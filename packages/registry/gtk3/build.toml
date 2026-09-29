@@ -1,0 +1,12 @@
+script_path = "packages/registry/gtk3/build-gtk3.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "cf81d0f7c"
+revision    = 2
+
+# The fetched `gtk3-src/` tree is gitignored; the resolver hashes these
+# tracked inputs on a clean checkout.
+inputs = [
+  "packages/registry/gtk3/build-gtk3.sh",
+  "packages/registry/gtk3/src/wasm-callback-arity.patch",
+  "packages/registry/gtk3/src/wayland-shm-gbm-pool.patch",
+]

@@ -1,0 +1,918 @@
+--- a/gtk/a11y/gtkaccessibility.c
++++ b/gtk/a11y/gtkaccessibility.c
+@@ -58,14 +58,17 @@
+                                          const GValue          *param_values,
+                                          gpointer               data);
+ static void     gail_finish_select       (GtkWidget            *widget);
+-static void     gail_map_cb              (GtkWidget            *widget);
+-static void     gail_map_submenu_cb      (GtkWidget            *widget);
++static void     gail_map_cb              (GtkWidget            *widget,
++                                          gpointer              user_data);
++static void     gail_map_submenu_cb      (GtkWidget            *widget,
++                                          gpointer              user_data);
+ static gint     gail_focus_idle_handler  (gpointer             data);
+ static void     gail_focus_notify        (GtkWidget            *widget);
+ static void     gail_focus_notify_when_idle (GtkWidget            *widget);
+ 
+ static void     gail_focus_tracker_init (void);
+-static void     gail_focus_object_destroyed (gpointer data);
++static void     gail_focus_object_destroyed (gpointer data,
++                                             GObject *where_the_object_was);
+ static void     gail_focus_tracker (AtkObject *object);
+ static void     gail_set_focus_widget (GtkWidget *focus_widget,
+                                        GtkWidget *widget);
+@@ -369,13 +372,15 @@
+ }
+ 
+ static void
+-gail_map_cb (GtkWidget *widget)
++gail_map_cb (GtkWidget *widget,
++             gpointer   user_data)
+ {
+   gail_finish_select (widget);
+ }
+ 
+ static void
+-gail_map_submenu_cb (GtkWidget *widget)
++gail_map_submenu_cb (GtkWidget *widget,
++                     gpointer   user_data)
+ {
+   if (GTK_IS_MENU (widget))
+     {
+@@ -708,7 +713,8 @@
+ }
+ 
+ static void
+-gail_focus_object_destroyed (gpointer data)
++gail_focus_object_destroyed (gpointer data,
++                             GObject *where_the_object_was)
+ {
+   GObject *obj;
+ 
+@@ -897,7 +903,8 @@
+ 
+ static gboolean
+ window_focus (GtkWidget     *widget,
+-              GdkEventFocus *event)
++              GdkEventFocus *event,
++              gpointer       user_data)
+ {
+   AtkObject *atk_obj;
+ 
+@@ -912,7 +919,8 @@
+ static void
+ window_added (AtkObject *atk_obj,
+               guint      index,
+-              AtkObject *child)
++              AtkObject *child,
++              gpointer   user_data)
+ {
+   GtkWidget *widget;
+ 
+@@ -931,7 +939,8 @@
+ static void
+ window_removed (AtkObject *atk_obj,
+                 guint      index,
+-                AtkObject *child)
++                AtkObject *child,
++                gpointer   user_data)
+ {
+   GtkWidget *widget;
+   GtkWindow *window;
+--- a/gtk/a11y/gtkwidgetaccessible.c
++++ b/gtk/a11y/gtkwidgetaccessible.c
+@@ -46,7 +46,8 @@
+ /* Translate GtkWidget::focus-in/out-event to AtkObject::focus-event */
+ static gboolean
+ focus_cb (GtkWidget     *widget,
+-          GdkEventFocus *event)
++          GdkEventFocus *event,
++          gpointer       user_data)
+ {
+   AtkObject *obj;
+ 
+@@ -60,7 +61,8 @@
+ /* Translate GtkWidget property change notification to the notify_gtk vfunc */
+ static void
+ notify_cb (GObject    *obj,
+-           GParamSpec *pspec)
++           GParamSpec *pspec,
++           gpointer    user_data)
+ {
+   GtkWidgetAccessible *widget;
+   GtkWidgetAccessibleClass *klass;
+@@ -74,7 +76,8 @@
+ /* Translate GtkWidget::size-allocate to AtkComponent::bounds-changed */
+ static void
+ size_allocate_cb (GtkWidget     *widget,
+-                  GtkAllocation *allocation)
++                  GtkAllocation *allocation,
++                  gpointer       user_data)
+ {
+   AtkObject* accessible;
+   AtkRectangle rect;
+@@ -91,15 +94,15 @@
+ }
+ 
+ /* Translate GtkWidget mapped state into AtkObject showing */
+-static gint
+-map_cb (GtkWidget *widget)
++static void
++map_cb (GtkWidget *widget,
++        gpointer   user_data)
+ {
+   AtkObject *accessible;
+ 
+   accessible = gtk_widget_get_accessible (widget);
+   atk_object_notify_state_change (accessible, ATK_STATE_SHOWING,
+                                   gtk_widget_get_mapped (widget));
+-  return 1;
+ }
+ 
+ static void
+--- a/gtk/a11y/gtkwindowaccessible.c
++++ b/gtk/a11y/gtkwindowaccessible.c
+@@ -74,7 +74,8 @@
+ 
+ static gboolean
+ window_state_event_cb (GtkWidget           *widget,
+-                       GdkEventWindowState *event)
++                       GdkEventWindowState *event,
++                       gpointer             user_data)
+ {
+   AtkObject* obj;
+ 
+--- a/gtk/gtkcellrenderer.c
++++ b/gtk/gtkcellrenderer.c
+@@ -72,7 +72,10 @@
+ #define DEBUG_CELL_SIZE_REQUEST 0
+ 
+ static void gtk_cell_renderer_init          (GtkCellRenderer      *cell);
+-static void gtk_cell_renderer_class_init    (GtkCellRendererClass *class);
++static void gtk_cell_renderer_class_init    (GtkCellRendererClass *class,
++                                             gpointer              class_data);
++static void gtk_cell_renderer_intern_instance_init (GTypeInstance *instance,
++                                                    gpointer       g_class);
+ static void gtk_cell_renderer_get_property  (GObject              *object,
+ 					     guint                 param_id,
+ 					     GValue               *value,
+@@ -197,8 +200,16 @@
+ }
+ 
+ static void
+-gtk_cell_renderer_class_init (GtkCellRendererClass *class)
++gtk_cell_renderer_intern_instance_init (GTypeInstance *instance,
++                                        gpointer       g_class)
+ {
++  gtk_cell_renderer_init ((GtkCellRenderer *) instance);
++}
++
++static void
++gtk_cell_renderer_class_init (GtkCellRendererClass *class,
++                              gpointer              class_data)
++{
+   GObjectClass *object_class = G_OBJECT_CLASS (class);
+ 
+   object_class->get_property = gtk_cell_renderer_get_property;
+@@ -472,7 +483,7 @@
+ 	NULL,		/* class_init */
+ 	sizeof (GtkWidget),
+ 	0,		/* n_preallocs */
+-	(GInstanceInitFunc) gtk_cell_renderer_init,
++	gtk_cell_renderer_intern_instance_init,
+ 	NULL,		/* value_table */
+       };
+       cell_renderer_type = g_type_register_static (G_TYPE_INITIALLY_UNOWNED, "GtkCellRenderer",
+--- a/gtk/gtkcontainer.c
++++ b/gtk/gtkcontainer.c
+@@ -318,8 +318,11 @@
+ /* --- prototypes --- */
+ static void     gtk_container_base_class_init      (GtkContainerClass *klass);
+ static void     gtk_container_base_class_finalize  (GtkContainerClass *klass);
+-static void     gtk_container_class_init           (GtkContainerClass *klass);
++static void     gtk_container_class_init           (GtkContainerClass *klass,
++                                                    gpointer           class_data);
+ static void     gtk_container_init                 (GtkContainer      *container);
++static void     gtk_container_intern_instance_init (GTypeInstance     *instance,
++                                                    gpointer           g_class);
+ static void     gtk_container_destroy              (GtkWidget         *widget);
+ static void     gtk_container_set_property         (GObject         *object,
+                                                     guint            prop_id,
+@@ -438,15 +441,15 @@
+         NULL        /* class_data */,
+         sizeof (GtkContainer),
+         0           /* n_preallocs */,
+-        (GInstanceInitFunc) gtk_container_init,
++        gtk_container_intern_instance_init,
+         NULL,       /* value_table */
+       };
+ 
+       const GInterfaceInfo buildable_info =
+       {
+-        (GInterfaceInitFunc) gtk_container_buildable_init,
++        g_wasm_iface_init_thunk,
+         NULL,
+-        NULL
++        (gpointer) (void (*)(void)) gtk_container_buildable_init
+       };
+ 
+       container_type =
+@@ -491,7 +494,8 @@
+ }
+ 
+ static void
+-gtk_container_class_init (GtkContainerClass *class)
++gtk_container_class_init (GtkContainerClass *class,
++                          gpointer           class_data)
+ {
+   GObjectClass *gobject_class = G_OBJECT_CLASS (class);
+   GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (class);
+@@ -1683,6 +1687,31 @@
+ }
+ 
+ static void
++gtk_container_intern_instance_init (GTypeInstance *instance,
++                                    gpointer       g_class)
++{
++  gtk_container_init ((GtkContainer *) instance);
++}
++
++static void
++gtk_widget_destroy_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_destroy (widget);
++}
++
++static void
++gtk_widget_show_all_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_show_all (widget);
++}
++
++static void
++gtk_widget_unmap_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_unmap (widget);
++}
++
++static void
+ gtk_container_destroy (GtkWidget *widget)
+ {
+   GtkContainer *container = GTK_CONTAINER (widget);
+@@ -1699,7 +1728,7 @@
+   if (priv->has_focus_chain)
+     gtk_container_unset_focus_chain (container);
+ 
+-  gtk_container_foreach (container, (GtkCallback) gtk_widget_destroy, NULL);
++  gtk_container_foreach (container, gtk_widget_destroy_wasm_cb, NULL);
+ 
+   GTK_WIDGET_CLASS (parent_class)->destroy (widget);
+ }
+@@ -3596,7 +3625,7 @@
+   g_return_if_fail (GTK_IS_CONTAINER (widget));
+ 
+   gtk_container_foreach (GTK_CONTAINER (widget),
+-                         (GtkCallback) gtk_widget_show_all,
++                         gtk_widget_show_all_wasm_cb,
+                          NULL);
+   gtk_widget_show (widget);
+ }
+@@ -3716,7 +3745,7 @@
+     gdk_window_hide (_gtk_widget_get_window (widget));
+ 
+   gtk_container_forall (GTK_CONTAINER (widget),
+-                        (GtkCallback)gtk_widget_unmap,
++                        gtk_widget_unmap_wasm_cb,
+                         NULL);
+ }
+ 
+--- a/gtk/gtkfilechooserembed.c
++++ b/gtk/gtkfilechooserembed.c
+@@ -21,7 +21,8 @@
+ #include "gtkmarshalers.h"
+ #include "gtkintl.h"
+ 
+-static void gtk_file_chooser_embed_class_init (gpointer g_iface);
++static void gtk_file_chooser_embed_class_init (gpointer g_iface,
++                                               gpointer class_data);
+ static void delegate_get_default_size         (GtkFileChooserEmbed *chooser_embed,
+ 					       gint                *default_width,
+ 					       gint                *default_height);
+@@ -145,7 +146,8 @@
+ }
+ 
+ static void
+-gtk_file_chooser_embed_class_init (gpointer g_iface)
++gtk_file_chooser_embed_class_init (gpointer g_iface,
++                                   gpointer class_data)
+ {
+   GType iface_type = G_TYPE_FROM_INTERFACE (g_iface);
+ 
+--- a/gtk/gtkflowbox.c
++++ b/gtk/gtkflowbox.c
+@@ -88,6 +88,12 @@
+ 
+ #include "a11y/gtkflowboxaccessibleprivate.h"
+ #include "a11y/gtkflowboxchildaccessible.h"
++
++static void
++gtk_widget_destroy_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_destroy (widget);
++}
+ 
+ /* Forward declarations and utilities {{{1 */
+ 
+@@ -4504,7 +4510,7 @@
+       g_clear_object (&priv->bound_model);
+     }
+ 
+-  gtk_flow_box_forall (GTK_CONTAINER (box), FALSE, (GtkCallback) gtk_widget_destroy, NULL);
++  gtk_flow_box_forall (GTK_CONTAINER (box), FALSE, gtk_widget_destroy_wasm_cb, NULL);
+ 
+   if (model == NULL)
+     return;
+--- a/gtk/gtkheaderbar.c
++++ b/gtk/gtkheaderbar.c
+@@ -33,6 +33,24 @@
+ #include "a11y/gtkheaderbaraccessible.h"
+ 
+ #include <string.h>
++
++static void
++gtk_header_bar_window_iconify_wasm_cb (GtkWindow *window, GtkWidget *button)
++{
++  gtk_window_iconify (window);
++}
++
++static void
++gtk_header_bar_window_toggle_maximized_wasm_cb (GtkWindow *window, GtkWidget *button)
++{
++  _gtk_window_toggle_maximized (window);
++}
++
++static void
++gtk_header_bar_window_close_wasm_cb (GtkWindow *window, GtkWidget *button)
++{
++  gtk_window_close (window);
++}
+ 
+ /**
+  * SECTION:gtkheaderbar
+@@ -408,7 +426,7 @@
+                   gtk_widget_set_can_focus (button, FALSE);
+                   gtk_widget_show_all (button);
+                   g_signal_connect_swapped (button, "clicked",
+-                                            G_CALLBACK (gtk_window_iconify), window);
++                                            G_CALLBACK (gtk_header_bar_window_iconify_wasm_cb), window);
+ 
+                   accessible = gtk_widget_get_accessible (button);
+                   if (GTK_IS_ACCESSIBLE (accessible))
+@@ -432,7 +450,7 @@
+                   gtk_widget_set_can_focus (button, FALSE);
+                   gtk_widget_show_all (button);
+                   g_signal_connect_swapped (button, "clicked",
+-                                            G_CALLBACK (_gtk_window_toggle_maximized), window);
++                                            G_CALLBACK (gtk_header_bar_window_toggle_maximized_wasm_cb), window);
+ 
+                   accessible = gtk_widget_get_accessible (button);
+                   if (GTK_IS_ACCESSIBLE (accessible))
+@@ -451,7 +469,7 @@
+                   gtk_widget_set_can_focus (button, FALSE);
+                   gtk_widget_show_all (button);
+                   g_signal_connect_swapped (button, "clicked",
+-                                            G_CALLBACK (gtk_window_close), window);
++                                            G_CALLBACK (gtk_header_bar_window_close_wasm_cb), window);
+ 
+                   accessible = gtk_widget_get_accessible (button);
+                   if (GTK_IS_ACCESSIBLE (accessible))
+--- a/gtk/gtklistbox.c
++++ b/gtk/gtklistbox.c
+@@ -35,6 +35,12 @@
+ 
+ #include "a11y/gtklistboxaccessibleprivate.h"
+ #include "a11y/gtklistboxrowaccessible.h"
++
++static void
++gtk_widget_destroy_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_destroy (widget);
++}
+ 
+ /**
+  * SECTION:gtklistbox
+@@ -4087,7 +4093,7 @@
+       g_clear_object (&priv->bound_model);
+     }
+ 
+-  gtk_list_box_forall (GTK_CONTAINER (box), FALSE, (GtkCallback) gtk_widget_destroy, NULL);
++  gtk_list_box_forall (GTK_CONTAINER (box), FALSE, gtk_widget_destroy_wasm_cb, NULL);
+ 
+   if (model == NULL)
+     return;
+--- a/gtk/gtkmain.c
++++ b/gtk/gtkmain.c
+@@ -638,6 +638,13 @@
+ }
+ 
+ static void
++gtk_main_do_event_wasm_cb (GdkEvent *event,
++                           gpointer  user_data)
++{
++  gtk_main_do_event (event);
++}
++
++static void
+ do_pre_parse_initialization (int    *argc,
+                              char ***argv)
+ {
+@@ -653,7 +660,7 @@
+     g_error ("GTK+ 2.x symbols detected. Using GTK+ 2.x and GTK+ 3 in the same process is not supported");
+ 
+   GDK_PRIVATE_CALL (gdk_pre_parse) ();
+-  gdk_event_handler_set ((GdkEventFunc)gtk_main_do_event, NULL, NULL);
++  gdk_event_handler_set (gtk_main_do_event_wasm_cb, NULL, NULL);
+ 
+   env_string = g_getenv ("GTK_DEBUG");
+   if (env_string != NULL)
+@@ -710,7 +717,9 @@
+ }
+ 
+ static void
+-default_display_notify_cb (GdkDisplayManager *dm)
++default_display_notify_cb (GdkDisplayManager *dm,
++                           GParamSpec        *pspec,
++                           gpointer           user_data)
+ {
+   _gtk_accessibility_init ();
+   debug_flags[0].display = gdk_display_get_default ();
+@@ -765,7 +774,7 @@
+ 
+   display_manager = gdk_display_manager_get ();
+   if (gdk_display_manager_get_default_display (display_manager) != NULL)
+-    default_display_notify_cb (display_manager);
++    default_display_notify_cb (display_manager, NULL, NULL);
+ 
+   g_signal_connect (display_manager, "notify::default-display",
+                     G_CALLBACK (default_display_notify_cb),
+--- a/gtk/gtkmenu.c
++++ b/gtk/gtkmenu.c
+@@ -140,6 +140,12 @@
+ 
+ #include "a11y/gtkmenuaccessible.h"
+ #include "gdk/gdk-private.h"
++
++static void
++gtk_widget_show_all_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_show_all (widget);
++}
+ 
+ #define NAVIGATION_REGION_OVERSHOOT 50  /* How much the navigation region
+                                          * extends below the submenu
+@@ -5676,7 +5682,7 @@
+ gtk_menu_show_all (GtkWidget *widget)
+ {
+   /* Show children, but not self. */
+-  gtk_container_foreach (GTK_CONTAINER (widget), (GtkCallback) gtk_widget_show_all, NULL);
++  gtk_container_foreach (GTK_CONTAINER (widget), gtk_widget_show_all_wasm_cb, NULL);
+ }
+ 
+ /**
+--- a/gtk/gtkmenuitem.c
++++ b/gtk/gtkmenuitem.c
+@@ -49,6 +49,12 @@
+ #include "deprecated/gtktearoffmenuitem.h"
+ #include "gtkstylecontextprivate.h"
+ #include "gtkcssstylepropertyprivate.h"
++
++static void
++gtk_widget_show_all_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_show_all (widget);
++}
+ 
+ #define MENU_POPUP_DELAY     225
+ 
+@@ -2237,7 +2243,7 @@
+   /* show children including submenu */
+   if (priv->submenu)
+     gtk_widget_show_all (priv->submenu);
+-  gtk_container_foreach (GTK_CONTAINER (widget), (GtkCallback) gtk_widget_show_all, NULL);
++  gtk_container_foreach (GTK_CONTAINER (widget), gtk_widget_show_all_wasm_cb, NULL);
+ 
+   gtk_widget_show (widget);
+ }
+--- a/gtk/gtkmodules.c
++++ b/gtk/gtkmodules.c
+@@ -429,7 +429,9 @@
+ }
+ 
+ static void
+-default_display_notify_cb (GdkDisplayManager *display_manager)
++default_display_notify_cb (GdkDisplayManager *display_manager,
++                           GParamSpec        *pspec,
++                           gpointer           user_data)
+ {
+   GSList *slist;
+ 
+@@ -456,7 +458,8 @@
+ 
+ static void
+ display_closed_cb (GdkDisplay *display,
+-		   gboolean    is_error)
++		   gboolean    is_error,
++		   gpointer    user_data)
+ {
+   GdkScreen *screen;
+   GtkSettings *settings;
+@@ -472,7 +475,8 @@
+ 
+ static void
+ display_opened_cb (GdkDisplayManager *display_manager,
+-		   GdkDisplay        *display)
++		   GdkDisplay        *display,
++		   gpointer           user_data)
+ {
+   GValue value = G_VALUE_INIT;
+   GSList *slist;
+--- a/gtk/gtkplacessidebar.c
++++ b/gtk/gtkplacessidebar.c
+@@ -64,6 +64,12 @@
+ #include "gtkgesturelongpress.h"
+ #include "gtkbox.h"
+ #include "gtkmodelbutton.h"
++
++static void
++gtk_widget_destroy_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_destroy (widget);
++}
+ 
+ /**
+  * SECTION:gtkplacessidebar
+@@ -1058,7 +1064,7 @@
+    * ending a drag */
+   stop_drop_feedback (sidebar);
+   gtk_container_foreach (GTK_CONTAINER (sidebar->list_box),
+-                         (GtkCallback) gtk_widget_destroy,
++                         gtk_widget_destroy_wasm_cb,
+                          NULL);
+ 
+   network_mounts = network_volumes = NULL;
+--- a/gtk/gtkprintunixdialog.c
++++ b/gtk/gtkprintunixdialog.c
+@@ -59,7 +59,13 @@
+ #include "gtkstylecontextprivate.h"
+ #include "gtkwidgetprivate.h"
+ 
++static void
++gtk_widget_destroy_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_destroy (widget);
++}
+ 
++
+ /**
+  * SECTION:gtkprintunixdialog
+  * @Short_description: A print dialog
+@@ -1985,13 +1991,13 @@
+     return;
+ 
+   gtk_container_foreach (GTK_CONTAINER (priv->finishing_table),
+-                         (GtkCallback)gtk_widget_destroy, NULL);
+-  gtk_container_foreach (GTK_CONTAINER (priv->image_quality_table),
+-                         (GtkCallback)gtk_widget_destroy, NULL);
++                         gtk_widget_destroy_wasm_cb, NULL);
++  gtk_container_foreach (GTK_CONTAINER (priv->image_quality_table),
++                         gtk_widget_destroy_wasm_cb, NULL);
+   gtk_container_foreach (GTK_CONTAINER (priv->color_table),
+-                         (GtkCallback)gtk_widget_destroy, NULL);
++                         gtk_widget_destroy_wasm_cb, NULL);
+   gtk_container_foreach (GTK_CONTAINER (priv->advanced_vbox),
+-                         (GtkCallback)gtk_widget_destroy, NULL);
++                         gtk_widget_destroy_wasm_cb, NULL);
+   extension_point_clear_children (GTK_CONTAINER (priv->extension_point));
+ }
+ 
+--- a/gtk/gtkshortcutlabel.c
++++ b/gtk/gtkshortcutlabel.c
+@@ -24,6 +24,12 @@
+ #include "gtkstylecontext.h"
+ #include "gtkprivate.h"
+ #include "gtkintl.h"
++
++static void
++gtk_widget_destroy_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_destroy (widget);
++}
+ 
+ /**
+  * SECTION:gtkshortcutlabel
+@@ -373,7 +379,7 @@
+   gchar **accels;
+   gint k;
+ 
+-  gtk_container_foreach (GTK_CONTAINER (self), (GtkCallback)gtk_widget_destroy, NULL);
++  gtk_container_foreach (GTK_CONTAINER (self), gtk_widget_destroy_wasm_cb, NULL);
+ 
+   if (self->accelerator == NULL || self->accelerator[0] == '\0')
+     {
+--- a/gtk/gtksidebarrow.c
++++ b/gtk/gtksidebarrow.c
+@@ -33,6 +33,12 @@
+ #ifdef HAVE_CLOUDPROVIDERS
+ #include <cloudproviders/cloudprovidersaccount.h>
+ #endif
++
++static void
++gtk_widget_destroy_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_destroy (widget);
++}
+ 
+ struct _GtkSidebarRow
+ {
+@@ -355,7 +361,7 @@
+             g_clear_object (&self->cloud_provider_account);
+ 
+             gtk_container_foreach (GTK_CONTAINER (self),
+-                                   (GtkCallback) gtk_widget_destroy,
++                                   gtk_widget_destroy_wasm_cb,
+                                    NULL);
+ 
+             context = gtk_widget_get_style_context (GTK_WIDGET (self));
+--- a/gtk/gtkstylecascade.c
++++ b/gtk/gtkstylecascade.c
+@@ -39,6 +39,13 @@
+   guint changed_signal_id;
+ };
+ 
++static void
++gtk_style_cascade_provider_changed (gpointer data,
++                                    gpointer provider)
++{
++  _gtk_style_provider_private_changed (data);
++}
++
+ static GtkStyleProvider *
+ gtk_style_cascade_iter_next (GtkStyleCascade     *cascade,
+                              GtkStyleCascadeIter *iter)
+@@ -333,14 +340,14 @@
+       g_object_ref (parent);
+       g_signal_connect_swapped (parent,
+                                 "-gtk-private-changed",
+-                                G_CALLBACK (_gtk_style_provider_private_changed),
++                                G_CALLBACK (gtk_style_cascade_provider_changed),
+                                 cascade);
+     }
+ 
+   if (cascade->parent)
+     {
+-      g_signal_handlers_disconnect_by_func (cascade->parent, 
+-                                            _gtk_style_provider_private_changed,
++      g_signal_handlers_disconnect_by_func (cascade->parent,
++                                            gtk_style_cascade_provider_changed,
+                                             cascade);
+       g_object_unref (cascade->parent);
+     }
+@@ -364,7 +371,7 @@
+   data.priority = priority;
+   data.changed_signal_id = g_signal_connect_swapped (provider,
+                                                      "-gtk-private-changed",
+-                                                     G_CALLBACK (_gtk_style_provider_private_changed),
++                                                     G_CALLBACK (gtk_style_cascade_provider_changed),
+                                                      cascade);
+ 
+   /* ensure it gets removed first */
+--- a/gtk/gtkstyleprovider.c
++++ b/gtk/gtkstyleprovider.c
+@@ -33,7 +33,8 @@
+  * See gtk_style_context_add_provider() and gtk_style_context_add_provider_for_screen().
+  */
+ 
+-static void gtk_style_provider_iface_init (gpointer g_iface);
++static void gtk_style_provider_iface_init (gpointer g_iface,
++                                           gpointer class_data);
+ 
+ GType
+ gtk_style_provider_get_type (void)
+@@ -50,7 +51,8 @@
+ }
+ 
+ static void
+-gtk_style_provider_iface_init (gpointer g_iface)
++gtk_style_provider_iface_init (gpointer g_iface,
++                               gpointer class_data)
+ {
+ }
+ 
+--- a/gtk/gtktoolbutton.c
++++ b/gtk/gtktoolbutton.c
+@@ -88,7 +88,8 @@
+ 
+ static void gtk_tool_button_init          (GtkToolButton      *button,
+ 					   GtkToolButtonClass *klass);
+-static void gtk_tool_button_class_init    (GtkToolButtonClass *klass);
++static void gtk_tool_button_class_init    (GtkToolButtonClass *klass,
++                                           gpointer            class_data);
+ static void gtk_tool_button_set_property  (GObject            *object,
+ 					   guint               prop_id,
+ 					   const GValue       *value,
+@@ -147,15 +148,15 @@
+     {
+       const GInterfaceInfo actionable_info =
+       {
+-        (GInterfaceInitFunc) gtk_tool_button_actionable_iface_init,
++        g_wasm_iface_init_thunk,
+         (GInterfaceFinalizeFunc) NULL,
+-        NULL
++        (gpointer) (void (*)(void)) gtk_tool_button_actionable_iface_init
+       };
+       const GInterfaceInfo activatable_info =
+       {
+-        (GInterfaceInitFunc) gtk_tool_button_activatable_interface_init,
++        g_wasm_iface_init_thunk,
+         (GInterfaceFinalizeFunc) NULL,
+-        NULL
++        (gpointer) (void (*)(void)) gtk_tool_button_activatable_interface_init
+       };
+ 
+       g_define_type_id = g_type_register_static_simple (GTK_TYPE_TOOL_ITEM,
+@@ -177,7 +178,8 @@
+ }
+ 
+ static void
+-gtk_tool_button_class_init (GtkToolButtonClass *klass)
++gtk_tool_button_class_init (GtkToolButtonClass *klass,
++                            gpointer            class_data)
+ {
+   GObjectClass *object_class;
+   GtkWidgetClass *widget_class;
+--- a/gtk/gtktreemenu.c
++++ b/gtk/gtktreemenu.c
+@@ -50,6 +50,12 @@
+ #define GDK_DEPRECATED_FOR(f)
+ 
+ #include "deprecated/gtktearoffmenuitem.h"
++
++static void
++gtk_widget_destroy_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_destroy (widget);
++}
+ 
+ /* GObjectClass */
+ static void      gtk_tree_menu_constructed                    (GObject            *object);
+@@ -1343,7 +1349,7 @@
+ 
+   /* Destroy all the menu items */
+   gtk_container_foreach (GTK_CONTAINER (menu),
+-                         (GtkCallback) gtk_widget_destroy, NULL);
++                         gtk_widget_destroy_wasm_cb, NULL);
+ 
+   /* Populate */
+   if (priv->model)
+--- a/gtk/gtkwidget.c
++++ b/gtk/gtkwidget.c
+@@ -632,7 +632,8 @@
+ 
+ /* --- prototypes --- */
+ static void	gtk_widget_base_class_init	(gpointer            g_class);
+-static void	gtk_widget_class_init		(GtkWidgetClass     *klass);
++static void	gtk_widget_class_init		(GtkWidgetClass     *klass,
++						 gpointer            class_data);
+ static void	gtk_widget_base_class_finalize	(GtkWidgetClass     *klass);
+ static void     gtk_widget_init                  (GTypeInstance     *instance,
+                                                   gpointer           g_class);
+@@ -750,6 +751,25 @@
+ static void             gtk_widget_real_set_has_tooltip         (GtkWidget *widget,
+ 								 gboolean   has_tooltip,
+ 								 gboolean   force);
++
++static void
++gtk_widget_unrealize_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_unrealize (widget);
++}
++
++static void
++gtk_widget_scale_changed_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  _gtk_widget_scale_changed (widget);
++}
++
++static void
++gtk_widget_ensure_allocate_wasm_cb (GtkWidget *widget, gpointer data)
++{
++  gtk_widget_ensure_allocate (widget);
++}
++
+ static void             gtk_widget_buildable_interface_init     (GtkBuildableIface *iface);
+ static void             gtk_widget_buildable_set_name           (GtkBuildable     *buildable,
+                                                                  const gchar      *name);
+@@ -880,16 +900,16 @@
+ 
+       const GInterfaceInfo accessibility_info =
+       {
+-	(GInterfaceInitFunc) gtk_widget_accessible_interface_init,
++	g_wasm_iface_init_thunk,
+ 	(GInterfaceFinalizeFunc) NULL,
+-	NULL /* interface data */
++	(gpointer) (void (*)(void)) gtk_widget_accessible_interface_init
+       };
+ 
+       const GInterfaceInfo buildable_info =
+       {
+-	(GInterfaceInitFunc) gtk_widget_buildable_interface_init,
++	g_wasm_iface_init_thunk,
+ 	(GInterfaceFinalizeFunc) NULL,
+-	NULL /* interface data */
++	(gpointer) (void (*)(void)) gtk_widget_buildable_interface_init
+       };
+ 
+       widget_type = g_type_register_static (G_TYPE_INITIALLY_UNOWNED, "GtkWidget",
+@@ -991,7 +1011,8 @@
+ }
+ 
+ static void
+-gtk_widget_class_init (GtkWidgetClass *klass)
++gtk_widget_class_init (GtkWidgetClass *klass,
++                       gpointer        class_data)
+ {
+   static GObjectNotifyContext cpn_context = { 0, NULL, NULL };
+   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
+@@ -10944,7 +10965,7 @@
+ 
+   if (GTK_IS_CONTAINER (widget))
+     gtk_container_forall (GTK_CONTAINER (widget),
+-                          (GtkCallback) _gtk_widget_scale_changed,
++                          gtk_widget_scale_changed_wasm_cb,
+                           NULL);
+ }
+ 
+@@ -12492,7 +12513,7 @@
+ 
+   if (GTK_IS_CONTAINER (widget))
+     gtk_container_forall (GTK_CONTAINER (widget),
+-			  (GtkCallback) gtk_widget_unrealize,
++			  gtk_widget_unrealize_wasm_cb,
+ 			  NULL);
+ 
+   if (_gtk_widget_get_has_window (widget))
+@@ -16388,7 +16409,7 @@
+ 
+       if (GTK_IS_CONTAINER (widget))
+         gtk_container_forall (GTK_CONTAINER (widget),
+-                              (GtkCallback) gtk_widget_ensure_allocate,
++                              gtk_widget_ensure_allocate_wasm_cb,
+                               NULL);
+     }
+ }
+--- a/libgail-util/gailtextutil.c
++++ b/libgail-util/gailtextutil.c
+@@ -35,9 +35,11 @@
+  * #GtkLabel, #GtkCellRendererText and #GtkTextView.
+  */
+ 
+-static void gail_text_util_class_init      (GailTextUtilClass *klass);
++static void gail_text_util_class_init      (GailTextUtilClass *klass, gpointer class_data);
+ 
+ static void gail_text_util_init            (GailTextUtil      *textutil);
++static void gail_text_util_intern_instance_init (GTypeInstance *instance,
++                                                 gpointer       g_class);
+ static void gail_text_util_finalize        (GObject           *object);
+ 
+ 
+@@ -69,7 +71,7 @@
+         NULL, /* class data */
+         sizeof(GailTextUtil),
+         0, /* nb preallocs */
+-        (GInstanceInitFunc) gail_text_util_init,
++        gail_text_util_intern_instance_init,
+         NULL, /* value table */
+       };
+ 
+@@ -92,13 +94,20 @@
+ }
+ 
+ static void
++gail_text_util_intern_instance_init (GTypeInstance *instance,
++                                     gpointer       g_class)
++{
++  gail_text_util_init ((GailTextUtil *) instance);
++}
++
++static void
+ gail_text_util_init (GailTextUtil *textutil)
+ {
+   textutil->buffer = NULL;
+ }
+ 
+ static void
+-gail_text_util_class_init (GailTextUtilClass *klass)
++gail_text_util_class_init (GailTextUtilClass *klass, gpointer class_data)
+ {
+   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
+ 

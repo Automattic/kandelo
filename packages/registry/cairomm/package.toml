@@ -1,0 +1,31 @@
+kind = "library"
+name = "cairomm"
+version = "1.12.2"
+kernel_abi = 17
+depends_on = [
+  "cairo@1.16.0",
+  "libsigcxx@2.10.3",
+  "glib@2.84.4",
+  "pixman@0.42.2",
+  "fontconfig@2.15.0",
+  "freetype@2.13.3",
+  "libpng@1.6.43",
+  "libcxx@21.1.7",
+]
+
+[source]
+url = "https://www.cairographics.org/releases/cairomm-1.12.2.tar.gz"
+sha256 = "45c47fd4d0aa77464a75cdca011143fea3ef795c4753f6e860057da5fb8bd599"
+provider = "archive"
+
+[license]
+spdx = "LGPL-2.0-or-later"
+url = "https://gitlab.freedesktop.org/cairo/cairomm/-/blob/1.12.2/COPYING"
+
+[build]
+script_path = "packages/registry/cairomm/build-cairomm.sh"
+
+[outputs]
+libs = ["lib/libcairomm-1.0.a"]
+headers = ["include/cairomm-1.0"]
+pkgconfig = ["lib/pkgconfig/cairomm-1.0.pc"]

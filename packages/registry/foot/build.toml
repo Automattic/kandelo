@@ -1,0 +1,14 @@
+script_path = "packages/registry/foot/build-foot.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "fd2d27b6c"
+revision    = 1
+
+# The patches are load-bearing: 0001 swaps memfd pools for gbm prime-fd
+# pools (the kernel's only cross-process pixel path), 0002 serializes
+# font loading (concurrent FcFontMatch races under this kernel's thread
+# model). Editing either must invalidate cached archives.
+inputs = [
+  "packages/registry/foot/build-foot.sh",
+  "packages/registry/foot/patches/0001-shm-gbm-prime-fd-pools.patch",
+  "packages/registry/foot/patches/0002-serial-font-loading.patch",
+]

@@ -1,6 +1,6 @@
 # wayland-protocols (vendored v1 XML)
 
-`kind = "source"` package providing the Wayland protocol XML the DRI
+`kind = "library"` package providing the Wayland protocol XML the DRI
 compositor and clients need. See
 [`docs/plans/2026-07-08-dri-wayland-compositor-plan.md`](../../../docs/plans/2026-07-08-dri-wayland-compositor-plan.md)
 for the roadmap.

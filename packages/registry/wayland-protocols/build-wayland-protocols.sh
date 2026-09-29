@@ -2,7 +2,7 @@
 #
 # Stage the vendored Wayland protocol XML into the dep cache.
 #
-# wayland-protocols is a `kind = "source"` package (see package.toml).
+# wayland-protocols is a `kind = "library"` package (see package.toml).
 # There is no tarball to fetch: the protocol XML is vendored in-tree
 # under `xml/`. This script just copies it into the resolver's
 # `$WASM_POSIX_DEP_OUT_DIR` so consumers that list `wayland-protocols`
@@ -18,8 +18,6 @@
 #     wayland-scanner private-code  \
 #         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/xdg-shell.xml" \
 #         xdg-shell-protocol.c
-#
-# See docs/package-management.md ("Source-kind manifests").
 
 set -euo pipefail
 

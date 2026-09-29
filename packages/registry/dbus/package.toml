@@ -1,0 +1,41 @@
+# Per-program manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "program"
+
+# Reference dbus 1.14.10 (last autotools series — 1.16 is meson/cmake
+# only), the PR22 session bus of plan
+# docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4.
+# Scope: session bus only — no activation, no policy language beyond
+# the stock session.conf, path sockets (no Linux abstract sockets),
+# EXTERNAL auth over the kernel's SO_PEERCRED. Clients speak gdbus
+# (gio); dbus-send/dbus-monitor cover the non-glib tool side of the
+# gate.
+name = "dbus"
+version = "1.14.10"
+kernel_abi = 17
+depends_on = ["expat@2.8.3"]
+
+[source]
+url = "https://dbus.freedesktop.org/releases/dbus/dbus-1.14.10.tar.xz"
+sha256 = "ba1f21d2bd9d339da2d4aa8780c09df32fea87998b73da24f49ab9df1e36a50f"
+provider = "archive"
+
+[license]
+spdx = "AFL-2.1 OR GPL-2.0-or-later"
+url = "https://gitlab.freedesktop.org/dbus/dbus/-/blob/dbus-1.14.10/COPYING"
+
+[build]
+script_path = "packages/registry/dbus/build-dbus.sh"
+
+[[outputs]]
+name = "dbus-daemon"
+wasm = "dbus-daemon.wasm"
+
+[[outputs]]
+name = "dbus-send"
+wasm = "dbus-send.wasm"
+
+[[outputs]]
+name = "dbus-monitor"
+wasm = "dbus-monitor.wasm"

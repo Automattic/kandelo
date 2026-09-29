@@ -5,6 +5,14 @@
 #define FE_ALL_EXCEPT 0
 #define FE_TONEAREST  0
 
+/* No exception flag can ever be raised; the standard names exist so
+ * portable code that tests them compiles (fetestexcept(0) is 0). */
+#define FE_INVALID    0
+#define FE_DIVBYZERO  0
+#define FE_OVERFLOW   0
+#define FE_UNDERFLOW  0
+#define FE_INEXACT    0
+
 typedef unsigned short fexcept_t;
 
 typedef struct {
