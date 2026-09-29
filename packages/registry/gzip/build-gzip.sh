@@ -5,13 +5,23 @@ set -euo pipefail
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # gzip has its own deflate implementation (does NOT link zlib).
-# Output: packages/registry/gzip/bin/gzip.wasm
+# Output: <work root>/bin/gzip.wasm (see the work-root note below)
 
 GZIP_VERSION="${GZIP_VERSION:-1.14}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/gzip-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. The
+# resolver reruns this script only when the package's cache key changed (an
+# ABI bump, a toolchain change). A tree kept in the package directory still
+# held the previous build's objects, which make treated as up to date, so the
+# rebuild shipped stale code (bzip2 kept declaring the old ABI version).
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/gzip-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -36,11 +46,11 @@ if [ ! -d "$SRC_DIR" ]; then
     # this tarball entirely (observed: mirror.freedif.org 404s 1.14), so a
     # mirror failure falls back to the canonical GNU host.
     FALLBACK_URL="https://ftp.gnu.org/gnu/gzip/${TARBALL}"
-    curl --retry 3 --retry-delay 5 --retry-max-time 120 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL" \
-        || curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$FALLBACK_URL" -o "/tmp/$TARBALL"
+    curl --retry 3 --retry-delay 5 --retry-max-time 120 --retry-all-errors -fsSL "$URL" -o "$WORK_DIR/$TARBALL" \
+        || curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$FALLBACK_URL" -o "$WORK_DIR/$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xJf "$WORK_DIR/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm "$WORK_DIR/$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -195,4 +205,4 @@ echo "Binary: $BIN_DIR/gzip.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary gzip "$SCRIPT_DIR/bin/gzip.wasm"
+install_local_binary gzip "$BIN_DIR/gzip.wasm"

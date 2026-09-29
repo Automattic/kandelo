@@ -11,13 +11,24 @@ set -euo pipefail
 # wasm-fork-instrument auto-discovers fork paths via call-graph
 # analysis — no onlylist is needed.
 #
-# Output: packages/registry/vim/bin/vim.wasm
+# Output: <work root>/bin/vim.wasm and <work root>/runtime/ (see the
+# work-root note below)
 
 VIM_VERSION="${VIM_VERSION:-9.1.0900}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/vim-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. The
+# resolver reruns this script only when the package's cache key changed (an
+# ABI bump, a toolchain change). A tree kept in the package directory still
+# held the previous build's objects, which make treated as up to date, so the
+# rebuild shipped stale code (bzip2 kept declaring the old ABI version).
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/vim-src"
+BIN_DIR="$WORK_DIR/bin"
 # Explicit env wins; else the in-tree sysroot. Keeps neighbour-worktree
 # invocations viable (WASM_POSIX_SYSROOT=<other>/sysroot). Same shape as
 # build-curl.sh:49.
@@ -75,10 +86,10 @@ if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading vim $VIM_VERSION..."
     TARBALL="v${VIM_VERSION}.tar.gz"
     URL="https://github.com/vim/vim/archive/refs/tags/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/vim-$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$WORK_DIR/vim-$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/vim-$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/vim-$TARBALL"
+    tar xzf "$WORK_DIR/vim-$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm "$WORK_DIR/vim-$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -264,9 +275,9 @@ install_local_binary vim "$BIN_DIR/vim.wasm"
 # the cache canonical path (and from there, the archive). Outside
 # the resolver, $WASM_POSIX_DEP_OUT_DIR is unset and this is a
 # no-op — direct invocations of build-vim.sh just leave runtime/
-# at its source-tree location.
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -d "$SCRIPT_DIR/runtime" ]; then
+# next to this script.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -d "$WORK_DIR/runtime" ]; then
     rm -rf "$WASM_POSIX_DEP_OUT_DIR/runtime"
-    cp -R "$SCRIPT_DIR/runtime" "$WASM_POSIX_DEP_OUT_DIR/runtime"
+    cp -R "$WORK_DIR/runtime" "$WASM_POSIX_DEP_OUT_DIR/runtime"
     echo "  staged runtime tree into resolver scratch"
 fi

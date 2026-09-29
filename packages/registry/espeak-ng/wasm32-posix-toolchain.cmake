@@ -73,8 +73,6 @@ set(CMAKE_C_FLAGS_INIT "${WASM32_FLAGS_STR}")
 set(CMAKE_CXX_FLAGS_INIT "${WASM32_FLAGS_STR}")
 
 # --- Linker flags (mirror sdk/src/lib/flags.ts LINK_FLAGS) ---
-# Path to the kandelo glue objs that the SDK normally injects. We hand
-# them to CMake via CMAKE_EXE_LINKER_FLAGS_INIT so cmake's link rule
 # Executables may leave undefined only the imports the host supplies:
 # libc/glue/kandelo-host-imports.txt, generated from
 # shared::abi::HOST_ENV_IMPORTS (same contract as sdk/src/lib/flags.ts).
@@ -88,9 +86,16 @@ if(NOT EXISTS "${_KANDELO_HOST_IMPORTS}")
   message(FATAL_ERROR "Link allowance not found at ${_KANDELO_HOST_IMPORTS}")
 endif()
 
+# Path to the kandelo glue objs that the SDK normally injects. We hand
+# them to CMake via CMAKE_EXE_LINKER_FLAGS_INIT so cmake's link rule
 # picks them up for `add_executable` targets (espeak-ng-bin).
-get_filename_component(_TOOLCHAIN_DIR2 "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-set(_GLUE_OBJ_DIR "${_TOOLCHAIN_DIR2}/glue-objs")
+# build-espeak-ng.sh compiles them into its build work root and exports
+# that directory; there is no in-tree fallback, because objects kept next to
+# this file outlived the ABI and toolchain changes that should rebuild them.
+if(NOT DEFINED ENV{ESPEAK_NG_GLUE_OBJ_DIR})
+  message(FATAL_ERROR "ESPEAK_NG_GLUE_OBJ_DIR is not set; configure through build-espeak-ng.sh.")
+endif()
+set(_GLUE_OBJ_DIR "$ENV{ESPEAK_NG_GLUE_OBJ_DIR}")
 
 set(WASM32_LINK_FLAGS
   "-nostdlib"
@@ -116,7 +121,9 @@ set(WASM32_LINK_FLAGS
 string(REPLACE ";" " " WASM32_LINK_FLAGS_STR "${WASM32_LINK_FLAGS}")
 
 # speechPlayer is C++, and -nostdlib keeps the driver from adding its runtime,
-# so name libc++/libc++abi (indexed into the sysroot by build-espeak-ng.sh).
+# so name libc++/libc++abi (build-espeak-ng.sh overlays the resolved libcxx
+# onto a private copy of the SDK sysroot with
+# kandelo_package_prepare_private_sysroot and points WASM_POSIX_SYSROOT at it).
 # Before honest links the missing operator new/delete became host imports.
 set(CMAKE_EXE_LINKER_FLAGS_INIT
   "${WASM32_LINK_FLAGS_STR} ${WASM_POSIX_SYSROOT}/lib/crt1.o ${_GLUE_OBJ_DIR}/channel_syscall.o ${_GLUE_OBJ_DIR}/compiler_rt.o -lc++ -lc++abi -lc"
