@@ -85,3 +85,5 @@ Systems software to port to Kandelo, prioritized by POSIX depth and browser util
 - Redis 7.2 — threads, sockets, signals, event loop
 - CPython 3.13.3 — mmap, signals, fork, file I/O, REPL + script runner
 - NetHack 3.6.7 — curses UI, DLB-packed data archive, /home/.nethack saves; shipped via the shell demo as a lazy archive
+- GNU Midnight Commander 4.8.32 — ncursesw UI, glib, fork-backed subshell and background file operations; shipped via the shell demo as a lazy archive
+- glib 2.84.4 — main loop over poll, gthread over musl pthreads, gobject and gio; with a from-scratch libffi port (no wasm32 backend upstream, and this target cannot JIT trampolines)

@@ -27,7 +27,7 @@ export function normalizeImageOwnedLazyReference(reference: string): string {
     reference === "ruby.zip" || reference === "python.zip" ||
     reference === "node.zip" || reference === "perl.zip" ||
     reference === "man.zip" || reference === "coreutils-docs.zip" ||
-    reference === "lsof-docs.zip"
+    reference === "lsof-docs.zip" || reference === "mc.zip"
   ) {
     return `assets/programs/wasm32/${reference}`;
   }

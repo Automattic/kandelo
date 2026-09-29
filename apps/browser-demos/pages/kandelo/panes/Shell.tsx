@@ -122,6 +122,14 @@ const ShellTerminalHost: React.FC<{
       fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
       theme: readShellTheme(containerRef.current),
       allowProposedApi: true,
+      // Send Option as Meta on macOS. xterm.js defaults this off there, so
+      // Option is treated as a compose key and the ESC prefix never reaches
+      // the guest — which silently removes every Meta binding a terminal
+      // program has. In Midnight Commander that is Alt+. (hidden files),
+      // Alt+t (listing mode), Alt+? (find) and Alt+Enter; vim and emacs lose
+      // their Alt bindings the same way. Users can still type Esc then the
+      // key, but nothing signals that Option is the thing that is broken.
+      macOptionIsMeta: true,
     });
     terminalRef.current = term;
     const fit = new FitAddon();
