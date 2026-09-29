@@ -33720,7 +33720,7 @@ export class CentralizedKernelWorker {
     statsSab?: SharedArrayBuffer,
     opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
-    // A remounted pane attaches a NEW OffscreenCanvas for the same CRTC;
+    // An embedder may attach a NEW OffscreenCanvas for the same CRTC;
     // a presenter cached against the old canvas would keep painting the
     // orphaned bitmap (getContext on the new canvas is never called).
     // Cached `null` failures are dropped too — the new canvas may accept
@@ -33732,6 +33732,10 @@ export class CentralizedKernelWorker {
       // context cannot move to another canvas: it keeps drawing into the old
       // one until the session ends (markKmsCanvasGlReleased), so this new
       // canvas stays blank meanwhile. Say so instead of failing silently.
+      // Panes avoid this by mounting KernelHost.kmsDisplayCanvas, the one
+      // canvas per CRTC for the kernel's lifetime, so a remount re-attaches
+      // the SAME canvas; only an embedder attaching a second, different
+      // canvas reaches this.
       if (this.kmsModeBeforeGlOwn.has(crtc_id)) {
         console.warn(
           `kms: crtc ${crtc_id} got a new canvas while a GL session owns the ` +

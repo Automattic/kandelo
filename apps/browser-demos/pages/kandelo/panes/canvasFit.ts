@@ -1,15 +1,20 @@
 import * as React from "react";
 
+/** `canvasOrRef` is a ref to a canvas the pane renders, or the element
+ *  itself when the pane mounts one it does not own (the KMS display
+ *  canvas) — passing the element re-runs the fit when it arrives. */
 export function useFittedCanvasStyle(
   containerRef: React.RefObject<HTMLElement | null>,
-  canvasRef: React.RefObject<HTMLCanvasElement | null>,
+  canvasOrRef: React.RefObject<HTMLCanvasElement | null> | HTMLCanvasElement | null,
   fallbackAspect: number,
 ): React.CSSProperties {
   const [style, setStyle] = React.useState<React.CSSProperties>({});
 
   React.useLayoutEffect(() => {
     const container = containerRef.current;
-    const canvas = canvasRef.current;
+    const canvas = canvasOrRef && "current" in canvasOrRef
+      ? canvasOrRef.current
+      : canvasOrRef;
     if (!container || !canvas) return;
 
     const update = () => {
@@ -47,7 +52,7 @@ export function useFittedCanvasStyle(
       mutationObserver.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, [canvasRef, containerRef, fallbackAspect]);
+  }, [canvasOrRef, containerRef, fallbackAspect]);
 
   return style;
 }

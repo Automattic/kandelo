@@ -2552,6 +2552,59 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     });
   });
 
+  it("kmsDisplayCanvas keeps one canvas per CRTC for the kernel's lifetime", () => {
+    // A program's WebGL context is bound to the canvas it was created on,
+    // so a remounted pane must get the SAME element back — and the same
+    // handle, without a second transferControlToOffscreen().
+    const realDocument = (globalThis as { document?: unknown }).document;
+    let transfers = 0;
+    (globalThis as { document?: unknown }).document = {
+      createElement: (tag: string) => {
+        expect(tag).toBe("canvas");
+        return {
+          width: 300,
+          height: 150,
+          transferControlToOffscreen: () => {
+            transfers++;
+            return {};
+          },
+        };
+      },
+    };
+    try {
+      withFakeResizeObserver(() => {
+        const host = new LiveKernelHost();
+        const kernelA = makeKmsKernel();
+        host.attachKernel(kernelA as any);
+        const size = { width: 1920, height: 1080 };
+
+        const canvas = host.kmsDisplayCanvas(1, size);
+        expect(canvas.width).toBe(1920);
+        expect(canvas.height).toBe(1080);
+        const handle = host.attachKmsDisplay(canvas, 1)!;
+        handle.close(); // pane unmount
+
+        // Remount: same element, same handle, one transfer.
+        expect(host.kmsDisplayCanvas(1, { width: 640, height: 480 })).toBe(canvas);
+        expect(canvas.width).toBe(1920); // size applies only at creation
+        expect(host.attachKmsDisplay(canvas, 1)).toBe(handle);
+        expect(transfers).toBe(1);
+        expect(kernelA.kmsAttachCanvas).toHaveBeenCalledTimes(1);
+
+        // Each CRTC has its own canvas.
+        expect(host.kmsDisplayCanvas(2)).not.toBe(canvas);
+
+        // The next kernel gets a fresh canvas: this one's control belongs
+        // to the detached kernel's worker.
+        host.detachKernel();
+        host.attachKernel(makeKmsKernel() as any);
+        expect(host.kmsDisplayCanvas(1, size)).not.toBe(canvas);
+      });
+    } finally {
+      (globalThis as { document?: unknown }).document = realDocument;
+    }
+  });
+
   it("whenKmsDisplaySized is bounded, and a detach releases it", async () => {
     vi.useFakeTimers();
     try {

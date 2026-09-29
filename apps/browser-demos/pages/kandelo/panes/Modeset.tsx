@@ -63,10 +63,38 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
   const host = useKernelHost();
   const status = useStatus();
   const stageRef = React.useRef<HTMLDivElement>(null);
-  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const slotRef = React.useRef<HTMLDivElement>(null);
   const handleRef = React.useRef<KmsDisplayHandle | null>(null);
+  // The same handle as state, for effects that must start once it exists
+  // (the stats drain); input callbacks read handleRef.
+  const [handle, setHandle] = React.useState<KmsDisplayHandle | null>(null);
+  const [canvas, setCanvas] = React.useState<HTMLCanvasElement | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [stats, setStats] = React.useState<KmsStats>(ZERO_STATS);
+
+  // Mount the host's display canvas for this CRTC rather than rendering one:
+  // a program's WebGL context is bound to that canvas for good, so a
+  // remounted pane must show the same element (see
+  // KernelHost.kmsDisplayCanvas). The slot is React-childless, so React
+  // never reconciles the canvas; on unmount the canvas leaves with the old
+  // slot, and the next mount's appendChild moves it here.
+  //
+  // The size is the wasm program's framebuffer, set before
+  // `transferControlToOffscreen()`: the placeholder HTMLCanvas keeps it as
+  // its `.width`/`.height` after transfer, and the OffscreenCanvas inherits
+  // it too. The drawing buffer must be 1920×1080 so
+  // `glViewport(0, 0, 1920, 1080)` covers the full surface. (The pointer
+  // scaler does NOT read `canvas.width` — it maps through the live scanout
+  // dims in stats slots 2/3, `fbDims` below.)
+  React.useLayoutEffect(() => {
+    if (status !== "booting" && status !== "running") return;
+    const slot = slotRef.current;
+    if (!slot) return;
+    const display = host.kmsDisplayCanvas(crtcId, { width: MODESET_FB_W, height: MODESET_FB_H });
+    display.classList.add("kmodeset-canvas");
+    if (display.parentNode !== slot) slot.replaceChildren(display);
+    setCanvas(display);
+  }, [host, status, crtcId]);
 
   // Attach the canvas as soon as we have one and the kernel is up. The pane
   // mounts during boot (MachineView) — hidden, but laid out — so attaching
@@ -74,28 +102,17 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
   // starts a mode-picking client.
   React.useEffect(() => {
     if (status !== "booting" && status !== "running") return;
-    const canvas = canvasRef.current;
     if (!canvas) return;
     if (handleRef.current) return;
 
-    // Match the wasm program's framebuffer dims BEFORE
-    // `transferControlToOffscreen()`. The placeholder HTMLCanvas keeps
-    // these as its `.width`/`.height` attribute values after transfer;
-    // the OffscreenCanvas inherits them too. The drawing buffer must be
-    // 1920×1080 so `glViewport(0, 0, 1920, 1080)` covers the full
-    // surface. (The pointer scaler does NOT read `canvas.width` — it
-    // maps through the live scanout dims in stats slots 2/3, `fbDims`
-    // below.)
-    if (canvas.width !== MODESET_FB_W) canvas.width = MODESET_FB_W;
-    if (canvas.height !== MODESET_FB_H) canvas.height = MODESET_FB_H;
-
     try {
-      const handle = host.attachKmsDisplay(canvas, crtcId);
-      if (!handle) {
+      const attached = host.attachKmsDisplay(canvas, crtcId);
+      if (!attached) {
         setError("Kernel does not expose kmsAttachCanvas (older ABI?)");
         return;
       }
-      handleRef.current = handle;
+      handleRef.current = attached;
+      setHandle(attached);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -104,8 +121,9 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     return () => {
       handleRef.current?.close();
       handleRef.current = null;
+      setHandle(null);
     };
-  }, [host, status, crtcId]);
+  }, [host, status, crtcId, canvas]);
 
   // Forward pointer motion + buttons into the kernel's `/dev/input/mice`.
   // Pointer events cover mouse, touch, and pen with one listener set; a
@@ -121,7 +139,6 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
   // direction.
   React.useEffect(() => {
     if (status !== "running") return;
-    const canvas = canvasRef.current;
     if (!canvas) return;
 
     let prevCanvasX: number | null = null;
@@ -281,12 +298,11 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
       canvas.removeEventListener("pointercancel", onPointerCancel);
       canvas.removeEventListener("contextmenu", onContextMenu);
     };
-  }, [status]);
+  }, [status, canvas]);
 
   // Drain the stats SAB at 4 Hz. The numbers are advisory; rAF would
   // re-render every blit, which is overkill for a status panel.
   React.useEffect(() => {
-    const handle = handleRef.current;
     if (!handle) return;
     const tick = () => {
       const s = handle.stats;
@@ -301,14 +317,20 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     tick();
     const id = window.setInterval(tick, 250);
     return () => window.clearInterval(id);
-  }, [status, error]);
+  }, [handle]);
 
   // Laid out whenever it is attached (booting too): its ResizeObserver is how
   // the display reports its size before the machine's command picks a video
   // mode. While booting the pane's slot is hidden, so nothing shows early.
   const showCanvas = (status === "booting" || status === "running") && !error;
   const hasFrame = stats.width > 0 && stats.height > 0;
-  const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, MODESET_FB_W / MODESET_FB_H);
+  const canvasStyle = useFittedCanvasStyle(stageRef, canvas, MODESET_FB_W / MODESET_FB_H);
+  // React does not render the canvas, so it cannot style it either.
+  React.useLayoutEffect(() => {
+    if (!canvas) return;
+    canvas.style.width = typeof canvasStyle.width === "string" ? canvasStyle.width : "";
+    canvas.style.height = typeof canvasStyle.height === "string" ? canvasStyle.height : "";
+  }, [canvas, canvasStyle]);
   const statusLabel = hasFrame
     ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs` +
       (RENDERER_LABELS[stats.renderer] ? ` · ${RENDERER_LABELS[stats.renderer]}` : "")
@@ -330,13 +352,12 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
   return (
     <div className="kmodeset-surface">
       <div className="kmodeset-stage" ref={stageRef}>
-        <canvas
-          ref={canvasRef}
-          className="kmodeset-canvas"
-          style={{
-            ...canvasStyle,
-            display: showCanvas ? "block" : "none",
-          }}
+        {/* Holds the host's display canvas (mounted above); `contents`
+            keeps the canvas a direct flex item of the stage. */}
+        <div
+          ref={slotRef}
+          className="kmodeset-canvas-slot"
+          style={{ display: showCanvas ? "contents" : "none" }}
         />
         {showCanvas && !hasFrame && (
           <div className="kmodeset-waiting" role="status" aria-live="polite">

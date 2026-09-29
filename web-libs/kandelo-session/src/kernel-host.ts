@@ -879,6 +879,13 @@ export interface KernelHost {
     crtcId?: number,
     opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): KmsDisplayHandle | null;
+  // The one canvas a display pane mounts for a CRTC, kept for the kernel's
+  // lifetime so a pane remount cannot strand a program's WebGL context on
+  // a detached element. `size` applies only when the canvas is created.
+  kmsDisplayCanvas(
+    crtcId?: number,
+    size?: { width: number; height: number },
+  ): HTMLCanvasElement;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
   getWebPreview(): WebPreviewState | null;
@@ -1183,12 +1190,17 @@ export class LiveKernelHost implements KernelHost {
    */
   private shellPids = new Map<number, string>();
   /**
-   * KMS display handles keyed by their canvas DOM node. React 18 StrictMode
-   * double-invokes effects, and `transferControlToOffscreen()` may only run
-   * once per canvas, so attachKmsDisplay memoizes the handle here. A WeakMap
-   * lets the handle drop naturally when the canvas itself is GC'd.
+   * KMS display handles keyed by their canvas DOM node. A pane remount
+   * (React 18 StrictMode double-invokes effects; see kmsDisplayCanvas for
+   * the others) attaches the same canvas again, and
+   * `transferControlToOffscreen()` may only run once per canvas, so
+   * attachKmsDisplay memoizes the handle here. A WeakMap lets the handle
+   * drop naturally when the canvas itself is GC'd.
    */
   private kmsHandles = new WeakMap<HTMLCanvasElement, KmsDisplayHandle>();
+  /** The one display canvas per CRTC for the current kernel
+   *  (kmsDisplayCanvas). Scoped to the kernel: detachKernel clears it. */
+  private kmsDisplayCanvases = new Map<number, HTMLCanvasElement>();
   /** The display-size ResizeObserver per attached canvas: disconnected when
    *  the pane closes its handle, reconnected when the cached handle is
    *  reused (StrictMode's mount → cleanup → mount). */
@@ -1307,6 +1319,9 @@ export class LiveKernelHost implements KernelHost {
     // Waiters on the detached kernel will never see a report: release them.
     this.kmsDisplaySizes.clear();
     this.settleKmsDisplaySizeWaiters(undefined, undefined);
+    // Each canvas's control was transferred to the detached kernel's worker;
+    // the next kernel needs canvases of its own.
+    this.kmsDisplayCanvases.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
@@ -2659,6 +2674,39 @@ export class LiveKernelHost implements KernelHost {
     }
   }
 
+  /**
+   * The display canvas for `crtcId` on the current kernel, created on first
+   * use. A display pane mounts THIS element instead of rendering its own.
+   *
+   * Why the host owns it: attachKmsDisplay transfers the canvas's control to
+   * the kernel worker, and a program's WebGL context is bound to that one
+   * canvas for good — a context cannot move to another canvas. A pane that
+   * rendered a fresh `<canvas>` on each mount would, after any remount while
+   * a GL program runs (a compositor, a game), show a blank element while the
+   * program kept drawing into the detached one. With one element per CRTC
+   * for the kernel's lifetime, a remount is a DOM move the kernel never
+   * sees, and attachKmsDisplay returns the memoized handle.
+   *
+   * `size` is the drawing-buffer size to start with. It applies only when
+   * the canvas is created: once its control is transferred, the main thread
+   * can no longer resize it.
+   */
+  kmsDisplayCanvas(
+    crtcId: number = KMS_PRIMARY_CRTC,
+    size?: { width: number; height: number },
+  ): HTMLCanvasElement {
+    let canvas = this.kmsDisplayCanvases.get(crtcId);
+    if (!canvas) {
+      canvas = globalThis.document.createElement("canvas");
+      if (size) {
+        canvas.width = size.width;
+        canvas.height = size.height;
+      }
+      this.kmsDisplayCanvases.set(crtcId, canvas);
+    }
+    return canvas;
+  }
+
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId: number = KMS_PRIMARY_CRTC,
@@ -2666,11 +2714,12 @@ export class LiveKernelHost implements KernelHost {
   ): KmsDisplayHandle | null {
     if (!this.kernel?.kmsAttachCanvas) return null;
     if (typeof canvas.transferControlToOffscreen !== "function") return null;
-    // React 18 StrictMode double-invokes effects: mount → cleanup → mount,
-    // and the second mount hits this method again on the same DOM canvas.
+    // A remounted pane hits this method again on the same DOM canvas: React
+    // 18 StrictMode double-invokes effects (mount → cleanup → mount), and a
+    // pane using kmsDisplayCanvas gets the same element on every mount.
     // `transferControlToOffscreen()` can only be called once per canvas, so
     // memoize the handle here. The cached handle keeps the original
-    // statsSab/OffscreenCanvas alive across the StrictMode unmount.
+    // statsSab/OffscreenCanvas alive across the unmount.
     const cached = this.kmsHandles.get(canvas);
     if (cached) {
       // The earlier close() disconnected the observer; the reused handle
@@ -2778,7 +2827,7 @@ export class LiveKernelHost implements KernelHost {
         // handle disconnects its display-size observer, so an unmounted
         // pane stops holding the canvas and the kernel it attached to
         // (an observer on a removed element need not fire again to notice).
-        // A StrictMode remount reuses the cached handle and reconnects it.
+        // A remount reuses the cached handle and reconnects it.
         this.kmsResizeObservers.get(canvas)?.disconnect();
       },
     };
