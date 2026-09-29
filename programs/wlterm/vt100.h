@@ -31,6 +31,12 @@ struct vt100;   /* opaque */
 struct vt100 *vt100_create(int cols, int rows);
 void vt100_destroy(struct vt100 *t);
 
+/* Resize the grid to cols × rows (a tiling compositor changed the window).
+ * The overlapping top-left cells are preserved; the cursor is clamped into
+ * the new bounds. A no-op (returns 0) if the size is unchanged or out of the
+ * vt100_create() bounds; returns 1 if the grid was rebuilt. */
+int vt100_resize(struct vt100 *t, int cols, int rows);
+
 /* Feed raw bytes from the child's stdout; advances the cursor and mutates
  * cells per the VT100 subset. */
 void vt100_feed(struct vt100 *t, const char *bytes, size_t len);

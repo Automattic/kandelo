@@ -87,6 +87,10 @@ export class KmsRegistry {
   setMasterPid(pid: number): void { this.masterPid = pid; }
   dropMaster(): void { this.masterPid = null; }
   isMasterPid(pid: number): boolean { return this.masterPid === pid; }
+  /** The pid currently holding DRM master, or null. The compositor's
+   *  scanout context is the shared GPU-bo multiplexer context, so the
+   *  host resolves it via this pid. */
+  getMasterPid(): number | null { return this.masterPid; }
 
   /** First CRTC with an FB bound for which `pid` holds DRM master.
    *  Null if `pid` is not master or no CRTC has an FB yet. The kernel

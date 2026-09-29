@@ -446,9 +446,10 @@ libwayland is the first consumer to hit:
 ### Gaps discovered + fixed during the desktop demo hardening (post-PR7)
 
 Running the full three-client desktop (`/?demo=wayland`) as a real user —
-typing, dragging windows, drag-painting, leaving it idle — surfaced five
-more defects that no marker-based gate caught. All are fixed on this branch;
-the first three live in shared kernel/host code, so both hosts get them.
+typing, dragging windows, drag-painting, leaving it idle — surfaced the ten
+findings below (most of them real defects) that no marker-based gate caught.
+All are addressed on this branch; the first four live in shared kernel/host
+code, so both hosts get them.
 
 1. **Blocking-poll timeouts never expired** (`host/src/kernel-worker.ts`).
    The EAGAIN retry loop re-entered `handleBlockingRetry` / `handleSelect` /
@@ -549,7 +550,8 @@ the first three live in shared kernel/host code, so both hosts get them.
 
 New permanent gates from this pass: `host/test/wldesktop-liveness-smoke.test.ts`
 (node: PAGE_FLIP commits keep advancing across drag-paint strokes) and
-`kandelo-wayland.spec.ts` gates 1c (webgl2 renderer active), 3 (per-step
+`kandelo-wayland.spec.ts` gates 1c (webgl2 renderer active), 1d (the
+compositor composites on the GPU — WLC_RENDERER gpu), 3 (per-step
 corner stability during the window drag), 4 (drag-paint liveness), and 5
 (flicker stability).
 

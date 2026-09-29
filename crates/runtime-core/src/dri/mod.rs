@@ -8,7 +8,7 @@
 pub mod bo;
 pub mod master;
 
-pub use bo::{BoId, BoRegistry, GbmBo, PrimeCookie, with_registry};
+pub use bo::{BoId, BoRegistry, BoTier, GbmBo, PrimeCookie, with_registry};
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 

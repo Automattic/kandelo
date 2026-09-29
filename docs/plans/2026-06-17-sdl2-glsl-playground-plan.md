@@ -213,7 +213,7 @@ All items implemented (uncommitted on `explore-dri-sdl2`):
 - ✅ Preset dropdown: Ctrl+L cycles the next preset for the active mode; Ctrl+Shift+L opens a modal chooser overlay (Up/Down + Enter + Esc). Lists `*.frag` under `/usr/share/shaders/{image,sound}` via `readdir`. (`main.c` preset browser.)
 - ✅ Boot splash over the render pane (fades out) + persistent "SDL2 GLSL Playground" title in the render-pane corner. (`main.c` render section.)
 
-Headless gate `cd host && npx vitest run sdl2` stays 4/4; full vitest + cargo + ABI not yet re-run for this batch.
+Headless gate `cd host && npx vitest run sdl2` stays 4/4.
 
 ### Phase 9 — Verification + docs (1 day)
 
