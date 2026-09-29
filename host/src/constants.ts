@@ -1,4 +1,5 @@
 import {
+  ABI_VERSION,
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
@@ -2585,7 +2586,11 @@ export function describeWasmArtifactPolicyFailures(
     );
   }
   if (options.forbidForkInstrumentation && hasForkArtifactSurface) {
-    failures.push("contains ABI 43 wasm-fork-instrument metadata, imports, or exports");
+    // The current epoch's metadata, named from the generated constant so the
+    // message cannot go stale when ABI_VERSION moves.
+    failures.push(
+      `contains ABI ${ABI_VERSION} wasm-fork-instrument metadata, imports, or exports`,
+    );
   }
 
   const requireForkInstrumentation =
