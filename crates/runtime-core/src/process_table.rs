@@ -152,6 +152,7 @@ struct SpawnInheritFromParent {
     fd_table: crate::fd::FdTable,
     ofd_table: crate::ofd::OfdTable,
     sockets: crate::socket::SocketTable,
+    epolls: Vec<Option<crate::process::EpollInstance>>,
 }
 
 /// Return each socket-table slot owned by at least one live OFD, exactly once.
@@ -1156,6 +1157,7 @@ impl ProcessTable {
                 fd_table: parent.fd_table.clone(),
                 ofd_table: parent.ofd_table.clone(),
                 sockets: parent.sockets.clone(),
+                epolls: parent.epolls.clone(),
             }
         };
 
@@ -1185,6 +1187,11 @@ impl ProcessTable {
         child.fd_table = inherit.fd_table;
         child.ofd_table = inherit.ofd_table;
         child.sockets = inherit.sockets;
+        // An inherited epoll fd must keep naming a live instance, as after
+        // fork. Registrations whose descriptions spawn's fd actions or
+        // close-on-exec closed are dropped the first time the child uses the
+        // instance (they no longer reach an open description).
+        child.epolls = inherit.epolls;
 
         // Retry pins are kernel capabilities owned by the parent task, not
         // descriptors inherited by a new process. Rebuild local OFD counts
@@ -1755,6 +1762,44 @@ mod wait_tests {
             .unwrap();
 
         assert_eq!(table.get(spawn_pid).unwrap().credentials(), &credentials);
+    }
+
+    /// posix_spawn inherits open fds, epoll fds included: the child's
+    /// inherited epoll fd must name a live instance with the parent's
+    /// registrations, not an instance that no longer exists (EBADF).
+    #[test]
+    fn spawn_inherits_epoll_instances() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let (rfd, epfd) = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let (rfd, _wfd) = crate::syscalls::sys_pipe2(parent, 0).unwrap();
+            let epfd = crate::syscalls::sys_epoll_create1(parent, 0).unwrap();
+            crate::syscalls::sys_epoll_ctl(parent, epfd, 1, rfd, 0x001, 9).unwrap();
+            (rfd, epfd)
+        };
+
+        let mut host = NoopHost;
+        let spawn_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        let child = table.get_mut(spawn_pid).unwrap();
+        assert_eq!(crate::syscalls::epoll_watched_fd(child, 0), Some(rfd));
+        // The inherited instance is manageable in the child.
+        crate::syscalls::sys_epoll_ctl(child, epfd, 2, rfd, 0, 0).unwrap();
+        assert_eq!(crate::syscalls::epoll_watched_fd(child, 0), None);
     }
 
     #[test]
@@ -2378,6 +2423,7 @@ mod tests {
                     st_ctime_sec: 0,
                     st_ctime_nsec: 0,
                     _pad: 0,
+                    st_rdev: 0,
                 },
                 WasmStatfs {
                     f_type: 1,

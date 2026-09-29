@@ -177,3 +177,64 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
     expect(markedCrtc, "must not claim GL ownership without a GL context").toBeNull();
   });
 });
+
+/**
+ * The other half of the claim: when the GL session that claimed a KMS
+ * canvas ends, the CRTC must go back to the vblank pump. Otherwise both
+ * pump presenters keep skipping it and the canvas freezes on the dead
+ * session's last GL frame.
+ *
+ * This was untested, and it hid two failures in turn: first there was no
+ * release at all, then the release path existed but read a claim that
+ * nothing recorded, so it returned early every time.
+ */
+describe("KMS GL canvas release — the claim is handed back", () => {
+  function claimed(): {
+    kernel: WasmPosixKernel & Record<string, any>;
+    imports: { env: Record<string, (...args: any[]) => any> };
+    released: number[];
+  } {
+    const canvas = fakeCanvas(1920, 1080);
+    const released: number[] = [];
+    const { kernel, imports } = harness({
+      getKmsCanvas: (crtc: number) => (crtc === 1 ? canvas : undefined),
+      getKmsCrtcIds: () => [1],
+      markKmsCanvasGlOwned: () => {},
+      markKmsCanvasGlReleased: (crtc: number) => {
+        released.push(crtc);
+      },
+    });
+    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    imports.env.host_kms_set_master(PID);
+    imports.env.host_gl_create_context(PID, 1, 0, 0);
+    expect(kernel.gl.get(PID)!.claimedKmsCrtc, "the claim is recorded").toBe(1);
+    return { kernel, imports, released };
+  }
+
+  it("releases the CRTC when the guest unbinds its GL session", () => {
+    const { imports, released } = claimed();
+    imports.env.host_gl_unbind(PID);
+    expect(released).toEqual([1]);
+  });
+
+  it("releases the CRTC when the guest destroys its GL context", () => {
+    const { imports, released } = claimed();
+    imports.env.host_gl_destroy_context(PID, 1);
+    expect(released).toEqual([1]);
+  });
+
+  it("releases the CRTC from the process-release backstop (exec, trap, forced exit)", () => {
+    // The guest-side hooks never run when a process traps or is killed;
+    // releaseProcessViews is the only thing that can hand the canvas back.
+    const { kernel, released } = claimed();
+    kernel.releaseProcessViews(PID);
+    expect(released).toEqual([1]);
+  });
+
+  it("releases exactly once when several release paths fire", () => {
+    const { kernel, imports, released } = claimed();
+    imports.env.host_gl_destroy_context(PID, 1);
+    kernel.releaseProcessViews(PID);
+    expect(released).toEqual([1]);
+  });
+});

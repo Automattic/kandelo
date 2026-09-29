@@ -51,9 +51,13 @@ name = "bash"
 [[packages.outputs]]
 binary = "programs/wasm32/bash.wasm"
 path = "/usr/bin/bash"
-# bash is the only shell the images ship. It is both the interactive login
-# shell and /bin/sh, which is what system(), popen() and a `#!/bin/sh`
-# script exec. bash honors POSIX mode when invoked as `sh`.
+# bash is /bin/sh in every Kandelo image, and the interactive login shell.
+# /bin/sh is what system(), popen() and a `#!/bin/sh` script exec, so it must
+# resolve to the same shell everywhere; bash honors POSIX mode when invoked as
+# `sh`. The image builders bind it through one helper,
+# installBashAsPosixShell in images/vfs/scripts/vfs-image-helpers.ts. Some
+# images also ship dash as an ordinary command at its own name; no other shell
+# claims /bin/sh.
 aliases = ["/bin/bash", "/bin/sh", "/usr/bin/sh"]
 
 [[packages]]

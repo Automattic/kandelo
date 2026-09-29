@@ -42,6 +42,7 @@ import {
   sourceDateEpochMilliseconds,
   writeVfsBinary,
   symlink,
+  installBashAsPosixShell,
 } from "./vfs-image-helpers";
 import type { SaveImageOptions } from "./vfs-image-helpers";
 import {
@@ -515,10 +516,7 @@ function populateBash(
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bashBytes = readFileSync(resolveArtifact("programs/bash.wasm", "bash"));
-  writeVfsBinary(fs, "/usr/bin/bash", new Uint8Array(bashBytes));
-  symlink(fs, "/usr/bin/bash", "/bin/bash");
-  symlink(fs, "/usr/bin/bash", "/bin/sh");
-  symlink(fs, "/usr/bin/bash", "/usr/bin/sh");
+  installBashAsPosixShell(fs, new Uint8Array(bashBytes));
 }
 
 function populateCoreutilsSymlinks(fs: MemoryFileSystem): void {

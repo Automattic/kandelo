@@ -215,6 +215,32 @@ impl VirtualDevice {
             VirtualDevice::InputEvent { device } => 10 + device as u64,
         }
     }
+
+    /// `st_rdev` for the device node — a Linux-encoded `dev_t`
+    /// (`makedev`). Only the evdev nodes carry one today: they are the
+    /// single input surface a userspace consumer identifies purely by
+    /// devnum. libinput's path backend `stat()`s the node, keeps only
+    /// `st_rdev`, and calls `udev_device_new_from_devnum(rdev)`, so
+    /// `/dev/input/event{N}` must be uniquely stat-identifiable. Linux
+    /// puts evdev on char major 13, minor 64+N. Other virtual nodes
+    /// report 0 until a consumer needs to distinguish them by devnum.
+    pub fn rdev(self) -> u64 {
+        match self {
+            VirtualDevice::InputEvent { device } => makedev(13, 64 + device as u32),
+            _ => 0,
+        }
+    }
+}
+
+/// Encode a `dev_t` the way musl's `sys/sysmacros.h` `makedev` does, so
+/// userspace `major()`/`minor()` decode the same `(major, minor)` back.
+const fn makedev(major: u32, minor: u32) -> u64 {
+    let major = major as u64;
+    let minor = minor as u64;
+    ((major & 0xffff_f000) << 32)
+        | ((major & 0x0000_0fff) << 8)
+        | ((minor & 0xffff_ff00) << 12)
+        | (minor & 0x0000_00ff)
 }
 
 /// Check if a resolved path is a virtual device node.
@@ -278,6 +304,7 @@ fn synthetic_file_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: 0,
     })
 }
 
@@ -1222,14 +1249,14 @@ fn handle_dri_ioctl(
             crate::dri::with_registry(|r| r.incref(bo_id));
 
             // Allocate a fresh OFD with the prime-bo sidecar. The
-            // host_handle = -200 sentinel sits outside the
-            // VirtualDevice range (-1..=-9) so this fd isn't
-            // mistakenly routed to a render or card ioctl path.
+            // PRIME_FD_HOST_HANDLE sentinel is disjoint from the
+            // VirtualDevice range, so this fd is never routed to a render
+            // or card ioctl path.
             let path = alloc::format!("/dev/dri/prime-{}-{:x}", bo_id, cookie).into_bytes();
             let prime_ofd = proc.ofd_table.create(
                 crate::ofd::FileType::CharDevice,
                 wasm_posix_shared::flags::O_RDWR,
-                -200,
+                crate::ofd::PRIME_FD_HOST_HANDLE,
                 path,
             );
             if let Some(new_ofd) = proc.ofd_table.get_mut(prime_ofd) {
@@ -1307,6 +1334,39 @@ fn handle_dri_ioctl(
                 }
             };
             req.handle = handle;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE => {
+            if buf.len() < core::mem::size_of::<WpkDrmBindForeignTexture>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmBindForeignTexture =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            // Both the bo handle and the GL context must live on THIS fd:
+            // texture binds go to the caller's own GL session (libEGL's
+            // renderD128 fd), so the caller imports the producer's
+            // prime-fd here first (PRIME_FD_TO_HANDLE).
+            let bo_id;
+            {
+                let dri = dri_state(proc, ofd_idx)?;
+                bo_id = *dri.handles.get(&req.bo_handle).ok_or(Errno::ENOENT)?;
+                let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if !gls.initialized || gls.context_id != Some(req.ctx_id) {
+                    return Err(Errno::EINVAL);
+                }
+            }
+            // The host owns pixel storage and the texture table; it
+            // returns the stable guest-visible texture id. Negative =
+            // no GL backing (headless host) or upload failure — the
+            // caller degrades to its CPU path.
+            let tex = host.gl_bind_foreign_texture(pid, req.ctx_id, bo_id, req.gl_target);
+            if tex <= 0 {
+                return Err(Errno::EIO);
+            }
+            req.gl_texture_id = tex as u32;
             unsafe {
                 core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
             }
@@ -1818,43 +1878,41 @@ fn handle_dri_card_ioctl(
                     return Err(Errno::EBUSY);
                 }
             }
-            // Best-effort stats: a clock-read failure leaves the flip
-            // queued and just skips the counter bump. The host reads
-            // the running totals via the kernel_kms_* exports.
-            let (tv_sec, tv_usec) =
-                match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
-                    Ok((sec, nsec)) => {
-                        let now_us = (sec as u64).wrapping_mul(1_000_000) + (nsec as u64) / 1000;
-                        crate::dri::record_kms_commit(req.crtc_id, now_us);
-                        (sec as u32, (nsec / 1000) as u32)
-                    }
-                    Err(_) => (0u32, 0u32),
-                };
-            let sequence = crate::dri::vblank_tick();
+            // Best-effort commit stats: a clock-read failure leaves
+            // the flip queued and just skips the per-crtc counter
+            // bump. The host reads the running totals via the
+            // kernel_kms_* exports.
+            if let Ok((sec, nsec)) = host.host_clock_gettime(
+                wasm_posix_shared::clock::CLOCK_MONOTONIC,
+            ) {
+                let now_us = (sec as u64).wrapping_mul(1_000_000)
+                    + (nsec as u64) / 1000;
+                crate::dri::record_kms_commit(req.crtc_id, now_us);
+            }
+            // Latch the new scanout fb NOW. The fb is fully painted
+            // before the flip ioctl, and the client only reuses the
+            // old bo after the flip-complete event (next vblank), so
+            // an immediate latch is race-free. Without this the host
+            // keeps blitting the fb from the initial SETCRTC forever —
+            // for a double-buffered compositor that's the BACK buffer
+            // half the time, so the 60 Hz pump samples frames
+            // mid-composite (wallpaper painted, windows not yet) and
+            // the desktop flickers randomly.
+            host.kms_set_fb(pid, req.crtc_id, req.fb_id);
+            // Queue the flip but do NOT synthesize the completion
+            // event here. `dri::drain_pending_flips`, called from
+            // `kernel_vblank` on each host vblank tick (16.67 ms),
+            // retires every queued flip into the per-fd `event_ring`
+            // as a DRM_EVENT_FLIP_COMPLETE record stamped with the
+            // new sequence and host monotonic time. Result: libdrm's
+            // `drmModePageFlip → poll → drmHandleEvent` loop returns
+            // at monitor-refresh rate instead of ioctl rate.
             let kms_mut = kms_state_mut(proc, ofd_idx)?;
             kms_mut.pending_flips.push(crate::ofd::PendingFlip {
                 crtc_id: req.crtc_id,
                 fb_id: req.fb_id,
                 user_data: req.user_data,
             });
-            // v1 simplification: the host vblank pump exists only to
-            // refresh canvases + counters, so the test-bench can run
-            // PAGE_FLIP → drmHandleEvent without a real 60 Hz tick
-            // driving event delivery. Retire each queued flip into
-            // the per-fd event_ring as a DRM_EVENT_FLIP_COMPLETE
-            // record immediately, matching what a real DRM vblank IRQ
-            // would do before the next ioctl.
-            if let Some(flip) = kms_mut.pending_flips.pop() {
-                let mut record = [0u8; 32];
-                record[0..4].copy_from_slice(&2u32.to_le_bytes());
-                record[4..8].copy_from_slice(&32u32.to_le_bytes());
-                record[8..16].copy_from_slice(&flip.user_data.to_le_bytes());
-                record[16..20].copy_from_slice(&tv_sec.to_le_bytes());
-                record[20..24].copy_from_slice(&tv_usec.to_le_bytes());
-                record[24..28].copy_from_slice(&sequence.to_le_bytes());
-                record[28..32].copy_from_slice(&flip.crtc_id.to_le_bytes());
-                kms_mut.event_ring.extend(record.iter());
-            }
             Ok(())
         }
         DRM_IOCTL_WAIT_VBLANK => {
@@ -1987,6 +2045,23 @@ fn handle_input_ioctl(
             }
             Ok(())
         }
+        // Physical-location / unique-id strings: virtual devices have
+        // none. libevdev tolerates ENOENT here ("unset"); any other errno
+        // is fatal to libevdev_new_from_fd, so ENOTTY would abort it.
+        n if (n == EVIOCGPHYS_NR || n == EVIOCGUNIQ_NR) && dir == 2 => {
+            Err(Errno::ENOENT)
+        }
+        // No input properties are modeled (no INPUT_PROP_POINTER /
+        // _BUTTONPAD / _DIRECT), so the property bitmap is all-zero. Linux
+        // always answers this; libevdev treats anything but EINVAL as fatal.
+        n if n == EVIOCGPROP_NR && dir == 2 => {
+            input_state(proc, ofd_idx)?; // must be an input fd
+            let len = size.min(buf.len());
+            for b in buf[..len].iter_mut() {
+                *b = 0;
+            }
+            Ok(())
+        }
         n if n == EVIOCGKEY_NR && dir == 2 => {
             // Return the device-global pressed-key bitmap. This is the
             // state a client re-reads after a SYN_DROPPED to recover from
@@ -2098,6 +2173,7 @@ fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: dev.rdev(),
     }
 }
 
@@ -2234,6 +2310,7 @@ fn dev_fd_path_stat(proc: &Process) -> WasmStat {
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: 0,
     }
 }
 
@@ -3450,6 +3527,13 @@ pub fn drain_deferred_scm_rights_releases(
         if let Some(handle) = released.host_close {
             let _ = host.host_close(handle);
         }
+        // A batch discarded before recvmsg still owns the bo reference
+        // `retain_reference` took; give it back and destroy at zero.
+        if let Some(bo_id) = released.prime_bo_id {
+            if crate::dri::with_registry(|r| r.decref(bo_id)) == Some(0) {
+                host.gbm_bo_destroy(0, bo_id);
+            }
+        }
     }
 }
 
@@ -3497,6 +3581,12 @@ pub fn validate_scm_rights_transfer_metadata(
         )
         .then_some(())
         .ok_or(Errno::EOPNOTSUPP),
+        FileType::CharDevice if host_handle == crate::ofd::PRIME_FD_HOST_HANDLE => {
+            // Prime-bo fds are reconstructible: the sidecar carries the
+            // machine-wide (bo_id, cookie) pair. Sidecar presence is enforced
+            // by validate_scm_rights_in_flight_fd.
+            Ok(())
+        }
         FileType::CharDevice if host_handle < 0 => {
             match VirtualDevice::from_host_handle(host_handle) {
                 Some(
@@ -3554,10 +3644,14 @@ pub fn snapshot_scm_rights_fd(
     let ofd = proc.ofd_table.get(fd_entry.ofd_ref.0).ok_or(Errno::EBADF)?;
 
     // DRI open-file descriptions carry GEM/KMS namespaces in a sidecar that
-    // InFlightFd cannot reproduce.
-    if ofd.dri_state.is_some() {
-        return Err(Errno::EOPNOTSUPP);
-    }
+    // InFlightFd cannot reproduce. The one transferable kind is a prime-bo
+    // fd: its sidecar is the (bo_id, cookie) pair itself, carried below so a
+    // cross-process wl_shm buffer composites correctly.
+    let prime_bo = match ofd.dri_state.as_deref() {
+        None => None,
+        Some(crate::ofd::DriOfdState::PrimeBo(pb)) => Some(pb.clone()),
+        Some(_) => return Err(Errno::EOPNOTSUPP),
+    };
     validate_scm_rights_transfer_metadata(ofd.file_type, ofd.host_handle)?;
 
     let mut path = Vec::new();
@@ -3583,6 +3677,7 @@ pub fn snapshot_scm_rights_fd(
             return Err(Errno::EOPNOTSUPP);
         }
     }
+    in_flight.prime_bo = prime_bo;
 
     Ok(in_flight)
 }
@@ -3616,6 +3711,11 @@ pub fn validate_scm_rights_in_flight_fd(
                 return Err(Errno::EOPNOTSUPP);
             }
         }
+    }
+    let is_prime = entry.file_type == FileType::CharDevice
+        && entry.host_handle == crate::ofd::PRIME_FD_HOST_HANDLE;
+    if is_prime != entry.prime_bo.is_some() {
+        return Err(Errno::EOPNOTSUPP);
     }
     Ok(())
 }
@@ -3670,6 +3770,19 @@ pub fn install_scm_rights_fds_with_flags(
         );
         match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
             Ok(new_fd) => {
+                // Take a bo refcount for the receiver's new fd; its close
+                // drops it (dri_release_ofd_state). The queued entry holds
+                // its own reference across the hop (see
+                // InFlightFd::retain_reference), so the sender may close
+                // its fd the instant sendmsg returns, as SCM_RIGHTS allows.
+                if let Some(pb) = entry.prime_bo.clone() {
+                    crate::dri::with_registry(|r| r.incref(pb.bo_id));
+                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                        ofd.dri_state = Some(alloc::boxed::Box::new(
+                            crate::ofd::DriOfdState::PrimeBo(pb),
+                        ));
+                    }
+                }
                 entry.transfer_reference();
                 new_fds.push(new_fd);
             }
@@ -4612,11 +4725,9 @@ pub fn sys_read(
                 return Err(Errno::EINVAL);
             }
             let tfd_idx = (-(host_handle + 1)) as usize;
-            // Compute expirations lazily
-            let (now_sec, now_nsec) = host.host_clock_gettime(0)?;
+            timerfd_refresh(host, tfd_idx)?;
             let count = crate::descriptor_backing::with_timerfds(|table| {
                 let tfd = table.get_mut(tfd_idx).ok_or(Errno::EBADF)?;
-                timerfd_compute_expirations(tfd, now_sec, now_nsec);
                 if tfd.expirations == 0 {
                     return Err(Errno::EAGAIN);
                 }
@@ -4699,12 +4810,17 @@ pub fn sys_read(
         FileType::PtyMaster => {
             let pty_idx = host_handle as usize;
             let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
-            if pty.slave_refs == 0 {
-                return Ok(0); // EOF — slave side closed
-            }
             let n = pty.master_read(buf);
             if n > 0 {
                 return Ok(n);
+            }
+            // Drain any buffered output BEFORE reporting EOF: a shell that
+            // writes its final bytes and exits in one go leaves the output
+            // buffer non-empty with slave_refs already 0. Returning EOF here
+            // would silently drop that last output (e.g. a terminal losing
+            // the tail of a command's result). Only signal EOF once drained.
+            if pty.slave_refs == 0 {
+                return Ok(0); // EOF — slave side closed, buffer empty
             }
             Err(Errno::EAGAIN)
         }
@@ -4748,9 +4864,11 @@ pub fn sys_read(
                             let mut ring = input.ring.borrow_mut();
                             // Empty ring: O_NONBLOCK gets EAGAIN; a blocking
                             // read returns Ok(0) (not a kernel park) so the
-                            // host retries on its poll timer — matches DriCard0
-                            // and is what the read-until-empty drain loop and
-                            // the host's retry path depend on. (Returning
+                            // host retries on its poll timer — the
+                            // read-until-empty drain loop and the host's retry
+                            // path depend on it. This is a known divergence
+                            // from Linux, whose evdev read blocks; DriCard0
+                            // blocks as Linux does. (Returning
                             // EAGAIN for the blocking case instead parks the
                             // read until the next injected event, which hangs a
                             // drain that has already consumed the whole ring.)
@@ -4812,13 +4930,17 @@ pub fn sys_read(
                                 }
                             }
                             if n == 0 {
-                                if status_flags & O_NONBLOCK != 0 {
-                                    return Err(Errno::EAGAIN);
-                                }
-                                // Nothing queued and not non-blocking: return
-                                // 0 so drmHandleEvent treats it as "no events
-                                // this round" rather than a hard error.
-                                return Ok(0);
+                                // Nothing queued. Linux's drm_read blocks until
+                                // an event arrives (EAGAIN only for O_NONBLOCK),
+                                // and EAGAIN is exactly that here: the host
+                                // returns it to an O_NONBLOCK caller and parks a
+                                // blocking one, which the vblank tick wakes after
+                                // kernel_vblank queues the flip completions. A 0
+                                // return is end-of-file: libdrm's drmHandleEvent
+                                // took it as "no event", the caller flipped
+                                // again with its first flip still pending, and
+                                // got EBUSY.
+                                return Err(Errno::EAGAIN);
                             }
                             n
                         }
@@ -5322,6 +5444,29 @@ pub fn sys_lseek(
     let ofd_idx = entry.ofd_ref.0;
 
     let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+
+    // A prime-bo fd seeks like a Linux dma-buf (dma_buf_llseek): only
+    // offset 0 with SEEK_SET or SEEK_END, and SEEK_END reports the buffer's
+    // size -- the portable way to learn how large the object behind the fd
+    // is. A Wayland compositor uses it to check a client's claimed wl_shm
+    // pool size against the real backing before trusting buffer geometry.
+    if ofd.file_type == FileType::CharDevice
+        && ofd.host_handle == crate::ofd::PRIME_FD_HOST_HANDLE
+    {
+        let bo_id = match ofd.dri_state.as_deref() {
+            Some(crate::ofd::DriOfdState::PrimeBo(p)) => p.bo_id,
+            _ => return Err(Errno::EBADF),
+        };
+        if offset != 0 {
+            return Err(Errno::EINVAL);
+        }
+        return match whence {
+            SEEK_SET => Ok(0),
+            SEEK_END => crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.size as i64))
+                .ok_or(Errno::EBADF),
+            _ => Err(Errno::EINVAL),
+        };
+    }
 
     // Non-seekable file types.
     if matches!(
@@ -6686,6 +6831,7 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         })
     } else if ofd.file_type == FileType::PcmPlayback {
         // `/dev/dsp` is represented by an OFD-owned PCM stream instead of the
@@ -6723,6 +6869,7 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             });
         }
         // Other char devices — delegate to host. VFS is the source of truth
@@ -6758,6 +6905,7 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         })
     } else if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
         synthetic_file_stat(&ofd.path, proc.effective_uid(), proc.effective_gid())
@@ -6813,6 +6961,7 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             }),
         )
     } else {
@@ -7232,6 +7381,7 @@ fn pty_pair_stat(pty_idx: usize) -> Option<WasmStat> {
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: 0,
     })
 }
 
@@ -7251,6 +7401,7 @@ fn pty_alias_stat(ino: u64) -> WasmStat {
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: 0,
     }
 }
 
@@ -10081,9 +10232,11 @@ pub fn sys_socketpair(
 
     let mut sock_a = SocketInfo::new(SocketDomain::Unix, stype, 0);
     sock_a.state = SocketState::Connected;
+    sock_a.peer_cred = Some(socket_peer_cred(proc));
 
     let mut sock_b = SocketInfo::new(SocketDomain::Unix, stype, 0);
     sock_b.state = SocketState::Connected;
+    sock_b.peer_cred = Some(socket_peer_cred(proc));
     if let Some((buf_ab_idx, buf_ba_idx)) = pipe_indices {
         // Socket A sends to A→B and receives from B→A; B is the inverse.
         sock_a.send_buf_idx = Some(buf_ab_idx);
@@ -12248,6 +12401,36 @@ pub fn sys_setsockopt_tcp_congestion(
     Ok(())
 }
 
+/// The credentials a socket this process creates, listens on, or connects
+/// records for its peer: its process ID and effective user/group IDs.
+pub fn socket_peer_cred(proc: &Process) -> crate::socket::PeerCred {
+    crate::socket::PeerCred {
+        pid: proc.pid,
+        uid: proc.effective_uid(),
+        gid: proc.effective_gid(),
+    }
+}
+
+/// Peer credentials for `SO_PEERCRED`, as `(pid, uid, gid)`.
+///
+/// Reports the credentials recorded on the socket (see
+/// `SocketInfo::peer_cred`), so a cross-process AF_UNIX connection reports
+/// the other process, not the caller. A socket with no recorded peer --
+/// unconnected, or not AF_UNIX -- reports Linux's `{0, -1, -1}`.
+pub fn sys_getsockopt_peercred(proc: &Process, fd: i32) -> Result<(u32, u32, u32), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    Ok(sock
+        .peer_cred
+        .map(|c| (c.pid, c.uid, c.gid))
+        .unwrap_or((0, u32::MAX, u32::MAX)))
+}
+
 /// Set socket option value.
 pub fn sys_setsockopt(
     proc: &mut Process,
@@ -12618,7 +12801,13 @@ pub fn sys_listen(
         return Err(Errno::EINVAL);
     }
 
+    let own_cred = socket_peer_cred(proc);
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if domain == SocketDomain::Unix {
+        // Linux records the listener's credentials at every listen(); each
+        // client that connects later copies them as its SO_PEERCRED.
+        sock.peer_cred = Some(own_cred);
+    }
     if let Some(value) = sock.get_option(
         wasm_posix_shared::socket::IPPROTO_TCP,
         wasm_posix_shared::socket::TCP_DEFER_ACCEPT,
@@ -12758,6 +12947,7 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
                 }
             }
             accepted.peer_port = pc.peer_port;
+            accepted.peer_cred = pc.peer_cred;
             accepted.global_pipes = true;
             let accepted_sock_idx = proc.sockets.alloc(accepted);
             if domain == SocketDomain::Unix && pc.peer_pid == proc.pid {
@@ -13312,6 +13502,8 @@ pub fn sys_connect(
             }
             let shared_idx = listener.shared_backlog_idx;
             let accept_wake_idx = listener.accept_wake_idx;
+            let listener_cred = listener.peer_cred;
+            let own_cred = socket_peer_cred(proc);
 
             // Create pipe pair for bidirectional communication (in global table for fork safety)
             let pipe_table = unsafe { crate::pipe::global_pipe_table() };
@@ -13326,6 +13518,7 @@ pub fn sys_connect(
                     peer_port: 0,
                     peer_pid: proc.pid,
                     peer_sock_idx: Some(sock_idx),
+                    peer_cred: Some(own_cred),
                     recv_pipe_idx: pipe_a_idx,
                     send_pipe_idx: pipe_b_idx,
                 };
@@ -13342,6 +13535,7 @@ pub fn sys_connect(
                 client.recv_buf_idx = Some(pipe_b_idx);
                 client.state = SocketState::Connected;
                 client.peer_idx = None;
+                client.peer_cred = listener_cred;
                 client.global_pipes = true;
             } else {
                 // Defensive compatibility for manually restored listener state
@@ -13350,6 +13544,7 @@ pub fn sys_connect(
                 accepted_sock.state = SocketState::Connected;
                 accepted_sock.recv_buf_idx = Some(pipe_a_idx);
                 accepted_sock.send_buf_idx = Some(pipe_b_idx);
+                accepted_sock.peer_cred = Some(own_cred);
                 accepted_sock.global_pipes = true;
                 let accepted_idx = proc.sockets.alloc(accepted_sock);
 
@@ -13363,6 +13558,7 @@ pub fn sys_connect(
                 client.recv_buf_idx = Some(pipe_b_idx);
                 client.state = SocketState::Connected;
                 client.peer_idx = Some(accepted_idx);
+                client.peer_cred = listener_cred;
                 client.global_pipes = true;
                 proc.sockets.get_mut(accepted_idx).unwrap().peer_idx = Some(sock_idx);
             }
@@ -13685,6 +13881,24 @@ pub fn sys_poll(
 
 /// Single non-blocking pass checking fd readiness. Used by sys_poll's loop.
 fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd]) -> i32 {
+    poll_check_depth(proc, host, fds, 0)
+}
+
+/// Maximum epoll-on-epoll recursion depth for readiness checks. Real
+/// nesting (a compositor registering libinput's epoll fd inside
+/// `wl_event_loop`'s epoll) is one level; this caps pathological cycles
+/// where an epoll transitively monitors itself through a different fd.
+const POLL_CHECK_MAX_DEPTH: u32 = 4;
+
+/// Single non-blocking pass checking fd readiness, tracking nested-epoll
+/// recursion depth. Used by `sys_poll`'s loop and by the `FileType::Epoll`
+/// arm when a nested epoll must report readiness of its own interests.
+fn poll_check_depth(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fds: &mut [WasmPollFd],
+    depth: u32,
+) -> i32 {
     use wasm_posix_shared::poll::*;
 
     let mut ready_count = 0i32;
@@ -13760,14 +13974,72 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                 }
             }
             FileType::Epoll => {
-                // Epoll fds are not typically polled; report not ready
+                // A nested epoll fd is readable when any fd in its own interest
+                // list is ready; recurse a non-blocking pass over that list.
+                if pollfd.events & POLLIN != 0 && depth < POLL_CHECK_MAX_DEPTH {
+                    const EPOLLIN: u32 = 0x001;
+                    const EPOLLOUT: u32 = 0x004;
+
+                    let ep_idx = (-(ofd.host_handle + 1)) as usize;
+                    // Owned list: drops the proc.epolls borrow before recursing
+                    // on &mut proc, and resolves each registration to an fd
+                    // that still reaches its description.
+                    let interests: Vec<crate::process::EpollInterest> =
+                        live_epoll_interests(proc, ep_idx)
+                            .into_iter()
+                            .map(|(mut i, probe)| {
+                                i.fd = probe;
+                                i
+                            })
+                            .collect();
+                    {
+                        let mut tmp: Vec<WasmPollFd> = interests
+                            .iter()
+                            // Guard against a direct self-monitoring cycle.
+                            .filter(|i| i.fd != pollfd.fd)
+                            .map(|i| {
+                                let mut ev: i16 = 0;
+                                if i.events & EPOLLIN != 0 {
+                                    ev |= POLLIN;
+                                }
+                                if i.events & EPOLLOUT != 0 {
+                                    ev |= POLLOUT;
+                                }
+                                WasmPollFd {
+                                    fd: i.fd,
+                                    events: ev,
+                                    revents: 0,
+                                }
+                            })
+                            .collect();
+                        if !tmp.is_empty() {
+                            poll_check_depth(proc, host, &mut tmp, depth + 1);
+                            // Count only conditions epoll_wait would actually
+                            // report. `poll_check_depth`'s return also counts
+                            // POLLNVAL, and nothing prunes `ep.interests` when
+                            // a monitored fd is closed without EPOLL_CTL_DEL
+                            // (Linux prunes automatically). Treating that as
+                            // readable makes the outer epoll report ready
+                            // forever while epoll_wait on the inner one yields
+                            // an events==0 entry — a 100% CPU spin.
+                            let ready = tmp.iter().any(|p| {
+                                p.revents & (POLLIN | POLLOUT | POLLERR | POLLHUP) != 0
+                            });
+                            if ready {
+                                revents |= POLLIN;
+                            }
+                        }
+                    }
+                }
             }
             FileType::TimerFd => {
                 let tfd_idx = (-(ofd.host_handle + 1)) as usize;
+                // A clock failure can't be reported through poll's readiness
+                // count; the fd just stays not-ready this pass.
+                let _ = timerfd_refresh(host, tfd_idx);
                 if let Some(expirations) = crate::descriptor_backing::with_timerfds(|table| {
                     table.get(tfd_idx).map(|tfd| tfd.expirations)
                 }) {
-                    // Check if timer has expired (lazy: just check expirations counter)
                     if pollfd.events & POLLIN != 0 && expirations > 0 {
                         revents |= POLLIN;
                     }
@@ -15570,6 +15842,75 @@ pub fn sys_epoll_create1(proc: &mut Process, flags: u32) -> Result<i32, Errno> {
 /// epoll_ctl — modify an epoll interest list.
 ///
 /// op: EPOLL_CTL_ADD (1), EPOLL_CTL_DEL (2), EPOLL_CTL_MOD (3).
+/// The open file description identity behind `fd`, if it is open.
+fn fd_ofd_id(proc: &Process, fd: i32) -> Option<crate::lock::OfdId> {
+    let entry = proc.fd_table.get(fd).ok()?;
+    proc.ofd_table.get(entry.ofd_ref.0).map(|ofd| ofd.ofd_id)
+}
+
+/// The fd through which a registration's open file description is reached
+/// now: its own fd if that still refers to the description, else any other
+/// fd that does (a dup), else None -- the description is closed.
+fn epoll_probe_fd(proc: &Process, interest: &crate::process::EpollInterest) -> Option<i32> {
+    if fd_ofd_id(proc, interest.fd) == Some(interest.ofd_id) {
+        return Some(interest.fd);
+    }
+    proc.fd_table
+        .iter()
+        .find(|(_, entry)| {
+            proc.ofd_table
+                .get(entry.ofd_ref.0)
+                .is_some_and(|ofd| ofd.ofd_id == interest.ofd_id)
+        })
+        .map(|(fd, _)| fd)
+}
+
+/// The `index`-th fd watched by a live registration in any of the process's
+/// epoll instances, or None past the end. The host registers targeted
+/// wakeups on these fds for a parked epoll_wait; it reads the kernel's list
+/// rather than keeping a copy of its own.
+pub fn epoll_watched_fd(proc: &Process, index: usize) -> Option<i32> {
+    proc.epolls
+        .iter()
+        .flatten()
+        .flat_map(|ep| ep.interests.iter())
+        .filter_map(|interest| epoll_probe_fd(proc, interest))
+        .nth(index)
+}
+
+/// Resolve an epoll instance's registrations to the fds that currently
+/// reach their open file descriptions, dropping the ones whose description
+/// is gone -- Linux removes a registration automatically once the last fd
+/// referring to its description is closed. A registration whose own fd was
+/// closed but whose description is still open through a `dup` keeps
+/// reporting, probed through that other fd, as on Linux. Returns each live
+/// registration with the fd to probe it through.
+fn live_epoll_interests(
+    proc: &mut Process,
+    ep_idx: usize,
+) -> Vec<(crate::process::EpollInterest, i32)> {
+    let Some(interests) = proc
+        .epolls
+        .get(ep_idx)
+        .and_then(|s| s.as_ref())
+        .map(|ep| ep.interests.clone())
+    else {
+        return Vec::new();
+    };
+    let mut live = Vec::with_capacity(interests.len());
+    for interest in interests {
+        if let Some(probe) = epoll_probe_fd(proc, &interest) {
+            live.push((interest, probe));
+        }
+    }
+    if let Some(ep) = proc.epolls.get_mut(ep_idx).and_then(|s| s.as_mut()) {
+        if ep.interests.len() != live.len() {
+            ep.interests = live.iter().map(|(i, _)| i.clone()).collect();
+        }
+    }
+    live
+}
+
 pub fn sys_epoll_ctl(
     proc: &mut Process,
     epfd: i32,
@@ -15590,31 +15931,37 @@ pub fn sys_epoll_ctl(
     }
     let ep_idx = (-(ofd.host_handle + 1)) as usize;
 
-    // Verify the target fd exists
-    let _ = proc.fd_table.get(fd)?;
+    // The target fd must be open; the registration key is (fd, its OFD).
+    let ofd_id = fd_ofd_id(proc, fd).ok_or(Errno::EBADF)?;
+    if proc.epolls.get(ep_idx).and_then(|s| s.as_ref()).is_none() {
+        return Err(Errno::EBADF);
+    }
+    // Drop registrations whose description has closed first, so a reused fd
+    // number is never mistaken for one (a stale entry made ADD fail EEXIST).
+    live_epoll_interests(proc, ep_idx);
 
     let ep = proc
         .epolls
         .get_mut(ep_idx)
         .and_then(|s| s.as_mut())
         .ok_or(Errno::EBADF)?;
+    let same = |e: &crate::process::EpollInterest| e.fd == fd && e.ofd_id == ofd_id;
 
     match op {
         EPOLL_CTL_ADD => {
-            // Check if fd already exists in interest list
-            if ep.interests.iter().any(|e| e.fd == fd) {
+            if ep.interests.iter().any(same) {
                 return Err(Errno::EEXIST);
             }
-            ep.interests
-                .push(crate::process::EpollInterest { fd, events, data });
+            ep.interests.push(crate::process::EpollInterest {
+                fd,
+                events,
+                data,
+                ofd_id,
+            });
             Ok(())
         }
         EPOLL_CTL_DEL => {
-            let pos = ep
-                .interests
-                .iter()
-                .position(|e| e.fd == fd)
-                .ok_or(Errno::ENOENT)?;
+            let pos = ep.interests.iter().position(same).ok_or(Errno::ENOENT)?;
             ep.interests.swap_remove(pos);
             Ok(())
         }
@@ -15622,7 +15969,7 @@ pub fn sys_epoll_ctl(
             let interest = ep
                 .interests
                 .iter_mut()
-                .find(|e| e.fd == fd)
+                .find(|e| same(e))
                 .ok_or(Errno::ENOENT)?;
             interest.events = events;
             interest.data = data;
@@ -15658,15 +16005,15 @@ pub fn sys_epoll_pwait(
     }
     let ep_idx = (-(ofd.host_handle + 1)) as usize;
 
-    // Copy interest list (need to release borrow on proc)
-    let interests = {
-        let ep = proc
-            .epolls
-            .get(ep_idx)
-            .and_then(|s| s.as_ref())
-            .ok_or(Errno::EBADF)?;
-        ep.interests.clone()
-    };
+    if proc.epolls.get(ep_idx).and_then(|s| s.as_ref()).is_none() {
+        return Err(Errno::EBADF);
+    }
+    // Live registrations, each with the fd that reaches its description
+    // (closed descriptions are dropped here, as Linux drops them).
+    let live = live_epoll_interests(proc, ep_idx);
+    let probe_fds: Vec<i32> = live.iter().map(|(_, probe)| *probe).collect();
+    let interests: Vec<crate::process::EpollInterest> =
+        live.into_iter().map(|(i, _)| i).collect();
 
     if interests.is_empty() {
         // No interests — just handle timeout/sigmask
@@ -15691,7 +16038,8 @@ pub fn sys_epoll_pwait(
     // Build pollfds from interests
     let mut pollfds: Vec<WasmPollFd> = interests
         .iter()
-        .map(|interest| {
+        .zip(probe_fds.iter())
+        .map(|(interest, &probe)| {
             let mut poll_events: i16 = 0;
             if interest.events & EPOLLIN != 0 {
                 poll_events |= POLLIN;
@@ -15700,7 +16048,7 @@ pub fn sys_epoll_pwait(
                 poll_events |= POLLOUT;
             }
             WasmPollFd {
-                fd: interest.fd,
+                fd: probe,
                 events: poll_events,
                 revents: 0,
             }
@@ -15921,6 +16269,27 @@ pub fn sys_timerfd_gettime(
         remain_nsec = 0;
     }
     Ok((interval_sec, interval_nsec, remain_sec, remain_nsec))
+}
+
+/// Recompute a timerfd's pending expirations against the current time of
+/// the timer's OWN clock. TFD_TIMER_ABSTIME targets live in the domain of
+/// `tfd.clock_id` (libinput arms CLOCK_MONOTONIC absolutes); comparing
+/// them against CLOCK_REALTIME makes every monotonic timer look
+/// already-expired on hosts where the two epochs differ. Every consumer
+/// of `expirations` (read and poll alike) must refresh through here first.
+fn timerfd_refresh(host: &mut dyn HostIO, tfd_idx: usize) -> Result<(), Errno> {
+    let Some(clock_id) = crate::descriptor_backing::with_timerfds(|table| {
+        table.get(tfd_idx).map(|tfd| tfd.clock_id)
+    }) else {
+        return Ok(());
+    };
+    let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
+    crate::descriptor_backing::with_timerfds(|table| {
+        if let Some(tfd) = table.get_mut(tfd_idx) {
+            timerfd_compute_expirations(tfd, now_sec, now_nsec);
+        }
+    });
+    Ok(())
 }
 
 /// Helper: compute timerfd expirations lazily.
@@ -17979,6 +18348,7 @@ mod tests {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         }
     }
 
@@ -18004,6 +18374,10 @@ mod tests {
         clock_time: (i64, i64),
         clock_error: Option<Errno>,
         clock_gettime_calls: usize,
+        /// When set, CLOCK_MONOTONIC (1) reads return this instead of
+        /// `clock_time`, letting tests model hosts where the monotonic and
+        /// realtime epochs differ (Node: hrtime-since-boot vs Unix epoch).
+        monotonic_time: Option<(i64, i64)>,
         /// Per-path owner overrides for host_stat / host_lstat. Mirrors how a real
         /// host-side VFS owns ownership; tests use `set_file_with_owner` to seed.
         file_owners: std::collections::HashMap<Vec<u8>, (u32, u32)>,
@@ -18077,6 +18451,15 @@ mod tests {
         pread_reported: Option<usize>,
         pwrite_reported: Option<usize>,
         prepared_exec_bytes: Option<Vec<u8>>,
+        /// Recorded `(pid, crtc_id, fb_id)` for every `kms_set_fb` call so
+        /// SETCRTC/PAGE_FLIP scanout latching can be asserted against.
+        kms_set_fb_calls: Vec<(i32, u32, u32)>,
+        /// Recorded `(pid, ctx_id, bo_id, gl_target)` for every
+        /// `gl_bind_foreign_texture` call.
+        gl_bind_foreign_texture_calls: Vec<(i32, u32, u32, u32)>,
+        /// Return value for `gl_bind_foreign_texture` (> 0 = texture id,
+        /// <= 0 = failure → the ioctl surfaces EIO).
+        gl_bind_foreign_texture_rc: i32,
     }
 
     impl MockHostIO {
@@ -18098,6 +18481,7 @@ mod tests {
                 clock_time: (1234567890, 123456789),
                 clock_error: None,
                 clock_gettime_calls: 0,
+                monotonic_time: None,
                 file_owners: std::collections::HashMap::new(),
                 file_modes: std::collections::HashMap::new(),
                 file_times: std::collections::HashMap::new(),
@@ -18159,6 +18543,9 @@ mod tests {
                 pread_reported: None,
                 pwrite_reported: None,
                 prepared_exec_bytes: None,
+                kms_set_fb_calls: Vec::new(),
+                gl_bind_foreign_texture_calls: Vec::new(),
+                gl_bind_foreign_texture_rc: 7,
             }
         }
 
@@ -18382,6 +18769,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
 
@@ -18412,6 +18800,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
 
@@ -18445,6 +18834,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
 
@@ -18686,10 +19076,15 @@ mod tests {
             Ok(())
         }
 
-        fn host_clock_gettime(&mut self, _clock_id: u32) -> Result<(i64, i64), Errno> {
+        fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno> {
             self.clock_gettime_calls += 1;
             if let Some(err) = self.clock_error {
                 return Err(err);
+            }
+            if clock_id == wasm_posix_shared::clock::CLOCK_MONOTONIC {
+                if let Some(t) = self.monotonic_time {
+                    return Ok(t);
+                }
             }
             Ok(self.clock_time)
         }
@@ -18899,6 +19294,20 @@ mod tests {
             self.proc_write_calls.push((pid, ptr, bytes.to_vec()));
             0
         }
+        fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {
+            self.kms_set_fb_calls.push((pid, crtc_id, fb_id));
+        }
+        fn gl_bind_foreign_texture(
+            &mut self,
+            pid: i32,
+            ctx_id: u32,
+            bo_id: u32,
+            gl_target: u32,
+        ) -> i32 {
+            self.gl_bind_foreign_texture_calls
+                .push((pid, ctx_id, bo_id, gl_target));
+            self.gl_bind_foreign_texture_rc
+        }
     }
 
     fn user_process(pid: u32) -> Process {
@@ -18919,6 +19328,34 @@ mod tests {
 
         // fd 3 should now be EBADF
         assert_eq!(proc.fd_table.get(fd), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn test_pty_master_read_drains_output_after_slave_close() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let master = sys_open(&mut proc, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let pty_idx = {
+            let entry = proc.fd_table.get(master).unwrap();
+            proc.ofd_table.get(entry.ofd_ref.0).unwrap().host_handle as usize
+        };
+        crate::pty::get_pty(pty_idx).unwrap().locked = false; // unlockpt
+
+        let slave_path = format!("/dev/pts/{pty_idx}");
+        let slave = sys_open(&mut proc, &mut host, slave_path.as_bytes(), O_RDWR, 0).unwrap();
+        sys_write(&mut proc, &mut host, slave, b"bye").unwrap();
+        sys_close(&mut proc, &mut host, slave).unwrap();
+
+        // Output buffered before the slave closed must drain before EOF — a
+        // program that writes its final bytes and exits in one go must not
+        // lose them.
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, master, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"bye");
+        assert_eq!(sys_read(&mut proc, &mut host, master, &mut buf).unwrap(), 0);
+
+        sys_close(&mut proc, &mut host, master).unwrap();
     }
 
     #[test]
@@ -19123,6 +19560,7 @@ mod tests {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         assert!(has_access(&proc, &file, R_OK | W_OK));
 
@@ -21666,6 +22104,7 @@ mod tests {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
 
         assert_eq!(
@@ -26801,7 +27240,7 @@ mod tests {
             (b"/dev/dri/card0", VirtualDevice::DriCard0.host_handle()),
             // Prime fds are kernel-owned CharDevices outside the named
             // VirtualDevice range and obey the same non-terminal contract.
-            (b"/dev/dri/prime-test", -200),
+            (b"/dev/dri/prime-test", crate::ofd::PRIME_FD_HOST_HANDLE),
             // A future host-backed CharDevice must opt into terminal identity
             // rather than inheriting it from a non-negative handle.
             (b"/dev/other-char-device", 77),
@@ -28203,6 +28642,86 @@ mod tests {
         use wasm_posix_shared::socket::*;
         let result = sys_getsockopt(&mut proc, 0, SOL_SOCKET, SO_TYPE);
         assert_eq!(result, Err(Errno::ENOTSOCK));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_socketpair() {
+        // libwayland's server calls SO_PEERCRED on every accepted client and
+        // refuses it on error. For the canonical socketpair setup the peer is
+        // this same process, so pid/uid/gid are the querying process's own.
+        let mut proc = Process::new(7);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        // Process::new defaults to root (uid=gid=0); pid is what we passed.
+        assert_eq!(sys_getsockopt_peercred(&proc, fd0), Ok((7, 0, 0)));
+        assert_eq!(sys_getsockopt_peercred(&proc, fd1), Ok((7, 0, 0)));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_reflects_credentials() {
+        // A socketpair records its creator's effective credentials after a
+        // privilege drop, not a hardcoded 0/0.
+        let mut proc = Process::new(42);
+        proc.configure_ids(Some(1000), Some(1000));
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        assert_eq!(sys_getsockopt_peercred(&proc, fd0), Ok((42, 1000, 1000)));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_without_peer_is_linux_sentinel() {
+        // Linux reports {pid 0, uid -1, gid -1} for a socket with no peer;
+        // it never substitutes the caller's own identity.
+        let mut proc = Process::new(9);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let unix = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        assert_eq!(sys_getsockopt_peercred(&proc, unix), Ok((0, u32::MAX, u32::MAX)));
+        let inet = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        assert_eq!(sys_getsockopt_peercred(&proc, inet), Ok((0, u32::MAX, u32::MAX)));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_captured_at_listen_and_connect() {
+        // The listener's credentials are fixed at listen(), the connector's at
+        // connect(): a later privilege change does not rewrite either side.
+        let mut proc = Process::new(11);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let listener = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0..2].copy_from_slice(&(AF_UNIX as u16).to_le_bytes());
+        addr[2..2 + 13].copy_from_slice(b"\0peercred-cap");
+        let addr = &addr[..2 + 13];
+        sys_bind(&mut proc, &mut host, listener, addr).unwrap();
+        sys_listen(&mut proc, &mut host, listener, 1).unwrap();
+        assert_eq!(sys_getsockopt_peercred(&proc, listener), Ok((11, 0, 0)));
+
+        proc.configure_ids(Some(1000), Some(1000));
+        let client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client, addr).unwrap();
+        // The client reports the listener as it was at listen(): root.
+        assert_eq!(sys_getsockopt_peercred(&proc, client), Ok((11, 0, 0)));
+
+        proc.configure_ids(Some(0), Some(0));
+        let accepted = sys_accept(&mut proc, &mut host, listener).unwrap();
+        // The accepted socket reports the connector as it was at connect().
+        assert_eq!(sys_getsockopt_peercred(&proc, accepted), Ok((11, 1000, 1000)));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_not_socket() {
+        // fd 1 (stdout) is a char device, not a socket → ENOTSOCK.
+        let proc = Process::new(1);
+        assert_eq!(sys_getsockopt_peercred(&proc, 1), Err(Errno::ENOTSOCK));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_bad_fd() {
+        let proc = Process::new(1);
+        assert_eq!(sys_getsockopt_peercred(&proc, 999), Err(Errno::EBADF));
     }
 
     #[test]
@@ -33277,6 +33796,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
         fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
@@ -33297,6 +33817,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
         fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
@@ -33318,6 +33839,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
         fn host_mkdir(&mut self, path: &[u8], _mode: u32) -> Result<(), Errno> {
@@ -37655,6 +38177,134 @@ mod tests {
         assert_eq!(ep.interests.len(), 0);
     }
 
+    /// An inherited epoll fd keeps working in the child: its instance and
+    /// registrations cross fork at the same slot, and a registration still
+    /// names the same open file description (ofd_id travels with the fd).
+    #[test]
+    fn test_fork_carries_epoll_instances() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (rfd, wfd) = sys_pipe2(&mut proc, 0).unwrap();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, rfd, 0x001, 77).unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = crate::fork::serialize_fork_state(&proc, &mut buf).unwrap();
+        let mut child = crate::fork::deserialize_fork_state(&buf[..written], 42).unwrap();
+
+        sys_write(&mut child, &mut host, wfd, b"x").unwrap();
+        let (n, events) =
+            sys_epoll_pwait(&mut child, &mut host, epfd, 4, 0, None).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(events[0].1, 77);
+        // The child can keep managing the inherited instance.
+        sys_epoll_ctl(&mut child, epfd, 2, rfd, 0, 0).unwrap();
+    }
+
+    /// Linux drops a registration once the last fd referring to its open
+    /// file description is closed, so a new file that reuses the fd number
+    /// can be added (no EEXIST) and never inherits the old one's data.
+    #[test]
+    fn epoll_registration_ends_with_its_description() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        const EPOLLIN: u32 = 0x001;
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let (rfd, wfd) = sys_pipe2(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, rfd, EPOLLIN, 7).unwrap();
+        sys_close(&mut proc, &mut host, rfd).unwrap();
+        sys_close(&mut proc, &mut host, wfd).unwrap();
+
+        // The fd number comes back for an unrelated pipe.
+        let (rfd2, wfd2) = sys_pipe2(&mut proc, 0).unwrap();
+        assert_eq!(rfd2, rfd);
+        sys_epoll_ctl(&mut proc, epfd, 1, rfd2, EPOLLIN, 99).unwrap();
+        sys_write(&mut proc, &mut host, wfd2, b"x").unwrap();
+        let (n, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 8, 0, None).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(events[0].1, 99, "the old registration's data must not surface");
+        // DEL on the old registration's number addresses the new one only.
+        sys_epoll_ctl(&mut proc, epfd, 2, rfd2, 0, 0).unwrap();
+        assert_eq!(
+            sys_epoll_ctl(&mut proc, epfd, 2, rfd2, 0, 0),
+            Err(Errno::ENOENT)
+        );
+    }
+
+    /// A registration outlives close(fd) while a dup keeps its description
+    /// open, and keeps reporting with its own data -- Linux's behaviour.
+    #[test]
+    fn epoll_registration_survives_close_while_duped() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        const EPOLLIN: u32 = 0x001;
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let (rfd, wfd) = sys_pipe2(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, rfd, EPOLLIN, 5).unwrap();
+        let dup = sys_dup(&mut proc, rfd).unwrap();
+        sys_close(&mut proc, &mut host, rfd).unwrap();
+        sys_write(&mut proc, &mut host, wfd, b"x").unwrap();
+        let (n, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 8, 0, None).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(events[0].1, 5);
+        // Closing the last fd to the description ends the registration.
+        sys_close(&mut proc, &mut host, dup).unwrap();
+        let (n, _) = sys_epoll_pwait(&mut proc, &mut host, epfd, 8, 0, None).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    /// A nested epoll whose interest list named a CLOSED fd must not report
+    /// the outer epoll readable. Treating the closed fd's POLLNVAL as
+    /// readiness made epoll_wait on the outer fd return immediately forever
+    /// while the inner one yielded an events==0 entry: a 100% CPU spin in
+    /// exactly the libinput-inside-wl_event_loop shape the recursion exists
+    /// to support. (The registration is now also dropped once its
+    /// description closes, as on Linux -- see the tests below.)
+    #[test]
+    fn nested_epoll_with_a_stale_interest_is_not_readable() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // Two pipes registered up front: closing one below must not make
+        // the outer epoll readable, and the other proves real readiness
+        // still propagates.
+        let (stale_rfd, _stale_wfd) = sys_pipe2(&mut proc, 0).unwrap();
+        let (live_rfd, live_wfd) = sys_pipe2(&mut proc, 0).unwrap();
+        let inner = sys_epoll_create1(&mut proc, 0).unwrap();
+        let outer = sys_epoll_create1(&mut proc, 0).unwrap();
+
+        const EPOLLIN: u32 = 0x001;
+        sys_epoll_ctl(&mut proc, inner, 1, stale_rfd, EPOLLIN, 7).unwrap();
+        sys_epoll_ctl(&mut proc, inner, 1, live_rfd, EPOLLIN, 11).unwrap();
+        sys_epoll_ctl(&mut proc, outer, 1, inner, EPOLLIN, 9).unwrap();
+
+        // Nothing written yet: no inner fd is ready, so neither is the outer.
+        let mut fds = [WasmPollFd { fd: outer, events: POLLIN, revents: 0 }];
+        assert_eq!(poll_check(&mut proc, &mut host, &mut fds), 0);
+        assert_eq!(fds[0].revents, 0);
+
+        // Close one monitored fd WITHOUT EPOLL_CTL_DEL. The stale interest
+        // now resolves to POLLNVAL, which is not a readiness condition.
+        sys_close(&mut proc, &mut host, stale_rfd).unwrap();
+        let mut fds = [WasmPollFd { fd: outer, events: POLLIN, revents: 0 }];
+        assert_eq!(
+            poll_check(&mut proc, &mut host, &mut fds),
+            0,
+            "a stale nested interest must not make the outer epoll readable",
+        );
+        assert_eq!(fds[0].revents & POLLIN, 0);
+
+        // Real readiness still propagates through the nesting.
+        sys_write(&mut proc, &mut host, live_wfd, b"x").unwrap();
+        let mut fds = [WasmPollFd { fd: outer, events: POLLIN, revents: 0 }];
+        assert_eq!(
+            poll_check(&mut proc, &mut host, &mut fds),
+            1,
+            "a genuinely ready nested interest must still be reported",
+        );
+        assert_ne!(fds[0].revents & POLLIN, 0);
+    }
+
     #[test]
     fn test_epoll_ctl_add_duplicate_eexist() {
         let mut proc = Process::new(1);
@@ -37727,6 +38377,68 @@ mod tests {
         assert_eq!(count, 1);
         assert_ne!(events[0].0 & epollin, 0);
         assert_eq!(events[0].1, 99); // data preserved
+    }
+
+    #[test]
+    fn test_epoll_nested_readiness() {
+        // An outer epoll monitoring an inner epoll fd must report it readable
+        // when any of the inner epoll's own interests is ready (epoll-on-epoll).
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let epollin: u32 = 0x001;
+
+        // Inner epoll watches a readable pipe.
+        let (read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        sys_write(&mut proc, &mut host, write_fd, b"x").unwrap();
+        let inner = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, inner, 1, read_fd, epollin, 7).unwrap();
+
+        // Outer epoll watches the inner epoll fd itself.
+        let outer = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, outer, 1, inner, epollin, 42).unwrap();
+
+        // Outer epoll_wait must see the inner epoll fd as ready.
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, outer, 10, 0, None).unwrap();
+        assert_eq!(count, 1, "nested epoll should report the inner fd ready");
+        assert_ne!(events[0].0 & epollin, 0);
+        assert_eq!(events[0].1, 42);
+
+        // Control: when the inner interest is NOT ready, the outer must not fire.
+        let mut proc2 = Process::new(2);
+        let (r2, _w2) = sys_pipe(&mut proc2).unwrap();
+        let inner2 = sys_epoll_create1(&mut proc2, 0).unwrap();
+        sys_epoll_ctl(&mut proc2, inner2, 1, r2, epollin, 7).unwrap();
+        let outer2 = sys_epoll_create1(&mut proc2, 0).unwrap();
+        sys_epoll_ctl(&mut proc2, outer2, 1, inner2, epollin, 42).unwrap();
+        let (count2, _) = sys_epoll_pwait(&mut proc2, &mut host, outer2, 10, 0, None).unwrap();
+        assert_eq!(count2, 0, "nested epoll must stay quiet when inner is idle");
+    }
+
+    #[test]
+    fn test_epoll_pwait_multiple_events_data() {
+        // With several interests ready at once, each event must carry its OWN
+        // data and none may be zero — a stride desync here returns a NULL
+        // source to libinput's multi-fd epoll loop, which crashes it.
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let epollin: u32 = 0x001;
+
+        let (r1, w1) = sys_pipe(&mut proc).unwrap();
+        let (r2, w2) = sys_pipe(&mut proc).unwrap();
+        sys_write(&mut proc, &mut host, w1, b"a").unwrap();
+        sys_write(&mut proc, &mut host, w2, b"b").unwrap();
+
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, r1, epollin, 0x1111_2222).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, r2, epollin, 0x3333_4444).unwrap();
+
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 2, "both readable pipes should be reported");
+        let mut datas: Vec<u64> = events.iter().map(|e| e.1).collect();
+        datas.sort_unstable();
+        assert_eq!(datas, vec![0x1111_2222, 0x3333_4444]);
+        // No event may carry a zero/NULL data payload.
+        assert!(events.iter().all(|e| e.1 != 0));
     }
 
     #[test]
@@ -38085,6 +38797,154 @@ mod tests {
         let mut proc = Process::new(1);
         let result = sys_timerfd_create(&mut proc, 0, 0xDEAD);
         assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_timerfd_poll_reports_expiry_without_read() {
+        // Regression: poll must lazily evaluate timerfd expirations against
+        // the current clock. Before the fix it only read the cached
+        // `expirations` counter (updated by read/settime), so a poller
+        // parked across an expiry never woke — libinput's button-debounce
+        // timer (which gates button RELEASE delivery to Wayland clients)
+        // hung on exactly this.
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::poll::POLLIN;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_timerfd_create(&mut proc, 0, 0).unwrap();
+
+        // Arm: expires at t=105s.
+        host.clock_time = (100, 0);
+        sys_timerfd_settime(&mut proc, &mut host, fd, 0, 0, 0, 5, 0).unwrap();
+
+        // Not yet expired → poll reports nothing.
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLIN,
+            revents: 0,
+        };
+        host.clock_time = (104, 0);
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(pollfd.revents, 0);
+
+        // Clock passes the expiry with NO intervening read/settime → poll
+        // alone must surface POLLIN.
+        host.clock_time = (106, 0);
+        pollfd.revents = 0;
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLIN, 0);
+
+        // And the subsequent read drains the expiration count as usual.
+        let mut buf = [0u8; 8];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 8);
+        assert_eq!(u64::from_le_bytes(buf), 1);
+    }
+
+    #[test]
+    fn test_timerfd_poll_uses_timers_own_clock() {
+        // Regression: expiry must be evaluated against the timer's OWN clock
+        // (tfd.clock_id), not CLOCK_REALTIME. TFD_TIMER_ABSTIME targets live
+        // in the clock_id domain; on real hosts monotonic (since boot) and
+        // realtime (Unix epoch) differ by ~1.7e9 s, so comparing a monotonic
+        // target against realtime "now" made every CLOCK_MONOTONIC timer look
+        // already-expired the instant it was armed — libinput's 25 ms button
+        // debounce fired immediately and its dispatch loop then never saw the
+        // real expiry.
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::clock::CLOCK_MONOTONIC;
+        use wasm_posix_shared::poll::POLLIN;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Realtime is far in the "future" relative to monotonic, as on Node.
+        host.clock_time = (1_700_000_000, 0);
+        host.monotonic_time = Some((100, 0));
+
+        let fd = sys_timerfd_create(&mut proc, CLOCK_MONOTONIC, 0).unwrap();
+        // Arm ABSTIME at monotonic t=100.025s (a libinput-style debounce).
+        const TFD_TIMER_ABSTIME: u32 = 1;
+        sys_timerfd_settime(
+            &mut proc,
+            &mut host,
+            fd,
+            TFD_TIMER_ABSTIME,
+            0,
+            0,
+            100,
+            25_000_000,
+        )
+        .unwrap();
+
+        // Monotonic hasn't reached the target: poll must NOT report POLLIN,
+        // even though realtime "now" is numerically far past the target.
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLIN,
+            revents: 0,
+        };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(pollfd.revents, 0);
+        // Nor may read consume a phantom expiration.
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            sys_read(&mut proc, &mut host, fd, &mut buf),
+            Err(Errno::EAGAIN)
+        );
+
+        // Monotonic passes the target → poll reports POLLIN and read drains.
+        host.monotonic_time = Some((100, 30_000_000));
+        pollfd.revents = 0;
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLIN, 0);
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 8);
+        assert_eq!(u64::from_le_bytes(buf), 1);
+    }
+
+    #[test]
+    fn test_timerfd_expiry_surfaces_through_epoll() {
+        // libinput waits on its timerfd through epoll (not bare poll), which
+        // reaches the lazy refresh via the epoll→poll_check_depth recursion
+        // arm — cover that shape, not just direct sys_poll.
+        use wasm_posix_shared::clock::CLOCK_MONOTONIC;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.clock_time = (1_700_000_000, 0);
+        host.monotonic_time = Some((100, 0));
+
+        let fd = sys_timerfd_create(&mut proc, CLOCK_MONOTONIC, 0).unwrap();
+        const TFD_TIMER_ABSTIME: u32 = 1;
+        sys_timerfd_settime(
+            &mut proc,
+            &mut host,
+            fd,
+            TFD_TIMER_ABSTIME,
+            0,
+            0,
+            100,
+            25_000_000,
+        )
+        .unwrap();
+
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let epollin: u32 = 0x001;
+        sys_epoll_ctl(&mut proc, epfd, 1, fd, epollin, 0x5555_6666).unwrap();
+
+        // Not yet expired → epoll reports nothing.
+        let (count, _) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 0);
+
+        // Expiry with no intervening read/settime → epoll alone must
+        // surface the readiness, carrying the registered data.
+        host.monotonic_time = Some((100, 30_000_000));
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 1);
+        assert_ne!(events[0].0 & epollin, 0);
+        assert_eq!(events[0].1, 0x5555_6666);
     }
 
     #[test]
@@ -38668,6 +39528,7 @@ mod tests {
                     st_ctime_sec: 0,
                     st_ctime_nsec: 0,
                     _pad: 0,
+                    st_rdev: 0,
                 })
             }
             fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
@@ -38880,6 +39741,7 @@ mod tests {
                     st_ctime_sec: 0,
                     st_ctime_nsec: 0,
                     _pad: 0,
+                    st_rdev: 0,
                 })
             }
             fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
@@ -39093,6 +39955,7 @@ mod tests {
                     st_ctime_sec: 0,
                     st_ctime_nsec: 0,
                     _pad: 0,
+                    st_rdev: 0,
                 })
             }
             fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
@@ -42012,6 +42875,24 @@ mod tests {
             prime_entry.fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC,
             0
         );
+
+        // It seeks like a Linux dma-buf: SEEK_END reports the buffer's real
+        // size (what a compositor checks a claimed pool size against),
+        // SEEK_SET 0 rewinds, anything else is EINVAL.
+        use wasm_posix_shared::seek::{SEEK_CUR, SEEK_END, SEEK_SET};
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, out.fd, 0, SEEK_END),
+            Ok(created.size as i64)
+        );
+        assert_eq!(sys_lseek(&mut proc, &mut host, out.fd, 0, SEEK_SET), Ok(0));
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, out.fd, 4, SEEK_SET),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, out.fd, 0, SEEK_CUR),
+            Err(Errno::EINVAL)
+        );
     }
 
     #[test]
@@ -42185,6 +43066,76 @@ mod tests {
         assert!(bo_gone_after, "close should have released the bo");
         // Avoid "unused variable" warning.
         let _ = created;
+    }
+
+    /// SCM_RIGHTS explicitly lets a sender close its fd the instant
+    /// sendmsg() returns. The queued entry therefore cannot borrow the
+    /// sender's bo reference: it must take one of its own at retain time.
+    /// Before this, a client that exported a bo, sent the prime fd to the
+    /// compositor and immediately closed its own copy drove the refcount to
+    /// zero, destroying the buffer while the descriptor was still in flight
+    /// -- the receiver's PRIME_FD_TO_HANDLE then failed and the surface
+    /// never composited.
+    #[test]
+    fn queued_prime_fd_holds_its_own_bo_reference_across_sender_close() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe {
+            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
+        };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let req = WpkDrmPrimeHandle { handle: created.handle, flags: 0, fd: -1 };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut pbuf).unwrap();
+        let exported: WpkDrmPrimeHandle =
+            unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
+
+        let bo_id = crate::dri::bo::next_id_for_test() - 1;
+        let refcount = || crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount));
+        assert_eq!(refcount(), Some(2), "render fd + prime fd");
+
+        // sendmsg(): queue the prime fd. The entry takes its own reference.
+        let mut queued = snapshot_scm_rights_fd(&proc, exported.fd).unwrap();
+        queued.retain_reference().unwrap();
+        assert_eq!(refcount(), Some(3), "the queued entry must hold a reference");
+
+        // The sender now closes BOTH its fds, as SCM_RIGHTS permits.
+        sys_close(&mut proc, &mut host, exported.fd).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(
+            refcount(),
+            Some(1),
+            "the in-flight descriptor must keep the bo alive after the sender closes",
+        );
+
+        // Never received: dropping the batch gives the reference back and
+        // the drain destroys the bo.
+        drop(queued);
+        drain_deferred_scm_rights_releases(&mut AdvisoryLockManager::new(), &mut host);
+        assert!(
+            crate::dri::with_registry(|r| r.get(bo_id).is_none()),
+            "a discarded batch must not leak the bo",
+        );
     }
 
     #[test]
@@ -42501,20 +43452,53 @@ mod tests {
 
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
-        // The v1 PAGE_FLIP path drains synchronously into event_ring, so
-        // pending_flips is left empty and a 32-byte DRM_EVENT_FLIP_COMPLETE
-        // record sits in event_ring waiting for read(card0).
+        // PAGE_FLIP queues the flip; retirement happens at vblank cadence.
+        // The queued flip sits in pending_flips until a vblank tick drains
+        // it into event_ring as a 32-byte DRM_EVENT_FLIP_COMPLETE record.
+        assert_eq!(kms.pending_flips.len(), 1);
+        assert!(kms.event_ring.is_empty());
+
+        // A back-to-back second PAGE_FLIP is EBUSY while one is pending.
+        unsafe {
+            core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip)
+        };
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_PAGE_FLIP,
+                &mut flipbuf,
+            )
+            .unwrap_err(),
+            Errno::EBUSY
+        );
+
+        // Before the vblank there is no event to read. The read must not
+        // report end-of-file (libdrm's drmHandleEvent would take that as "no
+        // event" and flip again into EBUSY): EAGAIN parks a blocking reader
+        // until the vblank tick wakes it.
+        let mut evbuf = [0u8; 64];
+        assert_eq!(
+            sys_read(&mut proc, &mut host, fd, &mut evbuf).unwrap_err(),
+            Errno::EAGAIN
+        );
+
+        // One vblank tick retires the queued flip into event_ring.
+        crate::dri::drain_pending_flips_for_process(&mut proc, 9, 1, 2);
+        let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
         assert!(kms.pending_flips.is_empty());
         assert_eq!(kms.event_ring.len(), 32);
         let event: Vec<u8> = kms.event_ring.iter().copied().collect();
         assert_eq!(u32::from_le_bytes(event[0..4].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(event[4..8].try_into().unwrap()), 32);
         assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0x42);
+        assert_eq!(u32::from_le_bytes(event[16..20].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(event[20..24].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(event[24..28].try_into().unwrap()), 9);
         assert_eq!(u32::from_le_bytes(event[28..32].try_into().unwrap()), 1);
 
-        // A back-to-back second PAGE_FLIP succeeds (the previous flip
-        // already retired synchronously) and appends another 32-byte
-        // record to the event_ring.
+        // With the queue drained, the next PAGE_FLIP succeeds and queues.
         unsafe {
             core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip)
         };
@@ -42527,8 +43511,108 @@ mod tests {
         )
         .unwrap();
         let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
-        assert!(kms.pending_flips.is_empty());
-        assert_eq!(kms.event_ring.len(), 64);
+        assert_eq!(kms.pending_flips.len(), 1);
+        assert_eq!(kms.event_ring.len(), 32);
+    }
+
+    #[test]
+    fn kms_page_flip_latches_host_scanout_fb() {
+        // A double-buffered client (gbm_surface ring) SETCRTCs bo A once,
+        // then ping-pongs PAGE_FLIP between A and B. The host-side blit
+        // pump reads `currentFb` — if PAGE_FLIP doesn't latch the new fb
+        // via `kms_set_fb`, the pump keeps scanning out the SETCRTC-era
+        // fb forever, which is the client's BACK buffer every other
+        // frame, and the desktop flickers with half-composited frames.
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let mut master_buf = [0u8; 16];
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut master_buf).unwrap();
+
+        // Two dumb buffers + fbs — the double-buffer ring.
+        let mut fb_ids = [0u32; 2];
+        for slot in &mut fb_ids {
+            let create = WpkDrmModeCreateDumb {
+                width: 64,
+                height: 32,
+                bpp: 32,
+                ..Default::default()
+            };
+            let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+            unsafe {
+                core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
+            };
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
+            let created: WpkDrmModeCreateDumb =
+                unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+            let mut fb_req = WpkDrmModeFbCmd2 {
+                width: 64,
+                height: 32,
+                pixel_format: DRM_FORMAT_ARGB8888,
+                ..Default::default()
+            };
+            fb_req.handles[0] = created.handle;
+            fb_req.pitches[0] = created.pitch;
+            let mut fbuf = [0u8; core::mem::size_of::<WpkDrmModeFbCmd2>()];
+            unsafe { core::ptr::write_unaligned(fbuf.as_mut_ptr() as *mut WpkDrmModeFbCmd2, fb_req) };
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, &mut fbuf).unwrap();
+            let fb_out: WpkDrmModeFbCmd2 =
+                unsafe { core::ptr::read_unaligned(fbuf.as_ptr() as *const WpkDrmModeFbCmd2) };
+            *slot = fb_out.fb_id;
+        }
+        assert_ne!(fb_ids[0], fb_ids[1]);
+
+        // SETCRTC to fb A latches the initial scanout.
+        let crtc_req = WpkDrmModeGetCrtc {
+            crtc_id: 1,
+            fb_id: fb_ids[0],
+            ..Default::default()
+        };
+        let mut crtcbuf = [0u8; core::mem::size_of::<WpkDrmModeGetCrtc>()];
+        unsafe { core::ptr::write_unaligned(crtcbuf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, crtc_req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC, &mut crtcbuf).unwrap();
+        assert_eq!(host.kms_set_fb_calls, vec![(1, 1, fb_ids[0])]);
+
+        // PAGE_FLIP to fb B must latch the host scanout to B immediately.
+        let flip = WpkDrmModeCrtcPageFlip {
+            crtc_id: 1,
+            fb_id: fb_ids[1],
+            flags: 0,
+            reserved: 0,
+            user_data: 0,
+        };
+        let mut flipbuf = [0u8; core::mem::size_of::<WpkDrmModeCrtcPageFlip>()];
+        unsafe { core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf).unwrap();
+        assert_eq!(
+            host.kms_set_fb_calls,
+            vec![(1, 1, fb_ids[0]), (1, 1, fb_ids[1])]
+        );
+
+        // A rejected flip (EBUSY while one is pending) must NOT latch.
+        let flip_back = WpkDrmModeCrtcPageFlip {
+            crtc_id: 1,
+            fb_id: fb_ids[0],
+            flags: 0,
+            reserved: 0,
+            user_data: 0,
+        };
+        unsafe {
+            core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip_back)
+        };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf).unwrap_err(),
+            Errno::EBUSY
+        );
+        assert_eq!(host.kms_set_fb_calls.len(), 2);
     }
 
     #[test]
@@ -42985,6 +44069,46 @@ mod tests {
     }
 
     #[test]
+    fn munmap_dri_raw_len_unbinds_page_aligned_binding() {
+        // sys_mmap accepts either the raw bo size or the page-aligned size,
+        // and MemoryManager::munmap rounds len up to the page — so an
+        // unmap with the raw size must still cover (and host-unbind) a
+        // binding recorded with the aligned size, or the host would keep
+        // mirroring pages the allocator has already recycled.
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let aligned_len = (size as usize + 0xFFFF) & !0xFFFF;
+        assert_ne!(size as usize, aligned_len);
+
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap();
+        let bo_id = (offset >> 12) as u32;
+
+        sys_munmap(&mut proc, &mut host, addr, size as usize).unwrap();
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(
+            host.gbm_bo_unbind_calls,
+            vec![(proc.pid as i32, bo_id, addr, aligned_len)]
+        );
+    }
+
+    #[test]
     fn mmap_dri_works_for_card0_too() {
         use wasm_posix_shared::dri::*;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
@@ -43152,6 +44276,113 @@ mod tests {
         .unwrap();
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
+    }
+
+    #[test]
+    fn drm_bind_foreign_texture_uploads_and_writes_texture_id() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::gl;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // A first bo on a separate fd offsets the global bo ids from the
+        // per-fd handles, so the happy path below can tell whether the host
+        // was handed the resolved bo id or the raw handle.
+        let fd_a = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let dumb = WpkDrmModeCreateDumb {
+            width: 64,
+            height: 32,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut dbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(dbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, dumb) };
+        sys_ioctl(&mut proc, &mut host, fd_a, DRM_IOCTL_MODE_CREATE_DUMB, &mut dbuf).unwrap();
+        unsafe { core::ptr::write_unaligned(dbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, dumb) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut dbuf).unwrap();
+        let dumb_out: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(dbuf.as_ptr() as *const _) };
+        assert_eq!(dumb_out.handle, 1);
+
+        let mut req = WpkDrmBindForeignTexture {
+            bo_handle: dumb_out.handle,
+            gl_target: 0x0DE1, // GL_TEXTURE_2D
+            ctx_id: 1,
+            gl_texture_id: 0,
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmBindForeignTexture>()];
+
+        // Short buffer → EINVAL.
+        let mut short = [0u8; 8];
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut short)
+                .unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        // No GL session on the fd yet → EINVAL.
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf)
+                .unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        // Bring up the GL session + context on the same fd.
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        let attrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 3] };
+        let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();
+
+        // Unknown handle → ENOENT.
+        req.bo_handle = 999;
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf)
+                .unwrap_err(),
+            Errno::ENOENT,
+        );
+
+        // Wrong ctx_id → EINVAL.
+        req.bo_handle = dumb_out.handle;
+        req.ctx_id = 2;
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf)
+                .unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        // Happy path: the host's texture id round-trips into the struct,
+        // and the host saw the resolved kernel-global bo id (2 — second
+        // bo in the reset registry), not this fd's local handle (1).
+        req.ctx_id = 1;
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf).unwrap();
+        let out: WpkDrmBindForeignTexture =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(out.gl_texture_id, 7);
+        assert_eq!(
+            host.gl_bind_foreign_texture_calls[0],
+            (1, 1, 2, 0x0DE1),
+        );
+
+        // Host failure (headless: no WebGL backing) → EIO.
+        host.gl_bind_foreign_texture_rc = -(Errno::ENOSYS as i32);
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf)
+                .unwrap_err(),
+            Errno::EIO,
+        );
     }
 
     #[test]
@@ -45715,6 +46946,63 @@ mod tests {
             let err = sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut off)
                 .unwrap_err();
             assert_eq!(err, Errno::ENOTTY, "EVIOCGRAB(0) must be rejected too");
+        }
+    }
+
+    #[test]
+    fn evdev_nodes_stat_with_distinct_char_1364_1365_rdev() {
+        // libinput's path backend identifies an evdev node purely by the
+        // st_rdev it stat()s, so event0/event1 must be distinct and match
+        // the Linux evdev convention (char major 13, minor 64+N).
+        let kbd = virtual_device_stat(VirtualDevice::InputEvent { device: 0 }, 0, 0);
+        let ptr = virtual_device_stat(VirtualDevice::InputEvent { device: 1 }, 0, 0);
+        assert_eq!(kbd.st_rdev, makedev(13, 64));
+        assert_eq!(ptr.st_rdev, makedev(13, 65));
+        assert_ne!(kbd.st_rdev, ptr.st_rdev);
+        // makedev must round-trip through musl's major()/minor() decode.
+        let (major, minor) = (13u64, 64u64);
+        let rdev = kbd.st_rdev;
+        let dec_major = (rdev >> 8) & 0xfff;
+        let dec_minor = (rdev & 0xff) | ((rdev >> 12) & 0xffff_ff00);
+        assert_eq!((dec_major, dec_minor), (major, minor));
+    }
+
+    #[test]
+    fn non_evdev_virtual_nodes_report_zero_rdev() {
+        for dev in [VirtualDevice::Null, VirtualDevice::Fb0, VirtualDevice::Dsp] {
+            let st = virtual_device_stat(dev, 0, 0);
+            assert_eq!(st.st_rdev, 0);
+        }
+    }
+
+    #[test]
+    fn evioc_gphys_and_guniq_return_enoent() {
+        // Virtual devices have no physical location / unique-id node.
+        // libevdev tolerates ENOENT here; ENOTTY would fatal its probe.
+        use wasm_posix_shared::input::{EVIOCGPHYS_NR, EVIOCGUNIQ_NR};
+        let (mut proc, mut host, fd) = open_evdev(620, b"/dev/input/event0");
+        let mut buf = [0u8; 64];
+        for nr in [EVIOCGPHYS_NR, EVIOCGUNIQ_NR] {
+            let req = evioc(2, nr, buf.len() as u32);
+            let err = sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap_err();
+            assert_eq!(err, Errno::ENOENT);
+        }
+    }
+
+    #[test]
+    fn evioc_gprop_gkey_gled_gsw_return_zeroed_state() {
+        // No input properties, no keys latched, no LEDs, no switches:
+        // the honest current state is all-zero, and the ioctl succeeds
+        // (real Linux never returns ENOTTY for these).
+        use wasm_posix_shared::input::{
+            EVIOCGKEY_NR, EVIOCGLED_NR, EVIOCGPROP_NR, EVIOCGSW_NR,
+        };
+        let (mut proc, mut host, fd) = open_evdev(621, b"/dev/input/event0");
+        for nr in [EVIOCGPROP_NR, EVIOCGKEY_NR, EVIOCGLED_NR, EVIOCGSW_NR] {
+            let mut buf = [0xffu8; 16];
+            let req = evioc(2, nr, buf.len() as u32);
+            sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+            assert_eq!(buf, [0u8; 16], "nr={nr:#x} must zero-fill the state buffer");
         }
     }
 

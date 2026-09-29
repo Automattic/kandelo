@@ -2414,3 +2414,212 @@ describe("Kandelo VFS consumer capacity contract", () => {
     )).toThrow("profile permits");
   });
 });
+
+describe("LiveKernelHost: KMS display size lifecycle", () => {
+  // attachKmsDisplay's ResizeObserver feeds kmsDisplaySizes and pushes each
+  // size to the kernel; the boot flow awaits the first report
+  // (whenKmsDisplaySized) before starting a mode-picking client. A stale
+  // entry from the previous session would satisfy that wait before the new
+  // pane pushed anything → 1920×1080 letterbox on every reboot.
+  class FakeResizeObserver {
+    static instances: FakeResizeObserver[] = [];
+    disconnected = false;
+    constructor(public cb: (entries: unknown[]) => void) {
+      FakeResizeObserver.instances.push(this);
+    }
+    observing = false;
+    observe(): void {
+      this.observing = true;
+      this.disconnected = false;
+    }
+    disconnect(): void {
+      this.disconnected = true;
+      this.observing = false;
+    }
+  }
+
+  const fireResize = (ro: FakeResizeObserver, w: number, h: number) =>
+    ro.cb([{ devicePixelContentBoxSize: [{ inlineSize: w, blockSize: h }] }]);
+
+  const makeKmsKernel = () => ({
+    kmsAttachCanvas: vi.fn(),
+    kmsSetDisplaySize: vi.fn(),
+  });
+
+  const makeCanvas = () =>
+    ({ transferControlToOffscreen: () => ({}) }) as unknown as HTMLCanvasElement;
+
+  const withFakeResizeObserver = (fn: () => void) => {
+    const real = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = FakeResizeObserver;
+    FakeResizeObserver.instances = [];
+    try {
+      fn();
+    } finally {
+      (globalThis as { ResizeObserver?: unknown }).ResizeObserver = real;
+    }
+  };
+
+  it("detachKernel clears the reported sizes and the stale observer stops feeding them", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernelA = makeKmsKernel();
+      host.attachKernel(kernelA as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      expect(host.attachKmsDisplay(makeCanvas())).not.toBeNull();
+      const ro = FakeResizeObserver.instances[0];
+      expect(ro).toBeDefined();
+
+      fireResize(ro, 800, 600);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 800, height: 600 });
+      expect(kernelA.kmsSetDisplaySize).toHaveBeenCalledWith(1, 800, 600);
+
+      host.detachKernel();
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+
+      // A late delivery from the dead pane must not repopulate the map
+      // (or poke the dead kernel) — the observer disconnects instead.
+      kernelA.kmsSetDisplaySize.mockClear();
+      fireResize(ro, 800, 600);
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+      expect(kernelA.kmsSetDisplaySize).not.toHaveBeenCalled();
+      expect(ro.disconnected).toBe(true);
+    });
+  });
+
+  it("an old session's observer never feeds the next session's kernel", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernelA = makeKmsKernel();
+      host.attachKernel(kernelA as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      const roA = FakeResizeObserver.instances[0];
+      fireResize(roA, 800, 600);
+
+      // Second boot: detach, attach a fresh kernel + remounted pane.
+      host.detachKernel();
+      const kernelB = makeKmsKernel();
+      host.attachKernel(kernelB as any);
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+
+      kernelA.kmsSetDisplaySize.mockClear();
+      fireResize(roA, 800, 600);
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+      expect(kernelA.kmsSetDisplaySize).not.toHaveBeenCalled();
+      expect(kernelB.kmsSetDisplaySize).not.toHaveBeenCalled();
+
+      // The remounted pane's own observer serves the new session.
+      host.attachKmsDisplay(makeCanvas());
+      const roB = FakeResizeObserver.instances[1];
+      fireResize(roB, 1024, 768);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 1024, height: 768 });
+      expect(kernelB.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1024, 768);
+    });
+  });
+
+  it("whenKmsDisplaySized resolves on the pane's first report, after the kernel has it", async () => {
+    let sized: Promise<{ width: number; height: number } | undefined> | undefined;
+    let kernel: ReturnType<typeof makeKmsKernel> | undefined;
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      sized = host.whenKmsDisplaySized(1, 60_000);
+      host.attachKmsDisplay(makeCanvas());
+      fireResize(FakeResizeObserver.instances[0], 0, 0);   // hidden: ignored
+      fireResize(FakeResizeObserver.instances[0], 1280, 720);
+    });
+    expect(await sized).toEqual({ width: 1280, height: 720 });
+    expect(kernel!.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1280, 720);
+  });
+
+  it("closing the pane's handle disconnects its observer; a StrictMode reuse reconnects it", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.attachKernel(makeKmsKernel() as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const canvas = makeCanvas();
+      const handle = host.attachKmsDisplay(canvas)!;
+      const ro = FakeResizeObserver.instances[0];
+      expect(ro.observing).toBe(true);
+      handle.close();                       // unmount: no dangling observer
+      expect(ro.observing).toBe(false);
+      expect(host.attachKmsDisplay(canvas)).toBe(handle); // StrictMode remount
+      expect(ro.observing).toBe(true);
+      expect(FakeResizeObserver.instances).toHaveLength(1);
+    });
+  });
+
+  it("kmsDisplayCanvas keeps one canvas per CRTC for the kernel's lifetime", () => {
+    // A program's WebGL context is bound to the canvas it was created on,
+    // so a remounted pane must get the SAME element back — and the same
+    // handle, without a second transferControlToOffscreen().
+    const realDocument = (globalThis as { document?: unknown }).document;
+    let transfers = 0;
+    (globalThis as { document?: unknown }).document = {
+      createElement: (tag: string) => {
+        expect(tag).toBe("canvas");
+        return {
+          width: 300,
+          height: 150,
+          transferControlToOffscreen: () => {
+            transfers++;
+            return {};
+          },
+        };
+      },
+    };
+    try {
+      withFakeResizeObserver(() => {
+        const host = new LiveKernelHost();
+        const kernelA = makeKmsKernel();
+        host.attachKernel(kernelA as any);
+        const size = { width: 1920, height: 1080 };
+
+        const canvas = host.kmsDisplayCanvas(1, size);
+        expect(canvas.width).toBe(1920);
+        expect(canvas.height).toBe(1080);
+        const handle = host.attachKmsDisplay(canvas, 1)!;
+        handle.close(); // pane unmount
+
+        // Remount: same element, same handle, one transfer.
+        expect(host.kmsDisplayCanvas(1, { width: 640, height: 480 })).toBe(canvas);
+        expect(canvas.width).toBe(1920); // size applies only at creation
+        expect(host.attachKmsDisplay(canvas, 1)).toBe(handle);
+        expect(transfers).toBe(1);
+        expect(kernelA.kmsAttachCanvas).toHaveBeenCalledTimes(1);
+
+        // Each CRTC has its own canvas.
+        expect(host.kmsDisplayCanvas(2)).not.toBe(canvas);
+
+        // The next kernel gets a fresh canvas: this one's control belongs
+        // to the detached kernel's worker.
+        host.detachKernel();
+        host.attachKernel(makeKmsKernel() as any);
+        expect(host.kmsDisplayCanvas(1, size)).not.toBe(canvas);
+      });
+    } finally {
+      (globalThis as { document?: unknown }).document = realDocument;
+    }
+  });
+
+  it("whenKmsDisplaySized is bounded, and a detach releases it", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new LiveKernelHost();
+      host.attachKernel(makeKmsKernel() as any);
+      const timedOut = host.whenKmsDisplaySized(1, 2_000);
+      vi.advanceTimersByTime(2_000);
+      expect(await timedOut).toBeUndefined();
+
+      const detached = host.whenKmsDisplaySized(1, 60_000);
+      host.detachKernel();
+      expect(await detached).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+

@@ -198,6 +198,18 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
             max: EVIOC_MAX_CALLER_LENGTH,
         },
     },
+    // EVIOCGPHYS / EVIOCGUNIQ / EVIOCGPROP: caller-length string and
+    // property reads libevdev issues during construction.
+    IoctlRequestFamily {
+        dir: 2,
+        magic: b'E' as u32,
+        nr_first: crate::input::EVIOCGPHYS_NR,
+        nr_last: crate::input::EVIOCGPROP_NR,
+        direction: IoctlDirection::Out,
+        size: IoctlFamilySize::CallerEncoded {
+            max: EVIOC_MAX_CALLER_LENGTH,
+        },
+    },
     IoctlRequestFamily {
         dir: 2,
         magic: b'E' as u32,
@@ -209,7 +221,8 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
         ),
     },
     // EVIOCGKEY / EVIOCGLED / EVIOCGSW: caller-encoded state-query reads
-    // used to resynchronise after a SYN_DROPPED. Each carries its own nr
+    // libevdev issues during construction and after a SYN_DROPPED to
+    // resynchronise. Each carries its own nr
     // (0x18 / 0x19 / 0x1b), so they register as three single-nr families
     // rather than one range — 0x1a (EVIOCGSND) is deliberately absent
     // because Kandelo has no sound-key surface.
@@ -340,6 +353,11 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_GET_CAP, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_MAP_DUMB, InOut, 16),
+    // bo_handle / gl_target / ctx_id in, gl_texture_id out. Without an
+    // entry here the host stages a zero-length buffer and the kernel
+    // handler rejects every call with EINVAL, so GPU compositing can
+    // never succeed from a real guest.
+    pointer!(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETENCODER, InOut, 20),
     pointer!(crate::dri::DRM_IOCTL_MODE_PAGE_FLIP, In, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_DUMB, InOut, 32),
@@ -445,6 +463,27 @@ mod tests {
 
         let grab = request_contract(crate::input::EVIOCGRAB).unwrap();
         assert_eq!(grab.arg_kind, IoctlArgKind::ScalarI32);
+    }
+
+    /// Every DRM ioctl a guest actually issues must resolve here. Without a
+    /// contract the host stages a zero-length buffer (`if (!contract)` in
+    /// kernel-worker.ts) and the kernel's handler rejects the call on its
+    /// length check — so the feature is unreachable from a real guest while
+    /// a Rust test that hands `sys_ioctl` a pre-filled buffer still passes.
+    #[test]
+    fn every_drm_ioctl_the_guest_issues_resolves_to_a_contract() {
+        let bind = request_contract(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE)
+            .expect("BIND_FOREIGN_TEXTURE must have a marshalling contract");
+        assert_eq!(bind.arg_kind, IoctlArgKind::Pointer);
+        assert_eq!(bind.direction, IoctlDirection::InOut);
+        // bo_handle / gl_target / ctx_id in, gl_texture_id out.
+        let want = core::mem::size_of::<crate::dri::WpkDrmBindForeignTexture>();
+        assert_eq!(bind.size_for_pointer_width(4), Some(want as u32));
+        assert_eq!(bind.size_for_pointer_width(8), Some(want as u32));
+
+        // The sibling prime-import ioctl, so a regression that drops the
+        // whole DRM block is caught too.
+        assert!(request_contract(crate::dri::DRM_IOCTL_PRIME_FD_TO_HANDLE).is_some());
     }
 
     #[test]

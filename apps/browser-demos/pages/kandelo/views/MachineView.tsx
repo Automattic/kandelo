@@ -111,9 +111,14 @@ export function useMachineSurfaceController(): MachineSurfaceController {
     demoSurface !== null &&
     isSurfaceAvailable(demoSurface, availability) &&
     status === "running";
+  // A KMS display mounts as soon as the kernel exposes it, while booting too:
+  // hidden, but laid out, so it attaches and reports its size before the
+  // machine's command starts a client that picks its video mode from that
+  // size (live-setup waits for the report). Other demo surfaces wait for
+  // "running" — there is nothing for them to show or measure earlier.
   const shouldMountDemoSurface =
     demoSurface !== null &&
-    status === "running" &&
+    (status === "running" || (demoSurface === "kms" && status === "booting")) &&
     isSurfaceAvailable(demoSurface, availability);
   const canUseInternals = status !== "idle" && isSurfaceAvailable("syslog", availability);
 
@@ -247,7 +252,10 @@ export const MachineView: React.FC<MachineViewProps> = ({
       <div className="kmachine-workspace">
         <div className="kmachine-primary">
           {shouldMountDemoSurface && (
-            <PrimarySurfaceSlot active={activePrimary === demoSurface}>
+            <PrimarySurfaceSlot
+              active={activePrimary === demoSurface}
+              measureWhileHidden={demoSurface === "kms"}
+            >
               <Display
                 ref={displayRef}
                 autoFocus={activePrimary === demoSurface}
@@ -290,11 +298,24 @@ function parseWordPressLoginPayload(payload: string): WordPressLoginOptions {
   };
 }
 
+/**
+ * One primary surface. A hidden slot is `display: none` -- out of layout and
+ * paint -- except with `measureWhileHidden`, which keeps it laid out (and
+ * invisible) so its pane still has a real size. Only the KMS display needs
+ * that: it reports its size to the kernel before the machine's command picks
+ * a video mode, while the boot view is still in front.
+ */
 const PrimarySurfaceSlot: React.FC<{
   active: boolean;
+  measureWhileHidden?: boolean;
   children: React.ReactNode;
-}> = ({ active, children }) => (
-  <div className={`kmachine-primary-slot${active ? "" : " is-hidden"}`} aria-hidden={!active}>
+}> = ({ active, measureWhileHidden = false, children }) => (
+  <div
+    className={`kmachine-primary-slot${
+      active ? "" : measureWhileHidden ? " is-hidden is-measured" : " is-hidden"
+    }`}
+    aria-hidden={!active}
+  >
     {children}
   </div>
 );

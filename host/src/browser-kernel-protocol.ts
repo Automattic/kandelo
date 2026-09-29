@@ -444,7 +444,7 @@ export interface KmsAttachCanvasMessage {
   crtcId: number;
   canvas: OffscreenCanvas;
   stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" };
+  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" };
 }
 
 /** Register a stats SAB for a CRTC without binding a scanout canvas. The
@@ -466,6 +466,17 @@ export interface KmsAttachStatsMessage {
 export interface FbReleaseGenerationAckMessage {
   type: "fb_release_generation_ack";
   requestId: number;
+}
+
+/** Report the display size (device pixels) of a CRTC's canvas element.
+ *  Consumed by the vblank pump's `webgl2-scanout` presenter, which sizes
+ *  the drawing buffer to match and GPU-scales the scanout texture into
+ *  it. Typically fed from a main-thread ResizeObserver. */
+export interface KmsSetDisplaySizeMessage {
+  type: "kms_set_display_size";
+  crtcId: number;
+  width: number;
+  height: number;
 }
 
 export type MainToKernelMessage =
@@ -510,7 +521,8 @@ export type MainToKernelMessage =
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
-  | FbReleaseGenerationAckMessage;
+  | FbReleaseGenerationAckMessage
+  | KmsSetDisplaySizeMessage;
 
 // ── Kernel Worker → Main Thread ──
 

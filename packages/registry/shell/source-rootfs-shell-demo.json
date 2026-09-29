@@ -21,7 +21,10 @@
       },
       "presentation": {
         "bootPrimary": "syslog",
-        "runningPrimary": ["terminal", "syslog"],
+        "runningPrimary": [
+          "terminal",
+          "syslog"
+        ],
         "terminalAccess": "primary",
         "internalsAccess": "drawer"
       },
@@ -172,35 +175,6 @@
         "internalsAccess": "drawer"
       }
     },
-    "evdev": {
-      "identity": {
-        "title": "Evdev input log",
-        "summary": "Keystrokes + pointer motion captured from the DOM and replayed through /dev/input/event{0,1}.",
-        "accent": "#7e57c2",
-        "glyph": "E",
-        "packages": [
-          "bash@local",
-          "coreutils@local"
-        ]
-      },
-      "runtime": {
-        "features": [
-          "evdev-input"
-        ]
-      },
-      "init": {
-        "shellCommand": "/usr/local/bin/evdev_demo"
-      },
-      "presentation": {
-        "bootPrimary": "syslog",
-        "runningPrimary": [
-          "terminal",
-          "syslog"
-        ],
-        "terminalAccess": "primary",
-        "internalsAccess": "drawer"
-      }
-    },
     "espeak": {
       "identity": {
         "title": "OSS - Espeak-NG",
@@ -222,6 +196,42 @@
           "syslog"
         ],
         "terminalAccess": "primary",
+        "internalsAccess": "drawer"
+      }
+    },
+    "wayland": {
+      "identity": {
+        "title": "Wayland desktop",
+        "summary": "A real Wayland stack on /dev/dri/card0: wlcompositor (a wl_shm and xdg-shell server driving KMS) composites three clients — wlclock, wlpaint, and wlterm, a VT100 terminal on the in-tree libkwl toolkit running a forkpty'd shell. Type to drive the shell; drag a titlebar to move a window.",
+        "accent": "#3a7d7b",
+        "glyph": "W",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "display": {
+        "minWidth": 1920,
+        "minHeight": 1080
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/wldesktop"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
         "internalsAccess": "drawer"
       }
     }

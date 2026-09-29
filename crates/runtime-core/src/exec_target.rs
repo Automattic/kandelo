@@ -670,6 +670,7 @@ mod tests {
             st_ctime_sec: 3,
             st_ctime_nsec: 4,
             _pad: 0,
+            st_rdev: 0,
         }
     }
 

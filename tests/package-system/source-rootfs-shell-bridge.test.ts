@@ -222,9 +222,16 @@ function fixturePaths(root: string) {
   const fbdoomPath = join(root, "fbdoom.wasm");
   const modesetPath = join(root, "modeset.wasm");
   const sdl2Path = join(root, "sdl2.wasm");
-  const evdevDemoPath = join(root, "evdev_demo.wasm");
   const espeakNgPath = join(root, "espeak-ng.wasm");
   const espeakNgDataPath = join(root, "espeak-ng-data.zip");
+  // The wayland-demo package's outputs: four programs, the launcher, and
+  // libinput's device quirks.
+  const wlcompositorPath = join(root, "wlcompositor.wasm");
+  const wltermPath = join(root, "wlterm.wasm");
+  const wlclockPath = join(root, "wlclock.wasm");
+  const wlpaintPath = join(root, "wlpaint.wasm");
+  const wldesktopPath = join(root, "wldesktop");
+  const libinputQuirksPath = join(root, "libinput-quirks.zip");
   const demoConfigPath = join(
     repoRoot,
     "packages/registry/shell/source-rootfs-shell-demo.json",
@@ -240,8 +247,20 @@ function fixturePaths(root: string) {
   writeFileSync(fbdoomPath, new Uint8Array([0xfa, 0xbd, 0x00, 0x01]));
   writeFileSync(modesetPath, new Uint8Array([0x6d, 0x6f, 0x64, 0x65]));
   writeFileSync(sdl2Path, new Uint8Array([0x73, 0x64, 0x6c, 0x32]));
-  writeFileSync(evdevDemoPath, new Uint8Array([0x65, 0x76, 0x64, 0x65]));
   writeFileSync(espeakNgPath, new Uint8Array([0x65, 0x73, 0x70, 0x6b]));
+  writeFileSync(wlcompositorPath, new Uint8Array([0x77, 0x6c, 0x63, 0x31]));
+  writeFileSync(wltermPath, new Uint8Array([0x77, 0x6c, 0x74, 0x31]));
+  writeFileSync(wlclockPath, new Uint8Array([0x77, 0x6c, 0x6b, 0x31]));
+  writeFileSync(wlpaintPath, new Uint8Array([0x77, 0x6c, 0x70, 0x31]));
+  writeFileSync(wldesktopPath, "#!/bin/sh\nexec wlterm\n");
+  writeFileSync(
+    libinputQuirksPath,
+    zipSync({
+      "10-generic-keyboard.quirks": new TextEncoder().encode(
+        "[Generic Keyboard]\n",
+      ),
+    }),
+  );
   writeFileSync(
     espeakNgDataPath,
     zipSync({
@@ -308,9 +327,14 @@ function fixturePaths(root: string) {
     fbdoomPath,
     modesetPath,
     sdl2Path,
-    evdevDemoPath,
     espeakNgPath,
     espeakNgDataPath,
+    wlcompositorPath,
+    wltermPath,
+    wlclockPath,
+    wlpaintPath,
+    wldesktopPath,
+    libinputQuirksPath,
     demoConfigPath,
     demoProfileOverlayPath,
     dependencyRoots,
@@ -586,7 +610,7 @@ describe("canonical source-rootfs shell", () => {
     expect(fs.stat("/usr/local/bin/fbdoom").mode & 0o777).toBe(0o755);
     expect(fs.stat("/usr/local/bin/modeset").mode & 0o777).toBe(0o755);
 
-    // WHY: sdl2, evdev_demo, and espeak-ng were previously fetched from the
+    // WHY: sdl2 and espeak-ng were previously fetched from the
     // page origin and written into the image at browser boot. An image the
     // host has to complete after the fact is not self-describing, so this
     // asserts they ship inside the built image itself.
@@ -594,10 +618,6 @@ describe("canonical source-rootfs shell", () => {
       new Uint8Array(readFileSync(paths.sdl2Path)),
     );
     expect(fs.stat("/usr/local/bin/sdl2").mode & 0o777).toBe(0o755);
-    expect(readVfsFile(fs, "/usr/local/bin/evdev_demo")).toEqual(
-      new Uint8Array(readFileSync(paths.evdevDemoPath)),
-    );
-    expect(fs.stat("/usr/local/bin/evdev_demo").mode & 0o777).toBe(0o755);
     expect(readVfsFile(fs, "/usr/bin/espeak-ng")).toEqual(
       new Uint8Array(readFileSync(paths.espeakNgPath)),
     );
@@ -607,6 +627,24 @@ describe("canonical source-rootfs shell", () => {
     expect(text(readVfsFile(fs, "/usr/share/espeak-ng-data/en/en_dict"))).toBe(
       "espeak voice data fixture",
     );
+    // The Wayland desktop: the launcher and the four programs it execs are
+    // eager executables on PATH, and wlcompositor's statically linked
+    // libinput finds its device quirks at LIBINPUT_QUIRKS_DIR.
+    for (const [guest, host] of [
+      ["/usr/local/bin/wlcompositor", paths.wlcompositorPath],
+      ["/usr/local/bin/wlterm", paths.wltermPath],
+      ["/usr/local/bin/wlclock", paths.wlclockPath],
+      ["/usr/local/bin/wlpaint", paths.wlpaintPath],
+      ["/usr/local/bin/wldesktop", paths.wldesktopPath],
+    ]) {
+      expect(readVfsFile(fs, guest), guest).toEqual(
+        new Uint8Array(readFileSync(host)),
+      );
+      expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
+    }
+    expect(
+      text(readVfsFile(fs, "/usr/share/libinput/10-generic-keyboard.quirks")),
+    ).toBe("[Generic Keyboard]\n");
     // Assert byte-for-byte equality against the tracked source for one
     // image shader and one sound shader: a loose "non-empty" check would
     // pass for a truncated or stubbed preset, which is exactly the kind of
@@ -945,8 +983,8 @@ describe("canonical source-rootfs shell", () => {
     const fbdoomDir = join(root, "fbdoom");
     const modesetDir = join(root, "modeset");
     const sdl2Dir = join(root, "sdl2-demo");
-    const evdevDemoDir = join(root, "evdev-demo");
     const espeakNgDir = join(root, "espeak-ng");
+    const waylandDemoDir = join(root, "wayland-demo");
     const toolDir = join(root, "tools");
     const extendedDependencyDirs = new Map<string, string>();
     for (const dir of [
@@ -957,7 +995,6 @@ describe("canonical source-rootfs shell", () => {
       fbdoomDir,
       modesetDir,
       sdl2Dir,
-      evdevDemoDir,
       espeakNgDir,
       toolDir,
     ]) {
@@ -973,9 +1010,19 @@ describe("canonical source-rootfs shell", () => {
     writeFileSync(join(fbdoomDir, "fbdoom.wasm"), "fbdoom");
     writeFileSync(join(modesetDir, "modeset.wasm"), "modeset");
     writeFileSync(join(sdl2Dir, "sdl2.wasm"), "sdl2");
-    writeFileSync(join(evdevDemoDir, "evdev_demo.wasm"), "evdev_demo");
     writeFileSync(join(espeakNgDir, "espeak-ng.wasm"), "espeak-ng");
     writeFileSync(join(espeakNgDir, "espeak-ng-data.zip"), "espeak-ng-data");
+    ensureDirRecursiveOnHost(waylandDemoDir);
+    for (const name of [
+      "wlcompositor.wasm",
+      "wlterm.wasm",
+      "wlclock.wasm",
+      "wlpaint.wasm",
+      "wldesktop",
+      "libinput-quirks.zip",
+    ]) {
+      writeFileSync(join(waylandDemoDir, name), name);
+    }
     const logPath = join(root, "composer.log");
     const fakeNode = join(toolDir, "node");
     writeFileSync(
@@ -1036,8 +1083,8 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
         WASM_POSIX_DEP_FBDOOM_DIR: fbdoomDir,
         WASM_POSIX_DEP_MODESET_DIR: modesetDir,
         WASM_POSIX_DEP_SDL2_DEMO_DIR: sdl2Dir,
-        WASM_POSIX_DEP_EVDEV_DEMO_DIR: evdevDemoDir,
         WASM_POSIX_DEP_ESPEAK_NG_DIR: espeakNgDir,
+        WASM_POSIX_DEP_WAYLAND_DEMO_DIR: waylandDemoDir,
         ...dependencyEnv,
       },
       stdio: "pipe",
@@ -1053,10 +1100,13 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(invocation).toContain(`--fbdoom ${fbdoomDir}/fbdoom.wasm`);
     expect(invocation).toContain(`--modeset ${modesetDir}/modeset.wasm`);
     expect(invocation).toContain(`--sdl2 ${sdl2Dir}/sdl2.wasm`);
-    expect(invocation).toContain(`--evdev-demo ${evdevDemoDir}/evdev_demo.wasm`);
     expect(invocation).toContain(`--espeak-ng ${espeakNgDir}/espeak-ng.wasm`);
     expect(invocation).toContain(
       `--espeak-ng-data ${espeakNgDir}/espeak-ng-data.zip`,
+    );
+    expect(invocation).toContain(`--wldesktop ${waylandDemoDir}/wldesktop`);
+    expect(invocation).toContain(
+      `--libinput-quirks ${waylandDemoDir}/libinput-quirks.zip`,
     );
     expect(invocation).toContain(
       `--demo-profile-overlay ${join(repoRoot, "packages/registry/shell/source-rootfs-shell-demo-profiles.json")}`,

@@ -14907,9 +14907,10 @@ fn wasm_artifact_policy_failures_for(
 
     if fork_instrumentation == ForkInstrumentationPolicy::Disabled {
         if has_fork_artifact_surface {
-            failures.push(
-                "has ABI 43 wasm-fork-instrument metadata, imports, or exports but this output disables fork instrumentation".to_string(),
-            );
+            failures.push(format!(
+                "has ABI {} wasm-fork-instrument metadata, imports, or exports but this output disables fork instrumentation",
+                wasm_posix_shared::ABI_VERSION,
+            ));
         }
         return failures;
     }

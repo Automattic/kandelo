@@ -48,7 +48,7 @@ fi
 # the work dir and -I"$WORK_DIR" resolves the quote-include.
 echo "==> Generating inconsolata_ttf.h..."
 mkdir -p "$WORK_DIR/third_party"
-python3 - "$SDL2_DEMO_DIR/third_party/Inconsolata-Regular.ttf" \
+python3 - "$SOURCE_ROOT/third_party/Inconsolata-Regular.ttf" \
     "$WORK_DIR/third_party/inconsolata_ttf.h" <<'PY'
 import sys, pathlib
 src = pathlib.Path(sys.argv[1]).read_bytes()
@@ -61,7 +61,7 @@ lines = [
 dst.write_text(
     "/* Auto-generated from Inconsolata-Regular.ttf by "
     "build-sdl2-demo.sh. */\n"
-    "/* See programs/sdl2/third_party/NOTICE.md for license. */\n"
+    "/* See third_party/NOTICE.md for license. */\n"
     "#pragma once\n"
     f"static const unsigned char inconsolata_ttf[] = {{\n"
     + ",\n".join(lines) + "\n};\n"
@@ -82,6 +82,7 @@ wasm32posix-cc \
     -D_DEFAULT_SOURCE \
     -I"$SDL2_PREFIX/include" \
     -I"$WORK_DIR" \
+    -I"$SOURCE_ROOT/third_party" \
     $PKG_CFLAGS \
     "$SDL2_DEMO_DIR/main.c" \
     "$SDL2_DEMO_DIR/audio.c" \

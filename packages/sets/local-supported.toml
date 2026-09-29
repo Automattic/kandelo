@@ -1,6 +1,9 @@
 schema = 1
 policy = "source-only-v1"
-dependency_only = ["pcre2-source", "wordpress-sqlite-integration-source"]
+dependency_only = [
+  "pcre2-source",
+  "wordpress-sqlite-integration-source",
+]
 registry_non_roots = []
 
 [[dormant_products]]
@@ -76,10 +79,6 @@ name = "espeak-ng"
 class = "user-software"
 
 [[packages]]
-name = "evdev-demo"
-class = "user-software"
-
-[[packages]]
 name = "fbdoom"
 class = "user-software"
 
@@ -144,11 +143,41 @@ name = "libdrm"
 class = "platform"
 
 [[packages]]
+name = "libevdev"
+class = "platform"
+
+[[packages]]
+name = "libffi"
+class = "platform"
+
+[[packages]]
 name = "libiconv"
 class = "platform"
 
 [[packages]]
+name = "libinput"
+class = "platform"
+
+[[packages]]
 name = "libpng"
+class = "platform"
+
+[[packages]]
+name = "libudev"
+class = "platform"
+
+[[packages]]
+name = "libwayland"
+class = "platform"
+
+[[packages]]
+# Vendored protocol XML consumed by libwayland and wayland-demo via
+# wayland-scanner. A library, not a source package: its bytes ship in-tree.
+name = "wayland-protocols"
+class = "platform"
+
+[[packages]]
+name = "libxkbcommon"
 class = "platform"
 
 [[packages]]
@@ -202,6 +231,10 @@ class = "user-software"
 [[packages]]
 name = "msmtpd"
 class = "user-software"
+
+[[packages]]
+name = "mtdev"
+class = "platform"
 
 [[packages]]
 name = "nano"
@@ -301,6 +334,10 @@ class = "platform"
 
 [[packages]]
 name = "sdl2-demo"
+class = "user-software"
+
+[[packages]]
+name = "wayland-demo"
 class = "user-software"
 
 [[packages]]

@@ -11,16 +11,20 @@ import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
+// The profile script runs under bash, because bash is what every Kandelo
+// image binds to /bin/sh — validating it under any other shell would test a
+// combination no image ships.
+//
 // WHY try/catch, not a bare tryResolveBinary(): a resolver that has already
-// staged dash in one provenance tier (e.g. an ad hoc `xtask build-deps
-// resolve dash`) without also publishing it as an installed package throws
+// staged bash in one provenance tier (e.g. an ad hoc `xtask build-deps
+// resolve bash`) without also publishing it as an installed package throws
 // rather than returning null — a genuinely ambiguous multi-tier state should
 // fail loudly, not be silently treated as "missing" (see
 // tryResolveBinarySetFromTiers in binary-resolver.ts). This suite only wants
-// to know "is a usable dash.wasm available", so any failure means skip.
+// to know "is a usable bash.wasm available", so any failure means skip.
 let SHELL_WASM: string | null;
 try {
-  SHELL_WASM = tryResolveBinary("programs/dash.wasm");
+  SHELL_WASM = tryResolveBinary("programs/bash.wasm");
 } catch {
   SHELL_WASM = null;
 }

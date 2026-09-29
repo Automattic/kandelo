@@ -221,16 +221,25 @@ export interface KernelLike {
    * blit + page-flip telemetry. `opts.mode` declares how the canvas
    * is painted (see `CentralizedKernelWorker.attachKmsCanvas`):
    * `"auto"` (default) defers context acquisition to whichever path
-   * arrives first; `"2d"` opts into the legacy CPU-blit pump; `"webgl2"`
-   * tells the pump the canvas is GL-owned so it stays hands-off and
-   * lets a libdrm/libgbm/EGL program (e.g. modeset.c) claim it.
+   * arrives first; `"2d"` opts into the legacy CPU-blit pump;
+   * `"webgl2-scanout"` has the pump present the scanout through a
+   * WebGL2 texture (GPU swizzle + scaling); `"webgl2"` tells the pump
+   * the canvas is GL-owned so it stays hands-off and lets a
+   * libdrm/libgbm/EGL program (e.g. modeset.c) claim it.
    */
   kmsAttachCanvas?(
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void;
+  /**
+   * Report the CRTC canvas's display size in device pixels. The
+   * `webgl2-scanout` presenter resizes its drawing buffer to match, so
+   * the scanout is GPU-scaled exactly once — at display resolution —
+   * instead of the page compositor rescaling an fb-sized bitmap.
+   */
+  kmsSetDisplaySize?(crtcId: number, width: number, height: number): void;
   /**
    * Register a stats SAB for `crtcId` without binding a scanout
    * canvas. Used by WebGL-rendered demos that want page-flip
@@ -327,6 +336,14 @@ export interface KernelLike {
 }
 
 // ── Status & lifecycle ─────────────────────────────────────────────────────
+
+/**
+ * The CRTC a KMS display pane scans out. The kernel exposes one CRTC today
+ * (SETCRTC and PAGE_FLIP reject any other id), so the pane, the host API
+ * defaults, and the boot flow's display-size wait all name it through this
+ * constant rather than each hard-coding 1.
+ */
+export const KMS_PRIMARY_CRTC = 1;
 
 export type MachineStatus =
   | "idle"      // no descriptor applied yet
@@ -546,6 +563,9 @@ export type MachineAudioState =
  *   4: last blit µs
  *   5: kernel-side PAGE_FLIP commit count
  *   6: kernel-side last frame µs (clock at PAGE_FLIP completion)
+ *   7: renderer that owns the canvas (1 = 2d blit, 2 = webgl2 scanout,
+ *      3 = a GL program claimed the canvas and paints it directly;
+ *      0 = nothing painting)
  */
 export interface KmsDisplayHandle {
   /** CRTC the canvas is bound to (matches what the wasm process passes
@@ -846,16 +866,26 @@ export interface KernelHost {
   // KMS display — registers a canvas as the scanout target for a
   // DRM CRTC. `opts.mode` (default "webgl2") selects how the canvas
   // is painted: "webgl2" hands ownership to the libdrm/libgbm/EGL
-  // path (modeset.c etc.); "2d" keeps the legacy CPU-blit pump that
-  // copies the kernel's scanout BO into the canvas at 60 Hz; "auto"
-  // defers the choice to whichever path arrives first. Returns null
-  // when the wrapped kernel does not yet expose `kmsAttachCanvas`
-  // (older ABI, Node host without an OffscreenCanvas polyfill, etc.).
+  // path (modeset.c etc.); "webgl2-scanout" has the vblank pump
+  // present the scanout BO through a WebGL2 texture (GPU swizzle +
+  // scaling — the path for CPU compositors like wlcompositor); "2d"
+  // keeps the legacy CPU-blit pump that copies the scanout BO into
+  // the canvas at 60 Hz; "auto" defers the choice to whichever path
+  // arrives first. Returns null when the wrapped kernel does not yet
+  // expose `kmsAttachCanvas` (older ABI, Node host without an
+  // OffscreenCanvas polyfill, etc.).
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId?: number,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): KmsDisplayHandle | null;
+  // The one canvas a display pane mounts for a CRTC, kept for the kernel's
+  // lifetime so a pane remount cannot strand a program's WebGL context on
+  // a detached element. `size` applies only when the canvas is created.
+  kmsDisplayCanvas(
+    crtcId?: number,
+    size?: { width: number; height: number },
+  ): HTMLCanvasElement;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
   getWebPreview(): WebPreviewState | null;
@@ -1160,12 +1190,48 @@ export class LiveKernelHost implements KernelHost {
    */
   private shellPids = new Map<number, string>();
   /**
-   * KMS display handles keyed by their canvas DOM node. React 18 StrictMode
-   * double-invokes effects, and `transferControlToOffscreen()` may only run
-   * once per canvas, so attachKmsDisplay memoizes the handle here. A WeakMap
-   * lets the handle drop naturally when the canvas itself is GC'd.
+   * KMS display handles keyed by their canvas DOM node. A pane remount
+   * (React 18 StrictMode double-invokes effects; see kmsDisplayCanvas for
+   * the others) attaches the same canvas again, and
+   * `transferControlToOffscreen()` may only run once per canvas, so
+   * attachKmsDisplay memoizes the handle here. A WeakMap lets the handle
+   * drop naturally when the canvas itself is GC'd.
    */
   private kmsHandles = new WeakMap<HTMLCanvasElement, KmsDisplayHandle>();
+  /** The one display canvas per CRTC for the current kernel
+   *  (kmsDisplayCanvas). Scoped to the kernel: detachKernel clears it. */
+  private kmsDisplayCanvases = new Map<number, HTMLCanvasElement>();
+  /** The display-size ResizeObserver per attached canvas: disconnected when
+   *  the pane closes its handle, reconnected when the cached handle is
+   *  reused (StrictMode's mount → cleanup → mount). */
+  private kmsResizeObservers = new WeakMap<HTMLCanvasElement, ResizeObserver>();
+  /**
+   * Default paint mode for `attachKmsDisplay` when the caller passes no
+   * explicit `opts.mode`. The wayland boot flow sets `"webgl2-scanout"`
+   * so the kernel worker's vblank pump presents the scanout BO through a
+   * WebGL2 texture whenever the compositor is compositing CPU-side —
+   * at boot, and permanently if its GLES probe or a GL frame fails. In
+   * the browser the compositor's own GL context normally claims the
+   * canvas for GPU compositing as the steady state, standing the
+   * presenter down (`"2d"` is the legacy CPU blit). GL-driven demos keep
+   * the `"webgl2"` default and let the GL bridge claim the canvas.
+   */
+  private kmsDisplayModeDefault: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null = null;
+  /**
+   * Last display size (device pixels) reported per CRTC by the
+   * attachKmsDisplay ResizeObserver, which also forwards it to the kernel
+   * (`kmsSetDisplaySize`), where `host_kms_mode_info` derives the
+   * connector's advertised mode from it. Boot flows await the first report
+   * with {@link whenKmsDisplaySized} before spawning a mode-picking client
+   * (wlcompositor), so the mode it picks follows the pane. Scoped to the
+   * current kernel: detachKernel clears it.
+   */
+  private kmsDisplaySizes = new Map<number, { width: number; height: number }>();
+  /** Pending {@link whenKmsDisplaySized} calls per CRTC. */
+  private kmsDisplaySizeWaiters = new Map<
+    number,
+    Set<(size: { width: number; height: number } | undefined) => void>
+  >();
 
   constructor(opts: LiveKernelHostOptions = {}) {
     this._status = opts.status ?? "idle";
@@ -1246,6 +1312,16 @@ export class LiveKernelHost implements KernelHost {
     this.kernel = undefined;
     this.audioStateListeners.emit("unavailable");
     this.audioActivityListeners.emit(false);
+    // The sizes describe the DETACHED kernel's panes. Left in place, the
+    // next boot's whenKmsDisplaySized would resolve at once with the
+    // previous session's size, before the new pane has pushed a real size
+    // to the new kernel — the desktop falls back to a 1920×1080 letterbox.
+    // Waiters on the detached kernel will never see a report: release them.
+    this.kmsDisplaySizes.clear();
+    this.settleKmsDisplaySizeWaiters(undefined, undefined);
+    // Each canvas's control was transferred to the detached kernel's worker;
+    // the next kernel needs canvases of its own.
+    this.kmsDisplayCanvases.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
@@ -2537,26 +2613,170 @@ export class LiveKernelHost implements KernelHost {
 
   // ── KernelHost: KMS display ──────────────────────────────────────────────
 
+  /** See {@link kmsDisplayModeDefault}. Call before the display pane
+   *  mounts (attachKmsDisplay memoizes per canvas). */
+  setKmsDisplayMode(mode: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null): void {
+    this.kmsDisplayModeDefault = mode;
+  }
+
+  /** See {@link kmsDisplaySizes}: last device-pixel display size the
+   *  attached pane reported for `crtcId`, or undefined before the
+   *  first ResizeObserver delivery. */
+  getKmsDisplaySize(crtcId: number = KMS_PRIMARY_CRTC): { width: number; height: number } | undefined {
+    const size = this.kmsDisplaySizes.get(crtcId);
+    return size ? { ...size } : undefined;
+  }
+
+  /**
+   * Resolve once the pane attached to `crtcId` has reported its display
+   * size to the current kernel (at once if it already has), or with
+   * `undefined` after `timeoutMs` or when the kernel detaches first.
+   *
+   * Only a `"webgl2-scanout"` pane reports a size. A boot flow awaits this
+   * before starting a client that picks a video mode, so the connector
+   * already advertises the pane's aspect when the client asks. The bound
+   * keeps a pane that never lays out (no display, a headless host) from
+   * stalling boot; the connector then keeps its 1920×1080 default.
+   */
+  whenKmsDisplaySized(
+    crtcId: number,
+    timeoutMs: number,
+  ): Promise<{ width: number; height: number } | undefined> {
+    const now = this.getKmsDisplaySize(crtcId);
+    if (now) return Promise.resolve(now);
+    return new Promise((resolve) => {
+      let waiters = this.kmsDisplaySizeWaiters.get(crtcId);
+      if (!waiters) {
+        waiters = new Set();
+        this.kmsDisplaySizeWaiters.set(crtcId, waiters);
+      }
+      const settle = (size: { width: number; height: number } | undefined) => {
+        clearTimeout(timer);
+        waiters!.delete(settle);
+        resolve(size ? { ...size } : undefined);
+      };
+      const timer = setTimeout(() => settle(undefined), timeoutMs);
+      waiters.add(settle);
+    });
+  }
+
+  /** Settle {@link whenKmsDisplaySized} waiters for `crtcId` (every CRTC
+   *  when undefined) with `size`. */
+  private settleKmsDisplaySizeWaiters(
+    crtcId: number | undefined,
+    size: { width: number; height: number } | undefined,
+  ): void {
+    const sets = crtcId === undefined
+      ? Array.from(this.kmsDisplaySizeWaiters.values())
+      : [this.kmsDisplaySizeWaiters.get(crtcId)].filter((w) => w !== undefined);
+    for (const waiters of sets) {
+      for (const settle of Array.from(waiters)) settle(size);
+    }
+  }
+
+  /**
+   * The display canvas for `crtcId` on the current kernel, created on first
+   * use. A display pane mounts THIS element instead of rendering its own.
+   *
+   * Why the host owns it: attachKmsDisplay transfers the canvas's control to
+   * the kernel worker, and a program's WebGL context is bound to that one
+   * canvas for good — a context cannot move to another canvas. A pane that
+   * rendered a fresh `<canvas>` on each mount would, after any remount while
+   * a GL program runs (a compositor, a game), show a blank element while the
+   * program kept drawing into the detached one. With one element per CRTC
+   * for the kernel's lifetime, a remount is a DOM move the kernel never
+   * sees, and attachKmsDisplay returns the memoized handle.
+   *
+   * `size` is the drawing-buffer size to start with. It applies only when
+   * the canvas is created: once its control is transferred, the main thread
+   * can no longer resize it.
+   */
+  kmsDisplayCanvas(
+    crtcId: number = KMS_PRIMARY_CRTC,
+    size?: { width: number; height: number },
+  ): HTMLCanvasElement {
+    let canvas = this.kmsDisplayCanvases.get(crtcId);
+    if (!canvas) {
+      canvas = globalThis.document.createElement("canvas");
+      if (size) {
+        canvas.width = size.width;
+        canvas.height = size.height;
+      }
+      this.kmsDisplayCanvases.set(crtcId, canvas);
+    }
+    return canvas;
+  }
+
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
-    crtcId: number = 1,
-    opts: { mode?: "auto" | "2d" | "webgl2" } = { mode: "webgl2" },
+    crtcId: number = KMS_PRIMARY_CRTC,
+    opts: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" } = {},
   ): KmsDisplayHandle | null {
     if (!this.kernel?.kmsAttachCanvas) return null;
     if (typeof canvas.transferControlToOffscreen !== "function") return null;
-    // React 18 StrictMode double-invokes effects: mount → cleanup → mount,
-    // and the second mount hits this method again on the same DOM canvas.
+    // A remounted pane hits this method again on the same DOM canvas: React
+    // 18 StrictMode double-invokes effects (mount → cleanup → mount), and a
+    // pane using kmsDisplayCanvas gets the same element on every mount.
     // `transferControlToOffscreen()` can only be called once per canvas, so
     // memoize the handle here. The cached handle keeps the original
-    // statsSab/OffscreenCanvas alive across the StrictMode unmount.
+    // statsSab/OffscreenCanvas alive across the unmount.
     const cached = this.kmsHandles.get(canvas);
-    if (cached) return cached;
-    // 7 i32 slots × 4 bytes = 28 bytes; align to 64 so atomics are happy.
+    if (cached) {
+      // The earlier close() disconnected the observer; the reused handle
+      // must keep feeding display sizes.
+      this.kmsResizeObservers.get(canvas)?.observe(canvas);
+      return cached;
+    }
+    // 8 i32 slots × 4 bytes = 32 bytes; align to 64 so atomics are happy.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
+    const mode = opts.mode ?? this.kmsDisplayModeDefault ?? "webgl2";
     const offscreen = canvas.transferControlToOffscreen();
-    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, opts);
+    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, {
+      ...opts,
+      mode,
+    });
     const kernel = this.kernel;
+    // The webgl2-scanout presenter renders at display resolution: track
+    // the canvas element's device-pixel size and forward it so the pump
+    // sizes its drawing buffer to the pixels the user actually sees.
+    // `devicePixelContentBoxSize` gives exact device pixels where
+    // supported; fall back to CSS size × devicePixelRatio.
+    if (
+      mode === "webgl2-scanout" &&
+      kernel.kmsSetDisplaySize &&
+      typeof ResizeObserver !== "undefined"
+    ) {
+      const resizeObserver = new ResizeObserver((entries) => {
+        // Bound to the kernel that attached this canvas. Once that kernel
+        // is detached (reboot), stop for good — otherwise this closure
+        // would keep re-populating kmsDisplaySizes (which detachKernel
+        // just cleared) with the dead session's size and pushing sizes
+        // into the dead kernel. The next boot's pane remount attaches a
+        // fresh canvas with its own observer.
+        if (this.kernel !== kernel) {
+          resizeObserver.disconnect();
+          return;
+        }
+        const entry = entries[entries.length - 1];
+        const dp = entry.devicePixelContentBoxSize?.[0];
+        const width = dp
+          ? dp.inlineSize
+          : entry.contentRect.width * (globalThis.devicePixelRatio || 1);
+        const height = dp
+          ? dp.blockSize
+          : entry.contentRect.height * (globalThis.devicePixelRatio || 1);
+        // A hidden pane reports 0×0 — keep the last real size (the
+        // worker ignores non-positive dims too).
+        if (width >= 1 && height >= 1) {
+          this.kmsDisplaySizes.set(crtcId, { width, height });
+          kernel.kmsSetDisplaySize?.(crtcId, width, height);
+          this.settleKmsDisplaySizeWaiters(crtcId, { width, height });
+        }
+      });
+      resizeObserver.observe(canvas);
+      this.kmsResizeObservers.set(canvas, resizeObserver);
+    }
     // evdev codes for the pointer path (struct input_event).
     const EV_SYN = 0x00, EV_KEY = 0x01, EV_REL = 0x02;
     const SYN_REPORT = 0x00, REL_X = 0x00, REL_Y = 0x01;
@@ -2603,9 +2823,12 @@ export class LiveKernelHost implements KernelHost {
       },
       close: () => {
         // The worker auto-stops the pump tick for unused CRTCs on the
-        // next teardown; there's no explicit detach API yet. Closing
-        // the handle just drops the local view so callers can drop
-        // their reference.
+        // next teardown; there's no explicit detach API yet. Closing the
+        // handle disconnects its display-size observer, so an unmounted
+        // pane stops holding the canvas and the kernel it attached to
+        // (an observer on a removed element need not fire again to notice).
+        // A remount reuses the cached handle and reconnects it.
+        this.kmsResizeObservers.get(canvas)?.disconnect();
       },
     };
     this.kmsHandles.set(canvas, handle);

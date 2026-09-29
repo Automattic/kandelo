@@ -132,14 +132,16 @@ export interface DemoRuntimeConfigInput {
 
 /**
  * Each feature here changes what the host actually does: `framebuffer` and
- * `kms` select a display surface, `evdev-input` makes the host attach a DOM
- * input source before the machine's command runs. A feature with no consumer
- * is a claim the platform does not honour, so it does not belong in this
- * union.
+ * `kms` select a display surface, `kms-gl-scanout` additionally routes that
+ * surface through the vblank pump's WebGL2 scanout presenter, and
+ * `evdev-input` makes the host attach a DOM input source before the machine's
+ * command runs. A feature with no consumer is a claim the platform does not
+ * honour, so it does not belong in this union.
  */
 export type DemoRuntimeFeature =
   | "framebuffer"
   | "kms"
+  | "kms-gl-scanout"
   | "evdev-input";
 
 /**
@@ -453,6 +455,7 @@ const INGEST_MAX_BYTES_CEILING = 64 * 1024 * 1024;
 const RUNTIME_FEATURES = new Set<DemoRuntimeFeature>([
   "framebuffer",
   "kms",
+  "kms-gl-scanout",
   "evdev-input",
 ]);
 
@@ -481,6 +484,13 @@ function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
       }
       features.push(entry as DemoRuntimeFeature);
     });
+  }
+  // kms-gl-scanout only refines how a KMS display is presented. Without
+  // "kms" there is no display for it to refine -- and the boot flow, which
+  // waits for the KMS pane's size on this feature, would wait for a pane
+  // that never mounts. Reject the combination from untrusted image metadata.
+  if (features.includes("kms-gl-scanout") && !features.includes("kms")) {
+    throw new Error(`${field}.features: "kms-gl-scanout" requires "kms"`);
   }
 
   return {

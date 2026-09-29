@@ -70,7 +70,12 @@ export interface SourceRootfsShellInputs {
   fbdoomPath: string;
   modesetPath: string;
   sdl2Path: string;
-  evdevDemoPath: string;
+  wlcompositorPath: string;
+  wltermPath: string;
+  wlclockPath: string;
+  wlpaintPath: string;
+  wldesktopPath: string;
+  libinputQuirksPath: string;
   espeakNgPath: string;
   espeakNgDataPath: string;
   demoConfigPath: string;
@@ -144,14 +149,13 @@ function readRegularInput(path: string, label: string): Uint8Array {
 }
 
 /**
- * Unpack espeak-ng's voice-data zip at `/usr/share/espeak-ng-data`.
+ * Unpack a package's data zip under `root`, as ordinary files (0644).
  *
- * libespeak-ng's `PATH_ESPEAK_DATA` is compiled in as `/usr/share`, so the
- * data tree must land unpacked on disk rather than staying a lazy archive
- * mount: espeak-ng never issues the range-mapped reads a lazy zip needs.
+ * For data a program opens from a compiled-in directory by plain open/read —
+ * espeak-ng's voices, libinput's device quirks — rather than through the
+ * range-mapped reads a lazy archive mount serves.
  */
-function writeEspeakVoiceData(fs: MemoryFileSystem, zipBytes: Uint8Array): void {
-  const root = "/usr/share/espeak-ng-data";
+function unpackDataZip(fs: MemoryFileSystem, root: string, zipBytes: Uint8Array): void {
   ensureDirRecursive(fs, root);
   for (const entry of parseZipCentralDirectory(zipBytes)) {
     if (entry.isDirectory) continue;
@@ -787,9 +791,20 @@ export async function buildSourceRootfsShellImage(
   const fbdoom = readRegularInput(inputs.fbdoomPath, "fbdoom dependency");
   const modeset = readRegularInput(inputs.modesetPath, "modeset dependency");
   const sdl2 = readRegularInput(inputs.sdl2Path, "sdl2 dependency");
-  const evdevDemo = readRegularInput(
-    inputs.evdevDemoPath,
-    "evdev_demo dependency",
+  const wlcompositor = readRegularInput(
+    inputs.wlcompositorPath,
+    "wlcompositor dependency",
+  );
+  const wlterm = readRegularInput(inputs.wltermPath, "wlterm dependency");
+  const wlclock = readRegularInput(inputs.wlclockPath, "wlclock dependency");
+  const wlpaint = readRegularInput(inputs.wlpaintPath, "wlpaint dependency");
+  const wldesktop = readRegularInput(
+    inputs.wldesktopPath,
+    "wldesktop launcher dependency",
+  );
+  const libinputQuirks = readRegularInput(
+    inputs.libinputQuirksPath,
+    "libinput quirks dependency",
   );
   const espeakNg = readRegularInput(inputs.espeakNgPath, "espeak-ng dependency");
   const espeakNgData = readRegularInput(
@@ -818,7 +833,18 @@ export async function buildSourceRootfsShellImage(
   writeVfsBinary(fs, "/usr/local/bin/fbdoom", fbdoom, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/sdl2", sdl2, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/evdev_demo", evdevDemo, 0o755);
+  // The Wayland desktop. /usr/local/bin/wldesktop arrives as a wayland-demo
+  // runtime_file and execs these four by name, so they must be on PATH as
+  // regular eager programs — a launcher whose programs are missing exits
+  // immediately and the machine shows an empty KMS surface.
+  writeVfsBinary(fs, "/usr/local/bin/wlcompositor", wlcompositor, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/wlterm", wlterm, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/wlclock", wlclock, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/wlpaint", wlpaint, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
+  // wlcompositor's statically linked libinput reads its device quirks from
+  // LIBINPUT_QUIRKS_DIR, compiled in as /usr/share/libinput.
+  unpackDataZip(fs, "/usr/share/libinput", libinputQuirks);
   // The Quake engine, unzip, and lha are lazy /usr/bin binaries; only this
   // small extraction+launch wrapper is written eagerly.
   writeVfsBinary(
@@ -841,7 +867,8 @@ export async function buildSourceRootfsShellImage(
   ensureDirRecursive(fs, "/usr/share/quake/id1", 0o777);
   ensureDirRecursive(fs, "/usr/bin");
   writeVfsBinary(fs, "/usr/bin/espeak-ng", espeakNg, 0o755);
-  writeEspeakVoiceData(fs, espeakNgData);
+  // libespeak-ng's PATH_ESPEAK_DATA is compiled in as /usr/share.
+  unpackDataZip(fs, "/usr/share/espeak-ng-data", espeakNgData);
   writeSdl2ShaderPresets(fs);
   // WHY: the package shell must not promise optional programs it does not own.
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot
@@ -901,7 +928,12 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--fbdoom",
     "--modeset",
     "--sdl2",
-    "--evdev-demo",
+    "--wlcompositor",
+    "--wlterm",
+    "--wlclock",
+    "--wlpaint",
+    "--wldesktop",
+    "--libinput-quirks",
     "--espeak-ng",
     "--espeak-ng-data",
     "--demo-config",
@@ -923,7 +955,10 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
         "usage: build-source-rootfs-shell-image.ts " +
           "--rootfs <rootfs.vfs.zst> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
           "--modeset <modeset.wasm> --sdl2 <sdl2.wasm> " +
-          "--evdev-demo <evdev_demo.wasm> --espeak-ng <espeak-ng.wasm> " +
+          "--wlcompositor <wlcompositor.wasm> --wlterm <wlterm.wasm> " +
+          "--wlclock <wlclock.wasm> --wlpaint <wlpaint.wasm> " +
+          "--wldesktop <wldesktop> --libinput-quirks <libinput-quirks.zip> " +
+          "--espeak-ng <espeak-ng.wasm> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
@@ -941,7 +976,12 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     fbdoomPath: values.get("--fbdoom")!,
     modesetPath: values.get("--modeset")!,
     sdl2Path: values.get("--sdl2")!,
-    evdevDemoPath: values.get("--evdev-demo")!,
+    wlcompositorPath: values.get("--wlcompositor")!,
+    wltermPath: values.get("--wlterm")!,
+    wlclockPath: values.get("--wlclock")!,
+    wlpaintPath: values.get("--wlpaint")!,
+    wldesktopPath: values.get("--wldesktop")!,
+    libinputQuirksPath: values.get("--libinput-quirks")!,
     espeakNgPath: values.get("--espeak-ng")!,
     espeakNgDataPath: values.get("--espeak-ng-data")!,
     demoConfigPath: values.get("--demo-config")!,
