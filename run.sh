@@ -657,6 +657,8 @@ build_mariadb_vfs() {
         return
     fi
     build_mariadb
+    # bash is /bin/sh in the image; dash ships at its own name.
+    build_bash
     build_dash
     step "Building MariaDB VFS image (wasm32)"
     # Delegate to the package-system wrapper so install_local_binary
@@ -675,6 +677,8 @@ build_mariadb64_vfs() {
         return
     fi
     build_mariadb64
+    # bash is /bin/sh in the image; dash ships at its own name.
+    build_bash
     build_dash
     step "Building MariaDB VFS image (wasm64)"
     WASM_POSIX_DEP_TARGET_ARCH=wasm64 \
