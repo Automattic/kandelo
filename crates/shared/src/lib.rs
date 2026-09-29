@@ -163,6 +163,12 @@ pub mod process_layout;
 ///     child then enters through the new `wpk_fork_resume_sink` export, and
 ///     the `kandelo.wpk_fork.boundaries` section lists the boundaries.
 ///     docs/abi-versioning.md ("ABI 46") lists each.
+/// 47: honest program links and kernel-owned host stdin. `HOST_ENV_IMPORTS`
+///     declares every `env` import the host provides; executables link against
+///     the generated allowance instead of `--allow-undefined`, and the host
+///     refuses a program importing anything else. Host-supplied stdin is a
+///     kernel pipe on fd 0 (`kernel_install_host_stdin_pipe`), shared across
+///     fork/dup/exec, instead of a host handle answered per pid.
 pub const ABI_VERSION: u32 = 47;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
