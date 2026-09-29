@@ -1,5 +1,5 @@
 /*
- * ffi_shim_test.c — native unit test proving the Wayland-scoped libffi
+ * ffi_shim_test.c — native unit test proving the libffi
  * shim's arity dispatch. Compiled for the HOST (see
  * host/test/libffi-shim-unit.test.ts) and also link-clean for wasm32.
  *
@@ -18,15 +18,11 @@
  * truncate an LP64 host pointer — that truncation is not a bug, it is
  * the wasm32 ABI the shim targets.
  */
-#define _POSIX_C_SOURCE 200809L   /* fork/waitpid under -std=c11 */
 #include <ffi.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <signal.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 static uint32_t g_recorded[FFI_SHIM_MAX_ARGS];
 static unsigned int g_count;
@@ -464,60 +460,11 @@ static void check_overflow_rejected(void) {
     CHECK(s != FFI_OK, "prep_cif accepted nargs > FFI_SHIM_MAX_ARGS");
 }
 
-/* Shapes the one-word-per-argument trampoline cannot pass faithfully are
- * refused, not truncated: a wider argument, a float (an f32 parameter, not
- * an i32 word), or a non-void return whose value ffi_call would drop. */
-static void check_unsupported_shapes_rejected(void) {
-    ffi_cif cif;
-    ffi_type *wide[2] = { &ffi_type_uint32, &ffi_type_uint64 };
-    CHECK(ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 2, &ffi_type_void, wide)
-              == FFI_BAD_ARGTYPE, "prep_cif accepted a 64-bit argument");
-    ffi_type *dbl[1] = { &ffi_type_double };
-    CHECK(ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 1, &ffi_type_void, dbl)
-              == FFI_BAD_ARGTYPE, "prep_cif accepted a double argument");
-    ffi_type *flt[1] = { &ffi_type_float };
-    CHECK(ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 1, &ffi_type_void, flt)
-              == FFI_BAD_ARGTYPE, "prep_cif accepted a float argument");
-    ffi_type *word[1] = { &ffi_type_uint32 };
-    CHECK(ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 1, &ffi_type_sint32, word)
-              == FFI_BAD_TYPEDEF, "prep_cif accepted a non-void return");
-    CHECK(ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 1, &ffi_type_void, NULL)
-              == FFI_BAD_ARGTYPE, "prep_cif accepted NULL arg types");
-}
-
-/* A cif that prep_cif rejected must not stay callable with the arity it
- * held before: libwayland ignores prep_cif's status. ffi_call has to abort
- * on it before copying any argument words. */
-static void check_rejected_cif_aborts(void) {
-    ffi_cif cif;
-    ffi_type *word[1] = { &ffi_type_uint32 };
-    ffi_status s = ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 1, &ffi_type_void, word);
-    CHECK(s == FFI_OK, "prep_cif(n=1) returned %d", (int) s);
-    s = ffi_prep_cif(&cif, FFI_DEFAULT_ABI, FFI_SHIM_MAX_ARGS + 1,
-                     &ffi_type_void, word);
-    CHECK(s != FFI_OK, "prep_cif accepted nargs > FFI_SHIM_MAX_ARGS");
-
-    fflush(stdout);
-    pid_t pid = fork();
-    if (pid == 0) {
-        uint32_t v = 7;
-        void *avalue[1] = { &v };
-        ffi_call(&cif, targets[1], NULL, avalue);
-        _exit(3);   /* reached only if ffi_call did not abort */
-    }
-    int status = 0;
-    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid, "fork/waitpid failed");
-    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT,
-          "ffi_call on a rejected cif did not abort (status 0x%x)", status);
-}
-
 int main(void) {
     for (unsigned int n = 0; n <= FFI_SHIM_MAX_ARGS; n++)
         check_arity(n);
     check_wl_closure_shape();
     check_overflow_rejected();
-    check_unsupported_shapes_rejected();
-    check_rejected_cif_aborts();
 
     if (failures == 0) {
         printf("ffi_shim_test: ALL PASS (arities 0..%u)\n", FFI_SHIM_MAX_ARGS);

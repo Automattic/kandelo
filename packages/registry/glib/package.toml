@@ -1,0 +1,72 @@
+# Per-library manifest for glib. See docs/package-management.md.
+#
+# Ports glib 2.84.4 (libglib-2.0.a, libgmodule-2.0.a, libgobject-2.0.a,
+# libgio-2.0.a) to wasm32-posix-kernel: gmain loop over poll, gthread
+# over musl pthreads, gobject with libffi-backed generic closure
+# marshalling, and gio with the gdbus client core but without
+# GApplication, the dbus-backed built-in modules, or the portal
+# backends. A session dbus daemon would be needed to take gdbus and its
+# dependents further; until one exists they stay excluded from gio.
+#
+# We bypass upstream's meson build (its feature probes target the build
+# host, not the wasm sysroot) and compile the upstream TU lists directly
+# against a hand-curated config.h + glibconfig.h. gregex.c is built
+# against the pcre2 package so GRegex works: Midnight Commander's search
+# engine uses it, and consumers that register the GRegex error domain at
+# init need g_regex_error_quark to resolve.
+#
+# WHAT IS EXERCISED TODAY. glib core is proven by a live consumer: the
+# mc package links libglib-2.0 and runs in the browser shell demo.
+# libffi's dispatch has its own native unit test. gobject and gio build
+# and link, but no shipped consumer drives them yet, and one known gap is
+# open: emitting a signal declared with a NULL marshaller — so dispatch
+# goes through g_cclosure_marshal_generic, i.e. libffi ffi_call — does
+# not invoke the connected handler. It fails quietly: libffi's dispatch
+# does not hit its "signature outside the generated dispatch" abort, and
+# glib emits no warning. The GObject type system and properties work, so
+# the fault is specific to that marshalling path. The cause has not been
+# determined. Treat gobject and gio here as built and linkable rather
+# than validated.
+#
+# GSpawn uses fork/exec — programs linking gio/glib that spawn children
+# MUST be fork-instrumented (scripts/run-wasm-fork-instrument.sh),
+# per the CLAUDE.md fork instrumentation policy.
+
+kind = "library"
+
+name = "glib"
+version = "2.84.4"
+kernel_abi = 43
+depends_on = ["libffi@0.1.0", "zlib@1.3.1", "pcre2@10.44"]
+
+[[host_tools]]
+# gen-visibility-macros.py, glib-mkenums (both ship in the dist tarball)
+# run under python3 to generate the visibility/version macro headers and
+# gobject/glib-enumtypes.[ch]. Provided via flake.nix.
+name = "python3"
+version_constraint = ">=3.8"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix; enter scripts/dev-shell.sh", linux = "provided by flake.nix; or apt install python3" }
+
+[source]
+# glib 2.84.4 dist tarball (download.gnome.org). sha256 from the
+# published glib-2.84.4.sha256sum next to the artifact.
+url = "https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz"
+sha256 = "8a9ea10943c36fc117e253f80c91e477b673525ae45762942858aef57631bb90"
+provider = "archive"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://gitlab.gnome.org/GNOME/glib/-/blob/2.84.4/COPYING"
+
+[build]
+script_path = "packages/registry/glib/build-glib.sh"
+
+[outputs]
+libs = [
+  "lib/libglib-2.0.a",
+  "lib/libgmodule-2.0.a",
+  "lib/libgobject-2.0.a",
+  "lib/libgio-2.0.a",
+]
+headers = ["include/glib-2.0/glib.h"]
