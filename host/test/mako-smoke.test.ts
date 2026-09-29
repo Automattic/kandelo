@@ -42,7 +42,7 @@ const INCONSOLATA = join(
   "examples/libs/wpkdraw/third_party/Inconsolata-Regular.ttf",
 );
 
-const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
+const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const dashBin = tryResolveBinary("programs/dash.wasm");
 const daemonBin = tryResolveBinary("programs/dbus/dbus-daemon.wasm");
 const makoBin = tryResolveBinary("programs/mako/mako.wasm");

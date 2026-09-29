@@ -14,7 +14,7 @@ async function gotoOrSkip(page: Page, path: string) {
 }
 
 async function openSurface(page: Page, label: string) {
-  const btn = page.locator("button.kmachine-switch-btn", { hasText: label });
+  const btn = page.locator("button.kdock-item", { hasText: label });
   await btn.waitFor({ state: "visible", timeout: 30_000 });
   await btn.click();
 }

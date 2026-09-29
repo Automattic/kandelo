@@ -1,0 +1,76 @@
+kind = "program"
+# The Kandelo Wayland desktop: the compositor plus the clients the wayland,
+# hyprland and omarchy demos run. The browser app imports every one of them
+# through `@binaries`, so they need a registry owner like every other product
+# artifact — see scripts/browser-binary-package-roots.mjs. The sources stay in
+# programs/ so scripts/build-programs.sh keeps building the local test
+# fixtures, the same split sdl2-demo and modeset use.
+name = "wldesktop"
+version = "0.1.0"
+kernel_abi = 44
+depends_on = [
+  "libwayland@1.24.0",
+  "libxkbcommon@1.7.0",
+  "libinput@1.25.0",
+  "libevdev@1.13.3",
+  "libudev@0.1.0",
+  "mtdev@0.1.0",
+  "libffi@0.1.0",
+  "wayland-protocols@1.45",
+  "glib@2.84.4",
+  "pcre2@10.44",
+  "zlib@1.3.1",
+]
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/wldesktop/build-wldesktop.sh"
+
+# Generates the server and client glue for the eight protocol XMLs the
+# compositor and libkwl compile against.
+[[host_tools]]
+name = "wayland-scanner"
+version_constraint = ">=1.20"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); or apt install wayland-utils" }
+
+# scripts/build-programs.sh regenerates the same TTF→C byte-array header
+# this build generates into its work dir.
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.8"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[outputs]]
+name = "wlcompositor"
+wasm = "wlcompositor.wasm"
+
+[[outputs]]
+name = "wlterm"
+wasm = "wlterm.wasm"
+
+[[outputs]]
+name = "wlclock"
+wasm = "wlclock.wasm"
+
+[[outputs]]
+name = "wlpaint"
+wasm = "wlpaint.wasm"
+
+[[outputs]]
+name = "klauncher"
+wasm = "klauncher.wasm"
+
+[[outputs]]
+name = "notify-send"
+wasm = "notify-send.wasm"

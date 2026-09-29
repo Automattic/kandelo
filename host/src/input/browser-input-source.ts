@@ -29,7 +29,7 @@
  */
 import type { InputSource, InputEvent } from "./input-source.js";
 import { INPUT_CODES } from "../generated/abi.js";
-import { codeToKey } from "./key-code-table.js";
+import { charToKey, codeToKey } from "./key-code-table.js";
 
 const {
   EV_SYN,
@@ -186,7 +186,7 @@ export class BrowserInputSource implements InputSource {
 
   private onKeyDown(e: KeyboardEvent): void {
     if (!this.shouldCapture(e)) return;
-    const key = codeToKey(e.code);
+    const key = charToKey(e.key) ?? codeToKey(e.code);
     if (key === null) return;
     e.preventDefault();
     this.emit(0, EV_KEY, key, e.repeat ? 2 : 1);
@@ -195,7 +195,7 @@ export class BrowserInputSource implements InputSource {
 
   private onKeyUp(e: KeyboardEvent): void {
     if (!this.shouldCapture(e)) return;
-    const key = codeToKey(e.code);
+    const key = charToKey(e.key) ?? codeToKey(e.code);
     if (key === null) return;
     e.preventDefault();
     this.emit(0, EV_KEY, key, 0);

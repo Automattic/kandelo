@@ -2430,7 +2430,15 @@ export class WasmPosixKernel {
             (bb, off, len) => decodeAndDispatch(bb, off, len),
           );
         },
-        host_gl_present: (pid: number): void => {
+        host_gl_present: (pid: number): number => {
+          // A lost WebGL context silently no-ops every GL call, so a
+          // present into it would report success while the canvas stays
+          // frozen. EIO here fails the guest's `eglSwapBuffers`, which is
+          // its cue to degrade to CPU compositing and hand the canvas
+          // back to the vblank pump (`eglTerminate` →
+          // `markKmsCanvasGlReleased`).
+          const b = this.gl.get(pid);
+          if (b?.gl?.isContextLost()) return -5; // EIO
           // A GPU-tier producer renders into an offscreen bo FBO on the
           // shared context, so `eglSwapBuffers` must fence the queued GL
           // work: `flush()` guarantees the producer's draws are submitted
@@ -2438,8 +2446,8 @@ export class WasmPosixKernel {
           // through the one shared context then gives render-before-sample
           // for free — no explicit sync object in v1). Canvas-backed
           // sessions present via RAF and need no fence here.
-          const b = this.gl.get(pid);
           if (b?.renderTargetFbo) b.gl?.flush();
+          return 0;
         },
         host_gl_query: (
           pid: number, op: number,
