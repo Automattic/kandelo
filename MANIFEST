@@ -35,6 +35,12 @@
 /usr/share/misc  d  0755  0  0
 /etc/ssl         d  0755  0  0
 /etc/ssl/certs   d  0755  0  0
+# xkbcommon's default include root. xkb_context_new(NO_FLAGS) fails hard
+# when this directory is absent (upstream returns NULL), and every real
+# Wayland client (foot) creates its context that way. Empty is fine —
+# clients compile the compositor-provided keymap string, not disk data.
+/usr/share/X11      d  0755  0  0
+/usr/share/X11/xkb  d  0755  0  0
 
 # ── User home ──────────────────────────────────────────────────────
 /home/maker      d  0755  1000  1000

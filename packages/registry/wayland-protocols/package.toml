@@ -1,14 +1,19 @@
-# Per-package manifest for wayland-protocols. See docs/package-management.md
-# ("Source-kind manifests").
+# Per-package manifest for wayland-protocols.
 #
-# This is a `kind = "source"` package: it provides the Wayland protocol
-# XML definitions that `wayland-scanner` (a host build tool, provided via
-# flake.nix) turns into C marshalling glue. It builds no wasm artifact of
-# its own — the generated glue is compiled by each *consumer* (libwayland
-# in PR3, the compositor and clients in PR6+) against the wasm sysroot.
+# This package provides the Wayland protocol XML definitions that
+# `wayland-scanner` (a host build tool, provided via flake.nix) turns into
+# C marshalling glue. It builds no wasm archive of its own — the generated
+# glue is compiled by each *consumer* (libwayland in PR3, the compositor
+# and clients in PR6+) against the wasm sysroot. Its declared outputs are
+# therefore `outputs.files` only.
 #
-# The XML files are VENDORED in-tree under `xml/` rather than fetched,
-# for three reasons:
+# It is `kind = "library"`, not `kind = "source"`, because the XML is
+# VENDORED in-tree (see below) rather than fetched. Under the
+# `source-only-v1` resolve policy a source-kind package must name a real
+# archive with a verifiable sha256, and its `[build]` script is bypassed
+# entirely — neither holds here.
+#
+# The XML files are vendored under `xml/` for three reasons:
 #   1. Darwin/Linux parity — the core `wayland.xml` ships only inside the
 #      Linux-only `wayland` library, which cannot even evaluate on macOS
 #      (`meta.badPlatforms` includes darwin). Vendoring gives both hosts
@@ -69,4 +74,24 @@ script_path = "packages/registry/wayland-protocols/build-wayland-protocols.sh"
 [outputs]
 # Vendored protocol XML, installed into the prefix by the build script.
 # wayland-scanner (a host tool) reads these; nothing links against them.
-files = ["xml/wayland.xml", "xml/xdg-shell.xml"]
+files = [
+  "xml/cursor-shape-v1.xml",
+  "xml/fractional-scale-v1.xml",
+  "xml/idle-inhibit-unstable-v1.xml",
+  "xml/keyboard-shortcuts-inhibit-unstable-v1.xml",
+  "xml/linux-dmabuf-v1.xml",
+  "xml/pointer-gestures-unstable-v1.xml",
+  "xml/presentation-time.xml",
+  "xml/primary-selection-unstable-v1.xml",
+  "xml/tablet-unstable-v2.xml",
+  "xml/text-input-unstable-v3.xml",
+  "xml/viewporter.xml",
+  "xml/wayland.xml",
+  "xml/wlr-layer-shell-unstable-v1.xml",
+  "xml/xdg-activation-v1.xml",
+  "xml/xdg-decoration-unstable-v1.xml",
+  "xml/xdg-foreign-unstable-v1.xml",
+  "xml/xdg-output-unstable-v1.xml",
+  "xml/xdg-shell-unstable-v6.xml",
+  "xml/xdg-shell.xml",
+]

@@ -1,0 +1,26 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+name = "freetype"
+version = "2.13.3"
+kernel_abi = 17
+depends_on = ["zlib@1.3.1"]
+
+[source]
+url = "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz"
+sha256 = "0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289"
+provider = "archive"
+
+[license]
+spdx = "FTL"
+url = "https://gitlab.freedesktop.org/freetype/freetype/-/blob/VER-2-13-3/docs/FTL.TXT"
+
+[build]
+script_path = "packages/registry/freetype/build-freetype.sh"
+
+[outputs]
+libs = ["lib/libfreetype.a"]
+headers = ["include/freetype2"]
+pkgconfig = ["lib/pkgconfig/freetype2.pc"]
