@@ -628,6 +628,15 @@ jobs:
           source-commit: ${{ github.event.pull_request.head.sha }}
           expected-cache-key-sha: ${{ matrix.sha }}
 
+      # A build that keeps its tree in packages/registry/<pkg>/ reuses stale
+      # objects on the next resolver rebuild (a cache-key change such as an
+      # ABI bump). This checkout is fresh, so any leftover was written by the
+      # build above. The check lives here, not in the composite action,
+      # because that action is a global package toolchain input: editing it
+      # changes every package cache key.
+      - name: Check the build left packages/registry clean
+        run: bash scripts/check-package-builds-leave-registry-clean.sh
+
       # Atomic per-matrix-entry write to this attempt's staging draft.
       # Different state-lock subjects from durable-release, so PR
       # staging publishes don't block prepare-merge runs.
@@ -711,6 +720,15 @@ jobs:
           library-matrix: ${{ needs.preflight.outputs.library_matrix }}
           dependency-matrix: ${{ needs.preflight.outputs.program_matrix }}
           github-token: ${{ github.token }}
+
+      # A build that keeps its tree in packages/registry/<pkg>/ reuses stale
+      # objects on the next resolver rebuild (a cache-key change such as an
+      # ABI bump). This checkout is fresh, so any leftover was written by the
+      # build above. The check lives here, not in the composite action,
+      # because that action is a global package toolchain input: editing it
+      # changes every package cache key.
+      - name: Check the build left packages/registry clean
+        run: bash scripts/check-package-builds-leave-registry-clean.sh
 
       # Atomic per-matrix-entry publish — same flow as
       # lib-matrix-build, targeting this attempt's staging draft.
@@ -825,6 +843,9 @@ jobs:
         run: |
           bash scripts/test-check-no-allow-undefined.sh
           bash scripts/check-no-allow-undefined.sh
+
+      - name: Test the package-registry-clean guard
+        run: bash scripts/dev-shell.sh bash scripts/test-check-package-builds-leave-registry-clean.sh
 
       - name: Test package publish flow
         if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
@@ -1337,6 +1358,8 @@ jobs:
             # provides (HOST_ENV_IMPORTS + the fork runtime's imports).
             bash scripts/check-program-env-imports.sh
             bash scripts/build-rootfs.sh
+            # No resolver-driven build above left a tree in packages/registry.
+            bash scripts/check-package-builds-leave-registry-clean.sh
           '
 
       - name: Pack prepared test workspace
