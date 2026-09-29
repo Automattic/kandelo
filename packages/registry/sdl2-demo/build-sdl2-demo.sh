@@ -71,6 +71,13 @@ PY
 
 PKG_CFLAGS="$(wasm32posix-pkg-config --cflags gbm libdrm egl glesv2)"
 PKG_LIBS="$(wasm32posix-pkg-config --libs gbm libdrm egl glesv2)"
+# libSDL2.a includes the Wayland video backend, which calls into
+# libwayland-{client,egl,cursor} and libxkbcommon, and libwayland-client
+# marshals through libffi. They are static archives
+# from those packages, so link them here: `-Wl,--allow-undefined` would
+# otherwise turn every wl_*/xkb_* call into an `env.*` import the host
+# resolves to a throwing stub, and SDL tries the Wayland driver before KMSDRM.
+SDL2_WAYLAND_LIBS="-L${WASM_POSIX_DEP_LIBWAYLAND_DIR:?resolver did not provide the direct libwayland dependency}/lib -L${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?resolver did not provide the direct libxkbcommon dependency}/lib -L${WASM_POSIX_DEP_LIBFFI_DIR:?resolver did not provide the direct libffi dependency}/lib -lwayland-client -lwayland-egl -lwayland-cursor -lxkbcommon -lffi"
 
 echo "==> Building the SDL2 GLSL playground..."
 wasm32posix-cc \
@@ -91,6 +98,7 @@ wasm32posix-cc \
     "$SDL2_DEMO_DIR/sound_shader.c" \
     -L"$SDL2_PREFIX/lib" \
     -lSDL2 \
+    $SDL2_WAYLAND_LIBS \
     $PKG_LIBS \
     -lm \
     -o "$OUT_BIN"
