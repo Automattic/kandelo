@@ -152,6 +152,7 @@ struct SpawnInheritFromParent {
     fd_table: crate::fd::FdTable,
     ofd_table: crate::ofd::OfdTable,
     sockets: crate::socket::SocketTable,
+    epolls: Vec<Option<crate::process::EpollInstance>>,
 }
 
 /// Return each socket-table slot owned by at least one live OFD, exactly once.
@@ -356,6 +357,51 @@ pub fn bump_inherited_resource_refcounts(
     }
 
     Ok(())
+}
+
+/// Incref every DRI bo referenced by the child's inherited card0 / renderD128
+/// / prime-fd OFDs — GEM-handle maps, KMS framebuffers, and prime-bo bindings.
+///
+/// **Spawn-only**, deliberately NOT folded into
+/// [`bump_inherited_resource_refcounts`]: unlike pipes/sockets/PTYs (whose
+/// refcount bumps live solely in that shared helper), DRI bos are increfed on
+/// the *fork* path inside deserialize (`fork::read_dri_fd_state` /
+/// `read_kms_fd_state` / the PrimeBo arm). `spawn_child`, however, builds the
+/// child by value-cloning the parent's `ofd_table` and never deserializes, so
+/// its inherited DRI OFDs carry no registry ref. Calling this from
+/// `bump_inherited_resource_refcounts` would double-incref on `fork_process`
+/// (deserialize + bump). Keeping it spawn-local balances the child's
+/// eventual close-path decref (`dri_release_ofd_state`) exactly once.
+///
+/// Without this, a `posix_spawn`'d client that inherits the compositor's
+/// `O_CLOEXEC` card0 fd (carrying the scanout bo's GEM handle + KMS
+/// framebuffer) decrefs those bos on exec with no matching incref, tombstoning
+/// the compositor's still-live scanout bo in the global `BoRegistry` and
+/// freezing the desktop under a `gbm_bo_map` EINVAL flood.
+fn bump_inherited_dri_bos(child: &Process) {
+    for (_idx, ofd) in child.ofd_table.iter() {
+        let Some(dri_state) = ofd.dri_state.as_deref() else {
+            continue;
+        };
+        crate::dri::with_registry(|reg| match dri_state {
+            crate::ofd::DriOfdState::PrimeBo(p) => {
+                reg.incref(p.bo_id);
+            }
+            crate::ofd::DriOfdState::RenderNode(dri) => {
+                for bo_id in dri.handles.values() {
+                    reg.incref(*bo_id);
+                }
+            }
+            crate::ofd::DriOfdState::Card { dri, kms } => {
+                for bo_id in dri.handles.values() {
+                    reg.incref(*bo_id);
+                }
+                for fb in kms.fbs.values() {
+                    reg.incref(fb.bo_id);
+                }
+            }
+        });
+    }
 }
 
 /// Build the fork-only `fork_pipe_replay` table: a list of (read_fd,
@@ -1156,6 +1202,7 @@ impl ProcessTable {
                 fd_table: parent.fd_table.clone(),
                 ofd_table: parent.ofd_table.clone(),
                 sockets: parent.sockets.clone(),
+                epolls: parent.epolls.clone(),
             }
         };
 
@@ -1185,6 +1232,11 @@ impl ProcessTable {
         child.fd_table = inherit.fd_table;
         child.ofd_table = inherit.ofd_table;
         child.sockets = inherit.sockets;
+        // An inherited epoll fd must keep naming a live instance, as after
+        // fork. Registrations whose descriptions spawn's fd actions or
+        // close-on-exec closed are dropped the first time the child uses the
+        // instance (they no longer reach an open description).
+        child.epolls = inherit.epolls;
 
         // Retry pins are kernel capabilities owned by the parent task, not
         // descriptors inherited by a new process. Rebuild local OFD counts
@@ -1264,6 +1316,11 @@ impl ProcessTable {
         // Bump cross-process refcounts on the inherited fd state. The same
         // helper fork uses — this is the genuinely-shared concern.
         bump_inherited_resource_refcounts(parent_pid, &child)?;
+        // DRI bos are the one inherited resource fork increfs during
+        // deserialize rather than in the shared helper, so spawn (which
+        // value-clones the fd tables and never deserializes) must incref them
+        // here — see `bump_inherited_dri_bos`.
+        bump_inherited_dri_bos(&child);
 
         // The child is a real kernel process and signal target, but the
         // parent has not received a successful posix_spawn result yet. Wait
@@ -1704,6 +1761,17 @@ impl ProcessTable {
     }
 }
 
+/// Run `f` over every live process. The audio period tick and the evdev
+/// fan-out both need to reach each process's OFD table from outside a
+/// syscall, where no `&mut Process` is in scope.
+pub fn with_processes<F>(f: F)
+where
+    F: FnOnce(alloc::collections::btree_map::ValuesMut<'_, u32, Process>),
+{
+    let table = unsafe { &mut *GLOBAL_PROCESS_TABLE.0.get() };
+    f(table.processes.values_mut());
+}
+
 #[cfg(test)]
 mod wait_tests {
     use super::*;
@@ -1744,6 +1812,44 @@ mod wait_tests {
             .unwrap();
 
         assert_eq!(table.get(spawn_pid).unwrap().credentials(), &credentials);
+    }
+
+    /// posix_spawn inherits open fds, epoll fds included: the child's
+    /// inherited epoll fd must name a live instance with the parent's
+    /// registrations, not an instance that no longer exists (EBADF).
+    #[test]
+    fn spawn_inherits_epoll_instances() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let (rfd, epfd) = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let (rfd, _wfd) = crate::syscalls::sys_pipe2(parent, 0).unwrap();
+            let epfd = crate::syscalls::sys_epoll_create1(parent, 0).unwrap();
+            crate::syscalls::sys_epoll_ctl(parent, epfd, 1, rfd, 0x001, 9).unwrap();
+            (rfd, epfd)
+        };
+
+        let mut host = NoopHost;
+        let spawn_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        let child = table.get_mut(spawn_pid).unwrap();
+        assert_eq!(crate::syscalls::epoll_watched_fd(child, 0), Some(rfd));
+        // The inherited instance is manageable in the child.
+        crate::syscalls::sys_epoll_ctl(child, epfd, 2, rfd, 0, 0).unwrap();
+        assert_eq!(crate::syscalls::epoll_watched_fd(child, 0), None);
     }
 
     #[test]
@@ -1851,6 +1957,101 @@ mod wait_tests {
         );
         assert_eq!(table.get(fork_pid).unwrap().ppid, parent_pid);
         assert_eq!(table.get(spawn_pid).unwrap().ppid, parent_pid);
+    }
+
+    #[test]
+    fn fork_shares_one_evdev_ring_with_parent() {
+        // POSIX/Linux: a forked `struct file` carries one shared
+        // `struct evdev_client`, so parent and child observe a single
+        // ring. Fork here serializes a point-in-time snapshot;
+        // link_shared_states_from must re-share the parent's live ring
+        // rather than leave the child with an independent copy.
+        use crate::ofd::{FileType, InputFdState, SharedInputRing};
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+
+        let ofd_idx = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let idx = parent.ofd_table.create(
+                FileType::CharDevice,
+                wasm_posix_shared::flags::O_RDWR,
+                -10,
+                b"/dev/input/event0".to_vec(),
+            );
+            parent.ofd_table.get_mut(idx).unwrap().input_state =
+                Some(alloc::boxed::Box::new(InputFdState {
+                    device: 0,
+                    ring: SharedInputRing::default(),
+                }));
+            // Fork inherits open descriptions through the fd table, so the
+            // OFD needs a referencing fd to cross the fork boundary.
+            parent
+                .fd_table
+                .alloc(crate::fd::OpenFileDescRef(idx), 0)
+                .unwrap();
+            idx
+        };
+
+        let fork_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
+
+        let parent_id = table
+            .get(parent_pid)
+            .unwrap()
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .input()
+            .unwrap()
+            .ring
+            .identity();
+        let child_id = table
+            .get(fork_pid)
+            .unwrap()
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .input()
+            .unwrap()
+            .ring
+            .identity();
+        assert_eq!(
+            parent_id, child_id,
+            "fork must re-share the parent's evdev ring, not copy it"
+        );
+
+        // A post-fork write into the parent's ring is visible through the
+        // child, proving one shared buffer rather than two.
+        table
+            .get(parent_pid)
+            .unwrap()
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .input()
+            .unwrap()
+            .ring
+            .borrow_mut()
+            .event_ring
+            .push_back(0xab);
+        assert_eq!(
+            table
+                .get(fork_pid)
+                .unwrap()
+                .ofd_table
+                .get(ofd_idx)
+                .unwrap()
+                .input()
+                .unwrap()
+                .ring
+                .borrow()
+                .event_ring
+                .len(),
+            1,
+            "a record pushed on the parent must be observable in the child"
+        );
     }
 
     #[test]
@@ -2272,6 +2473,7 @@ mod tests {
                     st_ctime_sec: 0,
                     st_ctime_nsec: 0,
                     _pad: 0,
+                    st_rdev: 0,
                 },
                 WasmStatfs {
                     f_type: 1,

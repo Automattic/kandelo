@@ -43,6 +43,14 @@ sha256 = "4404d93cbce818b1b98ca7259d0ba9b45db76f2fdd9373e56f2d29b519f4d43b"
 role = "runtime"
 materialization = "embedded"
 
+# bash is /bin/sh in every Kandelo image (see installBashAsPosixShell).
+[[software.package]]
+name = "bash"
+outputs = ["bash"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
 [[software.package]]
 name = "dash"
 outputs = ["dash"]

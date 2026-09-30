@@ -6,12 +6,27 @@ set -euo pipefail
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Output: packages/registry/tar/bin/tar.wasm
 
-TAR_VERSION="${TAR_VERSION:-1.35}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/tar-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/tar-src"
+BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+TAR_VERSION="${WASM_POSIX_DEP_VERSION:-${TAR_VERSION:-1.35}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/tar/tar-${TAR_VERSION}.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-4d62ff37342ec7aed748535323930c7cf94acf71c3591882b26a7ea50f3edc16}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-tar-source"
+
+# A resolver/Formula caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -30,16 +45,21 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # fork+exec rather than linking against zlib directly. Compression support
 # requires having the corresponding wasm binaries available at runtime.
 
-# --- Download tar source ---
+# --- Stage verified tar source ---
+# Use the resolver-provided, checksum-verified source (source-only-v1) instead
+# of a network download so the build honors the reproducible package contract
+# and never depends on live upstream availability.
+expected_source_marker="$(printf '%s\n%s\n%s' \
+    "$TAR_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && \
+   [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+    rm -rf "$SRC_DIR" "$BIN_DIR"
+fi
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading tar $TAR_VERSION..."
-    TARBALL="tar-${TAR_VERSION}.tar.xz"
-    URL="https://ftpmirror.gnu.org/tar/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified tar $TAR_VERSION source..."
+    kandelo_package_stage_verified_source tar "$SRC_DIR" \
+        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
 fi
 
 cd "$SRC_DIR"
@@ -215,4 +235,4 @@ echo "Binary: $BIN_DIR/tar.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary tar "$SCRIPT_DIR/bin/tar.wasm"
+install_local_binary tar "$BIN_DIR/tar.wasm"

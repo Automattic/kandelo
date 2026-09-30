@@ -154,7 +154,7 @@ make_fixture() {
     local root="$TMP_ROOT/$name"
     mkdir -p "$root/out" "$root/work" "$root/rootfs" "$root/bash" \
         "$root/fbdoom" "$root/modeset" "$root/dependencies"
-    printf 'rootfs\n' >"$root/rootfs/rootfs.vfs"
+    printf 'rootfs\n' >"$root/rootfs/rootfs.vfs.zst"
     printf 'bash\n' >"$root/bash/bash.wasm"
     printf 'fbdoom\n' >"$root/fbdoom/fbdoom.wasm"
     printf 'modeset\n' >"$root/modeset/modeset.wasm"

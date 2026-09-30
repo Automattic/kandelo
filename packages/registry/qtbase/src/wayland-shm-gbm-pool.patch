@@ -1,0 +1,147 @@
+diff -ur a/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp b/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
+--- a/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp	2026-08-31 10:04:19
++++ b/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp	2026-08-31 10:04:46
+@@ -21,6 +21,7 @@
+ #include <fcntl.h>
+ #include <unistd.h>
+ #include <sys/mman.h>
++#include <gbm.h>
+ 
+ #ifdef Q_OS_LINUX
+ #  include <sys/syscall.h>
+@@ -53,54 +54,65 @@
+                                      const QSize &size, QImage::Format format, qreal scale, wl_event_queue *customEventQueue)
+     : mDirtyRegion(QRect(QPoint(0, 0), size / scale))
+ {
+-    int stride = size.width() * 4;
+-    int alloc = stride * size.height();
+-    int fd = -1;
++    /* On wasm-posix-kernel the compositor imports a wl_shm pool with
++     * gbm_bo_import(GBM_BO_IMPORT_FD), so the pool fd has to be a DRI
++     * prime fd: a memfd is private to the process that made it and
++     * carries no pixels across the socket. Same allocation as foot's
++     * shm.c and GTK's gdkdisplay-wayland.c. */
++    static struct gbm_device *gbm = nullptr;
++    if (!gbm) {
++        int drmFd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
++        if (drmFd < 0) {
++            qErrnoWarning("QWaylandShmBuffer: open /dev/dri/renderD128 failed");
++            return;
++        }
++        gbm = gbm_create_device(drmFd);
++        if (!gbm) {
++            qWarning("QWaylandShmBuffer: gbm_create_device failed");
++            close(drmFd);
++            return;
++        }
++    }
+ 
+-#ifdef SYS_memfd_create
+-    fd = syscall(SYS_memfd_create, "wayland-shm", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+-    if (fd >= 0)
+-        fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_SEAL);
+-#endif
+-
+-    std::unique_ptr<QFile> filePointer;
+-    bool opened;
+-
+-    if (fd == -1) {
+-        auto tmpFile =
+-            std::make_unique<QTemporaryFile>(QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) +
+-                                       QLatin1String("/wayland-shm-XXXXXX"));
+-        opened = tmpFile->open();
+-        filePointer = std::move(tmpFile);
+-    } else {
+-        auto file = std::make_unique<QFile>();
+-        opened = file->open(fd, QIODevice::ReadWrite | QIODevice::Unbuffered, QFile::AutoCloseHandle);
+-        filePointer = std::move(file);
++    const bool hasAlpha = format != QImage::Format_RGB32
++        && format != QImage::Format_RGBX8888;
++    mBo = gbm_bo_create(gbm, size.width(), size.height(),
++                        hasAlpha ? GBM_FORMAT_ARGB8888 : GBM_FORMAT_XRGB8888,
++                        GBM_BO_USE_LINEAR | GBM_BO_USE_SCANOUT);
++    if (!mBo) {
++        qErrnoWarning("QWaylandShmBuffer: gbm_bo_create failed");
++        return;
+     }
+-    // NOTE beginPaint assumes a new buffer be all zeroes, which QFile::resize does.
+-    if (!opened || !filePointer->resize(alloc)) {
+-        qWarning("QWaylandShmBuffer: failed: %s", qUtf8Printable(filePointer->errorString()));
++
++    uint32_t stride = 0;
++    uchar *data = (uchar *) gbm_bo_map(mBo, 0, 0, size.width(), size.height(),
++                                       0, &stride, &mBoMapData);
++    if (!data) {
++        qErrnoWarning("QWaylandShmBuffer: gbm_bo_map failed");
++        gbm_bo_destroy(mBo);
++        mBo = nullptr;
+         return;
+     }
+-    fd = filePointer->handle();
++    int alloc = int(stride) * size.height();
+ 
+-    // map ourselves: QFile::map() will unmap when the object is destroyed,
+-    // but we want this mapping to persist (unmapping in destructor)
+-    uchar *data = (uchar *)
+-            mmap(nullptr, alloc, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+-    if (data == (uchar *) MAP_FAILED) {
+-        qErrnoWarning("QWaylandShmBuffer: mmap failed");
++    int fd = gbm_bo_get_fd(mBo);
++    if (fd < 0) {
++        qErrnoWarning("QWaylandShmBuffer: gbm_bo_get_fd failed");
++        gbm_bo_unmap(mBo, mBoMapData);
++        gbm_bo_destroy(mBo);
++        mBo = nullptr;
+         return;
+     }
+ 
+     QWaylandShm* shm = display->shm();
+     wl_shm_format wl_format = shm->formatFrom(format);
+-    mImage = QImage(data, size.width(), size.height(), stride, format);
++    mImage = QImage(data, size.width(), size.height(), int(stride), format);
+     mImage.setDevicePixelRatio(scale);
+ 
+     mShmPool = wl_shm_create_pool(shm->object(), fd, alloc);
++    close(fd);   /* wl_shm dup'd it into the pool */
+     init(wl_shm_pool_create_buffer(mShmPool,0, size.width(), size.height(),
+-                                       stride, wl_format));
++                                       int(stride), wl_format));
+     if (customEventQueue)
+         wl_proxy_set_queue(reinterpret_cast<struct wl_proxy *>(buffer()), customEventQueue);
+ }
+@@ -108,10 +120,12 @@
+ QWaylandShmBuffer::~QWaylandShmBuffer(void)
+ {
+     delete mMarginsImage;
+-    if (mImage.constBits())
+-        munmap((void *) mImage.constBits(), mImage.sizeInBytes());
+     if (mShmPool)
+         wl_shm_pool_destroy(mShmPool);
++    if (mBo) {
++        gbm_bo_unmap(mBo, mBoMapData);
++        gbm_bo_destroy(mBo);
++    }
+ }
+ 
+ QImage *QWaylandShmBuffer::imageInsideMargins(const QMargins &marginsIn)
+diff -ur a/src/plugins/platforms/wayland/qwaylandshmbackingstore_p.h b/src/plugins/platforms/wayland/qwaylandshmbackingstore_p.h
+--- a/src/plugins/platforms/wayland/qwaylandshmbackingstore_p.h	2026-08-31 10:04:19
++++ b/src/plugins/platforms/wayland/qwaylandshmbackingstore_p.h	2026-08-31 10:11:58
+@@ -22,6 +22,8 @@
+ #include <qpa/qplatformwindow.h>
+ #include <QMutex>
+ 
++struct gbm_bo;
++
+ QT_BEGIN_NAMESPACE
+ 
+ namespace QtWaylandClient {
+@@ -49,6 +51,8 @@
+ private:
+     QImage mImage;
+     struct wl_shm_pool *mShmPool = nullptr;
++    struct gbm_bo *mBo = nullptr;
++    void *mBoMapData = nullptr;
+     QMargins mMargins;
+     QImage *mMarginsImage = nullptr;
+     QRegion mDirtyRegion;

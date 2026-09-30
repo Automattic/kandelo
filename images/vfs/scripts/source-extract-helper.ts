@@ -194,3 +194,50 @@ export function ensureSourceExtract(
     legacyPath: legacyLocalPath,
   });
 }
+
+export interface FetchFileOptions {
+  url: string;
+  sha256: string;
+  /** Cache key segment; the full sha256 is folded in for uniqueness. */
+  cacheKey: string;
+  /** If set and present, return it as-is instead of downloading. */
+  legacyPath?: string;
+}
+
+/**
+ * Download + verify a single upstream file (no extraction) and return its
+ * on-disk path. This is the counterpart to `ensureExtract` for sources that
+ * ship as one bare file rather than an archive — e.g. Adminer's single-file
+ * PHP release. Same content-addressed cache and hard sha256 gate.
+ */
+export function ensureFile(opts: FetchFileOptions): string {
+  const { url, sha256, cacheKey, legacyPath } = opts;
+
+  if (legacyPath && existsSync(legacyPath)) {
+    return legacyPath;
+  }
+
+  const cacheRoot = process.env.XDG_CACHE_HOME
+    ? join(process.env.XDG_CACHE_HOME, "kandelo")
+    : join(homedir(), ".cache", "kandelo");
+  const destDir = join(cacheRoot, "vfs-build-sources", `${cacheKey}-${sha256.slice(0, 8)}`);
+  const fileName = url.split("/").pop()!;
+  const destPath = join(destDir, fileName);
+
+  if (existsSync(destPath) && sha256OfFile(destPath) === sha256) {
+    return destPath;
+  }
+
+  mkdirSync(destDir, { recursive: true });
+  console.log(`==> Downloading ${url}`);
+  execSync(`curl -fsSL -o "${destPath}.partial" "${url}"`, { stdio: "inherit" });
+  const got = sha256OfFile(`${destPath}.partial`);
+  if (got !== sha256) {
+    rmSync(`${destPath}.partial`, { force: true });
+    throw new Error(
+      `sha256 mismatch for ${fileName}: expected ${sha256}, got ${got}`,
+    );
+  }
+  renameSync(`${destPath}.partial`, destPath);
+  return destPath;
+}

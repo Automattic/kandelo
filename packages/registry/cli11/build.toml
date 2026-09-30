@@ -1,0 +1,12 @@
+script_path = "packages/registry/cli11/build-cli11.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
+
+# The fetched `cli11-src/` tree is gitignored; the resolver hashes these
+# tracked inputs on a clean checkout. script_path is not implicit — only
+# what this list names reaches the cache key.
+inputs = [
+  "packages/registry/cli11/build-cli11.sh",
+  "scripts/package-build-roots.sh",
+]

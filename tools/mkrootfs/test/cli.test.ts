@@ -170,6 +170,46 @@ describe("mkrootfs build — happy paths", () => {
     }
   });
 
+  it("compresses the artifact when -o names a .vfs.zst output", () => {
+    // WHY: `.vfs.zst` is how every other VFS product declares a compressed
+    // artifact, and the canonical rootfs ships through this CLI. Publishing it
+    // raw made it the one product downloaded uncompressed — 16 MiB on the wire
+    // for ~1.3 MiB of content.
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-zst-"));
+    const plain = join(tmp, "rootfs.vfs");
+    const compressed = join(tmp, "rootfs.vfs.zst");
+    try {
+      for (const out of [plain, compressed]) {
+        const r = run(
+          "build",
+          join(fixture, "MANIFEST"),
+          join(fixture, "rootfs"),
+          "-o", out,
+          "--repo-root", fixture,
+        );
+        expect(r.status, r.stderr).toBe(0);
+      }
+
+      const compressedBytes = new Uint8Array(readFileSync(compressed));
+      // zstd frame magic, little-endian on the wire.
+      expect(Array.from(compressedBytes.subarray(0, 4))).toEqual([
+        0x28, 0xb5, 0x2f, 0xfd,
+      ]);
+      expect(compressedBytes.byteLength).toBeLessThan(
+        readFileSync(plain).byteLength,
+      );
+
+      // Both encodings must restore to the same namespace.
+      const fromZst = MemoryFileSystem.fromImage(compressedBytes);
+      for (const path of ["/", "/etc", "/etc/passwd", "/usr/bin/sh"]) {
+        expect(() => fromZst.lstat(path), path).not.toThrow();
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("builds an image from MANIFEST + sourceTree and writes it to -o", () => {
     const fixture = join(here, "fixtures", "basic");
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));

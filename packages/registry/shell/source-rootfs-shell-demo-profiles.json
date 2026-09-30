@@ -2,12 +2,31 @@
   "version": 1,
   "profiles": {
     "doom": {
+      "identity": {
+        "title": "fbDOOM",
+        "summary": "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
+        "accent": "#b5301c",
+        "glyph": "D",
+        "packages": [
+          "fbdoom@local",
+          "doom-shareware@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "framebuffer"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["framebuffer", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad",
         "touchControls": true
       },
       "assets": [
@@ -15,8 +34,7 @@
           "path": "/doom1.wad",
           "url": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
           "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
-          "mode": 420,
-          "devCorsProxy": true
+          "mode": 420
         }
       ],
       "ingest": {
@@ -29,13 +47,113 @@
         }
       }
     },
+    "quake": {
+      "identity": {
+        "title": "Quake (software)",
+        "summary": "TyrQuake's software renderer on /dev/fb0, extracted from id's shareware archive inside Kandelo.",
+        "accent": "#8a1c1c",
+        "glyph": "Q",
+        "packages": [
+          "tyrquake@local",
+          "lhasa@local",
+          "unzip@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "framebuffer"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/quake"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["framebuffer", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "touchControls": true
+      },
+      "assets": [
+        {
+          "path": "/usr/share/quake/quake106.zip",
+          "url": "https://cdn.jsdelivr.net/gh/Jason2Brownlee/QuakeOfficialArchive@30c29bd5907fd999b0bb8e52c941ef770b4d3ba8/bin/quake106.zip",
+          "sha256": "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239",
+          "mode": 420
+        }
+      ],
+      "ingest": {
+        "accept": [".pak"],
+        "targetPath": "/usr/share/quake/id1/pak0.pak",
+        "maxBytes": 33554432,
+        "label": "Load pak0.pak",
+        "onLoad": {
+          "restart": "/usr/local/bin/quake"
+        }
+      }
+    },
     "modeset": {
+      "identity": {
+        "title": "DRM/KMS fluid sim",
+        "summary": "Pavel-style EGL/GLES fluid simulation presented through /dev/dri/card0 page flips.",
+        "accent": "#4f8fd6",
+        "glyph": "K",
+        "packages": [
+          "modeset@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/modeset"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["kms", "terminal", "syslog"],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/modeset"
+        "internalsAccess": "drawer"
+      }
+    },
+    "scummvm": {
+      "identity": {
+        "title": "ScummVM",
+        "summary": "ScummVM's SCUMM engine fullscreen on /dev/dri/card0: SDL2's KMSDRM backend takes the display as DRM master and renders GLES2 directly, with OSS audio on /dev/dsp. No game ships with it: upload a zipped SCUMM title with Load game data, then add it from the launcher.",
+        "accent": "#c46a3c",
+        "glyph": "G",
+        "packages": [
+          "scummvm@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/scummvm"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["kms", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "ingest": {
+        "accept": [".zip"],
+        "targetPath": "/usr/share/scummvm-games/upload.zip",
+        "maxBytes": 536870912,
+        "label": "Load game data"
       }
     }
   }

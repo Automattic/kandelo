@@ -1,0 +1,6 @@
+# Build byproducts produced by build-espeak-ng.sh. The channel/compiler-rt
+# glue objects are compiled fresh on each build (see GLUE_OBJ_DIR). The
+# sibling *-cross-build/ and *-build/ trees are already covered by the root
+# .gitignore; glue-objs/ does not match its *-glue-objs*/ pattern, so ignore
+# it here instead of renaming the directory.
+/glue-objs/

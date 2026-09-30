@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "defaultProfile": "nginx-python",
+  "profiles": {
+    "nginx-python": {
+      "identity": {
+        "title": "nginx + Python",
+        "summary": "nginx reverse-proxying to a Python (wsgiref) JSON API over SQLite.",
+        "accent": "#4b8bbe",
+        "glyph": "py",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "cpython@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "maxWorkers": 12
+        }
+      },
+      "init": {
+        "target": "nginx"
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "nginx + Python demo",
+        "summary": "Call a real Python (wsgiref) JSON API over SQLite, proxied by nginx.",
+        "groups": [
+          {
+            "title": "Service",
+            "actions": [
+              {
+                "id": "curl-home",
+                "label": "Fetch page",
+                "description": "Fetch the static page through nginx.",
+                "kind": "terminal.run",
+                "payload": "curl -i http://127.0.0.1:8080/ | head -40"
+              },
+              {
+                "id": "list-notes",
+                "label": "List notes",
+                "description": "GET the JSON notes list from Python.",
+                "kind": "terminal.run",
+                "payload": "curl -s http://127.0.0.1:8080/api/notes; echo"
+              },
+              {
+                "id": "create-note",
+                "label": "Create note",
+                "description": "POST a new note as JSON.",
+                "kind": "terminal.run",
+                "payload": "curl -s -X POST http://127.0.0.1:8080/api/notes -H 'Content-Type: application/json' -d '{\"title\":\"Hello\",\"body\":\"from curl\"}'; echo"
+              },
+              {
+                "id": "py-version",
+                "label": "Python",
+                "description": "Print the Python version.",
+                "kind": "terminal.run",
+                "payload": "PYTHONHOME=/usr /usr/bin/python3 --version"
+              }
+            ]
+          }
+        ],
+        "script": {
+          "title": "Service check",
+          "language": "sh",
+          "initialText": "curl -i http://127.0.0.1:8080/ | head -40\necho \"--- list notes (JSON via Python) ---\"\ncurl -s http://127.0.0.1:8080/api/notes\necho\necho \"--- create a note ---\"\ncurl -s -X POST http://127.0.0.1:8080/api/notes \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"title\":\"Hello\",\"body\":\"from curl\"}'\necho"
+        }
+      }
+    }
+  }
+}

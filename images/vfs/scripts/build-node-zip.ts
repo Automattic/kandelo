@@ -11,8 +11,8 @@
  * resolution, so npm's `await import('chalk')`-style loads of ESM-only deps are
  * rewritten to CommonJS shims — a documented compatibility workaround at that
  * platform boundary, tracked for removal once the embedding grows real ESM
- * resolution). Rather than duplicate that fragile glue, this reuses node-vfs's
- * exact `walkAndWrite` + `stageSpiderMonkeyNpmRuntime` on a MemoryFileSystem and
+ * resolution). Rather than duplicate that fragile glue, this reuses the shared
+ * `walkAndWrite` + `stageSpiderMonkeyNpmRuntime` on a MemoryFileSystem and
  * then exports the /usr subtree to a deterministic zip.
  *
  *   build-node-zip.ts <node.wasm> <npm-source-dir> <output.zip>
@@ -50,7 +50,7 @@ const fs = MemoryFileSystem.create(new SharedArrayBuffer(160 * 1024 * 1024));
 ensureDirRecursive(fs, "/usr/bin");
 ensureDirRecursive(fs, "/usr/local/lib");
 // The browser kernel worker writes the MITM CA cert here on init; npm reads it
-// for HTTPS. Mirror node-vfs so the directory exists.
+// for HTTPS. Create the directory so it exists once the archive is mounted.
 ensureDirRecursive(fs, "/etc/ssl");
 
 writeVfsBinary(fs, "/usr/bin/node", new Uint8Array(readFileSync(nodeWasmPath)), 0o755);
@@ -63,11 +63,11 @@ const written = walkAndWrite(fs, npmSourceDir, "/usr/local/lib/npm", {
 });
 console.log(`    ${written} npm files`);
 
-// Reuse node-vfs's exact runtime glue (runner, launchers, shims, source
-// patches, /usr/bin/npm+npx, /usr/local/bin symlinks). It also writes /bin/npm
-// symlinks and the demo /etc/profile.d file, but those live outside /usr so the
-// subtree export below simply drops them; the shell overlay owns the /bin
-// aliases and a minimal npm profile for the base shell.
+// The SpiderMonkey npm runtime glue (runner, launchers, shims, source patches,
+// /usr/bin/npm+npx, /usr/local/bin symlinks). It also writes /bin/npm symlinks,
+// but those live outside /usr so the subtree export below simply drops them;
+// the shell overlay owns the /bin aliases, and /etc/profile.d/node.sh (see
+// shell-lazy-archives.ts) carries npm's settings for the image.
 stageSpiderMonkeyNpmRuntime(fs);
 
 console.log("==> Exporting the /usr subtree...");

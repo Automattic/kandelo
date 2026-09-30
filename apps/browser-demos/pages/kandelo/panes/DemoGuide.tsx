@@ -182,7 +182,7 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onClose, onOpenTerminal, o
 
       <div className="kdemo-status" role="status">
         {status !== "running"
-          ? "Waiting for the machine to finish booting."
+          ? "Waiting for the computer to finish booting."
           : waitingForWeb
             ? webPreview.message ?? "Waiting for web preview."
             : message ?? "Ready"}

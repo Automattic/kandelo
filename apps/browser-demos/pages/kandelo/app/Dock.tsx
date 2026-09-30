@@ -29,6 +29,13 @@ const VIEW_ITEMS: DockItem<DockViewId>[] = [
   },
 ];
 
+const SHARE_ITEM: DockItem<"share"> = {
+  id: "share",
+  label: "Share",
+  title: "Share this computer as a link",
+  icon: <svg width="16" height="16" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="5.5" cy="11" r="2.4" /><circle cx="16" cy="5" r="2.4" /><circle cx="16" cy="17" r="2.4" /><path d="M7.6 10l6.4-3.6M7.6 12l6.4 3.6" /></svg>,
+};
+
 const INTERNALS_ITEM: DockItem<"internals"> = {
   id: "internals",
   label: "Internals",
@@ -38,7 +45,7 @@ const INTERNALS_ITEM: DockItem<"internals"> = {
 
 const GUIDE_ITEM: DockItem<"guide"> = {
   id: "guide",
-  label: "Guide",
+  label: "Demo",
   title: "Demo guide",
   icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M4 2.5h6.5L13 5v8.5H4z" /><path d="M10.5 2.5V5H13" /><path d="M6 7h5M6 9.5h5M6 12h3" /></svg>,
 };
@@ -54,7 +61,7 @@ const PANE_ITEMS: DockItem<DockPaneId>[] = [
   {
     id: "gallery",
     label: "New",
-    title: "Launch new machine",
+    title: "Launch new computer",
     icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M8 3v10M3 8h10" /></svg>,
   },
 ];
@@ -96,6 +103,7 @@ export const Dock: React.FC<{
   internalsAvailable: boolean;
   internalsOpen: boolean;
   themeOpen: boolean;
+  shareAvailable: boolean;
   status: MachineStatus;
   machineTitle?: string;
   viewDisabled?: Partial<Record<DockViewId, boolean>>;
@@ -104,6 +112,7 @@ export const Dock: React.FC<{
   onToggleGuide: () => void;
   onToggleInternals: () => void;
   onToggleTheme: () => void;
+  onOpenShare: () => void;
   onCloseGuide: () => void;
   onCloseInternals: () => void;
   onCloseTheme: () => void;
@@ -121,6 +130,7 @@ export const Dock: React.FC<{
   internalsAvailable,
   internalsOpen,
   themeOpen,
+  shareAvailable,
   status,
   machineTitle,
   viewDisabled = {},
@@ -129,6 +139,7 @@ export const Dock: React.FC<{
   onToggleGuide,
   onToggleInternals,
   onToggleTheme,
+  onOpenShare,
   onCloseGuide,
   onCloseInternals,
   onCloseTheme,
@@ -162,7 +173,7 @@ export const Dock: React.FC<{
   const internalsAnchor = useDockPopoverAnchor(internalsOpen, internalsPopup, shellRef, internalsButtonRef, 980);
   const themeAnchor = useDockPopoverAnchor(themeOpen, themePopup, shellRef, themeButtonRef, 360);
   const statusLabel = formatMachineStatus(status);
-  const title = machineTitle || "Kandelo machine";
+  const title = machineTitle || "Kandelo computer";
 
   const clampDockCenter = React.useCallback((center: number, width?: number): number => {
     const viewportWidth = window.innerWidth;
@@ -436,7 +447,7 @@ export const Dock: React.FC<{
               className="kdock-status"
               onClick={() => onSelectPane(null)}
               title={`${title}: ${statusLabel}`}
-              aria-label={`Current machine: ${title}, ${statusLabel}`}
+              aria-label={`Current computer: ${title}, ${statusLabel}`}
             >
               <img src={markUrl} alt="" />
               <span className="kdock-status-copy">
@@ -448,7 +459,7 @@ export const Dock: React.FC<{
               </span>
             </button>
             <div className="kdock">
-              <div className="kdock-section" aria-label="Machine tools">
+              <div className="kdock-section" aria-label="Computer tools">
                 {PANE_ITEMS.map((item) => (
                   <button
                     key={item.id}
@@ -464,7 +475,7 @@ export const Dock: React.FC<{
                 ))}
               </div>
               <div className="kdock-separator" aria-hidden="true" />
-              <div className="kdock-section" aria-label="Machine views">
+              <div className="kdock-section" aria-label="Computer views">
                 {VIEW_ITEMS.map((item) => {
                   const disabled = viewDisabled[item.id] === true;
                   return (
@@ -484,7 +495,7 @@ export const Dock: React.FC<{
                 })}
               </div>
               <div className="kdock-separator" aria-hidden="true" />
-              <div className="kdock-section kdock-section-actions" aria-label="Machine overlays">
+              <div className="kdock-section kdock-section-actions" aria-label="Computer overlays">
                 <button
                   ref={internalsButtonRef}
                   type="button"
@@ -511,12 +522,24 @@ export const Dock: React.FC<{
                   <span className="kdock-label">{THEME_ITEM.label}</span>
                 </button>
                 <button
+                  type="button"
+                  className="kdock-item"
+                  title={SHARE_ITEM.title}
+                  aria-label={SHARE_ITEM.title}
+                  disabled={!shareAvailable}
+                  onClick={onOpenShare}
+                >
+                  <span className="kdock-icon">{SHARE_ITEM.icon}</span>
+                  <span className="kdock-label">{SHARE_ITEM.label}</span>
+                </button>
+                <button
                   ref={guideButtonRef}
                   type="button"
                   className="kdock-item"
                   aria-pressed={guideOpen}
                   aria-expanded={guideOpen}
                   title={GUIDE_ITEM.title}
+                  aria-label={GUIDE_ITEM.title}
                   disabled={!guideAvailable}
                   onClick={onToggleGuide}
                 >
@@ -674,7 +697,7 @@ function popoverStyle(anchor: DockPopoverAnchor | null, width: number): DockPopo
 function formatMachineStatus(status: MachineStatus): string {
   switch (status) {
     case "idle":
-      return "No machine";
+      return "No computer";
     case "booting":
       return "Booting";
     case "running":

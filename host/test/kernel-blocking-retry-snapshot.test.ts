@@ -4640,6 +4640,69 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
 
   it.each([
     [
+      "signal-target selector",
+      (harness: RetryHarness) => {
+        harness.kernelExports.kernel_pick_signal_target_tid = vi.fn(
+          () => -ESRCH,
+        );
+      },
+    ],
+    [
+      "deliverable-signal query",
+      (harness: RetryHarness) => {
+        harness.kernelExports.kernel_thread_has_deliverable = vi.fn(
+          () => -ESRCH,
+        );
+      },
+    ],
+  ] as const)(
+    "treats -ESRCH from the %s as a vanished target, not corruption",
+    async (_description, configure) => {
+      const harness = createRetryHarness(4);
+      const futexPointer = 0x1000;
+      new Int32Array(
+        harness.processMemory.buffer,
+      )[futexPointer >>> 2] = 0;
+      writeRequest(harness, ABI_SYSCALLS.Futex, [
+        BigInt(futexPointer),
+        0n,
+        0n,
+        0n,
+        0n,
+        0n,
+      ]);
+      harness.kernelExports.kernel_handle_channel = vi.fn(
+        (rawPointer: number | bigint) => {
+          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
+          return 0;
+        },
+      );
+      harness.kernelExports.kernel_dequeue_signal = vi.fn(() => 0);
+      harness.worker.handleSyscall(harness.channel);
+      expect(
+        harness.worker.pendingFutexWaits.has(harness.channel),
+      ).toBe(true);
+      configure(harness);
+
+      harness.worker.testAuthority.sendSignalForTest(
+        harness.channel.pid,
+        SIGUSR1,
+      );
+      await Promise.resolve();
+
+      expect(harness.onKernelFatal).not.toHaveBeenCalled();
+      expect(
+        harness.kernelExports.kernel_dequeue_signal,
+      ).not.toHaveBeenCalled();
+      expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
+      expect(
+        harness.worker.pendingFutexWaits.has(harness.channel),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    [
       "SYS_KILL missing signal-target selector",
       ABI_SYSCALLS.Kill,
       (harness: RetryHarness) => {

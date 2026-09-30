@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Build upstream SDL 2 with its unmodified OSS dsp backend for Kandelo.
+# Build upstream SDL 2 for Kandelo with its unmodified OSS dsp audio
+# backend, its KMSDRM and Wayland video backends, and its direct evdev
+# input path. The Wayland backend (step 12) runs GL clients against
+# wlcompositor through libwayland-client + the wl_egl_window shim
+# (libwayland-egl.a) + libxkbcommon.
 
 set -euo pipefail
 
@@ -23,6 +27,19 @@ if [ "$TARGET_ARCH" != "wasm32" ]; then
 fi
 
 export WASM_POSIX_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+# Wayland backend deps (step 12b): libwayland provides
+# libwayland-{client,cursor}.a + wayland-egl/cursor headers + the
+# wayland-{client,egl,cursor,scanner}.pc files; libxkbcommon provides
+# libxkbcommon.a + xkbcommon.pc. Their pkgconfig dirs feed SDL2's
+# configure gate (see the CheckWayland short-circuit below).
+LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
+LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
+
+# The KMSDRM backend links libdrm and libgbm. libdrm is a package the
+# resolver stages for us; libgbm is a sysroot library scripts/
+# build-dri-stubs.sh builds, so it is read from the sysroot directly.
+LIBDRM_PREFIX="${WASM_POSIX_DEP_LIBDRM_DIR:?WASM_POSIX_DEP_LIBDRM_DIR must name the staged libdrm prefix (resolve sdl2 through cargo xtask build-deps)}"
+
 CC=wasm32posix-cc
 CXX=wasm32posix-c++
 AR=wasm32posix-ar
@@ -52,14 +69,66 @@ tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
 echo "==> Applying the Kandelo platform-classification patch..."
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0001-recognize-kandelo-as-unix.patch"
 
-echo "==> Configuring SDL2 with only the OSS playback backend..."
+# --- Wayland pkg-config wiring (step 12b) ------------------------------
+# SDL2's configure gates the Wayland backend on a hard pkg-config probe
+# (configure.ac CheckWayland ~L1742):
+#   $PKG_CONFIG --exists 'wayland-client >= 1.18' wayland-scanner \
+#               wayland-egl wayland-cursor egl 'xkbcommon >= 0.5.0'
+# The wayland-* .pc files ship in libwayland's prefix, xkbcommon.pc in
+# libxkbcommon's. egl.pc has no owning resolver package (our libEGL is the
+# sysroot stub from scripts/build-gles-stubs.sh), so we synthesize a
+# minimal one here purely to satisfy the --exists gate — SDL compiles
+# against its own bundled khronos EGL headers (src/video/khronos), and
+# the wayland backend links libEGL.a explicitly at client-link time
+# (step 12c), so egl.pc's Libs/Cflags are never consumed. PKG_CONFIG
+# points at the cross wrapper, which reads PKG_CONFIG_PATH (kandelo
+# cache + this build dir pass its host-path filter).
+export PKG_CONFIG=wasm32posix-pkg-config
+PC_LOCAL="$BUILD_DIR/pkgconfig"
+mkdir -p "$PC_LOCAL"
+cat > "$PC_LOCAL/egl.pc" <<EOF
+Name: egl
+Description: EGL (kandelo libEGL stub; headers via SDL khronos, lib linked at client-link)
+Version: 1.5
+Libs: -lEGL
+Cflags:
+EOF
+export PKG_CONFIG_PATH="$LIBWAYLAND_PREFIX/lib/pkgconfig:$LIBXKBCOMMON_PREFIX/lib/pkgconfig:$PC_LOCAL"
+
+# Sanity: fail loudly if the gate probe won't pass, rather than letting
+# configure silently report "Wayland support: no".
+if ! "$PKG_CONFIG" --exists 'wayland-client >= 1.18' wayland-scanner \
+        wayland-egl wayland-cursor egl 'xkbcommon >= 0.5.0'; then
+    echo "ERROR: wayland pkg-config gate failed. PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >&2
+    "$PKG_CONFIG" --exists --print-errors 'wayland-client >= 1.18' \
+        wayland-scanner wayland-egl wayland-cursor egl 'xkbcommon >= 0.5.0' >&2 || true
+    exit 1
+fi
+
+echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
 # Kandelo exposes neither the non-POSIX sysctl header nor its matching API.
 # Pin the cross-compile probe so SDL uses its portable sysconf path.
 # Executable links intentionally permit unresolved host imports, so link-only
 # Autoconf probes cannot prove optional functions. Pin only helpers absent from
 # the Kandelo musl headers/library; SDL provides portable fallbacks for them.
+#
+# libdrm and gbm ship no .pc files in the Kandelo sysroot. SDL consults
+# pkg-config only to populate CFLAGS/LIBS, so presetting the four
+# variables short-circuits the lookup (acinclude/pkg.m4, _PKG_CONFIG's
+# first branch).
+#
+# SDL_VIDEO_STATIC_ANGLE forces src/video/SDL_egl.c's LOAD_FUNC macro
+# down its static-link branch, so `_this->egl_data->eglFoo` binds to the
+# libEGL.a symbol instead of going through SDL_LoadFunction. With
+# --disable-loadso that loader returns NULL and EGL init fails before a
+# window can exist. The ANGLE in the name means "EGL symbols are linked
+# in, not dlopened" — the same path the Vita and WinRT builds take.
 (
     cd "$BUILD_DIR"
+    LIBDRM_CFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \
+    LIBDRM_LIBS="-L$LIBDRM_PREFIX/lib -ldrm" \
+    LIBGBM_CFLAGS="-I$WASM_POSIX_SYSROOT/include" \
+    LIBGBM_LIBS="-L$WASM_POSIX_SYSROOT/lib -lgbm" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --prefix="$INSTALL_DIR" \
@@ -79,7 +148,22 @@ echo "==> Configuring SDL2 with only the OSS playback backend..."
         --disable-libsamplerate \
         --disable-diskaudio \
         --disable-dummyaudio \
-        --disable-video \
+        --enable-video \
+        --enable-video-kmsdrm \
+        --disable-kmsdrm-shared \
+        --disable-video-x11 \
+        --enable-video-wayland \
+        --disable-wayland-shared \
+        --disable-libdecor \
+        --disable-video-vivante \
+        --disable-video-cocoa \
+        --disable-video-directfb \
+        --disable-video-offscreen \
+        --disable-video-dummy \
+        --disable-video-opengl \
+        --enable-video-opengl-es2 \
+        --enable-events \
+        --enable-input-events \
         --disable-render \
         --disable-joystick \
         --disable-haptic \
@@ -95,7 +179,9 @@ echo "==> Configuring SDL2 with only the OSS playback backend..."
         --disable-assembly \
         CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" \
         NM="$NM" STRIP="$STRIP" \
-        CFLAGS="-O2 $REPRO_FLAGS" \
+        CFLAGS="-O2 $REPRO_FLAGS -DSDL_VIDEO_STATIC_ANGLE=1" \
+        CPPFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \
+        LDFLAGS="-L$LIBDRM_PREFIX/lib -L$WASM_POSIX_SYSROOT/lib" \
         ac_cv_func_dlopen=no \
         ac_cv_func_sysctlbyname=no \
         ac_cv_func_elf_aux_info=no \
@@ -124,10 +210,77 @@ echo "==> Configuring SDL2 with only the OSS playback backend..."
 sed -i.bak 's|^prefix=.*|prefix=${pcfiledir}/../..|' \
     "$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
 rm -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc.bak"
+
+# Rewrite `Libs:` so the metadata is both relocatable and complete.
+#
+# Relocatable: configure copies LIBDRM_LIBS / LIBGBM_LIBS through verbatim,
+# so the generated line carries absolute `-L` paths into this build machine's
+# resolver cache and *its own worktree's* sysroot. This .pc is a cached
+# package output shared by every worktree on the machine, so a consumer would
+# link whatever libgbm.a some other checkout happens to hold — the same
+# stale-sysroot failure that shipped a broken sdl2.wasm. Drop the absolute
+# search paths and let the SDK's `--sysroot` resolve `-ldrm`/`-lgbm` from the
+# consumer's own sysroot, where scripts/build-dri-stubs.sh installs them.
+# (Dropping them also makes this output byte-identical across machines.)
+#
+# Complete: CFLAGS below define SDL_VIDEO_STATIC_ANGLE=1, which makes
+# src/video/SDL_egl.c bind `eglFoo` as a direct symbol reference instead of
+# an SDL_LoadFunction lookup. libSDL2.a therefore has hard undefined
+# references to EGL and GLES2, and consumers that link through this file must
+# be told so. Without it, `-Wl,--allow-undefined` turns each one into an
+# `env.*` import that traps the first time a window is created. The same
+# holds for libffi: configure's Libs names the static Wayland archives, but
+# libwayland-client marshals every request through ffi_call, and nothing
+# else would tell a consumer to link it.
+sdl2_pc="$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
+awk '
+    /^Libs:/ {
+        line = "Libs:"
+        has_egl = 0
+        has_gles = 0
+        has_ffi = 0
+        for (i = 2; i <= NF; i++) {
+            if ($i ~ /^-L\//) continue
+            if ($i == "-lEGL")    has_egl = 1
+            if ($i == "-lGLESv2") has_gles = 1
+            if ($i == "-lffi")    has_ffi = 1
+            line = line " " $i
+        }
+        if (!has_ffi)  line = line " -lffi"
+        if (!has_egl)  line = line " -lEGL"
+        if (!has_gles) line = line " -lGLESv2"
+        print line
+        next
+    }
+    { print }
+' "$sdl2_pc" > "$sdl2_pc.next"
+mv "$sdl2_pc.next" "$sdl2_pc"
+if grep -q -- '-L/' "$sdl2_pc"; then
+    echo "ERROR: sdl2.pc still names an absolute library search path" >&2
+    grep -- '-L/' "$sdl2_pc" >&2
+    exit 1
+fi
+for flag in -lSDL2 -ldrm -lgbm -lwayland-client -lxkbcommon -lffi -lEGL -lGLESv2; do
+    grep -q -- "$flag" "$sdl2_pc" || {
+        echo "ERROR: sdl2.pc does not declare $flag" >&2
+        exit 1
+    }
+done
 rm -rf "$INSTALL_DIR/bin" "$INSTALL_DIR/share" "$INSTALL_DIR/lib/cmake"
 rm -f "$INSTALL_DIR/lib/"*.la
 
 test -f "$INSTALL_DIR/lib/libSDL2.a"
 test -f "$INSTALL_DIR/include/SDL2/SDL.h"
 test -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
-echo "==> SDL2 OSS-only static package complete"
+
+# Autoconf silently drops a backend whose probe fails, which would leave a
+# library that links but cannot open a window. Fail the build instead.
+for feature in SDL_VIDEO_DRIVER_KMSDRM SDL_VIDEO_DRIVER_WAYLAND \
+    SDL_VIDEO_OPENGL_ES2 SDL_VIDEO_OPENGL_EGL SDL_INPUT_LINUXEV \
+    SDL_AUDIO_DRIVER_OSS; do
+    grep -q "^#define $feature 1" "$INSTALL_DIR/include/SDL2/SDL_config.h" || {
+        echo "ERROR: configure did not enable $feature" >&2
+        exit 1
+    }
+done
+echo "==> SDL2 static package complete (KMSDRM + Wayland video, evdev input, OSS audio)"

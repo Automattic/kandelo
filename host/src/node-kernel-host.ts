@@ -27,11 +27,13 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
   ResolveExecRequestMessage,
+  DestroyProgressEvent,
 } from "./node-kernel-protocol";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
+import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import {
   snapshotClosedLazyAssets,
   snapshotClosedLazyAssetSources,
@@ -47,6 +49,8 @@ import type { MountSpec } from "./vfs/default-mounts";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
+import type { InputEvent, InputSource } from "./input/input-source";
+import { batchBySynReport } from "./input/input-batch";
 
 export type { HttpRequest, HttpResponse };
 
@@ -132,8 +136,8 @@ export interface NodeKernelHostOptions {
   /**
    * Opt in to mount-based VFS for this kernel boot.
    *
-   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs`, falling back
-   *     to the resolver-managed `programs/rootfs.vfs` artifact, and apply
+   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs.zst`, falling back
+   *     to the resolver-managed `programs/rootfs.vfs.zst` artifact, and apply
    *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The worker constructs
    *     a `VirtualPlatformIO` (rootfs at `/`, host-fs scratch dirs at
    *     `/tmp` etc.).
@@ -224,6 +228,7 @@ export class NodeKernelHost {
   private _nextRequestId = 1;
   private options: NodeKernelHostOptions;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
+  private destroyProgress = createDestroyProgressFanout();
 
   constructor(options?: NodeKernelHostOptions) {
     this.options = options ?? {};
@@ -647,9 +652,25 @@ export class NodeKernelHost {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
     this.sendToWorker({ type: "kms_attach_canvas", crtcId, canvas, stats, opts });
+  }
+
+  /**
+   * Report the CRTC canvas's current display size in device pixels.
+   * Mirrors `BrowserKernel.kmsSetDisplaySize`. Feeds the virtual
+   * connector's PREFERRED mode (so mode-picking clients see it) and, when
+   * an OffscreenCanvas polyfill provides a real canvas, the
+   * `webgl2-scanout` presenter's drawing-buffer size.
+   */
+  kmsSetDisplaySize(
+    crtcId: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
+  ): void {
+    this.sendToWorker({ type: "kms_set_display_size", crtcId, width, height, physicalMm });
   }
 
   /**
@@ -659,6 +680,75 @@ export class NodeKernelHost {
    */
   kmsAttachStats(crtcId: number, stats: SharedArrayBuffer): void {
     this.sendToWorker({ type: "kms_attach_stats", crtcId, stats });
+  }
+
+  /**
+   * Push one evdev record into the kernel's `/dev/input/event{0,1}`
+   * ring. Mirrors `BrowserKernel.injectInputEvent`. The Node host
+   * doesn't have a DOM source; tests drive evdev traffic directly
+   * via this entry point.
+   */
+  injectInputEvent(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void {
+    this.sendToWorker({
+      type: "input_event_inject",
+      device,
+      ev_type,
+      code,
+      value,
+    });
+  }
+
+  /**
+   * Push a whole `SYN_REPORT` frame of evdev records to the worker in one
+   * message, so the worker runs a single kernel entry and wake scan for
+   * the frame. Mirrors `BrowserKernel.injectInputEventBatch`.
+   */
+  injectInputEventBatch(records: InputEvent[]): void {
+    if (records.length === 0) return;
+    this.sendToWorker({ type: "input_event_batch_inject", records });
+  }
+
+  /**
+   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * on `/dev/input/event1` reports the right `ABS_X.maximum` /
+   * `ABS_Y.maximum`. Mirrors `BrowserKernel.setInputCanvasDims`.
+   */
+  setInputCanvasDims(width: number, height: number): void {
+    this.sendToWorker({ type: "set_input_canvas_dims", width, height });
+  }
+
+  /**
+   * Wire an `InputSource` into the kernel: sets canvas dims, then
+   * starts the source with a dispatch callback that funnels each
+   * emitted record through `injectInputEvent`. Mirrors
+   * `BrowserKernel.attachInputSource` — dual-host parity per
+   * CLAUDE.md §"Two hosts".
+   *
+   * On the Node host the source is typically a `NodeInputSource`
+   * (no-op) so the init path is symmetric with the browser; tests
+   * call `injectInputEvent` directly afterwards.
+   */
+  private attachedInputSource: InputSource | null = null;
+
+  attachInputSource(
+    source: InputSource,
+    dims: { width: number; height: number },
+  ): void {
+    // Stop and replace any previously attached source (dual-host parity with
+    // BrowserKernel); NodeInputSource.stop() is a no-op today, but keeping
+    // the lifecycle symmetric avoids a divergence when a real Node source
+    // (e.g. a TTY capture) is added.
+    this.attachedInputSource?.stop();
+    this.attachedInputSource = source;
+    this.setInputCanvasDims(dims.width, dims.height);
+    source.start(
+      batchBySynReport((records) => this.injectInputEventBatch(records)),
+    );
   }
 
   /**
@@ -859,6 +949,13 @@ export class NodeKernelHost {
     };
   }
 
+  /** Subscribe to teardown progress while `destroy()` reaps processes. */
+  subscribeDestroyProgress(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void {
+    return this.destroyProgress.subscribe(cb);
+  }
+
   /**
    * Read a regular file from the existing worker-owned VFS. This is the Node
    * peer of BrowserKernel.readFileFromVfs(); it never falls back to an ambient
@@ -931,6 +1028,8 @@ export class NodeKernelHost {
 
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
+    this.attachedInputSource?.stop();
+    this.attachedInputSource = null;
     if (!this.workerStarted) return;
     let gracefulDetachFailure: string | undefined;
     this.kernelWorkerExitExpected = true;
@@ -957,6 +1056,7 @@ export class NodeKernelHost {
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
+    this.destroyProgress.clear();
     if (gracefulDetachFailure || realmTerminationFailure) {
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -1113,6 +1213,9 @@ export class NodeKernelHost {
       case "lazy_download":
         this.emitLazyDownload(msg.event);
         break;
+      case "destroy_progress":
+        this.destroyProgress.emit(msg.event);
+        break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol
         // grows. Runtime values still originate outside TypeScript, so make a
@@ -1228,7 +1331,7 @@ function resolveRootfsImage(
 }
 
 export interface ResolvedRootfsArtifact {
-  resolverRequest: "rootfs.vfs" | "programs/rootfs.vfs";
+  resolverRequest: "rootfs.vfs.zst" | "programs/rootfs.vfs.zst";
   selectedPath: string;
 }
 
@@ -1237,22 +1340,22 @@ export function resolveRootfsArtifact(
 ): ResolvedRootfsArtifact {
   try {
     return {
-      resolverRequest: "rootfs.vfs",
-      selectedPath: resolver("rootfs.vfs"),
+      resolverRequest: "rootfs.vfs.zst",
+      selectedPath: resolver("rootfs.vfs.zst"),
     };
   } catch (rootfsError) {
     try {
       return {
-        resolverRequest: "programs/rootfs.vfs",
-        selectedPath: resolver("programs/rootfs.vfs"),
+        resolverRequest: "programs/rootfs.vfs.zst",
+        selectedPath: resolver("programs/rootfs.vfs.zst"),
       };
     } catch (programsError) {
       const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
       const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);
       throw new Error(
         `rootfsImage:"default" requested but no rootfs image was available.\n` +
-          `Tried rootfs.vfs:\n${rootfsMessage}\n` +
-          `Tried programs/rootfs.vfs:\n${programsMessage}\n` +
+          `Tried rootfs.vfs.zst:\n${rootfsMessage}\n` +
+          `Tried programs/rootfs.vfs.zst:\n${programsMessage}\n` +
           `Run scripts/build-rootfs.sh, fetch/build the rootfs package, or pass explicit bytes.`,
       );
     }

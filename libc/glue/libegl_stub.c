@@ -13,6 +13,7 @@
  */
 
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <fcntl.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -27,6 +28,21 @@ static EGLint   g_last_error    = EGL_SUCCESS;
 static int      g_initialized   = 0;
 static int      g_context_made  = 0;
 static int      g_surface_made  = 0;
+/* GPU-tier producer target: the bo handle (from PRIME_FD_TO_HANDLE /
+ * gbm_bo) whose FBO the NEXT eglCreateWindowSurface renders into. Set by
+ * wpkEglSetWindowSurfaceTarget, consumed once and cleared. 0 = an
+ * ordinary canvas/scanout window surface (the default). */
+static uint32_t g_pending_surface_target_bo = 0;
+/* The native window (a struct wl_egl_window *) of the most recently created
+ * window surface, remembered so eglSwapBuffers can drive its wl_surface
+ * attach+commit. NULL for canvas/scanout surfaces (KMS compositor). */
+static void    *g_current_egl_window = NULL;
+
+/* libwayland-egl hooks (libc/glue/libwayland-egl.c). Weak so a program that
+ * links libEGL WITHOUT libwayland-egl — a KMS/canvas GL client — still links;
+ * the symbols resolve to NULL and the wayland-egl path is simply skipped. */
+__attribute__((weak)) uint32_t _wpk_wlegl_bo_handle(void *egl_window);
+__attribute__((weak)) void     _wpk_wlegl_present(void *egl_window);
 
 #define EGL_DPY_HANDLE      ((EGLDisplay)(uintptr_t)1)
 #define EGL_CONFIG_HANDLE   ((EGLConfig) (uintptr_t)1)
@@ -38,6 +54,38 @@ uint8_t *_wpk_gl_cmdbuf_base(void)  { return g_cmdbuf_base; }
 
 EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id) {
     (void)display_id;
+    return EGL_DPY_HANDLE;
+}
+
+/* EGL 1.5 core. `eglQueryString(dpy, EGL_VERSION)` below reports 1.5, so
+ * a client that believes us binds this entry point instead of the 1.0
+ * `eglGetDisplay` — SDL2's `SDL_EGL_LoadLibrary` does exactly that, and
+ * under `SDL_VIDEO_STATIC_ANGLE` the binding is a direct symbol
+ * reference. It has to resolve from libEGL.a or `-Wl,--allow-undefined`
+ * silently turns it into an `env.eglGetPlatformDisplay` import that the
+ * host stubs with a throwing function.
+ *
+ * One display, one device: everything is driven through
+ * WPK_GL_DEVICE. `EGL_PLATFORM_GBM_KHR` (== EGL_PLATFORM_GBM_MESA, the
+ * enum SDL2's KMSDRM backend passes) is the only platform this backend
+ * really is, so every other platform gets the EGL_BAD_PARAMETER the
+ * spec asks for rather than a display that cannot work. `native_display`
+ * is the caller's `gbm_device *`, which selects nothing here: the
+ * libgbm shim opens the same device. */
+EGLDisplay eglGetPlatformDisplay(EGLenum platform, void *native_display,
+                                 const EGLAttrib *attrib_list) {
+    (void)native_display;
+    if (platform != EGL_PLATFORM_GBM_KHR) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_NO_DISPLAY;
+    }
+    /* No platform attributes are defined for this backend. The spec
+     * requires EGL_BAD_ATTRIBUTE for anything we do not recognize; a NULL
+     * or immediately EGL_NONE-terminated list is legal. */
+    if (attrib_list && attrib_list[0] != EGL_NONE) {
+        g_last_error = EGL_BAD_ATTRIBUTE;
+        return EGL_NO_DISPLAY;
+    }
     return EGL_DPY_HANDLE;
 }
 
@@ -148,7 +196,7 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
 EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
                                   EGLNativeWindowType win,
                                   const EGLint *attrib_list) {
-    (void)config; (void)win; (void)attrib_list;
+    (void)config;
     if (dpy != EGL_DPY_HANDLE || g_fd < 0) {
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_NO_SURFACE;
@@ -159,12 +207,67 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
         .width = 0, .height = 0, .config_id = 1,
         .reserved = {0,0,0,0},
     };
+    /* Native window handles are opaque here (there is no real winsys), so
+     * an explicit EGL_WIDTH/EGL_HEIGHT attrib pair is the only way a
+     * caller can size the drawing buffer. The host resizes the backing
+     * canvas to a non-zero request — a KMS compositor passes its mode
+     * dims since it creates the surface before its first ADDFB (the
+     * point where the host could otherwise infer a size). */
+    if (attrib_list) {
+        for (const EGLint *a = attrib_list; a[0] != EGL_NONE; a += 2) {
+            if (a[0] == EGL_WIDTH)  surf.width  = (uint32_t)a[1];
+            if (a[0] == EGL_HEIGHT) surf.height = (uint32_t)a[1];
+        }
+    }
+    /* GPU-tier producer targeting: reserved[0] carries the target bo
+     * handle. The kernel translates it to a global bo_id and the host
+     * redirects this surface's default-framebuffer renders into that
+     * bo's FBO (see GLIO_CREATE_SURFACE). Consumed once. 0 leaves the
+     * ordinary canvas/scanout behavior untouched.
+     *
+     * An explicit wpkEglSetWindowSurfaceTarget wins; otherwise, when the
+     * native window is a libwayland-egl wl_egl_window (SDL2's Wayland GL
+     * backend), take the bo it allocated. Remember that window so
+     * eglSwapBuffers can attach+commit it. */
+    uint32_t target = g_pending_surface_target_bo;
+    g_pending_surface_target_bo = 0;
+    g_current_egl_window = (void *)win;
+    if (!target && win && _wpk_wlegl_bo_handle)
+        target = _wpk_wlegl_bo_handle((void *)win);
+    surf.reserved[0] = target;
     if (ioctl(g_fd, GLIO_CREATE_SURFACE, &surf) != 0) {
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_SURFACE;
     }
     g_surface_made = 1;
     return EGL_SURFACE_HANDLE;
+}
+
+/* Called by libwayland-egl after wl_egl_window_resize gave the window a new
+ * bo: re-aim the live window surface's default framebuffer at it. The
+ * surface is destroyed and re-created with the new target, which the host
+ * applies at once because the context already exists. Commands queued
+ * against the old target are flushed first, so they still land in the old
+ * bo, which libwayland-egl keeps alive until its successor is committed. */
+void _wpk_egl_window_retarget(void *egl_window) {
+    if (!egl_window || egl_window != g_current_egl_window || !g_surface_made
+        || g_fd < 0 || !_wpk_wlegl_bo_handle)
+        return;
+    uint32_t target = _wpk_wlegl_bo_handle(egl_window);
+    if (!target) return;
+    _wpk_gl_flush();
+    ioctl(g_fd, GLIO_DESTROY_SURFACE, NULL);
+    struct gl_surface_attrs surf = {
+        .kind = WPK_SURFACE_DEFAULT,
+        .width = 0, .height = 0, .config_id = 1,
+        .reserved = {target, 0, 0, 0},
+    };
+    if (ioctl(g_fd, GLIO_CREATE_SURFACE, &surf) != 0) {
+        /* The surface is gone and nothing replaced it: eglMakeCurrent and
+         * eglSwapBuffers now fail rather than render into a stale target. */
+        g_surface_made = 0;
+        g_current_egl_window = NULL;
+    }
 }
 
 EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
@@ -190,7 +293,8 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
 }
 
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
-    if (dpy != EGL_DPY_HANDLE || surface != EGL_SURFACE_HANDLE) {
+    if (dpy != EGL_DPY_HANDLE || surface != EGL_SURFACE_HANDLE
+        || !g_surface_made) {
         g_last_error = EGL_BAD_SURFACE;
         return EGL_FALSE;
     }
@@ -199,6 +303,11 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
         g_last_error = EGL_BAD_SURFACE;
         return EGL_FALSE;
     }
+    /* For a libwayland-egl window the flush + GLIO_PRESENT above is the
+     * buffer-ready fence; now attach+commit the dmabuf buffer to the
+     * wl_surface. No-op (skipped) for canvas/scanout surfaces. */
+    if (g_current_egl_window && _wpk_wlegl_present)
+        _wpk_wlegl_present(g_current_egl_window);
     return EGL_TRUE;
 }
 
@@ -206,6 +315,7 @@ EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface) {
     if (dpy != EGL_DPY_HANDLE || surface != EGL_SURFACE_HANDLE) return EGL_FALSE;
     ioctl(g_fd, GLIO_DESTROY_SURFACE, NULL);
     g_surface_made = 0;
+    g_current_egl_window = NULL;
     return EGL_TRUE;
 }
 
@@ -239,6 +349,22 @@ EGLint eglGetError(void) {
     return e;
 }
 
+/* The "1.5" below is the version clients branch on, and this archive
+ * does not define the whole 1.5 entry-point set: the sync objects
+ * (eglCreateSync/eglDestroySync/eglClientWaitSync/eglWaitSync/
+ * eglGetSyncAttrib), the images (eglCreateImage/eglDestroyImage),
+ * eglCreatePlatformWindowSurface/eglCreatePlatformPixmapSurface, and
+ * several 1.0-1.4 queries (eglGetConfigs, eglQuerySurface,
+ * eglQueryContext, eglGetCurrent*, eglSurfaceAttrib, eglBindTexImage,
+ * eglReleaseTexImage, eglCopyBuffers, eglCreatePixmapSurface,
+ * eglCreatePbufferFromClientBuffer) are all absent. That gap is
+ * deliberately left visible rather than papered over with a plausible
+ * return value — `wasm_require_approved_reserved_env_imports` in
+ * scripts/wasm-artifact-guards.sh refuses any artifact that references
+ * one, so a new consumer fails its build here instead of trapping on a
+ * throwing host import at run time. Implement the entry point when a
+ * consumer needs it; eglQuerySurface in particular needs the granted
+ * surface size, which GLIO_CREATE_SURFACE does not report back today. */
 const char *eglQueryString(EGLDisplay dpy, EGLint name) {
     if (dpy != EGL_DPY_HANDLE) return NULL;
     switch (name) {
@@ -256,3 +382,172 @@ EGLBoolean eglWaitClient(void) {
 }
 
 EGLBoolean eglReleaseThread(void) { return EGL_TRUE; }
+
+/* ----- additional thin stubs required by SDL2 ------------------- */
+
+/* SDL_egl.c's LOAD_FUNC under SDL_VIDEO_STATIC_ANGLE assigns these
+ * symbols directly into `_this->egl_data->NAME`.  All of them must
+ * therefore exist at link time even when their behaviour is a no-op
+ * (SDL2 documents NULL returns + EGL_FALSE returns as "the
+ * extension/feature isn't available", which is exactly the truth
+ * for our single-window single-buffer surface). */
+
+EGLBoolean eglSwapInterval(EGLDisplay dpy, EGLint interval) {
+    (void) interval;
+    if (dpy != EGL_DPY_HANDLE) {
+        g_last_error = EGL_BAD_DISPLAY;
+        return EGL_FALSE;
+    }
+    /* No vsync knob — the host bridge runs at the canvas's natural
+     * cadence (rAF in the browser, hrtime tick on Node).  Accept
+     * any interval and return EGL_TRUE so SDL2 doesn't surface an
+     * error to the app. */
+    return EGL_TRUE;
+}
+
+EGLBoolean eglWaitGL(void) {
+    _wpk_gl_flush();
+    return EGL_TRUE;
+}
+
+EGLBoolean eglWaitNative(EGLint engine) {
+    (void) engine;
+    return EGL_TRUE;
+}
+
+EGLenum eglQueryAPI(void) {
+    return EGL_OPENGL_ES_API;
+}
+
+EGLSurface eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config,
+                                   const EGLint *attrib_list) {
+    (void) config; (void) attrib_list;
+    if (dpy != EGL_DPY_HANDLE) {
+        g_last_error = EGL_BAD_DISPLAY;
+        return EGL_NO_SURFACE;
+    }
+    /* SDL2 only requests pbuffers under SDL_VIDEO_OFFSCREEN, which
+     * we don't enable — return EGL_NO_SURFACE so any accidental
+     * caller fails fast. */
+    g_last_error = EGL_BAD_CONFIG;
+    return EGL_NO_SURFACE;
+}
+
+/* ----- WPK dmabuf-import extension ------------------------------- */
+
+/* Kandelo's stand-in for EGL_EXT_image_dma_buf_import +
+ * glEGLImageTargetTexture2DOES: import a prime fd on the EGL session's
+ * renderD128 fd, then bind the bo as a texture in the current context.
+ * Consumers (wlcompositor's GPU compositing path) declare these extern —
+ * they resolve from libEGL.a at link time.
+ *
+ * The DRM ioctl numbers/structs below mirror Linux UAPI (and
+ * wasm_posix_shared::dri) — libEGL must not depend on libdrm headers. */
+
+#define WPK_DRM_IOCTL_GEM_CLOSE            0x40086409u
+#define WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE   0xc00c642eu
+#define WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE 0xc01064e1u
+
+struct wpk_drm_prime_handle { uint32_t handle; uint32_t flags; int32_t fd; };
+struct wpk_drm_gem_close    { uint32_t handle; uint32_t pad; };
+struct wpk_drm_bind_foreign_texture {
+    uint32_t bo_handle;
+    uint32_t gl_target;
+    uint32_t ctx_id;
+    uint32_t gl_texture_id;   /* out */
+};
+
+/* Import `prime_fd`'s bo as a GEM handle on the EGL device fd. Returns
+ * the handle, or 0 on failure. The caller owns the handle and releases
+ * it with wpkEglCloseBoHandle. */
+unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd) {
+    if (dpy != EGL_DPY_HANDLE || g_fd < 0 || prime_fd < 0) return 0;
+    struct wpk_drm_prime_handle req = { .handle = 0, .flags = 0, .fd = prime_fd };
+    if (ioctl(g_fd, WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) != 0) return 0;
+    return req.handle;
+}
+
+/* (Re)bind an imported bo as a GL_TEXTURE_2D texture in the current
+ * context, uploading the bo's pixels host-side (no cmdbuf marshalling).
+ * Re-call after the producer commits to refresh the texture — the
+ * returned id is stable per bo. Returns 0 on failure (no GL backing on
+ * this host, unknown handle) — callers degrade to their CPU path. */
+unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
+                             unsigned gl_target) {
+    if (dpy != EGL_DPY_HANDLE || g_fd < 0 || !g_context_made) return 0;
+    /* Flush queued GL ops first so host-side texture uploads and cmdbuf
+     * draws execute in program order. */
+    _wpk_gl_flush();
+    struct wpk_drm_bind_foreign_texture req = {
+        .bo_handle = bo_handle,
+        .gl_target = gl_target,
+        .ctx_id = 1,            /* single-context v1, matches GLIO_CREATE_CONTEXT */
+        .gl_texture_id = 0,
+    };
+    if (ioctl(g_fd, WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE, &req) != 0) return 0;
+    return req.gl_texture_id;
+}
+
+/* Target the NEXT eglCreateWindowSurface at a GPU-tier bo's FBO: a
+ * producer renders its frame into `bo_handle` (allocated via
+ * gbm_bo_create with GPU usage, or imported via PRIME_FD_TO_HANDLE)
+ * instead of a display canvas, and the compositor samples it zero-copy
+ * with wpkEglBindBoTexture. Call immediately before eglCreateWindowSurface;
+ * the target is consumed once. Passing 0 (or not calling this) yields an
+ * ordinary window surface. No-op if the display isn't initialized. */
+void wpkEglSetWindowSurfaceTarget(EGLDisplay dpy, unsigned bo_handle) {
+    if (dpy != EGL_DPY_HANDLE) return;
+    g_pending_surface_target_bo = bo_handle;
+}
+
+/* Release a handle from wpkEglImportDmabufHandle. */
+void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
+    if (dpy != EGL_DPY_HANDLE || g_fd < 0) return;
+    struct wpk_drm_gem_close req = { .handle = bo_handle, .pad = 0 };
+    ioctl(g_fd, WPK_DRM_IOCTL_GEM_CLOSE, &req);
+}
+
+/* eglGetProcAddress: EGL 1.5 lets clients query core client-API entry
+ * points as well as extensions, and GL loaders (ScummVM's glad via
+ * SDL_GL_GetProcAddress) fetch EVERY GL function through this pointer —
+ * a NULL answer for glGetString makes such loaders report "no GL".
+ * Answer with the statically linked libGLESv2.a entry points; unknown
+ * names (EGL-side extensions like eglCreateSyncKHR, GL functions the
+ * cmdbuf encoder doesn't implement) return NULL, the documented
+ * "not present" answer, so feature probes stay truthful. */
+#define WPK_GL_PROC_LIST(X) \
+    X(glActiveTexture) X(glAttachShader) X(glBindAttribLocation) \
+    X(glBindBuffer) X(glBindFramebuffer) X(glBindTexture) \
+    X(glBlendFunc) X(glBufferData) X(glBufferSubData) \
+    X(glCheckFramebufferStatus) X(glClear) X(glClearColor) \
+    X(glCompileShader) X(glCreateProgram) X(glCreateShader) \
+    X(glDeleteBuffers) X(glDeleteFramebuffers) X(glDeleteProgram) \
+    X(glDeleteShader) X(glDeleteTextures) X(glDetachShader) \
+    X(glDisable) X(glDisableVertexAttribArray) X(glDrawArrays) \
+    X(glEnable) X(glEnableVertexAttribArray) X(glFramebufferTexture2D) \
+    X(glGenBuffers) X(glGenFramebuffers) X(glGenTextures) \
+    X(glGenerateMipmap) X(glGetAttribLocation) X(glGetError) \
+    X(glGetIntegerv) X(glGetProgramInfoLog) X(glGetProgramiv) \
+    X(glGetShaderInfoLog) X(glGetShaderPrecisionFormat) X(glGetShaderiv) \
+    X(glGetString) X(glGetUniformLocation) X(glHint) X(glLinkProgram) \
+    X(glPixelStorei) X(glReadPixels) X(glScissor) X(glShaderSource) \
+    X(glTexImage2D) X(glTexParameteri) X(glTexSubImage2D) \
+    X(glUniform1f) X(glUniform1i) X(glUniform2f) X(glUniform3f) \
+    X(glUniform4f) X(glUniformMatrix4fv) X(glUseProgram) \
+    X(glVertexAttrib4fv) X(glVertexAttribPointer) X(glViewport)
+
+#define WPK_GL_PROC_DECL(name) extern void name(void);
+WPK_GL_PROC_LIST(WPK_GL_PROC_DECL)
+
+static const struct { const char *name; void (*fn)(void); } k_gl_procs[] = {
+#define WPK_GL_PROC_ENTRY(name) { #name, name },
+WPK_GL_PROC_LIST(WPK_GL_PROC_ENTRY)
+};
+
+void (*eglGetProcAddress(const char *procname))(void) {
+    if (procname == NULL) return NULL;
+    for (size_t i = 0; i < sizeof k_gl_procs / sizeof k_gl_procs[0]; i++) {
+        if (strcmp(k_gl_procs[i].name, procname) == 0) return k_gl_procs[i].fn;
+    }
+    return NULL;
+}

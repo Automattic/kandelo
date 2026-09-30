@@ -142,8 +142,8 @@ excludes runtime-owned `wp-content/database` state and `wp-content/debug.log`.
 Resolver-selected paths are retained alongside the logical artifact names;
 browser VFS evidence reflects the public asset that the benchmark page selects
 first. Kernel fingerprints use the same policy-aware binary resolver as each
-host. Node rootfs evidence records which of the runtime's `rootfs.vfs` then
-`programs/rootfs.vfs` fallback requests won, and is required for the
+host. Node rootfs evidence records which of the runtime's `rootfs.vfs.zst` then
+`programs/rootfs.vfs.zst` fallback requests won, and is required for the
 `syscall-io` and established `process-lifecycle` suites that boot that default
 image. The Node `spawn-scratch` suite supplies both of its executables and
 explicitly uses an empty VFS, so it neither resolves nor records a rootfs.
@@ -278,16 +278,21 @@ Runs PHP 8.4 with a full WordPress 6.7 installation. Two measurements: cold CLI 
 | `cli_require_ms` | ms | `php -r "require 'wp-load.php'"` — process start to exit |
 | `http_first_response_ms` | ms | Start PHP built-in server, time to first HTTP response |
 
+Each suite round first copies the WordPress tree and the router script into a
+fresh scratch directory under the OS temp directory, following symlinks (see
+[Checkout location](#checkout-location-does-not-change-the-numbers)). The
+measurements run against that copy; the checkout's tree is only the source.
 Each Node measurement starts from the WordPress setup state: the benchmark
 removes and recreates `wp-content/database`, removes `wp-content/debug.log`, and
 does the same cleanup after the measurement. When the OPcache side module is
 available and `NO_OPCACHE` is not `1`, the measurement uses
 `opcache.file_cache_only=1` with timestamp validation disabled. Each suite
-round creates a private cache root under `benchmarks/results/`, and the CLI and
+round creates a private cache root inside its scratch copy, and the CLI and
 HTTP measurements each receive a separate empty cache directory that is reset
-before and after timing. The run-owned cache root is removed when the round
-finishes, so compiled scripts cannot carry across metrics, rounds, concurrent
-benchmark processes, or worktrees.
+before and after timing. The scratch copy is removed when the round finishes,
+so compiled scripts cannot carry across metrics, rounds, concurrent benchmark
+processes, or worktrees. The HTTP measurement fails if the first response
+carries a PHP warning or fatal error, rather than timing an error page.
 
 **Prerequisites:**
 
@@ -322,6 +327,14 @@ Four suite variants are registered so wasm32 and wasm64 builds can be compared s
 
 Set `MARIADB_BENCH_VERBOSE=1` to forward mariadbd stdout/stderr to the shell (useful for debugging hangs or slow bootstraps).
 
+Each query metric times one `mysqltest` session: process start, connect, the
+SQL, and exit. `mariadbd`, `mysqltest`, and the bootstrap SQL are resolved and
+read once before any timing. Resolving a program runs the binary resolver, which
+checks the program index (about 0.9 s, growing with the number of packages); it
+used to run inside every timed query and made up about 90% of each query number.
+The data directory is a fresh scratch directory under the OS temp directory,
+removed after the run.
+
 **Prerequisites:**
 
 | Component | Path | Build command |
@@ -337,6 +350,19 @@ cross-compilation (host build for code generators, then wasm cross-compile).
 The wasm64 build uses `-O1` instead of `-O2` to avoid an LLVM 21 wasm64 backend
 miscompilation in table-lookup sign-extension. A missing declared tool is a
 reported environment block, not permission to use an undeclared host binary.
+
+#### Checkout location does not change the numbers
+
+On Node the application suites run guest programs directly on the host
+filesystem, so the paths a guest touches are real host paths, and work that
+walks or mirrors a path grows with the checkout's depth on disk. PHP's opcache
+file cache, for example, recreates each script's absolute path inside the cache
+one directory at a time: a checkout one directory deeper cost WordPress about
+560 extra `mkdir` calls per run. The WordPress and MariaDB suites therefore stage
+their path-sensitive data under the OS temp directory, which has the same path
+for every checkout in one environment. Run before/after comparisons in the same
+environment (for example, both under `scripts/dev-shell.sh`, which sets its own
+`TMPDIR`).
 
 ### Building All Suite Prerequisites
 

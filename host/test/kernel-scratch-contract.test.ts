@@ -641,6 +641,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#captureBlockingRetryDisposition::kernel-export-direct-use::isFdNonblock(channel.pid, fd)",
   ),
   reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.clearReadinessWait::kernel-export-direct-use::restoreMask?.(channel.pid, this.guestTidForChannel(channel))",
+  ),
+  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#completeSuccessfulSpawnWithinKernelEntry::kernel-export-direct-use::publishSpawnChild(parentPid, childPid)",
   ),
   reviewedScalarKernelExportCall(
@@ -677,17 +680,18 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#killAllBlockedForTeardownWithinKernelEntry::kernel-export-direct-use::getExitStatus(registration.pid)",
   ),
+  // Same read as the sibling above, from the single-process teardown path
+  // added with the Safari/iOS machine-switch fix (PR #1410): a pid in, an
+  // exit-status scalar out, so the kernel can skip a process it already
+  // marked Exited.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#killBlockedProcessForTeardownWithinKernelEntry::kernel-export-direct-use::getExitStatus(pid)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#notifyThreadExitWithinKernelEntry::kernel-export-direct-use::threadExit(pid, tid)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#pickKernelSignalTargetTid::kernel-export-direct-use::pickSignalTarget(pid, signum)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareExecFdMirrorPruneWithinKernelEntry::kernel-export-direct-use::fdIsOpen(pid, epfd)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareExecFdMirrorPruneWithinKernelEntry::kernel-export-direct-use::fdIsOpen(pid, interest.fd)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareTcpListenerRegistration::kernel-export-direct-use::getAcceptWake?.(pid, fd)",
@@ -811,6 +815,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleBlockingRetry::kernel-export-direct-use::getSendPipeIdx?.(channel.pid, origArgs[0])",
   ),
   reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleEpollPwait::kernel-export-direct-use::swapMask(channel.pid, this.guestTidForChannel(channel), mask)",
+  ),
+  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleExit::kernel-export-direct-use::commitProcessExit(exitStatus)",
   ),
   reviewedScalarKernelExportCall(
@@ -839,12 +846,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleSemctl::kernel-export-direct-use::statBytes(processPointerWidth)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.inheritHostFdMirrors::kernel-export-direct-use::fdIsOpen(childPid, entry.fd)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.inheritHostFdMirrors::kernel-export-direct-use::fdIsOpen(childPid, epfd)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.inheritHostFdMirrors::kernel-export-direct-use::getAcceptWake?.(parentPid, parentTarget.fd)",
@@ -889,10 +890,13 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.releaseAllSysvShmMappingsForProcess::kernel-export-direct-use::kernelShmdtAddr(pid, this.toKernelPtr(addr))",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getAcceptWakeIdx(pid, interest.fd)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getAcceptWakeIdx(pid, fd)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getRecvPipe(pid, interest.fd)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getRecvPipe(pid, fd)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::watchedFd(pid, i)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveInheritedListenerFd::kernel-export-direct-use::findListenerFd?.(pid, wakeIdx)",
@@ -1134,16 +1138,18 @@ const auditAllowances: AuditAllowance[] = [
     why: "This closed import-free helper has no memory and exposes only the unconditional trap used for Worker exception semantics.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ initial: 24n, maximum: 16384n, shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',
+    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ initial: 24n, maximum: BigInt(maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',
     disposition: "kernel-control",
     authorityOwner: "kernel",
-    why: "This true-private memory64 branch creates the dedicated kernel linear memory.",
+    why:
+      "This true-private memory64 branch creates the dedicated kernel linear memory at the host memory profile's ceiling.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ // 24 pages = 1.5 MiB of initial address space. This must remain above // the kernel Wasm's linker-derived minimum and leaves headroom for // future static data without re-tuning host construction each time. initial: 24, maximum: 16384, shared: true, })",
+    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ // 24 pages = 1.5 MiB of initial address space. This must remain above // the kernel Wasm's linker-derived minimum and leaves headroom for // future static data without re-tuning host construction each time. initial: 24, maximum: maximumPages, shared: true, })",
     disposition: "kernel-control",
     authorityOwner: "kernel",
-    why: "This true-private memory32 branch creates the dedicated kernel linear memory.",
+    why:
+      "This true-private memory32 branch creates the dedicated kernel linear memory at the host memory profile's ceiling.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.init::wasm-instance-authority::intrinsicApply( intrinsicWasmInstantiate, WebAssembly, [module, importObject], )",
@@ -1346,12 +1352,12 @@ const auditAllowances: AuditAllowance[] = [
     why: "The dedicated memory is returned only as env.memory inside the private kernel import object consumed by the reviewed instantiation path or module-secret test companion.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return new IntrinsicWasmMemory({ initial: 24n, maximum: 16384n, shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor);',
+    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return new IntrinsicWasmMemory({ initial: 24n, maximum: BigInt(maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor);',
     disposition: "kernel-control",
     why: "This true-private factory branch creates the dedicated memory64 kernel linear memory before it can be published to an instance or worker.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return new IntrinsicWasmMemory({ // 24 pages = 1.5 MiB of initial address space. This must remain above // the kernel Wasm's linker-derived minimum and leaves headroom for // future static data without re-tuning host construction each time. initial: 24, maximum: 16384, shared: true, });",
+    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return new IntrinsicWasmMemory({ // 24 pages = 1.5 MiB of initial address space. This must remain above // the kernel Wasm's linker-derived minimum and leaves headroom for // future static data without re-tuning host construction each time. initial: 24, maximum: maximumPages, shared: true, });",
     disposition: "kernel-control",
     why: "This true-private factory branch creates the dedicated memory32 kernel linear memory before it can be published to an instance or worker.",
   },
@@ -1514,6 +1520,11 @@ const auditAllowances: AuditAllowance[] = [
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( out_ptr, STRUCT_SIZE_WPK_DRM_MODE_MODEINFO, "host_kms_mode_info destination", )',
     disposition: "rust-lent",
     why: "The display-mode import binds its exact pointer formal to the generated fixed structure capacity before inspecting display state.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( out_ptr, 8, "host_kms_connector_mm destination", )',
+    disposition: "rust-lent",
+    why: "The connector physical-size import binds its exact pointer formal to the two-u32 capacity the kernel lends before inspecting display state.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#hostFutexWait::kernel-view::new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory))",

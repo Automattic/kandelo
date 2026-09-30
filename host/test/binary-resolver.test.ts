@@ -2830,7 +2830,7 @@ exit 2
     chmodSync(xtask, 0o755);
 
     for (const relPath of [
-      "host/wasm/rootfs.vfs",
+      "host/wasm/rootfs.vfs.zst",
       "examples/gencat.wasm",
       "examples/pthread_channel_reuse_test.wasm",
       "examples/wait_lifecycle_test.wasm",
@@ -3306,6 +3306,31 @@ wasm = "bin/${renamedOutput}.zip"
         localBinariesDir(),
         member.relPath,
         new TextEncoder().encode("unidentified-local-copy"),
+      );
+    }
+    const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+    const fetched = fixture.members.map((member) =>
+      linkClosureMember(binariesDir(), member, canonicalRoot)
+    );
+
+    expect(resolveBinary(fixture.members[0]!.relPath)).toBe(
+      realpathSync(fetched[0]!),
+    );
+  });
+
+  it("refuses a source-only generation copy the projection does not own", () => {
+    // `local-binaries/source-only-v1` holds real files, so its identity is
+    // the `.kandelo` projection authority rather than the directory shape.
+    // A closure dropped in by hand is not in that authority and must not be
+    // mistaken for the generation's own bytes.
+    const fixture = createMultiOutputFixture();
+    const sourceOnlyRoot = join(localBinariesDir(), "source-only-v1");
+    for (const member of fixture.members) {
+      cleanupDirs.add(join(sourceOnlyRoot, dirname(member.relPath)));
+      writeCandidate(
+        sourceOnlyRoot,
+        member.relPath,
+        new TextEncoder().encode("unowned-source-only-copy"),
       );
     }
     const canonicalRoot = fixtureCanonicalRoot(fixture.name);

@@ -11,6 +11,7 @@ import { createServer } from "net";
 import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
 import { tryResolveBinary } from "../../host/src/binary-resolver.js";
 import { ensureSourceExtract } from "../../images/vfs/scripts/source-extract-helper.js";
+import { createBenchmarkScratchDirectory } from "./scratch.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
@@ -141,7 +142,46 @@ function outputSuffix(output: string): string {
   return trimmed ? `:\n${trimmed}` : "";
 }
 
+/**
+ * Everything a run reads from disk, loaded once before any timing.
+ *
+ * Why: resolving a program runs the binary resolver, which spawns xtask to
+ * check the program index (~0.9 s, growing with the number of packages).
+ * Resolving mysqltest inside each timed query made that bookkeeping ~90% of
+ * every query number, and a PR that only added packages read as a MariaDB
+ * slowdown.
+ */
+interface MariaDBPrograms {
+  arch: WasmArch;
+  mysqldBytes: ArrayBuffer;
+  mysqltestBytes: ArrayBuffer;
+  bootstrapSql: Uint8Array;
+}
+
+function loadMariaDBPrograms(arch: WasmArch): MariaDBPrograms {
+  const mysqldPath = resolveMariaDBProgram(arch, "mariadbd.wasm");
+  if (!mysqldPath) {
+    throw new Error(`MariaDB ${arch} server binary not found`);
+  }
+  const mysqltestPath = resolveMariaDBProgram(arch, "mysqltest.wasm");
+  if (!mysqltestPath) {
+    throw new Error(`MariaDB ${arch} mysqltest binary not found`);
+  }
+  const sqlPaths = resolveMariaDBBootstrapSql(arch);
+  const systemTables = readFileSync(sqlPaths.systemTables, "utf-8");
+  const systemData = readFileSync(sqlPaths.systemData, "utf-8");
+  return {
+    arch,
+    mysqldBytes: loadBytes(mysqldPath),
+    mysqltestBytes: loadBytes(mysqltestPath),
+    bootstrapSql: new TextEncoder().encode(
+      `use mysql;\n${systemTables}\n${systemData}\n`,
+    ),
+  };
+}
+
 interface MariaDBInstance {
+  programs: MariaDBPrograms;
   host: NodeKernelHost;
   port: number;
   getOutput: () => string;
@@ -152,13 +192,9 @@ interface MariaDBInstance {
   cleanup: () => Promise<void>;
 }
 
-async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean, engineArgs: string[]): Promise<MariaDBInstance> {
+async function startMariaDB(programs: MariaDBPrograms, dataDir: string, bootstrap: boolean, engineArgs: string[]): Promise<MariaDBInstance> {
+  const { arch, mysqldBytes } = programs;
   const port = await getFreePort();
-  const mysqldPath = resolveMariaDBProgram(arch, "mariadbd.wasm");
-  if (!mysqldPath) {
-    throw new Error(`MariaDB ${arch} server binary not found`);
-  }
-  const mysqldBytes = loadBytes(mysqldPath);
 
   const verbose = process.env.MARIADB_BENCH_VERBOSE === "1";
   let output = "";
@@ -209,14 +245,7 @@ async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean,
     ? [...commonArgs, "--bootstrap", "--log-warnings=0"]
     : [...commonArgs, "--skip-networking=0", `--port=${port}`, "--bind-address=0.0.0.0", "--socket=", "--max-connections=10"];
 
-  let stdinData: Uint8Array | undefined;
-  if (bootstrap) {
-    const sqlPaths = resolveMariaDBBootstrapSql(arch);
-    const systemTables = readFileSync(sqlPaths.systemTables, "utf-8");
-    const systemData = readFileSync(sqlPaths.systemData, "utf-8");
-    const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n`;
-    stdinData = new TextEncoder().encode(bootstrapSql);
-  }
+  const stdinData = bootstrap ? programs.bootstrapSql : undefined;
 
   let livePid: number | undefined;
   let resolveStarted: ((pid: number) => void) | undefined;
@@ -344,6 +373,7 @@ async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean,
   };
 
   return {
+    programs,
     host,
     port,
     dataDir,
@@ -356,18 +386,12 @@ async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean,
 }
 
 async function runMysqlTest(
-  arch: WasmArch,
   instance: MariaDBInstance,
   sql: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const mysqltestPath = resolveMariaDBProgram(arch, "mysqltest.wasm");
-  if (!mysqltestPath) {
-    throw new Error(`MariaDB ${arch} mysqltest binary not found`);
-  }
-  const mysqltestBytes = loadBytes(mysqltestPath);
   let pid = 0;
   const exitPromise = instance.host.spawn(
-    mysqltestBytes,
+    instance.programs.mysqltestBytes,
     [
       "mysqltest",
       "--host=127.0.0.1",
@@ -394,11 +418,10 @@ async function runMysqlTest(
 }
 
 async function runMysqlTestChecked(
-  arch: WasmArch,
   instance: MariaDBInstance,
   sql: string,
 ): Promise<void> {
-  const result = await runMysqlTest(arch, instance, sql);
+  const result = await runMysqlTest(instance, sql);
   if (result.exitCode !== 0) {
     throw new Error(
       `mysqltest failed with exit ${result.exitCode}:\n${result.stdout}\n${result.stderr}`,
@@ -433,21 +456,38 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
   }
 
   const results: Record<string, number> = {};
+  const programs = loadMariaDBPrograms(arch);
 
-  // Use a fresh data directory for each run (separate per arch so concurrent suites don't collide)
-  const dataDir = resolve(repoRoot, `benchmarks/results/.mariadb-bench-data-${engine.toLowerCase()}-${arch}`);
-  rmSync(dataDir, { recursive: true, force: true });
+  // A fresh data directory for each run, outside the checkout so the paths
+  // mariadbd resolves do not depend on where the checkout lives (see
+  // scratch.ts). mkdtemp keeps concurrent suites from colliding.
+  const dataDir = createBenchmarkScratchDirectory(`mariadb-${engine.toLowerCase()}-${arch}`);
+  try {
+    return await measureMariaDB(programs, engine, engineArgs, dataDir, results);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+async function measureMariaDB(
+  programs: MariaDBPrograms,
+  engine: string,
+  engineArgs: string[],
+  dataDir: string,
+  results: Record<string, number>,
+): Promise<Record<string, number>> {
+  const { arch } = programs;
   mkdirSync(resolve(dataDir, "mysql"), { recursive: true });
   mkdirSync(resolve(dataDir, "tmp"), { recursive: true });
 
   // 1. Bootstrap
   const t0 = performance.now();
-  const bootstrapInstance = await startMariaDB(arch, dataDir, true, engineArgs);
+  const bootstrapInstance = await startMariaDB(programs, dataDir, true, engineArgs);
   await bootstrapInstance.cleanup();
   results.bootstrap_ms = performance.now() - t0;
 
   // 2. Start server
-  const instance = await startMariaDB(arch, dataDir, false, engineArgs);
+  const instance = await startMariaDB(programs, dataDir, false, engineArgs);
   try {
     // Wait for server readiness. Avoid a socket-level probe here: the Node TCP
     // bridge treats the probe as a real MariaDB client connection, and aborting
@@ -475,7 +515,7 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
 
     // 3. CREATE TABLE
     const t1 = performance.now();
-    await runMysqlTestChecked(arch, instance,`
+    await runMysqlTestChecked(instance, `
       CREATE DATABASE IF NOT EXISTS bench;
       USE bench;
       CREATE TABLE t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine};
@@ -492,12 +532,12 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
       insertSql += `INSERT INTO t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}');\n`;
     }
     const t2 = performance.now();
-    await runMysqlTestChecked(arch, instance,insertSql);
+    await runMysqlTestChecked(instance, insertSql);
     results.query_insert_ms = performance.now() - t2;
 
     // 5. SELECT with WHERE
     const t3 = performance.now();
-    await runMysqlTestChecked(arch, instance,`
+    await runMysqlTestChecked(instance, `
       USE bench;
       SELECT * FROM t1 WHERE value > 500 AND value < 800;
     `);
@@ -505,7 +545,7 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
 
     // 6. JOIN
     const t4 = performance.now();
-    await runMysqlTestChecked(arch, instance,`
+    await runMysqlTestChecked(instance, `
       USE bench;
       SELECT t1.name, t2.data FROM t1 JOIN t2 ON t1.id = t2.t1_id WHERE t1.value > 500;
     `);
@@ -513,9 +553,6 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
   } finally {
     await instance.cleanup();
   }
-
-  // Cleanup data directory
-  rmSync(dataDir, { recursive: true, force: true });
 
   return results;
 }

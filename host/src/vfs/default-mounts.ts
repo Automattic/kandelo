@@ -82,7 +82,17 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/srv", source: "scratch", mode: 0o755, nosuid: true },
 ];
 
-/** Default growth ceiling for the rootfs image-backed memfs (1 GiB). */
+/**
+ * Upper bound a host will honour for an image-backed rootfs memfs (1 GiB).
+ *
+ * This is a budget ceiling, not the amount reserved. The reservation is the
+ * capacity the image's own SharedFS superblock records, because
+ * `SharedFS.grow()` refuses to pass `SB_MAX_SIZE_BLOCKS` no matter how large
+ * the backing SharedArrayBuffer is. Reserving beyond that recorded capacity
+ * buys no filesystem space at all — and on WebKit it is not free: see
+ * `runtime-memory-profile.ts` for why a declared ceiling is a spent resource
+ * there.
+ */
 export const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
 
 /**
@@ -212,6 +222,37 @@ export function validateSpec(spec: MountSpec[]): void {
 }
 
 /**
+ * Decide how much address space to reserve for an image-backed rootfs.
+ *
+ * The filesystem cannot grow past the capacity recorded in its own
+ * superblock, so that capacity — not the host budget — is the reservation
+ * worth making. A budget below it still restores: `SharedFS.statfs()` already
+ * reports `min(configuredMaxBlocks, runtimeMaxBlocks)` and `grow()` returns
+ * ENOSPC at the smaller ceiling, which is the correct POSIX failure for a
+ * filesystem that ran out of space.
+ */
+export function imageMemfsReservationBytes(
+  rootfsImage: Uint8Array,
+  maxByteLengthBudget: number,
+): number {
+  if (
+    !Number.isSafeInteger(maxByteLengthBudget) ||
+    maxByteLengthBudget <= 0
+  ) {
+    throw new Error(
+      `invalid image filesystem reservation budget: ${maxByteLengthBudget}`,
+    );
+  }
+  const capacity = MemoryFileSystem.readImageCapacity(rootfsImage);
+  // Never reserve below what the image already occupies: that buffer must
+  // hold the restored bytes before any growth question arises.
+  return Math.max(
+    capacity.byteLength,
+    Math.min(capacity.maxByteLength, maxByteLengthBudget),
+  );
+}
+
+/**
  * Restore and authenticate every image-backed mount before any caller is
  * allowed to normalize an image or construct scratch mounts around it.
  *
@@ -221,17 +262,20 @@ export function validateSpec(spec: MountSpec[]): void {
 export async function restoreVerifiedImageMounts(
   spec: MountSpec[],
   rootfsImage: Uint8Array,
+  maxByteLengthBudget: number = IMAGE_MEMFS_MAX_BYTES,
 ): Promise<ReadonlyMap<MountSpec, MemoryFileSystem>> {
+  const imageSpec = spec.filter((mount) => mount.source === "image");
+  // WHY compute lazily: a spec with no image mount must not start parsing an
+  // image it was never going to restore.
+  const maxByteLength = imageSpec.length === 0
+    ? 0
+    : imageMemfsReservationBytes(rootfsImage, maxByteLengthBudget);
   const restored = new Map(
     await Promise.all(
-      spec
-        .filter((mount) => mount.source === "image")
-        .map(async (mount) => [
-          mount,
-          await restoreVerifiedVfsImage(rootfsImage, {
-            maxByteLength: IMAGE_MEMFS_MAX_BYTES,
-          }),
-        ] as const),
+      imageSpec.map(async (mount) => [
+        mount,
+        await restoreVerifiedVfsImage(rootfsImage, { maxByteLength }),
+      ] as const),
     ),
   );
 
@@ -250,6 +294,12 @@ export async function restoreVerifiedImageMounts(
 export interface BrowserResolverOptions {
   /** Mount path → initial SAB size in bytes. Overrides the default. */
   scratchSabBytes?: Record<string, number>;
+  /**
+   * Upper bound on the image-backed rootfs reservation. Defaults to
+   * {@link IMAGE_MEMFS_MAX_BYTES}; the host's runtime memory profile supplies
+   * a smaller budget on engines that charge declared ceilings.
+   */
+  imageMemfsMaxBytes?: number;
 }
 
 /**
@@ -274,7 +324,11 @@ async function resolveValidatedForBrowser(
   rootfsImage: Uint8Array,
   options: BrowserResolverOptions,
 ): Promise<MountConfig[]> {
-  const imageMounts = await restoreVerifiedImageMounts(spec, rootfsImage);
+  const imageMounts = await restoreVerifiedImageMounts(
+    spec,
+    rootfsImage,
+    options.imageMemfsMaxBytes ?? IMAGE_MEMFS_MAX_BYTES,
+  );
   const out: MountConfig[] = [];
   for (const m of spec) {
     if (m.source === "image") {

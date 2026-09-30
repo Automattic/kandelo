@@ -43,6 +43,61 @@
             llvmPkg.libcxx.dev
           ];
         };
+        qtHostVersion = pkgs.qt6.qtbase.version;
+
+        # nixpkgs' qtbase takes wayland only where the platform has it
+        # (modules/qtbase/default.nix:82), and that is what decides whether it
+        # finds the Wayland::Scanner its own qtwaylandscanner is gated on
+        # (qtbase src/tools/configure.cmake:5). Linux gets the generator and
+        # its Qt6WaylandScannerTools CMake package from qtbase itself; darwin
+        # gets neither, and a Qt Wayland cross-build there stops at
+        # `Failed to find the host tool "Qt6::qtwaylandscanner"`.
+        qtHostHasWaylandScanner =
+          pkgs.lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.wayland;
+
+        # The generator qtbase declined to build, built from qtbase's own src
+        # and version so it cannot drift from the moc/rcc/uic beside it in
+        # qtHostTree. Reusing that source also means no second fetch. The tool
+        # is 1332 lines over QtCore alone; nix/qtwaylandscanner/CMakeLists.txt
+        # carries the details.
+        qtWaylandScanner = pkgs.stdenv.mkDerivation {
+          pname = "qtwaylandscanner";
+          inherit (pkgs.qt6.qtbase) version src;
+          nativeBuildInputs = [ pkgs.cmake pkgs.ninja ];
+          buildInputs = [ pkgs.qt6.qtbase ];
+          # nixpkgs' qtPreHook fails any qtbase consumer that states no
+          # wrapping choice. The scanner reads XML and writes C++; it loads no
+          # Qt plugin, so it wants the plain binary Qt itself installs.
+          dontWrapQtApps = true;
+          postPatch = ''
+            mkdir host-qtwaylandscanner
+            cp ${./nix/qtwaylandscanner/CMakeLists.txt} host-qtwaylandscanner/CMakeLists.txt
+          '';
+          # $PWD is the unpacked qtbase root: preConfigure runs before the
+          # cmake hook descends into its build directory.
+          preConfigure = ''
+            cmakeFlagsArray+=( "-DQTBASE_SRC=$PWD" )
+          '';
+          cmakeDir = "../host-qtwaylandscanner";
+        };
+
+        # Combined tree so QT_HOST_PATH is one prefix, the shape Qt's
+        # cross-build CMake requires: it reads moc/rcc/uic out of
+        # <prefix>/libexec and the QML generators out of the same place,
+        # then loads the Qt6*Tools CMake packages from <prefix>/lib/cmake.
+        # nixpkgs splits those across four derivations, so a bare
+        # qtbase prefix resolves moc but fails on qmltyperegistrar.
+        qtHostTree = pkgs.symlinkJoin {
+          name = "qt-${qtHostVersion}-host-tree";
+          paths = [
+            pkgs.qt6.qtbase
+            pkgs.qt6.qtbase.dev
+            pkgs.qt6.qtdeclarative
+            pkgs.qt6.qtdeclarative.dev
+            pkgs.qt6.qtshadertools
+            pkgs.qt6.qtshadertools.dev
+          ] ++ pkgs.lib.optional (!qtHostHasWaylandScanner) qtWaylandScanner;
+        };
         devShellPackages = [
             rustToolchain
             # The wrapper supplies host `cc`, `c++`, `ar`, and linker tools
@@ -68,6 +123,10 @@
             # WebKitGTK, and Xorg just to run `erl`/`erlc`.
             pkgs.beam_minimal.interpreters.erlang_28
             pkgs.cmake
+            # ninja — Qt's own configure selects it as the generator
+            # whenever it is on PATH (QtProcessConfigureArgs.cmake:1136),
+            # so it is the generator Qt builds and tests against.
+            pkgs.ninja
             pkgs.autoconf
             pkgs.automake
             pkgs.libtool
@@ -95,6 +154,43 @@
             pkgs.git
             pkgs.binaryen
             pkgs.wabt
+            # wayland-scanner — host code generator for the Wayland DRI
+            # port (docs/plans/2026-07-08-dri-wayland-compositor-plan.md).
+            # It turns protocol XML (packages/registry/wayland-protocols/)
+            # into C marshalling glue that consumers compile to wasm32.
+            # This is the split `-bin` derivation (just the generator, no
+            # libwayland), so it is darwin+linux clean — unlike the full
+            # `wayland` library, whose meta.badPlatforms includes darwin
+            # and which we therefore do NOT add here (it is Linux-only and
+            # would break `nix develop` on the team's Macs). Pinned to
+            # 1.24.0 via nixpkgs-25.11; PR3's libwayland must pin the same
+            # wayland version so its runtime matches the generated glue.
+            # Consumers declare it as a `[[host_tools]]` prerequisite.
+            pkgs.wayland-scanner
+            # spirv-opt — qsb shells out to it for every shader built with
+            # qt_add_shaders(... OPTIMIZED), which Quickshell's widgets
+            # module uses.
+            pkgs.spirv-tools
+            # Qt 6 host tools — the code generators a Qt cross-build runs on
+            # the build machine: moc, rcc, uic, qmltyperegistrar and
+            # qmlcachegen. They emit plain C++ that consumers compile to
+            # wasm32, so their role is wayland-scanner's, one layer up.
+            #
+            # Qt cross-builds require a host Qt of the *same* version as the
+            # target: CMake reads it through QT_HOST_PATH and refuses a
+            # mismatch. So nixpkgs' 6.10.2 fixes the version the qtbase and
+            # qtdeclarative recipes pin. Bumping nixpkgs moves both.
+            #
+            # Taken from nixpkgs rather than built from the qtbase recipe's
+            # own source: a host build would compile Qt twice per cold cache,
+            # once natively and once for wasm32, to obtain generators whose
+            # output is platform-independent.
+            #
+            # Both are darwin+linux clean — they are the ordinary desktop
+            # derivations, and only their generators are used, never their
+            # libraries, which target the host and cannot link into a
+            # wasm32 program.
+            qtHostTree
             # cbindgen — required by Mozilla's JS/SpiderMonkey configure
             # path once Rust support is enabled.
             pkgs.rust-cbindgen
@@ -112,6 +208,8 @@
             #            mkconfig, cpython itself, file's
             #            magic-build, etc.
             #   flex/bison — bash, m4, mariadb (yacc-style parsers)
+            #   gperf  — fontconfig's fcobjshash.h (the release tarball
+            #            ships only the .gperf input, not the output)
             #   xz/bzip2 — extracting .tar.xz/.tar.bz2 tarballs and linking
             #            xtask's source extraction helpers.
             #   patch  — applying *.patch files (mariadb, ruby)
@@ -124,6 +222,7 @@
             pkgs.ruby
             pkgs.flex
             pkgs.bison
+            pkgs.gperf
             pkgs.xz
             pkgs.bzip2
             pkgs.gnupatch
@@ -209,6 +308,22 @@
             # paths only, so installing libncurses-dev on the host
             # doesn't help — the lib has to come from nixpkgs.
             pkgs.ncurses
+            # xorg util-macros — m4 macros (XORG_MACROS_VERSION) that
+            # libepoxy's configure.ac pulls in; its GitHub release
+            # tarball ships no pre-generated configure, so
+            # build-libepoxy.sh runs autoreconf and aclocal needs the
+            # macro definitions. Host-side m4 only, no X libraries.
+            pkgs.xorg.utilmacros
+            # Host glib dev tools — glib-compile-resources and
+            # glib-compile-schemas are compiled C programs (not
+            # scripts), so the wasm32 glib port cannot provide them.
+            # gdk-pixbuf and GTK3 builds invoke them at build time to
+            # bundle GResource data and compile GSettings schemas. The
+            # python tools (glib-mkenums, glib-genmarshal) come from
+            # the target glib install's bin/ via pkg-config variables,
+            # not from here. The GVDB formats both tools emit are
+            # stable across glib versions.
+            pkgs.glib.dev
             # sqlite3 CLI — host-side test helper. The WordPress
             # site-editor test (`packages/registry/wordpress/test/wordpress-
             # site-editor.test.ts`) polls the WP install's SQLite DB
@@ -226,6 +341,25 @@
             # host prefixes.
             pkgs.xcbuild
         ];
+
+        # A macOS SDK for the ONE build that needs a newer one than the dev
+        # shell's default. SpiderMonkey's configure refuses any macOS SDK
+        # older than 15.5 (`mac_sdk_min_version()` in
+        # build/moz.configure/toolchain.configure), and this nixpkgs pins the
+        # default Darwin SDK at 14.4 -- so before this existed, the recipe
+        # reached outside Nix for /Applications/Xcode.app instead, which is
+        # how it came to depend on whichever Xcode the machine happened to
+        # have. Exposed as an environment variable rather than added to
+        # devShellPackages on purpose: putting it in the package set would
+        # move SDKROOT for every host-side compile in the shell (perl's
+        # miniperl, MariaDB's host tools, every configure probe) from 14.4 to
+        # 15.5, and nothing but SpiderMonkey needs that.
+        #
+        # 15.5 and not the newest available: the failure this replaced was a
+        # too-NEW SDK (see packages/registry/spidermonkey/build-spidermonkey.sh),
+        # so the oldest version Mozilla accepts is the safest point to sit.
+        macosSdk = pkgs.lib.optionalString pkgs.stdenv.isDarwin
+          "${pkgs.apple-sdk_15}";
       in {
         devShells.default = pkgs.mkShell {
           packages = devShellPackages;
@@ -248,8 +382,20 @@
             # tools instead of ambient host binaries.
             export AR="$LLVM_BIN/llvm-ar"
             export RANLIB="$LLVM_BIN/llvm-ranlib"
+            # Qt cross-builds resolve their host generators through this
+            # prefix and refuse a host/target version mismatch, so it also
+            # fixes the version a Qt recipe may declare.
+            export QT_HOST_PATH=${qtHostTree}
             export WASM_POSIX_LLVM_LIBCXX_SOURCE=${llvmPkg.libcxx.src}
             export WASM_POSIX_LLVM_LIBUNWIND_SOURCE=${llvmPkg.libunwind.src}
+            ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+            # The newer-than-default macOS SDK described at `macosSdk` above.
+            # Only the SpiderMonkey recipe reads these; the shell's own
+            # SDKROOT/DEVELOPER_DIR stay on the nixpkgs default so no other
+            # host-side build changes SDK underneath it.
+            export KANDELO_MACOS_DEVELOPER_DIR="${macosSdk}"
+            export KANDELO_MACOS_SDK_DIR="${macosSdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+            ''}
             # CA bundle for HTTPS — pure-shell strips the user's
             # SSL_CERT_FILE; without an explicit re-export, every
             # `curl https://…` returns exit 77 ("Problem with the

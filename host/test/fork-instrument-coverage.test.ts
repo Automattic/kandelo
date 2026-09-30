@@ -28,9 +28,18 @@
  * Supported compiler/reference shapes must not be hidden behind a skip whose
  * label still claims that ABI 43 rejects them.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { resolveBinary, tryResolveBinary } from "../src/binary-resolver";
+
+
+// This file hands each guest a 10s budget via runCentralizedProgram's
+// `timeout`. Vitest's 5s default wall budget is smaller than that, so on any
+// machine slower than a quiet CI runner the wall clock fires first and reports
+// "Test timed out in 5000ms" instead of the guest timeout the test declared.
+// Give the wall budget room to contain the guest budget; the guest timeout
+// still fails the test with its own stdout/stderr diagnostics.
+vi.setConfig({ testTimeout: 30_000 });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -472,6 +481,21 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
       timeout: 10_000,
       useDefaultRootfs: false,
       maxPages: 384,
+    });
+  });
+
+  // P-12: the child's exit queues SIGCHLD on a parent that has a thread
+  // parked in poll(). Waking those polls by walking the live registration
+  // map never terminates — a poll that is still not ready re-registers as
+  // it retries, and the iterator visits the entry it just added — so the
+  // kernel worker spins and every process on the machine stops. Waybar hit
+  // this through wordexp(), which forks /bin/sh while waybar's signal
+  // thread sits in poll.
+  it("P-12 fork + child exit while another thread is parked in poll", async () => {
+    await runFixture("programs/p_12_fork_with_polling_thread.wasm", {
+      contains: ["THREAD_POLLING", "PRE_FORK", "CHILD: ok", "PARENT: child=", "REAPED", "PASS: P-12"],
+      timeout: 10_000,
+      useDefaultRootfs: false,
     });
   });
 });

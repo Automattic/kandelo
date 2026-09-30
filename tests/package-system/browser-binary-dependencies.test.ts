@@ -243,10 +243,12 @@ describe("browser binary dependencies", () => {
     );
   });
 
-  it("uses dinit's canonical multi-output projection path in live setup", () => {
-    const expected = "programs/wasm32/dinit/dinit.wasm";
-    expect(browserBinariesImports(repoRoot)).toContain(expected);
-
+  it("keeps dinit's canonical multi-output projection path in the index", () => {
+    // The browser app no longer imports dinit.wasm directly: since
+    // "Browser: Let VFS images describe the machines they contain" (#1409),
+    // dinit ships inside each VFS image and boots as the image's first user
+    // process. The projection index remains the canonical multi-output
+    // contract for every consumer that does resolve the binary.
     const index = JSON.parse(
       readFileSync(join(registryRoot, "program-packages.json"), "utf8"),
     );
@@ -263,7 +265,47 @@ describe("browser binary dependencies", () => {
         mirrorPath: "dinit/dinit.wasm",
       }),
     );
-    expect(`programs/wasm32/${dinit!.mirrorPath}`).toBe(expected);
+  });
+
+  it("never imports a multi-member package output at its flat spelling", () => {
+    // `selectedFlatProgramPackage` in host/src/binary-resolver.ts throws for
+    // the legacy flat spelling of an output owned by a multi-member package.
+    // An import written that way therefore fails at resolve time rather than
+    // at build time, so check every `@binaries` import against the index.
+    const index = JSON.parse(
+      readFileSync(join(registryRoot, "program-packages.json"), "utf8"),
+    );
+    const packages = index.packages as Record<string, {
+      members: Array<{ kind: string; mirrorPath: string }>;
+    }>;
+    const flatOnlyOwners = new Map<string, string>();
+    for (const [packageName, projection] of Object.entries(packages)) {
+      if (projection.members.length <= 1) continue;
+      for (const member of projection.members) {
+        if (member.kind !== "output") continue;
+        const flat = member.mirrorPath.split("/").at(-1)!;
+        flatOnlyOwners.set(flat, packageName);
+      }
+    }
+    // A true single-member package keeps the flat spelling valid even when a
+    // multi-member package also produces that output name.
+    for (const [packageName, projection] of Object.entries(packages)) {
+      if (projection.members.length > 1) continue;
+      for (const member of projection.members) {
+        if (member.kind !== "output") continue;
+        flatOnlyOwners.delete(member.mirrorPath.split("/").at(-1)!);
+      }
+    }
+
+    const offenders = browserBinariesImports(repoRoot).flatMap((relPath) => {
+      const components = relPath.split("/");
+      if (components.length !== 3 || components[0] !== "programs") return [];
+      const owner = flatOnlyOwners.get(components[2]!);
+      return owner === undefined
+        ? []
+        : [`${relPath} belongs to multi-member package ${owner}`];
+    });
+    expect(offenders).toEqual([]);
   });
 
   it("discovers syntax-level imports without treating generated source strings as imports", () => {

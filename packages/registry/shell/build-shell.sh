@@ -19,6 +19,9 @@ ROOTFS_DIR="${WASM_POSIX_DEP_ROOTFS_DIR:-}"
 BASH_DIR="${WASM_POSIX_DEP_BASH_DIR:-}"
 FBDOOM_DIR="${WASM_POSIX_DEP_FBDOOM_DIR:-}"
 MODESET_DIR="${WASM_POSIX_DEP_MODESET_DIR:-}"
+SDL2_DEMO_DIR="${WASM_POSIX_DEP_SDL2_DEMO_DIR:-}"
+WAYLAND_DEMO_DIR="${WASM_POSIX_DEP_WAYLAND_DEMO_DIR:-}"
+ESPEAK_NG_DIR="${WASM_POSIX_DEP_ESPEAK_NG_DIR:-}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-}"
 DECLARED_TOOL_PATH="${KANDELO_DEV_SHELL_TOOL_PATH:-}"
 DEPENDENCY_CONTRACT="$SCRIPT_DIR/source-rootfs-shell-dependencies.json"
@@ -60,6 +63,9 @@ require_regular_file() {
 [ -n "$BASH_DIR" ] || fail "WASM_POSIX_DEP_BASH_DIR is required"
 [ -n "$FBDOOM_DIR" ] || fail "WASM_POSIX_DEP_FBDOOM_DIR is required"
 [ -n "$MODESET_DIR" ] || fail "WASM_POSIX_DEP_MODESET_DIR is required"
+[ -n "$SDL2_DEMO_DIR" ] || fail "WASM_POSIX_DEP_SDL2_DEMO_DIR is required"
+[ -n "$WAYLAND_DEMO_DIR" ] || fail "WASM_POSIX_DEP_WAYLAND_DEMO_DIR is required"
+[ -n "$ESPEAK_NG_DIR" ] || fail "WASM_POSIX_DEP_ESPEAK_NG_DIR is required"
 [ "$TARGET_ARCH" = "wasm32" ] ||
     fail "source-rootfs shell composition supports only wasm32"
 [ -n "$DECLARED_TOOL_PATH" ] ||
@@ -99,6 +105,9 @@ require_real_directory WASM_POSIX_DEP_ROOTFS_DIR "$ROOTFS_DIR"
 require_real_directory WASM_POSIX_DEP_BASH_DIR "$BASH_DIR"
 require_real_directory WASM_POSIX_DEP_FBDOOM_DIR "$FBDOOM_DIR"
 require_real_directory WASM_POSIX_DEP_MODESET_DIR "$MODESET_DIR"
+require_real_directory WASM_POSIX_DEP_SDL2_DEMO_DIR "$SDL2_DEMO_DIR"
+require_real_directory WASM_POSIX_DEP_WAYLAND_DEMO_DIR "$WAYLAND_DEMO_DIR"
+require_real_directory WASM_POSIX_DEP_ESPEAK_NG_DIR "$ESPEAK_NG_DIR"
 for dependency in "${EXTENDED_DEPENDENCIES[@]}"; do
     dependency_key="$(printf '%s' "$dependency" | tr '[:lower:]-' '[:upper:]_')"
     env_key="WASM_POSIX_DEP_${dependency_key}_DIR"
@@ -107,10 +116,32 @@ for dependency in "${EXTENDED_DEPENDENCIES[@]}"; do
     require_real_directory "$env_key" "$dependency_dir"
 done
 
-ROOTFS="$ROOTFS_DIR/rootfs.vfs"
+ROOTFS="$ROOTFS_DIR/rootfs.vfs.zst"
 BASH="$BASH_DIR/bash.wasm"
 FBDOOM="$FBDOOM_DIR/fbdoom.wasm"
 MODESET="$MODESET_DIR/modeset.wasm"
+SDL2="$SDL2_DEMO_DIR/sdl2.wasm"
+# The Wayland desktop's four programs. wldesktop (the launcher that starts
+# them in order) rides in as a package runtime_file; these are the binaries
+# it execs, so they have to be installed here like every other eager program.
+WLCOMPOSITOR="$WAYLAND_DEMO_DIR/wlcompositor.wasm"
+WLTERM="$WAYLAND_DEMO_DIR/wlterm.wasm"
+WLCLOCK="$WAYLAND_DEMO_DIR/wlclock.wasm"
+WLPAINT="$WAYLAND_DEMO_DIR/wlpaint.wasm"
+# The launcher itself. A package runtime_file is NOT installed into the shell
+# image by the composer, so it has to be threaded like the binaries.
+WLDESKTOP="$WAYLAND_DEMO_DIR/wldesktop"
+# The tiling and Omarchy desktops: two more launchers, the Omarchy theme hook,
+# the small klauncher/notify-send programs, and the desktops' data archive.
+KLAUNCHER="$WAYLAND_DEMO_DIR/klauncher.wasm"
+NOTIFY_SEND="$WAYLAND_DEMO_DIR/notify-send.wasm"
+OMARCHYDESKTOP="$WAYLAND_DEMO_DIR/omarchydesktop"
+OMARCHY_THEME_HOOK="$WAYLAND_DEMO_DIR/omarchy-theme-changed"
+DESKTOP_DATA="$WAYLAND_DEMO_DIR/kandelo-desktop-data.zip"
+# libinput's device quirks, unpacked by the composer at /usr/share/libinput.
+LIBINPUT_QUIRKS="$WAYLAND_DEMO_DIR/libinput-quirks.zip"
+ESPEAK_NG="$ESPEAK_NG_DIR/espeak-ng.wasm"
+ESPEAK_NG_DATA="$ESPEAK_NG_DIR/espeak-ng-data.zip"
 DEMO_CONFIG="$SCRIPT_DIR/source-rootfs-shell-demo.json"
 DEMO_PROFILE_OVERLAY="$SCRIPT_DIR/source-rootfs-shell-demo-profiles.json"
 COMPOSER="$REPO_ROOT/images/vfs/scripts/build-source-rootfs-shell-image.ts"
@@ -120,6 +151,20 @@ require_regular_file "rootfs dependency output" "$ROOTFS"
 require_regular_file "bash dependency output" "$BASH"
 require_regular_file "fbdoom dependency output" "$FBDOOM"
 require_regular_file "modeset dependency output" "$MODESET"
+require_regular_file "sdl2 dependency output" "$SDL2"
+require_regular_file "wlcompositor dependency output" "$WLCOMPOSITOR"
+require_regular_file "wlterm dependency output" "$WLTERM"
+require_regular_file "wlclock dependency output" "$WLCLOCK"
+require_regular_file "wlpaint dependency output" "$WLPAINT"
+require_regular_file "wldesktop dependency output" "$WLDESKTOP"
+require_regular_file "klauncher dependency output" "$KLAUNCHER"
+require_regular_file "notify-send dependency output" "$NOTIFY_SEND"
+require_regular_file "omarchydesktop dependency output" "$OMARCHYDESKTOP"
+require_regular_file "omarchy theme hook dependency output" "$OMARCHY_THEME_HOOK"
+require_regular_file "desktop data dependency output" "$DESKTOP_DATA"
+require_regular_file "libinput quirks dependency output" "$LIBINPUT_QUIRKS"
+require_regular_file "espeak-ng dependency output" "$ESPEAK_NG"
+require_regular_file "espeak-ng data dependency output" "$ESPEAK_NG_DATA"
 require_regular_file "main-shell demo config" "$DEMO_CONFIG"
 require_regular_file "source-rootfs demo profile overlay" "$DEMO_PROFILE_OVERLAY"
 require_regular_file "source-rootfs shell composer" "$COMPOSER"
@@ -144,6 +189,20 @@ TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     --bash "$BASH" \
     --fbdoom "$FBDOOM" \
     --modeset "$MODESET" \
+    --sdl2 "$SDL2" \
+    --wlcompositor "$WLCOMPOSITOR" \
+    --wlterm "$WLTERM" \
+    --wlclock "$WLCLOCK" \
+    --wlpaint "$WLPAINT" \
+    --wldesktop "$WLDESKTOP" \
+    --klauncher "$KLAUNCHER" \
+    --notify-send "$NOTIFY_SEND" \
+    --omarchydesktop "$OMARCHYDESKTOP" \
+    --omarchy-theme-hook "$OMARCHY_THEME_HOOK" \
+    --desktop-data "$DESKTOP_DATA" \
+    --libinput-quirks "$LIBINPUT_QUIRKS" \
+    --espeak-ng "$ESPEAK_NG" \
+    --espeak-ng-data "$ESPEAK_NG_DATA" \
     --demo-config "$DEMO_CONFIG" \
     --demo-profile-overlay "$DEMO_PROFILE_OVERLAY" \
     --dependency-contract "$DEPENDENCY_CONTRACT" \

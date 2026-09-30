@@ -28,13 +28,14 @@ import {
   COREUTILS_NAMES,
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
+  shellLazySpecDependency,
+  shellLazySpecMode,
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
-  registerManShellProfile,
-  registerPythonShellProfile,
+  registerShellProfileScripts,
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
@@ -43,6 +44,7 @@ import {
   sourceDateEpochMilliseconds,
   writeVfsBinary,
   symlink,
+  installBashAsPosixShell,
 } from "./vfs-image-helpers";
 import type { SaveImageOptions } from "./vfs-image-helpers";
 import {
@@ -447,7 +449,6 @@ export function populateShellEnvironment(
     populateShellOverlay(fs);
   } else {
     populateSystem(fs);
-    populateDash(fs, resolveArtifact);
     if (opts.eagerBinaries) populateBash(fs, resolveArtifact);
     if (!opts.eagerBinaries) populateLazyBinaries(fs, resolveArtifact);
     populateCoreutilsSymlinks(fs);
@@ -465,6 +466,12 @@ export function populateShellEnvironment(
   // /usr/share/terminfo on every run, so the shared database must be present
   // regardless of whether the base rootfs already carries it.
   populateTerminfoDatabase(fs, resolveArtifact);
+  // Every /etc/profile.d script this image ships (the maker account's
+  // interactive identity, the static-CPython prefix, mandoc's pager), from
+  // the one list both shell-family builders call. Registered here rather than
+  // beside the archives that motivate each script so a new one cannot reach
+  // only whichever builder its author edited.
+  registerShellProfileScripts(fs);
   if (opts.baseProvided && !opts.eagerBinaries) {
     populateLazyBinaries(fs, resolveArtifact, { skipExisting: true });
   }
@@ -472,11 +479,9 @@ export function populateShellEnvironment(
   populateNetHackArchive(fs, resolveArtifact);
   populateRubyArchive(fs, resolveArtifact);
   populatePythonArchive(fs, resolveArtifact);
-  registerPythonShellProfile(fs);
   populateNodeArchive(fs, resolveArtifact);
   populatePerlArchive(fs, resolveArtifact);
   populateManArchive(fs, resolveArtifact);
-  registerManShellProfile(fs);
   populateCoreutilsDocsArchive(fs, resolveArtifact);
   populateLsofDocsArchive(fs, resolveArtifact);
   populateDemoExtendedSymlinks(fs);
@@ -503,24 +508,17 @@ function populateShellOverlay(fs: MemoryFileSystem): void {
 
 // ── Shell binaries ──────────────────────────────────────────────
 
-function populateDash(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  const dashBytes = readFileSync(resolveArtifact("programs/dash.wasm", "dash"));
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes));
-  symlink(fs, "/bin/dash", "/bin/sh");
-  symlink(fs, "/bin/dash", "/usr/bin/dash");
-  symlink(fs, "/bin/dash", "/usr/bin/sh");
-}
-
+/**
+ * bash is the only shell the images ship: the interactive login shell and
+ * also `/bin/sh`, which is what `system()`, `popen()` and a `#!/bin/sh`
+ * script exec. bash honors POSIX mode when invoked as `sh`.
+ */
 function populateBash(
   fs: MemoryFileSystem,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bashBytes = readFileSync(resolveArtifact("programs/bash.wasm", "bash"));
-  writeVfsBinary(fs, "/usr/bin/bash", new Uint8Array(bashBytes));
-  symlink(fs, "/usr/bin/bash", "/bin/bash");
+  installBashAsPosixShell(fs, new Uint8Array(bashBytes));
 }
 
 function populateCoreutilsSymlinks(fs: MemoryFileSystem): void {
@@ -571,13 +569,13 @@ function populateLazyBinaries(
 ): void {
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (opts.skipExisting && fs.getLazyEntry(spec.vfsPath)) continue;
-    const resolved = resolveArtifact(spec.resolverPath, spec.id);
+    const resolved = resolveArtifact(spec.resolverPath, shellLazySpecDependency(spec));
     const size = statSync(resolved).size;
     fs.registerLazyFile(
       spec.vfsPath,
       shellLazyPlaceholderUrl(spec),
       size,
-      0o755,
+      shellLazySpecMode(spec),
     );
   }
 }

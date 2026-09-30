@@ -20,6 +20,7 @@
 #include <GLES2/gl2.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -27,6 +28,11 @@
 #include "gl_abi.h"
 
 static uint8_t *g_cursor = NULL;
+
+/* Client-side mirror of GL_UNPACK_ALIGNMENT so glTexImage2D /
+ * glTexSubImage2D can size source rows when splitting an upload into
+ * u16-payload records. */
+static GLint g_unpack_alignment = 4;
 
 static inline void w_u16(uint8_t **c, uint16_t v) { memcpy(*c, &v, 2); *c += 2; }
 static inline void w_u32(uint8_t **c, uint32_t v) { memcpy(*c, &v, 4); *c += 4; }
@@ -67,6 +73,29 @@ static uint8_t *reserve(size_t bytes) {
 
 #define EMIT_END() g_cursor = _c;
 
+/* Max u32 names that fit one `{u16 op, u16 payload_len, u32 n, u32
+ * names[n]}` record: the payload_len header is 16-bit, so
+ * 4 + n*4 <= 0xFFFF, i.e. n <= (0xFFFF - 4) / 4 = 16382. */
+#define WPK_GL_NAMES_PER_RECORD ((GLsizei)((0xFFFFu - 4u) / 4u))
+
+/* Emit an op carrying `{u32 n, u32 names[n]}`, split across as many
+ * records as needed so each record's payload length fits the 16-bit TLV
+ * header. Without this an n >= 16383 call truncates the length field and
+ * desyncs the host command-stream decoder (glTexImage2D guards its own
+ * length the same way). Each chunk is a self-contained record, so the
+ * host's per-record dispatch handles the split identically to one call. */
+static void emit_name_array(uint16_t op, GLsizei n, const GLuint *names) {
+    for (GLsizei i = 0; i < n; ) {
+        GLsizei chunk = n - i;
+        if (chunk > WPK_GL_NAMES_PER_RECORD) chunk = WPK_GL_NAMES_PER_RECORD;
+        EMIT_BEGIN(op, 4u + (uint32_t)chunk * 4u)
+        w_u32(&_c, (uint32_t)chunk);
+        for (GLsizei j = 0; j < chunk; j++) w_u32(&_c, names[i + j]);
+        EMIT_END()
+        i += chunk;
+    }
+}
+
 /* ----- state -------------------------------------------------------- */
 
 void glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
@@ -104,14 +133,10 @@ static uint32_t g_next_program = 1;
 
 void glGenBuffers(GLsizei n, GLuint *out) {
     if (n <= 0 || !out) return;
-    /* Payload: u32 n, u32 names[n]. */
-    EMIT_BEGIN(OP_GEN_BUFFERS, 4u + (uint32_t)n * 4u)
-    w_u32(&_c, (uint32_t)n);
-    for (GLsizei i = 0; i < n; i++) {
-        out[i] = g_next_buffer++;
-        w_u32(&_c, out[i]);
-    }
-    EMIT_END()
+    /* Payload: u32 n, u32 names[n] — assign names, then emit in
+     * u16-length-safe chunks. */
+    for (GLsizei i = 0; i < n; i++) out[i] = g_next_buffer++;
+    emit_name_array(OP_GEN_BUFFERS, n, out);
 }
 
 void glBindBuffer(GLenum target, GLuint buf) {
@@ -121,15 +146,54 @@ void glBindBuffer(GLenum target, GLuint buf) {
     EMIT_END()
 }
 
+void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
+                     const void *data) {
+    if (size <= 0 || !data) return;
+    /* Payload: u32 target, i32 dstOffset, u32 dataLen, u8 data[dataLen].
+     * The TLV payload-length field is u16, so larger updates split into
+     * consecutive records with the destination offset advanced. */
+    const uint8_t *src = (const uint8_t *)data;
+    uint32_t remaining = (uint32_t)size;
+    uint32_t dst = (uint32_t)offset;
+    while (remaining > 0) {
+        uint32_t dlen = remaining;
+        if (dlen > 0xFFFFu - 12u) dlen = 0xFFFFu - 12u;
+        EMIT_BEGIN(OP_BUFFER_SUB_DATA, 12u + dlen)
+        w_u32(&_c, (uint32_t)target);
+        w_i32(&_c, (int32_t)dst);
+        w_u32(&_c, dlen);
+        memcpy(_c, src, dlen);
+        _c += dlen;
+        EMIT_END()
+        src += dlen;
+        dst += dlen;
+        remaining -= dlen;
+    }
+}
+
 void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
     if (size < 0) return;
-    /* Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage. */
+    /* Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage.
+     *
+     * LIMIT: the whole payload rides one TLV record whose length header
+     * is 16-bit, so a single upload is capped at 0xFFFF - 12 = 65523
+     * bytes. Larger uploads truncate the header and the host rejects the
+     * submit (loud, not silent — but not graceful). Unlike the name-array
+     * ops this cannot be chunked, since one BufferData is a contiguous
+     * store; lifting it needs a record-format change (u32 length) or an
+     * allocate-then-BufferSubData streaming protocol. See finding #3 on
+     * PR #709. The sdl2 demo's buffers are well under the cap, so this is
+     * latent today. */
     uint32_t dlen = (uint32_t)size;
     EMIT_BEGIN(OP_BUFFER_DATA, 12u + dlen)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, dlen);
-    if (data && dlen > 0) {
-        memcpy(_c, data, dlen);
+    if (dlen > 0) {
+        /* NULL data allocates an uninitialized store; WebGL zero-fills a
+         * sized allocation, so ship zeros to keep the TLV framing and the
+         * store size aligned. */
+        if (data) memcpy(_c, data, dlen);
+        else memset(_c, 0, dlen);
         _c += dlen;
     }
     w_u32(&_c, (uint32_t)usage);
@@ -200,6 +264,12 @@ void glAttachShader(GLuint program, GLuint shader) {
     EMIT_END()
 }
 
+void glDetachShader(GLuint program, GLuint shader) {
+    EMIT_BEGIN(OP_DETACH_SHADER, 8)
+    w_u32(&_c, program); w_u32(&_c, shader);
+    EMIT_END()
+}
+
 void glLinkProgram(GLuint program) {
     EMIT_BEGIN(OP_LINK_PROGRAM, 4) w_u32(&_c, program); EMIT_END()
 }
@@ -246,6 +316,15 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
     w_u32(&_c, normalized ? 1u : 0u);
     w_i32(&_c, (int32_t)stride);
     w_i32(&_c, (int32_t)(uintptr_t)pointer);
+    EMIT_END()
+}
+
+void glVertexAttrib4fv(GLuint index, const GLfloat *values) {
+    if (!values) return;
+    EMIT_BEGIN(OP_VERTEX_ATTRIB_4FV, 20)
+    w_u32(&_c, (uint32_t)index);
+    w_f32(&_c, values[0]); w_f32(&_c, values[1]);
+    w_f32(&_c, values[2]); w_f32(&_c, values[3]);
     EMIT_END()
 }
 
@@ -315,21 +394,13 @@ static uint32_t g_next_framebuffer = 1;
 
 void glGenTextures(GLsizei n, GLuint *out) {
     if (n <= 0 || !out) return;
-    EMIT_BEGIN(OP_GEN_TEXTURES, 4u + (uint32_t)n * 4u)
-    w_u32(&_c, (uint32_t)n);
-    for (GLsizei i = 0; i < n; i++) {
-        out[i] = g_next_texture++;
-        w_u32(&_c, out[i]);
-    }
-    EMIT_END()
+    for (GLsizei i = 0; i < n; i++) out[i] = g_next_texture++;
+    emit_name_array(OP_GEN_TEXTURES, n, out);
 }
 
 void glDeleteTextures(GLsizei n, const GLuint *names) {
     if (n <= 0 || !names) return;
-    EMIT_BEGIN(OP_DELETE_TEXTURES, 4u + (uint32_t)n * 4u)
-    w_u32(&_c, (uint32_t)n);
-    for (GLsizei i = 0; i < n; i++) w_u32(&_c, names[i]);
-    EMIT_END()
+    emit_name_array(OP_DELETE_TEXTURES, n, names);
 }
 
 void glBindTexture(GLenum target, GLuint tex) {
@@ -345,15 +416,93 @@ void glActiveTexture(GLenum unit) {
     EMIT_END()
 }
 
-/* Pavel's pipeline only allocates render-target textures (data == NULL):
- * the fragment shaders write each texture's contents. The upload path
- * (data != NULL) needs per-(format,type) byte-size logic; extend when a
- * demo actually needs to upload pixel data from C. */
+/* Bytes-per-pixel for the GL (format,type) pairs we know how to
+ * marshal. Returns 0 for unknown combos so glTexImage2D / glTexSubImage2D
+ * drops the upload rather than emit a garbled record. Extend when a
+ * demo needs a new combo. */
+static uint32_t bytes_per_pixel(GLenum format, GLenum type) {
+    if (type == GL_UNSIGNED_BYTE) {
+        switch (format) {
+            case GL_ALPHA:           return 1;
+            case GL_LUMINANCE:       return 1;
+            case GL_LUMINANCE_ALPHA: return 2;
+            case GL_RGB:             return 3;
+            case GL_RGBA:            return 4;
+            default: break;
+        }
+    } else if (type == GL_UNSIGNED_SHORT_5_6_5
+            || type == GL_UNSIGNED_SHORT_4_4_4_4
+            || type == GL_UNSIGNED_SHORT_5_5_5_1) {
+        return 2;
+    }
+    return 0;
+}
+
+/* Source row stride under the current GL_UNPACK_ALIGNMENT. */
+static uint32_t unpack_row_stride(GLsizei width, uint32_t bpp) {
+    uint32_t row = (uint32_t)width * bpp;
+    uint32_t a = (uint32_t)g_unpack_alignment;
+    return (row + a - 1u) & ~(a - 1u);
+}
+
+/* Emit one or more OP_TEX_SUB_IMAGE_2D records for a rect upload. The
+ * TLV payload-length field is u16, so uploads larger than ~64 KB are
+ * split into row bands; each band's data is sized to the GL client
+ * image layout ((rows-1)*stride + width*bpp) so the copy never reads
+ * past the caller's last row. */
+static void emit_tex_sub_image_2d(GLenum target, GLint level,
+                                  GLint xoff, GLint yoff,
+                                  GLsizei width, GLsizei height,
+                                  GLenum format, GLenum type,
+                                  const void *data) {
+    uint32_t bpp = bytes_per_pixel(format, type);
+    if (bpp == 0 || data == NULL || width <= 0 || height <= 0) return;
+    uint32_t stride = unpack_row_stride(width, bpp);
+    uint32_t tail = (uint32_t)width * bpp;
+    uint32_t max_rows = (0xFFFFu - 36u) / stride;
+    if (max_rows == 0) return;
+    const uint8_t *src = (const uint8_t *)data;
+    for (GLsizei y = 0; y < height; ) {
+        uint32_t rows = (uint32_t)(height - y);
+        if (rows > max_rows) rows = max_rows;
+        uint32_t dlen = (rows - 1u) * stride + tail;
+        EMIT_BEGIN(OP_TEX_SUB_IMAGE_2D, 36u + dlen)
+        w_u32(&_c, (uint32_t)target);
+        w_i32(&_c, level);
+        w_i32(&_c, xoff);
+        w_i32(&_c, yoff + y);
+        w_i32(&_c, width);
+        w_i32(&_c, (int32_t)rows);
+        w_u32(&_c, (uint32_t)format);
+        w_u32(&_c, (uint32_t)type);
+        w_u32(&_c, dlen);
+        memcpy(_c, src + (uint32_t)y * stride, dlen);
+        _c += dlen;
+        EMIT_END()
+        y += (GLsizei)rows;
+    }
+}
+
 void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const void *data) {
-    if (data != NULL) return;
-    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36)
+    uint32_t dlen = 0;
+    if (data != NULL && width > 0 && height > 0) {
+        uint32_t bpp = bytes_per_pixel(format, type);
+        if (bpp > 0) {
+            dlen = (uint32_t) width * (uint32_t) height * bpp;
+        }
+    }
+    /* The TLV payload-length field is u16, so the largest single-call
+     * upload that fits is 0xFFFF - 36 (header fields) ≈ 65499 bytes.
+     * Larger uploads allocate the texture with no data here and stream
+     * the pixels through chunked OP_TEX_SUB_IMAGE_2D records below. */
+    const void *inline_data = data;
+    if (dlen > 0xFFFFu - 36u) {
+        dlen = 0;
+        inline_data = NULL;
+    }
+    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u + dlen)
     w_u32(&_c, (uint32_t)target);
     w_i32(&_c, level);
     w_i32(&_c, internalFormat);
@@ -362,7 +511,31 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     w_i32(&_c, border);
     w_u32(&_c, (uint32_t)format);
     w_u32(&_c, (uint32_t)type);
-    w_u32(&_c, 0u);   /* dataLen */
+    w_u32(&_c, dlen);
+    if (dlen > 0) {
+        /* NULL data allocates an uninitialized texture; WebGL zero-fills,
+         * so ship zeros to keep the TLV framing and semantics aligned. */
+        if (inline_data) memcpy(_c, inline_data, dlen);
+        else memset(_c, 0, dlen);
+        _c += dlen;
+    }
+    EMIT_END()
+    if (inline_data == NULL && data != NULL) {
+        emit_tex_sub_image_2d(target, level, 0, 0, width, height,
+                              format, type, data);
+    }
+}
+
+void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,
+                     GLsizei width, GLsizei height,
+                     GLenum format, GLenum type, const void *data) {
+    emit_tex_sub_image_2d(target, level, xoff, yoff, width, height,
+                          format, type, data);
+}
+
+void glGenerateMipmap(GLenum target) {
+    EMIT_BEGIN(OP_GENERATE_MIPMAP, 4)
+    w_u32(&_c, (uint32_t)target);
     EMIT_END()
 }
 
@@ -372,6 +545,22 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
     w_u32(&_c, (uint32_t)pname);
     w_i32(&_c, param);
     EMIT_END()
+}
+
+void glPixelStorei(GLenum pname, GLint param) {
+    if (pname == GL_UNPACK_ALIGNMENT
+        && (param == 1 || param == 2 || param == 4 || param == 8)) {
+        g_unpack_alignment = param;
+    }
+    EMIT_BEGIN(OP_PIXEL_STOREI, 8)
+    w_u32(&_c, (uint32_t)pname);
+    w_i32(&_c, param);
+    EMIT_END()
+}
+
+void glDeleteBuffers(GLsizei n, const GLuint *names) {
+    if (n <= 0 || !names) return;
+    emit_name_array(OP_DELETE_BUFFERS, n, names);
 }
 
 /* ----- uniforms ----------------------------------------------------- */
@@ -407,16 +596,41 @@ void glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
     EMIT_END()
 }
 
+/* Column-major 4x4 matrix uniforms — the MVP path any 3D client needs.
+ * WebGL2 rejects a
+ * transpose flag other than false, so the host forwards `transpose`
+ * verbatim to gl.uniformMatrix4fv; callers must pass GL_FALSE and supply
+ * column-major data. Payload: i32 loc, u32 count, u32 transposeBool,
+ * f32 mat[count*16]. */
+void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose,
+                        const GLfloat *value) {
+    if (count < 0 || !value) return;
+    uint32_t floats = (uint32_t)count * 16u;
+    /* The TLV payload-length field is u16 — a single record holds at
+     * most (0xFFFF - 12) / 4 floats. One mat4 (16 floats) is far under
+     * that; guard anyway so an oversized array drops rather than truncates. */
+    if (12u + floats * 4u > 0xFFFFu) return;
+    EMIT_BEGIN(OP_UNIFORM_MATRIX4FV, 12u + floats * 4u)
+    w_i32(&_c, location);
+    w_u32(&_c, (uint32_t)count);
+    w_u32(&_c, transpose ? 1u : 0u);
+    for (uint32_t i = 0; i < floats; i++) w_f32(&_c, value[i]);
+    EMIT_END()
+}
+
 /* ----- framebuffers ------------------------------------------------- */
 
 void glGenFramebuffers(GLsizei n, GLuint *out) {
     if (n <= 0 || !out) return;
-    EMIT_BEGIN(OP_GEN_FRAMEBUFFERS, 4u + (uint32_t)n * 4u)
+    for (GLsizei i = 0; i < n; i++) out[i] = g_next_framebuffer++;
+    emit_name_array(OP_GEN_FRAMEBUFFERS, n, out);
+}
+
+void glDeleteFramebuffers(GLsizei n, const GLuint *names) {
+    if (n <= 0 || !names) return;
+    EMIT_BEGIN(OP_DELETE_FRAMEBUFFERS, 4u + (uint32_t)n * 4u)
     w_u32(&_c, (uint32_t)n);
-    for (GLsizei i = 0; i < n; i++) {
-        out[i] = g_next_framebuffer++;
-        w_u32(&_c, out[i]);
-    }
+    for (GLsizei i = 0; i < n; i++) w_u32(&_c, names[i]);
     EMIT_END()
 }
 
@@ -545,4 +759,113 @@ void glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei *length, GLcha
     memcpy(infoLog, out + 4, (size_t)copy);
     infoLog[copy] = '\0';
     if (length) *length = copy;
+}
+
+/* ----- strings / state getters -------------------------------------- */
+
+/* Fetch the host's string for `name` into `buf` (NUL-terminated,
+ * truncated to cap). Returns buf, or NULL when the query failed. */
+static char *wpk_host_string(GLenum name, char *buf, size_t cap) {
+    uint32_t n = (uint32_t)name;
+    size_t out_cap = 4 + cap;
+    uint8_t *out = malloc(out_cap);
+    if (!out) return NULL;
+    memset(out, 0, out_cap);
+    if (_wpk_gl_query_into(QOP_GET_STRING, &n, 4, out, (uint32_t)out_cap) != 0) {
+        free(out);
+        return NULL;
+    }
+    uint32_t slen;
+    memcpy(&slen, out, 4);
+    if (slen > cap - 1) slen = cap - 1;
+    memcpy(buf, out + 4, slen);
+    buf[slen] = '\0';
+    free(out);
+    return buf;
+}
+
+/* The context this stub exposes is OpenGL ES 2.0 (EGL client version 2
+ * over the host WebGL2 bridge), but the host's own strings say "WebGL
+ * 2.0 (…)". Report the ES API version of the context — the same
+ * normalization ANGLE and Mesa perform — with the host string kept in
+ * the parenthesized vendor-specific suffix that GL version strings
+ * allow. Results cache in statics: the strings are immutable for the
+ * context's lifetime and callers hold the returned pointer. */
+const GLubyte *glGetString(GLenum name) {
+    static char version[256];
+    static char glsl_version[256];
+    static char vendor[256];
+    static char renderer[256];
+    static char extensions[4096];
+    char host[192];
+
+    switch (name) {
+        case GL_VERSION:
+            if (version[0] == '\0') {
+                if (!wpk_host_string(name, host, sizeof host)) return NULL;
+                snprintf(version, sizeof version, "OpenGL ES 2.0 (%s)", host);
+            }
+            return (const GLubyte *)version;
+        case GL_SHADING_LANGUAGE_VERSION:
+            if (glsl_version[0] == '\0') {
+                if (!wpk_host_string(name, host, sizeof host)) return NULL;
+                snprintf(glsl_version, sizeof glsl_version,
+                         "OpenGL ES GLSL ES 1.00 (%s)", host);
+            }
+            return (const GLubyte *)glsl_version;
+        case GL_VENDOR:
+            if (vendor[0] == '\0'
+                && !wpk_host_string(name, vendor, sizeof vendor)) return NULL;
+            return (const GLubyte *)vendor;
+        case GL_RENDERER:
+            if (renderer[0] == '\0'
+                && !wpk_host_string(name, renderer, sizeof renderer)) return NULL;
+            return (const GLubyte *)renderer;
+        case GL_EXTENSIONS:
+            /* WebGL removed the GL_EXTENSIONS getParameter, so the host
+             * answers "" — an honest empty extension list, since none of
+             * the GLES extension surface is bridged. */
+            if (extensions[0] == '\0'
+                && !wpk_host_string(name, extensions, sizeof extensions)) {
+                return (const GLubyte *)"";
+            }
+            return (const GLubyte *)extensions;
+        default:
+            return NULL;
+    }
+}
+
+/* Single-word pnames only (GL_MAX_TEXTURE_SIZE and friends). The
+ * QOP_GET_INTEGERV reply carries one i32; multi-word pnames
+ * (GL_MAX_VIEWPORT_DIMS, …) need a wider query op when a consumer
+ * appears. */
+void glGetIntegerv(GLenum pname, GLint *params) {
+    if (!params) return;
+    uint32_t p = (uint32_t)pname;
+    int32_t out = 0;
+    if (_wpk_gl_query_into(QOP_GET_INTEGERV, &p, 4, &out, 4) != 0) return;
+    *params = out;
+}
+
+void glGetShaderPrecisionFormat(GLenum shadertype, GLenum precisiontype,
+                                GLint *range, GLint *precision) {
+    uint8_t in[8];
+    uint32_t s = (uint32_t)shadertype, p = (uint32_t)precisiontype;
+    memcpy(in, &s, 4); memcpy(in + 4, &p, 4);
+    int32_t out[3] = { 0, 0, 0 };
+    if (_wpk_gl_query_into(QOP_GET_SHADER_PRECISION_FORMAT,
+                           in, 8, out, 12) != 0) {
+        if (range) range[0] = range[1] = 0;
+        if (precision) *precision = 0;
+        return;
+    }
+    if (range) { range[0] = out[0]; range[1] = out[1]; }
+    if (precision) *precision = out[2];
+}
+
+/* GLES2 §5.2: hints are advisory and an implementation may ignore
+ * them; dropping the call client-side is conforming. */
+void glHint(GLenum target, GLenum mode) {
+    (void)target;
+    (void)mode;
 }

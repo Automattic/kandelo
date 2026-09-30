@@ -43,9 +43,10 @@ import type {
   VfsProductInputHandle,
   VfsProductInputKind,
 } from "./vfs-product-builder-contract";
-import { buildNodeVfsImage } from "./build-node-vfs-image";
 import { buildNginxVfsImage } from "./build-nginx-vfs-image";
 import { buildNginxPhpVfsImage } from "./build-nginx-php-vfs-image";
+import { buildNginxPythonVfsImage } from "./build-nginx-python-vfs-image";
+import { buildRubyTodoVfsImage } from "./build-ruby-todo-vfs-image";
 import { buildWordPressVfsImage } from "./build-wp-vfs-image";
 import { buildLampVfsImage } from "./build-lamp-vfs-image";
 import { buildMariadbVfsImage } from "./build-mariadb-vfs-image";
@@ -203,9 +204,10 @@ async function buildStagedPackageVfs(
 
 
 const SERVICE_PRODUCT_BUILDERS = new Map([
-  ["browser-node", "images/vfs/scripts/build-node-vfs-image.sh"],
   ["browser-nginx", "images/vfs/scripts/build-nginx-vfs-image.sh"],
   ["browser-nginx-php", "images/vfs/scripts/build-nginx-php-vfs-image.sh"],
+  ["browser-nginx-python", "images/vfs/scripts/build-nginx-python-vfs-image.sh"],
+  ["browser-ruby-todo", "images/vfs/scripts/build-ruby-todo-vfs-image.sh"],
   ["browser-wordpress", "images/vfs/scripts/build-wp-vfs-image.sh"],
   ["browser-lamp", "images/vfs/scripts/build-lamp-vfs-image.sh"],
 ] as const);
@@ -316,21 +318,6 @@ export async function buildStagedBrowserService(
     };
 
     switch (productId) {
-      case "browser-node": {
-        const npmDirectory = join(work, "npm-runtime");
-        materializeSingleRootArchive(
-          sourceArchive("npm-runtime"),
-          npmDirectory,
-          "browser-node npm runtime",
-        );
-        await buildNodeVfsImage({
-          shellImage,
-          node: packageBytes("node", "node"),
-          npmDirectory,
-          outputPath: invocation.outputPath,
-        });
-        break;
-      }
       case "browser-nginx":
         await buildNginxVfsImage({
           shellImage,
@@ -353,6 +340,42 @@ export async function buildStagedBrowserService(
           outputPath: invocation.outputPath,
         });
         break;
+      case "browser-nginx-python": {
+        const runtimeRoot = join(work, "python-runtime");
+        materializeArchiveContents(
+          packageBytes("cpython", "python-runtime"),
+          runtimeRoot,
+          "browser-nginx-python runtime",
+        );
+        await buildNginxPythonVfsImage({
+          shellImage,
+          nginx: packageBytes("nginx", "nginx"),
+          python: packageBytes("cpython", "cpython"),
+          runtimeRoot,
+          dinit: dinit(),
+          outputPath: invocation.outputPath,
+        });
+        break;
+      }
+      case "browser-ruby-todo": {
+        // Empty-base server image (no shell base); Ruby is resident.
+        const rubyRuntimeDir = join(work, "ruby-runtime");
+        materializeArchiveContents(
+          packageBytes("ruby", "ruby-runtime"),
+          rubyRuntimeDir,
+          "browser-ruby-todo ruby runtime",
+        );
+        await buildRubyTodoVfsImage({
+          ruby: packageBytes("ruby", "ruby"),
+          rubyRuntimeDir,
+          appDir: resolve(REPOSITORY_ROOT, "images/vfs/ruby-todo-app"),
+          services: new Uint8Array(
+            readFileSync(resolve(REPOSITORY_ROOT, "images/rootfs/etc/services")),
+          ),
+          outputPath: invocation.outputPath,
+        });
+        break;
+      }
       case "browser-wordpress": {
         const wordpressDirectory = join(work, "wordpress-core");
         const sqliteDirectory = join(work, "wordpress-sqlite-integration");
@@ -571,6 +594,7 @@ export async function buildStagedStandaloneProduct(
           architecture: build.product.architecture,
           mariadbd: packageBytes("mariadb", "mariadbd"),
           systemTablesDirectory,
+          bash: packageBytes("bash", "bash"),
           dash: packageBytes("dash", "dash"),
           coreutils: packageBytes("coreutils", "coreutils"),
           dinit: dinit(),
@@ -862,6 +886,7 @@ export async function buildStagedSdkOrTestProduct(
         await buildMariadbTestVfsImage({
           mariadbd: packageBytes("mariadb", "mariadbd"),
           mysqltest: packageBytes("mariadb", "mysqltest"),
+          bash: packageBytes("bash", "bash"),
           dash: packageBytes("dash", "dash"),
           coreutils: packageBytes("coreutils", "coreutils"),
           dinit: {
@@ -933,6 +958,7 @@ export async function buildStagedSdkOrTestProduct(
         await buildSqliteTestVfsImage({
           sqlite3: packageBytes("sqlite", "sqlite3"),
           testfixture: packageBytes("sqlite", "testfixture"),
+          bash: packageBytes("bash", "bash"),
           dash: packageBytes("dash", "dash"),
           coreutils: packageBytes("coreutils", "coreutils"),
           sqliteSourceDirectory: sqliteSource,

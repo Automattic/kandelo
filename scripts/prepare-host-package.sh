@@ -59,7 +59,7 @@ copy_first_existing \
     "$HOST_WASM_DIR/kernel.wasm"
 
 copy_first_existing \
-    "$HOST_WASM_DIR/rootfs.vfs" \
-    "$HOST_WASM_DIR/rootfs.vfs" \
-    "$REPO_ROOT/local-binaries/rootfs.vfs" \
-    "$REPO_ROOT/binaries/rootfs.vfs"
+    "$HOST_WASM_DIR/rootfs.vfs.zst" \
+    "$HOST_WASM_DIR/rootfs.vfs.zst" \
+    "$REPO_ROOT/local-binaries/rootfs.vfs.zst" \
+    "$REPO_ROOT/binaries/rootfs.vfs.zst"

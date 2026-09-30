@@ -25,20 +25,22 @@ import {
   buildLocalVfsAssetGroup,
   publishGeneratedTargets,
 } from "./build-local-vfs-asset-group.ts";
-import { loadVfsProductDeploymentMap } from "./vfs-product-deployment.ts";
+import {
+  projectedArtifact,
+  readGeneratedPagesRegistry,
+} from "./check-pages-vfs-product-registry.mjs";
+import { loadVfsProductCatalog } from "./vfs-product-catalog.mjs";
+import {
+  createVfsProductDeploymentPlugin,
+  loadVfsProductDeploymentMap,
+} from "./vfs-product-deployment.ts";
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PRODUCTS = [
-  ["browser-lamp", "lazy", "lamp.vfs.zst", "lamp.vfs.zst"],
-  ["browser-main-shell", "eager", "shell.vfs.zst", "shell.vfs.zst"],
-  ["browser-nginx", "lazy", "nginx-vfs.vfs.zst", "nginx-vfs.vfs.zst"],
-  ["browser-nginx-php", "lazy", "nginx-php-vfs.vfs.zst", "nginx-php-vfs.vfs.zst"],
-  ["browser-node", "lazy", "node-vfs.vfs.zst", "node-vfs.vfs.zst"],
-  ["browser-wordpress", "lazy", "wordpress.vfs.zst", "wordpress.vfs.zst"],
-  ["platform-rootfs", "eager", "rootfs.vfs", "rootfs.vfs"],
-] as const;
+// The fixture ships exactly the images the real Pages registry names, so
+// adding a demo product needs no edit here.
+const PRODUCTS = pagesProducts();
 
-test("produces the exact seven-image and 80-body closure from all legacy reference forms", async () => {
+test("produces every registered image and the 80-body closure from all legacy reference forms", async () => {
   const fixture = await createFixture();
   try {
     await withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
@@ -210,6 +212,78 @@ test("rejects an archive body that differs from its image integrity metadata", a
   }
 });
 
+test("derives the closure size from the product images instead of a fixed count", async () => {
+  // Products gain and lose lazy bodies as packages change; the group must
+  // follow the images rather than a hand-maintained total.
+  const fixture = await createFixture({ lazyFileCount: 88 });
+  try {
+    const run = () =>
+      withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+        buildLocalVfsAssetGroup({
+          assetGroupDirectory: fixture.outputDirectory,
+          productMapPath: fixture.productMapPath,
+          sourceRoot,
+        }),
+      );
+    await run();
+    // The second run compares against the published group (the reuse path),
+    // which must be bounded by the verified staged size too.
+    await run();
+    const manifest = validateVfsAssetGroupManifest(
+      JSON.parse(
+        readFileSync(join(fixture.outputDirectory, "manifest.json"), "utf8"),
+      ),
+    );
+    assert.equal(manifest.assets.length, 90);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("resolves product image URL imports to the image the grouped build ships", async () => {
+  // A grouped build copies product images only into the asset group. A page
+  // that boots from an imported image URL (gallery launches pass it as `vfs=`)
+  // must get that shipped file, not the ungrouped `products/...` path, which
+  // does not exist in the output and made the shell demos fail to boot.
+  const fixture = await createFixture();
+  try {
+    await withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+      buildLocalVfsAssetGroup({
+        assetGroupDirectory: fixture.outputDirectory,
+        productMapPath: fixture.productMapPath,
+        sourceRoot,
+      }),
+    );
+    const map = loadVfsProductDeploymentMap({
+      mapPath: fixture.productMapPath,
+      sourceRoot,
+    });
+    const plugin = createVfsProductDeploymentPlugin({
+      assetGroupDirectory: fixture.outputDirectory,
+      base: "/",
+      map,
+      mirrorRoots: [],
+    });
+    const load = plugin.load as (this: unknown, id: string) => string | null;
+    const module = load.call(
+      { error: (message: string) => { throw new Error(message); } },
+      "\0kandelo-pages-vfs-product-url:browser-main-shell",
+    );
+    const entry = map.products.find(({ id }) => id === "browser-main-shell")!;
+    const groupDirectory = dirname(entry.asset_group!.path);
+    assert.equal(
+      module,
+      `export default ${JSON.stringify(`/${groupDirectory}/images/shell.vfs.zst`)};\n`,
+    );
+    assert.ok(
+      existsSync(join(fixture.outputDirectory, "images/shell.vfs.zst")),
+      "the resolved URL names a file the group ships",
+    );
+  } finally {
+    fixture.dispose();
+  }
+});
+
 test("rejects a lazy asset member that collides with a product image member", async () => {
   const fixture = await createFixture({ collidingImageMember: true });
   try {
@@ -221,7 +295,7 @@ test("rejects a lazy asset member that collides with a product image member", as
           sourceRoot,
         }),
       ),
-      /image and lazy asset members collide|87 distinct snapshot members/,
+      /image and lazy asset members collide|distinct snapshot members/,
     );
     assert.equal(existsSync(fixture.outputDirectory), false);
   } finally {
@@ -348,7 +422,7 @@ test("replaces generated output when the existing group has an extra file", asyn
           ),
         ),
       ).products.length,
-      7,
+      PRODUCTS.length,
     );
   } finally {
     fixture.dispose();
@@ -665,15 +739,42 @@ function publicationFixture() {
     dispose: () => rmSync(root, { force: true, recursive: true }),
     productMapPath,
     root,
+    stagedFileCount: 1,
     stagedGroup,
     stagedMap,
   };
+}
+
+function pagesProducts(): ReadonlyArray<
+  readonly [id: string, load: "eager" | "lazy", sourceName: string, output: string]
+> {
+  const registry = readGeneratedPagesRegistry(
+    join(
+      sourceRoot,
+      "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json",
+    ),
+  );
+  const catalog = loadVfsProductCatalog(
+    join(sourceRoot, "images/vfs/products/generated/catalog.json"),
+  );
+  return registry.products
+    .map((entry: { id: string; load: "eager" | "lazy" }) => {
+      const product = catalog.productById(entry.id);
+      return [
+        entry.id,
+        entry.load,
+        projectedArtifact(product).filename,
+        product.output,
+      ] as const;
+    })
+    .sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
 }
 
 async function createFixture(
   options: {
     collidingImageMember?: boolean;
     extraReference?: { reference: string; sizeDelta: number };
+    lazyFileCount?: number;
     vimBody?: Buffer;
   } = {},
 ): Promise<Fixture> {
@@ -686,7 +787,8 @@ async function createFixture(
   mkdirSync(outputParent);
   const members = new Map<string, Buffer>();
   const assetBodies = new Map<string, Buffer>();
-  for (let index = 0; index < 78; index += 1) {
+  const lazyFileCount = options.lazyFileCount ?? 78;
+  for (let index = 0; index < lazyFileCount; index += 1) {
     const relative = `lazy/file-${String(index).padStart(3, "0")}.bin`;
     assetBodies.set(relative, Buffer.from(`lazy-${index}\n`));
   }
@@ -697,8 +799,10 @@ async function createFixture(
   for (const [id, _load, sourceName] of PRODUCTS) {
     const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
     if (id === "browser-main-shell") {
-      const lazyFileCount = options.collidingImageMember ? 77 : 78;
-      for (let index = 0; index < lazyFileCount; index += 1) {
+      const registeredLazyFileCount = options.collidingImageMember
+        ? lazyFileCount - 1
+        : lazyFileCount;
+      for (let index = 0; index < registeredLazyFileCount; index += 1) {
         const relative = `lazy/file-${String(index).padStart(3, "0")}.bin`;
         const reference =
           index < 39
@@ -734,7 +838,7 @@ async function createFixture(
           ],
         );
       }
-    } else if (id === "browser-node" && options.collidingImageMember) {
+    } else if (id === "browser-nginx" && options.collidingImageMember) {
       const body = images.get("browser-lamp")!;
       fs.registerLazyFile(
         `/opt/${id}`,

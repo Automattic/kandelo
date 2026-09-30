@@ -1,0 +1,4 @@
+# Keep the "Open a blank issue" option available alongside the structured
+# templates, so anyone can file general-purpose issues that don't fit a
+# specific template.
+blank_issues_enabled: true

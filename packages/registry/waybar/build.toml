@@ -1,0 +1,10 @@
+script_path = "packages/registry/waybar/build-waybar.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "cf81d0f7c"
+revision = 1
+
+inputs = [
+  "packages/registry/waybar/build-waybar.sh",
+  "packages/registry/waybar/src/glib-static-init.c",
+  "scripts/package-build-roots.sh",
+]

@@ -23,9 +23,9 @@ const OUT_FILE = "apps/browser-demos/public/shell.vfs.zst";
 
 function resolveRootfsImagePath(): string {
   try {
-    return resolveBinary("rootfs.vfs");
+    return resolveBinary("rootfs.vfs.zst");
   } catch {
-    return resolveBinary("programs/rootfs.vfs");
+    return resolveBinary("programs/rootfs.vfs.zst");
   }
 }
 

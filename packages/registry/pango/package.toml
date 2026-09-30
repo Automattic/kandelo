@@ -1,0 +1,47 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# Text layout (libpango-1.0.a, libpangoft2-1.0.a, libpangocairo-1.0.a).
+# Ported for the PR23 render stack and GTK3 (plan
+# docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4).
+# 1.42.4 is the last autotools release (1.43 moved to meson); it
+# shapes through harfbuzz and runs bidi through fribidi, both ported
+# for this PR.
+name = "pango"
+version = "1.42.4"
+kernel_abi = 17
+depends_on = [
+  "glib@2.84.4",
+  "harfbuzz@10.1.0",
+  "fribidi@1.0.16",
+  "cairo@1.16.0",
+  "fontconfig@2.15.0",
+  "freetype@2.13.3",
+]
+
+[source]
+url = "https://download.gnome.org/sources/pango/1.42/pango-1.42.4.tar.xz"
+sha256 = "1d2b74cd63e8bd41961f2f8d952355aa0f9be6002b52c8aa7699d9f5da597c9d"
+provider = "archive"
+
+[license]
+spdx = "LGPL-2.0-or-later"
+url = "https://gitlab.gnome.org/GNOME/pango/-/blob/1.42.4/COPYING"
+
+[build]
+script_path = "packages/registry/pango/build-pango.sh"
+
+[outputs]
+libs = [
+  "lib/libpango-1.0.a",
+  "lib/libpangoft2-1.0.a",
+  "lib/libpangocairo-1.0.a",
+]
+headers = ["include/pango-1.0"]
+pkgconfig = [
+  "lib/pkgconfig/pango.pc",
+  "lib/pkgconfig/pangoft2.pc",
+  "lib/pkgconfig/pangocairo.pc",
+]

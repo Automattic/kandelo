@@ -86,6 +86,43 @@ function gnulibSiteFacts(overrides: Record<string, string> = {}): string[] {
   return output.trimEnd().split('\n');
 }
 
+// musl's <stdio_ext.h> internals (src/stdio/ext.c, ext2.c). gnulib's
+// freading/fseterr/fpurge/... modules poke the FILE struct directly unless the
+// matching HAVE___* is defined, and that fallback has no musl branch (it emits
+// `#error "Please port gnulib ..."`). Every symbol here is a defined ' T '
+// symbol in sysroot/lib/libc.a, so config.site must report it present
+// authoritatively rather than leaving it to a link probe that only passes by
+// accident of -Wl,--allow-undefined.
+const presentStdioExtFacts = [
+  'ac_cv_func___fbufsize',
+  'ac_cv_func___flbf',
+  'ac_cv_func___fpending',
+  'ac_cv_func___fpurge',
+  'ac_cv_func___freadable',
+  'ac_cv_func___freadahead',
+  'ac_cv_func___freading',
+  'ac_cv_func___freadptr',
+  'ac_cv_func___freadptrinc',
+  'ac_cv_func___fseterr',
+  'ac_cv_func___fsetlocking',
+  'ac_cv_func___fwritable',
+  'ac_cv_func___fwriting',
+] as const;
+
+function presentStdioExtSiteFacts(overrides: Record<string, string> = {}): string[] {
+  const printFacts = [
+    '. "$1";',
+    'printf "%s\\n"',
+    ...presentStdioExtFacts.map((name) => `"$${name}"`),
+  ].join(' ');
+  const output = execFileSync(
+    'bash',
+    ['-c', printFacts, 'bash', CONFIG_SITE],
+    { encoding: 'utf8', env: { ...process.env, ...overrides } },
+  );
+  return output.trimEnd().split('\n');
+}
+
 describe('buildConfigureArgs', () => {
   it('includes --host and --prefix', () => {
     const args = buildConfigureArgs([]);
@@ -163,6 +200,17 @@ describe('config.site absent function facts', () => {
   it('preserves caller overrides for absent target functions', () => {
     const facts = absentSiteFacts({ ac_cv_func_mbschr: 'yes' });
     expect(facts[absentFunctionFacts.indexOf('ac_cv_func_mbschr')]).toBe('yes');
+  });
+});
+
+describe('config.site musl stdio_ext facts', () => {
+  it('reports musl stdio_ext internals present so gnulib skips the FILE-poking fallback', () => {
+    expect(presentStdioExtSiteFacts()).toEqual(presentStdioExtFacts.map(() => 'yes'));
+  });
+
+  it('preserves caller overrides for stdio_ext internals', () => {
+    const facts = presentStdioExtSiteFacts({ ac_cv_func___freading: 'no' });
+    expect(facts[presentStdioExtFacts.indexOf('ac_cv_func___freading')]).toBe('no');
   });
 });
 

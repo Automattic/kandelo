@@ -118,13 +118,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use walrus::{
     AbstractHeapType, ElementItems, ElementKind, ExportItem, FunctionBuilder, FunctionId,
-    FunctionKind, HeapType, LocalFunction, LocalId, MemoryId, Module, RawCustomSection, RefType,
-    TableId, TagId, TypeId, ValType,
+    FunctionKind, GlobalId, HeapType, LocalFunction, LocalId, MemoryId, Module, RawCustomSection,
+    RefType, TableId, TagId, TypeId, ValType,
     ir::{
         AtomicWidth, BinaryOp, Binop, Block, Br, BrTable, Call, CallIndirect, Const, GlobalGet,
-        IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
-        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefNull, Return, StoreKind, Throw,
-        TryTable, TryTableCatch, UnaryOp, Unreachable, Value,
+        GlobalSet, IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind,
+        LocalGet, LocalSet, LocalTee, Loop, MemArg, MemoryCopy, RefAsNonNull, RefNull, Return,
+        StoreKind, Throw, TryTable, TryTableCatch, UnaryOp, Unreachable, Value,
     },
 };
 
@@ -1212,6 +1212,12 @@ fn instrument_one_function_switch(
         }
     }
     let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
+    let spill_storage = build_spill_storage(
+        module,
+        runtime.buf_type,
+        &locals_with_offsets,
+        user_scalar_locals.len(),
+    );
     let ordinary_scalar_end = HEADER_SIZE + user_locals_size(&frame_scalars);
     let catch_scalar_frame = plan_plain_catch_scalar_frame(&plain_catch_state, ordinary_scalar_end);
     let scalar_end = catch_scalar_frame.frame_end(ordinary_scalar_end);
@@ -1317,6 +1323,7 @@ fn instrument_one_function_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
+        &spill_storage,
         catch_scalar_restore_dispatch,
         &reference_frame,
         frame_size,
@@ -1330,6 +1337,7 @@ fn instrument_one_function_switch(
         &call_sites,
         &arg_materializations,
         &carryover_spills,
+        &spill_storage,
         &catch_handlers,
         runtime,
         memory,
@@ -1364,6 +1372,7 @@ fn instrument_one_function_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
+        &spill_storage,
         catch_scalar_save_dispatch,
         reference_save_dispatch,
         frame_size,
@@ -1420,6 +1429,13 @@ fn instrument_one_function_switch(
     } else {
         debug_assert!(plain_catches.is_empty());
         shield_private_unwind_from_user_catches(module, func_id, runtime);
+    }
+
+    // Apply the shadow-stack scratch discipline over the final rebuilt body
+    // (reserve at entry, release before exits, reseed at catch landings).
+    // Must run after every catch restructure so all landings are visible.
+    if let SpillStorage::Scratch(frame) = &spill_storage {
+        apply_scratch_frame_discipline(module, func_id, frame, ptr_ty);
     }
 
     ResumeThunk {
@@ -3098,6 +3114,7 @@ fn populate_dispatch_structure(
     call_sites: &[CallSiteInfo],
     arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<TypedSpillLocal>],
+    storage: &SpillStorage,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -3132,6 +3149,7 @@ fn populate_dispatch_structure(
         call_sites,
         arg_materializations,
         carryover_spills,
+        storage,
         catch_handlers,
         runtime,
         memory,
@@ -3158,6 +3176,7 @@ fn emit_dispatch_node(
     call_sites: &[CallSiteInfo],
     arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<TypedSpillLocal>],
+    storage: &SpillStorage,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -3179,6 +3198,7 @@ fn emit_dispatch_node(
             call_sites,
             arg_materializations,
             carryover_spills,
+            storage,
             catch_handlers,
             runtime,
             memory,
@@ -3202,6 +3222,7 @@ fn emit_dispatch_node(
             call_sites,
             arg_materializations,
             carryover_spills,
+            storage,
             catch_handlers,
             runtime,
             memory,
@@ -3244,6 +3265,7 @@ fn emit_internal_dispatch(
     call_sites: &[CallSiteInfo],
     arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<TypedSpillLocal>],
+    storage: &SpillStorage,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -3308,6 +3330,7 @@ fn emit_internal_dispatch(
             call_sites,
             arg_materializations,
             carryover_spills,
+            storage,
             catch_handlers,
             runtime,
             memory,
@@ -3338,6 +3361,7 @@ fn emit_internal_dispatch(
         call_sites,
         arg_materializations,
         carryover_spills,
+        storage,
         catch_handlers,
         runtime,
         memory,
@@ -3367,6 +3391,7 @@ fn emit_leaf_dispatch(
     call_sites: &[CallSiteInfo],
     arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<TypedSpillLocal>],
+    storage: &SpillStorage,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -3414,6 +3439,8 @@ fn emit_leaf_dispatch(
             }
             emit_spill_call_tail(
                 s,
+                storage,
+                memory,
                 &arg_materializations[leaf_start],
                 &carryover_spills[leaf_start],
             );
@@ -3437,6 +3464,7 @@ fn emit_leaf_dispatch(
             k - 1,
             &arg_materializations[k - 1],
             &carryover_spills[k - 1],
+            storage,
             catch_handlers,
             runtime,
             memory,
@@ -3451,7 +3479,7 @@ fn emit_leaf_dispatch(
             for (instr, loc) in &chunks[k] {
                 s.push((instr.clone(), *loc));
             }
-            emit_spill_call_tail(s, &arg_materializations[k], &carryover_spills[k]);
+            emit_spill_call_tail(s, storage, memory, &arg_materializations[k], &carryover_spills[k]);
         }
     }
 
@@ -3475,6 +3503,7 @@ fn emit_leaf_dispatch(
         leaf_end - 1,
         &arg_materializations[leaf_end - 1],
         &carryover_spills[leaf_end - 1],
+        storage,
         catch_handlers,
         runtime,
         memory,
@@ -3497,6 +3526,8 @@ fn emit_leaf_dispatch(
         }
         emit_spill_call_tail(
             s,
+            storage,
+            memory,
             &arg_materializations[leaf_end],
             &carryover_spills[leaf_end],
         );
@@ -3514,33 +3545,45 @@ fn emit_leaf_dispatch(
 /// `carryovers[0]` ends up holding the deepest carryover slot.
 fn emit_spill_args(
     out: &mut Vec<(Instr, InstrLocId)>,
+    storage: &SpillStorage,
+    memory: MemoryId,
     spills: &[LocalId],
     carryovers: &[TypedSpillLocal],
 ) {
     for &local in spills.iter().rev() {
-        push_instr(out, Instr::LocalSet(LocalSet { local }));
+        emit_spill_store(out, storage, memory, local);
     }
     for &(local, _ty) in carryovers.iter().rev() {
-        push_instr(out, Instr::LocalSet(LocalSet { local }));
+        emit_spill_store(out, storage, memory, local);
     }
 }
 
 fn emit_spill_call_tail(
     out: &mut Vec<(Instr, InstrLocId)>,
+    storage: &SpillStorage,
+    memory: MemoryId,
     arg_materialization: &CallArgMaterialization,
     carryovers: &[TypedSpillLocal],
 ) {
-    emit_spill_args(out, arg_materialization.spill_locals(), carryovers);
+    emit_spill_args(
+        out,
+        storage,
+        memory,
+        arg_materialization.spill_locals(),
+        carryovers,
+    );
 }
 
 fn emit_materialized_call_args(
     out: &mut Vec<(Instr, InstrLocId)>,
+    storage: &SpillStorage,
+    memory: MemoryId,
     arg_materialization: &CallArgMaterialization,
 ) {
     match arg_materialization {
         CallArgMaterialization::Spill { locals, types } => {
             for (&local, &ty) in locals.iter().zip(types) {
-                push_typed_local_get(out, local, ty);
+                emit_spill_load(out, storage, memory, local, ty);
             }
         }
         CallArgMaterialization::PureTail { tail, .. } => {
@@ -3862,6 +3905,7 @@ fn populate_preamble_then(
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
     locals_with_offsets: &[(LocalId, ValType, u32)],
+    storage: &SpillStorage,
     catch_scalar_restore_dispatch: Option<InstrSeqId>,
     reference_plan: &ReferenceFramePlan,
     frame_size: u32,
@@ -3910,11 +3954,19 @@ fn populate_preamble_then(
         );
     }
 
-    // Restore scalar user locals (includes arg-spill locals).
+    // Restore scalar user locals (includes local-resident arg-spill locals).
+    // Scratch-resident spills are restored below with one bulk copy into the
+    // freshly reserved scratch region instead of one load/set pair each.
     for &(lid, ty, off) in locals_with_offsets {
+        if storage.is_scratch_resident(lid) {
+            continue;
+        }
         push_current_frame_ptr(s, runtime, memory, ptr_ty);
         push_instr(s, load_scalar(memory, ty, off as u64));
         push_instr(s, Instr::LocalSet(LocalSet { local: lid }));
+    }
+    if let Some(frame) = storage.scratch() {
+        emit_scratch_restore_copy(s, frame, runtime, memory, ptr_ty);
     }
     if let Some(dispatch) = catch_scalar_restore_dispatch {
         push_instr(s, Instr::Block(Block { seq: dispatch }));
@@ -3937,6 +3989,7 @@ fn populate_postamble(
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
     locals_with_offsets: &[(LocalId, ValType, u32)],
+    storage: &SpillStorage,
     catch_scalar_save_dispatch: Option<InstrSeqId>,
     reference_save_dispatch: Option<InstrSeqId>,
     frame_size: u32,
@@ -3985,11 +4038,20 @@ fn populate_postamble(
     );
     push_instr(out, store_i32(memory, REFERENCE_VECTOR_OFFSET));
 
-    // Save scalar user + arg-spill locals
+    // Save scalar user + local-resident arg-spill locals. Scratch-resident
+    // spills are published with one bulk copy from the live scratch region
+    // into the reserved node, keeping the payload bytes identical to the
+    // local-based shape.
     for &(lid, ty, off) in locals_with_offsets {
+        if storage.is_scratch_resident(lid) {
+            continue;
+        }
         push_current_frame_ptr(out, runtime, memory, ptr_ty);
         push_instr(out, Instr::LocalGet(LocalGet { local: lid }));
         push_instr(out, store_scalar(memory, ty, off as u64));
+    }
+    if let Some(frame) = storage.scratch() {
+        emit_scratch_save_copy(out, frame, runtime, memory, ptr_ty);
     }
     if let Some(dispatch) = catch_scalar_save_dispatch {
         push_instr(out, Instr::Block(Block { seq: dispatch }));
@@ -4049,9 +4111,11 @@ fn populate_lexical_call(
     sig_ty: TypeId,
     location: InstrLocId,
     arguments: &CallArgMaterialization,
+    storage: &SpillStorage,
+    memory: MemoryId,
 ) {
     let out = &mut local.block_mut(sequence).instrs;
-    emit_materialized_call_args(out, arguments);
+    emit_materialized_call_args(out, storage, memory, arguments);
     if matches!(target, CallTarget::Ref) {
         push_instr(
             out,
@@ -4078,6 +4142,8 @@ fn emit_resume_selected_call(
     resume_ty: TypeId,
     location: InstrLocId,
     arguments: &CallArgMaterialization,
+    storage: &SpillStorage,
+    memory: MemoryId,
     runtime: &Runtime,
     diagnostic_type: i32,
 ) {
@@ -4091,7 +4157,16 @@ fn emit_resume_selected_call(
     let lexical_sentinel = local.builder_mut().dangling_instr_seq(branch_ty).id();
     let dispatch = local.builder_mut().dangling_instr_seq(branch_ty).id();
 
-    populate_lexical_call(local, lexical_sentinel, target, sig_ty, location, arguments);
+    populate_lexical_call(
+        local,
+        lexical_sentinel,
+        target,
+        sig_ty,
+        location,
+        arguments,
+        storage,
+        memory,
+    );
     {
         let out = &mut local.block_mut(dispatch).instrs;
         // `resume_peek` is non-consuming and the journal pins its selection
@@ -4150,12 +4225,16 @@ fn emit_replay_routed_call(
     resume_ty: TypeId,
     location: InstrLocId,
     arguments: &CallArgMaterialization,
+    storage: &SpillStorage,
+    memory: MemoryId,
     runtime: &Runtime,
 ) {
     let branch_ty = InstrSeqType::MultiValue(resume_ty);
     let normal = local.builder_mut().dangling_instr_seq(branch_ty).id();
     let replay = local.builder_mut().dangling_instr_seq(branch_ty).id();
-    populate_lexical_call(local, normal, target, sig_ty, location, arguments);
+    populate_lexical_call(
+        local, normal, target, sig_ty, location, arguments, storage, memory,
+    );
     if direct_activation {
         // WHY: adding a no-argument resume thunk in front of every ordinary
         // recursive activation doubles native rewind depth. A materialized
@@ -4165,7 +4244,9 @@ fn emit_replay_routed_call(
         // require the process router because their lexical target need not be
         // the next materialized activation.
         debug_assert!(matches!(target, CallTarget::Direct(_)));
-        populate_lexical_call(local, replay, target, sig_ty, location, arguments);
+        populate_lexical_call(
+            local, replay, target, sig_ty, location, arguments, storage, memory,
+        );
     } else {
         emit_resume_selected_call(
             local,
@@ -4175,6 +4256,8 @@ fn emit_replay_routed_call(
             resume_ty,
             location,
             arguments,
+            storage,
+            memory,
             runtime,
             sig_ty.index() as i32,
         );
@@ -4223,9 +4306,10 @@ fn emit_replay_routed_call_with_unwind_boundary(
     resume_ty: TypeId,
     location: InstrLocId,
     arguments: &CallArgMaterialization,
+    storage: &SpillStorage,
     call_idx: u32,
     runtime: &Runtime,
-    _memory: MemoryId,
+    memory: MemoryId,
     ptr_ty: ValType,
     frame_size: u32,
     unwind_save: InstrSeqId,
@@ -4248,6 +4332,8 @@ fn emit_replay_routed_call_with_unwind_boundary(
         resume_ty,
         location,
         arguments,
+        storage,
+        memory,
         runtime,
     );
     {
@@ -4315,6 +4401,7 @@ fn emit_post_call_via_local(
     call_idx: usize,
     arg_materialization: &CallArgMaterialization,
     carryovers: &[TypedSpillLocal],
+    storage: &SpillStorage,
     _catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -4330,7 +4417,7 @@ fn emit_post_call_via_local(
     {
         let s = &mut local.block_mut(seq_id).instrs;
         for &(local, ty) in carryovers {
-            push_typed_local_get(s, local, ty);
+            emit_spill_load(s, storage, memory, local, ty);
         }
     }
     emit_replay_routed_call_with_unwind_boundary(
@@ -4343,6 +4430,7 @@ fn emit_post_call_via_local(
             .expect("call site resume type was not assigned"),
         call.loc,
         arg_materialization,
+        storage,
         call_idx as u32,
         runtime,
         memory,
@@ -4517,6 +4605,10 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
     if runtime.resume_peek.is_none() || runtime.resume_table.is_none() {
         return;
     }
+    // Generated wrappers have at most two argument locals; they never use
+    // scratch spill storage.
+    let no_scratch = SpillStorage::Locals;
+    let memory = first_memory(module);
 
     if let Some(start) = exported_function(module, "_start") {
         let start_ty = module.funcs.get(start).ty();
@@ -4538,6 +4630,8 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
                     locals: Vec::new(),
                     types: Vec::new(),
                 },
+                &no_scratch,
+                memory,
                 runtime,
                 0,
             );
@@ -4572,6 +4666,8 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
                 locals: vec![argument, table_index],
                 types: vec![ptr_ty, ValType::I32],
             },
+            &no_scratch,
+            memory,
             runtime,
             0,
         );
@@ -4582,6 +4678,502 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
 // ----------------------------------------------------------------------
 // Misc helpers
 // ----------------------------------------------------------------------
+
+// ======================================================================
+// Scratch-frame spill storage (frame-neutral instrumentation)
+// ======================================================================
+//
+// Per-call argument and operand-carryover spills are structurally co-live
+// as Wasm locals: each spill's set→get straddles its call's state-gate
+// region, and the regions chain across every fork-reaching call site.
+// Baseline-tier engines (V8 Liftoff) reserve a native stack slot per
+// declared local, so a function like CPython's `_PyEval_EvalFrameDefault`
+// (~583 sites, ~2,676 spill locals) balloons to a ~21.6 KB native frame
+// and deep recursion overflows small fixed Web Worker stacks. No liveness
+// optimization can merge the locals (measured 2026-09-22: coalesce-locals
+// leaves ~2,705 co-live either way), so functions whose scalar spill
+// region is large route the spills through a per-activation scratch
+// region carved from the guest shadow stack instead of through locals.
+//
+// Layout: the scratch region mirrors the frame-node payload's spill
+// region byte-for-byte (`scratch_off = node_off - node_spill_start`).
+// On UNWIND the postamble copies scratch→node with one `memory.copy`
+// before commit; on REWIND/abort-replay the preamble copies node→scratch
+// after `frame_next`. Normal-path spill/reload sites store/load
+// `base + off` directly. The node payload layout, exports, imports, and
+// host-visible contract are unchanged.
+//
+// The reserve/exit discipline matches `crates/wasm-local-root-spill`:
+// `SP -= size; base = SP` at entry; `SP = base + size` before every
+// function exit (returns, br-to-entry, tail calls, uncaught throws —
+// including the postamble's private unwind throw); `SP = base` reseeded
+// at catch landings to reclaim frames leaked by exception propagation.
+// `__stack_pointer` is a mutable scalar global, so the existing
+// unwind/rewind global snapshot already captures and restores it.
+
+/// Functions whose scalar spill region is at least this large use scratch
+/// storage; smaller functions keep the local-based shape (no hot-path
+/// change). 256 bytes ≈ 32 spill slots — far below the pathological
+/// interpreter-loop shapes this exists for, far above common wrappers.
+const SCRATCH_SPILL_THRESHOLD_BYTES: u32 = 256;
+
+/// How a function's frame-backed synthetic scalar spills are stored.
+enum SpillStorage {
+    /// Every spill is a declared Wasm local (the historical shape).
+    Locals,
+    /// Scalar spills live in a shadow-stack scratch region; reference
+    /// spills (recipe-vector path) and user locals remain locals.
+    Scratch(ScratchFrame),
+}
+
+struct ScratchFrame {
+    stack_pointer: GlobalId,
+    /// Pointer-typed local holding the scratch base (== SP inside the body).
+    base: LocalId,
+    /// 16-byte-aligned reserve size.
+    size: u32,
+    /// Spill LocalId → (value type, scratch offset). LocalIds remain the
+    /// planning keys everywhere; only access sites change representation.
+    offsets: HashMap<LocalId, (ValType, u32)>,
+    /// Frame-node payload offset where the spill region begins.
+    node_spill_start: u32,
+    /// Exact byte length of the spill region (memory.copy length).
+    spill_bytes: u32,
+    /// One temporary local per distinct scalar value width, used to order
+    /// [addr, value] for stores when the value is already on the stack.
+    tmps: HashMap<ValType, LocalId>,
+}
+
+impl SpillStorage {
+    fn scratch(&self) -> Option<&ScratchFrame> {
+        match self {
+            SpillStorage::Locals => None,
+            SpillStorage::Scratch(frame) => Some(frame),
+        }
+    }
+
+    /// True when `local` is scratch-resident (stored in memory, not a local).
+    fn is_scratch_resident(&self, local: LocalId) -> bool {
+        self.scratch()
+            .is_some_and(|frame| frame.offsets.contains_key(&local))
+    }
+}
+
+fn align16(size: u32) -> u32 {
+    (size + 15) & !15
+}
+
+/// Locate the guest shadow-stack pointer global (same discipline as
+/// `crates/wasm-local-root-spill`): the `__stack_pointer` export, or the
+/// name-section global of that name. Returns `None` when absent or when
+/// its type does not match the module pointer width — callers then keep
+/// the local-based spill shape.
+fn find_stack_pointer(module: &Module, ptr_ty: ValType) -> Option<GlobalId> {
+    let from_export = module.exports.iter().find_map(|export| match export.item {
+        ExportItem::Global(id) if export.name == "__stack_pointer" => Some(id),
+        _ => None,
+    });
+    let id = from_export.or_else(|| {
+        module
+            .globals
+            .iter()
+            .find(|global| global.name.as_deref() == Some("__stack_pointer"))
+            .map(|global| global.id())
+    })?;
+    let global = module.globals.get(id);
+    (global.ty == ptr_ty && global.mutable).then_some(id)
+}
+
+/// Decide the spill storage for one function and, when scratch mode is
+/// selected, allocate its base/tmp locals. `locals_with_offsets` must be
+/// ordered user-locals-first (the `assign_local_offsets` contract);
+/// `user_count` is the number of leading user entries.
+fn build_spill_storage(
+    module: &mut Module,
+    ptr_ty: ValType,
+    locals_with_offsets: &[(LocalId, ValType, u32)],
+    user_count: usize,
+) -> SpillStorage {
+    let spill_entries = &locals_with_offsets[user_count.min(locals_with_offsets.len())..];
+    let (first, last) = match (spill_entries.first(), spill_entries.last()) {
+        (Some(first), Some(last)) => (first, last),
+        _ => return SpillStorage::Locals,
+    };
+    let node_spill_start = first.2;
+    let spill_bytes = last.2 + scalar_size(last.1) - node_spill_start;
+    if spill_bytes < SCRATCH_SPILL_THRESHOLD_BYTES {
+        return SpillStorage::Locals;
+    }
+    let Some(stack_pointer) = find_stack_pointer(module, ptr_ty) else {
+        return SpillStorage::Locals;
+    };
+
+    let base = module.locals.add(ptr_ty);
+    let mut offsets = HashMap::new();
+    let mut tmps = HashMap::new();
+    for &(lid, ty, off) in spill_entries {
+        offsets.insert(lid, (ty, off - node_spill_start));
+        tmps.entry(ty)
+            .or_insert_with(|| module.locals.add(spill_storage_type(ty)));
+    }
+    SpillStorage::Scratch(ScratchFrame {
+        stack_pointer,
+        base,
+        size: align16(spill_bytes),
+        offsets,
+        node_spill_start,
+        spill_bytes,
+        tmps,
+    })
+}
+
+/// `SP -= size; base = SP` — prepended to the function entry.
+fn emit_scratch_reserve(out: &mut Vec<(Instr, InstrLocId)>, frame: &ScratchFrame, ptr_ty: ValType) {
+    push_instr(
+        out,
+        Instr::GlobalGet(GlobalGet {
+            global: frame.stack_pointer,
+        }),
+    );
+    push_instr(out, ptr_const(ptr_ty, frame.size as i64));
+    push_instr(
+        out,
+        Instr::Binop(Binop {
+            op: ptr_sub(ptr_ty),
+        }),
+    );
+    push_instr(out, Instr::LocalTee(LocalTee { local: frame.base }));
+    push_instr(
+        out,
+        Instr::GlobalSet(GlobalSet {
+            global: frame.stack_pointer,
+        }),
+    );
+}
+
+/// `SP = base + size` — before every function exit.
+fn emit_scratch_release(out: &mut Vec<(Instr, InstrLocId)>, frame: &ScratchFrame, ptr_ty: ValType) {
+    push_instr(out, Instr::LocalGet(LocalGet { local: frame.base }));
+    push_instr(out, ptr_const(ptr_ty, frame.size as i64));
+    push_instr(
+        out,
+        Instr::Binop(Binop {
+            op: ptr_add(ptr_ty),
+        }),
+    );
+    push_instr(
+        out,
+        Instr::GlobalSet(GlobalSet {
+            global: frame.stack_pointer,
+        }),
+    );
+}
+
+/// `SP = base` — at catch landings, reclaiming scratch leaked by callee
+/// frames that exited via exception propagation. Idempotent when nothing
+/// leaked (SP already equals base inside the body).
+fn emit_scratch_reseed(out: &mut Vec<(Instr, InstrLocId)>, frame: &ScratchFrame) {
+    push_instr(out, Instr::LocalGet(LocalGet { local: frame.base }));
+    push_instr(
+        out,
+        Instr::GlobalSet(GlobalSet {
+            global: frame.stack_pointer,
+        }),
+    );
+}
+
+/// Pop the value on top of the operand stack into spill storage. Scratch
+/// scalars route through the per-width tmp local to order [addr, value];
+/// everything else (Locals mode, reference spills) is a plain `local.set`.
+fn emit_spill_store(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    storage: &SpillStorage,
+    memory: MemoryId,
+    local: LocalId,
+) {
+    if let Some(frame) = storage.scratch() {
+        if let Some(&(ty, off)) = frame.offsets.get(&local) {
+            let tmp = *frame
+                .tmps
+                .get(&ty)
+                .expect("scratch tmp local exists for every spill width");
+            push_instr(out, Instr::LocalSet(LocalSet { local: tmp }));
+            push_instr(out, Instr::LocalGet(LocalGet { local: frame.base }));
+            push_instr(out, Instr::LocalGet(LocalGet { local: tmp }));
+            push_instr(out, store_scalar(memory, ty, off as u64));
+            return;
+        }
+    }
+    push_instr(out, Instr::LocalSet(LocalSet { local }));
+}
+
+/// Push a spilled value back onto the operand stack from its storage.
+fn emit_spill_load(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    storage: &SpillStorage,
+    memory: MemoryId,
+    local: LocalId,
+    expected: ValType,
+) {
+    if let Some(frame) = storage.scratch() {
+        if let Some(&(ty, off)) = frame.offsets.get(&local) {
+            debug_assert_eq!(ty, expected, "scratch spill type mismatch");
+            push_instr(out, Instr::LocalGet(LocalGet { local: frame.base }));
+            push_instr(out, load_scalar(memory, ty, off as u64));
+            return;
+        }
+    }
+    push_typed_local_get(out, local, expected);
+}
+
+/// REWIND/abort-replay: copy the committed node's spill region into the
+/// freshly reserved scratch (`memory.copy [dst=base, src=node+start, len]`).
+fn emit_scratch_restore_copy(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    frame: &ScratchFrame,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+) {
+    push_instr(out, Instr::LocalGet(LocalGet { local: frame.base }));
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    push_instr(out, ptr_const(ptr_ty, frame.node_spill_start as i64));
+    push_instr(
+        out,
+        Instr::Binop(Binop {
+            op: ptr_add(ptr_ty),
+        }),
+    );
+    push_instr(out, ptr_const(ptr_ty, frame.spill_bytes as i64));
+    push_instr(
+        out,
+        Instr::MemoryCopy(MemoryCopy {
+            src: memory,
+            dst: memory,
+        }),
+    );
+}
+
+/// UNWIND: copy scratch into the reserved node's spill region before commit
+/// (`memory.copy [dst=node+start, src=base, len]`).
+fn emit_scratch_save_copy(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    frame: &ScratchFrame,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+) {
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    push_instr(out, ptr_const(ptr_ty, frame.node_spill_start as i64));
+    push_instr(
+        out,
+        Instr::Binop(Binop {
+            op: ptr_add(ptr_ty),
+        }),
+    );
+    push_instr(out, Instr::LocalGet(LocalGet { local: frame.base }));
+    push_instr(out, ptr_const(ptr_ty, frame.spill_bytes as i64));
+    push_instr(
+        out,
+        Instr::MemoryCopy(MemoryCopy {
+            src: memory,
+            dst: memory,
+        }),
+    );
+}
+
+/// Post-assembly pass applying the scratch frame's SP discipline to the
+/// rebuilt function: prepend the reserve to the entry, insert the release
+/// before every function exit, and reseed SP at catch landings.
+///
+/// Exits: `Return`, `ReturnCall`/`ReturnCallIndirect`/`ReturnCallRef`,
+/// `Br`/`BrTable` whose (every) target is the entry seq, and
+/// `Throw`/`ThrowRef`/`Rethrow` not caught by an enclosing `try_table`
+/// (this includes the postamble's private unwind throw). A conditional or
+/// mixed branch to the entry cannot be handled by insertion and fails
+/// loudly — no shipping shape has produced one.
+fn apply_scratch_frame_discipline(
+    module: &mut Module,
+    func_id: FunctionId,
+    frame: &ScratchFrame,
+    ptr_ty: ValType,
+) {
+    let entry = {
+        let local = match &module.funcs.get(func_id).kind {
+            FunctionKind::Local(local) => local,
+            _ => panic!("scratch discipline requires a local function"),
+        };
+        local.entry_block()
+    };
+
+    // Collect every try_table catch-target seq in the final function.
+    let catch_targets: HashSet<InstrSeqId> = {
+        let local = match &module.funcs.get(func_id).kind {
+            FunctionKind::Local(local) => local,
+            _ => unreachable!(),
+        };
+        let mut targets = HashSet::new();
+        let mut stack = vec![entry];
+        let mut seen = HashSet::new();
+        while let Some(seq) = stack.pop() {
+            if !seen.insert(seq) {
+                continue;
+            }
+            for (instr, _) in &local.block(seq).instrs {
+                if let Instr::TryTable(TryTable { catches, .. }) = instr {
+                    for catch in catches {
+                        targets.insert(*match catch {
+                            TryTableCatch::Catch { label, .. }
+                            | TryTableCatch::CatchRef { label, .. }
+                            | TryTableCatch::CatchAll { label }
+                            | TryTableCatch::CatchAllRef { label } => label,
+                        });
+                    }
+                }
+                for child in nested_seqs(instr) {
+                    stack.push(child);
+                }
+            }
+        }
+        targets
+    };
+
+    rewrite_scratch_exits_in_seq(
+        module,
+        func_id,
+        entry,
+        entry,
+        &[],
+        frame,
+        ptr_ty,
+        &catch_targets,
+    );
+
+    // Prepend the reserve after all body rewrites.
+    let mut reserve = Vec::new();
+    emit_scratch_reserve(&mut reserve, frame, ptr_ty);
+    let local = local_mut(module, func_id);
+    let entry_instrs = &mut local.block_mut(entry).instrs;
+    entry_instrs.splice(0..0, reserve);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ScratchActiveCatch {
+    Tag(TagId),
+    Any,
+}
+
+fn scratch_catches_tag(active: &[ScratchActiveCatch], tag: TagId) -> bool {
+    active.iter().any(|catch| match catch {
+        ScratchActiveCatch::Tag(t) => *t == tag,
+        ScratchActiveCatch::Any => true,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rewrite_scratch_exits_in_seq(
+    module: &mut Module,
+    func_id: FunctionId,
+    seq: InstrSeqId,
+    entry: InstrSeqId,
+    active_catches: &[ScratchActiveCatch],
+    frame: &ScratchFrame,
+    ptr_ty: ValType,
+    catch_targets: &HashSet<InstrSeqId>,
+) {
+    let children: Vec<(InstrSeqId, Vec<ScratchActiveCatch>)> = {
+        let local = match &module.funcs.get(func_id).kind {
+            FunctionKind::Local(local) => local,
+            _ => unreachable!(),
+        };
+        local
+            .block(seq)
+            .instrs
+            .iter()
+            .flat_map(|(instr, _)| match instr {
+                Instr::Block(Block { seq }) | Instr::Loop(Loop { seq }) => {
+                    vec![(*seq, active_catches.to_vec())]
+                }
+                Instr::IfElse(IfElse {
+                    consequent,
+                    alternative,
+                }) => vec![
+                    (*consequent, active_catches.to_vec()),
+                    (*alternative, active_catches.to_vec()),
+                ],
+                Instr::TryTable(TryTable { seq, catches }) => {
+                    let mut inner = active_catches.to_vec();
+                    for catch in catches {
+                        inner.push(match catch {
+                            TryTableCatch::Catch { tag, .. }
+                            | TryTableCatch::CatchRef { tag, .. } => ScratchActiveCatch::Tag(*tag),
+                            TryTableCatch::CatchAll { .. } | TryTableCatch::CatchAllRef { .. } => {
+                                ScratchActiveCatch::Any
+                            }
+                        });
+                    }
+                    vec![(*seq, inner)]
+                }
+                _ => Vec::new(),
+            })
+            .collect()
+    };
+    for (child, child_catches) in children {
+        rewrite_scratch_exits_in_seq(
+            module,
+            func_id,
+            child,
+            entry,
+            &child_catches,
+            frame,
+            ptr_ty,
+            catch_targets,
+        );
+    }
+
+    let local = local_mut(module, func_id);
+    let original = std::mem::take(&mut local.block_mut(seq).instrs);
+    let mut out: Vec<(Instr, InstrLocId)> = Vec::with_capacity(original.len());
+    for (instr, loc) in original {
+        let releases = match &instr {
+            Instr::Return(Return {}) => true,
+            Instr::ReturnCall(..) | Instr::ReturnCallIndirect(..) | Instr::ReturnCallRef(..) => {
+                true
+            }
+            Instr::Br(Br { block }) => *block == entry,
+            Instr::BrTable(BrTable { blocks, default }) => {
+                let any_entry = *default == entry || blocks.iter().any(|block| *block == entry);
+                let all_entry = *default == entry && blocks.iter().all(|block| *block == entry);
+                assert!(
+                    !any_entry || all_entry,
+                    "scratch-frame spill cannot rewrite a br_table that mixes \
+                     function-exit and internal targets"
+                );
+                all_entry
+            }
+            Instr::BrIf(br_if) => {
+                assert!(
+                    br_if.block != entry,
+                    "scratch-frame spill cannot rewrite a conditional branch to \
+                     the function exit"
+                );
+                false
+            }
+            Instr::Throw(Throw { tag }) => !scratch_catches_tag(active_catches, *tag),
+            Instr::ThrowRef(..) | Instr::Rethrow(..) => active_catches.is_empty(),
+            _ => false,
+        };
+        if releases {
+            emit_scratch_release(&mut out, frame, ptr_ty);
+        }
+        let is_catch_landing = matches!(&instr, Instr::Block(Block { seq }) if catch_targets.contains(seq));
+        out.push((instr, loc));
+        if is_catch_landing {
+            emit_scratch_reseed(&mut out, frame);
+        }
+    }
+    local.block_mut(seq).instrs = out;
+}
 
 fn assign_local_offsets(
     user_scalar_locals: &[(LocalId, ValType)],
@@ -7602,6 +8194,12 @@ fn instrument_one_function_nested_switch(
     }
 
     let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
+    let spill_storage = build_spill_storage(
+        module,
+        runtime.buf_type,
+        &locals_with_offsets,
+        user_scalar_locals.len(),
+    );
     let ordinary_scalar_end = HEADER_SIZE + user_locals_size(&frame_scalars);
     let catch_scalar_frame = plan_plain_catch_scalar_frame(&plain_catch_state, ordinary_scalar_end);
     let scalar_end = catch_scalar_frame.frame_end(ordinary_scalar_end);
@@ -7719,6 +8317,7 @@ fn instrument_one_function_nested_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
+        &spill_storage,
         catch_scalar_restore_dispatch,
         &reference_frame,
         frame_size,
@@ -7776,6 +8375,7 @@ fn instrument_one_function_nested_switch(
             &arg_materializations,
             &carryover_spills,
             &carryover_plans,
+            &spill_storage,
             &catch_handlers,
             runtime,
             memory,
@@ -7806,6 +8406,7 @@ fn instrument_one_function_nested_switch(
         &arg_materializations,
         &carryover_spills,
         &carryover_plans,
+        &spill_storage,
         &catch_handlers,
         runtime,
         memory,
@@ -7840,6 +8441,7 @@ fn instrument_one_function_nested_switch(
         ptr_ty,
         catch_state_locals,
         &locals_with_offsets,
+        &spill_storage,
         catch_scalar_save_dispatch,
         reference_save_dispatch,
         frame_size,
@@ -7902,6 +8504,13 @@ fn instrument_one_function_nested_switch(
         shield_private_unwind_from_user_catches(module, func_id, runtime);
     }
 
+    // Apply the shadow-stack scratch discipline over the final rebuilt body
+    // (reserve at entry, release before exits, reseed at catch landings).
+    // Must run after every catch restructure so all landings are visible.
+    if let SpillStorage::Scratch(frame) = &spill_storage {
+        apply_scratch_frame_discipline(module, func_id, frame, ptr_ty);
+    }
+
     ResumeThunk {
         func_ordinal,
         function: emit_resume_thunk(
@@ -7934,6 +8543,8 @@ fn emit_chunk_tail_for_landing(
     landing: &LandingInfo,
     arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<TypedSpillLocal>>,
+    storage: &SpillStorage,
+    memory: MemoryId,
     cond_swap_local: LocalId,
 ) {
     match &landing.kind {
@@ -7947,22 +8558,17 @@ fn emit_chunk_tail_for_landing(
             // is treated as no-carryover.
             let empty: Vec<TypedSpillLocal> = Vec::new();
             let cr = carryover_spills.get(call_idx).unwrap_or(&empty);
-            emit_spill_call_tail(out, &arg_materializations[call_idx], cr);
+            emit_spill_call_tail(out, storage, memory, &arg_materializations[call_idx], cr);
         }
         LandingKind::SubRegionIfElse { .. } => {
             if let Some(plan) = &landing.carryover {
                 if let CarryoverPlan::Spill { spill_locals } = plan {
                     for (l, _ty) in spill_locals.iter().rev() {
-                        push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                        emit_spill_store(out, storage, memory, *l);
                     }
                 }
             } else {
-                push_instr(
-                    out,
-                    Instr::LocalSet(LocalSet {
-                        local: cond_swap_local,
-                    }),
-                );
+                emit_spill_store(out, storage, memory, cond_swap_local);
             }
         }
         LandingKind::SubRegion { .. } => {
@@ -7976,7 +8582,7 @@ fn emit_chunk_tail_for_landing(
             if let Some(plan) = &landing.carryover {
                 if let CarryoverPlan::Spill { spill_locals } = plan {
                     for (l, _ty) in spill_locals.iter().rev() {
-                        push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                        emit_spill_store(out, storage, memory, *l);
                     }
                 }
             }
@@ -8024,6 +8630,7 @@ fn transform_region_seq(
     arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<TypedSpillLocal>>,
     carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
+    storage: &SpillStorage,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -8118,6 +8725,7 @@ fn transform_region_seq(
         sites,
         arg_materializations,
         carryover_spills,
+        storage,
         catch_handlers,
         runtime,
         memory,
@@ -8160,6 +8768,7 @@ fn transform_entry_region(
     arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<TypedSpillLocal>>,
     carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
+    storage: &SpillStorage,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -8234,6 +8843,7 @@ fn transform_entry_region(
         sites,
         arg_materializations,
         carryover_spills,
+        storage,
         catch_handlers,
         runtime,
         memory,
@@ -8596,6 +9206,7 @@ fn populate_region_dispatch_structure(
     sites: &[NestedCallSite],
     arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<TypedSpillLocal>>,
+    storage: &SpillStorage,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -8636,6 +9247,8 @@ fn populate_region_dispatch_structure(
             &landings[0],
             arg_materializations,
             carryover_spills,
+            storage,
+            memory,
             cond_swap_local,
         );
     }
@@ -8659,6 +9272,7 @@ fn populate_region_dispatch_structure(
             sites,
             arg_materializations,
             carryover_spills,
+            storage,
             catch_handlers,
             runtime,
             memory,
@@ -8679,6 +9293,8 @@ fn populate_region_dispatch_structure(
                 &landings[k],
                 arg_materializations,
                 carryover_spills,
+                storage,
+                memory,
                 cond_swap_local,
             );
         }
@@ -8702,6 +9318,7 @@ fn populate_region_dispatch_structure(
         sites,
         arg_materializations,
         carryover_spills,
+        storage,
         catch_handlers,
         runtime,
         memory,
@@ -8731,6 +9348,7 @@ fn emit_post_landing(
     sites: &[NestedCallSite],
     arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<TypedSpillLocal>>,
+    storage: &SpillStorage,
     _catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
     memory: MemoryId,
@@ -8757,7 +9375,7 @@ fn emit_post_landing(
             {
                 let s = &mut local.block_mut(seq_id).instrs;
                 for &(local, ty) in carryovers {
-                    push_typed_local_get(s, local, ty);
+                    emit_spill_load(s, storage, memory, local, ty);
                 }
             }
             let target = match site.target {
@@ -8775,6 +9393,7 @@ fn emit_post_landing(
                     .expect("nested call site resume type was not assigned"),
                 site.loc,
                 &arg_materializations[call_idx],
+                storage,
                 *call_idx,
                 runtime,
                 memory,
@@ -8818,7 +9437,7 @@ fn emit_post_landing(
                 match plan {
                     CarryoverPlan::Spill { spill_locals } => {
                         for &(local, ty) in spill_locals {
-                            push_typed_local_get(s, local, ty);
+                            emit_spill_load(s, storage, memory, local, ty);
                         }
                     }
                     CarryoverPlan::PureTail { tail, .. } => {
@@ -8861,7 +9480,7 @@ fn emit_post_landing(
                         .copied()
                         .expect("IfElse spill plan must include the condition");
                     for &(local, ty) in spill_locals.iter().take(spill_locals.len() - 1) {
-                        push_typed_local_get(s, local, ty);
+                        emit_spill_load(s, storage, memory, local, ty);
                     }
                     IfElseCondSource::Local(cond_local)
                 }
@@ -8942,7 +9561,7 @@ fn emit_post_landing(
             // scalar tail removed from the NORMAL chunk.
             match cond_source {
                 IfElseCondSource::Local(cond_local) => {
-                    push_instr(s, Instr::LocalGet(LocalGet { local: cond_local }));
+                    emit_spill_load(s, storage, memory, cond_local, ValType::I32);
                 }
                 IfElseCondSource::PureTail(tail) => {
                     s.extend(tail.iter().cloned());

@@ -1,5 +1,5 @@
 /**
- * Task 4.3 — Node host wires `host/wasm/rootfs.vfs` and applies
+ * Task 4.3 — Node host wires `host/wasm/rootfs.vfs.zst` and applies
  * `DEFAULT_MOUNT_SPEC` via the fresh-session Node resolver at boot when the caller
  * does not supply a custom `io`.
  *
@@ -41,7 +41,7 @@ import { MemoryFileSystem } from "../src/vfs/memory-fs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 const probeWasm = join(repoRoot, "examples/mount_probe_test.wasm");
-const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
+const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs.zst");
 const servicesSource = join(repoRoot, "images/rootfs/etc/services");
 const caCertSource = join(repoRoot, "images/rootfs/etc/ssl/cert.pem");
 const opensslConfigSource = join(repoRoot, "images/rootfs/etc/ssl/openssl.cnf");
@@ -328,7 +328,7 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     // assert the success line is absent — the precise errno depends on
     // the host's /etc/services (macOS has one, Linux too), so we can't
     // hard-code a value. The point is: with a custom `io`, the call no
-    // longer goes through the rootfs.vfs image we built for these tests
+    // longer goes through the rootfs.vfs.zst image we built for these tests
     // (size differs from the host's /etc/services).
     if (result.exitCode === 0) {
       const expected = readFileSync(servicesSource);
