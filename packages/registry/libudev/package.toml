@@ -27,7 +27,11 @@
 # No upstream source is fetched; the build script compiles the bundled
 # `src/libudev_shim.c` directly. The `[source]` block carries a sentinel
 # URL + zero sha so the manifest schema parses but no remote fetch is
-# attempted (matches the libffi / libinput-lite in-tree-only convention).
+# attempted.
+#
+# FOLLOW-UP: this is not a real upstream package, and it covers a platform
+# gap (no /sys input tree). It is listed in
+# docs/package-management.md ("Packages that are not real upstream builds yet").
 
 kind = "library"
 

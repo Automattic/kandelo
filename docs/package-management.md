@@ -596,9 +596,9 @@ symlink. That symlink always targets bash: every Kandelo image binds
 `/bin/sh`, `/bin/bash` and `/usr/bin/sh` to `/usr/bin/bash`, and bash
 honors POSIX mode when invoked as `sh`. The base rootfs declares the binding
 as bash's `aliases` in `images/rootfs/PACKAGES.toml`; images composed on it
-(the source-rootfs shell image) inherit it and assert that `/bin/bash`
-and `/usr/bin/bash` resolve to the image's bash (the builder does not yet
-check the `sh` names); images built from scratch (the MariaDB, MariaDB-test and SQLite-test
+(the source-rootfs shell image) inherit it and assert that `/bin/bash`,
+`/usr/bin/bash`, `/bin/sh` and `/usr/bin/sh` all resolve to the image's
+bash; images built from scratch (the MariaDB, MariaDB-test and SQLite-test
 builders, and the lazy shell image in `shell-vfs-build.ts`) bind it with
 `installBashAsPosixShell` in `images/vfs/scripts/vfs-image-helpers.ts`. An image may also ship dash (or any other shell) as an
 ordinary command at its own name, but no other shell claims `/bin/sh` —

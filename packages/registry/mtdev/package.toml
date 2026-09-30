@@ -20,7 +20,10 @@
 # No upstream source is fetched; the build script compiles the bundled
 # `src/mtdev_stub.c` directly. The `[source]` block carries a sentinel
 # URL + zero sha so the manifest schema parses but no remote fetch is
-# attempted (matches the libffi / libinput-lite in-tree-only convention).
+# attempted.
+#
+# FOLLOW-UP: this is not a real upstream package. It is listed in
+# docs/package-management.md ("Packages that are not real upstream builds yet"); real upstream mtdev is expected to build.
 
 kind = "library"
 

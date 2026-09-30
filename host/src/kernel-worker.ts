@@ -3454,10 +3454,6 @@ export class CentralizedKernelWorker {
   private sharedMappingInheritancePids = new Set<number>();
   /** Process fd → resolved backing identity, including negative lookups. */
   private sharedMmapFdCache = new Map<string, { backingKey: string | null }>();
-  /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
-   *  Maintained by intercepting epoll_ctl results. Used by handleEpollPwait
-   *  to convert epoll_pwait to poll without calling kernel_handle_channel
-   *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
   /**
    * Byte-coherence mirrors for Rust-owned SysV shared-memory attachments.
    *

@@ -126,13 +126,14 @@ pub mod process_layout;
 ///     (`udev_device_new_from_devnum`), which is handed only the `st_rdev`
 ///     and must recover the devnode from it. The same epoch carries the
 ///     Wayland stack's other contract changes, structural and semantic:
-///     the `SO_PEERCRED` option, the evdev `EVIOCGPHYS`/`EVIOCGUNIQ`/
-///     `EVIOCGPROP` ioctl family, `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`,
-///     real peer credentials from `SO_PEERCRED`, a blocking read of
-///     `/dev/dri/card0` that waits for an event instead of returning 0,
+///     the `SO_PEERCRED` option (peer credentials; it used to fail with
+///     `ENOPROTOOPT`), the evdev `EVIOCGPHYS`/`EVIOCGUNIQ`/`EVIOCGPROP`
+///     ioctl family, `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`, a blocking read
+///     of `/dev/dri/card0` that waits for an event instead of returning 0,
 ///     dma-buf `lseek` on prime fds, epoll registrations keyed on (fd, open
-///     file description) and inherited across fork/spawn, and the
-///     `kernel_epoll_watched_fd` export. docs/abi-versioning.md ("ABI 44") lists
+///     file description) and inherited across fork/spawn, epoll fds that
+///     report readiness inside poll, prime fds that stay referenced while in
+///     flight over SCM_RIGHTS, and the `kernel_epoll_watched_fd` export. docs/abi-versioning.md ("ABI 44") lists
 ///     each with why it belongs to this epoch.
 /// 45: the DRI desktop stack (GPU-tier buffers, layer shell, the toolkit
 ///     ports). The kernel's `host_gl_present` import now returns a status

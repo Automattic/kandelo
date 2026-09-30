@@ -90,7 +90,14 @@ export interface SourceRootfsShellInputs {
   sourceDateEpoch?: string;
 }
 
-const REQUIRED_BASH_ALIASES = ["/bin/bash", "/usr/bin/bash"] as const;
+// Every image binds bash as /bin/sh (docs/package-management.md); check
+// the sh aliases, not only the bash names, so a regression cannot pass.
+const REQUIRED_BASH_ALIASES = [
+  "/bin/bash",
+  "/usr/bin/bash",
+  "/bin/sh",
+  "/usr/bin/sh",
+] as const;
 export const SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES = [
   ...readSourceRootfsShellResolverDependencies(),
 ] as const;

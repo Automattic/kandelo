@@ -2,11 +2,9 @@
 #
 # Build libinput.a for wasm32-posix-kernel, pinned to libinput 1.25.0.
 #
-# This is the REAL libinput core (path backend), replacing the historical
-# libinput-lite no-op stub for the compositor path. SDL2 keeps depending on
-# libinput-lite — it references zero libinput symbols and uses libinput only
-# as an optional-detection stub — so this port is scoped to the Wayland
-# compositor consumer (PR6/PR7) and its smoke test. See
+# This is the REAL libinput core (path backend), scoped to the Wayland
+# compositor and its smoke tests. SDL2 does not use libinput (it is built
+# with --disable-libudev). See
 # docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5c).
 #
 # We bypass upstream's meson build: its feature probes misreport against the
