@@ -64,8 +64,8 @@ COMPILED = [(re.compile(p), label, hint) for p, label, hint in RULES]
 NOISE = re.compile(r"warning:|^\s*\d+ (warning|error)s? generated|configure: error: in '")
 
 
-def diagnose(path, max_items):
-    lines = open(path, errors="replace").read().splitlines()
+def find_failures(lines):
+    """Return (line_index, label, hint) for each distinct failure, in log order."""
     seen, items = set(), []
     for i, line in enumerate(lines):
         if NOISE.search(line):
@@ -77,6 +77,12 @@ def diagnose(path, max_items):
                     seen.add(key)
                     items.append((i, label, hint))
                 break
+    return items
+
+
+def diagnose(path, max_items):
+    lines = open(path, errors="replace").read().splitlines()
+    items = find_failures(lines)
     print(f"log: {path} ({len(lines)} lines)")
     if not items:
         print("no known failure pattern; last 25 lines:")

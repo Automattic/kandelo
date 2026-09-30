@@ -1,0 +1,20 @@
+  CC       liblhasa_la-lk7_decoder.lo
+  CC       liblhasa_la-lz5_decoder.lo
+  CC       liblhasa_la-lzs_decoder.lo
+  CC       liblhasa_la-pm1_decoder.lo
+  CC       liblhasa_la-pm2_decoder.lo
+  CCLD     liblhasa.la
+make[1]: Leaving directory '/home/dev/.cache/kandelo/programs/.lhasa-0.4.0-rev1-wasm32-80a4983efc8142af4b0ed3858e322c9cb2b4b5a6e31cef23e51300fc06cc3b34.work-8714-0/lhasa-src/lib'
+make: Leaving directory '/home/dev/.cache/kandelo/programs/.lhasa-0.4.0-rev1-wasm32-80a4983efc8142af4b0ed3858e322c9cb2b4b5a6e31cef23e51300fc06cc3b34.work-8714-0/lhasa-src/lib'
+make: Entering directory '/home/dev/.cache/kandelo/programs/.lhasa-0.4.0-rev1-wasm32-80a4983efc8142af4b0ed3858e322c9cb2b4b5a6e31cef23e51300fc06cc3b34.work-8714-0/lhasa-src/src'
+  CC       lha-main.o
+  CC       lha-filter.o
+  CC       lha-list.o
+  CC       lha-extract.o
+  CC       lha-safe.o
+  CCLD     lha
+make: Leaving directory '/home/dev/.cache/kandelo/programs/.lhasa-0.4.0-rev1-wasm32-80a4983efc8142af4b0ed3858e322c9cb2b4b5a6e31cef23e51300fc06cc3b34.work-8714-0/lhasa-src/src'
+-rwxr-xr-x 1 dev staff 170877 Sep 29 12:45 /home/dev/.cache/kandelo/programs/.lhasa-0.4.0-rev1-wasm32-80a4983efc8142af4b0ed3858e322c9cb2b4b5a6e31cef23e51300fc06cc3b34.work-8714-0/lha.wasm
+==> lha.wasm built.
+  installed /home/dev/.cache/kandelo/programs/.lhasa-0.4.0-rev1-wasm32-80a4983efc8142af4b0ed3858e322c9cb2b4b5a6e31cef23e51300fc06cc3b34.build-stage-8714-0/lha.wasm (resolver scratch)
+/home/dev/.cache/kandelo/programs/lhasa-0.4.0-rev1-wasm32-80a4983efc8142af4b0ed3858e322c9cb2b4b5a6e31cef23e51300fc06cc3b34

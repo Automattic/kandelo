@@ -1669,6 +1669,9 @@ jobs:
       - name: Test package build root contract
         run: bash scripts/dev-shell.sh bash scripts/test-package-build-roots.sh
 
+      - name: Test agent skills
+        run: bash scripts/dev-shell.sh bash scripts/test-agent-skills.sh
+
       - name: Test package publish flow
         if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
         run: |

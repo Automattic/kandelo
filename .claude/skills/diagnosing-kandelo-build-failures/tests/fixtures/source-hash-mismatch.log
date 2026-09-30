@@ -1,0 +1,12 @@
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `execute_graph` is never used
+   --> tools/xtask/src/local_build_executor.rs:156:15
+    |
+156 | pub(crate) fn execute_graph<F>(
+    |               ^^^^^^^^^^^^^
+
+==> Staging pinned lhasa source...
+/home/dev/.cache/kandelo/programs/.example-0.4.0-rev1-wasm32-12c0e6f0eefb3986efab04291eec56c41ec53b976b8c53986d6585108bb896b4.work-6795-0/kandelo-lhasa-source.TK2VTH/source.archive: FAILED
+shasum: WARNING: 1 computed checksum did NOT match
+xtask build-deps: example@0.4.0: build script /work/kandelo/packages/registry/example/build-example.sh exited with exit status: 1
