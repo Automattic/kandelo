@@ -438,6 +438,83 @@ export interface PreparedPlatformFile {
   stat: StatResult;
 }
 
+/** Ownership, type and size of one path, as `stat`/`lstat` reports them. */
+export interface VfsPathStat {
+  mode: number;
+  size: number;
+  uid: number;
+  gid: number;
+}
+
+/** One directory entry, described without following a final symlink. */
+export interface VfsDirEntrySnapshot extends VfsPathStat {
+  name: string;
+  /** Symlink target, present only when the entry is a symlink. */
+  target?: string;
+}
+
+/**
+ * Describe a path, following symlinks. Deferred backing is prepared first so
+ * the answer matches what a guest `stat()` would see.
+ */
+export async function statPreparedPlatformPath(
+  io: PlatformIO,
+  path: string,
+): Promise<VfsPathStat> {
+  await io.preparePath?.(path);
+  const { mode, size, uid, gid } = io.stat(path);
+  return { mode, size, uid, gid };
+}
+
+/**
+ * List a directory through its owning PlatformIO mount. Entries are described
+ * with `lstat`, so a symlink is reported as a symlink with its target rather
+ * than as whatever it points at. An entry that disappears between `readdir`
+ * and `lstat` is skipped: another process may be unlinking it.
+ */
+export async function listPreparedPlatformDirectory(
+  io: PlatformIO,
+  path: string,
+): Promise<VfsDirEntrySnapshot[]> {
+  await io.preparePath?.(path);
+  const handle = io.opendir(path);
+  try {
+    const entries: VfsDirEntrySnapshot[] = [];
+    for (;;) {
+      const entry = io.readdir(handle);
+      if (!entry) break;
+      if (entry.name === "." || entry.name === "..") continue;
+      const childPath = path.endsWith("/")
+        ? path + entry.name
+        : `${path}/${entry.name}`;
+      let stat: StatResult;
+      try {
+        stat = io.lstat(childPath);
+      } catch {
+        continue;
+      }
+      const snapshot: VfsDirEntrySnapshot = {
+        name: entry.name,
+        mode: stat.mode,
+        size: stat.size,
+        uid: stat.uid,
+        gid: stat.gid,
+      };
+      if ((stat.mode & 0o170000) === 0o120000) {
+        try {
+          snapshot.target = io.readlink(childPath);
+        } catch {
+          // A link replaced mid-listing keeps its entry without a target.
+        }
+      }
+      entries.push(snapshot);
+    }
+    return entries;
+  } finally {
+    io.closedir(handle);
+  }
+}
+
 /**
  * Read a complete regular file through its owning PlatformIO mount.
  * Deferred backing is prepared before the synchronous descriptor operations,

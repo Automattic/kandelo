@@ -57,6 +57,16 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `writeFileToVfs`, and `unlinkFileFromVfs`). The owning worker performs those
   mutations through the mounted VFS; the main thread never receives the live
   VFS `SharedArrayBuffer`.
+  Reads follow the same rule. `readFileFromVfs`, `readDirFromVfs` and
+  `statVfsPath` ask the worker (both `BrowserKernel` and `NodeKernelHost`
+  implement them), and they are the only way `LiveKernelHost.readFile`,
+  `readDir`, `stat` and the process list's uid-to-name lookup reach the
+  filesystem. There is no synchronous filesystem handle on the kernel object
+  for UI code to fall back to; a kernel without these methods makes the call
+  fail with an error naming the missing method. A missing path resolves
+  `null` from the worker and surfaces as `ENOENT`, not as empty bytes or an
+  empty listing. `/proc` is kernel-virtual and is not visible through these
+  host-side reads; the process list comes from `enumProcs`.
   A quiescent machine can return durable root-image bytes through
   `BrowserKernel.exportRootfsImage()`. The worker rejects export while a guest
   process or teardown is live, serializes it against the same staging and lazy
