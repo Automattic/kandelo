@@ -15,6 +15,10 @@ link against musl → syscall channel → kernel).
 - `net-demo/` — P5: std::net TCP loopback (bind/accept/connect/echo).
 - `proc-demo/` — P3: std::process::Command (fork+exec self-spawn).
   REQUIRES fork instrumentation (see the fixture header).
+- `interop-c-calls-rust/` — M7.1: a C `main` linking a std-using Rust
+  `staticlib` and calling its `extern "C"` API.
+- `interop-rust-calls-c/` — M7.1: a Rust program linking a C static
+  library (built by `build.rs` with the SDK).
 
 Build/run: see `sdk/rust/README.md`. Run with
 `npx tsx examples/run-wasm.ts <fixture>/<name>.wasm` (a self-contained

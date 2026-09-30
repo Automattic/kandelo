@@ -33,6 +33,46 @@ Verified on the kernel (see `programs/rust/*`):
 | networking | `std::net` TCP | loopback + Node external TCP |
 | processes | `std::process::Command` | fork+exec (see below) |
 
+## Sharing libraries with C/C++
+
+Rust and C/C++ link against one shared musl, so static interop works in
+both directions (validated on the kernel — see
+`programs/rust/interop-c-calls-rust/` and `interop-rust-calls-c/`).
+
+**C/C++ calls Rust:** build the Rust crate as `crate-type =
+["staticlib"]` exposing `#[no_mangle] extern "C"` functions, then link the
+`.a` with the rest via the SDK:
+
+```
+# build the Rust staticlib (see the fixture's .cargo/config.toml)
+cargo build --release -Z unstable-options -Z json-target-spec \
+  -Z build-std=std,panic_abort --target sdk/rust/wasm32-unknown-kandelo-std.json
+# link a C/C++ program against it (wasm32posix-c++ for C++)
+wasm32posix-cc main.c target/wasm32-unknown-kandelo-std/release/lib<name>.a -o prog.wasm
+```
+
+A Rust `std` staticlib works even though the C `main`, not Rust's
+`lang_start`, is the entry: the allocator is malloc-backed, `panic =
+abort`, and stdio lazy-initializes. You only lose `std::env::args`, which
+a library does not need. C++ is identical — declare the Rust functions
+`extern "C"`.
+
+**Rust calls C/C++:** compile the C/C++ to a static lib with the SDK and
+link it from the Rust build. A `build.rs` can do it in one step:
+
+```rust
+Command::new("wasm32posix-cc").args(["-c", "c/foo.c", "-o", &obj]).status()?;
+Command::new("wasm32posix-ar").args(["rcs", &lib, &obj]).status()?;
+println!("cargo:rustc-link-search=native={out}");
+println!("cargo:rustc-link-lib=static=foo");
+```
+
+Both sides must be built for `wasm32-unknown-kandelo` (the SDK compiles C
+with the matching `+atomics,+bulk-memory` features, so `wasm-ld` links
+them). No `compiler_builtins`/`compiler_rt` intrinsic collisions occur.
+Dynamic loading (`dlopen` of a Rust `cdylib`) is a separate, unvalidated
+path.
+
 ## Fork-using programs need instrumentation
 
 `std::process` (and anything reaching `fork`) uses fork+exec on musl.

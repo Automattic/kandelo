@@ -1,0 +1,16 @@
+[package]
+name = "interop-rust-calls-c"
+version = "0.0.0"
+edition = "2021"
+build = "build.rs"
+
+[[bin]]
+name = "interop-rust-calls-c"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
+
+[workspace]
