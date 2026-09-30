@@ -15,6 +15,9 @@
 # libevdev needs is the generated event-name table (event-names.h), which
 # python3 (flake.nix) produces from the bundled linux UAPI headers.
 
+# FOLLOW-UP: the build bypasses upstream's meson build with a hand-written
+# config.h; listed in docs/package-management.md ("Packages that are not real upstream builds yet").
+
 kind = "library"
 
 name = "libevdev"

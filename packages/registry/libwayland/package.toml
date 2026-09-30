@@ -26,6 +26,9 @@
 #                        protocol headers from xml/wayland.xml with the
 #                        host wayland-scanner.
 
+# FOLLOW-UP: the build bypasses upstream's meson build with a hand-written
+# config.h; listed in docs/package-management.md ("Packages that are not real upstream builds yet").
+
 kind = "library"
 
 name = "libwayland"

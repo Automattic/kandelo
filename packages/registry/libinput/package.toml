@@ -1,9 +1,7 @@
 # Per-library manifest for libinput. See docs/package-management.md.
 #
 # Ports libinput 1.25.0 (libinput.a) to wasm32-posix-kernel — the REAL
-# libinput core, path backend only. This replaces the historical
-# libinput-lite no-op stub as the compositor's input library: libinput
-# opens explicit /dev/input/event* nodes via libinput_path_add_device,
+# libinput core, path backend only. libinput opens explicit /dev/input/event* nodes via libinput_path_add_device,
 # runs the evdev capability machine (built on libevdev), classifies
 # devices through the libudev input_id shim, and turns the raw
 # `struct input_event` stream into libinput pointer/keyboard/touch
@@ -11,13 +9,13 @@
 #
 # Scope: the 35 path-backend TUs (src_libfilter + src_libinput core +
 # util + quirks), DROPPING src/udev-seat.c — the udev enumerate/monitor
-# seat backend. The compositor (PR6/PR7) drives the path backend only.
-# SDL2 is a SEPARATE consumer that keeps depending on libinput-lite: it
-# references zero libinput symbols (verified against the SDL2 2.30 tree)
-# and uses libinput purely as an optional-detection stub, so swapping in
-# the real 35-TU library there would only bloat its dep graph for no
-# functional gain. See
-# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5c).
+# seat backend. The Wayland compositor drives the path backend only.
+# SDL2 does not use libinput: it is built with --disable-libudev and
+# reads evdev directly.
+#
+# FOLLOW-UP: its libudev and mtdev dependencies are shims, the build
+# bypasses meson, and one patch adapts to a missing DMI identity; all are
+# listed in docs/package-management.md ("Packages that are not real upstream builds yet").
 #
 # We bypass upstream's meson build (its feature probes target the build
 # host, not the wasm sysroot) and compile the core TUs directly with a

@@ -124,6 +124,10 @@ async function writeRootfs(
   ensureDirRecursive(fs, "/bin");
   ensureDirRecursive(fs, "/etc/kandelo");
   fs.symlink("/usr/bin/bash", "/bin/bash");
+  // Every Kandelo rootfs also binds bash as /bin/sh (images/rootfs/PACKAGES.toml
+  // `aliases`), and the shell image builder asserts all four names.
+  fs.symlink("/usr/bin/bash", "/bin/sh");
+  fs.symlink("/usr/bin/bash", "/usr/bin/sh");
   writeVfsBinary(
     fs,
     "/usr/bin/login",

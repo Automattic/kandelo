@@ -68,6 +68,10 @@ tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
 
 echo "==> Applying the Kandelo platform-classification patch..."
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0001-recognize-kandelo-as-unix.patch"
+# The KMSDRM backend has no GetDisplayDPI; without it a fullscreen client that
+# scales its UI by DPI (ScummVM) stays at 1x on a HiDPI display. Upstreamable.
+echo "==> Applying the KMSDRM display-DPI patch..."
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0002-kmsdrm-display-dpi-from-connector.patch"
 
 # --- Wayland pkg-config wiring (step 12b) ------------------------------
 # SDL2's configure gates the Wayland backend on a hard pkg-config probe

@@ -345,6 +345,15 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // event it receives (it runs at -l debug), so the bar's own line is the
   // proof the feed arrived; the compositor's WORKSPACE marker only proves it
   // was sent.
+  // The theme switch above reloads Waybar, which re-dumps its widget tree
+  // (about 40 lines at -l debug) and then re-maps the bar. Wait for the
+  // re-map first: if the dump lands after CTRL+2, it scrolls the WORKSPACE
+  // marker off the visible rows this gate reads.
+  await expectTerminal(
+    page,
+    /Bar configured \(width: \d+, height: \d+\)[\s\S]*LAYER ns=waybar layer=2 /,
+    60_000,
+  );
   await pressCtrl(page, "2");
   await expectTerminal(page, /WORKSPACE active=2/, 60_000);
   await expectTerminal(page, /hyprland IPC received workspacev2>>2,2/, 60_000);
@@ -411,5 +420,67 @@ test("Kandelo omarchy survives a rapid 8-window launch storm without SCM_RIGHTS 
   await expectTerminal(page, /TILE n=6 /, 30_000);
   await page.waitForTimeout(2_000);
   expect(await terminalText(page), "a client failed after the close/retile")
+    .not.toMatch(CLIENT_FAILURE);
+});
+
+/**
+ * ScummVM as a Wayland client. It is the desktop's one GL client that is not
+ * written for Kandelo: upstream ScummVM on upstream SDL2's Wayland backend,
+ * presenting through the libwayland-egl stand-in. Three platform pieces have
+ * to agree for it to fill its tile, and each failed silently before:
+ *
+ *   - the launch wrapper picks SDL's Wayland backend because a compositor
+ *     socket exists (it pins KMSDRM only on a bare display);
+ *   - the compositor tells the window it is tiled, because SDL keeps a
+ *     fixed-size window's own size for any configure it considers floating;
+ *   - wl_egl_window_resize reallocates the GL buffer. A client that kept its
+ *     creation-size buffer drew its tile-sized viewport cropped into it, and
+ *     every protocol marker still fired.
+ *
+ * GLBUFFER is the compositor's report of the buffer a GL window actually
+ * committed, so matching it to the tile is the gate for all three.
+ */
+test("Kandelo omarchy runs ScummVM as a GL window that takes its tile's size", async ({ page }) => {
+  test.setTimeout(300_000);
+
+  await launchOmarchy(page);
+  await openSurface(page, "Internals");
+  await expect
+    .poll(() => syslogText(page), { timeout: 180_000 })
+    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
+  await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
+
+  // Launch it the way a user does: the launcher's entry runs the image's
+  // wrapper, which execs the lazy engine.
+  await pressCtrl(page, "Space");
+  await expectTerminal(page, OPEN_LAUNCHER, 60_000);
+  await pressKeys(page, ["KeyS", "KeyC", "KeyU", "Enter"]);
+  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/scummvm/, 60_000);
+
+  // It maps as the only window, is tiled, and the GPU path draws its buffer.
+  await expectTerminal(page, /TILE n=1 i=0 x=\d+ y=\d+ w=\d+ h=\d+/, 180_000);
+  await expectTerminal(page, /GLDRAW app_id=SDL_App/, 60_000);
+  expect(await syslogText(page), "scummvm binary does not match the kernel ABI")
+    .not.toMatch(/ABI version mismatch/);
+
+  // The buffer it commits after the tiled configure is the tile's size (times
+  // a whole output scale). SDL's first buffer is its own default window size,
+  // so poll for the one that follows the resize.
+  await expect
+    .poll(async () => {
+      const text = await terminalText(page);
+      const tile = [...text.matchAll(/TILE n=1 i=0 x=\d+ y=\d+ w=(\d+) h=(\d+)/g)].at(-1);
+      const buffer = [...text.matchAll(/GLBUFFER app=SDL_App bw=(\d+) bh=(\d+)/g)].at(-1);
+      if (!tile || !buffer) return "no TILE or GLBUFFER marker on screen";
+      const [w, h] = [Number(tile[1]), Number(tile[2])];
+      const [bw, bh] = [Number(buffer[1]), Number(buffer[2])];
+      const scale = Math.round(bw / w);
+      return scale >= 1 && bw === w * scale && bh === h * scale
+        ? "buffer matches tile"
+        : `buffer ${bw}x${bh} does not match tile ${w}x${h}`;
+    }, { timeout: 60_000 })
+    .toBe("buffer matches tile");
+
+  expect(await terminalText(page), "a client failed while ScummVM ran")
     .not.toMatch(CLIENT_FAILURE);
 });

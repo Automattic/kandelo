@@ -14123,13 +14123,13 @@ fn poll_check_depth(
                         if !tmp.is_empty() {
                             poll_check_depth(proc, host, &mut tmp, depth + 1);
                             // Count only conditions epoll_wait would actually
-                            // report. `poll_check_depth`'s return also counts
-                            // POLLNVAL, and nothing prunes `ep.interests` when
-                            // a monitored fd is closed without EPOLL_CTL_DEL
-                            // (Linux prunes automatically). Treating that as
-                            // readable makes the outer epoll report ready
-                            // forever while epoll_wait on the inner one yields
-                            // an events==0 entry — a 100% CPU spin.
+                            // report. `live_epoll_interests` already drops
+                            // registrations whose description closed (as
+                            // Linux does), but `poll_check_depth`'s return
+                            // also counts POLLNVAL, which epoll_wait never
+                            // reports. Counting it would make the outer epoll
+                            // report ready forever while epoll_wait on the
+                            // inner one yields no events — a 100% CPU spin.
                             let ready = tmp.iter().any(|p| {
                                 p.revents & (POLLIN | POLLOUT | POLLERR | POLLHUP) != 0
                             });
