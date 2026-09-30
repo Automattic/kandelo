@@ -319,6 +319,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           label={ingest.label ?? "Load file"}
           busy={busy}
           busyLabel={ingestName ? `loading ${ingestName}…` : "loading…"}
+          testIdPrefix="fb"
           onFile={ingestFile}
         />
       )}
@@ -397,13 +398,13 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
         </div>
       )}
       {busy && (
-        <div className="kframebuffer-toast" data-testid="fb-ingest-busy">
+        <div className="kdemo-toast" data-testid="fb-ingest-busy">
           {ingestName ? `loading ${ingestName}…` : "loading…"}
         </div>
       )}
       {ingestError && !busy && (
         <div
-          className="kframebuffer-toast"
+          className="kdemo-toast"
           data-error="true"
           data-testid="fb-ingest-error"
           role="alert"
@@ -411,7 +412,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           {ingestError}
           <button
             type="button"
-            className="kframebuffer-toast-dismiss"
+            className="kdemo-toast-dismiss"
             onClick={() => setIngestError(null)}
             aria-label="Dismiss error"
           >
@@ -456,13 +457,15 @@ export const DemoSurfaceDockControls: React.FC<{
  * The primary ingest path: a real <input type="file">, so it works on every
  * platform including touch, where drag-and-drop does not exist.
  */
-const IngestControl: React.FC<{
+export const IngestControl: React.FC<{
   accept: string[];
   label: string;
   busy: boolean;
   busyLabel: string;
+  /** Surface that owns this control, so two panes get distinct test ids. */
+  testIdPrefix: string;
   onFile: (file: File) => void;
-}> = ({ accept, label, busy, busyLabel, onFile }) => {
+}> = ({ accept, label, busy, busyLabel, testIdPrefix, onFile }) => {
   const inputRef = React.useRef<HTMLInputElement>(null);
   return (
     <>
@@ -470,7 +473,7 @@ const IngestControl: React.FC<{
         ref={inputRef}
         type="file"
         accept={accept.join(",")}
-        data-testid="fb-ingest-input"
+        data-testid={`${testIdPrefix}-ingest-input`}
         style={{ display: "none" }}
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -482,7 +485,7 @@ const IngestControl: React.FC<{
       <button
         type="button"
         className="kdemo-surface-action"
-        data-testid="fb-ingest-button"
+        data-testid={`${testIdPrefix}-ingest-button`}
         disabled={busy}
         onClick={() => inputRef.current?.click()}
       >

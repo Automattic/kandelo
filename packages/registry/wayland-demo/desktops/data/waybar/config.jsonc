@@ -1,0 +1,22 @@
+{
+  "layer": "top",
+  "position": "top",
+  "spacing": 0,
+  "height": 32,
+  "modules-left": ["custom/omarchy", "hyprland/workspaces"],
+  "modules-center": ["clock"],
+  "modules-right": ["hyprland/window"],
+  "custom/omarchy": {
+    "format": "◆",
+    "on-click": "/usr/local/bin/klauncher --menu",
+    "tooltip": false
+  },
+  "hyprland/workspaces": {
+    "on-click": "activate",
+    "tooltip": false,
+    "format": "{name}",
+    "persistent-workspaces": { "1": [], "2": [], "3": [], "4": [], "5": [] }
+  },
+  "hyprland/window": { "format": "{title}", "max-length": 60, "tooltip": false },
+  "clock": { "format": "{:%H:%M:%S}", "interval": 1, "tooltip": false }
+}

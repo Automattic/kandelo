@@ -174,6 +174,20 @@ incomplete until both hosts have the same platform-observable behavior or the
 difference is explicitly justified by a real platform boundary. Do not land
 Node-first or browser-later host changes.
 
+A declared memory ceiling is a spent resource. WebKit/JavaScriptCore charges a
+shared `WebAssembly.Memory`'s `maximum` and a growable `SharedArrayBuffer`'s
+`maxByteLength` against one process-wide reservation pool at construction,
+whether or not the space is used; V8 and SpiderMonkey do not. Do not add or
+raise a ceiling without accounting for that cost, and never reserve past a
+capacity the resource cannot actually reach. Host budgets live in
+`host/src/runtime-memory-profile.ts`.
+
+The main thread must never own a VFS `SharedArrayBuffer`. Only
+`Worker.terminate()` reclaims shared memory deterministically on WebKit, so
+main-thread VFS buffers accumulate across machine boots until Safari throws
+`Out of memory`. Compose images in a worker and hand the main thread plain,
+transferable bytes.
+
 Shared files are cross-host changes by default. Changes to
 `host/src/kernel-worker.ts`, `host/src/worker-main.ts`, VFS behavior,
 networking, framebuffer, generated ABI constants, or worker protocol types need
@@ -275,12 +289,12 @@ as a local interactive convenience, but it is not the verification contract.
 Building artifacts is expected work, not scope creep. This project builds
 everything locally: no CI status check pre-materializes the sysroots, kernel
 wasm, program and test-fixture binaries (`local-binaries/`), rootfs image, or
-fetched binaries, and a fresh checkout or `git worktree` inherits none of
+package artifacts, and a fresh checkout or `git worktree` inherits none of
 them. When a goal — running a suite, reproducing a failure, validating before
 a merge — needs an artifact that is missing, build it and continue. A missing
-artifact is a `./run.sh setup` / `build-musl.sh` / `build-programs.sh` /
-`fetch-binaries.sh` step away (under `scripts/dev-shell.sh`), not a "cannot
-proceed" boundary and not a reason to hand the task back. Distinguish this
+artifact is a `./run.sh setup` / `build-musl.sh` / `build-programs.sh` step
+away (under `scripts/dev-shell.sh`), not a "cannot proceed" boundary and not a
+reason to hand the task back. Distinguish this
 from a genuine platform defect: a missing artifact you can produce is
 provisioning; an artifact that fails to build, or an ABI-mismatched one that
 must be rebuilt through the normal path, is the truthful failure the

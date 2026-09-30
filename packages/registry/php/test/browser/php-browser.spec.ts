@@ -38,12 +38,12 @@ if (hasIntlSo && !phpIcuRuntime) {
     "PHP intl.so is present but the declared php:icu.dat runtime file is not materialized",
   );
 }
-const hasRootfsVfs = tryResolveBinary("rootfs.vfs") != null
-  || tryResolveBinary("programs/rootfs.vfs") != null;
+const hasRootfsVfs = tryResolveBinary("rootfs.vfs.zst") != null
+  || tryResolveBinary("programs/rootfs.vfs.zst") != null;
 
 test.skip(!hasKernelWasm, "kernel.wasm is not built or fetched");
 test.skip(!hasPhpWasm, "php.wasm is not built or fetched");
-test.skip(!hasRootfsVfs, "rootfs.vfs is not built");
+test.skip(!hasRootfsVfs, "rootfs.vfs.zst is not built");
 
 test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML, OpenSSL, extensions)", async ({
   page,
@@ -121,7 +121,7 @@ test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML,
   // SimpleXML
   expect(results.xml).toContain("xml-ok");
 
-  // OpenSSL defaults are present in rootfs.vfs and key + CSR generation succeeds.
+  // OpenSSL defaults are present in rootfs.vfs.zst and key + CSR generation succeeds.
   expect(results.openssl).toContain("openssl-defaults-ok");
 
   // Packaged side module and DEFLATE behavior through the browser VFS.

@@ -135,19 +135,12 @@ export class FetchNetworkBackend implements NetworkIO {
           });
         } catch (e) {
           if (this.corsProxy) {
-            response = await fetch(
-              this.corsProxy.urlFor(url),
-              {
-                method,
-                headers: this.corsProxy.project({
-                  method,
-                  headers: browserHeaders,
-                  bodyPresent: fetchBody !== undefined,
-                  targetUrl: url,
-                }),
-                body: fetchBody,
-              },
-            );
+            response = await this.corsProxy.fetch({
+              method,
+              headers: browserHeaders,
+              body: fetchBody,
+              targetUrl: url,
+            });
           } else {
             throw e;
           }

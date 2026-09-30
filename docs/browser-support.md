@@ -207,7 +207,41 @@ pipe pair.
 ### Terminal
 - PTY support with full line discipline
 - Interactive stdin via `appendStdinData` for incremental input
-- xterm.js integration via `PtyTerminal`
+- xterm.js integration. The live Shell pane
+  (`apps/browser-demos/pages/kandelo/panes/Shell.tsx`) builds its own
+  `Terminal`; `apps/browser-demos/lib/pty-terminal.ts` provides a standalone
+  `PtyTerminal` for pages that drive a `BrowserKernel` directly.
+
+#### Clickable links
+
+URLs in terminal output are clickable and always open in a new tab. Both plain
+text URLs and OSC 8 hyperlinks go through one policy, decided by
+`classifyTerminalLink` in `web-libs/kandelo-session/src/terminal-links.ts` and
+wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
+
+- **Third-party destinations** open with `rel="noopener noreferrer"`. A Kandelo
+  page URL can carry machine state — a `#k1=` boot descriptor, a share link —
+  so the `Referer` header is withheld from anything that is not this machine.
+- **Same-origin destinations**, including the machine's own web surface, open
+  with `rel="noopener"` and do send a referrer.
+- **Loopback URLs an in-machine program printed** (`localhost`, `127.0.0.0/8`,
+  `0.0.0.0`, `[::1]`, `[::]`) name a port in the *machine's* network namespace,
+  not on the user's computer. The service-worker HTTP bridge forwards exactly
+  one machine port to the app prefix, so such a URL is rewritten onto that
+  prefix — `http://localhost:8080/wp-admin/` becomes
+  `<origin>/computer/<name>/wp-admin/` —
+  and only when its port matches the bridged one.
+- **Loopback URLs on any other port, or with no bridge running, are not
+  linkified at all.** Nothing forwards them, and a click that silently landed
+  on the user's own machine would be worse than plain text.
+- Only `http:` and `https:` are linkified. `javascript:`, `data:` and `file:`
+  URLs a program writes are never clickable.
+- An **OSC 8 hyperlink** lets a program choose the visible text and the
+  destination independently, so the text can misrepresent where the link goes.
+  Following one to a third party keeps xterm.js's confirmation prompt, which
+  names the real destination; only the referrer behavior changes. (xterm's
+  built-in handler navigates with `window.open` + `location.href`, which does
+  send the `Referer`.)
 
 ### Framebuffer (`/dev/fb0`)
 - 640×400 BGRA32 packed-pixel framebuffer; exclusive process owner.
@@ -271,6 +305,18 @@ pipe pair.
   stops: the queue fills, writers apply backpressure, and drain/close stays
   pending instead of pretending audio played. Resuming the context continues
   from the queued position.
+- **Audio demand is a separate signal from audio state.** Every machine gets a
+  PCM transport at kernel ready, so the sink's state (`unprepared`,
+  `suspended`, `running`, `error`, …) says nothing about whether anything in
+  the machine wants audio. The kernel already publishes demand in the shared
+  control header: a guest `open()` of `/dev/dsp` bumps the monotonic
+  `generation` and leaves `state` non-closed, while the host's transport claim
+  touches neither. `KernelHost.getAudioActivity()` /
+  `subscribeAudioActivity()` report that, latched for the machine's lifetime,
+  and the browser app shows its audio warning only when demand is set — so a
+  shell machine stays silent while a machine that has opened the device still
+  surfaces a suspended, errored, interrupted or unavailable sink. The latch is
+  what keeps the warning up after a program that played one short sound exits.
 - Browser policy suspension and interruption are recoverable and do not poison
   the stream. A permanent worklet, processor, or sink failure is latched into
   the shared transport instead: blocked calls wake, `write()` and drain return
@@ -304,7 +350,7 @@ Located in `apps/browser-demos/pages/`:
 | Demo | Software | Boot pattern | Features |
 |------|----------|--------------|----------|
 | simple | C programs | legacy spawn | Basic file I/O, printf |
-| shell | dash + coreutils | legacy spawn | Interactive shell with exec, pipes, PATH lookup |
+| shell | bash + coreutils | legacy spawn | Interactive shell with exec, pipes, PATH lookup |
 | python | CPython 3.13 | `kernel.boot` | REPL + script runner |
 | perl | Perl 5.40 | `kernel.boot` | REPL + script runner |
 | php | PHP CLI | `kernel.boot` | Script execution |
@@ -313,20 +359,577 @@ Located in `apps/browser-demos/pages/`:
 | erlang | OTP 28 BEAM | legacy spawn | Erlang VM, message passing |
 | nginx | nginx | dinit | Static file serving via service worker |
 | nginx-php | nginx + PHP-FPM | dinit | FastCGI, fork workers |
+| nginx-python | nginx + Python (wsgiref) | dinit | Reverse proxy to a standard-library WSGI JSON API over SQLite |
 | mariadb | MariaDB 10.5 | dinit | SQL database with threads (Aria/InnoDB) |
 | redis | Redis 7.2 | dinit | In-memory store with threads |
 | wordpress | nginx + PHP-FPM + WP | dinit | Full stack with SQLite |
 | lamp | MariaDB + nginx + PHP-FPM + WP | dinit | Full LAMP stack |
 | mariadb-test | MariaDB + mysqltest | dinit + spawn | Playwright-driven mysql-test runner |
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
-| network | dash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
+| network | bash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
+| sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package and is baked into the image with its shader presets before boot. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
+| espeak | espeak-ng | dinit | Speech synthesis through upstream pcaudiolib's OSS backend, so playback rides the same `/dev/dsp` path as the doom demo. The binary and the voice data both come from the `espeak-ng` package closure — the data as the `espeak-ng-data.zip` runtime file, unpacked into `/usr/share/espeak-ng-data` while the image is composed, because libespeak-ng's `PATH_ESPEAK_DATA` is fixed at build time. |
+| modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package and is baked into the image before boot; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
+| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. No game ships; the profile takes a zipped game as an upload. |
+| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package and are baked into the image before boot; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
+| omarchy | wlcompositor (dwindle) + dbus-daemon + mako + Waybar + klauncher + qtgallery + Quickshell | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor, mako and Waybar; windows, including the Qt clients, are opened from the launcher and keybinds. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
 - **dinit** — `kernelOwnedFs: true`, exec dinit as the first user process (PID 100), which brings up the per-demo service tree; PID 1 remains synthetic.
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
 - **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary, and the Rust kernel allocates the PID before the worker launches it.
+
+### Wayland desktop demo
+
+The Wayland desktop machine (launched from the gallery, or directly with
+`?vfs=<shell image>&profile=wayland`) boots four programs:
+
+- **wlcompositor** — a floating-window Wayland server (`wl_shm`,
+  `xdg_shell`, `wl_seat`, `wl_output`) built on the wasm32 libwayland
+  port. It opens `/dev/dri/card0`, becomes DRM master, and composites
+  all client windows (wallpaper + CSD titlebars + focus border) —
+  **on the GPU** when the host has WebGL2 (see below), with a CPU
+  dumb-bo blit fallback — while committing real `drmModePageFlip`
+  ioctls. Input arrives through the real libinput stack (libevdev on
+  `/dev/input/event*`).
+- **wlclock** — an animated analog clock (paced by `poll` timeouts;
+  hands/ticks drawn with wpkdraw's anti-aliased primitives).
+- **wlpaint** — a pointer-driven painting canvas.
+- **wlterm** — a libkwl VT100 terminal running a forkpty'd `sh` (bash, as in every Kandelo image).
+
+The Modeset pane bridges card0 to an OffscreenCanvas.
+
+**GPU compositing (default in the browser).** At boot wlcompositor
+probes the `/dev/dri/renderD128` GLES bridge (shader compile via sync
+queries, which fail cleanly on headless hosts) and, when available,
+composites with GLES3: each client `wl_shm` buffer — a gbm dumb bo
+whose prime-fd arrived over `SCM_RIGHTS` — is imported on the EGL fd
+and bound as a `WebGLTexture` through the
+`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` ioctl (the host uploads pixels
+straight from the bo's shared storage; nothing marshals through the
+cmdbuf). Frames render as textured quads (wallpaper texture + z-ordered
+windows + focus border) in a single cmdbuf flush, so the canvas
+transitions atomically between complete frames. The compositor's GL
+context claims the CRTC canvas (`markKmsCanvasGlOwned`), the vblank
+pump's presenter stands down, and stats slot 7 reports `3`
+(`webgl2-gl` in the chip). KMS PAGE_FLIPs still pace frame callbacks
+and the flip counters — only pixel production moves to the GPU. The
+compositor prints a one-shot `WLC_RENDERER gpu|cpu` marker;
+`WLC_NO_GPU=1` forces the CPU path.
+
+**CPU compositing (Node smokes, headless degrade, or `WLC_NO_GPU`).**
+The compositor blits committed buffers into the dumb-bo scanout as
+before, and the pane's canvas stays in `mode: "webgl2-scanout"`: the
+kernel worker's vblank pump owns a WebGL2 context on the canvas and
+presents the currently scanned-out framebuffer (the fb latched by the
+most recent `PAGE_FLIP`) as a texture draw — the DRM XRGB8888 → RGBA
+swizzle happens in the fragment shader and the scaling on the GPU
+(trilinear over a per-frame mip chain, so a downscaled desktop doesn't
+shimmer). A runtime GPU-compositing failure tears the compositor's EGL
+session down, which hands the canvas back to the pump presenter
+(`markKmsCanvasGlReleased`) so the desktop keeps painting. A browser
+GPU-process crash is detected on the same chain: when the canvas
+context is lost, `host_gl_present` fails the guest's `eglSwapBuffers`
+with `EIO`, the compositor degrades to CPU compositing, and EGL
+teardown returns the canvas to the pump. The kernel worker installs
+`webglcontextlost`/`webglcontextrestored` listeners when the canvas is
+attached (`hookKmsContextLoss`) — not lazily at presenter build — so
+the loss event is cancelled and the browser restores the context even
+when the compositor's GL session owned the canvas at loss time; the
+rebuilt pump presenter then finds a live context. Both crash rounds
+(compositor-owned, then pump-owned) are gated by
+`apps/browser-demos/test/kandelo-kms-context-loss.spec.ts`. The rebuilt
+presenter inherits the dead session's WebGL2 context — `getContext`
+returns the existing one — so it restores the state its draw depends on
+rather than assuming fresh-context defaults. Pixel-store state matters
+most: a leftover `UNPACK_ROW_LENGTH` or a still-bound
+`PIXEL_UNPACK_BUFFER` makes every scanout upload `GL_INVALID_OPERATION`,
+which raises no JS exception, so the pump would report presents onto a
+black canvas. Six unpack parameters and the `PIXEL_UNPACK_BUFFER`
+binding are reset on every rebuild, and
+`host/test/dri-kms-stats-sab.test.ts` pins each reset individually
+against a fake GL. That fake cannot see a rejected upload. The
+real-context gate that could — `kandelo-kms-presenter.spec.ts` — is
+deleted, because its fixture worker reached the kernel worker through a
+writable instance property and a `tickVblank` cast, and the sealed
+instance and the `#tickVblank` private field refuse both.
+`kandelo-kms-context-loss.spec.ts` does run on a real context, but it
+needs the built desktop binaries and the browser-demo CI job runs a bare
+checkout with no binary fetch, so it cannot take the vacated CI slot.
+Until that fixture is rebuilt on
+`createCentralizedKernelWorkerTestDouble`, no automated gate proves a
+rebuilt presenter's uploads are accepted. A
+main-thread ResizeObserver reports the pane's device-pixel size so the
+presenter renders at display resolution instead of letting the page
+compositor rescale an fb-sized bitmap; any letterbox is drawn in GL
+with the same contain math the pane's pointer mapping uses.
+
+The desktop itself also fills the pane. A machine declaring
+`kms-gl-scanout` mounts its display pane as soon as the kernel is
+attached — hidden while booting, but laid out, so it has its real size —
+and the boot flow waits for that pane's first size report before starting
+init or the machine's command. `host_kms_mode_info` then advertises a
+preferred mode matching the pane's aspect ratio
+(`round(1080 × aspect) × 1080`, width clamped [1440, 3840]). The wait is
+bounded at 5 s; a pane that never reports (no layout) leaves the
+connector at the 1920×1080 fallback, which the boot log records. wlcompositor
+sizes its scanout from that mode and its placement rules are
+edge-anchored (wlterm left, wlclock/wlpaint offsets from the right
+edge), so wider panes spread the demo across the full width with no
+black bars. The mode is fixed at boot — resizing the browser window
+afterwards letterboxes rather than re-modes.
+
+Because the mode is device pixels, a HiDPI pane gets a mode larger than
+its CSS box, and nothing in the mode says which of the two it is.
+wlcompositor takes the integer `wl_output` scale separately, as
+`WLC_SCALE` (clamped 1–3) in its environment, and then keeps two grids: the mode sizes every
+scanout, GBM bo, EGL surface and GL viewport, while the mode divided by
+the scale is the logical grid clients lay out in. `wl_output.mode`
+stays device pixels; `wl_output.scale`, `xdg_output`'s logical size and
+`wp_fractional_scale`'s preference (scale × 120) all follow the scale.
+A client that honours `wl_surface.set_buffer_scale` attaches a buffer
+that covers its window 1:1 and blits without resampling; one that
+ignores it is upscaled — soft, but correctly sized.
+
+**The scale comes from the display's physical size.** The page reports
+the pane's size twice: in device pixels (the mode) and as a physical size
+in millimetres derived from its CSS box — CSS defines 96 px per inch, so
+this is the browser's reference size, not a measured panel. The kernel
+reports that size on the DRM connector (`mm_width`/`mm_height` from
+`DRM_IOCTL_MODE_GETCONNECTOR`, filled from the `host_kms_connector_mm`
+import), exactly where a real connector carries its EDID size. Without
+`WLC_SCALE`, wlcompositor derives its output scale from it the way
+Hyprland's `auto` scale does: the mode's pixels per 96th of an inch,
+rounded and clamped to 1–3. A 2× Retina pane gets scale 2 and a 1× pane
+scale 1, and the boot log's `WLC_SCALE n source=connector` line says
+which. A host with no display (Node) reports 0×0, which keeps scale 1.
+The compositor still sends a 0×0 physical size in `wl_output.geometry`
+(see foot below), so the DPI only reaches clients as the integer scale.
+
+The desktop's own clients honour it, and none of them had to change to.
+libwpkdraw carries the scale instead: `wpk_set_scale()` is a
+process-wide setting that `wpk_surface_wrap()` and
+`wpk_font_load_default()` capture at call time, every primitive
+multiplies its logical coordinates by it, and glyphs are rasterized at
+`px * scale` rather than magnified. Metrics — `wpk_text_width()`,
+`wpk_font_ascent_px()` — stay logical, so an app's layout is untouched.
+libkwl reads `wl_output.scale`, calls `wpk_set_scale()` before any
+buffer or font exists, allocates its wl_shm buffers at
+`logical × scale`, and sends `wl_surface.set_buffer_scale`. wlterm,
+wlclock, wlpaint, klauncher and notify-send are sharp on a HiDPI pane
+without a single changed coordinate. wlcompositor never calls
+`wpk_set_scale()` — it composites in device pixels already — so its own
+drawing multiplies by `g.scale` by hand instead. Its gradient wallpaper
+(the fallback when a theme names no image) does that for the grid pitch,
+the two font sizes and every text offset.
+
+A third-party client learns the scale from `wl_surface.enter`, which
+names the output the surface is on, and it makes that decision once —
+before it draws. So the compositor sends the enter when a surface takes
+a role (`xdg_surface.get_toplevel`, or a layer surface's first commit),
+not when the surface maps. Map is a frame too late: the buffer being
+mapped was already drawn at the wrong scale, and for a mako toast one
+frame is the whole life of the surface. A client that binds `wl_output`
+only after its surface has a role still gets the enter at map.
+
+A layer-shell surface also renegotiates its size after that first
+configure — mako recomputes its toast one pixel shorter once it knows
+the scale — so every commit of a layer surface re-applies its
+double-buffered shell state (size, anchor, margins, exclusive zone,
+layer) and answers with a fresh configure when the resolved box moved.
+Applying it only on the first commit left mako waiting forever for a
+configure that never came, and the toast never appeared.
+
+libkwl also caps an initial window at half the output's width and
+three-fifths of its height, scaling both axes by the tighter ratio. A
+toolkit client picks its initial size as a constant, and a constant
+that suited a 2255×1080 desktop covers nearly all of a 1280×613 one;
+the compositor clamps a floating window's position but not its size.
+On a desktop roomy enough for the constant this changes nothing.
+`host/test/wlcompositor-output-scale-smoke.test.ts` and
+`host/test/mako-smoke.test.ts` gate the scaled path at `WLC_SCALE=2`.
+
+The Omarchy themes paint gradient wallpapers for now. Each
+`theme.conf` names its two gradient colours (`wallpaper_top`,
+`wallpaper_bottom`), and the compositor draws the gradient at the
+output's resolution. wlcompositor also supports image wallpapers: a
+theme's `wallpaper = <file>` names a KWLP raw-pixel image, which it
+centre-crops to the output's aspect and then scales
+(`host/test/wlcompositor-theme-smoke.test.ts` covers it), but the shell
+image does not ship any. **Short-term follow-up:** ship each theme's
+real Omarchy background. The images must come from upstream as sourced
+inputs (URL, sha256, license) and be converted to KWLP in the
+`wayland-demo` package build. Previously the page decoded them at boot,
+which does not exist once machines are declared by the image. Staged at
+source resolution (capped at 3840 per axis), the six backgrounds cost
+about 49 MB of VFS, so they belong in a lazy archive rather than the
+eager image.
+
+Pump presents are change-driven (kernel commit count, with a ~15 Hz
+strided-checksum content probe as a backstop) rather than
+unconditional at 60 Hz, and a presenter that detects software-GL frame
+times (headless Chromium) drops to plain bilinear. The Modeset status
+chip appends the active renderer (`webgl2-gl` / `webgl2` / `2d`, from
+stats slot 7). The legacy `mode: "2d"` CPU blit (`putImageData` + CPU
+swizzle) remains available. GL demos (modeset, sdl2) keep the WebGL2
+bridge instead and the pump never touches their canvas.
+
+Interactions, all end-to-end through the compositor:
+
+- **Typing** — `BrowserInputSource` writes keystrokes to `event0`;
+  the compositor's libinput picks them up and routes them to the
+  keyboard-focused window (wlterm, which echoes through the pty).
+- **Window drags** — pressing a CSD titlebar triggers
+  `xdg_toplevel.move`; the compositor grabs and the window tracks the
+  pointer until release.
+- **Drag-painting** — pointer strokes inside wlpaint's canvas paint
+  through `wl_pointer` motion events.
+- **Pointer** — the Modeset pane maps the host pointer absolutely
+  onto the desktop (EV_REL peg-and-jump emulation into
+  `event1`; the compositor coalesces each input batch into one repaint
+  and treats the peg frame as position-only so the artifact never
+  renders). The compositor draws **no software cursor**: the host
+  pointer is already visible and mapped 1:1, so a sprite would sit
+  exactly under it. The desktop is letterboxed aspect-true into the
+  pane (by the presenter's GL viewport in `webgl2-scanout` mode,
+  by CSS `object-fit: contain` in the legacy modes) and pointers map
+  through the fitted content box using the kernel-reported scanout
+  dimensions (stats slots 2/3 — the placeholder canvas's `width`
+  attribute tracks the committed display-sized bitmap, not the fb).
+
+Regression gates: `apps/browser-demos/test/kandelo-wayland.spec.ts`
+(client connection, the `WLC_RENDERER gpu` marker proving GPU
+compositing engaged, typing, window drag, drag-paint liveness via the
+PAGE_FLIP counter, and flicker stability via canvas PNG-size
+distribution) and the node-side twins under `host/test/wl*-smoke.test.ts`
+(including `wldesktop-liveness-smoke.test.ts`).
+
+### Hyprland tiling demo
+
+**Not in the shell image by default.** The Omarchy desktop below is the
+same tiling compositor with a desktop shell on top, so the shell image
+carries only that one; the `wayland-demo` package still builds the
+Hyprland launcher (`hyprdesktop`) and its config
+(`hyprland-wlcompositor.conf`) as runtime files for an image that wants
+it. As packaged, the Hyprland tiling machine boots the same `wlcompositor`
+binary as a Hyprland-class tiling window manager (the floating Wayland desktop
+above is its default layout). The image declares one command,
+`/usr/local/bin/hyprdesktop`, which starts the compositor with
+`WLC_LAYOUT=dwindle` and the image's hyprland.conf-shaped
+`/usr/share/kandelo/hyprland/wlcompositor.conf` (named by `WLC_CONFIG`),
+waits for its socket, then starts three real clients — one `wlclock` and
+two `wlterm` terminals. The foreground terminal's exit ends the desktop.
+
+- **Dwindle tiling.** Every mapped window is retiled into gapped, borderless
+  frames by recursively splitting the remaining region along its longer side
+  (Hyprland's dwindle default), across nine 1-based workspaces.
+- **Client-side resize (the crux).** The compositor composites each surface
+  at its native buffer size — it does not scale a window to its tile — so
+  tiling requires the *client* to resize. On each retile the compositor
+  sends `xdg_toplevel.configure(w,h)`; the libkwl clients rebuild their
+  `wl_shm` buffers to match and redraw (`wlclock` recomputes its dial,
+  `wlterm` reflows its VT100 grid via `TIOCSWINSZ` + `SIGWINCH`, `wlpaint`
+  reallocates its canvas so the toolbar + drawing area fill the whole tile
+  instead of a fixed 640×420 corner). Floating clients ignore the initial
+  `configure(0,0)`, so the floating Wayland desktop is unchanged.
+- **Server-side decorations.** Under `dwindle` the compositor negotiates
+  `SERVER_SIDE` decorations, so tiled windows have no titlebar (a floating
+  layout keeps client-side CSD).
+- **Keybinds.** `Return` launches a terminal, `W` kills the focused window,
+  and `1..9` switch workspaces — bound on both `SUPER` (real Hyprland) and
+  `CTRL` in the image's `wlcompositor.conf`. Use **`CTRL`** in the browser:
+  the OS/browser reserve `SUPER` (Cmd/Win) — `Cmd+W` closes the tab,
+  `Cmd+1..9` switch browser tabs — so those never reach the page, while
+  `Ctrl+…` does. The compositor also supports move-to-workspace, focus
+  cycling, and a `kwlctl` control socket (the `hyprctl` analog), which this
+  demo doesn't bind — see architecture.md.
+- **New-pane launch keybinds.** Opening a new pane is done Hyprland-style —
+  each app has its own `exec` bind rather than a launcher/`rofi` UI:
+  `Return`→`wlterm`, `K`→`wlclock` (K as in clo**K** — see the caveat),
+  `P`→`wlpaint` (again on both `SUPER` and `CTRL`). Pressing the combo makes
+  the compositor `posix_spawnp` the binary from `/usr/local/bin`, and the new
+  client tiles into the layout. Unlike on the Wayland desktop, `wlpaint`
+  is not started in the initial layout, so `Ctrl+P` is how you summon it.
+  **Caveat:** the compositor grabs a bound combo before the focused client,
+  so a `CTRL`+letter launch bind shadows the terminal's like-named control key.
+  The clock is bound to `K` (not `C`) precisely to leave `Ctrl+C` (SIGINT) to
+  the terminal; `Ctrl+W` (killactive) does still shadow `wlterm`'s werase.
+  That is the cost of using `CTRL` as the WM modifier in-browser; a real
+  Hyprland session on `SUPER` has no such clash.
+
+See
+[architecture.md](architecture.md#tiling-window-manager-wlc_layout-workspaces-kwlctl-keybinds).
+The tiling paths are gated node-side by
+`host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`
+and in the browser through the Omarchy machine
+(`apps/browser-demos/test/kandelo-omarchy.spec.ts`, including the
+eight-window launch storm that guards the kernel's SCM_RIGHTS fd delivery).
+
+### Omarchy desktop demo
+
+The Omarchy desktop machine (`?vfs=<shell image>&profile=omarchy`) is the
+tiling desktop above plus the shell that makes it a desktop: a status bar,
+a launcher, notifications, and themes. Omarchy is not a program but a set of
+files layered over Hyprland, so this machine is the same `wlcompositor`
+binary with its own `/usr/share/kandelo/omarchy/wlcompositor.conf`, an app
+registry under `/usr/share/kandelo/apps`, and six themes under
+`/usr/share/kandelo/themes`. All of it is image data: the `wayland-demo`
+package builds it into `kandelo-desktop-data.zip`, which the shell image
+unpacks under `/usr/share/kandelo`. The image declares one command,
+`/usr/local/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
+and the compositor, waits for both sockets, then starts mako and Waybar.
+Nothing is staged by the page.
+
+The desktop comes up bare: wallpaper and bar, no windows. As in Omarchy,
+the diamond at the bar's far left opens the Omarchy menu on click (Waybar's
+`custom/omarchy` module runs `klauncher --menu`), so the launcher is
+reachable without a keyboard shortcut. The desktop draws no cursor of its
+own, so the browser's pointer stays visible over it (`hostPointer`). Every client is one
+the user opens, through the binds below or the launcher. The demo stays alive
+on the compositor's own process rather than on a foreground terminal.
+
+- **The bar.** Unmodified upstream **Waybar 0.14.0** — the real GTK3 bar, on
+  the ported gtkmm/gtk-layer-shell stack, reading a translated version of
+  Omarchy's own `config.jsonc` and `style.css` (from
+  `/usr/share/kandelo/waybar`; the stylesheet is copied to
+  `/tmp/waybar-style.css` so a theme switch can rewrite it). `gtk_layer_shell` anchors it across the top with an
+  exclusive zone, so the windows tile *under* it rather than behind it. Its
+  `hyprland/workspaces` and `hyprland/window` modules speak Hyprland IPC to
+  the compositor's socket pair at `/tmp/hypr/wlcompositor/` — `j/`-prefixed
+  JSON queries plus the `event>>data` stream — exactly as they would to
+  hyprctl. Modules that need hardware or daemons this kernel does not serve
+  (battery, cpu, memory, network, pulseaudio, tray) are not part of the
+  build, and the clock is Waybar's `simpleclock` (no timezone database).
+  The compositor has no `xdg_popup` yet, so tooltips and menus are
+  refused: `xdg_surface.get_popup` is a protocol error for the requesting
+  client (its positioner is a real object, so the refusal never takes the
+  compositor down). Waybar's modules therefore run with `"tooltip": false`.
+  Popup support is a follow-up.
+  GDK backs the bar's `wl_shm` pools with `gbm` prime-fd dumb bos (the
+  gtk3 package's `wayland-shm-gbm-pool.patch`, foot's contract), which is
+  what carries its pixels across to the compositor. The bar runs at
+  `-l debug`, so every Hyprland IPC event it consumes shows up in the
+  machine's terminal next to the compositor's own marker.
+- **Notifications.** The demo boots a `dbus-daemon` session bus and
+  unmodified upstream mako on it. A theme switch reaches `notify-send`
+  through the config's `notify =` hook (the theme script above execs it) — a real
+  `org.freedesktop.Notifications.Notify` call over the bus, which mako
+  renders as a layer-shell toast in the top-right corner that dismisses
+  itself after five seconds. The bus address
+  (`DBUS_SESSION_BUS_ADDRESS`) is in every desktop process's
+  environment, so `notify-send` also works from any terminal.
+- **The launcher.** `Ctrl+Space` opens `klauncher`, an overlay-layer surface
+  that takes the keyboard exclusively — so what you type filters its list
+  instead of reaching the terminal underneath. Type to narrow, `Up`/`Down` to
+  move, `Enter` to launch (the compositor spawns it and it tiles in), `Esc` to
+  dismiss. Entries come from `/usr/share/kandelo/apps`, one file per app. The
+  registry offers real software from the shell image alongside the demo
+  clients: Vim, NetHack and Nano run unmodified inside foot (their
+  binaries lazy-fetch from the image's archives on first launch), as does
+  the terminal `Ctrl+Return` opens. foot rather than `wlterm`: `wlterm`
+  advertises `TERM=vt100` but does not implement the VT100 line-drawing
+  character set, so curses borders come out as letters. foot is stock
+  upstream foot 1.17.2, a Wayland client of its own on the ported font
+  stack —
+  freetype/fontconfig/fcft rasterizing the image's Inconsolata through
+  `/usr/share/kandelo/fonts/fonts.conf` (`FONTCONFIG_FILE`) — not a
+  `wlterm` wrapper (see
+  [architecture.md](architecture.md#stock-upstream-clients-foot--the-font-stack)).
+  The Theme Gallery entry is the first Qt client: a `QRasterWindow` from
+  the `qtgallery` package, painting one card per installed theme — each a
+  miniature desktop rendered from that theme's own `theme.conf` palette —
+  through QtGui's raster engine and the wayland QPA plugin onto `wl_shm`,
+  antialiased where the wpkdraw clients are not. Clicking a card (or
+  arrows + Enter) writes `dispatch theme <name>` to the compositor's
+  kwlctl socket, and the whole desktop restyles; a second card row swaps
+  the running Quickshell between the image's QML shells. It reads the same
+  `/usr/share/kandelo/fonts/fonts.conf`, which aliases `sans-serif`
+  alongside `monospace` to the image's Inconsolata for it. `Esc` or `Q` closes it. The Quickshell
+  entry is the first QtQuick client: **Quickshell 0.3.1** runs the image's
+  `/usr/share/kandelo/quickshell/island.qml`, the QML engine renders through
+  the scenegraph's software adaptation (`QT_QUICK_BACKEND=software`, which
+  `omarchydesktop` exports to the whole desktop), and its `PanelWindow` maps as a wlr-layer-shell
+  clock island floating above the bottom edge — except on Firefox, see
+  [the executable-code limit below](#firefox-executable-code-limit).
+- **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same launcher
+  at its root level (Apps, Theme). `Enter` descends; the Theme submenu lists
+  the installed themes and `Enter` switches live. `Esc` in a submenu goes
+  back to the root; `Esc` at the root dismisses.
+- **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night, Catppuccin, Gruvbox,
+  Nord, Everforest and Rosé Pine. One palette file drives the whole desktop at
+  once: the compositor's window borders, gaps and wallpaper, the
+  launcher's own colours, which it reloads when the compositor broadcasts the
+  switch, and the bar's. Waybar reads its stylesheet once per load, as
+  upstream does, so the switch takes the path a real Omarchy session takes:
+  the compositor's `notify =` hook (`/usr/local/bin/omarchy-theme-changed`)
+  writes `/tmp/waybar-style.css` from the new `theme.conf` and sends
+  Waybar `SIGUSR2`, which reloads it. The hook then execs `notify-send`, so
+  the toast is the same one. The themes paint gradient wallpapers; their
+  real Omarchy backgrounds are a short-term follow-up (see the wallpaper
+  note in the Wayland section above).
+- **The rest of the keybinds:** `Ctrl+Return` a terminal, `Ctrl+K` a
+  clock, `Ctrl+P` a paint canvas; `Ctrl+W` or `Ctrl+Shift+W` closes the
+  focused window (the second form leaves a terminal's `Ctrl+W` word-erase
+  alone, since the compositor takes a bound key before the client sees
+  it); `Ctrl+1..9` switches workspace and `Ctrl+Shift+1..9` moves the
+  focused window there; `Ctrl+J` / `Ctrl+Shift+J` cycle focus; and
+  `Ctrl+Shift+arrows` swaps the focused window with its neighbour in that
+  direction (Hyprland's `swapwindow`, Omarchy's `Super+Shift+arrows`).
+  Every bind is mirrored on `SUPER`, as Omarchy binds them; use `CTRL` in
+  the browser, which reserves `SUPER` (see the caveat above). Tiled
+  windows receive xdg-shell's `tiled_*` states, so a client that keeps
+  its own size when floating — SDL, and so ScummVM — takes the tile's.
+
+#### What is not real yet (deferred work)
+
+The Omarchy machine is an honest imitation in two places, and the gaps
+visitors notice come from them. They are recorded here as near-term
+follow-ups, not as the end state.
+
+- **The compositor is Kandelo's `wlcompositor`, not Hyprland.** It
+  implements the subset of Hyprland the desktop needs — dwindle tiling,
+  workspaces, a config-driven bind table, and a hyprctl-shaped IPC socket
+  that Waybar's Hyprland modules talk to — and every behaviour it lacks
+  is behaviour real Hyprland has (popups and tooltips, window swapping
+  beyond `swapwindow`, animations, the full dispatcher set). **Deferred:
+  port real Hyprland.** It needs platform work first: Hyprland renders
+  only with OpenGL ES 3 through its `aquamarine` backend, so Kandelo's EGL
+  must import dmabufs as EGLImages and provide fence/explicit sync over
+  the WebGL2 bridge; aquamarine expects KMS properties, planes and an
+  EDID blob from the kernel's connector; and it opens devices through
+  libseat and enumerates them through libudev, which here is a stand-in
+  with no `/sys` device tree behind it. A wlroots-based compositor with
+  its pixman software renderer is the fallback if the EGL work proves
+  too large. The dependency graph, each platform gap and a build order
+  are in `docs/plans/2026-09-30-real-hyprland-port-inventory.md`.
+- **The launcher is `klauncher`, not walker.** Omarchy's launcher is
+  walker (GTK4); `klauncher` is a Kandelo-authored stand-in that reads
+  `/usr/share/kandelo/apps`. **Deferred** with the Hyprland port, as are
+  Omarchy's other daemons (hyprlock, hypridle, swaybg, swayosd) and its
+  own scripts.
+
+Smaller gaps, each a follow-up:
+
+- **No `xdg_popup`**, so tooltips and menus are refused (see the bar,
+  above).
+- **Super needs fullscreen keyboard lock.** Omarchy binds everything on
+  Super; browsers keep Cmd/Win (Cmd+W closes the tab), so every bind is
+  mirrored on Ctrl, which shadows terminal keys such as Ctrl+W. Chromium's
+  Keyboard Lock API would let a fullscreen pane receive the real Super
+  bindings; Safari and Firefox lack it.
+- **`wlterm` advertises `TERM=vt100` without the VT100 line-drawing
+  set**, so curses borders print as letters in it (the desktop's
+  terminal entries use foot, which has it).
+- **No xkb data in the image** (`/usr/share/X11/xkb`): GTK clients log
+  that they cannot compile a keymap from names. They receive the
+  compositor's keymap, so input works.
+- **NetHack's curses interface does not redraw at its intro prompt after
+  a resize** (upstream behaviour; the resize itself reaches it — `Ctrl+R`
+  redraws).
+- **Theme wallpapers are gradients** (see the Wayland section).
+
+#### Quickshell QML limits
+
+One host cost bounds Quickshell in the browser: compiled wasm code.
+`quickshell.wasm` is ~93 MB and Chromium compiles it to hundreds of MB of
+machine code — and it compiles that copy **per Web Worker**, because a
+worker is a separate V8 isolate and isolates do not share a module's
+compiled code even when the same `WebAssembly.Module` is posted to each.
+Every guest pthread is one worker, so each thread Quickshell starts costs
+another compiled copy on top of the running desktop
+(compositor, Waybar, qtgallery, foot, mako, dbus-daemon).
+
+Two facts about this cost were established by measurement, correcting two
+earlier half-explanations:
+
+- It is **not** a guest leak. The guest process holds a flat ~55 MB
+  through a 50/s repaint storm on the Node host; only the browser tab's
+  native memory grows.
+- The **worker count multiplies** the cost, and the **QML content decides
+  the per-worker amount**. More workers move the whole tab up (before the
+  thread cuts below, 13→17 workers moved the tab from ~4 GB to its ~10 GB
+  ceiling). Independently, a content-heavy shell compiles more cold Qt/ICU
+  code in every worker: a nested-item panel with localized
+  `Qt.formatDateTime` name fields (`dddd`, `MMMM`) maps at ~9 GB where the
+  single-item numeric shell settles at ~5 GB with the same worker count.
+  Both the worker count and the shell content are real; neither alone is
+  the whole story.
+
+The port cuts the per-worker copies three ways:
+
+- **Fewer threads.** The QML type loader runs synchronously
+  (`FEATURE_qml_type_loader_thread=OFF` in `build-qtdeclarative.sh`, Qt's
+  own single-threaded wasm shape), Quickshell's logger runs on the main
+  thread (`packages/registry/quickshell/src/on-thread-logger-on-wasm.patch`),
+  and the Wayland QPA pumps the display fd from a `QSocketNotifier` on
+  the main loop instead of its two reader threads
+  (`packages/registry/qtbase/src/wayland-fd-notifier-on-wasm.patch`).
+  A Qt client on this port runs single-threaded.
+
+- **One instance across shell swaps.** The gallery's shell cards no
+  longer kill and respawn Quickshell — a respawn recompiles the process
+  module and its thread-patched twin from scratch while the old copies
+  await GC, which is what crashed a second or third swap. qtgallery
+  stages the selected QML as `/tmp/qtgallery-active.qml` once, starts one
+  Quickshell on it, and later cards rewrite the file in place; Quickshell's
+  own file watcher reloads the config inside the running process.
+
+- **A watcher that actually fires.** The kernel used to stub
+  `inotify_init` with a fake-success fd that never delivered events,
+  which silently disabled the file watching that the reload path needs —
+  Qt's `QFileSystemWatcher` (and glib's `GFileMonitor`) only fall back to
+  their polling engines when `inotify_init` *fails*. The stubs now return
+  `ENOSYS` and the pollers work everywhere.
+
+Together these roughly halved the tab baseline (single-item shells that
+crashed at ~10 GB now settle at ~5 GB and survive), which is why the
+image's shells run where they used to die. The ceiling is not gone,
+though. Two cases still cross it and bound what a shell may do:
+
+- **Content-heavy shells.** A panel with more than one item, a localized
+  `Qt.formatDateTime` name field (`dddd`, `ddd`, `MMMM`, `MMM`), or
+  `font.bold` (synthesized, since the image ships only a regular
+  Inconsolata face) compiles enough extra cold code per worker to reach
+  the ceiling on its own. The shells in
+  `packages/registry/wayland-demo/desktops/data/quickshell/` stay
+  in the tested envelope: one item, numeric date fields, regular weight.
+
+- **The reload transient.** A live config reload briefly holds two engine
+  generations, and its spike still crosses the ceiling on some swaps. The
+  single-instance path removed the far larger respawn recompile, but the
+  reload spike itself is not yet bounded.
+
+Both remain open; the fix belongs in the Qt/Quickshell layer, below this
+demo.
+
+#### Firefox executable-code limit
+
+SpiderMonkey reserves one fixed 2 GiB region per content process for all
+JIT and wasm compiled code (`MaxCodeBytesPerProcess`), shared by every
+worker on the page. Compiled wasm code is several times the module's size:
+the 93 MB `quickshell.wasm` alone costs ~620 MB of that region. With the
+full desktop running — compositor, Waybar, qtgallery, foot, mako, dbus-daemon,
+klauncher — the region already holds ~1.2 GB of live code. Quickshell's
+launch compile fits (~1.9 GB), but any `pthread_create` compiles the
+thread-patched module as a second full copy, which cannot fit; the compile
+throws SpiderMonkey's `InternalError: out of memory`, Qt logs
+`QThread::start: Thread creation error`, and the panel never maps. The
+thread cuts above shrink how many second copies a Qt client makes but do
+not lift the 2 GiB cap, and a single desktop-plus-Quickshell code image
+already exceeds it, so Firefox stays excluded. Chrome and WebKit have no
+fixed per-process code cap, so the same desktop passes there. This is an engine limit, not a memory shortage — the process RSS
+stays far below the machine's capacity when it hits. The omarchy spec
+therefore skips its Quickshell gate (5e) on Firefox; everything up to and
+after it runs on all three engines.
+
+See
+[architecture.md](architecture.md#desktop-shell-zwlr_layer_shell_v1-kbar-klauncher-themes).
+Gated node-side by
+`host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts`,
+`host/test/{waybar,mako}-smoke.test.ts` and in the browser by
+`apps/browser-demos/test/kandelo-omarchy.spec.ts`.
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
@@ -344,6 +947,59 @@ backends. That suite also runs SDL_mixer 2.8.2's unmodified `playwave` example
 against deterministic WAVs and compares the Node sink's consumed PCM exactly.
 Browser output remains a manual audible check because the production
 AudioWorklet intentionally exposes transport cursors, not rendered samples.
+
+### ScummVM demo
+
+The ScummVM machine (`?vfs=<shell image>&profile=scummvm`) runs unmodified
+upstream ScummVM's SCUMM engine fullscreen on `/dev/dri/card0`: SDL2's
+KMSDRM backend takes DRM master and renders GLES2 straight to the display,
+and audio goes through OSS on `/dev/dsp`. The engine
+(`/usr/bin/scummvm`) and the GUI data the package declares as runtime files
+(themes, icons and fonts under `/usr/share/scummvm`) are lazy files in the
+shell image, fetched on first use. The machine's command is
+`/usr/local/bin/scummvm`, a small wrapper in the image that:
+
+- names SDL's backends in the environment. Kandelo has no libudev, so
+  SDL's evdev layer only finds the kernel's keyboard and pointer when
+  `SDL_EVDEV_DEVICES` lists them (the libudev gap is in the register in
+  [package-management.md](package-management.md#packages-that-are-not-real-upstream-builds-yet)).
+- seeds `~/scummvm.ini` on first launch. ScummVM rewrites its config
+  whenever the user adds a game, so it lives in the writable home rather
+  than in image content. The GUI scale is fixed at 100%: ScummVM's
+  KMSDRM path does not read the connector's physical size the way the
+  desktops do (see the HiDPI note above), so on a HiDPI screen its
+  launcher is drawn small. Game graphics are unaffected; they scale to
+  the display.
+
+No game ships with the machine: no Kandelo package carries a commercial
+SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
+512 MiB, the platform's ingest ceiling) and writes it to
+`/usr/share/scummvm-games/upload.zip` while ScummVM keeps running. The
+launch wrapper stays alive beside the engine, notices the archive (it polls,
+since `inotify` is unimplemented), unzips it in place and deletes it; the
+terminal shows when it is done. ScummVM's "Add Game" browser opens in that
+directory. The archive and its contents must fit the machine's filesystem
+(1 GiB on desktop browsers, 768 MiB on constrained ones such as iOS
+Safari); one that does not fails with `ENOSPC`. The pointer is a real absolute device (`/dev/input/event1`
+reports `EV_ABS` positions), and the browser hides its own cursor over the
+display because ScummVM draws one.
+
+The same wrapper runs ScummVM on the Omarchy desktop, from the launcher or
+as `scummvm` in a terminal. When a compositor socket exists
+(`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`) the wrapper leaves SDL to pick its
+Wayland backend, and ScummVM runs as a GL client in a tile. It is told
+it is tiled (xdg-shell's `tiled_*` states), so it takes the tile's size,
+and its GL buffer is reallocated to that size (the `libwayland-egl` resize
+path in [architecture.md](architecture.md#drmkms-devdricard0-devdrirenderd128)).
+The fixed 100% GUI scale applies there too, so on a HiDPI desktop its
+launcher is drawn small; having the seeded config follow the display
+scale is a follow-up.
+
+Gated in the browser by `apps/browser-demos/test/kandelo-scummvm.spec.ts`
+(the GUI data reaches the guest, the config is writable, and an upload is
+extracted where the launcher browses). The Wayland path was verified by
+hand in Chromium at a device scale factor of 2 (full launcher in the tile;
+a click opens Global Options); no spec gates it yet.
 
 ### Kandelo session UI
 
@@ -399,9 +1055,11 @@ proxy. The Node.js host is unaffected and continues to fetch its lazy URLs
 directly.
 
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
-`wp_blog`, and `wp_install`. Every actual proxy boundary projects by
-case-insensitive field name only and preserves browser-representable values and
-occurrences as far as Fetch permits. Request fields the browser sets or
+`Range`, `wp_blog`, and `wp_install`, and copies `Range` into
+`X-Cors-Proxy-Range` (see "Byte-range reads through the proxy" below). Every
+actual proxy boundary projects by case-insensitive field name only and
+preserves browser-representable values and occurrences as far as Fetch
+permits. Request fields the browser sets or
 forbids on every `fetch()` — the Fetch forbidden request-header names plus
 browser-owned identity/client-hint fields such as `content-length`,
 `accept-encoding`, `transfer-encoding`, and `user-agent` — are omitted for
@@ -420,12 +1078,196 @@ credentialed, body-bearing, or non-GET request before dispatch. Direct Fetch
 attempts remain unprojected. The development same-origin relay enforces the same
 profile as production.
 
+#### Byte-range reads through the proxy
+
+`Range` is in the profile so that a byte-range read (for example, reading a
+ZIP archive's central directory from its last 64 KiB without downloading the
+archive) can reach the origin. It is relayed opaquely: no Kandelo proxy
+boundary parses range syntax.
+
+**Production (measured 2026-09-28).** The default proxy,
+`wordpress-playground-cors-proxy.net`, allows `Range` in its preflight and
+exposes `Content-Range`, `Accept-Ranges`, and `ETag`. The proxy is a PHP
+script hosted on WP Cloud, and WP Cloud's front-end web servers strip the
+`Range` header before the request reaches PHP, so a plain `Range` comes back
+as `200` with the whole entity. As a documented workaround, that proxy also
+reads the same value from `X-Cors-Proxy-Range` and forwards it upstream as
+`Range`. The profile names that field in `rangeRequestHeaderAlias`, and every
+proxy dispatch (`BrowserCorsProxy.project()` for guest traffic, and the
+service worker for page and worker fetches) copies an outgoing `Range` into
+it. Both fields carry the same value, which the proxy documents as safe once
+`Range` gets through. The alias workaround can be removed as soon as WP Cloud
+relays `Range` headers to PHP. A caller's own `X-Cors-Proxy-Range` is never relayed.
+
+**The HTTP cache must stay out of aliased requests.** The browser's HTTP
+cache may rewrite `Range` on the wire to fetch only the bytes it has not
+stored, but it cannot know that `X-Cors-Proxy-Range` names the same range.
+The proxy then answers the alias's range and the cache splices a body shorter
+than its `Content-Range`. Measured on 2026-09-28 in Chromium against a
+production-shaped fixture (`Cache-Control: no-cache`, strong `ETag`):
+overlapping reads of `bytes=50-149` and `bytes=0-199` came back with 50 and
+100 bytes. Every aliased request is therefore sent with the Fetch cache mode
+`no-store`. WebKit did not show the rewrite.
+
+**Limitation and technical debt: ranged requests through production pay CORS
+preflights.** `X-Cors-Proxy-Range` is not a CORS-safelisted request header,
+so the browser must send an `OPTIONS` preflight before a request that carries
+it, including simple `bytes=N-M` ranges that would otherwise need none.
+Measured on 2026-09-28 with five ranged reads of one proxy URL:
+
+| Engine | Preflights for 5 reads |
+|---|---|
+| Chromium | 5: a `no-store` request skips Chromium's preflight cache |
+| WebKit | 1: the preflight is reused for 5 seconds (the Fetch default when the proxy sends no `Access-Control-Max-Age`) |
+
+In Chromium, then, every ranged read costs one extra round trip to the proxy.
+A ZIP index read (a tail read, then possibly a directory read) pays it once or
+twice. The time cost was not measured. Both the preflights and the `no-store`
+mode exist only because of the alias workaround, and both go away when WP
+Cloud relays `Range` headers to PHP and the alias is removed; see
+`docs/future-improvements.md`.
+
+**`If-Range` is emulated, not relayed.** The proxy's preflight does not
+allow `If-Range`, and `If-Range` is never CORS-safelisted, so it is not in
+the profile and is never sent. Dropping it would turn a conditional ranged
+request into an unconditional one: after the resource changes, a resuming
+client would receive a slice of the new version. Instead, the proxy dispatch
+applies RFC 9110 section 13.1.5 to the answer. `BrowserCorsProxy.fetch()`
+does this for guest traffic, and the service worker for page and worker
+fetches. The range goes out without `If-Range`. If the `206` (or a `416` for
+a range the resource no longer covers) carries the matching validator, it
+stands. Otherwise the dispatch discards it and fetches the whole
+representation, exactly what a server whose `If-Range` condition is false
+would have sent, since such a server ignores the range. A validator that cannot be confirmed
+counts as a mismatch, so doubt costs one extra full request, never a wrong
+slice. An entity-tag `If-Range` is confirmed against the proxy-exposed
+`ETag`. A date `If-Range` also needs the response's `Date` header to prove
+`Last-Modified` is strong, and the proxy does not expose `Date` to scripts,
+so through the browser a date `If-Range` always takes the full-request path.
+`If-Range` without `Range` is meaningless and is dropped, as servers must
+ignore it. Several `If-Range` fields are joined, as Fetch joins them, and
+never match. Kandelo's own multi-read code, which issues no `If-Range`, passes
+the ETag it already saw to `fetchByteRange()` as `entityTag` and fails the
+read if an answer carries a different one.
+
+**Development (`__kandelo_cors_proxy`).** The Vite relay implements the same
+profile. It forwards `Range`, honors `X-Cors-Proxy-Range` the way the
+production proxy does (an empty alias is ignored, the alias is never
+forwarded, and an alias that disagrees with `Range` is a `400`), asks upstream
+for the identity encoding on ranged requests and `HEAD` so byte offsets and
+sizes address the stored bytes, relays the
+upstream status verbatim (a `206` stays a `206`), exposes `Content-Range`, and
+streams the body. A `206` that upstream compressed anyway is a `502`, because
+its `Content-Range` would describe bytes the relay does not send. The 100 MiB
+cap bounds the bytes one response actually carries, so a 16-byte slice of a
+4 GiB file is relayed, while an undeclared body that outgrows the cap is cut
+off mid-transfer. A client disconnect cancels the upstream request, before or
+after response headers.
+
+**Cancellation through the service worker.** Cancelling a proxied read
+reaches the relay once response headers have arrived: cancelling the body
+cancels the proxied transfer. Before headers it depends on the browser. The
+service worker copies the page request's abort signal onto the proxied
+request, but measured on 2026-09-26 in Playwright Chromium and WebKit, a page
+abort before headers never fired that signal (a plain pass-through
+`fetch(event.request)` behaved the same way). The upstream request then runs
+until it answers. This is a browser boundary, not relay behavior: a direct
+abort of a relay request cancels upstream in both engines.
+
+**Reading an answer.** A `200` answer to a ranged request is legal HTTP: any
+server or relay may ignore `Range`. Kandelo code that issues a ranged read
+must use `fetchByteRange()` from `host/src/networking/byte-range-fetch.ts`.
+It returns `partial` only for a `206` whose `Content-Range` answers the range
+requested: the exact bounded range (clamped to the entity's end), the final
+bytes for a suffix range, or a run starting at the requested position for an
+open-ended range. Its `bytes()` rejects a body of the wrong length. A `200`
+becomes `whole-entity`, a body that starts at offset 0 and is never the
+slice. Any other answer, including a `206` for a different range or with a
+different `ETag` than `entityTag`, becomes `failed`.
+
+Guest HTTP(S) requests reach the proxy through the same profile and get the
+relayed status unchanged. The Node.js host never projects guest requests; it
+fetches them directly with `Range` and `If-Range` intact. A guest `curl -r`
+therefore sees the same `206` on both hosts, including behind the production
+proxy, and a resume whose `If-Range` no longer matches sees the same `200`
+with the whole current file. The browser path may spend an extra request to
+get there.
+
 Bridge initialization now rejects typed CacheStorage and transition failures.
 A worker disappearance or lost acknowledgement after `postMessage` remains a
 known boundary: the worker may already have committed irreversible
 CacheStorage authority, so a client-only timeout could reject while leaving a
 discarded bridge authoritative. Closing this gap requires a coordinated
 transaction, cancellation acknowledgement, and restart reconciliation.
+
+### Multiple machines under one service worker scope
+
+A single service-worker scope can host several live Kandelo machines at
+once, one per booted browser tab. On `init-bridge` the worker mints a
+three-word, human-readable name (`adjective-color-noun`, e.g.
+`brisk-amber-otter`, drawn from three embedded word lists of 128+ entries
+each) and gives that machine its own stable, shareable URL space at
+`/<scope>/app/<name>/`. The worker keeps one in-memory `InstanceRecord` per
+name in a registry (name -> record), so two tabs under the same scope route
+independently and never clobber each other's bridge, cookies, or lifecycle
+state.
+
+A request is attributed to a machine one of two ways. A path that already
+contains `/app/<name>/` resolves directly to that machine's record; an
+unknown or malformed name never falls back to another machine, it is a real
+"not found" (see the 503 page below). A root-relative subresource request
+with no name in its path — the common case for a page's own same-origin
+asset requests — is attributed by the requesting client's id: the first time
+the worker resolves a named request for a given client, it remembers that
+client is "viewing" that machine, and later nameless requests from the same
+tab or iframe keep routing to it. That same client-id bookkeeping is what
+makes cross-tab viewing work: opening a machine's `/<scope>/app/<name>/` link
+in a second tab reaches the same running machine and relays through the
+bridge on the tab that owns it, rather than starting a second machine, because
+the name in the URL always takes priority over any per-client attribution.
+
+Each machine has its own cookie jar, keyed by its SW-minted name, so session
+cookies for one machine (WordPress admin cookies, for example) are never
+visible to another machine's requests even though both live under the same
+scope's origin.
+
+Each machine's bridge authority (its live `MessagePort`, session id, and
+cookie jar) is also persisted to Cache Storage under a per-name key as it is
+established, independent of the in-memory registry. If the browser
+terminates and restarts the service worker while a machine's host tab is
+still open, the worker has lost every live `MessagePort` but still has each
+machine's durable authority record. On the next request for that machine it
+broadcasts `need-bridge` to window clients and accepts only a
+`bridge-restored` reply whose name, app prefix, and session id match that
+exact record, re-establishing the bridge and replaying the persisted cookie
+jar. This restart is transient: while the worker waits for the owning tab to
+respond, the machine is "reconnecting", not offline, and it recovers without
+losing session state once the tab answers.
+
+A machine goes terminally offline only when its owning tab actually closes
+(a `pagehide`-driven `instance-closing` message, or — for a crashed tab that
+never sends one — the worker noticing on a later request that the owning
+window client is gone). There is no migration of a machine to a different
+host tab: once its host tab is gone, that machine is done, and its durable
+authority and cookie jar are dropped. Starting the demo again mints a new
+machine under a new name.
+
+When a machine goes offline or starts reconnecting, the worker pushes a
+`machine-offline` or `machine-reconnecting` message to every tab currently
+viewing it (any client whose viewing map points at that machine, not just the
+host tab). Demo pages that render a web preview of the machine map that push
+to the preview's `offline` or `reconnecting` status via
+`webPreviewForMachineChromeMessage()`
+(`web-libs/kandelo-session/src/machine-chrome-message.ts`); the pane keeps
+its existing label and URL and only its status and message change, so a
+viewer sees the same preview pane report itself unavailable or reconnecting
+rather than disappearing. A request that reaches the worker for a machine
+that is offline, or whose name was never minted, gets one 503 HTML page
+naming the machine — 503 rather than 404, because the name is a valid route,
+the machine behind it is just not running here. This is the raw-request
+fallback for any request that has no demo chrome to render a status in, such
+as loading `/<scope>/app/<name>/` directly with no page-side listener
+attached.
 
 ### Blob-URL iframes (service-worker boundary)
 
@@ -571,16 +1413,66 @@ artifact lookup continues to support relocated build inputs and local source
 overrides, but those paths do not carry enough identity to authorize a Wasm
 validation exception without a separate content-bound receipt.
 
-Gallery launch URLs retain both the logical demo id and the resolved VFS image
-URL. Each built-in VFS image has one trusted source and resource identity; the
-logical id separately selects launch behavior. This lets the shell, Doom, and
-modeset demos reuse the same shell image without creating multiple trusted
-image profiles. The loader verifies that the URL exactly matches the current
-built-in image before granting its larger resource limit. A query parameter or
-URL fragment cannot give an unrelated image that limit; images consumed by the
-general live host use the bounded custom-image profile when they do not match.
-The specialized Node host always boots its fixed built-in image rather than
-consuming a `vfs` override.
+### Selecting a machine: `?vfs=` and `&profile=`
+
+A Kandelo VFS image describes the machine it contains, in a tracked
+`/etc/kandelo/demo.json` baked into the image
+(`web-libs/kandelo-session/src/demo-config.ts`). The browser app holds no
+machine identities: no id list, no per-id switch, no per-id spec table. `?vfs=`
+alone is therefore enough to boot a first-party machine or a stranger's image,
+and both travel one code path.
+
+An image may declare several profiles — the shell image carries `shell`,
+`node`, `doom`, `quake`, `modeset`, `sdl2`, `wayland`, and `espeak` — so one
+channel selects one:
+
+1. `&profile=<id>` on the page URL.
+2. else the image's own `defaultProfile`.
+
+`&profile=` is the *only* channel a profile id travels on. A fragment on the
+`?vfs=` image URL itself (e.g. `?vfs=https://cdn/shell.vfs.zst%23doom`) is
+never read as a profile id, and the app never writes one: `galleryItemUrl`
+and every other link the app generates carry `&profile=` alone, with no
+fragment appended to the image URL. (URL-identity matching still ignores any
+fragment a hand-written `?vfs=` URL happens to carry — a fragment is never
+part of a resource's identity — but that is ordinary URL hygiene, not a second
+profile channel.)
+
+An id no profile in the image declares is a **loud boot error** naming the
+profiles the image does declare — never a silent fall back to its default. An
+image with no `/etc/kandelo/demo.json`, or a malformed one, fails the boot
+with that reason; nothing synthesizes a fallback machine.
+
+The older `?demo=<id>` parameter is **removed**. It named one of a dozen ids
+the app held, which is exactly what image-owned machine definitions delete. It
+is ignored rather than rejected, so links in the wild degrade instead of
+breaking: `galleryItemUrl` has always written `?vfs=` alongside it, so such a
+link still resolves its image and boots that image's declared default profile.
+
+A link shared before the fragment channel was removed may look like
+`?demo=doom&vfs=https://cdn/shell.vfs.zst%23doom`: the now-dead `?demo=` and
+the now-ignored image-URL fragment both named `doom`. Opening that link today
+still resolves the `?vfs=` image, but — since neither `?demo=` nor the
+fragment is read — boots the image's declared `defaultProfile` instead of the
+profile either of them named. For the shell image that means such a link now
+boots plain `shell`, not `doom`. This is an accepted, deliberate cost of
+removing the second channel, not a bug: re-sharing the link with `&profile=`
+produces a URL that keeps working.
+
+Each built-in VFS image has one trusted source and resource identity. The
+loader verifies that the URL exactly matches the current built-in image before
+granting its larger resource limit. A query parameter or URL fragment cannot
+give an unrelated image that limit; images consumed by the general live host
+use the bounded custom-image profile when they do not match. The specialized
+Node host always boots its fixed built-in image rather than consuming a `vfs`
+override.
+
+Resource ceilings are host policy, not image authority: `runtime.requests` in
+`demo.json` is a REQUEST that `live-setup.ts` clamps (worker count, memory
+pages, VFS byte ceiling). Gallery membership is likewise curated, in
+`apps/browser-demos/pages/kandelo/gallery-roster.json`; an image cannot claim a
+place in the gallery by declaring one. Every displayed byte — title, summary,
+accent, glyph — still comes from the named product's own tracked demo config.
 
 ```typescript
 // Typical demo pattern
@@ -598,6 +1490,65 @@ const memfs = await restoreVerifiedVfsImage(
 
 const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
 ```
+
+### Script-carrying share links
+
+The Share button in the dock produces links of the form
+`…/?vfs=<image>&profile=<id>#k1=<payload>`. The fragment is a versioned,
+gzip-compressed
+boot descriptor (`web-libs/kandelo-session/src/boot-descriptor.ts`) that may
+carry optional `inputs` and `parameters` fields. The payload is validated
+with hard caps and loud `BootDescriptorError` failures. A malformed or
+oversized fragment rejects the boot with a visible error; it never falls
+back to booting as if the fragment were absent.
+
+Boot inputs carry named, sha256-verified files materialized into the kernel
+VFS before the initial shell. The library in
+`web-libs/kandelo-session/src/boot-inputs.ts` validates every input's
+compressed bytes, decompresses (gzip-transported payloads are supported),
+and verifies the final sha256+byteLength before writing to the VFS. Inputs
+are all-or-nothing: if any input fails verification, no changes occur.
+Resolver-kind inputs fail materialization loudly when no resolver is
+registered (the production registry is empty; inline sources only today).
+
+Opening a script link boots the machine selected by the query parameters
+(the fragment cannot select an image the query parameters could not) and
+materializes the boot inputs. A script travels as input id `"script"`
+→ `/run/kandelo/inputs/script/kandelo-link.sh` (mode 0o755). An input
+manifest at `/run/kandelo/boot-input.json` (mode 0o644) records the
+materialized result: the manifest's own `version: 1`, the descriptor's
+`parameters`, and one entry per successfully materialized input (id,
+filename, guest `path`, byteLength, sha256) — not the raw descriptor
+`boot.inputs`/`boot.parameters` fields verbatim. When `boot.parameters.runScript`
+names the "script" input, that input is printed to the terminal with `cat`
+before execution, and then run from the initial interactive shell — `bash`
+when the image ships it, `sh` otherwise. The file is left writable so the
+visitor can experiment: edit it and re-run it after boot. The script's
+source, the invocation, and the script's output are all visible in the
+terminal, and the script takes the image's own `init.shellCommand`'s place
+in the launch sequence. Navigating to a different machine from the gallery drops
+the fragment.
+
+Links built before boot inputs were folded in could carry a top-level
+`script: { text }` field on the descriptor (superseded by `boot.inputs` +
+`boot.parameters.runScript`). The decoder tolerates that unknown field
+rather than rejecting the link, so such a link still boots — but the script
+field is ignored: no script is materialized or run. The machine log carries
+a visible warning so this isn't silent: a warn-level dmesg line at the start
+of boot, from `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`,
+names the ignored field.
+
+Caps enforce untrusted-input boundaries: maxBootInputs, 32 KiB carried per
+inline input, 2 MiB inflated per input, aggregate input size, 32 KiB
+parameters JSON. Zero-byte inputs are accepted; the dialog simply skips
+empty scripts during authoring.
+
+Scripts currently run without a confirmation step because every machine the
+browser app boots is ephemeral. This is a load-bearing boundary: before any
+persistent or restored-machine feature ships, script links must gain an
+explicit show-the-script consent step (see the warning at the execution
+site in `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` and
+`docs/superpowers/specs/2026-09-21-script-bearing-links-design.md`).
 
 ### Kandelo demo metadata
 
@@ -623,13 +1574,69 @@ preferences with the image instead of hardcoding them in the page loader.
 }
 ```
 
-Use `writeKandeloDemoConfig()` from
-`images/vfs/scripts/kandelo-demo-config.ts` in VFS build scripts. Images
-without this file still boot with Kandelo's generic presentation defaults, but
-the Kandelo app does not carry demo-specific presentation fallbacks.
-Any extra files needed by an image-declared `autoCommand` can be declared in
-`assets`; the loader stages those paths generically and hash-verifies them when
+The tracked JSON file **is** the artifact. A VFS build script never
+constructs this object in TypeScript: it calls `writeTrackedDemoConfig(fs,
+"packages/registry/<image>/<name>-demo.json")` from
+`images/vfs/scripts/tracked-demo-config.ts`, which copies the reviewed file
+byte-for-byte to `/etc/kandelo/demo.json`. Every tracked source is listed in
+`TRACKED_DEMO_CONFIG_SOURCES` in that same module, and
+`scripts/check-image-demo-config.ts` validates all of them and
+byte-compares each single-source image's baked copy against its tracked
+source. Images without
+this file still boot with Kandelo's generic presentation defaults, but the
+Kandelo app does not carry demo-specific presentation fallbacks.
+Any extra files needed by an image-declared `init.shellCommand` can be
+declared in `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
+
+The schema is PROFILE-ONLY. `version`, `defaultProfile`, and `profiles` are
+the only top-level keys; every machine block below belongs to a
+`profiles.<id>` entry, and declaring one at the top level is a validation
+error naming it. There is no top-level fallback for a profile that omits a
+block — a machine field is read from the selected profile or from nowhere.
+
+Alongside `presentation`, `assets`, `guide`, and `ingest`, a profile may
+declare these blocks.
+
+- `identity` — what a listing shows for this profile: `title`, `summary`,
+  `accent` (`#rrggbb`), `glyph` (1–4 characters), and optionally `packages`
+  (a list of package specs, at most 64). There is no `base` field: the app
+  computes `kandelo:shell@abi<N>` from the ABI it was built with, and real
+  ABI compatibility is enforced by the `__abi_version` check on binaries.
+- `runtime` — what the machine needs: `features` (any of `framebuffer`,
+  `kms`, `kms-gl-scanout`, `evdev-input`) and `requests` (`memoryPages`,
+  `maxWorkers`) which the host clamps to its own policy. `kms-gl-scanout`
+  additionally routes the KMS surface through the vblank pump's WebGL2
+  scanout presenter, which a Wayland compositor needs: its own GL context
+  claims the canvas as the steady state, but the presenter has to cover
+  boot before that claim and the permanent CPU fallback if the GLES probe
+  or a GL frame fails. It refines a KMS display, so the parser rejects it
+  without `kms`. There is no `network` flag: it gated no
+  socket syscall, and a field that reads like a sandbox control without
+  being one is a trap for third-party images.
+- `init` — what this machine runs. Exactly one of three mutually exclusive
+  shapes, so the exclusivity is structural rather than a cross-block rule:
+  - `{ "target": "<name>" }` — a bare dinit service name matching
+    `/etc/dinit.d/<name>`. It selects among init configurations the image
+    already carries; it is not a command vector.
+  - `{ "program", "args", "cwd"?, "uid", "gid" }` — exec a program from the
+    image directly as pid 1, for an image that ships no service manager.
+    `program` must be an absolute normalized path inside the image. `uid`
+    and `gid` are REQUIRED non-negative integers: defaulting to 0 would hand
+    root to any image that omitted them, and defaulting to 1000 would invent
+    an account convention an image may not share.
+  - `{ "shellCommand": "..." }` — a command line (at most 4096 characters)
+    run in the machine's login shell after boot. This is the shape for a
+    machine that is one program over an ordinary shell, such as fbDOOM or
+    the KMS fluid sim; exiting the program returns to that shell.
+- `web` — readiness signalling for the web pane: `requiredPorts` (non-empty,
+  at most 64), `probeHttp` (defaults to true), and an optional `probePath`
+  that must be a plain absolute path.
+- `display` — `minWidth`/`minHeight`, the smallest surface the machine
+  expects to be usable at. A floor the machine states, not a size it imposes.
+- `defaultProfile` (top level) — which profile a bare `?vfs=` URL boots.
+  An image with exactly one profile needs no declaration; an image with
+  several must name one.
 
 A profile may also declare one fixed-path file-ingest capability. The current
 Kandelo browser UI presents it on the framebuffer surface as a file picker and
@@ -662,11 +1669,18 @@ capability; the loader does not infer one from a package or profile name.
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
 version. The loader validates every profile before using any of them, so a
-malformed unselected profile cannot hide behind the current URL. Producers
-that already have a reviewed canonical JSON file may copy those exact bytes;
-the package-built main shell uses
-`packages/registry/shell/source-rootfs-shell-demo.json` as its single reviewed
-source.
+malformed unselected profile cannot hide behind the current URL. Every
+first-party image bakes a reviewed tracked file verbatim, so the baked bytes
+and the tracked bytes are identical.
+
+The source-rootfs shell image is the one documented exception. Its
+`/etc/kandelo/demo.json` is a deterministic merge of two tracked files —
+`packages/registry/shell/source-rootfs-shell-demo.json` (the package-owned
+base) and `packages/registry/shell/source-rootfs-shell-demo-profiles.json`
+(the image-owned profile overlay) — so the baked bytes are a superset of
+either one. The overlay may declare only `version` and `profiles`; the
+builder rejects any other top-level key, because composition takes every
+other field from the base and would otherwise discard it silently.
 
 VFS images do not need to serialize placeholder device nodes. Both Node and
 browser boot replace `/dev` with the authoritative `DeviceFileSystem` and mount
@@ -674,8 +1688,8 @@ shared memory at `/dev/shm`; image acceptance should exercise devices such as
 `/dev/null` only after those runtime mounts exist.
 
 KMS demos use the same metadata path. A profile can set
-`runningPrimary` to include `"kms"` and provide an `autoCommand` such as
-`/usr/local/bin/modeset`; the VFS image must contain that executable. The
+`runningPrimary` to include `"kms"` and declare an `init.shellCommand` such
+as `/usr/local/bin/modeset`; the VFS image must contain that executable. The
 Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
@@ -784,7 +1798,6 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | package-built platform rootfs plus shell demo assets; Bash and login are embedded, while sudo and the ordinary command set remain first-use package outputs |
-| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | exact lazy shell image plus the package-resolved Node executable, npm 10.9.2 distribution, writable `/work`, and Node demo metadata |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
@@ -835,7 +1848,8 @@ Shell-derived packages consume that resolved image as a declared dependency.
 Their builders preserve capacity, ABI identity, package-backed lazy transports
 and seals, and record the exact shell digest and byte count in their own
 metadata. A revision bump on the shell therefore changes the cache key of
-`node-vfs`, `nginx-vfs`, `nginx-php-vfs`, `lamp`, and `wordpress` through the
+`nginx-vfs`, `nginx-php-vfs`, `nginx-python-vfs`, `lamp`, and `wordpress`
+through the
 normal dependency graph.
 
 Hosted GitHub Pages publication is disabled. Its retained workflow is outside
@@ -855,7 +1869,11 @@ lazy formats do not gain compatibility shims.
 
 1. Create `images/vfs/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
 2. Create `images/vfs/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
-3. If the image is consumed by Kandelo, write `/etc/kandelo/demo.json` via `writeKandeloDemoConfig()`
+3. If the image is consumed by Kandelo, add a tracked
+   `packages/registry/<image>/<name>-demo.json`, list it in
+   `TRACKED_DEMO_CONFIG_SOURCES`, and bake it with
+   `writeTrackedDemoConfig(fs, "<that path>")` from
+   `images/vfs/scripts/tracked-demo-config.ts`
 4. If the image is consumed by the Kandelo UI, expose it through a gallery
    manifest, preset, or direct `vfs` URL so the UI can fetch the `.vfs.zst`
    image and await `restoreVerifiedVfsImage()` before inspecting or booting it
@@ -903,6 +1921,11 @@ served at `/a/`, and output built with `VITE_BASE=/candidate-b/` must be served
 at `/candidate-b/`. A completed build is not freely relocatable, and
 `base: "./"` is not a supported substitute for choosing its public path.
 
+`./run.sh build-browser [--base /prefix/] [--out DIR]` performs every step
+below for one prefix (default `/`, output `apps/browser-demos/dist`) and
+fails if the output lacks `index.html`, `service-worker.js`, or the VFS
+group, or contains the private product map.
+
 The SourceOnly local DAG described in
 [Package Management](package-management.md#local-dag-build) is the canonical
 way to build the seven active VFS products. Produce
@@ -925,8 +1948,8 @@ VITE_BASE=/candidate-b/ npm --prefix apps/browser-demos run build -- \
 ```
 
 Vite authenticates and copies the complete group beneath the owning output as
-`vfs-groups/release-1/`: manifest, seven unchanged images, and all 80 lazy
-assets. The private map is not published. Changing the public group path
+`vfs-groups/release-1/`: manifest, seven unchanged images, and every lazy
+asset those images reference. The private map is not published. Changing the public group path
 requires regenerating the complete manifest/images/assets handoff, updating
 the private map to its new manifest path, and rebuilding the distribution.
 Never move a group within an already completed build. Its complete group must
@@ -942,6 +1965,11 @@ and lazy VFS cache are separately namespaced by registration scope. Restarting
 one worker restores only that prefix's durable state. The Kandelo theme is the
 intentional origin-wide exception because it is ordinary `localStorage` UI
 preference state, not machine, bridge, cookie, retry, or VFS state.
+Within one scope, that bridge authority and cookie jar are further split per
+machine by its SW-minted name — see [Multiple machines under one service
+worker scope](#multiple-machines-under-one-service-worker-scope) — so
+restarting one worker restores every machine that scope was hosting, each
+from its own persisted record.
 
 The production coexistence scenario has been measured in Chromium with `/a/`
 and `/candidate-b/`: both shells booted, Vim materialized from each prefix's

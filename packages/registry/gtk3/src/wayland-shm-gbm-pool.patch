@@ -1,0 +1,224 @@
+--- a/gdk/wayland/gdkdisplay-wayland.c
++++ b/gdk/wayland/gdkdisplay-wayland.c
+@@ -30,6 +30,7 @@
+ #include <sys/mman.h>
+ #include <sys/syscall.h>
+ 
++#include <gbm.h>
+ #include <glib.h>
+ #include "gdkwayland.h"
+ #include "gdkdisplay.h"
+@@ -1241,101 +1242,100 @@
+ typedef struct _GdkWaylandCairoSurfaceData {
+   gpointer buf;
+   size_t buf_length;
++  struct gbm_bo *bo;
++  void *map_data;
+   struct wl_shm_pool *pool;
+   struct wl_buffer *buffer;
+   GdkWaylandDisplay *display;
+   uint32_t scale;
+ } GdkWaylandCairoSurfaceData;
+ 
+-static int
+-open_shared_memory (void)
+-{
+-  static gboolean force_shm_open = FALSE;
+-  int ret = -1;
++/* The compositor imports a wl_shm pool with gbm_bo_import(GBM_BO_IMPORT_FD),
++ * so the pool fd has to be a DRI prime fd: a memfd is private to the process
++ * that made it and carries no pixels across the socket. Same allocation as
++ * foot's shm.c and mako's pool-buffer.c.
++ */
++static struct gbm_device *
++gdk_wayland_gbm_device (void)
++{
++  static struct gbm_device *gbm = NULL;
++  int fd;
+ 
+-#if !defined (__NR_memfd_create)
+-  force_shm_open = TRUE;
+-#endif
++  if (gbm != NULL)
++    return gbm;
+ 
+-  do
++  fd = open ("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
++
++  if (fd < 0)
+     {
+-#if defined (__NR_memfd_create)
+-      if (!force_shm_open)
+-        {
+-          ret = syscall (__NR_memfd_create, "gdk-wayland", MFD_CLOEXEC);
++      g_critical (G_STRLOC ": opening /dev/dri/renderD128 failed: %m");
++      return NULL;
++    }
+ 
+-          /* fall back to shm_open until debian stops shipping 3.16 kernel
+-           * See bug 766341
+-           */
+-          if (ret < 0 && errno == ENOSYS)
+-            force_shm_open = TRUE;
+-        }
+-#endif
++  gbm = gbm_create_device (fd);
+ 
+-      if (force_shm_open)
+-        {
+-#if defined (__FreeBSD__)
+-          ret = shm_open (SHM_ANON, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
+-#else
+-          char name[NAME_MAX - 1] = "";
++  if (gbm == NULL)
++    g_critical (G_STRLOC ": creating the GBM device failed");
+ 
+-          sprintf (name, "/gdk-wayland-%x", g_random_int ());
+-
+-          ret = shm_open (name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
+-
+-          if (ret >= 0)
+-            shm_unlink (name);
+-          else if (errno == EEXIST)
+-            continue;
+-#endif
+-        }
+-    }
+-  while (ret < 0 && errno == EINTR);
+-
+-  if (ret < 0)
+-    g_critical (G_STRLOC ": creating shared memory file (using %s) failed: %m",
+-                force_shm_open? "shm_open" : "memfd_create");
+-
+-  return ret;
++  return gbm;
+ }
+ 
+ static struct wl_shm_pool *
+-create_shm_pool (struct wl_shm  *shm,
+-                 int             size,
+-                 size_t         *buf_length,
+-                 void          **data_out)
++create_shm_pool (struct wl_shm              *shm,
++                 int                         width,
++                 int                         height,
++                 uint32_t                   *stride_out,
++                 GdkWaylandCairoSurfaceData *data)
+ {
++  struct gbm_device *gbm = gdk_wayland_gbm_device ();
+   struct wl_shm_pool *pool;
+-  int fd;
+-  void *data;
+-
+-  fd = open_shared_memory ();
++  struct gbm_bo *bo;
++  uint32_t stride = 0;
++  void *map_data = NULL;
++  void *buf;
++  int fd;
+ 
+-  if (fd < 0)
++  if (gbm == NULL)
+     return NULL;
+ 
+-  if (ftruncate (fd, size) < 0)
++  bo = gbm_bo_create (gbm, width, height, GBM_FORMAT_ARGB8888,
++                      GBM_BO_USE_LINEAR | GBM_BO_USE_SCANOUT);
++
++  if (bo == NULL)
+     {
+-      g_critical (G_STRLOC ": Truncating shared memory file failed: %m");
+-      close (fd);
++      g_critical (G_STRLOC ": creating a %dx%d GBM buffer object failed",
++                  width, height);
+       return NULL;
+     }
+ 
+-  data = mmap (NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++  buf = gbm_bo_map (bo, 0, 0, width, height, 0, &stride, &map_data);
+ 
+-  if (data == MAP_FAILED)
++  if (buf == NULL)
+     {
+-      g_critical (G_STRLOC ": mmap'ping shared memory file failed: %m");
+-      close (fd);
++      g_critical (G_STRLOC ": mapping the GBM buffer object failed: %m");
++      gbm_bo_destroy (bo);
+       return NULL;
+     }
+ 
+-  pool = wl_shm_create_pool (shm, fd, size);
++  fd = gbm_bo_get_fd (bo);
+ 
++  if (fd < 0)
++    {
++      g_critical (G_STRLOC ": exporting the GBM buffer object failed: %m");
++      gbm_bo_unmap (bo, map_data);
++      gbm_bo_destroy (bo);
++      return NULL;
++    }
++
++  pool = wl_shm_create_pool (shm, fd, stride * height);
++
+   close (fd);
+ 
+-  *data_out = data;
+-  *buf_length = size;
++  data->bo = bo;
++  data->map_data = map_data;
++  data->buf = buf;
++  data->buf_length = (size_t) stride * height;
++  *stride_out = stride;
+ 
+   return pool;
+ }
+@@ -1351,7 +1351,12 @@
+   if (data->pool)
+     wl_shm_pool_destroy (data->pool);
+ 
+-  munmap (data->buf, data->buf_length);
++  if (data->bo)
++    {
++      gbm_bo_unmap (data->bo, data->map_data);
++      gbm_bo_destroy (data->bo);
++    }
++
+   g_free (data);
+ }
+ 
+@@ -1364,20 +1369,28 @@
+   GdkWaylandCairoSurfaceData *data;
+   cairo_surface_t *surface = NULL;
+   cairo_status_t status;
+-  int stride;
++  uint32_t stride = 0;
+ 
+-  data = g_new (GdkWaylandCairoSurfaceData, 1);
++  data = g_new0 (GdkWaylandCairoSurfaceData, 1);
+   data->display = display;
+   data->buffer = NULL;
+   data->scale = scale;
+ 
+-  stride = cairo_format_stride_for_width (CAIRO_FORMAT_ARGB32, width*scale);
+-
++  /* The bo picks the stride, so cairo and the wl_buffer both take it from
++   * there rather than from cairo_format_stride_for_width().
++   */
+   data->pool = create_shm_pool (display->shm,
+-                                height*scale*stride,
+-                                &data->buf_length,
+-                                &data->buf);
++                                width*scale,
++                                height*scale,
++                                &stride,
++                                data);
+ 
++  if (data->pool == NULL)
++    {
++      g_free (data);
++      return NULL;
++    }
++
+   surface = cairo_image_surface_create_for_data (data->buf,
+                                                  CAIRO_FORMAT_ARGB32,
+                                                  width*scale,

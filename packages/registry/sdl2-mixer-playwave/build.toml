@@ -2,6 +2,12 @@ script_path = "packages/registry/sdl2-mixer-playwave/build-sdl2-mixer-playwave.s
 inputs = [
   "packages/registry/sdl2-mixer-playwave/build-sdl2-mixer-playwave.sh",
   "scripts/run-wasm-fork-instrument.sh",
+  "libc/glue/libgbm_stub.c",
+  "libc/glue/libegl_stub.c",
+  "libc/glue/libglesv2_stub.c",
+  "libc/glue/gl_abi.h",
+  "scripts/build-dri-stubs.sh",
+  "scripts/build-gles-stubs.sh",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"

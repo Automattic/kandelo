@@ -1,0 +1,16 @@
+--- a/backends/platform/sdl/sdl.cpp
++++ b/backends/platform/sdl/sdl.cpp
+@@ -960,7 +960,13 @@
+ #ifdef USE_MULTIPLE_RENDERERS
+ 
+ OSystem_SDL::GraphicsManagerType OSystem_SDL::getDefaultGraphicsManager() const {
++#if defined(KANDELO) && defined(USE_OPENGL)
++	// Kandelo's SDL2 is built without SDL_Render; the OpenGL manager is
++	// the only presentation path on this platform.
++	return GraphicsManagerOpenGL;
++#else
+ 	return GraphicsManagerSurfaceSDL;
++#endif
+ }
+ 
+ SdlGraphicsManager *OSystem_SDL::createGraphicsManager(SdlEventSource *sdlEventSource, SdlWindow *window, GraphicsManagerType type) {

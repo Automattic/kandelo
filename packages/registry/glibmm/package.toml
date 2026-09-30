@@ -1,0 +1,26 @@
+kind = "library"
+name = "glibmm"
+version = "2.62.0"
+kernel_abi = 17
+depends_on = [
+  "glib@2.84.4",
+  "libsigcxx@2.10.3",
+  "libcxx@21.1.7",
+]
+
+[source]
+url = "https://download.gnome.org/sources/glibmm/2.62/glibmm-2.62.0.tar.xz"
+sha256 = "36659f13cc73282392d1305858f3bbca46fbd1ce2f078cc9db8b9f79b2e93cfe"
+provider = "archive"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://gitlab.gnome.org/GNOME/glibmm/-/blob/2.62.0/COPYING"
+
+[build]
+script_path = "packages/registry/glibmm/build-glibmm.sh"
+
+[outputs]
+libs = ["lib/libglibmm-2.4.a", "lib/libgiomm-2.4.a"]
+headers = ["include/glibmm-2.4", "include/giomm-2.4"]
+pkgconfig = ["lib/pkgconfig/glibmm-2.4.pc", "lib/pkgconfig/giomm-2.4.pc"]

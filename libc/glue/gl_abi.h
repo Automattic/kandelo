@@ -71,6 +71,7 @@
 #define OP_USE_PROGRAM                 0x0307u
 #define OP_BIND_ATTRIB_LOCATION        0x0308u
 #define OP_DELETE_PROGRAM              0x0309u
+#define OP_DETACH_SHADER               0x030Au
 
 #define OP_UNIFORM1I                   0x0400u
 #define OP_UNIFORM1F                   0x0401u
@@ -85,6 +86,7 @@
 #define OP_VERTEX_ATTRIB_POINTER       0x0502u
 #define OP_DRAW_ARRAYS                 0x0503u
 #define OP_DRAW_ELEMENTS               0x0504u
+#define OP_VERTEX_ATTRIB_4FV           0x0505u
 
 #define OP_GEN_VERTEX_ARRAYS           0x0600u
 #define OP_DELETE_VERTEX_ARRAYS        0x0601u
@@ -97,6 +99,7 @@
 #define OP_BIND_RENDERBUFFER           0x0704u
 #define OP_RENDERBUFFER_STORAGE        0x0705u
 #define OP_FRAMEBUFFER_RENDERBUFFER    0x0706u
+#define OP_DELETE_FRAMEBUFFERS         0x0707u
 
 /* Sync-query op tags. */
 #define QOP_GET_ERROR             0x01u
@@ -111,6 +114,7 @@
 #define QOP_GET_PROGRAM_INFO_LOG  0x0Au
 #define QOP_READ_PIXELS           0x0Bu
 #define QOP_CHECK_FB_STATUS       0x0Cu
+#define QOP_GET_SHADER_PRECISION_FORMAT 0x0Du
 
 /* Marshalled ioctl arg structs — must match shared::gl byte-for-byte. */
 struct gl_submit_info { uint32_t offset; uint32_t length; };

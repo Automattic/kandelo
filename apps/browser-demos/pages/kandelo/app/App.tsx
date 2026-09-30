@@ -2,15 +2,17 @@
 // switches machine views and opens exploratory panes for gallery and overlays.
 
 import * as React from "react";
-import { useDemoGuide, useKernelHost, useLazyDownloads } from "../kernel-host/react";
+import { useDemoGuide, useKernelHost, useLazyDownloads, useMachineProgress } from "../kernel-host/react";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
+import { MachineProgressOverlay } from "../panes/MachineProgressOverlay";
 import { descriptorFromGalleryItem } from "../gallery-descriptor";
 import { Gallery } from "../views/Gallery";
 import { EmptyState } from "../views/EmptyState";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
-import { navigateToGalleryItemUrl } from "../url-state";
+import { galleryItemUrl } from "../url-state";
+import { ShareDialog } from "../dialogs/ShareDialog";
 import type {
   BootDescriptor,
   GalleryItem,
@@ -50,8 +52,8 @@ const THEME_MODES: Array<{ mode: ThemeMode; label: string }> = [
 
 const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
   gallery: {
-    title: "Launch New Machine",
-    subtitle: "Choose a published Kandelo machine or local demo image to boot.",
+    title: "Launch New Computer",
+    subtitle: "Choose a published Kandelo computer or local demo image to boot.",
   },
 };
 
@@ -59,15 +61,19 @@ export const App: React.FC = () => {
   const host = useKernelHost();
   const demoGuide = useDemoGuide();
   const lazyDownloads = useLazyDownloads();
+  const machineProgress = useMachineProgress();
   const surface = useMachineSurfaceController();
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
   const [dockLayout, setDockLayout] = React.useState<DockLayoutState>({ collapsed: false, fullWidth: true });
-  const [demoGuideOpen, setDemoGuideOpen] = React.useState(demoGuide !== null);
+  // The demo guide never auto-opens; the dock's Demo button is the only way
+  // in. Machines with a guide simply have that button enabled.
+  const [demoGuideOpen, setDemoGuideOpen] = React.useState(false);
   const [demoDockControls, setDemoDockControls] = React.useState<React.ReactNode | null>(null);
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
@@ -75,6 +81,7 @@ export const App: React.FC = () => {
   const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
   const [audioState, setAudioState] = React.useState<MachineAudioState>(() => host.getAudioState());
+  const [audioActive, setAudioActive] = React.useState<boolean>(() => host.getAudioActivity());
   const [audioError, setAudioError] = React.useState<string | null>(null);
   const nextTerminalIndex = React.useRef(2);
   const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
@@ -82,11 +89,42 @@ export const App: React.FC = () => {
   const desc = host.getBootDescriptor();
   const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
 
+  // Keep the machine and the address bar in agreement across back/forward.
+  //
+  // Gallery launches now use `pushState` instead of navigating, so the browser
+  // no longer reloads on back/forward — it just fires `popstate` and changes
+  // the URL underneath us. Without this the address bar would name a machine
+  // that is not running, which is exactly the kind of lie the platform
+  // contract forbids.
+  //
+  // KNOWN LIMITATION: this reloads rather than booting the popped descriptor
+  // in place, so back/forward is still a real navigation and still leaks one
+  // machine's workers. That is a single user action rather than the
+  // accumulating switch loop this change fixes, and reloading is what
+  // back/forward already did before. Booting the popped URL in place needs a
+  // URL-to-descriptor path that also handles `#k1=` links and protected
+  // candidate mode; see the PR for why that is deferred.
+  React.useEffect(() => {
+    const onPopState = () => {
+      window.location.reload();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
   React.useEffect(
     () => host.subscribeAudioState((state) => {
       setAudioState(state);
       if (state === "running") setAudioError(null);
     }),
+    [host],
+  );
+
+  // Whether any guest in this machine has opened the audio device. Separate
+  // from the sink's state: it is what tells a real audio failure apart from a
+  // sink nothing ever asked for.
+  React.useEffect(
+    () => host.subscribeAudioActivity(setAudioActive),
     [host],
   );
 
@@ -137,7 +175,8 @@ export const App: React.FC = () => {
     const key = `${desc.id}:${demoGuide?.title ?? "no-guide"}`;
     if (autoOpenedDemoGuideKey.current === key) return;
     autoOpenedDemoGuideKey.current = key;
-    setDemoGuideOpen(dockPane === null && demoGuide !== null);
+    // Close a guide left open by the previous machine; never auto-open.
+    setDemoGuideOpen(false);
   }, [demoGuide?.title, desc.id, dockPane]);
 
   React.useEffect(() => {
@@ -206,13 +245,39 @@ export const App: React.FC = () => {
           console.warn("resolveVfsImageUrl failed:", err);
         }
       }
-      if (vfsImageUrl) {
-        navigateToGalleryItemUrl({ ...item, vfsImageUrl });
-        return;
-      }
-
-      const next = descriptorFromGalleryItem(item, host.getBootDescriptor());
+      // Boot in place, then move the address bar to match.
+      //
+      // Launching used to call `location.assign` whenever the item carried a
+      // VFS image URL, which navigates. A navigation destroys this document
+      // without running the machine's teardown, and on JavaScriptCore a worker
+      // parked in `Atomics.wait` does not release its OS thread when the
+      // browser terminates it — so every gallery switch leaked the whole
+      // machine's worker set and the tab grew until it threw "Out of memory".
+      // Measured at roughly +2.4 leaked threads per navigation. See
+      // docs/jsc-terminate-atomics-wait-workaround.md and
+      // benchmarks/measure-machine-switch-leak.mjs.
+      //
+      // `applyBootDescriptor` awaits the previous kernel's `destroy()` while
+      // this document is still alive, which is what lets those workers exit on
+      // their own. The descriptor already carries the image URL
+      // (`descriptorFromGalleryItem` -> `mountsWithRootImageUrl`), so nothing
+      // about the `?vfs=` contract changes: `pushState` writes exactly the URL
+      // `location.assign` would have, and a cold load still reads it from
+      // `location.search`.
+      const next = descriptorFromGalleryItem(
+        vfsImageUrl ? { ...item, vfsImageUrl } : item,
+        host.getBootDescriptor(),
+      );
       await host.applyBootDescriptor(next);
+      if (vfsImageUrl) {
+        // WHY after the boot: if composition fails, applyBootDescriptor throws
+        // and the address bar keeps naming the machine that is actually
+        // loaded, rather than one that never booted.
+        const url = galleryItemUrl({ ...item, vfsImageUrl });
+        if (url !== window.location.href) {
+          window.history.pushState(null, "", url);
+        }
+      }
       closeDockPane();
     })().catch((err) => {
       console.warn("applyBootDescriptor failed:", err);
@@ -287,91 +352,102 @@ export const App: React.FC = () => {
   }, []);
 
   return (
-    <div className={appClassName} style={appStyle} data-audio-state={audioState}>
-      <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
-        {isEmpty ? (
-          <EmptyState
-            onLaunchItem={onLaunchGalleryItem}
-            onBrowseAll={() => setDockPane("gallery")}
-            onApplyDescriptor={applyDescriptor}
-          />
-        ) : (
-          <MachineView
-            surface={surface}
-            demoGuideOpen={demoGuideOpen}
-            onDemoGuideOpenChange={setDemoGuideOpen}
-            onDemoDockControlsChange={setDemoDockControls}
-            onDemoGuidePopupChange={setDemoGuidePopup}
-            internalsTab={internalsTab}
-            terminals={terminals}
-            activeTerminalId={activeTerminalId}
-            onActiveTerminalId={setActiveTerminalId}
-            onAddTerminal={onAddTerminal}
+    <div className={appClassName} style={appStyle} data-audio-state={audioState} data-audio-active={audioActive ? "true" : "false"}>
+      <div
+        data-machine-content
+        {...(machineProgress === null ? {} : { inert: true })}
+      >
+        <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
+          {isEmpty ? (
+            <EmptyState
+              onLaunchItem={onLaunchGalleryItem}
+              onBrowseAll={() => setDockPane("gallery")}
+              onApplyDescriptor={applyDescriptor}
+            />
+          ) : (
+            <MachineView
+              surface={surface}
+              demoGuideOpen={demoGuideOpen}
+              onDemoGuideOpenChange={setDemoGuideOpen}
+              onDemoDockControlsChange={setDemoDockControls}
+              onDemoGuidePopupChange={setDemoGuidePopup}
+              internalsTab={internalsTab}
+              terminals={terminals}
+              activeTerminalId={activeTerminalId}
+              onActiveTerminalId={setActiveTerminalId}
+              onAddTerminal={onAddTerminal}
+            />
+          )}
+        </main>
+
+        {dockPane && meta && (
+          <>
+            <div
+              className="kdock-pane-dismiss-layer"
+              aria-hidden="true"
+              onPointerDown={closeDockPane}
+            />
+            <DockPane
+              pane={dockPane}
+              title={meta.title}
+              subtitle={meta.subtitle}
+              onClose={closeDockPane}
+            >
+              {dockPane === "gallery" && (
+                <Gallery
+                  compact
+                  onLaunch={onLaunchGalleryItem}
+                />
+              )}
+            </DockPane>
+          </>
+        )}
+
+        <LazyDownloadToasts downloads={lazyDownloads} />
+        {surface.status === "running" && audioActive && audioState !== "running" && (
+          <AudioStatusToast
+            state={audioState}
+            error={audioError}
+            onEnable={activateAudio}
           />
         )}
-      </main>
 
-      {dockPane && meta && (
-        <>
-          <div
-            className="kdock-pane-dismiss-layer"
-            aria-hidden="true"
-            onPointerDown={closeDockPane}
-          />
-          <DockPane
-            pane={dockPane}
-            title={meta.title}
-            subtitle={meta.subtitle}
-            onClose={closeDockPane}
-          >
-            {dockPane === "gallery" && (
-              <Gallery
-                compact
-                onLaunch={onLaunchGalleryItem}
-              />
-            )}
-          </DockPane>
-        </>
-      )}
+        {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
 
-      <LazyDownloadToasts downloads={lazyDownloads} />
-      {surface.status === "running" && audioState !== "running" && (
-        <AudioStatusToast
-          state={audioState}
-          error={audioError}
-          onEnable={activateAudio}
+        <Dock
+          activePane={dockPane}
+          activeView={dockActiveView}
+          viewControls={viewControls}
+          guidePopup={demoGuidePopup}
+          internalsPopup={internalsPopup}
+          themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
+          guideAvailable={!isEmpty && demoGuide !== null}
+          guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
+          internalsAvailable={!isEmpty && surface.canUseInternals}
+          internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
+          themeOpen={themeOpen}
+          shareAvailable={!isEmpty}
+          status={surface.status}
+          machineTitle={desc.title}
+          viewDisabled={{
+            demo: !surface.canOpenDemo,
+            terminal: !surface.canUseTerminal,
+          }}
+          onSelectPane={selectDockPane}
+          onSelectView={selectMachineView}
+          onToggleGuide={toggleDemoGuide}
+          onToggleInternals={toggleInternals}
+          onToggleTheme={toggleTheme}
+          onOpenShare={() => setShareOpen(true)}
+          onCloseGuide={() => setDemoGuideOpen(false)}
+          onCloseInternals={() => setInternalsOpen(false)}
+          onCloseTheme={() => setThemeOpen(false)}
+          onHeightChange={setDockHeight}
+          onLayoutChange={onDockLayoutChange}
         />
-      )}
+      </div>
 
-      <Dock
-        activePane={dockPane}
-        activeView={dockActiveView}
-        viewControls={viewControls}
-        guidePopup={demoGuidePopup}
-        internalsPopup={internalsPopup}
-        themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
-        guideAvailable={!isEmpty && demoGuide !== null}
-        guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
-        internalsAvailable={!isEmpty && surface.canUseInternals}
-        internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
-        themeOpen={themeOpen}
-        status={surface.status}
-        machineTitle={desc.title}
-        viewDisabled={{
-          demo: !surface.canOpenDemo,
-          terminal: !surface.canUseTerminal,
-        }}
-        onSelectPane={selectDockPane}
-        onSelectView={selectMachineView}
-        onToggleGuide={toggleDemoGuide}
-        onToggleInternals={toggleInternals}
-        onToggleTheme={toggleTheme}
-        onCloseGuide={() => setDemoGuideOpen(false)}
-        onCloseInternals={() => setInternalsOpen(false)}
-        onCloseTheme={() => setThemeOpen(false)}
-        onHeightChange={setDockHeight}
-        onLayoutChange={onDockLayoutChange}
-      />
+      <MachineProgressOverlay />
     </div>
   );
 };
@@ -388,7 +464,7 @@ const AudioStatusToast: React.FC<{
       ? "This browser does not provide the required Web Audio output."
       : state === "error"
       ? "The browser audio sink could not be started."
-      : "Browser policy pauses audio until you interact with this machine."
+      : "Browser policy pauses audio until you interact with this computer."
   );
   return (
     <aside className="kdownload-toasts kpcm-audio-status" aria-label="Audio status" aria-live="polite">

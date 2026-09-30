@@ -31,10 +31,7 @@ import {
 } from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
 import { prewarmOpcache } from "./opcache-prewarm";
-import {
-  webPresentation,
-  writeKandeloDemoConfig,
-} from "./kandelo-demo-config";
+import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   patchWordPressMysqliPersistentSource,
@@ -495,13 +492,7 @@ export async function buildLampVfsImage(
       "/var/www/html/wp-includes/SimplePie/autoloader.php",
     ],
   });
-  writeKandeloDemoConfig(fs, {
-    version: 1,
-    profiles: {
-      "wordpress-mariadb": { presentation: webPresentation() },
-      lamp: { presentation: webPresentation() },
-    },
-  });
+  writeTrackedDemoConfig(fs, "packages/registry/wordpress/lamp-demo.json");
 
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
   console.log(`${wpCount} WordPress files total`);

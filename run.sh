@@ -7,8 +7,12 @@
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh local-build [--json] Build all local SourceOnly VFS products
+#   ./run.sh cache-gc [args]      Garbage-collect the shared SourceOnly build
+#                                 cache (dry run unless --apply)
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh prepare-browser      Build local SourceOnly browser assets
+#   ./run.sh build-browser [--base /p/] [--out DIR]
+#                                 Build the deployable static browser app
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
@@ -30,6 +34,9 @@
 #                                 worktrees. Set it to isolate a worktree whose
 #                                 in-progress change alters cached artifact
 #                                 bytes. See docs/package-management.md.
+#   KANDELO_CACHE_GC_AUTO         Set to 0 to stop a successful local build
+#                                 from garbage-collecting the SourceOnly cache
+#                                 (at most once a day). See `./run.sh cache-gc`.
 #
 set -euo pipefail
 
@@ -143,7 +150,7 @@ fi
 export WASM_POSIX_USE_PR_STAGING=$USE_PR_STAGING
 
 case "${1:-}" in
-    browser|prepare-browser)
+    browser|prepare-browser|build-browser)
         if [ "$ALREADY_MATERIALIZED" -eq 1 ] ||
             [ "$SOURCE_ROOTFS_SHELL" -eq 1 ] ||
             [ "$USE_PR_STAGING" -eq 1 ] ||
@@ -455,7 +462,6 @@ has_shell_vfs()     {
 }
 has_node()          { pkg_has_output node node.wasm; }
 has_spidermonkey_node() { pkg_has_output spidermonkey-node node.wasm || [ -f "$REPO_ROOT/packages/registry/spidermonkey-node/bin/node.wasm" ]; }
-has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" ]; }
 has_erlang()        { pkg_has_output erlang erlang.wasm || [ -f "$REPO_ROOT/packages/registry/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { pkg_has_output erlang-vfs erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/erlang.vfs.zst" ]; }
 has_lamp_vfs()      { pkg_has_output lamp lamp.vfs.zst; }
@@ -478,6 +484,10 @@ has_unzip()         { pkg_has_output unzip unzip.wasm || [ -f "$REPO_ROOT/packag
 has_nano()          { pkg_has_output nano nano.wasm || [ -f "$REPO_ROOT/packages/registry/nano/bin/nano.wasm" ]; }
 has_nethack()       { pkg_has_output nethack nethack.wasm || [ -f "$REPO_ROOT/packages/registry/nethack/bin/nethack.wasm" ]; }
 has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || [ -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" ]; }
+has_foot()          { pkg_has_output foot foot.wasm; }
+has_dbus()          { pkg_has_output dbus dbus-daemon.wasm; }
+has_mako()          { pkg_has_output mako mako.wasm; }
+has_waybar()        { pkg_has_output waybar waybar.wasm; }
 has_vim()           { pkg_has_output vim vim.wasm || [ -f "$REPO_ROOT/packages/registry/vim/bin/vim.wasm" ]; }
 has_git()           { pkg_has_output git git.wasm || [ -f "$REPO_ROOT/packages/registry/git/bin/git.wasm" ]; }
 has_perl()          { pkg_has_output perl perl.wasm || [ -f "$REPO_ROOT/packages/registry/perl/bin/perl.wasm" ]; }
@@ -651,6 +661,8 @@ build_mariadb_vfs() {
         return
     fi
     build_mariadb
+    # bash is /bin/sh in the image; dash ships at its own name.
+    build_bash
     build_dash
     step "Building MariaDB VFS image (wasm32)"
     # Delegate to the package-system wrapper so install_local_binary
@@ -669,6 +681,8 @@ build_mariadb64_vfs() {
         return
     fi
     build_mariadb64
+    # bash is /bin/sh in the image; dash ships at its own name.
+    build_bash
     build_dash
     step "Building MariaDB VFS image (wasm64)"
     WASM_POSIX_DEP_TARGET_ARCH=wasm64 \
@@ -876,12 +890,6 @@ build_spidermonkey_node() {
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
         build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve spidermonkey-node)
     info "spidermonkey-node resolved"
-}
-
-build_node_vfs() {
-    # Declared VFS product; the engine resolves shell/node and runs
-    # packages/registry/node-vfs/build-node-vfs.sh (unchanged script).
-    bootstrap_target browser-node
 }
 
 build_vim_zip() {
@@ -1391,7 +1399,9 @@ build_shell_vfs() {
 
     # Declared VFS product (packages/sets/local-supported.toml); the engine
     # resolves the "shell" package closure and validates it against
-    # images/vfs/products/browser-main-shell.toml.
+    # images/vfs/products/browser-main-shell.toml, whose declared builder is
+    # packages/registry/shell/build-shell.sh (also the shell package's own
+    # build script).
     bootstrap_target browser-main-shell
 }
 
@@ -1480,6 +1490,20 @@ build_nginx_php_vfs() {
     # runs images/vfs/scripts/build-nginx-php-vfs-image.sh (unchanged
     # script), which is also the nginx-php-vfs package's own build script.
     bootstrap_target browser-nginx-php
+}
+
+build_nginx_python_vfs() {
+    # Declared VFS product; the engine resolves shell/nginx/cpython/dinit and
+    # runs images/vfs/scripts/build-nginx-python-vfs-image.sh (unchanged
+    # script), which is also the nginx-python-vfs package's own build script.
+    bootstrap_target browser-nginx-python
+}
+
+build_ruby_todo_vfs() {
+    # Declared VFS product; the engine resolves ruby and runs
+    # images/vfs/scripts/build-ruby-todo-vfs-image.sh, the ruby-todo-vfs
+    # package's own build script.
+    bootstrap_target browser-ruby-todo
 }
 
 build_texlive() {
@@ -1726,6 +1750,66 @@ build_fbdoom() {
     bootstrap_target fbdoom
 }
 
+build_foot() {
+    if has_foot; then
+        info "foot"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving foot.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve foot)
+    info "foot resolved"
+}
+
+build_dbus() {
+    if has_dbus; then
+        info "dbus"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving dbus-daemon.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve dbus)
+    info "dbus resolved"
+}
+
+build_mako() {
+    if has_mako; then
+        info "mako"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving mako.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve mako)
+    info "mako resolved"
+}
+
+build_waybar() {
+    if has_waybar; then
+        info "waybar"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving waybar.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve waybar)
+    info "waybar resolved"
+}
+
 build_vim() {
     bootstrap_target vim
 }
@@ -1810,7 +1894,6 @@ build_target() {
         shell-vfs)  build_shell_vfs ;;
         node)       build_node ;;
         spidermonkey-node) build_spidermonkey_node ;;
-        node-vfs)   build_node_vfs ;;
         wordpress)  build_wordpress ;;
         wp-vfs)     build_wp_vfs ;;
         erlang)     build_erlang ;;
@@ -1819,6 +1902,8 @@ build_target() {
         nginx-vfs)  build_nginx_vfs ;;
         redis-vfs)  build_redis_vfs ;;
         nginx-php-vfs) build_nginx_php_vfs ;;
+        nginx-python-vfs) build_nginx_python_vfs ;;
+        ruby-todo-vfs) build_ruby_todo_vfs ;;
         bc)         build_bc ;;
         file)       build_file ;;
         less)       build_less ;;
@@ -1838,6 +1923,10 @@ build_target() {
         nethack)    build_nethack ;;
         nethack-zip) build_nethack_zip ;;
         fbdoom)     build_fbdoom ;;
+        foot)       build_foot ;;
+        dbus)       build_dbus ;;
+        mako)       build_mako ;;
+        waybar)     build_waybar ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
         openssl)    build_openssl ;;
@@ -1862,7 +1951,7 @@ build_target() {
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs dbus foot mako waybar)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1905,6 +1994,7 @@ build_all() {
     build_php
     build_php_fpm
     build_nginx_php_vfs
+    build_nginx_python_vfs
     build_mariadb
     build_mariadb_vfs
     build_redis
@@ -1917,7 +2007,6 @@ build_all() {
     build_perl_vfs
     build_ruby
     build_shell_vfs
-    build_node_vfs
     build_wordpress
     build_wp_vfs
     build_lamp_vfs
@@ -1984,8 +2073,8 @@ clean_target() {
             rm -rf "$REPO_ROOT/host/dist"
             warn "Cleaned host" ;;
         rootfs)
-            rm -f "$REPO_ROOT/host/wasm/rootfs.vfs"
-            warn "Cleaned rootfs.vfs" ;;
+            rm -f "$REPO_ROOT/host/wasm/rootfs.vfs.zst"
+            warn "Cleaned rootfs.vfs.zst" ;;
         programs)
             rm -f "$REPO_ROOT/host/wasm/fork-exec.wasm"
             rm -f "$REPO_ROOT/host/wasm/"*.wasm 2>/dev/null || true
@@ -2103,11 +2192,6 @@ clean_target() {
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/spidermonkey-node.wasm"
             warn "Cleaned spidermonkey-node" ;;
-        node-vfs)
-            xtask_clean_target node-vfs
-            rm -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" \
-                  "$REPO_ROOT/local-binaries/programs/wasm32/node-vfs.vfs.zst"
-            warn "Cleaned Node VFS image" ;;
         wordpress)
             xtask_clean_target wordpress
             rm -rf "$REPO_ROOT/packages/registry/wordpress/wordpress" \
@@ -2337,7 +2421,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -2390,6 +2474,20 @@ cmd_rebuild() {
     done
     echo ""
     info "Rebuild complete"
+}
+
+# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE]` —
+# garbage-collect the SourceOnly build cache this checkout uses
+# (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). A dry run
+# unless --apply; the policy and its safety rules live in `xtask cache-gc`
+# (tools/xtask/src/cache_gc.rs) and docs/package-management.md.
+cmd_cache_gc() {
+    local xtask
+    xtask="$(pkg_xtask_bin)" || {
+        err "cache-gc: could not build xtask"
+        exit 1
+    }
+    bash "$REPO_ROOT/scripts/dev-shell.sh" "$xtask" cache-gc "$@"
 }
 
 cmd_local_build() {
@@ -2599,6 +2697,81 @@ cmd_prepare_browser() {
     info "Local SourceOnly browser assets are ready"
 }
 
+# Build the deployable static browser app: the local SourceOnly products, the
+# authenticated VFS asset group, and a production Vite build bound to one
+# absolute URL prefix (`--base`, default `/`). The output directory is the
+# complete site to upload; see docs/browser-support.md
+# "Directory-scoped production hosting" for the hosting rules.
+cmd_build_browser() {
+    local base="/"
+    local out="$REPO_ROOT/apps/browser-demos/dist"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --base) [ $# -ge 2 ] || { err "--base requires a value"; exit 2; }
+                    base="$2"; shift 2 ;;
+            --base=*) base="${1#--base=}"; shift ;;
+            --out)  [ $# -ge 2 ] || { err "--out requires a directory"; exit 2; }
+                    out="$2"; shift 2 ;;
+            --out=*) out="${1#--out=}"; shift ;;
+            *)
+                err "Usage: $0 build-browser [--base /prefix/] [--out DIR]"
+                exit 2
+                ;;
+        esac
+    done
+    case "$base" in
+        /*/|/) ;;
+        *) err "--base must be an absolute URL path that starts and ends with '/', got '$base'"; exit 2 ;;
+    esac
+    case "$out" in
+        /*) ;;
+        *) out="$PWD/$out" ;;
+    esac
+
+    cmd_prepare_browser
+
+    # The private product map names local paths and must never be published,
+    # so it and the group it authenticates live under local-binaries/, never
+    # under the output directory.
+    step "Building production browser app for $base"
+    # dev-shell.sh does not forward arbitrary caller environment, so the
+    # inner script takes the repo root, base, and output as arguments.
+    bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
+        set -euo pipefail
+        cd "$1"
+        export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+        export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+        export KANDELO_PAGES_PRODUCT_MAP="$PWD/local-binaries/pages-vfs-products.private.json"
+        export KANDELO_PAGES_VFS_ASSET_GROUP_DIR="$PWD/local-binaries/vfs-group"
+        if [ ! -d apps/browser-demos/node_modules ] ||
+           [ apps/browser-demos/package-lock.json -nt apps/browser-demos/node_modules ]; then
+            npm --prefix apps/browser-demos ci --no-audit --no-fund
+        fi
+        echo "==> Building the authenticated VFS asset group..."
+        node node_modules/tsx/dist/cli.mjs scripts/build-local-vfs-asset-group.ts \
+            "$KANDELO_PAGES_VFS_ASSET_GROUP_DIR" "$KANDELO_PAGES_PRODUCT_MAP"
+        VITE_BASE="$2" npm --prefix apps/browser-demos run build -- \
+            --outDir "$3" --emptyOutDir
+    ' build-browser "$REPO_ROOT" "$base" "$out"
+
+    # Fail loudly on an incomplete site rather than letting it be uploaded.
+    local missing=0 required
+    for required in index.html service-worker.js vfs-groups; do
+        if [ ! -e "$out/$required" ]; then
+            err "build-browser: $out/$required is missing"
+            missing=1
+        fi
+    done
+    if [ -e "$out/pages-vfs-products.private.json" ]; then
+        err "build-browser: the private product map leaked into $out"
+        missing=1
+    fi
+    [ "$missing" -eq 0 ] || exit 1
+
+    info "Browser app built: $out"
+    info "Upload the contents of that directory so it is served at exactly $base"
+}
+
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/apps/browser-demos"
 
@@ -2747,6 +2920,8 @@ cmd_list() {
     echo "  ./run.sh local-build                Build all seven local VFS products"
     echo "                                        and their package dependencies"
     echo "  ./run.sh local-build --json         Emit the canonical machine result"
+    echo "  ./run.sh cache-gc                   Show what cache GC would remove (dry run)"
+    echo "  ./run.sh cache-gc --apply           Remove unused SourceOnly cache entries"
     echo ""
     echo "${BOLD}Build targets:${RESET}"
     # kernel/sysroot/sysroot64/sdk/host/rootfs status below is inlined
@@ -2760,7 +2935,7 @@ cmd_list() {
     echo "  sysroot64   musl libc sysroot (wasm64)           $([ -f "$REPO_ROOT/sysroot64/lib/libc.a" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sdk         SDK cross-compilation tools           $(command -v wasm32posix-cc &>/dev/null && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  host        TypeScript host (tsup)                $([ -d "$REPO_ROOT/host/dist" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  rootfs      Canonical host rootfs.vfs             $([ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  rootfs      Canonical host rootfs.vfs.zst         $([ -f "$REPO_ROOT/host/wasm/rootfs.vfs.zst" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  programs    Simple C programs (sh, cat, ls, ...)  $(has_programs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dash        dash 0.5.12 shell                      $(has_dash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  bash        bash 5.2 shell                         $(has_bash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -2804,7 +2979,6 @@ cmd_list() {
     echo "  shell-vfs   Shell environment VFS image           $(has_shell_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  node        SpiderMonkey Node compatibility binary $(has_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  spidermonkey-node  SpiderMonkey Node-compatible binary $(has_spidermonkey_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  node-vfs    Node + npm VFS image                  $(has_node_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  lamp-vfs    WordPress LAMP VFS image              $(has_lamp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -2840,6 +3014,8 @@ cmd_list() {
     echo "${BOLD}Browser:${RESET}"
     echo "  ./run.sh prepare-browser             Build local SourceOnly browser assets"
     echo "  ./run.sh browser                     Build locally and start the Vite dev server"
+    echo "  ./run.sh build-browser [--base /p/] [--out DIR]"
+    echo "                                       Build the deployable app (default: / into apps/browser-demos/dist)"
     echo ""
     echo "${BOLD}Test suites:${RESET}"
     echo "  ./run.sh test                        Run default suites (cargo + vitest + libc + posix)"
@@ -2864,8 +3040,10 @@ case "${1:-list}" in
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
     local-build) cmd_local_build "${@:2}" ;;
+    cache-gc) cmd_cache_gc "${@:2}" ;;
     setup)    cmd_setup "${@:2}" ;;
     prepare-browser) cmd_prepare_browser ;;
+    build-browser) cmd_build_browser "${@:2}" ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;
     test)     cmd_test "${@:2}" ;;

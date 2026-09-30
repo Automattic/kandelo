@@ -190,7 +190,7 @@ describe("Vite browser binary capabilities", () => {
       'sourceOnlyViteAssets.resolve("kernel.wasm")',
     );
     expect(config).toContain(
-      'sourceOnlyViteAssets!.resolve(\n            "programs/wasm32/rootfs.vfs",',
+      'sourceOnlyViteAssets!.resolve(\n            "programs/wasm32/rootfs.vfs.zst",',
     );
     expect(config).toContain(
       "sourceOnlyViteAssets.resolve(request.relPath)",

@@ -1,4 +1,4 @@
-export type OptionalDemoVfsImage = "node" | "wordpress" | "lamp";
+export type OptionalDemoVfsImage = "wordpress" | "lamp";
 
 export type OptionalDemoVfsImporter = () => Promise<string>;
 export type OptionalDemoVfsImporters = Record<string, OptionalDemoVfsImporter>;
@@ -12,13 +12,6 @@ export const OPTIONAL_DEMO_VFS_PATHS: Record<
   OptionalDemoVfsImage,
   { label: string; relPaths: readonly string[] }
 > = {
-  node: {
-    label: "node-vfs.vfs.zst",
-    relPaths: [
-      "../../../../../local-binaries/programs/wasm32/node-vfs.vfs.zst",
-      "../../../../../binaries/programs/wasm32/node-vfs.vfs.zst",
-    ],
-  },
   wordpress: {
     label: "wordpress.vfs.zst",
     relPaths: [
@@ -40,12 +33,6 @@ export const OPTIONAL_DEMO_VFS_PATHS: Record<
 // returns a loader only for files that exist. The loader itself runs only when
 // the corresponding demo is requested.
 const OPTIONAL_DEMO_VFS_IMPORTERS = {
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/node-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/node-vfs.vfs.zst", {
-    query: "?url", import: "default",
-  }),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wordpress.vfs.zst", {
     query: "?url", import: "default",
   }),
@@ -59,6 +46,21 @@ const OPTIONAL_DEMO_VFS_IMPORTERS = {
     query: "?url", import: "default",
   }),
 } as OptionalDemoVfsImporters;
+
+/**
+ * Whether this checkout has actually materialized the image for an optional
+ * demo product. The gallery lists every roster entry either way; this is what
+ * lets it say "not built yet — run ./run.sh fetch" before the click instead
+ * of throwing after it.
+ */
+export function optionalDemoVfsIsBuilt(
+  image: OptionalDemoVfsImage,
+  importers: OptionalDemoVfsImporters = OPTIONAL_DEMO_VFS_IMPORTERS,
+): boolean {
+  return OPTIONAL_DEMO_VFS_PATHS[image].relPaths.some(
+    (relPath) => importers[relPath] !== undefined,
+  );
+}
 
 export async function resolveOptionalDemoVfsUrl(
   image: OptionalDemoVfsImage,

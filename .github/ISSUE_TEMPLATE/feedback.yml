@@ -1,0 +1,41 @@
+name: 💬 Feedback
+description: Tell us what you're making with Kandelo and how it's going.
+title: "Feedback: "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        We'd love to hear what you're up to with Kandelo. Rough notes are
+        welcome — you don't need to have it all figured out. If you have a
+        specific bug or feature request, a blank issue might fit better, but if
+        you're unsure, start here.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you making with Kandelo, and what brought you here?
+      description: >
+        Tell us what you're building (or dreaming up), who it's for, and what
+        made Kandelo feel like the right tool. The more specific, the better.
+      placeholder: >
+        e.g. "A no-install Python playground for my students — I didn't want to
+        run a server just for a sandbox," or "Running untrusted C programs in
+        the browser, because I needed real fork/exec that nothing else offered."
+    validations:
+      required: true
+
+  - type: textarea
+    id: experience
+    attributes:
+      label: How's it going — what's been a joy, and what's gotten in your way?
+      description: >
+        Tell us what clicked and what you're proud of, and be honest about the
+        rough edges — where things were confusing, slow, missing, or
+        frustrating. Both sides help us make Kandelo better.
+      placeholder: >
+        e.g. "Booting in the browser just worked and felt kind of magic, but
+        getting my package to build took a lot of trial and error," or "I
+        couldn't tell if a syscall was unsupported or I was using it wrong."
+    validations:
+      required: true

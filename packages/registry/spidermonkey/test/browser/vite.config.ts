@@ -31,10 +31,10 @@ function resolveKernelArtifactsAlias(): Plugin {
       }
 
       if (pathPart === ROOTFS) {
-        const file = path.resolve(repoRoot, "host/wasm/rootfs.vfs");
+        const file = path.resolve(repoRoot, "host/wasm/rootfs.vfs.zst");
         if (fs.existsSync(file)) return file + query;
         this.error(
-          "rootfs.vfs not found. Run `bash build.sh` from the repo root.\n" +
+          "rootfs.vfs.zst not found. Run `bash build.sh` from the repo root.\n" +
           `  Looked at: ${file}`,
         );
       }

@@ -1053,7 +1053,6 @@ readonly = false
                 "browser-main-shell",
                 set(&["shell|shell||Runtime|embedded"]),
             ),
-            ("browser-node", set(&["node|node||Runtime|embedded"])),
             (
                 "browser-nginx",
                 set(&[

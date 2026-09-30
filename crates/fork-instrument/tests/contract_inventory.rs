@@ -222,6 +222,44 @@ fn inventories_reserved_env_imports_in_modern_modules() {
 }
 
 #[test]
+fn inventories_sysroot_platform_library_imports() {
+    // Entry points of sysroot/lib/{libdrm,libgbm,libEGL,libGLESv2}.a. The host
+    // implements none of them, so an import is always a link that missed the
+    // archive — the shape that shipped a broken sdl2.wasm.
+    let bytes = wat::parse_str(
+        r#"
+        (module
+          (import "env" "drmAuthMagic" (func (param i32 i32) (result i32)))
+          (import "env" "gbm_surface_create" (func (result i32)))
+          (import "env" "eglGetPlatformDisplay" (func (result i32)))
+          (import "env" "glPixelStorei" (func (param i32 i32)))
+          ;; Lowercase lookalikes belong to ordinary packages, not to the
+          ;; platform libraries: the tail after the prefix must be uppercase.
+          (import "env" "glob" (func (result i32)))
+          (import "env" "drmgetenv" (func (result i32)))
+          (import "env" "eglue" (func (result i32)))
+          (import "env" "gbmfoo" (func (result i32)))
+          (func (export "_start")))
+        "#,
+    )
+    .expect("compile platform-library import WAT");
+
+    let imports = reserved_env_imports(&bytes).expect("inventory reserved imports");
+    assert_eq!(
+        imports
+            .iter()
+            .map(|import| import.identity.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "env.drmAuthMagic",
+            "env.gbm_surface_create",
+            "env.eglGetPlatformDisplay",
+            "env.glPixelStorei",
+        ]
+    );
+}
+
+#[test]
 fn artifact_identity_distinguishes_missing_and_invalid_abi_exports() {
     let missing = wat::parse_str(r#"(module (memory 1))"#).expect("compile missing ABI WAT");
     assert_eq!(

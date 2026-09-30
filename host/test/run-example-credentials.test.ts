@@ -1,9 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+
+
+// This file hands each guest a 45s budget via runCentralizedProgram's
+// `timeout`. Vitest's 5s default wall budget is smaller than that, so on any
+// machine slower than a quiet CI runner the wall clock fires first and reports
+// "Test timed out in 5000ms" instead of the guest timeout the test declared.
+// Give the wall budget room to contain the guest budget; the guest timeout
+// still fails the test with its own stdout/stderr diagnostics.
+vi.setConfig({ testTimeout: 90_000 });
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..", "..");

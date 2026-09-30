@@ -17,6 +17,7 @@ import {
   saveImage,
   sourceDateEpochMilliseconds,
 } from "../../images/vfs/scripts/vfs-image-helpers";
+import { imageMemfsReservationBytes } from "../src/vfs/default-mounts";
 import {
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
@@ -1209,6 +1210,113 @@ describe("VFS image save/restore", () => {
       expect(new TextDecoder().decode(readFile(mfs, "/data.txt"))).toBe(
         "shared",
       );
+    });
+  });
+
+  describe("free-capacity trimming", () => {
+    // WHY: a SharedFS allocator sizes its backing buffer for the capacity a
+    // running machine may need, not for the bytes a build actually wrote. An
+    // image that serializes that unused tail ships free space as product
+    // bytes — `rootfs.vfs` was 16 MiB on the wire for ~1.3 MiB of content,
+    // 93.6% of it zero. The filesystem grows on demand at runtime, so the
+    // free tail is recoverable and must not be serialized.
+    const MiB = 1024 * 1024;
+
+    function createSparse(): MemoryFileSystem {
+      const sab = new SharedArrayBuffer(16 * MiB, {
+        maxByteLength: 64 * MiB,
+      });
+      return MemoryFileSystem.create(sab, 64 * MiB);
+    }
+
+    it("does not serialize the unallocated block tail", async () => {
+      const mfs = createSparse();
+      writeFile(mfs, "/small.txt", new TextEncoder().encode("hello"));
+
+      const image = await mfs.saveImage({ trimFreeCapacity: true });
+
+      // The metadata region (bitmaps + inode table, sized for the 64 MiB
+      // ceiling) is a real floor; the 16 MiB of free data blocks is not.
+      expect(image.byteLength).toBeLessThan(6 * MiB);
+    });
+
+    it("keeps the free tail unless a product build opts in", async () => {
+      const mfs = createSparse();
+      writeFile(mfs, "/small.txt", new TextEncoder().encode("hello"));
+
+      // WHY this stays the default: a restored trimmed image is exactly full,
+      // so an in-process round-trip that restores into a fixed-size buffer
+      // would fail its first allocation — including materializing a deferred
+      // entry. Only artifact writers opt in.
+      const image = await mfs.saveImage();
+
+      expect(image.byteLength).toBeGreaterThan(16 * MiB);
+      const restored = MemoryFileSystem.fromImage(image);
+      writeFile(restored, "/after.txt", new TextEncoder().encode("ok"));
+      expect(new TextDecoder().decode(readFile(restored, "/after.txt"))).toBe(
+        "ok",
+      );
+    });
+
+    it("keeps a trimmed image readable and writable after restore", async () => {
+      const mfs = createSparse();
+      writeFile(mfs, "/small.txt", new TextEncoder().encode("hello"));
+
+      // A booting machine restores through the image's own recorded ceiling
+      // (see restoreVerifiedImageMounts), not through a caller-chosen buffer.
+      const restored = MemoryFileSystem.fromImagePreservingCapacity(
+        await mfs.saveImage({ trimFreeCapacity: true }),
+      );
+
+      expect(new TextDecoder().decode(readFile(restored, "/small.txt"))).toBe(
+        "hello",
+      );
+
+      // A trimmed image starts with no free blocks, so every write past the
+      // retained extent must be served by grow().
+      const bulk = new Uint8Array(8 * MiB).fill(0x41);
+      writeFile(restored, "/bulk.bin", bulk);
+      expect(readFile(restored, "/bulk.bin").byteLength).toBe(bulk.byteLength);
+      expect(new TextDecoder().decode(readFile(restored, "/small.txt"))).toBe(
+        "hello",
+      );
+    });
+
+    it("reserves growable space for a trimmed image at boot", async () => {
+      const mfs = createSparse();
+      writeFile(mfs, "/small.txt", new TextEncoder().encode("hello"));
+      const image = await mfs.saveImage({ trimFreeCapacity: true });
+
+      // The boot reservation must not collapse to the trimmed byte length, or
+      // a machine would boot with a filesystem it can never write to.
+      const reserved = imageMemfsReservationBytes(image, 64 * MiB);
+      expect(reserved).toBe(64 * MiB);
+      expect(reserved).toBeGreaterThan(image.byteLength);
+    });
+
+    it("preserves the declared growth ceiling through a trim", async () => {
+      const mfs = createSparse();
+      writeFile(mfs, "/small.txt", new TextEncoder().encode("hello"));
+
+      const image = await mfs.saveImage({ trimFreeCapacity: true });
+
+      expect(MemoryFileSystem.readImageCapacity(image).maxByteLength).toBe(
+        64 * MiB,
+      );
+    });
+
+    it("retains every allocated block when the filesystem is dense", async () => {
+      const mfs = createSparse();
+      const payload = new Uint8Array(4 * MiB).fill(0x5a);
+      writeFile(mfs, "/dense.bin", payload);
+
+      const restored = MemoryFileSystem.fromImagePreservingCapacity(
+        await mfs.saveImage({ trimFreeCapacity: true }),
+      );
+      const roundTripped = readFile(restored, "/dense.bin");
+
+      expect(roundTripped.byteLength).toBe(payload.byteLength);
+      expect(roundTripped).toEqual(payload);
     });
   });
 });

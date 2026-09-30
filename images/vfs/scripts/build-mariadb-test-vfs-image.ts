@@ -34,6 +34,7 @@ import {
 } from "../../../host/src/binary-resolver";
 import {
   exactVfsImageMetadata,
+  installBashAsPosixShell,
   saveImage,
   type ExactVfsImageAbi,
 } from "./vfs-image-helpers";
@@ -193,6 +194,7 @@ function buildServices(): DinitService[] {
 export interface MariadbTestVfsInputs {
   mariadbd: Uint8Array;
   mysqltest: Uint8Array;
+  bash: Uint8Array;
   dash: Uint8Array;
   coreutils: Uint8Array;
   dinit: DinitBinaryInputs;
@@ -224,6 +226,7 @@ export async function buildMariadbTestVfsImage(
   for (const [label, bytes] of [
     ["mariadbd", inputs.mariadbd],
     ["mysqltest", inputs.mysqltest],
+    ["bash", inputs.bash],
     ["dash", inputs.dash],
     ["coreutils", inputs.coreutils],
     ["services", inputs.services],
@@ -245,11 +248,12 @@ export async function buildMariadbTestVfsImage(
   }
   prepareMariadbWritableDirectories(fs);
 
-  // dash + coreutils for the bootstrap wrapper script (sh, sleep, kill).
+  // bash as /bin/sh, plus coreutils, for the bootstrap wrapper script (sh,
+  // sleep, kill). Every Kandelo image binds /bin/sh to bash; dash stays an
+  // ordinary command at its own name.
+  installBashAsPosixShell(fs, inputs.bash);
   writeVfsBinary(fs, "/bin/dash", inputs.dash);
-  symlink(fs, "/bin/dash", "/bin/sh");
   symlink(fs, "/bin/dash", "/usr/bin/dash");
-  symlink(fs, "/bin/dash", "/usr/bin/sh");
   writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils);
   for (const name of COREUTILS_SYMLINK_NAMES) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
@@ -330,6 +334,7 @@ async function main(): Promise<void> {
     ? join(legacyInstall, "mysql-test")
     : join(source, "mysql-test");
   const mariadbRoot = process.env.WASM_POSIX_DEP_MARIADB_DIR;
+  const bashRoot = process.env.WASM_POSIX_DEP_BASH_DIR;
   const dashRoot = process.env.WASM_POSIX_DEP_DASH_DIR;
   const coreutilsRoot = process.env.WASM_POSIX_DEP_COREUTILS_DIR;
   const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
@@ -348,6 +353,9 @@ async function main(): Promise<void> {
     mysqltest: new Uint8Array(readFileSync(mariadbRoot
       ? join(mariadbRoot, "mysqltest.wasm")
       : resolveBinary("programs/mariadb/mysqltest.wasm"))),
+    bash: new Uint8Array(readFileSync(bashRoot
+      ? join(bashRoot, "bash.wasm")
+      : resolveBinary("programs/bash.wasm"))),
     dash: new Uint8Array(readFileSync(dashRoot
       ? join(dashRoot, "dash.wasm")
       : resolveBinary("programs/dash.wasm"))),

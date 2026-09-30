@@ -1,0 +1,9 @@
+script_path = "packages/registry/scummvm/build-scummvm.sh"
+inputs = [
+  "packages/registry/scummvm/build-scummvm.sh",
+  "packages/registry/scummvm/patches/0001-kandelo-host-triple.patch",
+  "packages/registry/scummvm/patches/0002-kandelo-opengl-default-graphics-manager.patch",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 5

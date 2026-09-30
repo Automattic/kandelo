@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "defaultProfile": "wordpress-mariadb",
+  "profiles": {
+    "wordpress-mariadb": {
+      "identity": {
+        "title": "WordPress MariaDB",
+        "summary": "WordPress on nginx + PHP-FPM with MariaDB.",
+        "accent": "#5f8f73",
+        "glyph": "wp+",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "php-fpm@local",
+          "mariadb@local",
+          "wordpress@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "memoryPages": 16384,
+          "maxWorkers": 24
+        }
+      },
+      "init": {
+        "target": "nginx"
+      },
+      "web": {
+        "requiredPorts": [
+          8080,
+          9000
+        ],
+        "probeHttp": true,
+        "probePath": "/kandelo-ready.php"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "WordPress demo",
+        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
+        "groups": [
+          {
+            "title": "Admin",
+            "actions": [
+              {
+                "id": "wp-admin-login",
+                "label": "Log in as admin",
+                "description": "Open wp-admin with the bundled admin account.",
+                "kind": "web.wordpressLogin",
+                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lamp": {
+      "identity": {
+        "title": "WordPress MariaDB",
+        "summary": "WordPress on nginx + PHP-FPM with MariaDB.",
+        "accent": "#5f8f73",
+        "glyph": "wp+",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "php-fpm@local",
+          "mariadb@local",
+          "wordpress@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "memoryPages": 16384,
+          "maxWorkers": 24
+        }
+      },
+      "init": {
+        "target": "nginx"
+      },
+      "web": {
+        "requiredPorts": [
+          8080,
+          9000
+        ],
+        "probeHttp": true,
+        "probePath": "/kandelo-ready.php"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "WordPress demo",
+        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
+        "groups": [
+          {
+            "title": "Admin",
+            "actions": [
+              {
+                "id": "wp-admin-login",
+                "label": "Log in as admin",
+                "description": "Open wp-admin with the bundled admin account.",
+                "kind": "web.wordpressLogin",
+                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

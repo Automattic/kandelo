@@ -77,6 +77,7 @@ LINK_FLAGS=(
     -Wl,--import-memory
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
+    -Wl,-z,stack-size=8388608
     -Wl,--allow-undefined
     -Wl,--table-base=3
     -Wl,--export-table
@@ -91,13 +92,19 @@ LINK_FLAGS=(
 # Fork-instrumentation for fork()
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
+# Stamp each compiled test program with this checkout's ABI-contract digest.
+source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+
 instrument_wasm() {
     local wasm="$1"
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm" && abi_contract_stamp "$wasm"
 }
 
-# Timeout per test (seconds)
-TEST_TIMEOUT=30
+# The per-test budget in seconds. It is forwarded to examples/run-example.ts
+# as TIMEOUT (its own guest watchdog, 30 s by default, which exits 124 like
+# timeout(1)), so raising TEST_TIMEOUT really lets a slow guest run longer;
+# the outer kill gets a few seconds of grace behind it.
+TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 
 # ── Helper functions ──────────────────────────────────────
 
@@ -205,7 +212,8 @@ run_test() {
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM="$fixture_program" \
         KANDELO_RUNNER_VFS=isolated \
-        timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref \
+        TIMEOUT="$((TEST_TIMEOUT * 1000))" \
+        timeout "$((TEST_TIMEOUT + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null 2>&1)
     rc=$?
@@ -320,6 +328,17 @@ if [ ${#INTERFACES[@]} -eq 0 ]; then
     exit 1
 fi
 
+# Reject a misspelled or unvendored interface before building anything; a
+# run that tested nothing must not reach the summary looking like one that
+# passed.
+for iface in "${INTERFACES[@]}"; do
+    if [ ! -d "$IFACE_DIR/$iface" ]; then
+        echo "Error: interface '$iface' not found in $IFACE_DIR" >&2
+        echo "Run $0 --list for the available interfaces." >&2
+        exit 1
+    fi
+done
+
 # Verify prerequisites
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
@@ -330,6 +349,7 @@ if [ ! -f "$KERNEL_WASM" ]; then
     echo "Error: kernel wasm not found. Run build.sh first." >&2
     exit 1
 fi
+abi_contract_stamp_prepare || exit 1
 
 PASS=0
 FAIL=0

@@ -1,7 +1,7 @@
 export type WordPressDatabaseKind = "sqlite" | "mariadb";
 
 export const WORDPRESS_CONFIG_INIT_SCRIPT = `# wp-config.php is rendered into the VFS by the browser host before dinit starts.
-: "\${WP_APP_PATH:=/app}"
+: "\${WP_APP_PATH:=/computer}"
 : "\${WP_PROTO:=http}"
 echo "wp-config-init: APP_PATH=$WP_APP_PATH PROTO=$WP_PROTO"
 `;
@@ -67,7 +67,20 @@ define('WP_DEBUG_DISPLAY', false);
 @ini_set('display_errors', '0');
 
 $kandelo_proto = '@@PROTO@@';
-$kandelo_app_path = rtrim('@@APP_PATH@@', '/');
+// The service worker forwards this machine's public prefix
+// (e.g. /computer/humble-chestnut-cove) on every bridged request via
+// X-Forwarded-Prefix. Build WP_HOME/WP_SITEURL from it so WordPress emits links
+// under the machine's own prefix. The static @@APP_PATH@@ is only a fallback for
+// a direct, non-bridged request; using it while bridged would make WP_HOME
+// disagree with the routed prefix and double the segment
+// (/computer/<name>/app/).
+$kandelo_forwarded_prefix = isset($_SERVER['HTTP_X_FORWARDED_PREFIX'])
+    ? $_SERVER['HTTP_X_FORWARDED_PREFIX']
+    : '';
+$kandelo_app_path = rtrim(
+    $kandelo_forwarded_prefix !== '' ? $kandelo_forwarded_prefix : '@@APP_PATH@@',
+    '/'
+);
 $kandelo_host = $_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST'] ?? 'localhost';
 $_SERVER['HTTP_HOST'] = $kandelo_host;
 

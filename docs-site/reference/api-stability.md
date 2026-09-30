@@ -12,7 +12,9 @@ This applies to:
 - gallery manifest fields;
 - package-source workflow inputs;
 - release index details;
-- boot URL query parameters and share URL fragments.
+- boot URL query parameters and share URL fragments;
+- guest-visible boot-input paths (`/run/kandelo/inputs/<id>/<filename>`,
+  `/run/kandelo/boot-input.json`).
 
 ## Integration Guidance
 

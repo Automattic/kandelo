@@ -605,6 +605,60 @@ still use the process resume catalog. The lexical fast path adds no
 ordinary-activation local and no continuation bytes; its second
 non-consuming event lookup runs only during replay.
 
+## Scratch-frame spill storage
+
+Synthetic scalar spills (per-call arguments, operand-stack carryovers,
+SubRegion/IfElse carryovers) are structurally co-live as Wasm locals: each
+spill's `local.set`→`local.get` straddles its call's state-gate region, and
+the regions chain across every fork-reaching call site. Baseline-tier
+engines (V8 Liftoff) reserve one native stack slot per *declared* local, so
+a call-site-heavy function pays that co-liveness in native frame bytes.
+CPython's `_PyEval_EvalFrameDefault` (~583 sites) gained ~2,676 spill
+locals and a ~21.6 KB Liftoff frame; its ~26-deep import recursion needed
+~0.82 MB of worker stack, overflowing browser Web Worker stacks.
+`wasm-opt --coalesce-locals` cannot help (measured: ~2,705 co-live locals
+remain either way).
+
+A function whose scalar spill region is at least
+`SCRATCH_SPILL_THRESHOLD_BYTES` (256) therefore stores those spills in a
+per-activation scratch region carved from the guest shadow stack instead
+of declaring locals:
+
+- Entry: `SP -= scratch_size; base = SP` (one added pointer-width local),
+  the same discipline as `crates/wasm-local-root-spill`. `SP = base +
+  scratch_size` is emitted before every function exit — returns, tail
+  calls, br-to-entry, and uncaught throws including the postamble's
+  private unwind throw — and `SP = base` is reseeded at catch landings to
+  reclaim scratch leaked by exception propagation.
+- Spill sites store through one reused temporary local per value width
+  (`local.set tmp; local.get base; local.get tmp; T.store base+off`);
+  reload sites are `local.get base; T.load base+off`.
+- The scratch layout mirrors the frame-node payload's spill region
+  byte-for-byte (`scratch_off = node_off - spill_region_start`, offsets
+  from `assign_local_offsets`). The postamble publishes the region into
+  the reserved node with one `memory.copy` before commit, and the
+  rewind/abort preamble refills the freshly reserved scratch from the
+  selected node with one `memory.copy` after `frame_next`. Node payload
+  bytes are identical to the local-based shape, so the save-buffer format,
+  exports, imports, and host contract are unchanged — no ABI bump.
+- Below-threshold functions keep the historical local-based shape;
+  reference-typed spills always remain locals (recipe-vector path); the
+  per-seq body-input-param locals are unaffected (re-set on every entry).
+
+`__stack_pointer` is a mutable scalar global, so the existing
+`wpk_fork_unwind_begin`/`wpk_fork_rewind_begin` global snapshot already
+captures and restores it; replayed prologues re-reserve fresh scratch
+below the restored fork-time SP exactly as LLVM's own SP-bumping frames
+do during replay, and reloads are base-relative into the refilled fresh
+region. A module without a locatable mutable `__stack_pointer` global of
+the module pointer width falls back to the local-based shape.
+
+Measured on the CPython stdlib import chain (2026-09-22,
+`KANDELO_NODE_WORKER_STACK_SIZE_MB` sweep): worker-stack requirement
+0.82 MB → 0.31 MB (uninstrumented floor ~0.27 MB); max co-live locals
+4258 → 1585; `python.wasm` ~112 KB smaller. Scratch-mode capture/replay
+is covered by `crates/fork-instrument/tests/scratch_spill_node.rs`.
+
 ## Dispatch schemes
 
 Every fork-path function uses **one of two dispatch shapes**, chosen by the

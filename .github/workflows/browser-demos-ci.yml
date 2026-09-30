@@ -71,6 +71,14 @@ jobs:
         working-directory: host
         run: npm run typecheck
 
+      # These node:test files sat in the tree with no runner, so drift in the
+      # contracts they guard (Vite deployment config, service-worker scope,
+      # VFS product loading) went unnoticed. They need no browser, so they run
+      # before the Playwright install.
+      - name: Run browser demo unit tests
+        working-directory: apps/browser-demos
+        run: npm run test:unit
+
       - name: Install Playwright browsers
         working-directory: apps/browser-demos
         run: npx playwright install --with-deps chromium firefox webkit

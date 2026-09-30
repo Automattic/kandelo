@@ -79,6 +79,14 @@ Accepted image URL schemes are `http` and `https`. The image should be a `.vfs` 
 
 The host serving the image must allow the browser to fetch it from a cross-origin-isolated page. Use CORS or compatible cross-origin resource policy headers.
 
+## Script-Carrying Share Links
+
+The dock's Share button turns the current machine into a link that also runs a shell script when opened. Type a script into the dialog's editor and copy the URL; the script travels in the URL's `#k1=` fragment as a size-capped, checksum-verified payload.
+
+When someone opens the link, the machine boots, the script's full contents are printed in the terminal, and it then runs in the initial shell — bash on images that ship it. The script file is left in place at `/run/kandelo/inputs/script/kandelo-link.sh`, writable, so the visitor can inspect, edit, and re-run it. Opening the Share dialog on a machine booted from such a link pre-fills the editor with the inherited script, so a received link can be tweaked and re-shared.
+
+Scripts run without a confirmation prompt because every machine in the current UI is ephemeral: closing the tab discards everything, so a link can affect only its own session. A malformed or oversized link fragment fails with a visible error instead of booting. Launching a different machine from the gallery drops the fragment, so a script never follows you to another machine.
+
 ## External Software
 
 The demo app exposes only repository-defined gallery entries. It does not
@@ -104,7 +112,9 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 
 The URL selects the transport endpoint; it does not define a second capability
 profile. Kandelo currently relays only `Accept`, `Content-Type`,
-`git-protocol`, `wp_blog`, and `wp_install` at configured proxy boundaries.
+`git-protocol`, `Range`, `wp_blog`, and `wp_install` at configured proxy
+boundaries, and repeats `Range` as `X-Cors-Proxy-Range`, because WP Cloud,
+which hosts the default proxy, strips `Range` before it reaches the proxy.
 Anonymous bodyless GETs may omit other fields with a diagnostic. Requests that
 would lose credentials, a body, or state-changing semantics fail before proxy
 dispatch. Direct browser requests and Node.js-host networking are unchanged.

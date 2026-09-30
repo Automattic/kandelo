@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
+import { buildProgramsFixture, requireBuiltFixtures } from "./support/program-fixtures";
 import { readFileSync } from "node:fs";
-import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
-const devFdStatBinary = tryResolveBinary("programs/dev-fd-stat.wasm");
+const devFdStatBinary = buildProgramsFixture("programs/wasm32/dev-fd-stat.wasm");
 
-test.skip(!devFdStatBinary, "dev-fd-stat.wasm was not built");
+test.beforeAll(() => requireBuiltFixtures([devFdStatBinary]));
 
 test("devfs descriptor aliases preserve stat identity in BrowserKernel", async ({
   page,
@@ -13,7 +13,7 @@ test("devfs descriptor aliases preserve stat identity in BrowserKernel", async (
   await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
   await page.waitForFunction(() => (window as any).__testRunnerReady === true);
 
-  const bytes = Array.from(readFileSync(devFdStatBinary!));
+  const bytes = Array.from(readFileSync(devFdStatBinary));
   const result = await page.evaluate(async (wasmBytes) => {
     const wasm = new Uint8Array(wasmBytes).buffer;
     return (window as any).__runTest(wasm, ["dev-fd-stat"]);

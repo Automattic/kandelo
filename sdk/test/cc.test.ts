@@ -50,6 +50,7 @@ describe('buildClangArgs', () => {
     expect(args.join(' ')).toContain('compiler_rt.c');
     expect(args.join(' ')).toContain('crt1.o');
     expect(args.join(' ')).toContain('libc.a');
+    expect(args).toContain('-Wl,-z,stack-size=8388608');
   });
 
   it('-ldl selects the functional dynamic-loading glue', () => {
@@ -216,6 +217,12 @@ describe('buildClangArgs', () => {
     expect(args).toContain('-Wl,--no-entry');
     expect(args.join(' ')).toContain('channel_syscall.c');
     expect(args.join(' ')).toContain('libc.a');
+  });
+
+  it('preserves the relative order of link inputs and -l flags', () => {
+    const args = build(['foo.o', '-L/deps/lib', '-lz', 'bar.o', '-o', 'out.wasm']);
+    expect(args.indexOf('foo.o')).toBeLessThan(args.indexOf('-lz'));
+    expect(args.indexOf('-lz')).toBeLessThan(args.indexOf('bar.o'));
   });
 
   it('emits explicit process thread slot declarations into the glue compile', () => {

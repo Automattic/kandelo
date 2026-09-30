@@ -199,6 +199,14 @@ unsafe extern "C" {
         height: u32,
         stride: u32,
     ) -> i32;
+    fn host_gbm_gpu_bo_create(
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32;
     fn host_gbm_bo_destroy(pid: i32, bo_id: u32);
     fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
     fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
@@ -210,7 +218,7 @@ unsafe extern "C" {
     fn host_gl_destroy_surface(pid: i32, surface_id: u32);
     fn host_gl_make_current(pid: i32, ctx_id: u32, surface_id: u32);
     fn host_gl_submit(pid: i32, offset: usize, length: usize) -> i32;
-    fn host_gl_present(pid: i32);
+    fn host_gl_present(pid: i32) -> i32;
     fn host_gl_query(
         pid: i32,
         op: u32,
@@ -219,11 +227,15 @@ unsafe extern "C" {
         out_ptr: *mut u8,
         out_len: usize,
     ) -> i32;
+    fn host_gl_bind_foreign_texture(pid: i32, ctx_id: u32, bo_id: u32, gl_target: u32) -> i32;
     fn host_kms_set_master(pid: i32);
     fn host_kms_drop_master(pid: i32);
     fn host_proc_write_bytes(pid: i32, addr: u32, src_ptr: *const u8, len: u32) -> i32;
     fn host_proc_read_bytes(pid: i32, addr: u32, dst_ptr: *mut u8, len: u32) -> i32;
     fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
+    /// Writes the connector's physical size, two u32s (width, height) in
+    /// millimetres, to `out_ptr`; zeros when the display's size is unknown.
+    fn host_kms_connector_mm(connector_id: u32, out_ptr: *mut u32);
     fn host_kms_addfb(
         pid: i32,
         fb_id: u32,
@@ -376,6 +388,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_fstat(handle, stat_ptr) };
@@ -399,6 +412,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_stat(path.as_ptr(), path.len() as u32, stat_ptr) };
@@ -422,6 +436,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_lstat(path.as_ptr(), path.len() as u32, stat_ptr) };
@@ -975,6 +990,18 @@ impl HostIO for WasmHostIO {
         unsafe { host_gbm_bo_create(pid, bo_id, size, width, height, stride) }
     }
 
+    fn gbm_gpu_bo_create(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32 {
+        unsafe { host_gbm_gpu_bo_create(pid, bo_id, width, height, format, usage) }
+    }
+
     fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {
         unsafe { host_gbm_bo_destroy(pid, bo_id) }
     }
@@ -1019,7 +1046,7 @@ impl HostIO for WasmHostIO {
         unsafe { host_gl_submit(pid, offset, length) }
     }
 
-    fn gl_present(&mut self, pid: i32) {
+    fn gl_present(&mut self, pid: i32) -> i32 {
         unsafe { host_gl_present(pid) }
     }
 
@@ -1034,6 +1061,16 @@ impl HostIO for WasmHostIO {
                 out.len(),
             )
         }
+    }
+
+    fn gl_bind_foreign_texture(
+        &mut self,
+        pid: i32,
+        ctx_id: u32,
+        bo_id: u32,
+        gl_target: u32,
+    ) -> i32 {
+        unsafe { host_gl_bind_foreign_texture(pid, ctx_id, bo_id, gl_target) }
     }
 
     fn kms_set_master(&mut self, pid: i32) {
@@ -1056,6 +1093,12 @@ impl HostIO for WasmHostIO {
         let mut info = wasm_posix_shared::dri::WpkDrmModeModeinfo::default();
         unsafe { host_kms_mode_info(connector_id, &mut info as *mut _ as *mut u8) }
         info
+    }
+
+    fn kms_connector_mm(&mut self, connector_id: u32) -> (u32, u32) {
+        let mut mm = [0u32; 2];
+        unsafe { host_kms_connector_mm(connector_id, mm.as_mut_ptr()) }
+        (mm[0], mm[1])
     }
 
     fn kms_addfb(
@@ -2148,6 +2191,55 @@ pub extern "C" fn kernel_has_sa_nocldstop(pid: u32) -> i32 {
         Some(proc) => {
             let action = proc.signals.get_action(wasm_posix_shared::signal::SIGCHLD);
             i32::from(action.flags & wasm_posix_shared::signal::SA_NOCLDSTOP != 0)
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Swap thread `tid` of `pid` onto a temporary blocked-signal mask for the
+/// duration of a host-converted epoll_pwait/ppoll wait (the host runs those
+/// waits as non-blocking poll retries, so the kernel never sees one blocking
+/// syscall it could scope the mask to). Uses the per-task LIFO mask-wait
+/// context: the signal-delivery machinery restores the saved mask after
+/// delivering the signal that ended the wait. Idempotent while a swap is
+/// active (a host retry re-enters the active top context).
+/// Returns 0 on success, -ESRCH if the process does not exist.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_swap_poll_sigmask(pid: u32, tid: u32, mask: u64) -> i32 {
+    use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get_mut(pid) {
+        Some(proc) => {
+            let m = mask
+                & !(crate::signal::sig_bit(SIGKILL)
+                    | crate::signal::sig_bit(SIGSTOP));
+            proc.enter_signal_mask_wait_for(
+                tid,
+                crate::signal::SignalMaskWaitKind::EpollPwait,
+                m,
+            );
+            0
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Restore the mask kernel_swap_poll_sigmask saved, unless a signal became
+/// deliverable under the temporary mask — then the swap stays active so the
+/// dequeue path both delivers that signal and performs the restore itself.
+/// Returns 0 on success, -ESRCH if the process does not exist.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_restore_poll_sigmask(pid: u32, tid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get_mut(pid) {
+        Some(proc) => {
+            if proc.deliverable_for(tid) == 0 {
+                proc.finish_signal_mask_wait_for(
+                    tid,
+                    crate::signal::SignalMaskWaitKind::EpollPwait,
+                );
+            }
+            0
         }
         None => -(Errno::ESRCH as i32),
     }
@@ -5410,17 +5502,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             kernel_fchmodat(a1, path, channel_cstr_len!(path), a3 as u32, a4 as u32)
         }
 
-        // --- inotify stubs: create eventfd-like fd ---
-        247 | 381 => {
-            // SYS_INOTIFY_INIT1 / SYS_INOTIFY_INIT
-            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-            match syscalls::sys_inotify_init(proc) {
-                Ok(fd) => fd,
-                Err(e) => -(e as i32),
-            }
-        }
-        248 => 1, // SYS_INOTIFY_ADD_WATCH: return dummy watch descriptor
-        249 => 0, // SYS_INOTIFY_RM_WATCH: no-op success
+        // --- inotify: unimplemented. A fake-success fd never delivers
+        // events, which defeats the polling fallback in Qt's
+        // QFileSystemWatcher and glib's GFileMonitor — both only fall
+        // back when inotify_init fails. ---
+        247 | 381 => -(Errno::ENOSYS as i32), // SYS_INOTIFY_INIT1 / SYS_INOTIFY_INIT
+        248 => -(Errno::ENOSYS as i32),       // SYS_INOTIFY_ADD_WATCH
+        249 => -(Errno::ENOSYS as i32),       // SYS_INOTIFY_RM_WATCH
 
         // --- mknod/mknodat: create regular files and FIFOs ---
         // S_IFIFO nodes are real named pipes (see `crate::fifo`); other node
@@ -9037,7 +9125,6 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32, retry_to
         deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
         return -(err as i32);
     }
-
     let (base, len) = if iov_len == 0 {
         (0, 0)
     } else {
@@ -9868,6 +9955,7 @@ fn cross_process_loopback_connect(
         peer_port: client_port,
         peer_pid: 0,
         peer_sock_idx: None,
+        peer_cred: None,
         recv_pipe_idx: pipe_a_idx, // server reads client's writes
         send_pipe_idx: pipe_b_idx, // server writes to client's reads
     };
@@ -9992,6 +10080,7 @@ fn cross_process_loopback_connect6(
         peer_port: client_port,
         peer_pid: 0,
         peer_sock_idx: None,
+        peer_cred: None,
         recv_pipe_idx: pipe_a_idx,
         send_pipe_idx: pipe_b_idx,
     };
@@ -10081,6 +10170,10 @@ fn cross_process_unix_connect(
     }
     let shared_idx = listener.shared_backlog_idx.ok_or(Errno::ECONNREFUSED)?;
     let accept_wake_idx = listener.accept_wake_idx;
+    // SO_PEERCRED: the client reports the listener's credentials from its
+    // listen(); the accepted socket will report this connecting process.
+    let listener_cred = listener.peer_cred;
+    let client_cred = syscalls::socket_peer_cred(table.get(my_pid).ok_or(Errno::ESRCH)?);
 
     // Allocate pipes only after both endpoints have been validated, so a
     // stale or wrong-type registry entry cannot leak global pipe slots.
@@ -10095,6 +10188,7 @@ fn cross_process_unix_connect(
         peer_port: 0,
         peer_pid: my_pid,
         peer_sock_idx: Some(sock_idx),
+        peer_cred: Some(client_cred),
         recv_pipe_idx: pipe_a_idx,
         send_pipe_idx: pipe_b_idx,
     };
@@ -10111,6 +10205,7 @@ fn cross_process_unix_connect(
     client.recv_buf_idx = Some(pipe_b_idx);
     client.state = SocketState::Connected;
     client.peer_idx = None;
+    client.peer_cred = listener_cred;
     client.global_pipes = true;
 
     if let Some(idx) = accept_wake_idx {
@@ -10335,6 +10430,34 @@ pub extern "C" fn kernel_getsockopt(
                 let mut tmp = [0u8; 8];
                 tmp[0..4].copy_from_slice(&l_onoff.to_le_bytes());
                 tmp[4..8].copy_from_slice(&l_linger.to_le_bytes());
+                match write_getsockopt_bytes(
+                    optval_ptr,
+                    optval_capacity,
+                    optlen_ptr,
+                    optlen_capacity,
+                    &tmp,
+                ) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+        return result;
+    }
+
+    // Handle struct ucred { pid_t pid; uid_t uid; gid_t gid; } (SO_PEERCRED).
+    // 12 bytes, three little-endian u32s. libwayland's wl_client_create fails
+    // outright if this errors, so every accepted Wayland client depends on it.
+    if level == SOL_SOCKET && optname == SO_PEERCRED {
+        let result = match syscalls::sys_getsockopt_peercred(proc, fd) {
+            Ok((pid, uid, gid)) => {
+                let mut tmp = [0u8; 12];
+                tmp[0..4].copy_from_slice(&pid.to_le_bytes());
+                tmp[4..8].copy_from_slice(&uid.to_le_bytes());
+                tmp[8..12].copy_from_slice(&gid.to_le_bytes());
                 match write_getsockopt_bytes(
                     optval_ptr,
                     optval_capacity,
@@ -13087,6 +13210,7 @@ pub extern "C" fn kernel_inject_connection(
         peer_port: peer_port as u16,
         peer_pid: 0,
         peer_sock_idx: None,
+        peer_cred: None,
         recv_pipe_idx,
         send_pipe_idx,
     };
@@ -13306,6 +13430,17 @@ pub extern "C" fn kernel_pipe_has_readers(_pid: u32, pipe_idx: u32) -> i32 {
     } else {
         0
     }
+}
+
+/// The `index`-th fd watched by a live epoll registration of `pid` (across
+/// all its epoll instances), or -1 past the end. A parked epoll_wait
+/// registers targeted wakeups on these fds; the host reads them from the
+/// kernel's registrations instead of mirroring epoll_ctl.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_watched_fd(pid: u32, index: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else { return -1 };
+    syscalls::epoll_watched_fd(proc, index as usize).unwrap_or(-1)
 }
 
 /// Look up the recv pipe index for a socket fd.
@@ -13863,7 +13998,50 @@ pub extern "C" fn kernel_drain_wakeup_events(
 /// observe the new sequence on the next syscall round-trip.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_vblank() -> u32 {
-    crate::dri::vblank_tick()
+    let seq = crate::dri::vblank_tick();
+    let mut host = WasmHostIO;
+    let (tv_sec, tv_usec) =
+        match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
+            Ok((sec, nsec)) => (sec as u32, (nsec / 1000) as u32),
+            Err(_) => (0u32, 0u32),
+        };
+    crate::dri::drain_pending_flips(seq, tv_sec, tv_usec);
+    seq
+}
+
+/// Fan one translated DOM input event out to every open OFD bound to
+/// `/dev/input/event{0,1}`. Stamped with CLOCK_MONOTONIC so libinput /
+/// SDL2 see a single monotonic timeline across vblank + input streams.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_input_event(
+    device: u32,
+    ev_type: u32,
+    code: u32,
+    value: i32,
+) {
+    let mut host = WasmHostIO;
+    let (tv_sec, tv_usec) = match host.host_clock_gettime(
+        wasm_posix_shared::clock::CLOCK_MONOTONIC,
+    ) {
+        Ok((sec, nsec)) => (sec, (nsec / 1000) as i32),
+        Err(_) => (0i64, 0i32),
+    };
+    crate::input::dispatch::push_event(
+        device as u8,
+        ev_type as u16,
+        code as u16,
+        value,
+        tv_sec,
+        tv_usec,
+    );
+}
+
+/// Cache the canvas pixel dimensions advertised by
+/// `EVIOCGABS(ABS_X/ABS_Y)` on `/dev/input/event1`. Without this the
+/// first SDL2 / libinput probe sees the 1280×720 fallback.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
+    crate::input::set_canvas_dims(width, height);
 }
 
 /// Number of successful page-flip commits on the given crtc.

@@ -1,0 +1,9 @@
+script_path = "packages/registry/pangomm/build-pangomm.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "cf81d0f7c"
+revision = 1
+
+inputs = [
+  "packages/registry/pangomm/build-pangomm.sh",
+  "scripts/package-build-roots.sh",
+]

@@ -193,37 +193,53 @@ Package-source VFS images can opt into Kandelo's built-in demo guide by writing
 VFS package, not in the Kandelo app. The loader resolves metadata by gallery
 entry ID after restoring the image.
 
-For REPL demos in `kandelo-software`, add a `guide` next to the image's
-`presentation`:
+Write the metadata as a TRACKED JSON FILE next to the package that owns the
+image, list it in `TRACKED_DEMO_CONFIG_SOURCES`
+(`images/vfs/scripts/tracked-demo-config.ts`), and bake it from the build
+script with:
 
 ```typescript
-writeKandeloDemoConfig(fs, {
-  version: 1,
-  profiles: {
+writeTrackedDemoConfig(fs, "packages/registry/python-vfs/python-demo.json");
+```
+
+`writeTrackedDemoConfig` copies the reviewed file byte-for-byte to
+`/etc/kandelo/demo.json`. Nothing constructs this object in TypeScript: the
+tracked file is the artifact, which is what lets a reviewer read exactly what
+ships and what lets tooling aggregate machine metadata without building any
+image.
+
+For REPL demos in `kandelo-software`, the tracked file adds a `guide` next to
+the image's `presentation`:
+
+```json
+{
+  "version": 1,
+  "defaultProfile": "kandelo-software-python-vfs",
+  "profiles": {
     "kandelo-software-python-vfs": {
-      presentation: {
-        bootPrimary: "syslog",
-        runningPrimary: ["terminal", "syslog"],
-        terminalAccess: "primary",
-        internalsAccess: "drawer"
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["terminal", "syslog"],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer"
       },
-      guide: {
-        title: "Python demo",
-        groups: [
+      "guide": {
+        "title": "Python demo",
+        "groups": [
           {
-            title: "REPL",
-            actions: [
+            "title": "REPL",
+            "actions": [
               {
-                id: "open-repl",
-                label: "Open REPL",
-                kind: "terminal.run",
-                payload: "python3"
+                "id": "open-repl",
+                "label": "Open REPL",
+                "kind": "terminal.run",
+                "payload": "python3"
               },
               {
-                id: "send-expression",
-                label: "Send expr",
-                kind: "terminal.write",
-                payload: "import sys; sys.version\n"
+                "id": "send-expression",
+                "label": "Send expr",
+                "kind": "terminal.write",
+                "payload": "import sys; sys.version\n"
               }
             ]
           }
@@ -231,8 +247,18 @@ writeKandeloDemoConfig(fs, {
       }
     }
   }
-});
+}
 ```
+
+A profile may also declare `identity` (listing title, summary, accent, glyph,
+and optionally base image and package list), `runtime` (declared features,
+a descriptive `network` flag, and clamped `memoryPages`/`maxWorkers`
+requests), `init` (a bare dinit service name), `web` (required ports and an
+optional readiness probe path), `display` (minimum usable surface), and a
+top-level `defaultProfile`. See "Kandelo demo metadata" in
+`docs/browser-support.md` for the full block reference. These blocks are
+validated and carried in the image today; the browser app does not read them
+yet.
 
 Action kinds:
 

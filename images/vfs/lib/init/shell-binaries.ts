@@ -26,9 +26,25 @@ export interface VfsBinarySpec {
   resolverPath: string;
   vfsPath: string;
   symlinks: readonly string[];
+  /** Permission bits for the lazy file; programs default to 0755. A
+   *  package's runtime data file (not a program) declares 0644. */
+  mode?: number;
+  /** The package that provides the file, when it is not `id` — a package
+   *  whose runtime data files each need their own spec. */
+  dependency?: string;
 }
 
 export const SHELL_LAZY_URL_PREFIX = "kandelo-lazy:";
+
+/** The package whose output provides `spec`'s file. */
+export function shellLazySpecDependency(spec: VfsBinarySpec): string {
+  return spec.dependency ?? spec.id;
+}
+
+/** The lazy file's permission bits. */
+export function shellLazySpecMode(spec: VfsBinarySpec): number {
+  return spec.mode ?? 0o755;
+}
 
 export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
   return `${SHELL_LAZY_URL_PREFIX}${spec.resolverPath}`;
@@ -110,16 +126,66 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
   { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: ["/bin/nano"] },
+  // The Omarchy desktop's shell programs (omarchydesktop starts them). They
+  // are large -- Waybar statically links the GTK stack -- so they stay lazy:
+  // no other machine sharing this image pays to fetch them.
+  { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/local/bin/foot", symlinks: [] },
+  { id: "waybar", resolverPath: "programs/waybar.wasm", vfsPath: "/usr/local/bin/waybar", symlinks: [] },
+  // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
+  // (the package's declared runtime_files). /usr/local/bin/scummvm is the
+  // image's launch wrapper, which execs this engine.
+  { id: "scummvm", resolverPath: "programs/scummvm/scummvm.wasm", vfsPath: "/usr/bin/scummvm", symlinks: [] },
+  {
+    id: "scummvm-theme-remastered",
+    dependency: "scummvm",
+    resolverPath: "programs/scummvm/share/scummvm/scummremastered.zip",
+    vfsPath: "/usr/share/scummvm/scummremastered.zip",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "scummvm-theme-modern",
+    dependency: "scummvm",
+    resolverPath: "programs/scummvm/share/scummvm/scummmodern.zip",
+    vfsPath: "/usr/share/scummvm/scummmodern.zip",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "scummvm-theme-classic",
+    dependency: "scummvm",
+    resolverPath: "programs/scummvm/share/scummvm/scummclassic.zip",
+    vfsPath: "/usr/share/scummvm/scummclassic.zip",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "scummvm-gui-icons",
+    dependency: "scummvm",
+    resolverPath: "programs/scummvm/share/scummvm/gui-icons.dat",
+    vfsPath: "/usr/share/scummvm/gui-icons.dat",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "scummvm-fonts",
+    dependency: "scummvm",
+    resolverPath: "programs/scummvm/share/scummvm/fonts.dat",
+    vfsPath: "/usr/share/scummvm/fonts.dat",
+    symlinks: [],
+    mode: 0o644,
+  },
+  // The Qt clients the launcher offers. quickshell.wasm alone is ~93 MB.
+  { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/local/bin/qtgallery", symlinks: [] },
+  { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/local/bin/quickshell", symlinks: [] },
+  { id: "mako", resolverPath: "programs/mako/mako.wasm", vfsPath: "/usr/local/bin/mako", symlinks: [] },
+  {
+    id: "dbus",
+    resolverPath: "programs/dbus/dbus-daemon.wasm",
+    vfsPath: "/usr/local/bin/dbus-daemon",
+    symlinks: [],
+  },
   { id: "sqlite-cli", resolverPath: "programs/sqlite3.wasm", vfsPath: "/usr/bin/sqlite3", symlinks: ["/bin/sqlite3"] },
+  { id: "lhasa", resolverPath: "programs/lha.wasm", vfsPath: "/usr/bin/lha", symlinks: ["/bin/lha"] },
+  { id: "tyrquake", resolverPath: "programs/quake.wasm", vfsPath: "/usr/bin/quake", symlinks: ["/bin/quake"] },
 ] as const satisfies readonly VfsBinarySpec[];
-
-export const NODE_BINARY_SPEC = {
-  id: "node",
-  resolverPath: "programs/node.wasm",
-  vfsPath: "/usr/bin/node",
-  symlinks: [
-    "/bin/node",
-    "/usr/local/bin/node",
-    "/usr/bin/spidermonkey-node",
-  ],
-} as const satisfies VfsBinarySpec;

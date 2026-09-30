@@ -625,6 +625,9 @@ test("SourceOnly Vite does not fall back when an owned member is missing", async
 test("Vite serves an approved bottle member without exposing its cache", async () => {
   const savedRegistry = process.env.WASM_POSIX_DEPS_REGISTRY;
   const savedNoHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR;
+  const savedPolicy = process.env.WASM_POSIX_RESOLUTION_POLICY;
+  const savedSourceOnlyRoot =
+    process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
   const testRoot = mkdtempSync(join(tmpdir(), "kandelo-vite-cache-boundary-"));
   const namespace = `vite-cache-boundary-${randomUUID()}`;
   const programCacheRoot = binaryProgramCacheRoot();
@@ -711,6 +714,12 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     process.env.WASM_POSIX_DEPS_REGISTRY =
       registryStackWithFixture(registryRoot);
     process.env.KANDELO_BROWSER_TEST_NO_HMR = "1";
+    // This fixture is a registry bottle, which only the default policy
+    // resolves. The suite itself runs under SourceOnly (the app's dev server
+    // needs it), and this in-process server would otherwise inherit that
+    // policy and correctly refuse the member as outside the projection.
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+    delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
     server = await createServer({
       configFile: join(appRoot, "vite.config.ts"),
       root: appRoot,
@@ -837,6 +846,16 @@ test("Vite serves an approved bottle member without exposing its cache", async (
       delete process.env.KANDELO_BROWSER_TEST_NO_HMR;
     } else {
       process.env.KANDELO_BROWSER_TEST_NO_HMR = savedNoHmr;
+    }
+    if (savedPolicy === undefined) {
+      delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+    } else {
+      process.env.WASM_POSIX_RESOLUTION_POLICY = savedPolicy;
+    }
+    if (savedSourceOnlyRoot === undefined) {
+      delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+    } else {
+      process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = savedSourceOnlyRoot;
     }
   }
 });
