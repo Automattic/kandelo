@@ -180,49 +180,69 @@ export class BrowserCorsProxy {
    * the `206` does not carry the matching validator, discard it and fetch
    * the whole representation. A validator this cannot confirm counts as a
    * mismatch, so the cost of doubt is one extra full request, never a wrong
-   * slice. Without `Range`, `If-Range` is meaningless and is dropped.
+   * slice. Without `Range`, `If-Range` is meaningless and is dropped. A
+   * `416` gets the same treatment: a server whose condition is false would
+   * have ignored the unsatisfiable range and sent the whole representation.
+   * Several `If-Range` occurrences are joined as Fetch joins them, which
+   * never matches a single validator, so the service worker agrees.
    */
   async fetch(
     request: {
       method: string;
       headers: readonly HttpHeaderOccurrence[];
       body?: BodyInit;
+      /** Defaults to `body !== undefined`; a caller that drops a body sent
+       *  with GET/HEAD still reports it so projection judges the real ask. */
+      bodyPresent?: boolean;
       targetUrl: string;
     },
     fetchImpl: (input: string, init: RequestInit) => Promise<Response> =
       (input, init) => globalThis.fetch(input, init),
   ): Promise<Response> {
-    const carriesIfRange = this.isAllowed("if-range");
-    let ifRange: string | undefined;
-    const occurrences = carriesIfRange
+    const ifRangeValues: string[] = [];
+    const occurrences = this.isAllowed("if-range")
       ? request.headers
       : request.headers.filter(([name, value]) => {
         if (asciiLowercase(name) !== "if-range") return true;
-        ifRange = value;
+        ifRangeValues.push(value);
         return false;
       });
+    const ifRange = ifRangeValues.length === 0
+      ? undefined
+      : ifRangeValues.join(", ");
     const headers = this.project({
       method: request.method,
       headers: occurrences,
-      bodyPresent: request.body !== undefined,
+      bodyPresent: request.bodyPresent ?? request.body !== undefined,
       targetUrl: request.targetUrl,
     });
     const url = this.urlFor(request.targetUrl);
-    const init = { method: request.method, headers, body: request.body };
+    const init: RequestInit = { method: request.method, headers, body: request.body };
+    const alias = this.config.rangeRequestHeaderAlias;
+    if (alias !== undefined && headers.has(alias)) {
+      // WORKAROUND, part of the range alias: the browser's HTTP cache may
+      // rewrite Range on the wire to fetch only the bytes it lacks, but it
+      // cannot know the alias names the same range. The proxy then answers
+      // the alias's range and the cache splices a body shorter than its
+      // Content-Range. Keep this request out of the cache. In Chromium this
+      // also skips the CORS preflight cache, so every aliased request pays a
+      // preflight (documented as technical debt; it leaves with the alias).
+      init.cache = "no-store";
+    }
     const response = await fetchImpl(url, init);
     if (
       ifRange === undefined ||
       request.method !== "GET" ||
-      response.status !== 206 ||
+      (response.status !== 206 && response.status !== 416) ||
       ifRangeMatches(ifRange, response.headers)
     ) {
       return response;
     }
     await response.body?.cancel().catch(() => {});
     headers.delete("range");
-    const alias = this.config.rangeRequestHeaderAlias;
     if (alias !== undefined) headers.delete(alias);
-    return fetchImpl(url, { ...init, headers });
+    const { cache: _cache, ...wholeInit } = init;
+    return fetchImpl(url, { ...wholeInit, headers });
   }
 
   project(input: {

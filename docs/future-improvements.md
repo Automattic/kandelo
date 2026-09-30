@@ -147,19 +147,24 @@ deployment infrastructure and browser acceptance
 
 The default proxy's hosting front end strips `Range`, so the profile's
 `rangeRequestHeaderAlias` makes every proxy dispatch repeat `Range` as
-`X-Cors-Proxy-Range`, which that proxy forwards upstream as `Range`. The
-alias is not CORS-safelisted, so **every ranged request through production
-pays an extra `OPTIONS` preflight round trip**, and without
-`Access-Control-Max-Age` on the proxy, browsers cannot reuse one. This is a
-known performance cost accepted to make ranged reads work at all; it has not
-been measured. When `Range` reaches the proxy unchanged (re-measure a plain
+`X-Cors-Proxy-Range`, which that proxy forwards upstream as `Range`. This
+workaround has two costs, accepted to make ranged reads work at all:
+
+- **Preflights.** The alias is not CORS-safelisted, so a ranged request
+  needs an `OPTIONS` preflight. In Chromium every ranged request pays one,
+  because of the next item; WebKit reuses a preflight for 5 seconds. The time
+  cost has not been measured.
+- **No HTTP cache.** Aliased requests use the Fetch cache mode `no-store`,
+  because the HTTP cache can rewrite `Range` without the alias and splice a
+  short body. Ranged reads through the proxy are therefore never cached.
+
+When `Range` reaches the proxy unchanged (re-measure a plain
 `Range: bytes=0-15` through `wordpress-playground-cors-proxy.net` for a
-`206`), remove `rangeRequestHeaderAlias` from the profile,
-`BrowserCorsProxy.project()`, the service worker, and the development relay,
-together with their tests and the related text in `docs/browser-support.md`.
-Simple `bytes=N-M` ranges then need no preflight at all. Until then, an
-`Access-Control-Max-Age` on the proxy's preflight would reduce the cost to
-about one preflight per page session.
+`206`), remove `rangeRequestHeaderAlias` and the `no-store` mode from the
+profile, `BrowserCorsProxy.fetch()`/`project()`, the service worker, and the
+development relay, together with their tests and the related text in
+`docs/browser-support.md`. Simple `bytes=N-M` ranges then need no preflight
+at all.
 
 **Files:** `host/src/networking/browser-cors-proxy.ts`,
 `apps/browser-demos/lib/browser-cors-proxy.ts`,

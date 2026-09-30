@@ -2,9 +2,11 @@
  * One HTTP byte-range read whose answer cannot be mistaken for another.
  *
  * WHY: HTTP lets any hop ignore `Range` and answer `200` with the whole
- * representation, and some relays do. The browser CORS proxy in production
- * drops `Range` today, so a ranged read through it comes back as the entire
- * entity starting at offset 0. A caller that checks only `response.ok` and
+ * representation, and some relays do. The production browser CORS proxy's
+ * front end strips `Range` itself; only that proxy's `X-Cors-Proxy-Range`
+ * alias gets a range through it, and any other proxy may drop both. Such a read
+ * comes back as the entire entity starting at offset 0. A caller that
+ * checks only `response.ok` and
  * takes the first N bytes then returns the wrong bytes with no error — for a
  * ZIP tail read, silently corrupt metadata. This helper classifies the answer
  * once, so every caller has to handle the three real outcomes explicitly:
@@ -256,9 +258,12 @@ function unsafePosition(
     : "has positions beyond Number.MAX_SAFE_INTEGER";
 }
 
-/** A strong entity tag: a quoted opaque string without the `W/` prefix. */
+/**
+ * A strong entity tag (RFC 9110 section 8.8.3): `"` etagc* `"`, where etagc
+ * is %x21, %x23-7E, or obs-text, and without the `W/` weak prefix.
+ */
 export function isStrongEntityTag(value: string): boolean {
-  return /^"[^"]*"$/.test(value);
+  return /^"[\x21\x23-\x7E\x80-\xFF]*"$/.test(value);
 }
 
 function assertPosition(value: number, name: string): void {

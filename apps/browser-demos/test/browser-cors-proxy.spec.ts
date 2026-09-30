@@ -127,17 +127,16 @@ function constrainedProxyFixture(observed: ProxyRequest[]): Server {
       String(request.headers["x-cors-proxy-range"] ?? ""),
     );
     const ranged = proxied && request.url!.includes("/archive");
-    // WHY no-store: with a cacheable ETag, Chromium's HTTP cache keeps the
-    // partial responses and revalidates them by adding its own If-Range
-    // below the service worker. That is legitimate browser behavior, but it
-    // would hide whether the service worker relayed the page's If-Range. The
-    // production proxy also forbids storing ranged answers (no-cache).
+    // Production's caching headers: no-cache permits storage (with
+    // revalidation), and a strong ETag lets the HTTP cache revalidate and
+    // splice partial entries. That is what lets the cache rewrite Range below
+    // the service worker without rewriting the alias, so the fixture keeps it.
     if (ranged && aliased === null) {
       response.writeHead(200, {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, ETag",
         "Content-Type": "application/octet-stream",
-        "Cache-Control": "no-store",
+        "Cache-Control": "no-cache",
         "Cross-Origin-Resource-Policy": "cross-origin",
         ETag: '"v1"',
         Vary: "Origin",
@@ -158,7 +157,7 @@ function constrainedProxyFixture(observed: ProxyRequest[]): Server {
         "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, ETag",
         "Content-Range": `bytes ${start}-${end}/${size}`,
         "Content-Type": "application/octet-stream",
-        "Cache-Control": "no-store",
+        "Cache-Control": "no-cache",
         "Cross-Origin-Resource-Policy": "cross-origin",
         ETag: '"v1"',
         Vary: "Origin",
@@ -501,6 +500,12 @@ test("service worker reads ranges through a production-shaped proxy", async ({
         // A suffix range is never CORS-safelisted, so this one preflights.
         suffix: await read({ Range: "bytes=-22" }),
         bounded: await read({ Range: "bytes=1000-1015" }),
+        // Overlapping reads: with cacheable answers, Chromium's HTTP cache
+        // used to narrow Range to the missing bytes while the alias kept the
+        // original range, and spliced bodies shorter than Content-Range.
+        overlapFirst: await read({ Range: "bytes=2000-2099" }),
+        overlapShifted: await read({ Range: "bytes=2050-2149" }),
+        overlapWider: await read({ Range: "bytes=2000-2199" }),
         // If-Range is never sent (the proxy's preflight would reject it);
         // the service worker applies it to the answer instead.
         currentIfRange: await read({ Range: "bytes=0-3", "If-Range": '"v1"' }),
@@ -532,7 +537,22 @@ test("service worker reads ranges through a production-shaped proxy", async ({
       bytes: Array.from(RANGED_ENTITY),
     });
 
+    for (const [name, start, end] of [
+      ["overlapFirst", 2000, 2099],
+      ["overlapShifted", 2050, 2149],
+      ["overlapWider", 2000, 2199],
+    ] as const) {
+      expect(results[name], name).toEqual({
+        status: 206,
+        contentRange: `bytes ${start}-${end}/4096`,
+        bytes: Array.from(RANGED_ENTITY.subarray(start, end + 1)),
+      });
+    }
+
     const gets = observed.filter(({ method }) => method === "GET");
+    // Every ranged request reached the proxy with Range and its alias equal,
+    // and no If-Range ever went out: not the page's, and not one added by
+    // the HTTP cache (aliased requests bypass it).
     expect(gets.map(({ headers }) => [
       headers.range,
       headers["x-cors-proxy-range"],
@@ -540,6 +560,9 @@ test("service worker reads ranges through a production-shaped proxy", async ({
     ])).toEqual([
       ["bytes=-22", "bytes=-22", undefined],
       ["bytes=1000-1015", "bytes=1000-1015", undefined],
+      ["bytes=2000-2099", "bytes=2000-2099", undefined],
+      ["bytes=2050-2149", "bytes=2050-2149", undefined],
+      ["bytes=2000-2199", "bytes=2000-2199", undefined],
       ["bytes=0-3", "bytes=0-3", undefined],
       ["bytes=0-3", "bytes=0-3", undefined],
       [undefined, undefined, undefined],

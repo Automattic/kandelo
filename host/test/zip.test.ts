@@ -163,6 +163,25 @@ describe("fetchZipCentralDirectory", () => {
     );
   });
 
+  it("fails when the archive changed between HEAD and the tail read", async () => {
+    stubServer((range) => {
+      const match = /^bytes=(\d+)-(\d+)$/.exec(range ?? "")!;
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      return new Response(archive.slice(start, end + 1), {
+        status: 206,
+        headers: {
+          "Content-Range": `bytes ${start}-${end}/${archive.byteLength}`,
+          ETag: '"v2"',
+        },
+      });
+    });
+
+    await expect(fetchZipCentralDirectory(URL_UNDER_TEST)).rejects.toThrow(
+      /ZIP tail read failed: resource changed/,
+    );
+  });
+
   it("does not send If-Range, which the browser CORS proxy cannot carry", async () => {
     const sent: Headers[] = [];
     vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {

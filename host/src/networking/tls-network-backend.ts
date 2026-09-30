@@ -663,6 +663,9 @@ export class TlsNetworkBackend implements NetworkIO {
             method,
             headers: outgoingHeaders,
             body: requestBody,
+            // A body sent with GET/HEAD is dropped, but projection still
+            // judges the request the guest actually made.
+            bodyPresent: outgoingBody !== undefined,
             targetUrl: upstreamUrl,
           })
           : await fetch(url, {

@@ -285,9 +285,11 @@ export async function handleDevCorsProxyRequest(
  * protocol request with POST. A GET-only relay lets guest Git start discovery
  * but always fails before it can fetch any objects.
  *
- * Byte-range reads pass through unchanged: `Range`/`If-Range` go upstream,
- * the upstream status (including `206`) and `Content-Range` come back, and
- * the body streams. The relay never interprets range syntax; a client must
+ * Byte-range reads pass through unchanged: `Range` (or the production
+ * proxy's `X-Cors-Proxy-Range` alias) goes upstream, the upstream status
+ * (including `206`) and `Content-Range` come back, and the body streams.
+ * Like the production proxy, the relay does not forward `If-Range`; clients
+ * emulate it. The relay never interprets range syntax; a client must
  * still treat a `200` answer to a ranged request as the whole entity.
  */
 export async function relayDevCorsProxyRequest(
@@ -361,6 +363,12 @@ export async function relayDevCorsProxyRequest(
       `Range and ${RANGE_REQUEST_HEADER_ALIAS} disagree`,
     );
     return;
+  }
+  if (method === "HEAD") {
+    // Like the production proxy: clients size range reads from HEAD's
+    // Content-Length and ETag, so both must describe the same identity bytes
+    // the ranges address, not a copy compressed on the fly.
+    upstreamHeaders.set("accept-encoding", "identity");
   }
 
   // WHY: a client that gives up (an aborted fetch, a closed tab) must not

@@ -492,16 +492,32 @@ it. Both fields carry the same value, which the proxy documents as safe once
 the front end is fixed; the alias then becomes redundant and should be
 removed. A caller's own `X-Cors-Proxy-Range` is never relayed.
 
-**Limitation and technical debt: every ranged request through production
-pays a CORS preflight.** `X-Cors-Proxy-Range` is not a CORS-safelisted
-request header, so the browser sends an `OPTIONS` request before every ranged
-request that carries it, including simple `bytes=N-M` ranges that would
-otherwise go straight through. The proxy sends no `Access-Control-Max-Age`,
-so browsers cannot reuse a preflight across requests. Each ranged read
-therefore costs one extra round trip to the proxy; a ZIP index read (a tail
-read, then possibly a directory read) pays it once per request. This cost
-exists only because of the alias workaround. It was not measured. It goes
-away when the front end forwards `Range` and the alias is removed; see
+**The HTTP cache must stay out of aliased requests.** The browser's HTTP
+cache may rewrite `Range` on the wire to fetch only the bytes it has not
+stored, but it cannot know that `X-Cors-Proxy-Range` names the same range.
+The proxy then answers the alias's range and the cache splices a body shorter
+than its `Content-Range`. Measured on 2026-09-28 in Chromium against a
+production-shaped fixture (`Cache-Control: no-cache`, strong `ETag`):
+overlapping reads of `bytes=50-149` and `bytes=0-199` came back with 50 and
+100 bytes. Every aliased request is therefore sent with the Fetch cache mode
+`no-store`. WebKit did not show the rewrite.
+
+**Limitation and technical debt: ranged requests through production pay CORS
+preflights.** `X-Cors-Proxy-Range` is not a CORS-safelisted request header,
+so the browser must send an `OPTIONS` preflight before a request that carries
+it, including simple `bytes=N-M` ranges that would otherwise need none.
+Measured on 2026-09-28 with five ranged reads of one proxy URL:
+
+| Engine | Preflights for 5 reads |
+|---|---|
+| Chromium | 5: a `no-store` request skips Chromium's preflight cache |
+| WebKit | 1: the preflight is reused for 5 seconds (the Fetch default when the proxy sends no `Access-Control-Max-Age`) |
+
+In Chromium, then, every ranged read costs one extra round trip to the proxy.
+A ZIP index read (a tail read, then possibly a directory read) pays it once or
+twice. The time cost was not measured. Both the preflights and the `no-store`
+mode exist only because of the alias workaround, and both go away when the
+front end forwards `Range` and the alias is removed; see
 `docs/future-improvements.md`.
 
 **`If-Range` is emulated, not relayed.** The proxy's preflight does not
@@ -511,17 +527,19 @@ request into an unconditional one: after the resource changes, a resuming
 client would receive a slice of the new version. Instead, the proxy dispatch
 applies RFC 9110 section 13.1.5 to the answer. `BrowserCorsProxy.fetch()`
 does this for guest traffic, and the service worker for page and worker
-fetches. The range goes out without `If-Range`. If the `206` carries the
-matching validator, the slice stands. Otherwise the dispatch discards it and
-fetches the whole representation, exactly what a server whose `If-Range`
-condition is false would have sent. A validator that cannot be confirmed
+fetches. The range goes out without `If-Range`. If the `206` (or a `416` for
+a range the resource no longer covers) carries the matching validator, it
+stands. Otherwise the dispatch discards it and fetches the whole
+representation, exactly what a server whose `If-Range` condition is false
+would have sent, since such a server ignores the range. A validator that cannot be confirmed
 counts as a mismatch, so doubt costs one extra full request, never a wrong
 slice. An entity-tag `If-Range` is confirmed against the proxy-exposed
 `ETag`. A date `If-Range` also needs the response's `Date` header to prove
 `Last-Modified` is strong, and the proxy does not expose `Date` to scripts,
 so through the browser a date `If-Range` always takes the full-request path.
 `If-Range` without `Range` is meaningless and is dropped, as servers must
-ignore it. Kandelo's own multi-read code, which issues no `If-Range`, passes
+ignore it. Several `If-Range` fields are joined, as Fetch joins them, and
+never match. Kandelo's own multi-read code, which issues no `If-Range`, passes
 the ETag it already saw to `fetchByteRange()` as `entityTag` and fails the
 read if an answer carries a different one.
 
@@ -529,7 +547,8 @@ read if an answer carries a different one.
 profile. It forwards `Range`, honors `X-Cors-Proxy-Range` the way the
 production proxy does (an empty alias is ignored, the alias is never
 forwarded, and an alias that disagrees with `Range` is a `400`), asks upstream
-for the identity encoding so byte offsets address the stored bytes, relays the
+for the identity encoding on ranged requests and `HEAD` so byte offsets and
+sizes address the stored bytes, relays the
 upstream status verbatim (a `206` stays a `206`), exposes `Content-Range`, and
 streams the body. A `206` that upstream compressed anyway is a `502`, because
 its `Content-Range` would describe bytes the relay does not send. The 100 MiB

@@ -1106,6 +1106,11 @@ if (typeof window !== "undefined") {
       } else if (lower === "if-range") {
         // The proxy cannot carry it; fetchThroughCorsProxy applies its
         // semantics to the answer instead (RFC 9110 section 13.1.5).
+      } else if (lower === config.rangeRequestHeaderAlias) {
+        // Projection owns the alias: it is re-derived from Range below, so a
+        // caller's value is never relayed. Kandelo's own kernel worker sends
+        // it when its guest traffic reaches the proxy URL through this worker
+        // already projected; that is not an unsupported field.
       } else if (
         lower === "authorization" || lower === "cookie" ||
         lower === "cookie2" || lower === "proxy-authorization"
@@ -1155,7 +1160,7 @@ if (typeof window !== "undefined") {
     // the proxied one before response headers, in browsers that signal it.
     // (Chromium and WebKit did not when measured 2026-09-26; after headers,
     // cancelling the response stream reaches the proxy regardless.)
-    // Range/If-Range survive through the allow-list above like any other field.
+    // Range survives through the allow-list above like any other field.
     var init = {
       method: request.method,
       headers: headers,
@@ -1164,6 +1169,14 @@ if (typeof window !== "undefined") {
       redirect: request.redirect,
       signal: request.signal,
     };
+    if (config.rangeRequestHeaderAlias && headers.has(config.rangeRequestHeaderAlias)) {
+      // WORKAROUND, part of the range alias (mirrors BrowserCorsProxy.fetch):
+      // the HTTP cache may rewrite Range on the wire to fetch only the bytes
+      // it lacks, but not the alias, so the proxy would answer a different
+      // range and the cache would splice a short body. In Chromium this also
+      // skips the preflight cache: documented technical debt of the alias.
+      init.cache = "no-store";
+    }
     if (request.method === "GET" || request.method === "HEAD") {
       return Promise.resolve(new Request(outgoingUrl, init));
     }
@@ -1189,10 +1202,11 @@ if (typeof window !== "undefined") {
   }
 
   // Mirror of BrowserCorsProxy.fetch(): send the projected request and honor
-  // an If-Range the proxy cannot carry. A 206 without the matching validator
-  // is discarded for the whole representation, as a server whose If-Range
-  // condition is false would send (RFC 9110 section 13.1.5). The cost of
-  // doubt is one extra full request, never a slice of a changed resource.
+  // an If-Range the proxy cannot carry. A 206 or 416 without the matching
+  // validator is discarded for the whole representation, as a server whose
+  // If-Range condition is false would send (RFC 9110 section 13.1.5). The
+  // cost of doubt is one extra full request, never a slice of a changed
+  // resource. Several If-Range fields reach here joined, which never match.
   function fetchThroughCorsProxy(request, outgoingUrl, targetUrl) {
     var config = normalizedCorsProxyConfig();
     var ifRange = config && !proxyAllowedHeaderNames(config).has("if-range")
@@ -1203,7 +1217,8 @@ if (typeof window !== "undefined") {
       return fetch(projected).then(function (response) {
         if (
           ifRange === null || projected.method !== "GET" ||
-          response.status !== 206 || ifRangeMatches(ifRange, response.headers)
+          (response.status !== 206 && response.status !== 416) ||
+          ifRangeMatches(ifRange, response.headers)
         ) {
           return response;
         }
@@ -1213,7 +1228,7 @@ if (typeof window !== "undefined") {
         if (config.rangeRequestHeaderAlias) {
           headers.delete(config.rangeRequestHeaderAlias);
         }
-        return fetch(new Request(projected, { headers: headers }));
+        return fetch(new Request(projected, { headers: headers, cache: "default" }));
       });
     });
   }

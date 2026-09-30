@@ -464,13 +464,14 @@ describe("BrowserCorsProxy", () => {
     interface Sent {
       url: string;
       headers: Headers;
+      cache?: RequestCache;
     }
 
     // An origin that honors Range (via the alias) and reports ETag "v2".
     function origin(sent: Sent[], etag = '"v2"') {
       return async (url: string, init: RequestInit) => {
         const headers = new Headers(init.headers);
-        sent.push({ url, headers });
+        sent.push({ url, headers, cache: init.cache });
         const match = /^bytes=(\d+)-(\d+)$/.exec(
           headers.get("x-cors-proxy-range") ?? "",
         );
@@ -538,6 +539,110 @@ describe("BrowserCorsProxy", () => {
       expect(response.status).toBe(200);
       expect(sent).toHaveLength(1);
       expect(sent[0]!.headers.has("if-range")).toBe(false);
+    });
+
+    it("keeps aliased requests out of the HTTP cache, and only those", async () => {
+      // The HTTP cache may rewrite Range to the bytes it lacks but cannot
+      // rewrite the alias, so the proxy would answer a different range.
+      const sent: Sent[] = [];
+      await rangedProxy().fetch({
+        method: "GET",
+        headers: [["Range", "bytes=4-7"], ["If-Range", '"v1"']],
+        targetUrl: TARGET_URL,
+      }, origin(sent));
+      await rangedProxy().fetch({
+        method: "GET",
+        headers: [],
+        targetUrl: TARGET_URL,
+      }, origin(sent));
+      // Stale If-Range: the ranged request is no-store, the whole-entity
+      // refetch carries no alias and uses the cache normally.
+      expect(sent.map(({ cache }) => cache)).toEqual([
+        "no-store",
+        undefined,
+        undefined,
+      ]);
+    });
+
+    it("fetches the whole representation for a 416 when the resource changed", async () => {
+      const sent: Sent[] = [];
+      const answer = async (url: string, init: RequestInit) => {
+        const headers = new Headers(init.headers);
+        sent.push({ url, headers });
+        return headers.has("x-cors-proxy-range")
+          ? new Response(null, { status: 416, headers: { "Content-Range": "bytes */16" } })
+          : new Response(ENTITY, { status: 200, headers: { ETag: '"v2"' } });
+      };
+      const response = await rangedProxy().fetch({
+        method: "GET",
+        headers: [["Range", "bytes=4000-"], ["If-Range", '"v1"']],
+        targetUrl: TARGET_URL,
+      }, answer);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(ENTITY);
+      expect(sent).toHaveLength(2);
+    });
+
+    it("keeps a 416 whose validator still matches", async () => {
+      const sent: Sent[] = [];
+      const response = await rangedProxy().fetch({
+        method: "GET",
+        headers: [["Range", "bytes=4000-"], ["If-Range", '"v2"']],
+        targetUrl: TARGET_URL,
+      }, async (url, init) => {
+        sent.push({ url, headers: new Headers(init.headers) });
+        return new Response(null, { status: 416, headers: { ETag: '"v2"' } });
+      });
+      expect(response.status).toBe(416);
+      expect(sent).toHaveLength(1);
+    });
+
+    it("treats several If-Range fields as a mismatch, like Fetch's joined value", async () => {
+      const sent: Sent[] = [];
+      const response = await rangedProxy().fetch({
+        method: "GET",
+        headers: [["Range", "bytes=4-7"], ["If-Range", '"v0"'], ["If-Range", '"v2"']],
+        targetUrl: TARGET_URL,
+      }, origin(sent));
+      expect(response.status).toBe(200);
+      expect(sent).toHaveLength(2);
+    });
+
+    it.each(["HEAD", "POST"])(
+      "does not re-request a %s answer, which If-Range cannot govern",
+      async (method) => {
+        const sent: Sent[] = [];
+        const response = await proxy({
+          url: PROXY_URL,
+          allowedRequestHeaderNames: ["range"],
+          allowAnonymousGetHeaderOmission: false,
+          rangeRequestHeaderAlias: "x-cors-proxy-range",
+        }).fetch({
+          method,
+          headers: [["Range", "bytes=4-7"], ["If-Range", '"v1"']],
+          ...(method === "POST" ? { body: "x" } : {}),
+          targetUrl: TARGET_URL,
+        }, origin(sent));
+        expect(response.status).toBe(206);
+        expect(sent).toHaveLength(1);
+      },
+    );
+
+    it("judges projection by the body the caller reported, even if dropped", async () => {
+      // The TLS backend drops a body sent with GET but still reports it, so
+      // an unsupported field fails instead of being silently omitted.
+      await expect(
+        proxy({
+          url: PROXY_URL,
+          allowedRequestHeaderNames: [],
+          allowAnonymousGetHeaderOmission: true,
+        }).fetch({
+          method: "GET",
+          headers: [["X-Arbitrary", "1"]],
+          bodyPresent: true,
+          targetUrl: TARGET_URL,
+        }, async () => new Response("unexpected")),
+      ).rejects.toThrow(/unsupported request headers: x-arbitrary/);
     });
 
     it("forwards If-Range untouched to a proxy whose profile carries it", async () => {

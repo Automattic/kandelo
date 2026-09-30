@@ -4,6 +4,7 @@ import {
   type ByteRange,
   byteRangeHeaderValue,
   fetchByteRange,
+  isStrongEntityTag,
 } from "../src/networking/byte-range-fetch";
 
 const URL_UNDER_TEST = "https://archive.example/game.zip";
@@ -280,5 +281,22 @@ describe("fetchByteRange", () => {
         throw new TypeError("Failed to fetch");
       },
     })).rejects.toThrow("Failed to fetch");
+  });
+});
+
+describe("isStrongEntityTag", () => {
+  it.each<[string, boolean]>([
+    ['"v1"', true],
+    ['""', true],
+    ['"abc-123/xyz"', true],
+    ['"\u00e9t\u00e9"', true],
+    ['W/"v1"', false],
+    ["v1", false],
+    ['"a b"', false],
+    ['"a\tb"', false],
+    ['"a"b"', false],
+    ['"v1', false],
+  ])("classifies %s as %s", (value, expected) => {
+    expect(isStrongEntityTag(value)).toBe(expected);
   });
 });

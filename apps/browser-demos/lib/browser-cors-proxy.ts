@@ -12,8 +12,9 @@ const defaultConfig = validateBrowserCorsProxyConfig({
   //
   // WHY NOT if-range: the Playground proxy's preflight does not allow it, and
   // If-Range is never CORS-safelisted, so listing it here would make every
-  // request that carries it fail preflight. Unlisted, an anonymous GET drops
-  // it with a diagnostic, which is how it behaved before ranges were added.
+  // request that carries it fail preflight. Unlisted, it is never sent;
+  // BrowserCorsProxy.fetch() and the service worker apply its semantics to
+  // the answer instead (RFC 9110 section 13.1.5).
   allowedRequestHeaderNames: [
     "accept",
     "content-type",
