@@ -317,7 +317,7 @@ export function linkFlags(
     // shared::abi::HOST_ENV_IMPORTS. Anything else is a link error, so
     // configure checks report missing functions as missing and no program
     // ships a call that traps at run time. (`--allow-undefined`, used before
-    // ABI 44, is `--import-undefined` plus `--unresolved-symbols=ignore-all`:
+    // ABI 46, is `--import-undefined` plus `--unresolved-symbols=ignore-all`:
     // it accepted every missing function, and no later flag can undo it.)
     `-Wl,--allow-undefined-file=${hostImportsFile}`,
     // Reserve an 8 MiB main-thread shadow stack. wasm-ld's default is only

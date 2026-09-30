@@ -22,7 +22,7 @@
 
   ;; Must equal ABI_VERSION (crates/shared/src/lib.rs); bump with it.
   (func (export "__abi_version") (result i32)
-    i32.const 46)
+    i32.const 47)
 
   (func $sentinel (type $sentinel_type) (result i32)
     i32.const 77)

@@ -22,7 +22,7 @@ function moduleFromWat(wat: string): WebAssembly.Module {
 }
 
 // The C/C++ library functions the host used to fake in JavaScript before
-// ABI 44. They come from libc, libc++abi, or libc++ now.
+// ABI 46. They come from libc, libc++abi, or libc++ now.
 const REMOVED_STAND_INS = [
   "_Znwm", "_Znam", "_ZdlPv", "_ZdlPvm", "_ZdaPv", "_ZdaPvm",
   "_ZnwmRKSt9nothrow_t", "_ZnamRKSt9nothrow_t",

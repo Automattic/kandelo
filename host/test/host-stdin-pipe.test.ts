@@ -7,7 +7,7 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 
 // Host-supplied stdin is a kernel pipe (kernel_install_host_stdin_pipe):
 // fd 0 is an ordinary open file description, so a child that inherits it
-// reads the same stream. Before ABI 46 the bytes lived in host buffers keyed
+// reads the same stream. Before ABI 47 the bytes lived in host buffers keyed
 // by pid and an inheriting child blocked forever.
 const dash = tryResolveBinary("programs/dash.wasm");
 if (!dash) throw new Error("programs/dash.wasm is missing; build the dash package");

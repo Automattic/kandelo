@@ -4,8 +4,8 @@
  *
  * 1. libsqlite3 must be built with -DSQLITE_ENABLE_COLUMN_METADATA so
  *    sqlite3_column_table_name() actually exists. Without it, PHP now
- *    fails to link (ABI 46 links against the host-import allowance, not
- *    -Wl,--allow-undefined). Before ABI 46 it linked, wasm-ld emitted the
+ *    fails to link (ABI 47 links against the host-import allowance, not
+ *    -Wl,--allow-undefined). Before ABI 47 it linked, wasm-ld emitted the
  *    symbol as an `env.` import, and the host filled it with a throwing
  *    stub, so the first getColumnMeta() call killed the PHP process.
  * 2. PHP must be compiled with HAVE_SQLITE3_COLUMN_TABLE_NAME defined.

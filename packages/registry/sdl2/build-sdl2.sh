@@ -236,7 +236,7 @@ rm -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc.bak"
 # an SDL_LoadFunction lookup. libSDL2.a therefore has hard undefined
 # references to EGL and GLES2, and consumers that link through this file must
 # be told so. Without it their links fail on the undefined EGL/GLES2
-# symbols (before ABI 46, `--allow-undefined` turned each into an `env.*`
+# symbols (before ABI 47, `--allow-undefined` turned each into an `env.*`
 # import that trapped the first time a window was created). The same
 # holds for libffi: configure's Libs names the static Wayland archives, but
 # libwayland-client marshals every request through ffi_call, and nothing

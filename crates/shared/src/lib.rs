@@ -2062,7 +2062,7 @@ pub mod abi {
     /// are both generated from this list, so a program can leave a symbol
     /// undefined only if the host will supply it. C and C++ library functions
     /// never belong here; they come from libc, libc++abi, or libc++. Before
-    /// ABI 46 the SDK linked with `--allow-undefined` and the host stubbed any
+    /// ABI 47 the SDK linked with `--allow-undefined` and the host stubbed any
     /// unknown import with a throwing function, so configure checks accepted
     /// functions Kandelo lacks and programs trapped when they first called one.
     pub const HOST_ENV_IMPORTS: &[HostEnvImport] = &[

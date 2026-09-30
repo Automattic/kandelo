@@ -514,7 +514,7 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
 describe("fork_instrument_coverage / F-* boundaries and Wasm-GC", () => {
   // F-01 / F-02: ucontext (getcontext/makecontext/swapcontext) is a
   // documented unsupported API (docs/posix-status.md) and libc has no such
-  // symbols. Before ABI 46 these fixtures linked anyway and trapped on
+  // symbols. Before ABI 47 these fixtures linked anyway and trapped on
   // "Unimplemented import: env.getcontext"; with honest links the boundary
   // is a link failure on exactly those symbols, which is what we assert.
   // (scripts/build-programs.sh enforces the same when building fixtures.)

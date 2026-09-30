@@ -128,7 +128,7 @@ if [ ! -f Makefile ]; then
     # No gl_cv_func_re_compile_pattern_working seed: musl has no GNU regex
     # API (re_compile_pattern, re_search, re_syntax_options), so gnulib must
     # compile its own. Seeding "yes" made configure skip it, and before
-    # ABI 44 the program linked anyway and trapped on the first regex
+    # ABI 47 the program linked anyway and trapped on the first regex
     # (expr, csplit, ...) with "Unimplemented import: env.re_compile_pattern".
     export gl_cv_func_link_follows_symlink=no
     export gl_cv_func_lstat_dereferences_slashed_symlink=yes

@@ -2,7 +2,7 @@
  * The `env` imports a user program may carry, and the check that refuses any
  * other.
  *
- * WHY: before ABI 44 the SDK linked with `--allow-undefined` and the host
+ * WHY: before ABI 46 the SDK linked with `--allow-undefined` and the host
  * filled every unknown `env` function import with a stub that threw
  * "Unimplemented import" when called, and faked several C++ runtime
  * functions in JavaScript. A program that needed a function Kandelo lacks

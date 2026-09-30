@@ -4,7 +4,7 @@ import { tryResolveBinary } from "../src/binary-resolver";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 // Every C++ runtime function comes from the C++ runtime, not the host
-// (programs/cxx_runtime_test.cpp). Before ABI 44 the host faked many of them,
+// (programs/cxx_runtime_test.cpp). Before ABI 47 the host faked many of them,
 // including a __cxa_thread_atexit that never ran thread_local destructors.
 const HOST_STAND_INS = [
   "_Znwm", "_Znam", "_ZdlPv", "_ZdlPvm", "_ZdaPv", "_ZdaPvm",

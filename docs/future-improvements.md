@@ -143,10 +143,10 @@ the same test, and WebKit passes the Load WAD button path, which uses the
 same restart command.
 
 That demo's keyboard input goes through the PTY (`ptyWrite`), not the host
-stdin pipe that ABI 44 changed, and no old-code baseline was available
+stdin pipe that ABI 47 changed, and no old-code baseline was available
 locally to compare against, so the failure is recorded here rather than
 attributed. The investigation should: run the test on main in WebKit to
-establish whether it predates ABI 44; compare what the drop path does
+establish whether it predates ABI 47; compare what the drop path does
 differently from the button path (synthetic `DataTransfer` drop, focus,
 pane switching to the terminal); and capture the kernel's view of the
 restarted fbDOOM (blocked syscall, fb0 ownership) when it stalls.
@@ -328,7 +328,7 @@ Every byte that moves between a process and the kernel crosses two separate
 instantiated with, so today the kernel worker's JavaScript makes that hop, and
 a pipe read travels pipe buffer → kernel scratch → the reader's syscall
 channel area. Host-supplied stdin adds host → kernel scratch → pipe buffer in
-front of that (ABI 44 made host stdin a kernel pipe so a forked child shares
+front of that (ABI 47 made host stdin a kernel pipe so a forked child shares
 fd 0 with its parent; see `docs/abi-versioning.md`).
 
 A small reusable Wasm module could remove the JavaScript hop and the scratch
@@ -365,10 +365,10 @@ lengths, and ordering. Any follow-up should:
 
 ### Close the Node gap in host stdin throughput
 The `stdin-throughput` suite (24 MiB of host-supplied stdin read by one
-process) measured the ABI 44 kernel-pipe path against the ABI 43 per-pid host
-buffer on 2026-09-28, alternating runs at load average 6–10:
+process) measured the ABI 47 kernel-pipe path against the per-pid host
+buffer it replaced on 2026-09-28, alternating runs at load average 6–10:
 
-| Host | ABI 43 per-pid buffer | ABI 44 kernel pipe |
+| Host | Per-pid host buffer (before) | Kernel pipe (ABI 47) |
 |---|---|---|
 | Node | 818, 796, 793 MiB/s | 691, 705, 679 MiB/s |
 | Chromium | 727, 774 MiB/s | 800, 828 MiB/s |

@@ -634,7 +634,7 @@ fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<
             // whatever graphics archives it was first provisioned with, no
             // matter how far libc/glue or the libdrm package moved on; every
             // entry point a stale archive lacks then fails the link of each
-            // program that uses it (before ABI 46 it became an `env.*` import
+            // program that uses it (before ABI 47 it became an `env.*` import
             // that trapped at call time). Both scripts skip on a matching
             // input digest, so this is a no-op once the sysroot is current.
             run_repo_script(repo, "scripts/build-dri-stubs.sh", &[])?;
