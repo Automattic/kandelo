@@ -47,6 +47,7 @@ import {
   WASM_PAGE_SIZE,
 } from "./constants";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import {
@@ -999,6 +1000,40 @@ export class NodeKernelHost {
       throw new Error("kernel worker returned invalid VFS file bytes");
     }
     return result;
+  }
+
+  /**
+   * List a directory in the worker-owned VFS. The Node peer of
+   * BrowserKernel.readDirFromVfs(); `null` means the path does not exist.
+   */
+  async readDirFromVfs(path: string): Promise<VfsDirEntrySnapshot[] | null> {
+    if (!this.initialized) {
+      throw new Error("VFS directory listing requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_dir",
+      requestId,
+      path,
+    });
+    return (result as VfsDirEntrySnapshot[] | null) ?? null;
+  }
+
+  /**
+   * Describe a path in the worker-owned VFS, following symlinks. The Node
+   * peer of BrowserKernel.statVfsPath(); `null` means the path does not exist.
+   */
+  async statVfsPath(path: string): Promise<VfsPathStat | null> {
+    if (!this.initialized) {
+      throw new Error("VFS stat requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "stat_vfs_path",
+      requestId,
+      path,
+    });
+    return (result as VfsPathStat | null) ?? null;
   }
 
   /**

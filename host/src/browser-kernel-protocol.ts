@@ -153,6 +153,20 @@ export interface ReadVfsFileMessage {
   includeMode?: boolean;
 }
 
+/** List one directory through the worker-owned VFS. */
+export interface ReadVfsDirMessage {
+  type: "read_vfs_dir";
+  requestId: number;
+  path: string;
+}
+
+/** Describe one path (following symlinks) through the worker-owned VFS. */
+export interface StatVfsPathMessage {
+  type: "stat_vfs_path";
+  requestId: number;
+  path: string;
+}
+
 export interface WriteVfsFileMessage {
   type: "write_vfs_file";
   requestId: number;
@@ -516,6 +530,8 @@ export type MainToKernelMessage =
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage
+  | ReadVfsDirMessage
+  | StatVfsPathMessage
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
   | ExportRootfsImageMessage
