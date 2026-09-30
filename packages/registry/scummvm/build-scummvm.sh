@@ -130,8 +130,14 @@ fi
 # CXX/AR/RANLIB/STRIP env vars and probes SDL through sdl2-config.
 # libSDL2.a is static, so the Wayland/KMSDRM/GL dependency archives
 # must ride the final link line — LDFLAGS carries them
-# (libwayland-egl.a is the glue's wl_egl_window shim, staged into the
-# sysroot by the libwayland package).
+# (libwayland-egl.a is the glue's wl_egl_window shim, shipped by the
+# libwayland package).
+#
+# Every declared dependency's lib dir comes BEFORE the sysroot's. The
+# sysroot holds copies of some package archives (build-programs.sh stages
+# libwayland-egl.a there for program links), and those copies are only
+# as fresh as the last build-programs.sh run: searched first, a stale
+# copy silently won over the libwayland this package depends on.
 #
 # -lc++ -lc++abi is mandatory: the SDK links -nostdlib with
 # --allow-undefined, so a missing libc++abi does not fail the link —
@@ -166,7 +172,7 @@ echo "==> Configuring ScummVM (SCUMM engine, GLES2, SDL2 backend)..."
     cd "$SRC_DIR"
     CXX="$CXX" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
     CXXFLAGS="-O2 -DKANDELO $REPRO_FLAGS" \
-    LDFLAGS="-L$SYSROOT/lib -L$SDL2_PREFIX/lib -L$LIBDRM_PREFIX/lib -L$LIBWAYLAND_PREFIX/lib -L$LIBFFI_PREFIX/lib -L$LIBXKBCOMMON_PREFIX/lib -L$ZLIB_PREFIX/lib -L$LIBPNG_PREFIX/lib -L$FREETYPE_PREFIX/lib $SDL_DEP_LIBS" \
+    LDFLAGS="-L$SDL2_PREFIX/lib -L$LIBDRM_PREFIX/lib -L$LIBWAYLAND_PREFIX/lib -L$LIBFFI_PREFIX/lib -L$LIBXKBCOMMON_PREFIX/lib -L$ZLIB_PREFIX/lib -L$LIBPNG_PREFIX/lib -L$FREETYPE_PREFIX/lib -L$LIBCXX_PREFIX/lib -L$SYSROOT/lib $SDL_DEP_LIBS" \
     PKG_CONFIG_LIBDIR="$FREETYPE_PREFIX/lib/pkgconfig" \
     ./configure \
         --host=wasm32posix \

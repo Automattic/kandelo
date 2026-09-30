@@ -175,7 +175,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await expectTerminal(page, /TILE n=2 i=1 /, 60_000);
   await pressCtrl(page, "Enter");
   await expectTerminal(page, /TILE n=3 i=2 /, 60_000);
-  await expectTerminal(page, /TILE n=3 i=2 [^\n]*[\s\S]*KBD_FOCUS app_id=wlterm|KBD_FOCUS app_id=wlterm[\s\S]*TILE n=3 i=2 /, 30_000);
+  await expectTerminal(page, /TILE n=3 i=2 [^\n]*[\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=3 i=2 /, 30_000);
 
   // Gate 3: the windows tile UNDER the bar. The three-window retile is on
   // screen; every tile in it must start at or below the bar's strip.
@@ -224,11 +224,11 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // filter its list instead of being typed into the shell.
   await pressCtrl(page, "Space");
   await expectTerminal(page, /LAYER ns=launcher layer=3 /, 60_000);
-  await expectTerminal(page, /KLAUNCHER_READY n=8/, 60_000);
+  await expectTerminal(page, /KLAUNCHER_READY n=9/, 60_000);
 
-  // "te" narrows the eight entries (Clock, Nano, NetHack, Paint, Quickshell,
-  // Terminal, Theme Gallery, Vim) to Terminal alone — "t" alone still
-  // matches Paint.
+  // "te" narrows the nine entries (Clock, Nano, NetHack, Paint, Quickshell,
+  // ScummVM, Terminal, Theme Gallery, Vim) to Terminal alone — "t" alone
+  // still matches Paint.
   await pressKeys(page, ["KeyT", "KeyE"]);
   await expectTerminal(page, /KLAUNCHER_FILTER q=te n=1/, 60_000);
 
@@ -254,13 +254,13 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
 
   // Gate 5b: a real application through the same path. "vi" narrows to Vim;
-  // its entry runs unmodified vim inside a wlterm, fetched lazily from
+  // its entry runs unmodified vim inside foot, fetched lazily from
   // vim.zip on first exec — the fifth tile only appears if the whole chain
-  // (launcher → kwlctl exec → wlterm → lazy fetch → vim) held.
+  // (launcher → kwlctl exec → foot → lazy fetch → vim) held.
   await pressCtrl(page, "Space");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyV", "KeyI", "Enter"]);
-  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/wlterm \/usr\/bin\/vim/, 60_000);
+  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot [^\n]*\/usr\/bin\/vim/, 60_000);
   await expectTerminal(page, /TILE n=5 i=4 /, 120_000);
   expect(await syslogText(page), "vim binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
@@ -348,4 +348,68 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await pressCtrl(page, "2");
   await expectTerminal(page, /WORKSPACE active=2/, 60_000);
   await expectTerminal(page, /hyprland IPC received workspacev2>>2,2/, 60_000);
+});
+
+// A client killed by the compositor, or a buffer the compositor could not map.
+const CLIENT_FAILURE =
+  /invalid arguments for wl_shm|error in client communication|gbm_bo_map failed|gbm_bo_import/;
+
+/**
+ * Regression gate for the kernel SCM_RIGHTS fd-delivery coalescing bug.
+ *
+ * Launching windows rapidly makes the dwindle tiler retile every existing
+ * window on each new map — an O(N²) storm of `wl_shm.create_pool` messages,
+ * each carrying a gbm prime-fd over the Unix socket as SCM_RIGHTS ancillary
+ * data. The kernel used to pop only ONE ancillary fd-group per recvmsg, but a
+ * single recvmsg can drain the coalesced bytes of several create_pool
+ * messages — so only the first message's fd was delivered and the rest were
+ * stranded. libwayland then demarshalled a later create_pool with a MISSING
+ * fd, the server posted `invalid arguments for wl_shm.create_pool`, and killed
+ * that client: launched slowly all windows mapped, hammered they stalled at
+ * five. The kernel fix tags each ancillary group with the byte-stream offset
+ * of its send and caps each recvmsg at the next boundary. This gate hammers
+ * eight launches back-to-back and asserts all eight map. (It moved here from
+ * the Hyprland machine, which the image no longer carries; Omarchy tiles the
+ * same way.)
+ */
+test("Kandelo omarchy survives a rapid 8-window launch storm without SCM_RIGHTS fd loss", async ({ page }) => {
+  test.setTimeout(300_000);
+
+  await launchOmarchy(page);
+  await openSurface(page, "Internals");
+  await expect
+    .poll(() => syslogText(page), { timeout: 180_000 })
+    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
+  await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
+
+  // An empty workspace, so the storm's window count is unambiguous.
+  await pressCtrl(page, "2");
+  await expectTerminal(page, /WORKSPACE active=2/, 30_000);
+
+  // Eight wlclock launches back-to-back (CTRL+K, no delay).
+  await openSurface(page, "Demo");
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.down("Control");
+  for (let i = 0; i < 8; i++) await page.keyboard.press("KeyK", { delay: 0 });
+  await page.keyboard.up("Control");
+
+  // All eight must map and tile. Pre-fix this stalled at five while the
+  // connection count kept climbing — connected but killed before mapping.
+  await expectTerminal(page, /TILE n=8 /, 120_000);
+  expect(await terminalText(page), "a client failed during the launch storm")
+    .not.toMatch(CLIENT_FAILURE);
+
+  // Close two panes (killactive) and let the survivors retile: every buffer
+  // must still import. A prime-bo whose channel refcount was not held would
+  // tombstone before the compositor imports it, and every later composite
+  // floods `gbm_bo_map failed` — a flood fills the screen, so it cannot
+  // scroll out of view.
+  for (let i = 0; i < 2; i++) {
+    await pressCtrl(page, "KeyW");
+    await page.waitForTimeout(600);
+  }
+  await expectTerminal(page, /TILE n=6 /, 30_000);
+  await page.waitForTimeout(2_000);
+  expect(await terminalText(page), "a client failed after the close/retile")
+    .not.toMatch(CLIENT_FAILURE);
 });

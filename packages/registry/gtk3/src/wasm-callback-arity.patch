@@ -1,3 +1,27 @@
+--- a/gdk/gdkdisplay.c
++++ b/gdk/gdkdisplay.c
+@@ -338,7 +338,9 @@
+   display->queued_events = NULL;
+   display->queued_tail = NULL;
+ 
+-  g_list_foreach (display->input_devices, (GFunc) g_object_run_dispose, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GList *l = display->input_devices; l; l = l->next)
++    g_object_run_dispose (l->data);
+ 
+   if (device_manager)
+     {
+@@ -1925,7 +1927,9 @@
+        */
+       display->input_devices = gdk_seat_get_slaves (seat, GDK_SEAT_CAPABILITY_ALL_POINTING);
+       display->input_devices = g_list_prepend (display->input_devices, gdk_seat_get_pointer (seat));
+-      g_list_foreach (display->input_devices, (GFunc) g_object_ref, NULL);
++      /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++      for (GList *l = display->input_devices; l; l = l->next)
++        g_object_ref (l->data);
+     }
+ 
+   return display->input_devices;
 --- a/gtk/a11y/gtkaccessibility.c
 +++ b/gtk/a11y/gtkaccessibility.c
 @@ -58,14 +58,17 @@
@@ -142,6 +166,19 @@
  {
    AtkObject* obj;
  
+--- a/gtk/deprecated/gtkstyle.c
++++ b/gtk/deprecated/gtkstyle.c
+@@ -1111,7 +1111,9 @@
+ 
+   g_slist_free_full (style->icon_factories, g_object_unref);
+   style->icon_factories = g_slist_copy (src->icon_factories);
+-  g_slist_foreach (style->icon_factories, (GFunc) g_object_ref, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GSList *l = style->icon_factories; l; l = l->next)
++    g_object_ref (l->data);
+ }
+ 
+ static void
 --- a/gtk/gtkcellrenderer.c
 +++ b/gtk/gtkcellrenderer.c
 @@ -72,7 +72,10 @@
@@ -386,6 +423,20 @@
  
                    accessible = gtk_widget_get_accessible (button);
                    if (GTK_IS_ACCESSIBLE (accessible))
+--- a/gtk/gtkiconview.c
++++ b/gtk/gtkiconview.c
+@@ -3078,8 +3078,9 @@
+ gtk_icon_view_invalidate_sizes (GtkIconView *icon_view)
+ {
+   /* Clear all item sizes */
+-  g_list_foreach (icon_view->priv->items,
+-		  (GFunc)gtk_icon_view_item_invalidate_size, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GList *l = icon_view->priv->items; l; l = l->next)
++    gtk_icon_view_item_invalidate_size (l->data);
+ 
+   /* Re-layout the items */
+   gtk_widget_queue_resize (GTK_WIDGET (icon_view));
 --- a/gtk/gtklistbox.c
 +++ b/gtk/gtklistbox.c
 @@ -35,6 +35,12 @@
@@ -455,6 +506,17 @@
  
    g_signal_connect (display_manager, "notify::default-display",
                      G_CALLBACK (default_display_notify_cb),
+@@ -2197,7 +2206,9 @@
+   g_object_ref (group);
+ 
+   toplevels = gtk_window_list_toplevels ();
+-  g_list_foreach (toplevels, (GFunc)g_object_ref, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GList *l = toplevels; l; l = l->next)
++    g_object_ref (l->data);
+ 
+   while (toplevels)
+     {
 --- a/gtk/gtkmenu.c
 +++ b/gtk/gtkmenu.c
 @@ -140,6 +140,12 @@
@@ -560,6 +622,19 @@
                           NULL);
  
    network_mounts = network_volumes = NULL;
+--- a/gtk/gtkprinteroptionset.c
++++ b/gtk/gtkprinteroptionset.c
+@@ -46,7 +46,9 @@
+   GtkPrinterOptionSet *set = GTK_PRINTER_OPTION_SET (object);
+ 
+   g_hash_table_destroy (set->hash);
+-  g_ptr_array_foreach (set->array, (GFunc)g_object_unref, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (guint i = 0; i < set->array->len; i++)
++    g_object_unref (g_ptr_array_index (set->array, i));
+   g_ptr_array_free (set->array, TRUE);
+   
+   G_OBJECT_CLASS (gtk_printer_option_set_parent_class)->finalize (object);
 --- a/gtk/gtkprintunixdialog.c
 +++ b/gtk/gtkprintunixdialog.c
 @@ -59,7 +59,13 @@
@@ -595,6 +670,19 @@
    extension_point_clear_children (GTK_CONTAINER (priv->extension_point));
  }
  
+--- a/gtk/gtksearchenginesimple.c
++++ b/gtk/gtksearchenginesimple.c
+@@ -122,7 +122,9 @@
+ static void
+ search_thread_data_free (SearchThreadData *data)
+ {
+-  g_queue_foreach (data->directories, (GFunc)g_object_unref, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GList *l = data->directories->head; l; l = l->next)
++    g_object_unref (l->data);
+   g_queue_free (data->directories);
+   g_object_unref (data->cancellable);
+   g_object_unref (data->query);
 --- a/gtk/gtkshortcutlabel.c
 +++ b/gtk/gtkshortcutlabel.c
 @@ -24,6 +24,12 @@
@@ -686,6 +774,19 @@
                                                       cascade);
  
    /* ensure it gets removed first */
+--- a/gtk/gtkstylecontext.c
++++ b/gtk/gtkstylecontext.c
+@@ -670,7 +670,9 @@
+   GList *list, *toplevels;
+ 
+   toplevels = gtk_window_list_toplevels ();
+-  g_list_foreach (toplevels, (GFunc) g_object_ref, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GList *l = toplevels; l; l = l->next)
++    g_object_ref (l->data);
+ 
+   for (list = toplevels; list; list = list->next)
+     {
 --- a/gtk/gtkstyleprovider.c
 +++ b/gtk/gtkstyleprovider.c
 @@ -33,7 +33,8 @@
@@ -708,6 +809,19 @@
  {
  }
  
+--- a/gtk/gtktextbuffer.c
++++ b/gtk/gtktextbuffer.c
+@@ -2855,7 +2855,9 @@
+         }
+     }
+ 
+-  g_slist_foreach (tags, (GFunc) g_object_ref, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GSList *l = tags; l; l = l->next)
++    g_object_ref (l->data);
+   
+   tmp_list = tags;
+   while (tmp_list != NULL)
 --- a/gtk/gtktoolbutton.c
 +++ b/gtk/gtktoolbutton.c
 @@ -88,7 +88,8 @@
@@ -852,7 +966,18 @@
                            NULL);
  }
  
-@@ -12492,7 +12513,7 @@
+@@ -12098,7 +12119,9 @@
+       gtk_default_direction = dir;
+ 
+       tmp_list = toplevels = gtk_window_list_toplevels ();
+-      g_list_foreach (toplevels, (GFunc)g_object_ref, NULL);
++      /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++      for (GList *l = toplevels; l; l = l->next)
++        g_object_ref (l->data);
+ 
+       while (tmp_list)
+ 	{
+@@ -12492,7 +12515,7 @@
  
    if (GTK_IS_CONTAINER (widget))
      gtk_container_forall (GTK_CONTAINER (widget),
@@ -861,7 +986,18 @@
  			  NULL);
  
    if (_gtk_widget_get_has_window (widget))
-@@ -16388,7 +16409,7 @@
+@@ -15398,7 +15421,9 @@
+ static gboolean
+ tooltip_query_idle (gpointer data)
+ {
+-  g_slist_foreach (tooltip_query_displays, (GFunc)gtk_tooltip_trigger_tooltip_query, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GSList *l = tooltip_query_displays; l; l = l->next)
++    gtk_tooltip_trigger_tooltip_query (l->data);
+   g_slist_free_full (tooltip_query_displays, g_object_unref);
+ 
+   tooltip_query_displays = NULL;
+@@ -16388,7 +16413,7 @@
  
        if (GTK_IS_CONTAINER (widget))
          gtk_container_forall (GTK_CONTAINER (widget),
@@ -870,6 +1006,45 @@
                                NULL);
      }
  }
+--- a/gtk/gtkwindow.c
++++ b/gtk/gtkwindow.c
+@@ -4706,8 +4706,9 @@
+   if (info->icon_list == list) /* check for NULL mostly */
+     return;
+ 
+-  g_list_foreach (list,
+-                  (GFunc) g_object_ref, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GList *l = list; l; l = l->next)
++    g_object_ref (l->data);
+ 
+   g_list_free_full (info->icon_list, g_object_unref);
+ 
+@@ -4978,8 +4979,9 @@
+    */
+   default_icon_serial++;
+   
+-  g_list_foreach (list,
+-                  (GFunc) g_object_ref, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GList *l = list; l; l = l->next)
++    g_object_ref (l->data);
+ 
+   g_list_free_full (default_icon_list, g_object_unref);
+ 
+--- a/gtk/inspector/visual.c
++++ b/gtk/inspector/visual.c
+@@ -139,7 +139,9 @@
+ {
+   GList *toplevels;
+   toplevels = gtk_window_list_toplevels ();
+-  g_list_foreach (toplevels, (GFunc) gtk_widget_queue_draw, NULL);
++  /* wasm: a one-argument function cast to GFunc traps on call_indirect. */
++  for (GList *l = toplevels; l; l = l->next)
++    gtk_widget_queue_draw (l->data);
+   g_list_free (toplevels);
+ }
+ 
 --- a/libgail-util/gailtextutil.c
 +++ b/libgail-util/gailtextutil.c
 @@ -35,9 +35,11 @@

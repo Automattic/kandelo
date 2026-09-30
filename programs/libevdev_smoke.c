@@ -67,12 +67,14 @@ int main(void) {
     fflush(stdout);
     libevdev_free(kbd);
 
-    /* --- Phase 2: pointer (event1), EV_REL / REL_X ------------------- */
-    struct libevdev *ptr = probe("/dev/input/event1", "ptr", EV_REL, REL_X);
+    /* --- Phase 2: pointer (event1), EV_ABS / ABS_X ------------------- */
+    /* The pointer is an absolute device (it advertises ABS_X/ABS_Y and
+     * only the wheels on EV_REL), like a tablet or touchscreen. */
+    struct libevdev *ptr = probe("/dev/input/event1", "ptr", EV_ABS, ABS_X);
     printf("READY:ptr\n");
     fflush(stdout);
     wait_sync();
-    next(ptr, "ptr", 0);   /* EV_REL REL_X 5 */
+    next(ptr, "ptr", 0);   /* EV_ABS ABS_X 5 */
     next(ptr, "ptr", 1);   /* EV_SYN SYN_REPORT 0 */
     fflush(stdout);
     libevdev_free(ptr);

@@ -19,9 +19,10 @@
  *   - makoctl dismiss round-trips mako's private fr.emersion.Mako
  *     interface, and mako exits clean on SIGTERM (signalfd path).
  *
- * The orchestrating shell must be dash: exec targets resolved via
- * onResolveExec are visible to exec() but not to PATH-search stat calls,
- * so the script invokes them by absolute path. Skips if any binary is
+ * The orchestrating dash script execs each program by its absolute host
+ * path: exec reads its target from the kernel VFS, which the Node host's
+ * VFS maps onto the host filesystem, so the resolver's cached wasm is
+ * reachable there directly. Skips if any binary is
  * missing (bare checkout — mako comes from the package cache).
  */
 import { describe, expect, it } from "vitest";
@@ -39,7 +40,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const INCONSOLATA = join(
   REPO_ROOT,
-  "examples/libs/wpkdraw/third_party/Inconsolata-Regular.ttf",
+  "third_party/Inconsolata-Regular.ttf",
 );
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
@@ -96,10 +97,6 @@ describe("mako — upstream notification daemon on wlcompositor + dbus", () => {
     async () => {
       const compositorBytes = loadBytes(compositorBin!);
       const dashBytes = loadBytes(dashBin!);
-      const daemonBytes = loadBytes(daemonBin!);
-      const makoBytes = loadBytes(makoBin!);
-      const makoctlBytes = loadBytes(makoctlBin!);
-      const notifyBytes = loadBytes(notifyBin!);
 
       const root = mkdtempSync(join(tmpdir(), "kandelo-mako-"));
       const fontDir = join(root, "fonts");
@@ -122,23 +119,23 @@ describe("mako — upstream notification daemon on wlcompositor + dbus", () => {
 
       const script = [
         `printf '%s\\n' '${SESSION_CONF}' > /tmp/mako-session.conf`,
-        `/bin/dbus-daemon --config-file=/tmp/mako-session.conf --nofork &`,
+        `${daemonBin!} --config-file=/tmp/mako-session.conf --nofork &`,
         `daemon_pid=$!`,
         `i=0`,
         `while [ ! -S ${BUS_SOCKET} ] && [ $i -lt 20000 ]; do i=$((i+1)); done`,
         `export DBUS_SESSION_BUS_ADDRESS=unix:path=${BUS_SOCKET}`,
-        `/bin/mako &`,
+        `${makoBin!} &`,
         `mako_pid=$!`,
         // Retry until mako owns the name; the first success IS the
         // gate's notification.
         `tries=0`,
-        `until /bin/glib_gdbus_smoke --notify 2>/tmp/notify.err; do`,
+        `until ${notifyBin!} --notify 2>/tmp/notify.err; do`,
         `  tries=$((tries+1))`,
         `  [ $tries -ge 60 ] && break`,
         `  j=0; while [ $j -lt 20000 ]; do j=$((j+1)); done`,
         `done`,
         `[ $tries -ge 60 ] && while read l; do echo "notify.err: $l"; done < /tmp/notify.err`,
-        `/bin/makoctl dismiss --all && echo MAKOCTL_OK`,
+        `${makoctlBin!} dismiss --all && echo MAKOCTL_OK`,
         `kill $mako_pid`,
         `wait $mako_pid`,
         `echo MAKO_EXIT=$?`,
@@ -151,13 +148,6 @@ describe("mako — upstream notification daemon on wlcompositor + dbus", () => {
       const host = new NodeKernelHost({
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
-        onResolveExec: (path) => {
-          if (path.endsWith("/dbus-daemon")) return daemonBytes;
-          if (path.endsWith("/mako")) return makoBytes;
-          if (path.endsWith("/makoctl")) return makoctlBytes;
-          if (path.endsWith("/glib_gdbus_smoke")) return notifyBytes;
-          return null;
-        },
       });
       const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
 
