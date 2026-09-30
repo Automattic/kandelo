@@ -10,6 +10,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
+import { retryKernelEntryResult } from "../src/kernel-entry-retry";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { ThreadPageAllocator } from "../src/thread-allocator";
@@ -638,12 +639,18 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         const childChannelOffset = childLayout.channelOffset;
         new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-          ptrWidth: parentPtrWidth,
-          maxAddr: childLayout.maxAddr,
-          mmapBase: childLayout.mmapBase,
-        });
-        kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
+        // Same as the Node host's fork launch: the fork callback can run
+        // while another kernel entry is active, so registration and
+        // inheritance wait for it rather than failing the fork with a
+        // reentrancy error ("Cannot fork" in the guest).
+        await retryKernelEntryResult(() =>
+          kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
+            ptrWidth: parentPtrWidth,
+            maxAddr: childLayout.maxAddr,
+            mmapBase: childLayout.mmapBase,
+          }));
+        await retryKernelEntryResult(() =>
+          kernelWorker.inheritProcessSharedMappings(parentPid, childPid));
 
         const activeForkBufAddr = continuation.forkBufAddr;
         const parentForkReplayContext = forkReplayContexts.get(parentPid);

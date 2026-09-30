@@ -233,6 +233,9 @@ unsafe extern "C" {
     fn host_proc_write_bytes(pid: i32, addr: u32, src_ptr: *const u8, len: u32) -> i32;
     fn host_proc_read_bytes(pid: i32, addr: u32, dst_ptr: *mut u8, len: u32) -> i32;
     fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
+    /// Writes the connector's physical size, two u32s (width, height) in
+    /// millimetres, to `out_ptr`; zeros when the display's size is unknown.
+    fn host_kms_connector_mm(connector_id: u32, out_ptr: *mut u32);
     fn host_kms_addfb(
         pid: i32,
         fb_id: u32,
@@ -1090,6 +1093,12 @@ impl HostIO for WasmHostIO {
         let mut info = wasm_posix_shared::dri::WpkDrmModeModeinfo::default();
         unsafe { host_kms_mode_info(connector_id, &mut info as *mut _ as *mut u8) }
         info
+    }
+
+    fn kms_connector_mm(&mut self, connector_id: u32) -> (u32, u32) {
+        let mut mm = [0u32; 2];
+        unsafe { host_kms_connector_mm(connector_id, mm.as_mut_ptr()) }
+        (mm[0], mm[1])
     }
 
     fn kms_addfb(

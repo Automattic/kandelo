@@ -1829,6 +1829,10 @@ fn handle_dri_card_ioctl(
                     return Err(Errno::EFAULT);
                 }
             }
+            // The display's physical size is what a client derives its
+            // output scale (DPI) from; the host knows it, the kernel reports
+            // it here as a real connector does.
+            let (mm_width, mm_height) = host.kms_connector_mm(1);
             let resp = WpkDrmModeGetConnector {
                 encoders_ptr: req.encoders_ptr,
                 modes_ptr: req.modes_ptr,
@@ -1841,6 +1845,8 @@ fn handle_dri_card_ioctl(
                 connector_type: DRM_MODE_CONNECTOR_VIRTUAL,
                 connector_type_id: 1,
                 connection: DRM_MODE_CONNECTED,
+                mm_width,
+                mm_height,
                 subpixel: DRM_MODE_SUBPIXEL_UNKNOWN,
                 ..Default::default()
             };

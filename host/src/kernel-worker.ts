@@ -30,6 +30,7 @@ import {
   negErrno,
   WasmPosixKernel,
   type KernelPointer,
+  type KmsDisplaySize,
 } from "./kernel";
 import { resolveIoctlContract } from "./ioctl-contract";
 import { connectorModeSize } from "./dri/kms-registry";
@@ -3530,7 +3531,7 @@ export class CentralizedKernelWorker {
    *  drawing buffer to this and lets the GPU scale the framebuffer
    *  texture, instead of scaling an fb-sized bitmap in CSS. Absent →
    *  the canvas tracks the framebuffer size. */
-  private kmsDisplaySizes = new Map<number, { width: number; height: number }>();
+  private kmsDisplaySizes = new Map<number, KmsDisplaySize>();
   private vblankTimer: ReturnType<typeof setInterval> | null = null;
   /** `KmsRegistry.flipCount()` at the last vblank tick. The pump wakes
    *  blocked retries only when this moved — an unconditional 60 Hz wake
@@ -3598,8 +3599,9 @@ export class CentralizedKernelWorker {
       // `sendPointerAbs` forwards them as EV_ABS, so EVIOCGABS on the
       // pointer device must advertise exactly this framebuffer's size.
       // This SETCRTC hook keeps the range truthful for consumers that
-      // open the device later and for mid-session modesets (SDL reads
-      // raw values, so ScummVM survives either way). It cannot reach a
+      // open the device later and for mid-session modesets. Consumers
+      // scale EV_ABS by the range (SDL's evdev backend does), so a range
+      // that is not the framebuffer's misplaces the pointer. It cannot reach a
       // libinput consumer that is already running — libinput caches
       // absinfo at device open — which is why `setKmsDisplaySize`
       // advertises the derived connector mode before the guest starts.
@@ -16200,10 +16202,17 @@ export class CentralizedKernelWorker {
       // The entry keeps the call inside the active gate scope: the bare
       // instance would open a NEW entry, which throws mid-retry
       // (KernelReentrantEntryError while a syscall retry is active).
-      const restoreMask = this.#kernelInstanceIfAvailableForEntry(entry)?.exports
-        .kernel_restore_poll_sigmask as
+      const instance = this.#kernelInstanceIfAvailableForEntry(entry);
+      const restoreMask = instance?.exports.kernel_restore_poll_sigmask as
         | ((pid: number, tid: number) => number)
         | undefined;
+      // The swap above required the paired export; a kernel instance that
+      // is still live but lacks the restore half is the same broken build.
+      if (instance && !restoreMask) {
+        throw new Error(
+          "kernel lacks kernel_restore_poll_sigmask: epoll_pwait's signal mask cannot be restored",
+        );
+      }
       restoreMask?.(channel.pid, this.guestTidForChannel(channel));
     }
 
@@ -19644,12 +19653,20 @@ export class CentralizedKernelWorker {
             .kernel_swap_poll_sigmask as
             | ((pid: number, tid: number, mask: bigint) => number)
             | undefined;
-          if (swapMask) {
-            const mask = new DataView(channel.memory.buffer)
-              .getBigUint64(maskPointer, true);
-            swapMask(channel.pid, this.guestTidForChannel(channel), mask);
-            channel.pollSigmaskSwapped = true;
+          // Required, not optional: without the swap the caller's mask is
+          // silently ignored, and a signal it unblocks only inside the wait
+          // (foot's SIGCHLD reaper) never arrives, so the terminal never
+          // notices its shell exited. A kernel lacking the export is a
+          // broken build of this ABI; refuse it loudly.
+          if (!swapMask) {
+            throw new Error(
+              "kernel lacks kernel_swap_poll_sigmask: epoll_pwait's signal mask cannot be honoured",
+            );
           }
+          const mask = new DataView(channel.memory.buffer)
+            .getBigUint64(maskPointer, true);
+          swapMask(channel.pid, this.guestTidForChannel(channel), mask);
+          channel.pollSigmaskSwapped = true;
         }
       }
       eventsPtr = this.checkedProcessRange(
@@ -33887,15 +33904,33 @@ export class CentralizedKernelWorker {
    *  compositor's framebuffer will match). It must land here, not only
    *  at SETCRTC: libinput caches absinfo when it opens the device, and
    *  a compositor opens `event1` before it presents its first frame —
-   *  a range corrected at SETCRTC is a range libinput never sees. */
-  setKmsDisplaySize(crtc_id: number, width: number, height: number): void {
+   *  a range corrected at SETCRTC is a range libinput never sees.
+   *
+   *  `physicalMm`, when given, is the display's physical size; the kernel
+   *  reports it on the connector, where a compositor derives its output
+   *  scale from the display's DPI. */
+  setKmsDisplaySize(
+    crtc_id: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
+  ): void {
     if (!(width >= 1) || !(height >= 1)) return;
     // Sanity cap: a bogus resize report must not allocate an absurd
     // drawing buffer.
-    const display = {
+    const display: KmsDisplaySize = {
       width: Math.min(Math.round(width), 4096),
       height: Math.min(Math.round(height), 4096),
     };
+    // Millimetres are only meaningful when both are positive and sane (a
+    // 10 m display is a bogus report, not a physical size).
+    if (
+      physicalMm && physicalMm.width >= 1 && physicalMm.height >= 1 &&
+      physicalMm.width <= 10_000 && physicalMm.height <= 10_000
+    ) {
+      display.mmWidth = Math.round(physicalMm.width);
+      display.mmHeight = Math.round(physicalMm.height);
+    }
     this.kmsDisplaySizes.set(crtc_id, display);
     const mode = connectorModeSize(display);
     this.setInputCanvasDims(mode.width, mode.height);

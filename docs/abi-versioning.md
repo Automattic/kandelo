@@ -930,8 +930,16 @@ Structural changes (recorded in the snapshot):
 - **`GLIO_CREATE_SURFACE` attributes** grow from 12 to 20 bytes: a
   reserved field names the bo whose framebuffer the window surface
   renders into.
+- **A new `host_kms_connector_mm` import** reports the display's physical
+  size, which `DRM_IOCTL_MODE_GETCONNECTOR` now returns in
+  `mm_width`/`mm_height` (they were always 0). A host built for ABI 44
+  lacks the import and cannot instantiate this kernel. Host imports are not
+  in the structural snapshot, which is why this is listed by hand.
 - **`kernel_swap_poll_sigmask` / `kernel_restore_poll_sigmask`** exports
-  let the host hold an epoll_pwait signal mask for the whole wait.
+  let the host hold an epoll_pwait signal mask for the whole wait. The
+  host still runs epoll_pwait itself (it converts the wait to poll
+  retries), so without them the mask argument would be ignored and a
+  signal the caller unblocks only inside the wait would never arrive.
 
 Semantic changes (not visible to the snapshot):
 

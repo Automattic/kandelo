@@ -238,8 +238,15 @@ export interface KernelLike {
    * `webgl2-scanout` presenter resizes its drawing buffer to match, so
    * the scanout is GPU-scaled exactly once — at display resolution —
    * instead of the page compositor rescaling an fb-sized bitmap.
+   * `physicalMm` is the display's physical size, which the kernel reports
+   * on the DRM connector so a compositor can derive its output scale.
    */
-  kmsSetDisplaySize?(crtcId: number, width: number, height: number): void;
+  kmsSetDisplaySize?(
+    crtcId: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
+  ): void;
   /**
    * Register a stats SAB for `crtcId` without binding a scanout
    * canvas. Used by WebGL-rendered demos that want page-flip
@@ -2775,11 +2782,19 @@ export class LiveKernelHost implements KernelHost {
         const height = dp
           ? dp.blockSize
           : entry.contentRect.height * (globalThis.devicePixelRatio || 1);
+        // The physical size, from the CSS box: CSS defines 96 px per inch,
+        // so a client deriving DPI from it gets the device-pixel ratio —
+        // the output scale a HiDPI screen needs. It is the browser's
+        // reference size, not a measured panel.
+        const physicalMm = {
+          width: (entry.contentRect.width * 25.4) / 96,
+          height: (entry.contentRect.height * 25.4) / 96,
+        };
         // A hidden pane reports 0×0 — keep the last real size (the
         // worker ignores non-positive dims too).
         if (width >= 1 && height >= 1) {
           this.kmsDisplaySizes.set(crtcId, { width, height });
-          kernel.kmsSetDisplaySize?.(crtcId, width, height);
+          kernel.kmsSetDisplaySize?.(crtcId, width, height, physicalMm);
           this.settleKmsDisplaySizeWaiters(crtcId, { width, height });
         }
       });

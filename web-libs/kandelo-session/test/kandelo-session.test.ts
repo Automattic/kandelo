@@ -2452,8 +2452,18 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     }
   }
 
+  // A real ResizeObserverEntry carries both boxes; at a device-pixel ratio
+  // of 1 the CSS content box equals the device-pixel box.
   const fireResize = (ro: FakeResizeObserver, w: number, h: number) =>
-    ro.cb([{ devicePixelContentBoxSize: [{ inlineSize: w, blockSize: h }] }]);
+    ro.cb([{
+      devicePixelContentBoxSize: [{ inlineSize: w, blockSize: h }],
+      contentRect: { width: w, height: h },
+    }]);
+  // The physical size the host derives from the CSS box (96 px per inch).
+  const mmFor = (w: number, h: number) => ({
+    width: (w * 25.4) / 96,
+    height: (h * 25.4) / 96,
+  });
 
   const makeKmsKernel = () => ({
     kmsAttachCanvas: vi.fn(),
@@ -2486,7 +2496,7 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
 
       fireResize(ro, 800, 600);
       expect(host.getKmsDisplaySize(1)).toEqual({ width: 800, height: 600 });
-      expect(kernelA.kmsSetDisplaySize).toHaveBeenCalledWith(1, 800, 600);
+      expect(kernelA.kmsSetDisplaySize).toHaveBeenCalledWith(1, 800, 600, mmFor(800, 600));
 
       host.detachKernel();
       expect(host.getKmsDisplaySize(1)).toBeUndefined();
@@ -2528,7 +2538,7 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       const roB = FakeResizeObserver.instances[1];
       fireResize(roB, 1024, 768);
       expect(host.getKmsDisplaySize(1)).toEqual({ width: 1024, height: 768 });
-      expect(kernelB.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1024, 768);
+      expect(kernelB.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1024, 768, mmFor(1024, 768));
     });
   });
 
@@ -2546,7 +2556,7 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       fireResize(FakeResizeObserver.instances[0], 1280, 720);
     });
     expect(await sized).toEqual({ width: 1280, height: 720 });
-    expect(kernel!.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1280, 720);
+    expect(kernel!.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1280, 720, mmFor(1280, 720));
   });
 
   it("closing the pane's handle disconnects its observer; a StrictMode reuse reconnects it", () => {

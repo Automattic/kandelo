@@ -1217,8 +1217,13 @@ export class BrowserKernel {
    * GPU-scales the scanout into it. Feed from a ResizeObserver on the
    * placeholder canvas element.
    */
-  kmsSetDisplaySize(crtcId: number, width: number, height: number): void {
-    this.sendToKernel({ type: "kms_set_display_size", crtcId, width, height });
+  kmsSetDisplaySize(
+    crtcId: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
+  ): void {
+    this.sendToKernel({ type: "kms_set_display_size", crtcId, width, height, physicalMm });
   }
 
   /**

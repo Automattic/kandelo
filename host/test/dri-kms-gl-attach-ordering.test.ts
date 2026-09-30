@@ -45,7 +45,27 @@ function fakeCanvas(width = 300, height = 150): {
   height: number;
   getContext: () => unknown;
 } {
-  const glCtx = { getExtension: () => null };
+  // Canvas-backed GL renders into an offscreen present target and blits it
+  // to the canvas on present (host/src/webgl/present-target.ts), so the
+  // context needs the few calls that target makes. None of them is under
+  // test here; they only have to succeed.
+  const glCtx = {
+    getExtension: () => null,
+    getParameter: () => null,
+    createTexture: () => ({}),
+    createFramebuffer: () => ({}),
+    deleteTexture: () => {},
+    deleteFramebuffer: () => {},
+    bindTexture: () => {},
+    bindFramebuffer: () => {},
+    texImage2D: () => {},
+    texParameteri: () => {},
+    framebufferTexture2D: () => {},
+    checkFramebufferStatus: () => 0x8cd5, // FRAMEBUFFER_COMPLETE
+    blitFramebuffer: () => {},
+    enable: () => {},
+    disable: () => {},
+  };
   return { width, height, getContext: () => glCtx };
 }
 

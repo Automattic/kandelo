@@ -243,6 +243,33 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
     return EGL_SURFACE_HANDLE;
 }
 
+/* Called by libwayland-egl after wl_egl_window_resize gave the window a new
+ * bo: re-aim the live window surface's default framebuffer at it. The
+ * surface is destroyed and re-created with the new target, which the host
+ * applies at once because the context already exists. Commands queued
+ * against the old target are flushed first, so they still land in the old
+ * bo, which libwayland-egl keeps alive until its successor is committed. */
+void _wpk_egl_window_retarget(void *egl_window) {
+    if (!egl_window || egl_window != g_current_egl_window || !g_surface_made
+        || g_fd < 0 || !_wpk_wlegl_bo_handle)
+        return;
+    uint32_t target = _wpk_wlegl_bo_handle(egl_window);
+    if (!target) return;
+    _wpk_gl_flush();
+    ioctl(g_fd, GLIO_DESTROY_SURFACE, NULL);
+    struct gl_surface_attrs surf = {
+        .kind = WPK_SURFACE_DEFAULT,
+        .width = 0, .height = 0, .config_id = 1,
+        .reserved = {target, 0, 0, 0},
+    };
+    if (ioctl(g_fd, GLIO_CREATE_SURFACE, &surf) != 0) {
+        /* The surface is gone and nothing replaced it: eglMakeCurrent and
+         * eglSwapBuffers now fail rather than render into a stale target. */
+        g_surface_made = 0;
+        g_current_egl_window = NULL;
+    }
+}
+
 EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
                           EGLSurface read, EGLContext ctx) {
     if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
@@ -266,7 +293,8 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
 }
 
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
-    if (dpy != EGL_DPY_HANDLE || surface != EGL_SURFACE_HANDLE) {
+    if (dpy != EGL_DPY_HANDLE || surface != EGL_SURFACE_HANDLE
+        || !g_surface_made) {
         g_last_error = EGL_BAD_SURFACE;
         return EGL_FALSE;
     }

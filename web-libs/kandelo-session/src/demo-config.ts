@@ -450,8 +450,13 @@ export function resolveDemoIngest(
 }
 
 /** Upper bound on any image-declared cap, so a bad image can't ask the browser
- *  to buffer an unbounded upload into the VFS. */
-const INGEST_MAX_BYTES_CEILING = 64 * 1024 * 1024;
+ *  to buffer an unbounded upload into the VFS. The upload is held in page
+ *  memory and then written into the machine's filesystem, whose own ceiling
+ *  (`imageMemfsMaxBytes`: 1 GiB on desktop engines, 768 MiB on constrained
+ *  ones) still applies — a file the filesystem cannot hold fails the write
+ *  with ENOSPC. 512 MiB admits a CD-era game archive (a SCUMM talkie is
+ *  roughly 150-500 MB zipped) while staying well under that ceiling. */
+const INGEST_MAX_BYTES_CEILING = 512 * 1024 * 1024;
 
 const RUNTIME_FEATURES = new Set<DemoRuntimeFeature>([
   "framebuffer",

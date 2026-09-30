@@ -1522,6 +1522,11 @@ const auditAllowances: AuditAllowance[] = [
     why: "The display-mode import binds its exact pointer formal to the generated fixed structure capacity before inspecting display state.",
   },
   {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( out_ptr, 8, "host_kms_connector_mm destination", )',
+    disposition: "rust-lent",
+    why: "The connector physical-size import binds its exact pointer formal to the two-u32 capacity the kernel lends before inspecting display state.",
+  },
+  {
     key: "host/src/kernel.ts::WasmPosixKernel.#hostFutexWait::kernel-view::new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory))",
     disposition: "kernel-control",
     why: "The lossless pointer, four-byte current-memory range, and alignment are proved before constructing this one synchronous futex-wait atomic view.",

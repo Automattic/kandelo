@@ -390,6 +390,15 @@ pub trait HostIO {
         wasm_posix_shared::dri::WpkDrmModeModeinfo::default()
     }
 
+    /// The connector's physical size in millimetres, `(width, height)`, as
+    /// `DRM_IOCTL_MODE_GETCONNECTOR` reports it. `(0, 0)` means unknown,
+    /// which is what a real connector reports when the panel gives no size
+    /// (and what a host with no display reports).
+    #[allow(unused_variables)]
+    fn kms_connector_mm(&mut self, connector_id: u32) -> (u32, u32) {
+        (0, 0)
+    }
+
     #[allow(unused_variables)]
     fn kms_addfb(
         &mut self,
@@ -2245,19 +2254,32 @@ impl Process {
         let handler_base_mask = self.blocked_for(tid);
         let handler_depth = self.caught_handler_depth_for(tid).saturating_add(1);
         self.set_caught_handler_depth_for(tid, handler_depth);
-        if let Some(wait) = self
-            .mask_waits_for_mut(tid)
-            .and_then(|waits| waits.last_mut())
-        {
-            if wait.state == SignalMaskWaitState::Active {
-                wait.state = SignalMaskWaitState::Interrupted { handler_depth };
+        // The mask the handler's normal return restores.
+        let mut restore_mask = handler_base_mask;
+        if let Some(waits) = self.mask_waits_for_mut(tid) {
+            if let Some(wait) = waits.last_mut() {
+                if wait.state == SignalMaskWaitState::Active {
+                    if wait.kind == crate::signal::SignalMaskWaitKind::EpollPwait {
+                        // epoll_pwait is never restarted after a caught
+                        // handler: it returns EINTR, and the handler's
+                        // return restores the caller's pre-wait mask (Linux's
+                        // set_restore_sigmask). Keeping the context would
+                        // leave the wait's mask installed after the handler,
+                        // so a signal the caller blocks outside the wait
+                        // (foot's SIGCHLD) would run its handler anywhere.
+                        restore_mask = wait.saved_mask;
+                        waits.pop();
+                    } else {
+                        wait.state = SignalMaskWaitState::Interrupted { handler_depth };
+                    }
+                }
             }
         }
         self.set_blocked_for(
             tid,
             handler_base_mask | action_mask | crate::signal::sig_bit(signum),
         );
-        handler_base_mask
+        restore_mask
     }
 
     /// Collect every TID that has `sig` unblocked (main + worker threads).
@@ -2652,6 +2674,37 @@ mod tests {
         assert_eq!(proc.mask_wait_depth_for(proc.pid), 0);
         assert!(proc.return_from_caught_handler_for(proc.pid));
         proc.acknowledge_caught_handler_mask_restore_for(proc.pid);
+    }
+
+    #[test]
+    fn epoll_pwait_handler_return_restores_the_pre_wait_mask() {
+        use crate::signal::{SignalMaskWaitKind, sig_bit};
+        use wasm_posix_shared::signal::{SIGCHLD, SIGUSR1};
+
+        // foot's reaper: SIGCHLD blocked everywhere, open only in the wait.
+        let mut proc = Process::new(744);
+        let tid = proc.pid;
+        let original = sig_bit(SIGCHLD);
+        proc.set_blocked_for(tid, original);
+        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::EpollPwait, 0);
+        assert_eq!(proc.blocked_for(tid), 0);
+
+        let action_mask = sig_bit(SIGUSR1);
+        let restore_mask = proc.install_caught_handler_mask_for(tid, action_mask, SIGCHLD);
+
+        // epoll_pwait is not restarted: the handler's return restores the
+        // caller's mask, and the wait's context is gone.
+        assert_eq!(restore_mask, original);
+        assert_eq!(proc.mask_wait_depth_for(tid), 0);
+        assert_eq!(proc.blocked_for(tid), action_mask | sig_bit(SIGCHLD));
+        assert!(proc.return_from_caught_handler_for(tid));
+        proc.acknowledge_caught_handler_mask_restore_for(tid);
+
+        // The next wait starts a fresh context instead of reusing the old.
+        proc.set_blocked_for(tid, restore_mask);
+        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::EpollPwait, 0);
+        assert_eq!(proc.blocked_for(tid), 0);
+        assert_eq!(proc.mask_wait_depth_for(tid), 1);
     }
 
     #[test]
