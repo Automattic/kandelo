@@ -1001,7 +1001,9 @@ if (typeof window !== "undefined") {
     if (
       typeof CORS_PROXY_CONFIG.url !== "string" ||
       !Array.isArray(CORS_PROXY_CONFIG.allowedRequestHeaderNames) ||
-      typeof CORS_PROXY_CONFIG.allowAnonymousGetHeaderOmission !== "boolean"
+      typeof CORS_PROXY_CONFIG.allowAnonymousGetHeaderOmission !== "boolean" ||
+      (CORS_PROXY_CONFIG.rangeRequestHeaderAlias !== undefined &&
+        typeof CORS_PROXY_CONFIG.rangeRequestHeaderAlias !== "string")
     ) {
       return null;
     }
@@ -1101,6 +1103,15 @@ if (typeof window !== "undefined") {
       var lower = name.toLowerCase();
       if (allowed.has(lower)) {
         headers.append(name, value);
+      } else if (lower === "if-range") {
+        // The proxy cannot carry it; fetchThroughCorsProxy applies its
+        // semantics to the answer instead (RFC 9110 section 13.1.5).
+      } else if (lower === config.rangeRequestHeaderAlias) {
+        // Part of the WP Cloud Range workaround (see below). Projection owns
+        // the alias: it is re-derived from Range below, so a caller's value is
+        // never relayed. Kandelo's own kernel worker sends it when its guest
+        // traffic reaches the proxy URL through this worker already
+        // projected; that is not an unsupported field.
       } else if (
         lower === "authorization" || lower === "cookie" ||
         lower === "cookie2" || lower === "proxy-authorization"
@@ -1119,6 +1130,17 @@ if (typeof window !== "undefined") {
         unsupported.push(lower);
       }
     });
+    // WORKAROUND, mirroring BrowserCorsProxy.project(): WP Cloud, which hosts
+    // the Playground CORS proxy, strips the Range header before the request
+    // reaches the proxy's PHP, so the proxy also reads the same value from an
+    // alias header (X-Cors-Proxy-Range). Send both. Remove this, the alias
+    // handling above, and the no-store mode below as soon as WP Cloud relays
+    // Range headers to PHP (see BrowserCorsProxyConfig.rangeRequestHeaderAlias
+    // in host/src/networking/browser-cors-proxy.ts).
+    var range = headers.get("range");
+    if (config.rangeRequestHeaderAlias && range !== null) {
+      headers.set(config.rangeRequestHeaderAlias, range);
+    }
     var diagnosticNames = Array.from(new Set(unsupported)).sort();
     if (diagnosticNames.length > 0) {
       var canOmit = config.allowAnonymousGetHeaderOmission &&
@@ -1138,19 +1160,83 @@ if (typeof window !== "undefined") {
         );
       }
     }
+    // The proxy URL differs from the page's, so this has to be a new Request.
+    // Carry the page's abort signal across so a cancelled page fetch cancels
+    // the proxied one before response headers, in browsers that signal it.
+    // (Chromium and WebKit did not when measured 2026-09-26; after headers,
+    // cancelling the response stream reaches the proxy regardless.)
+    // Range survives through the allow-list above like any other field.
     var init = {
       method: request.method,
       headers: headers,
       credentials: "omit",
       mode: "cors",
       redirect: request.redirect,
+      signal: request.signal,
     };
+    if (config.rangeRequestHeaderAlias && headers.has(config.rangeRequestHeaderAlias)) {
+      // WORKAROUND, part of the WP Cloud Range alias (mirrors
+      // BrowserCorsProxy.fetch): the HTTP cache may shrink Range on the wire
+      // to the bytes it has not stored, but not the alias, so the proxy would
+      // answer a different range and the cache would join a short body. In
+      // Chromium this also skips the preflight cache (documented technical
+      // debt). Remove with the alias, as soon as WP Cloud relays Range
+      // headers to PHP.
+      init.cache = "no-store";
+    }
     if (request.method === "GET" || request.method === "HEAD") {
       return Promise.resolve(new Request(outgoingUrl, init));
     }
     return request.arrayBuffer().then(function (body) {
       if (body.byteLength > 0) init.body = body;
       return new Request(outgoingUrl, init);
+    });
+  }
+
+  // Mirror of ifRangeMatches() in host/src/networking/browser-cors-proxy.ts:
+  // does a 206 satisfy an If-Range condition? Unconfirmable counts as no.
+  function ifRangeMatches(ifRange, headers) {
+    var value = ifRange.trim();
+    if (value.indexOf("W/") === 0) return false;
+    if (value.charAt(0) === '"') {
+      return (headers.get("etag") || "").trim() === value;
+    }
+    var lastModified = (headers.get("last-modified") || "").trim();
+    if (!lastModified || lastModified !== value) return false;
+    var modified = Date.parse(lastModified);
+    var date = Date.parse(headers.get("date") || "");
+    return isFinite(modified) && isFinite(date) && date - modified >= 1000;
+  }
+
+  // Mirror of BrowserCorsProxy.fetch(): send the projected request and honor
+  // an If-Range the proxy cannot carry. A 206 or 416 without the matching
+  // validator is discarded for the whole representation, as a server whose
+  // If-Range condition is false would send (RFC 9110 section 13.1.5). The
+  // cost of doubt is one extra full request, never a slice of a changed
+  // resource. Several If-Range fields reach here joined, which never match.
+  function fetchThroughCorsProxy(request, outgoingUrl, targetUrl) {
+    var config = normalizedCorsProxyConfig();
+    var ifRange = config && !proxyAllowedHeaderNames(config).has("if-range")
+      ? request.headers.get("if-range")
+      : null;
+    return projectCorsProxyRequest(request, outgoingUrl, targetUrl).then(function (projected) {
+      if (projected instanceof Response) return projected;
+      return fetch(projected).then(function (response) {
+        if (
+          ifRange === null || projected.method !== "GET" ||
+          (response.status !== 206 && response.status !== 416) ||
+          ifRangeMatches(ifRange, response.headers)
+        ) {
+          return response;
+        }
+        if (response.body) response.body.cancel().catch(function () {});
+        var headers = new Headers(projected.headers);
+        headers.delete("range");
+        if (config.rangeRequestHeaderAlias) {
+          headers.delete(config.rangeRequestHeaderAlias);
+        }
+        return fetch(new Request(projected, { headers: headers, cache: "default" }));
+      });
     });
   }
 
@@ -1414,10 +1500,7 @@ if (typeof window !== "undefined") {
     // configured CORS proxy. Do not wrap that request in the same proxy again.
     if (isCorsProxyFetchUrl(targetUrl)) {
       var proxiedTargetUrl = corsProxyTargetUrl(targetUrl) || targetUrl;
-      return projectCorsProxyRequest(request, targetUrl, proxiedTargetUrl).then(function (projected) {
-        if (projected instanceof Response) return projected;
-        return fetch(projected);
-      }).then(function (response) {
+      return fetchThroughCorsProxy(request, targetUrl, proxiedTargetUrl).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
         return responseWithHeaders(response, headers);
       });
@@ -1426,10 +1509,7 @@ if (typeof window !== "undefined") {
     // If we have a CORS proxy, route through it
     if (normalizedCorsProxyConfig()) {
       var proxyUrl = corsProxyFetchUrl(targetUrl);
-      return projectCorsProxyRequest(request, proxyUrl, targetUrl).then(function (projected) {
-        if (projected instanceof Response) return projected;
-        return fetch(projected);
-      }).then(function (response) {
+      return fetchThroughCorsProxy(request, proxyUrl, targetUrl).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
         return responseWithHeaders(response, headers);
       });

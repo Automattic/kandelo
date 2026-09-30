@@ -133,7 +133,7 @@ existing Linux-VT guests working and preserve Node/browser parity.
 
 ### Replace the constrained public CORS proxy with an owned relay
 
-The current public proxy has a narrow five-name request-header profile. A
+The current public proxy has a narrow six-name request-header profile. A
 Kandelo-owned authenticated relay should add explicit origin policy, private
 network controls, rate limiting, abuse prevention, response limits, and
 operational ownership. Once that capability exists, remove anonymous GET
@@ -142,6 +142,50 @@ current browser boundary as complete POSIX socket or HTTP fidelity.
 
 **Files:** `host/src/networking/`, `apps/browser-demos/public/service-worker.js`,
 deployment infrastructure and browser acceptance
+
+### Technical debt: drop the `X-Cors-Proxy-Range` workaround and its preflights
+
+WP Cloud, which hosts the default proxy's PHP, strips the `Range` header
+before the request reaches PHP, so the profile's
+`rangeRequestHeaderAlias` makes every proxy dispatch repeat `Range` as
+`X-Cors-Proxy-Range`, which that proxy forwards upstream as `Range`. This
+workaround has two costs, accepted to make ranged reads work at all:
+
+- **Preflights.** The alias is not CORS-safelisted, so a ranged request
+  needs an `OPTIONS` preflight. In Chromium every ranged request pays one,
+  because of the next item; WebKit reuses a preflight for 5 seconds. The time
+  cost has not been measured.
+- **No HTTP cache.** Aliased requests use the Fetch cache mode `no-store`,
+  because the HTTP cache can rewrite `Range` without the alias and splice a
+  short body. Ranged reads through the proxy are therefore never cached.
+
+When `Range` reaches the proxy unchanged (re-measure a plain
+`Range: bytes=0-15` through `wordpress-playground-cors-proxy.net` for a
+`206`), remove `rangeRequestHeaderAlias` and the `no-store` mode from the
+profile, `BrowserCorsProxy.fetch()`/`project()`, the service worker, and the
+development relay, together with their tests and the related text in
+`docs/browser-support.md`. Simple `bytes=N-M` ranges then need no preflight
+at all.
+
+**Files:** `host/src/networking/browser-cors-proxy.ts`,
+`apps/browser-demos/lib/browser-cors-proxy.ts`,
+`apps/browser-demos/public/service-worker.js`,
+`apps/browser-demos/vite/dev-cors-proxy.ts`, upstream proxy deployment
+
+### Relay `If-Range` instead of emulating it
+
+The proxy cannot carry `If-Range`, so the browser host emulates it: a `206`
+without the matching validator is discarded for a second, whole-entity
+request. That costs a full extra request whenever the resource changed, and
+always for a date-form `If-Range`, because the proxy does not expose the
+response `Date` that proves `Last-Modified` is strong. If the proxy allowed
+and forwarded `If-Range` (its front end strips it, so it would need an alias
+like `Range`), the profile could list it and the emulation would step aside
+on its own. Exposing `Date` would make date-form `If-Range` confirmable in
+the meantime.
+
+**Files:** `host/src/networking/browser-cors-proxy.ts`,
+`apps/browser-demos/public/service-worker.js`, upstream proxy deployment
 
 ### Reject credentialed Fetch modes at the constrained proxy boundary
 
@@ -159,7 +203,7 @@ test that proves rejection happens before dispatch.
 
 git compresses the smart-HTTP `git-upload-pack` fetch request and sets
 `Content-Encoding: gzip`. The browser TLS-MITM currently decodes such bodies to
-identity and drops the header so the request fits the proxy's five-name
+identity and drops the header so the request fits the proxy's six-name
 allow-list — a faithful *equivalent* of what the guest sent, but not a
 faithful *representation* of it. The more complete behavior is to forward
 `Content-Encoding` and the compressed body unchanged. That requires

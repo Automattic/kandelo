@@ -559,9 +559,11 @@ proxy. The Node.js host is unaffected and continues to fetch its lazy URLs
 directly.
 
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
-`wp_blog`, and `wp_install`. Every actual proxy boundary projects by
-case-insensitive field name only and preserves browser-representable values and
-occurrences as far as Fetch permits. Request fields the browser sets or
+`Range`, `wp_blog`, and `wp_install`, and copies `Range` into
+`X-Cors-Proxy-Range` (see "Byte-range reads through the proxy" below). Every
+actual proxy boundary projects by case-insensitive field name only and
+preserves browser-representable values and occurrences as far as Fetch
+permits. Request fields the browser sets or
 forbids on every `fetch()` — the Fetch forbidden request-header names plus
 browser-owned identity/client-hint fields such as `content-length`,
 `accept-encoding`, `transfer-encoding`, and `user-agent` — are omitted for
@@ -579,6 +581,121 @@ dispatch. Any other application-owned unsupported field still fails a
 credentialed, body-bearing, or non-GET request before dispatch. Direct Fetch
 attempts remain unprojected. The development same-origin relay enforces the same
 profile as production.
+
+#### Byte-range reads through the proxy
+
+`Range` is in the profile so that a byte-range read (for example, reading a
+ZIP archive's central directory from its last 64 KiB without downloading the
+archive) can reach the origin. It is relayed opaquely: no Kandelo proxy
+boundary parses range syntax.
+
+**Production (measured 2026-09-28).** The default proxy,
+`wordpress-playground-cors-proxy.net`, allows `Range` in its preflight and
+exposes `Content-Range`, `Accept-Ranges`, and `ETag`. The proxy is a PHP
+script hosted on WP Cloud, and WP Cloud's front-end web servers strip the
+`Range` header before the request reaches PHP, so a plain `Range` comes back
+as `200` with the whole entity. As a documented workaround, that proxy also
+reads the same value from `X-Cors-Proxy-Range` and forwards it upstream as
+`Range`. The profile names that field in `rangeRequestHeaderAlias`, and every
+proxy dispatch (`BrowserCorsProxy.project()` for guest traffic, and the
+service worker for page and worker fetches) copies an outgoing `Range` into
+it. Both fields carry the same value, which the proxy documents as safe once
+`Range` gets through. The alias workaround can be removed as soon as WP Cloud
+relays `Range` headers to PHP. A caller's own `X-Cors-Proxy-Range` is never relayed.
+
+**The HTTP cache must stay out of aliased requests.** The browser's HTTP
+cache may rewrite `Range` on the wire to fetch only the bytes it has not
+stored, but it cannot know that `X-Cors-Proxy-Range` names the same range.
+The proxy then answers the alias's range and the cache splices a body shorter
+than its `Content-Range`. Measured on 2026-09-28 in Chromium against a
+production-shaped fixture (`Cache-Control: no-cache`, strong `ETag`):
+overlapping reads of `bytes=50-149` and `bytes=0-199` came back with 50 and
+100 bytes. Every aliased request is therefore sent with the Fetch cache mode
+`no-store`. WebKit did not show the rewrite.
+
+**Limitation and technical debt: ranged requests through production pay CORS
+preflights.** `X-Cors-Proxy-Range` is not a CORS-safelisted request header,
+so the browser must send an `OPTIONS` preflight before a request that carries
+it, including simple `bytes=N-M` ranges that would otherwise need none.
+Measured on 2026-09-28 with five ranged reads of one proxy URL:
+
+| Engine | Preflights for 5 reads |
+|---|---|
+| Chromium | 5: a `no-store` request skips Chromium's preflight cache |
+| WebKit | 1: the preflight is reused for 5 seconds (the Fetch default when the proxy sends no `Access-Control-Max-Age`) |
+
+In Chromium, then, every ranged read costs one extra round trip to the proxy.
+A ZIP index read (a tail read, then possibly a directory read) pays it once or
+twice. The time cost was not measured. Both the preflights and the `no-store`
+mode exist only because of the alias workaround, and both go away when WP
+Cloud relays `Range` headers to PHP and the alias is removed; see
+`docs/future-improvements.md`.
+
+**`If-Range` is emulated, not relayed.** The proxy's preflight does not
+allow `If-Range`, and `If-Range` is never CORS-safelisted, so it is not in
+the profile and is never sent. Dropping it would turn a conditional ranged
+request into an unconditional one: after the resource changes, a resuming
+client would receive a slice of the new version. Instead, the proxy dispatch
+applies RFC 9110 section 13.1.5 to the answer. `BrowserCorsProxy.fetch()`
+does this for guest traffic, and the service worker for page and worker
+fetches. The range goes out without `If-Range`. If the `206` (or a `416` for
+a range the resource no longer covers) carries the matching validator, it
+stands. Otherwise the dispatch discards it and fetches the whole
+representation, exactly what a server whose `If-Range` condition is false
+would have sent, since such a server ignores the range. A validator that cannot be confirmed
+counts as a mismatch, so doubt costs one extra full request, never a wrong
+slice. An entity-tag `If-Range` is confirmed against the proxy-exposed
+`ETag`. A date `If-Range` also needs the response's `Date` header to prove
+`Last-Modified` is strong, and the proxy does not expose `Date` to scripts,
+so through the browser a date `If-Range` always takes the full-request path.
+`If-Range` without `Range` is meaningless and is dropped, as servers must
+ignore it. Several `If-Range` fields are joined, as Fetch joins them, and
+never match. Kandelo's own multi-read code, which issues no `If-Range`, passes
+the ETag it already saw to `fetchByteRange()` as `entityTag` and fails the
+read if an answer carries a different one.
+
+**Development (`__kandelo_cors_proxy`).** The Vite relay implements the same
+profile. It forwards `Range`, honors `X-Cors-Proxy-Range` the way the
+production proxy does (an empty alias is ignored, the alias is never
+forwarded, and an alias that disagrees with `Range` is a `400`), asks upstream
+for the identity encoding on ranged requests and `HEAD` so byte offsets and
+sizes address the stored bytes, relays the
+upstream status verbatim (a `206` stays a `206`), exposes `Content-Range`, and
+streams the body. A `206` that upstream compressed anyway is a `502`, because
+its `Content-Range` would describe bytes the relay does not send. The 100 MiB
+cap bounds the bytes one response actually carries, so a 16-byte slice of a
+4 GiB file is relayed, while an undeclared body that outgrows the cap is cut
+off mid-transfer. A client disconnect cancels the upstream request, before or
+after response headers.
+
+**Cancellation through the service worker.** Cancelling a proxied read
+reaches the relay once response headers have arrived: cancelling the body
+cancels the proxied transfer. Before headers it depends on the browser. The
+service worker copies the page request's abort signal onto the proxied
+request, but measured on 2026-09-26 in Playwright Chromium and WebKit, a page
+abort before headers never fired that signal (a plain pass-through
+`fetch(event.request)` behaved the same way). The upstream request then runs
+until it answers. This is a browser boundary, not relay behavior: a direct
+abort of a relay request cancels upstream in both engines.
+
+**Reading an answer.** A `200` answer to a ranged request is legal HTTP: any
+server or relay may ignore `Range`. Kandelo code that issues a ranged read
+must use `fetchByteRange()` from `host/src/networking/byte-range-fetch.ts`.
+It returns `partial` only for a `206` whose `Content-Range` answers the range
+requested: the exact bounded range (clamped to the entity's end), the final
+bytes for a suffix range, or a run starting at the requested position for an
+open-ended range. Its `bytes()` rejects a body of the wrong length. A `200`
+becomes `whole-entity`, a body that starts at offset 0 and is never the
+slice. Any other answer, including a `206` for a different range or with a
+different `ETag` than `entityTag`, becomes `failed`.
+
+Guest HTTP(S) requests reach the proxy through the same profile and get the
+relayed status unchanged. The Node.js host never projects guest requests; it
+fetches them directly with `Range` and `If-Range` intact. A guest `curl -r`
+therefore sees the same `206` on both hosts, including behind the production
+proxy, and a resume whose `If-Range` no longer matches sees the same `200`
+with the whole current file. The browser path may spend an extra request to
+get there.
 
 Bridge initialization now rejects typed CacheStorage and transition failures.
 A worker disappearance or lost acknowledgement after `postMessage` remains a
