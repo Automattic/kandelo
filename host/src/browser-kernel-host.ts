@@ -48,6 +48,7 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
@@ -1402,6 +1403,34 @@ export class BrowserKernel {
       path,
     });
     return (result as Uint8Array | null) ?? null;
+  }
+
+  /**
+   * List a directory in the kernel-owned VFS. Returns `null` when the path
+   * does not exist. Entries are described without following a final symlink.
+   */
+  async readDirFromVfs(path: string): Promise<VfsDirEntrySnapshot[] | null> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_dir",
+      requestId,
+      path,
+    });
+    return (result as VfsDirEntrySnapshot[] | null) ?? null;
+  }
+
+  /**
+   * Describe a path in the kernel-owned VFS, following symlinks. Returns
+   * `null` when the path does not exist.
+   */
+  async statVfsPath(path: string): Promise<VfsPathStat | null> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "stat_vfs_path",
+      requestId,
+      path,
+    });
+    return (result as VfsPathStat | null) ?? null;
   }
 
   /**

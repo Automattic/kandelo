@@ -138,6 +138,43 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     expect(result.stdout).toContain("content=scratch-mount-roundtrip");
   });
 
+  it("lists and stats the worker-owned VFS for the main thread", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-node-list-"));
+    mkdirSync(join(fixtureRoot, "suite", "nested"), { recursive: true });
+    writeFileSync(join(fixtureRoot, "suite", "fixture"), "seed");
+    const host = new NodeKernelHost({
+      rootfsImage: "default" as const,
+      sessionSeedTrees: [{
+        sourcePath: fixtureRoot,
+        destinationPath: "/tmp/kandelo-run",
+      }],
+    });
+
+    try {
+      await host.init();
+      const entries = await host.readDirFromVfs("/tmp/kandelo-run/suite");
+      expect(entries?.map((entry) => entry.name).sort()).toEqual([
+        "fixture",
+        "nested",
+      ]);
+      const file = entries!.find((entry) => entry.name === "fixture")!;
+      expect(file.size).toBe(4);
+      expect(file.mode & 0o170000).toBe(0o100000);
+      const dir = entries!.find((entry) => entry.name === "nested")!;
+      expect(dir.mode & 0o170000).toBe(0o040000);
+
+      await expect(
+        host.statVfsPath("/tmp/kandelo-run/suite/fixture"),
+      ).resolves.toMatchObject({ size: 4 });
+      // A missing path is `null`, never an empty listing or a zeroed stat.
+      await expect(host.readDirFromVfs("/tmp/kandelo-run/absent")).resolves.toBeNull();
+      await expect(host.statVfsPath("/tmp/kandelo-run/absent")).resolves.toBeNull();
+    } finally {
+      await host.destroy();
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it("gives concurrent boots independent private copies of one seed tree", async () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-node-seed-"));
     const sourceFile = join(fixtureRoot, "suite", "fixture");

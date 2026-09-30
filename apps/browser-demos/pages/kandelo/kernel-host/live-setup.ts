@@ -1131,11 +1131,9 @@ async function runLinkScript(
   //
   // The interpreter comes from the link itself (boot.parameters.runScriptShell,
   // set by ShareDialog to the authoring machine's default shell), so the script
-  // runs directly as `<shell> script` with no visible `command -v bash` probe.
-  // A main-thread host.stat("/bin/bash") is not a usable substitute: the kernel
-  // owns the VFS in its worker and exposes no synchronous surface in the
-  // browser, so that probe always reads empty and would silently drop the
-  // script onto sh. The shell token is validated to a bare command word first.
+  // runs directly as `<shell> script` with no visible `command -v bash` probe
+  // and no round-trip to the kernel worker to look for one. The shell token is
+  // validated to a bare command word first.
   const shell = safeBootLinkShell(recordedShell);
   tick("showing boot-link script in the terminal...");
   // Show the actual script contents in the terminal before running them —

@@ -34,7 +34,9 @@ import type {
   PreparedExecLaunchRequest,
 } from "./exec-target";
 import {
+  listPreparedPlatformDirectory,
   readPreparedPlatformFile,
+  statPreparedPlatformPath,
   VirtualPlatformIO,
 } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
@@ -3774,6 +3776,48 @@ async function handleReadVfsFile(
   }
 }
 
+// Directory listing and stat are answered here for the same reason file reads
+// are: the worker owns the VFS, so the main thread asks instead of reaching in.
+async function handleReadVfsDir(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_dir" }>,
+) {
+  const vfs = io;
+  if (!vfs) { respond(msg.requestId, null); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    // Listing can materialize a deferred tree, so it is serialized with
+    // snapshots exactly as a file read is.
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "list or materialize a rootfs directory",
+    );
+    respond(msg.requestId, await listPreparedPlatformDirectory(vfs, msg.path));
+  } catch (error) {
+    if (isMissingPathError(error)) respond(msg.requestId, null);
+    else respondError(msg.requestId, formatError(error));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
+async function handleStatVfsPath(
+  msg: Extract<MainToKernelMessage, { type: "stat_vfs_path" }>,
+) {
+  const vfs = io;
+  if (!vfs) { respond(msg.requestId, null); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "stat or materialize a rootfs path",
+    );
+    respond(msg.requestId, await statPreparedPlatformPath(vfs, msg.path));
+  } catch (error) {
+    if (isMissingPathError(error)) respond(msg.requestId, null);
+    else respondError(msg.requestId, formatError(error));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
 // Mutate the mounted filesystem from inside its owning worker. This keeps the
 // VFS SAB off the persistent browser main thread while allowing harnesses to
 // stage transient files between process spawns.
@@ -4466,6 +4510,8 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "terminate_process": void handleTerminateProcess(msg); break;
     case "read_vfs_file": void handleReadVfsFile(msg); break;
+    case "read_vfs_dir": void handleReadVfsDir(msg); break;
+    case "stat_vfs_path": void handleStatVfsPath(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
