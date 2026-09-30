@@ -287,6 +287,15 @@ compile-fix loop; the acceptance is "zero `libc` errors."
 
 ## Milestone 2 status + a discovered milestone (2026-09-07)
 
+> **Structure update (2026-09-30):** the libc fork is no longer vendored.
+> The tasks below say "Create `sdk/rust/libc-kandelo/`" (a full vendored
+> copy); that was replaced to match the project's no-vendoring norm by a
+> `rust-lang/libc` submodule (`sdk/rust/libc-upstream`, pinned to the
+> version `std` uses) plus a single delta patch `sdk/rust/libc-kandelo.patch`.
+> `build-rust-sysroot.sh` assembles the fork (submodule + `git apply`
+> patch) into a work dir and points `[patch]` there. Read
+> `sdk/rust/libc-kandelo/...` references below as "the assembled fork."
+
 **M1 done** (`60eff3460`): the delivery mechanism had to change for the
 Nix toolchain (no rustup). `scripts/build-rust-sysroot.sh` assembles a
 private writable sysroot (mirror-by-symlink, `rust-src` copied writable),

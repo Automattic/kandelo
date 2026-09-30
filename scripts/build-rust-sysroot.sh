@@ -26,19 +26,39 @@ set -euo pipefail
 #     --target sdk/rust/wasm32-unknown-kandelo-std.json
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FORK_LIBC="$REPO_ROOT/sdk/rust/libc-kandelo"
+# We do not vendor the libc crate. The upstream crate is the pinned
+# rust-lang/libc submodule; our kandelo delta is a single patch. The fork
+# is assembled at build time (submodule + patch), mirroring how
+# build-musl.sh overlays libc/musl-overlay onto the libc/musl submodule.
+LIBC_UPSTREAM="$REPO_ROOT/sdk/rust/libc-upstream"      # rust-lang/libc, pinned to the version std uses
+LIBC_PATCH="$REPO_ROOT/sdk/rust/libc-kandelo.patch"    # kandelo delta only
 STD_OVERLAY="$REPO_ROOT/sdk/rust/std-overlay"
 
 OUT_DIR="${KANDELO_RUST_DIR:-$HOME/.kandelo/rust}"
 MYSYS="$OUT_DIR/sysroot"
 WRAP="$OUT_DIR/rustc-kandelo"
+FORK_LIBC="$OUT_DIR/libc-kandelo"                       # assembled = upstream + patch (not committed)
 
 command -v rustc >/dev/null || { echo "rustc not on PATH; run inside scripts/dev-shell.sh" >&2; exit 1; }
-[ -d "$FORK_LIBC" ] || { echo "missing forked libc at $FORK_LIBC" >&2; exit 1; }
+[ -f "$LIBC_UPSTREAM/Cargo.toml" ] || {
+  echo "sdk/rust/libc-upstream not initialized; run: git submodule update --init $LIBC_UPSTREAM" >&2; exit 1; }
+[ -f "$LIBC_PATCH" ] || { echo "missing libc overlay patch at $LIBC_PATCH" >&2; exit 1; }
 
 REALSYS="$(rustc --print sysroot)"
 REAL_RUSTC="$REALSYS/bin/rustc"
 [ -x "$REAL_RUSTC" ] || { echo "no rustc at $REAL_RUSTC" >&2; exit 1; }
+
+echo "==> Assembling forked libc = upstream + kandelo overlay -> $FORK_LIBC"
+rm -rf "$FORK_LIBC"
+cp -R "$LIBC_UPSTREAM" "$FORK_LIBC"
+rm -rf "$FORK_LIBC/.git"
+chmod -R u+w "$FORK_LIBC"
+# git apply fails loudly if the patch no longer matches the pinned upstream
+# (e.g. after a libc version bump) — the truthful signal to refresh the delta.
+( cd "$FORK_LIBC" && git apply "$LIBC_PATCH" ) || {
+  echo "libc overlay patch did not apply cleanly against $LIBC_UPSTREAM; refresh sdk/rust/libc-kandelo.patch for the pinned libc version" >&2
+  exit 1
+}
 
 echo "==> Assembling sysroot at $MYSYS (from $REALSYS)"
 rm -rf "$MYSYS"

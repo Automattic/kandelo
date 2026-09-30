@@ -68,12 +68,22 @@ in a private sysroot:
   spec uses `target-family = ["unix","wasm"]`, links via the SDK driver
   (`linker = wasm32posix-cc`, `entry-name = __main_argc_argv`), and bakes
   in `+atomics,+bulk-memory`.
-- `sdk/rust/libc-kandelo/` — forked `libc` (reuses linux-musl bindings;
-  `kandelo` arms + a reconciled wasm32 arch leaf).
-- `sdk/rust/std-overlay/` — the `library/std` `kandelo` pal arms.
-- `scripts/build-rust-sysroot.sh` — assembles the private sysroot
-  (mirror-by-symlink + patched `rust-src`) and a `rustc` wrapper that
-  injects `--sysroot`; `scripts/export-rust-overlay.sh` captures edits.
+- `sdk/rust/libc-upstream/` (submodule, `rust-lang/libc` pinned to the
+  version `std` uses) + `sdk/rust/libc-kandelo.patch` (our delta:
+  `kandelo` arms reusing linux-musl bindings + a reconciled wasm32 arch
+  leaf). The crate is NOT vendored; the fork is assembled at build time
+  (submodule + patch), mirroring how `build-musl.sh` overlays
+  `libc/musl-overlay` onto the `libc/musl` submodule. A libc version bump
+  makes the patch fail loudly — the signal to refresh the delta.
+- `sdk/rust/std-overlay/` — the `library/std` `kandelo` pal arms
+  (file-copy overlay onto the toolchain's `rust-src`, which is not a
+  submodule).
+- `scripts/build-rust-sysroot.sh` — assembles the fork (submodule +
+  patch) and the private sysroot (mirror-by-symlink + patched `rust-src`)
+  and a `rustc` wrapper that injects `--sysroot`;
+  `scripts/export-rust-overlay.sh` captures std-overlay edits.
+
+First checkout: `git submodule update --init sdk/rust/libc-upstream`.
 
 Builds require `-Z unstable-options -Z json-target-spec
 -Z build-std=std,panic_abort` and `RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1`
