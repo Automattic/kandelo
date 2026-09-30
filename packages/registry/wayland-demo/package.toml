@@ -85,14 +85,16 @@ artifact = "wldesktop"
 guest_path = "/usr/local/bin/wldesktop"
 mode = 0o755
 
-# libinput's device quirks, packed by the libinput package. wlcompositor
-# links libinput statically and reads them from /usr/share/libinput; image
-# builders unpack this zip there. (libinput logs "Failed to load the device
-# quirks" and applies no device fixups without them.)
+# The Hyprland-class tiling desktop. Not installed by the shell image (its
+# machine is off by default); an image that wants it installs both.
 [[runtime_files]]
 artifact = "hyprdesktop"
 guest_path = "/usr/local/bin/hyprdesktop"
 mode = 0o755
+
+[[runtime_files]]
+artifact = "hyprland-wlcompositor.conf"
+guest_path = "/usr/share/kandelo/hyprland/wlcompositor.conf"
 
 [[runtime_files]]
 artifact = "omarchydesktop"
@@ -108,6 +110,10 @@ mode = 0o755
 artifact = "kandelo-desktop-data.zip"
 guest_path = "/usr/share/wayland-demo/kandelo-desktop-data.zip"
 
+# libinput's device quirks, packed by the libinput package. wlcompositor
+# links libinput statically and reads them from /usr/share/libinput; image
+# builders unpack this zip there. (libinput logs "Failed to load the device
+# quirks" and applies no device fixups without them.)
 [[runtime_files]]
 artifact = "libinput-quirks.zip"
 guest_path = "/usr/share/wayland-demo/libinput-quirks.zip"

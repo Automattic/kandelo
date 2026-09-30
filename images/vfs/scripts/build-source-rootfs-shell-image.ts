@@ -77,7 +77,6 @@ export interface SourceRootfsShellInputs {
   wldesktopPath: string;
   klauncherPath: string;
   notifySendPath: string;
-  hyprdesktopPath: string;
   omarchydesktopPath: string;
   omarchyThemeHookPath: string;
   desktopDataPath: string;
@@ -272,16 +271,28 @@ exec /usr/bin/quake -basedir "$BASE" "$@"
  * It execs the lazy engine at /usr/bin/scummvm (an absolute path, so PATH
  * cannot recurse into this wrapper) after two pieces of setup:
  *
- * - SDL's backends are named in the environment. ScummVM is unmodified
- *   upstream, and Kandelo has no libudev, so SDL's evdev layer finds no input
- *   devices unless SDL_EVDEV_DEVICES lists the kernel's two virtual ones
- *   (class 2 = keyboard, 1 = mouse); the video and audio drivers are pinned to
- *   KMSDRM and OSS so SDL does not probe the Wayland backend first.
+ * - SDL's display follows where it is launched. Inside a Wayland session (a
+ *   compositor's socket at $XDG_RUNTIME_DIR/wayland-0, e.g. from Omarchy's
+ *   launcher or a terminal on that desktop) SDL picks its Wayland backend and
+ *   ScummVM opens as a window. On a bare display (the ScummVM machine) the
+ *   video driver is pinned to KMSDRM, and because Kandelo has no libudev,
+ *   SDL's evdev layer only finds the kernel's input devices when
+ *   SDL_EVDEV_DEVICES lists them (class 2 = keyboard, 1 = mouse). Audio is
+ *   OSS either way.
  * - The config lives in the user's home, because ScummVM rewrites it whenever
  *   the user adds a game or changes an option. The first launch seeds it so
  *   the launcher's "Add Game" browser opens in the upload directory. The GUI
  *   scale stays at 100%: the browser's device-pixel ratio does not reach the
  *   machine (see docs/browser-support.md on HiDPI).
+ *
+ * It then stays alive beside the engine to unpack uploads. "Load game data"
+ * writes one archive to $GAMES/upload.zip while ScummVM keeps running (the
+ * user keeps their place in the launcher), and nothing else can run the
+ * extraction: the machine's terminal is ScummVM's. The wrapper polls for the
+ * archive — inotify is unimplemented (ENOSYS), and polling is what a watcher
+ * falls back to — unzips it in place, and removes it so the peak filesystem
+ * cost is one archive plus its contents. The host writes the file in one
+ * kernel-worker task, so the wrapper never sees a partial archive.
  */
 const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
 set -e
@@ -290,10 +301,27 @@ INI="\${HOME:-/home/maker}/scummvm.ini"
 if [ ! -f "$INI" ]; then
     printf '[scummvm]\\ngui_scale=100\\nbrowser_lastpath=%s\\n' "$GAMES" > "$INI"
 fi
-export SDL_VIDEODRIVER=kmsdrm
 export SDL_AUDIODRIVER=dsp
-export SDL_EVDEV_DEVICES=2:/dev/input/event0,1:/dev/input/event1
-exec /usr/bin/scummvm --config="$INI" "$@"
+if [ -z "\${XDG_RUNTIME_DIR:-}" ] || [ ! -S "$XDG_RUNTIME_DIR/\${WAYLAND_DISPLAY:-wayland-0}" ]; then
+    export SDL_VIDEODRIVER=kmsdrm
+    export SDL_EVDEV_DEVICES=2:/dev/input/event0,1:/dev/input/event1
+fi
+/usr/bin/scummvm --config="$INI" "$@" &
+engine=$!
+set +e
+while kill -0 "$engine" 2>/dev/null; do
+    if [ -f "$GAMES/upload.zip" ]; then
+        echo "scummvm: extracting uploaded game data..." >&2
+        if unzip -o -q "$GAMES/upload.zip" -d "$GAMES"; then
+            echo "scummvm: extracted into $GAMES; add it from the launcher" >&2
+        else
+            echo "scummvm: could not extract the upload (not a zip archive?)" >&2
+        fi
+        rm -f "$GAMES/upload.zip"
+    fi
+    sleep 1
+done
+wait "$engine"
 `;
 
 export function composeSourceRootfsDemoConfig(
@@ -849,10 +877,6 @@ export async function buildSourceRootfsShellImage(
   );
   const klauncher = readRegularInput(inputs.klauncherPath, "klauncher dependency");
   const notifySend = readRegularInput(inputs.notifySendPath, "notify-send dependency");
-  const hyprdesktop = readRegularInput(
-    inputs.hyprdesktopPath,
-    "hyprdesktop launcher dependency",
-  );
   const omarchydesktop = readRegularInput(
     inputs.omarchydesktopPath,
     "omarchydesktop launcher dependency",
@@ -913,7 +937,6 @@ export async function buildSourceRootfsShellImage(
   // pay for them.
   writeVfsBinary(fs, "/usr/local/bin/klauncher", klauncher, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/notify-send", notifySend, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/hyprdesktop", hyprdesktop, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/omarchy-theme-changed", omarchyThemeHook, 0o755);
   // Configs, themes, launcher entries, fontconfig and D-Bus configs, and the
@@ -1024,7 +1047,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--wldesktop",
     "--klauncher",
     "--notify-send",
-    "--hyprdesktop",
     "--omarchydesktop",
     "--omarchy-theme-hook",
     "--desktop-data",
@@ -1053,7 +1075,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--wlcompositor <wlcompositor.wasm> --wlterm <wlterm.wasm> " +
           "--wlclock <wlclock.wasm> --wlpaint <wlpaint.wasm> " +
           "--wldesktop <wldesktop> --klauncher <klauncher.wasm> " +
-          "--notify-send <notify-send.wasm> --hyprdesktop <hyprdesktop> " +
+          "--notify-send <notify-send.wasm> " +
           "--omarchydesktop <omarchydesktop> " +
           "--omarchy-theme-hook <omarchy-theme-changed> " +
           "--desktop-data <kandelo-desktop-data.zip> " +
@@ -1083,7 +1105,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     wldesktopPath: values.get("--wldesktop")!,
     klauncherPath: values.get("--klauncher")!,
     notifySendPath: values.get("--notify-send")!,
-    hyprdesktopPath: values.get("--hyprdesktop")!,
     omarchydesktopPath: values.get("--omarchydesktop")!,
     omarchyThemeHookPath: values.get("--omarchy-theme-hook")!,
     desktopDataPath: values.get("--desktop-data")!,

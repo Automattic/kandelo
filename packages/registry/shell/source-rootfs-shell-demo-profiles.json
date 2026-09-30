@@ -136,6 +136,7 @@
       "runtime": {
         "features": [
           "kms",
+          "kms-gl-scanout",
           "evdev-input"
         ]
       },
@@ -151,11 +152,8 @@
       "ingest": {
         "accept": [".zip"],
         "targetPath": "/usr/share/scummvm-games/upload.zip",
-        "maxBytes": 67108864,
-        "label": "Load game data",
-        "onLoad": {
-          "restart": "unzip -o -q /usr/share/scummvm-games/upload.zip -d /usr/share/scummvm-games && rm -f /usr/share/scummvm-games/upload.zip"
-        }
+        "maxBytes": 536870912,
+        "label": "Load game data"
       }
     }
   }

@@ -181,9 +181,11 @@ wasm32posix-cc "${CFLAGS[@]}" -I"$SYSROOT/include/glib-2.0" \
 
 # --- launchers and desktop data ----------------------------------------
 # wldesktop starts the floating demo desktop; hyprdesktop and omarchydesktop
-# start the tiling desktop and the Omarchy-shaped one. Their configs, themes
-# and launcher entries are image data under /usr/share/kandelo, packed into
-# one archive the image builder unpacks there.
+# start the tiling desktop and the Omarchy-shaped one. Omarchy's configs,
+# themes and launcher entries are image data under /usr/share/kandelo, packed
+# into one archive the image builder unpacks there. The Hyprland desktop is
+# not in any image by default, so its launcher and config are separate
+# artifacts an image that wants it installs.
 for launcher in wldesktop desktops/hyprdesktop desktops/omarchydesktop \
                 desktops/omarchy-theme-changed; do
     cp "$HERE/$launcher" "$WORK_DIR/$(basename "$launcher")"
@@ -221,6 +223,8 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     done
     install -m 0644 "$WORK_DIR/kandelo-desktop-data.zip" \
         "$WASM_POSIX_DEP_OUT_DIR/kandelo-desktop-data.zip"
+    install -m 0644 "$HERE/desktops/hyprland/wlcompositor.conf" \
+        "$WASM_POSIX_DEP_OUT_DIR/hyprland-wlcompositor.conf"
 fi
 # The compositor links libinput statically, so the device quirks libinput
 # reads at runtime travel with this package (see [[runtime_files]]).
