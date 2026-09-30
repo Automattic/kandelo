@@ -11,8 +11,8 @@ answers too, because a regex hit is not proof the advice is right.
 Usage (from the repo root):
   python3 evals/agent-skills/run.py [--reps 3] [--model sonnet] [--tasks id,id] [--jobs 4]
 
-Cost: each run is roughly 50-100k tokens. The default (4 tasks x 2 arms x
-3 reps) is ~24 runs; run it when the skills change, not in CI.
+Cost: roughly $0.10-0.30 per run on Sonnet. The default (2 tasks x 2 arms x
+3 reps) is 12 runs; run it when a skill changes, not in CI.
 """
 import argparse
 import concurrent.futures
@@ -26,17 +26,19 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-SKILLS = ["porting-software-to-kandelo", "diagnosing-kandelo-build-failures"]
+SKILLS = ["porting-software-to-kandelo"]
 ARMS = {
     "skills-on": {},
     "skills-off": {"skillOverrides": {name: "off" for name in SKILLS}},
 }
 READ_ONLY_TOOLS = ("Read Grep Glob Skill Bash(grep *) Bash(git grep *) Bash(ls *) "
-                   "Bash(sed -n *) Bash(head *) Bash(wc *) Bash(find *)")
+                   "Bash(sed -n *) Bash(head *) Bash(tail *) Bash(wc *) Bash(find *)")
 
 
 def build_prompt(task):
     prompt = task["prompt"]
+    if "log_path" in task:
+        prompt += "\n\nLog: " + task["log_path"]
     if "log_fixture" in task:
         log = (REPO / task["log_fixture"]).read_text(errors="replace")
         prompt += "\n\n```\n" + log.strip() + "\n```"

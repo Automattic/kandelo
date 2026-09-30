@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Check the agent skills under .claude/skills: diagnosis fixtures still report
-# the right first cause, and every path, doc heading, and identifier the skills
-# name still exists in the repo.
+# Check the agent skills under .claude/skills: every path, doc heading, and
+# identifier a skill names must still exist in the repo, and its reference
+# packages must still follow the current build contract.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python3 .claude/skills/tests/test_skills.py

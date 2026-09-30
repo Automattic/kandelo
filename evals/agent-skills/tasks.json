@@ -22,25 +22,5 @@
       "kernel_abi from ABI_VERSION": "ABI_VERSION",
       "registers in local-supported.toml": "local-supported\\.toml"
     }
-  },
-  {
-    "id": "diagnose-gnulib-fallback",
-    "log_fixture": ".claude/skills/diagnosing-kandelo-build-failures/tests/fixtures/gnulib-fallback.log",
-    "prompt": "A Kandelo package build failed with the output below. This is read-only: do not edit files or run builds. What is the most likely root cause, how would you confirm it, and what is the right fix?",
-    "checks": {
-      "names the incomplete sysroot": "sysroot",
-      "points at the generated kandelo headers or configure probes": "kandelo_[a-z_]*\\.h|bits/kandelo|stdio_ext|__freading|probe",
-      "fixes through setup or build-musl": "run\\.sh setup|build-musl"
-    }
-  },
-  {
-    "id": "diagnose-missing-library",
-    "log_fixture": ".claude/skills/diagnosing-kandelo-build-failures/tests/fixtures/library-not-on-link-path.log",
-    "prompt": "A Kandelo package build failed with the output below. This is read-only: do not edit files or run builds. What is the most likely root cause, how would you confirm it, and what is the right fix?",
-    "checks": {
-      "checks whether ncurses is a declared dependency": "depends_on|declar",
-      "looks for the archive in the -L directory": "libncursesw\\.a",
-      "names the resolver cache or dependency directory": "cache|WASM_POSIX_DEP_[A-Z0-9_]*DIR"
-    }
   }
 ]

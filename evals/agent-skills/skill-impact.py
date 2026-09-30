@@ -22,7 +22,7 @@ import re
 import statistics
 from datetime import datetime
 
-SKILLS = ("porting-software-to-kandelo", "diagnosing-kandelo-build-failures")
+SKILLS = ("porting-software-to-kandelo",)
 WRAPPER = re.compile(r"\bbash\s+\S*build-package\.sh\s+([A-Za-z0-9._+-]+)")
 FEEDBACK = re.compile(r"Skill feedback[^\n]*", re.I)
 PUSHBACK = re.compile(r"\b(that'?s (wrong|not right|incorrect)|wrong (package|pattern|reference)|don'?t copy|stale)\b", re.I)
