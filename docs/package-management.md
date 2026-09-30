@@ -596,10 +596,11 @@ symlink. That symlink always targets bash: every Kandelo image binds
 `/bin/sh`, `/bin/bash` and `/usr/bin/sh` to `/usr/bin/bash`, and bash
 honors POSIX mode when invoked as `sh`. The base rootfs declares the binding
 as bash's `aliases` in `images/rootfs/PACKAGES.toml`; images composed on it
-(the source-rootfs shell image) inherit it and assert the aliases are
-present; images built from scratch (the MariaDB, MariaDB-test and
-SQLite-test builders) bind it with `installBashAsPosixShell` in
-`images/vfs/scripts/vfs-image-helpers.ts`. An image may also ship dash (or any other shell) as an
+(the source-rootfs shell image) inherit it and assert that `/bin/bash`
+and `/usr/bin/bash` resolve to the image's bash (the builder does not yet
+check the `sh` names); images built from scratch (the MariaDB, MariaDB-test and SQLite-test
+builders, and the lazy shell image in `shell-vfs-build.ts`) bind it with
+`installBashAsPosixShell` in `images/vfs/scripts/vfs-image-helpers.ts`. An image may also ship dash (or any other shell) as an
 ordinary command at its own name, but no other shell claims `/bin/sh` —
 `system()`, `popen()` and `#!/bin/sh` scripts must behave the same in
 every image.
@@ -1681,6 +1682,110 @@ forcing a single shared declaration file.
 
 See decisions 10 (cache-key impact) and 11 (probe + install hint
 contract) in `docs/plans/2026-04-22-deps-management-v2-design.md`.
+
+## Packages that are not real upstream builds yet
+
+Packages should be real upstream software built through the normal platform
+path: a fetched, sha256-pinned upstream archive, upstream's own build system,
+and patches only at documented compatibility boundaries. When a package falls
+short of that, the gap has to stay visible until someone closes it; it must
+not quietly become the permanent design. This register lists every package
+in the Wayland and desktop stack that currently falls short, what it is
+instead, and what closing the gap takes. Each row is a follow-up, not an
+accepted end state. Remove a row only when the package is replaced by the
+real upstream build or the patch is dropped.
+
+The register covers the packages added with the Wayland compositor (PR #948)
+and the desktop stack on top of it (PR #1438). It does not yet audit older
+packages.
+
+### Hand-written stand-ins (replace with the real upstream library)
+
+These carry an upstream library's name and API, but the code is Kandelo's.
+The four that are packages have a placeholder `[source]` in `package.toml`
+(`example.invalid`, zero sha256) because they fetch no upstream archive.
+
+| Package | What it is today | Why it exists | Follow-up |
+|---|---|---|---|
+| `libffi` | Kandelo's own implementation of the libffi API (`packages/registry/libffi/src/ffi_core.c` plus the dispatch tables `gen-dispatch.sh` generates): one `call_indirect` case per call shape and per closure class. It is not upstream libffi. | libwayland, glib and the GTK stack need `ffi_call` and closures, and upstream libffi's wasm32 port targets Emscripten's JavaScript glue, which Kandelo does not use. | Port upstream libffi for Kandelo's wasm target and drop this implementation. |
+| `libudev` | A libinput-scoped shim: libinput's path backend gets `udev_device` objects, and the shim synthesizes the `ID_INPUT_*` properties by probing each device's evdev capability bits. Every other property and all parent lookups return nothing; there is no enumerate or monitor API. | systemd's libudev needs `/sys`, netlink uevents and udevd, none of which Kandelo provides. | This covers a **platform gap**. Expose input and DRM devices through a real `/sys` tree (with the `uevent`/capability attributes udev reads), then build a real upstream libudev such as libudev-zero or eudev's, and drop the shim. The real-Hyprland inventory (`docs/plans/2026-09-30-real-hyprland-port-inventory.md`) needs the same work. |
+| `mtdev` | A link stub: `struct mtdev` plus the entry points libinput links, each of which aborts if called. | libinput links mtdev unconditionally but calls it only for legacy protocol-A multitouch devices, which Kandelo does not expose. | Build real upstream mtdev (a small plain-C library over evdev ioctls); no platform gap is known to block it. |
+| `wayland-protocols` | Upstream protocol XML (`wayland.xml`, `xdg-shell.xml`, `wlr-layer-shell`, `linux-dmabuf` and the rest under `packages/registry/wayland-protocols/xml/`) vendored in-tree behind a placeholder `[source]`. | Chosen to give macOS and Linux identical inputs, but fetching sha256-pinned upstream archives already does that. | Fetch the wayland, wayland-protocols and wlr-protocols release archives, sha256-pinned, and install the XML from them. |
+| `libwayland-egl` (shipped by `libwayland`) | `libc/glue/libwayland-egl.c`: the `wl_egl_window` API plus the buffer allocation and present logic that Mesa's EGL Wayland platform owns on Linux. It sits on the sysroot's `libEGL`/`libGLESv2`/`libgbm` stubs, which forward GL to the host's WebGL2 (see "Sysroot libraries are not packages"). | There is no Mesa on Kandelo; SDL2's Wayland backend and other GL clients need a `wl_egl_window`. | Tied to the GL stack: a real EGL with dmabuf import (the GL section of the real-Hyprland inventory) would let upstream libwayland-egl and a real EGL Wayland platform replace it. |
+
+### Real upstream source, hand-rolled build (use upstream's build system)
+
+These packages fetch real, sha256-pinned upstream archives, but their build
+scripts skip upstream's meson build. They compile a hand-picked list of
+source files, and most supply a hand-written `config.h` and generate by hand
+the files meson would generate:
+
+`libwayland`, `libxkbcommon`, `libevdev`, `libinput`, `libdrm`, `glib`, `atk`,
+`basu`, `fcft`, `foot`, `mako`, `gtk-layer-shell`, `waybar`, `harfbuzz`
+(its single-file amalgamation), `utf8proc` and `tllist` (header-only).
+
+The stated reasons are that meson's feature probes misreport against the wasm
+sysroot (one example is detecting macOS's `struct xucred`) and that the dev
+shell ships no meson at all (`flake.nix` provides cmake and ninja only).
+Both point at an SDK gap: Kandelo has no meson and no meson cross file, so
+meson would probe the build machine instead of the target. The hand-written
+answers can drift from what the sysroot actually provides, and a source list
+copied from `meson.build` can silently miss a file or an option that a later
+upstream release adds.
+
+Follow-up: add meson and a meson cross file to the SDK (compiler wrappers,
+sysroot, `host_machine`), then build these packages with upstream meson so
+their feature probes run against the real target. Probes that still misreport
+are SDK or libc defects to fix, not answers to hard-code.
+
+### Packages built as if the target were Linux
+
+`qtbase`, `qtdeclarative`, `qtshadertools`, `quickshell`, `qtgallery` and
+`basu` compile with `-D__linux__` (the Qt packages also with `-DQT_LINUXBASE`).
+Qt's `qsystemdetection.h` has no branch for this target and refuses to build
+without a known OS. Kandelo is not a Linux target, and the SDK deliberately
+does not define `__linux__`: every Linux-only code path the define enables is
+a claim the platform may not honour. Two qtbase patches and one qtdeclarative
+patch below exist only to turn such paths back off.
+
+Follow-up: give Qt a platform definition for Kandelo (a generic-Unix
+`Q_OS_*` branch that can go upstream) and drop the define; do the same for
+basu.
+
+### Patches
+
+Every patch below is applied to real upstream source. They are grouped by
+the boundary they sit at, because that decides who owns the fix.
+
+**Kandelo platform gaps.** These work around something the platform should
+provide. The fix belongs in the kernel, libc or host, and the patch should be
+dropped once it lands.
+
+| Package | Patch | Gap | Follow-up |
+|---|---|---|---|
+| `foot`, `mako`, `gtk3`, `qtbase` | `foot/patches/0001-shm-gbm-prime-fd-pools.patch`, `mako/patches/0001-pool-buffer-gbm-prime-fd.patch`, `gtk3/src/wayland-shm-gbm-pool.patch`, `qtbase/src/wayland-shm-gbm-pool.patch`: allocate `wl_shm` pools from DRI buffers instead of `memfd`. | A `MAP_SHARED` mapping of a memfd writes back only on `msync`/`munmap`, so another process mapping the same memory reads stale bytes. | Make shared file mappings coherent across processes in the kernel, then drop all four. |
+| `foot` | `patches/0002-serial-font-loading.patch`: load fonts one at a time. | Concurrent `FcFontMatch` calls race under Kandelo's thread model. Not root-caused. | Find the cause in the kernel or runtime; drop the patch. |
+| `libinput` | `patches/0001-quirks-empty-dmi-identity-without-dmi.patch`: report the empty DMI identity (`"dmi:"`) when the platform has no DMI source, so the identity-independent quirks still load. | Kandelo exposes no SMBIOS/DMI or devicetree firmware identity. | Expose a machine identity (for example `/sys/class/dmi/id/modalias`) and drop the patch, or send the platform-neutral change upstream. |
+| `qtdeclarative` | `src/qv4-stack-bounds-on-wasm.patch`: report the stack bounds from the linker's `__stack_low`/`__stack_high`. | With `__linux__` defined, QV4 reads `/proc/self/maps` (absent) and `pthread_getattr_np`, whose musl implementation probes with `mremap`, which the kernel does not implement. | Implement `mremap` (or make musl's probe truthful on this target); the patch then reduces to the missing `/proc/self/maps`. |
+| `qtbase` | `src/qmutex-honour-qt-linuxbase.patch`, `src/forkfd-generic-on-wasm.patch`: use Qt's generic mutex and `forkfd` paths instead of the Linux futex and `clone`/pidfd ones. | Follows from building as Linux (above) on a kernel without those Linux interfaces. The qmutex change is a real upstream inconsistency and can be sent upstream. | Drop with the `__linux__` define. |
+
+**WebAssembly boundaries.** These are properties of WebAssembly or of browsers,
+not Kandelo defects. They stay until the engine or the upstream code changes.
+
+| Package | Patch | Boundary |
+|---|---|---|
+| `glib`, `atk`, `cairo`, `pango`, `gtk3`, `mako` | `glib/src/wasm-callback-signatures.patch`, `wasm-callback-arity.patch` in `atk`, `cairo`, `pango` and `gtk3`, `mako/patches/0003-typed-listener-noops.patch`: give every callback the exact signature it is called with. | `call_indirect` checks the function's type, so C code that calls a function through a pointer of a different type (a `GFunc` cast from a one-argument function, a shared zero-argument no-op) traps instead of working by accident. |
+| `mako`, `quickshell` | `mako/patches/0002-rename-parse-boolean.patch`, `quickshell/src/no-wl-proxy-interpose-on-wasm.patch`. | A fully static link has one symbol namespace and no `dlsym(RTLD_NEXT)`: mako's `parse_boolean` collides with basu's, and Quickshell cannot interpose on libwayland. |
+| `qtbase`, `quickshell` | `qtbase/src/wayland-fd-notifier-on-wasm.patch`, `quickshell/src/on-thread-logger-on-wasm.patch`, `quickshell/src/one-generation-reload-on-wasm.patch`: do on the main thread what upstream does on helper threads, and free the old QML engine before building its replacement. | Each guest thread is a Web Worker, and Chromium compiles the whole program module again per worker (see [browser-support.md](browser-support.md#quickshell-qml-limits)). |
+
+**Target recognition and upstream defects.**
+
+| Package | Patch | Reason | Follow-up |
+|---|---|---|---|
+| `sdl2` | `patches/0001-recognize-kandelo-as-unix.patch`: `configure` accepts `wasm32-*-none` as a Unix target. | SDL's `configure` has a fixed list of host triples. | Upstreamable as generic-Unix detection. |
+| `scummvm` | `patches/0001-kandelo-host-triple.patch`: `configure` maps the `wasm32posix` host to its generic POSIX/SDL backend (every `wasm32-*` triple otherwise selects the Emscripten port). `patches/0002-kandelo-opengl-default-graphics-manager.patch`: default to the OpenGL graphics manager. | ScummVM's hand-written `configure` keys on the triple. Kandelo's SDL2 is built without `SDL_Render`, so the OpenGL manager is the only presentation path. | The first is upstreamable. The second goes away if SDL2 is built with a renderer. |
+| `glib` | `src/wasm-credentials.patch`: declare Linux `ucred` credentials for wasm32. `src/giomodule-no-dbus-builtins.patch`: guard the D-Bus built-in GIO modules behind a build flag. | `gcredentialsprivate.h` has a fixed list of platforms; the kernel provides `SO_PEERCRED`. The second follows from the hand-rolled build, which leaves out the D-Bus-backed GIO sources those registrations point at. | The first needs a generic upstream path for a non-Linux `SO_PEERCRED` platform. The second goes away with an upstream meson build. |
+| `glibmm`, `fmt` | `glibmm/src/libcxx-contenttype-string.patch`, `fmt/src/include-cstdlib.patch`. | Upstream defects against current libc++ (a removed `char_traits<unsigned char>`, a missing `<cstdlib>` include). | Drop when the pinned upstream versions carry the fixes. |
 
 ## Out of scope
 

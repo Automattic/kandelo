@@ -872,12 +872,13 @@ structural ones are recorded in the snapshot; the semantic ones change
 what an existing call returns, which the snapshot cannot see, so they are
 listed here:
 
-- **`SO_PEERCRED`** (new option, `struct ucred {pid, uid, gid}`), with
-  Linux's capture points: an accepted AF_UNIX stream socket reports the
-  process that called `connect()`, the connecting socket reports the
-  listener as of `listen()`, a socketpair and a listener report their
-  creator, and a socket with no AF_UNIX peer reports `{0, -1, -1}`.
-  Before this epoch the option reported the caller's own credentials.
+- **`SO_PEERCRED`** (`struct ucred {pid, uid, gid}`), with Linux's
+  capture points: an accepted AF_UNIX stream socket reports the process
+  that called `connect()`, the connecting socket reports the listener as
+  of `listen()`, a socketpair and a listener report their creator, and a
+  socket with no AF_UNIX peer reports `{0, -1, -1}`. Before this epoch
+  the kernel did not implement the option: `getsockopt(SO_PEERCRED)`
+  failed with `ENOPROTOOPT`.
 - **evdev ioctls**: `EVIOCGPHYS`/`EVIOCGUNIQ`/`EVIOCGPROP` join the
   caller-length `E`-magic families that libevdev issues while it
   constructs a device.
@@ -901,7 +902,16 @@ listed here:
   inherited epoll fd used to name no instance), and the host's `epoll_wait`
   evaluates the kernel's registrations instead of keeping its own mirror;
   the new `kernel_epoll_watched_fd(pid, index)` export lists the fds a
-  parked wait registers wakeups on.
+  parked wait registers wakeups on. Fork state moves to `FORK_VERSION` 16
+  to carry the instances (and each socket's peer credentials).
+- **An epoll fd inside `poll()` or another epoll** reports `POLLIN` when
+  one of its registrations is ready, as on Linux (nesting is followed four
+  levels deep). It used to report never ready, so an event loop that
+  watches an inner epoll fd -- libinput's inside libwayland's -- never woke.
+- **A PRIME buffer fd passed over `SCM_RIGHTS`** holds its own reference
+  to the buffer while in flight, as a Linux dma-buf fd does. The sender
+  may close its copy as soon as `sendmsg()` returns; that used to drop the
+  last reference and destroy the buffer before the receiver imported it.
 
 Each semantic change corrects behavior toward Linux without changing a
 layout. They share this epoch rather than taking their own because a
