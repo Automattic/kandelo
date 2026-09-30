@@ -618,6 +618,30 @@ host already handles view-detach — safe, not a blocker.
 *Phase 4 is a genuine architectural + novel-runtime commitment; paused
 for maintainer go/no-go before implementing.*
 
+**2026-09-30 — Reconciled onto latest main (ABI 45); Phase 4 approved.**
+Main advanced 58 commits since the port's baseline; `ABI_VERSION` went
+43 -> 45 (the Wayland/DRI desktop stack — GPU buffers, evdev, SDL2 —
+additive). Merged `origin/main` into the branch (clean; docs are new
+files). Verified the Go-port-critical contracts are UNCHANGED: channel
+region layout (all offsets identical), the syscall numbers the port uses
+(Write=4, Exit=34, ClockGettime=40, Openat=69, Mkdirat=95, …),
+`struct stat` field offsets (only `st_rdev@88` is now populated;
+112-byte layout unchanged), the process-memory constants
+(`PROCESS_MEMORY_DEFAULT_MAX_PAGES=16384`,
+`PROCESS_MEMORY_FALLBACK_BRK_BASE=16 MiB`), `env.__channel_base` still a
+process-expected global, and required executable exports still
+`["__abi_version","_start"]` — so the Phase-4 host-change verdict still
+holds. The thread-worker path changed only a guarded `__stack_pointer`
+read (musl pthread vararg stack alignment), which does not affect Go.
+**Only fork change needed:** the synthesized `__abi_version` marker
+43 -> 45 (fork `3e1d28f`). Reused the sibling `rust-programs-on-kandelo`
+worktree's fresh clean-main ABI-45 `kernel.wasm` (its `crates/kernel`/
+`crates/shared` match `origin/main` exactly) instead of a duplicate
+build. Independently verified `fmt.Println` runs against that ABI-45
+kernel: exit 0, stdout `"hello, kandelo\n"`. (Benign: Go binaries lack
+the `kandelo.abi.contract` digest stamp — currently warn-and-pass;
+track in case that rollout later hard-fails.) Proceeding into Phase 4.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
