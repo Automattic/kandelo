@@ -39,3 +39,8 @@ The resolver deletes the work directory, so re-run just the configure step by ha
 | Fixing the last error printed | Fix `[FIRST]`; rebuild; re-summarize |
 | Rebuilding one artifact after a closure error ("artifact closure is incomplete") | Run the full front door, `scripts/dev-shell.sh ./run.sh setup` |
 | Patching the package around a missing libc/syscall behavior | Treat it as a platform gap (`docs/agent-guidance/debugging-and-posix.md`) |
+
+## Feedback
+
+End your final report with one line, so maintainers can see where this skill helped or misled:
+`Skill feedback (diagnosing-kandelo-build-failures): used <what>; wrong: <what or none>; missing: <what or none>`

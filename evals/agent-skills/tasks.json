@@ -1,0 +1,46 @@
+[
+  {
+    "id": "port-autoconf-program",
+    "prompt": "Plan a port of GNU hello 2.12.1 (a C program built with autoconf, no library dependencies) to Kandelo as a new package under packages/registry/hello/. This is read-only: do not edit files or run builds. Answer concisely:\n1. Which existing package would you copy the build-script shape from, and why?\n2. Which helper scripts and functions should the build script use?\n3. What exact command builds just this package locally?\n4. What kernel_abi value goes in package.toml, and where does it come from?\n5. What else must change so ./run.sh setup builds the package?\n6. If configure reports that a libc function exists but musl does not have it, what is happening and how do you fix it honestly?",
+    "checks": {
+      "uses package-build-roots.sh": "package-build-roots\\.sh",
+      "installs with install_local_binary": "install_local_binary",
+      "kernel_abi from ABI_VERSION": "ABI_VERSION",
+      "registers in local-supported.toml": "local-supported\\.toml",
+      "builds through build-deps resolve": "build-deps resolve|build-package\\.sh",
+      "checks musl symbols before seeding ac_cv_": "wasm32posix-nm|libc\\.a"
+    }
+  },
+  {
+    "id": "port-cpp-program",
+    "prompt": "Plan a port of lzip 1.24 (a C++ program, no library dependencies besides the C++ standard library) to Kandelo as a new package under packages/registry/lzip/. This is read-only: do not edit files or run builds. Answer concisely:\n1. Which existing package would you copy the build-script shape from, and why?\n2. How does the build script get the C++ standard library?\n3. Which helper scripts and functions should the build script use?\n4. What exact command builds just this package locally?\n5. What kernel_abi value goes in package.toml, and where does it come from?\n6. What else must change so ./run.sh setup builds the package?",
+    "checks": {
+      "declares the libcxx dependency": "libcxx",
+      "uses kandelo_package_prepare_private_sysroot": "kandelo_package_prepare_private_sysroot",
+      "uses package-build-roots.sh": "package-build-roots\\.sh",
+      "installs with install_local_binary": "install_local_binary",
+      "kernel_abi from ABI_VERSION": "ABI_VERSION",
+      "registers in local-supported.toml": "local-supported\\.toml"
+    }
+  },
+  {
+    "id": "diagnose-gnulib-fallback",
+    "log_fixture": ".claude/skills/diagnosing-kandelo-build-failures/tests/fixtures/gnulib-fallback.log",
+    "prompt": "A Kandelo package build failed with the output below. This is read-only: do not edit files or run builds. What is the most likely root cause, how would you confirm it, and what is the right fix?",
+    "checks": {
+      "names the incomplete sysroot": "sysroot",
+      "points at the generated kandelo headers or configure probes": "kandelo_[a-z_]*\\.h|bits/kandelo|stdio_ext|__freading|probe",
+      "fixes through setup or build-musl": "run\\.sh setup|build-musl"
+    }
+  },
+  {
+    "id": "diagnose-missing-library",
+    "log_fixture": ".claude/skills/diagnosing-kandelo-build-failures/tests/fixtures/library-not-on-link-path.log",
+    "prompt": "A Kandelo package build failed with the output below. This is read-only: do not edit files or run builds. What is the most likely root cause, how would you confirm it, and what is the right fix?",
+    "checks": {
+      "checks whether ncurses is a declared dependency": "depends_on|declar",
+      "looks for the archive in the -L directory": "libncursesw\\.a",
+      "names the resolver cache or dependency directory": "cache|WASM_POSIX_DEP_[A-Z0-9_]*DIR"
+    }
+  }
+]
