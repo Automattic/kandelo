@@ -1,4 +1,4 @@
-;; ABI 44 real-worker integration fixture for activation-owned Wasm GC state.
+;; ABI 46 real-worker integration fixture for activation-owned Wasm GC state.
 ;;
 ;; One cyclic object is aliased simultaneously by a reference parameter, an
 ;; operand-stack carryover across kernel_fork, a mutable reference global, and

@@ -7,7 +7,7 @@
 //! WHY: executables link with `--allow-undefined-file` against the generated
 //! allowance, so a fresh SDK link cannot leave any other `env` import. This
 //! survey checks the artifacts themselves, which also catches programs linked
-//! outside the SDK's link paths and stale artifacts from before ABI 44. The
+//! outside the SDK's link paths and stale artifacts from before ABI 46. The
 //! allowed set is read from the declarations, not from a copy of them:
 //! `HOST_ENV_IMPORTS`, plus the fork runtime's imports that instrumentation
 //! adds after linking (`WPK_FORK_REQUIRED_IMPORTS`,

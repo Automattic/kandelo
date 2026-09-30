@@ -18,7 +18,7 @@ extern "C" {
  * libc++abi: the eight operator new/delete forms and __cxa_pure_virtual.
  * Anything else (static-local guards, dynamic_cast, exceptions, thread_local
  * destructors) needs the real runtime: link -lc++abi (the libcxx package).
- * Before ABI 44 the host silently supplied JavaScript stand-ins for those;
+ * Before ABI 46 the host silently supplied JavaScript stand-ins for those;
  * now such a program fails to link instead.
  *
  * Without libc++abi there is no exception runtime to throw std::bad_alloc,

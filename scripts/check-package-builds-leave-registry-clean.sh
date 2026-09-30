@@ -6,8 +6,8 @@
 # script a fresh WASM_POSIX_DEP_WORK_DIR for exactly that reason. A script
 # that instead keeps its source or build tree next to itself in the registry
 # finds the previous build's objects there on the next run, make treats them
-# as up to date, and the "rebuilt" package ships stale code. After the ABI 43
-# to 44 bump, bzip2 kept shipping a binary that declared ABI 43 until the
+# as up to date, and the "rebuilt" package ships stale code. After an ABI
+# bump, bzip2 kept shipping a binary that declared the previous ABI until the
 # in-tree tree was deleted by hand. CI never saw it because every CI job starts
 # from a fresh checkout, so this check makes the leftover itself the failure:
 # after resolver-driven builds, packages/registry must hold no untracked or

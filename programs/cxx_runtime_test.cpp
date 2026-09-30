@@ -1,6 +1,6 @@
 // C++ runtime contract: every function a C++ program needs comes from the
 // C++ runtime (libc++abi / libc++ / the SDK's cxxrt glue), never from the
-// host. Before ABI 44 the host supplied JavaScript stand-ins for many of
+// host. Before ABI 46 the host supplied JavaScript stand-ins for many of
 // these, including a __cxa_thread_atexit that did nothing, so thread_local
 // destructors silently never ran.
 //
