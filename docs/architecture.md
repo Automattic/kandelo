@@ -2460,7 +2460,7 @@ The same `wlcompositor` binary is also a Hyprland-class tiling WM (PR14); the fl
 - **Server-side decoration.** The compositor advertises `zxdg_decoration_manager_v1` and negotiates the mode by layout: `dwindle` → `SERVER_SIDE` (a tiled window has no titlebar), `floating` → `CLIENT_SIDE` (the client keeps its CSD titlebar). A libkwl client honors the negotiated mode (`decoration_configure`): under SSD it sets its titlebar height to 0 and treats all pointer events as content, so the tiled desktop looks like Hyprland.
 - **Client-side resize.** The compositor composites each surface at its **native** buffer size (`blit_surface` does not scale to the tile; the one exception is an explicit `wp_viewport` destination, which scales that surface's committed source rect), so tiling requires the *client* to resize into the size the compositor dictates. `retile()` sends `xdg_toplevel.configure(w,h)`; libkwl records it and, on the `xdg_surface.configure` ack barrier, rebuilds both `wl_shm` buffers at the new size and pushes a `KWL_RESIZE` event (new content w/h). Clients react: `wlclock` recomputes its dial geometry, `wlterm` reflows its VT100 grid (`vt100_resize` + `TIOCSWINSZ` + `SIGWINCH`), `wlpaint` reallocates its canvas (preserving the painting) so the toolbar + drawing area fill the whole tile rather than a fixed 640×420 corner. The initial `get_toplevel` `configure(0,0)` ("you decide") is ignored, so a floating client (`/?demo=wayland`) never resizes and is byte-identical to before.
 
-These are entirely in-kernel (client↔compositor over the wayland + `/tmp/kwlctl-0` sockets) — no host-runtime change — and gated by `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`. The browser demo (`/?demo=hyprland`, staged by `live-setup.ts` with `WLC_LAYOUT=dwindle` + a staged `/etc/kandelo/wlcompositor.conf`, gated by `apps/browser-demos/test/kandelo-hyprland.spec.ts`) boots the same compositor plus a `wlclock` and two `wlterm` terminals, which tile into gapped borderless frames and resize into their tiles — the first end-to-end Hyprland-class desktop. `wlpaint` is also staged (not auto-spawned) so the `Ctrl+P` launch bind can summon it on demand. See [browser-support.md](browser-support.md#hyprland-tiling-demo).
+These are entirely in-kernel (client↔compositor over the wayland + `/tmp/kwlctl-0` sockets) — no host-runtime change — and gated by `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`. The browser's Hyprland machine (the shell image's `hyprland` profile, whose `/usr/local/bin/hyprdesktop` launcher sets `WLC_LAYOUT=dwindle` and `WLC_CONFIG=/usr/share/kandelo/hyprland/wlcompositor.conf`; gated by `apps/browser-demos/test/kandelo-hyprland.spec.ts`) boots the same compositor plus a `wlclock` and two `wlterm` terminals, which tile into gapped borderless frames and resize into their tiles — the first end-to-end Hyprland-class desktop. `wlpaint` is in the image but not started, so the `Ctrl+P` launch bind summons it on demand. See [browser-support.md](browser-support.md#hyprland-tiling-demo).
 
 ### Desktop shell (`zwlr_layer_shell_v1`, `kbar`, `klauncher`, themes)
 
@@ -2527,7 +2527,9 @@ two clients consume it. This is the **O1** milestone of
   a `wallpaper = <file>` image in the KWLP raw-pixel format (`"KWLP"`, u32le
   width/height, XRGB pixels) that the compositor bilinear-scales to the
   output — raw pixels because nothing in the compositor decodes PNG/JPEG;
-  whoever stages the theme renders the image. `theme = <name>` in the
+  whoever builds the theme renders the image. The themes in the shell image
+  ship gradients only for now (see
+  [browser-support.md](browser-support.md#omarchy-desktop-demo)). `theme = <name>` in the
   compositor config selects the
   startup theme, and `kwlctl dispatch theme <name|next|prev>` (or a `theme`
   bind) switches live: gaps re-tile, the wallpaper is re-rendered and
@@ -2536,7 +2538,8 @@ two clients consume it. This is the **O1** milestone of
   name plus the installed set, so a client that starts later still matches.
 
 Gated by `host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts` and, in the
-browser, by `apps/browser-demos/test/kandelo-omarchy.spec.ts` (`/?demo=omarchy`).
+browser, by `apps/browser-demos/test/kandelo-omarchy.spec.ts` (the Omarchy
+machine).
 See [browser-support.md](browser-support.md#omarchy-desktop-demo).
 
 ### Stock upstream clients (`foot` + the font stack)
@@ -2565,24 +2568,24 @@ What it took, on each side of the protocol:
   size of 0×0 — sending pixels as millimetres made foot derive a 25.4 DPI and
   garble its font reload. `wp_presentation` (above) is its frame clock.
 - **The font stack.** Four library packages feed it: `freetype` 2.13.3
-  (rasterizer), `fontconfig` 2.15.0 (font discovery — reads
-  `/etc/fonts/fonts.conf`, scans the staged font dirs), `fcft` 3.1.9 (the
+  (rasterizer), `fontconfig` 2.15.0 (font discovery — reads the config
+  `FONTCONFIG_FILE` names and scans the font dirs it lists), `fcft` 3.1.9 (the
   glyph-cache layer foot draws with) and `tllist` 1.1.0, over `pixman` 0.42.2
   and `utf8proc` 2.9.0. Gates: `host/test/fontstack-smoke.test.ts` and the
   per-package `host/test/{pixman,utf8proc}-smoke.test.ts`.
-- **Kernel: signals interrupt host-converted epoll waits.** foot's SIGCHLD
-  reaper parks in `epoll_pwait` with the signal unblocked only inside the
-  wait; the host-converted wait now swaps the process signal mask via the
-  additive kernel exports `kernel_swap_poll_sigmask` /
-  `kernel_restore_poll_sigmask` and returns EINTR when the per-attempt
-  dequeue delivered a signal (`handleEpollPwait` in
-  `host/src/kernel-worker.ts`).
+- **Kernel: signals interrupt epoll waits.** foot's SIGCHLD reaper parks
+  in `epoll_pwait` with the signal unblocked only inside the wait. The
+  kernel's `sys_epoll_pwait` swaps the thread's signal mask in a per-task
+  wait context, keeps it swapped across the wait's retries, and ends the
+  wait with EINTR once a signal the mask allows is deliverable — the same
+  model as `ppoll` and `pselect6`.
 
 Gated end-to-end by `host/test/foot-smoke.test.ts` (foot on wlcompositor:
 connect, fontconfig+fcft startup, first composited frame through the gbm pool
 path, keys typed into its forked `dash`, clean exit). In the browser, foot is
-a launcher entry of `/?demo=omarchy` — staged at `/usr/local/bin/foot` with
-`fonts.conf` + Inconsolata under `/usr/share/fonts`, gated by
+a launcher entry of the Omarchy machine — a lazy binary at
+`/usr/local/bin/foot`, with the desktop's `fonts.conf` and Inconsolata under
+`/usr/share/kandelo/fonts` — gated by
 `apps/browser-demos/test/kandelo-omarchy.spec.ts`.
 
 ### Full libffi (generated dispatch + static closure trampolines)

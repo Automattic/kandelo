@@ -55,6 +55,14 @@
     },
     {
       "product": "browser-main-shell",
+      "profile": "hyprland"
+    },
+    {
+      "product": "browser-main-shell",
+      "profile": "omarchy"
+    },
+    {
+      "product": "browser-main-shell",
       "profile": "espeak"
     }
   ]

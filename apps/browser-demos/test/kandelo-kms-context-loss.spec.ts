@@ -56,7 +56,19 @@ async function canvasAdvances(page: Page): Promise<boolean> {
 test("the webgl2 scanout presenter survives a GPU process crash", async ({ page }) => {
   test.setTimeout(300_000);
 
-  await gotoOrSkip(page, "/?demo=wayland");
+  // Machines are image-declared: the gallery row produces
+  // `?vfs=<image>&profile=wayland`. `/?demo=wayland` boots the default shell.
+  await gotoOrSkip(page, "/");
+  await page
+    .getByRole("button", { name: /^(New|Launch new computer)$/ })
+    .first()
+    .click();
+  await expect(page.locator("tr.kgal-row").first()).toBeVisible();
+  await page
+    .locator("tr.kgal-row")
+    .filter({ hasText: /Wayland desktop/i })
+    .first()
+    .click();
 
   await expect(canvasLocator(page)).toBeVisible({ timeout: 60_000 });
   await expect

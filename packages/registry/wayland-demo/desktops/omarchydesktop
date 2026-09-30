@@ -1,0 +1,71 @@
+#!/bin/sh
+# Start the Omarchy-shaped desktop and stay in the foreground until it ends.
+#
+# The tiling compositor with its shell on top: a D-Bus session bus, mako for
+# notifications, and unmodified Waybar on a wlr-layer-shell surface. The
+# desktop comes up bare -- wallpaper and bar, no windows; the visitor opens
+# clients through the keybindings or the launcher (CTRL+Space).
+#
+# Everything this desktop reads is image data under /usr/share/kandelo: the
+# compositor config, themes (/usr/share/kandelo/themes, the compositor's
+# default), launcher entries, and the Waybar, mako, D-Bus and fontconfig
+# configurations. Nothing is staged by the page.
+set -u
+
+SOCKET=/tmp/wayland-0
+BUS=/tmp/dbus-session.socket
+HYPR_IPC=/tmp/hypr/wlcompositor/.socket.sock
+DATA=/usr/share/kandelo
+
+# Every desktop process gets the session bus: the compositor passes it on to
+# what it execs (notify-send on a theme switch, launched terminals).
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS"
+export FONTCONFIG_FILE="$DATA/fonts/fonts.conf"
+
+# Wait for a socket path, failing if the process that should bind it died.
+wait_socket() {
+    path=$1 pid=$2 name=$3 i=0
+    while [ ! -S "$path" ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "omarchydesktop: $name exited before binding $path" >&2
+            return 1
+        fi
+        i=$((i + 1))
+        if [ "$i" -gt 300 ]; then
+            echo "omarchydesktop: timed out waiting for $path ($name)" >&2
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
+/usr/local/bin/dbus-daemon --config-file="$DATA/dbus/session.conf" --nofork &
+bus_pid=$!
+
+WLC_LAYOUT=dwindle \
+WLC_CONFIG="$DATA/omarchy/wlcompositor.conf" \
+    /usr/local/bin/wlcompositor &
+compositor_pid=$!
+
+wait_socket "$SOCKET" "$compositor_pid" wlcompositor || exit 1
+wait_socket "$BUS" "$bus_pid" dbus-daemon || exit 1
+
+# mako and Waybar connect to their sockets exactly once (no retry), so they
+# start only after the compositor and the bus are up. Waybar is also a
+# Gtk::Application, so it needs the session bus, and it talks to the
+# compositor over the Hyprland IPC socket pair. `-l debug` makes the bar log
+# every IPC event it receives, which keeps it legible in the terminal.
+/usr/local/bin/mako --config "$DATA/mako/config" &
+wait_socket "$HYPR_IPC" "$compositor_pid" wlcompositor || exit 1
+# The theme hook rewrites the bar's stylesheet on a switch, so the bar reads
+# a writable copy on /tmp rather than the image's.
+cp "$DATA/waybar/style.css" /tmp/waybar-style.css
+HYPRLAND_INSTANCE_SIGNATURE=wlcompositor \
+    /usr/local/bin/waybar -l debug \
+        -c "$DATA/waybar/config.jsonc" -s /tmp/waybar-style.css &
+
+# The compositor's lifetime is the desktop's.
+wait "$compositor_pid"
+status=$?
+kill "$bus_pid" 2>/dev/null
+exit "$status"

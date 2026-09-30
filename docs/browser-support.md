@@ -372,6 +372,8 @@ Located in `apps/browser-demos/pages/`:
 | espeak | espeak-ng | dinit | Speech synthesis through upstream pcaudiolib's OSS backend, so playback rides the same `/dev/dsp` path as the doom demo. The binary and the voice data both come from the `espeak-ng` package closure — the data as the `espeak-ng-data.zip` runtime file, unpacked into `/usr/share/espeak-ng-data` while the image is composed, because libespeak-ng's `PATH_ESPEAK_DATA` is fixed at build time. |
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. The four binaries come from the `wayland-demo` package and are baked into the image before boot; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
+| hyprland | wlcompositor (dwindle) + wlclock + wlterm | dinit | Tiling desktop — see [Hyprland tiling demo](#hyprland-tiling-demo). The image declares `/usr/local/bin/hyprdesktop`, which starts the same compositor in dwindle mode with the image's `/usr/share/kandelo/hyprland/wlcompositor.conf` and three clients. |
+| omarchy | wlcompositor (dwindle) + dbus-daemon + mako + Waybar + klauncher | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor, mako and Waybar; windows are opened from the keyboard. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -481,10 +483,9 @@ black bars. The mode is fixed at boot — resizing the browser window
 afterwards letterboxes rather than re-modes.
 
 Because the mode is device pixels, a HiDPI pane gets a mode larger than
-its CSS box, and nothing in the mode says which of the two it is. The
-page passes the integer `wl_output` scale separately, as `WLC_SCALE`
-(`round(devicePixelRatio)`, clamped 1–3) in the compositor's
-environment. wlcompositor then keeps two grids: the mode sizes every
+its CSS box, and nothing in the mode says which of the two it is.
+wlcompositor takes the integer `wl_output` scale separately, as
+`WLC_SCALE` (clamped 1–3) in its environment, and then keeps two grids: the mode sizes every
 scanout, GBM bo, EGL surface and GL viewport, while the mode divided by
 the scale is the logical grid clients lay out in. `wl_output.mode`
 stays device pixels; `wl_output.scale`, `xdg_output`'s logical size and
@@ -492,6 +493,19 @@ stays device pixels; `wl_output.scale`, `xdg_output`'s logical size and
 A client that honours `wl_surface.set_buffer_scale` attaches a buffer
 that covers its window 1:1 and blits without resampling; one that
 ignores it is upscaled — soft, but correctly sized.
+
+**The browser machines run at scale 1 for now.** Machines are declared
+by the shell image, and an image's launcher is fixed when the image is
+built, while the scale belongs to the display the visitor is looking at.
+Nothing in the boot path sets `WLC_SCALE` any more (the page used to put
+it in the compositor's environment before machines moved into the
+image), so on a HiDPI pane the desktop gets a device-pixel mode at scale
+1: the geometry is right, and windows and text are drawn at half their
+intended size. **Follow-up:** the kernel should report the display's
+physical size on the DRM connector (`mmWidth`/`mmHeight`), as Linux
+does, so the compositor derives its scale from system state instead of
+from something the page injects. The scale path itself is gated
+node-side (below).
 
 The desktop's own clients honour it, and none of them had to change to.
 libwpkdraw carries the scale instead: `wpk_set_scale()` is a
@@ -533,20 +547,25 @@ toolkit client picks its initial size as a constant, and a constant
 that suited a 2255×1080 desktop covers nearly all of a 1280×613 one;
 the compositor clamps a floating window's position but not its size.
 On a desktop roomy enough for the constant this changes nothing.
-`host/test/wlcompositor-output-scale-smoke.test.ts` gates the protocol
-side and `apps/browser-demos/test/kandelo-hidpi.spec.ts` gates the
-whole chain at `deviceScaleFactor: 2`.
+`host/test/wlcompositor-output-scale-smoke.test.ts` and
+`host/test/mako-smoke.test.ts` gate the scaled path at `WLC_SCALE=2`.
+No browser test covers it while the machines run at scale 1.
 
-The theme wallpapers cannot follow the mode. Each is baked into the VFS
-image at compose time and the kernel owns the VFS from boot, while the
-mode is only settled later — and the pane's own box is still moving
-while it settles, so a compose-time measurement does not predict it. So
-the page stages every pixel the source JPEG has (capped at 3840 per
-axis) and wlcompositor centre-crops the KWLP to the output's aspect
-before scaling it. That keeps a HiDPI desktop's background sharp and
-undistorted at any pane aspect, at the cost of a larger image: six
-themes staged eagerly at source resolution are ~49 MB of VFS instead of
-the ~12 MB the fixed 960×540 staging cost.
+The Omarchy themes paint gradient wallpapers for now. Each
+`theme.conf` names its two gradient colours (`wallpaper_top`,
+`wallpaper_bottom`), and the compositor draws the gradient at the
+output's resolution. wlcompositor also supports image wallpapers: a
+theme's `wallpaper = <file>` names a KWLP raw-pixel image, which it
+centre-crops to the output's aspect and then scales
+(`host/test/wlcompositor-theme-smoke.test.ts` covers it), but the shell
+image does not ship any. **Short-term follow-up:** ship each theme's
+real Omarchy background. The images must come from upstream as sourced
+inputs (URL, sha256, license) and be converted to KWLP in the
+`wayland-demo` package build. Previously the page decoded them at boot,
+which does not exist once machines are declared by the image. Staged at
+source resolution (capped at 3840 per axis), the six backgrounds cost
+about 49 MB of VFS, so they belong in a lazy archive rather than the
+eager image.
 
 Pump presents are change-driven (kernel commit count, with a ~15 Hz
 strided-checksum content probe as a backstop) rather than
@@ -589,12 +608,15 @@ distribution) and the node-side twins under `host/test/wl*-smoke.test.ts`
 
 ### Hyprland tiling demo
 
-`/?demo=hyprland` boots the same `wlcompositor` binary as a Hyprland-class
-tiling window manager (the floating `/?demo=wayland` desktop above is its
-default layout). The staging block sets `WLC_LAYOUT=dwindle` in the
-compositor's environment and stages a hyprland.conf-shaped
-`/etc/kandelo/wlcompositor.conf` (read via `WLC_CONFIG`), then spawns three
-real clients — one `wlclock` and two `wlterm` terminals:
+The Hyprland tiling machine (launched from the gallery, or directly with
+`?vfs=<shell image>&profile=hyprland`) boots the same `wlcompositor` binary
+as a Hyprland-class tiling window manager (the floating Wayland desktop
+above is its default layout). The image declares one command,
+`/usr/local/bin/hyprdesktop`, which starts the compositor with
+`WLC_LAYOUT=dwindle` and the image's hyprland.conf-shaped
+`/usr/share/kandelo/hyprland/wlcompositor.conf` (named by `WLC_CONFIG`),
+waits for its socket, then starts three real clients — one `wlclock` and
+two `wlterm` terminals. The foreground terminal's exit ends the desktop.
 
 - **Dwindle tiling.** Every mapped window is retiled into gapped, borderless
   frames by recursively splitting the remaining region along its longer side
@@ -607,13 +629,13 @@ real clients — one `wlclock` and two `wlterm` terminals:
   `wlterm` reflows its VT100 grid via `TIOCSWINSZ` + `SIGWINCH`, `wlpaint`
   reallocates its canvas so the toolbar + drawing area fill the whole tile
   instead of a fixed 640×420 corner). Floating clients ignore the initial
-  `configure(0,0)`, so `/?demo=wayland` is unchanged.
+  `configure(0,0)`, so the floating Wayland desktop is unchanged.
 - **Server-side decorations.** Under `dwindle` the compositor negotiates
   `SERVER_SIDE` decorations, so tiled windows have no titlebar (a floating
   layout keeps client-side CSD).
 - **Keybinds.** `Return` launches a terminal, `W` kills the focused window,
   and `1..9` switch workspaces — bound on both `SUPER` (real Hyprland) and
-  `CTRL` in the staged `wlcompositor.conf`. Use **`CTRL`** in the browser:
+  `CTRL` in the image's `wlcompositor.conf`. Use **`CTRL`** in the browser:
   the OS/browser reserve `SUPER` (Cmd/Win) — `Cmd+W` closes the tab,
   `Cmd+1..9` switch browser tabs — so those never reach the page, while
   `Ctrl+…` does. The compositor also supports move-to-workspace, focus
@@ -624,9 +646,8 @@ real clients — one `wlclock` and two `wlterm` terminals:
   `Return`→`wlterm`, `K`→`wlclock` (K as in clo**K** — see the caveat),
   `P`→`wlpaint` (again on both `SUPER` and `CTRL`). Pressing the combo makes
   the compositor `posix_spawnp` the binary from `/usr/local/bin`, and the new
-  client tiles into the layout. `wlpaint` is staged solely for this path —
-  unlike `/?demo=wayland` it is not auto-spawned into the initial layout, so
-  `Ctrl+P` is how you summon it.
+  client tiles into the layout. Unlike on the Wayland desktop, `wlpaint`
+  is not started in the initial layout, so `Ctrl+P` is how you summon it.
   **Caveat:** the compositor grabs a bound combo before the focused client,
   so a `CTRL`+letter launch bind shadows the terminal's like-named control key.
   The clock is bound to `K` (not `C`) precisely to leave `Ctrl+C` (SIGINT) to
@@ -642,13 +663,18 @@ and in the browser by `apps/browser-demos/test/kandelo-hyprland.spec.ts`.
 
 ### Omarchy desktop demo
 
-`/?demo=omarchy` is the tiling desktop above plus the shell that makes it a
-desktop: a status bar, a launcher, and themes. Omarchy is not a program but a
-set of files layered over Hyprland, so this demo is the same `wlcompositor`
-binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
-`/usr/share/kandelo/apps`, and six themes under `/usr/share/kandelo/themes`
-— all staged into the VFS at boot from
-`apps/browser-demos/pages/kandelo/kernel-host/omarchy-desktop.ts`.
+The Omarchy desktop machine (`?vfs=<shell image>&profile=omarchy`) is the
+tiling desktop above plus the shell that makes it a desktop: a status bar,
+a launcher, notifications, and themes. Omarchy is not a program but a set of
+files layered over Hyprland, so this machine is the same `wlcompositor`
+binary with its own `/usr/share/kandelo/omarchy/wlcompositor.conf`, an app
+registry under `/usr/share/kandelo/apps`, and six themes under
+`/usr/share/kandelo/themes`. All of it is image data: the `wayland-demo`
+package builds it into `kandelo-desktop-data.zip`, which the shell image
+unpacks under `/usr/share/kandelo`. The image declares one command,
+`/usr/local/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
+and the compositor, waits for both sockets, then starts mako and Waybar.
+Nothing is staged by the page.
 
 The desktop comes up bare: wallpaper and bar, no windows. Every client is one
 the user opens, through the binds below or the launcher. The demo stays alive
@@ -656,8 +682,9 @@ on the compositor's own process rather than on a foreground terminal.
 
 - **The bar.** Unmodified upstream **Waybar 0.14.0** — the real GTK3 bar, on
   the ported gtkmm/gtk-layer-shell stack, reading a translated version of
-  Omarchy's own `config.jsonc` and `style.css` from
-  `~/.config/waybar`. `gtk_layer_shell` anchors it across the top with an
+  Omarchy's own `config.jsonc` and `style.css` (from
+  `/usr/share/kandelo/waybar`; the stylesheet is copied to
+  `/tmp/waybar-style.css` so a theme switch can rewrite it). `gtk_layer_shell` anchors it across the top with an
   exclusive zone, so the windows tile *under* it rather than behind it. Its
   `hyprland/workspaces` and `hyprland/window` modules speak Hyprland IPC to
   the compositor's socket pair at `/tmp/hypr/wlcompositor/` — `j/`-prefixed
@@ -669,7 +696,7 @@ on the compositor's own process rather than on a foreground terminal.
   gtk3 package's `wayland-shm-gbm-pool.patch`, foot's contract), which is
   what carries its pixels across to the compositor. The bar runs at
   `-l debug`, so every Hyprland IPC event it consumes shows up in the
-  Internals syslog next to the compositor's own marker.
+  machine's terminal next to the compositor's own marker.
 - **Notifications.** The demo boots a `dbus-daemon` session bus and
   unmodified upstream mako on it. A theme switch reaches `notify-send`
   through the config's `notify =` hook (the theme script above execs it) — a real
@@ -688,8 +715,9 @@ on the compositor's own process rather than on a foreground terminal.
   binaries lazy-fetch from the image's archives on first launch), plus a Bash
   terminal. The Foot entry is different in kind: stock upstream foot 1.17.2
   as its own Wayland client on the ported font stack —
-  freetype/fontconfig/fcft rasterizing the staged Inconsolata through
-  `/etc/fonts/fonts.conf` — not a `wlterm` wrapper (see
+  freetype/fontconfig/fcft rasterizing the image's Inconsolata through
+  `/usr/share/kandelo/fonts/fonts.conf` (`FONTCONFIG_FILE`) — not a
+  `wlterm` wrapper (see
   [architecture.md](architecture.md#stock-upstream-clients-foot--the-font-stack)).
 - **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same launcher
   at its root level (Apps, Theme). `Enter` descends; the Theme submenu lists
@@ -702,13 +730,11 @@ on the compositor's own process rather than on a foreground terminal.
   switch, and the bar's. Waybar reads its stylesheet once per load, as
   upstream does, so the switch takes the path a real Omarchy session takes:
   the compositor's `notify =` hook (`/usr/local/bin/omarchy-theme-changed`)
-  writes `~/.config/waybar/style.css` from the new `theme.conf` and sends
+  writes `/tmp/waybar-style.css` from the new `theme.conf` and sends
   Waybar `SIGUSR2`, which reloads it. The hook then execs `notify-send`, so
-  the toast is the same one. Each theme ships its real Omarchy background, which the page
-  decodes and renders to raw pixels at staging time
-  (`renderImageWallpaperKwlp`, with an aurora fallback via
-  `renderWallpaperKwlp` if the decode fails); the compositor scales it to the
-  output and falls back to a gradient for themes without one.
+  the toast is the same one. The themes paint gradient wallpapers; their
+  real Omarchy backgrounds are a short-term follow-up (see the wallpaper
+  note in the Wayland section above).
 - **The rest of the keybinds** are the Hyprland demo's: `Ctrl+Return` a
   terminal, `Ctrl+K` a clock, `Ctrl+P` a paint canvas, `Ctrl+W` closes the
   focused window, `Ctrl+1..9` switch workspaces, `Ctrl+J` cycles focus. Every

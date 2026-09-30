@@ -131,6 +131,14 @@ WLPAINT="$WAYLAND_DEMO_DIR/wlpaint.wasm"
 # The launcher itself. A package runtime_file is NOT installed into the shell
 # image by the composer, so it has to be threaded like the binaries.
 WLDESKTOP="$WAYLAND_DEMO_DIR/wldesktop"
+# The tiling and Omarchy desktops: two more launchers, the Omarchy theme hook,
+# the small klauncher/notify-send programs, and the desktops' data archive.
+KLAUNCHER="$WAYLAND_DEMO_DIR/klauncher.wasm"
+NOTIFY_SEND="$WAYLAND_DEMO_DIR/notify-send.wasm"
+HYPRDESKTOP="$WAYLAND_DEMO_DIR/hyprdesktop"
+OMARCHYDESKTOP="$WAYLAND_DEMO_DIR/omarchydesktop"
+OMARCHY_THEME_HOOK="$WAYLAND_DEMO_DIR/omarchy-theme-changed"
+DESKTOP_DATA="$WAYLAND_DEMO_DIR/kandelo-desktop-data.zip"
 # libinput's device quirks, unpacked by the composer at /usr/share/libinput.
 LIBINPUT_QUIRKS="$WAYLAND_DEMO_DIR/libinput-quirks.zip"
 ESPEAK_NG="$ESPEAK_NG_DIR/espeak-ng.wasm"
@@ -150,6 +158,12 @@ require_regular_file "wlterm dependency output" "$WLTERM"
 require_regular_file "wlclock dependency output" "$WLCLOCK"
 require_regular_file "wlpaint dependency output" "$WLPAINT"
 require_regular_file "wldesktop dependency output" "$WLDESKTOP"
+require_regular_file "klauncher dependency output" "$KLAUNCHER"
+require_regular_file "notify-send dependency output" "$NOTIFY_SEND"
+require_regular_file "hyprdesktop dependency output" "$HYPRDESKTOP"
+require_regular_file "omarchydesktop dependency output" "$OMARCHYDESKTOP"
+require_regular_file "omarchy theme hook dependency output" "$OMARCHY_THEME_HOOK"
+require_regular_file "desktop data dependency output" "$DESKTOP_DATA"
 require_regular_file "libinput quirks dependency output" "$LIBINPUT_QUIRKS"
 require_regular_file "espeak-ng dependency output" "$ESPEAK_NG"
 require_regular_file "espeak-ng data dependency output" "$ESPEAK_NG_DATA"
@@ -183,6 +197,12 @@ TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     --wlclock "$WLCLOCK" \
     --wlpaint "$WLPAINT" \
     --wldesktop "$WLDESKTOP" \
+    --klauncher "$KLAUNCHER" \
+    --notify-send "$NOTIFY_SEND" \
+    --hyprdesktop "$HYPRDESKTOP" \
+    --omarchydesktop "$OMARCHYDESKTOP" \
+    --omarchy-theme-hook "$OMARCHY_THEME_HOOK" \
+    --desktop-data "$DESKTOP_DATA" \
     --libinput-quirks "$LIBINPUT_QUIRKS" \
     --espeak-ng "$ESPEAK_NG" \
     --espeak-ng-data "$ESPEAK_NG_DATA" \
