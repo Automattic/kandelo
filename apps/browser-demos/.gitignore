@@ -5,3 +5,4 @@ public/*.vfs
 public/vim.zip
 public/nethack.zip
 public/bootstrap-bundle.zip
+test-results/

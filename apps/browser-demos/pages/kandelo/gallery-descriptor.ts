@@ -11,9 +11,17 @@ export function descriptorFromGalleryItem(
   item: GalleryItem,
   base: BootDescriptor,
 ): BootDescriptor {
-  const mounts = item.vfsImageUrl
+  const rootMounts = item.vfsImageUrl
     ? mountsWithRootImageUrl(base.mounts, item.vfsImageUrl)
     : base.mounts;
+  // WHY: browser-storage mounts are per-machine opt-ins. Carrying the
+  // previous machine's opfs workspace into the next profile would silently
+  // attach its persistent data (and its exclusive workspace lock) to a
+  // machine that never asked for it.
+  const mounts = [
+    ...rootMounts.filter((m) => m.source !== "opfs"),
+    ...(item.mounts ?? []),
+  ];
   const rootBoot = item.bootCommand[0] === "/sbin/dinit";
   const nodeBoot = item.id === "node";
   // WHY: a gallery switch changes runtime profiles. Carrying the previous
