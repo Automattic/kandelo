@@ -159,6 +159,11 @@ static int run_server(void)
                                  G_BUS_NAME_OWNER_FLAGS_NONE,
                                  on_name_acquired, on_name_lost, &st, NULL);
     g_main_loop_run(st.loop);
+    /* GDBus sends replies from its worker thread. Leaving main right after
+     * the last return_value can exit before that reply is written, and the
+     * client then sees "recipient disconnected without replying" (the same
+     * race exists on Linux). Flush before exiting. */
+    g_dbus_connection_flush_sync(bus, NULL, NULL);
 
     if (st.ping_handled != 1 || st.notify_handled != 1) {
         fprintf(stderr, "server: ping=%d notify=%d\n",

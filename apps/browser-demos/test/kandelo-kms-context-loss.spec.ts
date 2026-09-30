@@ -56,19 +56,10 @@ async function canvasAdvances(page: Page): Promise<boolean> {
 test("the webgl2 scanout presenter survives a GPU process crash", async ({ page }) => {
   test.setTimeout(300_000);
 
-  // Machines are image-declared: the gallery row produces
-  // `?vfs=<image>&profile=wayland`. `/?demo=wayland` boots the default shell.
-  await gotoOrSkip(page, "/");
-  await page
-    .getByRole("button", { name: /^(New|Launch new computer)$/ })
-    .first()
-    .click();
-  await expect(page.locator("tr.kgal-row").first()).toBeVisible();
-  await page
-    .locator("tr.kgal-row")
-    .filter({ hasText: /Wayland desktop/i })
-    .first()
-    .click();
+  // The Wayland desktop is not listed in the gallery (Omarchy is the
+  // desktop shown there), but the shell image still declares it, so it
+  // boots by profile.
+  await gotoOrSkip(page, "/?profile=wayland");
 
   await expect(canvasLocator(page)).toBeVisible({ timeout: 60_000 });
   await expect

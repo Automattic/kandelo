@@ -23,10 +23,10 @@ const CANVAS_H = 768;
 
 const EV_SYN = 0x00;
 const EV_KEY = 0x01;
-const EV_REL = 0x02;
+const EV_ABS = 0x03;
 const SYN_REPORT = 0x00;
 const KEY_A = 30;
-const REL_X = 0x00;
+const ABS_X = 0x00;
 
 const KICK = new Uint8Array([0x0a]);
 
@@ -87,7 +87,7 @@ describe("libevdev — capability probe + event decode", () => {
 
         // Phase 2 — pointer (event1).
         await waitFor(stdout, "READY:ptr\n", 10_000);
-        host.injectInputEvent(1, EV_REL, REL_X, 5);
+        host.injectInputEvent(1, EV_ABS, ABS_X, 5);
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
         host.appendStdinData(pid, KICK);
 
@@ -126,9 +126,9 @@ describe("libevdev — capability probe + event decode", () => {
           `kbd_ev1 type=${EV_SYN} code=${SYN_REPORT} value=0 type_name=EV_SYN code_name=SYN_REPORT`,
         );
 
-        // Phase 2: REL_X=+5 then SYN_REPORT.
+        // Phase 2: ABS_X=5 then SYN_REPORT (the pointer is absolute).
         expect(stdout.value).toContain(
-          `ptr_ev0 type=${EV_REL} code=${REL_X} value=5 type_name=EV_REL code_name=REL_X`,
+          `ptr_ev0 type=${EV_ABS} code=${ABS_X} value=5 type_name=EV_ABS code_name=ABS_X`,
         );
         expect(stdout.value).toContain(
           `ptr_ev1 type=${EV_SYN} code=${SYN_REPORT} value=0 type_name=EV_SYN code_name=SYN_REPORT`,

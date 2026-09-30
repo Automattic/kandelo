@@ -235,7 +235,6 @@ function fixturePaths(root: string) {
   // theme hook, and the data archive unpacked at /usr/share/kandelo.
   const klauncherPath = join(root, "klauncher.wasm");
   const notifySendPath = join(root, "notify-send.wasm");
-  const hyprdesktopPath = join(root, "hyprdesktop");
   const omarchydesktopPath = join(root, "omarchydesktop");
   const omarchyThemeHookPath = join(root, "omarchy-theme-changed");
   const desktopDataPath = join(root, "kandelo-desktop-data.zip");
@@ -263,7 +262,6 @@ function fixturePaths(root: string) {
   writeFileSync(wldesktopPath, "#!/bin/sh\nexec wlterm\n");
   writeFileSync(klauncherPath, new Uint8Array([0x6b, 0x6c, 0x6e, 0x31]));
   writeFileSync(notifySendPath, new Uint8Array([0x6e, 0x73, 0x6e, 0x31]));
-  writeFileSync(hyprdesktopPath, "#!/bin/sh\nexec wlterm\n");
   writeFileSync(omarchydesktopPath, "#!/bin/sh\nexec wlcompositor\n");
   writeFileSync(omarchyThemeHookPath, "#!/usr/bin/bash\nexit 0\n");
   writeFileSync(
@@ -341,7 +339,15 @@ function fixturePaths(root: string) {
       requestedDependency === "git-remote-http" ? "git" : requestedDependency;
     const dir = dependencyRoots.get(dependency);
     if (!dir) throw new Error(`fixture omitted dependency ${dependency}`);
-    const artifact = join(dir, resolverPath.split("/").at(-1)!);
+    // Same mapping as the fixture writer above: a package-relative path
+    // (programs/<pkg>/share/...) keeps its subdirectories.
+    const packagePrefix = `programs/${dependency}/`;
+    const artifact = join(
+      dir,
+      resolverPath.startsWith(packagePrefix)
+        ? resolverPath.slice(packagePrefix.length)
+        : resolverPath.split("/").at(-1)!,
+    );
     if (!existsSync(artifact)) {
       throw new Error(`fixture omitted ${dependency} output ${artifact}`);
     }
@@ -362,7 +368,6 @@ function fixturePaths(root: string) {
     wldesktopPath,
     klauncherPath,
     notifySendPath,
-    hyprdesktopPath,
     omarchydesktopPath,
     omarchyThemeHookPath,
     desktopDataPath,
@@ -670,7 +675,6 @@ describe("canonical source-rootfs shell", () => {
       ["/usr/local/bin/wldesktop", paths.wldesktopPath],
       ["/usr/local/bin/klauncher", paths.klauncherPath],
       ["/usr/local/bin/notify-send", paths.notifySendPath],
-      ["/usr/local/bin/hyprdesktop", paths.hyprdesktopPath],
       ["/usr/local/bin/omarchydesktop", paths.omarchydesktopPath],
       ["/usr/local/bin/omarchy-theme-changed", paths.omarchyThemeHookPath],
     ]) {
@@ -811,9 +815,11 @@ describe("canonical source-rootfs shell", () => {
       ),
     );
     const base = JSON.parse(readFileSync(packageDemoPath, "utf8"));
-    base.profiles.doom = overlay.profiles.doom;
-    base.profiles.quake = overlay.profiles.quake;
-    base.profiles.modeset = overlay.profiles.modeset;
+    // Every overlay profile (doom, quake, modeset, scummvm, ...) becomes a
+    // base-owned twin, so the overlay adds nothing new.
+    for (const [name, profile] of Object.entries(overlay.profiles)) {
+      base.profiles[name] = profile;
+    }
     const basePath = join(root, "base-with-owned-profiles.json");
     writeFileSync(basePath, JSON.stringify(base));
     const reverseObjectKeys = (value: unknown): unknown => {
@@ -1067,7 +1073,6 @@ describe("canonical source-rootfs shell", () => {
       "wldesktop",
       "klauncher.wasm",
       "notify-send.wasm",
-      "hyprdesktop",
       "omarchydesktop",
       "omarchy-theme-changed",
       "kandelo-desktop-data.zip",
@@ -1159,7 +1164,6 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(invocation).toContain(`--wldesktop ${waylandDemoDir}/wldesktop`);
     expect(invocation).toContain(`--klauncher ${waylandDemoDir}/klauncher.wasm`);
     expect(invocation).toContain(`--notify-send ${waylandDemoDir}/notify-send.wasm`);
-    expect(invocation).toContain(`--hyprdesktop ${waylandDemoDir}/hyprdesktop`);
     expect(invocation).toContain(`--omarchydesktop ${waylandDemoDir}/omarchydesktop`);
     expect(invocation).toContain(
       `--omarchy-theme-hook ${waylandDemoDir}/omarchy-theme-changed`,

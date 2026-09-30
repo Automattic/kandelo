@@ -37,7 +37,7 @@ const BUILD_SCRIPT = join(
 );
 const INCONSOLATA = join(
   REPO_ROOT,
-  "examples/libs/wpkdraw/third_party/Inconsolata-Regular.ttf",
+  "third_party/Inconsolata-Regular.ttf",
 );
 
 function hasToolchain(): boolean {
@@ -84,8 +84,12 @@ describe("qtbase — QtGui and the Wayland plugin on the kernel", () => {
       );
 
       const programPath = join(workDir, "qt_gui_smoke.wasm");
+      // The CMake build is verbose (and glib's .pc names a sysprof module
+      // the package does not ship, so every pkg-config query warns); the
+      // 1 MiB default buffer overflows with ENOBUFS.
       const built = execFileSync("bash", [BUILD_SCRIPT, programPath], {
         encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
       });
       expect(built, built).toContain("QT_GUI_SMOKE_BUILT");
 

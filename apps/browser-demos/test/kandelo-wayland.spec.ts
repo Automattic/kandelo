@@ -240,26 +240,20 @@ async function readDesktopDims(page: Page): Promise<void> {
  * Skips (via gotoOrSkip) when the binaries aren't built — Vite fails the
  * `?url` import and shows an error overlay.
  *
- * The machine is launched from the gallery, not a query parameter. `?demo=`
- * was removed when VFS images gained their own machine descriptors: selection
- * is now `?vfs=<image>&profile=<id>`, and the gallery row is the tracked
- * channel that produces it. Navigating to `/?demo=wayland` silently boots the
- * default shell instead — a green-looking run against the wrong machine.
+ * The machine is selected with `?profile=wayland` against the default shell
+ * image. `?demo=` was removed when VFS images gained their own machine
+ * descriptors, and navigating to `/?demo=wayland` silently boots the default
+ * shell instead — a green-looking run against the wrong machine — so the
+ * boot log is checked for wldesktop below. The gallery does not list this
+ * machine (Omarchy is the desktop shown there).
  */
 test("Kandelo wayland desktop composites three clients, routes typing and window drags", async ({ page }) => {
   test.setTimeout(300_000);
 
-  await gotoOrSkip(page, "/");
-  await page
-    .getByRole("button", { name: /^(New|Launch new computer)$/ })
-    .first()
-    .click();
-  await expect(page.locator("tr.kgal-row").first()).toBeVisible();
-  await page
-    .locator("tr.kgal-row")
-    .filter({ hasText: /Wayland desktop/i })
-    .first()
-    .click();
+  // The Wayland desktop is not listed in the gallery (Omarchy is the
+  // desktop shown there), but the shell image still declares it, so it
+  // boots by profile.
+  await gotoOrSkip(page, "/?profile=wayland");
 
   // The desktop boot is heavy (four wasm programs + a forkpty'd shell).
   // The image declares one command, /usr/local/bin/wldesktop, which brings

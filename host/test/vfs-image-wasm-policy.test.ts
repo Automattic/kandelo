@@ -8,6 +8,7 @@ import {
 } from "../../images/vfs/scripts/vfs-image-helpers";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { ABI_VERSION } from "../src/generated/abi";
 
 const NODE_PATH = "/usr/bin/node";
 const DISABLED_NODE_POLICY = {
@@ -84,7 +85,10 @@ describe("VFS image path-scoped Wasm artifact policy", () => {
         wasmArtifactPolicies: [DISABLED_NODE_POLICY],
       }),
     ).rejects.toThrow(
-      /\/usr\/bin\/node:[\s\S]*contains ABI 43 wasm-fork-instrument metadata, imports, or exports/,
+      new RegExp(
+        String.raw`/usr/bin/node:[\s\S]*contains ABI ${ABI_VERSION} `
+          + "wasm-fork-instrument metadata, imports, or exports",
+      ),
     );
   });
 

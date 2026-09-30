@@ -22,9 +22,10 @@
  *     to a multi-threaded process — see
  *     host/test/signal-to-threaded.test.ts for the minimal case.
  *
- * The orchestrating shell must be dash: exec targets resolved via
- * onResolveExec are visible to exec() but not to PATH-search stat calls,
- * so the script invokes them by absolute path. Skips if any binary is
+ * The orchestrating dash script execs each program by its absolute host
+ * path: exec reads its target from the kernel VFS, which the Node host's
+ * VFS maps onto the host filesystem, so the resolver's cached wasm is
+ * reachable there directly. Skips if any binary is
  * missing (bare checkout — waybar comes from the package cache).
  */
 import { describe, expect, it } from "vitest";
@@ -42,7 +43,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const INCONSOLATA = join(
   REPO_ROOT,
-  "examples/libs/wpkdraw/third_party/Inconsolata-Regular.ttf",
+  "third_party/Inconsolata-Regular.ttf",
 );
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
@@ -123,9 +124,6 @@ describe("waybar — upstream status bar on wlcompositor's Hyprland IPC", () => 
     async () => {
       const compositorBytes = loadBytes(compositorBin!);
       const dashBytes = loadBytes(dashBin!);
-      const daemonBytes = loadBytes(daemonBin!);
-      const waybarBytes = loadBytes(waybarBin!);
-      const kwlctlBytes = loadBytes(kwlctlBin!);
 
       const root = mkdtempSync(join(tmpdir(), "kandelo-waybar-"));
       const fontDir = join(root, "fonts");
@@ -165,19 +163,19 @@ describe("waybar — upstream status bar on wlcompositor's Hyprland IPC", () => 
         // Waybar is a Gtk::Application, so g_application_register needs a
         // session bus. Without one GIO tries to autolaunch and dies on the
         // missing machine-id; the omarchy demo passes the same address.
-        `/bin/dbus-daemon --config-file=/tmp/waybar-session.conf --nofork &`,
+        `${daemonBin!} --config-file=/tmp/waybar-session.conf --nofork &`,
         `b=0`,
         `while [ ! -S ${BUS_SOCKET} ] && [ $b -lt 20000 ]; do b=$((b+1)); done`,
         `export DBUS_SESSION_BUS_ADDRESS=unix:path=${BUS_SOCKET}`,
         `export HYPRLAND_INSTANCE_SIGNATURE=wlcompositor`,
-        `/bin/waybar -c /tmp/waybar-config.jsonc -s /tmp/waybar-style.css &`,
+        `${waybarBin!} -c /tmp/waybar-config.jsonc -s /tmp/waybar-style.css &`,
         `bar_pid=$!`,
         // No sleep in this environment either: spin until the test has
         // seen the bar map, then drive the event stream.
         `i=0`,
         `while [ ! -f ${GO_FILE} ] && [ $i -lt 4000000 ]; do i=$((i+1)); done`,
-        `/bin/kwlctl dispatch workspace 2`,
-        `/bin/kwlctl dispatch workspace 1`,
+        `${kwlctlBin!} dispatch workspace 2`,
+        `${kwlctlBin!} dispatch workspace 1`,
         `j=0; while [ $j -lt 200000 ]; do j=$((j+1)); done`,
         // The omarchy theme switch: rewrite the stylesheet, then SIGUSR2
         // the bar. Waybar's default on-sigusr2 action is reload.
@@ -206,12 +204,6 @@ describe("waybar — upstream status bar on wlcompositor's Hyprland IPC", () => 
           const text = new TextDecoder().decode(data);
           err.value += text;
           log.value += text;
-        },
-        onResolveExec: (path) => {
-          if (path.endsWith("/dbus-daemon")) return daemonBytes;
-          if (path.endsWith("/waybar")) return waybarBytes;
-          if (path.endsWith("/kwlctl")) return kwlctlBytes;
-          return null;
         },
       });
       const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;

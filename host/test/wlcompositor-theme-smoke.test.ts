@@ -345,7 +345,6 @@ describe("wlcompositor — theme system", () => {
       // the height at most one.
       const compositorBytes = loadBytes(compositorBin!);
       const wltermBytes = loadBytes(wltermBin!);
-      const dashBytes = loadBytes(dashBin!);
       const kwlctlBytes = loadBytes(kwlctlBin!);
 
       const gapsOut = [8, 9, 10, 11];
@@ -363,8 +362,6 @@ describe("wlcompositor — theme system", () => {
       const host = new NodeKernelHost({
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
-        onResolveExec: (path) =>
-          path === "dash" || path.endsWith("/dash") ? dashBytes : null,
       });
       const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
 
@@ -383,7 +380,7 @@ describe("wlcompositor — theme system", () => {
 
         host.spawn(
           wltermBytes,
-          ["wlterm", "dash", "-c", "printf 'READY\\n'; read x"],
+          ["wlterm", dashBin!, "-c", "printf 'READY\\n'; read x"],
           { env: ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
         );
         await waitFor(out, "WLTERM_READY", 20_000, dump);

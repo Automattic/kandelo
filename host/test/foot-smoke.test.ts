@@ -38,7 +38,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const INCONSOLATA = join(
   REPO_ROOT,
-  "examples/libs/wpkdraw/third_party/Inconsolata-Regular.ttf",
+  "third_party/Inconsolata-Regular.ttf",
 );
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
