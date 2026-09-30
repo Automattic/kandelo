@@ -240,6 +240,10 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
     executable: "/usr/local/bin/scummvm",
     command: "/usr/local/bin/scummvm",
   },
+  retro: {
+    executable: "/usr/local/bin/retro-run",
+    command: "/usr/local/bin/retro-run",
+  },
 } as const;
 
 /**
@@ -271,6 +275,169 @@ if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
     fi
 fi
 exec /usr/bin/quake -basedir "$BASE" "$@"
+`;
+
+/**
+ * The retro machine's launcher, written eagerly to /usr/local/bin/retro-run.
+ * It picks one of the three lazy kandelo-retro programs and execs it.
+ *
+ * WHY it reads the ROM instead of its name: a "Load ROM" upload always lands
+ * at one fixed path, and the demo ingest contract never passes the uploaded
+ * filename to the restart command. So the system is identified the way
+ * emulator frontends identify a headerless dump: the iNES magic at offset 0,
+ * "SEGA" at 0x100 for Mega Drive, "TMR SEGA" near the end of a Master System
+ * or Game Gear ROM, and for SNES the header checksum and its complement at
+ * the LoROM/HiROM header offsets (with and without a 512-byte copier header).
+ * A file that matches none of them is rejected with a message rather than
+ * handed to an arbitrary core.
+ *
+ * Which ROM runs, in order: an explicit argument; a ROM loaded during this
+ * session; a ROM or bundled-ROM name supplied by a boot link; the NES starter
+ * ROM. A boot link's save state is only applied to the ROM the link named.
+ *
+ * The cores themselves take the system type from the path's extension, so
+ * the launcher runs the ROM through a symlink named for what it detected.
+ */
+const RETRO_RUN_SCRIPT = `#!/bin/sh
+# Pick the emulator core for a ROM from the ROM's own bytes, then exec it.
+#
+# The core cannot be chosen from a filename: an uploaded file always lands at
+# one fixed path, and its original name is never passed to this script.
+ROMS=/usr/share/kandelo-retro/roms
+DEFAULT_ROM="$ROMS/240pee.nes"
+UPLOAD=/var/lib/kandelo-retro/rom
+INPUTS=/run/kandelo/inputs
+MANIFEST=/run/kandelo/boot-input.json
+RUN=/tmp/kandelo-retro
+
+first_file() {
+    for f in "$1"/*; do
+        [ -f "$f" ] && { printf '%s\\n' "$f"; return 0; }
+    done
+    return 1
+}
+
+# $1=file $2=offset $3=count -> lowercase hex, no separators
+hex_at() {
+    dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null | od -An -tx1 | tr -d ' \\n'
+}
+
+# A SNES header stores a checksum and its bitwise complement side by side.
+snes_header_at() {
+    h=$(hex_at "$1" "$2" 4)
+    [ \${#h} -eq 8 ] || return 1
+    c=$((0x\${h%????})); s=$((0x\${h#????}))
+    [ $((c ^ s)) -eq 65535 ]
+}
+
+ROM=""; STATE=""
+if [ $# -ge 1 ]; then
+    ROM=$1
+elif [ -f "$UPLOAD" ]; then
+    # A ROM loaded during this session replaces whatever the machine booted
+    # with, including a boot link's save state, which belongs to another game.
+    ROM=$UPLOAD
+else
+    ROM=$(first_file "$INPUTS/rom") || ROM=""
+    if [ -z "$ROM" ] && [ -f "$MANIFEST" ]; then
+        # A boot link may name a bundled ROM. Accept only a bare filename that
+        # exists in the package's own ROM directory.
+        name=$(sed -n 's/^ *"bundledRom": *"\\([A-Za-z0-9._-]*\\)",\\{0,1\\} *$/\\1/p' "$MANIFEST" | head -n 1)
+        [ -n "$name" ] && [ -f "$ROMS/$name" ] && ROM="$ROMS/$name"
+    fi
+    [ -n "$ROM" ] || ROM=$DEFAULT_ROM
+    STATE=$(first_file "$INPUTS/state") || STATE=""
+fi
+
+if [ ! -r "$ROM" ]; then
+    echo "retro-run: cannot read ROM: $ROM" >&2
+    exit 1
+fi
+
+CORE=""; EXT=""
+if [ "$(hex_at "$ROM" 0 4)" = "4e45531a" ]; then
+    CORE=/usr/bin/kandelo-retro; EXT=nes
+elif [ "$(hex_at "$ROM" 256 4)" = "53454741" ]; then
+    CORE=/usr/bin/kandelo-retro-genesis; EXT=md
+else
+    for off in 32752 16368 8176; do
+        if [ "$(hex_at "$ROM" "$off" 8)" = "544d522053454741" ]; then
+            CORE=/usr/bin/kandelo-retro-genesis; EXT=sms
+            # Region nibble: 5-7 are Game Gear, 3-4 are Master System.
+            region=$(hex_at "$ROM" $((off + 15)) 1)
+            case \${region%?} in 5|6|7) EXT=gg ;; esac
+            break
+        fi
+    done
+fi
+if [ -z "$CORE" ]; then
+    for off in 32732 65500 33244 66012; do
+        if snes_header_at "$ROM" "$off"; then
+            CORE=/usr/bin/kandelo-retro-snes; EXT=sfc
+            break
+        fi
+    done
+fi
+if [ -z "$CORE" ]; then
+    echo "retro-run: $ROM is not a recognised NES, SNES, Mega Drive, Master System or Game Gear ROM" >&2
+    exit 1
+fi
+
+# The cores read the system type from the path's extension, so give the ROM
+# a name that carries what its contents said.
+mkdir -p "$RUN" || exit 1
+LINK="$RUN/rom.$EXT"
+ln -sf "$ROM" "$LINK" || exit 1
+
+if [ -n "$STATE" ]; then
+    exec "$CORE" "$LINK" --state "$STATE"
+fi
+exec "$CORE" "$LINK"
+`;
+
+/**
+ * Written eagerly to /usr/local/bin/retro-checkpoint. It asks the running
+ * emulator for a save state (SIGUSR1) and exits 0 only once the emulator has
+ * published a complete state in answer to this request, identified by a
+ * fresh nonce the emulator echoes back after renaming the state into place.
+ * A caller therefore needs nothing but the exit status to know the file at
+ * /tmp/kandelo-retro.state is whole and current.
+ */
+const RETRO_CHECKPOINT_SCRIPT = `#!/bin/sh
+# Ask the running emulator for a save state and wait until it is complete.
+# Exit status 0 means /tmp/kandelo-retro.state is a full state written in
+# answer to this request.
+PID_FILE=/tmp/kandelo-retro.pid
+REQUEST=/tmp/kandelo-retro.request
+DONE=/tmp/kandelo-retro.complete
+
+hex_of() { od -An -tx1 "$1" 2>/dev/null | tr -d ' \\n'; }
+
+if [ ! -r "$PID_FILE" ]; then
+    echo "retro-checkpoint: no emulator is running" >&2
+    exit 1
+fi
+pid=$(cat "$PID_FILE")
+
+head -c 16 /dev/urandom > "$REQUEST.new" && mv -f "$REQUEST.new" "$REQUEST" || {
+    echo "retro-checkpoint: cannot write $REQUEST" >&2
+    exit 1
+}
+want=$(hex_of "$REQUEST")
+
+if ! kill -USR1 "$pid" 2>/dev/null; then
+    echo "retro-checkpoint: emulator process $pid is gone" >&2
+    exit 1
+fi
+
+tries=0
+while [ "$tries" -lt 160 ]; do
+    [ "$(hex_of "$DONE")" = "$want" ] && exit 0
+    sleep 0.05
+    tries=$((tries + 1))
+done
+echo "retro-checkpoint: the emulator did not publish a save state within 8 seconds" >&2
+exit 1
 `;
 
 /**
@@ -981,6 +1148,24 @@ export async function buildSourceRootfsShellImage(
     0o755,
   );
   ensureDirRecursive(fs, "/usr/share/scummvm-games", 0o777);
+  // kandelo-retro: the three emulator programs and their starter ROMs are
+  // lazy; only the launcher and the checkpoint helper are eager. "Load ROM"
+  // writes the upload to /var/lib/kandelo-retro/rom through the kernel
+  // worker, which requires the parent to exist.
+  writeVfsBinary(
+    fs,
+    "/usr/local/bin/retro-run",
+    new TextEncoder().encode(RETRO_RUN_SCRIPT),
+    0o755,
+  );
+  writeVfsBinary(
+    fs,
+    "/usr/local/bin/retro-checkpoint",
+    new TextEncoder().encode(RETRO_CHECKPOINT_SCRIPT),
+    0o755,
+  );
+  ensureDirRecursive(fs, "/var/lib");
+  ensureDirRecursive(fs, "/var/lib/kandelo-retro", 0o777);
   // Create the id1 game dir too: the bring-your-own-pak ingest writes
   // /usr/share/quake/id1/pak0.pak directly (host.writeFile requires the parent
   // to exist), and that path must work even offline when no quake106.zip was

@@ -1,0 +1,90 @@
+# Per-program manifest for kandelo-retro. See docs/package-management.md.
+#
+# A small, core-agnostic libretro frontend (frontend/main.c) that renders to
+# /dev/fb0 (BGRA32), plays audio through /dev/dsp (OSS S16_LE) and reads Linux
+# MEDIUMRAW keycodes from stdin as a joypad. One libretro core is linked
+# statically into each output, so the package produces one program per system:
+#
+#   kandelo-retro          NES                       (FCEUmm)
+#   kandelo-retro-genesis  Mega Drive / SMS / GG     (Genesis Plus GX)
+#   kandelo-retro-snes     SNES                      (Snes9x)
+#
+# The runtime files are three freely redistributable test-suite ROMs, one per
+# core, so every program has something to run without a ROM from the user.
+
+kind = "program"
+name = "kandelo-retro"
+version = "0.1.0"
+kernel_abi = 45
+# zlib: Genesis Plus GX and Snes9x link against it. libcxx: Snes9x is C++.
+# The two core trees and two of the ROM archives are source-kind direct
+# dependencies; the resolver verifies and extracts them before this package's
+# build script runs.
+depends_on = [
+  "zlib@1.3.1",
+  "libcxx@21.1.7",
+  "genesis-plus-gx-source@fa4dca561e08d5be9077419f7b255e1da213ed21",
+  "snes9x-source@185488cd83aaf274752a742c94d45561cbecb7af",
+  "retro-rom-240p-md@1.21",
+  "retro-rom-240p-snes@1.03",
+]
+arches = ["wasm32"]
+
+# FCEUmm is this recipe's primary source, pinned by commit.
+[source]
+url = "https://github.com/libretro/libretro-fceumm/archive/0d610d9a6401697157f693a5407adf450a0e52fb.tar.gz"
+sha256 = "fa4bd76278221ea5416da3085559ea4473c37f305bc96f804c79a3937207f0a1"
+provider = "archive"
+
+[license]
+# The aggregate expression for the whole archive. LICENSE-MAP.md maps each
+# output and ROM to its upstream source, license and copied notice.
+spdx = "GPL-2.0-or-later AND GPL-2.0-only AND LicenseRef-Genesis-Plus-GX AND LicenseRef-Snes9x"
+url = "https://github.com/Automattic/kandelo/blob/main/packages/registry/kandelo-retro/LICENSE-MAP.md"
+
+[build]
+script_path = "packages/registry/kandelo-retro/build-kandelo-retro.sh"
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "curl"
+version_constraint = ">=7.71.0"
+probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "shasum"
+version_constraint = ">=6.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[outputs]]
+name = "kandelo-retro"
+wasm = "kandelo-retro.wasm"
+
+[[outputs]]
+name = "kandelo-retro-genesis"
+wasm = "kandelo-retro-genesis.wasm"
+
+[[outputs]]
+name = "kandelo-retro-snes"
+wasm = "kandelo-retro-snes.wasm"
+
+# Starter ROMs, one per core. They are runtime files, so an image references
+# them lazily and only the ROM the emulator opens is ever fetched.
+[[runtime_files]]
+artifact = "share/kandelo-retro/roms/240pee.nes"
+guest_path = "/usr/share/kandelo-retro/roms/240pee.nes"
+
+[[runtime_files]]
+artifact = "share/kandelo-retro/roms/240pSuite-md-1.21.bin"
+guest_path = "/usr/share/kandelo-retro/roms/240pSuite-md-1.21.bin"
+
+[[runtime_files]]
+artifact = "share/kandelo-retro/roms/240pSuite-snes-1.03.sfc"
+guest_path = "/usr/share/kandelo-retro/roms/240pSuite-snes-1.03.sfc"

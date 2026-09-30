@@ -155,6 +155,44 @@
         "maxBytes": 536870912,
         "label": "Load game data"
       }
+    },
+    "retro": {
+      "identity": {
+        "title": "Retro consoles",
+        "summary": "NES, SNES and Mega Drive emulation on /dev/fb0 with OSS audio: three libretro cores behind one launcher that picks the core from the ROM's own contents. Starts on a free test-suite ROM; bring your own with Load ROM.",
+        "accent": "#5b4fc4",
+        "glyph": "R",
+        "packages": [
+          "kandelo-retro@local",
+          "bash@local",
+          "coreutils@local",
+          "sed@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "framebuffer"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/retro-run"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["framebuffer", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "touchControls": true
+      },
+      "ingest": {
+        "accept": [".nes", ".sfc", ".smc", ".md", ".gen", ".smd", ".bin", ".sms", ".gg"],
+        "targetPath": "/var/lib/kandelo-retro/rom",
+        "maxBytes": 16777216,
+        "label": "Load ROM",
+        "onLoad": {
+          "restart": "/usr/local/bin/retro-run"
+        }
+      }
     }
   }
 }

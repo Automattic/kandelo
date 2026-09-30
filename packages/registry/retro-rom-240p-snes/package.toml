@@ -1,0 +1,16 @@
+# The 240p Test Suite for SNES / Super Famicom (Artemio Urbina and
+# contributors), release 1.03, exactly as upstream publishes it; the archive
+# carries its own GPLv2.txt. kandelo-retro installs the ROM inside as a starter
+# ROM so the SNES core has something to run that is free to redistribute.
+kind = "source"
+name = "retro-rom-240p-snes"
+version = "1.03"
+
+[source]
+url = "https://downloads.sourceforge.net/project/testsuite240p/OldFiles/SNES_SFC/240pSuite-SNES-1.03.zip"
+sha256 = "e503ae6ae740a217692ff395f3f31a5f89d365615a28c9644455acb1f0c651c0"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-only"
+url = "https://github.com/ArtemioUrbina/240pTestSuite"

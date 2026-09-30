@@ -382,6 +382,7 @@ Located in `apps/browser-demos/pages/`:
 | espeak | espeak-ng | dinit | Speech synthesis through upstream pcaudiolib's OSS backend, so playback rides the same `/dev/dsp` path as the doom demo. The binary and the voice data both come from the `espeak-ng` package closure — the data as the `espeak-ng-data.zip` runtime file, unpacked into `/usr/share/espeak-ng-data` while the image is composed, because libespeak-ng's `PATH_ESPEAK_DATA` is fixed at build time. |
 | modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package and is baked into the image before boot; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. No game ships; the profile takes a zipped game as an upload. |
+| retro | kandelo-retro (FCEUmm, Genesis Plus GX, Snes9x) | dinit | NES, SNES and Mega Drive emulation on `/dev/fb0` with OSS audio through `/dev/dsp` — see [Retro console demo](#retro-console-demo). The image declares `/usr/local/bin/retro-run`, a launcher that picks the core from the ROM's contents. The three programs and three starter ROMs are lazy files from the `kandelo-retro` package closure; the profile's `ingest` takes a ROM through **Load ROM**. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package and are baked into the image before boot; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + mako + Waybar + klauncher + qtgallery + Quickshell | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor, mako and Waybar; windows, including the Qt clients, are opened from the launcher and keybinds. |
 
@@ -957,6 +958,37 @@ backends. That suite also runs SDL_mixer 2.8.2's unmodified `playwave` example
 against deterministic WAVs and compares the Node sink's consumed PCM exactly.
 Browser output remains a manual audible check because the production
 AudioWorklet intentionally exposes transport cursors, not rendered samples.
+
+### Retro console demo
+
+The `retro` machine runs one of three libretro cores on `/dev/fb0`, each
+linked statically into the same small frontend (`kandelo-retro`):
+FCEUmm for NES, Genesis Plus GX for Mega Drive, Master System and Game Gear,
+and Snes9x for SNES. It starts on the NES build of the 240p Test Suite; the
+package also carries the Mega Drive and SNES builds. All three are free to
+redistribute. They and the three programs are lazy files, so only the ROM and
+the core that actually run are fetched.
+
+- **Choosing the core.** `/usr/local/bin/retro-run` reads the ROM's own bytes:
+  the iNES magic, `SEGA` at offset 0x100, `TMR SEGA` near the end of a Master
+  System or Game Gear ROM, and the SNES header's checksum and complement. It
+  does not use the filename, because an upload always lands at one fixed path
+  and the ingest contract never passes the uploaded name to the restart
+  command. A file that matches none of these is rejected with a message on
+  the terminal; no core is started.
+- **Loading a ROM.** **Load ROM** (or dropping a file on the display) writes
+  the file to `/var/lib/kandelo-retro/rom`, stops the running emulator, and
+  runs the launcher again. The cap is 16 MiB. The upload lives in the
+  machine's filesystem and is gone when the machine is.
+- **Input.** Arrow keys are the D-pad, Enter is Start, Right Shift is Select,
+  Z/X are B/A, A/S are Y/X, and Q/W are the shoulder buttons.
+- **Audio before a gesture.** `/dev/dsp` applies backpressure while the
+  browser holds audio suspended (see above). The frontend waits at most
+  100 ms for room in the queue, then drops samples until a write gets through
+  again, so the game runs silently rather than freezing on its first frame.
+  Once audio is enabled the sound card's clock paces the core again.
+- **Not supported.** Battery saves, controller remapping, a second player,
+  and any system other than the ones listed.
 
 ### ScummVM demo
 
