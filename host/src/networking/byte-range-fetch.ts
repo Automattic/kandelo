@@ -2,9 +2,10 @@
  * One HTTP byte-range read whose answer cannot be mistaken for another.
  *
  * WHY: HTTP lets any hop ignore `Range` and answer `200` with the whole
- * representation, and some relays do. The production browser CORS proxy's
- * front end strips `Range` itself; only that proxy's `X-Cors-Proxy-Range`
- * alias gets a range through it, and any other proxy may drop both. Such a read
+ * representation, and some relays do. WP Cloud, which hosts the production
+ * browser CORS proxy, strips `Range` before it reaches the proxy; only that
+ * proxy's `X-Cors-Proxy-Range` alias gets a range through, and any other
+ * proxy may drop both. Such a read
  * comes back as the entire entity starting at offset 0. A caller that
  * checks only `response.ok` and
  * takes the first N bytes then returns the wrong bytes with no error — for a

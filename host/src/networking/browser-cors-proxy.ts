@@ -10,12 +10,21 @@ export interface BrowserCorsProxyConfig {
   /**
    * A second request field this proxy reads a byte range from.
    *
-   * WORKAROUND: the WordPress Playground proxy's hosting front end strips
-   * `Range` before the proxy sees it, so that proxy also accepts the same
-   * value as `X-Cors-Proxy-Range` and forwards it upstream as `Range`.
-   * Projection copies an outgoing `Range` into this field verbatim and keeps
-   * `Range` itself, which is the combination that proxy documents as safe
-   * after the front end is fixed. Remove when `Range` reaches that proxy.
+   * WORKAROUND for a WP Cloud limitation. The WordPress Playground CORS proxy
+   * is a PHP script hosted on WP Cloud, and WP Cloud's front-end web servers
+   * strip the `Range` header before the request reaches PHP. The proxy
+   * therefore also accepts the same value in the custom header
+   * `X-Cors-Proxy-Range`, which WP Cloud passes through, and forwards it to
+   * the target as `Range`. Every proxy dispatch copies an outgoing `Range`
+   * into this field unchanged and keeps `Range` itself, a combination the
+   * proxy documents as safe once `Range` gets through.
+   *
+   * The whole workaround can be removed as soon as WP Cloud relays `Range`
+   * headers to PHP: this field, its value in the default profile, the copies
+   * in `project()`/`fetch()`, the service worker, and the development relay,
+   * and the `no-store` cache mode that exists only because of the alias.
+   * Check with a plain `Range: bytes=0-15` request through the proxy: a
+   * `206` answer means `Range` now reaches PHP.
    */
   readonly rangeRequestHeaderAlias?: string;
 }
@@ -220,13 +229,15 @@ export class BrowserCorsProxy {
     const init: RequestInit = { method: request.method, headers, body: request.body };
     const alias = this.config.rangeRequestHeaderAlias;
     if (alias !== undefined && headers.has(alias)) {
-      // WORKAROUND, part of the range alias: the browser's HTTP cache may
-      // rewrite Range on the wire to fetch only the bytes it lacks, but it
-      // cannot know the alias names the same range. The proxy then answers
-      // the alias's range and the cache splices a body shorter than its
-      // Content-Range. Keep this request out of the cache. In Chromium this
-      // also skips the CORS preflight cache, so every aliased request pays a
-      // preflight (documented as technical debt; it leaves with the alias).
+      // WORKAROUND, part of the X-Cors-Proxy-Range alias for WP Cloud (see
+      // BrowserCorsProxyConfig.rangeRequestHeaderAlias). The browser's HTTP
+      // cache may shrink Range on the wire to the bytes it has not stored,
+      // but it cannot shrink the alias to match. The proxy then answers the
+      // alias's range and the cache joins a body shorter than its
+      // Content-Range, so keep this request out of the cache. In Chromium
+      // this also skips the CORS preflight cache, so every aliased request
+      // pays a preflight (documented technical debt). Remove this together
+      // with the alias, as soon as WP Cloud relays Range headers to PHP.
       init.cache = "no-store";
     }
     const response = await fetchImpl(url, init);
@@ -300,6 +311,9 @@ export class BrowserCorsProxy {
     );
   }
 
+  // WORKAROUND for WP Cloud stripping Range before it reaches the proxy's
+  // PHP (see BrowserCorsProxyConfig.rangeRequestHeaderAlias). Remove as soon
+  // as WP Cloud relays Range headers to PHP.
   private mirrorRange(headers: Headers): void {
     const alias = this.config.rangeRequestHeaderAlias;
     const range = headers.get("range");

@@ -24,11 +24,16 @@ const defaultConfig = validateBrowserCorsProxyConfig({
     "wp_install",
   ],
   allowAnonymousGetHeaderOmission: true,
-  // WORKAROUND: the Playground proxy's front end strips Range; see
-  // BrowserCorsProxyConfig.rangeRequestHeaderAlias for when to remove this.
-  // TECHNICAL DEBT: the alias is not CORS-safelisted, so every ranged request
-  // through production pays an extra OPTIONS preflight round trip (the proxy
-  // sends no Access-Control-Max-Age). See docs/future-improvements.md.
+  // WORKAROUND: WP Cloud, which hosts the Playground CORS proxy, strips the
+  // Range header before the request reaches the proxy's PHP, so ranges are
+  // also sent as X-Cors-Proxy-Range (see
+  // BrowserCorsProxyConfig.rangeRequestHeaderAlias). Remove this line, and
+  // the workaround it enables, as soon as WP Cloud relays Range headers to
+  // PHP.
+  // TECHNICAL DEBT: the alias is not a CORS-safelisted header, so ranged
+  // requests need a CORS preflight. Aliased requests also skip the HTTP
+  // cache, which in Chromium means one preflight per ranged request. See
+  // docs/future-improvements.md.
   rangeRequestHeaderAlias: "x-cors-proxy-range",
 });
 if (defaultConfig === undefined) {

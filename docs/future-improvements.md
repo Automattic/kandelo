@@ -145,7 +145,8 @@ deployment infrastructure and browser acceptance
 
 ### Technical debt: drop the `X-Cors-Proxy-Range` workaround and its preflights
 
-The default proxy's hosting front end strips `Range`, so the profile's
+WP Cloud, which hosts the default proxy's PHP, strips the `Range` header
+before the request reaches PHP, so the profile's
 `rangeRequestHeaderAlias` makes every proxy dispatch repeat `Range` as
 `X-Cors-Proxy-Range`, which that proxy forwards upstream as `Range`. This
 workaround has two costs, accepted to make ranged reads work at all:

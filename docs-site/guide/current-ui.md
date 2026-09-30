@@ -113,8 +113,8 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 The URL selects the transport endpoint; it does not define a second capability
 profile. Kandelo currently relays only `Accept`, `Content-Type`,
 `git-protocol`, `Range`, `wp_blog`, and `wp_install` at configured proxy
-boundaries, and repeats `Range` as `X-Cors-Proxy-Range` for proxies whose
-front end strips `Range`.
+boundaries, and repeats `Range` as `X-Cors-Proxy-Range`, because WP Cloud,
+which hosts the default proxy, strips `Range` before it reaches the proxy.
 Anonymous bodyless GETs may omit other fields with a diagnostic. Requests that
 would lose credentials, a body, or state-changing semantics fail before proxy
 dispatch. Direct browser requests and Node.js-host networking are unchanged.

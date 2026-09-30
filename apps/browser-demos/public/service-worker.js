@@ -1107,10 +1107,11 @@ if (typeof window !== "undefined") {
         // The proxy cannot carry it; fetchThroughCorsProxy applies its
         // semantics to the answer instead (RFC 9110 section 13.1.5).
       } else if (lower === config.rangeRequestHeaderAlias) {
-        // Projection owns the alias: it is re-derived from Range below, so a
-        // caller's value is never relayed. Kandelo's own kernel worker sends
-        // it when its guest traffic reaches the proxy URL through this worker
-        // already projected; that is not an unsupported field.
+        // Part of the WP Cloud Range workaround (see below). Projection owns
+        // the alias: it is re-derived from Range below, so a caller's value is
+        // never relayed. Kandelo's own kernel worker sends it when its guest
+        // traffic reaches the proxy URL through this worker already
+        // projected; that is not an unsupported field.
       } else if (
         lower === "authorization" || lower === "cookie" ||
         lower === "cookie2" || lower === "proxy-authorization"
@@ -1129,9 +1130,13 @@ if (typeof window !== "undefined") {
         unsupported.push(lower);
       }
     });
-    // WORKAROUND, mirroring BrowserCorsProxy.project(): the Playground proxy's
-    // front end strips Range, so that proxy also reads the same value from an
-    // alias field. Send both; remove with rangeRequestHeaderAlias.
+    // WORKAROUND, mirroring BrowserCorsProxy.project(): WP Cloud, which hosts
+    // the Playground CORS proxy, strips the Range header before the request
+    // reaches the proxy's PHP, so the proxy also reads the same value from an
+    // alias header (X-Cors-Proxy-Range). Send both. Remove this, the alias
+    // handling above, and the no-store mode below as soon as WP Cloud relays
+    // Range headers to PHP (see BrowserCorsProxyConfig.rangeRequestHeaderAlias
+    // in host/src/networking/browser-cors-proxy.ts).
     var range = headers.get("range");
     if (config.rangeRequestHeaderAlias && range !== null) {
       headers.set(config.rangeRequestHeaderAlias, range);
@@ -1170,11 +1175,13 @@ if (typeof window !== "undefined") {
       signal: request.signal,
     };
     if (config.rangeRequestHeaderAlias && headers.has(config.rangeRequestHeaderAlias)) {
-      // WORKAROUND, part of the range alias (mirrors BrowserCorsProxy.fetch):
-      // the HTTP cache may rewrite Range on the wire to fetch only the bytes
-      // it lacks, but not the alias, so the proxy would answer a different
-      // range and the cache would splice a short body. In Chromium this also
-      // skips the preflight cache: documented technical debt of the alias.
+      // WORKAROUND, part of the WP Cloud Range alias (mirrors
+      // BrowserCorsProxy.fetch): the HTTP cache may shrink Range on the wire
+      // to the bytes it has not stored, but not the alias, so the proxy would
+      // answer a different range and the cache would join a short body. In
+      // Chromium this also skips the preflight cache (documented technical
+      // debt). Remove with the alias, as soon as WP Cloud relays Range
+      // headers to PHP.
       init.cache = "no-store";
     }
     if (request.method === "GET" || request.method === "HEAD") {

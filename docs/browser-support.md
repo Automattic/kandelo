@@ -481,16 +481,17 @@ boundary parses range syntax.
 
 **Production (measured 2026-09-28).** The default proxy,
 `wordpress-playground-cors-proxy.net`, allows `Range` in its preflight and
-exposes `Content-Range`, `Accept-Ranges`, and `ETag`. Its hosting front end
-still strips `Range` before the proxy sees it, so a plain `Range` comes back
+exposes `Content-Range`, `Accept-Ranges`, and `ETag`. The proxy is a PHP
+script hosted on WP Cloud, and WP Cloud's front-end web servers strip the
+`Range` header before the request reaches PHP, so a plain `Range` comes back
 as `200` with the whole entity. As a documented workaround, that proxy also
 reads the same value from `X-Cors-Proxy-Range` and forwards it upstream as
 `Range`. The profile names that field in `rangeRequestHeaderAlias`, and every
 proxy dispatch (`BrowserCorsProxy.project()` for guest traffic, and the
 service worker for page and worker fetches) copies an outgoing `Range` into
 it. Both fields carry the same value, which the proxy documents as safe once
-the front end is fixed; the alias then becomes redundant and should be
-removed. A caller's own `X-Cors-Proxy-Range` is never relayed.
+`Range` gets through. The alias workaround can be removed as soon as WP Cloud
+relays `Range` headers to PHP. A caller's own `X-Cors-Proxy-Range` is never relayed.
 
 **The HTTP cache must stay out of aliased requests.** The browser's HTTP
 cache may rewrite `Range` on the wire to fetch only the bytes it has not
@@ -516,8 +517,8 @@ Measured on 2026-09-28 with five ranged reads of one proxy URL:
 In Chromium, then, every ranged read costs one extra round trip to the proxy.
 A ZIP index read (a tail read, then possibly a directory read) pays it once or
 twice. The time cost was not measured. Both the preflights and the `no-store`
-mode exist only because of the alias workaround, and both go away when the
-front end forwards `Range` and the alias is removed; see
+mode exist only because of the alias workaround, and both go away when WP
+Cloud relays `Range` headers to PHP and the alias is removed; see
 `docs/future-improvements.md`.
 
 **`If-Range` is emulated, not relayed.** The proxy's preflight does not

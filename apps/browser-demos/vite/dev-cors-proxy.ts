@@ -47,10 +47,12 @@ const ALLOWED_RESPONSE_HEADERS = new Set([
 class EntityTooLargeError extends Error {}
 class RangeAliasConflictError extends Error {}
 
-// WORKAROUND, matching the production Playground proxy: that proxy also reads
-// a byte range from this alias because its front end strips Range. Honoring
-// it here keeps the development relay a faithful stand-in for the profile the
-// browser sends. Remove with BrowserCorsProxyConfig.rangeRequestHeaderAlias.
+// WORKAROUND, matching the production Playground proxy: WP Cloud, which hosts
+// that proxy, strips the Range header before the request reaches its PHP, so
+// the proxy also reads a byte range from this alias. Honoring it here keeps
+// the development relay a faithful stand-in for the profile the browser
+// sends. Remove it with BrowserCorsProxyConfig.rangeRequestHeaderAlias, as
+// soon as WP Cloud relays Range headers to PHP.
 const RANGE_REQUEST_HEADER_ALIAS =
   DEFAULT_BROWSER_CORS_PROXY_CONFIG.rangeRequestHeaderAlias?.toLowerCase();
 
