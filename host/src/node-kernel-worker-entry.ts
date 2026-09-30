@@ -64,6 +64,11 @@ import type {
   PreparedExecLaunchPlan,
   PreparedExecLaunchRequest,
 } from "./exec-target";
+import {
+  resolveTopLevelSpawnProgram,
+  TopLevelSpawnError,
+  type TopLevelSpawnProgram,
+} from "./exec-target";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
@@ -1256,8 +1261,26 @@ async function handleSpawn(msg: SpawnMessage) {
       );
       return;
     }
-    const programBytes = msg.programBytes ??
-      await readExecFromVfs(msg.programPath!);
+    let programBytes: ArrayBuffer | null = msg.programBytes ?? null;
+    if (!hasProgramBytes) {
+      // Resolve a #! script to its interpreter exactly as a guest execve
+      // would; the browser worker does the same through the same helper.
+      try {
+        const resolved = await resolveTopLevelSpawnProgram(
+          msg.programPath!,
+          msg.argv,
+          readExecFromVfs,
+        );
+        programBytes = resolved.bytes;
+        msg = { ...msg, programPath: resolved.path, argv: resolved.argv };
+      } catch (error) {
+        if (error instanceof TopLevelSpawnError) {
+          respondError(msg.requestId, error.message);
+          return;
+        }
+        throw error;
+      }
+    }
     const programModule = hasProgramBytes ? msg.programModule : undefined;
     if (programBytes === null) {
       respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
