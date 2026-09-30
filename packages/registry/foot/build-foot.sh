@@ -47,6 +47,7 @@ LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DI
 LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set}"
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
 LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:?WASM_POSIX_DEP_LIBXML2_DIR not set}"
+LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/xml"
 
@@ -153,13 +154,16 @@ done
 # Link order: dependents before dependencies, libffi last so
 # wl_closure_invoke's ffi_call resolves (same rule as build-programs.sh's
 # wlcompositor pass). libgbm comes from the base sysroot (build-musl.sh).
+# libiconv follows libxml2: fontconfig parses its configuration with
+# libxml2, and this libxml2 converts encodings through GNU libiconv.
 echo "==> Linking foot.wasm..."
 wasm32posix-cc "${OBJS[@]}" \
-    -Wl,-z,stack-size=1048576 -Wl,--export=__abi_version \
+    -Wl,-z,stack-size=1048576 \
     "$FCFT_PREFIX/lib/libfcft.a" \
     "$FONTCONFIG_PREFIX/lib/libfontconfig.a" \
     "$FREETYPE_PREFIX/lib/libfreetype.a" \
     "$LIBXML2_PREFIX/lib/libxml2.a" \
+    "$LIBICONV_PREFIX/lib/libiconv.a" \
     "$ZLIB_PREFIX/lib/libz.a" \
     "$PIXMAN_PREFIX/lib/libpixman-1.a" \
     "$UTF8PROC_PREFIX/lib/libutf8proc.a" \

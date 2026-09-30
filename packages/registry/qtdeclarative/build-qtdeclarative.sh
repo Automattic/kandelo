@@ -32,6 +32,11 @@
 # before the archives, so libunwind's __wasm_lpad_context stays
 # undefined for the module's target apps unless they come after them
 # (the constraint build-gui-smoke.sh documents for manual links).
+# It also names the archives the target apps (tools/qml, qmleasing) need
+# but Qt's exported targets do not carry: libxml2 and libiconv behind
+# fontconfig, libffi behind libwayland-client, and libgbm/libdrm behind
+# Qt6WaylandClient's buffer pools. A link that omits one fails on the
+# undefined symbol.
 #
 # CMAKE_DISABLE_FIND_PACKAGE_harfbuzz forces Qt6Gui's recorded
 # find_package(WrapSystemHarfbuzz) down its pkg-config branch, which
@@ -54,6 +59,8 @@
 #     WASM_POSIX_DEP_LIBCXX_DIR        WASM_POSIX_DEP_LIBXKBCOMMON_DIR
 #     WASM_POSIX_DEP_ZLIB_DIR          WASM_POSIX_DEP_LIBWAYLAND_DIR
 #     WASM_POSIX_DEP_FREETYPE_DIR      WASM_POSIX_DEP_FONTCONFIG_DIR
+#     WASM_POSIX_DEP_LIBFFI_DIR        WASM_POSIX_DEP_LIBXML2_DIR
+#     WASM_POSIX_DEP_LIBICONV_DIR
 
 set -euo pipefail
 
@@ -97,6 +104,9 @@ HARFBUZZ_PREFIX="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not 
 LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?WASM_POSIX_DEP_LIBPNG_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
 LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
 LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
+LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
+LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:?WASM_POSIX_DEP_LIBXML2_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
+LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
@@ -171,7 +181,7 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
     `# MinSizeRel, not Release: the browser compiles the linked module once per worker thread, so code size multiplies across workers (docs/browser-support.md#quickshell-qml-limits).` \
     -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
-    -DCMAKE_CXX_STANDARD_LIBRARIES="-lc++ -lc++abi" \
+    -DCMAKE_CXX_STANDARD_LIBRARIES="$LIBXML2_PREFIX/lib/libxml2.a $LIBICONV_PREFIX/lib/libiconv.a $LIBFFI_PREFIX/lib/libffi.a $SYSROOT/lib/libgbm.a $SYSROOT/lib/libdrm.a -lc++ -lc++abi" \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
     -DCMAKE_PREFIX_PATH="$CMAKE_PREFIXES" \
     -DCMAKE_INSTALL_PREFIX="$GUEST_PREFIX" \

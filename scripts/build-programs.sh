@@ -520,9 +520,14 @@ fi
 if ls "$REPO_ROOT"/programs/fontstack_*.c >/dev/null 2>&1; then
     echo "==> Resolving fcft + fontconfig + freetype for font-stack programs..."
     HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
-    for pkg in fcft fontconfig freetype libxml2 zlib; do
+    # libiconv is a link dependency of libxml2 (it converts encodings
+    # through GNU libiconv). It is linked from its resolved prefix rather
+    # than staged: a libiconv in the sysroot would shadow libc's iconv for
+    # every other program.
+    for pkg in fcft fontconfig freetype libxml2 libiconv zlib; do
         (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve "$pkg" >/dev/null)
     done
+    LIBICONV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libiconv)"
     FCFT_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path fcft)"
     FONTCONFIG_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path fontconfig)"
     FREETYPE_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path freetype)"
@@ -556,6 +561,9 @@ if ls "$REPO_ROOT"/programs/pango_*.c >/dev/null 2>&1; then
     FREETYPE_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path freetype)"
     LIBXML2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libxml2)"
     ZLIB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path zlib)"
+    # libxml2's libiconv, linked from its prefix (see the font-stack block).
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libiconv >/dev/null)
+    LIBICONV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libiconv)"
 
     for a in libpango-1.0.a libpangoft2-1.0.a libpangocairo-1.0.a; do
         stage_sysroot_file "$PANGO_PREFIX/lib/$a" "$SYSROOT/lib/$a"
@@ -803,6 +811,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libfontconfig.a" \
                 "$SYSROOT/lib/libfreetype.a" \
                 "$SYSROOT/lib/libxml2.a" \
+                "$LIBICONV_PREFIX/lib/libiconv.a" \
                 "$SYSROOT/lib/libpng.a" \
                 "$SYSROOT/lib/libz.a" \
                 "$LIBCXX_PREFIX_32/lib/libc++.a" \
@@ -815,7 +824,8 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # the wayland client libs + xkbcommon + cairo-gobject, then
             # the PR23 render closure, glib stack, and font stack.
             # libgbm/libdrm back gdk's wl_shm pools (see the gtk3
-            # package's wayland-shm-gbm-pool.patch).
+            # package's wayland-shm-gbm-pool.patch); libEGL and libGLESv2
+            # back libwayland-egl.
             build_program "$src" "$OUT_DIR_32" \
                 "-I$SYSROOT/include/gtk-3.0" \
                 "-I$SYSROOT/include/atk-1.0" \
@@ -849,10 +859,13 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libfontconfig.a" \
                 "$SYSROOT/lib/libfreetype.a" \
                 "$SYSROOT/lib/libxml2.a" \
+                "$LIBICONV_PREFIX/lib/libiconv.a" \
                 "$SYSROOT/lib/libpng.a" \
                 "$SYSROOT/lib/libz.a" \
                 "$SYSROOT/lib/libgbm.a" \
                 "$SYSROOT/lib/libdrm.a" \
+                "$SYSROOT/lib/libEGL.a" \
+                "$SYSROOT/lib/libGLESv2.a" \
                 "$LIBCXX_PREFIX_32/lib/libc++.a" \
                 "$LIBCXX_PREFIX_32/lib/libc++abi.a"
             ;;
@@ -864,6 +877,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libfontconfig.a" \
                 "$SYSROOT/lib/libfreetype.a" \
                 "$SYSROOT/lib/libxml2.a" \
+                "$LIBICONV_PREFIX/lib/libiconv.a" \
                 "$SYSROOT/lib/libpixman-1.a" \
                 "$SYSROOT/lib/libz.a"
             ;;
@@ -903,10 +917,15 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # dlopen). SDL_Init(VIDEO) probes Wayland first: the real
             # wl_display_connect(NULL) returns NULL when no compositor is
             # running, so SDL falls through to KMSDRM, as on real hardware.
-            # libffi backs libwayland-client's wl_closure marshalling.
+            # libffi backs libwayland-client's wl_closure marshalling. The
+            # Wayland backend also calls libwayland-egl, libwayland-cursor
+            # and libxkbcommon (the sdl2-demo package links the same set).
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
                 "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libwayland-egl.a" \
+                "$SYSROOT/lib/libwayland-cursor.a" \
+                "$SYSROOT/lib/libxkbcommon.a" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
                 "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
                 "$SYSROOT/lib/libffi.a"
@@ -1314,8 +1333,13 @@ PY
         "$CC" "${CFLAGS[@]}" -I"$REPO_ROOT/third_party" "${sdl2_sources[@]}" \
             "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libSDL2.a" \
+            "$SYSROOT/lib/libwayland-client.a" \
+            "$SYSROOT/lib/libwayland-egl.a" \
+            "$SYSROOT/lib/libwayland-cursor.a" \
+            "$SYSROOT/lib/libxkbcommon.a" \
             "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
             "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
+            "$SYSROOT/lib/libffi.a" \
             "${LINK_POST_LIBS[@]}" \
             -o "$sdl2_wasm"
         "$FORK_INSTRUMENT" "$sdl2_wasm" -o "$sdl2_wasm.instr"

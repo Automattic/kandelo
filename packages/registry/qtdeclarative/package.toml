@@ -27,6 +27,9 @@ depends_on = [
   "libpng@1.6.43",
   "libxkbcommon@1.7.0",
   "libwayland@1.24.0",
+  "libffi@0.1.0",
+  "libxml2@2.13.8",
+  "libiconv@1.17",
 ]
 
 [source]

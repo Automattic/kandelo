@@ -49,6 +49,7 @@ FREETYPE_PREFIX="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not 
 LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?WASM_POSIX_DEP_LIBPNG_DIR not set}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:?WASM_POSIX_DEP_LIBXML2_DIR not set}"
+LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set}"
 LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set}"
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
 PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/xml"
@@ -164,7 +165,9 @@ done
 # pangoft2/pango/cairo, pango pulls harfbuzz/fribidi/gobject/glib,
 # cairo pulls pixman/fontconfig/freetype/png, harfbuzz (C++) pulls
 # libc++, libffi last so gobject closures and wl_closure_invoke
-# resolve. libgbm/libdrm come from the base sysroot.
+# resolve. libgbm/libdrm come from the base sysroot. libiconv follows
+# libxml2: fontconfig parses its configuration with libxml2, and this
+# libxml2 converts encodings through GNU libiconv.
 MAKO_LIBS=(
     "$PANGO_PREFIX/lib/libpangocairo-1.0.a"
     "$PANGO_PREFIX/lib/libpangoft2-1.0.a"
@@ -180,6 +183,7 @@ MAKO_LIBS=(
     "$FONTCONFIG_PREFIX/lib/libfontconfig.a"
     "$FREETYPE_PREFIX/lib/libfreetype.a"
     "$LIBXML2_PREFIX/lib/libxml2.a"
+    "$LIBICONV_PREFIX/lib/libiconv.a"
     "$LIBPNG_PREFIX/lib/libpng.a"
     "$ZLIB_PREFIX/lib/libz.a"
     "$LIBWAYLAND_PREFIX/lib/libwayland-cursor.a"
