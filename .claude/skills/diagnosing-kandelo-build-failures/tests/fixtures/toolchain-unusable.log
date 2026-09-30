@@ -1,0 +1,4 @@
+[gzip/wasm32] configure: error: in '/work/kandelo/packages/registry/gzip/gzip-src':
+[gzip/wasm32] configure: error: C compiler cannot create executables
+[gzip/wasm32] See 'config.log' for more details
+[gzip/wasm32] xtask local-build: gzip@1.13: build script /work/kandelo/packages/registry/gzip/build-gzip.sh exited with exit status: 77

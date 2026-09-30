@@ -1,0 +1,3 @@
+4	    [gzip/wasm32] freading.c:72:4: error: "Please port gnulib freading.c to your platform!"
+5	    [gzip/wasm32] fseterr.c:82:3: error: "Please port gnulib fseterr.c to your platform! ..."
+6	    xtask local-build: gzip@1.13: build script packages/registry/gzip/build-gzip.sh exited with exit status: 2
