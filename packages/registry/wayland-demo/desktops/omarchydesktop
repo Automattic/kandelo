@@ -21,6 +21,11 @@ DATA=/usr/share/kandelo
 # what it execs (notify-send on a theme switch, launched terminals).
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS"
 export FONTCONFIG_FILE="$DATA/fonts/fonts.conf"
+# The session's runtime directory. A login manager normally provides it; here
+# the desktop's session script does. Stock clients (mako, Waybar, foot) find
+# the compositor's socket as $XDG_RUNTIME_DIR/wayland-0, and /tmp is the one
+# directory every uid can write under this kernel (see wldesktop).
+export XDG_RUNTIME_DIR=/tmp
 # QtQuick clients (Quickshell) render through the software scenegraph:
 # a Wayland client has no GL surface of its own here.
 export QT_QUICK_BACKEND=software

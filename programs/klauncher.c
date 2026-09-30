@@ -46,11 +46,11 @@
  * for tests. */
 #define APPS_DIR           "/usr/share/kandelo/apps"
 #define THEME_DIR          "/usr/share/kandelo/themes"
-#define WIN_W              520
-#define WIN_H              320
-#define ROW_H              32
-#define PROMPT_H           44
-#define FONT_PX            16
+#define WIN_W              640
+#define WIN_H              400
+#define ROW_H              40
+#define PROMPT_H           54
+#define FONT_PX            20
 #define MAX_APPS           32
 
 /* XKB keysyms the launcher acts on. */

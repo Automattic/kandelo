@@ -75,6 +75,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -150,7 +151,7 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 /* The config path, hyprland.conf-shaped subset. Absent = generic defaults
  * (install_default_binds); WLC_CONFIG overrides for tests. */
 #define WLC_CONFIG_PATH "/etc/kandelo/wlcompositor.conf"
-#define MAX_BINDS 64
+#define MAX_BINDS 128
 
 /* Themes are just files, the way Omarchy does it: one directory per theme
  * holding a palette the compositor and every shell client read. WLC_THEME_DIR
@@ -167,7 +168,7 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 
 enum bind_action {
     ACT_EXEC, ACT_WORKSPACE, ACT_MOVE_TO_WS, ACT_KILL,
-    ACT_CYCLE_NEXT, ACT_CYCLE_PREV, ACT_THEME,
+    ACT_CYCLE_NEXT, ACT_CYCLE_PREV, ACT_THEME, ACT_SWAP,
 };
 
 /* One `bind = MODS, KEY, DISPATCHER, ARGS` rule. sym is the BASE-level keysym
@@ -177,7 +178,7 @@ struct keybind {
     xkb_keysym_t sym;
     int action;
     int arg;               /* workspace number for workspace/movetoworkspace */
-    char param[64];        /* command line for exec */
+    char param[256];       /* command line for exec */
 };
 
 /* ---- surface state ----------------------------------------------------- */
@@ -286,6 +287,10 @@ struct shm_buffer {
     void *map_data;
     uint32_t *pixels;       /* shared mapping of the client's bytes */
     uint32_t map_stride_px;
+    /* linux-dmabuf Y_INVERT: row 0 is the bottom of the image. A GL
+     * producer (libwayland-egl) renders into a framebuffer, whose rows are
+     * stored bottom-up; CPU-drawn buffers are top-down. */
+    int y_invert;
     /* GPU path: the bo imported on the EGL fd + its texture. gl_dirty is
      * set on every commit of this buffer so the next GL repaint rebinds
      * (= re-uploads) only surfaces whose content actually changed. */
@@ -318,11 +323,12 @@ struct compositor {
      * layout site still reads width/height. */
     uint32_t pw, ph;
     uint32_t width, height;
-    /* wl_output scale: device pixels per logical pixel (WLC_SCALE, 1 when
-     * unset). A client that honours wl_surface.set_buffer_scale attaches a
+    /* wl_output scale: device pixels per logical pixel (WLC_SCALE, else
+     * derived from the connector's physical size, else 1). A client that honours wl_surface.set_buffer_scale attaches a
      * buffer this many times larger than its logical size and blits 1:1; one
      * that ignores it is upscaled — soft, but correctly sized. */
     uint32_t scale;
+    int scale_explicit;   /* WLC_SCALE set it; do not derive from DPI */
     struct gbm_device *gbm;
     struct gbm_surface *gbm_surface;
     struct gbm_bo *displayed_bo;   /* on-screen right now */
@@ -849,13 +855,27 @@ static void retile(void) {
         s->w = geoms[i].w;
         s->h = geoms[i].h;
         s->placed = 1;
-        /* The states array carries only ACTIVATED for now; TILED_* awaits an
-         * xdg-shell v2 bump. */
+        /* ACTIVATED plus, for clients that bound xdg-shell v2, all four
+         * TILED_* edges: a tiled window is constrained on every side, as
+         * Hyprland reports it. The tiled states are what tell a client the
+         * size is not a suggestion — SDL, for one, keeps a fixed-size
+         * window's own size for any configure it considers floating. */
         if (s->xdg_toplevel && s->xdg_surface) {
             struct wl_array states;
             wl_array_init(&states);
             uint32_t *st = wl_array_add(&states, sizeof(uint32_t));
             if (st) *st = XDG_TOPLEVEL_STATE_ACTIVATED;
+            if (wl_resource_get_version(s->xdg_toplevel) >=
+                XDG_TOPLEVEL_STATE_TILED_LEFT_SINCE_VERSION) {
+                static const uint32_t edges[] = {
+                    XDG_TOPLEVEL_STATE_TILED_LEFT, XDG_TOPLEVEL_STATE_TILED_RIGHT,
+                    XDG_TOPLEVEL_STATE_TILED_TOP, XDG_TOPLEVEL_STATE_TILED_BOTTOM,
+                };
+                for (size_t k = 0; k < sizeof edges / sizeof *edges; k++) {
+                    uint32_t *t = wl_array_add(&states, sizeof(uint32_t));
+                    if (t) *t = edges[k];
+                }
+            }
             xdg_toplevel_send_configure(s->xdg_toplevel, s->w, s->h, &states);
             wl_array_release(&states);
             surface_send_xdg_configure(s);
@@ -1490,8 +1510,8 @@ static void dmabuf_params_add(struct wl_client *c, struct wl_resource *r,
 static void dmabuf_params_create(struct wl_client *c, struct wl_resource *r,
                                  int32_t width, int32_t height, uint32_t format,
                                  uint32_t flags) {
-    /* flags (y_invert/interlaced/bottom_first) don't apply: our producers
-     * render top-left-origin into a progressive bo. */
+    /* Y_INVERT is honoured (a GL producer's framebuffer is bottom-up);
+     * interlaced/bottom_first do not apply to a progressive bo. */
     struct dmabuf_params *p = wl_resource_get_user_data(r);
     if (p->used) {
         wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
@@ -1501,6 +1521,7 @@ static void dmabuf_params_create(struct wl_client *c, struct wl_resource *r,
     p->used = 1;
     uint32_t err = 0;
     struct shm_buffer *b = dmabuf_make_buffer(c, p, width, height, format, &err);
+    if (b) b->y_invert = (flags & ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_Y_INVERT) != 0;
     if (!b) {
         if (err) zwp_linux_buffer_params_v1_send_failed(r);
         return;
@@ -1528,6 +1549,7 @@ static void dmabuf_params_create_immed(struct wl_client *c,
     p->used = 1;
     uint32_t err = 0;
     struct shm_buffer *b = dmabuf_make_buffer(c, p, width, height, format, &err);
+    if (b) b->y_invert = (flags & ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_Y_INVERT) != 0;
     if (!b) {
         /* create_immed reports failure as a fatal protocol error (it has no
          * 'failed' event — the client committed to the new_id). */
@@ -1894,12 +1916,66 @@ static const struct xdg_surface_interface xdg_surface_impl = {
 static void wm_base_destroy(struct wl_client *c, struct wl_resource *r) {
     wl_resource_destroy(r);
 }
+/* xdg_positioner. A positioner only carries placement state for
+ * xdg_surface.get_popup, which this compositor rejects (no xdg_popup yet), so
+ * nothing reads the state. The requests still need real handlers: a resource
+ * with a NULL implementation makes libwayland abort the whole server on the
+ * first request, so a toolkit building a tooltip (GTK, Qt) killed the desktop
+ * instead of only having its popup refused. The spec's input checks stay. */
+static void positioner_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void positioner_set_size(struct wl_client *c, struct wl_resource *r,
+                                int32_t w, int32_t h) {
+    if (w <= 0 || h <= 0)
+        wl_resource_post_error(r, XDG_POSITIONER_ERROR_INVALID_INPUT,
+                               "set_size %dx%d must be positive", w, h);
+}
+static void positioner_set_anchor_rect(struct wl_client *c,
+                                       struct wl_resource *r, int32_t x,
+                                       int32_t y, int32_t w, int32_t h) {
+    if (w < 0 || h < 0)
+        wl_resource_post_error(r, XDG_POSITIONER_ERROR_INVALID_INPUT,
+                               "set_anchor_rect %dx%d is negative", w, h);
+}
+static void positioner_set_anchor(struct wl_client *c, struct wl_resource *r,
+                                  uint32_t anchor) {}
+static void positioner_set_gravity(struct wl_client *c, struct wl_resource *r,
+                                   uint32_t gravity) {}
+static void positioner_set_constraint_adjustment(struct wl_client *c,
+                                                 struct wl_resource *r,
+                                                 uint32_t adjustment) {}
+static void positioner_set_offset(struct wl_client *c, struct wl_resource *r,
+                                  int32_t x, int32_t y) {}
+static void positioner_set_reactive(struct wl_client *c,
+                                    struct wl_resource *r) {}
+static void positioner_set_parent_size(struct wl_client *c,
+                                       struct wl_resource *r, int32_t w,
+                                       int32_t h) {}
+static void positioner_set_parent_configure(struct wl_client *c,
+                                            struct wl_resource *r,
+                                            uint32_t serial) {}
+static const struct xdg_positioner_interface positioner_impl = {
+    .destroy = positioner_destroy,
+    .set_size = positioner_set_size,
+    .set_anchor_rect = positioner_set_anchor_rect,
+    .set_anchor = positioner_set_anchor,
+    .set_gravity = positioner_set_gravity,
+    .set_constraint_adjustment = positioner_set_constraint_adjustment,
+    .set_offset = positioner_set_offset,
+    .set_reactive = positioner_set_reactive,
+    .set_parent_size = positioner_set_parent_size,
+    .set_parent_configure = positioner_set_parent_configure,
+};
 static void wm_base_create_positioner(struct wl_client *c, struct wl_resource *r,
                                       uint32_t id) {
-    /* Positioners only matter for popups (PR8); hand back an inert object. */
     struct wl_resource *p = wl_resource_create(
         c, &xdg_positioner_interface, wl_resource_get_version(r), id);
-    if (p) wl_resource_set_implementation(p, NULL, NULL, NULL);
+    if (!p) {
+        wl_client_post_no_memory(c);
+        return;
+    }
+    wl_resource_set_implementation(p, &positioner_impl, NULL, NULL);
 }
 static void wm_base_get_xdg_surface(struct wl_client *client,
                                     struct wl_resource *resource, uint32_t id,
@@ -3154,10 +3230,16 @@ static void surface_draw_box(struct surface *s, struct shm_buffer *b,
         uv[1] = y0 / (float)b->height;
         uv[2] = (x0 + (float)wl_fixed_to_double(s->vp_src_w)) / (float)b->width;
         uv[3] = (y0 + (float)wl_fixed_to_double(s->vp_src_h)) / (float)b->height;
-        return;
+    } else {
+        uv[0] = uv[1] = 0.0f;
+        uv[2] = uv[3] = 1.0f;
     }
-    uv[0] = uv[1] = 0.0f;
-    uv[2] = uv[3] = 1.0f;
+    /* A y-inverted buffer stores the image bottom-up: mirror the source
+     * rows so its top lands at the top of the destination box. */
+    if (b->y_invert) {
+        uv[1] = 1.0f - uv[1];
+        uv[3] = 1.0f - uv[3];
+    }
 }
 
 static void glc_draw_solid(uint32_t argb, int32_t x, int32_t y,
@@ -3323,7 +3405,6 @@ static int repaint_gl(void) {
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         s->frame_tex = shm_buffer_gl_texture(b);
-        if (!s->frame_tex) return 0;
     }
     for (int i = 0; i < g.n_layers; i++) {
         struct surface *s = g.layers[i];
@@ -3332,7 +3413,6 @@ static int repaint_gl(void) {
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         s->frame_tex = shm_buffer_gl_texture(b);
-        if (!s->frame_tex) return 0;
     }
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -3625,10 +3705,43 @@ static void focus_cycle(int dir) {
     ptr_refresh_focus();
 }
 
+/* swapwindow l|r|u|d (Hyprland's dispatcher): swap the focused tile with
+ * its nearest neighbour in that direction — among tiles overlapping it on
+ * the other axis — by exchanging their places in the tiling order. */
+static void swap_window(char dir) {
+    struct surface *f = g.kbd_focus;
+    if (g.layout == LAYOUT_FLOATING || !f || !f->xdg_toplevel || !surface_visible(f))
+        return;
+    int fi = -1, best = -1;
+    long best_d = 0;
+    for (int i = 0; i < g.n_surfaces; i++) {
+        struct surface *s = g.zorder[i];
+        if (s == f) { fi = i; continue; }
+        if (!s->xdg_toplevel || !surface_visible(s)) continue;
+        int vert_overlap = s->y < f->y + f->h && f->y < s->y + s->h;
+        int horiz_overlap = s->x < f->x + f->w && f->x < s->x + s->w;
+        long d;
+        switch (dir) {
+        case 'l': if (!vert_overlap || s->x >= f->x) continue; d = f->x - s->x; break;
+        case 'r': if (!vert_overlap || s->x <= f->x) continue; d = s->x - f->x; break;
+        case 'u': if (!horiz_overlap || s->y >= f->y) continue; d = f->y - s->y; break;
+        case 'd': if (!horiz_overlap || s->y <= f->y) continue; d = s->y - f->y; break;
+        default: return;
+        }
+        if (best < 0 || d < best_d) { best = i; best_d = d; }
+    }
+    if (fi < 0 || best < 0) return;
+    g.zorder[fi] = g.zorder[best];
+    g.zorder[best] = f;
+    printf("SWAP dir=%c\n", dir);
+    fflush(stdout);
+    retile();
+}
+
 static void run_dispatch(const struct keybind *b) {
     switch (b->action) {
     case ACT_EXEC: {
-        char tmp[64];
+        char tmp[sizeof b->param];
         snprintf(tmp, sizeof(tmp), "%s", b->param);   /* kwlctl_exec strtoks */
         kwlctl_exec(tmp);
         break;
@@ -3642,6 +3755,7 @@ static void run_dispatch(const struct keybind *b) {
     case ACT_CYCLE_NEXT:   focus_cycle(+1); break;
     case ACT_CYCLE_PREV:   focus_cycle(-1); break;
     case ACT_THEME:        theme_switch(b->param); break;
+    case ACT_SWAP:         swap_window(b->param[0]); break;
     }
 }
 
@@ -3664,12 +3778,23 @@ static int try_keybind(uint32_t key, uint32_t state) {
 
 static void add_bind(uint32_t mods, xkb_keysym_t sym, int action, int arg,
                      const char *param) {
-    if (g.n_binds >= MAX_BINDS) return;
+    if (g.n_binds >= MAX_BINDS) {
+        fprintf(stderr, "wlcompositor: more than %d binds; ignoring the rest\n", MAX_BINDS);
+        return;
+    }
     struct keybind *b = &g.binds[g.n_binds++];
     b->mods = mods;
     b->sym = sym;
     b->action = action;
     b->arg = arg;
+    /* A command that does not fit would run truncated — a different,
+     * usually missing, program — so refuse the bind loudly instead. */
+    if (param && strlen(param) >= sizeof(b->param)) {
+        fprintf(stderr, "wlcompositor: bind command too long (%zu bytes, max %zu): %s\n",
+                strlen(param), sizeof(b->param) - 1, param);
+        g.n_binds--;
+        return;
+    }
     snprintf(b->param, sizeof(b->param), "%s", param ? param : "");
 }
 
@@ -3861,6 +3986,7 @@ static void parse_bind_line(char *rhs) {
     else if (!strcmp(disp, "cyclenext"))  add_bind(mods, sym, ACT_CYCLE_NEXT, 0, NULL);
     else if (!strcmp(disp, "cycleprev"))  add_bind(mods, sym, ACT_CYCLE_PREV, 0, NULL);
     else if (!strcmp(disp, "theme"))      add_bind(mods, sym, ACT_THEME, 0, arg);
+    else if (!strcmp(disp, "swapwindow")) add_bind(mods, sym, ACT_SWAP, 0, arg);
 }
 
 /* Load keybinds: parse WLC_CONFIG / WLC_CONFIG_PATH if present, else install
@@ -4125,7 +4251,7 @@ static int setup_keymap(void) {
      * xkb offset), so an evdev KEY_* the compositor receives from libinput
      * lands on the matching xkb key here. Enough of a real keyboard for a
      * terminal: letters, digits, common punctuation, space, Return, Tab,
-     * Backspace, Escape, both Shifts and left Control, plus F1-F12 and the
+     * Backspace, Escape, both Shifts, Controls, Alts and Supers, plus F1-F12 and the
      * nav cluster (Home/End/PgUp/PgDn/Insert/Delete) for full-screen
      * terminal apps. Two levels (base / Shift) via TWO_LEVEL; the bare
      * action keys are ONE_LEVEL. */
@@ -4152,6 +4278,12 @@ static int setup_keymap(void) {
         "    <AB09> = 60;  <AB10> = 61;  <RTSH> = 62;  <SPCE> = 65;\n"
         "    <LWIN> = 133;\n"   /* evdev KEY_LEFTMETA (125) + 8: the SUPER key */
         "    <LALT> = 64;\n"    /* evdev KEY_LEFTALT (56) + 8 */
+        /* The right-hand modifiers. A browser reports a Caps Lock that macOS
+         * remaps to Control as ControlRight, so without <RCTL> that key
+         * modified nothing and no CTRL bind fired. */
+        "    <RCTL> = 105;\n"   /* evdev KEY_RIGHTCTRL (97) + 8 */
+        "    <RALT> = 108;\n"   /* evdev KEY_RIGHTALT (100) + 8 */
+        "    <RWIN> = 134;\n"   /* evdev KEY_RIGHTMETA (126) + 8 */
         "    <UP> = 111;  <LEFT> = 113;  <RGHT> = 114;  <DOWN> = 116;\n"
         "    <FK01> = 67;  <FK02> = 68;  <FK03> = 69;  <FK04> = 70;\n"
         "    <FK05> = 71;  <FK06> = 72;  <FK07> = 73;  <FK08> = 74;\n"
@@ -4182,10 +4314,19 @@ static int setup_keymap(void) {
         "    interpret Control_L+AnyOfOrNone(all) {\n"
         "      action = SetMods(modifiers=Control);\n"
         "    };\n"
+        "    interpret Control_R+AnyOfOrNone(all) {\n"
+        "      action = SetMods(modifiers=Control);\n"
+        "    };\n"
         "    interpret Super_L+AnyOfOrNone(all) {\n"
         "      action = SetMods(modifiers=Mod4);\n"
         "    };\n"
+        "    interpret Super_R+AnyOfOrNone(all) {\n"
+        "      action = SetMods(modifiers=Mod4);\n"
+        "    };\n"
         "    interpret Alt_L+AnyOfOrNone(all) {\n"
+        "      action = SetMods(modifiers=Mod1);\n"
+        "    };\n"
+        "    interpret Alt_R+AnyOfOrNone(all) {\n"
         "      action = SetMods(modifiers=Mod1);\n"
         "    };\n"
         "  };\n"
@@ -4200,6 +4341,9 @@ static int setup_keymap(void) {
         "    key <RTSH> { [ Shift_R ] };\n"
         "    key <LWIN> { [ Super_L ] };\n"
         "    key <LALT> { [ Alt_L ] };\n"
+        "    key <RCTL> { [ Control_R ] };\n"
+        "    key <RALT> { [ Alt_R ] };\n"
+        "    key <RWIN> { [ Super_R ] };\n"
         "    key <UP>   { [ Up ] };\n"
         "    key <DOWN> { [ Down ] };\n"
         "    key <LEFT> { [ Left ] };\n"
@@ -4261,9 +4405,9 @@ static int setup_keymap(void) {
         "    key <AB09> { type=\"TWO_LEVEL\", [ period, greater ] };\n"
         "    key <AB10> { type=\"TWO_LEVEL\", [ slash, question ] };\n"
         "    modifier_map Shift { <LFSH>, <RTSH> };\n"
-        "    modifier_map Control { <LCTL> };\n"
-        "    modifier_map Mod4 { <LWIN> };\n"
-        "    modifier_map Mod1 { <LALT> };\n"
+        "    modifier_map Control { <LCTL>, <RCTL> };\n"
+        "    modifier_map Mod4 { <LWIN>, <RWIN> };\n"
+        "    modifier_map Mod1 { <LALT>, <RALT> };\n"
         "  };\n"
         "};\n";
 
@@ -4315,6 +4459,22 @@ static int setup_drm(void) {
     g.mode = conn->modes[0];
     g.pw = g.mode.hdisplay;
     g.ph = g.mode.vdisplay;
+    /* Output scale from the display's DPI when WLC_SCALE did not set it.
+     * 96 dpi is scale 1 (the reference pixel), so the scale is the mode's
+     * pixels per 96th of an inch, rounded to an integer and clamped. A
+     * connector with no physical size (mm 0) keeps scale 1. */
+    const char *scale_source = g.scale_explicit ? "env" : "default";
+    if (!g.scale_explicit && conn->mmWidth > 0) {
+        double ref_px = (double)conn->mmWidth * 96.0 / 25.4;
+        long s = lround((double)g.pw / ref_px);
+        if (s < 1) s = 1;
+        if (s > MAX_OUTPUT_SCALE) s = MAX_OUTPUT_SCALE;
+        g.scale = (uint32_t)s;
+        scale_source = "connector";
+    }
+    printf("WLC_SCALE %u source=%s mm=%ux%u\n", g.scale, scale_source,
+           conn->mmWidth, conn->mmHeight);
+    fflush(stdout);
     /* A scale that does not divide the mode would put the logical grid's
      * right/bottom edge inside the last device pixel, so the layout could
      * place a window the scanout has no room for. Round the logical grid
@@ -4919,18 +5079,21 @@ int main(void) {
            g.layout == LAYOUT_DWINDLE ? "dwindle" : "floating");
     fflush(stdout);
 
-    /* The embedder sizes the mode in device pixels, so the compositor cannot
-     * recover the scale from it — a 2176x1226 mode is a dpr-2 pane and a
-     * dpr-1 one alike. WLC_SCALE is how the page passes what it knows. */
+    /* The mode is in device pixels, so it cannot tell a dpr-2 display from a
+     * dpr-1 one — a 2176x1226 mode is either. WLC_SCALE sets the scale
+     * explicitly; without it, setup_drm derives it from the connector's
+     * physical size (the display's DPI), as Hyprland's `auto` scale does. */
     g.scale = 1;
     const char *want_scale = getenv("WLC_SCALE");
     if (want_scale) {
         long v = strtol(want_scale, NULL, 10);
-        if (v >= 1 && v <= MAX_OUTPUT_SCALE) g.scale = (uint32_t)v;
-        else fprintf(stderr, "wlcompositor: ignoring WLC_SCALE=%s\n", want_scale);
+        if (v >= 1 && v <= MAX_OUTPUT_SCALE) {
+            g.scale = (uint32_t)v;
+            g.scale_explicit = 1;
+        } else {
+            fprintf(stderr, "wlcompositor: ignoring WLC_SCALE=%s\n", want_scale);
+        }
     }
-    printf("WLC_SCALE %u\n", g.scale);
-    fflush(stdout);
     theme_scan();
     load_config();
 
@@ -4953,7 +5116,7 @@ int main(void) {
         !wl_global_create(g.display, &wl_shm_interface, 1, NULL, shm_bind) ||
         !wl_global_create(g.display, &zwp_linux_dmabuf_v1_interface, 3, NULL,
                           dmabuf_bind) ||
-        !wl_global_create(g.display, &xdg_wm_base_interface, 1, NULL,
+        !wl_global_create(g.display, &xdg_wm_base_interface, 2, NULL,
                           wm_base_bind) ||
         !wl_global_create(g.display, &zxdg_decoration_manager_v1_interface, 1,
                           NULL, decoration_mgr_bind) ||

@@ -233,43 +233,8 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer"
-      }
-    },
-    "hyprland": {
-      "identity": {
-        "title": "Hyprland tiling desktop",
-        "summary": "wlcompositor as a Hyprland-class tiling window manager on /dev/dri/card0: windows tile into gapped frames and resize to fit. CTRL+Return opens a terminal, CTRL+K a clock, CTRL+P a paint canvas, CTRL+W closes the focused window, and CTRL+1..9 switch workspaces (each mirrored on SUPER, which the browser keeps for itself).",
-        "accent": "#00aaff",
-        "glyph": "H",
-        "packages": [
-          "bash@local",
-          "coreutils@local"
-        ]
-      },
-      "runtime": {
-        "features": [
-          "kms",
-          "kms-gl-scanout",
-          "evdev-input"
-        ]
-      },
-      "display": {
-        "minWidth": 1920,
-        "minHeight": 1080
-      },
-      "init": {
-        "shellCommand": "/usr/local/bin/hyprdesktop"
-      },
-      "presentation": {
-        "bootPrimary": "syslog",
-        "runningPrimary": [
-          "kms",
-          "terminal",
-          "syslog"
-        ],
-        "terminalAccess": "drawer",
-        "internalsAccess": "drawer"
+        "internalsAccess": "drawer",
+        "hostPointer": true
       }
     },
     "omarchy": {
@@ -305,7 +270,8 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer"
+        "internalsAccess": "drawer",
+        "hostPointer": true
       }
     }
   }

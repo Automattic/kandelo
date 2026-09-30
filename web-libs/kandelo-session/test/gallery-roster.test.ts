@@ -133,9 +133,13 @@ describe("parseGalleryRoster", () => {
       "quake",
       "modeset",
       "sdl2",
-      "wayland",
+      "scummvm",
+      "omarchy",
       "espeak",
     ]);
+    // The floating Wayland desktop left the gallery when Omarchy joined it;
+    // it still boots by URL (?profile=wayland) for its compositor specs.
+    expect(roster.entries.map((e) => e.profile)).not.toContain("wayland");
     // sdl2 is deliberately in the gallery even though its omission from
     // pages-vfs-product-gallery.json was known drift, not intent.
     expect(roster.entries).toContainEqual({
