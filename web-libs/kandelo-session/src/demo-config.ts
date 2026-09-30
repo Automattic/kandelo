@@ -132,6 +132,54 @@ export interface DemoCheckpointConfig {
   label?: string;
 }
 
+/** One search scope a library offers, e.g. one console's ROMs. */
+export interface DemoLibraryGroupConfig {
+  label: string;
+  /** Provider query clause every search in this group is ANDed with. */
+  query: string;
+}
+
+/** An item the library suggests before anyone searches. */
+export interface DemoLibraryFeaturedConfig {
+  /** The provider's identifier for the item. */
+  item: string;
+  title: string;
+  note?: string;
+  /** Label of the group it belongs to, for display. */
+  group?: string;
+}
+
+/** A file already in the image that the library offers alongside remote ones. */
+export interface DemoLibraryBundledConfig {
+  path: string;
+  title: string;
+  group?: string;
+}
+
+/**
+ * Declarative "find something to load" capability: where to search, what to
+ * suggest, and which files the image already carries. What the library
+ * finds is loaded through the profile's `ingest`, so a library requires one.
+ * Content-neutral: the image supplies every query and title.
+ */
+export interface DemoLibraryConfig {
+  /** The only provider today. Its searches and downloads are public. */
+  provider: "internet-archive";
+  /**
+   * Boot-input id a library file travels under in a share link, so an
+   * opener's machine can fetch the same verified bytes again.
+   */
+  inputId: string;
+  groups: DemoLibraryGroupConfig[];
+  featured?: DemoLibraryFeaturedConfig[];
+  bundled?: DemoLibraryBundledConfig[];
+  /**
+   * Largest archive downloaded whole when a server or relay ignores Range,
+   * so a member can still be extracted. Defaults to 64 MiB.
+   */
+  maxArchiveBytes?: number;
+}
+
 /**
  * Declared runtime shape of a machine.
  *
@@ -308,6 +356,7 @@ export interface KandeloDemoProfileConfig {
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
   checkpoint?: DemoCheckpointConfig;
+  library?: DemoLibraryConfig;
   runtime?: DemoRuntimeConfigInput;
   init?: DemoInitConfig;
   web?: DemoWebConfigInput;
@@ -401,6 +450,7 @@ const PROFILE_ONLY_KEYS = [
   "guide",
   "ingest",
   "checkpoint",
+  "library",
   "runtime",
   "init",
   "web",
@@ -481,6 +531,16 @@ export function resolveDemoIngest(
   return profile?.ingest === undefined
     ? null
     : normalizeIngest(profile.ingest, `profiles.${profileId}.ingest`);
+}
+
+export function resolveDemoLibrary(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoLibraryConfig | null {
+  const profile = profileConfig(config, profileId);
+  return profile?.library === undefined
+    ? null
+    : normalizeLibrary(profile.library, `profiles.${profileId}.library`);
 }
 
 export function resolveDemoCheckpoint(
@@ -1055,6 +1115,109 @@ function normalizeCheckpoint(value: unknown, field: string): DemoCheckpointConfi
   return checkpoint;
 }
 
+const LIBRARY_MAX_GROUPS = 16;
+const LIBRARY_MAX_FEATURED = 64;
+const LIBRARY_MAX_BUNDLED = 32;
+const LIBRARY_MAX_QUERY_CHARS = 512;
+const LIBRARY_MAX_TEXT_CHARS = 200;
+const LIBRARY_DEFAULT_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const LIBRARY_ARCHIVE_BYTES_CEILING = 256 * 1024 * 1024;
+
+function normalizeLibrary(value: unknown, field: string): DemoLibraryConfig {
+  if (!isRecord(value)) throw new Error(`${field} must be an object`);
+  if (value.provider !== "internet-archive") {
+    throw new Error(`${field}.provider must be "internet-archive"`);
+  }
+  const inputId = requiredString(value.inputId, `${field}.inputId`);
+  if (inputId.length > 64 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(inputId)) {
+    throw new Error(`${field}.inputId must be a short identifier`);
+  }
+  const text = (raw: unknown, name: string, max = LIBRARY_MAX_TEXT_CHARS) => {
+    const out = requiredString(raw, name);
+    if (out.length > max) throw new Error(`${name} is longer than ${max} characters`);
+    return out;
+  };
+  const list = (raw: unknown, name: string, max: number, required: boolean) => {
+    if (raw === undefined && !required) return [];
+    if (!Array.isArray(raw) || (required && raw.length === 0) || raw.length > max) {
+      throw new Error(`${name} must be an array of ${required ? 1 : 0} to ${max} entries`);
+    }
+    return raw.map((entry, index) => {
+      if (!isRecord(entry)) throw new Error(`${name}[${index}] must be an object`);
+      return entry;
+    });
+  };
+
+  const groups = list(value.groups, `${field}.groups`, LIBRARY_MAX_GROUPS, true).map(
+    (group, index) => ({
+      label: text(group.label, `${field}.groups[${index}].label`),
+      query: text(group.query, `${field}.groups[${index}].query`, LIBRARY_MAX_QUERY_CHARS),
+    }),
+  );
+  if (new Set(groups.map((group) => group.label)).size !== groups.length) {
+    throw new Error(`${field}.groups must have distinct labels`);
+  }
+  const labels = new Set(groups.map((group) => group.label));
+  const groupOf = (raw: unknown, name: string): { group?: string } => {
+    if (raw === undefined) return {};
+    const group = text(raw, name);
+    if (!labels.has(group)) throw new Error(`${name} names no declared group`);
+    return { group };
+  };
+
+  const featured = list(value.featured, `${field}.featured`, LIBRARY_MAX_FEATURED, false).map(
+    (entry, index) => {
+      const name = `${field}.featured[${index}]`;
+      const item = text(entry.item, `${name}.item`, 128);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(item)) {
+        throw new Error(`${name}.item must be an Internet Archive identifier`);
+      }
+      return {
+        item,
+        title: text(entry.title, `${name}.title`),
+        ...(entry.note === undefined ? {} : { note: text(entry.note, `${name}.note`) }),
+        ...groupOf(entry.group, `${name}.group`),
+      };
+    },
+  );
+
+  const bundled = list(value.bundled, `${field}.bundled`, LIBRARY_MAX_BUNDLED, false).map(
+    (entry, index) => {
+      const name = `${field}.bundled[${index}]`;
+      const path = requiredString(entry.path, `${name}.path`);
+      validateAbsoluteNormalizedPath(path, `${name}.path`);
+      return {
+        path,
+        title: text(entry.title, `${name}.title`),
+        ...groupOf(entry.group, `${name}.group`),
+      };
+    },
+  );
+
+  let maxArchiveBytes = LIBRARY_DEFAULT_ARCHIVE_BYTES;
+  if (value.maxArchiveBytes !== undefined) {
+    const raw = value.maxArchiveBytes;
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
+      throw new Error(`${field}.maxArchiveBytes must be a positive integer`);
+    }
+    if (raw > LIBRARY_ARCHIVE_BYTES_CEILING) {
+      throw new Error(
+        `${field}.maxArchiveBytes exceeds the ${LIBRARY_ARCHIVE_BYTES_CEILING}-byte ceiling`,
+      );
+    }
+    maxArchiveBytes = raw;
+  }
+
+  return {
+    provider: "internet-archive",
+    inputId,
+    groups,
+    ...(featured.length > 0 ? { featured } : {}),
+    ...(bundled.length > 0 ? { bundled } : {}),
+    maxArchiveBytes,
+  };
+}
+
 /**
  * The one place a machine field is looked up. Anything that is not a record
  * — a missing profile id, or a profile declared as an array or a string —
@@ -1106,6 +1269,12 @@ function validateProfileFields(
   }
   if (value.checkpoint !== undefined) {
     normalizeCheckpoint(value.checkpoint, `${field}.checkpoint`);
+  }
+  if (value.library !== undefined) {
+    if (value.ingest === undefined) {
+      throw new Error(`${field}.library requires ${field}.ingest to load what it finds`);
+    }
+    normalizeLibrary(value.library, `${field}.library`);
   }
 }
 

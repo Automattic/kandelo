@@ -21,6 +21,12 @@
  */
 
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
+import type { BrowserCorsProxyConfig } from "../../../../../host/src/networking/browser-cors-proxy";
+import {
+  createInternetArchiveResolver,
+  INTERNET_ARCHIVE_RESOLVER,
+} from "../../../../../web-libs/kandelo-session/src/internet-archive";
+import { corsProxyFetch } from "../../../lib/archive-fetch";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -158,6 +164,8 @@ export interface ComposeImageJob {
    * See {@link patchedPhpFpmConf}.
    */
   preforkServiceProcesses: number;
+  /** How boot-input resolvers reach hosts that send no CORS headers. */
+  corsProxy: BrowserCorsProxyConfig;
 }
 
 export interface ComposeImageResult {
@@ -311,7 +319,14 @@ export async function composeKandeloImage(
   if (job.descriptor.boot.inputs?.length) {
     tick("materializing boot inputs...");
     bootInputManifest = await materializeBootInputs(job.descriptor, {
-      resolvers: {},
+      // Resolvers are host policy, never supplied by a link: a link can only
+      // name one of these. Each fetches no more than the input's declared
+      // byteLength, and every input is then checked against its sha256.
+      resolvers: {
+        [INTERNET_ARCHIVE_RESOLVER]: createInternetArchiveResolver({
+          fetch: corsProxyFetch(job.corsProxy),
+        }),
+      },
       mkdir: (p) => ensureDirRecursive(buildFs, p),
       writeFile: (p, b, m) => writeVfsBinary(buildFs, p, b, m),
     });

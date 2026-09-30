@@ -222,21 +222,39 @@ async function settledDigest(canvas: Locator): Promise<number> {
   return last.digest;
 }
 
+/**
+ * Poll until the frame differs from `base` in more than `atLeast` of its
+ * rows (or, with `atMost`, in no more than that many). The test suite's page
+ * arrows blink, which alone changes a few percent of rows; turning a page
+ * changes far more, so the thresholds sit an order of magnitude apart.
+ */
+async function waitForRows(
+  canvas: Locator,
+  base: number[],
+  bound: { atLeast: number } | { atMost: number },
+): Promise<number[]> {
+  let rows: number[] = [];
+  await expect.poll(async () => {
+    rows = await frameRows(canvas);
+    const fraction = differingFraction(base, rows);
+    return "atLeast" in bound ? fraction > bound.atLeast : fraction <= bound.atMost;
+  }, { timeout: 30_000, intervals: [500, 1_000] }).toBe(true);
+  return rows;
+}
+
+const PAGE_TURN = { atLeast: 0.2 } as const;
+const SAME_PAGE = { atMost: 0.05 } as const;
+
 test("a share link with a save state reopens the game where it was", async ({ page, context }) => {
   test.setTimeout(600_000);
   const canvas = await bootRetro(page);
   await canvas.click();
-  const firstPage = await settledDigest(canvas);
+  await settledDigest(canvas);
   const firstRows = await frameRows(canvas);
 
   // Move off the opening screen, so "where it was" differs from a fresh boot.
   await page.keyboard.press("ArrowRight");
-  await expect.poll(async () => (await frameSummary(canvas)).digest, { timeout: 30_000 })
-    .not.toBe(firstPage);
-  await settledDigest(canvas);
-  const secondRows = await frameRows(canvas);
-  // The two pages differ across most of the text panel's rows.
-  expect(differingFraction(firstRows, secondRows)).toBeGreaterThan(0.3);
+  await waitForRows(canvas, firstRows, PAGE_TURN);
 
   // Clicking the display captured the mouse. Release it the way the
   // browser's own Esc does (Playwright's key presses do not reach the
@@ -258,15 +276,105 @@ test("a share link with a save state reopens the game where it was", async ({ pa
   const reopened = opener.locator("canvas.kframebuffer-canvas").first();
   await expect(reopened).toBeVisible({ timeout: 180_000 });
   await awaitRender(reopened);
-  // The restored machine shows the second page, not the opening screen.
-  // Compared before opening Internals, which resizes the display pane and
-  // with it the scaled frame, as the original was. The comparison allows a
-  // few rows to differ: the page's arrows blink, and two tabs need not catch
-  // them in the same phase.
+
+  // The restored machine is on the second page. Frames are compared within
+  // the opener's own tab, because two tabs need not scale the display alike:
+  // Left must turn back a page, and Right must return to the restored frame.
+  await reopened.click();
   await settledDigest(reopened);
   const restoredRows = await frameRows(reopened);
-  expect(differingFraction(restoredRows, secondRows)).toBeLessThan(0.05);
-  expect(differingFraction(restoredRows, firstRows)).toBeGreaterThan(0.3);
+  await opener.keyboard.press("ArrowLeft");
+  await waitForRows(reopened, restoredRows, PAGE_TURN);
+  await opener.keyboard.press("ArrowRight");
+  await waitForRows(reopened, restoredRows, SAME_PAGE);
+  // And Right on the restored frame goes nowhere: it was the last page.
+  await opener.keyboard.press("ArrowRight");
+  await opener.waitForTimeout(1_500);
+  expect(differingFraction(restoredRows, await frameRows(reopened))).toBeLessThanOrEqual(0.05);
+
+  await opener.evaluate(() => document.exitPointerLock());
   await expect.poll(() => emulatorCommand(opener), { timeout: 30_000 })
     .toMatch(/--state \/run\/kandelo\/inputs\/state\/retro\.state$/);
+});
+
+async function archiveReachable(): Promise<boolean> {
+  try {
+    const res = await fetch("https://archive.org/metadata/carpetshark", { method: "GET" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function openLibrary(page: Page): Promise<void> {
+  if (await page.evaluate(() => document.pointerLockElement !== null)) {
+    await page.evaluate(() => document.exitPointerLock());
+  }
+  await page.getByTestId("fb-library-button").click();
+  await expect(page.getByRole("dialog", { name: "Library" })).toBeVisible();
+}
+
+test("the library loads a ROM the image already carries", async ({ page }) => {
+  test.setTimeout(420_000);
+  const canvas = await bootRetro(page);
+  await openLibrary(page);
+  await page.getByTestId("library-group").selectOption("SNES");
+  await page.getByTestId("library-bundled").getByRole("button", { name: "240p Test Suite" }).click();
+  await expect(page.getByRole("dialog", { name: "Library" })).toHaveCount(0);
+  await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
+    .toMatch(/\/usr\/bin\/kandelo-retro-snes \/tmp\/kandelo-retro\/rom\.sfc/);
+  await awaitRender(canvas);
+});
+
+test("the library plays an Internet Archive ROM, and a checkpoint link fetches it again", async ({ page, context }) => {
+  test.setTimeout(600_000);
+  test.skip(!(await archiveReachable()), "archive.org unreachable (offline)");
+  const canvas = await bootRetro(page);
+
+  await openLibrary(page);
+  await page.getByTestId("library-featured").getByRole("button", { name: /Carpet Shark/ }).click();
+  await page.getByTestId("library-files").getByRole("button", { name: /CarpetShark\.nes/ }).click();
+  await expect(page.getByRole("dialog", { name: "Library" })).toHaveCount(0, { timeout: 120_000 });
+  await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
+    .toMatch(/\/usr\/bin\/kandelo-retro \/tmp\/kandelo-retro\/rom\.nes/);
+  await awaitRender(canvas);
+  await settledDigest(canvas);
+
+  await page.getByRole("button", { name: "Share" }).click();
+  await page.getByTestId("share-checkpoint-toggle").check();
+  await expect(page.getByTestId("share-checkpoint-status"))
+    .toContainText("Checkpoint taken", { timeout: 60_000 });
+  const shareUrl = page.locator(".kshare-url");
+  await expect(shareUrl).toHaveAttribute("data-share-url", /#k1=/, { timeout: 30_000 });
+  const url = (await shareUrl.getAttribute("data-share-url"))!;
+
+  // The opener's machine fetches the ROM from the Archive itself, checks it
+  // against the link's sha256, and restores the state onto it.
+  const opener = await context.newPage();
+  await opener.goto(url, { waitUntil: "domcontentloaded" });
+  const reopened = opener.locator("canvas.kframebuffer-canvas").first();
+  await expect(reopened).toBeVisible({ timeout: 180_000 });
+  await awaitRender(reopened);
+  await expect.poll(() => emulatorCommand(opener), { timeout: 60_000 }).toMatch(
+    /\/tmp\/kandelo-retro\/rom\.nes --state \/run\/kandelo\/inputs\/state\/retro\.state$/,
+  );
+});
+
+test("the library extracts one ROM from an Internet Archive ZIP", async ({ page }) => {
+  test.setTimeout(600_000);
+  test.skip(!(await archiveReachable()), "archive.org unreachable (offline)");
+  const canvas = await bootRetro(page);
+  await openLibrary(page);
+  await page.getByTestId("library-group").selectOption("Mega Drive");
+  await page.getByTestId("library-featured").getByRole("button", { name: /Capoeira Boy/ }).click();
+  const files = page.getByTestId("library-files");
+  await expect(files.getByRole("button").first()).toBeVisible({ timeout: 60_000 });
+  await files.getByRole("button", { name: /open archive/ }).first().click();
+  const members = page.getByTestId("library-members");
+  await expect(members.getByRole("button").first()).toBeVisible({ timeout: 120_000 });
+  await members.getByRole("button").first().click();
+  await expect(page.getByRole("dialog", { name: "Library" })).toHaveCount(0, { timeout: 120_000 });
+  await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
+    .toMatch(/\/usr\/bin\/kandelo-retro-genesis /);
+  await awaitRender(canvas);
 });

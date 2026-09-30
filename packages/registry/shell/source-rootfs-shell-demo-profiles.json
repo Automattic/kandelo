@@ -202,6 +202,39 @@
         "inputId": "state",
         "filename": "retro.state",
         "label": "Include save state"
+      },
+      "library": {
+        "provider": "internet-archive",
+        "inputId": "rom",
+        "groups": [
+          {
+            "label": "NES",
+            "query": "mediatype:software AND (format:ZIP OR format:Unknown) AND (subject:\"NES\" OR subject:\"Nintendo Entertainment System\")"
+          },
+          {
+            "label": "Mega Drive",
+            "query": "mediatype:software AND (format:ZIP OR format:Unknown) AND (subject:\"Sega Genesis\" OR subject:\"Mega Drive\" OR subject:\"MegaDrive\")"
+          },
+          {
+            "label": "SNES",
+            "query": "mediatype:software AND (format:ZIP OR format:Unknown) AND (subject:\"SNES\" OR subject:\"Super Nintendo\" OR subject:\"Super Famicom\")"
+          }
+        ],
+        "featured": [
+          { "item": "carpetshark", "title": "Carpet Shark", "note": "homebrew", "group": "NES" },
+          { "item": "lawn_mower", "title": "Lawn Mower", "note": "homebrew", "group": "NES" },
+          { "item": "snake_nes", "title": "Another NES Snake", "note": "homebrew", "group": "NES" },
+          { "item": "Mighty_Mighty_Missile_2004_by_Fonzie_PD", "title": "Mighty Mighty Missile!", "note": "public domain", "group": "Mega Drive" },
+          { "item": "Uwol_Quest_For_Money_by_Shiru_v1.0-2010.04.03_PD", "title": "Uwol: Quest for Money", "note": "public domain", "group": "Mega Drive" },
+          { "item": "capoeiraboymdrom", "title": "Capoeira Boy", "note": "homebrew, in a ZIP", "group": "Mega Drive" },
+          { "item": "keeping-snesalive", "title": "Keeping SNES Alive", "note": "homebrew", "group": "SNES" },
+          { "item": "till-hat-demo-a", "title": "Till & Hat Demo A", "note": "homebrew demo", "group": "SNES" }
+        ],
+        "bundled": [
+          { "path": "/usr/share/kandelo-retro/roms/240pee.nes", "title": "240p Test Suite", "group": "NES" },
+          { "path": "/usr/share/kandelo-retro/roms/240pSuite-md-1.21.bin", "title": "240p Test Suite", "group": "Mega Drive" },
+          { "path": "/usr/share/kandelo-retro/roms/240pSuite-snes-1.03.sfc", "title": "240p Test Suite", "group": "SNES" }
+        ]
       }
     }
   }

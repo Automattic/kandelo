@@ -64,8 +64,14 @@ static enum retro_pixel_format g_pixfmt = RETRO_PIXEL_FORMAT_0RGB1555; /* defaul
 static struct retro_system_av_info g_av;
 static bool g_have_av = false;
 
-/* Keyboard: held state indexed by 7-bit Linux keycode. */
+/* Keyboard: held state indexed by 7-bit Linux keycode, plus a latch for
+ * each key pressed since the core last ran. The core samples input once per
+ * frame, so a press and its release that both arrive between two frames
+ * would otherwise cancel out before the core ever saw the key: a quick tap
+ * (and every tap on the touch controls) would do nothing. A latched key
+ * reads as pressed for the next frame, then the latch clears. */
 static uint8_t g_keystate[128];
+static uint8_t g_keylatch[128];
 
 /* A save is requested by SIGUSR1 (or F5 at the keyboard) and performed after
  * the current retro_run() completes. The requester first writes a fresh
@@ -215,7 +221,12 @@ static void input_drain(void)
                 g_keystate[kc] = pressed ? 1 : 0;
                 continue;
             }
-            g_keystate[kc] = (b & 0x80) ? 0 : 1;  /* bit7 set => release */
+            if (b & 0x80) {                          /* bit7 set => release */
+                g_keystate[kc] = 0;
+            } else {
+                g_keystate[kc] = 1;
+                g_keylatch[kc] = 1;
+            }
         }
     }
 }
@@ -427,7 +438,7 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
     if (id >= 16) return 0;
     int8_t kc = map[id];
     if (kc <= 0) return 0;
-    return g_keystate[(uint8_t)kc] ? 1 : 0;
+    return (g_keystate[(uint8_t)kc] || g_keylatch[(uint8_t)kc]) ? 1 : 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -750,6 +761,7 @@ int main(int argc, char **argv)
         struct timespec frame_start;
         now_ts(&frame_start);
         retro_run();
+        memset(g_keylatch, 0, sizeof g_keylatch);
         if (g_save_requested) {
             g_save_requested = 0;
             (void)write_save_state();

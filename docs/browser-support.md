@@ -981,11 +981,19 @@ the core that actually run are fetched.
   runs the launcher again. The cap is 16 MiB. The upload lives in the
   machine's filesystem and is gone when the machine is.
 - **Input.** Arrow keys are the D-pad, Enter is Start, Right Shift is Select,
-  Z/X are B/A, A/S are Y/X, and Q/W are the shoulder buttons.
+  Z/X are B/A, A/S are Y/X, and Q/W are the shoulder buttons. A key pressed
+  and released within one frame still counts as pressed for that frame, so
+  quick taps, including taps on the touch controls, are not lost.
+- **Library.** The profile's `library` offers the three starter ROMs, a few
+  homebrew and public-domain games on the Internet Archive, and a search of
+  the Archive for each system; see
+  [Kandelo demo metadata](#kandelo-demo-metadata). A ZIP on the Archive opens
+  to list its ROMs, and only the chosen ROM is downloaded.
 - **Save states in links.** The profile declares a `checkpoint` (see
   [Kandelo demo metadata](#kandelo-demo-metadata)). The frontend saves on
-  SIGUSR1; `/usr/local/bin/retro-checkpoint` sends it and waits for the
-  frontend to confirm a complete state by echoing back a fresh nonce. The
+  SIGUSR1; `/usr/local/bin/retro-checkpoint` sends it and waits, for at most
+  eight seconds, for the frontend to confirm a complete state by echoing back
+  a fresh nonce. The
   launcher starts the core with `--state` when a link delivers one. A state of
   a ROM loaded from the visitor's device cannot be shared, and a state too big
   for a link is refused with its size. Whether a state fits depends on the
@@ -1568,7 +1576,9 @@ compressed bytes, decompresses (gzip-transported payloads are supported),
 and verifies the final sha256+byteLength before writing to the VFS. Inputs
 are all-or-nothing: if any input fails verification, no changes occur.
 Resolver-kind inputs fail materialization loudly when no resolver is
-registered (the production registry is empty; inline sources only today).
+registered. The browser app registers one, `internet-archive` (see the
+`library` block under [Kandelo demo metadata](#kandelo-demo-metadata)); a
+link naming any other resolver fails its boot with that name.
 
 Opening a script link boots the machine selected by the query parameters
 (the fragment cannot select an image the query parameters could not) and
@@ -1730,6 +1740,56 @@ file picked or dropped from the visitor's device, or a file fetched through a
 boot-input resolver. A share link can only name content the opener's browser
 could fetch again, so this origin decides whether a checkpoint (below) can be
 shared.
+
+A profile with an `ingest` may also declare a library of things to load:
+
+```json
+{
+  "library": {
+    "provider": "internet-archive",
+    "inputId": "rom",
+    "groups": [
+      { "label": "NES", "query": "mediatype:software AND subject:\"NES\"" }
+    ],
+    "featured": [
+      { "item": "carpetshark", "title": "Carpet Shark", "group": "NES" }
+    ],
+    "bundled": [
+      { "path": "/usr/share/kandelo-retro/roms/240pee.nes", "title": "240p Test Suite", "group": "NES" }
+    ],
+    "maxArchiveBytes": 67108864
+  }
+}
+```
+
+The framebuffer dock shows a **Library** button next to the ingest control.
+Its panel offers the image's `bundled` files, its `featured` Internet Archive
+items, and a search of the Internet Archive within one of the image's `groups`.
+The visitor's search words are only ever quoted into the group's query, so
+they cannot widen it. Opening an item lists its files whose extensions the
+`ingest` accepts, and its ZIP files, which open to list their members. Search
+and item metadata come directly from `archive.org`, which sends CORS headers;
+file bytes come from the item's own download host through the CORS proxy.
+
+A ZIP member is extracted without downloading the archive: one suffix range
+read finds the end records (ZIP64 included), one more reads the central
+directory if it starts earlier, and one reads the member's local header and
+data. A relay that ignores `Range` gets the whole archive instead, up to
+`maxArchiveBytes` (64 MiB by default, at most 256 MiB); a larger archive is
+refused with that reason. Encrypted members, members compressed with anything
+but store or deflate, and members over `ingest.maxBytes` are listed but cannot
+be picked. The directory is untrusted: every offset and size is checked against
+the archive's length before use.
+
+Whatever is picked goes through the same ingest as a dropped file. The panel
+also records where it came from, so a checkpoint link can name it: a file from
+the Internet Archive becomes a boot input of kind `resolver`, resolver
+`internet-archive`, with locator `{ "item", "file", "member"? }`, under the
+library's `inputId`; a `bundled` file is named by boot parameter `ingestPath`.
+The opener's browser fetches a resolver input again through the same client,
+never reads more than the link's declared byte length, and rejects it unless
+its SHA-256 matches, before anything is written to the machine. The resolver
+is registered by the browser app; a link can only name it.
 
 A profile may also declare a checkpoint capability, the inverse of `ingest`:
 

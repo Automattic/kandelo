@@ -15,17 +15,28 @@
 // or press Ctrl+Shift+Esc to move focus back to the UI.
 
 import * as React from "react";
-import { useDemoIngest, useKernelHost, usePresentation, useStatus } from "../kernel-host/react";
+import {
+  useDemoIngest,
+  useDemoLibrary,
+  useKernelHost,
+  usePresentation,
+  useStatus,
+} from "../kernel-host/react";
+import { LibraryDialog } from "./Library";
 import {
   attachLinuxMediumRawKeyboard,
   attachPointerLockMouse,
   type PointerLockMouseHandle,
 } from "../../../../../host/src/framebuffer/browser-controls";
-import type { FramebufferHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type {
+  DemoIngestSource,
+  FramebufferHandle,
+} from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
   IngestError,
   runDemoIngest,
   waitForProcessExit,
+  type IngestFileLike,
   type IngestPhase,
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { useFittedCanvasStyle } from "./canvasFit";
@@ -54,6 +65,8 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   const host = useKernelHost();
   const status = useStatus();
   const ingest = useDemoIngest();
+  const library = useDemoLibrary();
+  const [libraryOpen, setLibraryOpen] = React.useState(false);
   const presentation = usePresentation();
   const coarsePointer = useCoarsePointer();
   const stageRef = React.useRef<HTMLDivElement>(null);
@@ -247,7 +260,10 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     });
   }, []);
 
-  const ingestFile = React.useCallback(async (file: File) => {
+  const ingestFile = React.useCallback(async (
+    file: IngestFileLike,
+    source?: DemoIngestSource,
+  ) => {
     if (!ingest || ingestPhase !== null) return;
     setIngestError(null);
     setIngestName(file.name);
@@ -256,6 +272,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
         targetPid: handleRef.current?.getBoundPid() ?? null,
         waitForRelease: waitForFbRelease,
         onPhase: setIngestPhase,
+        ...(source ? { source } : {}),
       });
       // runDemoIngest returns as soon as the relaunch is dispatched; keep the
       // indicator up until the new process actually owns the framebuffer.
@@ -323,8 +340,19 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           onFile={ingestFile}
         />
       )}
+      {ingest && library && status === "running" && (
+        <button
+          type="button"
+          className="kdemo-surface-action"
+          data-testid="fb-library-button"
+          disabled={busy}
+          onClick={() => setLibraryOpen(true)}
+        >
+          Library
+        </button>
+      )}
     </DemoSurfaceDockControls>
-  ), [boundPid, busy, captureLabel, focused, ingest, ingestFile, ingestName, mouseCaptured, status]);
+  ), [boundPid, busy, captureLabel, focused, ingest, ingestFile, ingestName, library, mouseCaptured, status]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -358,6 +386,20 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       data-drag-active={dragActive ? "true" : "false"}
       {...dropHandlers}
     >
+      {libraryOpen && ingest && library && (
+        <LibraryDialog
+          library={library}
+          ingest={ingest}
+          onClose={() => setLibraryOpen(false)}
+          onPick={async ({ name, bytes, source }) => {
+            await ingestFile({
+              name,
+              size: bytes.byteLength,
+              arrayBuffer: async () => Uint8Array.from(bytes).buffer,
+            }, source);
+          }}
+        />
+      )}
       <canvas
         ref={canvasRef}
         className="kframebuffer-canvas"
@@ -446,10 +488,15 @@ export const DemoSurfaceDockControls: React.FC<{
   <div className="kdemo-surface-controls">
     <span className="kdemo-surface-title">{title}</span>
     <span className="kdemo-surface-spacer" />
-    {children}
+    {/* WHY the badge comes before the actions: its text changes as the
+        display gains and loses focus, and pressing an action blurs the
+        display. With the actions after it they stay anchored to the right
+        edge; before this, the release of a press landed on whichever button
+        had slid under the pointer, and the click went nowhere (WebKit). */}
     <span className="kdemo-surface-badge" data-active={active ? "true" : "false"}>
       {status}
     </span>
+    {children}
   </div>
 );
 

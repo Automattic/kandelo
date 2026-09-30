@@ -2,6 +2,7 @@ import type {
   DemoCheckpointConfig,
   DemoGuideConfig,
   DemoIngestConfig,
+  DemoLibraryConfig,
 } from "./demo-config";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 
@@ -812,7 +813,9 @@ export type DemoIngestSource =
   /** Picked or dropped from the visitor's own device. No link can name it. */
   | { kind: "upload"; name: string }
   /** Fetched through a boot-input resolver; `input` names and verifies it. */
-  | { kind: "input"; input: BootInput };
+  | { kind: "input"; input: BootInput }
+  /** Copied from a file the machine's image already carries. */
+  | { kind: "image"; path: string };
 
 export interface RunProgramOptions {
   /** `NAME=value` strings. Defaults to a minimal POSIX environment. */
@@ -960,6 +963,9 @@ export interface KernelHost {
   getDemoIngestSource(): DemoIngestSource | null;
   /** Record a completed ingest write. Called by `runDemoIngest`. */
   noteDemoIngest(source: DemoIngestSource): void;
+  /** Library capability declared by the current VFS image, if any. */
+  getDemoLibrary(): DemoLibraryConfig | null;
+  subscribeDemoLibrary(cb: (state: DemoLibraryConfig | null) => void): () => void;
   /** Checkpoint capability declared by the current VFS image, if any. */
   getDemoCheckpoint(): DemoCheckpointConfig | null;
   subscribeDemoCheckpoint(cb: (state: DemoCheckpointConfig | null) => void): () => void;
@@ -1229,6 +1235,7 @@ export class LiveKernelHost implements KernelHost {
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
   private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
   private demoCheckpointListeners = new ListenerSet<DemoCheckpointConfig | null>();
+  private demoLibraryListeners = new ListenerSet<DemoLibraryConfig | null>();
   private audioStateListeners = new ListenerSet<MachineAudioState>();
   private audioActivityListeners = new ListenerSet<boolean>();
 
@@ -1240,6 +1247,7 @@ export class LiveKernelHost implements KernelHost {
   private demoGuide: DemoGuideConfig | null = null;
   private demoIngest: DemoIngestConfig | null = null;
   private demoCheckpoint: DemoCheckpointConfig | null = null;
+  private demoLibrary: DemoLibraryConfig | null = null;
   private demoIngestSource: DemoIngestSource | null = null;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
@@ -1399,6 +1407,7 @@ export class LiveKernelHost implements KernelHost {
     this.setDemoGuide(null);
     this.setDemoIngest(null);
     this.setDemoCheckpoint(null);
+    this.setDemoLibrary(null);
   }
 
   /** Configure the program attachPty spawns by default. */
@@ -1746,6 +1755,7 @@ export class LiveKernelHost implements KernelHost {
     this.setDemoGuide(null);
     this.setDemoIngest(null);
     this.setDemoCheckpoint(null);
+    this.setDemoLibrary(null);
     const kernel = this.kernel;
     this.invalidatePtySessions(kernel);
     this.kernel = undefined;
@@ -3012,6 +3022,20 @@ export class LiveKernelHost implements KernelHost {
 
   subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void {
     return this.demoIngestListeners.add(cb);
+  }
+
+  /** Update the optional library capability exposed by the current image. */
+  setDemoLibrary(library: DemoLibraryConfig | null): void {
+    this.demoLibrary = library ? structuredClone(library) : null;
+    this.demoLibraryListeners.emit(this.getDemoLibrary());
+  }
+
+  getDemoLibrary(): DemoLibraryConfig | null {
+    return this.demoLibrary ? structuredClone(this.demoLibrary) : null;
+  }
+
+  subscribeDemoLibrary(cb: (state: DemoLibraryConfig | null) => void): () => void {
+    return this.demoLibraryListeners.add(cb);
   }
 
   getDemoCheckpoint(): DemoCheckpointConfig | null {

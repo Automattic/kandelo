@@ -4513,3 +4513,17 @@
 }
 
 .kmprogress-error .kmprogress-detail { color: var(--k-err); }
+
+/* Library panel (panes/Library.tsx). Builds on the Share dialog's frame. */
+.klibrary { max-height: min(80vh, 720px); display: flex; flex-direction: column; }
+.klibrary .kshare-body { overflow-y: auto; }
+.klibrary-search { display: flex; gap: 8px; }
+.klibrary-search input { flex: 1; min-width: 0; }
+.klibrary-list { list-style: none; margin: 6px 0 12px; padding: 0; }
+.klibrary-row {
+  width: 100%; text-align: left; padding: 6px 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--k-text); font: inherit; cursor: pointer;
+}
+.klibrary-row:hover:not(:disabled) { background: color-mix(in oklch, var(--k-accent) 10%, transparent); }
+.klibrary-row:disabled { color: var(--k-text-faint); cursor: not-allowed; }
+.klibrary-dim { color: var(--k-text-muted); font-size: 12px; }

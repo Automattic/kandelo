@@ -19,6 +19,7 @@ import { createCheckpointBootInputs } from "../../../../../web-libs/kandelo-sess
 import type {
   BootDescriptor,
   BootInput,
+  BootParameters,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface ShareDialogProps {
@@ -63,7 +64,7 @@ export const SharePanel: React.FC<SharePanelProps> = ({
   const [checkpointState, setCheckpointState] = React.useState<
     | { kind: "off" }
     | { kind: "capturing" }
-    | { kind: "ready"; inputs: BootInput[]; bytes: number }
+    | { kind: "ready"; inputs: BootInput[]; parameters?: BootParameters; bytes: number }
     | { kind: "error"; message: string }
   >({ kind: "off" });
   const [url, setUrl] = React.useState<string>("");
@@ -85,9 +86,18 @@ export const SharePanel: React.FC<SharePanelProps> = ({
       (input) => input.id !== runScript,
     );
     try {
-      const inputs = await createCheckpointBootInputs(host, checkpoint, carried);
+      const { inputs, parameters } = await createCheckpointBootInputs(
+        host,
+        checkpoint,
+        carried,
+      );
       const state = inputs[inputs.length - 1];
-      setCheckpointState({ kind: "ready", inputs, bytes: state.byteLength });
+      setCheckpointState({
+        kind: "ready",
+        inputs,
+        ...(parameters ? { parameters } : {}),
+        bytes: state.byteLength,
+      });
     } catch (err) {
       setCheckpointState({
         kind: "error",
@@ -131,6 +141,9 @@ export const SharePanel: React.FC<SharePanelProps> = ({
         const checkpointInputs = checkpointState.kind === "ready"
           ? checkpointState.inputs
           : [];
+        const checkpointParameters = checkpointState.kind === "ready"
+          ? checkpointState.parameters
+          : undefined;
         if (!trimmed && checkpointInputs.length === 0) {
           if (!cancelled) { setUrl(workingShareUrl(null)); setError(null); }
           return;
@@ -164,8 +177,13 @@ export const SharePanel: React.FC<SharePanelProps> = ({
             // `command -v bash` probe. Every Kandelo browser image provides
             // bash as its default shell, and the opener boots the same image
             // this link carries, so the choice is a property of the link.
-            ...(trimmed
-              ? { parameters: { runScript: "script", runScriptShell: "bash" } }
+            ...(trimmed || checkpointParameters
+              ? {
+                parameters: {
+                  ...(checkpointParameters ?? {}),
+                  ...(trimmed ? { runScript: "script", runScriptShell: "bash" } : {}),
+                },
+              }
               : {}),
           },
         };

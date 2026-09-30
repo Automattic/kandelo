@@ -135,7 +135,8 @@ describe("checkpoint capture", () => {
 
 describe("checkpoint boot inputs", () => {
   it("carries the state as a verified inline input that a later boot materializes", async () => {
-    const inputs = await createCheckpointBootInputs(host(), CHECKPOINT);
+    const { inputs, parameters } = await createCheckpointBootInputs(host(), CHECKPOINT);
+    expect(parameters).toBeUndefined();
     expect(inputs).toHaveLength(1);
     expect(inputs[0]).toMatchObject({
       id: "state",
@@ -174,7 +175,7 @@ describe("checkpoint boot inputs", () => {
 
   it("keeps the inputs the machine booted with while nothing was ingested", async () => {
     const stale: BootInput = { ...ROM, id: "state", filename: "app.state" };
-    const inputs = await createCheckpointBootInputs(host(), CHECKPOINT, [ROM, stale]);
+    const { inputs } = await createCheckpointBootInputs(host(), CHECKPOINT, [ROM, stale]);
     // The content input survives; the previous link's state is replaced.
     expect(inputs.map((input) => input.id)).toEqual(["rom", "state"]);
     expect(inputs[0]).toEqual(ROM);
@@ -183,13 +184,23 @@ describe("checkpoint boot inputs", () => {
 
   it("names ingested content by the input it was fetched through", async () => {
     const other: BootInput = { ...ROM, filename: "other.bin" };
-    const inputs = await createCheckpointBootInputs(
+    const { inputs } = await createCheckpointBootInputs(
       host({ source: { kind: "input", input: other } }),
       CHECKPOINT,
       [ROM],
     );
     // What the machine booted with is no longer what it runs.
     expect(inputs.map((input) => input.filename)).toEqual(["other.bin", "app.state"]);
+  });
+
+  it("names content copied from the image by its path, not by an input", async () => {
+    const { inputs, parameters } = await createCheckpointBootInputs(
+      host({ source: { kind: "image", path: "/usr/share/app/demo.bin" } }),
+      CHECKPOINT,
+      [ROM],
+    );
+    expect(inputs.map((input) => input.id)).toEqual(["state"]);
+    expect(parameters).toEqual({ ingestPath: "/usr/share/app/demo.bin" });
   });
 
   it("refuses, without capturing, when the content came from the visitor's device", async () => {

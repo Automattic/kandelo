@@ -14,7 +14,7 @@
 import { BootDescriptorError } from "./boot-descriptor";
 import { createInlineBootInput } from "./boot-inputs";
 import type { DemoCheckpointConfig } from "./demo-config";
-import type { BootInput, KernelHost } from "./kernel-host";
+import type { BootInput, BootParameters, KernelHost } from "./kernel-host";
 
 export type CheckpointRejection =
   | "capture-failed"
@@ -93,9 +93,24 @@ export async function captureDemoCheckpoint(
   return Uint8Array.from(bytes);
 }
 
+/** What a share link needs to put a later machine back where this one is. */
+export interface CheckpointLinkContent {
+  inputs: BootInput[];
+  /** Set when the content is a file the image already carries. */
+  parameters?: BootParameters;
+}
+
 /**
- * The boot inputs that put a later machine back where this one is: the
- * checkpoint, plus whatever names the content it belongs to.
+ * The boot parameter that names content copied from the machine's own image.
+ * The opener's image has the same file, so the link names it by path; the
+ * image's init decides whether to trust that path.
+ */
+export const INGEST_PATH_PARAMETER = "ingestPath";
+
+/**
+ * The boot inputs (and, for image content, the parameter) that put a later
+ * machine back where this one is: the checkpoint, plus whatever names the
+ * content it belongs to.
  *
  * `bootInputs` are the inputs this machine itself booted with. They are kept
  * only while nothing has been ingested since boot, because only then is the
@@ -106,7 +121,7 @@ export async function createCheckpointBootInputs(
   checkpoint: DemoCheckpointConfig,
   bootInputs: readonly BootInput[] = [],
   options: CaptureDemoCheckpointOptions = {},
-): Promise<BootInput[]> {
+): Promise<CheckpointLinkContent> {
   const source = host.getDemoIngestSource();
   if (source?.kind === "upload") {
     // Refuse before capturing: there is nothing useful to do with the state.
@@ -118,7 +133,9 @@ export async function createCheckpointBootInputs(
   }
   const content = source?.kind === "input"
     ? [source.input]
-    : bootInputs.filter((input) => input.id !== checkpoint.inputId);
+    : source?.kind === "image"
+      ? []
+      : bootInputs.filter((input) => input.id !== checkpoint.inputId);
   if (content.some((input) => input.id === checkpoint.inputId)) {
     throw new CheckpointError(
       "unshareable-content",
@@ -146,7 +163,12 @@ export async function createCheckpointBootInputs(
     }
     throw err;
   }
-  return [...content.map((input) => structuredClone(input)), state];
+  return {
+    inputs: [...content.map((input) => structuredClone(input)), state],
+    ...(source?.kind === "image"
+      ? { parameters: { [INGEST_PATH_PARAMETER]: source.path } }
+      : {}),
+  };
 }
 
 function errorText(err: unknown): string {

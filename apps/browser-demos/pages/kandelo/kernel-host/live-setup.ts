@@ -25,9 +25,7 @@ import {
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
 import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
-import {
-  resolveBrowserCorsProxyConfig,
-} from "../../../lib/browser-cors-proxy";
+import { BROWSER_CORS_PROXY } from "./browser-cors-proxy-config";
 import { ABI_VERSION } from "../../../../../host/src/generated/abi";
 import {
   KMS_PRIMARY_CRTC,
@@ -47,6 +45,7 @@ import {
   resolveDemoGuide,
   resolveDemoIdentity,
   resolveDemoCheckpoint,
+  resolveDemoLibrary,
   resolveDemoIngest,
   resolveDemoInit,
   resolveDemoPresentation,
@@ -479,12 +478,6 @@ const SW_SCOPE = deploymentScopeFromServiceWorkerUrl(
   new URL(SW_URL, window.location.href).href,
   window.location.href,
 );
-const BROWSER_CORS_PROXY = resolveBrowserCorsProxyConfig({
-  configuredUrl: import.meta.env.VITE_CORS_PROXY_URL,
-  development: import.meta.env.DEV,
-  baseUrl: import.meta.env.BASE_URL,
-  pageUrl: window.location.href,
-});
 const COI_RELOAD_SESSION_STATE = createCoiReloadSessionState(
   SW_SCOPE,
   sessionStorage,
@@ -1311,6 +1304,7 @@ async function bootProfile(
       appPath: APP_PATH,
       proto: PROTO,
       preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
+      corsProxy: BROWSER_CORS_PROXY,
     },
     {
       onTick: tick,
@@ -1341,6 +1335,8 @@ async function bootProfile(
   host.setDemoIngest(resolveDemoIngest(imageConfig, profileId));
   // So is taking a checkpoint: the image names the command and the file.
   host.setDemoCheckpoint(resolveDemoCheckpoint(imageConfig, profileId));
+  // And a library of things to load: the image supplies every query.
+  host.setDemoLibrary(resolveDemoLibrary(imageConfig, profileId));
   // The one command this machine asked its login shell to run, if any. Read
   // once here: `init` is the single block that says what a machine runs.
   const machineShellCommand = shellCommandForMachine(machine.init);

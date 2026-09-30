@@ -340,10 +340,17 @@ elif [ -f "$UPLOAD" ]; then
 else
     ROM=$(first_file "$INPUTS/rom") || ROM=""
     if [ -z "$ROM" ] && [ -f "$MANIFEST" ]; then
-        # A boot link may name a bundled ROM. Accept only a bare filename that
-        # exists in the package's own ROM directory.
-        name=$(sed -n 's/^ *"bundledRom": *"\\([A-Za-z0-9._-]*\\)",\\{0,1\\} *$/\\1/p' "$MANIFEST" | head -n 1)
-        [ -n "$name" ] && [ -f "$ROMS/$name" ] && ROM="$ROMS/$name"
+        # A boot link may name a ROM this image already carries, by path
+        # (boot parameter ingestPath). Accept only a plain file directly in
+        # the package's own ROM directory. The manifest is written one key
+        # per line (web-libs/kandelo-session/src/boot-inputs.ts); anything
+        # else simply matches nothing and the default ROM runs.
+        path=$(sed -n 's|^ *"ingestPath": *"\\([A-Za-z0-9._/-]*\\)",\\{0,1\\} *$|\\1|p' "$MANIFEST" | head -n 1)
+        name=\${path#"$ROMS/"}
+        case "$name" in
+            ""|*/*|.*) ;;
+            *) [ "$path" = "$ROMS/$name" ] && [ -f "$path" ] && ROM=$path ;;
+        esac
     fi
     [ -n "$ROM" ] || ROM=$DEFAULT_ROM
     STATE=$(first_file "$INPUTS/state") || STATE=""
@@ -407,36 +414,46 @@ const RETRO_CHECKPOINT_SCRIPT = `#!/bin/sh
 # Ask the running emulator for a save state and wait until it is complete.
 # Exit status 0 means /tmp/kandelo-retro.state is a full state written in
 # answer to this request.
+#
+# The request is a nonce the emulator echoes into the completion marker only
+# after renaming the state into place. It is written as 16 hex characters so
+# the wait below can read the marker with a shell builtin: the loop then forks
+# only sleep, and its deadline is measured in wall-clock seconds rather than
+# iterations, whose cost depends on how fast the machine forks.
 PID_FILE=/tmp/kandelo-retro.pid
 REQUEST=/tmp/kandelo-retro.request
 DONE=/tmp/kandelo-retro.complete
-
-hex_of() { od -An -tx1 "$1" 2>/dev/null | tr -d ' \\n'; }
+DEADLINE_SECONDS=8
 
 if [ ! -r "$PID_FILE" ]; then
     echo "retro-checkpoint: no emulator is running" >&2
     exit 1
 fi
-pid=$(cat "$PID_FILE")
+read -r pid < "$PID_FILE"
 
-head -c 16 /dev/urandom > "$REQUEST.new" && mv -f "$REQUEST.new" "$REQUEST" || {
+want=$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \\n')
+if [ \${#want} -ne 16 ]; then
+    echo "retro-checkpoint: cannot make a request nonce" >&2
+    exit 1
+fi
+printf '%s' "$want" > "$REQUEST.new" && mv -f "$REQUEST.new" "$REQUEST" || {
     echo "retro-checkpoint: cannot write $REQUEST" >&2
     exit 1
 }
-want=$(hex_of "$REQUEST")
 
 if ! kill -USR1 "$pid" 2>/dev/null; then
     echo "retro-checkpoint: emulator process $pid is gone" >&2
     exit 1
 fi
 
-tries=0
-while [ "$tries" -lt 160 ]; do
-    [ "$(hex_of "$DONE")" = "$want" ] && exit 0
+SECONDS=0
+while [ "$SECONDS" -lt "$DEADLINE_SECONDS" ]; do
+    got=
+    [ -r "$DONE" ] && read -r got < "$DONE"
+    [ "$got" = "$want" ] && exit 0
     sleep 0.05
-    tries=$((tries + 1))
 done
-echo "retro-checkpoint: the emulator did not publish a save state within 8 seconds" >&2
+echo "retro-checkpoint: the emulator did not publish a save state within $DEADLINE_SECONDS seconds" >&2
 exit 1
 `;
 

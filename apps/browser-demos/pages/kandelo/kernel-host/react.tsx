@@ -17,6 +17,7 @@ import type {
   DemoCheckpointConfig,
   DemoGuideConfig,
   DemoIngestConfig,
+  DemoLibraryConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
@@ -205,6 +206,18 @@ export function useDemoIngest(): DemoIngestConfig | null {
   React.useEffect(() => {
     setState(host.getDemoIngest());
     return host.subscribeDemoIngest(setState);
+  }, [host]);
+  return state;
+}
+
+export function useDemoLibrary(): DemoLibraryConfig | null {
+  const host = useKernelHost();
+  const [state, setState] = React.useState<DemoLibraryConfig | null>(
+    () => host.getDemoLibrary(),
+  );
+  React.useEffect(() => {
+    setState(host.getDemoLibrary());
+    return host.subscribeDemoLibrary(setState);
   }, [host]);
   return state;
 }
