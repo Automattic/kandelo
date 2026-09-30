@@ -642,6 +642,57 @@ kernel: exit 0, stdout `"hello, kandelo\n"`. (Benign: Go binaries lack
 the `kandelo.abi.contract` digest stamp — currently warn-and-pass;
 track in case that rollout later hard-fails.) Proceeding into Phase 4.
 
+**2026-09-30 — MILESTONE 3 breakthrough: a 2nd M runs (fork `6e0ba54`).**
+First gc-Go wasm port to run a second M. Independently reproduced: a Go
+`GOOS=kandelo` program spawns a 2nd OS thread via the real kernel path
+(`//go:wasmimport kernel kernel_clone` -> kernel `sys_clone` -> host
+`centralizedThreadWorkerMain` -> `table.get(PC_F)()`); the new instance
+bootstraps its OWN `g`/`SP` and per-M channel base and performs an
+observable channel syscall. Output: stdout `"M1: before spawn\nM1: after
+spawn\n"`, stderr `"M2 alive via kernel_clone\n"`, exit 0, zero host
+diagnostics (no corruption).
+- *Phase 4a (fork `04dd1235e`):* exported `__indirect_function_table`,
+  per-M `mOS.channelBase`, `wasm_pthread_start` trampoline; single-M
+  intact.
+- *Phase 4b (fork `6e0ba54`):* (A) bootstrap — a hand-written wasm-asm
+  entry `wasmThreadTramp` installs `g` (global 2) and `SP` (global 0)
+  from handoff words before any Go code (the `//go:wasmexport` wrapper
+  can't be used: it starts with `global.get SP; i32.eqz; call
+  notInitialized`); the trampoline must return the entry's i32 to pass
+  `WebAssembly.validate`. (B) `newosprocKandelo` writes `g0`/stack to a
+  shared handoff under `kandeloCloneLock`, computes
+  `PC_F = FuncPCABI0(wasmThreadTramp)>>16` (never hardcoded), and calls
+  `kernel_clone` with `CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM`
+  (`tls/ptid/ctid=0`; kernel `sys_clone` requires `VM|THREAD` and gates
+  TID/TLS writes behind `SETTLS`/`CHILD_CLEARTID`). (C) per-instance
+  wasm globals give per-M `g`/`SP` for free (proven). No imported
+  global; `wasip1`/`js` unaffected.
+
+**FUNDAMENTAL DECISION SURFACED — memory partition for many Ms.** Two
+allocators share one linear memory: Go's heap grows up from `blocMax`,
+and the host thread-slot allocator marches up from `firstThreadSlotPage`
+— which sits just below Go's heap. They converge after ~3 threads. The
+mechanics milestone holds (slot 0 landed in the forfeited gap below the
+heap), but the FULL scheduler (GOMAXPROCS Ms, and extra Ms spawned when
+blocking channel syscalls park a worker) needs this resolved. The host
+already supports the fix: `computeProcessMemoryLayout` honors
+`preallocateThreadSlots` + `threadSlotCount` (reserving the slot arena
+below the heap, bounding the allocator via `maxPageExclusive`). The Go
+module now exports `__wasm_posix_thread_slots=8`. Resolving it cleanly
+means a **host launcher change** (Node+browser) to pass
+`preallocateThreadSlots:true` + the guest count — crossing the "no host
+change" line the thread-*entry* verdict established, and touching the
+process-memory-layout (ABI-adjacent). A guest-only alternative (Go
+reserves the arena in its heap-start computation) cannot bound the
+host's allocator by itself, so it is not sufficient alone. Paused for
+maintainer decision before making the host change.
+
+*Full-scheduler follow-up (after the memory decision):* swap the
+trampoline marker for `mstart()` + make `newosprocKandelo` the real
+`newosproc`; real per-M parking (`notesleep`/`futex` via `memory.atomic.
+wait32`/`notify`); child-ack handshake so the single handoff slot
+tolerates >1 in-flight spawn; `dropm`/`mdestroy` slot teardown.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
