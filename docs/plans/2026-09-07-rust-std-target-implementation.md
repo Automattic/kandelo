@@ -595,6 +595,56 @@ a Rust program. Commit. `Docs:` prefix.
 
 ---
 
+## Milestone 7 — Rust in the package system (C↔Rust interop + Rust packages)
+
+Follows the cross-compilation target. Driving use case: **latest librsvg**,
+which is Rust-core with a C/GObject public API — i.e. a Rust static lib
+linked into a C-API library. Its heavy C dependency stack is already in
+`packages/registry/` (cairo, pango, glib, gdk-pixbuf, libxml2, freetype,
+fontconfig, harfbuzz, pixman, libffi, zlib, libpng); `gettext` is the one
+notable gap (often optional/stubbable). librsvg would be the FIRST
+Rust-based package, so this milestone builds the reusable pattern.
+
+### Task 7.1: Validate C↔Rust static interop (both directions)
+
+**Files:** a fixture pair — a C `main` calling a Rust `staticlib`'s
+`extern "C"` fn, and a Rust program linking a C `staticlib`
+(`build.rs`/`#[link]`). Build via the SDK (`wasm32posix-cc`/`-c++` does
+the final link) and run on the kernel.
+
+**Steps:** confirm one shared musl instance; **resolve any intrinsic
+symbol duplication** between Rust `compiler_builtins` and the SDK's
+`compiler_rt` glue (`__multi3`, `__udivdi3`, …) — the one real risk.
+Document the pattern in `docs/rust-target.md`. Fork-using combined
+programs still need `run-wasm-fork-instrument.sh`.
+
+### Task 7.2: Establish the "Rust package" build pattern
+
+**Files:** a minimal reference package under `packages/registry/` that is
+a Rust lib with a C API — `package.toml`, `build-<name>.sh` that drives
+the Rust toolchain (target spec + sysroot) inside the SDK build
+environment, installs only into `WASM_POSIX_DEP_OUT_DIR`, and produces
+the declared outputs. Vendor Rust crate deps for a reproducible,
+offline build (Kandelo builds don't pull crates.io at build time).
+Follow `porting-software-to-kandelo`.
+
+### Task 7.3: gtk-rs `-sys` binding crates for the target
+
+**Steps:** get `cairo-sys-rs`/`glib-sys`/`gobject-sys`/… to compile for
+`wasm32-unknown-kandelo`. Their `build.rs` probes the C libs via
+pkg-config, so `wasm32posix-pkg-config` + the ported libs' `.pc` files
+must satisfy them. This is the main new integration risk and the gate
+for librsvg itself.
+
+### Task 7.4 (separate effort): port latest librsvg
+
+On top of 7.1–7.3, port librsvg via `porting-software-to-kandelo`. Close
+the `gettext` gap or confirm it is optional for the build. This is a
+substantial port, tracked separately; 7.1–7.3 are the reusable
+foundation this repo's Rust work should own.
+
+---
+
 ## Definition of done
 
 - `programs/rust/std-cli` (files/env/args/time/HashMap),
