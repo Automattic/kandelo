@@ -31,6 +31,7 @@ inputs = [
   "host/src/vfs/tar.ts",
   "host/src/vfs/types.ts",
   "host/src/vfs/zip.ts",
+  "host/src/networking/byte-range-fetch.ts",
   "web-libs/kandelo-session/src/experimental-terminal-session.ts",
   "web-libs/kandelo-session/src/demo-config.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",

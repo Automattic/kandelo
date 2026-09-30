@@ -17,6 +17,7 @@ inputs = [
   "host/src/statfs.ts",
   "host/src/types.ts",
   "host/src/vfs",
+  "host/src/networking/byte-range-fetch.ts",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
