@@ -18,7 +18,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/expat-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. A
+# source or build tree kept in the package directory survives the rebuilds
+# the resolver runs after a recipe, patch, toolchain, or ABI change, so the
+# "rebuilt" package would be made from the previous build's tree.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/expat-src"
 
 # --- Inputs from resolver, with legacy fallbacks ---
 EXPAT_VERSION="${WASM_POSIX_DEP_VERSION:-${EXPAT_VERSION:-2.8.3}}"
@@ -28,7 +38,7 @@ SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
 # autoconf bakes --prefix into the Makefile, so always build in a
 # fresh dir rather than reusing a stale expat-build/.
-BUILD_DIR="$SCRIPT_DIR/expat-build"
+BUILD_DIR="$WORK_DIR/expat-build"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
@@ -38,7 +48,7 @@ fi
 # --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading expat $EXPAT_VERSION..."
-    TARBALL="/tmp/expat-${EXPAT_VERSION}.tar.xz"
+    TARBALL="$WORK_DIR/expat-${EXPAT_VERSION}.tar.xz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."

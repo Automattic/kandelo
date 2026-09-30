@@ -28,14 +28,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/pangomm-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. A
+# source or build tree kept in the package directory survives the rebuilds
+# the resolver runs after a recipe, patch, toolchain, or ABI change, so the
+# "rebuilt" package would be made from the previous build's tree.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/pangomm-src"
 
 PANGOMM_VERSION="${WASM_POSIX_DEP_VERSION:-2.42.0}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/pangomm-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.gnome.org/sources/pangomm/2.42/pangomm-${PANGOMM_VERSION}.tar.xz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
-BUILD_DIR="$SCRIPT_DIR/pangomm-build"
+BUILD_DIR="$WORK_DIR/pangomm-build"
 
 if ! command -v wasm32posix-c++ &>/dev/null; then
     echo "ERROR: wasm32posix-c++ not found. Enter scripts/dev-shell.sh." >&2
@@ -54,8 +63,6 @@ LIBSIGCXX_PREFIX="${WASM_POSIX_DEP_LIBSIGCXX_DIR:?WASM_POSIX_DEP_LIBSIGCXX_DIR n
 # private sysroot with the resolved libcxx overlaid: the worktree SDK seed
 # is an input tree for every package build and must hold no symlink
 # (mariadb pattern — see scripts/package-build-roots.sh).
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot pangomm "$SDK_SYSROOT" libcxx
@@ -65,7 +72,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading pangomm $PANGOMM_VERSION..."
-    TARBALL="/tmp/pangomm-${PANGOMM_VERSION}.tar.xz"
+    TARBALL="$WORK_DIR/pangomm-${PANGOMM_VERSION}.tar.xz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."

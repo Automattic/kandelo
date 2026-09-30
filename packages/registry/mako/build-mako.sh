@@ -20,14 +20,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/mako-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. A
+# source or build tree kept in the package directory survives the rebuilds
+# the resolver runs after a recipe, patch, toolchain, or ABI change, so the
+# "rebuilt" package would be made from the previous build's tree.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/mako-src"
 
 MAKO_VERSION="${WASM_POSIX_DEP_VERSION:-1.10.0}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/mako-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/emersion/mako/archive/refs/tags/v${MAKO_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
-BUILD_DIR="$SCRIPT_DIR/mako-build"
+BUILD_DIR="$WORK_DIR/mako-build"
 
 for tool in wasm32posix-cc wayland-scanner; do
     if ! command -v "$tool" &>/dev/null; then
@@ -58,8 +67,6 @@ PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PR
 # with the resolved libcxx overlaid: the worktree SDK seed is an input tree
 # for every package build and must hold no symlink (mariadb pattern — see
 # scripts/package-build-roots.sh).
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot mako "$SDK_SYSROOT" libcxx
@@ -69,7 +76,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # --- Fetch + verify + patch source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading mako $MAKO_VERSION..."
-    TARBALL="/tmp/mako-${MAKO_VERSION}.tar.gz"
+    TARBALL="$WORK_DIR/mako-${MAKO_VERSION}.tar.gz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."

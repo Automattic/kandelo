@@ -21,14 +21,24 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/pcre2-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. A
+# source or build tree kept in the package directory survives the rebuilds
+# the resolver runs after a recipe, patch, toolchain, or ABI change, so the
+# "rebuilt" package would be made from the previous build's tree.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/pcre2-src"
 
 PCRE2_VERSION="${WASM_POSIX_DEP_VERSION:-10.44}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/pcre2-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${PCRE2_VERSION}/pcre2-${PCRE2_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
-BUILD_DIR="$SCRIPT_DIR/pcre2-build"
+BUILD_DIR="$WORK_DIR/pcre2-build"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
@@ -38,7 +48,7 @@ fi
 # --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading pcre2 $PCRE2_VERSION..."
-    TARBALL="/tmp/pcre2-${PCRE2_VERSION}.tar.gz"
+    TARBALL="$WORK_DIR/pcre2-${PCRE2_VERSION}.tar.gz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."

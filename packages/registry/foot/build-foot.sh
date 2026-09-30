@@ -21,14 +21,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/foot-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. A
+# source or build tree kept in the package directory survives the rebuilds
+# the resolver runs after a recipe, patch, toolchain, or ABI change, so the
+# "rebuilt" package would be made from the previous build's tree.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/foot-src"
 
 FOOT_VERSION="${WASM_POSIX_DEP_VERSION:-1.17.2}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/foot-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://codeberg.org/dnkl/foot/releases/download/${FOOT_VERSION}/foot-${FOOT_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
-BUILD_DIR="$SCRIPT_DIR/foot-build"
+BUILD_DIR="$WORK_DIR/foot-build"
 
 for tool in wasm32posix-cc python3 wayland-scanner; do
     if ! command -v "$tool" &>/dev/null; then
@@ -56,7 +65,7 @@ SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 # --- Fetch + verify + patch source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading foot $FOOT_VERSION..."
-    TARBALL="/tmp/foot-${FOOT_VERSION}.tar.gz"
+    TARBALL="$WORK_DIR/foot-${FOOT_VERSION}.tar.gz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."

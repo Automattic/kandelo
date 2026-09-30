@@ -53,7 +53,7 @@ kandelo_package_stage_verified_source dbus "$SRC_DIR" \
     "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.
-BUILD_DIR="$SCRIPT_DIR/dbus-build"
+BUILD_DIR="$WORK_DIR/dbus-build"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
@@ -115,15 +115,15 @@ done
 # install_local_binary applies fork instrumentation (policy auto) and
 # also stages each output into WASM_POSIX_DEP_OUT_DIR for the resolver.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-mkdir -p "$SCRIPT_DIR/bin"
+mkdir -p "$WORK_DIR/bin"
 for out in dbus-daemon dbus-send dbus-monitor; do
     case "$out" in
         dbus-daemon) src="$BUILD_DIR/bus/$out" ;;
         *)           src="$BUILD_DIR/tools/$out" ;;
     esac
-    cp "$src" "$SCRIPT_DIR/bin/$out.wasm"
-    install_local_binary dbus "$SCRIPT_DIR/bin/$out.wasm"
+    cp "$src" "$WORK_DIR/bin/$out.wasm"
+    install_local_binary dbus "$WORK_DIR/bin/$out.wasm"
 done
 
 echo "==> dbus $DBUS_VERSION built successfully!"
-ls -lh "$SCRIPT_DIR/bin/"*.wasm
+ls -lh "$WORK_DIR/bin/"*.wasm

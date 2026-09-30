@@ -86,14 +86,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/qtbase-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. A
+# source or build tree kept in the package directory survives the rebuilds
+# the resolver runs after a recipe, patch, toolchain, or ABI change, so the
+# "rebuilt" package would be made from the previous build's tree.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/qtbase-src"
 
 QTBASE_VERSION="${WASM_POSIX_DEP_VERSION:-6.10.2}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/qtbase-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.qt.io/archive/qt/6.10/${QTBASE_VERSION}/submodules/qtbase-everywhere-src-${QTBASE_VERSION}.tar.xz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
-BUILD_DIR="$SCRIPT_DIR/qtbase-build"
+BUILD_DIR="$WORK_DIR/qtbase-build"
 
 for tool in wasm32posix-c++ wasm32posix-cc cmake ninja qmake strings; do
     if ! command -v "$tool" &>/dev/null; then
@@ -127,8 +136,6 @@ LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DI
 # private sysroot with the resolved libcxx overlaid: the worktree SDK seed
 # is an input tree for every package build and must hold no symlink
 # (mariadb pattern — see scripts/package-build-roots.sh).
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot qtbase "$SDK_SYSROOT" libcxx
@@ -138,7 +145,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading qtbase $QTBASE_VERSION..."
-    TARBALL="/tmp/qtbase-${QTBASE_VERSION}.tar.xz"
+    TARBALL="$WORK_DIR/qtbase-${QTBASE_VERSION}.tar.xz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."

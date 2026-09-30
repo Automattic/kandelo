@@ -27,6 +27,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# Build under the package work root: the resolver's fresh
+# WASM_POSIX_DEP_WORK_DIR, or this directory for a direct invocation. A
+# source or build tree kept in the package directory survives the rebuilds
+# the resolver runs after a recipe, patch, toolchain, or ABI change, so the
+# "rebuilt" package would be made from the previous build's tree.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-scummvm.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -88,8 +97,6 @@ test -f "$LIBCXX_PREFIX/lib/libc++.a"
 # build-mariadb.sh). A direct invocation has no resolver work dir and
 # indexes the artifacts into the worktree sysroot instead.
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
-    # shellcheck source=/dev/null
-    source "$REPO_ROOT/scripts/package-build-roots.sh"
     SYSROOT="$(
         kandelo_package_prepare_private_sysroot scummvm "$SYSROOT" libcxx
     )"
@@ -105,7 +112,7 @@ ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
 # The source tree persists across runs (sdl2-src pattern): the 225 MB
 # tarball downloads once and `make` stays incremental. `rm -rf
 # scummvm-src` forces a fresh download + re-patch.
-SRC_DIR="$SCRIPT_DIR/scummvm-src"
+SRC_DIR="$WORK_DIR/scummvm-src"
 DEST_DIR="$WORK_DIR/dest"
 REPRO_FLAGS="-ffile-prefix-map=$SRC_DIR=/usr/src/scummvm -fdebug-prefix-map=$SRC_DIR=/usr/src/scummvm -fmacro-prefix-map=$SRC_DIR=/usr/src/scummvm"
 mkdir -p "$DEST_DIR"

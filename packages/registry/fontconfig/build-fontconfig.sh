@@ -37,7 +37,7 @@ SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.freedesktop.org/software/fo
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-63a0658d0e06e0fa886106452b58ef04f21f58202ea02a94c39de0d3335d7c0e}"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 
-BUILD_DIR="$SCRIPT_DIR/fontconfig-build"
+BUILD_DIR="$WORK_DIR/fontconfig-build"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
