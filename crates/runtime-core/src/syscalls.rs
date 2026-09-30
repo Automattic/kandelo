@@ -661,20 +661,12 @@ fn handle_dsp_ioctl(
     }
 }
 
-/// Fixed framebuffer geometry. fbDOOM is happy with whatever the device
-/// reports; pinning a single mode keeps the implementation small.
-const FB_WIDTH: u32 = 640;
-const FB_HEIGHT: u32 = 400;
-const FB_BYTES_PER_PIXEL: u32 = 4;
-const FB_LINE_LENGTH: u32 = FB_WIDTH * FB_BYTES_PER_PIXEL;
-const FB_SMEM_LEN: u32 = FB_LINE_LENGTH * FB_HEIGHT;
-
 /// Handle ioctl on `/dev/fb0`.
 ///
 /// Implements the four fbdev ioctls fbDOOM (and most fbdev clients)
 /// actually use:
-/// - `FBIOGET_VSCREENINFO` / `FBIOGET_FSCREENINFO` report fixed geometry
-///   in BGRA32 packed-pixel form.
+/// - `FBIOGET_VSCREENINFO` / `FBIOGET_FSCREENINFO` report the machine's
+///   configured geometry in BGRA32 packed-pixel form.
 /// - `FBIOPAN_DISPLAY` is accepted but is a no-op (presentation is driven
 ///   by host RAF, not user-space pan calls).
 /// - `FBIOPUT_VSCREENINFO` accepts only the geometry we expose; anything
@@ -683,17 +675,18 @@ const FB_SMEM_LEN: u32 = FB_LINE_LENGTH * FB_HEIGHT;
 /// Anything else returns `ENOTTY`.
 fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
     use wasm_posix_shared::fbdev::*;
+    let fb = crate::framebuffer::geometry();
     match request {
         FBIOGET_VSCREENINFO => {
             if buf.len() < core::mem::size_of::<FbVarScreenInfo>() {
                 return Err(Errno::EINVAL);
             }
             let mut v = FbVarScreenInfo::default();
-            v.xres = FB_WIDTH;
-            v.yres = FB_HEIGHT;
-            v.xres_virtual = FB_WIDTH;
-            v.yres_virtual = FB_HEIGHT;
-            v.bits_per_pixel = FB_BYTES_PER_PIXEL * 8;
+            v.xres = fb.width;
+            v.yres = fb.height;
+            v.xres_virtual = fb.width;
+            v.yres_virtual = fb.height;
+            v.bits_per_pixel = crate::framebuffer::Geometry::BYTES_PER_PIXEL * 8;
             // BGRA32: byte 0 = blue, 1 = green, 2 = red, 3 = alpha.
             v.blue = FbBitfield {
                 offset: 0,
@@ -726,8 +719,8 @@ fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
             }
             let mut f = FbFixScreenInfo::default();
             f.id[..6].copy_from_slice(b"wasmfb");
-            f.smem_len = FB_SMEM_LEN;
-            f.line_length = FB_LINE_LENGTH;
+            f.smem_len = fb.smem_len();
+            f.line_length = fb.line_length();
             f.fb_type = FB_TYPE_PACKED_PIXELS;
             f.visual = FB_VISUAL_TRUECOLOR;
             unsafe {
@@ -742,9 +735,9 @@ fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
             }
             let v: FbVarScreenInfo =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const FbVarScreenInfo) };
-            if v.xres != FB_WIDTH
-                || v.yres != FB_HEIGHT
-                || v.bits_per_pixel != FB_BYTES_PER_PIXEL * 8
+            if v.xres != fb.width
+                || v.yres != fb.height
+                || v.bits_per_pixel != crate::framebuffer::Geometry::BYTES_PER_PIXEL * 8
             {
                 return Err(Errno::EINVAL);
             }
@@ -5418,27 +5411,28 @@ pub fn sys_write(
                             // the host knows to allocate its own pixel
                             // buffer for this pid; per-write deltas go
                             // through `fb_write`.
+                            let fb = crate::framebuffer::geometry();
                             if proc.fb_binding.is_none() {
                                 proc.fb_binding = Some(crate::process::FbBinding {
                                     addr: 0,
                                     len: 0,
-                                    w: FB_WIDTH,
-                                    h: FB_HEIGHT,
-                                    stride: FB_LINE_LENGTH,
+                                    w: fb.width,
+                                    h: fb.height,
+                                    stride: fb.line_length(),
                                     fmt: 0,
                                 });
                                 host.bind_framebuffer(
                                     proc.pid as i32,
                                     0,
                                     0,
-                                    FB_WIDTH,
-                                    FB_HEIGHT,
-                                    FB_LINE_LENGTH,
+                                    fb.width,
+                                    fb.height,
+                                    fb.line_length(),
                                     0,
                                 );
                             }
                             let offset = ofd.offset().max(0) as usize;
-                            let max_off = (FB_SMEM_LEN as usize).saturating_sub(offset);
+                            let max_off = (fb.smem_len() as usize).saturating_sub(offset);
                             let n = buf.len().min(max_off);
                             if n > 0 {
                                 let new_offset = checked_offset_advance(ofd.offset(), n)?;
@@ -5723,7 +5717,7 @@ pub fn sys_lseek(
                 let new_off = match whence {
                     SEEK_SET => offset,
                     SEEK_CUR => cur.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
-                    SEEK_END => (FB_SMEM_LEN as i64)
+                    SEEK_END => (crate::framebuffer::geometry().smem_len() as i64)
                         .checked_add(offset)
                         .ok_or(Errno::EOVERFLOW)?,
                     _ => return Err(Errno::EINVAL),
@@ -10000,8 +9994,9 @@ pub fn sys_mmap(
         let _fd_entry = proc.fd_table.get(fd)?;
 
         // /dev/fb0: map the pixel buffer in process memory and notify the
-        // host. Geometry is fixed at FB_WIDTH × FB_HEIGHT × 4; the caller
-        // must request exactly that length.
+        // host. The caller must request exactly the machine's configured
+        // geometry — width × height × 4, the `smem_len` FBIOGET_FSCREENINFO
+        // reports.
         let entry = proc.fd_table.get(fd)?;
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
         if ofd.is_path_only() {
@@ -10016,7 +10011,8 @@ pub fn sys_mmap(
             if proc.fb_binding.is_some() {
                 return Err(Errno::EINVAL);
             }
-            if len != FB_SMEM_LEN as usize {
+            let fb = crate::framebuffer::geometry();
+            if len != fb.smem_len() as usize {
                 return Err(Errno::EINVAL);
             }
             let alloc_flags = flags | MAP_ANONYMOUS;
@@ -10027,18 +10023,18 @@ pub fn sys_mmap(
             proc.fb_binding = Some(crate::process::FbBinding {
                 addr: addr_out,
                 len,
-                w: FB_WIDTH,
-                h: FB_HEIGHT,
-                stride: FB_LINE_LENGTH,
+                w: fb.width,
+                h: fb.height,
+                stride: fb.line_length(),
                 fmt: 0, // BGRA32
             });
             host.bind_framebuffer(
                 proc.pid as i32,
                 addr_out,
                 len,
-                FB_WIDTH,
-                FB_HEIGHT,
-                FB_LINE_LENGTH,
+                fb.width,
+                fb.height,
+                fb.line_length(),
                 0,
             );
             return Ok(addr_out);
@@ -41383,6 +41379,116 @@ mod tests {
         sys_ioctl(&mut proc, &mut host, fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap();
 
         sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn configured_fb_geometry_drives_screeninfo_and_mmap() {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::fbdev::*;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        crate::framebuffer::set_geometry(1280, 800);
+
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+
+        let mut buf = [0u8; 160];
+        sys_ioctl(&mut proc, &mut host, fd, FBIOGET_VSCREENINFO, &mut buf).unwrap();
+        let v: FbVarScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!((v.xres, v.yres), (1280, 800));
+        assert_eq!((v.xres_virtual, v.yres_virtual), (1280, 800));
+
+        sys_ioctl(&mut proc, &mut host, fd, FBIOGET_FSCREENINFO, &mut buf).unwrap();
+        let f: FbFixScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(f.smem_len, 1280 * 800 * 4);
+        assert_eq!(f.line_length, 1280 * 4);
+
+        // FBIOPUT_VSCREENINFO validates against the configured mode, not the
+        // default: 640×400 is now the mismatch.
+        let mut stale = FbVarScreenInfo::default();
+        stale.xres = 640;
+        stale.yres = 400;
+        stale.bits_per_pixel = 32;
+        unsafe {
+            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, stale);
+        }
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap_err(),
+            Errno::EINVAL
+        );
+
+        assert_eq!(
+            sys_mmap(
+                &mut proc,
+                &mut host,
+                0,
+                (640 * 400 * 4) as usize,
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED,
+                fd,
+                0,
+            )
+            .unwrap_err(),
+            Errno::EINVAL
+        );
+        let len = (1280 * 800 * 4) as usize;
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+        let b = proc.fb_binding.expect("fb_binding should be Some after mmap");
+        assert_eq!((b.addr, b.len, b.w, b.h, b.stride), (addr, len, 1280, 800, 1280 * 4));
+        let call = &host.bind_framebuffer_calls[0];
+        assert_eq!((call.w, call.h, call.stride), (1280, 800, 1280 * 4));
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        crate::framebuffer::set_geometry(
+            crate::framebuffer::DEFAULT_WIDTH,
+            crate::framebuffer::DEFAULT_HEIGHT,
+        );
+    }
+
+    #[test]
+    fn configured_fb_geometry_drives_write_binding_and_seek_end() {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::O_RDWR;
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        crate::framebuffer::set_geometry(1280, 800);
+
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+
+        let smem_len = 1280 * 800 * 4;
+        assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_END), Ok(smem_len));
+
+        // Straddle the end of the configured buffer: the reported length is
+        // the whole request, the forwarded delta is capped at `smem_len`. At
+        // 640×400 this offset is past the end and nothing is forwarded.
+        let off = (smem_len - 8) as usize;
+        sys_lseek(&mut proc, &mut host, fd, off as i64, SEEK_SET).unwrap();
+        let pixels = [0u8; 16];
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &pixels), Ok(pixels.len()));
+        assert_eq!(host.fb_write_calls.len(), 1);
+        assert_eq!((host.fb_write_calls[0].offset, host.fb_write_calls[0].len), (off, 8));
+
+        let b = &host.bind_framebuffer_calls[0];
+        assert_eq!((b.addr, b.len, b.w, b.h, b.stride), (0, 0, 1280, 800, 1280 * 4));
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        crate::framebuffer::set_geometry(
+            crate::framebuffer::DEFAULT_WIDTH,
+            crate::framebuffer::DEFAULT_HEIGHT,
+        );
     }
 
     #[test]

@@ -4068,6 +4068,9 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "set_input_canvas_dims":
       kernelWorker.setInputCanvasDims(msg.width, msg.height);
       break;
+    case "set_fb_geometry":
+      kernelWorker.setFbGeometry(msg.width, msg.height);
+      break;
     default: {
       const exhaustive: never = msg;
       void exhaustive;

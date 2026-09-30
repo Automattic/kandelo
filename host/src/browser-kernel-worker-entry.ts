@@ -4649,6 +4649,9 @@ sw.onmessage = (e: MessageEvent) => {
     case "set_input_canvas_dims":
       kernelWorker.setInputCanvasDims(msg.width, msg.height);
       break;
+    case "set_fb_geometry":
+      kernelWorker.setFbGeometry(msg.width, msg.height);
+      break;
     default: {
       // Every typed MainToKernelMessage must have a case above. Browser
       // tooling also sends a few deliberately out-of-band control messages,

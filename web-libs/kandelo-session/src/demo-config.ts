@@ -210,6 +210,18 @@ export type DemoRuntimeFeature =
 export interface DemoResourceRequests {
   memoryPages?: number;
   maxWorkers?: number;
+  framebuffer?: DemoFramebufferGeometry;
+}
+
+/**
+ * The `/dev/fb0` display mode the machine asks for, in pixels: what
+ * FBIOGET_VSCREENINFO reports and how many bytes an `mmap` of the device
+ * must request. Not `DemoDisplayConfig`, which is a viewport floor — a
+ * machine can want a 1280×800 framebuffer inside a 640×480 window.
+ */
+export interface DemoFramebufferGeometry {
+  width: number;
+  height: number;
 }
 
 /** 16384 pages = 1 GiB, matching the largest legitimate machine today
@@ -217,6 +229,10 @@ export interface DemoResourceRequests {
 export const MAX_REQUESTED_MEMORY_PAGES = 16384;
 /** Comfortably above wordpress-mariadb's 24 without permitting worker floods. */
 export const MAX_REQUESTED_WORKERS = 64;
+/** 4K, the largest mode a real display has; at BGRA32 a 33 MiB `mmap`
+ *  inside the machine's own page budget. */
+export const MAX_REQUESTED_FRAMEBUFFER_WIDTH = 3840;
+export const MAX_REQUESTED_FRAMEBUFFER_HEIGHT = 2160;
 
 /**
  * WHAT THIS MACHINE RUNS. A profile with no `init` block boots the image's
@@ -605,7 +621,36 @@ function normalizeResourceRequests(
       "worker",
     );
   }
+  if (value.framebuffer !== undefined) {
+    requests.framebuffer = normalizeFramebufferGeometry(
+      value.framebuffer,
+      `${field}.framebuffer`,
+    );
+  }
   return requests;
+}
+
+function normalizeFramebufferGeometry(
+  value: unknown,
+  field: string,
+): DemoFramebufferGeometry {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  return {
+    width: boundedCount(
+      value.width,
+      `${field}.width`,
+      MAX_REQUESTED_FRAMEBUFFER_WIDTH,
+      "pixel",
+    ),
+    height: boundedCount(
+      value.height,
+      `${field}.height`,
+      MAX_REQUESTED_FRAMEBUFFER_HEIGHT,
+      "pixel",
+    ),
+  };
 }
 
 function boundedCount(
