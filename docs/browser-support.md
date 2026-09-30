@@ -965,11 +965,15 @@ shell image, fetched on first use. The machine's command is
   [package-management.md](package-management.md#packages-that-are-not-real-upstream-builds-yet)).
 - seeds `~/scummvm.ini` on first launch. ScummVM rewrites its config
   whenever the user adds a game, so it lives in the writable home rather
-  than in image content. The GUI scale is fixed at 100%: ScummVM's
-  KMSDRM path does not read the connector's physical size the way the
-  desktops do (see the HiDPI note above), so on a HiDPI screen its
-  launcher is drawn small. Game graphics are unaffected; they scale to
-  the display.
+  than in image content. `gui_scale` stays at ScummVM's default of 100%;
+  that key is the user's own multiplier. The display's factor comes from
+  SDL: ScummVM sizes its launcher by `SDL_GetDisplayDPI` (its reference
+  is 90 dpi, clamped to 1x-4x), and SDL derives the DPI from the
+  connector's physical size, which the kernel reports from the pane. SDL2's
+  KMSDRM backend has no DPI query upstream, so the `sdl2` package adds
+  one (`patches/0002-kmsdrm-display-dpi-from-connector.patch`). On a
+  display at twice the reference density the launcher is drawn at about
+  twice the size. Game graphics always scale to the display.
 
 No game ships with the machine: no Kandelo package carries a commercial
 SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
@@ -991,15 +995,19 @@ Wayland backend, and ScummVM runs as a GL client in a tile. It is told
 it is tiled (xdg-shell's `tiled_*` states), so it takes the tile's size,
 and its GL buffer is reallocated to that size (the `libwayland-egl` resize
 path in [architecture.md](architecture.md#drmkms-devdricard0-devdrirenderd128)).
-The fixed 100% GUI scale applies there too, so on a HiDPI desktop its
-launcher is drawn small; having the seeded config follow the display
-scale is a follow-up.
+Its launcher scales with the display there too: the compositor reports
+the connector's physical size in `wl_output.geometry`, and SDL's Wayland
+backend derives the DPI from it.
 
 Gated in the browser by `apps/browser-demos/test/kandelo-scummvm.spec.ts`
 (the GUI data reaches the guest, the config is writable, and an upload is
-extracted where the launcher browses). The Wayland path was verified by
-hand in Chromium at a device scale factor of 2 (full launcher in the tile;
-a click opens Global Options); no spec gates it yet.
+extracted where the launcher browses). The Wayland path is gated by
+`apps/browser-demos/test/kandelo-omarchy.spec.ts`: ScummVM launched from
+the launcher is tiled, drawn by the GPU path, and commits a buffer of its
+tile's size. Pointer input and the launcher's size on a HiDPI display are
+checked by hand (Chromium at a device scale factor of 2), because
+Playwright's emulated device scale does not change the size the pane
+reports.
 
 ### Kandelo session UI
 

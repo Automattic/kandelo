@@ -256,6 +256,8 @@ struct surface {
      * commit. A bar commits a frame a second, so the marker fires on a change,
      * not on every commit. */
     int32_t reported_scale;
+    /* The buffer size the GLBUFFER marker last reported. */
+    int32_t reported_bw, reported_bh;
     /* Set once wl_surface.enter has named the output to this surface. One
      * output means one enter, so this keeps the two senders from doubling it. */
     int entered;
@@ -329,6 +331,10 @@ struct compositor {
      * that ignores it is upscaled — soft, but correctly sized. */
     uint32_t scale;
     int scale_explicit;   /* WLC_SCALE set it; do not derive from DPI */
+    /* The connector's physical size in millimetres, 0 when unknown. It is
+     * what wl_output.geometry reports, so a client that sizes its UI by DPI
+     * (SDL's Wayland backend, and so ScummVM) sees the real display. */
+    int32_t mm_width, mm_height;
     struct gbm_device *gbm;
     struct gbm_surface *gbm_surface;
     struct gbm_bo *displayed_bo;   /* on-screen right now */
@@ -1022,6 +1028,21 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
             s->reported_scale = s->buffer_scale;
             printf("BUFFER_SCALE app=%s scale=%d bw=%d bh=%d w=%d h=%d\n",
                    s->app_id, s->buffer_scale, b->width, b->height, w, h);
+            fflush(stdout);
+        }
+        /* A GL client's buffer size, reported when it changes: it is how a
+         * gate sees that the client really reallocated for the size it was
+         * configured to (a tiled GL client that keeps its first buffer draws
+         * cropped, and no other marker changes). Only buffers rendered by GL
+         * -- the ones libwayland-egl marks Y_INVERT -- are reported: shm
+         * clients resize on every retile, and one line per window per theme
+         * switch would scroll the markers other gates read off the screen. */
+        if (s->xdg_toplevel && b->y_invert &&
+            (b->width != s->reported_bw || b->height != s->reported_bh)) {
+            s->reported_bw = b->width;
+            s->reported_bh = b->height;
+            printf("GLBUFFER app=%s bw=%d bh=%d\n", s->app_id,
+                   b->width, b->height);
             fflush(stdout);
         }
         /* The compositor dictates a layer surface's box, so its geometry comes
@@ -2500,10 +2521,11 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
     wl_resource_set_implementation(r, &output_impl, NULL,
                                    output_resource_destroy);
     wl_list_insert(&g.outputs, wl_resource_get_link(r));
-    /* Physical size 0x0 = unknown: this is a virtual connector, and a
-     * DPI-aware client (foot) derives its font size from mm — feeding it
-     * pixels as mm yields DPI 25.4 and a garbage font reload. */
-    wl_output_send_geometry(r, 0, 0, 0, 0,
+    /* The physical size is the connector's, which the host reports for the
+     * display the pane occupies. 0x0 means unknown (a host with no display);
+     * never substitute pixels, which a DPI-aware client would read as a
+     * 25.4 dpi screen. */
+    wl_output_send_geometry(r, 0, 0, g.mm_width, g.mm_height,
                             WL_OUTPUT_SUBPIXEL_UNKNOWN, "Kandelo", "virtual-0",
                             WL_OUTPUT_TRANSFORM_NORMAL);
     /* wl_output.mode is in device pixels; wl_output.scale is how a client
@@ -4472,6 +4494,8 @@ static int setup_drm(void) {
         g.scale = (uint32_t)s;
         scale_source = "connector";
     }
+    g.mm_width = (int32_t)conn->mmWidth;
+    g.mm_height = (int32_t)conn->mmHeight;
     printf("WLC_SCALE %u source=%s mm=%ux%u\n", g.scale, scale_source,
            conn->mmWidth, conn->mmHeight);
     fflush(stdout);

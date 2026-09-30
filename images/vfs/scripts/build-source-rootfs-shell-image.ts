@@ -288,9 +288,11 @@ exec /usr/bin/quake -basedir "$BASE" "$@"
  *   OSS either way.
  * - The config lives in the user's home, because ScummVM rewrites it whenever
  *   the user adds a game or changes an option. The first launch seeds it so
- *   the launcher's "Add Game" browser opens in the upload directory. The GUI
- *   scale stays at 100%: the browser's device-pixel ratio does not reach the
- *   machine (see docs/browser-support.md on HiDPI).
+ *   the launcher's "Add Game" browser opens in the upload directory.
+ *   gui_scale is ScummVM's own user multiplier and stays at its default of
+ *   100%; the display's factor comes from SDL's display DPI, which SDL
+ *   computes from the physical size the kernel reports on the connector
+ *   (KMSDRM) or the compositor reports on wl_output (Wayland).
  *
  * It then stays alive beside the engine to unpack uploads. "Load game data"
  * writes one archive to $GAMES/upload.zip while ScummVM keeps running (the
