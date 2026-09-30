@@ -56,3 +56,8 @@ It prints one status line and, on failure, a summary; the full log stays in `.co
 - **Main-thread stack is 8 MiB; pthreads get 128 KiB.** Deep recursion in a thread overflows silently; see `docs/sdk-guide.md`.
 - **Wasm traces without names** mean `wasm-opt` stripped the name section; keep it for debugging rather than guessing from `wasm-function[N]`.
 - **A missing POSIX API is a platform gap**, not a package patch. Stub honestly or implement it in the kernel/libc.
+
+## Feedback
+
+End your final report with one line, so maintainers can see where this skill helped or misled:
+`Skill feedback (porting-software-to-kandelo): used <what>; wrong: <what or none>; missing: <what or none>`
