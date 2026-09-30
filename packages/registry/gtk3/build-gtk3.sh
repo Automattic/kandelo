@@ -82,6 +82,8 @@ LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DI
 LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set}"
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
+LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:?WASM_POSIX_DEP_LIBCXX_DIR not set}"
+LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set}"
 PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/xml"
 
 # --- Stage verified source ---
@@ -184,8 +186,24 @@ echo "==> Configuring gtk+ for wasm32..."
     # tool is a compiled host binary (flake.nix pkgs.glib.dev), so the
     # env override supplies it. glib's pc files reference -lffi / -lz
     # by bare name; the build's own executables need the search paths.
+    #
+    # LIBS completes the static link of the executables gtk builds
+    # (gtk-launch, gtk-builder-tool, gtk-query-settings); no .pc file this
+    # configure reads lists these, and a link without them fails on the
+    # undefined symbols:
+    #   - libEGL, libGLESv2, libgbm, libdrm (base sysroot):
+    #     wayland-shm-gbm-pool.patch makes GDK allocate its wl_shm pools
+    #     with libgbm, and libwayland-egl calls libgbm and libEGL;
+    #   - libiconv: fontconfig parses its configuration with libxml2, and
+    #     this libxml2 converts encodings through GNU libiconv;
+    #   - libc++, libc++abi: pango shapes through harfbuzz, which is C++.
+    # They are named as -l flags with their directories in LDFLAGS, never
+    # as archive paths: libtool unpacks an archive path it finds among a
+    # static library's dependencies and merges its members into that
+    # library, which corrupts libgdk-3.a.
     CFLAGS="-O2" \
-    LDFLAGS="-L$LIBFFI_PREFIX/lib -L$ZLIB_PREFIX/lib" \
+    LDFLAGS="-L$LIBFFI_PREFIX/lib -L$ZLIB_PREFIX/lib -L$LIBICONV_PREFIX/lib -L$LIBCXX_PREFIX/lib" \
+    LIBS="-lEGL -lGLESv2 -lgbm -ldrm -liconv -lc++ -lc++abi" \
     PKG_CONFIG_PATH="$PC_PATH" \
     GLIB_COMPILE_RESOURCES="$(command -v glib-compile-resources)" \
     "$SRC_DIR/configure" \

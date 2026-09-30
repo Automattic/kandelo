@@ -31,6 +31,8 @@ depends_on = [
   "wayland-protocols@1.45",
   "libffi@0.1.0",
   "zlib@1.3.1",
+  "libcxx@21.1.7",
+  "libiconv@1.17",
 ]
 
 [source]
