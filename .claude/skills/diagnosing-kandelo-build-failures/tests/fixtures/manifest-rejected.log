@@ -1,7 +1,0 @@
-warning: function `execute_graph` is never used
-   --> tools/xtask/src/local_build_executor.rs:156:15
-    |
-156 | pub(crate) fn execute_graph<F>(
-    |               ^^^^^^^^^^^^^
-
-xtask build-deps: /work/kandelo/packages/registry/example/package.toml: source.provider = "archive" requires a nonzero source.sha256

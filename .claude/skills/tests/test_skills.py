@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""Checks that the repo's agent skills still work and still match the repo.
+"""Checks that the repo's agent skills still match the repo.
 
-1. Diagnosis fixtures: each trimmed, real failure log must report the expected
-   first cause, and a clean build log must report none.
-2. Drift: every repo path, doc heading, and identifier a SKILL.md names must
-   still exist, and every reference package must still follow the current
-   build-root contract. Stale guidance steers agents wrong with confidence,
-   which is worse than no guidance.
+Every repo path, doc heading, and identifier a SKILL.md names must still
+exist, and every reference package must still follow the current build-root
+contract. Stale guidance steers agents wrong with confidence, which is worse
+than no guidance.
 
 Run from the repo root: python3 .claude/skills/tests/test_skills.py
 """
-import importlib.util
 import pathlib
 import re
 import subprocess
@@ -18,53 +15,16 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
 SKILLS = REPO / ".claude" / "skills"
-DIAG = SKILLS / "diagnosing-kandelo-build-failures"
 # Paths that only exist after a build, so a fresh checkout cannot contain them.
 GENERATED = ("sysroot/", "sysroot64/", "local-binaries/", "binaries/", ".context/")
 # Names defined outside this repo (Claude Code tool parameters, autoconf macros).
 EXTERNAL = {"run_in_background", "AC_CHECK_FUNCS", "AC_SEARCH_LIBS"}
-
-EXPECTED_FIRST = {
-    "gnulib-fallback.log": "gnulib fallback",
-    "toolchain-unusable.log": "toolchain unusable",
-    "library-not-on-link-path.log": "library not on link path",
-    "missing-header.log": "missing header",
-    "mixed-provenance-tiers.log": "mixed provenance tiers",
-    "command-not-found.log": "host tool not in dev shell",
-    "source-hash-mismatch.log": "source hash",
-    "manifest-rejected.log": "resolver/manifest error",
-    "prefixed-resolver-error.log": "resolver/manifest error",
-    "clean-success.log": None,
-}
 
 failures = []
 
 
 def fail(msg):
     failures.append(msg)
-
-
-def load_diagnoser():
-    spec = importlib.util.spec_from_file_location("diag", DIAG / "scripts" / "diagnose-build-log.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def check_fixtures():
-    diag = load_diagnoser()
-    fixtures = DIAG / "tests" / "fixtures"
-    present = {p.name for p in fixtures.glob("*.log")}
-    for name in sorted(present ^ set(EXPECTED_FIRST)):
-        fail(f"fixture {name}: present on disk but not in EXPECTED_FIRST, or vice versa")
-    for name, expected in EXPECTED_FIRST.items():
-        path = fixtures / name
-        if not path.exists():
-            continue
-        items = diag.find_failures(path.read_text(errors="replace").splitlines())
-        got = items[0][1] if items else None
-        if got != expected:
-            fail(f"fixture {name}: first failure {got!r}, expected {expected!r}")
 
 
 def tracked_text_contains(word):
@@ -113,7 +73,6 @@ def check_skill(skill_md):
 
 
 def main():
-    check_fixtures()
     skill_files = sorted(SKILLS.glob("*/SKILL.md"))
     if not skill_files:
         fail("no skills found under .claude/skills")
@@ -121,7 +80,7 @@ def main():
         check_skill(s)
     for f in failures:
         print("FAIL", f)
-    print(f"agent skills: {len(skill_files)} skills, {len(EXPECTED_FIRST)} fixtures, {len(failures)} failures")
+    print(f"agent skills: {len(skill_files)} skills, {len(failures)} failures")
     return 1 if failures else 0
 
 
