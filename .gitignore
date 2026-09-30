@@ -157,7 +157,7 @@ packages/registry/*/package.pr.toml
 .*.kandelo-index.lock
 
 # SDL2 playground: auto-generated TTF→C-byte-array header.
-# Regenerated from programs/sdl2/third_party/Inconsolata-Regular.ttf by
+# Regenerated from third_party/Inconsolata-Regular.ttf by
 # scripts/build-programs.sh on every build.
 programs/sdl2/third_party/inconsolata_ttf.h
 

@@ -4,6 +4,23 @@ Date: 2026-07-08
 Branch: `explore-dri-wayland`
 Worktree: `/Users/mho/emdash/worktrees/kandelo/wasm-posix-kernel/emdash/explore-direct-rendering-infrastructure-9vbaz`
 
+> **Where the code now differs (2026-09-29, PR #948).** This plan is a
+> historical record; the authoritative descriptions are
+> `docs/architecture.md` ("Wayland compositor") and
+> `docs/browser-support.md` ("Wayland desktop demo"). Since it was written:
+> §2's "every kernel primitive Wayland needs already exists" proved wrong.
+> PR #948 had to implement `SO_PEERCRED`, key epoll registrations on the
+> open file description and carry them across fork/spawn, make a blocking
+> DRM event read wait, and add dma-buf `lseek` (ABI 44). `wlterm` runs `sh`,
+> which is bash in every Kandelo image, not dash. The desktop is the
+> `wayland` machine in the shell image, not a `/?demo=wayland` URL (the
+> `?demo=` parameter was removed). The plans cited below
+> (`2026-07-13-wpkcompositor-plan.md`, "plans 8/10/11") are not in this
+> repository. The libffi, libudev and mtdev packages it calls shims or
+> stubs, and the vendored wayland-protocols XML, are listed as follow-ups
+> in `docs/package-management.md` ("Packages that are not real upstream
+> builds yet").
+
 > **Status:** This document supersedes `2026-07-13-wpkcompositor-plan.md`
 > and amends `2026-05-18-dri-design.md` (§9.2, §9.5, §15) plus the
 > greenfield plans 8/10/11. It is the authoritative roadmap for the top

@@ -1,5 +1,12 @@
 # SDL2 GLSL playground — split-pane live audio-visual shader editor
 
+> **Where the code now differs (2026-09-29).** This plan is a historical
+> record. The shipped SDL2 build uses OSS audio through `/dev/dsp`
+> (`--enable-oss --disable-alsa` in `packages/registry/sdl2/build-sdl2.sh`),
+> not ALSA, and GLES goes through Kandelo's `/dev/dri/renderD128` bridge to
+> the host's WebGL2 context, not a static ANGLE link. See
+> `docs/browser-support.md` (the `sdl2` machine) for the current behaviour.
+
 **Goal:** Replace the current `sdl2_demo` (5 s spinning quad + 440 Hz tone + ESC) with a Shadertoy-style live editor: split-pane SDL2 window, GLSL fragment shader editor on the left, live shader output on the right, with a second editor mode for **sound shaders** that drive the audio output. The visual shader can sample the running audio via an `iAudio` uniform, so the two shaders are in dialog — edit the sound, see the visual respond.
 
 **Audience:** web developers. The full pitch lives in the "Headline pitch" section at the bottom (PR-description ready).

@@ -370,17 +370,15 @@ Located in `apps/browser-demos/pages/`:
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package and is baked into the image with its shader presets before boot. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
 | espeak | espeak-ng | dinit | Speech synthesis through upstream pcaudiolib's OSS backend, so playback rides the same `/dev/dsp` path as the doom demo. The binary and the voice data both come from the `espeak-ng` package closure — the data as the `espeak-ng-data.zip` runtime file, unpacked into `/usr/share/espeak-ng-data` while the image is composed, because libespeak-ng's `PATH_ESPEAK_DATA` is fixed at build time. |
-| modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
+| modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package and is baked into the image before boot; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. No game ships; the profile takes a zipped game as an upload. |
-| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. The four binaries come from the `wayland-demo` package and are baked into the image before boot; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
-| hyprland | wlcompositor (dwindle) + wlclock + wlterm | dinit | Tiling desktop — see [Hyprland tiling demo](#hyprland-tiling-demo). The image declares `/usr/local/bin/hyprdesktop`, which starts the same compositor in dwindle mode with the image's `/usr/share/kandelo/hyprland/wlcompositor.conf` and three clients. |
+| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package and are baked into the image before boot; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + mako + Waybar + klauncher + qtgallery + Quickshell | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor, mako and Waybar; windows, including the Qt clients, are opened from the launcher and keybinds. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
 - **dinit** — `kernelOwnedFs: true`, exec dinit as the first user process (PID 100), which brings up the per-demo service tree; PID 1 remains synthetic.
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
-- **`kernel.boot` + spawn** — the machine boots to a shell; the page stages the demo binaries into the VFS and spawns them via `kernel.spawn()` / `runShellCommand`.
 - **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary, and the Rust kernel allocates the PID before the worker launches it.
 
 ### Wayland desktop demo
@@ -495,18 +493,20 @@ A client that honours `wl_surface.set_buffer_scale` attaches a buffer
 that covers its window 1:1 and blits without resampling; one that
 ignores it is upscaled — soft, but correctly sized.
 
-**The browser machines run at scale 1 for now.** Machines are declared
-by the shell image, and an image's launcher is fixed when the image is
-built, while the scale belongs to the display the visitor is looking at.
-Nothing in the boot path sets `WLC_SCALE` any more (the page used to put
-it in the compositor's environment before machines moved into the
-image), so on a HiDPI pane the desktop gets a device-pixel mode at scale
-1: the geometry is right, and windows and text are drawn at half their
-intended size. **Follow-up:** the kernel should report the display's
-physical size on the DRM connector (`mmWidth`/`mmHeight`), as Linux
-does, so the compositor derives its scale from system state instead of
-from something the page injects. The scale path itself is gated
-node-side (below).
+**The scale comes from the display's physical size.** The page reports
+the pane's size twice: in device pixels (the mode) and as a physical size
+in millimetres derived from its CSS box — CSS defines 96 px per inch, so
+this is the browser's reference size, not a measured panel. The kernel
+reports that size on the DRM connector (`mm_width`/`mm_height` from
+`DRM_IOCTL_MODE_GETCONNECTOR`, filled from the `host_kms_connector_mm`
+import), exactly where a real connector carries its EDID size. Without
+`WLC_SCALE`, wlcompositor derives its output scale from it the way
+Hyprland's `auto` scale does: the mode's pixels per 96th of an inch,
+rounded and clamped to 1–3. A 2× Retina pane gets scale 2 and a 1× pane
+scale 1, and the boot log's `WLC_SCALE n source=connector` line says
+which. A host with no display (Node) reports 0×0, which keeps scale 1.
+The compositor still sends a 0×0 physical size in `wl_output.geometry`
+(see foot below), so the DPI only reaches clients as the integer scale.
 
 The desktop's own clients honour it, and none of them had to change to.
 libwpkdraw carries the scale instead: `wpk_set_scale()` is a
@@ -550,7 +550,6 @@ the compositor clamps a floating window's position but not its size.
 On a desktop roomy enough for the constant this changes nothing.
 `host/test/wlcompositor-output-scale-smoke.test.ts` and
 `host/test/mako-smoke.test.ts` gate the scaled path at `WLC_SCALE=2`.
-No browser test covers it while the machines run at scale 1.
 
 The Omarchy themes paint gradient wallpapers for now. Each
 `theme.conf` names its two gradient colours (`wallpaper_top`,
@@ -609,9 +608,13 @@ distribution) and the node-side twins under `host/test/wl*-smoke.test.ts`
 
 ### Hyprland tiling demo
 
-The Hyprland tiling machine (launched from the gallery, or directly with
-`?vfs=<shell image>&profile=hyprland`) boots the same `wlcompositor` binary
-as a Hyprland-class tiling window manager (the floating Wayland desktop
+**Not in the shell image by default.** The Omarchy desktop below is the
+same tiling compositor with a desktop shell on top, so the shell image
+carries only that one; the `wayland-demo` package still builds the
+Hyprland launcher (`hyprdesktop`) and its config
+(`hyprland-wlcompositor.conf`) as runtime files for an image that wants
+it. As packaged, the Hyprland tiling machine boots the same `wlcompositor`
+binary as a Hyprland-class tiling window manager (the floating Wayland desktop
 above is its default layout). The image declares one command,
 `/usr/local/bin/hyprdesktop`, which starts the compositor with
 `WLC_LAYOUT=dwindle` and the image's hyprland.conf-shaped
@@ -660,7 +663,9 @@ See
 [architecture.md](architecture.md#tiling-window-manager-wlc_layout-workspaces-kwlctl-keybinds).
 The tiling paths are gated node-side by
 `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`
-and in the browser by `apps/browser-demos/test/kandelo-hyprland.spec.ts`.
+and in the browser through the Omarchy machine
+(`apps/browser-demos/test/kandelo-omarchy.spec.ts`, including the
+eight-window launch storm that guards the kernel's SCM_RIGHTS fd delivery).
 
 ### Omarchy desktop demo
 
@@ -677,7 +682,11 @@ unpacks under `/usr/share/kandelo`. The image declares one command,
 and the compositor, waits for both sockets, then starts mako and Waybar.
 Nothing is staged by the page.
 
-The desktop comes up bare: wallpaper and bar, no windows. Every client is one
+The desktop comes up bare: wallpaper and bar, no windows. As in Omarchy,
+the diamond at the bar's far left opens the Omarchy menu on click (Waybar's
+`custom/omarchy` module runs `klauncher --menu`), so the launcher is
+reachable without a keyboard shortcut. The desktop draws no cursor of its
+own, so the browser's pointer stays visible over it (`hostPointer`). Every client is one
 the user opens, through the binds below or the launcher. The demo stays alive
 on the compositor's own process rather than on a foreground terminal.
 
@@ -693,6 +702,11 @@ on the compositor's own process rather than on a foreground terminal.
   hyprctl. Modules that need hardware or daemons this kernel does not serve
   (battery, cpu, memory, network, pulseaudio, tray) are not part of the
   build, and the clock is Waybar's `simpleclock` (no timezone database).
+  The compositor has no `xdg_popup` yet, so tooltips and menus are
+  refused: `xdg_surface.get_popup` is a protocol error for the requesting
+  client (its positioner is a real object, so the refusal never takes the
+  compositor down). Waybar's modules therefore run with `"tooltip": false`.
+  Popup support is a follow-up.
   GDK backs the bar's `wl_shm` pools with `gbm` prime-fd dumb bos (the
   gtk3 package's `wayland-shm-gbm-pool.patch`, foot's contract), which is
   what carries its pixels across to the compositor. The bar runs at
@@ -712,10 +726,13 @@ on the compositor's own process rather than on a foreground terminal.
   move, `Enter` to launch (the compositor spawns it and it tiles in), `Esc` to
   dismiss. Entries come from `/usr/share/kandelo/apps`, one file per app. The
   registry offers real software from the shell image alongside the demo
-  clients: Vim, NetHack and Nano run unmodified inside a `wlterm` (their
-  binaries lazy-fetch from the image's archives on first launch). The
-  Terminal entry is different in kind: stock upstream foot 1.17.2 as its own
-  Wayland client on the ported font stack —
+  clients: Vim, NetHack and Nano run unmodified inside foot (their
+  binaries lazy-fetch from the image's archives on first launch), as does
+  the terminal `Ctrl+Return` opens. foot rather than `wlterm`: `wlterm`
+  advertises `TERM=vt100` but does not implement the VT100 line-drawing
+  character set, so curses borders come out as letters. foot is stock
+  upstream foot 1.17.2, a Wayland client of its own on the ported font
+  stack —
   freetype/fontconfig/fcft rasterizing the image's Inconsolata through
   `/usr/share/kandelo/fonts/fonts.conf` (`FONTCONFIG_FILE`) — not a
   `wlterm` wrapper (see
@@ -752,11 +769,66 @@ on the compositor's own process rather than on a foreground terminal.
   the toast is the same one. The themes paint gradient wallpapers; their
   real Omarchy backgrounds are a short-term follow-up (see the wallpaper
   note in the Wayland section above).
-- **The rest of the keybinds** are the Hyprland demo's: `Ctrl+Return` a
-  terminal, `Ctrl+K` a clock, `Ctrl+P` a paint canvas, `Ctrl+W` closes the
-  focused window, `Ctrl+1..9` switch workspaces, `Ctrl+J` cycles focus. Every
-  bind is mirrored on `SUPER` for a real Hyprland session; use `CTRL` in the
-  browser, which reserves `SUPER` (see the caveat above).
+- **The rest of the keybinds:** `Ctrl+Return` a terminal, `Ctrl+K` a
+  clock, `Ctrl+P` a paint canvas; `Ctrl+W` or `Ctrl+Shift+W` closes the
+  focused window (the second form leaves a terminal's `Ctrl+W` word-erase
+  alone, since the compositor takes a bound key before the client sees
+  it); `Ctrl+1..9` switches workspace and `Ctrl+Shift+1..9` moves the
+  focused window there; `Ctrl+J` / `Ctrl+Shift+J` cycle focus; and
+  `Ctrl+Shift+arrows` swaps the focused window with its neighbour in that
+  direction (Hyprland's `swapwindow`, Omarchy's `Super+Shift+arrows`).
+  Every bind is mirrored on `SUPER`, as Omarchy binds them; use `CTRL` in
+  the browser, which reserves `SUPER` (see the caveat above). Tiled
+  windows receive xdg-shell's `tiled_*` states, so a client that keeps
+  its own size when floating — SDL, and so ScummVM — takes the tile's.
+
+#### What is not real yet (deferred work)
+
+The Omarchy machine is an honest imitation in two places, and the gaps
+visitors notice come from them. They are recorded here as near-term
+follow-ups, not as the end state.
+
+- **The compositor is Kandelo's `wlcompositor`, not Hyprland.** It
+  implements the subset of Hyprland the desktop needs — dwindle tiling,
+  workspaces, a config-driven bind table, and a hyprctl-shaped IPC socket
+  that Waybar's Hyprland modules talk to — and every behaviour it lacks
+  is behaviour real Hyprland has (popups and tooltips, window swapping
+  beyond `swapwindow`, animations, the full dispatcher set). **Deferred:
+  port real Hyprland.** It needs platform work first: Hyprland renders
+  only with OpenGL ES 3 through its `aquamarine` backend, so Kandelo's EGL
+  must import dmabufs as EGLImages and provide fence/explicit sync over
+  the WebGL2 bridge; aquamarine expects KMS properties, planes and an
+  EDID blob from the kernel's connector; and it opens devices through
+  libseat and enumerates them through libudev, which here is a stand-in
+  with no `/sys` device tree behind it. A wlroots-based compositor with
+  its pixman software renderer is the fallback if the EGL work proves
+  too large. The dependency graph, each platform gap and a build order
+  are in `docs/plans/2026-09-30-real-hyprland-port-inventory.md`.
+- **The launcher is `klauncher`, not walker.** Omarchy's launcher is
+  walker (GTK4); `klauncher` is a Kandelo-authored stand-in that reads
+  `/usr/share/kandelo/apps`. **Deferred** with the Hyprland port, as are
+  Omarchy's other daemons (hyprlock, hypridle, swaybg, swayosd) and its
+  own scripts.
+
+Smaller gaps, each a follow-up:
+
+- **No `xdg_popup`**, so tooltips and menus are refused (see the bar,
+  above).
+- **Super needs fullscreen keyboard lock.** Omarchy binds everything on
+  Super; browsers keep Cmd/Win (Cmd+W closes the tab), so every bind is
+  mirrored on Ctrl, which shadows terminal keys such as Ctrl+W. Chromium's
+  Keyboard Lock API would let a fullscreen pane receive the real Super
+  bindings; Safari and Firefox lack it.
+- **`wlterm` advertises `TERM=vt100` without the VT100 line-drawing
+  set**, so curses borders print as letters in it (the desktop's
+  terminal entries use foot, which has it).
+- **No xkb data in the image** (`/usr/share/X11/xkb`): GTK clients log
+  that they cannot compile a keymap from names. They receive the
+  compositor's keymap, so input works.
+- **NetHack's curses interface does not redraw at its intro prompt after
+  a resize** (upstream behaviour; the resize itself reaches it — `Ctrl+R`
+  redraws).
+- **Theme wallpapers are gradients** (see the Wayland section).
 
 #### Quickshell QML limits
 
@@ -893,21 +965,41 @@ shell image, fetched on first use. The machine's command is
   [package-management.md](package-management.md#packages-that-are-not-real-upstream-builds-yet)).
 - seeds `~/scummvm.ini` on first launch. ScummVM rewrites its config
   whenever the user adds a game, so it lives in the writable home rather
-  than in image content. The GUI scale is fixed at 100%, like the
-  desktops' output scale (see the HiDPI note above), so on a HiDPI screen
-  the launcher is drawn small.
+  than in image content. The GUI scale is fixed at 100%: ScummVM's
+  KMSDRM path does not read the connector's physical size the way the
+  desktops do (see the HiDPI note above), so on a HiDPI screen its
+  launcher is drawn small. Game graphics are unaffected; they scale to
+  the display.
 
 No game ships with the machine: no Kandelo package carries a commercial
 SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
-64 MiB), writes it to `/usr/share/scummvm-games/upload.zip`, and the image's
-declared ingest unzips it in place; ScummVM's "Add Game" browser opens in
-that directory. The pointer is a real absolute device (`/dev/input/event1`
+512 MiB, the platform's ingest ceiling) and writes it to
+`/usr/share/scummvm-games/upload.zip` while ScummVM keeps running. The
+launch wrapper stays alive beside the engine, notices the archive (it polls,
+since `inotify` is unimplemented), unzips it in place and deletes it; the
+terminal shows when it is done. ScummVM's "Add Game" browser opens in that
+directory. The archive and its contents must fit the machine's filesystem
+(1 GiB on desktop browsers, 768 MiB on constrained ones such as iOS
+Safari); one that does not fails with `ENOSPC`. The pointer is a real absolute device (`/dev/input/event1`
 reports `EV_ABS` positions), and the browser hides its own cursor over the
 display because ScummVM draws one.
 
+The same wrapper runs ScummVM on the Omarchy desktop, from the launcher or
+as `scummvm` in a terminal. When a compositor socket exists
+(`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`) the wrapper leaves SDL to pick its
+Wayland backend, and ScummVM runs as a GL client in a tile. It is told
+it is tiled (xdg-shell's `tiled_*` states), so it takes the tile's size,
+and its GL buffer is reallocated to that size (the `libwayland-egl` resize
+path in [architecture.md](architecture.md#drmkms-devdricard0-devdrirenderd128)).
+The fixed 100% GUI scale applies there too, so on a HiDPI desktop its
+launcher is drawn small; having the seeded config follow the display
+scale is a follow-up.
+
 Gated in the browser by `apps/browser-demos/test/kandelo-scummvm.spec.ts`
 (the GUI data reaches the guest, the config is writable, and an upload is
-extracted where the launcher browses).
+extracted where the launcher browses). The Wayland path was verified by
+hand in Chromium at a device scale factor of 2 (full launcher in the tile;
+a click opens Global Options); no spec gates it yet.
 
 ### Kandelo session UI
 
@@ -1518,7 +1610,8 @@ declare these blocks.
   scanout presenter, which a Wayland compositor needs: its own GL context
   claims the canvas as the steady state, but the presenter has to cover
   boot before that claim and the permanent CPU fallback if the GLES probe
-  or a GL frame fails. There is no `network` flag: it gated no
+  or a GL frame fails. It refines a KMS display, so the parser rejects it
+  without `kms`. There is no `network` flag: it gated no
   socket syscall, and a field that reads like a sandbox control without
   being one is a trap for third-party images.
 - `init` — what this machine runs. Exactly one of three mutually exclusive
