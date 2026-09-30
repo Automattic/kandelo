@@ -224,8 +224,12 @@ A profile may also declare:
 - `identity` — `title`, `summary`, `accent` (`#rrggbb`), `glyph` (1–4
   characters), and optionally `packages`.
 - `runtime` — `features` (`framebuffer`, `kms`, `evdev-input`) and
-  `requests` (`memoryPages`, `maxWorkers`), which the host clamps to its
-  own policy.
+  `requests` (`memoryPages`, `maxWorkers`, `framebuffer`), which the host
+  bounds to its own policy. `requests.framebuffer` is
+  `{ "width", "height" }` in pixels — the `/dev/fb0` display mode, set
+  before pid 1 runs. It is not `display`, which is a viewport floor. Both
+  dimensions are required together and each is capped (3840 × 2160). An
+  image that declares nothing keeps 640×400.
 - `init` — what this machine runs, in exactly one of three shapes:
   `{ "target": "<dinit service>" }` for a bare service name matching
   `/etc/dinit.d/<name>`; `{ "program", "args", "cwd"?, "uid", "gid" }` to

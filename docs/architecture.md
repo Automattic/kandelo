@@ -2226,7 +2226,8 @@ The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, m
    open("/dev/fb0")     ─────────►   match_virtual_device              (no host call)
                                      CAS FB0_OWNER (single-open)
    ioctl(FBIOGET_*)     ─────────►   fill fb_var_screeninfo /          (no host call)
-                                     fb_fix_screeninfo, 640×400 BGRA32
+                                     fb_fix_screeninfo, BGRA32 at the
+                                     machine's configured geometry
    mmap(fd, len)        ─────────►   memory.mmap_anonymous(len)
                                      record FbBinding(addr,len,w,h)
                                      host.bind_framebuffer(...)  ───►  registry.bind(pid,...)
@@ -2234,6 +2235,8 @@ The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, m
                          host sees them through the same SAB)
    ioctl(FBIOPAN_DISPLAY) ───────►   no-op success                     (no-op)
 ```
+
+The display mode is per-machine, not per-build. `crates/runtime-core/src/framebuffer.rs` holds it as kernel state, defaulting to 640×400 — the mode fbDOOM was written against, and the mode an image that declares nothing still gets. A machine asks for another by declaring `runtime.requests.framebuffer` in its `demo.json`; the host validates the pair, then pushes it with the `kernel_set_fb_geometry` export before pid 1 runs. Pushing it later would leave a program that has already read `FBIOGET_VSCREENINFO` drawing at one size while the canvas expects another. Everything the device reports follows that one pair: `xres`/`yres`, `line_length`, `smem_len`, the length an `mmap` of the device must request, the geometry `FBIOPUT_VSCREENINFO` accepts, and the `bind_framebuffer` call that sizes the host canvas.
 
 The pixel buffer lives **inside the process's wasm `Memory`** — a `SharedArrayBuffer`. The host (browser canvas, Node test, etc.) is told `(pid, addr, len, w, h, stride, fmt)` via the `bind_framebuffer` HostIO callback; it builds a typed-array view directly over that range. There is no separate framebuffer SAB, no per-frame syscall, no copy. The host drives presentation via `requestAnimationFrame`.
 

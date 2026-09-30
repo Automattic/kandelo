@@ -349,6 +349,19 @@ export interface SetInputCanvasDimsMessage {
 }
 
 /**
+ * Main-thread → kernel-worker `/dev/fb0` display mode. Sets the geometry
+ * FBIOGET_VSCREENINFO reports, the `smem_len` an `mmap` of the device must
+ * request, and the size of the canvas binding the kernel registers. Sent
+ * once at boot, BEFORE pid 1 runs: a program that has already read the
+ * geometry keeps the mode it was told.
+ */
+export interface SetFbGeometryMessage {
+  type: "set_fb_geometry";
+  width: number;
+  height: number;
+}
+
+/**
  * Main-thread → kernel-worker audio drain request. The main thread's
  * AudioContext scheduler ticks every ~50 ms, asks the kernel ring for
  * up to `maxBytes` of PCM samples, and feeds them to a chained
@@ -513,6 +526,7 @@ export type MainToKernelMessage =
   | InputEventInjectMessage
   | InputEventBatchInjectMessage
   | SetInputCanvasDimsMessage
+  | SetFbGeometryMessage
   | AudioDrainMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage

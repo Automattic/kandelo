@@ -1472,6 +1472,13 @@ async function bootProfile(
       );
     await kernel.initFromImage(kernelInitOptions);
     assertCurrent();
+    // Before any process runs: a program reads the `/dev/fb0` geometry once
+    // at startup, and a later push would leave it drawing at one size while
+    // the canvas expects another.
+    const framebuffer = machine.runtime.requests.framebuffer;
+    if (framebuffer !== undefined) {
+      kernel.setFbGeometry(framebuffer.width, framebuffer.height);
+    }
     host.attachKernel(kernel);
     host.setTerminalSessionPolicy(
       experimentalTerminalSessionPolicy(terminalSession),

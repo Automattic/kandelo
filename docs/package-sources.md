@@ -252,11 +252,12 @@ the image's `presentation`:
 
 A profile may also declare `identity` (listing title, summary, accent, glyph,
 and optionally base image and package list), `runtime` (declared features,
-a descriptive `network` flag, and clamped `memoryPages`/`maxWorkers`
-requests), `init` (a bare dinit service name), `web` (required ports and an
-optional readiness probe path), `display` (minimum usable surface), and a
-top-level `defaultProfile`. See "Kandelo demo metadata" in
-`docs/browser-support.md` for the full block reference. These blocks are
+a descriptive `network` flag, and bounded
+`memoryPages`/`maxWorkers`/`framebuffer` requests), `init` (a bare dinit
+service name), `web` (required ports and an optional readiness probe path),
+`display` (minimum usable surface), and a top-level `defaultProfile`. See
+"Kandelo demo metadata" in `docs/browser-support.md` for the full block
+reference. These blocks are
 validated and carried in the image today; the browser app does not read them
 yet.
 
