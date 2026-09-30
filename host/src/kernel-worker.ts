@@ -30458,6 +30458,24 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Set the `/dev/fb0` display mode. Call once at boot, before the first
+   * process starts: a program that has already issued
+   * FBIOGET_VSCREENINFO keeps the geometry it was told.
+   */
+  setFbGeometry(width: number, height: number): void {
+    this.#runOrDeferKernelEntry(
+      "framebuffer geometry",
+      (entry) => {
+        const set = entry.instance.exports.kernel_set_fb_geometry as
+          | ((width: number, height: number) => void)
+          | undefined;
+        if (!set) return;
+        set(width, height);
+      },
+    );
+  }
+
+  /**
    * Drain up to `out.byteLength` bytes of PCM audio buffered in
    * `/dev/dsp` into `out`. Returns the number of bytes copied, always
    * a multiple of the active frame size (2 bytes mono / 4 bytes

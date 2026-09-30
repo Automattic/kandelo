@@ -383,6 +383,18 @@ export interface SetInputCanvasDimsMessage {
   height: number;
 }
 
+/**
+ * Main-thread → kernel-worker `/dev/fb0` display mode. Mirrors the
+ * browser-side `SetFbGeometryMessage`. Sets the geometry
+ * FBIOGET_VSCREENINFO reports and the `smem_len` an `mmap` of the device
+ * must request.
+ */
+export interface SetFbGeometryMessage {
+  type: "set_fb_geometry";
+  width: number;
+  height: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -419,7 +431,8 @@ export type MainToKernelMessage =
   | KmsSetDisplaySizeMessage
   | InputEventInjectMessage
   | InputEventBatchInjectMessage
-  | SetInputCanvasDimsMessage;
+  | SetInputCanvasDimsMessage
+  | SetFbGeometryMessage;
 
 // ── Kernel Worker → Main Thread ──
 

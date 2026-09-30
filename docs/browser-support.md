@@ -973,10 +973,12 @@ override.
 
 Resource ceilings are host policy, not image authority: `runtime.requests` in
 `demo.json` is a REQUEST that `live-setup.ts` clamps (worker count, memory
-pages, VFS byte ceiling). Gallery membership is likewise curated, in
-`apps/browser-demos/pages/kandelo/gallery-roster.json`; an image cannot claim a
-place in the gallery by declaring one. Every displayed byte — title, summary,
-accent, glyph — still comes from the named product's own tracked demo config.
+pages, VFS byte ceiling). A `framebuffer` geometry past its ceiling is
+rejected by the config parser instead. Gallery membership is likewise curated,
+in `apps/browser-demos/pages/kandelo/gallery-roster.json`; an image cannot
+claim a place in the gallery by declaring one. Every displayed byte — title,
+summary, accent, glyph — still comes from the named product's own tracked
+demo config.
 
 ```typescript
 // Typical demo pattern
@@ -1109,13 +1111,20 @@ declare these blocks.
   ABI compatibility is enforced by the `__abi_version` check on binaries.
 - `runtime` — what the machine needs: `features` (any of `framebuffer`,
   `kms`, `kms-gl-scanout`, `evdev-input`) and `requests` (`memoryPages`,
-  `maxWorkers`) which the host clamps to its own policy. `kms-gl-scanout`
-  additionally routes the KMS surface through the vblank pump's WebGL2
-  scanout presenter, which a Wayland compositor needs: its own GL context
-  claims the canvas as the steady state, but the presenter has to cover
-  boot before that claim and the permanent CPU fallback if the GLES probe
-  or a GL frame fails. There is no `network` flag: it gated no
-  socket syscall, and a field that reads like a sandbox control without
+  `maxWorkers`, `framebuffer`), each rejected past its ceiling; the host
+  then clamps the first two to its own policy.
+  `kms-gl-scanout` additionally routes the KMS surface through the vblank
+  pump's WebGL2 scanout presenter, which a Wayland compositor needs: its own
+  GL context claims the canvas as the steady state, but the presenter has to
+  cover boot before that claim and the permanent CPU fallback if the GLES
+  probe or a GL frame fails. `requests.framebuffer` is
+  `{ "width", "height" }` in pixels: the `/dev/fb0` display mode, pushed
+  into the kernel before pid 1 runs. It is not `display`, which is a
+  viewport floor — a machine can want a 1280×800 framebuffer inside a
+  640×480 window. Both dimensions are required together; the ceiling is
+  3840 × 2160 because `smem_len` is an mmap size. An image that declares
+  nothing keeps the kernel's 640×400. There is no `network` flag: it gated
+  no socket syscall, and a field that reads like a sandbox control without
   being one is a trap for third-party images.
 - `init` — what this machine runs. Exactly one of three mutually exclusive
   shapes, so the exclusivity is structural rather than a cross-block rule:

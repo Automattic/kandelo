@@ -5,6 +5,8 @@ import { findRepoRoot } from "../../../host/src/binary-resolver";
 import { TRACKED_DEMO_CONFIG_SOURCES } from "../../../images/vfs/scripts/tracked-demo-config";
 import {
   MAX_KANDELO_DEMO_CONFIG_BYTES,
+  MAX_REQUESTED_FRAMEBUFFER_HEIGHT,
+  MAX_REQUESTED_FRAMEBUFFER_WIDTH,
   MAX_REQUESTED_MEMORY_PAGES,
   MAX_REQUESTED_WORKERS,
   parseKandeloDemoConfig,
@@ -84,6 +86,48 @@ describe("runtime block", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
       runtime: { requests: { memoryPages: 4096.5 } },
     }))).toThrow(/memoryPages must be a positive integer/);
+  });
+
+  it("carries a framebuffer geometry request through normalization", () => {
+    const config = withProfile({
+      runtime: { requests: { framebuffer: { width: 1280, height: 800 } } },
+    });
+    validateKandeloDemoConfig(config);
+    expect(resolveDemoRuntime(config, "m")).toEqual({
+      features: [],
+      requests: { framebuffer: { width: 1280, height: 800 } },
+    });
+  });
+
+  // `smem_len` is an mmap size, so an unclamped geometry is the same
+  // unbounded-allocation threat as an unclamped memoryPages.
+  it("rejects an absurd framebuffer request", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      runtime: { requests: { framebuffer: { width: 100000, height: 800 } } },
+    }))).toThrow(
+      new RegExp(
+        `framebuffer\\.width exceeds the ${MAX_REQUESTED_FRAMEBUFFER_WIDTH}-pixel ceiling`,
+      ),
+    );
+    expect(() => validateKandeloDemoConfig(withProfile({
+      runtime: { requests: { framebuffer: { width: 1280, height: 100000 } } },
+    }))).toThrow(
+      new RegExp(
+        `framebuffer\\.height exceeds the ${MAX_REQUESTED_FRAMEBUFFER_HEIGHT}-pixel ceiling`,
+      ),
+    );
+  });
+
+  it("rejects a framebuffer request missing a dimension", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      runtime: { requests: { framebuffer: { width: 1280 } } },
+    }))).toThrow(/framebuffer\.height must be a positive integer/);
+  });
+
+  it("rejects a framebuffer request that is not an object", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      runtime: { requests: { framebuffer: "1280x800" } },
+    }))).toThrow(/framebuffer must be an object/);
   });
 
   it("rejects a zero or negative request", () => {

@@ -133,7 +133,9 @@ pub mod process_layout;
 ///     dma-buf `lseek` on prime fds, epoll registrations keyed on (fd, open
 ///     file description) and inherited across fork/spawn, and the
 ///     `kernel_epoll_watched_fd` export. docs/abi-versioning.md ("ABI 44") lists
-///     each with why it belongs to this epoch.
+///     each with why it belongs to this epoch. `kernel_set_fb_geometry` is
+///     an additive export within 44 ("Additive changes within an ABI
+///     epoch" there).
 pub const ABI_VERSION: u32 = 44;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
