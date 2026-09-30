@@ -345,6 +345,15 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // event it receives (it runs at -l debug), so the bar's own line is the
   // proof the feed arrived; the compositor's WORKSPACE marker only proves it
   // was sent.
+  // The theme switch above reloads Waybar, which re-dumps its widget tree
+  // (about 40 lines at -l debug) and then re-maps the bar. Wait for the
+  // re-map first: if the dump lands after CTRL+2, it scrolls the WORKSPACE
+  // marker off the visible rows this gate reads.
+  await expectTerminal(
+    page,
+    /Bar configured \(width: \d+, height: \d+\)[\s\S]*LAYER ns=waybar layer=2 /,
+    60_000,
+  );
   await pressCtrl(page, "2");
   await expectTerminal(page, /WORKSPACE active=2/, 60_000);
   await expectTerminal(page, /hyprland IPC received workspacev2>>2,2/, 60_000);
