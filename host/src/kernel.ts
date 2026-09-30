@@ -722,6 +722,20 @@ const WASM_STATFS_SIZE = STRUCT_SIZE_WASM_STATFS;
 /** Size of the WasmDirent struct: d_ino(u64) + d_type(u32) + d_namlen(u32). */
 const WASM_DIRENT_SIZE = STRUCT_SIZE_WASM_DIRENT;
 
+/**
+ * A KMS display as the embedder reports it: its size in device pixels, and
+ * optionally its physical size in millimetres. A browser derives the physical
+ * size from the CSS box (CSS defines 96 px per inch), so a client computing
+ * DPI from it gets the page's device-pixel ratio — the scale a HiDPI screen
+ * needs. Absent means unknown (a host with no display).
+ */
+export interface KmsDisplaySize {
+  width: number;
+  height: number;
+  mmWidth?: number;
+  mmHeight?: number;
+}
+
 export interface KernelCallbacks {
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
@@ -790,7 +804,7 @@ export interface KernelCallbacks {
    * display's aspect ratio, so mode-picking clients fill the pane
    * without letterboxing. `undefined` → the 1920x1080 default.
    */
-  getKmsDisplaySize?: () => { width: number; height: number } | undefined;
+  getKmsDisplaySize?: () => KmsDisplaySize | undefined;
   /**
    * A program has pointed a CRTC at a framebuffer (SETCRTC or PAGE_FLIP).
    * From here on its page flips retire at vblank, so the host must be
@@ -2679,6 +2693,22 @@ export class WasmPosixKernel {
             connector_id,
             this.callbacks.getKmsDisplaySize?.(),
           );
+          this.#writeKernelBytes(destination, bytes);
+        },
+        host_kms_connector_mm: (
+          _connector_id: number,
+          out_ptr: KernelPointer,
+        ): void => {
+          const destination = this.#rustLentKernelDestination(
+            out_ptr,
+            8,
+            "host_kms_connector_mm destination",
+          );
+          const display = this.callbacks.getKmsDisplaySize?.();
+          const bytes = new Uint8Array(8);
+          const view = new DataView(bytes.buffer);
+          view.setUint32(0, display?.mmWidth ?? 0, true);
+          view.setUint32(4, display?.mmHeight ?? 0, true);
           this.#writeKernelBytes(destination, bytes);
         },
         host_kms_addfb: (

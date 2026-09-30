@@ -2,6 +2,7 @@
 
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
+import { connectorModeSize } from "@host/dri/kms-registry";
 import { composeImageInWorker } from "./image-composer-client";
 import { imageMachine, type ImageMachine } from "./image-composer";
 import {
@@ -1629,7 +1630,7 @@ async function bootProfile(
     // Attachment has to precede the command because a program that polls
     // /dev/input/event{0,1} misses everything delivered before it starts.
     if (machine.runtime.features.includes("evdev-input")) {
-      attachDeclaredInputSource(kernel, machine, tick);
+      attachDeclaredInputSource(kernel, machine, tick, host);
     }
 
     if (profile.framebufferTest) {
@@ -1775,16 +1776,29 @@ function attachDeclaredInputSource(
   kernel: BrowserKernel,
   machine: ImageMachine,
   tick: (msg: string) => void,
+  host: { getKmsDisplaySize(crtcId?: number): { width: number; height: number } | undefined },
 ): void {
   const displaySelector = machine.runtime.features.includes("kms")
     ? ".kmodeset-surface"
     : machine.runtime.features.includes("framebuffer")
     ? ".kframebuffer-surface"
     : null;
-  const dims = () => ({
-    width: Math.max(window.innerWidth, machine.display?.minWidth ?? 0),
-    height: Math.max(window.innerHeight, machine.display?.minHeight ?? 0),
-  });
+  // A KMS pane sends the pointer as framebuffer pixels (sendPointerAbs), and
+  // consumers scale EV_ABS values by the advertised range (SDL's evdev
+  // backend does, and libinput caches the range when it opens the device),
+  // so the range must be the space those values are in: the connector's
+  // mode, which is the framebuffer a KMS program renders at. The window size
+  // is unrelated to it — publishing it here put ScummVM's cursor 1.5x off.
+  // The mode is fixed at boot (a resize letterboxes), so it is not
+  // republished on resize; the kernel worker also keeps the range on the
+  // scanout framebuffer at SETCRTC.
+  const kms = displaySelector === ".kmodeset-surface";
+  const dims = () => kms
+    ? connectorModeSize(host.getKmsDisplaySize(KMS_PRIMARY_CRTC))
+    : {
+      width: Math.max(window.innerWidth, machine.display?.minWidth ?? 0),
+      height: Math.max(window.innerHeight, machine.display?.minHeight ?? 0),
+    };
   tick("attaching input source...");
   kernel.attachInputSource(
     // Bound to the window for global reach; `shouldCapture` is what keeps the
@@ -1793,10 +1807,12 @@ function attachDeclaredInputSource(
     new BrowserInputSource(window, {
       ...(displaySelector === null ? {} : { pointer: false }),
       wheel: true,
-      onResize: () => {
-        const { width, height } = dims();
-        kernel.setInputCanvasDims(width, height);
-      },
+      ...(kms ? {} : {
+        onResize: () => {
+          const { width, height } = dims();
+          kernel.setInputCanvasDims(width, height);
+        },
+      }),
       shouldCapture: demoSurfaceCaptureGate(
         () => document.querySelector(displaySelector ?? "main"),
       ),

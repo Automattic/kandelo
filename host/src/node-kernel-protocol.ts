@@ -344,6 +344,9 @@ export interface KmsSetDisplaySizeMessage {
   crtcId: number;
   width: number;
   height: number;
+  /** The display's physical size in millimetres, when the embedder knows
+   *  it; the kernel reports it on the DRM connector (mm_width/mm_height). */
+  physicalMm?: { width: number; height: number };
 }
 
 /**

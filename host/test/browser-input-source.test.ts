@@ -103,6 +103,38 @@ describe("BrowserInputSource", () => {
     expect(recorded[0]).toEqual({ device: 0, ev_type: 0x01, code: 2, value: 1 });
   });
 
+  it("a key the OS reports as Control is Control, whatever its position (Caps Lock remapped)", () => {
+    // macOS/xkb remaps keep code="CapsLock" but report key="Control".
+    target.fire("keydown", { code: "CapsLock", key: "Control", repeat: false, preventDefault() {} });
+    target.fire("keydown", { code: "Space", key: " ", repeat: false, ctrlKey: true, preventDefault() {} });
+    target.fire("keyup", { code: "Space", key: " ", repeat: false, ctrlKey: true, preventDefault() {} });
+    target.fire("keyup", { code: "CapsLock", key: "Control", repeat: false, preventDefault() {} });
+    const keys = recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+    expect(keys).toEqual([[29, 1], [57, 1], [57, 0], [29, 0]]);
+  });
+
+  it("a modifier held only in the event flags is pressed before the key and released after", () => {
+    // Some remaps never deliver a modifier keydown at all: the only sign of
+    // Control is ctrlKey on the keys pressed while it is held.
+    target.fire("keydown", {
+      code: "CapsLock", key: "CapsLock", repeat: false, preventDefault() {},
+      getModifierState: () => false,
+    });
+    target.fire("keydown", { code: "Space", key: " ", repeat: false, ctrlKey: true, preventDefault() {} });
+    target.fire("keyup", { code: "Space", key: " ", repeat: false, ctrlKey: true, preventDefault() {} });
+    target.fire("keydown", { code: "KeyA", key: "a", repeat: false, ctrlKey: false, preventDefault() {} });
+    const keys = recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+    // No KEY_CAPSLOCK (58): the OS did not engage Caps Lock.
+    expect(keys).toEqual([[29, 1], [57, 1], [57, 0], [29, 0], [30, 1]]);
+  });
+
+  it("a right-hand modifier keeps its side", () => {
+    target.fire("keydown", { code: "ControlRight", key: "Control", repeat: false, preventDefault() {} });
+    target.fire("keyup", { code: "ControlRight", key: "Control", repeat: false, preventDefault() {} });
+    const keys = recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+    expect(keys).toEqual([[97, 1], [97, 0]]);
+  });
+
   it("repeat keydown emits value=2 (Linux autorepeat convention)", () => {
     target.fire("keydown", {
       code: "Space",

@@ -664,8 +664,13 @@ export class NodeKernelHost {
    * an OffscreenCanvas polyfill provides a real canvas, the
    * `webgl2-scanout` presenter's drawing-buffer size.
    */
-  kmsSetDisplaySize(crtcId: number, width: number, height: number): void {
-    this.sendToWorker({ type: "kms_set_display_size", crtcId, width, height });
+  kmsSetDisplaySize(
+    crtcId: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
+  ): void {
+    this.sendToWorker({ type: "kms_set_display_size", crtcId, width, height, physicalMm });
   }
 
   /**

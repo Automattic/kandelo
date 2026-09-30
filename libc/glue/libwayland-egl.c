@@ -26,8 +26,15 @@
  *     The GPU-tier bo is a persistent host WebGLTexture+FBO and the compositor
  *     re-binds the foreign texture per commit; the one shared GL submit queue
  *     orders render-before-sample, so no buffer pool / wl_buffer.release
- *     tracking is needed in v1. Live resize is therefore not supported — the
- *     window keeps its creation size (documented below).
+ *     tracking is needed in v1.
+ *   - Resize swaps that single buffer: wl_egl_window_resize allocates a bo at
+ *     the new size and has libEGL re-aim the live window surface at it
+ *     (_wpk_egl_window_retarget), so the next frame renders at the new size.
+ *     A tiling compositor resizes every window it maps, and a GL client that
+ *     kept its creation-size buffer drew its new viewport cropped into it.
+ *     The old buffer is retired, not destroyed, until the new one has been
+ *     attached and committed, so the compositor never loses the surface's
+ *     current buffer.
  *   - The zwp_linux_dmabuf_v1 global is bound through a PRIVATE wl_event_queue
  *     so the roundtrip here never consumes events off the client's default
  *     queue (SDL dispatches that queue itself).
@@ -61,7 +68,15 @@ struct wpk_wlegl {
     struct wl_event_queue        *queue;       /* private queue for the bind */
     struct zwp_linux_dmabuf_v1   *dmabuf;
     struct wl_buffer             *buffer;      /* the single reusable buffer */
+    /* The buffer a resize replaced; destroyed once its successor has been
+     * committed (see wl_egl_window_resize). */
+    struct gbm_device            *retired_gbm;
+    struct gbm_bo                *retired_bo;
+    struct wl_buffer             *retired_buffer;
 };
+
+/* libEGL re-targets the live window surface at the window's current bo. */
+__attribute__((weak)) void _wpk_egl_window_retarget(void *egl_window);
 
 /* ---- zwp_linux_dmabuf_v1 bind (private-queue registry roundtrip) --------- */
 
@@ -148,15 +163,27 @@ static int alloc_buffer(struct wpk_wlegl *w, struct wl_egl_window *win,
         params, prime, 0, 0, stride,
         (uint32_t)(DRM_FORMAT_MOD_LINEAR >> 32),
         (uint32_t)(DRM_FORMAT_MOD_LINEAR & 0xffffffffu));
+    /* Y_INVERT: GL renders into the bo's framebuffer, whose rows are stored
+     * bottom-up, so the compositor must flip it when it samples the buffer
+     * (Mesa's Wayland EGL platform renders flipped instead; the flag is the
+     * protocol's way to say the same thing). */
     w->buffer = zwp_linux_buffer_params_v1_create_immed(
-        params, width, height, DRM_FORMAT_XRGB8888, 0);
+        params, width, height, DRM_FORMAT_XRGB8888,
+        ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_Y_INVERT);
     zwp_linux_buffer_params_v1_destroy(params);
     close(prime);   /* the compositor dup'd it into its own bo */
 
     return w->buffer ? 0 : -1;
 }
 
+static void free_retired(struct wpk_wlegl *w) {
+    if (w->retired_buffer) { wl_buffer_destroy(w->retired_buffer); w->retired_buffer = NULL; }
+    if (w->retired_bo)     { gbm_bo_destroy(w->retired_bo); w->retired_bo = NULL; }
+    if (w->retired_gbm)    { gbm_device_destroy(w->retired_gbm); w->retired_gbm = NULL; }
+}
+
 static void free_buffer(struct wpk_wlegl *w) {
+    free_retired(w);
     if (w->buffer) { wl_buffer_destroy(w->buffer); w->buffer = NULL; }
     if (w->bo)     { gbm_bo_destroy(w->bo); w->bo = NULL; }
     if (w->gbm)    { gbm_device_destroy(w->gbm); w->gbm = NULL; } /* no fd close */
@@ -214,10 +241,13 @@ void wl_egl_window_destroy(struct wl_egl_window *win) {
     free(win);
 }
 
-/* v1 keeps the creation size: the GL surface's FBO target is bound to the
- * bo at eglCreateWindowSurface time and there's no path to re-target a live
- * EGL surface, so a genuine resize would desync render size from the buffer.
- * We record the request (SDL reads it back) but do not reallocate. */
+/* Mesa applies a resize to the next frame; so does this. The window gets a
+ * bo at the new size now, and libEGL re-targets the live window surface at
+ * it, so the frame the client draws next lands in a buffer of the size it
+ * draws at. The replaced buffer stays alive until the next present has
+ * attached its successor. If the new bo cannot be allocated the window
+ * keeps rendering into the old one at the old size, and the attached size
+ * (which SDL can read back) still reports it. */
 void wl_egl_window_resize(struct wl_egl_window *win, int width, int height,
                           int dx, int dy) {
     if (!win) return;
@@ -225,6 +255,32 @@ void wl_egl_window_resize(struct wl_egl_window *win, int width, int height,
     win->dy = dy;
     if (width > 0)  win->width = width;
     if (height > 0) win->height = height;
+
+    struct wpk_wlegl *w = win->driver_private;
+    if (!w || (win->width == win->attached_width &&
+               win->height == win->attached_height))
+        return;
+
+    /* A second resize before any present: the buffer it replaces was never
+     * committed, so nothing references it — drop it now. */
+    if (w->retired_buffer) {
+        free_retired(w);
+    }
+    struct wpk_wlegl old = *w;
+    w->gbm = NULL; w->bo = NULL; w->buffer = NULL; w->bo_handle = 0;
+    if (alloc_buffer(w, win, win->width, win->height) != 0) {
+        free_buffer(w);
+        w->gbm = old.gbm; w->bo = old.bo; w->buffer = old.buffer;
+        w->bo_handle = old.bo_handle;
+        return;
+    }
+    w->retired_gbm = old.gbm;
+    w->retired_bo = old.bo;
+    w->retired_buffer = old.buffer;
+    win->attached_width = win->width;
+    win->attached_height = win->height;
+    if (_wpk_egl_window_retarget)
+        _wpk_egl_window_retarget(win);
 }
 
 void wl_egl_window_get_attached_size(struct wl_egl_window *win,
@@ -257,4 +313,5 @@ void _wpk_wlegl_present(void *egl_window) {
     wl_surface_attach(win->surface, w->buffer, 0, 0);
     wl_surface_damage(win->surface, 0, 0, win->width, win->height);
     wl_surface_commit(win->surface);
+    free_retired(w);
 }
