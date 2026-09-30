@@ -13,30 +13,72 @@ async function gotoOrSkip(page: Page, path: string) {
   }
 }
 
-async function openSurface(page: Page, label: string) {
-  const btn = page.locator("button.kdock-item", { hasText: label });
-  await btn.waitFor({ state: "visible", timeout: 30_000 });
-  await btn.click();
+/**
+ * Boot the Omarchy machine the way a visitor does: through its gallery row.
+ * Machines are declared by the shell image, and the gallery row is the
+ * tracked channel that produces `?vfs=<image>&profile=<id>`.
+ */
+async function launchOmarchy(page: Page) {
+  await gotoOrSkip(page, "/");
+  await page
+    .getByRole("button", { name: /^(New|Launch new computer)$/ })
+    .first()
+    .click();
+  await expect(page.locator("tr.kgal-row").first()).toBeVisible();
+  await page
+    .locator("tr.kgal-row")
+    .filter({ hasText: /Omarchy/i })
+    .first()
+    .click();
 }
 
+/**
+ * Show the Internals syslog, the demo canvas, or the machine's terminal.
+ * Internals is an overlay toggle in the dock (aria-pressed); showing the demo
+ * or the terminal means closing it and selecting that view.
+ */
+async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+  const internals = page.getByRole("button", { name: "Internals", exact: true });
+  await internals.waitFor({ state: "visible", timeout: 30_000 });
+  const open = (await internals.getAttribute("aria-pressed")) === "true";
+  if (open !== (label === "Internals")) await internals.click();
+  if (label !== "Internals") {
+    const view = page
+      .getByLabel("Computer views")
+      .getByRole("button", { name: label, exact: true });
+    if ((await view.getAttribute("aria-current")) !== "true") await view.click();
+  }
+}
+
+/** The host's boot log (Internals), where the command launch is recorded. */
 async function syslogText(page: Page): Promise<string> {
   const lines = await page.locator(".ksys-line").allInnerTexts();
   return lines.join("\n");
 }
 
-// A printf marker can split across two .ksys-line entries, so join only the
-// .ksys-msg spans — otherwise the next line's `[timestamp]LEVEL` prefix
-// interleaves into the marker and the regex misses.
-async function syslogStream(page: Page): Promise<string> {
-  const msgs = await page.locator(".ksys-line .ksys-msg").allInnerTexts();
-  return msgs.join("");
+/**
+ * The desktop's own output. The image's command runs in the machine's login
+ * shell, so the compositor and every client write their markers to that
+ * terminal. Only the rows on screen are in the DOM — no scrollback — so every
+ * gate below matches a marker while it is visible, and orders events by
+ * matching a sequence within the screen rather than counting a cumulative log.
+ */
+async function terminalText(page: Page): Promise<string> {
+  if ((await page.locator(".xterm-rows").count()) === 0) return "";
+  const rows = await page.locator(".xterm-rows").first().locator(":scope > div").allInnerTexts();
+  return rows.join("\n");
 }
 
-const canvasLocator = (page: Page) =>
-  page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
+/** Show the terminal and wait until `pattern` appears in it. */
+async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
+  await openSurface(page, "Terminal");
+  await expect.poll(() => terminalText(page), { timeout }).toMatch(pattern);
+}
 
-// Press a CTRL combo at the page level. A browser reserves SUPER (Cmd/Win), so
-// the demo mirrors every Omarchy bind on CTRL; that is the path a user takes.
+/** Press a CTRL combo on the desktop. A browser reserves SUPER (Cmd/Win), so
+ *  the demo binds every action on CTRL too — the path users actually press.
+ *  Focus off the canvas placeholder first (BrowserInputSource listens on
+ *  window). */
 async function pressCtrl(page: Page, key: string, shift = false, alt = false) {
   await openSurface(page, "Demo");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
@@ -47,113 +89,100 @@ async function pressCtrl(page: Page, key: string, shift = false, alt = false) {
   if (alt) await page.keyboard.up("Alt");
   if (shift) await page.keyboard.up("Shift");
   await page.keyboard.up("Control");
-  await openSurface(page, "Internals");
 }
 
-// How many times the launcher has come up so far. The syslog is cumulative,
-// so a later session is only visible as one more marker than before — and a
-// key typed before the launcher holds the keyboard goes to the focused
-// window, exactly as it would on the real desktop.
-async function launcherSessions(page: Page): Promise<number> {
-  return (await syslogStream(page)).split(/KLAUNCHER_READY n=\d+/).length - 1;
-}
-
-// How many windows of one app the compositor has focused so far. The syslog is
-// cumulative, so a second terminal shows up as one more marker. Counting the
-// app's own name is what distinguishes a window the demo opened from Waybar's
-// second, empty-app_id toplevel, which takes a tile slot of its own.
-async function focusedWindows(page: Page, appId: string): Promise<number> {
-  return (await syslogStream(page)).split(`KBD_FOCUS app_id=${appId}`).length - 1;
-}
-
-// Press bare keys with the Demo surface focused, then return to Internals.
+/** Press bare keys with the Demo surface focused. */
 async function pressKeys(page: Page, keys: string[]) {
   await openSurface(page, "Demo");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   for (const key of keys) await page.keyboard.press(key);
-  await openSurface(page, "Internals");
 }
 
-const SETUP_FAILURE =
-  /omarchy failed|wlcompositor failed|waybar failed|wlclock failed|wlterm failed|dbus-daemon failed|mako failed/;
+const canvasLocator = (page: Page) =>
+  page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
+
+// A command the host could not run, or the launcher reporting that a desktop
+// service died before binding its socket.
+const SETUP_FAILURE = /configured command failed/;
+const DESKTOP_FAILURE = /omarchydesktop: /;
+
+// A launcher session that is up and not yet dismissed: the last
+// KLAUNCHER_READY on screen with no KLAUNCHER_EXIT after it. A key typed
+// before the launcher holds the keyboard goes to the focused window, exactly
+// as it would on the real desktop, so each session is awaited this way.
+const OPEN_LAUNCHER = /KLAUNCHER_READY n=\d+(?![\s\S]*KLAUNCHER_EXIT)/;
 
 /**
- * The O1 gate of docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md:
- * `/?demo=omarchy` boots the tiling compositor with the desktop shell Omarchy
- * is made of — a layer-shell status bar reserving the top strip, a launcher on
- * CTRL+Space, and switchable themes — and every piece is driven from the
- * keyboard. Skips (via gotoOrSkip) when the binaries aren't built.
+ * The Omarchy machine boots the tiling compositor with the desktop shell
+ * Omarchy is made of — a layer-shell status bar reserving the top strip, a
+ * launcher on CTRL+Space, notifications, and switchable themes — and every
+ * piece is driven from the keyboard. Skips (via gotoOrSkip) when the binaries
+ * aren't built.
  */
 test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and live theme switching", async ({ page }) => {
   test.setTimeout(300_000);
 
-  await gotoOrSkip(page, "/?demo=omarchy");
-
+  await launchOmarchy(page);
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/omarchy desktop ready/);
+    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
   expect(await syslogText(page), "omarchy setup reported failure")
     .not.toMatch(SETUP_FAILURE);
 
-  // Gate 1: the desktop's own config is what drives it — the tiling layout,
-  // the staged keybinds, and the theme named in that same file.
-  await expect
-    .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/WLC_LAYOUT dwindle/);
-  expect(await syslogStream(page), "compositor did not load the staged config")
-    .toMatch(/BINDS_LOADED n=\d+ source=\/etc\/kandelo\/wlcompositor\.conf/);
-  expect(await syslogStream(page), "the configured theme was not loaded")
-    .toMatch(/THEME tokyo-night/);
-  expect(await syslogStream(page), "the theme's image wallpaper was not rendered")
-    .toMatch(/WALLPAPER image w=2580 h=1080/);
+  // Gate 1: the image's own config drives the desktop — the tiling layout,
+  // the keybinds, and the theme named in that same file. Themes ship
+  // gradient wallpapers for now (the theme images are a documented
+  // follow-up), so the compositor paints the theme's gradient.
+  await expectTerminal(
+    page,
+    /BINDS_LOADED n=\d+ source=\/usr\/share\/kandelo\/omarchy\/wlcompositor\.conf/,
+    120_000,
+  );
+  const boot = await terminalText(page);
+  expect(boot, "the compositor is not tiling").toMatch(/WLC_LAYOUT dwindle/);
+  expect(boot, "the configured theme was not loaded").toMatch(/THEME tokyo-night/);
+  expect(boot, "the theme's wallpaper was not rendered").toMatch(/WALLPAPER gradient/);
 
   // Gate 2: the bar is unmodified Waybar on a real layer-shell surface —
   // anchored across the top, and its hyprland modules attached to the
-  // compositor's Hyprland IPC event socket (HYPR_LISTENER).
-  await expect
-    .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/LAYER ns=waybar layer=2 x=0 y=0 w=\d+ h=\d+/);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/HYPR_LISTENER slot=\d+/);
+  // compositor's Hyprland IPC event socket (HYPR_LISTENER). The bar's height
+  // is read now, while its LAYER line is on screen.
+  await expectTerminal(page, /LAYER ns=waybar layer=2 x=0 y=0 w=\d+ h=\d+/, 120_000);
+  const barHeight = Number(
+    (await terminalText(page)).match(/LAYER ns=waybar layer=2 x=0 y=0 w=\d+ h=(\d+)/)![1],
+  );
+  expect(barHeight, "waybar reserved no strip").toBeGreaterThan(0);
+  await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 120_000);
+  expect(await terminalText(page), "a desktop service failed to start")
+    .not.toMatch(DESKTOP_FAILURE);
 
   // The desktop boots bare. Assert that before touching the keyboard: the bar
-  // has already mapped, which takes longer than a client would, so a client
-  // window here is one nobody asked for. Without this the assertions below
-  // would pass just as well against a desktop that opens its own.
-  expect(await focusedWindows(page, "wlclock"), "the desktop opened a clock on its own").toBe(0);
-  expect(await focusedWindows(page, "wlterm"), "the desktop opened a terminal on its own").toBe(0);
+  // has already mapped, which takes longer than a client would, so a tile
+  // here is a window nobody asked for. Without this the gates below would
+  // pass just as well against a desktop that opens its own.
+  expect(await terminalText(page), "the desktop opened a window on its own")
+    .not.toMatch(/TILE n=/);
 
   // Open the three clients the way a user does, through the binds the
   // compositor loaded from its own config: CTRL+K for the clock, CTRL+Return
   // for each terminal. Each one is awaited before the next, so a missed key
-  // shows up here rather than as a wrong count three gates later.
+  // shows up here rather than as a wrong count three gates later. The tile
+  // count is the window count: every window the compositor maps is tiled.
   await pressCtrl(page, "KeyK");
-  await expect
-    .poll(() => focusedWindows(page, "wlclock"), { timeout: 60_000 })
-    .toBe(1);
+  await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=wlclock|KBD_FOCUS app_id=wlclock[\s\S]*TILE n=1 i=0 /, 60_000);
   await pressCtrl(page, "Enter");
-  await expect
-    .poll(() => focusedWindows(page, "wlterm"), { timeout: 60_000 })
-    .toBe(1);
+  await expectTerminal(page, /TILE n=2 i=1 /, 60_000);
   await pressCtrl(page, "Enter");
-  await expect
-    .poll(() => focusedWindows(page, "wlterm"), { timeout: 60_000 })
-    .toBe(2);
+  await expectTerminal(page, /TILE n=3 i=2 /, 60_000);
+  await expectTerminal(page, /TILE n=3 i=2 [^\n]*[\s\S]*KBD_FOCUS app_id=wlterm|KBD_FOCUS app_id=wlterm[\s\S]*TILE n=3 i=2 /, 30_000);
 
-  // Gate 3: the windows tile UNDER the bar. Read the log from the bar's LAYER
-  // line onward — only the tiles emitted once the bar reserved its strip are
-  // the desktop's answer.
-  const stream = await syslogStream(page);
-  const barLayer = stream.match(/LAYER ns=waybar layer=2 x=0 y=0 w=\d+ h=(\d+)/);
-  const barHeight = Number(barLayer![1]);
-  expect(barHeight, "waybar reserved no strip").toBeGreaterThan(0);
-  const afterBar = stream.split(/LAYER ns=waybar /).pop() ?? "";
-  const tiles = [...afterBar.matchAll(
-    /TILE n=\d+ i=\d+ x=(-?\d+) y=(-?\d+) w=(\d+) h=(\d+)/g)];
-  expect(tiles.length, "no tiles emitted after the bar mapped")
-    .toBeGreaterThan(0);
+  // Gate 3: the windows tile UNDER the bar. The three-window retile is on
+  // screen; every tile in it must start at or below the bar's strip.
+  const tiles = [...(await terminalText(page)).matchAll(
+    /TILE n=3 i=\d+ x=(-?\d+) y=(-?\d+) w=(\d+) h=(\d+)/g)];
+  expect(tiles.length, "the three-window retile is not on screen")
+    .toBeGreaterThanOrEqual(3);
   for (const t of tiles)
     expect(Number(t[2]), `a window tiled over the bar: ${t[0]}`)
       .toBeGreaterThanOrEqual(barHeight);
@@ -161,7 +190,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // xdg_toplevel role — a client's cursor surface — taking one shifts every
   // count below by one, and the launcher gates then pass on the previous
   // client's tile instead of the one they name.
-  expect(afterBar, "a surface with no window role took a tile")
+  expect(await terminalText(page), "a surface with no window role took a tile")
     .not.toMatch(/TILE n=4 /);
 
   // Gate 4: the desktop composited to the canvas. The Modeset pane uses
@@ -186,86 +215,54 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // compositor's own context, "webgl2" the pump's CPU-composite fallback.
   await expect(page.locator("text=/flips ·/").first())
     .toContainText(/webgl2-gl/i, { timeout: 30_000 });
-  expect(await syslogStream(page), "GPU compositing was torn down")
+  await openSurface(page, "Terminal");
+  expect(await terminalText(page), "GPU compositing was torn down")
     .not.toMatch(/GPU compositing failed/);
 
   // Gate 5: CTRL+Space opens the launcher. It is an overlay layer surface that
-  // takes the keyboard away from the focused terminal, so the "t" that follows
-  // filters its list instead of being typed into the shell.
+  // takes the keyboard away from the focused terminal, so the keys that follow
+  // filter its list instead of being typed into the shell.
   await pressCtrl(page, "Space");
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/LAYER ns=launcher layer=3 /);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_READY n=8/);
+  await expectTerminal(page, /LAYER ns=launcher layer=3 /, 60_000);
+  await expectTerminal(page, /KLAUNCHER_READY n=8/, 60_000);
 
   // "te" narrows the eight entries (Bash, Clock, Foot, Nano, NetHack, Paint,
   // Terminal, Vim) to Terminal alone — "t" alone still matches Paint.
-  await openSurface(page, "Demo");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
-  await page.keyboard.press("KeyT");
-  await page.keyboard.press("KeyE");
-  await openSurface(page, "Internals");
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_FILTER q=te n=1/);
+  await pressKeys(page, ["KeyT", "KeyE"]);
+  await expectTerminal(page, /KLAUNCHER_FILTER q=te n=1/, 60_000);
 
   // Enter launches the one match (Terminal) through the compositor's kwlctl
   // socket and dismisses the launcher. The desktop went in with three tiled
   // windows, so the launched terminal shows up as a fourth tile — the
   // connection count alone would not prove it, since the launcher's own
   // session ends at the same moment and frees its slot.
-  await openSurface(page, "Demo");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
-  await page.keyboard.press("Enter");
-  await openSurface(page, "Internals");
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/wlterm/);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_EXIT/);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/TILE n=4 i=3 /);
+  await pressKeys(page, ["Enter"]);
+  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/wlterm/, 60_000);
+  await expectTerminal(page, /KLAUNCHER_EXIT/, 60_000);
+  await expectTerminal(page, /TILE n=4 i=3 /, 60_000);
 
   // Gate 5b: a real application through the same path. "vi" narrows to Vim;
   // its entry runs unmodified vim inside a wlterm, fetched lazily from
   // vim.zip on first exec — the fifth tile only appears if the whole chain
   // (launcher → kwlctl exec → wlterm → lazy fetch → vim) held.
-  const beforeVim = await launcherSessions(page);
   await pressCtrl(page, "Space");
-  await expect
-    .poll(() => launcherSessions(page), { timeout: 60_000 })
-    .toBeGreaterThan(beforeVim);
+  await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyV", "KeyI", "Enter"]);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/wlterm \/usr\/bin\/vim/);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/TILE n=5 i=4 /);
+  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/wlterm \/usr\/bin\/vim/, 60_000);
+  await expectTerminal(page, /TILE n=5 i=4 /, 120_000);
   expect(await syslogText(page), "vim binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
 
   // Gate 5c: an unmodified upstream client through the same path. "fo"
   // narrows to Foot; its entry runs stock foot 1.17.2 — wl_display_connect
-  // via XDG_RUNTIME_DIR, fontconfig resolving "monospace" through the staged
-  // fonts.conf, fcft rasterizing the staged Inconsolata — and the sixth tile
+  // via XDG_RUNTIME_DIR, fontconfig resolving "monospace" through the image's
+  // fonts.conf, fcft rasterizing the bundled Inconsolata — and the sixth tile
   // only appears once foot maps its first frame through all of it.
-  const beforeFoot = await launcherSessions(page);
   await pressCtrl(page, "Space");
-  await expect
-    .poll(() => launcherSessions(page), { timeout: 60_000 })
-    .toBeGreaterThan(beforeFoot);
+  await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyF", "KeyO", "Enter"]);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot /);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/TILE n=6 i=5 /);
+  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot /, 60_000);
+  await expectTerminal(page, /TILE n=6 i=5 /, 120_000);
   expect(await syslogText(page), "foot binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
 
@@ -277,41 +274,29 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // pipe, so "Reloading..." is also the proof that a signal reaches a
   // multi-threaded process.
   await pressCtrl(page, "Space", true);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/THEME (catppuccin|everforest|gruvbox|nord|rose-pine)/);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/THEME_HOOK theme=(catppuccin|everforest|gruvbox|nord|rose-pine) bar=#[0-9a-f]{6} bar_pid=\d+/);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/Reloading\.\.\./);
+  await expectTerminal(page, /THEME (catppuccin|everforest|gruvbox|nord|rose-pine)/, 60_000);
+  await expectTerminal(
+    page,
+    /THEME_HOOK theme=(catppuccin|everforest|gruvbox|nord|rose-pine) bar=#[0-9a-f]{6} bar_pid=\d+/,
+    60_000,
+  );
+  await expectTerminal(page, /Reloading\.\.\./, 60_000);
   // The switch also spawns the configured notifier: notify-send routes a
   // real org.freedesktop.Notifications.Notify over the dbus-daemon session
   // bus, mako answers with the assigned id and maps the toast as a
   // layer-shell surface.
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/NOTIFY_ID id=\d+/);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/LAYER ns=notifications /);
+  await expectTerminal(page, /NOTIFY_ID id=\d+/, 60_000);
+  await expectTerminal(page, /LAYER ns=notifications /, 60_000);
 
   // Gate 6b: CTRL+ALT+Space opens the Omarchy menu — the same launcher binary
   // at its root level. Down+Enter descends into the theme list, and Enter on
   // an entry dispatches the switch through kwlctl.
   await pressCtrl(page, "Space", false, true);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_LEVEL root/);
+  await expectTerminal(page, /KLAUNCHER_LEVEL root/, 60_000);
   await pressKeys(page, ["ArrowDown", "Enter"]);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_LEVEL themes/);
+  await expectTerminal(page, /KLAUNCHER_LEVEL themes/, 60_000);
   await pressKeys(page, ["Enter"]);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_THEME name=[a-z-]+/);
+  await expectTerminal(page, /KLAUNCHER_THEME name=[a-z-]+/, 60_000);
 
   // Gate 7: the bar tracks the desktop. CTRL+2 switches workspace, and the
   // bar's hyprland/workspaces module reads the switch off the Hyprland IPC
@@ -320,10 +305,6 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // proof the feed arrived; the compositor's WORKSPACE marker only proves it
   // was sent.
   await pressCtrl(page, "2");
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/WORKSPACE active=2/);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/hyprland IPC received workspacev2>>2,2/);
+  await expectTerminal(page, /WORKSPACE active=2/, 60_000);
+  await expectTerminal(page, /hyprland IPC received workspacev2>>2,2/, 60_000);
 });

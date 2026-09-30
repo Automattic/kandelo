@@ -38,9 +38,12 @@ test("the machine named by the booted descriptor is current", () => {
 
 test("other machines inside the same image are not current", () => {
   // One VFS image declares several machines: browser-main-shell backs shell,
-  // node, doom, quake, modeset, sdl2, wayland and espeak. Matching on the image URL
+  // node, doom, quake, modeset, sdl2, wayland, hyprland, omarchy and espeak.
+  // Matching on the image URL
   // alone marked every one of them as the current machine.
-  for (const other of ["shell", "node", "quake", "modeset", "sdl2", "wayland", "espeak"]) {
+  for (const other of [
+    "shell", "node", "quake", "modeset", "sdl2", "wayland", "hyprland", "omarchy", "espeak",
+  ]) {
     assert.equal(
       galleryItemMatchesCurrent(
         item(other, SHELL_IMAGE),

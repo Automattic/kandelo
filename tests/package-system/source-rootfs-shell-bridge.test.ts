@@ -231,6 +231,14 @@ function fixturePaths(root: string) {
   const wlclockPath = join(root, "wlclock.wasm");
   const wlpaintPath = join(root, "wlpaint.wasm");
   const wldesktopPath = join(root, "wldesktop");
+  // The tiling and Omarchy desktops: two more programs, two launchers, the
+  // theme hook, and the data archive unpacked at /usr/share/kandelo.
+  const klauncherPath = join(root, "klauncher.wasm");
+  const notifySendPath = join(root, "notify-send.wasm");
+  const hyprdesktopPath = join(root, "hyprdesktop");
+  const omarchydesktopPath = join(root, "omarchydesktop");
+  const omarchyThemeHookPath = join(root, "omarchy-theme-changed");
+  const desktopDataPath = join(root, "kandelo-desktop-data.zip");
   const libinputQuirksPath = join(root, "libinput-quirks.zip");
   const demoConfigPath = join(
     repoRoot,
@@ -253,6 +261,18 @@ function fixturePaths(root: string) {
   writeFileSync(wlclockPath, new Uint8Array([0x77, 0x6c, 0x6b, 0x31]));
   writeFileSync(wlpaintPath, new Uint8Array([0x77, 0x6c, 0x70, 0x31]));
   writeFileSync(wldesktopPath, "#!/bin/sh\nexec wlterm\n");
+  writeFileSync(klauncherPath, new Uint8Array([0x6b, 0x6c, 0x6e, 0x31]));
+  writeFileSync(notifySendPath, new Uint8Array([0x6e, 0x73, 0x6e, 0x31]));
+  writeFileSync(hyprdesktopPath, "#!/bin/sh\nexec wlterm\n");
+  writeFileSync(omarchydesktopPath, "#!/bin/sh\nexec wlcompositor\n");
+  writeFileSync(omarchyThemeHookPath, "#!/usr/bin/bash\nexit 0\n");
+  writeFileSync(
+    desktopDataPath,
+    zipSync({
+      "themes/tokyo-night/theme.conf": new TextEncoder().encode("# Tokyo Night\n"),
+      "apps/terminal.conf": new TextEncoder().encode("name = Terminal\n"),
+    }),
+  );
   writeFileSync(
     libinputQuirksPath,
     zipSync({
@@ -334,6 +354,12 @@ function fixturePaths(root: string) {
     wlclockPath,
     wlpaintPath,
     wldesktopPath,
+    klauncherPath,
+    notifySendPath,
+    hyprdesktopPath,
+    omarchydesktopPath,
+    omarchyThemeHookPath,
+    desktopDataPath,
     libinputQuirksPath,
     demoConfigPath,
     demoProfileOverlayPath,
@@ -636,12 +662,26 @@ describe("canonical source-rootfs shell", () => {
       ["/usr/local/bin/wlclock", paths.wlclockPath],
       ["/usr/local/bin/wlpaint", paths.wlpaintPath],
       ["/usr/local/bin/wldesktop", paths.wldesktopPath],
+      ["/usr/local/bin/klauncher", paths.klauncherPath],
+      ["/usr/local/bin/notify-send", paths.notifySendPath],
+      ["/usr/local/bin/hyprdesktop", paths.hyprdesktopPath],
+      ["/usr/local/bin/omarchydesktop", paths.omarchydesktopPath],
+      ["/usr/local/bin/omarchy-theme-changed", paths.omarchyThemeHookPath],
     ]) {
       expect(readVfsFile(fs, guest), guest).toEqual(
         new Uint8Array(readFileSync(host)),
       );
       expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
     }
+    // The desktops' data is image bytes under /usr/share/kandelo.
+    expect(
+      new TextDecoder().decode(
+        readVfsFile(fs, "/usr/share/kandelo/themes/tokyo-night/theme.conf"),
+      ),
+    ).toBe("# Tokyo Night\n");
+    expect(
+      new TextDecoder().decode(readVfsFile(fs, "/usr/share/kandelo/apps/terminal.conf")),
+    ).toBe("name = Terminal\n");
     expect(
       text(readVfsFile(fs, "/usr/share/libinput/10-generic-keyboard.quirks")),
     ).toBe("[Generic Keyboard]\n");
@@ -1019,6 +1059,12 @@ describe("canonical source-rootfs shell", () => {
       "wlclock.wasm",
       "wlpaint.wasm",
       "wldesktop",
+      "klauncher.wasm",
+      "notify-send.wasm",
+      "hyprdesktop",
+      "omarchydesktop",
+      "omarchy-theme-changed",
+      "kandelo-desktop-data.zip",
       "libinput-quirks.zip",
     ]) {
       writeFileSync(join(waylandDemoDir, name), name);
@@ -1105,6 +1151,16 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
       `--espeak-ng-data ${espeakNgDir}/espeak-ng-data.zip`,
     );
     expect(invocation).toContain(`--wldesktop ${waylandDemoDir}/wldesktop`);
+    expect(invocation).toContain(`--klauncher ${waylandDemoDir}/klauncher.wasm`);
+    expect(invocation).toContain(`--notify-send ${waylandDemoDir}/notify-send.wasm`);
+    expect(invocation).toContain(`--hyprdesktop ${waylandDemoDir}/hyprdesktop`);
+    expect(invocation).toContain(`--omarchydesktop ${waylandDemoDir}/omarchydesktop`);
+    expect(invocation).toContain(
+      `--omarchy-theme-hook ${waylandDemoDir}/omarchy-theme-changed`,
+    );
+    expect(invocation).toContain(
+      `--desktop-data ${waylandDemoDir}/kandelo-desktop-data.zip`,
+    );
     expect(invocation).toContain(
       `--libinput-quirks ${waylandDemoDir}/libinput-quirks.zip`,
     );

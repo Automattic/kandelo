@@ -75,6 +75,12 @@ export interface SourceRootfsShellInputs {
   wlclockPath: string;
   wlpaintPath: string;
   wldesktopPath: string;
+  klauncherPath: string;
+  notifySendPath: string;
+  hyprdesktopPath: string;
+  omarchydesktopPath: string;
+  omarchyThemeHookPath: string;
+  desktopDataPath: string;
   libinputQuirksPath: string;
   espeakNgPath: string;
   espeakNgDataPath: string;
@@ -802,6 +808,24 @@ export async function buildSourceRootfsShellImage(
     inputs.wldesktopPath,
     "wldesktop launcher dependency",
   );
+  const klauncher = readRegularInput(inputs.klauncherPath, "klauncher dependency");
+  const notifySend = readRegularInput(inputs.notifySendPath, "notify-send dependency");
+  const hyprdesktop = readRegularInput(
+    inputs.hyprdesktopPath,
+    "hyprdesktop launcher dependency",
+  );
+  const omarchydesktop = readRegularInput(
+    inputs.omarchydesktopPath,
+    "omarchydesktop launcher dependency",
+  );
+  const omarchyThemeHook = readRegularInput(
+    inputs.omarchyThemeHookPath,
+    "omarchy theme hook dependency",
+  );
+  const desktopData = readRegularInput(
+    inputs.desktopDataPath,
+    "desktop data dependency",
+  );
   const libinputQuirks = readRegularInput(
     inputs.libinputQuirksPath,
     "libinput quirks dependency",
@@ -842,6 +866,20 @@ export async function buildSourceRootfsShellImage(
   writeVfsBinary(fs, "/usr/local/bin/wlclock", wlclock, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/wlpaint", wlpaint, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
+  // The tiling (hyprland) and Omarchy-shaped (omarchy) desktops start the
+  // same compositor through their own launchers. klauncher and notify-send
+  // are small in-tree programs, eager like the other wl* programs; foot,
+  // Waybar, mako and dbus-daemon are large and arrive as lazy rootfs files
+  // (images/rootfs/PACKAGES.toml), so machines that never start them do not
+  // pay for them.
+  writeVfsBinary(fs, "/usr/local/bin/klauncher", klauncher, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/notify-send", notifySend, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/hyprdesktop", hyprdesktop, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/omarchy-theme-changed", omarchyThemeHook, 0o755);
+  // Configs, themes, launcher entries, fontconfig and D-Bus configs, and the
+  // font: everything the desktops read is image data here, not page staging.
+  unpackDataZip(fs, "/usr/share/kandelo", desktopData);
   // wlcompositor's statically linked libinput reads its device quirks from
   // LIBINPUT_QUIRKS_DIR, compiled in as /usr/share/libinput.
   unpackDataZip(fs, "/usr/share/libinput", libinputQuirks);
@@ -933,6 +971,12 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--wlclock",
     "--wlpaint",
     "--wldesktop",
+    "--klauncher",
+    "--notify-send",
+    "--hyprdesktop",
+    "--omarchydesktop",
+    "--omarchy-theme-hook",
+    "--desktop-data",
     "--libinput-quirks",
     "--espeak-ng",
     "--espeak-ng-data",
@@ -957,7 +1001,12 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--modeset <modeset.wasm> --sdl2 <sdl2.wasm> " +
           "--wlcompositor <wlcompositor.wasm> --wlterm <wlterm.wasm> " +
           "--wlclock <wlclock.wasm> --wlpaint <wlpaint.wasm> " +
-          "--wldesktop <wldesktop> --libinput-quirks <libinput-quirks.zip> " +
+          "--wldesktop <wldesktop> --klauncher <klauncher.wasm> " +
+          "--notify-send <notify-send.wasm> --hyprdesktop <hyprdesktop> " +
+          "--omarchydesktop <omarchydesktop> " +
+          "--omarchy-theme-hook <omarchy-theme-changed> " +
+          "--desktop-data <kandelo-desktop-data.zip> " +
+          "--libinput-quirks <libinput-quirks.zip> " +
           "--espeak-ng <espeak-ng.wasm> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
@@ -981,6 +1030,12 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     wlclockPath: values.get("--wlclock")!,
     wlpaintPath: values.get("--wlpaint")!,
     wldesktopPath: values.get("--wldesktop")!,
+    klauncherPath: values.get("--klauncher")!,
+    notifySendPath: values.get("--notify-send")!,
+    hyprdesktopPath: values.get("--hyprdesktop")!,
+    omarchydesktopPath: values.get("--omarchydesktop")!,
+    omarchyThemeHookPath: values.get("--omarchy-theme-hook")!,
+    desktopDataPath: values.get("--desktop-data")!,
     libinputQuirksPath: values.get("--libinput-quirks")!,
     espeakNgPath: values.get("--espeak-ng")!,
     espeakNgDataPath: values.get("--espeak-ng-data")!,

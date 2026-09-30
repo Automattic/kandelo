@@ -90,5 +90,24 @@ mode = 0o755
 # builders unpack this zip there. (libinput logs "Failed to load the device
 # quirks" and applies no device fixups without them.)
 [[runtime_files]]
+artifact = "hyprdesktop"
+guest_path = "/usr/local/bin/hyprdesktop"
+mode = 0o755
+
+[[runtime_files]]
+artifact = "omarchydesktop"
+guest_path = "/usr/local/bin/omarchydesktop"
+mode = 0o755
+
+[[runtime_files]]
+artifact = "omarchy-theme-changed"
+guest_path = "/usr/local/bin/omarchy-theme-changed"
+mode = 0o755
+
+[[runtime_files]]
+artifact = "kandelo-desktop-data.zip"
+guest_path = "/usr/share/wayland-demo/kandelo-desktop-data.zip"
+
+[[runtime_files]]
 artifact = "libinput-quirks.zip"
 guest_path = "/usr/share/wayland-demo/libinput-quirks.zip"

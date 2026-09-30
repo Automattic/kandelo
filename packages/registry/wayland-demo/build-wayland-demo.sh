@@ -179,9 +179,36 @@ wasm32posix-cc "${CFLAGS[@]}" -I"$SYSROOT/include/glib-2.0" \
     "$SYSROOT/lib/libz.a" \
     -lm -o "$WORK_DIR/notify-send.wasm"
 
-# --- launcher ---------------------------------------------------------
-cp "$HERE/wldesktop" "$WORK_DIR/wldesktop"
-chmod 0755 "$WORK_DIR/wldesktop"
+# --- launchers and desktop data ----------------------------------------
+# wldesktop starts the floating demo desktop; hyprdesktop and omarchydesktop
+# start the tiling desktop and the Omarchy-shaped one. Their configs, themes
+# and launcher entries are image data under /usr/share/kandelo, packed into
+# one archive the image builder unpacks there.
+for launcher in wldesktop desktops/hyprdesktop desktops/omarchydesktop \
+                desktops/omarchy-theme-changed; do
+    cp "$HERE/$launcher" "$WORK_DIR/$(basename "$launcher")"
+    chmod 0755 "$WORK_DIR/$(basename "$launcher")"
+done
+# Deterministic: sorted entries, fixed timestamps and modes, so the archive's
+# bytes depend only on its inputs. The font is the one libwpkdraw vendors.
+python3 - "$HERE/desktops/data" "$SOURCE_ROOT/third_party/Inconsolata-Regular.ttf" \
+    "$WORK_DIR/kandelo-desktop-data.zip" <<'PY'
+import os, sys, zipfile
+data, font, out = sys.argv[1:4]
+entries = []
+for root, _dirs, files in os.walk(data):
+    for name in files:
+        path = os.path.join(root, name)
+        entries.append((os.path.relpath(path, data), path))
+entries.append(("fonts/Inconsolata-Regular.ttf", font))
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for arcname, path in sorted(entries):
+        info = zipfile.ZipInfo(arcname, date_time=(1980, 1, 1, 0, 0, 0))
+        info.external_attr = 0o644 << 16
+        info.compress_type = zipfile.ZIP_DEFLATED
+        with open(path, "rb") as f:
+            z.writestr(info, f.read())
+PY
 
 cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
@@ -189,7 +216,11 @@ for prog in wlcompositor wlterm wlclock wlpaint klauncher notify-send; do
     install_local_binary wayland-demo "$WORK_DIR/$prog.wasm" "$prog.wasm"
 done
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    install -m 0755 "$WORK_DIR/wldesktop" "$WASM_POSIX_DEP_OUT_DIR/wldesktop"
+    for launcher in wldesktop hyprdesktop omarchydesktop omarchy-theme-changed; do
+        install -m 0755 "$WORK_DIR/$launcher" "$WASM_POSIX_DEP_OUT_DIR/$launcher"
+    done
+    install -m 0644 "$WORK_DIR/kandelo-desktop-data.zip" \
+        "$WASM_POSIX_DEP_OUT_DIR/kandelo-desktop-data.zip"
 fi
 # The compositor links libinput statically, so the device quirks libinput
 # reads at runtime travel with this package (see [[runtime_files]]).
