@@ -43,6 +43,7 @@ function ingestHost(overrides: Partial<KernelHost> = {}): KernelHost {
     writeFile: vi.fn(async () => {}),
     signalProcess: vi.fn(async () => true),
     dispatchShellCommand: vi.fn(async () => {}),
+    noteDemoIngest: vi.fn(),
     ...overrides,
   } as unknown as KernelHost;
 }
@@ -122,6 +123,40 @@ describe("demo ingest transaction", () => {
       "signal:41:15",
       "dispatch:fbdoom -iwad /user.wad",
     ]);
+  });
+
+  it("records where the ingested file came from once the write lands", async () => {
+    const noteDemoIngest = vi.fn();
+    const host = ingestHost({ noteDemoIngest });
+    await runDemoIngest(host, INGEST, file("custom.wad", 4, [1, 2, 3, 4]));
+    expect(noteDemoIngest).toHaveBeenCalledWith({ kind: "upload", name: "custom.wad" });
+
+    const input = {
+      id: "wad", filename: "custom.wad", byteLength: 4, sha256: "0".repeat(64),
+      source: { kind: "resolver" as const, resolver: "example", locator: "x" },
+    };
+    await runDemoIngest(host, INGEST, file("custom.wad", 4, [1, 2, 3, 4]), {
+      source: { kind: "input", input },
+    });
+    expect(noteDemoIngest).toHaveBeenLastCalledWith({ kind: "input", input });
+  });
+
+  it("records nothing for a file that was rejected or never written", async () => {
+    const noteDemoIngest = vi.fn();
+    await expect(
+      runDemoIngest(ingestHost({ noteDemoIngest }), INGEST, file("notes.txt", 4, [1, 2, 3, 4])),
+    ).rejects.toMatchObject({ reason: "extension" });
+    await expect(
+      runDemoIngest(
+        ingestHost({
+          noteDemoIngest,
+          writeFile: vi.fn(async () => { throw new Error("ENOSPC"); }),
+        }),
+        INGEST,
+        file("custom.wad", 4, [1, 2, 3, 4]),
+      ),
+    ).rejects.toMatchObject({ reason: "write-failed" });
+    expect(noteDemoIngest).not.toHaveBeenCalled();
   });
 
   it("rechecks actual bytes before writing", async () => {

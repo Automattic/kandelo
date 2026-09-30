@@ -1,12 +1,13 @@
 // Share dialog — modal portaled to <body>.
 //
 // Encodes the current (or preset) boot descriptor plus an optional
-// boot-time script into a #k1= URL fragment, and updates the tier bar /
-// byte count as the user types.
+// boot-time script and, for a machine whose image declares one, an optional
+// checkpoint of where it is now, into a #k1= URL fragment, and updates the
+// tier bar / byte count as the user types.
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { useKernelHost } from "../kernel-host/react";
+import { useDemoCheckpoint, useKernelHost } from "../kernel-host/react";
 import {
   classifyTier, encodeBootDescriptor, HARD_CAPS,
 } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
@@ -14,8 +15,10 @@ import {
   createInlineBootInput,
   decodeInlineBootInputText,
 } from "../../../../../web-libs/kandelo-session/src/boot-inputs";
+import { createCheckpointBootInputs } from "../../../../../web-libs/kandelo-session/src/demo-checkpoint";
 import type {
   BootDescriptor,
+  BootInput,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface ShareDialogProps {
@@ -52,7 +55,17 @@ export const SharePanel: React.FC<SharePanelProps> = ({
   descriptor: presetDesc, onClose, embedded = false,
 }) => {
   const host = useKernelHost();
+  const checkpoint = useDemoCheckpoint();
   const [script, setScript] = React.useState("");
+  // A checkpoint is taken once, when asked for: the link then describes the
+  // moment the box was ticked, not whatever the machine is doing when the
+  // visitor gets around to copying.
+  const [checkpointState, setCheckpointState] = React.useState<
+    | { kind: "off" }
+    | { kind: "capturing" }
+    | { kind: "ready"; inputs: BootInput[]; bytes: number }
+    | { kind: "error"; message: string }
+  >({ kind: "off" });
   const [url, setUrl] = React.useState<string>("");
   const [error, setError] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
@@ -61,6 +74,27 @@ export const SharePanel: React.FC<SharePanelProps> = ({
     () => presetDesc ?? host.getBootDescriptor(),
     [presetDesc, host],
   );
+
+  const takeCheckpoint = React.useCallback(async () => {
+    if (!checkpoint) return;
+    setCheckpointState({ kind: "capturing" });
+    // Inputs the machine booted with still describe its content until
+    // something is ingested; the link script is not part of that content.
+    const runScript = baseDescriptor.boot.parameters?.runScript;
+    const carried = (baseDescriptor.boot.inputs ?? []).filter(
+      (input) => input.id !== runScript,
+    );
+    try {
+      const inputs = await createCheckpointBootInputs(host, checkpoint, carried);
+      const state = inputs[inputs.length - 1];
+      setCheckpointState({ kind: "ready", inputs, bytes: state.byteLength });
+    } catch (err) {
+      setCheckpointState({
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [baseDescriptor, checkpoint, host]);
 
   const scriptBytes = React.useMemo(
     () => new TextEncoder().encode(script).byteLength,
@@ -94,11 +128,23 @@ export const SharePanel: React.FC<SharePanelProps> = ({
     void (async () => {
       try {
         const trimmed = script.trim();
-        if (!trimmed) {
+        const checkpointInputs = checkpointState.kind === "ready"
+          ? checkpointState.inputs
+          : [];
+        if (!trimmed && checkpointInputs.length === 0) {
           if (!cancelled) { setUrl(workingShareUrl(null)); setError(null); }
           return;
         }
-        const text = script.endsWith("\n") ? script : `${script}\n`;
+        const scriptInputs = trimmed
+          ? [await createInlineBootInput({
+            id: "script",
+            filename: "kandelo-link.sh",
+            bytes: new TextEncoder().encode(
+              script.endsWith("\n") ? script : `${script}\n`,
+            ),
+            compression: "gzip",
+          })]
+          : [];
         const desc: BootDescriptor = {
           ...baseDescriptor,
           boot: {
@@ -112,18 +158,15 @@ export const SharePanel: React.FC<SharePanelProps> = ({
             argv: ["bash", "-l", "-i"],
             cwd: "/",
             env: {},
-            inputs: [await createInlineBootInput({
-              id: "script",
-              filename: "kandelo-link.sh",
-              bytes: new TextEncoder().encode(text),
-              compression: "gzip",
-            })],
+            inputs: [...checkpointInputs, ...scriptInputs],
             // Record the shell that should run the script so the opener's
             // machine executes it directly (`<shell> script`) with no visible
             // `command -v bash` probe. Every Kandelo browser image provides
             // bash as its default shell, and the opener boots the same image
             // this link carries, so the choice is a property of the link.
-            parameters: { runScript: "script", runScriptShell: "bash" },
+            ...(trimmed
+              ? { parameters: { runScript: "script", runScriptShell: "bash" } }
+              : {}),
           },
         };
         const { fragment } = await encodeBootDescriptor(desc);
@@ -136,7 +179,7 @@ export const SharePanel: React.FC<SharePanelProps> = ({
       }
     })();
     return () => { cancelled = true; };
-  }, [baseDescriptor, script]);
+  }, [baseDescriptor, script, checkpointState]);
 
   const tier = classifyTier(url.length);
   const tierPct = url.length === 0 ? 0 : Math.min(100, (url.length / (8 * 1024)) * 100);
@@ -183,6 +226,41 @@ export const SharePanel: React.FC<SharePanelProps> = ({
         )}
 
         <div className="kshare-body">
+          {checkpoint && (
+            <div className="kshare-script">
+              <label className="kshare-sect-lbl" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  data-testid="share-checkpoint-toggle"
+                  checked={checkpointState.kind !== "off"}
+                  disabled={checkpointState.kind === "capturing"}
+                  onChange={(e) => {
+                    if (e.target.checked) void takeCheckpoint();
+                    else setCheckpointState({ kind: "off" });
+                  }}
+                />
+                {checkpoint.label ?? "Include a checkpoint"}
+              </label>
+              <div className="kshare-script-meta" data-testid="share-checkpoint-status">
+                {checkpointState.kind === "off" && "The link opens this machine from the start."}
+                {checkpointState.kind === "capturing" && "Taking a checkpoint…"}
+                {checkpointState.kind === "ready" && (
+                  <>
+                    {`Checkpoint taken (${checkpointState.bytes} B). The link opens where this machine was then. `}
+                    <button type="button" className="kshare-btn" onClick={() => void takeCheckpoint()}>
+                      Take again
+                    </button>
+                  </>
+                )}
+              </div>
+              {checkpointState.kind === "error" && (
+                <div className="kshare-script-err" data-testid="share-checkpoint-error">
+                  {checkpointState.message}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Script */}
           <div className="kshare-script">
             <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>

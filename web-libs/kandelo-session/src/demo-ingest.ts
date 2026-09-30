@@ -13,7 +13,7 @@
 // exited and the kernel's exit path has released the binding.
 
 import type { DemoIngestConfig } from "./demo-config";
-import type { KernelHost } from "./kernel-host";
+import type { DemoIngestSource, KernelHost } from "./kernel-host";
 
 /** POSIX SIGTERM. Default disposition terminates a process with no handler. */
 export const SIGTERM = 15;
@@ -63,6 +63,12 @@ export interface RunDemoIngestOptions {
   onPhase?: (phase: IngestPhase) => void;
   /** How long to wait for the old process to go away. */
   stopTimeoutMs?: number;
+  /**
+   * Where the file came from. Defaults to an upload from the visitor's
+   * device; a caller that fetched the bytes through a boot-input resolver
+   * passes that input so the content can later be named in a share link.
+   */
+  source?: DemoIngestSource;
 }
 
 /** Lowercase extension of a filename, including the dot. "" when none. */
@@ -113,6 +119,7 @@ export async function runDemoIngest(
     waitForRelease,
     onPhase = () => {},
     stopTimeoutMs = 10_000,
+    source = { kind: "upload", name: file.name },
   } = options;
 
   onPhase("validating");
@@ -140,6 +147,9 @@ export async function runDemoIngest(
       `could not write ${ingest.targetPath}: ${errorText(err)}`,
     );
   }
+  // The file at targetPath is now this one, whether or not the restart below
+  // succeeds, so its origin is recorded as soon as the write lands.
+  host.noteDemoIngest(source);
 
   if (!ingest.onLoad) {
     onPhase("done");

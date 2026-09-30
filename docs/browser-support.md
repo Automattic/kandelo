@@ -982,6 +982,15 @@ the core that actually run are fetched.
   machine's filesystem and is gone when the machine is.
 - **Input.** Arrow keys are the D-pad, Enter is Start, Right Shift is Select,
   Z/X are B/A, A/S are Y/X, and Q/W are the shoulder buttons.
+- **Save states in links.** The profile declares a `checkpoint` (see
+  [Kandelo demo metadata](#kandelo-demo-metadata)). The frontend saves on
+  SIGUSR1; `/usr/local/bin/retro-checkpoint` sends it and waits for the
+  frontend to confirm a complete state by echoing back a fresh nonce. The
+  launcher starts the core with `--state` when a link delivers one. A state of
+  a ROM loaded from the visitor's device cannot be shared, and a state too big
+  for a link is refused with its size. Whether a state fits depends on the
+  core and on how well that moment of the game compresses; the NES test
+  suite's does.
 - **Audio before a gesture.** `/dev/dsp` applies backpressure while the
   browser holds audio suspended (see above). The frontend waits at most
   100 ms for room in the queue, then drops samples until a write gets through
@@ -1715,6 +1724,46 @@ uses the kernel signal path and bounded process/device waits before dispatching
 the image-owned command. Write, signal, timeout, and command-dispatch failures
 remain visible. An absent `ingest` block means the image exposes no upload
 capability; the loader does not infer one from a package or profile name.
+
+The browser remembers where the machine's last ingested file came from: a
+file picked or dropped from the visitor's device, or a file fetched through a
+boot-input resolver. A share link can only name content the opener's browser
+could fetch again, so this origin decides whether a checkpoint (below) can be
+shared.
+
+A profile may also declare a checkpoint capability, the inverse of `ingest`:
+
+```json
+{
+  "checkpoint": {
+    "capture": {
+      "argv": ["/usr/local/bin/retro-checkpoint"],
+      "path": "/tmp/kandelo-retro.state",
+      "maxBytes": 2097152
+    },
+    "inputId": "state",
+    "filename": "retro.state",
+    "label": "Include save state"
+  }
+}
+```
+
+The browser runs `capture.argv` with no terminal (a `#!` script runs through
+its interpreter, as execve would) and takes its exit status as the only signal:
+exit 0 means `capture.path` holds a complete checkpoint made for this request,
+and any other status means there is none, so the file is not read. It reads
+the file through the kernel worker and rejects an empty file or one over
+`maxBytes`, which cannot exceed 2 MiB because the checkpoint travels in a link
+as a gzip-compressed inline boot input. The Share dialog offers it as a check
+box. The link carries the checkpoint as input `inputId`, plus the inputs that
+name the machine's content: the ones it booted with while nothing has been
+ingested since, or the resolver input an ingested file was fetched through. A
+checkpoint of a file from the visitor's own device is refused before anything
+is captured, because no link could deliver that file to the opener. A
+checkpoint whose compressed size exceeds a link's 32 KiB inline cap fails with
+its size. Restoring is the image's job: the opener's boot materializes the
+checkpoint at `/run/kandelo/inputs/<inputId>/<filename>` and the profile's own
+init decides what to do with it.
 
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported

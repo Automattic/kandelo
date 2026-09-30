@@ -9,6 +9,7 @@ export * from "./demo-config-vfs";
 export * from "./dinit-boot-targets";
 export * from "./demo-guides";
 export * from "./experimental-terminal-session";
+export * from "./demo-checkpoint";
 export * from "./demo-ingest";
 export * from "./deployment-scope";
 export * from "./vfs-asset-group";

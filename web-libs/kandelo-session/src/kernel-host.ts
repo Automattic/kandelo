@@ -1,4 +1,8 @@
-import type { DemoGuideConfig, DemoIngestConfig } from "./demo-config";
+import type {
+  DemoCheckpointConfig,
+  DemoGuideConfig,
+  DemoIngestConfig,
+} from "./demo-config";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
@@ -799,6 +803,25 @@ export interface GalleryQuery {
 
 // ── The interface ──────────────────────────────────────────────────────────
 
+/**
+ * Where the file a machine last ingested came from. A share link can only
+ * name content a later visitor's browser could fetch again, so the origin
+ * decides whether the machine's current content can travel in a link.
+ */
+export type DemoIngestSource =
+  /** Picked or dropped from the visitor's own device. No link can name it. */
+  | { kind: "upload"; name: string }
+  /** Fetched through a boot-input resolver; `input` names and verifies it. */
+  | { kind: "input"; input: BootInput };
+
+export interface RunProgramOptions {
+  /** `NAME=value` strings. Defaults to a minimal POSIX environment. */
+  env?: string[];
+  cwd?: string;
+  /** Defaults to 30 seconds. */
+  timeoutMs?: number;
+}
+
 export interface KernelHost {
   // status
   getStatus(): MachineStatus;
@@ -859,6 +882,13 @@ export interface KernelHost {
    * exists. Rejects when the attached kernel cannot signal.
    */
   signalProcess(pid: number, signum: number): Promise<boolean>;
+  /**
+   * Run a program from the machine's filesystem to completion, with no
+   * terminal, and resolve with its exit status. `argv[0]` is the absolute
+   * path to execute; a script is run by its `#!` interpreter as usual. The
+   * program is terminated and the call rejects if it outlives `timeoutMs`.
+   */
+  runProgram(argv: string[], options?: RunProgramOptions): Promise<number>;
 
   // inspector
   enumProcs(): Promise<ProcessInfo[]>;
@@ -923,6 +953,16 @@ export interface KernelHost {
   /** File-ingest capability declared by the current VFS image, if any. */
   getDemoIngest(): DemoIngestConfig | null;
   subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void;
+  /**
+   * What the machine last ingested, or null when nothing has been ingested
+   * since it booted (it still runs what it booted with).
+   */
+  getDemoIngestSource(): DemoIngestSource | null;
+  /** Record a completed ingest write. Called by `runDemoIngest`. */
+  noteDemoIngest(source: DemoIngestSource): void;
+  /** Checkpoint capability declared by the current VFS image, if any. */
+  getDemoCheckpoint(): DemoCheckpointConfig | null;
+  subscribeDemoCheckpoint(cb: (state: DemoCheckpointConfig | null) => void): () => void;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -1161,6 +1201,12 @@ const NOT_IMPLEMENTED = (m: string) =>
     `(see docs/plans/2026-05-14-kandelo-ui-followups.md).`
   );
 
+/** What a program gets when its caller names no environment of its own. */
+const DEFAULT_PROGRAM_ENV: string[] = [
+  "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  "HOME=/root",
+];
+
 export class LiveKernelHost implements KernelHost {
   private _status: MachineStatus;
   private statusListeners = new ListenerSet<MachineStatus>();
@@ -1182,6 +1228,7 @@ export class LiveKernelHost implements KernelHost {
   private galleryListeners = new ListenerSet<void>();
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
   private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
+  private demoCheckpointListeners = new ListenerSet<DemoCheckpointConfig | null>();
   private audioStateListeners = new ListenerSet<MachineAudioState>();
   private audioActivityListeners = new ListenerSet<boolean>();
 
@@ -1192,6 +1239,8 @@ export class LiveKernelHost implements KernelHost {
   private webPreview: WebPreviewState | null = null;
   private demoGuide: DemoGuideConfig | null = null;
   private demoIngest: DemoIngestConfig | null = null;
+  private demoCheckpoint: DemoCheckpointConfig | null = null;
+  private demoIngestSource: DemoIngestSource | null = null;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
   private offLazyDownloads: (() => void) | null = null;
@@ -1349,6 +1398,7 @@ export class LiveKernelHost implements KernelHost {
     this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
     this.setDemoIngest(null);
+    this.setDemoCheckpoint(null);
   }
 
   /** Configure the program attachPty spawns by default. */
@@ -1398,7 +1448,18 @@ export class LiveKernelHost implements KernelHost {
   /** Update the optional file-ingest capability exposed by the current image. */
   setDemoIngest(ingest: DemoIngestConfig | null): void {
     this.demoIngest = ingest ? structuredClone(ingest) : null;
+    // A different capability means a different machine (or none): whatever
+    // was ingested before is not what this one is running.
+    this.demoIngestSource = null;
     this.demoIngestListeners.emit(this.getDemoIngest());
+  }
+
+  getDemoIngestSource(): DemoIngestSource | null {
+    return this.demoIngestSource ? structuredClone(this.demoIngestSource) : null;
+  }
+
+  noteDemoIngest(source: DemoIngestSource): void {
+    this.demoIngestSource = structuredClone(source);
   }
 
   private async startShellCommand(
@@ -1684,6 +1745,7 @@ export class LiveKernelHost implements KernelHost {
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
     this.setDemoIngest(null);
+    this.setDemoCheckpoint(null);
     const kernel = this.kernel;
     this.invalidatePtySessions(kernel);
     this.kernel = undefined;
@@ -2204,6 +2266,39 @@ export class LiveKernelHost implements KernelHost {
       );
     }
     return this.kernel.signalProcess(pid, signum);
+  }
+
+  async runProgram(argv: string[], options: RunProgramOptions = {}): Promise<number> {
+    const kernel = this.kernel;
+    if (!kernel?.spawnFromVfs) {
+      throw new Error(
+        "LiveKernelHost.runProgram: the attached kernel cannot spawn from " +
+        "the VFS (no spawnFromVfs).",
+      );
+    }
+    if (argv.length === 0 || !argv[0].startsWith("/")) {
+      throw new Error("runProgram: argv[0] must be an absolute path");
+    }
+    const timeoutMs = options.timeoutMs ?? 30_000;
+    const { pid, exit } = await kernel.spawnFromVfs(argv[0], argv, {
+      env: options.env ?? DEFAULT_PROGRAM_ENV,
+      cwd: options.cwd ?? "/",
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        // Do not leave a runaway helper behind a caller that gave up on it.
+        void kernel.terminateProcess(pid).catch(() => {});
+        reject(new Error(
+          `${argv[0]} (pid ${pid}) did not exit within ${timeoutMs} ms`,
+        ));
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([exit, timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async readDir(path: string): Promise<VfsDirent[]> {
@@ -2901,6 +2996,12 @@ export class LiveKernelHost implements KernelHost {
     return this.surfaceListeners.add(cb);
   }
 
+  /** Update the optional checkpoint capability exposed by the current image. */
+  setDemoCheckpoint(checkpoint: DemoCheckpointConfig | null): void {
+    this.demoCheckpoint = checkpoint ? structuredClone(checkpoint) : null;
+    this.demoCheckpointListeners.emit(this.getDemoCheckpoint());
+  }
+
   getDemoGuide(): DemoGuideConfig | null {
     return this.demoGuide ? structuredClone(this.demoGuide) : null;
   }
@@ -2911,6 +3012,16 @@ export class LiveKernelHost implements KernelHost {
 
   subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void {
     return this.demoIngestListeners.add(cb);
+  }
+
+  getDemoCheckpoint(): DemoCheckpointConfig | null {
+    return this.demoCheckpoint ? structuredClone(this.demoCheckpoint) : null;
+  }
+
+  subscribeDemoCheckpoint(
+    cb: (state: DemoCheckpointConfig | null) => void,
+  ): () => void {
+    return this.demoCheckpointListeners.add(cb);
   }
 
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {

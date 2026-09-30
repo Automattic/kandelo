@@ -192,6 +192,16 @@
         "onLoad": {
           "restart": "/usr/local/bin/retro-run"
         }
+      },
+      "checkpoint": {
+        "capture": {
+          "argv": ["/usr/local/bin/retro-checkpoint"],
+          "path": "/tmp/kandelo-retro.state",
+          "maxBytes": 2097152
+        },
+        "inputId": "state",
+        "filename": "retro.state",
+        "label": "Include save state"
       }
     }
   }

@@ -46,6 +46,7 @@ import {
   genericDemoPresentation,
   resolveDemoGuide,
   resolveDemoIdentity,
+  resolveDemoCheckpoint,
   resolveDemoIngest,
   resolveDemoInit,
   resolveDemoPresentation,
@@ -1338,6 +1339,8 @@ async function bootProfile(
   // Ingest is an image-owned capability. Absence is valid and must not be
   // replaced with a package- or profile-name-specific UI promise.
   host.setDemoIngest(resolveDemoIngest(imageConfig, profileId));
+  // So is taking a checkpoint: the image names the command and the file.
+  host.setDemoCheckpoint(resolveDemoCheckpoint(imageConfig, profileId));
   // The one command this machine asked its login shell to run, if any. Read
   // once here: `init` is the single block that says what a machine runs.
   const machineShellCommand = shellCommandForMachine(machine.init);

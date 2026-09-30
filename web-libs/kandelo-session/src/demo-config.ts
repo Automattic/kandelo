@@ -101,6 +101,38 @@ export interface DemoIngestConfig {
 }
 
 /**
+ * How to take a checkpoint of what a machine is running.
+ *
+ * `argv` is an author-provided command from the VFS image, never user input.
+ * It must leave a complete checkpoint at `path` and exit 0; any other exit
+ * status means there is no checkpoint, whatever `path` holds.
+ */
+export interface DemoCheckpointCaptureConfig {
+  argv: string[];
+  /** Fixed absolute path the command writes the checkpoint to. */
+  path: string;
+  /** Hard cap on the checkpoint's size, enforced before it leaves the machine. */
+  maxBytes: number;
+}
+
+/**
+ * Declarative "save where I am" capability — the inverse of `ingest`. The
+ * image says how a checkpoint is produced and under which boot-input name it
+ * returns; the machine's own init decides what to do with a checkpoint it
+ * finds at `/run/kandelo/inputs/<inputId>/<filename>` on a later boot.
+ * Content-neutral: nothing here knows what the bytes mean.
+ */
+export interface DemoCheckpointConfig {
+  capture: DemoCheckpointCaptureConfig;
+  /** Boot-input id the checkpoint travels under in a share link. */
+  inputId: string;
+  /** Basename the checkpoint is materialized as on the next boot. */
+  filename: string;
+  /** Human-facing control label, e.g. "Include save state". */
+  label?: string;
+}
+
+/**
  * Declared runtime shape of a machine.
  *
  * There is deliberately no `network` flag. One was carried here as
@@ -275,6 +307,7 @@ export interface KandeloDemoProfileConfig {
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
+  checkpoint?: DemoCheckpointConfig;
   runtime?: DemoRuntimeConfigInput;
   init?: DemoInitConfig;
   web?: DemoWebConfigInput;
@@ -367,6 +400,7 @@ const PROFILE_ONLY_KEYS = [
   "assets",
   "guide",
   "ingest",
+  "checkpoint",
   "runtime",
   "init",
   "web",
@@ -447,6 +481,16 @@ export function resolveDemoIngest(
   return profile?.ingest === undefined
     ? null
     : normalizeIngest(profile.ingest, `profiles.${profileId}.ingest`);
+}
+
+export function resolveDemoCheckpoint(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoCheckpointConfig | null {
+  const profile = profileConfig(config, profileId);
+  return profile?.checkpoint === undefined
+    ? null
+    : normalizeCheckpoint(profile.checkpoint, `profiles.${profileId}.checkpoint`);
 }
 
 /** Upper bound on any image-declared cap, so a bad image can't ask the browser
@@ -937,6 +981,80 @@ function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
   return ingest;
 }
 
+/** A checkpoint travels in a share link as an inline boot input, so it can
+ *  never usefully exceed that transport's inflated cap
+ *  (boot-descriptor.ts `HARD_CAPS.maxInlineInflatedInputBytes`). An image that
+ *  asks for more is declaring something no link could carry. */
+const CHECKPOINT_MAX_BYTES_CEILING = 2 * 1024 * 1024;
+const CHECKPOINT_MAX_ARGV = 16;
+const CHECKPOINT_MAX_ARG_CHARS = 1024;
+
+function normalizeCheckpoint(value: unknown, field: string): DemoCheckpointConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  if (!isRecord(value.capture)) {
+    throw new Error(`${field}.capture must be an object`);
+  }
+  const rawArgv = value.capture.argv;
+  if (
+    !Array.isArray(rawArgv) || rawArgv.length === 0
+    || rawArgv.length > CHECKPOINT_MAX_ARGV
+  ) {
+    throw new Error(
+      `${field}.capture.argv must be an array of 1 to ${CHECKPOINT_MAX_ARGV} strings`,
+    );
+  }
+  const argv = rawArgv.map((arg, index) => {
+    const text = stringField(arg, `${field}.capture.argv[${index}]`);
+    if (text.length > CHECKPOINT_MAX_ARG_CHARS || text.includes("\0")) {
+      throw new Error(`${field}.capture.argv[${index}] is too long or contains NUL`);
+    }
+    return text;
+  });
+  // The command is spawned by path, not looked up on a PATH the image does
+  // not control at capture time.
+  validateAbsoluteNormalizedPath(argv[0], `${field}.capture.argv[0]`);
+
+  const path = requiredString(value.capture.path, `${field}.capture.path`);
+  validateAbsoluteNormalizedPath(path, `${field}.capture.path`);
+
+  const maxBytes = value.capture.maxBytes;
+  if (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error(`${field}.capture.maxBytes must be a positive integer`);
+  }
+  if (maxBytes > CHECKPOINT_MAX_BYTES_CEILING) {
+    throw new Error(
+      `${field}.capture.maxBytes exceeds the ${CHECKPOINT_MAX_BYTES_CEILING}-byte ceiling`,
+    );
+  }
+
+  // Same rules a boot descriptor applies to an input's id and filename, so a
+  // declared checkpoint can always be encoded into a link.
+  const inputId = requiredString(value.inputId, `${field}.inputId`);
+  if (inputId.length > 64 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(inputId)) {
+    throw new Error(`${field}.inputId must be a short identifier`);
+  }
+  const filename = requiredString(value.filename, `${field}.filename`);
+  if (
+    filename === "." || filename === ".." || filename.length > 255
+    || filename.includes("/") || filename.includes("\\")
+    || /[\x00-\x1f\x7f]/.test(filename)
+  ) {
+    throw new Error(`${field}.filename must be a safe basename`);
+  }
+
+  const checkpoint: DemoCheckpointConfig = {
+    capture: { argv, path, maxBytes },
+    inputId,
+    filename,
+  };
+  if (typeof value.label === "string" && value.label.length > 0) {
+    checkpoint.label = value.label;
+  }
+  return checkpoint;
+}
+
 /**
  * The one place a machine field is looked up. Anything that is not a record
  * — a missing profile id, or a profile declared as an array or a string —
@@ -985,6 +1103,9 @@ function validateProfileFields(
   }
   if (value.ingest !== undefined) {
     normalizeIngest(value.ingest, `${field}.ingest`);
+  }
+  if (value.checkpoint !== undefined) {
+    normalizeCheckpoint(value.checkpoint, `${field}.checkpoint`);
   }
 }
 

@@ -182,3 +182,91 @@ test("a file that is not a ROM it knows starts no core at all", async ({ page })
   await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
     .toBe("0 emulator processes");
 });
+
+/**
+ * One hash per pixel row of the frame, for comparing frames across tabs.
+ * A row changes if any pixel in it does, so thin text still registers.
+ */
+function frameRows(canvas: Locator): Promise<number[]> {
+  return canvas.evaluate((el: HTMLCanvasElement) => {
+    const ctx = el.getContext("2d");
+    if (!ctx) return [];
+    const { data, width, height } = ctx.getImageData(0, 0, el.width, el.height);
+    const rows: number[] = [];
+    for (let y = 0; y < height; y++) {
+      let hash = 0;
+      for (let i = y * width * 4; i < (y + 1) * width * 4; i += 4) {
+        hash = (Math.imul(hash, 31) + ((data[i] << 16) | (data[i + 1] << 8) | data[i + 2])) | 0;
+      }
+      rows.push(hash);
+    }
+    return rows;
+  });
+}
+
+function differingFraction(a: number[], b: number[]): number {
+  if (a.length === 0 || a.length !== b.length) return 1;
+  let differing = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) differing++;
+  return differing / a.length;
+}
+
+async function settledDigest(canvas: Locator): Promise<number> {
+  let last = await frameSummary(canvas);
+  await expect.poll(async () => {
+    const next = await frameSummary(canvas);
+    const same = next.digest === last.digest;
+    last = next;
+    return same;
+  }, { timeout: 60_000, intervals: [1_500] }).toBe(true);
+  return last.digest;
+}
+
+test("a share link with a save state reopens the game where it was", async ({ page, context }) => {
+  test.setTimeout(600_000);
+  const canvas = await bootRetro(page);
+  await canvas.click();
+  const firstPage = await settledDigest(canvas);
+  const firstRows = await frameRows(canvas);
+
+  // Move off the opening screen, so "where it was" differs from a fresh boot.
+  await page.keyboard.press("ArrowRight");
+  await expect.poll(async () => (await frameSummary(canvas)).digest, { timeout: 30_000 })
+    .not.toBe(firstPage);
+  await settledDigest(canvas);
+  const secondRows = await frameRows(canvas);
+  // The two pages differ across most of the text panel's rows.
+  expect(differingFraction(firstRows, secondRows)).toBeGreaterThan(0.3);
+
+  // Clicking the display captured the mouse. Release it the way the
+  // browser's own Esc does (Playwright's key presses do not reach the
+  // browser's pointer-lock handling), so the dock can be clicked.
+  await page.evaluate(() => document.exitPointerLock());
+  await expect(page.getByText(/MOUSE LOCKED/i)).toHaveCount(0, { timeout: 10_000 });
+  await page.getByRole("button", { name: "Share" }).click();
+  await page.getByTestId("share-checkpoint-toggle").check();
+  await expect(page.getByTestId("share-checkpoint-status"))
+    .toContainText("Checkpoint taken", { timeout: 60_000 });
+  await expect(page.getByTestId("share-checkpoint-error")).toHaveCount(0);
+  const shareUrl = page.locator(".kshare-url");
+  await expect(shareUrl).toHaveAttribute("data-share-url", /#k1=/, { timeout: 30_000 });
+  const url = (await shareUrl.getAttribute("data-share-url"))!;
+
+  // A second visitor opens the link in a fresh tab.
+  const opener = await context.newPage();
+  await opener.goto(url, { waitUntil: "domcontentloaded" });
+  const reopened = opener.locator("canvas.kframebuffer-canvas").first();
+  await expect(reopened).toBeVisible({ timeout: 180_000 });
+  await awaitRender(reopened);
+  // The restored machine shows the second page, not the opening screen.
+  // Compared before opening Internals, which resizes the display pane and
+  // with it the scaled frame, as the original was. The comparison allows a
+  // few rows to differ: the page's arrows blink, and two tabs need not catch
+  // them in the same phase.
+  await settledDigest(reopened);
+  const restoredRows = await frameRows(reopened);
+  expect(differingFraction(restoredRows, secondRows)).toBeLessThan(0.05);
+  expect(differingFraction(restoredRows, firstRows)).toBeGreaterThan(0.3);
+  await expect.poll(() => emulatorCommand(opener), { timeout: 30_000 })
+    .toMatch(/--state \/run\/kandelo\/inputs\/state\/retro\.state$/);
+});

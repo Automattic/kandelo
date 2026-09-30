@@ -13,7 +13,11 @@ import type {
   MachineProgress,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { activeLazyDownloadSummaries } from "../../../../../web-libs/kandelo-session/src/lazy-download";
-import type { DemoGuideConfig, DemoIngestConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import type {
+  DemoCheckpointConfig,
+  DemoGuideConfig,
+  DemoIngestConfig,
+} from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
 const LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS = 2400;
@@ -201,6 +205,18 @@ export function useDemoIngest(): DemoIngestConfig | null {
   React.useEffect(() => {
     setState(host.getDemoIngest());
     return host.subscribeDemoIngest(setState);
+  }, [host]);
+  return state;
+}
+
+export function useDemoCheckpoint(): DemoCheckpointConfig | null {
+  const host = useKernelHost();
+  const [state, setState] = React.useState<DemoCheckpointConfig | null>(
+    () => host.getDemoCheckpoint(),
+  );
+  React.useEffect(() => {
+    setState(host.getDemoCheckpoint());
+    return host.subscribeDemoCheckpoint(setState);
   }, [host]);
   return state;
 }
