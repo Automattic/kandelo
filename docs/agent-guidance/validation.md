@@ -109,6 +109,19 @@ scripts/agent-job result <id>    # exit status, tree-changed warning, [suite-hea
   of the suite did not run (a load error or zero tests). Read it before
   citing a pass.
 
+- **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
+  patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
+  `pgrep -f` waiters, and subagents running whole-tree builds or full
+  suites, and every denial says what to do instead. It is opt-in.
+  - **Install or update** with
+    `python3 .claude/hooks/install-hooks.py --user` (all your sessions) or
+    `--project-local` (this checkout only). It edits only its own entry,
+    keeps a `.bak` of the settings file, and changes nothing when run again.
+  - **Check for a stale copy** with `--check`, which exits 1 when the
+    installed hook is out of date. `--uninstall` removes it.
+  - **Scope:** the hook acts only in checkouts that contain
+    `scripts/agent-job`.
+
 Whether each of these helps is measured, with a rule for keeping or removing
 it, in `evals/build-waiting/README.md`.
 

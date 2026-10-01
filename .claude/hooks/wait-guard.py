@@ -14,10 +14,11 @@ the marker `agent-job: allow-wait` passes; that override is logged, and the
 eval counts overrides as evasions. Every decision is appended to
 ~/.cache/kandelo/agent-jobs/hook-log.jsonl for review.
 
-Opt-in. To use it, add to ~/.claude/settings.json (or a project's
-.claude/settings.local.json):
-  {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command",
-    "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/wait-guard.py\""}]}]}}
+Opt-in. Install or update it with .claude/hooks/install-hooks.py (see that
+file, or "Waiting on long builds and suites" in
+docs/agent-guidance/validation.md). It acts only inside a checkout that has
+scripts/agent-job, the tool its advice points to; everywhere else it allows
+every command.
 
 Judged by evals/build-waiting/README.md (tools 8 and 8b). Fails open: any
 error allows the command.
@@ -167,12 +168,31 @@ def log(payload, rule, denied):
         pass
 
 
+def in_agent_job_checkout(cwd):
+    """True when cwd is inside a checkout that ships scripts/agent-job.
+
+    The hook may be installed for every project (user settings); its advice
+    only makes sense where agent-job exists, including older Kandelo branches
+    that predate it, so elsewhere it stays out of the way.
+    """
+    path = os.path.abspath(cwd or os.getcwd())
+    while True:
+        if os.path.isfile(os.path.join(path, "scripts", "agent-job")):
+            return True
+        parent = os.path.dirname(path)
+        if parent == path:
+            return False
+        path = parent
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
     except ValueError:
         return
     if payload.get("tool_name") != "Bash":
+        return
+    if not in_agent_job_checkout(payload.get("cwd")):
         return
     rule, reason = decide(payload)
     if not rule:

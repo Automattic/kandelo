@@ -262,6 +262,12 @@ waiters, and standalone `sleep` of 30 s or more. It points the agent at
   - at least 90% of denials are real wait loops;
   - and evasions occur in fewer than 1 session in 5.
 
+**Installing it:** run `python3 .claude/hooks/install-hooks.py --user`.
+It is idempotent and keeps a `.bak`; `--check` reports a stale copy and
+`--uninstall` removes it. The hook acts only in checkouts that have
+`scripts/agent-job`. To judge the rule, count from the date it was
+installed, which is recorded in `hook-log.jsonl` by its first entry.
+
 ### 8b. Subagent long-wait guard (same hook)
 
 The largest baseline cost is subagents blocking on long builds, at 938 M
