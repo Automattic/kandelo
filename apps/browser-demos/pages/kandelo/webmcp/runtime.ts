@@ -144,14 +144,23 @@ export async function listGuestDirectory(host: KernelHost, path: string) {
 /**
  * The identity's home and login shell, read once per session from the
  * image's own `/etc/passwd`. An image that does not list the account gets
- * the POSIX fallback, `/bin/sh` at `/`.
+ * the POSIX fallback, `/bin/sh` at `/`, and a listed shell the image does
+ * not hold is replaced by `/bin/sh`.
  */
 function sessionAccount(host: KernelHost, session: Session): Promise<Account> {
   session.account ??= host.readVfsFile("/etc/passwd")
     .then(bytes => (bytes ? passwdAccount(decoder.decode(bytes), session.identity.uid) : null))
+    .then(account => (account ? withInstalledShell(host, account) : null))
     .catch(() => null)
     .then(account => account ?? FALLBACK_ACCOUNT);
   return session.account;
+}
+
+async function withInstalledShell(host: KernelHost, account: Account): Promise<Account> {
+  const slash = account.shell.lastIndexOf("/");
+  const entries = await host.readVfsDir(account.shell.slice(0, slash) || "/");
+  if (entries?.some(entry => entry.name === account.shell.slice(slash + 1))) return account;
+  return { ...account, shell: FALLBACK_ACCOUNT.shell };
 }
 
 export function passwdAccount(passwd: string, uid: number): Account | null {

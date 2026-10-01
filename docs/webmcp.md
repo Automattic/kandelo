@@ -296,7 +296,8 @@ Every job runs as the agent's guest account: the `maker` account (uid 1000)
 the terminal logs into, so the agent and the user own the same files. The
 account's home directory and login shell come from the image's own
 `/etc/passwd`; an image that lists no account for that uid gets `/bin/sh` at
-`/`. The script runs as `<shell> -c script` with `cwd` defaulting to the home
+`/`, and a listed shell that the image does not hold is replaced by `/bin/sh`.
+The script runs as `<shell> -c script` with `cwd` defaulting to the home
 directory and an environment made of the host's POSIX baseline (`PATH`, `HOME`,
 `USER`, `LOGNAME`, `TMPDIR`, `TERM`, the SSL certificate paths), then the
 call's own `env` entries, which override it. `kandelo_write_file` gives the

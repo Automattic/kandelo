@@ -45,6 +45,7 @@ function fakeHost(files: Record<string, string>, listError: Error | null = null)
     subscribeStatus: () => () => {},
     readVfsFile: async (path: string) =>
       path === "/etc/passwd" ? encoder.encode("maker:x:1000:1000::/home/maker:/bin/bash\n") : null,
+    readVfsDir: async (path: string) => (path === "/bin" ? [{ name: "bash" }] : null),
     readDir: async (path: string) => {
       if (listError && path === STATIC) throw listError;
       if (!VFS_TOOLS_DIRS.includes(path)) throw new Error(`ENOENT: ${path}`);

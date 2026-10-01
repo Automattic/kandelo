@@ -57,6 +57,7 @@ function fakeHost(overrides: Partial<KernelHost> = {}) {
       calls.reads.push(path);
       return encoder.encode("foo\n");
     },
+    readVfsDir: async (path: string) => (path === "/bin" ? [{ name: "bash" }, { name: "sh" }] : null),
     writeVfsFile: async (path: string, bytes: Uint8Array, mode?: number, options?: unknown) => {
       calls.writes.push([path, bytes, mode, options]);
     },
@@ -182,6 +183,14 @@ test("an image that lists no account for the agent gets /bin/sh at /", async () 
   assert.equal(calls.jobs[0]?.[1], "/bin/sh");
   assert.deepEqual(calls.jobs[0]?.[2], ["sh", "-c", "true"]);
   assert.deepEqual(calls.jobs[0]?.[3], { cwd: "/", env: ["PATH=/bin", "TERM=xterm", "HOME=/"], uid: 1000, gid: 1000, timeoutMs: 30000 });
+});
+
+test("a login shell the image does not hold falls back to /bin/sh at the account's home", async () => {
+  const { host, calls } = attached({ readVfsDir: async () => [{ name: "sh" }] } as Partial<KernelHost>);
+  await startGuestJob(host, "job-1", { script: "true" });
+  assert.equal(calls.jobs[0]?.[1], "/bin/sh");
+  assert.deepEqual(calls.jobs[0]?.[2], ["sh", "-c", "true"]);
+  assert.equal((calls.jobs[0]?.[3] as { cwd: string }).cwd, "/home/maker");
 });
 
 test("a job refuses a NUL in its script or environment", async () => {
