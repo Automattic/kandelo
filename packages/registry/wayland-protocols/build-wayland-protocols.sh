@@ -44,7 +44,7 @@ cp "$SRC_XML"/*.xml "$INSTALL_DIR/xml/"
 # through pkg-config's pkgdatadir. CMake consumers (Quickshell's
 # pkg_get_variable) resolve protocol paths against that layout, so stage
 # the vendored files a second time at their upstream 1.45 paths.
-# wayland.xml (core wayland) and wlr-layer-shell-unstable-v1.xml
+# wayland.xml (core wayland) and the wlr-*-unstable-v1.xml files
 # (wlroots) are not wayland-protocols upstream — they stay flat-only.
 DATA_DIR="$INSTALL_DIR/share/wayland-protocols"
 while read -r file category protocol; do
