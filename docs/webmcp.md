@@ -77,7 +77,9 @@ parameter bounds and required fields. Unknown fields and invalid types are rejec
 Supported terminal keys: `enter`, `ctrl_c`, `ctrl_d`, `ctrl_z`, `tab`, `escape`,
 `backspace`, `up`, `down`, `left`, `right`. Text is literal; include `\n` to submit
 it. `ready:true` means a PTY is attached, not that login is complete or a shell
-prompt is visible. Read output to determine the current interactive state.
+prompt is visible. Read output to determine the current interactive state. The
+page attaches to a dock terminal on the first terminal tool call, keeps the
+terminal's size, and so starts no shell while no agent uses the terminals.
 
 ## Image-declared tools
 

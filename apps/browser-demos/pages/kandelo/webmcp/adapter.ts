@@ -129,9 +129,6 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
     for (const [id, record] of terminals) {
       if (!visible.has(id)) { record.off?.(); record.pty?.close(); terminals.delete(id); }
     }
-    if (host.getStatus() === "running" && host.getSurfaceAvailability().terminal) {
-      for (const terminal of get().terminals.slice(0, MAX_TERMINALS)) ensureTerminal(terminal);
-    }
   }
   async function profile(id: string) {
     const item = (await host.galleryQuery({ tab: 'presets' })).find(p => p.id === id);
@@ -212,6 +209,7 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
       case 'list_terminals': {
         if (host.getStatus() === 'running' && host.getSurfaceAvailability().terminal) {
           // Attach output observers to the same host-owned PTYs, never restart them.
+          for (const terminal of get().terminals.slice(0, MAX_TERMINALS)) ensureTerminal(terminal);
           await Promise.all([...terminals.values()].map(t => t.pending));
           sameGeneration(current);
         }
