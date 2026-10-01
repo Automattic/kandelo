@@ -44,6 +44,7 @@ export class GlMuxer {
       s.blendFunc.srcRGB, s.blendFunc.dstRGB,
       s.blendFunc.srcA, s.blendFunc.dstA,
     );
+    gl.blendEquationSeparate(s.blendEquation.rgb, s.blendEquation.alpha);
 
     if (s.cullFaceEnabled) gl.enable(GL_CULL_FACE); else gl.disable(GL_CULL_FACE);
     gl.cullFace(s.cullFace);

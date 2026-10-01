@@ -196,6 +196,12 @@ export function runGlQuery(
       return 12;
     }
 
+    // glFinish. The query is answered after the host has decoded every
+    // earlier command, so finishing the context here completes them all.
+    case O.QOP_FINISH:
+      gl.finish();
+      return 0;
+
     // in: u32 target; out: u32 status
     case O.QOP_CHECK_FB_STATUS: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;

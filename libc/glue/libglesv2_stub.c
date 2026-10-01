@@ -34,6 +34,12 @@ static uint8_t *g_cursor = NULL;
  * u16-payload records. */
 static GLint g_unpack_alignment = 4;
 
+/* An error this library raises itself, without a host round trip
+ * (glShaderBinary). GL records the
+ * first error until glGetError reads it; this latch holds that first
+ * client-side error and glGetError reports it before asking the host. */
+static GLenum _wpk_gl_client_error = GL_NO_ERROR;
+
 static inline void w_u16(uint8_t **c, uint16_t v) { memcpy(*c, &v, 2); *c += 2; }
 static inline void w_u32(uint8_t **c, uint32_t v) { memcpy(*c, &v, 4); *c += 4; }
 static inline void w_i32(uint8_t **c, int32_t v)  { memcpy(*c, &v, 4); *c += 4; }
@@ -368,9 +374,31 @@ static int _wpk_gl_query_into(uint32_t op,
 }
 
 GLenum glGetError(void) {
+    if (_wpk_gl_client_error != GL_NO_ERROR) {
+        GLenum e = _wpk_gl_client_error;
+        _wpk_gl_client_error = GL_NO_ERROR;
+        return e;
+    }
     uint32_t out = 0;
     if (_wpk_gl_query_into(QOP_GET_ERROR, NULL, 0, &out, 4) != 0) return GL_NO_ERROR;
     return (GLenum)out;
+}
+
+/* glFinish blocks until every earlier command has completed. Commands reach
+ * the host in submission order, so a query answered after they have run, and
+ * after the host context's own finish(), is that point. */
+void glFinish(void) {
+    (void)_wpk_gl_query_into(QOP_FINISH, NULL, 0, NULL, 0);
+}
+
+/* OpenGL ES 2.0 lets an implementation support no shader binary formats;
+ * this one supports none (GL_NUM_SHADER_BINARY_FORMATS is 0, as WebGL has no
+ * binary shaders). Every binaryformat is therefore not an accepted value,
+ * which the specification reports as GL_INVALID_ENUM. */
+void glShaderBinary(GLsizei count, const GLuint *shaders, GLenum binaryformat,
+                    const void *binary, GLsizei length) {
+    (void)count; (void)shaders; (void)binaryformat; (void)binary; (void)length;
+    if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
 }
 
 GLint glGetAttribLocation(GLuint program, const GLchar *name) {
@@ -659,6 +687,27 @@ void glBlendFunc(GLenum sfactor, GLenum dfactor) {
     w_u32(&_c, (uint32_t)sfactor);
     w_u32(&_c, (uint32_t)dfactor);
     EMIT_END()
+}
+
+void glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB,
+                         GLenum srcAlpha, GLenum dstAlpha) {
+    EMIT_BEGIN(OP_BLEND_FUNC_SEPARATE, 16)
+    w_u32(&_c, (uint32_t)srcRGB);
+    w_u32(&_c, (uint32_t)dstRGB);
+    w_u32(&_c, (uint32_t)srcAlpha);
+    w_u32(&_c, (uint32_t)dstAlpha);
+    EMIT_END()
+}
+
+void glBlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha) {
+    EMIT_BEGIN(OP_BLEND_EQUATION_SEPARATE, 8)
+    w_u32(&_c, (uint32_t)modeRGB);
+    w_u32(&_c, (uint32_t)modeAlpha);
+    EMIT_END()
+}
+
+void glBlendEquation(GLenum mode) {
+    glBlendEquationSeparate(mode, mode);
 }
 
 /* ----- queries: locations, shader/program info --------------------- */

@@ -1005,6 +1005,14 @@ ABI 46 also gives host-supplied stdin a kernel pipe
 (`kernel_install_host_stdin_pipe`): fd 0 is an ordinary pipe read end shared
 across `fork`, `dup`, and `exec`, instead of a host handle answered per pid.
 
+The GL command stream gains `OP_BLEND_FUNC_SEPARATE`,
+`OP_BLEND_EQUATION_SEPARATE` and the query `QOP_FINISH` (`crates/shared` `gl`
+module, `libc/glue/gl_abi.h`, `host/src/webgl/ops.ts`), which back
+`glBlendFuncSeparate`, `glBlendEquationSeparate`/`glBlendEquation` and
+`glFinish`. Without them SDL2's GLES2 renderer, which looks up all of these at
+startup, could not be created. A guest GLES library that emits them needs a
+host that decodes them, so they ride this epoch rather than `OP_VERSION`.
+
 Every artifact is rebuilt for ABI 46; the strict `__abi_version` equality
 check rejects ABI 45 programs. As with any bump, the committed resolver bundle
 `scripts/resolve-binary.bundle.mjs` embeds the ABI version and the required

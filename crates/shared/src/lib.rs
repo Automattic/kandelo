@@ -153,7 +153,9 @@ pub mod process_layout;
 ///     the generated allowance instead of `--allow-undefined`, and the host
 ///     refuses a program importing anything else. Host-supplied stdin is a
 ///     kernel pipe on fd 0 (`kernel_install_host_stdin_pipe`), shared across
-///     fork/dup/exec, instead of a host handle answered per pid.
+///     fork/dup/exec, instead of a host handle answered per pid. The GL
+///     command stream gains OP_BLEND_FUNC_SEPARATE, OP_BLEND_EQUATION_SEPARATE
+///     and QOP_FINISH.
 pub const ABI_VERSION: u32 = 46;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
@@ -4582,6 +4584,11 @@ pub mod gl {
     pub const OP_FRONT_FACE: u16 = 0x000A;
     pub const OP_LINE_WIDTH: u16 = 0x000B;
     pub const OP_PIXEL_STOREI: u16 = 0x000C;
+    /// `glBlendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha)`: four u32.
+    pub const OP_BLEND_FUNC_SEPARATE: u16 = 0x000D;
+    /// `glBlendEquationSeparate(modeRGB, modeAlpha)`: two u32. `glBlendEquation`
+    /// encodes as this op with both modes equal.
+    pub const OP_BLEND_EQUATION_SEPARATE: u16 = 0x000E;
 
     pub const OP_GEN_BUFFERS: u16 = 0x0100;
     pub const OP_DELETE_BUFFERS: u16 = 0x0101;
@@ -4659,6 +4666,9 @@ pub mod gl {
     pub const QOP_READ_PIXELS: u32 = 0x0B;
     pub const QOP_CHECK_FB_STATUS: u32 = 0x0C;
     pub const QOP_GET_SHADER_PRECISION_FORMAT: u32 = 0x0D;
+    /// `glFinish`: no input, no output. The reply is sent only after the host
+    /// has executed every earlier command and `finish()`ed the context.
+    pub const QOP_FINISH: u32 = 0x0E;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -5970,6 +5980,8 @@ mod gl_tests {
             OP_FRONT_FACE,
             OP_LINE_WIDTH,
             OP_PIXEL_STOREI,
+            OP_BLEND_FUNC_SEPARATE,
+            OP_BLEND_EQUATION_SEPARATE,
             OP_GEN_BUFFERS,
             OP_DELETE_BUFFERS,
             OP_BIND_BUFFER,
@@ -6042,6 +6054,7 @@ mod gl_tests {
             QOP_READ_PIXELS,
             QOP_CHECK_FB_STATUS,
             QOP_GET_SHADER_PRECISION_FORMAT,
+            QOP_FINISH,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

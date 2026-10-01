@@ -18,6 +18,7 @@ import {
 class RecordingGl {
   log: Array<[string, unknown[]]> = [];
   bindVertexArray(v: unknown) { this.log.push(["bindVertexArray", [v]]); }
+  blendEquationSeparate(...a: number[]) { this.log.push(["blendEquationSeparate", a]); }
   bindFramebuffer(t: number, f: unknown) { this.log.push(["bindFramebuffer", [t, f]]); }
   viewport(...a: number[]) { this.log.push(["viewport", a]); }
   scissor(...a: number[]) { this.log.push(["scissor", a]); }
@@ -49,6 +50,14 @@ function mk(): { gl: RecordingGl; mux: GlMuxer } {
 }
 
 describe("GlMuxer.switchTo", () => {
+  it("replays the blend equation", () => {
+    const { gl, mux } = mk();
+    const t = newTarget();
+    t.shadow.blendEquation = { rgb: 0x800a, alpha: 0x8006 };
+    mux.switchTo(t);
+    expect(gl.callsOf("blendEquationSeparate")).toEqual([[0x800a, 0x8006]]);
+  });
+
   it("replays viewport, clearColor, useProgram from the target shadow", () => {
     const { gl, mux } = mk();
     const t = newTarget();
