@@ -27,7 +27,11 @@
 # workflow context, not tools: `./run.sh local-build` re-enters this
 # shell, so without these keeps an isolated-cache or no-auto-GC
 # request would be silently dropped and the build would run against
-# the machine-wide shared cache. `KANDELO_PLAYWRIGHT_PORT` is kept for
+# the machine-wide shared cache. `KANDELO_HOST_PATH_GUARD` and
+# `KANDELO_HOST_PATH_GUARD_LOG` (whether the SDK compilers report or reject
+# host include/library directories, and where reports go) are kept for the
+# same reason: without them `./run.sh local-build` silently runs the
+# default report mode on stderr. `KANDELO_PLAYWRIGHT_PORT` is kept for
 # the same reason and with a sharper failure mode: dropping it sends
 # Playwright to the shared default port, and on a machine running more
 # than one checkout that port already belongs to somebody else's dev
@@ -129,6 +133,8 @@ nix_develop=(
     --keep KANDELO_NIX_BIN \
     --keep KANDELO_SOURCE_CACHE_ROOT \
     --keep KANDELO_CACHE_GC_AUTO \
+    --keep KANDELO_HOST_PATH_GUARD \
+    --keep KANDELO_HOST_PATH_GUARD_LOG \
     --keep KANDELO_PLAYWRIGHT_PORT \
     --keep WASM_POSIX_RESOLUTION_POLICY \
     --keep WASM_POSIX_SOURCE_ONLY_BINARY_ROOT \
