@@ -192,6 +192,50 @@ export interface KernelDirEntry {
   target?: string;
 }
 
+/**
+ * One read of a worker-owned command family. The worker retains a bounded tail
+ * of the family's output, so a cursor older than `oldest` has expired.
+ */
+export type KernelOwnedJobRead =
+  | { expired: true; oldest: number }
+  | {
+      expired: false;
+      /** The pid the family was started as. */
+      pid: number;
+      status: "running" | "cancelling" | "cancelled" | "timed_out" | "completed";
+      /** Exit status of the family's root, null while it still runs. */
+      exitCode: number | null;
+      /** True once every member of the family has been observed to terminate. */
+      terminationObserved: boolean;
+      chunks: Array<{ stream: "stdout" | "stderr"; bytes: Uint8Array }>;
+      /** Cursor to pass to the next read. */
+      next: number;
+      hasMore: boolean;
+      /** True when retained output had already been dropped before this read. */
+      truncated: boolean;
+    };
+
+export interface KernelOwnedJobOptions {
+  /** Cancel the family after this many milliseconds. The worker enforces it. */
+  timeoutMs: number;
+  env?: string[];
+  cwd?: string;
+  uid?: number;
+  gid?: number;
+}
+
+export interface VfsOwner {
+  uid: number;
+  gid: number;
+}
+
+export interface VfsWriteOptions {
+  /** Fail with EEXIST rather than replace an existing path. */
+  exclusive?: boolean;
+  /** Owner to give the written path; the VFS-owning worker's identity otherwise. */
+  owner?: VfsOwner;
+}
+
 export interface KernelLike {
   /** Legacy synchronous VFS surface; worker-owned hosts intentionally omit it. */
   readonly fs?: FileSystemLike;
@@ -214,7 +258,12 @@ export interface KernelLike {
    * exist. The kernel worker owns the filesystem, so this is an async
    * round-trip (unlike the deprecated synchronous {@link fs}).
    */
-  writeFileToVfs?(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
+  writeFileToVfs?(
+    path: string,
+    bytes: Uint8Array,
+    mode?: number,
+    options?: VfsWriteOptions,
+  ): Promise<void>;
   /**
    * Read a regular file through the VFS-owning worker. Resolves `null` when
    * the path is absent or not a regular file.
@@ -356,6 +405,7 @@ export interface KernelLike {
     programPath: string,
     argv: string[],
     options?: {
+      ownedJob?: { id: string; timeoutMs: number };
       env?: string[];
       cwd?: string;
       uid?: number;
@@ -366,6 +416,17 @@ export interface KernelLike {
       ptyRows?: number;
     },
   ): Promise<{ pid: number; exit: Promise<number> }>;
+  /**
+   * Read a worker-owned command family, optionally cancelling it first. Both
+   * the browser and the Node kernel worker own jobs; a kernel that predates
+   * the surface omits this method.
+   */
+  readOwnedJob?(
+    jobId: string,
+    offset?: number,
+    limit?: number,
+    cancel?: boolean,
+  ): Promise<KernelOwnedJobRead>;
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
   ptyWrite(pid: number, data: Uint8Array): void;
   ptyResize(pid: number, rows: number, cols: number): void;
@@ -901,6 +962,40 @@ export interface KernelHost {
    * present at boot never emit; list the directory once, then watch it.
    */
   subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void;
+
+  // Raw peers of readFile/readDir/writeFile. These report the values the VFS
+  // holds rather than the strings the Inspector renders, and a path that is
+  // not there resolves null instead of throwing. Callers that present a
+  // listing to a person want readFile/readDir; callers that hand bytes and
+  // numbers to a program want these.
+  readVfsFile(path: string): Promise<Uint8Array | null>;
+  readVfsDir(path: string): Promise<KernelDirEntry[] | null>;
+  writeVfsFile(
+    path: string,
+    bytes: Uint8Array,
+    mode?: number,
+    options?: VfsWriteOptions,
+  ): Promise<void>;
+
+  // owned jobs
+  /**
+   * Start `program` as a command family this host owns. Ownership survives
+   * exec, fork and setsid, so cancelling the job terminates every descendant
+   * and the job reports the root's exit status once all of them are gone.
+   */
+  startOwnedJob(
+    id: string,
+    program: string,
+    argv: string[],
+    options: KernelOwnedJobOptions,
+  ): Promise<void>;
+  /** Read one owned job, cancelling it first when `cancel` is true. */
+  readOwnedJob(
+    id: string,
+    offset?: number,
+    limit?: number,
+    cancel?: boolean,
+  ): Promise<KernelOwnedJobRead>;
 
   // process control
   /**
@@ -2280,6 +2375,76 @@ export class LiveKernelHost implements KernelHost {
       );
     }
     return this.kernel.subscribeVfsChanges(prefix, cb);
+  }
+
+  async readVfsFile(path: string): Promise<Uint8Array | null> {
+    if (!this.kernel?.readFileFromVfs) {
+      throw new Error("LiveKernelHost.readVfsFile: the attached kernel has no VFS surface.");
+    }
+    return this.kernel.readFileFromVfs(path);
+  }
+
+  async readVfsDir(path: string): Promise<KernelDirEntry[] | null> {
+    if (!this.kernel?.readDirFromVfs) {
+      throw new Error("LiveKernelHost.readVfsDir: the attached kernel has no VFS surface.");
+    }
+    return this.kernel.readDirFromVfs(path);
+  }
+
+  async writeVfsFile(
+    path: string,
+    bytes: Uint8Array,
+    mode = 0o644,
+    options: VfsWriteOptions = {},
+  ): Promise<void> {
+    if (!this.kernel?.writeFileToVfs) {
+      throw new Error(
+        `LiveKernelHost.writeVfsFile(${path}): the attached kernel cannot write ` +
+        `to the VFS (no writeFileToVfs).`,
+      );
+    }
+    await this.kernel.writeFileToVfs(path, bytes, mode, options);
+  }
+
+  // ── KernelHost: owned jobs ──────────────────────────────────────────────
+
+  async startOwnedJob(
+    id: string,
+    program: string,
+    argv: string[],
+    options: KernelOwnedJobOptions,
+  ): Promise<void> {
+    if (!this.kernel?.spawnFromVfs || !this.kernel.readOwnedJob) {
+      throw new Error(
+        "LiveKernelHost.startOwnedJob: the attached kernel cannot own a command family.",
+      );
+    }
+    const spawned = await this.kernel.spawnFromVfs(program, argv, {
+      ownedJob: { id, timeoutMs: options.timeoutMs },
+      cwd: options.cwd,
+      env: options.env,
+      uid: options.uid,
+      gid: options.gid,
+      // An owned job has no interactive input; empty stdin reads EOF at once.
+      stdin: new Uint8Array(0),
+    });
+    // The job record carries lifecycle and output. Consume the separate root
+    // exit so destroying the machine mid-command cannot reject unhandled.
+    void spawned.exit.catch(() => {});
+  }
+
+  async readOwnedJob(
+    id: string,
+    offset?: number,
+    limit?: number,
+    cancel = false,
+  ): Promise<KernelOwnedJobRead> {
+    if (!this.kernel?.readOwnedJob) {
+      throw new Error(
+        "LiveKernelHost.readOwnedJob: the attached kernel cannot own a command family.",
+      );
+    }
+    return this.kernel.readOwnedJob(id, offset, limit, cancel);
   }
 
   // ── KernelHost: process control ─────────────────────────────────────────
