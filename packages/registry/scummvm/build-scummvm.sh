@@ -128,6 +128,14 @@ fi
 
 # ScummVM's configure is hand-written (not autoconf); it honors the
 # CXX/AR/RANLIB/STRIP env vars and probes SDL through sdl2-config.
+#
+# configure asks plain `pkg-config` for freetype2 and libpng. The dev shell
+# exports a PKG_CONFIG_PATH of /nix/store directories, and pkg-config searches
+# PKG_CONFIG_PATH in addition to PKG_CONFIG_LIBDIR, so libpng resolved to the
+# build machine's libpng-apng: every object compiled against its 1.6.55
+# headers while linking the libpng 1.6.43 package. Clearing PKG_CONFIG_PATH
+# and listing exactly the declared dependencies' .pc directories (libpng's
+# Requires.private names zlib) keeps every flag inside resolver outputs.
 # libSDL2.a is static, so the Wayland/KMSDRM/GL dependency archives
 # must ride the final link line — LDFLAGS carries them
 # (libwayland-egl.a is the glue's wl_egl_window shim, shipped by the
@@ -173,7 +181,8 @@ echo "==> Configuring ScummVM (SCUMM engine, GLES2, SDL2 backend)..."
     CXX="$CXX" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
     CXXFLAGS="-O2 -DKANDELO $REPRO_FLAGS" \
     LDFLAGS="-L$SDL2_PREFIX/lib -L$LIBDRM_PREFIX/lib -L$LIBWAYLAND_PREFIX/lib -L$LIBFFI_PREFIX/lib -L$LIBXKBCOMMON_PREFIX/lib -L$ZLIB_PREFIX/lib -L$LIBPNG_PREFIX/lib -L$FREETYPE_PREFIX/lib -L$LIBCXX_PREFIX/lib -L$SYSROOT/lib $SDL_DEP_LIBS" \
-    PKG_CONFIG_LIBDIR="$FREETYPE_PREFIX/lib/pkgconfig" \
+    PKG_CONFIG_PATH= \
+    PKG_CONFIG_LIBDIR="$FREETYPE_PREFIX/lib/pkgconfig:$LIBPNG_PREFIX/lib/pkgconfig:$ZLIB_PREFIX/lib/pkgconfig" \
     ./configure \
         --host=wasm32posix \
         --backend=sdl \
