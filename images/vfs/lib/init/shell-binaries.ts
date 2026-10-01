@@ -137,11 +137,9 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
   { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: ["/bin/nano"] },
-  // The Omarchy desktop's shell programs (omarchydesktop starts them). They
-  // are large -- Waybar statically links the GTK stack -- so they stay lazy:
-  // no other machine sharing this image pays to fetch them.
+  // The Omarchy desktop's terminal. Large, so it stays lazy: no other
+  // machine sharing this image pays to fetch it.
   { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/local/bin/foot", symlinks: [] },
-  { id: "waybar", resolverPath: "programs/waybar.wasm", vfsPath: "/usr/local/bin/waybar", symlinks: [] },
   // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
   // (the package's declared runtime_files). /usr/local/bin/scummvm is the
   // image's launch wrapper, which execs this engine.
@@ -200,10 +198,10 @@ export const SHELL_LAZY_BINARY_SPECS = [
     symlinks: [] as string[],
     mode: 0o644,
   })),
-  // The Qt clients the launcher offers. quickshell.wasm alone is ~93 MB.
-  { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/local/bin/qtgallery", symlinks: [] },
+  // The Omarchy shell (omarchydesktop starts it) and the Qt client the
+  // launcher offers. quickshell.wasm alone is 82 MB.
   { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/local/bin/quickshell", symlinks: [] },
-  { id: "mako", resolverPath: "programs/mako/mako.wasm", vfsPath: "/usr/local/bin/mako", symlinks: [] },
+  { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/local/bin/qtgallery", symlinks: [] },
   {
     id: "dbus",
     resolverPath: "programs/dbus/dbus-daemon.wasm",

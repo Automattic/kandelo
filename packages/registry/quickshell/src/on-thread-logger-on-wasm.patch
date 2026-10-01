@@ -1,7 +1,7 @@
 Run the logger on the main thread instead of a dedicated QThread.
 
 On this host every guest pthread is a Web Worker, and Chromium compiles
-the whole 93 MB quickshell module again for each worker (~600 MB of
+the whole 82 MB quickshell module again for each worker (hundreds of MB of
 machine code per thread — see
 docs/browser-support.md#quickshell-qml-limits). The logger thread exists
 upstream to keep log I/O off the UI thread; here it buys no parallelism

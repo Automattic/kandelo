@@ -11,38 +11,24 @@
  * kwlctl and the CTRL+SHIFT+Space bind use — and the whole desktop
  * repaints from the new palette.
  *
- * A second row lists the Quickshell shells staged under
- * QTGALLERY_SHELL_DIR (default /usr/share/kandelo/quickshell): activating
- * one stages that QML file as /tmp/qtgallery-active.qml and the gallery's
- * single Quickshell child live-reloads it in place — the swap-the-shell
- * demonstration Quickshell exists for. One child for every swap, never a
- * respawn: each Quickshell process costs the browser host a fresh compiled
- * copy of the whole Qt wasm module per worker, and respawn churn at that
- * size crashes the tab (docs/browser-support.md#quickshell-qml-limits).
- *
  * Cards activate by click (hover highlights) or by arrows + Enter.
  * Escape or Q closes.
  *
  * Markers on stdout (the smoke test and the browser spec read them):
  *   GALLERY_PLATFORM=<qpa>            after QGuiApplication construction
  *   GALLERY_THEMES n=<count>          after the theme scan
- *   GALLERY_SHELLS n=<count>          after the shell scan
  *   GALLERY_EXPOSED <w>x<h>           once, on the first paint
  *   GALLERY_APPLY theme=<n> reply=<r> after a theme card activates
- *   GALLERY_SHELL file=<p> pid=<pid>  after a shell card activates
  */
 #include <QDir>
 #include <QFile>
-#include <QFileInfo>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QProcess>
 #include <QRasterWindow>
-#include <QSaveFile>
 #include <QTextStream>
 #include <QTime>
 #include <QTimer>
@@ -83,27 +69,6 @@ QString themesRoot()
     const QByteArray env = qgetenv("WLC_THEME_DIR");
     return env.isEmpty() ? QStringLiteral("/usr/share/kandelo/themes")
                          : QString::fromUtf8(env);
-}
-
-QString shellsRoot()
-{
-    const QByteArray env = qgetenv("QTGALLERY_SHELL_DIR");
-    return env.isEmpty() ? QStringLiteral("/usr/share/kandelo/quickshell")
-                         : QString::fromUtf8(env);
-}
-
-const QString kActiveShellPath = QStringLiteral("/tmp/qtgallery-active.qml");
-
-/* The atomic commit keeps Quickshell's content-hash reload from ever
- * reading a half-written file. */
-bool stageActiveShell(const QString &file)
-{
-    QFile source(file);
-    if (!source.open(QIODevice::ReadOnly)) return false;
-    QSaveFile active(kActiveShellPath);
-    if (!active.open(QIODevice::WriteOnly)) return false;
-    active.write(source.readAll());
-    return active.commit();
 }
 
 QColor parseColor(const QString &value, const QColor &fallback)
@@ -215,32 +180,16 @@ public:
                 m_themes.append(loadTheme(root.absolutePath(), entry));
         }
         std::printf("GALLERY_THEMES n=%d\n", (int)m_themes.size());
-
-        const QDir shells(shellsRoot());
-        for (const QString &entry :
-             shells.entryList({ QStringLiteral("*.qml") }, QDir::Files,
-                              QDir::Name))
-            m_shells.append(shells.absoluteFilePath(entry));
-        std::printf("GALLERY_SHELLS n=%d\n", (int)m_shells.size());
         std::fflush(stdout);
 
         const int themeRows = ((int)m_themes.size() + kColumns - 1) / kColumns;
         resize(kMargin * 2 + kColumns * kCardW + (kColumns - 1) * kGap,
-               kHeaderH + kSectionH + themeRows * (kCardH + kGap) + kSectionH
-                   + kShellH + kMargin);
+               kHeaderH + kSectionH + themeRows * (kCardH + kGap) + kMargin);
 
         auto *timer = new QTimer(this);
         connect(timer, &QTimer::timeout, this,
                 [this] { update(); });
         timer->start(1000);
-    }
-
-    ~GalleryWindow() override
-    {
-        if (m_quickshell) {
-            m_quickshell->kill();
-            m_quickshell->waitForFinished(3000);
-        }
     }
 
 protected:
@@ -274,14 +223,6 @@ protected:
         for (int i = 0; i < (int)m_themes.size(); i++)
             paintThemeCard(p, i);
 
-        const int shellTop = shellSectionTop();
-        p.setPen(kDimText);
-        p.drawText(QRect(kMargin, shellTop, width() - 2 * kMargin, kSectionH),
-                   Qt::AlignVCenter | Qt::AlignLeft,
-                   QStringLiteral("Quickshell — click to swap the shell"));
-        for (int i = 0; i < (int)m_shells.size(); i++)
-            paintShellCard(p, i);
-
         if (!m_exposed) {
             m_exposed = true;
             std::printf("GALLERY_EXPOSED %dx%d\n", width(), height());
@@ -307,7 +248,7 @@ protected:
 
     void keyPressEvent(QKeyEvent *e) override
     {
-        const int total = (int)m_themes.size() + (int)m_shells.size();
+        const int total = (int)m_themes.size();
         switch (e->key()) {
         case Qt::Key_Escape:
         case Qt::Key_Q:
@@ -338,15 +279,8 @@ private:
     static constexpr int kGap = 16;
     static constexpr int kCardW = 216;
     static constexpr int kCardH = 132;
-    static constexpr int kShellH = 64;
     static constexpr int kHeaderH = 56;
     static constexpr int kSectionH = 32;
-
-    int shellSectionTop() const
-    {
-        const int themeRows = ((int)m_themes.size() + kColumns - 1) / kColumns;
-        return kHeaderH + kSectionH + themeRows * (kCardH + kGap);
-    }
 
     QRect themeCardRect(int i) const
     {
@@ -355,20 +289,10 @@ private:
                      kCardW, kCardH);
     }
 
-    QRect shellCardRect(int i) const
-    {
-        return QRect(kMargin + i * (kCardW + kGap),
-                     shellSectionTop() + kSectionH, kCardW, kShellH);
-    }
-
-    /* Cards index a single selection space: themes first, shells after. */
     int cardAt(const QPoint &pos) const
     {
         for (int i = 0; i < (int)m_themes.size(); i++)
             if (themeCardRect(i).contains(pos)) return i;
-        for (int i = 0; i < (int)m_shells.size(); i++)
-            if (shellCardRect(i).contains(pos))
-                return (int)m_themes.size() + i;
         return -1;
     }
 
@@ -428,64 +352,21 @@ private:
         p.drawEllipse(QPoint(r.right() - 18, r.bottom() - 17), 4, 4);
     }
 
-    void paintShellCard(QPainter &p, int i)
-    {
-        const QRect r = shellCardRect(i);
-        const int index = (int)m_themes.size() + i;
-        paintCardFrame(p, r, index);
-
-        const QString base = QFileInfo(m_shells[i]).baseName();
-        QFont f = p.font();
-        f.setPixelSize(13);
-        p.setFont(f);
-        p.setPen(kText);
-        p.drawText(QRect(r.x() + 12, r.y() + 8, r.width() - 24, 20),
-                   Qt::AlignVCenter | Qt::AlignLeft, titleCase(base));
-        p.setPen(kDimText);
-        p.drawText(QRect(r.x() + 12, r.y() + 30, r.width() - 24, 20),
-                   Qt::AlignVCenter | Qt::AlignLeft,
-                   base + QStringLiteral(".qml"));
-    }
-
     void activate(int index)
     {
-        if (index < (int)m_themes.size()) {
-            const QString &name = m_themes[index].name;
-            const QString reply = kwlctlDispatch(
-                QStringLiteral("dispatch theme ") + name);
-            std::printf("GALLERY_APPLY theme=%s reply=%s\n",
-                        name.toUtf8().constData(),
-                        reply.isEmpty() ? "unreachable"
-                                        : reply.toUtf8().constData());
-            std::fflush(stdout);
-        } else {
-            const QString &file = m_shells[index - (int)m_themes.size()];
-            if (!stageActiveShell(file)) return;
-            if (m_quickshell
-                && m_quickshell->state() == QProcess::NotRunning) {
-                delete m_quickshell;
-                m_quickshell = nullptr;
-            }
-            if (!m_quickshell) {
-                m_quickshell = new QProcess;
-                m_quickshell->setProgram(
-                    QStringLiteral("/usr/local/bin/quickshell"));
-                m_quickshell->setArguments(
-                    { QStringLiteral("-p"), kActiveShellPath });
-                m_quickshell->start();
-                m_quickshell->waitForStarted(10000);
-            }
-            std::printf("GALLERY_SHELL file=%s pid=%lld\n",
-                        file.toUtf8().constData(),
-                        (long long)m_quickshell->processId());
-            std::fflush(stdout);
-        }
+        if (index >= (int)m_themes.size()) return;
+        const QString &name = m_themes[index].name;
+        const QString reply = kwlctlDispatch(
+            QStringLiteral("dispatch theme ") + name);
+        std::printf("GALLERY_APPLY theme=%s reply=%s\n",
+                    name.toUtf8().constData(),
+                    reply.isEmpty() ? "unreachable"
+                                    : reply.toUtf8().constData());
+        std::fflush(stdout);
         update();
     }
 
     QList<Theme> m_themes;
-    QStringList m_shells;
-    QProcess *m_quickshell = nullptr;
     int m_hover = -1;
     int m_selected = 0;
     bool m_exposed = false;

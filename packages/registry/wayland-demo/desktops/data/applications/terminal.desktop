@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Exec=/usr/local/bin/foot --config=/usr/share/kandelo/foot/foot.ini /usr/bin/bash -i

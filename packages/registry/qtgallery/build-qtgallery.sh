@@ -45,6 +45,7 @@ if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]
 fi
 
 QTBASE="${WASM_POSIX_DEP_QTBASE_DIR:?WASM_POSIX_DEP_QTBASE_DIR not set (must be invoked via cargo xtask build-deps resolve qtgallery)}"
+LIBDBUS="${WASM_POSIX_DEP_LIBDBUS_DIR:?WASM_POSIX_DEP_LIBDBUS_DIR not set}"
 FONTCONFIG="${WASM_POSIX_DEP_FONTCONFIG_DIR:?WASM_POSIX_DEP_FONTCONFIG_DIR not set}"
 FREETYPE="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not set}"
 HARFBUZZ="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not set}"
@@ -87,8 +88,10 @@ wasm32posix-c++ \
     "$QTBASE/plugins/wayland-shell-integration/libxdg-shell.a" \
     "$QTBASE/lib/libQt6WaylandClient.a" \
     "$QTBASE/lib/libQt6Gui.a" \
+    "$QTBASE/lib/libQt6DBus.a" \
     "$QTBASE/lib/libQt6Core.a" \
     "$QTBASE/lib/libQt6BundledPcre2.a" \
+    "$LIBDBUS/lib/libdbus-1.a" \
     "$FONTCONFIG/lib/libfontconfig.a" \
     "$FREETYPE/lib/libfreetype.a" \
     "$HARFBUZZ/lib/libharfbuzz.a" \

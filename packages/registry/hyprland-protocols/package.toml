@@ -1,0 +1,44 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+#
+# hyprland-protocols: the Wayland protocol XML Hyprland adds on top of
+# wayland-protocols. wlcompositor generates its hyprland-global-shortcuts-v1
+# glue from it, which is how a `bind = SUPER, space, global, quickshell:launcher`
+# line reaches the shortcut Quickshell registered, the way it does under
+# Hyprland. Quickshell carries its own copy of the same XML in its source
+# tree, so it does not depend on this package.
+#
+# Data only: upstream's meson build installs the XML under
+# share/hyprland-protocols/protocols and writes the .pc; the script here
+# does the same without meson, which the dev shell does not carry.
+kind = "library"
+
+name = "hyprland-protocols"
+version = "0.6.4"
+kernel_abi = 45
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/hyprwm/hyprland-protocols/archive/refs/tags/v0.6.4.tar.gz"
+sha256 = "0d4f99abc21b04fc126dd754e306bb84cd334131d542ff2e0c172190c6570384"
+provider = "archive"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/hyprwm/hyprland-protocols/blob/v0.6.4/LICENSE"
+
+[build]
+script_path = "packages/registry/hyprland-protocols/build-hyprland-protocols.sh"
+
+[outputs]
+pkgconfig = ["share/pkgconfig/hyprland-protocols.pc"]
+files = [
+  "share/hyprland-protocols/protocols/hyprland-ctm-control-v1.xml",
+  "share/hyprland-protocols/protocols/hyprland-focus-grab-v1.xml",
+  "share/hyprland-protocols/protocols/hyprland-global-shortcuts-v1.xml",
+  "share/hyprland-protocols/protocols/hyprland-lock-notify-v1.xml",
+  "share/hyprland-protocols/protocols/hyprland-surface-v1.xml",
+  "share/hyprland-protocols/protocols/hyprland-toplevel-export-v1.xml",
+  "share/hyprland-protocols/protocols/hyprland-toplevel-mapping-v1.xml",
+]

@@ -1,0 +1,9 @@
+script_path = "packages/registry/hyprland-protocols/build-hyprland-protocols.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
+
+inputs = [
+  "packages/registry/hyprland-protocols/build-hyprland-protocols.sh",
+  "scripts/package-build-roots.sh",
+]

@@ -1,14 +1,18 @@
 # Per-program manifest for Quickshell. See docs/package-management.md.
 #
 # Ports Quickshell 0.3.1, the QtQuick-based Wayland shell toolkit
-# Omarchy's bar and launcher are written in. The build keeps the
-# Wayland window layer (wlr-layer-shell for bars/overlays) and turns
-# off every feature whose dependency this kernel does not carry:
-# NETWORK pulls QtDBus (qtbase does not build it), SOCKETS' QML socket
-# API has no consumer in the Omarchy configs,
-# the SERVICE_* modules speak DBus/PipeWire/PAM/greetd, and X11,
-# Hyprland, i3, screencopy, session-lock and toplevel-management
-# target compositor surfaces wlcompositor does not expose.
+# Omarchy's shell is written in. The build keeps what the Omarchy
+# desktop's shell uses: wlr-layer-shell for the bar, launcher, wallpaper
+# and notifications; ext-session-lock for the lock screen; the Hyprland
+# IPC (workspaces, windows, dispatch) and global shortcuts that
+# wlcompositor serves; the D-Bus notification server (QtDBus from
+# qtbase, libdbus from the registry); and the Io sockets the shell reads
+# the compositor's theme through. Foreign-toplevel management rides
+# along because upstream's Hyprland IPC module includes its header
+# unconditionally. Everything else stays off because this kernel
+# carries no dependency for it: PipeWire, PAM, greetd, polkit, UPower,
+# Bluetooth, NetworkManager, the status-notifier tray and MPRIS (D-Bus
+# services nothing here provides), X11, i3 and screencopy.
 kind = "program"
 name = "quickshell"
 version = "0.3.1"
@@ -30,6 +34,7 @@ depends_on = [
   "libffi@0.1.0",
   "libiconv@1.17",
   "zlib@1.3.1",
+  "libdbus@1.14.10",
   "libcxx@21.1.7",
 ]
 
