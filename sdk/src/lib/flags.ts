@@ -489,6 +489,119 @@ export function parseArgs(args: string[]): ParsedArgs {
   return result;
 }
 
+/** A directory named by a header-, library-, or sysroot-search flag. */
+export interface SearchDirectoryArg {
+  /** The flag as the caller spelled it: `-I`, `-isystem`, `-Wl,-L`, ... */
+  flag: string;
+  /** The directory exactly as written, before any path resolution. */
+  value: string;
+}
+
+// Clang driver flags whose value is a search directory. Single-dash flags take
+// the value attached (`-I/x`) or as the next argument (`-I /x`); double-dash
+// flags take `--flag=/x` or `--flag /x`. Longest spellings come first so a
+// prefix such as `-isystem` never claims `-isystem-after`.
+const COMPILER_SEARCH_DIRECTORY_FLAGS = [
+  '--include-directory-after',
+  '--include-directory',
+  '--library-directory',
+  '--sysroot',
+  '-isystem-after',
+  '-idirafter',
+  '-isysroot',
+  '-isystem',
+  '-iquote',
+  '-I',
+  '-L',
+];
+
+// Linker (wasm-ld) flags whose value is a search directory.
+const LINKER_SEARCH_DIRECTORY_FLAGS = ['--library-path', '--sysroot', '-L'];
+
+function matchSearchDirectoryFlag(
+  arg: string,
+  flags: readonly string[],
+): { flag: string; attached: string | null } | null {
+  for (const flag of flags) {
+    if (arg === flag) return { flag, attached: null };
+    if (!arg.startsWith(flag)) continue;
+    if (flag.startsWith('--')) {
+      if (arg[flag.length] === '=') return { flag, attached: arg.slice(flag.length + 1) };
+      continue;
+    }
+    return { flag, attached: arg.slice(flag.length) };
+  }
+  return null;
+}
+
+function expandOrKeep(args: string[], readResponseFile?: ResponseFileReader): string[] {
+  if (!readResponseFile) return args;
+  try {
+    return expandResponseFiles(args, readResponseFile);
+  } catch {
+    // An unreadable or malformed response file is clang's or wasm-ld's error
+    // to report; inspection proceeds over what is visible.
+    return args;
+  }
+}
+
+/**
+ * List every header, library, and sysroot directory a compiler-driver command
+ * line names, including those inside `@response` files and those handed to the
+ * linker through `-Wl,` or `-Xlinker`. Values of unrelated flags (`-MF`,
+ * `-include`, `-D`, ...) are skipped so they are never mistaken for flags.
+ */
+export function searchDirectoryArgs(
+  args: string[],
+  readResponseFile?: ResponseFileReader,
+): SearchDirectoryArg[] {
+  const found: SearchDirectoryArg[] = [];
+  const linker: { token: string; via: string }[] = [];
+  const driverArgs = expandOrKeep(args, readResponseFile);
+
+  for (let i = 0; i < driverArgs.length; i++) {
+    const arg = driverArgs[i];
+    if (arg === '-Xlinker') {
+      if (i + 1 < driverArgs.length) linker.push({ token: driverArgs[++i], via: '-Xlinker ' });
+      continue;
+    }
+    if (arg.startsWith('-Wl,')) {
+      for (const token of arg.slice('-Wl,'.length).split(',')) {
+        linker.push({ token, via: '-Wl,' });
+      }
+      continue;
+    }
+    const match = matchSearchDirectoryFlag(arg, COMPILER_SEARCH_DIRECTORY_FLAGS);
+    if (match) {
+      const value = match.attached ?? driverArgs[++i];
+      if (value !== undefined && value.length > 0) found.push({ flag: match.flag, value });
+      continue;
+    }
+    if (FLAGS_WITH_VALUE.has(arg)) i++;
+  }
+
+  // Linker response files (`-Wl,@file`) hold linker arguments.
+  const linkerTokens: { token: string; via: string }[] = [];
+  for (const entry of linker) {
+    if (entry.token.startsWith('@') && entry.token.length > 1) {
+      for (const token of expandOrKeep([entry.token], readResponseFile)) {
+        linkerTokens.push({ token, via: entry.via });
+      }
+    } else {
+      linkerTokens.push(entry);
+    }
+  }
+  for (let i = 0; i < linkerTokens.length; i++) {
+    const { token, via } = linkerTokens[i];
+    const match = matchSearchDirectoryFlag(token, LINKER_SEARCH_DIRECTORY_FLAGS);
+    if (!match) continue;
+    const value = match.attached ?? linkerTokens[++i]?.token;
+    if (value !== undefined && value.length > 0) found.push({ flag: `${via}${match.flag}`, value });
+  }
+
+  return found;
+}
+
 export function needsLinking(parsed: ParsedArgs): boolean {
   if (parsed.compileOnly || parsed.preprocessOnly || parsed.assemblyOnly) return false;
   if (parsed.otherArgs.some(arg => arg.startsWith('-Wl,@') || arg.startsWith('@'))) return true;

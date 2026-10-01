@@ -185,11 +185,11 @@ runs:
         # buildable dependency edge through the same-run overlay downloaded
         # above, while the explicit source-build override executes the target.
         #
-        # WHY: the SDK's pkg-config wrapper rejects inherited host-library
-        # paths and currently recognizes target package caches by their
-        # `kandelo/` namespace. Keep this resolver-owned temporary cache under
-        # that namespace so configure can see the declared same-run dependency
-        # metadata without admitting ambient Nix pkg-config paths.
+        # WHY: keep this resolver-owned temporary cache below one private
+        # parent. The SDK's pkg-config wrapper admits dependency metadata by
+        # membership in the resolver-exported WASM_POSIX_BINARY_CACHE_ROOT,
+        # so configure sees the declared same-run dependencies without
+        # admitting ambient Nix pkg-config paths.
         EXACT_MAIN_PACKAGE_CACHE_PARENT="$RUNNER_TEMP/kandelo"
         if [ -e "$EXACT_MAIN_PACKAGE_CACHE_PARENT" ] \
           || [ -L "$EXACT_MAIN_PACKAGE_CACHE_PARENT" ]; then

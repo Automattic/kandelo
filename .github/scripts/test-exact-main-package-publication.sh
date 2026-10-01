@@ -162,7 +162,7 @@ do
 done
 grep -Fq 'EXACT_MAIN_PACKAGE_CACHE_PARENT="$RUNNER_TEMP/kandelo"' \
   "$EXACT_REBUILD_ACTION" ||
-  fail "exact-main package cache is outside the SDK target-cache namespace"
+  fail "exact-main package cache moved from its private resolver-owned parent"
 grep -Fq 'mkdir -m 700 "$EXACT_MAIN_PACKAGE_CACHE_PARENT"' \
   "$EXACT_REBUILD_ACTION" ||
   fail "exact-main package cache namespace is not privately resolver-owned"

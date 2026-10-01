@@ -891,20 +891,21 @@ Rust, TypeScript, and standalone resolver calls share the direct
 dependencies' cache identity.
 
 The SDK's `pkg-config` wrapper filters inherited host-library search paths so a
-native Nix library cannot satisfy a Wasm configure probe. Today that filter
-recognizes package-cache paths by the `kandelo/` namespace used by the default
-cache roots. An explicit cache root used for source builds must preserve that
-namespace when its declared dependencies provide `.pc` metadata. A source
-build that uses a private cache root (for example under `$RUNNER_TEMP/kandelo/`
-in CI) therefore keeps the `kandelo/` namespace; the resolver still constructs
-`WASM_POSIX_DEP_PKG_CONFIG_PATH` only from the selected dependency graph.
+native Nix library cannot satisfy a Wasm configure probe. It keeps a
+`PKG_CONFIG_PATH` entry only when the entry, lexically or after resolving
+symlinks, lies inside one of the roots the resolver hands the build: the
+target sysroot, the selected `WASM_POSIX_BINARY_CACHE_ROOT` (every declared
+dependency's prefix lies below it), or the recipe's own
+`WASM_POSIX_DEP_WORK_DIR` and `WASM_POSIX_DEP_OUT_DIR` (for `.pc` files a
+build stages for itself). Every other entry is dropped, and the wrapper prints
+one line naming what it dropped. A private cache root, such as the CI
+exact-main cache under `$RUNNER_TEMP`, needs no particular pathname: the
+resolver exports it as `WASM_POSIX_BINARY_CACHE_ROOT`, and that is what the
+filter checks. Outside a resolver-launched build only the sysroot qualifies.
 
-This pathname test is a target-versus-host contamination guard, not package
-authentication. A future SDK change should instead canonicalize each candidate
-path against the resolver-selected `WASM_POSIX_BINARY_CACHE_ROOT` and declared
-`WASM_POSIX_DEP_<UPPER>_DIR` roots. Because `sdk/src` is a global package
-toolchain input, that migration must be coordinated with a full package cache
-identity rotation rather than folded into an isolated publication repair.
+This membership test is a target-versus-host contamination guard, not package
+authentication. The compiler wrappers' [host-path guard](sdk-guide.md#host-path-guard)
+catches host directories that reach a compile by any other route.
 
 This is an identity and pathname contract, not an operating-system lease.
 Normal same-user cache generations are immutable; force-source rebuild or

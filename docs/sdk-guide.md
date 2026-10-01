@@ -54,7 +54,7 @@ This makes 8 CLI tools available globally:
 | `wasm32posix-ranlib` | Archive index generator (wraps llvm-ranlib) |
 | `wasm32posix-nm` | Symbol lister (wraps llvm-nm) |
 | `wasm32posix-strip` | Symbol stripper (no-op for Wasm) |
-| `wasm32posix-pkg-config` | pkg-config with sysroot awareness |
+| `wasm32posix-pkg-config` | pkg-config limited to the sysroot and declared package dependencies |
 | `wasm32posix-configure` | Autoconf `./configure` wrapper |
 
 ### LLVM Discovery
@@ -393,6 +393,69 @@ Executable builds also declare the process's pthread concurrency limit through t
 
 The count is a resource limit, not a static memory slab reservation. The host dynamically reserves each four-page pthread control slot when `pthread_create()` succeeds and reuses exited slots within the same process.
 
+### Host-path guard
+
+Every header and library a WebAssembly compile uses must come from the
+Kandelo sysroot or a declared package dependency. The build machine's own
+copies of the same libraries (in `/nix/store`, `/usr/include`, Homebrew,
+the macOS SDK, ...) are built for macOS or Linux, usually at different
+versions. If one of their directories reaches a Wasm compile, clang accepts
+it: the program compiles against host headers while linking the Kandelo
+package, and struct layouts, macros, and inline functions can silently
+disagree at run time.
+
+`wasm{32,64}posix-cc` and `wasm{32,64}posix-c++` therefore inspect every
+search directory on their command line before compiling:
+
+- compiler flags `-I`, `-isystem`, `-iquote`, `-idirafter`, `-isysroot`,
+  `-L`, `--sysroot`, `--include-directory`, `--library-directory`, in attached
+  (`-I/dir`, `--sysroot=/dir`) and separated (`-I /dir`) forms;
+- linker flags passed as `-Wl,-L/dir`, `-Wl,-L,/dir`, `-Wl,--library-path=/dir`,
+  or `-Xlinker -L -Xlinker /dir`;
+- the contents of `@response` files, including linker `-Wl,@file`;
+- the `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH`,
+  and `LIBRARY_PATH` environment variables, which clang honors without any
+  flag.
+
+A directory is a host directory when it resolves (relative paths against the
+working directory) to `/nix/store`, `/usr/include`, `/usr/lib`,
+`/usr/local/include`, `/usr/local/lib`, `/opt/homebrew`,
+`/Library/Developer/CommandLineTools`, `/Applications/Xcode.app`, or an
+absolute `SDKROOT`, or to anything below them. Nothing under those roots is a
+WebAssembly artifact. Sysroot-relative spellings (`-I=/usr/include`) name the
+target sysroot and are not host directories. Native host compilers (`cc`,
+`clang`) are not wrapped and are unaffected.
+
+`KANDELO_HOST_PATH_GUARD` selects what happens on a match:
+
+| Value | Behavior |
+|-------|----------|
+| `report` (default, also when unset or empty) | Report each offending directory once per invocation, then compile normally. |
+| `error` | Print the offending flags and refuse to compile (exit status 1). |
+
+Any other value is an error. In `report` mode the report goes to stderr,
+unless `KANDELO_HOST_PATH_GUARD_LOG` names an absolute file, in which case
+one JSON record per offending flag (tool, arch, package, flag, value, matched
+root, the `CPPFLAGS`/`CFLAGS`/`CXXFLAGS`/`LDFLAGS` variables containing it,
+working directory) is appended to that file and stderr stays quiet. Use the
+log for whole-build surveys: some configure probes treat compiler stderr as
+failure (Autoconf's `AC_LANG_WERROR`, libtool's flag checks), so a report on
+stderr can change what a leaking package configures.
+
+Report mode is a transitional default while existing package recipes are
+fixed; see the
+[design](superpowers/specs/2026-10-01-hermetic-target-dependency-flags-design.md).
+
+A report or error means a recipe let a host directory into a target compile.
+The message names the flag and, when it can tell, the environment variable it
+came from. The usual sources are a host `pkg-config` (an upstream configure
+calling plain `pkg-config` sees the dev shell's host `PKG_CONFIG_PATH`), a
+`*-config` script from the host, or `CPPFLAGS`/`LDFLAGS`. Fix it by resolving
+the dependency from its declared Kandelo package (`WASM_POSIX_DEP_<NAME>_DIR`,
+`WASM_POSIX_DEP_PKG_CONFIG_PATH`), or by declaring the missing dependency. Do
+not point the build at the host's copy, and do not allow-list a host path: a
+host header that a target compile genuinely needs is a platform gap to raise.
+
 ### Flags silently ignored
 
 These flags are common in build systems but irrelevant for Wasm:
@@ -548,6 +611,8 @@ exported ABI, save-buffer format, and the dispatch-scheme decisions.
 | `WASM_POSIX_LLVM_DIR` | Path to LLVM bin directory |
 | `WASM_POSIX_SYSROOT` | Override sysroot path (default: `<repo>/sysroot`) |
 | `WASM_POSIX_GLUE_DIR` | Override glue directory (default: `<repo>/libc/glue`) |
+| `KANDELO_HOST_PATH_GUARD` | `report` (default) or `error`; see [Host-path guard](#host-path-guard) |
+| `KANDELO_HOST_PATH_GUARD_LOG` | Absolute file that receives report-mode JSON records instead of stderr |
 
 ## Running Programs
 

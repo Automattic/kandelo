@@ -20,8 +20,9 @@ import {
   type ResponseFileContents,
 } from '../lib/flags.ts';
 import { run, runPassthrough } from '../lib/exec.ts';
+import { applyHostPathGuard } from '../lib/host-path-guard.ts';
 import { isMain } from '../lib/is-main.ts';
-import { type WasmArch, detectArch, targetTriple } from '../lib/arch.ts';
+import { type WasmArch, detectArch, targetTriple, toolPrefix } from '../lib/arch.ts';
 
 const STABLE_SDK_SOURCE_ROOT = '/usr/src/kandelo-sdk';
 
@@ -444,10 +445,33 @@ export async function prepareExecutableLinker(
   };
 }
 
+/**
+ * Run the host-path guard for a compiler-driver invocation. Exits the process
+ * when error mode rejects the command line or the guard mode is malformed.
+ */
+export function guardHostPathsOrExit(userArgs: string[], arch: WasmArch, driver: 'cc' | 'c++'): void {
+  let proceed: boolean;
+  try {
+    proceed = applyHostPathGuard({
+      args: userArgs,
+      env: process.env,
+      cwd: process.cwd(),
+      readResponseFile: (path) => readLlvmResponseFile(path),
+      tool: `${toolPrefix(arch)}-${driver}`,
+      arch,
+    });
+  } catch (error) {
+    console.error(`${toolPrefix(arch)}-${driver}: error: ${(error as Error).message}`);
+    process.exit(1);
+  }
+  if (!proceed) process.exit(1);
+}
+
 async function main(): Promise<void> {
   const arch = detectArch();
-  const toolchain = await resolveToolchain(arch);
   const userArgs = process.argv.slice(2);
+  guardHostPathsOrExit(userArgs, arch, 'cc');
+  const toolchain = await resolveToolchain(arch);
   const executableLinker = await prepareExecutableLinker(userArgs, toolchain, arch);
   const args = buildClangArgs(userArgs, toolchain, arch, executableLinker ?? undefined);
   const exitCode = await runPassthrough(toolchain.cc, args);
