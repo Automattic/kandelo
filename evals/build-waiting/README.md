@@ -317,6 +317,26 @@ in seconds instead of mid-suite.
   - the preflight runs in ≤ 10 s;
   - and it never fails on a tree that the suite then runs cleanly.
 
+## Status after building (2026-10-01)
+
+Pre-landing evidence only. The transcript-based keep rules need about 5 real
+sessions with the tools before they can be judged.
+
+| # | Tool | Evidence so far | Against its rule |
+|---|---|---|---|
+| 1 | `agent-job` | A/B 9/9 correct vs 3/9 without; +23% raw cost per run | Correctness met; raw-cost clause not met; transcripts pending |
+| 2 | Tree-change stamp | Fired 5 times during development; each was a real edit during the run, none caused by the run's own outputs | No false stamps yet |
+| 3 | Build progress | Real 154-node build: `status` showed 143/154 done, running nodes with ages, and the process tree | Transcript measure pending |
+| 4 | `[suite-health]` | Probe files: 3 load failures grouped to one cause and warned; zero-test run warned; full suite (482 files) raised no false warning | Precision pending (needs 20 warnings) |
+| 5 | XFAIL reasons | All 47 recorded and verified. Found a stale rationale (mlock/12-1) and 2 XFAILs that do not fail as documented. One false mismatch (short XFAIL timeout under load) was fixed by giving only "timeout" XFAILs the short budget | Met: caught a real mismatch on the first run |
+| 6 | Program-index lock | Fixes "index target changed" (14 of 44 baseline errors); 3 regression tests | Pending; the other 30 errors are a separate open defect |
+| 7 | `npm ci` skip | Saved about 3 s per run | Failed; removed before landing |
+| 8 | Wait-guard hook | Replay over 118,477 past Bash calls: 20/20 sampled sleep-poll denials and 12/12 pgrep-waiter denials were real. The harness already blocks about 40% of leading sleeps | Not installed; opt-in |
+| 8b | Subagent guard | Hook input carries `agent_id`; end-to-end denial of `./run.sh setup` in a subagent confirmed | Not installed; opt-in |
+| 9 | `local-build --plan` | Plan takes 2.3-6 s; first estimate 610 s against 1,095 s actual (44% error, load average ~100) | 1 of 10 builds |
+| 10 | Timing history | node-durations.jsonl and runs.jsonl recording | Judged through tools 1 and 9 |
+| 11 | Closure preflight | Catches a broken closure (negative test); 2.7 s warm, 12 s cold, 46 s cold at load ~100 | Warm runs meet 10 s; cold runs do not |
+
 ## What the analyzer cannot see
 
 - **Main-session idle gaps include the user's own think time.** That is why
