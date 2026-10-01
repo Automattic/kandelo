@@ -39,6 +39,7 @@ import {
 } from "./source-rootfs-shell-overlay";
 
 const REGULAR_FILE_MODE = 0o100000;
+const DIRECTORY_MODE = 0o040000;
 const SYMBOLIC_LINK_MODE = 0o120000;
 const FILE_TYPE_MASK = 0o170000;
 const EXECUTE_BITS = 0o111;
@@ -67,21 +68,11 @@ const SDL2_SHADER_PRESETS: ReadonlyArray<{
 export interface SourceRootfsShellInputs {
   rootfsPath: string;
   bashPath: string;
-  fbdoomPath: string;
-  modesetPath: string;
-  sdl2Path: string;
-  wlcompositorPath: string;
-  wltermPath: string;
-  wlclockPath: string;
-  wlpaintPath: string;
   wldesktopPath: string;
-  klauncherPath: string;
-  notifySendPath: string;
   omarchydesktopPath: string;
   omarchyThemeHookPath: string;
   desktopDataPath: string;
   libinputQuirksPath: string;
-  espeakNgPath: string;
   espeakNgDataPath: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
@@ -98,6 +89,18 @@ const REQUIRED_BASH_ALIASES = [
   "/bin/sh",
   "/usr/bin/sh",
 ] as const;
+
+/**
+ * The only Wasm programs this composer may write eagerly, together with every
+ * hard link to them (Bash is also /bin/sh). Bash is the account shell: login
+ * execs it on every boot, before any machine could benefit from deferring it.
+ * Every other program is a lazy file (SHELL_LAZY_BINARY_SPECS).
+ * WHY enforce it: each eager byte is downloaded by every visitor before the
+ * machine boots, and eager programs accumulate one convenient addition at a
+ * time — 2.4 MB of compressed image had grown to 4.1 MB this way.
+ */
+const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set(["/usr/bin/bash"]);
+const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d] as const;
 export const SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES = [
   ...readSourceRootfsShellResolverDependencies(),
 ] as const;
@@ -721,6 +724,76 @@ function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * Paths of the regular files whose bytes are stored in the image and begin
+ * with the Wasm magic. Lazy files and lazy-archive trees are skipped without
+ * being read, so the walk never materializes deferred content.
+ */
+function eagerWasmPrograms(fs: MemoryFileSystem): Set<string> {
+  const programs = new Set<string>();
+  const magic = new Uint8Array(WASM_MAGIC.length);
+  const walk = (dir: string): void => {
+    const handle = fs.opendir(dir);
+    try {
+      for (let entry = fs.readdir(handle); entry; entry = fs.readdir(handle)) {
+        if (entry.name === "." || entry.name === "..") continue;
+        const path = dir === "/" ? `/${entry.name}` : `${dir}/${entry.name}`;
+        if (fs.isPathDeferred(path)) continue;
+        const stat = fs.lstat(path);
+        const type = stat.mode & FILE_TYPE_MASK;
+        if (type === DIRECTORY_MODE) {
+          walk(path);
+          continue;
+        }
+        if (
+          type !== REGULAR_FILE_MODE ||
+          fs.getLazyEntry(path) !== null ||
+          stat.size < magic.byteLength
+        ) {
+          continue;
+        }
+        const fd = fs.open(path, 0, 0);
+        try {
+          if (fs.read(fd, magic, null, magic.byteLength) !== magic.byteLength) {
+            throw new Error(`short VFS read for ${path}`);
+          }
+        } finally {
+          fs.close(fd);
+        }
+        if (WASM_MAGIC.every((byte, index) => magic[index] === byte)) {
+          programs.add(path);
+        }
+      }
+    } finally {
+      fs.closedir(handle);
+    }
+  };
+  walk("/");
+  return programs;
+}
+
+function requireLazyShellPrograms(
+  sourcePrograms: ReadonlySet<string>,
+  fs: MemoryFileSystem,
+): void {
+  const allowedInodes = new Set(
+    [...EAGER_SHELL_PROGRAMS].map((path) => fs.stat(path).ino),
+  );
+  const added = [...eagerWasmPrograms(fs)]
+    .filter(
+      (path) =>
+        !sourcePrograms.has(path) && !allowedInodes.has(fs.lstat(path).ino),
+    )
+    .sort();
+  if (added.length > 0) {
+    throw new Error(
+      "source-rootfs shell must add programs as lazy files " +
+        "(SHELL_LAZY_BINARY_SPECS), but wrote eager Wasm at: " +
+        added.join(", "),
+    );
+  }
+}
+
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false;
   return left.every((byte, index) => byte === right[index]);
@@ -845,6 +918,9 @@ export async function buildSourceRootfsShellImage(
   // authenticate atomic seals before the source image gains that authority.
   await fs.verifyImportedLazyAtomicGroupSeals();
   const terminalSession = readExperimentalTerminalSession(fs);
+  // The rootfs owns its own eager programs (login); only what this composer
+  // adds is held to the lazy default.
+  const sourceEagerPrograms = eagerWasmPrograms(fs);
   const demo = composeSourceRootfsDemoConfig(
     inputs.demoConfigPath,
     inputs.demoProfileOverlayPath,
@@ -870,22 +946,10 @@ export async function buildSourceRootfsShellImage(
   const unrelatedLazyBefore = lazyRecords(fs, omittedLazyIdentities);
 
   const bash = readRegularInput(inputs.bashPath, "bash dependency");
-  const fbdoom = readRegularInput(inputs.fbdoomPath, "fbdoom dependency");
-  const modeset = readRegularInput(inputs.modesetPath, "modeset dependency");
-  const sdl2 = readRegularInput(inputs.sdl2Path, "sdl2 dependency");
-  const wlcompositor = readRegularInput(
-    inputs.wlcompositorPath,
-    "wlcompositor dependency",
-  );
-  const wlterm = readRegularInput(inputs.wltermPath, "wlterm dependency");
-  const wlclock = readRegularInput(inputs.wlclockPath, "wlclock dependency");
-  const wlpaint = readRegularInput(inputs.wlpaintPath, "wlpaint dependency");
   const wldesktop = readRegularInput(
     inputs.wldesktopPath,
     "wldesktop launcher dependency",
   );
-  const klauncher = readRegularInput(inputs.klauncherPath, "klauncher dependency");
-  const notifySend = readRegularInput(inputs.notifySendPath, "notify-send dependency");
   const omarchydesktop = readRegularInput(
     inputs.omarchydesktopPath,
     "omarchydesktop launcher dependency",
@@ -902,7 +966,6 @@ export async function buildSourceRootfsShellImage(
     inputs.libinputQuirksPath,
     "libinput quirks dependency",
   );
-  const espeakNg = readRegularInput(inputs.espeakNgPath, "espeak-ng dependency");
   const espeakNgData = readRegularInput(
     inputs.espeakNgDataPath,
     "espeak-ng data dependency",
@@ -926,26 +989,11 @@ export async function buildSourceRootfsShellImage(
   requireCompleteProductShellContract(fs);
 
   ensureDirRecursive(fs, "/usr/local/bin");
-  writeVfsBinary(fs, "/usr/local/bin/fbdoom", fbdoom, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/sdl2", sdl2, 0o755);
-  // The Wayland desktop. /usr/local/bin/wldesktop arrives as a wayland-demo
-  // runtime_file and execs these four by name, so they must be on PATH as
-  // regular eager programs — a launcher whose programs are missing exits
-  // immediately and the machine shows an empty KMS surface.
-  writeVfsBinary(fs, "/usr/local/bin/wlcompositor", wlcompositor, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/wlterm", wlterm, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/wlclock", wlclock, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/wlpaint", wlpaint, 0o755);
+  // The desktops' launchers are small scripts, written eagerly. Every Wasm
+  // program they exec (wlcompositor, wlterm, klauncher, foot, Waybar, ...)
+  // is a lazy file registered by the overlay above, so a machine that never
+  // starts a desktop never fetches them.
   writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
-  // The tiling (hyprland) and Omarchy-shaped (omarchy) desktops start the
-  // same compositor through their own launchers. klauncher and notify-send
-  // are small in-tree programs, eager like the other wl* programs; foot,
-  // Waybar, mako and dbus-daemon are large and arrive as lazy rootfs files
-  // (images/rootfs/PACKAGES.toml), so machines that never start them do not
-  // pay for them.
-  writeVfsBinary(fs, "/usr/local/bin/klauncher", klauncher, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/notify-send", notifySend, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/omarchy-theme-changed", omarchyThemeHook, 0o755);
   // Configs, themes, launcher entries, fontconfig and D-Bus configs, and the
@@ -986,8 +1034,7 @@ export async function buildSourceRootfsShellImage(
   // to exist), and that path must work even offline when no quake106.zip was
   // staged and the wrapper's own `mkdir -p id1` never ran.
   ensureDirRecursive(fs, "/usr/share/quake/id1", 0o777);
-  ensureDirRecursive(fs, "/usr/bin");
-  writeVfsBinary(fs, "/usr/bin/espeak-ng", espeakNg, 0o755);
+  // /usr/bin/espeak-ng itself is a lazy file.
   // libespeak-ng's PATH_ESPEAK_DATA is compiled in as /usr/share.
   unpackDataZip(fs, "/usr/share/espeak-ng-data", espeakNgData);
   writeSdl2ShaderPresets(fs);
@@ -997,6 +1044,9 @@ export async function buildSourceRootfsShellImage(
   requireOwnedDemoCommands(fs, demo);
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demo, 0o644);
+
+  // Checked before saving so a rejected composition writes no output.
+  requireLazyShellPrograms(sourceEagerPrograms, fs);
 
   // WHY: Bash is the one intentional eager identity. Every other source-rootfs
   // first-use download must retain the same path, URL, size, and tree metadata.
@@ -1046,21 +1096,11 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
   const allowed = new Set([
     "--rootfs",
     "--bash",
-    "--fbdoom",
-    "--modeset",
-    "--sdl2",
-    "--wlcompositor",
-    "--wlterm",
-    "--wlclock",
-    "--wlpaint",
     "--wldesktop",
-    "--klauncher",
-    "--notify-send",
     "--omarchydesktop",
     "--omarchy-theme-hook",
     "--desktop-data",
     "--libinput-quirks",
-    "--espeak-ng",
     "--espeak-ng-data",
     "--demo-config",
     "--demo-profile-overlay",
@@ -1079,17 +1119,12 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     ) {
       throw new Error(
         "usage: build-source-rootfs-shell-image.ts " +
-          "--rootfs <rootfs.vfs.zst> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
-          "--modeset <modeset.wasm> --sdl2 <sdl2.wasm> " +
-          "--wlcompositor <wlcompositor.wasm> --wlterm <wlterm.wasm> " +
-          "--wlclock <wlclock.wasm> --wlpaint <wlpaint.wasm> " +
-          "--wldesktop <wldesktop> --klauncher <klauncher.wasm> " +
-          "--notify-send <notify-send.wasm> " +
+          "--rootfs <rootfs.vfs.zst> --bash <bash.wasm> " +
+          "--wldesktop <wldesktop> " +
           "--omarchydesktop <omarchydesktop> " +
           "--omarchy-theme-hook <omarchy-theme-changed> " +
           "--desktop-data <kandelo-desktop-data.zip> " +
           "--libinput-quirks <libinput-quirks.zip> " +
-          "--espeak-ng <espeak-ng.wasm> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
@@ -1104,21 +1139,11 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
   return {
     rootfsPath: values.get("--rootfs")!,
     bashPath: values.get("--bash")!,
-    fbdoomPath: values.get("--fbdoom")!,
-    modesetPath: values.get("--modeset")!,
-    sdl2Path: values.get("--sdl2")!,
-    wlcompositorPath: values.get("--wlcompositor")!,
-    wltermPath: values.get("--wlterm")!,
-    wlclockPath: values.get("--wlclock")!,
-    wlpaintPath: values.get("--wlpaint")!,
     wldesktopPath: values.get("--wldesktop")!,
-    klauncherPath: values.get("--klauncher")!,
-    notifySendPath: values.get("--notify-send")!,
     omarchydesktopPath: values.get("--omarchydesktop")!,
     omarchyThemeHookPath: values.get("--omarchy-theme-hook")!,
     desktopDataPath: values.get("--desktop-data")!,
     libinputQuirksPath: values.get("--libinput-quirks")!,
-    espeakNgPath: values.get("--espeak-ng")!,
     espeakNgDataPath: values.get("--espeak-ng-data")!,
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,

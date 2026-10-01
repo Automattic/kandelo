@@ -50,6 +50,14 @@ export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
   return `${SHELL_LAZY_URL_PREFIX}${spec.resolverPath}`;
 }
 
+/**
+ * Every program the shell image adds, as a lazy file: the image records its
+ * path, size and mode, and the bytes are fetched on first read. Lazy is the
+ * default because every visitor downloads the eager image before anything
+ * boots, while most machines run only a few of these programs. The composer
+ * rejects any other Wasm program it would write eagerly (see
+ * EAGER_SHELL_PROGRAMS in build-source-rootfs-shell-image.ts).
+ */
 export const SHELL_LAZY_BINARY_SPECS = [
   {
     id: "coreutils",
@@ -183,6 +191,69 @@ export const SHELL_LAZY_BINARY_SPECS = [
     id: "dbus",
     resolverPath: "programs/dbus/dbus-daemon.wasm",
     vfsPath: "/usr/local/bin/dbus-daemon",
+    symlinks: [],
+  },
+  // The Wayland desktops' in-tree programs. The desktops' launchers exec them
+  // by name from PATH; a lazy file is an ordinary executable there, so only a
+  // machine that starts a desktop fetches them. notify-send statically links
+  // glib and gio (~5.8 MB), which alone would outweigh much of the eager image.
+  {
+    id: "wlcompositor",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/wlcompositor.wasm",
+    vfsPath: "/usr/local/bin/wlcompositor",
+    symlinks: [],
+  },
+  {
+    id: "wlterm",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/wlterm.wasm",
+    vfsPath: "/usr/local/bin/wlterm",
+    symlinks: [],
+  },
+  {
+    id: "wlclock",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/wlclock.wasm",
+    vfsPath: "/usr/local/bin/wlclock",
+    symlinks: [],
+  },
+  {
+    id: "wlpaint",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/wlpaint.wasm",
+    vfsPath: "/usr/local/bin/wlpaint",
+    symlinks: [],
+  },
+  {
+    id: "klauncher",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/klauncher.wasm",
+    vfsPath: "/usr/local/bin/klauncher",
+    symlinks: [],
+  },
+  {
+    id: "notify-send",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/notify-send.wasm",
+    vfsPath: "/usr/local/bin/notify-send",
+    symlinks: [],
+  },
+  // The single-program machines' workloads. Each machine's profile command
+  // execs its program, which is the first read of these bytes.
+  {
+    id: "sdl2",
+    dependency: "sdl2-demo",
+    resolverPath: "programs/sdl2.wasm",
+    vfsPath: "/usr/local/bin/sdl2",
+    symlinks: [],
+  },
+  { id: "fbdoom", resolverPath: "programs/fbdoom.wasm", vfsPath: "/usr/local/bin/fbdoom", symlinks: [] },
+  { id: "modeset", resolverPath: "programs/modeset.wasm", vfsPath: "/usr/local/bin/modeset", symlinks: [] },
+  {
+    id: "espeak-ng",
+    resolverPath: "programs/espeak-ng/espeak-ng.wasm",
+    vfsPath: "/usr/bin/espeak-ng",
     symlinks: [],
   },
   { id: "sqlite-cli", resolverPath: "programs/sqlite3.wasm", vfsPath: "/usr/bin/sqlite3", symlinks: ["/bin/sqlite3"] },
