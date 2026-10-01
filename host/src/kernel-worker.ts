@@ -21076,6 +21076,14 @@ export class CentralizedKernelWorker {
       result = { retVal: -1, errVal: EIO };
     }
 
+    // WHY: the transfer ran a real syscall, and Rust delivers default signal
+    // actions before returning. A write that raised SIGPIPE (or SIGXFSZ) has
+    // already made this process an Exited zombie. Finish that termination
+    // before any further kernel entry: signal dequeue, retry disposition, and
+    // shared-mapping sync all require a live task, and Rust correctly rejects
+    // a dead one. This is the same boundary the generic syscall path stops at.
+    if (this.#finishSignalTermination(channel, entry)) return;
+
     const retryDisposition: BlockingRetryDisposition | undefined =
       replaySnapshot
       ?? (
@@ -21606,6 +21614,10 @@ export class CentralizedKernelWorker {
       this.#rejectScratchTransfer(channel, error, entry);
       return;
     }
+
+    // A send to a closed peer can terminate this process by SIGPIPE inside
+    // the kernel call; see #handleFlattenedTransfer.
+    if (this.#finishSignalTermination(channel, entry)) return;
 
     const { retVal, errVal } = result;
     if (
