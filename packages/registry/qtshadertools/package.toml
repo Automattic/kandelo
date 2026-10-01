@@ -21,6 +21,7 @@ depends_on = [
   "libpng@1.6.43",
   "libxkbcommon@1.7.0",
   "libwayland@1.24.0",
+  "libdbus@1.14.10",
 ]
 
 [source]

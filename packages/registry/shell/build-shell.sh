@@ -116,9 +116,8 @@ BASH="$BASH_DIR/bash.wasm"
 # The Wayland desktop's launcher. A package runtime_file is NOT installed
 # into the shell image by the composer, so it has to be threaded explicitly.
 WLDESKTOP="$WAYLAND_DEMO_DIR/wldesktop"
-# The Omarchy desktop's launcher, its theme hook, and the desktops' data.
+# The Omarchy desktop's launcher and the desktops' data.
 OMARCHYDESKTOP="$WAYLAND_DEMO_DIR/omarchydesktop"
-OMARCHY_THEME_HOOK="$WAYLAND_DEMO_DIR/omarchy-theme-changed"
 DESKTOP_DATA="$WAYLAND_DEMO_DIR/kandelo-desktop-data.zip"
 # libinput's device quirks, unpacked by the composer at /usr/share/libinput.
 LIBINPUT_QUIRKS="$WAYLAND_DEMO_DIR/libinput-quirks.zip"
@@ -132,7 +131,6 @@ require_regular_file "rootfs dependency output" "$ROOTFS"
 require_regular_file "bash dependency output" "$BASH"
 require_regular_file "wldesktop dependency output" "$WLDESKTOP"
 require_regular_file "omarchydesktop dependency output" "$OMARCHYDESKTOP"
-require_regular_file "omarchy theme hook dependency output" "$OMARCHY_THEME_HOOK"
 require_regular_file "desktop data dependency output" "$DESKTOP_DATA"
 require_regular_file "libinput quirks dependency output" "$LIBINPUT_QUIRKS"
 require_regular_file "espeak-ng data dependency output" "$ESPEAK_NG_DATA"
@@ -160,7 +158,6 @@ TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     --bash "$BASH" \
     --wldesktop "$WLDESKTOP" \
     --omarchydesktop "$OMARCHYDESKTOP" \
-    --omarchy-theme-hook "$OMARCHY_THEME_HOOK" \
     --desktop-data "$DESKTOP_DATA" \
     --libinput-quirks "$LIBINPUT_QUIRKS" \
     --espeak-ng-data "$ESPEAK_NG_DATA" \

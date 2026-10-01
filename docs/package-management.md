@@ -1975,6 +1975,8 @@ the files meson would generate:
 `libwayland`, `libxkbcommon`, `libevdev`, `libinput`, `libdrm`, `glib`, `atk`,
 `basu`, `fcft`, `foot`, `mako`, `gtk-layer-shell`, `waybar`, `harfbuzz`
 (its single-file amalgamation), `utf8proc` and `tllist` (header-only).
+`hyprland-protocols` is data only — its meson build installs XML and
+writes a `.pc` — and its script reproduces that install without meson.
 
 The stated reasons are that meson's feature probes misreport against the wasm
 sysroot (one example is detecting macOS's `struct xucred`) and that the dev
@@ -2028,7 +2030,7 @@ not Kandelo defects. They stay until the engine or the upstream code changes.
 |---|---|---|
 | `glib`, `atk`, `cairo`, `pango`, `gtk3`, `mako` | `glib/src/wasm-callback-signatures.patch`, `wasm-callback-arity.patch` in `atk`, `cairo`, `pango` and `gtk3`, `mako/patches/0003-typed-listener-noops.patch`: give every callback the exact signature it is called with. | `call_indirect` checks the function's type, so C code that calls a function through a pointer of a different type (a `GFunc` cast from a one-argument function, a shared zero-argument no-op) traps instead of working by accident. |
 | `mako`, `quickshell` | `mako/patches/0002-rename-parse-boolean.patch`, `quickshell/src/no-wl-proxy-interpose-on-wasm.patch`. | A fully static link has one symbol namespace and no `dlsym(RTLD_NEXT)`: mako's `parse_boolean` collides with basu's, and Quickshell cannot interpose on libwayland. |
-| `qtbase`, `quickshell` | `qtbase/src/wayland-fd-notifier-on-wasm.patch`, `quickshell/src/on-thread-logger-on-wasm.patch`, `quickshell/src/one-generation-reload-on-wasm.patch`: do on the main thread what upstream does on helper threads, and free the old QML engine before building its replacement. | Each guest thread is a Web Worker, and Chromium compiles the whole program module again per worker (see [browser-support.md](browser-support.md#quickshell-qml-limits)). |
+| `qtbase`, `quickshell` | `qtbase/src/wayland-fd-notifier-on-wasm.patch`, `qtbase/src/dbus-manager-on-thread-on-wasm.patch`, `quickshell/src/on-thread-logger-on-wasm.patch`, `quickshell/src/one-generation-reload-on-wasm.patch`: do on the main thread what upstream does on helper threads (the Wayland reader threads, QtDBus's connection-manager thread, Quickshell's logger), and free the old QML engine before building its replacement. | Each guest thread is a Web Worker: Chromium compiles the whole program module again per worker, and Firefox's fixed per-process code region cannot hold a second copy of a Qt client at all (see [browser-support.md](browser-support.md#quickshell-qml-limits)). |
 
 **Target recognition and upstream defects.**
 

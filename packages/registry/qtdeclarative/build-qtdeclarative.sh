@@ -61,6 +61,7 @@
 #     WASM_POSIX_DEP_FREETYPE_DIR      WASM_POSIX_DEP_FONTCONFIG_DIR
 #     WASM_POSIX_DEP_LIBFFI_DIR        WASM_POSIX_DEP_LIBXML2_DIR
 #     WASM_POSIX_DEP_LIBICONV_DIR
+#     WASM_POSIX_DEP_LIBDBUS_DIR
 
 set -euo pipefail
 
@@ -115,6 +116,7 @@ LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DI
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
 LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:?WASM_POSIX_DEP_LIBXML2_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
 LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
+LIBDBUS_PREFIX="${WASM_POSIX_DEP_LIBDBUS_DIR:?WASM_POSIX_DEP_LIBDBUS_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
 
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
@@ -153,6 +155,7 @@ DEP_PREFIXES=(
     "$LIBPNG_PREFIX"
     "$LIBXKBCOMMON_PREFIX"
     "$LIBWAYLAND_PREFIX"
+    "$LIBDBUS_PREFIX"
 )
 
 # pkg-config must see only the resolved dependency prefixes (the qtbase

@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=NetHack
+Exec=/usr/local/bin/foot --config=/usr/share/kandelo/foot/foot.ini /usr/bin/nethack

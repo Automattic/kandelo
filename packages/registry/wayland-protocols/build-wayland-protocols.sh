@@ -59,6 +59,7 @@ cursor-shape-v1.xml staging cursor-shape
 ext-data-control-v1.xml staging ext-data-control
 ext-background-effect-v1.xml staging ext-background-effect
 ext-idle-notify-v1.xml staging ext-idle-notify
+ext-session-lock-v1.xml staging ext-session-lock
 ext-workspace-v1.xml staging ext-workspace
 fractional-scale-v1.xml staging fractional-scale
 xdg-activation-v1.xml staging xdg-activation
