@@ -14,27 +14,27 @@
     {
       "name": "fbdoom",
       "version": "0.1.0",
-      "role": "eager-program"
+      "role": "lazy-file"
     },
     {
       "name": "modeset",
       "version": "0.1.0",
-      "role": "eager-program"
+      "role": "lazy-file"
     },
     {
       "name": "sdl2-demo",
       "version": "0.1.0",
-      "role": "eager-program"
+      "role": "lazy-file"
     },
     {
       "name": "wayland-demo",
       "version": "0.1.0",
-      "role": "eager-program"
+      "role": "lazy-file"
     },
     {
       "name": "espeak-ng",
       "version": "1.52.0",
-      "role": "eager-program"
+      "role": "lazy-file"
     },
     {
       "name": "ncurses",

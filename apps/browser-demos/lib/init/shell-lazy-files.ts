@@ -48,55 +48,81 @@ import scummvmModernUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/sc
 import scummvmClassicUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/scummclassic.zip?url";
 import scummvmGuiIconsUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/gui-icons.dat?url";
 import scummvmFontsUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/fonts.dat?url";
+import wlcompositorWasmUrl from "@binaries/programs/wasm32/wayland-demo/wlcompositor.wasm?url";
+import wltermWasmUrl from "@binaries/programs/wasm32/wayland-demo/wlterm.wasm?url";
+import wlclockWasmUrl from "@binaries/programs/wasm32/wayland-demo/wlclock.wasm?url";
+import wlpaintWasmUrl from "@binaries/programs/wasm32/wayland-demo/wlpaint.wasm?url";
+import klauncherWasmUrl from "@binaries/programs/wasm32/wayland-demo/klauncher.wasm?url";
+import notifySendWasmUrl from "@binaries/programs/wasm32/wayland-demo/notify-send.wasm?url";
+import sdl2WasmUrl from "@binaries/programs/wasm32/sdl2.wasm?url";
+import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
+import modesetWasmUrl from "@binaries/programs/wasm32/modeset.wasm?url";
+import espeakNgWasmUrl from "@binaries/programs/wasm32/espeak-ng/espeak-ng.wasm?url";
 
 export {
   assertShellLazyUrlsResolved,
 } from "./shell-lazy-url-contract";
 
-const SHELL_LAZY_ASSET_URLS: Record<(typeof SHELL_LAZY_BINARY_SPECS)[number]["id"], string> = {
-  coreutils: coreutilsWasmUrl,
-  grep: grepWasmUrl,
-  sed: sedWasmUrl,
-  bc: bcWasmUrl,
-  file: fileWasmUrl,
-  less: lessWasmUrl,
-  m4: m4WasmUrl,
-  make: makeWasmUrl,
-  tar: tarWasmUrl,
-  curl: curlWasmUrl,
-  netcat: ncWasmUrl,
-  wget: wgetWasmUrl,
-  git: gitWasmUrl,
-  "git-remote-http": gitRemoteHttpWasmUrl,
-  gzip: gzipWasmUrl,
-  bzip2: bzip2WasmUrl,
-  xz: xzWasmUrl,
-  zstd: zstdWasmUrl,
-  zip: zipWasmUrl,
-  unzip: unzipWasmUrl,
-  lsof: lsofWasmUrl,
-  nano: nanoWasmUrl,
-  "sqlite-cli": sqlite3WasmUrl,
-  lhasa: lhaWasmUrl,
-  tyrquake: quakeWasmUrl,
-  foot: footWasmUrl,
-  waybar: waybarWasmUrl,
-  mako: makoWasmUrl,
-  dbus: dbusDaemonWasmUrl,
-  qtgallery: qtgalleryWasmUrl,
-  quickshell: quickshellWasmUrl,
-  scummvm: scummvmWasmUrl,
-  "scummvm-theme-remastered": scummvmRemasteredUrl,
-  "scummvm-theme-modern": scummvmModernUrl,
-  "scummvm-theme-classic": scummvmClassicUrl,
-  "scummvm-gui-icons": scummvmGuiIconsUrl,
-  "scummvm-fonts": scummvmFontsUrl,
+// Keyed by each spec's resolverPath -- the artifact the URL serves -- not by
+// its id, so this artifact table cannot read as a table of machine profiles
+// (scripts/check-pages-vfs-product-registry.mjs rejects those).
+const SHELL_LAZY_ASSET_URLS: Record<
+  (typeof SHELL_LAZY_BINARY_SPECS)[number]["resolverPath"],
+  string
+> = {
+  "programs/coreutils.wasm": coreutilsWasmUrl,
+  "programs/grep.wasm": grepWasmUrl,
+  "programs/sed.wasm": sedWasmUrl,
+  "programs/bc.wasm": bcWasmUrl,
+  "programs/file/file.wasm": fileWasmUrl,
+  "programs/less.wasm": lessWasmUrl,
+  "programs/m4.wasm": m4WasmUrl,
+  "programs/make.wasm": makeWasmUrl,
+  "programs/tar.wasm": tarWasmUrl,
+  "programs/curl.wasm": curlWasmUrl,
+  "programs/nc.wasm": ncWasmUrl,
+  "programs/wget.wasm": wgetWasmUrl,
+  "programs/git/git.wasm": gitWasmUrl,
+  "programs/git/git-remote-http.wasm": gitRemoteHttpWasmUrl,
+  "programs/gzip.wasm": gzipWasmUrl,
+  "programs/bzip2.wasm": bzip2WasmUrl,
+  "programs/xz.wasm": xzWasmUrl,
+  "programs/zstd.wasm": zstdWasmUrl,
+  "programs/zip.wasm": zipWasmUrl,
+  "programs/unzip.wasm": unzipWasmUrl,
+  "programs/lsof.wasm": lsofWasmUrl,
+  "programs/nano.wasm": nanoWasmUrl,
+  "programs/sqlite3.wasm": sqlite3WasmUrl,
+  "programs/lha.wasm": lhaWasmUrl,
+  "programs/quake.wasm": quakeWasmUrl,
+  "programs/foot.wasm": footWasmUrl,
+  "programs/waybar.wasm": waybarWasmUrl,
+  "programs/mako/mako.wasm": makoWasmUrl,
+  "programs/dbus/dbus-daemon.wasm": dbusDaemonWasmUrl,
+  "programs/qtgallery.wasm": qtgalleryWasmUrl,
+  "programs/quickshell.wasm": quickshellWasmUrl,
+  "programs/scummvm/scummvm.wasm": scummvmWasmUrl,
+  "programs/scummvm/share/scummvm/scummremastered.zip": scummvmRemasteredUrl,
+  "programs/scummvm/share/scummvm/scummmodern.zip": scummvmModernUrl,
+  "programs/scummvm/share/scummvm/scummclassic.zip": scummvmClassicUrl,
+  "programs/scummvm/share/scummvm/gui-icons.dat": scummvmGuiIconsUrl,
+  "programs/scummvm/share/scummvm/fonts.dat": scummvmFontsUrl,
+  "programs/wayland-demo/wlcompositor.wasm": wlcompositorWasmUrl,
+  "programs/wayland-demo/wlterm.wasm": wltermWasmUrl,
+  "programs/wayland-demo/wlclock.wasm": wlclockWasmUrl,
+  "programs/wayland-demo/wlpaint.wasm": wlpaintWasmUrl,
+  "programs/wayland-demo/klauncher.wasm": klauncherWasmUrl,
+  "programs/wayland-demo/notify-send.wasm": notifySendWasmUrl,
+  "programs/sdl2.wasm": sdl2WasmUrl,
+  "programs/fbdoom.wasm": fbdoomWasmUrl,
+  "programs/modeset.wasm": modesetWasmUrl,
+  "programs/espeak-ng/espeak-ng.wasm": espeakNgWasmUrl,
 };
 
 const SHELL_LAZY_PLACEHOLDER_URLS = new Map(
   SHELL_LAZY_BINARY_SPECS.map((spec) => [
     shellLazyPlaceholderUrl(spec),
-    SHELL_LAZY_ASSET_URLS[spec.id],
+    SHELL_LAZY_ASSET_URLS[spec.resolverPath],
   ]),
 );
 
