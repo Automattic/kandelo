@@ -72,7 +72,7 @@ none of this. Run it in the foreground with output to a log file
 turns. For anything longer:
 
 ```bash
-scripts/agent-job start -- scripts/dev-shell.sh ./run.sh setup   # prints a job id
+scripts/agent-job start -- ./run.sh setup   # prints a job id (run.sh enters the dev shell itself)
 scripts/agent-job wait <id>      # blocks on the job's PID for up to 9 min; exit 124 = still running, run it again
 scripts/agent-job status [<id>]  # elapsed vs usual duration, local-build progress, live processes
 scripts/agent-job result <id>    # exit status, tree-changed warning, [suite-health] lines, log tail
@@ -90,6 +90,11 @@ scripts/agent-job result <id>    # exit status, tree-changed warning, [suite-hea
   call rewrites its whole context. Build what a subagent needs before
   dispatching it. A subagent that discovers it needs one reports the command
   back instead of running it.
+- **Progress:** for `./run.sh setup`, `local-build`, and `build <target>`,
+  `agent-job status` shows nodes done out of the total. Start them as
+  `./run.sh …`, not under `scripts/dev-shell.sh`, which drops the events
+  variable. `./run.sh local-build --plan` previews a build (cache hits,
+  nodes to build, estimated time) before you start it.
 - **Locked runs:** `agent-job start` refuses a second locked run (vitest,
   `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup, local-build) in the
   same worktree while one is running. Those runs race each other.
