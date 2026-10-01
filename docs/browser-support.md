@@ -370,7 +370,7 @@ Located in `apps/browser-demos/pages/`:
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package as a lazy file in the image, fetched when the profile first runs it; its shader presets are baked into the image. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
 | modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
-| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. No game ships; the profile takes a zipped game as an upload. |
+| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + mako + Waybar + klauncher + qtgallery + Quickshell | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor, mako and Waybar; windows, including the Qt clients, are opened from the launcher and keybinds. |
 
@@ -988,7 +988,39 @@ any plugin import has no export to bind to. The machine's command is
   display at twice the reference density the launcher is drawn at about
   twice the size. Game graphics always scale to the display.
 
-No game ships with the machine: no Kandelo package carries a commercial
+The display's dock offers the freeware games the ScummVM project
+distributes: **Play a freeware game** opens a menu of them with each
+download's size. The rights holders made these
+games freeware (Beneath a Steel Sky's licence, the `readme.txt` inside its
+archive and kept beside the data, allows free redistribution as long as
+that readme and the copyright notices stay intact). Two catalog games are
+listed but disabled, with the reason: Broken Sword 2.5 needs Theora video
+and Lua, which the build leaves out, and its 859 MB archive does not fit
+the machine's filesystem; Helga Deep in Trouble needs the Wintermute
+engine's JPEG support.
+
+The catalog is image content. `packages/registry/shell/scummvm-freeware-games.json`
+lists each game's archive URL on `downloads.scummvm.org`, its size, and the
+SHA-256 the ScummVM project publishes beside it; the image builder writes it
+to `/usr/local/share/scummvm-play/games.tsv`, and fails if the ScummVM
+profile's dock menu does not list exactly its games. Each button and menu
+entry is a `dockActions` command: it ends the running ScummVM with Ctrl+C,
+then runs `/usr/local/bin/scummvm-play <game>` in the machine's shell. That
+script downloads the archive with the machine's own `curl` — in the browser
+that goes through the CORS proxy described below, because the site grants
+no CORS — reporting a percentage against the catalog size (the guest
+receives downloads as chunked responses, so `curl` never learns the total),
+checks the SHA-256, unzips into `/usr/share/scummvm-games/<game>`, and
+deletes the archive. ScummVM's own `--add --recursive` then finds the game
+and records it as a launcher target, and the script starts that target; a
+collection (the WAGE games) opens the launcher instead. A failed download
+or a digest mismatch stops there with a message in the machine's terminal;
+nothing is started from unverified data. `scummvm-play --list` prints the
+catalog in the terminal. A game stays unpacked for the rest of the session,
+so choosing it again starts it without downloading; nothing persists across
+a reboot.
+
+No other game ships with the machine: no Kandelo package carries a commercial
 SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
 512 MiB, the platform's ingest ceiling) and writes it to
 `/usr/share/scummvm-games/upload.zip` while ScummVM keeps running. The
@@ -1013,8 +1045,11 @@ the connector's physical size in `wl_output.geometry`, and SDL's Wayland
 backend derives the DPI from it.
 
 Gated in the browser by `apps/browser-demos/test/kandelo-scummvm.spec.ts`
-(the GUI data reaches the guest, the config is writable, and an upload is
-extracted where the launcher browses). The Wayland path is gated by
+(the GUI data reaches the guest, the config is writable, an upload is
+extracted where the launcher browses, and the freeware menu lists the
+catalog with its unrunnable games disabled; tagged `@slow`, since they
+download through the proxy, the Steel Sky action and a menu entry each
+replace the running ScummVM with their game on its engine plugin). The Wayland path is gated by
 `apps/browser-demos/test/kandelo-omarchy.spec.ts`: ScummVM launched from
 the launcher is tiled, drawn by the GPU path, and commits a buffer of its
 tile's size. Pointer input and the launcher's size on a HiDPI display are
@@ -1695,14 +1730,14 @@ before the ingest control:
 {
   "dockActions": [
     {
-      "id": "steel-sky",
-      "label": "Play Beneath a Steel Sky",
+      "id": "demo",
+      "label": "Run the demo",
       "description": "Shown as the button's tooltip",
-      "restart": "/usr/local/bin/scummvm-play steel-sky"
+      "restart": "/usr/local/bin/run-demo"
     },
     {
       "id": "freeware",
-      "label": "More freeware games",
+      "label": "Play a freeware game",
       "menu": [
         {
           "id": "lure",

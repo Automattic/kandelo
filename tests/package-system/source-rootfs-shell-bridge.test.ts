@@ -23,6 +23,9 @@ import type { ZipEntry } from "../../host/src/vfs/zip";
 import {
   buildSourceRootfsShellImage,
   composeSourceRootfsDemoConfig,
+  formatDownloadSize,
+  loadScummvmFreewareCatalog,
+  scummvmFreewareMenuEntries,
   SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES,
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
 import { SHELL_LAZY_BINARY_SPECS, shellLazySpecDependency } from "../../images/vfs/lib/init/shell-binaries";
@@ -37,6 +40,7 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
   parseKandeloDemoConfig,
   resolveDemoAssets,
+  resolveDemoDockActions,
   resolveDemoInit,
   resolveDemoPresentation,
   validateKandeloDemoConfig,
@@ -418,11 +422,12 @@ describe("canonical source-rootfs shell", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*35$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*36$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "packages/registry/shell/source-rootfs-shell-demo.json",
       "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
+      "packages/registry/shell/scummvm-freeware-games.json",
       "images/vfs/scripts/build-source-rootfs-shell-image.ts",
       "images/vfs/scripts/source-rootfs-shell-overlay.ts",
       "images/vfs/scripts/shell-lazy-archives.ts",
@@ -650,6 +655,34 @@ describe("canonical source-rootfs shell", () => {
     expect(text(readVfsFile(fs, "/usr/share/espeak-ng-data/en/en_dict"))).toBe(
       "espeak voice data fixture",
     );
+    // The ScummVM machine's dock actions run this script, so it must be an
+    // eager executable, and every game it can fetch must be pinned in the
+    // catalog it reads: an unverified download would let a changed file
+    // start as the game.
+    const play = text(readVfsFile(fs, "/usr/local/bin/scummvm-play"));
+    expect(fs.stat("/usr/local/bin/scummvm-play").mode & 0o777).toBe(0o755);
+    expect(play).toContain("sha256sum -c -");
+    const catalog = loadScummvmFreewareCatalog();
+    const catalogRows = text(
+      readVfsFile(fs, "/usr/local/share/scummvm-play/games.tsv"),
+    ).trimEnd().split("\n").map((line) => line.split("\t"));
+    expect(catalogRows).toEqual(catalog.games.map((game) => [
+      game.id,
+      String(game.bytes),
+      formatDownloadSize(game.bytes),
+      game.sha256,
+      game.url,
+      game.title,
+    ]));
+    // The dock menu offers exactly the catalog, so no entry names a game the
+    // machine cannot fetch.
+    const bakedDemo = parseKandeloDemoConfig(
+      text(readVfsFile(fs, KANDELO_DEMO_CONFIG_PATH)),
+    )!;
+    const scummvmMenu = resolveDemoDockActions(bakedDemo, "scummvm")
+      .find((action) => action.id === "freeware");
+    expect(scummvmMenu && "menu" in scummvmMenu ? scummvmMenu.menu : null)
+      .toEqual(scummvmFreewareMenuEntries(catalog));
     // Ctrl+C at the machine's terminal must stop ScummVM itself. The wrapper
     // runs the engine in the background, where POSIX has SIGINT ignored, so
     // the wrapper must forward it or the old engine keeps the display.
