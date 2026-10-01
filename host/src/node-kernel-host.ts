@@ -1042,6 +1042,16 @@ export class NodeKernelHost {
     }) as OwnedJobRead;
   }
 
+  /** Forget a finished job's record and free its slot. Rejects while the family is live. */
+  async releaseOwnedJob(jobId: string): Promise<void> {
+    const requestId = this._nextRequestId++;
+    await this.request(requestId, {
+      type: "release_owned_job",
+      requestId,
+      jobId,
+    });
+  }
+
   /**
    * Create or replace a regular file in the worker-owned VFS. The parent
    * directory must already exist, matching the browser host's raw mutation

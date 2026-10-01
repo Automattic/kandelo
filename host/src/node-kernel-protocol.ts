@@ -88,9 +88,9 @@ export interface InitMessage {
   enableTcpNetwork?: boolean;
 }
 
-/** Read or cancel one worker-owned command family. */
+/** Read, cancel or release one worker-owned command family. */
 export interface OwnedJobMessage {
-  type: "read_owned_job" | "cancel_owned_job";
+  type: "read_owned_job" | "cancel_owned_job" | "release_owned_job";
   requestId: number;
   jobId: string;
   offset?: number;

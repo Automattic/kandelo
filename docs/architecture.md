@@ -1522,10 +1522,20 @@ process worker has detached, and the remaining family records have been reaped
 through the host-owned reap path above. A guest parent inside the family keeps
 normal `wait()`/`waitpid()` semantics while the job runs.
 
+A record outlives its family so the host can still read the tail and the exit
+status after the command ends. A spawn that fails before its root launches
+keeps no record: the start is refused, and the identifier stays free.
+Releasing a job forgets the record and frees both the slot and the identifier.
+A release is refused while any member is still live, because forgetting a
+running family would discard the guarantee that every member really
+terminated. The 64-job limit therefore bounds the families a host holds at
+once, not the families it may run over a session: a host that runs thousands
+of commands releases each one when it is done reading it.
+
 Owned jobs are a host primitive, not a browser feature. `BrowserKernel` and
 `NodeKernelHost` both accept `spawnFromVfs(..., { ownedJob })` and both expose
-`readOwnedJob(id, offset, limit, cancel)`. The WebMCP `kandelo_run_command` tool
-is one consumer; see `docs/webmcp.md`.
+`readOwnedJob(id, offset, limit, cancel)` and `releaseOwnedJob(id)`. The WebMCP
+`kandelo_run_command` tool is one consumer; see `docs/webmcp.md`.
 
 ### clone() (threads)
 

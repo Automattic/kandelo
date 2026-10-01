@@ -1422,6 +1422,12 @@ export class BrowserKernel {
     return await this.request(requestId, { type: cancel ? "cancel_owned_job" : "read_owned_job", requestId, jobId, offset, limit }) as OwnedJobRead;
   }
 
+  /** Forget a finished job's record and free its slot. Rejects while the family is live. */
+  async releaseOwnedJob(jobId: string): Promise<void> {
+    const requestId = this.nextRequestId++;
+    await this.request(requestId, { type: "release_owned_job", requestId, jobId });
+  }
+
 
   /**
    * Read a file out of the kernel-owned VFS from the main thread. Returns the

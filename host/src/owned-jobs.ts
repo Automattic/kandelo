@@ -121,6 +121,21 @@ export class OwnedJobs {
     const next = cursor + limit - remaining;
     return { expired: false, pid: job.root, status: !job.cleaned ? (job.reason ? 'cancelling' : 'running') : job.reason ?? 'completed', exitCode: job.exitCode, terminationObserved: job.cleaned, chunks, next, hasMore: next < job.end, truncated: offset === undefined && job.start > 0 };
   }
+  /** Forget a finished job's record and free its slot. Throws while the family is live. */
+  release(id: string) {
+    const job = this.require(id);
+    if (!job.cleaned) throw new Error('JOB_RUNNING');
+    clearTimeout(job.timer);
+    this.jobs.delete(id);
+  }
+  /** Forget the job whose root never launched. No member ran, so the refused start keeps no slot. */
+  abandon(root: number) {
+    const id = this.owners.get(root);
+    if (!id || this.jobs.get(id)!.root !== root) return;
+    clearTimeout(this.jobs.get(id)!.timer);
+    this.jobs.delete(id);
+    this.owners.delete(root);
+  }
   private require(id: string) {
     const job = this.jobs.get(id);
     if (!job) throw new Error('UNKNOWN_JOB');

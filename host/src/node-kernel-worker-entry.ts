@@ -1449,7 +1449,7 @@ async function handleSpawn(msg: SpawnMessage) {
         }
       }
     }
-    if (createdPid !== undefined && !processes.has(createdPid)) { ownedJobs.exited(createdPid, 127); ownedJobs.detached(createdPid); }
+    if (createdPid !== undefined && !processes.has(createdPid)) ownedJobs.abandon(createdPid);
     respondError(msg.requestId, String(e));
   } finally {
     releaseMutation?.();
@@ -3976,6 +3976,17 @@ port.on("message", (msg: MainToKernelMessage) => {
       try {
         if (msg.type === "cancel_owned_job") ownedJobs.cancel(msg.jobId);
         respond(msg.requestId, ownedJobs.read(msg.jobId, msg.offset, msg.limit));
+      } catch (error) {
+        respondError(
+          msg.requestId,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      break;
+    case "release_owned_job":
+      try {
+        ownedJobs.release(msg.jobId);
+        respond(msg.requestId, true);
       } catch (error) {
         respondError(
           msg.requestId,

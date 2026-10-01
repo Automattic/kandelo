@@ -1612,7 +1612,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
         }
       }
     }
-    if (createdPid !== undefined && !processes.has(createdPid)) { ownedJobs.exited(createdPid, 127); ownedJobs.detached(createdPid); }
+    if (createdPid !== undefined && !processes.has(createdPid)) ownedJobs.abandon(createdPid);
     respondError(msg.requestId, String(e));
   } finally {
     releaseMutation?.();
@@ -4562,6 +4562,12 @@ sw.onmessage = (e: MessageEvent) => {
       try {
         if (msg.type === "cancel_owned_job") ownedJobs.cancel(msg.jobId);
         respond(msg.requestId, ownedJobs.read(msg.jobId, msg.offset, msg.limit));
+      } catch (error) { respondError(msg.requestId, formatError(error)); }
+      break;
+    case "release_owned_job":
+      try {
+        ownedJobs.release(msg.jobId);
+        respond(msg.requestId, true);
       } catch (error) { respondError(msg.requestId, formatError(error)); }
       break;
     case "spawn":

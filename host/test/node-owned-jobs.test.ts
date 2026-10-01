@@ -126,6 +126,50 @@ describe.skipIf(!haveKernel || !havePrograms)("NodeKernelHost owned jobs", () =>
     }
   }, 60_000);
 
+  it("releases a finished job and refuses to release a live one", async () => {
+    const host = await bootedHost();
+    try {
+      await host.spawnFromVfs("/bin/block-forever", ["block-forever"], {
+        ownedJob: { id: "held", timeoutMs: 30_000 },
+      });
+      await expect(host.releaseOwnedJob("held")).rejects.toThrow("JOB_RUNNING");
+      await host.readOwnedJob("held", 0, 4096, true);
+      expect((await awaitTermination(host, "held")).status).toBe("cancelled");
+      await host.releaseOwnedJob("held");
+      await expect(host.readOwnedJob("held")).rejects.toThrow("UNKNOWN_JOB");
+      // The slot and the identifier are both free again.
+      await host.spawnFromVfs("/bin/spawn-smoke", ["spawn-smoke"], {
+        ownedJob: { id: "held", timeoutMs: 30_000 },
+      });
+      const reused = await awaitTermination(host, "held");
+      expect(reused.status).toBe("completed");
+      expect(decode(reused, "stdout")).toContain("OK");
+    } finally {
+      await host.destroy();
+    }
+  }, 60_000);
+
+  it("keeps no job for a spawn that fails before its root launches", async () => {
+    const host = await bootedHost();
+    try {
+      for (let index = 0; index < 65; index++) {
+        await expect(host.spawnFromVfs("/bin/echo", ["echo"], {
+          cwd: "/missing",
+          ownedJob: { id: "refused", timeoutMs: 30_000 },
+        })).rejects.toThrow("setCwd failed");
+      }
+      await expect(host.readOwnedJob("refused")).rejects.toThrow("UNKNOWN_JOB");
+      await host.spawnFromVfs("/bin/echo", ["echo", "launched"], {
+        ownedJob: { id: "refused", timeoutMs: 30_000 },
+      });
+      const read = await awaitTermination(host, "refused");
+      expect(read.status).toBe("completed");
+      expect(decode(read, "stdout")).toContain("launched");
+    } finally {
+      await host.destroy();
+    }
+  }, 60_000);
+
   it("reports an unknown job rather than an empty one", async () => {
     const host = await bootedHost();
     try {
