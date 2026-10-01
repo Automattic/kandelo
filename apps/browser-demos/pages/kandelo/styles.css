@@ -4570,33 +4570,87 @@
 }
 .kfb-system-switcher button:disabled { opacity: 0.55; cursor: default; }
 
-.kfb-emulator-controls {
+/* Machine controls: one pill of icon buttons, each named by a tooltip. */
+.kfb-icon-pill {
   flex: 0 0 auto;
-  display: flex;
-  align-items: stretch;
-}
-
-.kfb-emulator-controls button {
-  padding: 2px 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 1px;
   border: 1px solid var(--kdock-border);
-  background: var(--kdock-bg);
-  color: var(--kdock-muted);
-  font: inherit;
-  font-size: 9px;
-  cursor: pointer;
-  white-space: nowrap;
+  border-radius: 999px;
+  background: var(--kdock-bg-raised, var(--kdock-bg));
 }
 
-.kfb-emulator-controls button:first-child { border-radius: 6px 0 0 6px; }
-.kfb-emulator-controls button:last-child {
-  border-left: 0;
-  border-radius: 0 6px 6px 0;
+.kfb-icon-wrap { display: inline-flex; }
+
+.kfb-icon-btn {
+  width: 26px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--kdock-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
 }
-.kfb-emulator-controls button:hover:not(:disabled) {
-  border-color: var(--kdock-active-bg);
-  color: var(--kdock-active-text);
+
+.kfb-icon-btn:hover:not(:disabled),
+.kfb-icon-btn:focus-visible {
+  background: color-mix(in oklch, var(--kdock-text) 10%, transparent);
+  color: var(--kdock-text);
+  outline: none;
 }
-.kfb-emulator-controls button:disabled { opacity: 0.45; cursor: default; }
+
+.kfb-icon-btn:focus-visible {
+  box-shadow: inset 0 0 0 1.5px var(--kdock-active-bg);
+}
+
+/* Power reads as lit while the program runs. */
+.kfb-icon-btn[data-active="true"] { color: var(--kdock-active-bg); }
+
+.kfb-icon-btn:disabled { opacity: 0.4; cursor: default; }
+
+.kfb-icon-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.kdock-tooltip {
+  position: fixed;
+  z-index: 1020;
+  transform: translate(-50%, calc(-100% - 8px));
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--k-text);
+  color: var(--k-surface);
+  font-family: var(--k-font-ui);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+}
+
+.kdock-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 8px;
+  height: 8px;
+  background: inherit;
+  transform: translateX(-50%) rotate(45deg);
+}
 
 .kfb-load-rom-split {
   min-width: 0;
@@ -5215,7 +5269,6 @@
 
   .kfb-current-rom { max-width: 24vw; }
   .kfb-system-switcher button { padding-inline: 5px; }
-  .kfb-emulator-controls button { padding-inline: 5px; }
 }
 
 @media (max-width: 560px) {

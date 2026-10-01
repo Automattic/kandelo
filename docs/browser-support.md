@@ -972,17 +972,32 @@ the core that actually run are fetched.
 - **Choosing the core.** `/usr/local/bin/retro-run` reads the ROM's own bytes:
   the iNES magic, `SEGA` at offset 0x100, `TMR SEGA` near the end of a Master
   System or Game Gear ROM, and the SNES header's checksum and complement. It
-  does not use the filename, because an upload always lands at one fixed path
-  and the ingest contract never passes the uploaded name to the restart
-  command. A file that matches none of these is rejected with a message on
-  the terminal; no core is started.
+  does not use the file's extension, which is often wrong. A file that matches
+  none of these is rejected with a message on the terminal; no core is
+  started. The launcher is a bash script that reads the ROM's first 64 KiB
+  once (`od | tr`) and does everything else with builtins, because each
+  process it starts costs real time in Kandelo: probing each offset with its
+  own `dd | od | tr` pipeline took about 25 processes to reach the SNES test
+  and made a SNES start take 7 s in Chromium and 11 s in WebKit, against
+  about 1.2 s and 2 s now.
+- **The ROM's name still matters.** FCEUmm takes an iNES 1.0 NES ROM's TV
+  system from tags in its name, such as `(E)` or `(Europe)` for PAL (an
+  NES 2.0 header carries its own region, which wins), and a European game run
+  as NTSC plays fast and high-pitched. The launcher
+  therefore starts the core on a link named after the ROM, with the extension
+  its contents chose: `/tmp/kandelo-retro/Mega Man 2 (E) _!_.nes`. The name
+  comes from the boot input's filename, the image path, or, for a loaded file,
+  the ingest's `namePath` (`/var/lib/kandelo-retro/rom.name`). Only letters,
+  digits, spaces and `._()!,&+-` survive; anything else becomes `_`.
 - **Loading a ROM.** **From file…** (or dropping a file on the display) writes
   the file to `/var/lib/kandelo-retro/rom`, stops the running emulator, and
   runs the launcher again. The cap is 16 MiB. The upload lives in the
-  machine's filesystem and is gone when the machine is. The dock's NES, Mega
-  Drive and SNES buttons load that system's starter ROM the same way, and the
+  machine's filesystem and is gone when the machine is. The dock's NES, SNES
+  and Mega Drive buttons load that system's starter ROM the same way, and the
   dock names the ROM that is running.
-- **Reset and power.** **Reset** stops the emulator and runs the launcher
+- **Reset and power.** The dock's save, reset and power controls are icon
+  buttons in one pill, each named by its tooltip and accessible label.
+  **Reset** stops the emulator and runs the launcher
   again on the same ROM; **Power off** stops it and leaves `/dev/fb0` free,
   and **Power on** runs the launcher again. A state delivered by a link is
   applied to the first run after boot only, so Reset and Power on start the
@@ -1009,11 +1024,21 @@ the core that actually run are fetched.
   for a link is refused with its size. Whether a state fits depends on the
   core and on how well that moment of the game compresses; the NES test
   suite's does.
+- **Audio paces the game.** The frontend asks `/dev/dsp` for a 32 KiB queue
+  (`SNDCTL_DSP_SETFRAGMENT`) instead of the default 4 KiB, about one frame at
+  48 kHz. After each frame it reads how much sound is queued
+  (`SNDCTL_DSP_GETODELAY`): below 60 ms the next frame runs at once, above it
+  the loop sleeps for the excess. The sound card's clock therefore sets the
+  frame rate, and the queue keeps a 60 ms lead that absorbs a late frame. A
+  frontend that paced by the wall clock kept the queue near empty, so any
+  late frame was a gap in the sound, heard as stutter and grain. If the queue
+  still runs dry, the emulator is slower than real time; the frontend says so
+  on the terminal, at most every ten seconds.
 - **Audio before a gesture.** `/dev/dsp` applies backpressure while the
   browser holds audio suspended (see above). The frontend waits at most
   100 ms for room in the queue, then drops samples until a write gets through
   again, so the game runs silently rather than freezing on its first frame.
-  Once audio is enabled the sound card's clock paces the core again.
+  Until a write gets through, the wall clock paces the frames.
 - **Not supported.** Battery saves, controller remapping, a second player,
   and any system other than the ones listed.
 
@@ -1745,6 +1770,13 @@ the image-owned command. Write, signal, timeout, and command-dispatch failures
 remain visible. An absent `ingest` block means the image exposes no upload
 capability; the loader does not infer one from a package or profile name.
 
+An ingest may also declare `namePath`, an absolute path (other than
+`targetPath`) the browser writes the file's own name to, after the file: the
+last path component, control characters replaced, at most 255 bytes. It is
+for programs that read meaning from a name, as an emulator reads a ROM's
+region from `(Europe)`. The name is data in a file, never part of a command,
+and stays untrusted: the image decides what to accept from it.
+
 The browser remembers where the machine's last ingested file came from: a
 file picked or dropped from the visitor's device, or a file fetched through a
 boot-input resolver. A share link can only name content the opener's browser
@@ -1773,7 +1805,7 @@ A profile with an `ingest` may also declare a library of things to load:
 ```
 
 The framebuffer dock splits the ingest control into **From file…** and
-**From Internet Archive…**. The second opens a drawer that offers the image's
+**Search**. The second opens a drawer that offers the image's
 `bundled` files, its `featured` Internet Archive items, and a search of the
 Internet Archive within one of the image's `groups`, run as the visitor types.
 The visitor's search words are only ever quoted into the group's query, so
@@ -1859,6 +1891,13 @@ Ingest machines with an `onLoad.restart` also get **Reset** and
 **Power off/on** in the framebuffer dock. They act on the process that owns
 `/dev/fb0`, with the same steps an ingest uses: SIGTERM and a bounded wait for
 the process to exit and release the device, then the image's restart command.
+
+After a restart command is dispatched, by a load, Reset or Power on, the
+dock watches the machine's process events from before the dispatch. The start
+succeeds when a process other than the previous owner binds `/dev/fb0`. It
+fails at once, with a pointer to the terminal, when every process spawned
+since the dispatch has exited without binding, as when a launcher refuses a
+file. A 60-second limit covers anything else.
 
 The framebuffer surface is normally available only while some process has
 `/dev/fb0` bound, so a program that exits hands the view back to the terminal.

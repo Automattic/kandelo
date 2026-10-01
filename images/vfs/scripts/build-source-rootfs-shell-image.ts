@@ -298,54 +298,56 @@ exec /usr/bin/quake -basedir "$BASE" "$@"
  * The cores themselves take the system type from the path's extension, so
  * the launcher runs the ROM through a symlink named for what it detected.
  */
-const RETRO_RUN_SCRIPT = `#!/bin/sh
+const RETRO_RUN_SCRIPT = `#!/bin/bash
 # Pick the emulator core for a ROM from the ROM's own bytes, then exec it.
 #
-# The core cannot be chosen from a filename: an uploaded file always lands at
-# one fixed path, and its original name is never passed to this script.
+# The core is chosen from the bytes, not the extension, which is often wrong.
+# Every process this script starts takes real time on Kandelo, so it reads the
+# ROM's first 64 KiB once and does everything else with bash builtins. Probing
+# each offset with its own dd|od|tr pipeline took about 25 processes to reach
+# the SNES test, and seconds before a SNES game started.
 ROMS=/usr/share/kandelo-retro/roms
 DEFAULT_ROM="$ROMS/240pee.nes"
 UPLOAD=/var/lib/kandelo-retro/rom
+UPLOAD_NAME=/var/lib/kandelo-retro/rom.name
 INPUTS=/run/kandelo/inputs
 MANIFEST=/run/kandelo/boot-input.json
 RUN=/tmp/kandelo-retro
 
+# $1=dir -> FOUND=first regular file in it
 first_file() {
+    FOUND=""
     for f in "$1"/*; do
-        [ -f "$f" ] && { printf '%s\\n' "$f"; return 0; }
+        [ -f "$f" ] && { FOUND=$f; return 0; }
     done
     return 1
 }
 
-# $1=file $2=offset $3=count -> lowercase hex, no separators
-hex_at() {
-    dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null | od -An -tx1 | tr -d ' \\n'
-}
-
-# A SNES header stores a checksum and its bitwise complement side by side.
-snes_header_at() {
-    h=$(hex_at "$1" "$2" 4)
-    [ \${#h} -eq 8 ] || return 1
-    c=$((0x\${h%????})); s=$((0x\${h#????}))
-    [ $((c ^ s)) -eq 65535 ]
-}
-
-ROM=""; STATE=""
+ROM=""; STATE=""; NAME=""
 if [ $# -ge 1 ]; then
     ROM=$1
 elif [ -f "$UPLOAD" ]; then
     # A ROM loaded during this session replaces whatever the machine booted
     # with, including a boot link's save state, which belongs to another game.
+    # The browser writes the loaded file's own name beside it (ingest
+    # namePath); it is untrusted data, sanitized below before any use.
     ROM=$UPLOAD
+    [ -f "$UPLOAD_NAME" ] && { IFS= read -r -n 255 NAME < "$UPLOAD_NAME" || :; }
 else
-    ROM=$(first_file "$INPUTS/rom") || ROM=""
+    first_file "$INPUTS/rom" && ROM=$FOUND
     if [ -z "$ROM" ] && [ -f "$MANIFEST" ]; then
         # A boot link may name a ROM this image already carries, by path
         # (boot parameter ingestPath). Accept only a plain file directly in
         # the package's own ROM directory. The manifest is written one key
         # per line (web-libs/kandelo-session/src/boot-inputs.ts); anything
         # else simply matches nothing and the default ROM runs.
-        path=$(sed -n 's|^ *"ingestPath": *"\\([A-Za-z0-9._/-]*\\)",\\{0,1\\} *$|\\1|p' "$MANIFEST" | head -n 1)
+        path=""
+        while IFS= read -r line; do
+            case $line in *'"ingestPath":'*) ;; *) continue ;; esac
+            path=\${line#*'"ingestPath":'}; path=\${path#*'"'}; path=\${path%%'"'*}
+            break
+        done < "$MANIFEST"
+        [[ $path == *[!A-Za-z0-9._/-]* ]] && path=""
         name=\${path#"$ROMS/"}
         case "$name" in
             ""|*/*|.*) ;;
@@ -353,7 +355,7 @@ else
         esac
     fi
     [ -n "$ROM" ] || ROM=$DEFAULT_ROM
-    STATE=$(first_file "$INPUTS/state") || STATE=""
+    first_file "$INPUTS/state" && STATE=$FOUND
 fi
 
 if [ ! -r "$ROM" ]; then
@@ -361,25 +363,43 @@ if [ ! -r "$ROM" ]; then
     exit 1
 fi
 
+# Every signature below lies in the first 66,016 bytes.
+HEX=$(od -An -tx1 -v -N 66016 "$ROM" | tr -d ' \\n')
+# $1=offset $2=count -> H=lowercase hex of those bytes (shorter past the end)
+hex_at() { H=\${HEX:$(( $1 * 2 )):$(( $2 * 2 ))}; }
+
+# A SNES header stores a checksum and its bitwise complement side by side.
+snes_header_at() {
+    hex_at "$1" 4
+    [ \${#H} -eq 8 ] || return 1
+    [ $(( 16#\${H:0:4} ^ 16#\${H:4:4} )) -eq 65535 ]
+}
+
 CORE=""; EXT=""
-if [ "$(hex_at "$ROM" 0 4)" = "4e45531a" ]; then
+hex_at 0 4
+if [ "$H" = "4e45531a" ]; then
     CORE=/usr/bin/kandelo-retro; EXT=nes
-elif [ "$(hex_at "$ROM" 256 4)" = "53454741" ]; then
-    CORE=/usr/bin/kandelo-retro-genesis; EXT=md
 else
+    hex_at 256 4
+    if [ "$H" = "53454741" ]; then
+        CORE=/usr/bin/kandelo-retro-genesis; EXT=md
+    fi
+fi
+if [ -z "$CORE" ]; then
     for off in 32752 16368 8176; do
-        if [ "$(hex_at "$ROM" "$off" 8)" = "544d522053454741" ]; then
+        hex_at "$off" 8
+        if [ "$H" = "544d522053454741" ]; then
             CORE=/usr/bin/kandelo-retro-genesis; EXT=sms
             # Region nibble: 5-7 are Game Gear, 3-4 are Master System.
-            region=$(hex_at "$ROM" $((off + 15)) 1)
-            case \${region%?} in 5|6|7) EXT=gg ;; esac
+            hex_at $((off + 15)) 1
+            case \${H:0:1} in 5|6|7) EXT=gg ;; esac
             break
         fi
     done
 fi
 if [ -z "$CORE" ]; then
     for off in 32732 65500 33244 66012; do
-        if snes_header_at "$ROM" "$off"; then
+        if snes_header_at "$off"; then
             CORE=/usr/bin/kandelo-retro-snes; EXT=sfc
             break
         fi
@@ -391,9 +411,18 @@ if [ -z "$CORE" ]; then
 fi
 
 # The cores read the system type from the path's extension, so give the ROM
-# a name that carries what its contents said.
-mkdir -p "$RUN" || exit 1
-LINK="$RUN/rom.$EXT"
+# a name that carries what its contents said. The rest of the name is the
+# ROM's own: FCEUmm takes an iNES 1.0 ROM's TV system from tags such as
+# "(E)" or "(Europe)" in it, and a European game named "rom" runs at NTSC
+# speed and pitch. Only a conservative character set survives.
+[ -n "$NAME" ] || NAME=\${ROM##*/}
+BASE=\${NAME%.*}
+BASE=\${BASE//[^A-Za-z0-9 ._()!,&+-]/_}
+BASE=\${BASE:0:120}
+case "$BASE" in ""|.*|-*) BASE="rom$BASE" ;; esac
+[ -d "$RUN" ] || mkdir -p "$RUN" || exit 1
+for old in "$RUN"/*; do [ -L "$old" ] && rm -f "$old"; done
+LINK="$RUN/$BASE.$EXT"
 ln -sf "$ROM" "$LINK" || exit 1
 
 # A boot link's save state is where the machine was when the link was made,

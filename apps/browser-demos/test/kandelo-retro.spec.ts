@@ -25,9 +25,10 @@ const ROM_DIR = join(
 );
 const MD_ROM = join(ROM_DIR, "240pSuite-md-1.21.bin");
 const SNES_ROM = join(ROM_DIR, "240pSuite-snes-1.03.sfc");
+const NES_ROM = join(ROM_DIR, "240pee.nes");
 
 function requireStarterRoms(): void {
-  const missing = [MD_ROM, SNES_ROM].filter((path) => !existsSync(path));
+  const missing = [MD_ROM, SNES_ROM, NES_ROM].filter((path) => !existsSync(path));
   if (missing.length > 0) {
     throw new Error(
       `kandelo-retro starter ROM(s) not built: ${missing.join(", ")}. `
@@ -115,7 +116,7 @@ test("the retro machine boots the NES starter ROM and the core takes input", asy
   const canvas = await bootRetro(page);
 
   await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
-    .toMatch(/\/usr\/bin\/kandelo-retro \/tmp\/kandelo-retro\/rom\.nes/);
+    .toMatch(/\/usr\/bin\/kandelo-retro \/tmp\/kandelo-retro\/[^/]+\.nes/);
 
   // The suite opens on a static two-page credits screen: the frame settles,
   // and then only input moves it. Give the canvas focus, turn the page with
@@ -144,7 +145,7 @@ test("Load ROM picks the core from the ROM's contents, not its name", async ({ p
   // A real Mega Drive ROM under its own extension.
   await loadRom(page, canvas, MD_ROM);
   await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
-    .toMatch(/\/usr\/bin\/kandelo-retro-genesis \/tmp\/kandelo-retro\/rom\.md/);
+    .toMatch(/\/usr\/bin\/kandelo-retro-genesis \/tmp\/kandelo-retro\/[^/]+\.md/);
 
   // The SNES ROM, named as if it were a Mega Drive dump. Only its header can
   // say what it is.
@@ -154,7 +155,29 @@ test("Load ROM picks the core from the ROM's contents, not its name", async ({ p
     buffer: readFileSync(SNES_ROM),
   });
   await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
-    .toMatch(/\/usr\/bin\/kandelo-retro-snes \/tmp\/kandelo-retro\/rom\.sfc/);
+    .toMatch(/\/usr\/bin\/kandelo-retro-snes \/tmp\/kandelo-retro\/mislabeled\.sfc/);
+});
+
+test("a European NES ROM keeps its name, so the core runs it at PAL speed", async ({ page }) => {
+  test.setTimeout(420_000);
+  requireStarterRoms();
+  const canvas = await bootRetro(page);
+  // FCEUmm reads an iNES 1.0 ROM's TV system from "(Europe)" in its name;
+  // the upload's name reaches it through the ingest's namePath.
+  // As iNES 1.0, the header most commercial dumps carry: it has no region
+  // field, so the name decides. (The suite's own NES 2.0 header says NTSC.)
+  const rom = Buffer.from(readFileSync(NES_ROM));
+  rom[7] &= 0xf0;
+  rom.fill(0, 8, 16);
+  await loadRom(page, canvas, {
+    name: "Demo (Europe).nes",
+    mimeType: "application/octet-stream",
+    buffer: rom,
+  });
+  await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
+    .toMatch(/\/usr\/bin\/kandelo-retro \/tmp\/kandelo-retro\/Demo \(Europe\)\.nes$/);
+  await page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }).click();
+  await expect(page.getByText(/\[retro\] av: \S+ fps=50\.0/).first()).toBeVisible({ timeout: 30_000 });
 });
 
 test("a file that is not a ROM it knows starts no core at all", async ({ page }) => {
@@ -178,7 +201,7 @@ test("a file that is not a ROM it knows starts no core at all", async ({ page })
   // failed; the launcher says why on the machine's terminal.
   await expect.poll(() => boundPid(page), { timeout: 90_000 }).toBeNull();
   await expect(page.getByTestId("fb-ingest-error"))
-    .toContainText(/nothing took \/dev\/fb0 .* the terminal shows its output/, { timeout: 30_000 });
+    .toContainText("the program exited without taking /dev/fb0; the terminal shows its output", { timeout: 30_000 });
   await page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }).click();
   await expect(
     page.getByText(/retro-run: .* is not a recognised NES, SNES, Mega Drive/).first(),
@@ -350,7 +373,7 @@ test("the library loads a ROM the image already carries, and keeps its place whe
     .getByRole("button", { name: "Play 240p Test Suite" }).click();
   await expect(page.getByRole("dialog", { name: "Library" })).toHaveCount(0, { timeout: 90_000 });
   await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
-    .toMatch(/\/usr\/bin\/kandelo-retro-snes \/tmp\/kandelo-retro\/rom\.sfc/);
+    .toMatch(/\/usr\/bin\/kandelo-retro-snes \/tmp\/kandelo-retro\/[^/]+\.sfc/);
   await awaitRender(canvas);
   await expect(page.getByTestId("fb-group-SNES")).toHaveAttribute("aria-pressed", "true");
 });
@@ -359,10 +382,17 @@ test("the dock switches consoles, resets, and powers the machine off and on", as
   test.setTimeout(600_000);
   const canvas = await bootRetro(page);
 
+  // The image orders the consoles; the controls are named icon buttons.
+  await expect(page.locator(".kfb-system-switcher button")).toHaveText(["NES", "SNES", "Mega Drive"]);
+  await page.getByTestId("fb-reset").hover();
+  await expect(page.locator(".kdock-tooltip")).toHaveText("Reset");
+  await page.mouse.move(0, 0);
+  await expect(page.locator(".kdock-tooltip")).toHaveCount(0);
+
   // The console switcher loads that console's included ROM.
   await page.getByTestId("fb-group-Mega Drive").click();
   await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
-    .toMatch(/\/usr\/bin\/kandelo-retro-genesis \/tmp\/kandelo-retro\/rom\.md/);
+    .toMatch(/\/usr\/bin\/kandelo-retro-genesis \/tmp\/kandelo-retro\/[^/]+\.md/);
   await awaitRender(canvas);
   await expect(page.getByTestId("fb-group-Mega Drive")).toHaveAttribute("aria-pressed", "true");
 
@@ -374,12 +404,12 @@ test("the dock switches consoles, resets, and powers the machine off and on", as
     return pid !== null && pid !== before;
   }, { timeout: 90_000 }).toBe(true);
   await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
-    .toMatch(/\/usr\/bin\/kandelo-retro-genesis \/tmp\/kandelo-retro\/rom\.md$/);
+    .toMatch(/\/usr\/bin\/kandelo-retro-genesis \/tmp\/kandelo-retro\/[^/]+\.md$/);
 
   // Power off stops the emulator and leaves nothing on /dev/fb0.
   await page.getByTestId("fb-power").click();
   await expect.poll(() => boundPid(page), { timeout: 90_000 }).toBeNull();
-  await expect(page.getByTestId("fb-power")).toHaveText("Power on");
+  await expect(page.getByTestId("fb-power")).toHaveAttribute("aria-label", "Power on");
   await expect(page.locator(".kdemo-surface-badge")).toHaveText(/powered off/i);
   await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
     .toBe("0 emulator processes");
@@ -427,7 +457,7 @@ test("Save state puts the game in the address bar, and reloading restores it", a
   await releasePointer(page);
   await page.getByTestId("fb-reset").click();
   await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
-    .toMatch(/\/usr\/bin\/kandelo-retro \/tmp\/kandelo-retro\/rom\.nes$/);
+    .toMatch(/\/usr\/bin\/kandelo-retro \/tmp\/kandelo-retro\/[^/]+\.nes$/);
   expect(new URL(page.url()).hash).toMatch(/^#k1=/);
 
   // Loading another ROM leaves the saved game behind, so the address no
@@ -460,7 +490,7 @@ test("the library plays an Internet Archive ROM, and a checkpoint link fetches i
     .getByRole("button", { name: /^Play .*CarpetShark\.nes$/ }).click();
   await expect(page.getByRole("dialog", { name: "Library" })).toHaveCount(0, { timeout: 120_000 });
   await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
-    .toMatch(/\/usr\/bin\/kandelo-retro \/tmp\/kandelo-retro\/rom\.nes/);
+    .toMatch(/\/usr\/bin\/kandelo-retro \/tmp\/kandelo-retro\/[^/]+\.nes/);
   await awaitRender(canvas);
   await settledDigest(canvas);
 
@@ -480,7 +510,7 @@ test("the library plays an Internet Archive ROM, and a checkpoint link fetches i
   await expect(reopened).toBeVisible({ timeout: 180_000 });
   await awaitRender(reopened);
   await expect.poll(() => emulatorCommand(opener), { timeout: 60_000 }).toMatch(
-    /\/tmp\/kandelo-retro\/rom\.nes --state \/run\/kandelo\/inputs\/state\/retro\.state$/,
+    /\/tmp\/kandelo-retro\/[^/]+\.nes --state \/run\/kandelo\/inputs\/state\/retro\.state$/,
   );
 });
 

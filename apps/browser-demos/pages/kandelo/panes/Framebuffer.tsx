@@ -24,6 +24,7 @@ import {
   useStatus,
 } from "../kernel-host/react";
 import { LibraryDrawer, type LibraryPick } from "./Library";
+import { DockIconButton, PowerIcon, ResetIcon, SaveStateIcon } from "./DockIconButton";
 import {
   attachLinuxMediumRawKeyboard,
   attachPointerLockMouse,
@@ -61,7 +62,7 @@ import {
   type TouchKeySender,
 } from "./TouchControls";
 
-const FRAMEBUFFER_REBIND_TIMEOUT_MS = 10_000;
+const FRAMEBUFFER_LAUNCH_TIMEOUT_MS = 60_000;
 const SAVED_NOTICE_MS = 2_000;
 
 /** What the dock names as running: a title, and the library group it is in. */
@@ -293,37 +294,73 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     ]).then(() => {});
   }, [host]);
 
-  /** Resolve boundedly once some process has bound /dev/fb0 again. */
-  const waitForFbBind = React.useCallback((): Promise<void> => {
+  /**
+   * Watch a program start, from before its command is dispatched, until a
+   * new process owns /dev/fb0. Started first so no event is missed.
+   *
+   * WHY not just a timeout: how long a start takes depends on the image's
+   * launcher, on fetching a lazy program the first time, and on the network,
+   * so a short limit fails real starts (a 10 s one failed SNES on WebKit), and
+   * a long one leaves a launcher that refused a file "loading" for a minute.
+   * The start has failed when every process spawned since the watch began
+   * has exited without binding, and that is reported at once.
+   */
+  const watchFbLaunch = React.useCallback((): { done: Promise<void>; cancel: () => void } => {
     const handle = handleRef.current;
-    return new Promise<void>((resolve, reject) => {
+    let cancel = () => {};
+    const done = new Promise<void>((resolve, reject) => {
       if (!handle) {
         reject(new Error("framebuffer handle disappeared during restart"));
         return;
       }
+      const previous = handle.getBoundPid();
+      const alive = new Set<number>();
+      let spawned = false;
       let settled = false;
-      let off = () => {};
-      const timer = window.setTimeout(() => {
-        finish(new Error(
-          `nothing took /dev/fb0 within ${FRAMEBUFFER_REBIND_TIMEOUT_MS / 1000} s `
-            + "of starting the program; the terminal shows its output",
-        ));
-      }, FRAMEBUFFER_REBIND_TIMEOUT_MS);
+      let offBound = () => {};
+      let offProcs = () => {};
+      const timer = window.setTimeout(() => finish(new Error(
+        `nothing took /dev/fb0 within ${FRAMEBUFFER_LAUNCH_TIMEOUT_MS / 1000} s `
+          + "of starting the program; the terminal shows its output",
+      )), FRAMEBUFFER_LAUNCH_TIMEOUT_MS);
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timer);
-        off();
+        offBound();
+        offProcs();
         if (error) reject(error);
         else resolve();
       };
-      off = handle.onBoundPidChange((next) => {
-        if (next !== null) finish();
+      cancel = () => finish(new Error("cancelled"));
+      offBound = handle.onBoundPidChange((next) => {
+        if (next !== null && next !== previous) finish();
       });
-      if (handle.getBoundPid() !== null) finish();
-      if (settled) off();
+      // Events for a short-lived process may arrive exit-first, so an exit
+      // seen before its spawn is remembered rather than left "alive" forever.
+      const exited = new Set<number>();
+      offProcs = host.subscribeProcessEvents((event) => {
+        if (event.kind === "spawn") {
+          spawned = true;
+          if (!exited.delete(event.pid)) alive.add(event.pid);
+        } else if (event.kind === "exit") {
+          if (!alive.delete(event.pid)) {
+            exited.add(event.pid);
+            return;
+          }
+        } else {
+          return;
+        }
+        if (spawned && alive.size === 0 && handle.getBoundPid() === null) {
+          finish(new Error(
+            "the program exited without taking /dev/fb0; the terminal shows its output",
+          ));
+        }
+      });
     });
-  }, []);
+    done.catch(() => {});
+    return { done, cancel };
+  }, [host]);
 
   const ingestFile = React.useCallback(async (
     file: IngestFileLike,
@@ -333,6 +370,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     if (!ingest || ingestPhase !== null || control !== null) return;
     setIngestError(null);
     setIngestName(file.name);
+    const launch = ingest.onLoad ? watchFbLaunch() : null;
     try {
       await runDemoIngest(host, ingest, file, {
         targetPid: handleRef.current?.getBoundPid() ?? null,
@@ -351,7 +389,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       savedHashRef.current = null;
       // runDemoIngest returns as soon as the relaunch is dispatched; keep the
       // indicator up until the new process actually owns the framebuffer.
-      await waitForFbBind();
+      await launch?.done;
     } catch (err) {
       setIngestError(
         err instanceof IngestError ? err.message
@@ -360,10 +398,11 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       );
       throw err;
     } finally {
+      launch?.cancel();
       setIngestPhase(null);
       setIngestName(null);
     }
-  }, [control, host, ingest, ingestPhase, waitForFbBind, waitForFbRelease]);
+  }, [control, host, ingest, ingestPhase, watchFbLaunch, waitForFbRelease]);
 
   const closeLibrary = React.useCallback(() => setLibraryOpen(false), []);
 
@@ -396,14 +435,24 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     }
   }, [control, ingestPhase]);
 
+  const startWatched = async () => {
+    if (!ingest) return;
+    const launch = watchFbLaunch();
+    try {
+      await startDemoProgram(host, ingest);
+      await launch.done;
+    } finally {
+      launch.cancel();
+    }
+  };
+
   // Reset and power act on the program the image's ingest restarts, which is
   // whatever owns /dev/fb0. They use the same stop and start an ingest does.
   const reset = () => void runControl("resetting…", async () => {
     const pid = handleRef.current?.getBoundPid() ?? null;
     if (!ingest || pid === null) return;
     await stopDemoProgram(host, pid, { waitForRelease: waitForFbRelease });
-    await startDemoProgram(host, ingest);
-    await waitForFbBind();
+    await startWatched();
   });
 
   const togglePower = () => void runControl(
@@ -415,8 +464,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
         await stopDemoProgram(host, pid, { waitForRelease: waitForFbRelease });
         setPoweredOff(true);
       } else {
-        await startDemoProgram(host, ingest);
-        await waitForFbBind();
+        await startWatched();
       }
     },
   );
@@ -541,36 +589,31 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
         </span>
       )}
       {ingest?.onLoad && running && (
-        <div className="kfb-emulator-controls" role="group" aria-label="Machine controls">
-          {checkpoint && (
-            <button
-              type="button"
-              data-testid="fb-save-state"
-              disabled={busy || boundPid === null}
-              title="Save where this machine is into the page's address, so reloading restores it"
-              onClick={saveState}
-            >
-              {stateSaved ? "State saved" : "Save state"}
-            </button>
-          )}
-          <button
-            type="button"
-            data-testid="fb-reset"
-            disabled={busy || boundPid === null}
-            title="Restart the program with what is loaded now"
-            onClick={reset}
-          >
-            Reset
-          </button>
-          <button
-            type="button"
-            data-testid="fb-power"
+        <div className="kfb-icon-pill" role="group" aria-label="Machine controls">
+          <DockIconButton
+            label={boundPid === null ? "Power on" : "Power off"}
+            icon={PowerIcon}
+            testId="fb-power"
+            active={boundPid !== null}
             disabled={busy || (boundPid === null && !hasBound)}
-            title={boundPid === null ? "Start the program again" : "Stop the program"}
             onClick={togglePower}
-          >
-            {boundPid === null ? "Power on" : "Power off"}
-          </button>
+          />
+          <DockIconButton
+            label="Reset"
+            icon={ResetIcon}
+            testId="fb-reset"
+            disabled={busy || boundPid === null}
+            onClick={reset}
+          />
+          {checkpoint && (
+            <DockIconButton
+              label={stateSaved ? "State saved to the address bar" : "Save state to the address bar"}
+              icon={SaveStateIcon}
+              testId="fb-save-state"
+              disabled={busy || boundPid === null}
+              onClick={saveState}
+            />
+          )}
         </div>
       )}
       {ingest && running && (
@@ -608,7 +651,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
               aria-expanded={libraryOpen}
               onClick={() => setLibraryOpen(true)}
             >
-              From Internet Archive…
+              Search
             </button>
           )}
         </div>

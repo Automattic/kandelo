@@ -187,6 +187,7 @@
       "ingest": {
         "accept": [".nes", ".sfc", ".smc", ".md", ".gen", ".smd", ".bin", ".sms", ".gg"],
         "targetPath": "/var/lib/kandelo-retro/rom",
+        "namePath": "/var/lib/kandelo-retro/rom.name",
         "maxBytes": 16777216,
         "label": "Load ROM",
         "onLoad": {
@@ -212,12 +213,12 @@
             "query": "mediatype:software AND (format:ZIP OR format:Unknown) AND (subject:\"NES\" OR subject:\"Nintendo Entertainment System\")"
           },
           {
-            "label": "Mega Drive",
-            "query": "mediatype:software AND (format:ZIP OR format:Unknown) AND (subject:\"Sega Genesis\" OR subject:\"Mega Drive\" OR subject:\"MegaDrive\")"
-          },
-          {
             "label": "SNES",
             "query": "mediatype:software AND (format:ZIP OR format:Unknown) AND (subject:\"SNES\" OR subject:\"Super Nintendo\" OR subject:\"Super Famicom\")"
+          },
+          {
+            "label": "Mega Drive",
+            "query": "mediatype:software AND (format:ZIP OR format:Unknown) AND (subject:\"Sega Genesis\" OR subject:\"Mega Drive\" OR subject:\"MegaDrive\")"
           }
         ],
         "featured": [

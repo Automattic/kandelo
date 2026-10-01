@@ -7,6 +7,7 @@ import {
 } from "../src/demo-config";
 import {
   IngestError,
+  ingestFileName,
   runDemoIngest,
   waitForProcessExit,
   type IngestFileLike,
@@ -157,6 +158,31 @@ describe("demo ingest transaction", () => {
       ),
     ).rejects.toMatchObject({ reason: "write-failed" });
     expect(noteDemoIngest).not.toHaveBeenCalled();
+  });
+
+  it("writes the file's own name to namePath after the file, as data", async () => {
+    const writes: string[] = [];
+    const host = ingestHost({
+      writeFile: vi.fn(async (path: string, bytes: Uint8Array) => {
+        writes.push(`${path}=${new TextDecoder().decode(bytes)}`);
+      }),
+    });
+    await runDemoIngest(
+      host,
+      { ...INGEST, namePath: "/user.wad.name" },
+      file("maps/Doom (Europe).wad", 3, [1, 2, 3]),
+    );
+    expect(writes).toEqual(["/user.wad=\u0001\u0002\u0003", "/user.wad.name=Doom (Europe).wad"]);
+    expect(ingestFileName("a\\b\u0007c.wad")).toBe("b_c.wad");
+    expect(new TextEncoder().encode(ingestFileName("é".repeat(400))).byteLength).toBeLessThanOrEqual(255);
+  });
+
+  it("rejects a namePath that is unsafe or is the target itself", () => {
+    const config = (ingest: object) => ({ version: 1, profiles: { p: { ingest } } });
+    expect(() => validateKandeloDemoConfig(config({ ...INGEST, namePath: "rel/name" }) as never))
+      .toThrow(/namePath/);
+    expect(() => validateKandeloDemoConfig(config({ ...INGEST, namePath: "/user.wad" }) as never))
+      .toThrow(/must differ/);
   });
 
   it("rechecks actual bytes before writing", async () => {

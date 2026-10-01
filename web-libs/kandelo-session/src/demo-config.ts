@@ -97,6 +97,13 @@ export interface DemoIngestConfig {
   maxBytes: number;
   /** Human-facing control label, e.g. "Load ROM". */
   label?: string;
+  /**
+   * Fixed absolute path the loaded file's own name is written to, as data,
+   * after the file itself. For programs that read meaning from a name (an
+   * emulator takes a ROM's region from "(Europe)"). The name never reaches
+   * a command line; the image decides how far to trust it.
+   */
+  namePath?: string;
   onLoad?: DemoIngestOnLoadConfig;
 }
 
@@ -1034,6 +1041,14 @@ function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
   const ingest: DemoIngestConfig = { accept, targetPath, maxBytes };
   if (typeof value.label === "string" && value.label.length > 0) {
     ingest.label = value.label;
+  }
+  if (value.namePath !== undefined) {
+    const namePath = requiredString(value.namePath, `${field}.namePath`);
+    validateAbsoluteNormalizedPath(namePath, `${field}.namePath`);
+    if (namePath === targetPath) {
+      throw new Error(`${field}.namePath must differ from ${field}.targetPath`);
+    }
+    ingest.namePath = namePath;
   }
   if (value.onLoad !== undefined) {
     if (!isRecord(value.onLoad)) {

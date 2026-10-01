@@ -55,9 +55,12 @@ static int      g_fb_fd = -1;
 #define SNDCTL_DSP_SPEED  0xc0045002u
 #define SNDCTL_DSP_STEREO 0xc0045003u
 #define SNDCTL_DSP_SETFMT 0xc0045005u
+#define SNDCTL_DSP_SETFRAGMENT 0xc004500au
+#define SNDCTL_DSP_GETODELAY   0x80045017u
 #define AFMT_S16_LE       0x10
 
-static int g_dsp_fd = -1;
+static int    g_dsp_fd = -1;
+static double g_dsp_bytes_per_sec = 0;
 
 /* ---- libretro state ---- */
 static enum retro_pixel_format g_pixfmt = RETRO_PIXEL_FORMAT_0RGB1555; /* default */
@@ -188,7 +191,16 @@ static void dsp_open(double sample_rate)
         g_dsp_fd = -1;
         return;
     }
-    fprintf(stderr, "[retro] dsp S16_LE stereo %d Hz\n", speed);
+    /* The device's default queue is four 1 KiB fragments, about 21 ms at
+     * 48 kHz: barely one 60 Hz frame. Ask for 32 KiB of headroom so a late
+     * frame does not empty it; the frame loop below decides how much of it
+     * to keep filled. The kernel clamps the request and reports what it set. */
+    int fragments = (32 << 16) | 10;
+    if (ioctl(g_dsp_fd, SNDCTL_DSP_SETFRAGMENT, &fragments) < 0)
+        perror("dsp SETFRAGMENT (keeping the default queue)");
+    g_dsp_bytes_per_sec = (double)speed * 2 * (int)sizeof(int16_t);
+    fprintf(stderr, "[retro] dsp S16_LE stereo %d Hz, queue %d x %d bytes\n",
+            speed, fragments >> 16, 1 << (fragments & 0xffff));
 }
 
 /* Raw, non-blocking stdin so injected MEDIUMRAW keycode bytes arrive
@@ -558,6 +570,57 @@ static void pace_to(const struct timespec *frame_start, int64_t target_ns)
     do { now_ts(&now); } while (ns_since(frame_start, &now) < target_ns);
 }
 
+/* Audio-clocked pacing. While the sound card is playing, its clock decides
+ * when the next frame runs: frames run back to back until AUDIO_LEAD_NS of
+ * sound is queued, then the loop sleeps only for the excess. Pacing by the
+ * wall clock instead never builds a lead, so the queue sits near empty and
+ * every late frame is a gap in the sound, heard as stutter and grain. It also
+ * keeps the emulator from drifting against the sound card.
+ *
+ * Returns false when audio cannot pace the loop (no device, or the sink is
+ * not playing yet), and the caller falls back to the wall clock. */
+#define AUDIO_LEAD_NS (60LL * 1000000LL)
+
+static bool    g_audio_lead_reached = false;
+static int64_t g_audio_dry_frames = 0;
+static struct timespec g_audio_dry_reported;
+
+static bool pace_by_audio(int64_t frame_ns)
+{
+    if (g_dsp_fd < 0 || g_dsp_stalled || g_dsp_bytes_per_sec <= 0) return false;
+    int queued = 0;
+    if (ioctl(g_dsp_fd, SNDCTL_DSP_GETODELAY, &queued) < 0) return false;
+    int64_t queued_ns = (int64_t)((double)queued * 1e9 / g_dsp_bytes_per_sec);
+
+    if (queued_ns >= AUDIO_LEAD_NS) {
+        g_audio_lead_reached = true;
+        int64_t excess = queued_ns - AUDIO_LEAD_NS;
+        if (excess > 2 * frame_ns) excess = 2 * frame_ns;
+        if (excess > 0) {
+            struct timespec req = { excess / 1000000000LL, excess % 1000000000LL };
+            nanosleep(&req, NULL);
+        }
+        return true;
+    }
+
+    /* Below the lead the next frame runs at once. A queue that empties after
+     * the lead was reached means the emulator is slower than real time; say
+     * so (at most every ten seconds) rather than leave the stutter a mystery. */
+    if (g_audio_lead_reached && queued == 0) {
+        g_audio_dry_frames++;
+        struct timespec now;
+        now_ts(&now);
+        if (ns_since(&g_audio_dry_reported, &now) >= 10LL * 1000000000LL) {
+            fprintf(stderr, "[retro] the sound queue ran dry %lld time(s): "
+                            "emulation is running slower than real time\n",
+                    (long long)g_audio_dry_frames);
+            g_audio_dry_frames = 0;
+            g_audio_dry_reported = now;
+        }
+    }
+    return true;
+}
+
 /* ---------------------------------------------------------------------------
  * Main
  * ------------------------------------------------------------------------- */
@@ -665,10 +728,15 @@ static int write_save_state(void)
 int main(int argc, char **argv)
 {
     const char *state_path = NULL;
+    bool info_only = false;
     if (argc == 4 && strcmp(argv[2], "--state") == 0) {
         state_path = argv[3];
+    } else if (argc == 3 && strcmp(argv[2], "--info") == 0) {
+        /* Load the ROM, report the core's timing, and exit: what the core
+         * decided about the content, without needing a display. */
+        info_only = true;
     } else if (argc != 2) {
-        fprintf(stderr, "usage: %s <rom> [--state <state-path>]\n", argv[0]);
+        fprintf(stderr, "usage: %s <rom> [--state <state-path> | --info]\n", argv[0]);
         return 2;
     }
 
@@ -737,6 +805,7 @@ int main(int argc, char **argv)
     double srate = g_av.timing.sample_rate > 1.0 ? g_av.timing.sample_rate : 44100.0;
     fprintf(stderr, "[retro] av: %ux%u fps=%.3f rate=%.0f\n",
             g_av.geometry.base_width, g_av.geometry.base_height, fps, srate);
+    if (info_only) return 0;
 
     if (fb_open() < 0) return 1;
     dsp_open(srate);
@@ -766,7 +835,7 @@ int main(int argc, char **argv)
             g_save_requested = 0;
             (void)write_save_state();
         }
-        pace_to(&frame_start, target_ns);
+        if (!pace_by_audio(target_ns)) pace_to(&frame_start, target_ns);
     }
 
     /* not reached */

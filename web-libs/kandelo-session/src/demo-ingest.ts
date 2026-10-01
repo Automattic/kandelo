@@ -71,6 +71,18 @@ export interface RunDemoIngestOptions {
   source?: DemoIngestSource;
 }
 
+/**
+ * The name written to `namePath`: the last path component, without control
+ * characters, at most 255 UTF-8 bytes. Still untrusted data for the image.
+ */
+export function ingestFileName(name: string): string {
+  const base = name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1);
+  let out = base.replace(/[\u0000-\u001f\u007f]/g, "_");
+  const encoder = new TextEncoder();
+  while (encoder.encode(out).byteLength > 255) out = out.slice(0, -1);
+  return out || "file";
+}
+
 /** Lowercase extension of a filename, including the dot. "" when none. */
 function extensionOf(name: string): string {
   const dot = name.lastIndexOf(".");
@@ -146,6 +158,20 @@ export async function runDemoIngest(
       "write-failed",
       `could not write ${ingest.targetPath}: ${errorText(err)}`,
     );
+  }
+  if (ingest.namePath) {
+    try {
+      await host.writeFile(
+        ingest.namePath,
+        new TextEncoder().encode(ingestFileName(file.name)),
+        0o644,
+      );
+    } catch (err) {
+      throw new IngestError(
+        "write-failed",
+        `could not write ${ingest.namePath}: ${errorText(err)}`,
+      );
+    }
   }
   // The file at targetPath is now this one, whether or not the restart below
   // succeeds, so its origin is recorded as soon as the write lands.
