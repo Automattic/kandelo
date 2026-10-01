@@ -1,3 +1,20 @@
+type OwnedJobStatus = 'running' | 'cancelling' | 'cancelled' | 'timed_out' | 'completed';
+
+/** One read of a job. A cursor older than the retained tail has expired. */
+export type OwnedJobRead =
+  | { expired: true; oldest: number }
+  | {
+      expired: false;
+      pid: number;
+      status: OwnedJobStatus;
+      exitCode: number | null;
+      terminationObserved: boolean;
+      chunks: Array<{ stream: 'stdout' | 'stderr'; bytes: Uint8Array }>;
+      next: number;
+      hasMore: boolean;
+      truncated: boolean;
+    };
+
 /** Worker-owned command families. Ownership survives exec, reparenting and setsid. */
 export class OwnedJobs {
   private jobs = new Map<string, {
@@ -87,10 +104,10 @@ export class OwnedJobs {
     };
     drain();
   }
-  read(id: string, offset?: number, limit = 4096) {
+  read(id: string, offset?: number, limit = 4096): OwnedJobRead {
     const job = this.require(id);
     const cursor = offset ?? job.start;
-    if (cursor < job.start) return { expired: true as const, oldest: job.start };
+    if (cursor < job.start) return { expired: true, oldest: job.start };
     if (!Number.isSafeInteger(cursor) || cursor > job.end) throw new Error('INVALID_CURSOR');
     const chunks: Array<{ stream: 'stdout' | 'stderr'; bytes: Uint8Array }> = [];
     let pos = job.start, remaining = limit;
@@ -102,7 +119,7 @@ export class OwnedJobs {
       if (!remaining) break;
     }
     const next = cursor + limit - remaining;
-    return { expired: false as const, pid: job.root, status: !job.cleaned ? (job.reason ? 'cancelling' : 'running') : job.reason ?? 'completed', exitCode: job.exitCode, terminationObserved: job.cleaned, chunks, next, hasMore: next < job.end, truncated: offset === undefined && job.start > 0 };
+    return { expired: false, pid: job.root, status: !job.cleaned ? (job.reason ? 'cancelling' : 'running') : job.reason ?? 'completed', exitCode: job.exitCode, terminationObserved: job.cleaned, chunks, next, hasMore: next < job.end, truncated: offset === undefined && job.start > 0 };
   }
   private require(id: string) {
     const job = this.jobs.get(id);

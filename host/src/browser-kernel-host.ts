@@ -1,4 +1,4 @@
-import type { OwnedJobs } from "./owned-jobs";
+import type { OwnedJobRead } from "./owned-jobs";
 /**
  * BrowserKernel — Thin proxy that communicates with a dedicated kernel
  * web worker via MessagePort. The kernel worker owns the Wasm instance
@@ -1417,9 +1417,9 @@ export class BrowserKernel {
   }
 
   /** Read bounded output and observed termination of a worker-owned command family. */
-  async readOwnedJob(jobId: string, offset?: number, limit?: number, cancel = false): Promise<ReturnType<OwnedJobs['read']>> {
+  async readOwnedJob(jobId: string, offset?: number, limit?: number, cancel = false): Promise<OwnedJobRead> {
     const requestId = this.nextRequestId++;
-    return await this.request(requestId, { type: cancel ? "cancel_owned_job" : "read_owned_job", requestId, jobId, offset, limit }) as ReturnType<OwnedJobs['read']>;
+    return await this.request(requestId, { type: cancel ? "cancel_owned_job" : "read_owned_job", requestId, jobId, offset, limit }) as OwnedJobRead;
   }
 
 
