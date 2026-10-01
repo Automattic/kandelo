@@ -153,10 +153,11 @@ result says `tree changed during run`.
 - **Keep if:** no false stamps. One false stamp means fix the comparison;
   two means remove the stamp.
 
-### 3. Build progress: `local-build --events` + `agent-job status`
+### 3. Build progress: local-build events + `agent-job status`
 
 `local-build` writes its scheduler events (ready, running, finished, failed)
-as JSON lines. `agent-job status` then shows nodes done out of total and
+as JSON lines to the file named by `KANDELO_LOCAL_BUILD_EVENTS`, which
+`agent-job` sets. `agent-job status` then shows nodes done out of total and
 what is running, with each process's command line and age.
 
 - **Measure:** process probes per session. Baseline: 4,568 in 107 sessions,

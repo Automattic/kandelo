@@ -132,6 +132,79 @@ Retrying a failed node while the original aggregate process remains active is
 not supported today; that additive workflow is recorded in
 [package-management future work](package-management-future-work.md#retry-a-failed-node-during-an-active-aggregate).
 
+### Progress, timing history, and `plan --status`
+
+A full build runs for tens of minutes. The engine therefore makes its progress
+and history readable by other tools, so nobody has to inspect processes or
+tail logs to guess how far along a build is or how long it will take.
+
+**Progress events.** When `KANDELO_LOCAL_BUILD_EVENTS` names a file,
+`local-build run` appends one JSON object per line to it. `xtask bootstrap`,
+and therefore `./run.sh setup`, does the same. The writer creates the file if
+needed and flushes every line. The first line is
+`{"event":"plan","nodes":<n>,"at":<unix seconds>}`. After the up-front cache
+check comes `{"event":"cached-check","cached":<n>,"at":...}`. Each scheduler
+event follows as `{"event":"<kind>","node":"<name>/<arch>","at":...}`, where
+`<kind>` is `ready`, `running`, `succeeded`, `cached`, `reused`, `failed`, or
+`blocked`. Products are named `product/<id>`. `scripts/agent-job` sets the
+variable and summarizes the file as nodes done out of the total.
+`scripts/dev-shell.sh` starts from an empty environment, so `./run.sh setup`,
+`./run.sh local-build`, and `./run.sh build <target>` forward the variable
+into the dev shell explicitly. If you run xtask under `scripts/dev-shell.sh`
+yourself, set the variable inside that shell. A write failure prints one
+warning and never fails the build.
+
+**Timing history.** Every node that launches a build child records its wall
+time, from `running` to its result, in
+`<source cache root>/timings/node-durations.jsonl`. Each record holds the node,
+its cache key when the child returned a receipt, the seconds taken, the outcome
+(`published`, `reused`, `cached` when the child itself found the entry current,
+or `failed`), and a timestamp. Nodes that the up-front check reports cached
+never start a child, so they are not recorded. Every completed run also
+appends one line to `<source cache root>/timings/runs.jsonl`. That line holds
+the predicted and actual seconds, the seconds spent in the scheduler, and the
+node, built, and cached counts, plus the job count. Comparing predicted with
+actual is how the estimate's accuracy is measured. The source cache root is
+shared by every worktree, so all of them build and use one history. `cache-gc`
+reads only `roots/`, the compiled cache directories, and its own trash, so it
+leaves `timings/` alone.
+
+**`plan --status`.** Before you start a build, this shows which nodes it would
+take from the cache and roughly how long the rest would take:
+
+```bash
+cargo xtask local-build plan --set packages/sets/local-supported.toml --status
+cargo xtask local-build plan --set packages/sets/local-supported.toml --status --json
+```
+
+It runs the same up-front cache check as `run` and lists each selected node as
+`cached` or `will run`, with the node's median recorded duration. That median
+is taken over its 10 most recent non-failed runs. `Source`-kind packages are
+never skipped up front, because their child checks the fetched source itself.
+They therefore appear as `will run (source check)`. The estimate has two
+parts. The first is the larger of two numbers: the longest dependency chain,
+weighted by node medians, and the total will-run time divided by the job
+count. The second is the median time recent runs spent outside the scheduler:
+installing JavaScript dependencies, generating indexes, planning, the cache
+check, and finalizing. Cached nodes cost nothing. A will-run node with no
+history is counted at the median of the nodes that have history, or at 60
+seconds when there is no history at all. The output says how many nodes were
+counted this way.
+
+The defaults match `./run.sh setup`: the default source cache root, this
+checkout's `local-binaries/source-only-v1`, every product, and the job count
+from `--jobs`, then `WASM_POSIX_LOCAL_BUILD_JOBS`, then the CPU count.
+`./run.sh local-build` uses 16 jobs, so pass `--jobs 16` to estimate that
+command. `--source-cache-root`, `--output-root`, and `--product` work as they
+do for `run`.
+
+The dry run writes nothing. It creates no cache directories, does not refresh
+last-used stamps, and regenerates neither the catalog nor the program index.
+It also takes no cache lock. A `cache-gc` running at the same moment can
+therefore make the report slightly out of date, but the report still describes
+the tree it read. `--rebuild` and `--verify-cache` turn off the up-front check
+in `run`, so the plan does not describe those runs.
+
 ## Artifact invalidation model
 
 Use precise artifact concepts when changing CI gates or package cache
@@ -474,6 +547,18 @@ The root passed to `program-index` or `program-index-check` must be the
 highest-priority existing root in `WASM_POSIX_DEPS_REGISTRY`. Generate a lower
 root's committed fallback with the registry suffix beginning at that root.
 `build-deps check` verifies every present index against its own suffix context.
+Many processes regenerate the index: vitest global setup and every vitest
+worker, `build-programs.sh`, `prepare-host-package.sh`, and `local-build`.
+Each computes the projection first, then publishes it under one lock file,
+`<registry-root>/.program-packages.json.kandelo-index.lock`. The writer takes
+that lock before it looks at the existing index, so another writer's
+publication cannot slip in between the look and the replace. When the index
+already holds the exact bytes, the writer leaves the file in place instead of
+renaming a new copy over it. Concurrent runs over one unchanged registry
+therefore all succeed. A writer that has to wait prints
+`waiting for program-index lock (<path>)` once. The lock is an OS file lock,
+so it is released when its holder exits, even after a crash.
+
 `program-index-context-check` is the stricter consumer boundary: it skips
 nonexistent optional roots, requires an index for every existing configured
 root, and validates each in its exact suffix context. Source-checkout program
