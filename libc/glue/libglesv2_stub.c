@@ -35,7 +35,7 @@ static uint8_t *g_cursor = NULL;
 static GLint g_unpack_alignment = 4;
 
 /* An error this library raises itself, without a host round trip
- * (glShaderBinary). GL records the
+ * (glShaderBinary, a client-array draw it cannot stage). GL records the
  * first error until glGetError reads it; this latch holds that first
  * client-side error and glGetError reports it before asking the host. */
 static GLenum _wpk_gl_client_error = GL_NO_ERROR;
@@ -145,7 +145,12 @@ void glGenBuffers(GLsizei n, GLuint *out) {
     emit_name_array(OP_GEN_BUFFERS, n, out);
 }
 
+/* The GL_ARRAY_BUFFER binding, mirrored so glVertexAttribPointer can tell a
+ * buffer offset from a client-memory pointer (see the client arrays below). */
+static GLuint g_array_buffer = 0;
+
 void glBindBuffer(GLenum target, GLuint buf) {
+    if (target == GL_ARRAY_BUFFER) g_array_buffer = buf;
     EMIT_BEGIN(OP_BIND_BUFFER, 8)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)buf);
@@ -302,27 +307,67 @@ void glBindAttribLocation(GLuint program, GLuint index, const GLchar *name) {
 
 /* ----- vertex attribs / draws -------------------------------------- */
 
-void glEnableVertexAttribArray(GLuint index) {
-    EMIT_BEGIN(OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
-}
+/* Client-side vertex arrays. OpenGL ES 2.0 lets glVertexAttribPointer name
+ * client memory when no GL_ARRAY_BUFFER is bound, and GL reads the vertices
+ * from that memory at draw time. WebGL has no client arrays, so the host can
+ * only draw from buffers: each such attribute is recorded here, and each draw
+ * copies the vertices it reads into a temporary buffer, points the attribute
+ * at it, draws, and deletes the buffer. SDL2's GLES2 renderer draws this way
+ * on every platform except Emscripten. */
+#define WPK_GL_MAX_ATTRIBS 16u
 
-void glDisableVertexAttribArray(GLuint index) {
-    EMIT_BEGIN(OP_DISABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
-}
+struct wpk_client_attrib {
+    int client;          /* 1: pointer is client memory, not a buffer offset */
+    int enabled;
+    GLint size;
+    GLenum type;
+    GLboolean normalized;
+    GLsizei stride;
+    const void *pointer;
+};
+static struct wpk_client_attrib g_attribs[WPK_GL_MAX_ATTRIBS];
 
-void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
-                           GLboolean normalized, GLsizei stride,
-                           const void *pointer) {
-    /* `pointer` is a buffer offset when a VBO is bound (the only mode
-     * WebGL2 supports — client arrays aren't part of the WebGL surface). */
+static void emit_vertex_attrib_pointer(GLuint index, GLint size, GLenum type,
+                                       GLboolean normalized, GLsizei stride,
+                                       uint32_t offset) {
     EMIT_BEGIN(OP_VERTEX_ATTRIB_POINTER, 24)
     w_u32(&_c, (uint32_t)index);
     w_i32(&_c, (int32_t)size);
     w_u32(&_c, (uint32_t)type);
     w_u32(&_c, normalized ? 1u : 0u);
     w_i32(&_c, (int32_t)stride);
-    w_i32(&_c, (int32_t)(uintptr_t)pointer);
+    w_i32(&_c, (int32_t)offset);
     EMIT_END()
+}
+
+void glEnableVertexAttribArray(GLuint index) {
+    if (index < WPK_GL_MAX_ATTRIBS) g_attribs[index].enabled = 1;
+    EMIT_BEGIN(OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
+}
+
+void glDisableVertexAttribArray(GLuint index) {
+    if (index < WPK_GL_MAX_ATTRIBS) g_attribs[index].enabled = 0;
+    EMIT_BEGIN(OP_DISABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
+}
+
+void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
+                           GLboolean normalized, GLsizei stride,
+                           const void *pointer) {
+    if (g_array_buffer == 0 && index < WPK_GL_MAX_ATTRIBS) {
+        /* Client memory: record it; the draw uploads what it reads. */
+        struct wpk_client_attrib *a = &g_attribs[index];
+        a->client = 1;
+        a->size = size;
+        a->type = type;
+        a->normalized = normalized;
+        a->stride = stride;
+        a->pointer = pointer;
+        return;
+    }
+    if (index < WPK_GL_MAX_ATTRIBS) g_attribs[index].client = 0;
+    /* `pointer` is an offset into the bound GL_ARRAY_BUFFER. */
+    emit_vertex_attrib_pointer(index, size, type, normalized, stride,
+                               (uint32_t)(uintptr_t)pointer);
 }
 
 void glVertexAttrib4fv(GLuint index, const GLfloat *values) {
@@ -334,12 +379,66 @@ void glVertexAttrib4fv(GLuint index, const GLfloat *values) {
     EMIT_END()
 }
 
+static uint32_t attrib_type_size(GLenum type) {
+    switch (type) {
+    case GL_BYTE: case GL_UNSIGNED_BYTE: return 1;
+    case GL_SHORT: case GL_UNSIGNED_SHORT: return 2;
+    case GL_FIXED: case GL_FLOAT: return 4;
+    default: return 0;
+    }
+}
+
+/* Upload every enabled client-memory attribute for vertices
+ * [0, first + count) into its own temporary buffer. Returns the number of
+ * buffers made (their names are in `names`), or -1 when the draw cannot be
+ * made (the error is latched for glGetError). */
+static int stage_client_attribs(GLint first, GLsizei count, GLuint *names) {
+    int made = 0;
+    if (count <= 0) return 0;
+    for (uint32_t i = 0; i < WPK_GL_MAX_ATTRIBS; i++) {
+        struct wpk_client_attrib *a = &g_attribs[i];
+        if (!a->client || !a->enabled) continue;
+        uint32_t tsize = attrib_type_size(a->type);
+        if (tsize == 0 || a->size < 1 || a->size > 4 || a->pointer == NULL) {
+            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION;
+            return -1;
+        }
+        uint32_t elem = tsize * (uint32_t)a->size;
+        uint32_t stride = a->stride ? (uint32_t)a->stride : elem;
+        uint64_t len = (uint64_t)(uint32_t)(first + count - 1) * stride + elem;
+        /* One glBufferData record carries at most 65523 bytes (see
+         * glBufferData); a larger client array cannot be staged. */
+        if (len > 0xFFFFu - 12u) {
+            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            return -1;
+        }
+        GLuint name = g_next_buffer++;
+        emit_name_array(OP_GEN_BUFFERS, 1, &name);
+        glBindBuffer(GL_ARRAY_BUFFER, name);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)len, a->pointer, GL_STREAM_DRAW);
+        emit_vertex_attrib_pointer(i, a->size, a->type, a->normalized,
+                                   a->stride, 0);
+        names[made++] = name;
+    }
+    return made;
+}
+
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
-    EMIT_BEGIN(OP_DRAW_ARRAYS, 12)
-    w_u32(&_c, (uint32_t)mode);
-    w_i32(&_c, first);
-    w_i32(&_c, (int32_t)count);
-    EMIT_END()
+    GLuint staged[WPK_GL_MAX_ATTRIBS];
+    GLuint app_buffer = g_array_buffer;
+    int n = stage_client_attribs(first, count, staged);
+    if (n < 0) return;
+    if (n > 0) glBindBuffer(GL_ARRAY_BUFFER, app_buffer);
+    {
+        EMIT_BEGIN(OP_DRAW_ARRAYS, 12)
+        w_u32(&_c, (uint32_t)mode);
+        w_i32(&_c, first);
+        w_i32(&_c, (int32_t)count);
+        EMIT_END()
+    }
+    /* The attributes keep referring to the deleted buffers until the next
+     * draw restages them, as GL allows. */
+    if (n > 0) emit_name_array(OP_DELETE_BUFFERS, n, staged);
 }
 
 /* ----- sync queries ------------------------------------------------- */
