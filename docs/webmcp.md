@@ -96,7 +96,7 @@ replacing or deleting a file registers or unregisters its tool without a reload.
 {
   "description": "Evaluate an arithmetic expression",
   "inputSchema": { "type": "object", "properties": { "expression": { "type": "string" } }, "required": ["expression"] },
-  "command": "echo {expression} | bc -l"
+  "command": "echo {expression:q} | bc -l"
 }
 ```
 
@@ -104,9 +104,22 @@ replacing or deleting a file registers or unregisters its tool without a reload.
 what the terminal printed before the next prompt, as `{ok:true,output}`.
 Aborting the call sends Ctrl-C to the shell.
 
-A `{param}` placeholder is filled from the call arguments: a string verbatim,
-any other value JSON-encoded. An unrecognised name is left in place, so
-`{param}` with no matching argument reaches the shell literally.
+A placeholder is filled from the call arguments: a string verbatim, any other
+value JSON-encoded. Two spellings decide how the shell then reads it.
+
+- `{param}` substitutes the value as written. The shell parses whatever comes
+  out, so a value may carry several words, a redirection or a pipeline. Use it
+  for a parameter that is a command fragment.
+- `{param:q}` substitutes the value as one POSIX single-quoted word. Spaces,
+  quotes, `$`, `;` and newlines survive as literal characters. Use it for a
+  parameter that is a value: a path, a pattern, a name.
+
+Write `{param:q}` unless the parameter is meant to be shell syntax. Hand-quoting
+a bare placeholder does not work: `'{pattern}'` breaks as soon as the value
+contains a single quote, which is exactly what `{pattern:q}` handles.
+
+An unrecognised name is left in place, so `{param}` with no matching argument
+reaches the shell literally.
 
 An image-declared tool goes through the same registration as a built-in one, so
 it gets the same argument validation against its own `inputSchema` and the same

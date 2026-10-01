@@ -2,7 +2,8 @@
 // /home/maker/mcp belongs to the maker; on a name clash the maker's file wins.
 // One JSON file per tool, named after the tool: `{ description, inputSchema,
 // command }`. The command is typed into the machine's visible shell; it may
-// carry `{param}` placeholders filled from the call arguments.
+// carry `{param}` placeholders filled from the call arguments, or `{param:q}`
+// to substitute the value as one shell-quoted word.
 
 import type { Schema } from "./contract";
 
@@ -16,7 +17,7 @@ export interface VfsTool {
 }
 
 const TOOL_NAME = /^[a-z][a-z0-9_-]*$/;
-const PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+const PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)(:q)?\}/g;
 
 // Exactly the keywords `validate` in contract.ts enforces. A keyword it
 // would ignore is refused here, so a tool never registers a promise its
@@ -93,11 +94,17 @@ export function validateToolSchema(schema: Record<string, unknown>, where: strin
 }
 
 export function substituteCommand(command: string, args: Record<string, unknown>): string {
-  return command.replace(PLACEHOLDER, (match, key: string) => {
+  return command.replace(PLACEHOLDER, (match, key: string, quoted?: string) => {
     if (!Object.hasOwn(args, key)) return match;
     const value = args[key];
-    return typeof value === "string" ? value : JSON.stringify(value);
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    return quoted ? shellQuote(text) : text;
   });
+}
+
+/** One POSIX single-quoted word. A value's own quote closes, escapes and reopens it. */
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

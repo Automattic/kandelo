@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseVfsTool, substituteCommand, validateToolSchema, vfsToolName } from "./vfs-tools.ts";
+import { parseVfsTool, shellQuote, substituteCommand, validateToolSchema, vfsToolName } from "./vfs-tools.ts";
 
 const definition = (inputSchema: unknown) =>
   JSON.stringify({ description: "x", inputSchema, command: "true" });
@@ -103,4 +103,36 @@ test("substitutes named arguments into the command", () => {
     substituteCommand("{command} {count} {missing}", { command: "echo 'hi'", count: 2 }),
     "echo 'hi' 2 {missing}",
   );
+});
+
+test("a :q placeholder substitutes one shell-quoted word", () => {
+  assert.equal(
+    substituteCommand("grep -n {pattern:q} {file:q}", { pattern: "it's here", file: "/a b.txt" }),
+    "grep -n 'it'\\''s here' '/a b.txt'",
+  );
+});
+
+test("a bare placeholder stays verbatim beside a quoted one", () => {
+  assert.equal(
+    substituteCommand("{prefix} {value:q}", { prefix: "echo hi |", value: "$HOME; rm -rf /" }),
+    "echo hi | '$HOME; rm -rf /'",
+  );
+});
+
+test("a quoted placeholder JSON-encodes a non-string before quoting", () => {
+  assert.equal(substituteCommand("n={count:q}", { count: 2 }), "n='2'");
+  assert.equal(substituteCommand("n={items:q}", { items: ["a", "b"] }), `n='["a","b"]'`);
+});
+
+test("a missing argument leaves both placeholder spellings untouched", () => {
+  assert.equal(substituteCommand("{a} {b:q}", {}), "{a} {b:q}");
+});
+
+test("shellQuote makes every value one word the shell cannot reinterpret", () => {
+  assert.equal(shellQuote("plain"), "'plain'");
+  assert.equal(shellQuote(""), "''");
+  assert.equal(shellQuote("a b"), "'a b'");
+  assert.equal(shellQuote("$(whoami)"), "'$(whoami)'");
+  assert.equal(shellQuote("it's"), "'it'\\''s'");
+  assert.equal(shellQuote("line\nnext"), "'line\nnext'");
 });
