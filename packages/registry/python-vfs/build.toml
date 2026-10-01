@@ -22,6 +22,7 @@ inputs = [
   "host/src/vfs/tar.ts",
   "host/src/vfs/types.ts",
   "host/src/vfs/zip.ts",
+  "host/src/networking/byte-range-fetch.ts",
   "web-libs/kandelo-session/src/demo-config.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
