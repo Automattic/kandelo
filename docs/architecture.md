@@ -2422,10 +2422,12 @@ emits silence on underrun. The main thread only creates/resumes the
 drain through a timer. At 48 kHz one render quantum is about 2.7 ms; browser
 device `baseLatency`/`outputLatency` is additional and platform-dependent.
 After machine teardown drains the shared ring, a running browser context is
-suspended to hand already-rendered blocks to the output device, then retained
-for a bounded base/output-latency-plus-quantum settlement interval before it is
-closed. Teardown never resumes a suspended or interrupted context, preserving
-the browser's user-activation boundary.
+suspended to hand already-rendered blocks to the output device, retained for a
+bounded base/output-latency-plus-quantum settlement interval, and then resumed
+again: the page shares one `AudioContext` across machines, so the next machine's
+worklet node starts on the activation the page already has. Teardown never
+resumes a context that was suspended or interrupted before it, preserving the
+browser's user-activation boundary.
 Node uses the same cursor and wakeup contract with a wall-clock-paced null sink
 for headless execution, so callbacks cannot run at CPU speed. Its running tick
 follows the negotiated fragment duration, preserves fractional-frame drift,

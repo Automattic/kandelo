@@ -129,9 +129,16 @@ export class BrowserPcmDriver implements PcmOutputDriver {
    * to the hardware; the latency wait then covers physical emission of the
    * reported processing/device queues and the final quantum.
    *
-   * This method never resumes a context, so it does not bypass browser user-
-   * activation policy. Both suspension and the final wait share a bounded
-   * teardown budget so a broken AudioContext cannot wedge machine destroy.
+   * The suspension is the settle, not a change of the page's audio state. A
+   * shared context outlives this machine, so once the tail has played it goes
+   * back to running: the next machine's node then starts on the activation
+   * the person already gave, instead of on a paused clock that parks every
+   * blocking `/dev/dsp` write until the page sees another gesture. A private
+   * context stays suspended for `close()` to close. A context that was not
+   * running is never resumed here, so this does not bypass browser user-
+   * activation policy. Suspension, the final wait, and the resume each run
+   * under a bounded teardown budget so a broken AudioContext cannot wedge
+   * machine destroy.
    */
   async settleOutputPipeline(): Promise<void> {
     if (this.preparing) await this.preparing.catch(() => {});
@@ -158,6 +165,12 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       remainingBudgetMs,
     );
     if (settleMs > 0) await delay(settleMs);
+    if (this.ownsContext) return;
+    await waitForPromiseWithin(
+      context.resume(),
+      MAX_OUTPUT_PIPELINE_SETTLE_MS,
+    );
+    this.syncContextState();
   }
 
   async close(): Promise<void> {
@@ -185,8 +198,8 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     }
     // A shared context stays open on purpose — closing it is exactly the
     // engine-bug trigger this driver exists to avoid, and the next machine
-    // will reuse it. It is suspended (or was never resumed), so an open idle
-    // context costs one rendering thread total, not one per machine.
+    // will reuse it, in whatever state the page's activation left it. An open
+    // idle context costs one rendering thread total, not one per machine.
     this.setState("closed");
     this.listeners.clear();
   }

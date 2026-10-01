@@ -1715,15 +1715,15 @@ describe("BrowserKernel", () => {
 
     // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] The AudioContext is page-wide (PR
     // #1410): closing one per machine leaves a WebCore AudioWorklet rendering
-    // thread parked forever on WebKit. Teardown suspends the pipeline and
-    // unhooks this machine's worklet node, then leaves the context open and
-    // suspended for the next machine to reuse.
+    // thread parked forever on WebKit. Teardown suspends the pipeline to
+    // settle it and unhooks this machine's worklet node, then leaves the
+    // context open and running again for the next machine to reuse.
     expect(teardownOrder).toEqual([
       "pcm-pipeline-settle",
       "kernel-worker-terminate",
     ]);
     expect(audio.context.close).not.toHaveBeenCalled();
-    expect(audio.context.state).toBe("suspended");
+    expect(audio.context.state).toBe("running");
     expect(audio.node.disconnect).toHaveBeenCalledOnce();
     expect(audio.node.port.close).toHaveBeenCalledOnce();
     expect(kernel.getAudioState()).toBe("unavailable");

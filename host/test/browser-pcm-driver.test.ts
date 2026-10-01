@@ -218,6 +218,72 @@ describe("BrowserPcmDriver", () => {
     await driver.close();
   });
 
+  it("hands the shared context to the next machine running", async () => {
+    const mocks = browserAudioMocks();
+    const AudioContextCtor = vi.fn(function () {
+      return mocks.context;
+    });
+    vi.stubGlobal("AudioContext", AudioContextCtor);
+    try {
+      const outgoing = new BrowserPcmDriver({
+        workletUrl: "/worklet.js",
+        createNode: mocks.createNode,
+      });
+      await outgoing.prepare(createPcmTransport());
+      await outgoing.resume();
+
+      await outgoing.settleOutputPipeline();
+      expect(mocks.context.suspend).toHaveBeenCalledOnce();
+      expect(mocks.context.resume).toHaveBeenCalledTimes(2);
+      expect(mocks.context.state).toBe("running");
+      await outgoing.close();
+      expect(mocks.context.close).not.toHaveBeenCalled();
+
+      const incoming = new BrowserPcmDriver({
+        workletUrl: "/worklet.js",
+        createNode: mocks.createNode,
+      });
+      await incoming.prepare(createPcmTransport());
+      expect(AudioContextCtor).toHaveBeenCalledOnce();
+      expect(mocks.addModule).toHaveBeenCalledOnce();
+      expect(incoming.getState()).toBe("running");
+      await incoming.close();
+    } finally {
+      await mocks.context.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leaves the shared context suspended when the browser refuses the resume", async () => {
+    const mocks = browserAudioMocks();
+    vi.stubGlobal(
+      "AudioContext",
+      vi.fn(function () {
+        return mocks.context;
+      }),
+    );
+    try {
+      const driver = new BrowserPcmDriver({
+        workletUrl: "/worklet.js",
+        createNode: mocks.createNode,
+      });
+      await driver.prepare(createPcmTransport());
+      await driver.resume();
+      mocks.context.resume.mockImplementationOnce(async () => {
+        throw new Error("user activation required");
+      });
+
+      await driver.settleOutputPipeline();
+
+      expect(mocks.context.state).toBe("suspended");
+      expect(driver.getState()).toBe("suspended");
+      await driver.close();
+    } finally {
+      await mocks.context.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("bounds settlement when AudioContext suspension never resolves", async () => {
     vi.useFakeTimers();
     try {

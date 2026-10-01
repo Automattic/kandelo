@@ -399,9 +399,13 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
   be measured separately. Machine teardown first waits for the shared PCM ring
   to drain. If the context is running, it then suspends the context so Web
   Audio hands already-rendered blocks to the output device and waits a bounded
-  interval covering the reported base/output latency and final render quantum
-  before closing the context. A suspended or interrupted context is never
-  resumed implicitly during teardown.
+  interval covering the reported base/output latency and final render quantum.
+  One `AudioContext` serves every machine the page boots, because WebKit keeps
+  a worklet rendering thread for each closed context; after the wait the
+  context is resumed again, so the next machine's sink starts on the activation
+  the page already has rather than on a paused clock that would park its
+  blocking `/dev/dsp` writes. A context that was suspended or interrupted
+  before teardown is never resumed implicitly.
 - **A user gesture is required.** Preparing the PCM driver may leave its
   `AudioContext` suspended. The application must call the session audio-resume
   path from a click, keypress, or other browser-recognized activation. If the
