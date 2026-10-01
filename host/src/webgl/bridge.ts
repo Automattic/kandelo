@@ -659,7 +659,8 @@ function dispatch(
     }
     case O.OP_BIND_VERTEX_ARRAY: {
       const vao = b.vaos.get(v.getUint32(p, true)) ?? null;
-      gl.bindVertexArray(vao);
+      // Vertex array 0 is this binding's own default (see GlShadowState).
+      gl.bindVertexArray(vao ?? b.shadow.defaultVao);
       b.shadow.vao = vao;
       return;
     }

@@ -25,6 +25,13 @@ export interface GlShadowState {
 
   currentProgram: WebGLProgram | null;
   vao: WebGLVertexArrayObject | null;
+  /** This binding's stand-in for vertex array 0. Every GL context has its
+   *  own default vertex-array state (attribute pointers and enables), but
+   *  bindings that share one WebGL context would otherwise share WebGL's
+   *  single default VAO, and one program's attribute arrays would break
+   *  another's draws. Created by the muxer the first time it switches to
+   *  the binding; bound whenever the program has vertex array 0 bound. */
+  defaultVao: WebGLVertexArrayObject | null;
   fbo: WebGLFramebuffer | null;
 
   activeTexture: number;
@@ -51,6 +58,7 @@ export function defaultShadow(): GlShadowState {
     polygonOffsetFillEnabled: false,
     currentProgram: null,
     vao: null,
+    defaultVao: null,
     fbo: null,
     activeTexture: 0,
     textureUnits: new Array(32).fill(null),
