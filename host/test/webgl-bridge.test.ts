@@ -122,6 +122,7 @@ class RecordingGl {
   framebufferRenderbuffer(...a: unknown[]) { this.log.push(["framebufferRenderbuffer", a]); }
 
   // queries
+  finish() { this.log.push(["finish", []]); }
   getError() { return 0; }
   getParameter(p: number) {
     if (p === 0x1F03 /* GL_EXTENSIONS */) return "WEBGL_test";
@@ -403,6 +404,12 @@ describe("query handler", () => {
     const { b } = setupBinding(gl);
     return { gl, b };
   }
+
+  it("QOP_FINISH finishes the context and writes nothing", () => {
+    const { b, gl } = setup();
+    expect(runGlQuery(b, O.QOP_FINISH, input([]), out(0))).toBe(0);
+    expect(gl.log.filter(([m]) => m === "finish")).toHaveLength(1);
+  });
 
   it("QOP_GET_ERROR writes 4 bytes", () => {
     const { b } = setup();

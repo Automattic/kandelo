@@ -144,6 +144,7 @@ function validPayload(op: number, v: DataView): boolean {
       return exact(v, 4);
 
     case O.OP_BLEND_FUNC:
+    case O.OP_BLEND_EQUATION_SEPARATE:
     case O.OP_PIXEL_STOREI:
     case O.OP_BIND_BUFFER:
     case O.OP_BIND_TEXTURE:
@@ -168,6 +169,7 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_DRAW_ELEMENTS:
     case O.OP_RENDERBUFFER_STORAGE:
     case O.OP_FRAMEBUFFER_RENDERBUFFER:
+    case O.OP_BLEND_FUNC_SEPARATE:
       return exact(v, 16);
 
     case O.OP_UNIFORM4F:
@@ -262,6 +264,19 @@ function dispatch(
       const s = v.getUint32(p, true), d = v.getUint32(p + 4, true);
       gl.blendFunc(s, d);
       b.shadow.blendFunc = { srcRGB: s, dstRGB: d, srcA: s, dstA: d };
+      return;
+    }
+    case O.OP_BLEND_FUNC_SEPARATE: {
+      const srcRGB = v.getUint32(p, true), dstRGB = v.getUint32(p + 4, true);
+      const srcA = v.getUint32(p + 8, true), dstA = v.getUint32(p + 12, true);
+      gl.blendFuncSeparate(srcRGB, dstRGB, srcA, dstA);
+      b.shadow.blendFunc = { srcRGB, dstRGB, srcA, dstA };
+      return;
+    }
+    case O.OP_BLEND_EQUATION_SEPARATE: {
+      const rgb = v.getUint32(p, true), alpha = v.getUint32(p + 4, true);
+      gl.blendEquationSeparate(rgb, alpha);
+      b.shadow.blendEquation = { rgb, alpha };
       return;
     }
     case O.OP_DEPTH_FUNC:

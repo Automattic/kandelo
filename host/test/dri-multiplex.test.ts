@@ -21,6 +21,8 @@ class RecordingGl {
   clear(m: number) { this.log.push(["clear", [m]]); }
   depthFunc(f: number) { this.log.push(["depthFunc", [f]]); }
   blendFuncSeparate(...a: number[]) { this.log.push(["blendFuncSeparate", a]); }
+  blendEquationSeparate(...a: number[]) { this.log.push(["blendEquationSeparate", a]); }
+  bindTexture(t: number, tex: unknown) { this.log.push(["bindTexture", [t, tex]]); }
   cullFace(m: number) { this.log.push(["cullFace", [m]]); }
   frontFace(m: number) { this.log.push(["frontFace", [m]]); }
   useProgram(p: unknown) { this.log.push(["useProgram", [p]]); }
