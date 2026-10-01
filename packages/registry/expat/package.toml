@@ -1,0 +1,30 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# XML parser (libexpat.a). Ported as the config-parser dependency of
+# the dbus daemon (plan
+# docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4,
+# PR22). Entropy comes from the kernel-backed getrandom().
+name = "expat"
+version = "2.8.3"
+kernel_abi = 17
+depends_on = []
+
+[source]
+url = "https://github.com/libexpat/libexpat/releases/download/R_2_8_3/expat-2.8.3.tar.xz"
+sha256 = "f6256df90c906773d344da084402b7d3e4f22ed41b1a59c989098a83d3ea0c85"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/libexpat/libexpat/blob/R_2_8_3/expat/COPYING"
+
+[build]
+script_path = "packages/registry/expat/build-expat.sh"
+
+[outputs]
+libs = ["lib/libexpat.a"]
+headers = ["include/expat.h", "include/expat_external.h"]
+pkgconfig = ["lib/pkgconfig/expat.pc"]

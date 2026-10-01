@@ -48,15 +48,6 @@ import {
 import { loadVfsProductCatalog } from "./vfs-product-catalog.mjs";
 
 const MAX_CAPTURE_BYTES = 512 * 1024 * 1024;
-const EXPECTED_IMAGE_MEMBERS = [
-  "programs/wasm32/lamp.vfs.zst",
-  "programs/wasm32/nginx-php-vfs.vfs.zst",
-  "programs/wasm32/nginx-vfs.vfs.zst",
-  "programs/wasm32/node-vfs.vfs.zst",
-  "programs/wasm32/rootfs.vfs",
-  "programs/wasm32/shell.vfs.zst",
-  "programs/wasm32/wordpress.vfs.zst",
-];
 
 export interface BuildLocalVfsAssetGroupOptions {
   assetGroupDirectory: string;
@@ -138,15 +129,16 @@ export async function buildLocalVfsAssetGroup(
     .sort((left: ProductProjection, right: ProductProjection) =>
       ordinal(left.id, right.id),
     );
-  if (
-    products.length !== 7 ||
-    canonicalJson(
-      products.map(({ sourceMember }) => sourceMember).sort(ordinal),
-    ) !== canonicalJson(EXPECTED_IMAGE_MEMBERS)
-  ) {
-    throw new Error(
-      "generated Pages registry differs from the exact seven product images",
-    );
+  // WHY: the Pages registry (pages-vfs-products.toml, checked against its
+  // generated JSON) is the one authority for which images ship. A second
+  // hand-kept list here only went stale whenever a demo was added. Every
+  // image is verified by size and SHA-256 below; distinct members are
+  // checked with the lazy closure.
+  if (products.length === 0) {
+    throw new Error("generated Pages registry lists no product images");
+  }
+  if (!products.some(({ load }) => load === "eager")) {
+    throw new Error("generated Pages registry lists no eager product image");
   }
 
   // WHY: one session pins the projection authority while restored images

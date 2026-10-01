@@ -1,0 +1,95 @@
+--- a/wayland.c
++++ b/wayland.c
+@@ -11,11 +11,43 @@
+ #include "surface.h"
+ #include "wayland.h"
+ 
+-static void noop() {
+-	// This space intentionally left blank
++/* wasm32: call_indirect is signature-typed, so a shared zero-arg noop
++ * traps when invoked through a listener slot. Each unused slot gets a
++ * noop with the slot's exact signature. */
++static void output_noop_mode(void *data, struct wl_output *wl_output,
++		uint32_t flags, int32_t width, int32_t height, int32_t refresh) {
++}
++
++static void output_noop_done(void *data, struct wl_output *wl_output) {
++}
++
++static void output_noop_description(void *data, struct wl_output *wl_output,
++		const char *description) {
++}
++
++static void pointer_noop_axis(void *data, struct wl_pointer *wl_pointer,
++		uint32_t time, uint32_t axis, wl_fixed_t value) {
++}
++
++static void touch_noop_frame(void *data, struct wl_touch *wl_touch) {
++}
++
++static void touch_noop_cancel(void *data, struct wl_touch *wl_touch) {
++}
++
++static void touch_noop_shape(void *data, struct wl_touch *wl_touch,
++		int32_t id, wl_fixed_t major, wl_fixed_t minor) {
+ }
+ 
++static void touch_noop_orientation(void *data, struct wl_touch *wl_touch,
++		int32_t id, wl_fixed_t orientation) {
++}
+ 
++static void seat_noop_name(void *data, struct wl_seat *wl_seat,
++		const char *name) {
++}
++
++
+ static void output_handle_geometry(void *data, struct wl_output *wl_output,
+ 		int32_t x, int32_t y, int32_t phy_width, int32_t phy_height,
+ 		int32_t subpixel, const char *make, const char *model,
+@@ -38,11 +70,11 @@
+ 
+ static const struct wl_output_listener output_listener = {
+ 	.geometry = output_handle_geometry,
+-	.mode = noop,
+-	.done = noop,
++	.mode = output_noop_mode,
++	.done = output_noop_done,
+ 	.scale = output_handle_scale,
+ 	.name = output_handle_name,
+-	.description = noop,
++	.description = output_noop_description,
+ };
+ 
+ static void send_frame(struct mako_surface *surface);
+@@ -272,17 +304,17 @@
+ 	.leave = pointer_handle_leave,
+ 	.motion = pointer_handle_motion,
+ 	.button = pointer_handle_button,
+-	.axis = noop,
++	.axis = pointer_noop_axis,
+ };
+ 
+ static const struct wl_touch_listener touch_listener = {
+ 	.down = touch_handle_down,
+ 	.up = touch_handle_up,
+ 	.motion = touch_handle_motion,
+-	.frame = noop,
+-	.cancel = noop,
+-	.shape = noop,
+-	.orientation = noop,
++	.frame = touch_noop_frame,
++	.cancel = touch_noop_cancel,
++	.shape = touch_noop_shape,
++	.orientation = touch_noop_orientation,
+ };
+ 
+ static void seat_handle_capabilities(void *data, struct wl_seat *wl_seat,
+@@ -311,7 +343,7 @@
+ 
+ static const struct wl_seat_listener seat_listener = {
+ 	.capabilities = seat_handle_capabilities,
+-	.name = noop,
++	.name = seat_noop_name,
+ };
+ 
+ static void create_seat(struct mako_state *state, struct wl_seat *wl_seat) {

@@ -1074,7 +1074,7 @@ describe("wasm artifact policy helpers", () => {
     expect(describeWasmArtifactPolicyFailures(wasm, {
       expectedAbi: ABI_VERSION,
     })).toContain(
-      "duplicate ABI 44 process-checkpoint import kernel.kernel_checkpoint",
+      "duplicate ABI 46 process-checkpoint import kernel.kernel_checkpoint",
     );
   });
 
@@ -1083,7 +1083,7 @@ describe("wasm artifact policy helpers", () => {
     expect(describeWasmArtifactPolicyFailures(wasm, {
       expectedAbi: ABI_VERSION,
     })).toContain(
-      "ABI 44 process-checkpoint import kernel.kernel_checkpoint has the "
+      "ABI 46 process-checkpoint import kernel.kernel_checkpoint has the "
         + "wrong signature; expected () -> ()",
     );
   });
@@ -1744,9 +1744,7 @@ describe("wasm artifact policy helpers", () => {
       expectedAbi: 12,
       requireForkInstrumentation: false,
       forbidForkInstrumentation: true,
-    })).toContain(
-      "contains ABI 12 wasm-fork-instrument metadata, imports, or exports",
-    );
+    })).toContain(`contains ABI ${ABI_VERSION} wasm-fork-instrument metadata, imports, or exports`);
   });
 });
 

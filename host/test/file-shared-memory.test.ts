@@ -1368,7 +1368,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(backing.sizeValid).toBe(true);
   });
 
-  it("rejects shared memfd mappings deliberately without affecting private mmap", () => {
+  it("shared memfd mappings take the populate-only fallback, untracked", () => {
     const h = createFileHarness();
     h.getFdStatForSharedMapping.mockReturnValue({
       kind: "ok",
@@ -1380,12 +1380,14 @@ describe("file/POSIX MAP_SHARED page cache", () => {
         hostHandle: null,
       },
     });
+    // No persistent host capability exists for a kernel-backed regular
+    // file, so the mapping falls back to fd-pread population like
+    // MAP_SHARED on non-regular files — no writeback tracker entry.
+    // libwayland-cursor's memfd theme pool depends on this mapping.
     expect(h.mapResult(h.pids[0], 4, 0x1000))
-      .toEqual({ kind: "error", errno: 95 });
+      .toEqual({ kind: "unsupported" });
     expect(h.retainHostFileHandle).not.toHaveBeenCalled();
     expect((h.kw as any).sharedMappings.size).toBe(0);
-    // The _handleSyscallInner preflight is gated on MAP_SHARED; MAP_PRIVATE
-    // still uses the existing fd-pread population path.
   });
 
   it("rejects a backend that cannot promise stable file identity", () => {

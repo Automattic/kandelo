@@ -1,0 +1,70 @@
+Drop the wl_proxy_get_listener interposition on the static wasm link.
+
+Upstream shadows libwayland's wl_proxy_get_listener with a null-guarding
+wrapper and recovers the original through dlsym(RTLD_NEXT, ...) — a
+dynamic-linking mechanism. In a fully static wasm link the wrapper and
+libwayland-client.a's definition collide, wasm-ld has no
+--export-dynamic-symbol, and RTLD_NEXT has nothing to search. Without
+the hook the behavior is upstream libwayland's (QTBUG-145022's null
+deref stays possible, exactly as in any non-interposed build).
+
+diff -ru a/src/wayland/CMakeLists.txt b/src/wayland/CMakeLists.txt
+--- a/src/wayland/CMakeLists.txt	2026-08-31 19:35:06
++++ b/src/wayland/CMakeLists.txt	2026-08-31 19:35:06
+@@ -82,10 +82,6 @@
+ 	output_tracking.cpp
+ )
+ 
+-# required for wl_proxy_safe_deref
+-target_link_libraries(quickshell-wayland PRIVATE ${CMAKE_DL_LIBS})
+-target_link_options(quickshell PRIVATE "LINKER:--export-dynamic-symbol=wl_proxy_get_listener")
+-
+ # required to make sure the constructor is linked
+ add_library(quickshell-wayland-init OBJECT init.cpp)
+ 
+diff -ru a/src/wayland/wl_proxy_safe_deref.cpp b/src/wayland/wl_proxy_safe_deref.cpp
+--- a/src/wayland/wl_proxy_safe_deref.cpp	2026-08-31 19:35:06
++++ b/src/wayland/wl_proxy_safe_deref.cpp	2026-08-31 19:35:06
+@@ -1,41 +1,12 @@
+-#include <dlfcn.h>
+ #include <qlogging.h>
+ #include <qloggingcategory.h>
+-#include <wayland-client-core.h>
+-#include <wayland-util.h>
+ 
+ #include "../core/logcat.hpp"
+ 
+ namespace {
+ QS_LOGGING_CATEGORY(logDeref, "quickshell.wayland.safederef", QtWarningMsg);
+-using wl_proxy_get_listener_t = const void* (*) (wl_proxy*);
+-wl_proxy_get_listener_t original_wl_proxy_get_listener = nullptr; // NOLINT
+ } // namespace
+ 
+-extern "C" {
+-WL_EXPORT const void* wl_proxy_get_listener(struct wl_proxy* proxy) {
+-	// Avoid null derefs of protocol objects in qtbase.
+-	// https://qt-project.atlassian.net/browse/QTBUG-145022
+-	if (!proxy) [[unlikely]] {
+-		qCCritical(logDeref) << "wl_proxy_get_listener called with a null proxy!";
+-		return nullptr;
+-	}
+-
+-	return original_wl_proxy_get_listener(proxy);
+-}
+-}
+-
+-// NOLINTBEGIN (concurrency-mt-unsafe)
+ void installWlProxySafeDeref() {
+-	dlerror(); // clear old errors
+-
+-	original_wl_proxy_get_listener =
+-	    reinterpret_cast<wl_proxy_get_listener_t>(dlsym(RTLD_NEXT, "wl_proxy_get_listener"));
+-
+-	if (auto* error = dlerror()) {
+-		qCCritical(logDeref) << "Failed to find wl_proxy_get_listener for hooking:" << error;
+-	} else {
+-		qCInfo(logDeref) << "Installed wl_proxy_get_listener hook.";
+-	}
++	qCInfo(logDeref) << "Static wasm link: wl_proxy_get_listener interposition disabled.";
+ }
+-// NOLINTEND

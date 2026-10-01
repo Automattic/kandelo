@@ -9,6 +9,22 @@ implement alternate runtime behavior.
 metadata, and sharing behavior. App-specific React wiring and page fixtures
 belong under `apps/browser-demos`.
 
+The main thread must never own a VFS `SharedArrayBuffer` — live or staging.
+The kernel worker owns the live filesystem (`kernelOwnedFs`), and boot-time
+image composition runs in a disposable worker
+(`apps/browser-demos/pages/kandelo/kernel-host/image-composer.ts`) whose
+staging buffer dies with its realm. `Worker.terminate()` is the only mechanism
+that reclaims a shared buffer deterministically on WebKit — a buffer the
+persistent main thread merely dropped is released only if a garbage collection
+happens to run, and reserved shared memory creates almost no heap pressure to
+trigger one, so main-thread VFS buffers accumulate across machine boots until
+Safari throws `Out of memory` (#863). Treat any new main-thread
+`MemoryFileSystem` or `SharedArrayBuffer` in a boot path as a defect: compose
+in a worker and hand the main thread plain, transferable bytes. A GC nudge
+(`settleWebKitReclaim` in `apps/browser-demos/lib/kernel-owned-boot.ts`, still
+used by the benchmark page's main-thread build path) is best-effort with a
+deadline and does not count as reclamation.
+
 `KernelHost` is a compatibility surface. UI surfaces should consume machine
 state through that contract: status, boot descriptor, dmesg, process events,
 PTY, VFS reads, proc/memory inspection, syscall trace, framebuffer, web

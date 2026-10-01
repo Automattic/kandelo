@@ -32,8 +32,10 @@ import {
   type AcceptSelectionTap,
   type GlQueryTap,
   type KernelPointer,
+  type KmsDisplaySize,
 } from "./kernel";
 import { resolveIoctlContract } from "./ioctl-contract";
+import { connectorModeSize } from "./dri/kms-registry";
 import {
   captureGlContext,
   type CheckpointGlContext,
@@ -123,7 +125,6 @@ import {
   CHANNEL_REQUEST_FLAG_CANCELLATION_POINT,
   CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
   CHANNEL_REQUEST_FLAGS_KNOWN_MASK,
-  EPOLL_EVENTS,
   FCNTL_COMMANDS,
   FCNTL_FLOCK_BYTES,
   FILE_MODES,
@@ -268,9 +269,6 @@ import {
   WASM_POLL_FD_EVENTS_OFFSET,
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
-  WASM_EPOLL_EVENT_DATA_OFFSET,
-  WASM_EPOLL_EVENT_EVENTS_OFFSET,
-  WASM_EPOLL_EVENT_PAD_OFFSET,
   WAIT_EVENT_CONTINUED,
   WAIT_EVENT_EXITED,
   WAIT_EVENT_STOPPED,
@@ -313,7 +311,6 @@ import {
 } from "./audio/pcm-transport";
 
 import type { KernelConfig, NetworkAddress, PlatformIO, TcpConnectionPeer, UdpDatagram } from "./types";
-import type { CheckpointEpoll } from "./migration/checkpoint";
 
 // WHY: kernel exports can synchronously reach hostile host hooks. Capture the
 // mutable intrinsics used by the split scoped/detached entry protocol before
@@ -1703,6 +1700,8 @@ interface ChannelInfo {
   readinessDeadline?: number;
   /** Force the next readiness dispatch to perform a zero-time final check. */
   readinessFinalCheck?: boolean;
+  /** A temporary epoll_pwait sigmask swap is active for this parked wait. */
+  pollSigmaskSwapped?: boolean;
 }
 
 /**
@@ -2071,6 +2070,17 @@ export interface ResolvedSpawnProgram {
   argv: string[];
 }
 
+/**
+ * A resolver's spawn candidate carries bytes only. Compilation happens exactly
+ * once, in `compileSpawnCandidateSnapshot`; a resolver-side module would be
+ * discarded there while still pinning executable memory (a full desktop of
+ * duplicate modules exhausts SpiderMonkey's 2 GiB per-process code arena).
+ */
+export interface ResolvedSpawnCandidate {
+  programBytes: ArrayBuffer;
+  argv: string[];
+}
+
 export interface SpawnResolveError {
   errno: number;
 }
@@ -2158,6 +2168,8 @@ function createThreadChannelAttachment(
 }
 
 export type SpawnProgramResolution = ResolvedSpawnProgram | SpawnResolveError;
+
+export type SpawnCandidateResolution = ResolvedSpawnCandidate | SpawnResolveError;
 
 interface ReservedSpawnScratch {
   // A token exists before its pointer/capacity can be validated. Keeping that
@@ -2296,7 +2308,7 @@ interface BlockingRetryWakeTargets {
 }
 
 function isSpawnResolveError(
-  resolution: SpawnProgramResolution,
+  resolution: SpawnProgramResolution | SpawnCandidateResolution,
 ): resolution is SpawnResolveError {
   return "errno" in resolution &&
     typeof resolution.errno === "number";
@@ -2368,9 +2380,10 @@ export interface CentralizedKernelCallbacks {
 
   /**
    * Pre-flight resolution step for SYS_SPAWN. Returns the validated program
-   * bytes, their compiled module, and launch argv for `path`, `{ errno }` for
-   * a located but unlaunchable program, or `null` for ENOENT. **Must NOT have
-   * side effects** —
+   * bytes and launch argv for `path`, `{ errno }` for a located but
+   * unlaunchable program, or `null` for ENOENT. The shared worker compiles
+   * the candidate exactly once, from its own isolated byte snapshot.
+   * **Must NOT have side effects** —
    * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
    * actions never run on a doomed PATH-iteration. POSIX requires
    * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
@@ -2381,7 +2394,7 @@ export interface CentralizedKernelCallbacks {
    *
    * Required if `onSpawn` is set; together they form the spawn surface.
    */
-  onResolveSpawn?: (path: string, argv: string[]) => Promise<SpawnProgramResolution | null>;
+  onResolveSpawn?: (path: string, argv: string[]) => Promise<SpawnCandidateResolution | null>;
 
   /**
    * Launch a worker for the spawned child with bytes and module derived from
@@ -2459,10 +2472,6 @@ interface TcpListenerRegistrationPlan {
 }
 
 interface ExecFdMirrorPrunePlan {
-  readonly epollInterests: Map<
-    string,
-    Array<{ fd: number; events: number; data: bigint }>
-  >;
   readonly tcpListenerTargets: Map<number, TcpListenerTarget[]>;
   readonly tcpListenerRRIndex: Map<number, number>;
   readonly tcpListeners: Map<string, TcpListenerBridge>;
@@ -2838,6 +2847,210 @@ export function createCentralizedKernelWorkerTestDouble(
       centralizedKernelWorkerTestCapability,
     ],
   ) as CentralizedKernelWorkerTestDouble;
+}
+
+/** WebGL2 state the vblank pump keeps per `mode: "webgl2-scanout"` CRTC:
+ *  a fullscreen-triangle program that samples the scanout texture with a
+ *  shader-side BGR→RGB swizzle, plus the texture's current geometry so
+ *  steady-state frames go through `texSubImage2D`. */
+interface KmsGlPresenter {
+  gl: WebGL2RenderingContext;
+  tex: WebGLTexture;
+  /** The presenter's own program and (attribute-free) vertex array. Owned
+   *  so a stand-down can delete them: the context outlives the presenter,
+   *  and each GL-session claim/release cycle builds a new one. */
+  prog: WebGLProgram;
+  vao: WebGLVertexArrayObject;
+  texW: number;
+  texH: number;
+  /** fb_id + kernel commit count at the last present. The presenter
+   *  re-presents only when one of them (or the target size) changes —
+   *  flip-driven renderers change content exclusively through
+   *  SETCRTC/PAGE_FLIP, so an unchanged count usually means an
+   *  identical frame and the 8 MB sync + upload + draw can be
+   *  skipped. The content probe below backstops the exceptions. */
+  lastFbId: number;
+  lastCommits: number;
+  /** Tick phase + strided checksum for the low-rate content probe.
+   *  Every 4th otherwise-skipped tick the presenter samples the
+   *  scanout bytes; a checksum change forces a present. This catches
+   *  scanout mutations that never tick the commit count — a renderer
+   *  painting its single bound bo without flipping, or a broken
+   *  kernel leaving `currentFb` pinned to a bo the client is
+   *  repainting (the PAGE_FLIP-latch regression the wayland spec's
+   *  flicker gate exists to catch: flip-synced presents alone always
+   *  sample the pinned bo *before* its repaint and hide the bug). */
+  probePhase: number;
+  lastProbeSum: number;
+  /** Presents completed (drives the one-warmup-frame degrade grace). */
+  presentCount: number;
+  /** Set once a steady-state present overruns the frame budget —
+   *  software GL (headless Chromium's SwiftShader) takes tens of ms
+   *  for the mipmap chain + trilinear fullscreen draw, which would
+   *  starve the kernel worker. Degraded presenters use plain bilinear
+   *  and skip generateMipmap. Hardware GL presents in well under a
+   *  millisecond; a stall landing mid-present (GC pause) can still
+   *  trip this, costing filtering quality, not correctness. */
+  degraded: boolean;
+}
+
+// Fullscreen triangle from gl_VertexID — no vertex buffers. v is flipped
+// so texture row 0 (the framebuffer's top scanline) lands at the top of
+// the viewport.
+const KMS_SCANOUT_VS = `#version 300 es
+out vec2 v_uv;
+void main() {
+  vec2 pos = vec2(float((gl_VertexID & 1) << 2) - 1.0,
+                  float((gl_VertexID & 2) << 1) - 1.0);
+  v_uv = vec2(pos.x * 0.5 + 0.5, 0.5 - pos.y * 0.5);
+  gl_Position = vec4(pos, 0.0, 1.0);
+}
+`;
+
+// DRM XRGB8888 little-endian bytes are [B,G,R,X]; uploaded as RGBA they
+// read back as (r=B, g=G, b=R). Swizzle in the sampler and force alpha
+// opaque — this replaces the 2d path's per-pixel CPU swizzle loop.
+// highp: mediump can be fp16, which loses texel addressing precision
+// above ~2048 px — connector modes go to 3840 wide.
+const KMS_SCANOUT_FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_scanout;
+in vec2 v_uv;
+out vec4 o_color;
+void main() {
+  o_color = vec4(texture(u_scanout, v_uv).bgr, 1.0);
+}
+`;
+
+/** Compile the scanout presenter program + texture on a fresh WebGL2
+ *  context. Returns null when anything fails (context lost, compile
+ *  error) so the pump can degrade to stats-only. The program stays
+ *  bound for the context's lifetime — the pump is its sole user. */
+/** Delete the GL objects a presenter owns. Its context lives on (a program
+ *  GL session may be inheriting it), so they are not freed otherwise. */
+function releaseKmsGlPresenter(presenter: KmsGlPresenter | null | undefined): void {
+  if (!presenter) return;
+  const { gl } = presenter;
+  gl.deleteTexture(presenter.tex);   // also unbinds it from unit 0
+  gl.deleteVertexArray(presenter.vao);
+  gl.deleteProgram(presenter.prog);
+}
+
+function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null {
+  // The context may be inherited from a torn-down program GL session
+  // (markKmsCanvasGlReleased): getContext returns the canvas's existing
+  // context with whatever state the dying compositor left behind, and
+  // nothing replays it back to defaults. Reset everything the upload and
+  // the fullscreen-triangle draw depend on; on a fresh context these are
+  // all defaults already.
+  //
+  // Draw target and pipeline.
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.disable(gl.BLEND);
+  gl.disable(gl.CULL_FACE);
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.STENCIL_TEST);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+  gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+  gl.disable(gl.SAMPLE_COVERAGE);
+  gl.disable(gl.RASTERIZER_DISCARD);
+  gl.colorMask(true, true, true, true);
+  // Texture unit 0: a bound sampler object would override the scanout
+  // texture's own filtering and wrap parameters.
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindSampler(0, null);
+  // Upload: texImage2D/texSubImage2D read `scratch` as tightly packed RGBA
+  // rows from its start. A bound PIXEL_UNPACK_BUFFER makes them read a
+  // buffer object instead (and reject an ArrayBufferView source), and any
+  // non-default unpack parameter reshapes or offsets the rows.
+  gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_IMAGES, 0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  const compile = (type: number, src: string): WebGLShader | null => {
+    const sh = gl.createShader(type);
+    if (!sh) return null;
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      gl.deleteShader(sh);
+      return null;
+    }
+    return sh;
+  };
+  const vs = compile(gl.VERTEX_SHADER, KMS_SCANOUT_VS);
+  const fs = compile(gl.FRAGMENT_SHADER, KMS_SCANOUT_FS);
+  const prog = vs && fs ? gl.createProgram() : null;
+  if (prog) {
+    gl.attachShader(prog, vs!);
+    gl.attachShader(prog, fs!);
+    gl.linkProgram(prog);
+  }
+  // A linked program keeps its code; the shader objects are not needed.
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  if (!prog) return null;
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    gl.deleteProgram(prog);
+    return null;
+  }
+  // A vertex array of our own, not the default one: the dying session may
+  // have left attribute arrays enabled on the default VAO pointing at
+  // buffers it deleted. The triangle is generated from gl_VertexID, so a
+  // fresh VAO (every attribute disabled) is all the draw needs.
+  const vao = gl.createVertexArray();
+  const tex = gl.createTexture();
+  if (!vao || !tex) {
+    gl.deleteVertexArray(vao);
+    gl.deleteTexture(tex);
+    gl.deleteProgram(prog);
+    return null;
+  }
+  gl.bindVertexArray(vao);
+  gl.useProgram(prog);
+  const loc = gl.getUniformLocation(prog, "u_scanout");
+  if (loc) gl.uniform1i(loc, 0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  // LINEAR_MIPMAP_LINEAR: the desktop framebuffer is a fixed 1920×1080
+  // and panes usually show it smaller — plain bilinear minification
+  // undersamples 1-px window borders and glyph strokes into shimmer
+  // ("everything is pixelated"). Trilinear over a per-frame mip chain
+  // integrates every source pixel.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return {
+    gl, tex, prog, vao, texW: 0, texH: 0,
+    lastFbId: -1, lastCommits: -1,
+    presentCount: 0, degraded: false,
+    probePhase: 0, lastProbeSum: 0,
+  };
+}
+
+/** Strided checksum over the scanout pixels (u32 samples, ~4k reads at
+ *  1080p). Cheap enough for the 15 Hz content probe; a mid-composite or
+ *  otherwise-mutated frame differs across many pixels, so a simple
+ *  multiplicative hash over a sparse stride is plenty. */
+function kmsProbeChecksum(pixels: Uint8Array): number {
+  const words = new Uint32Array(
+    pixels.buffer,
+    pixels.byteOffset,
+    pixels.byteLength >> 2,
+  );
+  const stride = Math.max(1, words.length >> 12);
+  let h = 0;
+  for (let i = 0; i < words.length; i += stride) {
+    h = (Math.imul(h, 31) + words[i]) | 0;
+  }
+  return h;
 }
 
 export class CentralizedKernelWorker {
@@ -3327,11 +3540,6 @@ export class CentralizedKernelWorker {
   private sharedMappingInheritancePids = new Set<number>();
   /** Process fd → resolved backing identity, including negative lookups. */
   private sharedMmapFdCache = new Map<string, { backingKey: string | null }>();
-  /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
-   *  Maintained by intercepting epoll_ctl results. Used by handleEpollPwait
-   *  to convert epoll_pwait to poll without calling kernel_handle_channel
-   *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
-  private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
   /**
    * Byte-coherence mirrors for Rust-owned SysV shared-memory attachments.
    *
@@ -3363,8 +3571,9 @@ export class CentralizedKernelWorker {
   private kmsContexts = new Map<number, OffscreenCanvasRenderingContext2D>();
   /** Which context type each CRTC's canvas has been claimed for. Set
    *  by `attachKmsCanvas` when the embedder declares the mode up-front
-   *  (`"2d"` for legacy CPU-blit demos, `"webgl2"` for libdrm/libgbm/EGL
-   *  apps like modeset.c). Auto-mode leaves this unset so the pump
+   *  (`"2d"` for legacy CPU-blit demos, `"webgl2-scanout"` for the
+   *  pump-owned WebGL2 scanout presenter, `"webgl2"` for libdrm/libgbm/
+   *  EGL apps like modeset.c). Auto-mode leaves this unset so the pump
    *  never touches the canvas — `host_gl_create_context` later flips
    *  it to `"webgl2"` via `markKmsCanvasGlOwned` once the GL session
    *  claims the canvas. Once set, the value is sticky: an OffscreenCanvas
@@ -3372,7 +3581,7 @@ export class CentralizedKernelWorker {
    *
    *  This says what may paint the canvas, not what has. `kmsGlOwned` says
    *  what has. */
-  private kmsContextMode = new Map<number, "2d" | "webgl2">();
+  private kmsContextMode = new Map<number, "2d" | "webgl2" | "webgl2-scanout">();
   /** CRTCs a live WebGL2 context paints. Written only by
    *  `markKmsCanvasGlOwned`, which `host_gl_create_context` calls once the
    *  context exists.
@@ -3382,6 +3591,12 @@ export class CentralizedKernelWorker {
    *  pixels still reach the GBM buffer object a checkpoint reads. Keeping the
    *  two apart is what lets a CPU-painting modeset guest be captured. */
   private kmsGlOwned = new Set<number>();
+  /** Presenter mode a CRTC had before a program GL context claimed its
+   *  canvas (`markKmsCanvasGlOwned`), so `markKmsCanvasGlReleased` can
+   *  resume it. Key present = canvas currently GL-claimed. */
+  private kmsModeBeforeGlOwn = new Map<
+    number, "2d" | "webgl2" | "webgl2-scanout" | undefined
+  >();
   /** GL contexts a checkpoint restore has not rebuilt yet, by pid.
    *
    *  A context needs a canvas, and the canvas arrives whenever the
@@ -3395,18 +3610,44 @@ export class CentralizedKernelWorker {
   >();
   /** KMS stats SAB per CRTC. Slots [0..4] populated by the pump (frame
    *  count, timestamp, width, height, blit µs); slots [5,6] populated
-   *  from kernel-side `kernel_kms_commit_count` / `kernel_kms_last_frame_us`. */
+   *  from kernel-side `kernel_kms_commit_count` / `kernel_kms_last_frame_us`;
+   *  slot 7 = active presenter (1 = 2d, 2 = pump webgl2-scanout,
+   *  3 = program-owned WebGL2, 0 = none). */
   private kmsStatsViews = new Map<number, Int32Array>();
-  /** Cached per-CRTC `Uint8ClampedArray` for `putImageData` so the pump
-   *  doesn't allocate 8 MB/frame at 1080p. Resized on bo geometry change.
-   *  Backed by a plain `ArrayBuffer` so `new ImageData(scratch, …)`
-   *  accepts it (an `ImageDataArray` rejects SAB-backed views). */
+  /** Cached per-CRTC scratch for both presenters (putImageData /
+   *  texImage2D) so the pump doesn't allocate 8 MB/frame at 1080p.
+   *  Resized on bo geometry change. Backed by a plain `ArrayBuffer` so
+   *  `new ImageData(scratch, …)` accepts it (an `ImageDataArray` rejects
+   *  SAB-backed views). */
   private kmsScratchBytes = new Map<number, Uint8ClampedArray<ArrayBuffer>>();
+  /** Per-CRTC WebGL2 presenter state for `mode: "webgl2-scanout"`.
+   *  `null` marks a canvas where WebGL2 acquisition failed (e.g. a Node
+   *  host without an OffscreenCanvas polyfill) so the pump doesn't retry
+   *  `getContext` at 60 Hz. */
+  private kmsGlPresenters = new Map<number, KmsGlPresenter | null>();
+  /** Canvases whose WebGL context-loss listeners are installed. A lost
+   *  context silently no-ops every GL call, so without these hooks the
+   *  pump keeps "presenting" frozen pixels while the kernel-side flip
+   *  counters advance. Loss stands the presenter down (`null` cache);
+   *  `preventDefault()` opts into restoration, and restore drops the
+   *  cache so the next tick rebuilds program, texture and a full
+   *  repaint via the fresh presenter's never-presented sentinels. */
+  private kmsContextLossHooked = new WeakSet<OffscreenCanvas>();
+  /** Embedder-reported display size (device pixels) per CRTC, fed by
+   *  `setKmsDisplaySize`. The webgl2-scanout presenter sizes the canvas
+   *  drawing buffer to this and lets the GPU scale the framebuffer
+   *  texture, instead of scaling an fb-sized bitmap in CSS. Absent →
+   *  the canvas tracks the framebuffer size. */
+  private kmsDisplaySizes = new Map<number, KmsDisplaySize>();
   private vblankTimer: ReturnType<typeof setInterval> | null = null;
   /** Answers how far past the named process's own point the primary already
    *  went, in machine milliseconds, or null when it has not; see
    *  `setReplicationAheadProbe`. */
   #replicationAheadProbe: ((pid: number) => number | null) | null = null;
+  /** `KmsRegistry.flipCount()` at the last vblank tick. The pump wakes
+   *  blocked retries only when this moved — an unconditional 60 Hz wake
+   *  would retry every parked poll/select in the system each tick. */
+  private vblankFlipCount = 0;
   /** Construction-time schedulers include the browser worker's installed
    * polyfill but cannot be replaced by a later guest/host callback. */
   readonly #schedulerReceiver: typeof globalThis;
@@ -3464,9 +3705,48 @@ export class CentralizedKernelWorker {
       // before binding an FB (SDL2's KMSDRM ordering). See
       // WasmPosixKernel.tryAttachKmsGlCanvas.
       getKmsCrtcIds: () => [...this.kmsCanvases.keys()],
+      // The scanout framebuffer defines the pointer coordinate space:
+      // the pane maps pointer positions into framebuffer pixels and
+      // `sendPointerAbs` forwards them as EV_ABS, so EVIOCGABS on the
+      // pointer device must advertise exactly this framebuffer's size.
+      // This SETCRTC hook keeps the range truthful for consumers that
+      // open the device later and for mid-session modesets. Consumers
+      // scale EV_ABS by the range (SDL's evdev backend does), so a range
+      // that is not the framebuffer's misplaces the pointer. It cannot reach a
+      // libinput consumer that is already running — libinput caches
+      // absinfo at device open — which is why `setKmsDisplaySize`
+      // advertises the derived connector mode before the guest starts.
+      onKmsScanoutFb: (_crtcId: number, width: number, height: number) => {
+        this.setInputCanvasDims(width, height);
+      },
       markKmsCanvasGlOwned: (crtcId: number) => {
         this.markKmsCanvasGlOwned(crtcId);
       },
+      markKmsCanvasGlReleased: (crtcId: number) => {
+        // The claiming GL session is gone (context destroyed / EGL
+        // terminated — e.g. a GPU compositor degrading to its CPU
+        // path). Resume the pre-claim presenter mode; the next tick
+        // rebuilds a webgl2-scanout presenter on the same context and
+        // repopulates slot 7.
+        if (!this.kmsModeBeforeGlOwn.has(crtcId)) return;
+        this.kmsGlOwned.delete(crtcId);
+        const prev = this.kmsModeBeforeGlOwn.get(crtcId);
+        this.kmsModeBeforeGlOwn.delete(crtcId);
+        if (prev) this.kmsContextMode.set(crtcId, prev);
+        else this.kmsContextMode.delete(crtcId);
+        const stats = this.kmsStatsViews.get(crtcId);
+        if (stats && stats.length > 7) Atomics.store(stats, 7, 0);
+      },
+      // Display size for connector-mode derivation (host_kms_mode_info).
+      // Single-head today: any registered CRTC's size stands in for the
+      // one virtual connector.
+      getKmsDisplaySize: () => {
+        for (const size of this.kmsDisplaySizes.values()) return size;
+        return undefined;
+      },
+      // The first SETCRTC/PAGE_FLIP needs vblank ticks to retire its flips;
+      // startVblankPump is a no-op once the pump runs.
+      onKmsScanoutActive: () => this.startVblankPump(),
       onStdin: (maxLen: number): Uint8Array | null => {
         const pid = this.currentHandlePid;
         const buf = this.stdinBuffers.get(pid);
@@ -5283,6 +5563,11 @@ export class CentralizedKernelWorker {
     }
 
     this.#initialized = true;
+    // The vblank pump runs only when something needs it: an attached KMS
+    // canvas or stats view (attachKmsCanvas starts it too), or a program
+    // that has started scanning out -- onKmsScanoutActive, since its page
+    // flips retire at vblank even with no canvas (Node, headless). A kernel
+    // that never touches KMS pays no 60 Hz tick.
     if (this.kmsCanvases.size > 0 || this.kmsStatsViews.size > 0) {
       this.startVblankPump();
     }
@@ -6529,6 +6814,15 @@ export class CentralizedKernelWorker {
     // ABI padding. Reading either as size_t would treat unrelated padding as
     // the high half of a count and reject or mis-size a valid message.
     const iovecCount = view.getUint32(layout.iovecCountOffset, true);
+    // Linux rejects msg_iovlen above IOV_MAX with EMSGSIZE — net/socket.c's
+    // __copy_msghdr serves both sendmsg and recvmsg — while readv/writev
+    // keep POSIX's EINVAL for the same overflow.
+    if (iovecCount > POSIX_IOV_MAX) {
+      throw new KernelScratchError(
+        `msg_iovlen must be at most ${POSIX_IOV_MAX}`,
+        EMSGSIZE,
+      );
+    }
     const rawControlPointer = pointerWidth === 8
       ? view.getBigUint64(layout.controlOffset, true)
       : view.getUint32(layout.controlOffset, true);
@@ -8263,13 +8557,6 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Clean up epoll interest mirrors for this process
-    for (const key of this.epollInterests.keys()) {
-      if (key.startsWith(`${pid}:`)) {
-        this.epollInterests.delete(key);
-      }
-    }
-
     // Remove from kernel process table
     this.#removeFromKernelProcessTableWithinKernelEntry(pid, entry);
 
@@ -9197,7 +9484,6 @@ export class CentralizedKernelWorker {
     parentPid: number,
     childPid: number,
     entry: KernelWorkerEntryContext,
-    includeEpoll: boolean = true,
   ): void {
     const getAcceptWake = this.#kernelInstanceForEntry(entry).exports
       .kernel_get_fd_accept_wake_idx as
@@ -9224,22 +9510,8 @@ export class CentralizedKernelWorker {
         targets.push({ pid: childPid, ...childTarget });
       }
     }
-
-    if (!includeEpoll) return;
-
-    const fdIsOpen = this.#kernelInstanceForEntry(entry).exports.kernel_fd_is_open as
-      ((pid: number, fd: number) => number) | undefined;
-    for (const [key, interests] of Array.from(this.epollInterests.entries())) {
-      if (!key.startsWith(`${parentPid}:`)) continue;
-      const epfd = Number(key.slice(key.indexOf(":") + 1));
-      if (fdIsOpen && fdIsOpen(childPid, epfd) !== 1) continue;
-      this.epollInterests.set(
-        `${childPid}:${epfd}`,
-        interests
-          .filter((entry) => !fdIsOpen || fdIsOpen(childPid, entry.fd) === 1)
-          .map((entry) => ({ ...entry })),
-      );
-    }
+    // Epoll registrations need no host copy: the kernel carries epoll
+    // instances into the child with the rest of its fork state.
   }
 
   /** Remove host-only child state after fork/spawn Worker launch fails. */
@@ -9261,9 +9533,6 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
   ): void {
     this.#deactivateProcessWithinKernelEntry(childPid, entry);
-    for (const key of Array.from(this.epollInterests.keys())) {
-      if (key.startsWith(`${childPid}:`)) this.epollInterests.delete(key);
-    }
   }
 
   /**
@@ -9284,25 +9553,6 @@ export class CentralizedKernelWorker {
     if (!fdIsOpen) return null;
     const prefix = `${pid}:`;
     const aliasByWake = new Map<number, number | null>();
-
-    const nextEpollInterests = new Map(this.epollInterests);
-    for (const [key, interests] of Array.from(this.epollInterests.entries())) {
-      if (!key.startsWith(prefix)) continue;
-      const epfd = Number(key.slice(prefix.length));
-      if (fdIsOpen(pid, epfd) !== 1) {
-        nextEpollInterests.delete(key);
-      } else {
-        // The current epoll model stores numeric fds rather than OFD identity.
-        // Dropping closed targets prevents later fd reuse from observing a
-        // stale registration; duplicate-fd retention remains a documented gap.
-        nextEpollInterests.set(
-          key,
-          interests.filter(
-            (interest) => fdIsOpen(pid, interest.fd) === 1,
-          ),
-        );
-      }
-    }
 
     const nextTcpListenerTargets = new Map(this.tcpListenerTargets);
     const nextTcpListenerRRIndex = new Map(this.tcpListenerRRIndex);
@@ -9389,7 +9639,6 @@ export class CentralizedKernelWorker {
     }
 
     return {
-      epollInterests: nextEpollInterests,
       tcpListenerTargets: nextTcpListenerTargets,
       tcpListenerRRIndex: nextTcpListenerRRIndex,
       tcpListeners: nextTcpListeners,
@@ -9442,7 +9691,6 @@ export class CentralizedKernelWorker {
 
   /** Publish one materialized exec mirror replacement outside Wasm authority. */
   #publishExecFdMirrorPrune(plan: ExecFdMirrorPrunePlan): void {
-    this.epollInterests = plan.epollInterests;
     this.tcpListenerTargets = plan.tcpListenerTargets;
     this.tcpListenerRRIndex = plan.tcpListenerRRIndex;
     this.tcpListeners = plan.tcpListeners;
@@ -14061,6 +14309,21 @@ export class CentralizedKernelWorker {
         );
       }
 
+      // --- Imported-bo coherence on poll readiness ---
+      // The GbmBoRegistry is bind-boundary-synced (see host/src/dri/
+      // registry.ts): an importer's long-lived mmap of another process's
+      // bo only gets the snapshot taken at mmap time. A wl_shm compositor
+      // keeps that mapping for the buffer's lifetime and re-reads it on
+      // every commit, so refresh imported mappings when a wait reports
+      // readiness — the moment the importer wakes to process a commit.
+      // Only poll/ppoll reach this tail; epoll_wait, select and pselect6 are
+      // intercepted before it and call the same helper where they report
+      // readiness. Below the EAGAIN branch so a still-blocked poller doesn't
+      // pay the copy on every retry.
+      if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
+        this.#syncImportedBosOnReadiness(channel, retVal);
+      }
+
       if ((this.sharedMmapBackings?.size ?? 0) > 0) {
         this.handleSharedMappingsAfterFileSyscall(
           channel,
@@ -14591,7 +14854,7 @@ export class CentralizedKernelWorker {
     // future SIGCONT. Retire one-shot timeout/deadline state now so no second
     // completion can race the parked one.
     this.clearSocketTimeout(channel);
-    this.clearReadinessWait(channel);
+    this.clearReadinessWait(channel, entry);
 
     // Drain PTY output buffers before notifying the process — slave writes
     // produce data in the PTY output_buf that needs to reach the host (xterm.js).
@@ -15454,6 +15717,134 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Per-pid counterpart of {@link killAllBlockedForTeardown}: wake exactly one
+   * process (all its threads) parked in `Atomics.wait` on its syscall channel
+   * so it runs the guest glue's cooperative `kernel_exit` and returns to its JS
+   * event loop, where a subsequent `Worker.terminate()` can actually reclaim it.
+   *
+   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] `terminate_process` (host force-kill; how
+   * a terminal session's process is torn down on every machine switch) used to
+   * hard-terminate the worker while it was still parked in `Atomics.wait`. On
+   * JavaScriptCore (Safari, Bun) `Worker.terminate()` cannot reap an
+   * `Atomics.wait`-parked worker, so its OS thread + committed working set
+   * leaked — one per switch, until Safari/iOS OOMed. `killAllBlockedForTeardown`
+   * fixes the same class at whole-machine destroy, but is unusable for a single
+   * `kill(pid)` because it wakes (and thus exits) *every* live process. This
+   * variant is scoped so sibling processes keep running (e.g. tearing down one
+   * of several servers). Delivering SIGKILL through the ordinary signal path is
+   * not sufficient: it only wakes *registered* blockers (signal-waits, futex,
+   * wait4, pipe readers), never a channel merely parked at `CH_PENDING` on a
+   * blocked `read`/`accept`. The wake must be driven off `CH_STATUS`, exactly as
+   * the global method does. See docs/jsc-terminate-atomics-wait-workaround.md.
+   */
+  killBlockedProcessForTeardown(pid: number): Promise<Set<number>> {
+    if (this.#kernelFatalError !== null) {
+      return this.#resolvePromise(new Set<number>());
+    }
+    return new this.#promiseReceiver<Set<number>>((resolve, reject) => {
+      try {
+        this.#runOrDeferKernelEntry(
+          `blocked-process teardown wake pid=${pid}`,
+          (entry) => {
+            const woken = this.#killBlockedProcessForTeardownWithinKernelEntry(
+              pid,
+              entry,
+            );
+            entry.deferProtocolEffect(() => {
+              resolve(woken);
+              return undefined;
+            });
+            return undefined;
+          },
+        );
+      } catch (cause) {
+        this.#rethrowKernelEntryFatal(cause);
+        reject(cause);
+      }
+    });
+  }
+
+  #killBlockedProcessForTeardownWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): Set<number> {
+    const woken = new Set<number>();
+    const registration = this.processes.get(pid);
+    if (!registration) return woken;
+
+    // Drop this pid's pending-retry bookkeeping so a timer cannot re-arm a
+    // syscall behind the wake. Scoped to the target's channels — sibling
+    // processes' entries are left untouched. The wake itself is driven off
+    // CH_STATUS below, not these maps (a blocked read/accept may not appear in
+    // any of them, but always sits at CH_PENDING). Mirrors the global method's
+    // pre-wake sweep, filtered by pid.
+    const ownsChannel = (channel: ChannelInfo): boolean => channel.pid === pid;
+    const dropChannelKeyed = <V extends { timer?: ReturnType<typeof setTimeout> }>(
+      map: Map<ChannelInfo, V>,
+    ): void => {
+      for (const [channel, value] of [...map]) {
+        if (!ownsChannel(channel)) continue;
+        if (value.timer) this.#cancelRegisteredTimeout(value.timer);
+        map.delete(channel);
+      }
+    };
+    dropChannelKeyed(this.pendingPollRetries);
+    if (this.pendingAdvisoryLockRetries) {
+      dropChannelKeyed(this.pendingAdvisoryLockRetries);
+    }
+    dropChannelKeyed(this.pendingSelectRetries);
+    dropChannelKeyed(this.pendingSleeps);
+    for (const [key, value] of [...this.pendingSignalWaits]) {
+      if (value.channel.pid !== pid) continue;
+      this.#cancelRegisteredTimeout(value.timer);
+      this.pendingSignalWaits.delete(key);
+      this.signalWaitDeadlines.delete(key);
+    }
+    for (const [pipeIdx, waiters] of [...this.pendingPipeReaders]) {
+      const kept = waiters.filter((w) => w.pid !== pid);
+      if (kept.length) this.pendingPipeReaders.set(pipeIdx, kept);
+      else this.pendingPipeReaders.delete(pipeIdx);
+    }
+    for (const [pipeIdx, waiters] of [...this.pendingPipeWriters]) {
+      const kept = waiters.filter((w) => w.pid !== pid);
+      if (kept.length) this.pendingPipeWriters.set(pipeIdx, kept);
+      else this.pendingPipeWriters.delete(pipeIdx);
+    }
+    for (const [channel] of [...this.pendingFutexWaits]) {
+      if (ownsChannel(channel)) this.pendingFutexWaits.delete(channel);
+    }
+    for (const channel of Array.from(this.blockingRetrySnapshots.keys())) {
+      if (ownsChannel(channel)) {
+        this.#releaseBlockingRetrySnapshot(channel, entry);
+      }
+    }
+
+    // Skip a process the kernel already marked Exited (a sibling thread's
+    // exit_group set the real status); forcing kernel_exit on a still-parked
+    // thread would clobber it. Only genuinely-live processes need waking.
+    const getExitStatus = this.#kernelInstanceIfAvailableForEntry(entry)?.exports
+      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+    if (getExitStatus && getExitStatus(pid) !== -1) return woken;
+
+    for (const channel of registration.channels) {
+      let status: number;
+      try {
+        const i32 = new Int32Array(channel.memory.buffer, channel.channelOffset);
+        status = Atomics.load(i32, CH_STATUS / Int32Array.BYTES_PER_ELEMENT);
+      } catch { continue; }
+      if (status !== CH_PENDING) continue;
+      try {
+        this.wakeChannelForTeardownExit(channel, entry);
+        woken.add(channel.pid);
+      } catch (err) {
+        this.#rethrowKernelEntryFatal(err);
+        console.error(`[killBlockedProcessForTeardown] wake failed for pid=${channel.pid} off=${channel.channelOffset}: ${err}`);
+      }
+    }
+    return woken;
+  }
+
+  /**
    * Cooperatively unwind the exact browser Worker generation discarded by
    * exec without exiting the persistent kernel Process.
    *
@@ -15785,7 +16176,7 @@ export class CentralizedKernelWorker {
       return;
     }
     this.clearSocketTimeout(channel);
-    this.clearReadinessWait(channel);
+    this.clearReadinessWait(channel, entry);
     const prepared: PreparedChannelCompletion = {
       kind: "raw",
       outputWrites: [],
@@ -15928,25 +16319,26 @@ export class CentralizedKernelWorker {
     if (!getRecvPipe && !getAcceptWakeIdx)
       return { pipeIndices: [], acceptIndices: [] };
 
-    const key = `${pid}:`;
+    // The fds the process's live epoll registrations watch, straight from
+    // the kernel's registrations (closed descriptions already excluded).
+    // An accept wakeup on a listener watched only for EPOLLOUT costs at most
+    // a spurious retry.
+    const watchedFd = this.#kernelInstanceForEntry(entry).exports
+      .kernel_epoll_watched_fd as
+      ((pid: number, index: number) => number) | undefined;
+    if (!watchedFd) return { pipeIndices: [], acceptIndices: [] };
     const indices: number[] = [];
     const acceptIndices: number[] = [];
-    const { EPOLLIN } = EPOLL_EVENTS;
-    for (const [k, interests] of this.epollInterests) {
-      if (!k.startsWith(key)) continue;
-      for (const interest of interests) {
-        if (getRecvPipe) {
-          const pipeIdx = getRecvPipe(pid, interest.fd);
-          if (pipeIdx >= 0) {
-            indices.push(pipeIdx);
-          }
-        }
-        if (getAcceptWakeIdx && (interest.events & EPOLLIN) !== 0) {
-          const acceptIdx = getAcceptWakeIdx(pid, interest.fd);
-          if (acceptIdx >= 0) {
-            acceptIndices.push(acceptIdx);
-          }
-        }
+    for (let i = 0; ; i++) {
+      const fd = watchedFd(pid, i);
+      if (fd < 0) break;
+      if (getRecvPipe) {
+        const pipeIdx = getRecvPipe(pid, fd);
+        if (pipeIdx >= 0) indices.push(pipeIdx);
+      }
+      if (getAcceptWakeIdx) {
+        const acceptIdx = getAcceptWakeIdx(pid, fd);
+        if (acceptIdx >= 0) acceptIndices.push(acceptIdx);
       }
     }
     return { pipeIndices: indices, acceptIndices };
@@ -16404,6 +16796,12 @@ export class CentralizedKernelWorker {
     return false;
   }
 
+  /** Key for the blocked-retry maps. Scoped by pid because channelOffset
+   *  values repeat across processes (same layout in each process memory). */
+  private retryKey(channel: ChannelInfo): string {
+    return `${channel.pid}:${channel.channelOffset}`;
+  }
+
   /** Same as scheduleWakeBlockedRetries but delays by a few ms to allow
    *  follow-up cross-process syscalls from the event source to land. */
   private scheduleWakeBlockedRetriesDeferred(
@@ -16630,9 +17028,33 @@ export class CentralizedKernelWorker {
   }
 
   /** Clear readiness deadline and any still-parked retry for a completed call. */
-  private clearReadinessWait(channel: ChannelInfo): void {
+  private clearReadinessWait(
+    channel: ChannelInfo,
+    entry?: KernelWorkerEntryContext,
+  ): void {
     channel.readinessDeadline = undefined;
     channel.readinessFinalCheck = undefined;
+
+    if (channel.pollSigmaskSwapped) {
+      channel.pollSigmaskSwapped = undefined;
+      // Guarded kernel-side: a no-op when a signal became deliverable under
+      // the temporary mask — kernel_dequeue_signal owns the restore then.
+      // The entry keeps the call inside the active gate scope: the bare
+      // instance would open a NEW entry, which throws mid-retry
+      // (KernelReentrantEntryError while a syscall retry is active).
+      const instance = this.#kernelInstanceIfAvailableForEntry(entry);
+      const restoreMask = instance?.exports.kernel_restore_poll_sigmask as
+        | ((pid: number, tid: number) => number)
+        | undefined;
+      // The swap above required the paired export; a kernel instance that
+      // is still live but lacks the restore half is the same broken build.
+      if (instance && !restoreMask) {
+        throw new Error(
+          "kernel lacks kernel_restore_poll_sigmask: epoll_pwait's signal mask cannot be restored",
+        );
+      }
+      restoreMask?.(channel.pid, this.guestTidForChannel(channel));
+    }
 
     const pollEntry = this.pendingPollRetries.get(channel);
     if (pollEntry) {
@@ -19650,6 +20072,9 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    // Imported-bo coherence on readiness, as for poll/ppoll and epoll: a
+    // select-based importer wakes here to re-read long-lived mappings.
+    this.#syncImportedBosOnReadiness(channel, retVal);
     this.completeChannel(
       channel,
       SYS_SELECT,
@@ -19849,6 +20274,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    this.#syncImportedBosOnReadiness(channel, retVal);
     this.completeChannel(
       channel,
       SYS_PSELECT6,
@@ -19868,46 +20294,6 @@ export class CentralizedKernelWorker {
   //   epoll_create1/create → still call kernel (works fine), mirror result
   //   epoll_ctl → still call kernel (works fine), mirror interest list
   //   epoll_pwait → convert to poll entirely on host, no kernel_handle_channel
-
-  /**
-   * The epoll mirror, for a checkpoint.
-   *
-   * `epoll_pwait` is served from this mirror rather than from the kernel, so
-   * the mirror is machine state: a checkpoint without it restores guests
-   * whose `epoll_wait` answers EBADF for fds they genuinely hold. The kernel
-   * memory copy carries the kernel's own epoll state; this carries the
-   * host's.
-   */
-  captureEpollInterestsForCheckpoint(): CheckpointEpoll[] {
-    return [...this.epollInterests.entries()].map(([key, interests]) => {
-      const [pid, epfd] = key.split(":").map(Number);
-      return {
-        pid: pid!,
-        epfd: epfd!,
-        interests: interests.map((interest) => ({
-          fd: interest.fd,
-          events: interest.events,
-          data: interest.data.toString(),
-        })),
-      };
-    });
-  }
-
-  /** Adopt a captured machine's epoll mirror, before any restored guest polls. */
-  restoreEpollInterestsFromCheckpoint(
-    epolls: readonly CheckpointEpoll[],
-  ): void {
-    for (const epoll of epolls) {
-      this.epollInterests.set(
-        `${epoll.pid}:${epoll.epfd}`,
-        epoll.interests.map((interest) => ({
-          fd: interest.fd,
-          events: interest.events,
-          data: BigInt(interest.data),
-        })),
-      );
-    }
-  }
 
   /**
    * Handle epoll_create1 / epoll_create: let the kernel create the fd,
@@ -19965,12 +20351,6 @@ export class CentralizedKernelWorker {
 
     const { retVal, errVal } = result;
 
-    // If successful, initialise the host-side interest mirror
-    if (retVal >= 0) {
-      const key = `${channel.pid}:${retVal}`;
-      this.epollInterests.set(key, []);
-    }
-
     this.completeChannel(
       channel,
       syscallNr,
@@ -19985,8 +20365,8 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Handle epoll_ctl: let the kernel modify its interest list, then mirror
-   * the change on the host side.
+   * Handle epoll_ctl: the kernel owns the interest list; the host only
+   * marshals the event struct through scratch.
    */
   private handleEpollCtl(
     channel: ChannelInfo,
@@ -20002,8 +20382,6 @@ export class CentralizedKernelWorker {
 
     // Both Kandelo musl targets align epoll_data_t to eight bytes:
     // { events: u32, pad: u32, data: u64 } = 16 bytes.
-    let events = 0;
-    let data = 0n;
     let eventPtr = 0;
     if (hasEvent) {
       let eventRange: { pointer: number; length: number; end: number };
@@ -20019,13 +20397,6 @@ export class CentralizedKernelWorker {
         return;
       }
       eventPtr = eventRange.pointer;
-      const pv = new DataView(
-        channel.memory.buffer,
-        eventRange.pointer,
-        eventRange.length,
-      );
-      events = pv.getUint32(WASM_EPOLL_EVENT_EVENTS_OFFSET, true);
-      data = pv.getBigUint64(WASM_EPOLL_EVENT_DATA_OFFSET, true);
     }
 
     let result: { retVal: number; errVal: number };
@@ -20091,33 +20462,6 @@ export class CentralizedKernelWorker {
     if (this.#finishSignalTermination(channel, entry)) return;
 
     const { retVal, errVal } = result;
-
-    // Mirror the change on the host side if the kernel succeeded
-    if (retVal === 0) {
-      const EPOLL_CTL_ADD = 1;
-      const EPOLL_CTL_DEL = 2;
-      const EPOLL_CTL_MOD = 3;
-
-      const key = `${channel.pid}:${epfd}`;
-      let interests = this.epollInterests.get(key);
-      if (!interests) {
-        interests = [];
-        this.epollInterests.set(key, interests);
-      }
-
-      if (op === EPOLL_CTL_ADD) {
-        interests.push({ fd, events, data });
-      } else if (op === EPOLL_CTL_DEL) {
-        const idx = interests.findIndex(e => e.fd === fd);
-        if (idx >= 0) interests.splice(idx, 1);
-      } else if (op === EPOLL_CTL_MOD) {
-        const entry = interests.find(e => e.fd === fd);
-        if (entry) {
-          entry.events = events;
-          entry.data = data;
-        }
-      }
-    }
 
     this.completeChannel(
       channel,
@@ -20195,12 +20539,39 @@ export class CentralizedKernelWorker {
               EINVAL,
             );
           }
-          this.checkedProcessRange(
+          const maskPointer = this.checkedProcessRange(
             channel,
             rawMaskPointer,
             SIGNAL_MASK_BYTES,
             "epoll_pwait signal mask",
-          );
+          ).pointer;
+          // epoll_pwait's atomic mask swap. The host runs this wait as
+          // timeout=0 poll retries, so the kernel cannot scope the mask to
+          // one blocking syscall — swap it through the sigsuspend
+          // saved-mask slot (idempotent across retry re-entries) and keep
+          // it swapped while parked, so a signal arriving mid-wait (foot's
+          // SIGCHLD reaper) passes sendSignalToProcess's blocked check and
+          // wakes the retry. kernel_dequeue_signal restores the saved mask
+          // after delivering the signal that ended the wait;
+          // clearReadinessWait restores it on every other completion.
+          const swapMask = this.#kernelInstanceForEntry(entry).exports
+            .kernel_swap_poll_sigmask as
+            | ((pid: number, tid: number, mask: bigint) => number)
+            | undefined;
+          // Required, not optional: without the swap the caller's mask is
+          // silently ignored, and a signal it unblocks only inside the wait
+          // (foot's SIGCHLD reaper) never arrives, so the terminal never
+          // notices its shell exited. A kernel lacking the export is a
+          // broken build of this ABI; refuse it loudly.
+          if (!swapMask) {
+            throw new Error(
+              "kernel lacks kernel_swap_poll_sigmask: epoll_pwait's signal mask cannot be honoured",
+            );
+          }
+          const mask = new DataView(channel.memory.buffer)
+            .getBigUint64(maskPointer, true);
+          swapMask(channel.pid, this.guestTidForChannel(channel), mask);
+          channel.pollSigmaskSwapped = true;
         }
       }
       eventsPtr = this.checkedProcessRange(
@@ -20210,118 +20581,42 @@ export class CentralizedKernelWorker {
         "epoll output events",
       ).pointer;
     } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
       this.#rejectScratchTransfer(channel, error, entry);
       return;
     }
 
-    const key = `${channel.pid}:${epfd}`;
-    const interests = this.epollInterests.get(key);
-    if (!interests) {
-      this.completeChannelRawAndRelisten(channel, -9, 9, entry); // -EBADF
-      return;
-    }
+    // One nonblocking pass of the kernel's own epoll_pwait: it evaluates the
+    // instance's registrations -- keyed on (fd, open file description), with
+    // closed descriptions dropped -- and returns ready events with their data.
+    // The host owns only the wait/retry loop and wakeups around it; it keeps
+    // no copy of the registrations. A wait returns at most as many events as
+    // fit the scratch data, as epoll_wait may return fewer than maxevents.
+    const maxKernelEvents = Math.min(
+      maxevents,
+      Math.floor(CH_DATA_SIZE / STRUCT_SIZE_WASM_EPOLL_EVENT),
+    );
+    const eventBytes = maxKernelEvents * STRUCT_SIZE_WASM_EPOLL_EVENT;
 
-    if (interests.length === 0) {
-      // No poll call follows for an empty interest set, so explicitly service
-      // the signal boundary before parking or returning a timeout result.
-      if (this.completeEpollSignalOutcome(channel, entry)) return;
-
-      // No interests registered — return 0 immediately for timeout=0,
-      // or block (EAGAIN) for non-zero timeout.
-      if (timeoutMs === 0) {
-        this.completeChannelRawAndRelisten(channel, 0, 0, entry);
-        return;
-      }
-      if (deadline > 0 && Date.now() >= deadline) {
-        this.completeChannelRawAndRelisten(channel, 0, 0, entry);
-        return;
-      }
-      if (
-        this.interruptPendingCancellationBeforeRegistration(
-          channel,
-          syscallNr,
-          this.#cancellationPointIdentity(channel),
-          entry,
-        )
-      ) return;
-      // For non-zero timeout with no interests, retry with delay to avoid starvation
-      const retryMs = deadline > 0 ? Math.min(Math.max(deadline - Date.now(), 1), 10) : 10;
-      entry.deferProtocolEffect(() => {
-        const timer = this.#registerTimeout(() => {
-          const pending = this.pendingPollRetries.get(channel);
-          if (!pending || pending.timer !== timer) return;
-          this.pendingPollRetries.delete(channel);
-          if (this.isRegisteredChannel(channel)) {
-            this.retrySyscall(channel);
-          }
-        }, retryMs);
-        this.pendingPollRetries.set(channel, {
-          ...this.#cancellationPointIdentity(channel),
-          timer,
-          channel,
-          pipeIndices: [],
-          deadline,
-        });
-      });
-      return;
-    }
-
-    // EPOLL event flags → poll event flags
-    const { EPOLLIN, EPOLLOUT, EPOLLERR, EPOLLHUP } = EPOLL_EVENTS;
-    const { POLLIN, POLLOUT, POLLERR, POLLHUP } = POLL_EVENTS;
-
-    // Build fixed pollfd records in kernel scratch data.
-    const nfds = interests.length;
-    const pollfdSize = nfds * STRUCT_SIZE_WASM_POLL_FD;
-
-    if (pollfdSize > CH_DATA_SIZE) {
-      // Too many fds — unlikely but handle gracefully
-      this.completeChannelRawAndRelisten(channel, -22, 22, entry); // -EINVAL
-      return;
-    }
-
-    let pollResult: {
+    let waitResult: {
       retVal: number;
       errVal: number;
-      pollfds: Uint8Array;
+      events: Uint8Array;
     };
     try {
-      pollResult = this.#requireMainScratchRegion().withLease((lease) => {
+      waitResult = this.#requireMainScratchRegion().withLease((lease) => {
         const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        const pollfdsView = lease.dataView(CH_DATA, pollfdSize);
-        for (let i = 0; i < nfds; i++) {
-          const interest = interests[i]!;
-          const off = i * STRUCT_SIZE_WASM_POLL_FD;
-          let pollEvents = 0;
-          if (interest.events & EPOLLIN) pollEvents |= POLLIN;
-          if (interest.events & EPOLLOUT) pollEvents |= POLLOUT;
-          pollfdsView.setInt32(
-            off + WASM_POLL_FD_FD_OFFSET,
-            interest.fd,
-            true,
-          );
-          pollfdsView.setInt16(
-            off + WASM_POLL_FD_EVENTS_OFFSET,
-            pollEvents,
-            true,
-          );
-          pollfdsView.setInt16(
-            off + WASM_POLL_FD_REVENTS_OFFSET,
-            0,
-            true,
-          );
-        }
-
-        kernelView.setUint32(CH_SYSCALL, SYS_POLL, true);
+        kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_PWAIT, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
         lease.writeAddress(
-          CH_ARGS,
+          CH_ARGS + CH_ARG_SIZE,
           CH_DATA,
-          pollfdSize,
+          eventBytes,
           "u64-le",
         );
-        kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(nfds), true);
-        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 0n, true);
+        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(maxKernelEvents), true);
         for (let i = 3; i < CH_ARGS_COUNT; i++) {
+          // timeout 0 (nonblocking), no signal mask.
           kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
         }
 
@@ -20346,7 +20641,7 @@ export class CentralizedKernelWorker {
         return {
           retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
           errVal: resultView.getUint32(CH_ERRNO, true),
-          pollfds: lease.copyOut(CH_DATA, pollfdSize),
+          events: lease.copyOut(CH_DATA, eventBytes),
         };
       });
     } catch (error) {
@@ -20355,70 +20650,40 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    const { retVal, errVal, pollfds } = pollResult;
+    const { retVal, errVal, events } = waitResult;
 
-    // This host-side emulation performs a nonblocking poll and owns the
-    // wait/retry loop, so it must preserve the syscall-boundary signal
-    // outcome that kernel_handle_channel would normally return to the guest.
-    // A default terminating action leaves an exited kernel Process and must
-    // reap the worker without waking guest code. A caught handler interrupts
-    // epoll with EINTR so the glue can run the copied handler metadata before
-    // the application decides whether to restart the wait.
+    // This host-side wait loop performs a nonblocking kernel pass, so it must
+    // preserve the syscall-boundary signal outcome that kernel_handle_channel
+    // would normally return to the guest. A default terminating action leaves
+    // an exited kernel Process and must reap the worker without waking guest
+    // code. A caught handler interrupts epoll with EINTR so the glue can run
+    // the copied handler metadata before the application decides whether to
+    // restart the wait.
     if (this.completeEpollSignalOutcome(channel, entry)) return;
 
-    // If poll returned error (not EAGAIN), propagate it
+    // A kernel error (EBADF, EINVAL, ...) is the syscall's result.
     if (retVal < 0 && errVal !== EAGAIN) {
       this.completeChannelRawAndRelisten(channel, retVal, errVal, entry);
       return;
     }
 
-    // Count ready events and map back to epoll_event format
-    let readyCount = 0;
-    if (retVal > 0) {
-      const processView = new DataView(channel.memory.buffer);
-      const pollfdsView = new DataView(
-        pollfds.buffer,
-        pollfds.byteOffset,
-        pollfds.byteLength,
-      );
-      for (let i = 0; i < nfds && readyCount < maxevents; i++) {
-        const off = i * STRUCT_SIZE_WASM_POLL_FD;
-        const revents = pollfdsView.getInt16(
-          off + WASM_POLL_FD_REVENTS_OFFSET,
-          true,
-        );
-        if (revents !== 0) {
-          // Map poll revents back to epoll events
-          let epEvents = 0;
-          if (revents & POLLIN) epEvents |= EPOLLIN;
-          if (revents & POLLOUT) epEvents |= EPOLLOUT;
-          if (revents & POLLERR) epEvents |= EPOLLERR;
-          if (revents & POLLHUP) epEvents |= EPOLLHUP;
-
-          const evOff =
-            eventsPtr + readyCount * STRUCT_SIZE_WASM_EPOLL_EVENT;
-          processView.setUint32(
-            evOff + WASM_EPOLL_EVENT_EVENTS_OFFSET,
-            epEvents,
-            true,
-          );
-          processView.setUint32(
-            evOff + WASM_EPOLL_EVENT_PAD_OFFSET,
-            0,
-            true,
-          );
-          processView.setBigUint64(
-            evOff + WASM_EPOLL_EVENT_DATA_OFFSET,
-            interests[i].data,
-            true,
-          );
-          readyCount++;
-        }
-      }
+    const readyCount = retVal > 0 ? retVal : 0;
+    if (readyCount > 0) {
+      new Uint8Array(
+        channel.memory.buffer,
+        eventsPtr,
+        readyCount * STRUCT_SIZE_WASM_EPOLL_EVENT,
+      ).set(events.subarray(0, readyCount * STRUCT_SIZE_WASM_EPOLL_EVENT));
     }
 
     // If we got events, return them
     if (readyCount > 0) {
+      // Imported-bo coherence: an epoll_wait return is the moment a
+      // compositor-style importer wakes to process a client's commit and
+      // re-read its long-lived imported wl_shm mappings. Refresh them from
+      // the creator's memory first (mirror of the poll/ppoll hook in the
+      // generic post-syscall path — epoll is intercepted before that tail).
+      this.#syncImportedBosOnReadiness(channel, readyCount);
       this.completeChannelRawAndRelisten(channel, readyCount, 0, entry);
       return;
     }
@@ -23773,7 +24038,7 @@ export class CentralizedKernelWorker {
     // shared backend. Epoll backing tables are not yet cloned by spawn_child,
     // so only listener mirrors are inherited here.
     try {
-      this.inheritHostFdMirrors(parentPid, childPid, entry, false);
+      this.inheritHostFdMirrors(parentPid, childPid, entry);
     } catch (err) {
       this.#rethrowKernelEntryFatal(err);
       this.#rollbackSpawnWithinKernelEntry(
@@ -25524,9 +25789,6 @@ export class CentralizedKernelWorker {
     const exitSignal = this.finalizeExecHandoffTermination(pid);
     if (exitSignal !== -1) {
       this.cleanupTcpListeners(pid);
-      for (const key of Array.from(this.epollInterests.keys())) {
-        if (key.startsWith(`${pid}:`)) this.epollInterests.delete(key);
-      }
     }
     return exitSignal;
   }
@@ -25540,9 +25802,6 @@ export class CentralizedKernelWorker {
     if (exitSignal !== -1) {
       entry.deferProtocolEffect(() => {
         this.cleanupTcpListeners(pid);
-        for (const key of Array.from(this.epollInterests.keys())) {
-          if (key.startsWith(`${pid}:`)) this.epollInterests.delete(key);
-        }
         return undefined;
       });
     }
@@ -25874,6 +26133,11 @@ export class CentralizedKernelWorker {
   }
 
   #validateKernelSignalTargetTid(targetTid: number): number {
+    // -ESRCH is part of the export's contract: the process exited between
+    // the signal queue and this interrupt attempt (e.g. a killactive close
+    // racing the client teardown). Nothing is left to wake — map it to
+    // "no target". Any other negative value is protocol corruption.
+    if (targetTid === -ESRCH) return 0;
     if (!Number.isSafeInteger(targetTid) || targetTid < 0) {
       this.#failBlockingRetryProtocol(
         `kernel returned invalid signal target TID ${targetTid}`,
@@ -25926,6 +26190,9 @@ export class CentralizedKernelWorker {
       );
     }
     const result = threadHasDeliverable(pid, tid);
+    // -ESRCH: the process (or that thread) is already gone — nothing is
+    // deliverable. Part of the export's contract, not corruption.
+    if (result === -ESRCH) return false;
     if (result !== 0 && result !== 1) {
       this.#failBlockingRetryProtocol(
         `kernel returned invalid deliverable-signal state ${result}`,
@@ -27471,9 +27738,15 @@ export class CentralizedKernelWorker {
     }
     if (stat.hostHandle === null) {
       // MemFd and synthetic regular files complete fstat inside the kernel,
-      // so there is no persistent host capability to retain. They need a
-      // kernel-owned mapping bridge; MAP_PRIVATE keeps its fd-pread path.
-      return { kind: "error", errno: ENOTSUP };
+      // so there is no persistent host capability to retain for writeback.
+      // Take the same populate-only fallback as MAP_SHARED on non-regular
+      // files: pread fills the pages at map time and writes stay local.
+      // libwayland-cursor's theme pool is the load-bearing consumer — its
+      // memfd pool must map, and nothing ever reads the pool back (the
+      // compositor accepts and ignores wl_pointer.set_cursor). Live
+      // coherence needs a kernel-owned mapping bridge that does not exist
+      // yet.
+      return { kind: "unsupported" };
     }
     const accessResult = this.getFdAccessModeForSharedMapping(
       channel,
@@ -34764,12 +35037,27 @@ export class CentralizedKernelWorker {
   /** Record that a live WebGL2 context now paints the CRTC's canvas.
    *
    *  Called by `host_gl_create_context` through the kernel's callbacks once
-   *  the context exists. Idempotent, and one-way: an OffscreenCanvas holds
-   *  one context type for its lifetime, so a destroyed GL context does not
-   *  give the pixels back. */
+   *  the context exists, and by a checkpoint restore once it has rebuilt a
+   *  captured context. Idempotent. If the pump's webgl2-scanout presenter was
+   *  active on this CRTC, it holds state on the SAME WebGL2 context the
+   *  program just inherited — stand it down and free what it owns (texture,
+   *  program, vertex array; deletion also unbinds each); anything else the
+   *  presenter set (viewport, clear color) is state the claiming session sets
+   *  itself before drawing. `markKmsCanvasGlReleased` undoes this when the
+   *  session ends. */
   markKmsCanvasGlOwned(crtcId: number): void {
+    releaseKmsGlPresenter(this.kmsGlPresenters.get(crtcId));
+    this.kmsGlPresenters.delete(crtcId);
+    if (!this.kmsModeBeforeGlOwn.has(crtcId)) {
+      this.kmsModeBeforeGlOwn.set(crtcId, this.kmsContextMode.get(crtcId));
+    }
     this.kmsContextMode.set(crtcId, "webgl2");
     this.kmsGlOwned.add(crtcId);
+    // Slot 7 = 3: program-owned WebGL2 (direct GL rendering; no pump
+    // presenter). Distinct from 2 (pump webgl2-scanout) so gates can
+    // tell GPU compositing from CPU-composite-then-GPU-present.
+    const stats = this.kmsStatsViews.get(crtcId);
+    if (stats && stats.length > 7) Atomics.store(stats, 7, 3);
   }
 
   /** Register an `OffscreenCanvas` (and optional stats SAB) as the
@@ -34785,6 +35073,12 @@ export class CentralizedKernelWorker {
    *  - `"2d"`: legacy CPU-blit path. The pump eagerly grabs 2D here
    *    and copies the kernel's scanout BO into the canvas each frame.
    *    Used by demos that render into the FB via memcpy rather than GL.
+   *  - `"webgl2-scanout"`: pump-owned WebGL2 presenter. The pump uploads
+   *    the scanout BO to a texture each frame and draws it as a
+   *    mipmapped, letterboxed quad — the XRGB→RGB swizzle happens in
+   *    the fragment shader and the scale/filter on the GPU. Combine
+   *    with `setKmsDisplaySize` to render at display resolution.
+   *    Used by CPU compositors (wlcompositor's dumb-bo + PAGE_FLIP).
    *  - `"webgl2"`: reserves the canvas for GL up front. Pump never
    *    blits, so the GL bridge cannot lose a race to the pump's 2D
    *    acquisition. This reserves the canvas; it does not claim it.
@@ -34794,8 +35088,31 @@ export class CentralizedKernelWorker {
     crtc_id: number,
     canvas: OffscreenCanvas,
     statsSab?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
+    // An embedder may attach a NEW OffscreenCanvas for the same CRTC;
+    // a presenter cached against the old canvas would keep painting the
+    // orphaned bitmap (getContext on the new canvas is never called).
+    // Cached `null` failures are dropped too — the new canvas may accept
+    // a context the old one refused.
+    if (this.kmsCanvases.get(crtc_id) !== canvas) {
+      releaseKmsGlPresenter(this.kmsGlPresenters.get(crtc_id));
+      this.kmsGlPresenters.delete(crtc_id);
+      // A program's GL session owns the CRTC's current canvas, and a WebGL
+      // context cannot move to another canvas: it keeps drawing into the old
+      // one until the session ends (markKmsCanvasGlReleased), so this new
+      // canvas stays blank meanwhile. Say so instead of failing silently.
+      // Panes avoid this by mounting KernelHost.kmsDisplayCanvas, the one
+      // canvas per CRTC for the kernel's lifetime, so a remount re-attaches
+      // the SAME canvas; only an embedder attaching a second, different
+      // canvas reaches this.
+      if (this.kmsModeBeforeGlOwn.has(crtc_id)) {
+        console.warn(
+          `kms: crtc ${crtc_id} got a new canvas while a GL session owns the ` +
+          `current one; the new canvas stays blank until that session ends`,
+        );
+      }
+    }
     const statsView = statsSab === undefined
       ? undefined
       : new Int32Array(statsSab);
@@ -34812,11 +35129,63 @@ export class CentralizedKernelWorker {
         this.kmsContexts.set(crtc_id, ctx);
         this.kmsContextMode.set(crtc_id, "2d");
       }
-    } else if (mode === "webgl2") {
-      this.kmsContextMode.set(crtc_id, "webgl2");
+    } else if (mode === "webgl2" || mode === "webgl2-scanout") {
+      // webgl2-scanout defers context creation to the first tick so a
+      // host without WebGL2 (Node) degrades to stats-only instead of
+      // failing the attach.
+      this.kmsContextMode.set(crtc_id, mode);
+      // Arm loss/restore now — a GL claim can precede the first tick.
+      if (typeof canvas.addEventListener === "function") {
+        this.hookKmsContextLoss(canvas);
+      }
     }
     if (mode !== "2d") this.rebuildPendingGlContext(crtc_id, canvas);
     this.startVblankPump();
+  }
+
+  /** Report the embedder-side display size (device pixels) for a CRTC's
+   *  canvas. The `"webgl2-scanout"` presenter consumes it: the
+   *  drawing buffer is resized to match and the scanout texture is
+   *  GPU-scaled into it, so the page compositor never rescales an
+   *  fb-sized bitmap. Callers typically feed this from a ResizeObserver
+   *  with `devicePixelContentBoxSize`. Zero/negative dims are ignored
+   *  (a hidden pane reports 0×0 — keep the last real size).
+   *
+   *  It also keys the EVIOCGABS range on `/dev/input/event1` to the
+   *  connector mode this size derives (`connectorModeSize`, which the
+   *  compositor's framebuffer will match). It must land here, not only
+   *  at SETCRTC: libinput caches absinfo when it opens the device, and
+   *  a compositor opens `event1` before it presents its first frame —
+   *  a range corrected at SETCRTC is a range libinput never sees.
+   *
+   *  `physicalMm`, when given, is the display's physical size; the kernel
+   *  reports it on the connector, where a compositor derives its output
+   *  scale from the display's DPI. */
+  setKmsDisplaySize(
+    crtc_id: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
+  ): void {
+    if (!(width >= 1) || !(height >= 1)) return;
+    // Sanity cap: a bogus resize report must not allocate an absurd
+    // drawing buffer.
+    const display: KmsDisplaySize = {
+      width: Math.min(Math.round(width), 4096),
+      height: Math.min(Math.round(height), 4096),
+    };
+    // Millimetres are only meaningful when both are positive and sane (a
+    // 10 m display is a bogus report, not a physical size).
+    if (
+      physicalMm && physicalMm.width >= 1 && physicalMm.height >= 1 &&
+      physicalMm.width <= 10_000 && physicalMm.height <= 10_000
+    ) {
+      display.mmWidth = Math.round(physicalMm.width);
+      display.mmHeight = Math.round(physicalMm.height);
+    }
+    this.kmsDisplaySizes.set(crtc_id, display);
+    const mode = connectorModeSize(display);
+    this.setInputCanvasDims(mode.width, mode.height);
   }
 
   /** Attach a stats SAB for a CRTC without registering a scanout canvas.
@@ -34830,6 +35199,20 @@ export class CentralizedKernelWorker {
       new Int32Array(statsSab),
     );
     this.startVblankPump();
+  }
+
+  /**
+   * Imported-bo coherence at a wait's readiness report. The GbmBoRegistry is
+   * bind-boundary-synced (host/src/dri/registry.ts): an importer's
+   * long-lived mmap of another process's bo holds the mmap-time snapshot
+   * until refreshed. A compositor wakes from its wait -- poll, ppoll,
+   * epoll_wait, select or pselect6 -- to process a client's commit, so every
+   * one of them refreshes the importer's mappings when it reports ready fds.
+   */
+  #syncImportedBosOnReadiness(channel: ChannelInfo, readyCount: number): void {
+    if (readyCount > 0 && this.#kernel.bos.hasStaleableImports(channel.pid)) {
+      this.#kernel.bos.syncImportsForPid(channel.pid, channel.memory);
+    }
   }
 
   private startVblankPump(): void {
@@ -34872,6 +35255,48 @@ export class CentralizedKernelWorker {
         const vblankFn = entry.instance.exports.kernel_vblank as
           (() => void) | undefined;
         vblankFn?.();
+        // kernel_vblank just drained any pending page-flips into each open
+        // card0 fd's `event_ring`. Wake blocked DRM poll() callers now
+        // instead of letting them spin on the generic safety-net retry —
+        // without this hook the C-side frame loop is capped well below the
+        // 60 Hz tick unless something else (mouse input, etc.) triggers a
+        // wake. Gated on flip activity: the worker is single-threaded, so
+        // a flip queued before this tick's kernel_vblank moved the host
+        // latch counter, and a tick with no new latch retired nothing —
+        // waking then would retry every parked poll/select in the system
+        // at 60 Hz for no reason.
+        const flips = this.#kernel.kms.flipCount();
+        if (flips !== this.vblankFlipCount) {
+          this.vblankFlipCount = flips;
+          this.scheduleWakeBlockedRetries(entry);
+        }
+
+        // Snapshot webgl2-scanout presenter inputs while entry authority is
+        // live. The detached canvas phase below runs the GL upload + draw
+        // against host-owned SAB pixel copies only; the commit counter is a
+        // kernel export, so it must be read here.
+        const commitCountFn = entry.instance.exports
+          .kernel_kms_commit_count as
+          ((id: number) => bigint) | undefined;
+        const glPresents: Array<{
+          crtcId: number;
+          canvas: OffscreenCanvas;
+          fb: { fb_id: number; width: number; height: number };
+          commits: number;
+        }> = [];
+        for (const [crtcId, canvas] of this.kmsCanvases) {
+          if (this.kmsContextMode.get(crtcId) !== "webgl2-scanout") continue;
+          const fb = this.#kernel.kms.currentFb(crtcId);
+          if (!fb) continue;
+          glPresents.push({
+            crtcId,
+            canvas,
+            fb: { fb_id: fb.fb_id, width: fb.width, height: fb.height },
+            commits: commitCountFn
+              ? Number(commitCountFn(crtcId) & 0x7fffffffn)
+              : -1,
+          });
+        }
 
         // WHY: process/BO memory may change on the next ingress. Copy every
         // scanout now; the detached canvas phase retains no Wasm view.
@@ -35005,6 +35430,29 @@ export class CentralizedKernelWorker {
               Atomics.add(blit.stats, 0, 1);
               Atomics.store(blit.stats, 1, performance.now() | 0);
               Atomics.store(blit.stats, 4, blitUs);
+              // Slot 7: which presenter painted (1 = 2d blit, 2 = webgl2
+              // scanout). Lets embedder UIs and browser gates assert the
+              // render path without reaching into the worker.
+              if (blit.stats.length > 7) Atomics.store(blit.stats, 7, 1);
+            }
+          }
+          for (const present of glPresents) {
+            const presentStart = performance.now();
+            const painted = this.presentKmsGlScanout(
+              present.crtcId,
+              present.canvas,
+              present.fb,
+              present.commits,
+            );
+            if (!painted) continue;
+            const presentUs =
+              ((performance.now() - presentStart) * 1000) | 0;
+            const stats = this.kmsStatsViews.get(present.crtcId);
+            if (stats) {
+              Atomics.add(stats, 0, 1);
+              Atomics.store(stats, 1, performance.now() | 0);
+              Atomics.store(stats, 4, presentUs);
+              if (stats.length > 7) Atomics.store(stats, 7, 2);
             }
           }
           for (const snapshot of statsSnapshots) {
@@ -35038,6 +35486,196 @@ export class CentralizedKernelWorker {
         }
       },
     );
+  }
+
+  /** Copy the SAB-backed scanout view into a cached plain-ArrayBuffer
+   *  scratch. Both presenters need it: `ImageData` rejects SAB-backed
+   *  views and WebGL refuses to upload from them. Resized on bo
+   *  geometry change so the pump doesn't allocate 8 MB/frame at 1080p. */
+  private kmsScratchFor(crtc_id: number, pixels: Uint8Array, need: number): Uint8ClampedArray<ArrayBuffer> {
+    let scratch = this.kmsScratchBytes.get(crtc_id);
+    if (!scratch || scratch.byteLength !== need) {
+      scratch = new Uint8ClampedArray(new ArrayBuffer(need)) as Uint8ClampedArray<ArrayBuffer>;
+      this.kmsScratchBytes.set(crtc_id, scratch);
+    }
+    scratch.set(pixels);
+    return scratch;
+  }
+
+  /** `mode: "webgl2-scanout"`: upload the scanout bo to a texture and
+   *  draw it as a letterboxed fullscreen triangle. The R/B swizzle
+   *  happens in the fragment shader; scaling + trilinear filtering on
+   *  the GPU at the embedder-reported display resolution. Presents only
+   *  when the frame actually changed (see the change gate below). */
+  private presentKmsGlScanout(
+    crtc_id: number,
+    canvas: OffscreenCanvas,
+    fb: { fb_id: number; width: number; height: number },
+    commits: number,
+  ): boolean {
+    const presenter = this.ensureKmsGlPresenter(crtc_id, canvas);
+    if (!presenter) return false;
+    const { gl, tex } = presenter;
+    if (gl.isContextLost()) {
+      console.warn(
+        `kms: webgl2 context lost on crtc ${crtc_id}; presenter stands down until restore`,
+      );
+      this.kmsGlPresenters.set(crtc_id, null);
+      const stats = this.kmsStatsViews.get(crtc_id);
+      if (stats && stats.length > 7) Atomics.store(stats, 7, 0);
+      return false;
+    }
+    // Drawing buffer tracks the display size when the embedder reports
+    // one (setKmsDisplaySize), else the framebuffer size. Rendering at
+    // display resolution means the page compositor maps the canvas 1:1
+    // instead of rescaling an fb-sized bitmap a second time.
+    const disp = this.kmsDisplaySizes.get(crtc_id);
+    const cw = disp?.width ?? fb.width;
+    const ch = disp?.height ?? fb.height;
+    // Present-on-change gate. Flip-driven renderers change the scanout
+    // through SETCRTC (fb_id changes) or PAGE_FLIP (commit count
+    // advances), so an unchanged pair usually means a byte-identical
+    // frame — skip the 8 MB scanout sync, texture upload and draw
+    // entirely instead of redoing them at 60 Hz. Geometry/display-size
+    // changes re-present the same content at the new size. Scanout
+    // mutations that never tick the commit count are backstopped by
+    // the ~15 Hz content probe (see KmsGlPresenter.probePhase).
+    const changed =
+      presenter.lastFbId !== fb.fb_id ||
+      presenter.lastCommits !== commits ||
+      presenter.texW !== fb.width ||
+      presenter.texH !== fb.height ||
+      canvas.width !== cw ||
+      canvas.height !== ch;
+    if (!changed) {
+      presenter.probePhase = (presenter.probePhase + 1) & 3;
+      if (presenter.probePhase !== 0) return false;
+    }
+    const pixels = this.#kernel.kms.scanoutBytes(crtc_id);
+    if (!pixels) return false;
+    const probeSum = kmsProbeChecksum(pixels);
+    if (!changed && probeSum === presenter.lastProbeSum) return false;
+    const presentStart = performance.now();
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width = cw;
+      canvas.height = ch;
+    }
+    const need = fb.width * fb.height * 4;
+    const scratch = this.kmsScratchFor(crtc_id, pixels, need);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (presenter.texW !== fb.width || presenter.texH !== fb.height) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, fb.width, fb.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, scratch);
+      presenter.texW = fb.width;
+      presenter.texH = fb.height;
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, fb.width, fb.height, gl.RGBA, gl.UNSIGNED_BYTE, scratch);
+    }
+    if (!presenter.degraded) gl.generateMipmap(gl.TEXTURE_2D);
+    // Contain-fit letterbox, same math as the Modeset pane's
+    // toCanvasCoords / the wayland spec's desktopPoint (which assume
+    // the fb sits centered and aspect-true inside the canvas). Bars
+    // are cleared to black; the viewport clips the triangle to the
+    // content rect.
+    const scale = Math.min(cw / fb.width, ch / fb.height);
+    const vw = Math.max(1, Math.round(fb.width * scale));
+    const vh = Math.max(1, Math.round(fb.height * scale));
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.viewport((cw - vw) >> 1, (ch - vh) >> 1, vw, vh);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    presenter.lastFbId = fb.fb_id;
+    presenter.lastCommits = commits;
+    presenter.lastProbeSum = probeSum;
+    // Adaptive quality: a steady-state present that blows the 60 Hz
+    // frame budget means GL is running in software (headless Chromium's
+    // SwiftShader) where the mip chain + trilinear fullscreen draw cost
+    // tens of ms and would starve the kernel worker between presents.
+    // Fall back to plain bilinear once, permanently. Hardware GL
+    // presents in well under a millisecond; a false trip (a GC pause
+    // landing mid-present) costs filtering quality only. The first
+    // present is exempt — it pays one-off allocation costs.
+    if (!presenter.degraded && presenter.presentCount > 0 &&
+        performance.now() - presentStart > 16) {
+      presenter.degraded = true;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    }
+    presenter.presentCount++;
+    return true;
+  }
+
+  /** Arm loss/restore listeners on a scanout canvas. Installed at attach
+   *  time, NOT first presenter build: a program GL session can claim the
+   *  canvas before the pump ever builds a presenter (the GPU compositor
+   *  boots straight into `markKmsCanvasGlOwned`), and a loss that fires
+   *  before the listener exists is never cancelled — the browser then
+   *  never restores the context and every later rebuild finds it dead.
+   *  Loss stands the presenter down; `preventDefault()` opts into
+   *  restoration; restore drops the cache so the next tick rebuilds. */
+  private hookKmsContextLoss(canvas: OffscreenCanvas): void {
+    if (this.kmsContextLossHooked.has(canvas)) return;
+    this.kmsContextLossHooked.add(canvas);
+    canvas.addEventListener("webglcontextlost", (event: Event) => {
+      event.preventDefault();
+      for (const [id, c] of this.kmsCanvases) {
+        if (c !== canvas) continue;
+        console.warn(
+          `kms: webgl2 context lost on crtc ${id}; presenter stands down until restore`,
+        );
+        this.kmsGlPresenters.set(id, null);
+        const stats = this.kmsStatsViews.get(id);
+        if (stats && stats.length > 7) Atomics.store(stats, 7, 0);
+      }
+    });
+    canvas.addEventListener("webglcontextrestored", () => {
+      for (const [id, c] of this.kmsCanvases) {
+        if (c !== canvas) continue;
+        console.warn(
+          `kms: webgl2 context restored on crtc ${id}; rebuilding the presenter`,
+        );
+        this.kmsGlPresenters.delete(id);
+      }
+    });
+  }
+
+  /** Lazily acquire the WebGL2 presenter for a `webgl2-scanout` CRTC.
+   *  A failed acquisition (no WebGL2 on this host, context refused) is
+   *  cached as `null` so the pump doesn't retry getContext at 60 Hz —
+   *  the CRTC then degrades to stats-only, which is exactly what the
+   *  Node host wants. */
+  private ensureKmsGlPresenter(crtc_id: number, canvas: OffscreenCanvas): KmsGlPresenter | null {
+    const cached = this.kmsGlPresenters.get(crtc_id);
+    if (cached !== undefined) return cached;
+    let presenter: KmsGlPresenter | null = null;
+    try {
+      this.hookKmsContextLoss(canvas);
+      const gl = canvas.getContext("webgl2", {
+        antialias: false,
+        premultipliedAlpha: false,
+        depth: false,
+        stencil: false,
+        // The context outlives the presenter: a program GL session that
+        // later claims this canvas (markKmsCanvasGlOwned — the GPU
+        // compositor path) inherits THIS context, and its cross-task
+        // readbacks (COMPOSITE_SAMPLE) need the drawing buffer to
+        // survive the browser's present.
+        preserveDrawingBuffer: true,
+      }) as WebGL2RenderingContext | null;
+      if (gl && typeof gl.createTexture === "function") {
+        presenter = buildKmsGlPresenter(gl);
+      }
+    } catch {
+      presenter = null;
+    }
+    if (!presenter) {
+      // Loud one-shot: a silently-cached failure looks like a black
+      // canvas with advancing flip counters and is miserable to debug.
+      console.warn(
+        `kms: webgl2-scanout presenter unavailable for crtc ${crtc_id} ` +
+        `(WebGL2 context refused or shader build failed); CRTC degrades to stats-only`,
+      );
+    }
+    this.kmsGlPresenters.set(crtc_id, presenter);
+    return presenter;
   }
 }
 

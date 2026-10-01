@@ -22,10 +22,7 @@ import {
   type ExactVfsImageAbi,
   writeVfsBinary,
 } from "./vfs-image-helpers";
-import {
-  terminalPresentation,
-  writeKandeloDemoConfig,
-} from "./kandelo-demo-config";
+import { writeTrackedDemoConfig } from "./tracked-demo-config";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
@@ -120,17 +117,7 @@ export async function buildPythonVfsImage(
   const runtimeFiles = copyTreeSorted(fs, stdlibRoot, `/usr/lib/${PYTHON_STDLIB}`);
   writeVfsBinary(fs, "/usr/share/licenses/cpython/LICENSE", new Uint8Array(readFileSync(license)), 0o644);
 
-  writeKandeloDemoConfig(fs, {
-    version: 1,
-    profiles: {
-      python: {
-        presentation: {
-          ...terminalPresentation(),
-          autoCommand: "PYTHONHOME=/usr PYTHONDONTWRITEBYTECODE=1 python3 -c \"import json, sys; print('Python', sys.version.split()[0]); print(json.dumps({'kandelo': 'software'}))\"",
-        },
-      },
-    },
-  });
+  writeTrackedDemoConfig(fs, "packages/registry/python-vfs/python-demo.json");
 
   await saveImage(fs, inputs.outputPath, {
     normalizeTimestampsMs: REPRODUCIBLE_TIMESTAMP_MS,

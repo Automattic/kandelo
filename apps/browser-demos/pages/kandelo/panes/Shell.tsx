@@ -9,8 +9,10 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
-import { useKernelHost, useStatus } from "../kernel-host/react";
+import { useMachineProgress, useKernelHost, useStatus } from "../kernel-host/react";
 import type { PtyHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { TerminalLinkContext } from "../../../../../web-libs/kandelo-session/src/terminal-links";
+import { registerTerminalLinks } from "../../../lib/terminal-links";
 import { requestTerminalAutoFocus } from "./terminal-focus";
 
 export interface ShellProps {
@@ -133,6 +135,19 @@ const ShellTerminalHost: React.FC<{
     themeObserver.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["data-k-theme", "data-k-mode", "style"],
+    });
+    const links = registerTerminalLinks(term, (): TerminalLinkContext => {
+      // Pull the preview on demand rather than subscribing. This callback only
+      // runs while resolving a hovered link, and `setWebPreviewPendingRequests`
+      // fires on every HTTP request through the bridge — subscribing here would
+      // re-render the live terminal host on each one.
+      const preview = host.getWebPreview();
+      // Loopback URLs the machine prints are reachable from the page only
+      // through a running HTTP bridge, and only on the one port it forwards.
+      const machine = preview && preview.status === "running" && typeof preview.port === "number"
+        ? { url: preview.url, port: preview.port }
+        : null;
+      return { pageUrl: window.location.href, machine };
     });
     let unsubData = () => {};
     let disposed = false;
@@ -262,6 +277,7 @@ const ShellTerminalHost: React.FC<{
       }
       document.removeEventListener("pointerdown", onDocumentPointerDown, true);
       themeObserver.disconnect();
+      links.dispose();
       term.dispose();
       terminalRef.current = null;
       setAttached(false);
@@ -287,27 +303,34 @@ const ShellTerminalHost: React.FC<{
   );
 };
 
-const PreBoot: React.FC<{ status: string }> = ({ status }) => (
-  <div className="kshell-placeholder">
-    <pre style={{
-      margin: "0 0 10px",
-      color: "var(--k-accent-fire)",
-      fontFamily: "inherit",
-      fontSize: 11,
-      lineHeight: 1.1,
-    }}>
+const PreBoot: React.FC<{ status: string }> = ({ status }) => {
+  const progress = useMachineProgress();
+  // Name the image actually being loaded. Before the load starts there is
+  // nothing truthful to show, so say so rather than printing a stand-in.
+  const image = progress?.label ?? "(not loaded yet)";
+
+  return (
+    <div className="kshell-placeholder">
+      <pre style={{
+        margin: "0 0 10px",
+        color: "var(--k-accent-fire)",
+        fontFamily: "inherit",
+        fontSize: 11,
+        lineHeight: 1.1,
+      }}>
 {`      (        Kandelo Linux 6.8.0
        )       Booting a browser VFS image.
       (
  ___|||___     status: ${status}
-|  | | |  |    image: b3:9f2a3b81d2c47f1e
+|  | | |  |    image: ${image}
 |__|_|_|__|    Waiting for the kernel to reach 'running'.`}
-    </pre>
-    <span className="kshell-dim">maker@kandelo</span>
-    <span className="kshell-dim">:~$ </span>
-    <span className="kshell-cursor" />
-  </div>
-);
+      </pre>
+      <span className="kshell-dim">maker@kandelo</span>
+      <span className="kshell-dim">:~$ </span>
+      <span className="kshell-cursor" />
+    </div>
+  );
+};
 
 /** The xterm palette the current Kandelo theme resolves to. */
 export function readShellTheme(element: HTMLElement | null) {

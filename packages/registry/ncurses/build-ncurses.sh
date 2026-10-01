@@ -245,6 +245,12 @@ export cf_cv_working_poll=yes
 export cf_cv_func_poll=yes
 export cf_cv_posix_saved_ids=yes
 
+# configure probes `ar` and settles on `-curvU`, whose `U` flag asks for real
+# member timestamps. Two builds a second apart then produce archives that
+# differ in every member header, which fails the resolver's rebuild-receipt
+# comparison. `D` is the deterministic counterpart: zeroed mtime, uid and gid.
+export cf_cv_ar_flags='-curvD'
+
 # Type sizes for wasm32.
 export ac_cv_sizeof_signed_char=1
 export ac_cv_sizeof_short=2
@@ -322,6 +328,21 @@ echo "==> Installing to $INSTALL_DIR..."
     cd "$WASM_BUILD_DIR"
     make install 2>&1 | tail -10
 )
+
+# `make install` leaves two build-machine paths in the tree, and both differ
+# between any two invocations of the same recipe.
+#
+# `ncursesw6-config` reports the configure `--prefix`, which is the resolver's
+# per-invocation staging directory. That path is deleted the moment the entry
+# is published, so the installed script answers with a directory that does not
+# exist. Nothing in the repo runs it — consumers link `-lncursesw` directly,
+# and `--enable-pc-files=no` means there is no pkg-config file to keep in step.
+rm -f "$INSTALL_DIR/bin/ncursesw6-config"
+
+# `MKkey_defs.sh` names its two input files in a generated comment in
+# `curses.h`, at whatever absolute path the source tree was staged under.
+sed -i.bak "s|$SRC_DIR/include/|include/|g" "$INSTALL_DIR/include/ncursesw/curses.h"
+rm -f "$INSTALL_DIR/include/ncursesw/curses.h.bak"
 
 # Non-wide symlinks for consumers that link `-lncurses` / `-ltinfo`.
 # Nice-to-have — the resolver only enforces the underlying wide files.

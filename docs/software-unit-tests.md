@@ -440,7 +440,7 @@ scripts/run-php-upstream-tests.sh \
 ```
 
 The browser VFS builder layers PHP and the PHPT source tree onto the canonical
-`rootfs.vfs`, so shell and utility coverage comes from the same packaged rootfs
+`rootfs.vfs.zst`, so shell and utility coverage comes from the same packaged rootfs
 used by other Kandelo hosts. Set `ROOTFS_VFS` or `PHP_WASM` only when testing an
 explicit alternate artifact. The browser page rewrites the rootfs's relative
 lazy executable URLs to Vite-managed assets before the legacy shared-filesystem
@@ -908,8 +908,6 @@ Build or fetch `kernel.wasm` before running any browser or Node suite:
 
 ```bash
 ./run.sh setup
-# or
-scripts/fetch-binaries.sh
 ```
 
 (`bash build.sh` still works as a deprecated delegator to `./run.sh setup`.)

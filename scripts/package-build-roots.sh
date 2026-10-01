@@ -602,6 +602,44 @@ kandelo_package_require_existing_regular_file() {
     printf '%s\n' "$canonical"
 }
 
+# Download one declared source archive URL. curl's own retry budget covers
+# transient failures against a single origin; it restarts every attempt from
+# the declared URL, so it cannot escape an origin that is deterministically
+# broken.
+kandelo_package_download_source_archive() {
+    local url="$1"
+    local output="$2"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
+        -fsSL "$url" -o "$output"
+}
+
+# Print the canonical ftp.gnu.org URL behind a ftpmirror.gnu.org URL, or fail
+# when the URL does not use that redirector.
+#
+# WHY this is an upstream-service boundary, not a package quirk:
+# ftpmirror.gnu.org is a redirector. It answers every request with a 302 to
+# one mirror it picks for the client, and it keeps picking the same mirror
+# even when that mirror is down. Because curl retries restart from the
+# declared URL, every retry lands on the same dead mirror. ftp.gnu.org is the
+# authoritative origin the redirector fronts, so it is the one fallback that
+# is guaranteed to publish the same release bytes; the sha256 check below
+# still governs what is accepted. The redirector strips one leading "gnu/"
+# path segment before forwarding, so the canonical path does the same.
+kandelo_package_canonical_gnu_source_url() {
+    local url="$1"
+    local path
+    case "$url" in
+        https://ftpmirror.gnu.org/*|http://ftpmirror.gnu.org/*) ;;
+        *) return 1 ;;
+    esac
+    path="${url#*://ftpmirror.gnu.org/}"
+    path="${path#gnu/}"
+    if [ -z "$path" ]; then
+        return 1
+    fi
+    printf 'https://ftp.gnu.org/gnu/%s\n' "$path"
+}
+
 kandelo_package_stage_verified_source() {
     local label="$1"
     local dest="$2"
@@ -610,7 +648,7 @@ kandelo_package_stage_verified_source() {
     local source_sha256="$5"
     local work_dir="$6"
     local archive_magic download_dir entry invalid tarball zip_listing
-    local zip_listing_long zip_root zip_top zip_top_name
+    local zip_listing_long zip_root zip_top zip_top_name fallback_url
     local resolver_archive resolver_source work_root output_root positional_source dest_path
     local -a zip_entries
 
@@ -717,10 +755,19 @@ kandelo_package_stage_verified_source() {
     # both gzip and xz archives, and tar should select the decompressor from
     # the verified bytes rather than a recipe-specific filename convention.
     tarball="$download_dir/source.archive"
-    if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$source_url" -o "$tarball"; then
-        rm -rf "$download_dir"
-        return 1
+    if ! kandelo_package_download_source_archive "$source_url" "$tarball"; then
+        fallback_url="$(kandelo_package_canonical_gnu_source_url "$source_url" || true)"
+        if [ -z "$fallback_url" ]; then
+            rm -rf "$download_dir"
+            return 1
+        fi
+        echo "WARN: $label download from $source_url failed;" \
+            "retrying from the canonical GNU origin $fallback_url" >&2
+        rm -f "$tarball"
+        if ! kandelo_package_download_source_archive "$fallback_url" "$tarball"; then
+            rm -rf "$download_dir"
+            return 1
+        fi
     fi
     if ! printf '%s  %s\n' "$source_sha256" "$tarball" | shasum -a 256 -c -; then
         rm -rf "$download_dir"

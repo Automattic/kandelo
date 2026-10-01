@@ -61,6 +61,20 @@ pub use wasm_posix_shared::ioctl_contract::{
 /// musl struct termios size: 4 flags (16) + c_line (1) + c_cc (32) + pad (3) + speeds (8) = 60
 pub const TERMIOS_SIZE: usize = wasm_posix_shared::ioctl_contract::TERMIOS_SIZE as usize;
 
+/// Whether ECHOCTL renders `byte` as a printable `^X` pair rather than echoing
+/// it raw.
+///
+/// Matches Linux's `echo_char()` in `n_tty.c`: every control character except
+/// TAB, which must keep its column-advancing effect. Newline never reaches
+/// this path — line completion handles it earlier.
+///
+/// This is what stops a program with no line editing from driving the terminal
+/// with its own keystrokes: an arrow key sends `ESC [ A`, and echoing the ESC
+/// raw would have the emulator obey it as a cursor-movement command.
+fn echoctl_renders_as_caret(byte: u8) -> bool {
+    (byte < 0x20 || byte == 0x7F) && byte != b'\t'
+}
+
 /// Window size structure
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -121,7 +135,7 @@ impl TerminalState {
             c_iflag: ICRNL | IXON | IXANY | IMAXBEL,
             c_oflag: OPOST | ONLCR,
             c_cflag: CS8 | CREAD | HUPCL | B38400,
-            c_lflag: ECHO | ECHOE | ECHOK | ICANON | ISIG | IEXTEN,
+            c_lflag: ECHO | ECHOE | ECHOK | ECHOCTL | ICANON | ISIG | IEXTEN,
             c_line: 0,
             c_cc,
             c_ispeed: B38400,
@@ -295,7 +309,12 @@ impl TerminalState {
         self.eof_pending = false;
         self.line_buffer.push(byte);
         if do_echo {
-            echo.push(byte);
+            if self.c_lflag & ECHOCTL != 0 && echoctl_renders_as_caret(byte) {
+                echo.push(b'^');
+                echo.push(byte ^ 0x40);
+            } else {
+                echo.push(byte);
+            }
         }
         (echo, None)
     }
@@ -567,6 +586,68 @@ mod tests {
         let (echo, sig) = ts.process_input_byte(b'\n');
         assert_eq!(echo, vec![b'\n']);
         assert!(sig.is_none());
+    }
+
+    #[test]
+    fn test_echoctl_is_on_by_default() {
+        // Linux's TTYDEF_LFLAG (sys/ttydefaults.h, vendored in libc/musl)
+        // includes ECHOCTL. A tty that echoes control bytes raw lets a program
+        // with no line editing drive the emulator with its own keystrokes.
+        let ts = TerminalState::new();
+        assert!(ts.c_lflag & ECHOCTL != 0);
+    }
+
+    #[test]
+    fn test_echoctl_echoes_escape_as_caret_bracket() {
+        // The reported failure: pressing an arrow key sends ESC [ A. Echoed
+        // raw, the emulator obeys it as a cursor-up command and the cursor
+        // walks over earlier output. ECHOCTL echoes ESC as the two printable
+        // characters "^[", so the sequence is visible and inert.
+        let mut ts = TerminalState::new();
+
+        let (echo, _) = ts.process_input_byte(0x1B);
+        assert_eq!(echo, b"^[");
+
+        // The rest of the sequence is printable and echoes unchanged.
+        let (echo, _) = ts.process_input_byte(b'[');
+        assert_eq!(echo, vec![b'[']);
+        let (echo, _) = ts.process_input_byte(b'A');
+        assert_eq!(echo, vec![b'A']);
+    }
+
+    #[test]
+    fn test_echoctl_does_not_alter_the_line_buffer() {
+        // ECHOCTL changes what the terminal displays, never what the program
+        // reads. The shell still receives the raw escape bytes.
+        let mut ts = TerminalState::new();
+        for byte in [0x1B, b'[', b'A', b'\n'] {
+            ts.process_input_byte(byte);
+        }
+        let mut buf = [0u8; 16];
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(&buf[..n], b"\x1b[A\n");
+    }
+
+    #[test]
+    fn test_echoctl_exempts_tab_and_newline() {
+        // POSIX exempts TAB, NL and the flow-control characters: echoing TAB
+        // as "^I" would break column alignment.
+        let mut ts = TerminalState::new();
+
+        let (echo, _) = ts.process_input_byte(b'\t');
+        assert_eq!(echo, vec![b'\t']);
+
+        let (echo, _) = ts.process_input_byte(b'\n');
+        assert_eq!(echo, vec![b'\n']);
+    }
+
+    #[test]
+    fn test_echoctl_disabled_echoes_control_bytes_raw() {
+        let mut ts = TerminalState::new();
+        ts.c_lflag &= !ECHOCTL;
+
+        let (echo, _) = ts.process_input_byte(0x1B);
+        assert_eq!(echo, vec![0x1B]);
     }
 
     #[test]

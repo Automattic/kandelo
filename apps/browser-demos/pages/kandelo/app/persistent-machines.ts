@@ -22,7 +22,6 @@ import {
   type WorkspaceCopyReport,
 } from "../../../../../web-libs/kandelo-session/src/opfs-workspace";
 import {
-  homeDirectoryOf,
   PERSISTENT_MACHINES_STORAGE_KEY,
   PersistentMachineRegistry,
   persistentMachineDescriptor,
@@ -108,7 +107,8 @@ export function usePersistentMachines(): PersistentMachines {
   const save = React.useCallback(() => run("saving", async () => {
     const descriptor = host.getBootDescriptor();
     if (persistentMachineIdOf(descriptor) !== null) return;
-    const home = homeDirectoryOf(descriptor);
+    const home = host.getHomeDirectory();
+    if (home === null) throw new Error("This machine declares no home directory to save.");
     const id = crypto.randomUUID();
     const name = randomMachineName(registry.list().map((machine) => machine.name));
     const tree = await host.readTree(home);
@@ -121,7 +121,7 @@ export function usePersistentMachines(): PersistentMachines {
     const machine: PersistentMachine = {
       id,
       name,
-      descriptor: persistentMachineDescriptor(descriptor, id),
+      descriptor: persistentMachineDescriptor(descriptor, id, home),
       createdAt: now,
       openedAt: now,
     };

@@ -10,6 +10,34 @@ The kernel must run in a dedicated worker on every host. `CentralizedKernelWorke
 must not be instantiated on the main thread. The main thread is a proxy for
 setup, UI, and I/O routing; it is not the syscall engine.
 
+A declared memory ceiling is a spent resource, not a free upper bound. On
+WebKit/JavaScriptCore — Safari on every device, and Bun — a shared
+`WebAssembly.Memory`'s `maximum` and a growable `SharedArrayBuffer`'s
+`maxByteLength` are charged against one process-wide reservation pool the
+moment the object is constructed, whether or not a single page is ever
+touched. When the pool is exhausted the constructor throws `Out of memory`
+with resident memory still low, and there is no recovery except declaring
+smaller ceilings. V8 and SpiderMonkey reserve address space lazily, so a
+ceiling that is invisible on Chrome, Firefox, and Node can still make Safari
+fail. Before adding or raising any ceiling, ask what it costs on the engine
+that charges it, and check whether the ceiling can even be reached: a
+SharedFS-backed filesystem cannot grow past the capacity recorded in its own
+superblock, so reserving beyond that recorded capacity buys nothing anywhere
+and costs real budget on WebKit. Host budgets live in
+`host/src/runtime-memory-profile.ts`; when a budget forces a smaller address
+space than a caller asked for, report the reduction rather than applying it
+silently.
+
+That budget is also visible to the guest, and must stay that way. A process
+address space is a bounded Wasm linear memory, so `getrlimit(RLIMIT_AS)`
+reports the real per-process ceiling rather than `RLIM_INFINITY` — it is the
+only way a program can discover a bound that differs by device (1 GiB under
+the desktop profile, 256 MiB under the constrained one). Software that sizes
+one large allocation from a compile-time default is the case that breaks:
+TyrQuake's 256 MiB default heap is the entire address space under the
+constrained budget, so the Quake demo died at startup on iOS alone. Port such
+programs to ask, rather than raising a global budget to fit one of them.
+
 Node.js and browser hosts are peers. A host-runtime behavior change is
 incomplete until both hosts have the same platform-observable behavior or the
 difference is explicitly justified by a real platform boundary. Do not land

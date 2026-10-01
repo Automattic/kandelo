@@ -185,6 +185,7 @@ function buildMainProgram(source: string, name: string, forceExports: string[] =
     "-Wl,--import-memory",
     "-Wl,--shared-memory",
     "-Wl,--max-memory=1073741824",
+    "-Wl,-z,stack-size=8388608",
     "-Wl,--allow-undefined",
     "-Wl,--global-base=1114112",
     "-Wl,--table-base=3",

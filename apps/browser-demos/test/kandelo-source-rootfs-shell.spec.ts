@@ -63,7 +63,10 @@ test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async 
   page.on("response", (response) => {
     if (response.ok()) fetchedAssets.push(response.url());
   });
-  await page.goto(new URL("?demo=shell", productBase).href, {
+  // `&profile=` names a profile THIS image declares. No `?vfs=` is needed:
+  // with none, the app boots the gallery roster's first product, which is the
+  // main shell image this deployment serves.
+  await page.goto(new URL("?profile=shell", productBase).href, {
     waitUntil: "domcontentloaded",
   });
   // "Ready" renders inside the demo guide panel, which no longer auto-opens.

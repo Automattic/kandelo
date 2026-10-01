@@ -3004,8 +3004,21 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
             verify_cache,
         )?;
         let actual_cache_receipt = before.cache_receipt_sha256.clone();
-        if receipt.manifest_sha256 != before.manifest_sha256
-            || receipt.cache_key_sha256 != before.cache_key_sha256
+        // `manifest_sha256` is the digest of the package.toml FILE, and it is
+        // recorded as provenance rather than compared here. It is a fact about
+        // one input file, while a cache entry's identity is the recipe the key
+        // describes — the merged view of package.toml and build.toml. Gating
+        // on the file bytes conflated the two: editing a comment, or any field
+        // the key does not model, changed the recorded digest without changing
+        // the key, so the package was neither rebuilt nor its receipt
+        // refreshed and finalization failed with no way to recover short of a
+        // manual revision bump.
+        //
+        // The fields that do determine a build are keyed instead, including
+        // host_tools and target_arches, so a change to any of them yields a
+        // different key, a different cache directory, and a fresh build whose
+        // receipt agrees. That is the check this comparison was reaching for.
+        if receipt.cache_key_sha256 != before.cache_key_sha256
             || receipt.cache_receipt_sha256 != actual_cache_receipt
         {
             return Err(format!(
@@ -5384,6 +5397,7 @@ fn program_package_index_for_root_once(
     root: &Path,
     registry: &Registry,
 ) -> Result<ProgramPackageIndex, String> {
+    let _hash_pass = BuildInputHashPass::enter();
     let canonical_root = std::fs::canonicalize(root)
         .map_err(|e| format!("resolve program registry root {}: {e}", root.display()))?;
     let mut first_existing_root = None;
@@ -6928,6 +6942,51 @@ fn compute_sha_with_identity_context_for_platform(
             // adjacent strings unambiguous (e.g. lib `"a"` + `"bc"` ≠
             // lib `"ab"` + `"c"`). A section tag (`"libs:"`, etc.)
             // before each list prevents cross-section collisions.
+            // Fold in the two manifest fields that determine a build but
+            // were otherwise unkeyed. Hashed only when they depart from the
+            // default, so the packages declaring neither keep byte-identical
+            // identity — the same conditional shape as the source-extract
+            // exclusions above.
+            //
+            // `host_tools` names the host programs a build probes for and the
+            // versions it demands; `target_arches` names the arches the
+            // package may be built for. Both change what a build does, so an
+            // entry produced under different values is not reusable, and the
+            // cached receipt refuses it. Keying them is what lets that refusal
+            // resolve itself by rebuilding instead of wedging the build.
+            //
+            // Deliberately absent: `license`, `kernel_abi`, and the manifest's
+            // free text. None of them determine the artifact. `license` is
+            // metadata; `kernel_abi` is recorded but not yet enforced, and an
+            // ABI bump already rebuilds every artifact through the
+            // `__abi_version` equality check; comments would rebuild a package
+            // and everything downstream for a documentation edit.
+            if !target.host_tools.is_empty() {
+                h.update(b"kandelo-host-tools-v1\n");
+                for tool in &target.host_tools {
+                    h.update(tool.name.as_bytes());
+                    h.update(b"|");
+                    let min = &tool.version_constraint.min;
+                    h.update(min.major.to_le_bytes());
+                    h.update(min.minor.to_le_bytes());
+                    h.update(min.patch.unwrap_or(0).to_le_bytes());
+                    h.update(b"|");
+                    for arg in &tool.probe.args {
+                        h.update(arg.as_bytes());
+                        h.update(b",");
+                    }
+                    h.update(b"|");
+                    h.update(tool.probe.version_regex.as_bytes());
+                    h.update(b"|");
+                }
+            }
+            if target.target_arches != [TargetArch::Wasm32] {
+                h.update(b"kandelo-target-arches-v1\n");
+                for arch_entry in &target.target_arches {
+                    h.update(arch_entry.as_str().as_bytes());
+                    h.update(b"|");
+                }
+            }
             h.update(b"outputs.libs:\n");
             for s in &target.outputs.libs {
                 h.update(s.as_bytes());
@@ -7169,26 +7228,20 @@ struct CargoLockPackage {
     checksum: Option<String>,
 }
 
-const FORK_INSTRUMENT_CARGO_METADATA_ARGS: &[&str] =
-    &["metadata", "--format-version=1", "--locked"];
-
 fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], String> {
     // WHY: program cache paths have no build-host dimension. Filtering this
     // graph through the current macOS or Linux host made one source tree
     // compute different identities. Cargo's unfiltered graph is the stable
     // union, so any dependency that can build the instrumenter invalidates the
     // shared generation without making the key host-specific.
-    let output = Command::new("cargo")
-        .args(FORK_INSTRUMENT_CARGO_METADATA_ARGS)
-        .current_dir(root)
-        .output()
-        .map_err(|e| format!("run cargo metadata for fork-instrument cache key: {e}"))?;
-    fork_instrument_cargo_dependency_digest_from_output(root, output, None)
+    let output = crate::cargo_closure::cargo_metadata_output(root)
+        .map_err(|e| format!("fork-instrument cache key: {e}"))?;
+    fork_instrument_cargo_dependency_digest_from_output(root, &output, None)
 }
 
 fn fork_instrument_cargo_dependency_digest_from_output(
     root: &Path,
-    output: std::process::Output,
+    output: &std::process::Output,
     inert_source_root: Option<&Path>,
 ) -> Result<[u8; 32], String> {
     if !output.status.success() {
@@ -8570,10 +8623,71 @@ fn require_selected_registry_build_input(
     ))
 }
 
+thread_local! {
+    /// Digests already computed in the current projection pass; `None`
+    /// outside one. See [`BuildInputHashPass`].
+    static BUILD_INPUT_HASH_MEMO: std::cell::RefCell<
+        Option<std::collections::HashMap<PathBuf, [u8; 32]>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Scope inside which [`hash_build_input`] reuses a digest it already
+/// computed for the same path.
+///
+/// WHY: one program-package projection pass recomputes every package's cache
+/// key, and each key recursively recomputes its dependencies' keys. On the
+/// full registry that was 14,844 hashes of 284 distinct inputs — 612 MB read
+/// for 17 MB of distinct content — and the host resolver runs that pass on
+/// every `resolveBinary` of a program. Nothing is built or written inside a
+/// pass, so an input cannot change between two reads within it.
+///
+/// The scope is deliberately one pass, not the whole projection:
+/// [`program_package_index_for_root_with`] computes the projection twice and
+/// compares the results to catch a registry changing underneath it. A memo
+/// spanning both passes would replay first-pass digests into the second and
+/// make that comparison unable to fail for an edited build input.
+struct BuildInputHashPass {
+    outermost: bool,
+}
+
+impl BuildInputHashPass {
+    fn enter() -> Self {
+        let outermost = BUILD_INPUT_HASH_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            if memo.is_none() {
+                *memo = Some(std::collections::HashMap::new());
+                true
+            } else {
+                false
+            }
+        });
+        Self { outermost }
+    }
+}
+
+impl Drop for BuildInputHashPass {
+    fn drop(&mut self) {
+        if self.outermost {
+            BUILD_INPUT_HASH_MEMO.with(|memo| *memo.borrow_mut() = None);
+        }
+    }
+}
+
 fn hash_build_input(path: &Path) -> Result<[u8; 32], String> {
+    if let Some(digest) = BUILD_INPUT_HASH_MEMO
+        .with(|memo| memo.borrow().as_ref().and_then(|memo| memo.get(path).copied()))
+    {
+        return Ok(digest);
+    }
     let mut h = Sha256::new();
     hash_build_input_entry(&mut h, path, path)?;
-    Ok(h.finalize().into())
+    let digest: [u8; 32] = h.finalize().into();
+    BUILD_INPUT_HASH_MEMO.with(|memo| {
+        if let Some(memo) = memo.borrow_mut().as_mut() {
+            memo.insert(path.to_path_buf(), digest);
+        }
+    });
+    Ok(digest)
 }
 
 fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<(), String> {
@@ -8718,6 +8832,15 @@ pub struct ResolveOpts<'a> {
     /// disables symlink placement (test fixtures, library-only
     /// resolves, etc.).
     pub binaries_dir: Option<&'a Path>,
+    /// Hermetic SourceOnlyV1 output tree (the local-build engine's
+    /// `--output-root`). When `Some`, source-build children receive it as
+    /// `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT`, so a recipe that boots the
+    /// kernel host (`host/src/binary-resolver.ts` demands that variable
+    /// whenever the policy env is set) works under the env-scrubbed
+    /// `dev-shell.sh` entry. `None` leaves the child's ambient value
+    /// untouched (standalone `build-deps resolve` callers export it
+    /// themselves).
+    pub source_only_binary_root: Option<&'a Path>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9340,6 +9463,7 @@ where
         force_source_build: forced.as_ref(),
         repo_root: Some(repo_root),
         binaries_dir: None,
+        source_only_binary_root: Some(output_root),
     };
     validate_resolve_cache_pair(&opts)?;
     let canonical_repo = exact_canonical_real_directory(repo_root, "local-build repository root")?;
@@ -10507,6 +10631,7 @@ fn ensure_built_uncached(
                 &cache_key_sha_hex,
                 opts.cache_root,
                 opts.source_cache_root,
+                opts.source_only_binary_root,
                 &canonical,
                 &dep_dirs,
                 &pkgconfig_path,
@@ -10538,6 +10663,7 @@ fn ensure_built_uncached(
                 &cache_key_sha_hex,
                 opts.cache_root,
                 opts.source_cache_root,
+                opts.source_only_binary_root,
                 &canonical,
                 &dep_dirs,
                 &pkgconfig_path,
@@ -13390,6 +13516,7 @@ fn build_into_cache(
     cache_key_sha: &str,
     cache_root: &Path,
     source_cache_root: Option<&Path>,
+    source_only_binary_root: Option<&Path>,
     canonical: &Path,
     dep_dirs: &BTreeMap<String, DirectDep>,
     pkgconfig_path: &str,
@@ -13601,6 +13728,9 @@ fn build_into_cache(
                 })?;
                 cmd.env(SOURCE_ONLY_POLICY_ENV, SOURCE_ONLY_POLICY_VALUE);
                 cmd.env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", base);
+                if let Some(binary_root) = source_only_binary_root {
+                    cmd.env("WASM_POSIX_SOURCE_ONLY_BINARY_ROOT", binary_root);
+                }
                 let registry_root = registry
                     .roots
                     .iter()
@@ -14793,9 +14923,10 @@ fn wasm_artifact_policy_failures_for(
 
     if fork_instrumentation == ForkInstrumentationPolicy::Disabled {
         if has_fork_artifact_surface {
-            failures.push(
-                "has ABI 43 wasm-fork-instrument metadata, imports, or exports but this output disables fork instrumentation".to_string(),
-            );
+            failures.push(format!(
+                "has ABI {} wasm-fork-instrument metadata, imports, or exports but this output disables fork instrumentation",
+                wasm_posix_shared::ABI_VERSION,
+            ));
         }
         return failures;
     }
@@ -16789,7 +16920,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     if extra.is_some() {
                         return Err("build-deps path: unexpected extra arg".into());
                     }
-                    cmd_path(&manifest, &registry, arch)
+                    cmd_path(&manifest, &registry, arch, resolve_policy)
                 }
                 "resolve" => {
                     if extra.is_some() {
@@ -16955,18 +17086,28 @@ fn cmd_sha(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<()
     Ok(())
 }
 
-fn cmd_path(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(), String> {
+fn cmd_path(
+    m: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    policy: ResolvePolicy,
+) -> Result<(), String> {
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
-    let sha = compute_sha(
+    let sha = compute_sha_for_policy(
         m,
         registry,
         arch,
         current_abi_version(),
+        policy,
         &mut memo,
         &mut chain,
     )?;
-    let path = canonical_path(&default_cache_root(), m, arch, &sha);
+    let cache_root = match policy {
+        ResolvePolicy::SourceOnlyV1 => source_only_cache_roots()?.compiled,
+        ResolvePolicy::Default => default_cache_root(),
+    };
+    let path = canonical_path(&cache_root, m, arch, &sha);
     println!("{}", path.display());
     Ok(())
 }
@@ -17146,6 +17287,7 @@ fn cmd_resolve(
         // package binaries via `tryResolveBinary` need the dep
         // symlinks too.
         binaries_dir,
+        source_only_binary_root: None,
     };
     let path = ensure_built(m, registry, arch, current_abi_version(), &opts)?;
 
@@ -22007,6 +22149,57 @@ wasm = "changing-command.wasm"
     }
 
     #[test]
+    fn program_package_projection_rejects_a_build_input_edit_between_snapshots() {
+        // Guards BuildInputHashPass's scope. A hash memo spanning both snapshot
+        // passes would replay the first pass's digest into the second and
+        // hide this edit; the edited input is a dependency's, so the edit only
+        // reaches `command` through the recursive dependency key.
+        let root = tempdir("program-projection-build-input-mutation");
+        write(&root, "dependency", "1.0.0", &[]);
+        write_build_with_input(&root, "dependency", 1, "recipe.txt", "dependency-one\n");
+        write_program(
+            &root,
+            "command",
+            "1.0.0",
+            &["dependency@1.0.0"],
+            ":",
+            &[("command", "command.wasm")],
+        );
+        write_build_with_input(&root, "command", 1, "recipe.txt", "command-one\n");
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let recipe = root.join("dependency").join("recipe.txt");
+        let mut mutate = || fs::write(&recipe, "dependency-two\n").unwrap();
+
+        let error = program_package_index_for_root_with(&root, &registry, &mut mutate)
+            .unwrap_err();
+        assert!(
+            error.contains("registry changed while generating"),
+            "got: {error}",
+        );
+    }
+
+    #[test]
+    fn build_input_hash_memo_is_scoped_to_one_pass() {
+        let root = tempdir("build-input-hash-memo-scope");
+        let input = root.join("input.txt");
+        fs::write(&input, "one\n").unwrap();
+        let (first, second_in_pass) = {
+            let _pass = BuildInputHashPass::enter();
+            let first = hash_build_input(&input).unwrap();
+            fs::write(&input, "two\n").unwrap();
+            (first, hash_build_input(&input).unwrap())
+        };
+        assert_eq!(first, second_in_pass, "a pass reuses the digest it computed");
+        assert_ne!(
+            hash_build_input(&input).unwrap(),
+            first,
+            "outside a pass every call reads the file",
+        );
+    }
+
+    #[test]
     fn program_package_projection_rejects_cross_package_mirror_collisions() {
         let registry = tempdir("program-projection-collision");
         for package in ["first", "second"] {
@@ -23450,12 +23643,12 @@ version = "0.1.0"
     #[test]
     fn fork_instrument_dependency_metadata_is_not_build_host_filtered() {
         assert_eq!(
-            FORK_INSTRUMENT_CARGO_METADATA_ARGS,
+            crate::cargo_closure::CARGO_METADATA_ARGS,
             ["metadata", "--format-version=1", "--locked"],
             "shared package cache keys must hash Cargo's cross-host dependency union"
         );
         assert!(
-            !FORK_INSTRUMENT_CARGO_METADATA_ARGS.contains(&"--filter-platform"),
+            !crate::cargo_closure::CARGO_METADATA_ARGS.contains(&"--filter-platform"),
             "a host-filtered dependency graph gives macOS and Linux different package identities"
         );
     }
@@ -24426,6 +24619,7 @@ spdx = "TestLicense"
             force_source_build: None,
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         }
     }
 
@@ -24446,6 +24640,7 @@ spdx = "TestLicense"
             force_source_build: None,
             repo_root: Some(repo_root),
             binaries_dir: None,
+            source_only_binary_root: None,
         }
     }
 
@@ -24465,6 +24660,7 @@ spdx = "TestLicense"
             force_source_build: None,
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         }
     }
 
@@ -29549,6 +29745,97 @@ fork_instrumentation = "disabled"
         );
     }
 
+    /// Identity covers what determines a build, and nothing else.
+    ///
+    /// The cached package receipt refuses an entry whose recorded identity no
+    /// longer matches, so whatever decides that refusal has to be in the key —
+    /// otherwise two manifests share one key, hence one cache directory, and
+    /// the refusal cannot be resolved by rebuilding. It previously wedged the
+    /// build until someone bumped build.toml.revision by hand.
+    ///
+    /// The converse matters just as much: a comment does not change what a
+    /// build produces, so keying it would rebuild a package and everything
+    /// downstream for a documentation edit.
+    #[test]
+    fn package_identity_tracks_build_determining_manifest_fields_only() {
+        let dir = tempdir("identity-manifest-fields");
+        let pkg = dir.join("libIdentity");
+        std::fs::create_dir_all(&pkg).unwrap();
+        let registry = Registry {
+            roots: vec![dir.clone()],
+        };
+
+        let base = r#"
+kind = "library"
+name = "libIdentity"
+version = "1.0.0"
+depends_on = []
+
+[source]
+url = "https://example.test/libIdentity-1.0.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/libidentity.a"]
+"#;
+        let key_of = |text: &str| -> [u8; 32] {
+            std::fs::write(pkg.join("package.toml"), text).unwrap();
+            let manifest = registry.load("libIdentity").unwrap();
+            compute_sha(
+                &manifest,
+                &registry,
+                TargetArch::Wasm32,
+                4,
+                &mut Default::default(),
+                &mut Default::default(),
+            )
+            .unwrap()
+        };
+
+        let baseline = key_of(base);
+
+        // A comment is not part of the build.
+        let commented = key_of(&format!("# an explanatory comment
+{base}"));
+        assert_eq!(
+            baseline, commented,
+            "a comment must not change package identity"
+        );
+
+        // `license` is metadata, not a build input.
+        let relicensed = key_of(&base.replace("TestLicense", "OtherTestLicense"));
+        assert_eq!(
+            baseline, relicensed,
+            "license is metadata and must not change package identity"
+        );
+
+        // `host_tools` decides which host programs a build probes for.
+        let with_host_tool = key_of(&format!(
+            "{base}
+[[host_tools]]
+name = \"python3\"
+version_constraint = \">=3.8\"
+"
+        ));
+        assert_ne!(
+            baseline, with_host_tool,
+            "declaring a host tool changes what the build requires"
+        );
+
+        // `arches` decides which targets the package may be built for.
+        let with_arches = key_of(&base.replace(
+            "depends_on = []",
+            "depends_on = []\narches = [\"wasm32\", \"wasm64\"]",
+        ));
+        assert_ne!(
+            baseline, with_arches,
+            "declaring extra arches changes what the build produces"
+        );
+    }
+
     #[test]
     fn source_kind_sha_omits_arch_and_abi_inputs() {
         let dir = tempdir("c3a");
@@ -29694,6 +29981,7 @@ spdx = "BSD-3-Clause"
             force_source_build: None,
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         let path = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert!(
@@ -30238,6 +30526,7 @@ libs = ["lib/libF1.a"]
             force_source_build: Some(&force),
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         let p3 = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert_eq!(p1, p3, "force-rebuild must land at the same canonical path");
@@ -30324,6 +30613,7 @@ libs = ["lib/libF3b.a"]
             force_source_build: Some(&force),
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         ensure_built(&ma, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
         ensure_built(&mb, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
@@ -32241,6 +32531,7 @@ revision = 1
             force_source_build: None,
             repo_root: None,
             binaries_dir: Some(&binaries),
+            source_only_binary_root: None,
         };
         ensure_built(
             &target,
@@ -32779,6 +33070,7 @@ printf NESTED > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             force_source_build: None,
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         let resolved = ensure_built(
             &manifest,
@@ -32789,6 +33081,52 @@ printf NESTED > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
         )
         .unwrap();
         assert_eq!(std::fs::read(resolved.join("lib/out.a")).unwrap(), b"NESTED");
+    }
+
+    #[test]
+    fn source_only_recipe_receives_engine_binary_root() {
+        let root = tempdir("source-only-binary-root-registry");
+        let cache_base = tempdir("source-only-binary-root-cache");
+        let cache = cache_base.join("source-only-v1/compiled");
+        std::fs::create_dir_all(&cache).unwrap();
+        let binary_root = tempdir("source-only-binary-root-output");
+        write_lib(
+            &root,
+            "libRooted",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"
+test "${{WASM_POSIX_SOURCE_ONLY_BINARY_ROOT:-}}" = "{}"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf ROOTED > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+"#,
+                binary_root.display()
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&root, "libRooted");
+        let registry = Registry { roots: vec![root] };
+        let manifest = registry.load("libRooted").unwrap();
+        let opts = ResolveOpts {
+            policy: ResolvePolicy::SourceOnlyV1,
+            source_cache_root: Some(&cache_base),
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: None,
+            repo_root: None,
+            binaries_dir: None,
+            source_only_binary_root: Some(&binary_root),
+        };
+        let resolved = ensure_built(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(resolved.join("lib/out.a")).unwrap(), b"ROOTED");
     }
 
     #[test]
@@ -34181,6 +34519,7 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             &"1".repeat(64),
             &cache,
             None,
+            None,
             &canonical,
             &deps,
             "",
@@ -34222,6 +34561,7 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
                 current_abi_version(),
                 &"1".repeat(64),
                 &cache,
+                None,
                 None,
                 &canonical,
                 &reserved,
@@ -34348,6 +34688,7 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             force_source_build: Some(&forced),
             repo_root: Some(&root),
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         let canonical =
             ensure_built(&manifest, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
@@ -34456,6 +34797,7 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             force_source_build: None,
             repo_root: Some(&root),
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         let cached = ensure_built(
             &manifest,
@@ -34727,6 +35069,7 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             force_source_build: None,
             repo_root: Some(repo),
             binaries_dir,
+            source_only_binary_root: None,
         };
         let path = ensure_built(m, registry, arch, TEST_ABI, &opts)?;
         if let Some(bdir) = binaries_dir {

@@ -29,6 +29,7 @@ Real, unmodified software compiled to WebAssembly:
 | Ruby | 3.3 | Interpreter with core stdlib |
 | SpiderMonkey | 140 ESR | JavaScript engine backing the Node.js-compatible runtime with Intl, SharedArrayBuffer, worker_threads, and npm package installs. |
 | GNU nano | 8.3 | Terminal text editor |
+| ELinks | 0.20 | Text-mode web browser: tables, tabs, HTTPS, and page JavaScript via QuickJS-NG. Carries two small portability patches (see `packages/registry/elinks/patches/`) |
 | dash | 0.5.12 | POSIX shell with pipes, redirects, job control |
 | GNU coreutils | 9.6 | 50+ utilities (ls, cat, sort, wc, etc.) |
 | GNU grep | 3.11 | Regular expression search |
@@ -160,7 +161,7 @@ npm install wasm-posix-host wasm-posix-sdk
 ```
 
 `wasm-posix-host` ships the compiled host runtime JS, worker entry
-points, `kernel.wasm`, and `rootfs.vfs`. `wasm-posix-sdk` ships the
+points, `kernel.wasm`, and `rootfs.vfs.zst`. `wasm-posix-sdk` ships the
 compiler wrappers, musl sysroot, and host glue files used when linking
 your own C/C++ programs. You still need LLVM 21+ on `PATH` (or
 `WASM_POSIX_LLVM_DIR`) because the SDK wraps clang rather than
@@ -199,11 +200,8 @@ then to a source build via the per-library `build-<name>.sh`. See
 [docs/package-management.md](docs/package-management.md) for the
 full schema, resolution order, and release-archive contract.
 
-If you prefer to skip cargo-driven dep resolution and pull every
-pre-built artifact at once, run `bash scripts/fetch-binaries.sh` after
-`./run.sh setup`. It walks every `packages/registry/<pkg>/package.toml`
-with a `[binary.<arch>]` block and resolves the archives into the
-content-addressed cache plus `binaries/programs/<arch>/` symlinks.
+`./run.sh setup` already resolves every registry package this way, so a
+fresh checkout needs no separate fetch step.
 
 To source-build the current seven browser VFS products and their declared
 dependency graph, use the local DAG builder from the repository root:
@@ -331,8 +329,11 @@ already active, reload the page; clearing site data may be needed if the browser
 keeps an older service worker around.
 
 The application owns one complete proxy profile. The current profile relays
-only `Accept`, `Content-Type`, `git-protocol`, `wp_blog`, and `wp_install`, by
-case-insensitive field name, at every configured proxy dispatch. Unsupported
+only `Accept`, `Content-Type`, `git-protocol`, `Range`, `wp_blog`, and
+`wp_install`, by case-insensitive field name, at every configured proxy
+dispatch, and also sends `Range` as `X-Cors-Proxy-Range` (a workaround the
+default proxy needs because WP Cloud, which hosts it, strips `Range` before
+the request reaches its PHP). Unsupported
 fields may be omitted with a diagnostic only for anonymous bodyless GETs;
 lossy credentialed, body-bearing, or non-GET requests fail before dispatch.
 This is a browser transport boundary, not full HTTP-header fidelity. Direct
@@ -359,6 +360,7 @@ bash packages/registry/perl/build-perl.sh           # Perl 5.40
 bash packages/registry/ruby/build-ruby.sh           # Ruby 3.3
 bash packages/registry/spidermonkey/build-spidermonkey.sh # SpiderMonkey JS + Node.js compat
 bash packages/registry/nano/build-nano.sh           # GNU nano 8.3
+cargo xtask build-deps resolve elinks               # ELinks 0.20 + QuickJS-NG (builds its library deps first)
 bash packages/registry/curl/build-curl.sh           # curl
 bash packages/registry/netcat/build-netcat.sh        # GNU Netcat 0.7.1
 bash packages/registry/make/build-make.sh           # GNU make

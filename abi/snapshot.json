@@ -1,5 +1,5 @@
 {
-  "abi_version": 45,
+  "abi_version": 46,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -993,7 +993,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 45,
+      "abi_version": 46,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1667,6 +1667,18 @@
       "wasm32Size": 16,
       "wasm64Size": 16
     },
+    "3222299872": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299873": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
     "3222561958": {
       "argKind": "pointer",
       "direction": "inout",
@@ -1812,6 +1824,15 @@
       "maxCallerSize": 256,
       "nrFirst": 32,
       "nrLast": 63
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 7,
+      "nrLast": 9
     },
     {
       "dir": 2,
@@ -2075,6 +2096,11 @@
       "kind": "func",
       "name": "kernel_epoll_pwait",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_epoll_watched_fd",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3003,6 +3029,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_restore_poll_sigmask",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rewinddir",
       "signature": "(i32) -> (i32)"
     },
@@ -3295,6 +3326,11 @@
       "kind": "func",
       "name": "kernel_statx",
       "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_swap_poll_sigmask",
+      "signature": "(i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -4440,9 +4476,14 @@
           "name": "_pad",
           "offset": 84,
           "span": 4
+        },
+        {
+          "name": "st_rdev",
+          "offset": 88,
+          "span": 8
         }
       ],
-      "size": 88
+      "size": 96
     },
     "WasmStatfs": {
       "fields": [

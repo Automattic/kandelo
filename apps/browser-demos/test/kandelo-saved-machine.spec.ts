@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { appUrl, gotoMachine } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 
 /**
@@ -8,11 +9,6 @@ import { runTerminalCommand } from "./support/terminal-command";
  * renames and deletes, a second tab is refused the workspace a running machine
  * holds, and a deleted machine's workspace is gone from origin storage.
  */
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
 
 const SAVE_BUTTON = { name: "Save", exact: true } as const;
 const MACHINES_BUTTON = { name: "Machines", exact: true } as const;
@@ -65,7 +61,7 @@ test.describe("saved machines", () => {
     context,
   }) => {
     test.setTimeout(600_000);
-    await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(page, "shell");
     await waitForShell(page);
     await runTerminalCommand(page, "echo world > hello.txt && pwd", "/home/maker");
 
@@ -128,7 +124,7 @@ test.describe("saved machines", () => {
 
   test("a share link for a saved machine names its image and carries no workspace @slow", async ({ page }) => {
     test.setTimeout(600_000);
-    await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(page, "shell");
     await waitForShell(page);
     await page.getByRole("button", SAVE_BUTTON).click();
     await page.getByRole("dialog", { name: "Save", exact: true })
@@ -137,13 +133,13 @@ test.describe("saved machines", () => {
     await expect.poll(() => new URL(page.url()).search).toBe("");
 
     // The address bar is bare, so the link names the image itself.
-    await page.getByRole("button", { name: "Share this machine as a link" }).click();
+    await page.getByRole("button", { name: "Share this computer as a link" }).click();
     const shareUrl = page.locator(".kshare-url");
-    await expect.poll(() => shareUrl.getAttribute("data-share-url")).toMatch(/\?demo=shell$/);
+    await expect.poll(() => shareUrl.getAttribute("data-share-url")).toMatch(/\?vfs=[^#&]+&profile=shell$/);
 
     // A script makes the link carry the descriptor, which is the machine on memory.
     await page.locator(".kshare textarea").fill("echo foo");
-    await expect.poll(() => shareUrl.getAttribute("data-share-url")).toMatch(/\?demo=shell#k1=/);
+    await expect.poll(() => shareUrl.getAttribute("data-share-url")).toMatch(/\?vfs=[^#&]+&profile=shell#k1=/);
     const url = await shareUrl.getAttribute("data-share-url");
     const { decodeBootDescriptor } = await import(
       "../../../web-libs/kandelo-session/src/boot-descriptor"

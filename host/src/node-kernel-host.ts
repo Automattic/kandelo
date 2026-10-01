@@ -31,6 +31,7 @@ import type {
   ReplicationReplicaHashResponse,
   ReplicationSealResponse,
   ResolveExecRequestMessage,
+  DestroyProgressEvent,
 } from "./node-kernel-protocol";
 import type { ReplicationLogEntry } from "./replication/log";
 import type { ReplicationReplaySpec } from "./replication/worker";
@@ -44,6 +45,7 @@ import {
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
+import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import {
   snapshotClosedLazyAssets,
   snapshotClosedLazyAssetSources,
@@ -146,8 +148,8 @@ export interface NodeKernelHostOptions {
   /**
    * Opt in to mount-based VFS for this kernel boot.
    *
-   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs`, falling back
-   *     to the resolver-managed `programs/rootfs.vfs` artifact, and apply
+   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs.zst`, falling back
+   *     to the resolver-managed `programs/rootfs.vfs.zst` artifact, and apply
    *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The worker constructs
    *     a `VirtualPlatformIO` (rootfs at `/`, host-fs scratch dirs at
    *     `/tmp` etc.).
@@ -268,6 +270,7 @@ export class NodeKernelHost {
   private replicationListeners = new Set<
     (entries: readonly ReplicationLogEntry[]) => void
   >();
+  private destroyProgress = createDestroyProgressFanout();
 
   constructor(options?: NodeKernelHostOptions) {
     this.options = options ?? {};
@@ -697,9 +700,25 @@ export class NodeKernelHost {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
     this.sendToWorker({ type: "kms_attach_canvas", crtcId, canvas, stats, opts });
+  }
+
+  /**
+   * Report the CRTC canvas's current display size in device pixels.
+   * Mirrors `BrowserKernel.kmsSetDisplaySize`. Feeds the virtual
+   * connector's PREFERRED mode (so mode-picking clients see it) and, when
+   * an OffscreenCanvas polyfill provides a real canvas, the
+   * `webgl2-scanout` presenter's drawing-buffer size.
+   */
+  kmsSetDisplaySize(
+    crtcId: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
+  ): void {
+    this.sendToWorker({ type: "kms_set_display_size", crtcId, width, height, physicalMm });
   }
 
   /**
@@ -1216,6 +1235,13 @@ export class NodeKernelHost {
     };
   }
 
+  /** Subscribe to teardown progress while `destroy()` reaps processes. */
+  subscribeDestroyProgress(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void {
+    return this.destroyProgress.subscribe(cb);
+  }
+
   /**
    * Read the directory tree under `path` from the worker-owned VFS. This is
    * the Node peer of BrowserKernel.readTreeFromVfs().
@@ -1336,6 +1362,7 @@ export class NodeKernelHost {
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
+    this.destroyProgress.clear();
     if (gracefulDetachFailure || realmTerminationFailure) {
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -1497,6 +1524,9 @@ export class NodeKernelHost {
           listener(msg.entries);
         }
         break;
+      case "destroy_progress":
+        this.destroyProgress.emit(msg.event);
+        break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol
         // grows. Runtime values still originate outside TypeScript, so make a
@@ -1612,7 +1642,7 @@ function resolveRootfsImage(
 }
 
 export interface ResolvedRootfsArtifact {
-  resolverRequest: "rootfs.vfs" | "programs/rootfs.vfs";
+  resolverRequest: "rootfs.vfs.zst" | "programs/rootfs.vfs.zst";
   selectedPath: string;
 }
 
@@ -1621,22 +1651,22 @@ export function resolveRootfsArtifact(
 ): ResolvedRootfsArtifact {
   try {
     return {
-      resolverRequest: "rootfs.vfs",
-      selectedPath: resolver("rootfs.vfs"),
+      resolverRequest: "rootfs.vfs.zst",
+      selectedPath: resolver("rootfs.vfs.zst"),
     };
   } catch (rootfsError) {
     try {
       return {
-        resolverRequest: "programs/rootfs.vfs",
-        selectedPath: resolver("programs/rootfs.vfs"),
+        resolverRequest: "programs/rootfs.vfs.zst",
+        selectedPath: resolver("programs/rootfs.vfs.zst"),
       };
     } catch (programsError) {
       const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
       const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);
       throw new Error(
         `rootfsImage:"default" requested but no rootfs image was available.\n` +
-          `Tried rootfs.vfs:\n${rootfsMessage}\n` +
-          `Tried programs/rootfs.vfs:\n${programsMessage}\n` +
+          `Tried rootfs.vfs.zst:\n${rootfsMessage}\n` +
+          `Tried programs/rootfs.vfs.zst:\n${programsMessage}\n` +
           `Run scripts/build-rootfs.sh, fetch/build the rootfs package, or pass explicit bytes.`,
       );
     }

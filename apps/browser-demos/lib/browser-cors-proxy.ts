@@ -5,14 +5,36 @@ import {
 
 const defaultConfig = validateBrowserCorsProxyConfig({
   url: "https://wordpress-playground-cors-proxy.net/?",
+  // WHY range: forwarding it is what makes a byte-range read possible at
+  // all. It is relayed opaquely; nothing here parses it. A relay that still
+  // ignores it answers 200 with the whole entity, which fetchByteRange()
+  // reports as such instead of as the requested slice.
+  //
+  // WHY NOT if-range: the Playground proxy's preflight does not allow it, and
+  // If-Range is never CORS-safelisted, so listing it here would make every
+  // request that carries it fail preflight. Unlisted, it is never sent;
+  // BrowserCorsProxy.fetch() and the service worker apply its semantics to
+  // the answer instead (RFC 9110 section 13.1.5).
   allowedRequestHeaderNames: [
     "accept",
     "content-type",
     "git-protocol",
+    "range",
     "wp_blog",
     "wp_install",
   ],
   allowAnonymousGetHeaderOmission: true,
+  // WORKAROUND: WP Cloud, which hosts the Playground CORS proxy, strips the
+  // Range header before the request reaches the proxy's PHP, so ranges are
+  // also sent as X-Cors-Proxy-Range (see
+  // BrowserCorsProxyConfig.rangeRequestHeaderAlias). Remove this line, and
+  // the workaround it enables, as soon as WP Cloud relays Range headers to
+  // PHP.
+  // TECHNICAL DEBT: the alias is not a CORS-safelisted header, so ranged
+  // requests need a CORS preflight. Aliased requests also skip the HTTP
+  // cache, which in Chromium means one preflight per ranged request. See
+  // docs/future-improvements.md.
+  rangeRequestHeaderAlias: "x-cors-proxy-range",
 });
 if (defaultConfig === undefined) {
   throw new Error("default browser CORS proxy configuration is missing");

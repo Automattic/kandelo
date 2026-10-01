@@ -11,26 +11,37 @@ const serviceWorkerPath = fileURLToPath(
   new URL("../public/service-worker.js", import.meta.url),
 );
 
+// The production Playground proxy's preflight, measured 2026-09-28. It
+// allows Range and its X-Cors-Proxy-Range workaround, not If-Range.
 const ALLOWED_PREFLIGHT_HEADERS = [
   "Accept",
   "Authorization",
   "Content-Type",
   "git-protocol",
+  "Range",
   "wp_blog",
   "wp_install",
   "x-cors-proxy-allowed-request-headers",
   "x-cors-proxy-content-type",
+  "x-cors-proxy-range",
 ].join(", ");
+
+// Byte N is N mod 251, so a slice from the wrong offset cannot match.
+const RANGED_ENTITY = Buffer.from(
+  Array.from({ length: 4096 }, (_, index) => index % 251),
+);
 
 const EFFECTIVE_PROXY_CONFIG = {
   allowedRequestHeaderNames: [
     "accept",
     "content-type",
     "git-protocol",
+    "range",
     "wp_blog",
     "wp_install",
   ],
   allowAnonymousGetHeaderOmission: true,
+  rangeRequestHeaderAlias: "x-cors-proxy-range",
 } as const;
 
 type TestResult = {
@@ -50,8 +61,9 @@ type TestRunnerWindow = Window & {
     options?: {
       corsProxy?: {
         url: string;
-        allowedRequestHeaderNames: string[];
+        allowedRequestHeaderNames: readonly string[];
         allowAnonymousGetHeaderOmission: boolean;
+        rangeRequestHeaderAlias?: string;
       };
     },
   ): Promise<TestResult>;
@@ -109,6 +121,50 @@ function constrainedProxyFixture(observed: ProxyRequest[]): Server {
       return;
     }
     const proxied = request.url?.startsWith("/?") === true;
+    // Like production: the front end strips Range before the proxy sees it,
+    // so only the X-Cors-Proxy-Range workaround yields a 206.
+    const aliased = /^bytes=(\d*)-(\d*)$/.exec(
+      String(request.headers["x-cors-proxy-range"] ?? ""),
+    );
+    const ranged = proxied && request.url!.includes("/archive");
+    // Production's caching headers: no-cache permits storage (with
+    // revalidation), and a strong ETag lets the HTTP cache revalidate and
+    // splice partial entries. That is what lets the cache rewrite Range below
+    // the service worker without rewriting the alias, so the fixture keeps it.
+    if (ranged && aliased === null) {
+      response.writeHead(200, {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, ETag",
+        "Content-Type": "application/octet-stream",
+        "Cache-Control": "no-cache",
+        "Cross-Origin-Resource-Policy": "cross-origin",
+        ETag: '"v1"',
+        Vary: "Origin",
+      });
+      response.end(RANGED_ENTITY);
+      return;
+    }
+    if (ranged && aliased !== null) {
+      const size = RANGED_ENTITY.byteLength;
+      const start = aliased[1] === ""
+        ? size - Number(aliased[2])
+        : Number(aliased[1]);
+      const end = aliased[1] === "" || aliased[2] === ""
+        ? size - 1
+        : Math.min(Number(aliased[2]), size - 1);
+      response.writeHead(206, {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, ETag",
+        "Content-Range": `bytes ${start}-${end}/${size}`,
+        "Content-Type": "application/octet-stream",
+        "Cache-Control": "no-cache",
+        "Cross-Origin-Resource-Policy": "cross-origin",
+        ETag: '"v1"',
+        Vary: "Origin",
+      });
+      response.end(RANGED_ENTITY.subarray(start, end + 1));
+      return;
+    }
     response.writeHead(200, {
       ...(proxied ? { "Access-Control-Allow-Origin": origin } : {}),
       "Content-Type": "text/plain",
@@ -145,9 +201,10 @@ test("Vite serves a service worker with the complete proxy profile", async ({
   expect(source).not.toContain("__CORS_PROXY_CONFIG__");
   expect(source).not.toContain("__CORS_PROXY_URL__");
   expect(source).toContain(
-    '"allowedRequestHeaderNames":["accept","content-type","git-protocol","wp_blog","wp_install"]',
+    '"allowedRequestHeaderNames":["accept","content-type","git-protocol","range","wp_blog","wp_install"]',
   );
   expect(source).toContain('"allowAnonymousGetHeaderOmission":true');
+  expect(source).toContain('"rangeRequestHeaderAlias":"x-cors-proxy-range"');
 });
 
 test("service worker projects both configured proxy boundaries", async ({
@@ -304,6 +361,325 @@ test("service worker projects both configured proxy boundaries", async ({
     expect(corsErrors).toEqual([]);
   } finally {
     await Promise.all([close(app), close(proxy), close(directTarget)]);
+  }
+});
+
+test("service worker relays byte-range reads through the development relay", async ({
+  page,
+}) => {
+  // Byte N of the entity is N mod 251, so a slice from the wrong offset
+  // cannot match the expected bytes.
+  const entity = Buffer.from(
+    Array.from({ length: 8192 }, (_, index) => index % 251),
+  );
+  let streamingClosed = false;
+  const upstreamRanges: Array<string | undefined> = [];
+  const upstream = createServer((request, response) => {
+    upstreamRanges.push(request.headers.range);
+    if (request.url === "/streaming") {
+      // Send one chunk and hold the body open: only a cancellation that
+      // crosses the service worker and the relay can close this request.
+      response.once("close", () => {
+        streamingClosed = true;
+      });
+      response.writeHead(206, {
+        "Content-Range": `bytes 0-${entity.byteLength - 1}/${entity.byteLength}`,
+        "Content-Type": "application/octet-stream",
+      });
+      response.write(entity.subarray(0, 1024));
+      return;
+    }
+    const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range ?? "");
+    if (request.url === "/ranged" && match !== null) {
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      response.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${entity.byteLength}`,
+        "Content-Type": "application/octet-stream",
+      });
+      response.end(entity.subarray(start, end + 1));
+      return;
+    }
+    // A range-ignoring origin, like the production proxy today.
+    response.writeHead(200, { "Content-Type": "application/octet-stream" });
+    response.end(entity);
+  });
+  const upstreamRoot = await listen(upstream);
+
+  try {
+    await page.goto("/pages/test-runner/", { waitUntil: "domcontentloaded" });
+    await page.evaluate(async () => {
+      await navigator.serviceWorker.register("/service-worker.js", {
+        scope: "/",
+        updateViaCache: "none",
+      });
+      await navigator.serviceWorker.ready;
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
+
+    const results = await page.evaluate(async (root) => {
+      async function read(path: string, range: string) {
+        const response = await fetch(`${root}${path}`, {
+          headers: { Range: range },
+        });
+        return {
+          status: response.status,
+          contentRange: response.headers.get("content-range"),
+          bytes: Array.from(new Uint8Array(await response.arrayBuffer())),
+        };
+      }
+      return {
+        tail: await read("/ranged", "bytes=8170-8191"),
+        middle: await read("/ranged", "bytes=1000-1015"),
+        ignored: await read("/no-ranges", "bytes=1000-1015"),
+      };
+    }, upstreamRoot);
+
+    expect(results.tail).toEqual({
+      status: 206,
+      contentRange: "bytes 8170-8191/8192",
+      bytes: Array.from(entity.subarray(8170, 8192)),
+    });
+    expect(results.middle).toEqual({
+      status: 206,
+      contentRange: "bytes 1000-1015/8192",
+      bytes: Array.from(entity.subarray(1000, 1016)),
+    });
+    // A range-ignoring answer stays a 200 with the whole entity from offset
+    // 0; nothing on the path reshapes it into a fake slice.
+    expect(results.ignored.status).toBe(200);
+    expect(results.ignored.contentRange).toBeNull();
+    expect(results.ignored.bytes).toEqual(Array.from(entity));
+    expect(upstreamRanges).toEqual([
+      "bytes=8170-8191",
+      "bytes=1000-1015",
+      "bytes=1000-1015",
+    ]);
+
+    // Abandoning a read mid-body cancels the upstream transfer. An abort
+    // before response headers is not covered: Chromium and WebKit did not
+    // propagate it to the service worker's request signal when measured, so
+    // it is a documented browser boundary (docs/browser-support.md).
+    await page.evaluate(async (root) => {
+      const controller = new AbortController();
+      const response = await fetch(`${root}/streaming`, {
+        headers: { Range: "bytes=0-" },
+        signal: controller.signal,
+      });
+      await response.body!.getReader().read();
+      controller.abort();
+    }, upstreamRoot);
+    await expect.poll(() => streamingClosed, { timeout: 10_000 }).toBe(true);
+  } finally {
+    upstream.closeAllConnections();
+    await close(upstream);
+  }
+});
+
+test("service worker reads ranges through a production-shaped proxy", async ({
+  browserName,
+  context,
+  page,
+}) => {
+  const observed: ProxyRequest[] = [];
+  const proxy = constrainedProxyFixture(observed);
+  const proxyRoot = await listen(proxy);
+  const rawServiceWorker = await readFile(serviceWorkerPath, "utf8");
+  const serviceWorker = rawServiceWorker.replace(
+    '"__CORS_PROXY_CONFIG__"',
+    JSON.stringify({ url: `${proxyRoot}/?`, ...EFFECTIVE_PROXY_CONFIG }),
+  );
+  const app = createServer((request, response) => {
+    if (request.url === "/service-worker.js") {
+      response.writeHead(200, { "Content-Type": "application/javascript" });
+      response.end(serviceWorker);
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/html" });
+    response.end(`<!doctype html><script>
+      window.ready = navigator.serviceWorker.controller !== null;
+      if (!window.ready) {
+        navigator.serviceWorker.register('/service-worker.js', {
+          scope: '/',
+          updateViaCache: 'none',
+        }).then(() =>
+          navigator.serviceWorker.ready.then(() => location.reload()));
+      }
+    </script>`);
+  });
+  const appRoot = await listen(app);
+  const warnings: string[] = [];
+  context.on("console", (message) => {
+    if (message.type() === "warning") warnings.push(message.text());
+  });
+
+  try {
+    await page.goto(appRoot);
+    await page.waitForFunction(
+      () => (window as Window & { ready?: boolean }).ready === true,
+    );
+    const results = await page.evaluate(async () => {
+      async function read(headers: Record<string, string>) {
+        const response = await fetch("https://origin.example/archive.zip", {
+          headers,
+        });
+        return {
+          status: response.status,
+          contentRange: response.headers.get("content-range"),
+          bytes: Array.from(new Uint8Array(await response.arrayBuffer())),
+        };
+      }
+      return {
+        // A suffix range is never CORS-safelisted, so this one preflights.
+        suffix: await read({ Range: "bytes=-22" }),
+        bounded: await read({ Range: "bytes=1000-1015" }),
+        // Overlapping reads: with cacheable answers, Chromium's HTTP cache
+        // used to narrow Range to the missing bytes while the alias kept the
+        // original range, and spliced bodies shorter than Content-Range.
+        overlapFirst: await read({ Range: "bytes=2000-2099" }),
+        overlapShifted: await read({ Range: "bytes=2050-2149" }),
+        overlapWider: await read({ Range: "bytes=2000-2199" }),
+        // If-Range is never sent (the proxy's preflight would reject it);
+        // the service worker applies it to the answer instead.
+        currentIfRange: await read({ Range: "bytes=0-3", "If-Range": '"v1"' }),
+        staleIfRange: await read({ Range: "bytes=0-3", "If-Range": '"v0"' }),
+      };
+    });
+
+    expect(results.suffix).toEqual({
+      status: 206,
+      contentRange: "bytes 4074-4095/4096",
+      bytes: Array.from(RANGED_ENTITY.subarray(4074)),
+    });
+    expect(results.bounded).toEqual({
+      status: 206,
+      contentRange: "bytes 1000-1015/4096",
+      bytes: Array.from(RANGED_ENTITY.subarray(1000, 1016)),
+    });
+    // The resource is still "v1": the slice stands.
+    expect(results.currentIfRange).toEqual({
+      status: 206,
+      contentRange: "bytes 0-3/4096",
+      bytes: Array.from(RANGED_ENTITY.subarray(0, 4)),
+    });
+    // The client's copy is "v0": like a server whose If-Range condition is
+    // false, the answer is the whole current representation.
+    expect(results.staleIfRange).toEqual({
+      status: 200,
+      contentRange: null,
+      bytes: Array.from(RANGED_ENTITY),
+    });
+
+    for (const [name, start, end] of [
+      ["overlapFirst", 2000, 2099],
+      ["overlapShifted", 2050, 2149],
+      ["overlapWider", 2000, 2199],
+    ] as const) {
+      expect(results[name], name).toEqual({
+        status: 206,
+        contentRange: `bytes ${start}-${end}/4096`,
+        bytes: Array.from(RANGED_ENTITY.subarray(start, end + 1)),
+      });
+    }
+
+    const gets = observed.filter(({ method }) => method === "GET");
+    // Every ranged request reached the proxy with Range and its alias equal,
+    // and no If-Range ever went out: not the page's, and not one added by
+    // the HTTP cache (aliased requests bypass it).
+    expect(gets.map(({ headers }) => [
+      headers.range,
+      headers["x-cors-proxy-range"],
+      headers["if-range"],
+    ])).toEqual([
+      ["bytes=-22", "bytes=-22", undefined],
+      ["bytes=1000-1015", "bytes=1000-1015", undefined],
+      ["bytes=2000-2099", "bytes=2000-2099", undefined],
+      ["bytes=2050-2149", "bytes=2050-2149", undefined],
+      ["bytes=2000-2199", "bytes=2000-2199", undefined],
+      ["bytes=0-3", "bytes=0-3", undefined],
+      ["bytes=0-3", "bytes=0-3", undefined],
+      [undefined, undefined, undefined],
+    ]);
+    expect(observed.some(({ method }) => method === "OPTIONS")).toBe(true);
+    // Playwright receives service-worker console messages only in Chromium,
+    // so only there can this show If-Range was honored, not dropped.
+    if (browserName === "chromium") {
+      expect(warnings.filter((message) => message.includes("if-range")))
+        .toEqual([]);
+    }
+  } finally {
+    await Promise.all([close(app), close(proxy)]);
+  }
+});
+
+test("guest curl reads a range through a production-shaped proxy", async ({
+  page,
+}) => {
+  const observed: ProxyRequest[] = [];
+  const proxy = constrainedProxyFixture(observed);
+  const proxyRoot = await listen(proxy);
+  const targetRoot = proxyRoot.replace("127.0.0.1", "localtest.me");
+  try {
+    const curlBytes = Array.from(await readFile(curlPath));
+    await page.goto("/pages/test-runner/", { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+      () => (window as unknown as TestRunnerWindow).__testRunnerReady === true,
+    );
+    const result = await page.evaluate(
+      async ({ bytes, proxyUrl, proxyConfig, targetUrl }) =>
+        (window as unknown as TestRunnerWindow).__runTest(
+          new Uint8Array(bytes).buffer,
+          // Bytes 2040-2055 of the entity are the printable run " !"..."/",
+          // so stdout can carry the slice itself, followed by the status.
+          ["curl", "-sS", "-r", "2040-2055", "-w", "|%{http_code}", targetUrl],
+          60_000,
+          { corsProxy: { url: `${proxyUrl}/?`, ...proxyConfig } },
+        ),
+      {
+        bytes: curlBytes,
+        proxyUrl: proxyRoot,
+        proxyConfig: EFFECTIVE_PROXY_CONFIG,
+        targetUrl: `${targetRoot}/archive.zip`,
+      },
+    );
+
+    expect(result.exitCode, JSON.stringify({ result, observed }, null, 2)).toBe(0);
+    expect(result.stdout).toBe(
+      `${RANGED_ENTITY.subarray(2040, 2056).toString("latin1")}|206`,
+    );
+    const proxied = observed.find(
+      ({ method, url }) => method === "GET" && url.startsWith("/?"),
+    );
+    expect(proxied?.headers.range).toBe("bytes=2040-2055");
+    expect(proxied?.headers["x-cors-proxy-range"]).toBe("bytes=2040-2055");
+
+    // A resume whose stored ETag is stale gets the whole current file.
+    observed.length = 0;
+    const stale = await page.evaluate(
+      async ({ bytes, proxyUrl, proxyConfig, targetUrl }) =>
+        (window as unknown as TestRunnerWindow).__runTest(
+          new Uint8Array(bytes).buffer,
+          ["curl", "-sS", "-r", "2040-2055", "-H", 'If-Range: "v0"',
+            "-o", "/dev/null", "-w", "%{http_code} %{size_download}", targetUrl],
+          60_000,
+          { corsProxy: { url: `${proxyUrl}/?`, ...proxyConfig } },
+        ),
+      {
+        bytes: curlBytes,
+        proxyUrl: proxyRoot,
+        proxyConfig: EFFECTIVE_PROXY_CONFIG,
+        targetUrl: `${targetRoot}/archive.zip`,
+      },
+    );
+    expect(stale.exitCode, JSON.stringify({ stale, observed }, null, 2)).toBe(0);
+    expect(stale.stdout).toBe(`200 ${RANGED_ENTITY.byteLength}`);
+    expect(
+      observed.filter(({ method, url }) => method === "GET" && url.startsWith("/?"))
+        .map(({ headers }) => [headers.range, headers["if-range"]]),
+    ).toEqual([["bytes=2040-2055", undefined], [undefined, undefined]]);
+  } finally {
+    await close(proxy);
   }
 });
 

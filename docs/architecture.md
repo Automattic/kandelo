@@ -975,6 +975,8 @@ A short retry timer remains a scheduling safety net. `ENOLCK` is a completed
 guest-visible failure, not a retry result. Native runtimes can consume the same
 generic wake event without implementing advisory-lock storage.
 
+**Finite-timeout waits persist their deadline across retries.** Each retry re-enters the handler (`handleBlockingRetry`, `handleSelect`, `handlePselect6`, `handleEpollPwait`) from scratch, so a handler that recomputed `deadline = now + timeout` on every wake would never time out on a busy system — broad wakes arrive every ~10 ms and each one used to push the deadline out again. The kernel worker stores the deadline on the waiting channel itself (`ChannelInfo.readinessDeadline`, via `getReadinessDeadline`): it is set once when the wait first blocks, checked on every re-entry, and cleared by `clearReadinessWait` when the call completes or is abandoned.
+
 ## Multi-Process Model
 
 ### Task identity allocation
@@ -1821,7 +1823,7 @@ call.
 
 `/etc/passwd`, `/etc/group`, `/etc/hosts`, `/etc/nsswitch.conf`,
 `/etc/resolv.conf`, and static OpenSSL policy/trust files under `/etc/ssl` are
-real files inside `host/wasm/rootfs.vfs`, served through the `/` mount. Any
+real files inside `host/wasm/rootfs.vfs.zst`, served through the `/` mount. Any
 program that calls `getpwnam`, `gethostbyname`, `getservbyname`, or OpenSSL's
 default configuration/trust lookup reads the same image bytes that `cat` would.
 The kernel synthesizes `/etc/mtab` because it reports live mount state; it does
@@ -1861,7 +1863,7 @@ VFS images can also carry image-level metadata outside the guest file tree. The 
 `NodeKernelHost` accepts
 `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With
 `"default"` (the path used by the vitest suite), the worker reads
-`host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via the private-session
+`host/wasm/rootfs.vfs.zst`, applies `DEFAULT_MOUNT_SPEC` via the private-session
 Node resolver, and constructs a `VirtualPlatformIO` for the kernel. The image
 supplies both `/etc/ssl/cert.pem` and
 `/etc/ssl/certs/ca-certificates.crt`; Node does not silently add them to
@@ -1890,7 +1892,7 @@ The browser test runner and Git test assemble small kernel-owned VFS images with
 serialize them with `finalizeKernelOwnedImage` and boot them through
 `BrowserKernel.boot`. Before serialization, the shared host helper
 `overlayEtcFromRootfs` in `host/src/vfs/rootfs-overlay.ts` recursively merges
-`/etc/**` from the canonical `rootfs.vfs`. Existing leaves and directory
+`/etc/**` from the canonical `rootfs.vfs.zst`. Existing leaves and directory
 metadata remain caller-owned, while missing canonical descendants such as
 `/etc/ssl/openssl.cnf` retain their source modes and ownership. Missing
 canonical `/etc` state, short reads, and target capacity failures abort image
@@ -2489,6 +2491,193 @@ the default 256-frame (5.333 ms) fragment cadence against the same 21.333 ms
 bounded queue. These are footprint and configured-buffer measurements, not a
 throughput or performance claim.
 
+## DRM/KMS (`/dev/dri/card0`, `/dev/dri/renderD128`)
+
+This section is the implementation walk-through; [Linux-compatible graphics devices](#linux-compatible-graphics-devices) states the device-level contract.
+
+`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (only `DUMB_BUFFER` and `PRIME` report support; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. There is no plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same surface unmodified. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the pane's aspect ratio at a fixed 1080 logical height — `round(1080 × aspect) × 1080`, width clamped to [1440, 3840] — so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The mode is sampled per GETCONNECTOR call but effectively fixed once a client boots; resizing the pane afterwards reintroduces letterboxing rather than switching modes. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+
+`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
+
+`DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) is the fully GPU-backed tier: the bo is a host `WebGLTexture` plus a color-attachment FBO — no SAB, unmappable on the CPU. WebGL textures are not shareable across contexts, so all GPU-tier bos and every GL client that touches them live on **one** shared multiplexer context: the DRM-master compositor's scanout WebGL2 context. A non-master GL client (which has no display canvas of its own) is routed onto that shared context at `host_gl_create_context`; the existing `GlMuxer` (keyed by the WebGL2 context) multiplexes the compositor and its clients by replaying each binding's shadow state on `switchTo`. A client renders into the bo by targeting its FBO: the bo handle reaches the next `eglCreateWindowSurface`'s `GLIO_CREATE_SURFACE` either explicitly (`libEGL`'s `wpkEglSetWindowSurfaceTarget(handle)`) or, for a libwayland-egl `wl_egl_window`, from the bo that window allocated; the kernel translates the per-fd handle to a global bo id and the host redirects the client's "bind default framebuffer 0" to the bo's FBO (sizing the viewport to the bo). Because a toolkit may create the window surface *before* the GL context, the redirect target is captured at surface creation and (re)applied at whichever of context-creation or surface-creation runs last, since it needs both `b.gl` and the resolved bo. A `wl_egl_window_resize` (a tiling compositor resizes every window it maps) gives the window a new bo at the new size and has `libEGL` destroy and re-create the window surface against it, flushing first so commands already queued land in the old bo; the old buffer is destroyed only after the next `eglSwapBuffers` has attached and committed its successor. As in Mesa, the resize takes effect from the next frame. `eglSwapBuffers` flushes the shared context as the buffer-ready fence before `wl_surface.commit`; command order through the one submit queue gives render-before-sample ordering for free (no explicit sync object in v1). `BIND_FOREIGN_TEXTURE` on a GPU-tier bo then degenerates to returning the texture id — true zero-copy, no upload. Allocation degrades to a CPU-tier dumb bo whenever no shared context exists — headless Node has no WebGL2, and in the browser the compositor must have created its context first — so `libgbm` only requests the GPU tier for render-only bos (RENDERING set, none of SCANOUT/CURSOR/WRITE/LINEAR) and falls back to CREATE_DUMB on any error. This producer path is browser-only. The GPU-tier bo's FBO is color-only; a depth attachment (required for arbitrary non-convex 3D) is tracked as follow-up (plan §7.1).
+
+`MODE_PAGE_FLIP` latches the new framebuffer as the host-side scanout immediately (`host_kms_set_fb`, same call `MODE_SETCRTC` makes) and queues a flip-complete event that `kernel_vblank` — driven by the host's 60 Hz vblank pump — retires into the fd's event ring at the next tick. Two consequences: libdrm's `drmModePageFlip → poll → drmHandleEvent` loop runs at refresh rate rather than ioctl rate, and any host-side consumer of the current scanout (the vblank pump's WebGL2 scanout presenter or the legacy 2D canvas blit used by CPU-rendered demos) always reads the most recently flipped buffer, never a double-buffered client's back buffer. The immediate latch is race-free because a well-behaved client fully paints a bo before flipping to it and only reuses the old bo after the flip-complete event.
+
+## Wayland compositor (`wlcompositor`, `wlterm`)
+
+On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.25.0 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). Buffer sharing is zero-copy: clients allocate `wl_shm` pools backed by `gbm` dumb BOs and pass the prime-fd to the compositor via `SCM_RIGHTS`. The same prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888` + `LINEAR` only, no feedback): `zwp_linux_buffer_params_v1.add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to importing with `gbm_bo_import` and CPU-blitting into the scanout buffer. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-EIO` when the canvas context reports `isContextLost()`, `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails, and the compositor's repaint falls through to the CPU path and terminates EGL — no guest-side context-loss API is needed. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
+
+Kandelo-authored clients build on `libkwl` (`examples/libs/libkwl/`), a small toolkit over `libwayland-client` that wraps registry bind, an `xdg` CSD toplevel, double-buffered `wl_shm` back buffers, xkb keysym/UTF-8 translation, and a `kwl_dispatch` event loop; it exposes `kwl_display_fd()` so an app can `poll` the Wayland connection alongside its own fds. Drawing goes through `libwpkdraw` (`examples/libs/wpkdraw/`), a CPU rasterizer (alpha-blended clear/pixel/rect + an `stb_truetype` font engine over a bundled Inconsolata) that renders into a caller-owned ARGB buffer. `programs/wlterm/` is the first real client: a terminal that `forkpty()`s `sh` (bash, which every Kandelo image binds to `/bin/sh`), runs an in-tree VT100 core (`vt100.c`), and multiplexes the Wayland display fd and the PTY master fd in one `poll` loop — Wayland key events become PTY writes, PTY output feeds the VT100 grid and is rendered back into the libkwl window. Because `wlterm` forks, its wasm is mandatorily processed by `wasm-fork-instrument` (see [fork-instrumentation.md](fork-instrumentation.md)).
+
+The stack is dual-host: the Node smoke gates (`host/test/{wpkdraw,libkwl,wlcompositor,wlterm,wldesktop,wldesktop-liveness}-smoke.test.ts`) drive compositor+client harnesses (two-process for the single-client gates, compositor + wlclock + wlpaint for the desktop gates), and the browser demo (the `wayland` machine in the shell image, declared in `packages/registry/shell/source-rootfs-shell-demo.json`, listed in `apps/browser-demos/pages/kandelo/gallery-roster.json`, and gated by `apps/browser-demos/test/kandelo-wayland.spec.ts`) boots the compositor plus three clients — `wlclock` (animated clock), `wlpaint` (pointer painting), and `wlterm` — against `card0` mirrored to an `OffscreenCanvas`, with DOM keyboard input injected as evdev events and the pane's pointer bridge feeding `event1`. This is the same KMS-to-canvas + `BrowserInputSource` path the `modeset` and `sdl2` demos use. The pane opts into the vblank pump's WebGL2 scanout presenter (`mode: "webgl2-scanout"`: scanout-to-texture upload with shader-side XRGB→RGB swizzle, change-driven presents gated on the kernel commit count plus a ~15 Hz content-probe backstop, and GPU scaling at the pane's device-pixel resolution); in the browser the compositor's own GLES context then claims the canvas for GPU compositing (`markKmsCanvasGlOwned` — the presenter stands down, stats slot 7 flips to 3/`webgl2-gl`), while headless/Node runs stay on the CPU-composite + presenter pipeline. A legacy `mode: "2d"` putImageData blit remains available. See [browser-support.md](browser-support.md#wayland-desktop-demo).
+
+### Tiling window manager (`WLC_LAYOUT`, workspaces, `kwlctl`, keybinds)
+
+The same `wlcompositor` binary is also a Hyprland-class tiling WM (PR14); the floating desktop above is simply its default layout, so `/?demo=wayland` is unchanged. `WLC_LAYOUT=dwindle` selects the tiler.
+
+- **Layout engine.** `compute_tiling(area, n)` is a pure function: it partitions the output among `n` windows by recursively splitting the remaining region along its longer side (Hyprland's dwindle default — near half to window *i*, remainder carried forward), insetting an outer gap from the screen edge and an inner gap between windows. `retile()` runs it over the mapped windows on the active workspace (in map order = z-order) and pushes each dictated size through the `xdg_toplevel.configure` path; `FLOATING` mode keeps the app_id placement rules and makes `retile()` a no-op. Because the tiler is pure, the Node gate predicts the exact partition and compares it against the emitted `TILE` markers. A surface enters that list only once it carries the `xdg_toplevel` role: a client's cursor surface (`wl_pointer.set_cursor` is accepted and ignored, since the host pointer already draws the sprite) commits a buffer under no role, and would otherwise map, take the keyboard, and claim a tile of its own. Waybar's cursor theme is the case that reaches it.
+- **Workspaces.** Nine 1-based workspaces on the single output. Each surface carries a workspace id (assigned at first map); `surface_visible()` (mapped AND on the active workspace) gates compositing, input hit-testing, and tiling. `switch_workspace()` restores focus to the target's top window (z-order doubles as per-workspace focus memory); `move_focus_to_workspace()` sends the focused window away and re-tiles the remainder.
+- **`kwlctl` IPC.** A control + event socket at `/tmp/kwlctl-0` (the hyprctl analog), polled in the compositor's `wl_event_loop` alongside the wayland + libinput fds. Verbs: `clients` / `workspaces` / `activeworkspace` / `activewindow` / `monitors` / `workspacerules` / `theme` (JSON queries, each also accepted behind hyprctl's `j/` prefix), `dispatch <workspace N|focusworkspaceoncurrentmonitor N|movetoworkspace N|close|exec <path…>|theme <name|next|prev>>`, and `--listen` (a newline-delimited `event>>data` stream in Hyprland's socket2 format). `dispatch exec` uses the non-forking `posix_spawnp` (`SYS_SPAWN`) — a `fork()` from inside an event-loop callback would wedge the server — and accepted control fds are `CLOEXEC` so they don't leak into spawned children. The CLI client is `programs/wlcompositor/kwlctl.c` (`KWLCTL_SOCKET` overrides the path).
+- **Hyprland IPC compatibility.** The same command table and event bus are also served on Hyprland's own socket pair, where an unmodified Waybar looks for them: `/tmp/hypr/wlcompositor/.socket.sock` (request/reply) and `.socket2.sock` (the event stream, which needs no handshake — a client that connects is a listener). `main()` exports `HYPRLAND_INSTANCE_SIGNATURE=wlcompositor` and defaults `XDG_RUNTIME_DIR=/tmp`, so anything the compositor execs finds the directory. The query replies carry the `hyprctl -j` field set Waybar's `hyprland/*` modules read — window `class`/`title`/`workspace`/`floating`/`mapped`, workspace `id`/`name`/`monitor`/`windows`, and a single `virtual-0` monitor — and the events it subscribes to: `workspace`/`workspacev2`, `createworkspace`/`destroyworkspace` (+`v2`), `focusedmon`(`v2`), `activewindow`/`activewindowv2`, `openwindow`/`closewindow`, `movewindow`(`v2`), `windowtitle`(`v2`). Window titles exist only for this: `xdg_toplevel.set_title` is stored on the surface and relayed, never drawn (clients keep their own CSD titlebars).
+- **Keybinds.** A config-driven bind table parsed from `WLC_CONFIG` / `/etc/kandelo/wlcompositor.conf` (a hyprland.conf-shaped subset: `bind = MODS, KEY, DISPATCHER[, ARGS]`); absent config installs generic SUPER-based defaults, not demo-specific ones. Keys are intercepted in the compositor's keyboard path before the focused client: a bind matches on the pressed key's shift-independent base keysym plus an exact modifier mask. Modifiers: `SUPER` (Mod4), `SHIFT`, `CTRL`, `ALT` (Mod1) — the self-contained xkb keymap carries `Super_L`, both Shifts, `Control_L`, `Alt_L`, the four arrow keys, `F1`–`F12`, and the nav cluster (Home/End/PgUp/PgDn/Insert/Delete). `CTRL` exists because a browser reserves the Cmd/Win (`SUPER`) key, so the in-browser demo mirrors every `SUPER` bind onto `CTRL`. Dispatchers: `exec`, `workspace`, `movetoworkspace`, `killactive`, `cyclenext`/`cycleprev` (focus cycling without z-order reordering, so a tiled layout keeps its geometry). The `exec` dispatcher is how new panes are opened Hyprland-style — a per-app launch bind rather than a launcher UI: the `/?demo=hyprland` config binds `Return`→`wlterm`, `K`→`wlclock`, `P`→`wlpaint` (each on both `SUPER` and `CTRL`), and on the keypress the compositor runs `kwlctl_exec` → `posix_spawnp` of the `/usr/local/bin` binary, which connects as a new tiled client. Because bound combos are grabbed before the focused client, a `CTRL`-letter launch bind shadows the terminal's like-named control key in-browser; the clock is deliberately on `K` (not `C`) so `Ctrl+C` SIGINT still reaches `wlterm`. A real Hyprland session drives these on `SUPER` and avoids the clash entirely. `killactive` sends `xdg_toplevel.close` to the focused window; the client is responsible for tearing its surface down (the compositor retiles once the surface is destroyed). `wlterm` closes its window immediately and hangs its shell up with `SIGHUP` — closing the pty master alone does not wake a shell blocked in `read()`, so without the explicit hangup the reap (and the tile) would block forever.
+- **Server-side decoration.** The compositor advertises `zxdg_decoration_manager_v1` and negotiates the mode by layout: `dwindle` → `SERVER_SIDE` (a tiled window has no titlebar), `floating` → `CLIENT_SIDE` (the client keeps its CSD titlebar). A libkwl client honors the negotiated mode (`decoration_configure`): under SSD it sets its titlebar height to 0 and treats all pointer events as content, so the tiled desktop looks like Hyprland.
+- **Client-side resize.** The compositor composites each surface at its **native** buffer size (`blit_surface` does not scale to the tile; the one exception is an explicit `wp_viewport` destination, which scales that surface's committed source rect), so tiling requires the *client* to resize into the size the compositor dictates. `retile()` sends `xdg_toplevel.configure(w,h)`; libkwl records it and, on the `xdg_surface.configure` ack barrier, rebuilds both `wl_shm` buffers at the new size and pushes a `KWL_RESIZE` event (new content w/h). Clients react: `wlclock` recomputes its dial geometry, `wlterm` reflows its VT100 grid (`vt100_resize` + `TIOCSWINSZ` + `SIGWINCH`), `wlpaint` reallocates its canvas (preserving the painting) so the toolbar + drawing area fill the whole tile rather than a fixed 640×420 corner. The initial `get_toplevel` `configure(0,0)` ("you decide") is ignored, so a floating client (`/?demo=wayland`) never resizes and is byte-identical to before.
+
+These are entirely in-kernel (client↔compositor over the wayland + `/tmp/kwlctl-0` sockets) — no host-runtime change — and gated by `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`. The browser's Hyprland machine (the shell image's `hyprland` profile, whose `/usr/local/bin/hyprdesktop` launcher sets `WLC_LAYOUT=dwindle` and `WLC_CONFIG=/usr/share/kandelo/hyprland/wlcompositor.conf`; gated by `apps/browser-demos/test/kandelo-hyprland.spec.ts`) boots the same compositor plus a `wlclock` and two `wlterm` terminals, which tile into gapped borderless frames and resize into their tiles — the first end-to-end Hyprland-class desktop. `wlpaint` is in the image but not started, so the `Ctrl+P` launch bind summons it on demand. See [browser-support.md](browser-support.md#hyprland-tiling-demo).
+
+### Desktop shell (`zwlr_layer_shell_v1`, `kbar`, `klauncher`, themes)
+
+A tiling WM is not yet a desktop: a desktop also has a bar, a launcher, and a
+theme. Those are ordinary Wayland clients, but they need a protocol that lets a
+surface anchor to an output edge and reserve space from the windows — which is
+what `zwlr_layer_shell_v1` is, and what Waybar, mako and every other shell
+component speak. The compositor implements it (protocol XML vendored at
+`packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml`), and
+two clients consume it. This is the **O1** milestone of
+[docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md](plans/2026-07-14-build-hyprland-class-compositor-plan.md).
+
+- **Layer shell.** A `wl_surface` given the layer role carries a layer
+  (background/bottom/top/overlay), an anchor mask, margins, an exclusive zone
+  and a keyboard-interactivity mode; the surface joins `g.layers` at role
+  creation, because the protocol's initial commit carries no buffer and exists
+  only to fetch the configure that tells the client its size.
+  `layers_arrange()` walks the layers background→overlay, anchors each surface
+  inside the area left by the ones before it, and sends
+  `zwlr_layer_surface_v1.configure` when the box changes. What remains after
+  every **mapped** surface's exclusive zone is `g.usable`, the work area
+  `retile()` partitions — so a bar shrinks the tiling area rather than covering
+  a window. A surface with a role but no buffer reserves nothing, so a client
+  that dies mid-handshake cannot strand a strip of the desktop. Compositing and
+  hit-testing put background/bottom under the windows and top/overlay over
+  them, on both the GPU and CPU paths; a layer surface shows on every workspace.
+  `EXCLUSIVE` keyboard interactivity takes the keyboard for as long as the
+  surface lives, and focus falls back to the topmost window when it goes away.
+- **`kbar`** (`programs/kbar.c`) — the Tier-1 status bar: a
+  30 px top-anchored layer surface with a matching exclusive zone, rendering
+  workspace pills, the focused window's app id, the kernel's monotonic uptime,
+  and a clock. Its state comes
+  from `kwlctl` — a `workspaces` / `activewindow` / `theme` query at startup,
+  then the `--listen` event stream — polled alongside the Wayland fd, which is
+  the same feed Waybar's hyprland modules take from hyprctl. The omarchy
+  browser demo runs unmodified **Waybar** in this slot instead (see the
+  Hyprland IPC compatibility bullet above); `kbar` stays as the dependency-free
+  bar and is what the layer-shell and theme smokes gate on.
+- **`knotify`** (`programs/knotify.c`) — the notification toast, the
+  notify-send slot: one toast per process, a corner-anchored overlay surface
+  (margins via `zwlr_layer_surface_v1.set_margin`) that shows
+  `knotify <title> <body…>` for a moment and exits — the surface teardown is
+  the dismissal. The compositor's `notify = <path>` config key spawns it on
+  every theme switch. The omarchy browser demo points that key at a theme
+  script that restyles Waybar and then execs
+  `notify-send` (`programs/notify-send.c`) — a gdbus client that
+  calls `org.freedesktop.Notifications.Notify` over the `dbus-daemon`
+  session bus, where unmodified upstream mako owns the name and renders
+  the toast as its own layer-shell surface.
+- **`klauncher`** (`programs/klauncher.c`) — the launcher, Walker's slot: a
+  centred overlay-layer surface with exclusive keyboard interactivity, filtering
+  a registry of `/usr/share/kandelo/apps/*.conf` entries (`name` + `exec`) as
+  you type. Enter hands the command to the compositor over `kwlctl dispatch
+  exec` and dismisses; the launcher itself never forks. `klauncher --menu`
+  opens the Omarchy menu instead: a root level (Apps, Theme) that descends
+  into the app list or the installed-theme list (read from `kwlctl theme`,
+  switched with `dispatch theme`); ESC in a submenu returns to the root.
+- **Themes.** A theme is a directory holding one `theme.conf` under
+  `/usr/share/kandelo/themes` (`WLC_THEME_DIR` / `KANDELO_THEME_DIR` override
+  the root) — the same file-based design Omarchy uses. The compositor reads the
+  border colour, gaps and wallpaper; the shell clients read the bar,
+  foreground, muted and accent colours; unknown keys are skipped, so one file
+  serves both sides. A theme's wallpaper is either the two gradient colours or
+  a `wallpaper = <file>` image in the KWLP raw-pixel format (`"KWLP"`, u32le
+  width/height, XRGB pixels) that the compositor bilinear-scales to the
+  output — raw pixels because nothing in the compositor decodes PNG/JPEG;
+  whoever builds the theme renders the image. The themes in the shell image
+  ship gradients only for now (see
+  [browser-support.md](browser-support.md#omarchy-desktop-demo)). `theme = <name>` in the
+  compositor config selects the
+  startup theme, and `kwlctl dispatch theme <name|next|prev>` (or a `theme`
+  bind) switches live: gaps re-tile, the wallpaper is re-rendered and
+  re-uploaded to its GL texture, and `theme>>name` on the event stream tells
+  every shell client to reload its own palette. `kwlctl theme` reports the live
+  name plus the installed set, so a client that starts later still matches.
+
+Gated by `host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts` and, in the
+browser, by `apps/browser-demos/test/kandelo-omarchy.spec.ts` (the Omarchy
+machine).
+See [browser-support.md](browser-support.md#omarchy-desktop-demo).
+
+### Stock upstream clients (`foot` + the font stack)
+
+Every client above is Kandelo-authored on `libkwl`. `foot` 1.17.2
+(`packages/registry/foot/`) is the first **unmodified upstream** Wayland
+client: stock `wl_display_connect()` (via `XDG_RUNTIME_DIR`), stock
+xdg-shell/SSD negotiation, and a real font pipeline. Two declared patches are
+the entire delta, both kernel-model boundaries rather than feature edits:
+`0001` allocates its `wl_shm` pools as `gbm` prime-fd dumb-bos instead of
+memfds (a memfd `MAP_SHARED` mapping only writes back on msync/munmap on this
+kernel, so the compositor would composite stale bytes), and `0002` serializes
+its font loading (concurrent `FcFontMatch` garbles pattern doubles under the
+kernel's thread model — any future threaded font consumer hits the same wall).
+foot forks its shell (`slave.c`), so its wasm is mandatorily
+fork-instrumented; it runs with `--term=vt100` because no foot terminfo is
+staged in any VFS image.
+
+What it took, on each side of the protocol:
+
+- **Compositor surface for stock clients.** `wl_subcompositor` (subsurfaces
+  composited glued to their parent — foot's URL/search overlays), an inert
+  `wl_data_device_manager` v3 stub (foot binds it unconditionally for
+  clipboard), `wl_seat` at v5 (`repeat_info` + pointer `frame` events),
+  `wl_surface.enter` at map, and `wl_output` `scale`+`done` with a physical
+  size of 0×0 — sending pixels as millimetres made foot derive a 25.4 DPI and
+  garble its font reload. `wp_presentation` (above) is its frame clock.
+- **The font stack.** Four library packages feed it: `freetype` 2.13.3
+  (rasterizer), `fontconfig` 2.15.0 (font discovery — reads the config
+  `FONTCONFIG_FILE` names and scans the font dirs it lists), `fcft` 3.1.9 (the
+  glyph-cache layer foot draws with) and `tllist` 1.1.0, over `pixman` 0.42.2
+  and `utf8proc` 2.9.0. Gates: `host/test/fontstack-smoke.test.ts` and the
+  per-package `host/test/{pixman,utf8proc}-smoke.test.ts`.
+- **Kernel: signals interrupt host-converted epoll waits.** foot's SIGCHLD
+  reaper parks in `epoll_pwait` with the signal unblocked only inside the
+  wait. The host runs epoll_pwait itself as poll retries
+  (`handleEpollPwait` in `host/src/kernel-worker.ts`), so it swaps the
+  thread's signal mask through the kernel exports
+  `kernel_swap_poll_sigmask` / `kernel_restore_poll_sigmask` for the whole
+  wait, and the wait ends with EINTR once a signal the mask allows is
+  deliverable. A kernel without those exports is refused, not run with the
+  mask silently ignored.
+
+Gated end-to-end by `host/test/foot-smoke.test.ts` (foot on wlcompositor:
+connect, fontconfig+fcft startup, first composited frame through the gbm pool
+path, keys typed into its forked `dash`, clean exit). In the browser, foot is
+a launcher entry of the Omarchy machine — a lazy binary at
+`/usr/local/bin/foot`, with the desktop's `fonts.conf` and Inconsolata under
+`/usr/share/kandelo/fonts` — gated by
+`apps/browser-demos/test/kandelo-omarchy.spec.ts`.
+
+### Full libffi (generated dispatch + static closure trampolines)
+
+The glib/gobject tier needs real `ffi_call` (doubles, i64, by-value structs)
+and `ffi_closure` — which on native targets JIT-writes trampolines. wasm32
+cannot generate code at runtime, so `packages/registry/libffi/` is a
+from-scratch port built on two facts of clang's wasm32 C ABI lowering: a
+struct whose only member (recursively) is one scalar travels as that scalar,
+and every other by-value struct is a pointer at the wasm level (`byval`
+argument copies, hidden leading `sret` return pointer) — so every signature
+collapses to word classes {i32, i64, f32, f64}. `gen-dispatch.sh` enumerates
+signature families into two generated TUs: a `switch` of `call_indirect`
+shapes for `ffi_call` (every arity ≤ 8 with at most two non-i32 args, plus
+all-i32 up to the Wayland ceiling of 22, times five return classes) and a
+static trampoline pool for closures (N real C functions per signature class,
+baked into the function table; `ffi_prep_closure_loc` binds a free slot and
+pool exhaustion aborts naming the class). A signature outside the generated
+families aborts printing its key — coverage is a one-line bound change in the
+generator. `ffi_cif` deliberately gained no fields across the rewrite:
+libwayland embeds it by value, so its cached archive stays ABI-compatible.
+Gated by `host/test/libffi-full-unit.test.ts` (native + wasm-under-kernel
+matrix over arities × types × call/closure via `programs/libffi_full_test.c`)
+and `host/test/libffi-shim-unit.test.ts` (the PR1 Wayland arity gate, kept
+green through the rewrite).
+
 ## Signal Subsystem
 
 Signals are delivered at syscall boundaries. When a process has a pending signal:
@@ -2646,8 +2835,9 @@ upstream 2.4.120, KMS subset only — the kernel implements enough of the
 Packages that depend on these APIs link through `wasm32posix-pkg-config` and
 declare their resulting program artifacts as packages. The `modeset` demo is
 one such package: its VFS image installs `/usr/local/bin/modeset`, and
-`/etc/kandelo/demo.json` selects the KMS surface and `autoCommand` that starts
-it. The browser loader stays generic; it does not special-case `modeset.wasm`.
+`/etc/kandelo/demo.json` selects the KMS surface and the `init.shellCommand`
+that starts it. The browser loader stays generic; it does not special-case
+`modeset.wasm`.
 
 ## Performance Architecture
 
@@ -2696,7 +2886,7 @@ order:
 3. `sysroot64` — provisions the wasm64 musl sysroot the same way
 4. `sdk` — verifies the `wasm32posix-cc` toolchain wrappers resolve against `sysroot`
 5. `engine` — builds every package in the local-build graph, including the kernel: `cargo build` with `-Z build-std=core,alloc` targeting `wasm32-unknown-unknown`, then copies `kandelo-kernel.wasm` to `host/wasm/`
-6. `rootfs` — builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`
+6. `rootfs` — builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs.zst`
 7. `host-dist` — builds the TypeScript host via `npm run build` (tsup → ESM + CJS)
 
 ```bash
@@ -2710,7 +2900,7 @@ step that `./run.sh setup` does not run: use `./run.sh build programs`
 (`scripts/build-programs.sh`) when you need them, e.g. for the wasm64
 Vitest cases or benchmark suites.
 
-`host/wasm/` is gitignored — `rootfs.vfs`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
+`host/wasm/` is gitignored — `rootfs.vfs.zst`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
 
 Manifest node paths and archive mount points use canonical absolute POSIX
 paths. ZIP archives ingested by `mkrootfs` require byte-exact UTF-8 canonical

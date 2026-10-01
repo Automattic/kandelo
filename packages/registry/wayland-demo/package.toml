@@ -1,0 +1,119 @@
+kind = "program"
+# Runtime backing for the `wayland` machine in the shell image: the four binaries that make up the
+# Wayland desktop, plus the launcher that starts them in order. The browser
+# app consumes these through the VFS image like every other machine, so they
+# need a registry owner — a demo must not fetch its own binaries at boot.
+#
+# The sources stay under programs/ and examples/libs/ so
+# scripts/build-programs.sh keeps building the local test fixtures, the same
+# split sdl2-demo and modeset use.
+name = "wayland-demo"
+version = "0.1.0"
+kernel_abi = 45
+depends_on = [
+  "libwayland@1.24.0",
+  "libxkbcommon@1.7.0",
+  "libinput@1.25.0",
+  "libevdev@1.13.3",
+  "libudev@0.1.0",
+  "mtdev@0.1.0",
+  "libffi@0.1.0",
+  "wayland-protocols@1.45",
+  "glib@2.84.4",
+  "pcre2@10.44",
+  "zlib@1.3.1",
+]
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/wayland-demo/build-wayland-demo.sh"
+
+[[host_tools]]
+# Generates the xdg-shell glue the compositor and libkwl compile against;
+# same constraint as libwayland, whose wire tables the output must match.
+name = "wayland-scanner"
+version_constraint = ">=1.24"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+# wpkdraw embeds its font by generating a C byte array from the vendored TTF.
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.8"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[outputs]]
+name = "wlcompositor"
+wasm = "wlcompositor.wasm"
+
+[[outputs]]
+name = "wlterm"
+wasm = "wlterm.wasm"
+
+[[outputs]]
+name = "wlclock"
+wasm = "wlclock.wasm"
+
+[[outputs]]
+name = "wlpaint"
+wasm = "wlpaint.wasm"
+
+[[outputs]]
+name = "klauncher"
+wasm = "klauncher.wasm"
+
+[[outputs]]
+name = "notify-send"
+wasm = "notify-send.wasm"
+
+# The launcher is the machine's single `init.shellCommand`. It owns the
+# start order the desktop needs — compositor first (it takes DRM master and
+# drives KMS), then the clients once its socket exists — so the browser app
+# stays a consumer with no per-demo staging ladder.
+[[runtime_files]]
+artifact = "wldesktop"
+guest_path = "/usr/local/bin/wldesktop"
+mode = 0o755
+
+# The Hyprland-class tiling desktop. Not installed by the shell image (its
+# machine is off by default); an image that wants it installs both.
+[[runtime_files]]
+artifact = "hyprdesktop"
+guest_path = "/usr/local/bin/hyprdesktop"
+mode = 0o755
+
+[[runtime_files]]
+artifact = "hyprland-wlcompositor.conf"
+guest_path = "/usr/share/kandelo/hyprland/wlcompositor.conf"
+
+[[runtime_files]]
+artifact = "omarchydesktop"
+guest_path = "/usr/local/bin/omarchydesktop"
+mode = 0o755
+
+[[runtime_files]]
+artifact = "omarchy-theme-changed"
+guest_path = "/usr/local/bin/omarchy-theme-changed"
+mode = 0o755
+
+[[runtime_files]]
+artifact = "kandelo-desktop-data.zip"
+guest_path = "/usr/share/wayland-demo/kandelo-desktop-data.zip"
+
+# libinput's device quirks, packed by the libinput package. wlcompositor
+# links libinput statically and reads them from /usr/share/libinput; image
+# builders unpack this zip there. (libinput logs "Failed to load the device
+# quirks" and applies no device fixups without them.)
+[[runtime_files]]
+artifact = "libinput-quirks.zip"
+guest_path = "/usr/share/wayland-demo/libinput-quirks.zip"

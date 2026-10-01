@@ -30,11 +30,7 @@ import {
 import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
-import {
-  webPresentation,
-  writeKandeloDemoConfig,
-} from "./kandelo-demo-config";
-import { nginxPhpGuide } from "./kandelo-demo-guides";
+import { writeTrackedDemoConfig } from "./tracked-demo-config";
 
 const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "nginx-php-vfs.vfs.zst");
 const PHP_FPM_WORKERS = 6;
@@ -454,15 +450,7 @@ export async function buildNginxPhpVfsImage(
       restart: false,
     },
   ], { binaries: inputs.dinit });
-  writeKandeloDemoConfig(fs, {
-    version: 1,
-    profiles: {
-      "nginx-php": {
-        presentation: webPresentation(),
-        guide: nginxPhpGuide(),
-      },
-    },
-  });
+  writeTrackedDemoConfig(fs, "packages/registry/nginx/nginx-php-demo.json");
 
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
 }

@@ -1,14 +1,13 @@
 import { expect, test } from "@playwright/test";
+import { devServerAssetUrl } from "./support/dev-server-assets";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const programPath = resolve(
   __dirname,
   "../../../examples/kernel_allocator_churn_test.wasm",
 );
-const kernelWasmPath = resolveBinary("kernel.wasm");
 const reusableKernelWorkerPath = resolve(
   __dirname,
   "fixtures/reusable-kernel-export-stack-worker.ts",
@@ -59,7 +58,7 @@ test("kernel allocations and reusable exports remain bounded under churn in Chro
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
   const asViteFsUrl = (path: string) => new URL(`/@fs/${path}`, baseURL).href;
   const programUrl = asViteFsUrl(programPath);
-  const kernelWasmUrl = asViteFsUrl(kernelWasmPath);
+  const kernelWasmUrl = await devServerAssetUrl(page, "@kernel-wasm");
   const reusableKernelWorkerUrl = asViteFsUrl(reusableKernelWorkerPath);
   const browserKernelModuleUrl = asViteFsUrl(browserKernelModulePath);
   const kernelOwnedBootModuleUrl = asViteFsUrl(kernelOwnedBootModulePath);

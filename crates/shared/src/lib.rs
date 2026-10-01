@@ -118,17 +118,48 @@ pub mod process_layout;
 ///     `fork`, and `exec` so a buffered record is delivered once rather than
 ///     duplicated into each descendant. These are new surfaces, not changes to
 ///     existing 43 contracts, so they ride ABI 43.
-/// 44: machine checkpoints reserve a channel request word directly below the
-///     signal delivery area, freshly built programs import the no-argument,
-///     no-result `kernel.kernel_checkpoint` unwind hook from the post-syscall
-///     trampoline, and machine restore uses the host-handle enumerate and
-///     remap, host-timer re-arm, and PTY-index kernel exports.
-/// 45: the checkpoint request word is a bit set rather than a single value.
-///     The freeze completes a parked blocking syscall with `EINTR` so the
-///     process reaches the post-syscall trampoline at all, and publishes
+/// 44: `WasmStat` grows 88→96 with a trailing `st_rdev: u64` (offset 88, the
+///     slot the libc `struct kstat` already reserved). Virtual device nodes
+///     report a Linux-encoded `dev_t` — `/dev/input/event{N}` is char major
+///     13, minor 64+N — so a `stat().st_rdev` uniquely identifies an evdev
+///     node. Required by the real libinput path backend
+///     (`udev_device_new_from_devnum`), which is handed only the `st_rdev`
+///     and must recover the devnode from it. The same epoch carries the
+///     Wayland stack's other contract changes, structural and semantic:
+///     the `SO_PEERCRED` option (peer credentials; it used to fail with
+///     `ENOPROTOOPT`), the evdev `EVIOCGPHYS`/`EVIOCGUNIQ`/`EVIOCGPROP`
+///     ioctl family, `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`, a blocking read
+///     of `/dev/dri/card0` that waits for an event instead of returning 0,
+///     dma-buf `lseek` on prime fds, epoll registrations keyed on (fd, open
+///     file description) and inherited across fork/spawn, epoll fds that
+///     report readiness inside poll, prime fds that stay referenced while in
+///     flight over SCM_RIGHTS, and the `kernel_epoll_watched_fd` export. docs/abi-versioning.md ("ABI 44") lists
+///     each with why it belongs to this epoch.
+/// 45: the DRI desktop stack (GPU-tier buffers, layer shell, the toolkit
+///     ports). The kernel's `host_gl_present` import now returns a status
+///     (`i32`), a new `host_gbm_gpu_bo_create` import backs
+///     `DRM_IOCTL_WPK_CREATE_GPU_BO` (previously ENOSYS), `GLIO_CREATE_SURFACE`
+///     attributes grow a target-bo field, a `host_kms_connector_mm` import
+///     reports the connector's physical size, and the kernel exports
+///     `kernel_swap_poll_sigmask` / `kernel_restore_poll_sigmask`. Semantic changes ride along:
+///     epoll_pwait holds its signal mask for the whole
+///     wait and a signal ends a parked wait, SA_RESTART alone decides whether
+///     an interrupted wait restarts, sendmsg/recvmsg gather every iovec, a
+///     new thread's stack pointer is 16-byte aligned, the GL command stream
+///     gains three ops and a query, /dev/input/event1 is an absolute
+///     pointer, inotify fails with ENOSYS, and a MAP_FIXED mapping inside a
+///     mapping carves it. docs/abi-versioning.md ("ABI 45") lists each.
+/// 46: machine checkpoint and restore. Checkpoints reserve a channel request
+///     word directly below the signal delivery area, freshly built programs
+///     import the no-argument, no-result `kernel.kernel_checkpoint` unwind
+///     hook from the post-syscall trampoline, and machine restore uses the
+///     host-handle enumerate and remap, host-timer re-arm, and PTY-index
+///     kernel exports. The request word is a bit set rather than a single
+///     value: the freeze completes a parked blocking syscall with `EINTR` so
+///     the process reaches the post-syscall trampoline at all, and publishes
 ///     `CHECKPOINT_REQUEST_RESTART` alongside `CHECKPOINT_REQUEST_UNWIND` to
 ///     tell the guest to resubmit that syscall once the rewind returns.
-pub const ABI_VERSION: u32 = 45;
+pub const ABI_VERSION: u32 = 46;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1090,6 +1121,10 @@ pub mod socket {
     pub const SO_ACCEPTCONN: u32 = 30;
     pub const SO_REUSEPORT: u32 = 15;
     pub const SO_PASSCRED: u32 = 16;
+    /// `SO_PEERCRED` (Linux value). Returns `struct ucred { pid, uid, gid }`
+    /// for a connected AF_UNIX socket. libwayland's `wl_client_create` calls
+    /// this on every accepted client and fails if it errors.
+    pub const SO_PEERCRED: u32 = 17;
     pub const SHUT_RD: u32 = 0;
     pub const SHUT_WR: u32 = 1;
     pub const SHUT_RDWR: u32 = 2;
@@ -1457,7 +1492,10 @@ mod channel_abi_tests {
 /// Stat structure for the Wasm POSIX interface.
 ///
 /// Uses `repr(C)` for a stable, predictable memory layout that can be
-/// shared across the Wasm shared-memory boundary.
+/// shared across the Wasm shared-memory boundary. 96 bytes total; the
+/// libc side reads it into `struct kstat` (see
+/// `libc/musl-overlay/arch/*/kstat.h`), whose `st_rdev` sits at offset
+/// 88 to match `st_rdev` below.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct WasmStat {
@@ -1475,6 +1513,12 @@ pub struct WasmStat {
     pub st_ctime_sec: u64,
     pub st_ctime_nsec: u32,
     pub _pad: u32,
+    /// Device ID for a special file (char/block device), encoded like
+    /// Linux `dev_t` (see musl `makedev`). 0 for anything that is not a
+    /// device node. Offset 88 — kept last so the layout through
+    /// `st_ctime_nsec`/`_pad` is unchanged; the libc `struct kstat`
+    /// already reserves `st_rdev` at this offset.
+    pub st_rdev: u64,
 }
 
 /// Directory entry structure for the Wasm POSIX interface.
@@ -4560,6 +4604,7 @@ pub mod gl {
     pub const OP_USE_PROGRAM: u16 = 0x0307;
     pub const OP_BIND_ATTRIB_LOCATION: u16 = 0x0308;
     pub const OP_DELETE_PROGRAM: u16 = 0x0309;
+    pub const OP_DETACH_SHADER: u16 = 0x030A;
 
     pub const OP_UNIFORM1I: u16 = 0x0400;
     pub const OP_UNIFORM1F: u16 = 0x0401;
@@ -4577,6 +4622,10 @@ pub mod gl {
     pub const OP_VERTEX_ATTRIB_POINTER: u16 = 0x0502;
     pub const OP_DRAW_ARRAYS: u16 = 0x0503;
     pub const OP_DRAW_ELEMENTS: u16 = 0x0504;
+    /// `glVertexAttrib4fv(index, value)` — constant (non-array) vertex
+    /// attribute. ScummVM's shader pipeline feeds the per-draw color
+    /// through this when the attribute array is disabled.
+    pub const OP_VERTEX_ATTRIB_4FV: u16 = 0x0505;
 
     pub const OP_GEN_VERTEX_ARRAYS: u16 = 0x0600;
     pub const OP_DELETE_VERTEX_ARRAYS: u16 = 0x0601;
@@ -4589,6 +4638,7 @@ pub mod gl {
     pub const OP_BIND_RENDERBUFFER: u16 = 0x0704;
     pub const OP_RENDERBUFFER_STORAGE: u16 = 0x0705;
     pub const OP_FRAMEBUFFER_RENDERBUFFER: u16 = 0x0706;
+    pub const OP_DELETE_FRAMEBUFFERS: u16 = 0x0707;
 
     // --- sync query op tags (used in GlQueryInfo.op) -----------------------
 
@@ -4604,6 +4654,7 @@ pub mod gl {
     pub const QOP_GET_PROGRAM_INFO_LOG: u32 = 0x0A;
     pub const QOP_READ_PIXELS: u32 = 0x0B;
     pub const QOP_CHECK_FB_STATUS: u32 = 0x0C;
+    pub const QOP_GET_SHADER_PRECISION_FORMAT: u32 = 0x0D;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -4835,9 +4886,18 @@ pub mod dri {
 
     /// `_IOWR('d', 0xE1, WpkDrmBindForeignTexture)` — bind a foreign bo as
     /// a `WebGLTexture` in the caller's GL context. The caller must already
-    /// hold a local bo handle (via PRIME_FD_TO_HANDLE), and the bo must be
-    /// GPU-tier. Used by the compositor to sample client bos and by
-    /// `gbm_bo_import` callers that want texture-side access.
+    /// hold a local bo handle (via PRIME_FD_TO_HANDLE). Used by the
+    /// compositor to sample client bos and by `gbm_bo_import` callers that
+    /// want texture-side access.
+    ///
+    /// Implemented for CPU-tier (dumb) bos: each successful call
+    /// (re)uploads the bo's current pixels into the texture from host-side
+    /// storage, so callers refresh a texture by re-issuing the ioctl after
+    /// the producer commits new content. The returned `gl_texture_id` is
+    /// stable across rebinds of the same bo. On a GPU-tier bo
+    /// (`WPK_CREATE_GPU_BO`) the bind is zero-copy: the pixels already live
+    /// as a `WebGLTexture` on the shared context, so it returns that
+    /// texture id directly with no upload.
     pub const DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: u32 = 0xc010_64e1;
 
     /// GPU-bo allocator argument. 16 bytes on wasm32 (4 × u32). `format` and
@@ -5548,23 +5608,36 @@ pub mod input {
     /// `axis` is a small integer (`ABS_X = 0`, `ABS_Y = 1`, …).
     pub const EVIOCGABS_NR_BASE: u32 = 0x40;
 
-    /// `_IOW('E', 0x90, int)` = `0x4004_4590`.
-    pub const EVIOCGRAB: u32 = 0x4004_4590;
+    // Variable-length device-introspection reads (`_IOC(_IOC_READ, 'E',
+    // nr, len)`), matched on `nr`. libevdev's `libevdev_set_fd` issues
+    // every one of these during construction and treats most as fatal on
+    // failure (see docs/plans/2026-07-08-dri-wayland-compositor-plan.md
+    // §5 PR5). Our virtual devices have no phys/uniq node, no input
+    // properties, and no keys/LEDs/switches currently latched, so the
+    // kernel answers with the honest empty state.
 
-    /// `EVIOCGKEY(len)` — `_IOC(_IOC_READ, 'E', 0x18, len)`. Returns the
-    /// bitmap of currently-pressed `EV_KEY` codes for the device (this is
-    /// device-global state, not per-fd). Userspace re-reads it after a
-    /// `SYN_DROPPED` to resynchronise, which is the only Linux-sanctioned
-    /// recovery from a dropped event.
+    /// `EVIOCGPHYS(len)` — physical location string. Virtual devices have
+    /// none; the kernel returns `ENOENT`, which libevdev treats as "unset".
+    pub const EVIOCGPHYS_NR: u32 = 0x07;
+
+    /// `EVIOCGUNIQ(len)` — unique identifier string. As with phys, unset →
+    /// `ENOENT`.
+    pub const EVIOCGUNIQ_NR: u32 = 0x08;
+
+    /// `EVIOCGPROP(len)` — `INPUT_PROP_*` bitmap. No properties → zeroed.
+    pub const EVIOCGPROP_NR: u32 = 0x09;
+
+    /// `EVIOCGKEY(len)` — currently-pressed key/button state bitmap.
     pub const EVIOCGKEY_NR: u32 = 0x18;
 
-    /// `EVIOCGLED(len)` — `_IOC(_IOC_READ, 'E', 0x19, len)`. Bitmap of lit
-    /// LEDs. Kandelo's virtual devices have none, so the reply is zeroed.
+    /// `EVIOCGLED(len)` — current LED state bitmap.
     pub const EVIOCGLED_NR: u32 = 0x19;
 
-    /// `EVIOCGSW(len)` — `_IOC(_IOC_READ, 'E', 0x1b, len)`. Bitmap of
-    /// active switches. Kandelo has none, so the reply is zeroed.
+    /// `EVIOCGSW(len)` — current switch state bitmap.
     pub const EVIOCGSW_NR: u32 = 0x1b;
+
+    /// `_IOW('E', 0x90, int)` = `0x4004_4590`.
+    pub const EVIOCGRAB: u32 = 0x4004_4590;
 
     /// `KEY_MAX` / `KEY_CNT` — the largest `EV_KEY` code and the bit count
     /// of an `EVIOCGKEY` bitmap (`KEY_CNT / 8 = 96` bytes), matching Linux
@@ -5916,6 +5989,7 @@ mod gl_tests {
             OP_USE_PROGRAM,
             OP_BIND_ATTRIB_LOCATION,
             OP_DELETE_PROGRAM,
+            OP_DETACH_SHADER,
             OP_UNIFORM1I,
             OP_UNIFORM1F,
             OP_UNIFORM2F,
@@ -5928,6 +6002,7 @@ mod gl_tests {
             OP_VERTEX_ATTRIB_POINTER,
             OP_DRAW_ARRAYS,
             OP_DRAW_ELEMENTS,
+            OP_VERTEX_ATTRIB_4FV,
             OP_GEN_VERTEX_ARRAYS,
             OP_DELETE_VERTEX_ARRAYS,
             OP_BIND_VERTEX_ARRAY,
@@ -5938,6 +6013,7 @@ mod gl_tests {
             OP_BIND_RENDERBUFFER,
             OP_RENDERBUFFER_STORAGE,
             OP_FRAMEBUFFER_RENDERBUFFER,
+            OP_DELETE_FRAMEBUFFERS,
         ];
         for (i, &a) in ops.iter().enumerate() {
             for &b in &ops[i + 1..] {
@@ -5961,6 +6037,7 @@ mod gl_tests {
             QOP_GET_PROGRAM_INFO_LOG,
             QOP_READ_PIXELS,
             QOP_CHECK_FB_STATUS,
+            QOP_GET_SHADER_PRECISION_FORMAT,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

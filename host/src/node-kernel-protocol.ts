@@ -58,7 +58,7 @@ export interface InitMessage {
    */
   execProgramBytes?: Record<string, ArrayBuffer>;
   /**
-   * Bytes of `host/wasm/rootfs.vfs`, read on the main thread and forwarded
+   * Bytes of `host/wasm/rootfs.vfs.zst`, read on the main thread and forwarded
    * to the worker. When present, the worker materialises the default mount
    * spec (rootfs at `/`, scratch dirs at `/tmp` etc.) and constructs a
    * `VirtualPlatformIO`. Absent → worker falls back to `NodePlatformIO`
@@ -542,7 +542,7 @@ export interface KmsAttachCanvasMessage {
   crtcId: number;
   canvas: OffscreenCanvas;
   stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" };
+  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" };
 }
 
 /** Register a stats SAB for a CRTC without binding a scanout canvas. */
@@ -550,6 +550,20 @@ export interface KmsAttachStatsMessage {
   type: "kms_attach_stats";
   crtcId: number;
   stats: SharedArrayBuffer;
+}
+
+/** Report the display size (device pixels) of a CRTC's canvas element.
+ *  Mirrors the Browser-side message. Feeds the virtual connector's
+ *  PREFERRED mode and (with an OffscreenCanvas polyfill) the
+ *  `webgl2-scanout` presenter's drawing-buffer size. */
+export interface KmsSetDisplaySizeMessage {
+  type: "kms_set_display_size";
+  crtcId: number;
+  width: number;
+  height: number;
+  /** The display's physical size in millimetres, when the embedder knows
+   *  it; the kernel reports it on the DRM connector (mm_width/mm_height). */
+  physicalMm?: { width: number; height: number };
 }
 
 /**
@@ -631,6 +645,7 @@ export type MainToKernelMessage =
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
+  | KmsSetDisplaySizeMessage
   | InputEventInjectMessage
   | InputEventBatchInjectMessage
   | SetInputCanvasDimsMessage;
@@ -696,6 +711,28 @@ export interface LazyDownloadMessage {
   event: LazyDownloadEvent;
 }
 
+/** Which teardown step `performDestroy` is in. */
+export type DestroyPhase = "draining" | "terminating";
+
+/**
+ * Cumulative teardown progress. Counts processes, not bytes.
+ *
+ * `total` is a lower bound while `totalProvisional` is true: the drain phase
+ * knows only the processes it woke, and the terminate phase adds stragglers it
+ * discovers afterwards. `completed` never resets between phases.
+ */
+export interface DestroyProgressEvent {
+  phase: DestroyPhase;
+  completed: number;
+  total: number;
+  totalProvisional: boolean;
+}
+
+export interface DestroyProgressMessage {
+  type: "destroy_progress";
+  event: DestroyProgressEvent;
+}
+
 /**
  * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
  * browser-side ProcEventMessage. Exit events come via the existing
@@ -719,4 +756,5 @@ export type KernelToMainMessage =
   | ResolveExecRequestMessage
   | ProcEventMessage
   | LazyDownloadMessage
-  | ReplicationRecordedMessage;
+  | ReplicationRecordedMessage
+  | DestroyProgressMessage;

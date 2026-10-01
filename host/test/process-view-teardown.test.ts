@@ -20,11 +20,15 @@ describe("process-owned device view teardown", () => {
     const framebufferUnbind = vi.fn();
     const releaseBos = vi.fn();
     const dropMaster = vi.fn();
+    const markKmsCanvasGlReleased = vi.fn();
+    // The exiting process holds a GL session that claimed CRTC 1's canvas.
+    const binding = { claimedKmsCrtc: 1, canvas: {} as unknown };
     const kernel = Object.assign(
       Object.create(WasmPosixKernel.prototype),
       {
+        callbacks: { markKmsCanvasGlReleased },
         gl_submit_queue: { removePid },
-        gl: { unbind: glUnbind },
+        gl: { unbind: glUnbind, get: (pid: number) => (pid === 41 ? binding : undefined) },
         framebuffers: { unbind: framebufferUnbind },
         bos: { releaseProcess: releaseBos },
         kms: {
@@ -41,6 +45,10 @@ describe("process-owned device view teardown", () => {
     expect(framebufferUnbind).toHaveBeenCalledWith(41);
     expect(releaseBos).toHaveBeenCalledWith(41);
     expect(dropMaster).toHaveBeenCalledOnce();
+    // The claimed canvas goes back to the vblank pump before the unbind that
+    // would otherwise make the claim unreachable.
+    expect(markKmsCanvasGlReleased).toHaveBeenCalledExactlyOnceWith(1);
+    expect(binding.claimedKmsCrtc).toBeNull();
   });
 
   it("refuses stale pid-only teardown after exec installs a new Memory", () => {

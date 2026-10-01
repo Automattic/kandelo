@@ -7,17 +7,15 @@
 // it, the running programs do not.
 import * as React from "react";
 import { presentableMachineName } from "../../../../../web-libs/kandelo-session/src/machine-name";
-import { homeDirectoryOf } from "../../../../../web-libs/kandelo-session/src/persistent-machine";
-import type { BootDescriptor } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import type { PersistentMachines } from "./persistent-machines";
 
 export const SavePopup: React.FC<{
-  descriptor: BootDescriptor;
+  /** The login session's home directory, or null when the host cannot name it. */
+  home: string | null;
   persistent: PersistentMachines;
   onOpenMachines: () => void;
-}> = ({ descriptor, persistent, onOpenMachines }) => {
+}> = ({ home, persistent, onOpenMachines }) => {
   const { current, busy, failure, lastSave } = persistent;
-  const home = homeDirectory(descriptor);
 
   return (
     <div className="ksave-popup">
@@ -116,14 +114,6 @@ const MachineNameField: React.FC<{
     </label>
   );
 };
-
-function homeDirectory(descriptor: BootDescriptor): string | null {
-  try {
-    return homeDirectoryOf(descriptor);
-  } catch {
-    return null;
-  }
-}
 
 function describeKind(kind: "symlink" | "other"): string {
   return kind === "symlink" ? "symbolic link" : "device, pipe, or socket";

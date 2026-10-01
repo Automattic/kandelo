@@ -6,6 +6,18 @@ import type {
 
 export const VFS_IMAGE_QUERY_PARAM = "vfs";
 
+/**
+ * `&profile=<id>` — which machine inside the image to boot.
+ *
+ * This replaced `?demo=<id>` outright. The old parameter named one of a dozen
+ * ids the APP held; this one names a profile the IMAGE declares, so the app
+ * never has to know what any of them are. A legacy `?demo=` is ignored (and
+ * stripped when the app rewrites a URL) rather than rejected: every link ever
+ * shared carries `?vfs=` too, so such a link still resolves its image and
+ * boots that image's declared default profile.
+ */
+export const PROFILE_QUERY_PARAM = "profile";
+
 const VFS_IMAGE_QUERY_ALIASES = [
   VFS_IMAGE_QUERY_PARAM,
   "vfsUrl",
@@ -16,6 +28,10 @@ const VFS_IMAGE_QUERY_ALIASES = [
 
 export interface KandeloBootQuery {
   vfsImageUrl: string | null;
+  /** `&profile=` — the only channel that selects which machine inside the
+   *  image to boot. A `?vfs=` URL's own `#fragment` is not read as a profile
+   *  id; it plays no role in machine selection. */
+  profileId: string | null;
 }
 
 export interface TrustedVfsSourceCandidate<SourceId extends string> {
@@ -31,6 +47,7 @@ export function readKandeloBootQuery(search = currentSearch()): KandeloBootQuery
   const params = new URLSearchParams(search);
   return {
     vfsImageUrl: normalizeVfsImageUrl(firstVfsImageQueryValue(params)),
+    profileId: nonEmpty(params.get(PROFILE_QUERY_PARAM)),
   };
 }
 
@@ -39,49 +56,32 @@ export function galleryItemUrl(
   href = currentHref(),
 ): string {
   const url = new URL(href);
+  // `?demo=` is gone. Strip it so a legacy link the visitor arrived on does
+  // not keep a parameter nothing reads any more.
   url.searchParams.delete("demo");
   url.searchParams.delete("idle");
+  url.searchParams.delete(PROFILE_QUERY_PARAM);
   clearVfsImageQueryParams(url.searchParams);
   // A #k1= boot-link fragment belongs to the linked machine only. Launching
   // a different machine from the gallery must not carry its script along.
   url.hash = "";
   if (item.vfsImageUrl) {
-    // WHY: the demo id selects launch behavior while the exact URL identifies
-    // the VFS image and its resource limit. Gallery navigation must preserve
-    // both parts of that contract.
-    url.searchParams.set("demo", item.id);
+    // WHY: the exact image URL identifies the bytes and their resource limit,
+    // while `&profile=` selects which machine inside them to boot. This is
+    // the ONLY channel that carries the profile id — the image URL itself
+    // never gets a fragment appended.
     url.searchParams.set(VFS_IMAGE_QUERY_PARAM, item.vfsImageUrl);
+    url.searchParams.set(PROFILE_QUERY_PARAM, item.id);
   }
   return url.href;
-}
-
-export function navigateToGalleryItemUrl(item: GalleryItem): void {
-  const next = galleryItemUrl(item);
-  if (next === window.location.href) return;
-  window.location.assign(next);
-}
-
-/**
- * Point the address bar at a gallery item without leaving the document.
- *
- * WHY: a peer connection exists only in the document that opened it. Following
- * the URL would tear that document down and close the connection, and manual
- * signaling offers no way back — both people would have to exchange codes
- * again. A page holding a peer moves its URL rather than following it, so the
- * address stays shareable and the link survives the boot.
- */
-export function replaceGalleryItemUrl(item: GalleryItem): void {
-  const next = galleryItemUrl(item);
-  if (next === window.location.href) return;
-  window.history.replaceState(window.history.state, "", next);
 }
 
 /**
  * Point the address bar at the bare page without leaving the document.
  *
- * A saved machine is found in this browser's list, not in a URL: a `?demo=`
- * or `?vfs=` address reloaded after saving would boot a fresh machine on
- * memory beside the saved one. The bare page shows the list instead.
+ * A saved machine is found in this browser's list, not in a URL: a `?vfs=`
+ * address reloaded after saving would boot a fresh machine on memory beside
+ * the saved one. The bare page shows the list instead.
  */
 export function replaceBareUrl(): void {
   const url = new URL(currentHref());
@@ -94,9 +94,9 @@ export function replaceBareUrl(): void {
 /**
  * The page URL that boots the machine `descriptor` describes, for a link.
  *
- * The address bar names the machine it booted through `?demo=` and `?vfs=`,
- * and a link is that address. A saved machine's address is the bare page,
- * so its link names the machine from the descriptor instead.
+ * The address bar names the machine it booted through `?vfs=` and
+ * `&profile=`, and a link is that address. A saved machine's address is the
+ * bare page, so its link names the machine from the descriptor instead.
  */
 export function machineUrl(
   descriptor: BootDescriptor,
@@ -104,11 +104,11 @@ export function machineUrl(
 ): string {
   const url = new URL(href);
   url.hash = "";
-  const named = url.searchParams.has("demo") || firstVfsImageQueryValue(url.searchParams) !== null;
-  if (named) return url.href;
-  url.searchParams.set("demo", descriptor.id);
+  if (firstVfsImageQueryValue(url.searchParams) !== null) return url.href;
   const vfsImageUrl = vfsImageUrlFromDescriptor(descriptor, href);
-  if (vfsImageUrl) url.searchParams.set(VFS_IMAGE_QUERY_PARAM, vfsImageUrl);
+  if (vfsImageUrl === null) return url.href;
+  url.searchParams.set(VFS_IMAGE_QUERY_PARAM, vfsImageUrl);
+  url.searchParams.set(PROFILE_QUERY_PARAM, descriptor.id);
   return url.href;
 }
 
@@ -181,8 +181,10 @@ export function normalizeVfsImageUrl(
 /**
  * Match a URL to one exact trusted VFS source.
  *
- * Fragments describe launch behavior, not file identity, so they are ignored
- * here. Unmatched, duplicated, ambiguous, and unresolvable sources fail closed.
+ * A fragment is never part of a resource's identity, so a stray one on a
+ * hand-written `?vfs=` URL (the app itself never writes one any more) is
+ * ignored here rather than defeating the match. Unmatched, duplicated,
+ * ambiguous, and unresolvable sources fail closed.
  */
 export async function matchTrustedVfsSourceId<SourceId extends string>(
   vfsImageUrl: string,

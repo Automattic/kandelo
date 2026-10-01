@@ -372,7 +372,7 @@ pub(crate) struct BootstrapStep {
 /// resolution models, so nothing rebuilds it as a side effect of building a
 /// package node; `sdk` itself only checks that `sysroot`'s toolchain wrappers
 /// resolve, so it must run after `sysroot`); `rootfs` must follow `engine`
-/// (`build-rootfs.sh` assembles the canonical `host/wasm/rootfs.vfs` image
+/// (`build-rootfs.sh` assembles the canonical `host/wasm/rootfs.vfs.zst` image
 /// from packages the engine step just built) and precede `host-dist` (the
 /// TypeScript host build should see a fresh rootfs image, even though it
 /// does not currently read it at build time); `host-dist` must follow
@@ -605,6 +605,20 @@ fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<
     if libc_a.is_file() {
         let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
         run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])?;
+        if arch == "wasm32posix" {
+            // The resync above copies headers only. `sysroot/lib/{libdrm,
+            // libgbm,libEGL,libGLESv2}.a` are sysroot *artifacts*, installed
+            // by these two scripts and only ever from inside build-musl.sh —
+            // which this branch deliberately skips. A worktree therefore kept
+            // whatever graphics archives it was first provisioned with, no
+            // matter how far libc/glue or the libdrm package moved on, and
+            // `-Wl,--allow-undefined` turned every entry point the stale
+            // archive lacked into an `env.*` import that traps at call time
+            // rather than failing the link. Both scripts skip on a matching
+            // input digest, so this is a no-op once the sysroot is current.
+            run_repo_script(repo, "scripts/build-dri-stubs.sh", &[])?;
+            run_repo_script(repo, "scripts/build-gles-stubs.sh", &[])?;
+        }
     } else if arch == "wasm32posix" {
         run_repo_script(repo, "scripts/build-musl.sh", &[])?;
     } else {
@@ -6161,7 +6175,6 @@ mod tests {
                 "build_nginx_php_vfs",
                 Expectation::FoldedProduct("browser-nginx-php"),
             ),
-            ("build_node_vfs", Expectation::FoldedProduct("browser-node")),
     // mariadb-test has no `[[products]]` entry (matching the
             // sibling test-support manifests test-php.toml/test-sqlite.toml,
             // which are also manifest-only with no active product) but its

@@ -1591,7 +1591,9 @@ describe("exec host-state transition", () => {
     expect(worker.shmMappings.has(7)).toBe(false);
   });
 
-  it("commits the exact caller and target before pruning closed epoll mirrors", () => {
+  // Epoll registrations need no exec-time pruning here: the kernel owns them
+  // and drops those whose description close-on-exec closed.
+  it("commits the exact caller and target", () => {
     let ambientPid = 0;
     let committedCaller = 0;
     let committedTarget = 0;
@@ -1614,13 +1616,6 @@ describe("exec host-state transition", () => {
           kernel_fd_is_open: (_pid: number, fd: number) => openFds.has(fd) ? 1 : 0,
         },
       },
-      epollInterests: new Map([
-        ["7:6", [
-          { fd: 8, events: 1, data: 11n },
-          { fd: 9, events: 1, data: 12n },
-        ]],
-        ["7:10", []],
-      ]),
     });
 
     expect(worker.kernelExecCommit(7, 11, 13)).toBe(0);
@@ -1628,10 +1623,6 @@ describe("exec host-state transition", () => {
     expect(committedTarget).toBe(13);
     expect(ambientPid).toBe(7);
     expect(worker.currentHandlePid).toBe(0);
-    expect(worker.epollInterests.get("7:6")).toEqual([
-      { fd: 8, events: 1, data: 11n },
-    ]);
-    expect(worker.epollInterests.has("7:10")).toBe(false);
   });
 
   it("fails loudly when the target-aware commit export is absent", () => {
@@ -1800,12 +1791,6 @@ describe("exec host-state transition", () => {
           },
         ]),
       ),
-      epollInterests: new Map([
-        ["8:4", [{ fd: 6, events: 1, data: 1n }]],
-        ["9:4", [{ fd: 6, events: 1, data: 2n }]],
-        ["10:4", [{ fd: 6, events: 1, data: 3n }]],
-        ["11:4", [{ fd: 6, events: 1, data: 4n }]],
-      ]),
     });
 
     expect(worker.shouldLaunchPendingChild(8)).toBe(false);
@@ -1818,10 +1803,6 @@ describe("exec host-state transition", () => {
     expect(listenerClose.get(9)).not.toHaveBeenCalled();
     expect(listenerClose.get(10)).toHaveBeenCalledOnce();
     expect(listenerClose.get(11)).toHaveBeenCalledOnce();
-    expect(worker.epollInterests.has("8:4")).toBe(false);
-    expect(worker.epollInterests.has("9:4")).toBe(true);
-    expect(worker.epollInterests.has("10:4")).toBe(false);
-    expect(worker.epollInterests.has("11:4")).toBe(false);
     expect(removeProcess).not.toHaveBeenCalled();
   });
 });

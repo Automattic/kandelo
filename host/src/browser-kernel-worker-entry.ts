@@ -24,7 +24,7 @@ import type {
   ForkBorrowedReplayWorkspace,
   ForkContinuationContext,
   ResolvedSpawnProgram,
-  SpawnProgramResolution,
+  SpawnCandidateResolution,
   ThreadChannelAttachment,
 } from "./kernel-worker";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
@@ -183,6 +183,7 @@ import {
   initializeBrowserCorsProxyForWorker,
 } from "./browser-kernel-protocol";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import { createDestroyProgressReporter } from "./destroy-progress-reporter";
 
 const PAGE_SIZE = 65536;
 const O_WRONLY_CREAT_TRUNC =
@@ -264,7 +265,6 @@ const checkpointMachine: CheckpointMachine = {
     buffers: kernelWorker.bos.snapshot(),
   }),
   glContexts: () => kernelWorker.captureGlContextsForCheckpoint(),
-  epollInterests: () => kernelWorker.captureEpollInterestsForCheckpoint(),
   framebuffers: () =>
     kernelWorker.framebuffers.list().map((binding) => ({
       pid: binding.pid,
@@ -427,7 +427,7 @@ async function resolveExecutableForLaunch(
   path: string,
   argv: string[],
   depth = 0,
-): Promise<ResolvedSpawnProgram | { errno: number } | null> {
+): Promise<SpawnCandidateResolution | null> {
   if (depth > MAX_SHEBANG_DEPTH) return null;
   const bytes = await readExecFileFromFs(path);
   if (!bytes) return null;
@@ -439,18 +439,11 @@ async function resolveExecutableForLaunch(
       expectedAbi: kernelWorker.getKernelAbiVersion(),
     });
     if (artifactFailures.length > 0) return { errno: ENOEXEC };
-    let programModule: WebAssembly.Module;
-    try {
-      programModule = await WebAssembly.compile(bytes);
-    } catch (error) {
-      if (error instanceof WebAssembly.CompileError) return { errno: ENOEXEC };
-      throw error;
-    }
     const declaredAbi = extractAbiVersion(bytes);
     if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
       return { errno: ENOEXEC };
     }
-    return { programBytes: bytes, programModule, argv };
+    return { programBytes: bytes, argv };
   }
 
   const scriptArgv = [
@@ -1390,7 +1383,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   const specMounts = await restoreBrowserKernelInitMounts(
     msg.vfsImage,
     msg.rootfsMountSpec,
-    { opfsMounts: msg.opfsMounts },
+    {
+      opfsMounts: msg.opfsMounts,
+      imageMemfsMaxBytes: msg.config.imageMemfsMaxBytes,
+    },
   );
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("rootfs mount spec missing / mount");
@@ -1497,6 +1493,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       dataBufferSize: PAGE_SIZE,
       useSharedMemory: true,
       defaultThreadSlots,
+      kernelMaxPages: msg.config.kernelMaxPages,
       enableSyscallLog: msg.config.enableSyscallLog,
       syscallLogPtrWidth: msg.config.syscallLogPtrWidth,
     },
@@ -1680,9 +1677,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   if (msg.restoreCheckpoint && restoredProgramModules) {
     kernelWorker.rebindRestoredHostHandles(
       msg.restoreCheckpoint.processes.map((bucket) => ({ pid: bucket.pid })),
-    );
-    kernelWorker.restoreEpollInterestsFromCheckpoint(
-      msg.restoreCheckpoint.epolls,
     );
     // Before the first restored process resumes: its next GL submit must
     // find a binding, or a machine that was healthy when captured fails
@@ -2331,14 +2325,19 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     const channelOffset = layout.channelOffset;
     const launchEnv = withBrowserMitmCaEnv(msg.env ?? defaultEnv);
 
-    kernelWorker.registerProcess(pid, memory, [channelOffset], {
-      ptrWidth,
-      argv: msg.argv,
-      env: launchEnv,
-      brkBase: layout.brkBase,
-      mmapBase: layout.mmapBase,
-      maxAddr: layout.maxAddr,
-    });
+    // Launch continuations resume on the host event loop, where an active
+    // kernel export may legitimately own the entry gate. registerProcess
+    // rejects reentrant ingress rather than deferring, so retry on a later
+    // host turn instead of turning contention into a launch failure.
+    await retryKernelEntryResult(() =>
+      kernelWorker.registerProcess(pid, memory, [channelOffset], {
+        ptrWidth,
+        argv: msg.argv,
+        env: launchEnv,
+        brkBase: layout.brkBase,
+        mmapBase: layout.mmapBase,
+        maxAddr: layout.maxAddr,
+      }));
     createdMemoryRegistered = true;
 
     kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
@@ -2893,14 +2892,23 @@ async function handleVfork(
       workspaceAddress,
       PAGES_PER_THREAD * PAGE_SIZE,
     );
-    kernelWorker.registerProcess(childPid, parentMemory, [childChannelOffset], {
-      ptrWidth,
-      maxAddr: childLayout.maxAddr,
-      mmapBase: childLayout.mmapBase,
-      borrowedAddressSpace: true,
-    });
+    // See the launch-continuation retry note on the root spawn path.
+    await retryKernelEntryResult(() =>
+      kernelWorker.registerProcess(childPid, parentMemory, [childChannelOffset], {
+        ptrWidth,
+        maxAddr: childLayout.maxAddr,
+        mmapBase: childLayout.mmapBase,
+        borrowedAddressSpace: true,
+      }));
     registered = true;
-    kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
+    // Inheritance refuses to start while another kernel entry holds the gate
+    // (it throws before touching any state), and the caller cannot start the
+    // child until it has run. Retry on a later host turn like registration
+    // above, so gate contention delays the fork instead of failing it: under
+    // a busy desktop (a bus daemon, a bar and their clients) a single refusal
+    // surfaced in the guest as `fork: Cannot fork`.
+    await retryKernelEntryResult(() =>
+      kernelWorker.inheritProcessSharedMappings(parentPid, childPid));
 
     const forkBufAddr = continuation.forkBufAddr;
     const forkReplayContext: ForkReplayContext | undefined =
@@ -3280,13 +3288,24 @@ async function handleOrdinaryFork(
       CH_TOTAL_SIZE,
     ).fill(0);
 
-    kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-      ptrWidth,
-      maxAddr: childLayout.maxAddr,
-      mmapBase: childLayout.mmapBase,
-    });
+    // See the launch-continuation retry note on the root spawn path. This
+    // fork-child registration raced dinit/php-fpm boot traffic in practice
+    // (KernelReentrantEntryError → spurious fork failure).
+    await retryKernelEntryResult(() =>
+      kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
+        ptrWidth,
+        maxAddr: childLayout.maxAddr,
+        mmapBase: childLayout.mmapBase,
+      }));
     registered = true;
-    kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
+    // Inheritance refuses to start while another kernel entry holds the gate
+    // (it throws before touching any state), and the caller cannot start the
+    // child until it has run. Retry on a later host turn like registration
+    // above, so gate contention delays the fork instead of failing it: under
+    // a busy desktop (a bus daemon, a bar and their clients) a single refusal
+    // surfaced in the guest as `fork: Cannot fork`.
+    await retryKernelEntryResult(() =>
+      kernelWorker.inheritProcessSharedMappings(parentPid, childPid));
 
     const activeForkBufAddr = continuation.forkBufAddr;
     const forkReplayContext: ForkReplayContext | undefined =
@@ -3755,17 +3774,19 @@ async function handleExec(
         }
         return workerAdapter.createWorker(execInitData);
       });
-      kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-        preserveProcessState: true,
-        ptrWidth,
-        metadataPtrWidth: initiatingInfo.ptrWidth,
-        brkBase: newLayout.brkBase,
-        mmapBase: newLayout.mmapBase,
-        maxAddr: newLayout.maxAddr,
-        // Refresh kernel-owned argv/environment for procfs and kernel APIs.
-        argv: launchArgv,
-        env: envp,
-      });
+      // See the launch-continuation retry note on the root spawn path.
+      await retryKernelEntryResult(() =>
+        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
+          preserveProcessState: true,
+          ptrWidth,
+          metadataPtrWidth: initiatingInfo.ptrWidth,
+          brkBase: newLayout.brkBase,
+          mmapBase: newLayout.mmapBase,
+          maxAddr: newLayout.maxAddr,
+          // Refresh kernel-owned argv/environment for procfs and kernel APIs.
+          argv: launchArgv,
+          env: envp,
+        }));
       replacementRegistered = true;
       bindForkHostImports(replacementWorker, replacementForkHostImports);
 
@@ -3990,13 +4011,14 @@ async function handleExec(
  * Pre-flight resolver — see node-kernel-worker-entry.ts:handlePosixSpawnResolve.
  * Browser-side equivalent: materialize the lazy file (async fetch via
  * the memfs lazy-loader, avoiding sync-XHR + SW deadlocks), reads its
- * contents from the VFS, follows shebangs, and compiles the final Wasm
- * module. Safe to call before the kernel applies spawn file actions.
+ * contents from the VFS, and follows shebangs. Compilation is deferred to the
+ * shared worker's isolated candidate snapshot. Safe to call before the kernel
+ * applies spawn file actions.
  */
 async function handlePosixSpawnResolve(
   path: string,
   argv: string[],
-): Promise<SpawnProgramResolution | null> {
+): Promise<SpawnCandidateResolution | null> {
   return resolveExecutableForLaunch(path, argv);
 }
 
@@ -4068,12 +4090,14 @@ async function handlePosixSpawn(
   try {
     // Kernel already created the child via kernel_spawn_process. Treat every
     // subsequent host attachment as one rollback-capable transaction.
-    kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
-      ptrWidth,
-      brkBase: newLayout.brkBase,
-      mmapBase: newLayout.mmapBase,
-      maxAddr: newLayout.maxAddr,
-    });
+    // See the launch-continuation retry note on the root spawn path.
+    await retryKernelEntryResult(() =>
+      kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
+        ptrWidth,
+        brkBase: newLayout.brkBase,
+        mmapBase: newLayout.mmapBase,
+        maxAddr: newLayout.maxAddr,
+      }));
     registered = true;
 
     externrefGeneration = externrefProcessOwner.startGeneration(childPid);
@@ -4820,6 +4844,60 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   const info = processes.get(pid);
   if (info) vmInterruptTimers.clear(pid, info);
 
+  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Wake the target to a cooperative exit
+  // before any hard `Worker.terminate()` below. WHY: a live process worker is
+  // never idle in its JS event loop — it is parked in an in-wasm `Atomics.wait`
+  // on its syscall channel (a blocked read/accept/wait, or musl's
+  // post-exit_group `_Exit` loop). On JavaScriptCore (Safari, and Bun),
+  // `Worker.terminate()` cannot reap a worker parked in `Atomics.wait`: its OS
+  // thread and committed working set survive the call. `terminate_process` is
+  // how a terminal session's process is torn down, so every machine switch that
+  // went straight to `terminateTrackedWorker` leaked one `WebCore: Worker`
+  // thread (measured +1 per switch, non-decaying) until Safari/iOS threw "Out
+  // of memory". Delivering SIGKILL through the normal kernel signal path
+  // completes each parked channel with EINTR and queues SIGKILL so the guest
+  // glue runs `kernel_exit`; worker-main then returns to its JS event loop and
+  // posts `{exit}`, whose `finishProcessExit` terminates the now-idle worker — a
+  // state JSC *can* reclaim. This mirrors `performDestroy`'s Phase-1 wake, but
+  // scoped to a single pid so sibling processes (e.g. php-test tearing down
+  // several servers) keep running. Delivering SIGKILL through the ordinary
+  // signal path is not enough: it wakes only *registered* blockers (signal
+  // waits, futex, wait4, pipe readers), never a channel merely parked at
+  // CH_PENDING on a blocked read/accept, which is where an idle shell sits. See
+  // docs/jsc-terminate-atomics-wait-workaround.md.
+  //
+  // A bounded drain, not an unbounded wait: a guest wedged in a non-syscalling
+  // wasm loop never reaches a checkpoint to observe the wake, so after the
+  // deadline we fall through to the force-terminate path below. That path still
+  // leaks the one worker on JSC — the truthful cost of an unresponsive guest,
+  // not the common case this fix addresses.
+  if (info?.worker && processes.get(pid) === info) {
+    try {
+      await kernelWorker.killBlockedProcessForTeardown(pid);
+    } catch (error) {
+      console.warn(
+        `[browser-kernel-worker] terminate_process could not wake pid ${pid} ` +
+        `for cooperative exit; forcing: ${formatError(error)}`,
+      );
+    }
+    const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
+    while (processes.get(pid) === info && Date.now() < drainDeadline) {
+      await delay(DESTROY_KILL_DRAIN_POLL_MS);
+    }
+    // The SIGKILL-woken worker ran its exit path and `finishProcessExit`
+    // already terminated it (while idle) and detached its generation. Nothing
+    // is left to tear down or detach here.
+    if (!processes.has(pid)) {
+      respond(msg.requestId, true);
+      return;
+    }
+    console.warn(
+      `[browser-kernel-worker] terminate_process pid=${pid} did not exit ` +
+      `cooperatively within ${DESTROY_KILL_DRAIN_TIMEOUT_MS}ms; force-terminating ` +
+      `(this can leak one worker thread on JavaScriptCore)`,
+    );
+  }
+
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
   if (threads) {
@@ -5005,10 +5083,14 @@ async function performDestroy() {
   // EINTR + a queued SIGKILL; the guest glue then runs kernel_exit, the worker
   // returns to its JS event loop (via {exit}), and it becomes reclaimable. A
   // no-op cost on V8 (Chrome), so it runs unconditionally.
+  const destroyProgress = createDestroyProgressReporter((event) =>
+    post({ type: "destroy_progress", event }),
+  );
   let woken = new Set<number>();
   try { woken = await kernelWorker.killAllBlockedForTeardown(); } catch (e) {
     console.error(`[kernel-worker] killAllBlockedForTeardown failed: ${e}`);
   }
+  destroyProgress.startDraining(woken.size);
 
   // Phase 2 — drain. The woken workers run their exit path and post `{exit}`,
   // which fires handleExit → removes them from `processes` and terminates them
@@ -5016,14 +5098,19 @@ async function performDestroy() {
   // not wake (e.g. one already exited via a sibling thread) never posts `{exit}`
   // and is force-terminated below instead of waited on. Bounded.
   const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
-  const stillDraining = () => {
-    for (const pid of woken) if (processes.has(pid)) return true;
-    return false;
+  const liveWokenCount = () => {
+    let live = 0;
+    for (const pid of woken) if (processes.has(pid)) live++;
+    return live;
   };
-  while (stillDraining() && Date.now() < drainDeadline) {
+  let liveWoken = liveWokenCount();
+  while (liveWoken > 0 && Date.now() < drainDeadline) {
+    destroyProgress.drained(woken.size - liveWoken);
     await delay(DESTROY_KILL_DRAIN_POLL_MS);
+    liveWoken = liveWokenCount();
   }
-  if (stillDraining()) {
+  destroyProgress.drained(woken.size - liveWoken);
+  if (liveWoken > 0) {
     console.warn(`[kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
   }
 
@@ -5033,7 +5120,9 @@ async function performDestroy() {
   // threadWorkers / ptyByPid clears, those maps stay populated across kernel
   // rebuilds (e.g. iframe reload) and leak.
   const retireCurrentGenerations = async (): Promise<void> => {
-    for (const [pid, info] of [...processes.entries()]) {
+    const stragglers = [...processes.entries()];
+    destroyProgress.startTerminating(stragglers.length);
+    for (const [pid, info] of stragglers) {
       if (info.worker) {
         await terminateThreadWorkers(pid);
         await terminateTrackedWorker(info.worker);
@@ -5056,6 +5145,7 @@ async function performDestroy() {
           detachResult,
         );
       }
+      destroyProgress.terminatedOne();
     }
   };
   await retireCurrentGenerations();
@@ -5707,6 +5797,9 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "fb_release_generation_ack":
       acknowledgeMainFramebufferRelease(msg.requestId);
+      break;
+    case "kms_set_display_size":
+      kernelWorker.setKmsDisplaySize(msg.crtcId, msg.width, msg.height, msg.physicalMm);
       break;
     case "input_event_inject":
       kernelWorker.injectInputEvent(msg.device, msg.ev_type, msg.code, msg.value);

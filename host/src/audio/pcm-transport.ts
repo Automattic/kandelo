@@ -200,6 +200,30 @@ export function readPcmConfig(words: Int32Array): PcmTransportConfig {
   }
 }
 
+/**
+ * Has a guest opened `/dev/dsp` on this machine?
+ *
+ * The kernel already publishes both halves of the answer into this header.
+ * `open_stream()` bumps `generation` and stores a non-closed `state`
+ * (crates/runtime-core/src/audio.rs:352), while the host's eager
+ * `claim_transport()` touches neither (audio.rs:781). A machine whose guests
+ * never opened the device therefore reads generation 0 and state closed for
+ * its whole life.
+ *
+ * `generation` is what makes this safe to sample rather than subscribe to: it
+ * is monotonic, so a program that opens the device, writes a short sound and
+ * exits between two observations still leaves its mark.
+ *
+ * Orthogonal to `PcmOutputState`, which describes the host sink. This
+ * describes whether anything in the machine ever asked for one.
+ */
+export function pcmGuestAudioActivity(words: Int32Array): boolean {
+  return (
+    loadU32(words, PCM_CONTROL.generation) !== 0 ||
+    loadU32(words, PCM_CONTROL.state) !== PcmStreamState.Closed
+  );
+}
+
 export function isPcmGenerationCurrent(
   words: Int32Array,
   generation: number,

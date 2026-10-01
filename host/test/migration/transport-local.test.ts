@@ -21,7 +21,6 @@ function fakeCheckpoint(marker: number): MachineCheckpoint {
     framebuffers: [],
     kms: { fbs: [], crtcs: [], masterPid: null, buffers: [] },
     gl: [],
-    epolls: [],
     processes: [],
   };
 }

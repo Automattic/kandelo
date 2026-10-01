@@ -29,7 +29,7 @@
  */
 import type { InputSource, InputEvent } from "./input-source.js";
 import { INPUT_CODES } from "../generated/abi.js";
-import { codeToKey } from "./key-code-table.js";
+import { charToKey, codeToKey } from "./key-code-table.js";
 
 const {
   EV_SYN,
@@ -43,16 +43,68 @@ const {
   BTN_LEFT,
   BTN_RIGHT,
   BTN_MIDDLE,
+  KEY_LEFTCTRL,
+  KEY_LEFTSHIFT,
+  KEY_LEFTALT,
+  KEY_LEFTMETA,
 } = INPUT_CODES;
+
+/**
+ * Modifiers follow what the OS says a key IS, not where it sits. A user who
+ * remaps Caps Lock to Control (macOS System Settings, or a Linux xkb option)
+ * presses a key whose `code` is still "CapsLock" but which the OS reports as
+ * Control — as `key: "Control"` on the key itself, or only as `ctrlKey` on the
+ * keys pressed while it is held, depending on the platform and browser. The
+ * guest's keymap is a fixed US layout, so the wire must carry the modifier
+ * the user meant; `code` alone would send KEY_CAPSLOCK and no bind fires.
+ */
+type ModifierKind = "Control" | "Shift" | "Alt" | "Meta";
+const MODIFIER_KINDS: readonly ModifierKind[] = ["Control", "Shift", "Alt", "Meta"];
+const MODIFIER_FLAG = {
+  Control: "ctrlKey",
+  Shift: "shiftKey",
+  Alt: "altKey",
+  Meta: "metaKey",
+} as const;
+const MODIFIER_LEFT_KEY: Record<ModifierKind, number> = {
+  Control: KEY_LEFTCTRL,
+  Shift: KEY_LEFTSHIFT,
+  Alt: KEY_LEFTALT,
+  Meta: KEY_LEFTMETA,
+};
+const MODIFIER_CODES: Record<ModifierKind, readonly string[]> = {
+  Control: ["ControlLeft", "ControlRight"],
+  Shift: ["ShiftLeft", "ShiftRight"],
+  Alt: ["AltLeft", "AltRight"],
+  Meta: ["MetaLeft", "MetaRight"],
+};
+
+function isModifierKind(key: unknown): key is ModifierKind {
+  return typeof key === "string" && (MODIFIER_KINDS as readonly string[]).includes(key);
+}
+
+/** The modifier a key event is, by its OS meaning; keeps the physical side
+ *  when the code agrees with the meaning (ControlRight stays right). */
+function modifierKeyOf(e: KeyboardEvent): { kind: ModifierKind; key: number } | null {
+  if (!isModifierKind(e.key)) return null;
+  const kind = e.key;
+  const positional = MODIFIER_CODES[kind].includes(e.code) ? codeToKey(e.code) : null;
+  return { kind, key: positional ?? MODIFIER_LEFT_KEY[kind] };
+}
 
 export class BrowserInputSource implements InputSource {
   private dispatch: ((ev: InputEvent) => void) | null = null;
-  private bindings: Array<[EventTarget, string, EventListener]> = [];
+  private bindings: Array<
+    [EventTarget, string, EventListener, AddEventListenerOptions | undefined]
+  > = [];
   // Previous absolute pointer position (rounded clientX/Y), used to derive
   // REL deltas outside pointer lock. `null` means "no baseline yet" — the
   // next non-lock move only re-establishes it and emits no motion.
   private lastAbsX: number | null = null;
   private lastAbsY: number | null = null;
+  // Modifiers the guest currently holds down, by kind, with the key code
+  // that was pressed for each (so the release matches the press).
+  private heldModifiers = new Map<ModifierKind, number>();
 
   /**
    * @param target  Event source to bind to (defaults to `window`).
@@ -93,8 +145,18 @@ export class BrowserInputSource implements InputSource {
 
   start(dispatch: (ev: InputEvent) => void): void {
     this.dispatch = dispatch;
-    this.bind("keydown", this.onKeyDown);
-    this.bind("keyup", this.onKeyUp);
+    // Keyboard in the CAPTURE phase. This source binds to `window` for
+    // global reach and lets `shouldCapture` decide what the demo owns, but a
+    // focused widget inside the demo stage gets the event first and can end
+    // it: xterm.js calls `stopPropagation()` on every key it handles, so a
+    // bubbling keydown never reaches window while the Shell pane holds focus
+    // — and keyup, which xterm does not cancel, still does. That asymmetry
+    // handed `/dev/input/event0` a key release with no matching press, which
+    // is worse for an evdev consumer than receiving neither. Capture phase
+    // sees the event before any target handler can cancel it; the gate still
+    // decides whether this demo wants it.
+    this.bind("keydown", this.onKeyDown, { capture: true });
+    this.bind("keyup", this.onKeyUp, { capture: true });
     if (this.opts.pointer !== false) {
       this.bind("pointermove", this.onPointerMove);
       this.bind("pointerdown", this.onPointerDown);
@@ -112,12 +174,15 @@ export class BrowserInputSource implements InputSource {
     // it can't go through this.bind which is parametric over `target`.
     // Tracked in `bindings` for symmetric removal in stop().
     const lockHandler = this.onPointerLockChange.bind(this) as EventListener;
-    this.bindings.push([document, "pointerlockchange", lockHandler]);
+    this.bindings.push([document, "pointerlockchange", lockHandler, undefined]);
     document.addEventListener("pointerlockchange", lockHandler);
   }
 
   stop(): void {
-    for (const [t, n, l] of this.bindings) t.removeEventListener(n, l);
+    // `removeEventListener` matches on the capture flag as well as the
+    // callback, so the options a binding was registered with have to come
+    // back with it or a capture-phase listener outlives stop().
+    for (const [t, n, l, o] of this.bindings) t.removeEventListener(n, l, o);
     this.bindings = [];
     this.dispatch = null;
   }
@@ -129,7 +194,7 @@ export class BrowserInputSource implements InputSource {
   ) {
     const wrapped = handler.bind(this);
     this.target.addEventListener(name, wrapped as EventListener, options);
-    this.bindings.push([this.target, name, wrapped as EventListener]);
+    this.bindings.push([this.target, name, wrapped as EventListener, options]);
   }
 
   private emit(
@@ -171,20 +236,68 @@ export class BrowserInputSource implements InputSource {
 
   private onKeyDown(e: KeyboardEvent): void {
     if (!this.shouldCapture(e)) return;
-    const key = codeToKey(e.code);
+    const modifier = modifierKeyOf(e);
+    if (modifier !== null) {
+      e.preventDefault();
+      this.emit(0, EV_KEY, modifier.key, e.repeat ? 2 : 1);
+      this.heldModifiers.set(modifier.kind, modifier.key);
+      this.frame(0);
+      return;
+    }
+    // A Caps Lock the OS did not engage is a remapped key whose meaning
+    // arrives as a modifier flag on the next key (see above); forwarding it
+    // would toggle the guest into upper case.
+    if (e.key === "CapsLock" && typeof e.getModifierState === "function"
+      && e.getModifierState("CapsLock") === false) {
+      return;
+    }
+    const key = charToKey(e.key) ?? codeToKey(e.code);
     if (key === null) return;
     e.preventDefault();
+    this.syncModifiers(e);
     this.emit(0, EV_KEY, key, e.repeat ? 2 : 1);
     this.frame(0);
   }
 
   private onKeyUp(e: KeyboardEvent): void {
     if (!this.shouldCapture(e)) return;
-    const key = codeToKey(e.code);
+    const modifier = modifierKeyOf(e);
+    if (modifier !== null) {
+      e.preventDefault();
+      this.emit(0, EV_KEY, this.heldModifiers.get(modifier.kind) ?? modifier.key, 0);
+      this.heldModifiers.delete(modifier.kind);
+      this.frame(0);
+      return;
+    }
+    const key = charToKey(e.key) ?? codeToKey(e.code);
     if (key === null) return;
     e.preventDefault();
+    this.syncModifiers(e);
     this.emit(0, EV_KEY, key, 0);
     this.frame(0);
+  }
+
+  /**
+   * Make the guest's held modifiers match the event's modifier flags before
+   * a non-modifier key. The flags are the OS's word on what is held, so this
+   * covers a remapped key that never produced a modifier keydown, and a
+   * modifier released while the page did not have focus. An event without
+   * boolean flags (a synthetic one) leaves the state alone.
+   */
+  private syncModifiers(e: KeyboardEvent): void {
+    for (const kind of MODIFIER_KINDS) {
+      const flag = (e as unknown as Record<string, unknown>)[MODIFIER_FLAG[kind]];
+      if (typeof flag !== "boolean") continue;
+      const held = this.heldModifiers.get(kind);
+      if (flag && held === undefined) {
+        const key = MODIFIER_LEFT_KEY[kind];
+        this.emit(0, EV_KEY, key, 1);
+        this.heldModifiers.set(kind, key);
+      } else if (!flag && held !== undefined) {
+        this.emit(0, EV_KEY, held, 0);
+        this.heldModifiers.delete(kind);
+      }
+    }
   }
 
   private onPointerMove(e: PointerEvent): void {

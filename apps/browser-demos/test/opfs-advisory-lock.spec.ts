@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
+import { devServerAssetUrl } from "./support/dev-server-assets";
 import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { platform, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const proxyWorkerPath = resolve(
@@ -59,11 +59,8 @@ test("Rust advisory locks use exact OPFS identity, wake events, and bounded capa
       const page = context.pages()[0] ?? (await context.newPage());
       const proxyWorkerUrl = new URL(`/@fs/${proxyWorkerPath}`, baseURL).href;
       const clientWorkerUrl = new URL(`/@fs/${clientWorkerPath}`, baseURL).href;
-      const kernelWasmUrl = new URL(
-        `/@fs/${resolveBinary("kernel.wasm")}`,
-        baseURL,
-      ).href;
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const kernelWasmUrl = await devServerAssetUrl(page, "@kernel-wasm");
 
       const result = await page.evaluate(
         async ({ proxyWorkerUrl, clientWorkerUrl, kernelWasmUrl }) => {

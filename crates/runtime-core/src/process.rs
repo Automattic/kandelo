@@ -262,8 +262,32 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
-    /// Free host-side SAB backing for a bo whose refcount has reached
-    /// zero. Idempotent: calling on an unknown `bo_id` is a no-op.
+    /// Allocate host-side `WebGLTexture` backing for a freshly-created
+    /// GPU-tier bo (`DRM_IOCTL_WPK_CREATE_GPU_BO`, PR10). Unlike
+    /// `gbm_bo_create`, there is no SAB: the bo lives as a texture (+FBO)
+    /// on the shared multiplexer context, sampled zero-copy by the
+    /// compositor and rendered into by its producer. `format` is a
+    /// `DRM_FORMAT_*` and `usage` a `GBM_BO_USE_*` bitmask, both passed
+    /// through from the guest. Returns ≥ 0 on success, negative errno on
+    /// failure (e.g. no WebGL backing on a headless host). Released via
+    /// `gbm_bo_destroy` when the refcount reaches zero — the same path as
+    /// CPU-tier bos.
+    #[allow(unused_variables)]
+    fn gbm_gpu_bo_create(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Free host-side backing for a bo whose refcount has reached zero
+    /// (SAB for CPU-tier, `WebGLTexture`+FBO for GPU-tier). Idempotent:
+    /// calling on an unknown `bo_id` is a no-op.
     #[allow(unused_variables)]
     fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {}
 
@@ -323,16 +347,36 @@ pub trait HostIO {
         0
     }
 
-    /// Flush any pending GL work and signal "frame ready". v1 no-op
-    /// (canvas presents on the next RAF); kept as a hook for future
-    /// fence/sync work.
+    /// Flush any pending GL work and signal "frame ready". Returns 0 on
+    /// success or negative errno when the host cannot present — a lost
+    /// WebGL context must fail `eglSwapBuffers` so a GPU compositor
+    /// degrades to its CPU path instead of presenting frozen pixels.
     #[allow(unused_variables)]
-    fn gl_present(&mut self, pid: i32) {}
+    fn gl_present(&mut self, pid: i32) -> i32 {
+        0
+    }
 
     /// Synchronous GL query (`glGetError`, `glReadPixels`, etc.).
     /// Returns bytes written into `out`, or negative errno on failure.
     #[allow(unused_variables)]
     fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`: (re)upload a CPU-tier bo's
+    /// current pixels into a `WebGLTexture` in `pid`'s GL context and
+    /// return the guest-visible texture id (> 0), or negative errno.
+    /// Idempotent per (pid, bo): rebinding refreshes the pixels and
+    /// returns the same id. The texture's lifetime is tied to the bo —
+    /// `gbm_bo_destroy` drops it.
+    #[allow(unused_variables)]
+    fn gl_bind_foreign_texture(
+        &mut self,
+        pid: i32,
+        ctx_id: u32,
+        bo_id: u32,
+        gl_target: u32,
+    ) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 
@@ -358,6 +402,15 @@ pub trait HostIO {
     #[allow(unused_variables)]
     fn kms_mode_info(&mut self, connector_id: u32) -> wasm_posix_shared::dri::WpkDrmModeModeinfo {
         wasm_posix_shared::dri::WpkDrmModeModeinfo::default()
+    }
+
+    /// The connector's physical size in millimetres, `(width, height)`, as
+    /// `DRM_IOCTL_MODE_GETCONNECTOR` reports it. `(0, 0)` means unknown,
+    /// which is what a real connector reports when the panel gives no size
+    /// (and what a host with no display reports).
+    #[allow(unused_variables)]
+    fn kms_connector_mm(&mut self, connector_id: u32) -> (u32, u32) {
+        (0, 0)
     }
 
     #[allow(unused_variables)]
@@ -589,11 +642,19 @@ pub struct EventFdState {
 }
 
 /// An entry in an epoll interest list.
+///
+/// Like Linux, a registration belongs to the pair (fd number, open file
+/// description): `ofd_id` is the description `fd` referred to at
+/// EPOLL_CTL_ADD. The registration lives as long as that description has
+/// an fd in the process -- it survives `close(fd)` while a `dup` keeps the
+/// description open, and disappears once none does -- and a later file that
+/// reuses the fd number is a different registration.
 #[derive(Debug, Clone)]
 pub struct EpollInterest {
     pub fd: i32,
     pub events: u32,
     pub data: u64,
+    pub ofd_id: crate::lock::OfdId,
 }
 
 /// An epoll instance: a set of monitored file descriptors.
@@ -2207,19 +2268,32 @@ impl Process {
         let handler_base_mask = self.blocked_for(tid);
         let handler_depth = self.caught_handler_depth_for(tid).saturating_add(1);
         self.set_caught_handler_depth_for(tid, handler_depth);
-        if let Some(wait) = self
-            .mask_waits_for_mut(tid)
-            .and_then(|waits| waits.last_mut())
-        {
-            if wait.state == SignalMaskWaitState::Active {
-                wait.state = SignalMaskWaitState::Interrupted { handler_depth };
+        // The mask the handler's normal return restores.
+        let mut restore_mask = handler_base_mask;
+        if let Some(waits) = self.mask_waits_for_mut(tid) {
+            if let Some(wait) = waits.last_mut() {
+                if wait.state == SignalMaskWaitState::Active {
+                    if wait.kind == crate::signal::SignalMaskWaitKind::EpollPwait {
+                        // epoll_pwait is never restarted after a caught
+                        // handler: it returns EINTR, and the handler's
+                        // return restores the caller's pre-wait mask (Linux's
+                        // set_restore_sigmask). Keeping the context would
+                        // leave the wait's mask installed after the handler,
+                        // so a signal the caller blocks outside the wait
+                        // (foot's SIGCHLD) would run its handler anywhere.
+                        restore_mask = wait.saved_mask;
+                        waits.pop();
+                    } else {
+                        wait.state = SignalMaskWaitState::Interrupted { handler_depth };
+                    }
+                }
             }
         }
         self.set_blocked_for(
             tid,
             handler_base_mask | action_mask | crate::signal::sig_bit(signum),
         );
-        handler_base_mask
+        restore_mask
     }
 
     /// Collect every TID that has `sig` unblocked (main + worker threads).
@@ -2614,6 +2688,37 @@ mod tests {
         assert_eq!(proc.mask_wait_depth_for(proc.pid), 0);
         assert!(proc.return_from_caught_handler_for(proc.pid));
         proc.acknowledge_caught_handler_mask_restore_for(proc.pid);
+    }
+
+    #[test]
+    fn epoll_pwait_handler_return_restores_the_pre_wait_mask() {
+        use crate::signal::{SignalMaskWaitKind, sig_bit};
+        use wasm_posix_shared::signal::{SIGCHLD, SIGUSR1};
+
+        // foot's reaper: SIGCHLD blocked everywhere, open only in the wait.
+        let mut proc = Process::new(744);
+        let tid = proc.pid;
+        let original = sig_bit(SIGCHLD);
+        proc.set_blocked_for(tid, original);
+        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::EpollPwait, 0);
+        assert_eq!(proc.blocked_for(tid), 0);
+
+        let action_mask = sig_bit(SIGUSR1);
+        let restore_mask = proc.install_caught_handler_mask_for(tid, action_mask, SIGCHLD);
+
+        // epoll_pwait is not restarted: the handler's return restores the
+        // caller's mask, and the wait's context is gone.
+        assert_eq!(restore_mask, original);
+        assert_eq!(proc.mask_wait_depth_for(tid), 0);
+        assert_eq!(proc.blocked_for(tid), action_mask | sig_bit(SIGCHLD));
+        assert!(proc.return_from_caught_handler_for(tid));
+        proc.acknowledge_caught_handler_mask_restore_for(tid);
+
+        // The next wait starts a fresh context instead of reusing the old.
+        proc.set_blocked_for(tid, restore_mask);
+        proc.enter_signal_mask_wait_for(tid, SignalMaskWaitKind::EpollPwait, 0);
+        assert_eq!(proc.blocked_for(tid), 0);
+        assert_eq!(proc.mask_wait_depth_for(tid), 1);
     }
 
     #[test]
@@ -3230,6 +3335,168 @@ mod tests {
             after_fork, 3,
             "fork child must add one ref via the shared helper"
         );
+    }
+
+    #[test]
+    fn spawn_child_increfs_inherited_dri_bos() {
+        // Regression (hyprland tiling desktop freeze): a posix_spawn'd client
+        // inherits the compositor's O_CLOEXEC card0 OFD, which carries the
+        // scanout bo's GEM handle + KMS framebuffer. spawn must incref those
+        // bos exactly as fork does (read_dri_fd_state / read_kms_fd_state),
+        // otherwise the child's exec-time close (dri_release_ofd_state) decrefs
+        // the compositor's still-live scanout bo to zero, tombstoning it in the
+        // global BoRegistry and freezing the desktop under a gbm_bo_map EINVAL
+        // flood.
+        use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent = table.get_mut(parent_pid).unwrap();
+        let ofd_idx = parent.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        // Mirror the compositor's card0 fd: one GEM handle + one framebuffer,
+        // both referencing the scanout bo.
+        let mut dri = DriFdState::default();
+        dri.handles.insert(5, bo);
+        dri.next_handle = 6;
+        let mut kms = KmsFdState::default();
+        kms.fbs.insert(
+            42,
+            KmsFb {
+                bo_id: bo,
+                width: 64,
+                height: 64,
+                pixel_format: 0x34325241, // AR24
+                stride: 64 * 4,
+            },
+        );
+        kms.next_fb_id = 43;
+        parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+        parent
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(1),
+            "synthetic parent setup leaves the registry at the alloc refcount"
+        );
+
+        let mut host = test_host::NoopHost;
+        table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"wlclock".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .expect("spawn_child_for_caller");
+
+        // Child inherited the card0 OFD's one GEM handle + one framebuffer;
+        // each must have taken its own registry ref so the child's eventual
+        // close-path decref is balanced.
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(3),
+            "spawn child must incref the inherited scanout bo once per handle + fb"
+        );
+
+        crate::dri::with_registry(|r| {
+            r.decref(bo);
+            r.decref(bo);
+            r.decref(bo);
+        });
+    }
+
+    #[test]
+    fn fork_process_increfs_inherited_dri_bos_exactly_once() {
+        // Guard the spawn-vs-fork incref split. DRI bos are increfed on the
+        // fork path inside deserialize (read_dri_fd_state / read_kms_fd_state),
+        // NOT in the shared bump helper — spawn uses `bump_inherited_dri_bos`
+        // instead. If a future change moved the DRI incref into
+        // `bump_inherited_resource_refcounts`, fork_process (deserialize + bump)
+        // would double-incref and leak the bo. This asserts exactly one child
+        // ref per inherited GEM handle + framebuffer.
+        use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
+        use crate::process_table::ProcessTable;
+
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent = table.get_mut(parent_pid).unwrap();
+        let ofd_idx = parent.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        let mut dri = DriFdState::default();
+        dri.handles.insert(5, bo);
+        dri.next_handle = 6;
+        let mut kms = KmsFdState::default();
+        kms.fbs.insert(
+            42,
+            KmsFb {
+                bo_id: bo,
+                width: 64,
+                height: 64,
+                pixel_format: 0x34325241, // AR24
+                stride: 64 * 4,
+            },
+        );
+        kms.next_fb_id = 43;
+        parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+        parent
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(1),
+            "synthetic parent setup leaves the registry at the alloc refcount"
+        );
+
+        table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .expect("fork_process_for_caller");
+
+        // Parent's ref (1, synthetic) + child's one incref per handle + fb (2).
+        // A deserialize+bump double-count would show 5.
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(3),
+            "fork must incref each inherited DRI bo exactly once (no deserialize + bump double-count)"
+        );
+
+        crate::dri::with_registry(|r| {
+            r.decref(bo);
+            r.decref(bo);
+            r.decref(bo);
+        });
     }
 
     #[test]

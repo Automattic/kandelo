@@ -14,6 +14,12 @@ export interface BrowserKernelInitMountOptions {
    * thread already initialized for the named workspace.
    */
   opfsMounts?: readonly OpfsMountInit[];
+  /**
+   * Upper bound on the image-backed rootfs reservation. Defaults to the
+   * resolver's `IMAGE_MEMFS_MAX_BYTES`; the host's runtime memory profile
+   * supplies a smaller budget on engines that charge declared ceilings.
+   */
+  imageMemfsMaxBytes?: number;
 }
 
 /**
@@ -36,5 +42,10 @@ export function restoreBrowserKernelInitMounts(
   const opfsChannels = Object.fromEntries(
     opfsMounts.map((m) => [m.path, m.channelSab]),
   );
-  return resolveForBrowser(spec, vfsImage, { opfsChannels });
+  return resolveForBrowser(spec, vfsImage, {
+    opfsChannels,
+    ...(options.imageMemfsMaxBytes === undefined
+      ? {}
+      : { imageMemfsMaxBytes: options.imageMemfsMaxBytes }),
+  });
 }

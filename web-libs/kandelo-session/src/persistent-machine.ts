@@ -182,33 +182,25 @@ function validateMachine(value: unknown): asserts value is PersistentMachine {
   }
 }
 
-/** The home directory a descriptor boots into, from its `HOME`. */
-export function homeDirectoryOf(descriptor: BootDescriptor): string {
-  const home = descriptor.boot.env.HOME;
-  if (typeof home !== "string" || !home.startsWith("/") || home === "/") {
-    throw new PersistentMachineError(
-      "E_NO_HOME",
-      `descriptor ${descriptor.id} sets no home directory to persist`,
-    );
-  }
-  return home;
-}
-
-/** The workspace a descriptor mounts at its home directory, or null. */
+/**
+ * The workspace a saved machine's descriptor mounts at its home directory, or
+ * null. A descriptor that mounts a workspace without declaring persistence is
+ * a machine on memory with a mount, not a saved machine.
+ */
 export function persistentMachineIdOf(descriptor: BootDescriptor): string | null {
-  const home = descriptor.boot.env.HOME;
-  const mount = descriptor.mounts.find(
-    (m) => m.source === "opfs" && m.path === home,
-  );
+  if (descriptor.caps?.persistence !== true) return null;
+  const workspaces = descriptor.mounts.filter((m) => m.source === "opfs");
+  if (workspaces.length !== 1) return null;
+  const mount = workspaces[0];
   return typeof mount?.name === "string" ? mount.name : null;
 }
 
-/** `descriptor` with its home directory on the workspace `id`. */
+/** `descriptor` with its home directory `home` on the workspace `id`. */
 export function persistentMachineDescriptor(
   descriptor: BootDescriptor,
   id: string,
+  home: string,
 ): BootDescriptor {
-  const home = homeDirectoryOf(descriptor);
   const workspace: DescriptorMount = { path: home, source: "opfs", name: id };
   return {
     ...descriptor,

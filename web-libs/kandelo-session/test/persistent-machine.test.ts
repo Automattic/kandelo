@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import type { BootDescriptor } from "../src/kernel-host";
 import {
   ephemeralDescriptor,
-  homeDirectoryOf,
   PERSISTENT_MACHINES_STORAGE_KEY,
   PersistentMachineError,
   PersistentMachineRegistry,
@@ -40,6 +39,7 @@ const SHELL: BootDescriptor = {
   caps: { network: true },
 };
 
+const HOME = "/home/maker";
 const FOO_ID = "0f5d2e3a-4b6c-4d7e-8f90-a1b2c3d4e5f6";
 const BAR_ID = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 
@@ -47,7 +47,7 @@ function machine(id: string, name: string, openedAt: string): PersistentMachine 
   return {
     id,
     name,
-    descriptor: persistentMachineDescriptor(SHELL, id),
+    descriptor: persistentMachineDescriptor(SHELL, id, HOME),
     createdAt: "2026-09-30T10:00:00.000Z",
     openedAt,
   };
@@ -63,22 +63,9 @@ class MapStorage implements MachineStorage {
   }
 }
 
-describe("homeDirectoryOf", () => {
-  it("reads HOME from the boot environment", () => {
-    expect(homeDirectoryOf(SHELL)).toBe("/home/maker");
-  });
-
-  it("refuses a descriptor without a home directory", () => {
-    const noHome = { ...SHELL, boot: { ...SHELL.boot, env: { PATH: "/bin" } } };
-    expect(() => homeDirectoryOf(noHome)).toThrow(PersistentMachineError);
-    const rootHome = { ...SHELL, boot: { ...SHELL.boot, env: { HOME: "/" } } };
-    expect(() => homeDirectoryOf(rootHome)).toThrow(/no home directory/);
-  });
-});
-
 describe("persistentMachineDescriptor", () => {
   it("mounts the workspace at the home directory and declares persistence", () => {
-    const desc = persistentMachineDescriptor(SHELL, FOO_ID);
+    const desc = persistentMachineDescriptor(SHELL, FOO_ID, HOME);
     expect(desc.mounts).toEqual([
       ...SHELL.mounts,
       { path: "/home/maker", source: "opfs", name: FOO_ID },
@@ -89,8 +76,9 @@ describe("persistentMachineDescriptor", () => {
 
   it("replaces a workspace the descriptor already carried", () => {
     const desc = persistentMachineDescriptor(
-      persistentMachineDescriptor(SHELL, FOO_ID),
+      persistentMachineDescriptor(SHELL, FOO_ID, HOME),
       BAR_ID,
+      HOME,
     );
     expect(desc.mounts.filter((m) => m.source === "opfs")).toEqual([
       { path: "/home/maker", source: "opfs", name: BAR_ID },
@@ -99,7 +87,7 @@ describe("persistentMachineDescriptor", () => {
 
   it("leaves the input descriptor untouched", () => {
     const before = JSON.stringify(SHELL);
-    persistentMachineDescriptor(SHELL, FOO_ID);
+    persistentMachineDescriptor(SHELL, FOO_ID, HOME);
     expect(JSON.stringify(SHELL)).toBe(before);
   });
 });
@@ -109,25 +97,25 @@ describe("persistentMachineIdOf", () => {
     expect(persistentMachineIdOf(SHELL)).toBeNull();
   });
 
-  it("ignores a workspace mounted somewhere other than home", () => {
-    const elsewhere = {
+  it("ignores a workspace the descriptor does not declare as its persistence", () => {
+    const mounted = {
       ...SHELL,
-      mounts: [...SHELL.mounts, { path: "/persist", source: "opfs" as const, name: FOO_ID }],
+      mounts: [...SHELL.mounts, { path: HOME, source: "opfs" as const, name: FOO_ID }],
     };
-    expect(persistentMachineIdOf(elsewhere)).toBeNull();
+    expect(persistentMachineIdOf(mounted)).toBeNull();
   });
 });
 
 describe("ephemeralDescriptor", () => {
   it("drops every workspace and the persistence capability", () => {
-    const desc = ephemeralDescriptor(persistentMachineDescriptor(SHELL, FOO_ID));
+    const desc = ephemeralDescriptor(persistentMachineDescriptor(SHELL, FOO_ID, HOME));
     expect(desc.mounts).toEqual(SHELL.mounts);
     expect(desc.caps).toEqual({ network: true });
   });
 
   it("drops caps entirely when persistence was the only one", () => {
     const { caps: _caps, ...noCaps } = SHELL;
-    const desc = ephemeralDescriptor(persistentMachineDescriptor(noCaps, FOO_ID));
+    const desc = ephemeralDescriptor(persistentMachineDescriptor(noCaps, FOO_ID, HOME));
     expect(desc.caps).toBeUndefined();
   });
 });

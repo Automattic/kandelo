@@ -28,7 +28,11 @@ export {
   symlink,
 } from "../../../host/src/vfs/image-helpers";
 
-import { writeVfsBinary, ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
+import {
+  writeVfsBinary,
+  ensureDirRecursive,
+  symlink,
+} from "../../../host/src/vfs/image-helpers";
 
 export interface WalkOptions {
   exclude?: (relPath: string) => boolean;
@@ -449,6 +453,12 @@ export async function serializeImage(
     materializeAll: options.materializeAll,
     metadata,
     normalizeTimestampsMs: options.normalizeTimestampsMs,
+    // WHY: this is the product-artifact boundary. The allocator's free tail is
+    // capacity a running machine grows into, not content anyone should
+    // download — and it compresses to almost nothing, so it also hides how
+    // large an image really is. Consumers restore through the ceiling the
+    // image declares, so the tail is recoverable at boot.
+    trimFreeCapacity: true,
   });
   // Materialize first when requested so the resource and Wasm checks inspect
   // the exact concrete namespace represented by the returned snapshot.
@@ -512,4 +522,30 @@ export async function saveImage(
   console.log(`VFS image: ${rawMB} MB raw → ${compMB} MB zstd (${ratio}%)`);
   console.log(`Written to: ${outFile}`);
   return serialized.bytes;
+}
+
+/**
+ * The paths every Kandelo image binds to bash. `/bin/sh` is what system(),
+ * popen(), a `#!/bin/sh` script and a POSIX-conforming program exec, so it
+ * must resolve to the same shell in every reference image; bash honors POSIX
+ * mode when invoked as `sh`. A per-builder copy of this list is how three
+ * images drifted to dash while the rootfs and the shell image used bash.
+ */
+export const BASH_SHELL_PATHS = ["/bin/bash", "/bin/sh", "/usr/bin/sh"] as const;
+
+/**
+ * Install bash at /usr/bin/bash and bind every POSIX shell path to it.
+ *
+ * An image may still ship other shells (dash, for one) as ordinary commands at
+ * their own names; none of them may claim /bin/sh.
+ */
+export function installBashAsPosixShell(
+  fs: MemoryFileSystem,
+  bash: Uint8Array,
+): void {
+  if (bash.byteLength === 0) {
+    throw new Error("installBashAsPosixShell: bash.wasm is empty");
+  }
+  writeVfsBinary(fs, "/usr/bin/bash", bash);
+  for (const path of BASH_SHELL_PATHS) symlink(fs, "/usr/bin/bash", path);
 }

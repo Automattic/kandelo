@@ -3,8 +3,8 @@ inputs = [
   "images/vfs/scripts/build-nginx-php-vfs-image.sh",
   "images/vfs/scripts/build-nginx-php-vfs-image.ts",
   "images/vfs/scripts/dinit-image-helpers.ts",
-  "images/vfs/scripts/kandelo-demo-config.ts",
-  "images/vfs/scripts/kandelo-demo-guides.ts",
+  "images/vfs/scripts/tracked-demo-config.ts",
+  "packages/registry/nginx/nginx-php-demo.json",
   "images/vfs/scripts/opcache-prewarm.ts",
   "images/vfs/scripts/package-shell-vfs-build.ts",
   "images/vfs/scripts/shell-lazy-archives.ts",
@@ -18,7 +18,6 @@ inputs = [
   # cache identity cannot outlive either contract.
   "host/src",
   "web-libs/kandelo-session/src/demo-config.ts",
-  "web-libs/kandelo-session/src/demo-guides.ts",
   "web-libs/kandelo-session/src/experimental-terminal-session.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",
 ]

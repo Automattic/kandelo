@@ -127,6 +127,12 @@ export interface InitMessage {
   config: {
     maxWorkers: number;
     maxMemoryPages: number;
+    /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */
+    kernelMaxPages: number;
+    /** Upper bound on the image-backed rootfs reservation, in bytes. */
+    imageMemfsMaxBytes: number;
+    /** Identifier of the runtime memory profile these budgets came from. */
+    memoryProfileId: string;
     /**
      * Sampled live-allocation admission budget. Unmediated memory.grow can
      * cross it until the next allocation observes current byte lengths.
@@ -689,7 +695,7 @@ export interface KmsAttachCanvasMessage {
   crtcId: number;
   canvas: OffscreenCanvas;
   stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" };
+  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" };
 }
 
 /** Register a stats SAB for a CRTC without binding a scanout canvas. The
@@ -711,6 +717,20 @@ export interface KmsAttachStatsMessage {
 export interface FbReleaseGenerationAckMessage {
   type: "fb_release_generation_ack";
   requestId: number;
+}
+
+/** Report the display size (device pixels) of a CRTC's canvas element.
+ *  Consumed by the vblank pump's `webgl2-scanout` presenter, which sizes
+ *  the drawing buffer to match and GPU-scales the scanout texture into
+ *  it. Typically fed from a main-thread ResizeObserver. */
+export interface KmsSetDisplaySizeMessage {
+  type: "kms_set_display_size";
+  crtcId: number;
+  width: number;
+  height: number;
+  /** The display's physical size in millimetres, when the embedder knows
+   *  it; the kernel reports it on the DRM connector (mm_width/mm_height). */
+  physicalMm?: { width: number; height: number };
 }
 
 export type MainToKernelMessage =
@@ -764,7 +784,8 @@ export type MainToKernelMessage =
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
-  | FbReleaseGenerationAckMessage;
+  | FbReleaseGenerationAckMessage
+  | KmsSetDisplaySizeMessage;
 
 // ── Kernel Worker → Main Thread ──
 
@@ -934,6 +955,28 @@ export interface LazyDownloadMessage {
   event: LazyDownloadEvent;
 }
 
+/** Which teardown step `performDestroy` is in. */
+export type DestroyPhase = "draining" | "terminating";
+
+/**
+ * Cumulative teardown progress. Counts processes, not bytes.
+ *
+ * `total` is a lower bound while `totalProvisional` is true: the drain phase
+ * knows only the processes it woke, and the terminate phase adds stragglers it
+ * discovers afterwards. `completed` never resets between phases.
+ */
+export interface DestroyProgressEvent {
+  phase: DestroyPhase;
+  completed: number;
+  total: number;
+  totalProvisional: boolean;
+}
+
+export interface DestroyProgressMessage {
+  type: "destroy_progress";
+  event: DestroyProgressEvent;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
@@ -955,4 +998,5 @@ export type KernelToMainMessage =
   | HttpBridgePendingMessage
   | LazyDownloadMessage
   | ReplicationRecordedMessage
-  | ReplicationHttpMissMessage;
+  | ReplicationHttpMissMessage
+  | DestroyProgressMessage;

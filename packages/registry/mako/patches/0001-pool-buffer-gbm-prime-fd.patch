@@ -1,0 +1,165 @@
+--- a/pool-buffer.c	2025-03-16 15:21:09
++++ b/pool-buffer.c	2026-08-13 20:37:40
+@@ -1,55 +1,35 @@
+ #include <cairo/cairo.h>
+-#include <errno.h>
+ #include <fcntl.h>
+-#include <sys/mman.h>
+-#include <time.h>
++#include <gbm.h>
++#include <stdio.h>
+ #include <unistd.h>
+ #include <wayland-client.h>
+ #include <string.h>
+ 
+ #include "pool-buffer.h"
+ 
+-static void randname(char *buf) {
+-	struct timespec ts;
+-	clock_gettime(CLOCK_REALTIME, &ts);
+-	long r = ts.tv_nsec;
+-	for (int i = 0; i < 6; ++i) {
+-		buf[i] = 'A'+(r&15)+(r&16)*2;
+-		r >>= 5;
+-	}
+-}
+-
+-static int anonymous_shm_open(void) {
+-	char name[] = "/mako-XXXXXX";
+-	int retries = 100;
+-
+-	do {
+-		randname(name + strlen(name) - 6);
+-
+-		--retries;
+-		// shm_open guarantees that O_CLOEXEC is set
+-		int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+-		if (fd >= 0) {
+-			shm_unlink(name);
+-			return fd;
++/*
++ * On wasm-posix-kernel a shm MAP_SHARED mapping is written back only on
++ * msync/munmap, so a memfd pool's bytes never reach the compositor while
++ * a buffer is live. The only cross-process pixel path is the DRI bo
++ * registry: every buffer is backed by a renderD128 dumb-bo whose
++ * prime-fd is what wl_shm receives — the same contract every in-tree
++ * client uses (wlcompositor.c "wl_shm pool / buffer").
++ */
++static struct gbm_device *pool_gbm_device(void) {
++	static struct gbm_device *gbm = NULL;
++	if (gbm == NULL) {
++		int fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
++		if (fd < 0) {
++			perror("mako: open /dev/dri/renderD128");
++			return NULL;
+ 		}
+-	} while (retries > 0 && errno == EEXIST);
+-
+-	return -1;
+-}
+-
+-static int create_shm_file(off_t size) {
+-	int fd = anonymous_shm_open();
+-	if (fd < 0) {
+-		return fd;
++		gbm = gbm_create_device(fd);
++		if (gbm == NULL) {
++			fprintf(stderr, "mako: gbm_create_device failed\n");
++		}
+ 	}
+-
+-	if (ftruncate(fd, size) < 0) {
+-		close(fd);
+-		return -1;
+-	}
+-
+-	return fd;
++	return gbm;
+ }
+ 
+ static void buffer_handle_release(void *data, struct wl_buffer *wl_buffer) {
+@@ -66,33 +46,46 @@
+ 	const enum wl_shm_format wl_fmt = WL_SHM_FORMAT_ARGB8888;
+ 	const cairo_format_t cairo_fmt = CAIRO_FORMAT_ARGB32;
+ 
+-	uint32_t stride = cairo_format_stride_for_width(cairo_fmt, width);
+-	size_t size = stride * height;
+-
+ 	void *data = NULL;
+-	if (size > 0) {
+-		int fd = create_shm_file(size);
+-		if (fd == -1) {
++	uint32_t stride = 0;
++	if (width > 0 && height > 0) {
++		struct gbm_device *gbm = pool_gbm_device();
++		if (gbm == NULL) {
+ 			return NULL;
+ 		}
+-
+-		data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+-		if (data == MAP_FAILED) {
+-			close(fd);
++		buf->bo = gbm_bo_create(gbm, width, height, GBM_FORMAT_ARGB8888,
++			GBM_BO_USE_LINEAR | GBM_BO_USE_SCANOUT);
++		if (buf->bo == NULL) {
++			fprintf(stderr, "mako: gbm_bo_create failed\n");
+ 			return NULL;
+ 		}
++		data = gbm_bo_map(buf->bo, 0, 0, width, height, 0, &stride,
++			&buf->map_data);
++		if (data == NULL) {
++			gbm_bo_destroy(buf->bo);
++			buf->bo = NULL;
++			return NULL;
++		}
++		int prime_fd = gbm_bo_get_fd(buf->bo);
++		if (prime_fd < 0) {
++			gbm_bo_unmap(buf->bo, buf->map_data);
++			gbm_bo_destroy(buf->bo);
++			buf->bo = NULL;
++			return NULL;
++		}
+ 
+-		struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, size);
++		struct wl_shm_pool *pool =
++			wl_shm_create_pool(shm, prime_fd, stride * height);
+ 		buf->buffer =
+ 			wl_shm_pool_create_buffer(pool, 0, width, height, stride, wl_fmt);
+ 		wl_buffer_add_listener(buf->buffer, &buffer_listener, buf);
+ 		wl_shm_pool_destroy(pool);
+ 
+-		close(fd);
++		close(prime_fd); // wl_shm dup'd it into the pool
+ 	}
+ 
+ 	buf->data = data;
+-	buf->size = size;
++	buf->size = (size_t)stride * height;
+ 	buf->width = width;
+ 	buf->height = height;
+ 	buf->surface = cairo_image_surface_create_for_data(data, cairo_fmt, width,
+@@ -115,8 +108,11 @@
+ 	if (buffer->pango) {
+ 		g_object_unref(buffer->pango);
+ 	}
+-	if (buffer->data) {
+-		munmap(buffer->data, buffer->size);
++	if (buffer->bo) {
++		if (buffer->data) {
++			gbm_bo_unmap(buffer->bo, buffer->map_data);
++		}
++		gbm_bo_destroy(buffer->bo);
+ 	}
+ 	memset(buffer, 0, sizeof(struct pool_buffer));
+ }
+--- a/include/pool-buffer.h	2025-03-16 15:21:09
++++ b/include/pool-buffer.h	2026-08-13 20:37:50
+@@ -9,6 +9,8 @@
+ 
+ struct pool_buffer {
+ 	struct wl_buffer *buffer;
++	struct gbm_bo *bo;
++	void *map_data;
+ 	cairo_surface_t *surface;
+ 	cairo_t *cairo;
+ 	PangoContext *pango;

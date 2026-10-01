@@ -65,6 +65,76 @@ describe("BrowserInputSource", () => {
     ]);
   });
 
+  it("a typed letter wins over its physical position (AZERTY Ctrl+W)", () => {
+    // On AZERTY the key labeled W sits at the QWERTY-Z position: the browser
+    // reports code=KeyZ, key="w". The kernel-side keymap is a fixed US
+    // layout, so the wire must carry KEY_W (17) — what the key says — or a
+    // `bind = CTRL, W` never fires for a French keyboard.
+    target.fire("keydown", {
+      code: "KeyZ",
+      key: "w",
+      repeat: false,
+      preventDefault() {},
+    });
+    target.fire("keyup", {
+      code: "KeyZ",
+      key: "w",
+      repeat: false,
+      preventDefault() {},
+    });
+    expect(recorded).toEqual([
+      { device: 0, ev_type: 0x01, code: 17, value: 1 },
+      { device: 0, ev_type: 0x00, code: 0, value: 0 },
+      { device: 0, ev_type: 0x01, code: 17, value: 0 },
+      { device: 0, ev_type: 0x00, code: 0, value: 0 },
+    ]);
+  });
+
+  it("a non-letter key value falls back to the positional code", () => {
+    // Dead keys ("Dead"), modified characters ("å"), and layout symbols
+    // ("&" on an AZERTY digit) are not typed ASCII letters: the positional
+    // path stays authoritative for them.
+    target.fire("keydown", {
+      code: "Digit1",
+      key: "&",
+      repeat: false,
+      preventDefault() {},
+    });
+    expect(recorded[0]).toEqual({ device: 0, ev_type: 0x01, code: 2, value: 1 });
+  });
+
+  it("a key the OS reports as Control is Control, whatever its position (Caps Lock remapped)", () => {
+    // macOS/xkb remaps keep code="CapsLock" but report key="Control".
+    target.fire("keydown", { code: "CapsLock", key: "Control", repeat: false, preventDefault() {} });
+    target.fire("keydown", { code: "Space", key: " ", repeat: false, ctrlKey: true, preventDefault() {} });
+    target.fire("keyup", { code: "Space", key: " ", repeat: false, ctrlKey: true, preventDefault() {} });
+    target.fire("keyup", { code: "CapsLock", key: "Control", repeat: false, preventDefault() {} });
+    const keys = recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+    expect(keys).toEqual([[29, 1], [57, 1], [57, 0], [29, 0]]);
+  });
+
+  it("a modifier held only in the event flags is pressed before the key and released after", () => {
+    // Some remaps never deliver a modifier keydown at all: the only sign of
+    // Control is ctrlKey on the keys pressed while it is held.
+    target.fire("keydown", {
+      code: "CapsLock", key: "CapsLock", repeat: false, preventDefault() {},
+      getModifierState: () => false,
+    });
+    target.fire("keydown", { code: "Space", key: " ", repeat: false, ctrlKey: true, preventDefault() {} });
+    target.fire("keyup", { code: "Space", key: " ", repeat: false, ctrlKey: true, preventDefault() {} });
+    target.fire("keydown", { code: "KeyA", key: "a", repeat: false, ctrlKey: false, preventDefault() {} });
+    const keys = recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+    // No KEY_CAPSLOCK (58): the OS did not engage Caps Lock.
+    expect(keys).toEqual([[29, 1], [57, 1], [57, 0], [29, 0], [30, 1]]);
+  });
+
+  it("a right-hand modifier keeps its side", () => {
+    target.fire("keydown", { code: "ControlRight", key: "Control", repeat: false, preventDefault() {} });
+    target.fire("keyup", { code: "ControlRight", key: "Control", repeat: false, preventDefault() {} });
+    const keys = recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+    expect(keys).toEqual([[97, 1], [97, 0]]);
+  });
+
   it("repeat keydown emits value=2 (Linux autorepeat convention)", () => {
     target.fire("keydown", {
       code: "Space",
@@ -323,5 +393,69 @@ describe("BrowserInputSource", () => {
     });
     doc.fire("pointerlockchange", {});
     expect(recorded).toEqual([]);
+  });
+});
+
+/**
+ * A target that remembers the exact `options` each listener was registered
+ * and de-registered with. `removeEventListener` matches on the capture flag,
+ * so "registered with capture, removed without" is a real leak the plain
+ * FakeTarget above cannot see.
+ */
+class OptionRecordingTarget implements EventTarget {
+  readonly added: Array<[string, EventListener, unknown]> = [];
+  readonly removed: Array<[string, EventListener, unknown]> = [];
+  addEventListener(
+    name: string,
+    l: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void {
+    if (typeof l !== "function") return;
+    this.added.push([name, l, options]);
+  }
+  removeEventListener(
+    name: string,
+    l: EventListenerOrEventListenerObject | null,
+    options?: boolean | EventListenerOptions,
+  ): void {
+    if (typeof l !== "function") return;
+    this.removed.push([name, l, options]);
+  }
+  dispatchEvent(_e: Event): boolean {
+    return true;
+  }
+}
+
+describe("BrowserInputSource — listener registration", () => {
+  it("binds the keyboard in the capture phase and removes it the same way", () => {
+    const target = new OptionRecordingTarget();
+    const doc = Object.assign(new OptionRecordingTarget(), {
+      pointerLockElement: null,
+    });
+    vi.stubGlobal("document", doc);
+    const src = new BrowserInputSource(target as unknown as EventTarget);
+    src.start(() => {});
+
+    // A focused widget can stopPropagation() a bubbling keydown — xterm.js
+    // does exactly that for every key it handles — so the demo's global
+    // input capture has to see the event before any target handler runs.
+    for (const name of ["keydown", "keyup"]) {
+      const entry = target.added.find(([n]) => n === name);
+      expect(entry, `${name} must be bound`).toBeDefined();
+      expect(entry![2], `${name} must bind in the capture phase`).toEqual({
+        capture: true,
+      });
+    }
+
+    src.stop();
+    for (const [name, listener, options] of target.added) {
+      expect(
+        target.removed.some(
+          ([n, l, o]) => n === name && l === listener && o === options,
+        ),
+        `${name} must be removed with the options it was added with`,
+      ).toBe(true);
+    }
+    vi.unstubAllGlobals();
   });
 });

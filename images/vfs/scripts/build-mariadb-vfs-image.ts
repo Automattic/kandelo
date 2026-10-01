@@ -28,6 +28,7 @@ import {
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   exactVfsImageMetadata,
+  installBashAsPosixShell,
   saveImage,
   type ExactVfsImageAbi,
 } from "./vfs-image-helpers";
@@ -133,6 +134,7 @@ export interface MariadbVfsImageBuildInputs {
   architecture: "wasm32" | "wasm64";
   mariadbd: Uint8Array;
   systemTablesDirectory: string;
+  bash: Uint8Array;
   dash: Uint8Array;
   coreutils: Uint8Array;
   dinit?: DinitBinaryInputs;
@@ -158,12 +160,13 @@ export async function buildMariadbVfsImage(
   }
   prepareMariadbWritableDirectories(fs);
 
-  // Bake dash and coreutils so the service wrappers and shell utilities are
-  // available without ambient browser assets.
+  // Bake bash as /bin/sh -- the same POSIX shell every Kandelo image binds
+  // there -- plus coreutils, so the service wrappers and shell utilities are
+  // available without ambient browser assets. dash stays an ordinary command
+  // at its own name; it does not claim /bin/sh.
+  installBashAsPosixShell(fs, inputs.bash);
   writeVfsBinary(fs, "/bin/dash", inputs.dash);
-  symlink(fs, "/bin/dash", "/bin/sh");
   symlink(fs, "/bin/dash", "/usr/bin/dash");
-  symlink(fs, "/bin/dash", "/usr/bin/sh");
   writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils);
   for (const name of COREUTILS_SYMLINK_NAMES) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
@@ -257,6 +260,7 @@ async function main(): Promise<void> {
       repositoryRoot,
       useWasm64,
     ),
+    bash: new Uint8Array(readFileSync(resolveBinary("programs/bash.wasm"))),
     dash: new Uint8Array(readFileSync(resolveBinary("programs/dash.wasm"))),
     coreutils: new Uint8Array(
       readFileSync(resolveBinary("programs/coreutils.wasm")),

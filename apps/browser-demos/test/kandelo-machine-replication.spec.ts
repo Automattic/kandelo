@@ -30,6 +30,7 @@ import { expect, test, type Page } from "@playwright/test";
  */
 
 import { distinctColors, regionBrightness } from "./support/canvas";
+import { gotoMachine } from "./support/kandelo-machine";
 import {
   appUrl,
   closeDockPopovers,
@@ -76,7 +77,7 @@ test("runs the user's machine on the computer that was watching it", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(user, "shell");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
 
@@ -154,7 +155,7 @@ test("keeps the replica across a dropped link and resumes it on the next", async
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(user, "shell");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
     await connectPeers(user, viewer, (reason) => test.skip(true, reason));
@@ -228,7 +229,7 @@ test("gives the viewer the user's shell, not a shell of its own", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(user, "shell");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
 
@@ -287,7 +288,7 @@ test("follows the user to the demo they launch next", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(user, "shell");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
     await connectPeers(user, viewer, (reason) => test.skip(true, reason));
@@ -347,7 +348,7 @@ test("lets the user grant the mirror only, and the replica again", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(user, "shell");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
 
@@ -443,7 +444,7 @@ test("replicates a machine whose screen only a GL context painted", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=modeset"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(user, "modeset");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
 
     // The fluid sim paints through the EGL to WebGL2 bridge: no frame of it
@@ -503,7 +504,7 @@ test("puts the taker's splats where the taker points after a take-over", async (
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=modeset"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(user, "modeset");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await expect(user.locator(".kdock-status-text"))
       .toHaveAttribute("data-status", "running", { timeout: 300_000 });
@@ -584,7 +585,7 @@ test("gives the machine to the viewer, and a replica back to the user", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(user, "shell");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
     await connectPeers(user, viewer, (reason) => test.skip(true, reason));

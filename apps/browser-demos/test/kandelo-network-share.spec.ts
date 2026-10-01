@@ -26,6 +26,7 @@ import { expect, test, type Locator } from "@playwright/test";
  */
 
 import { distinctColors } from "./support/canvas";
+import { gotoMachine } from "./support/kandelo-machine";
 import {
   appUrl,
   closeDockPopovers,
@@ -59,7 +60,7 @@ test("bridges the viewer over the shared terminal until its replica runs", async
   const viewerRequests: string[] = [];
   viewer.on("request", (request) => viewerRequests.push(request.url()));
   try {
-    await sharer.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(sharer, "shell");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
 
     await sharer.getByRole("button", { name: "Terminal", exact: true })
@@ -133,7 +134,7 @@ test("replicates a machine that shares no surface at all", async ({
     // screen pixels to send. Replication does not care: it moves the
     // machine's state, not a surface, so this is the machine that shows the
     // difference.
-    await sharer.goto(appUrl("/?demo=nginx"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(sharer, "nginx");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await connectPeers(sharer, viewer, (reason) => test.skip(true, reason));
 
@@ -167,7 +168,7 @@ test("bridges a running fbDOOM's pixels until its replica paints its own", async
   const sharer = await sharerContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await sharer.goto(appUrl("/?demo=doom"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(sharer, "doom");
     if (await sharer.locator("vite-error-overlay").count()) {
       test.skip(true, "Required binary not built - Vite import error");
     }
@@ -236,7 +237,7 @@ test("moves a running fbDOOM to the computer that was watching it", async ({
   const keeper = await keeperContext.newPage();
   const taker = await takerContext.newPage();
   try {
-    await keeper.goto(appUrl("/?demo=doom"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(keeper, "doom");
     if (await keeper.locator("vite-error-overlay").count()) {
       test.skip(true, "Required binary not built - Vite import error");
     }
@@ -303,7 +304,7 @@ test("carries the machine's files to the computer that takes it", async ({
   const keeper = await keeperContext.newPage();
   const taker = await takerContext.newPage();
   try {
-    await keeper.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(keeper, "shell");
     await taker.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await expect(keeper.locator(".kshell-host .xterm-rows").first())
       .toBeVisible({ timeout: 120_000 });
@@ -394,7 +395,7 @@ test("moves the keyboard with the machine, in both directions", async ({
   const first = await firstContext.newPage();
   const second = await secondContext.newPage();
   try {
-    await first.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(first, "shell");
     await second.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await expect(first.locator(".kshell-host .xterm-rows").first())
       .toBeVisible({ timeout: 120_000 });
@@ -482,7 +483,7 @@ test("shows the viewer the page the user's machine is serving", async ({
   const sharer = await sharerContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await sharer.goto(appUrl("/?demo=nginx"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(sharer, "nginx");
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
 
     // The machine serves its page to its own person first.
@@ -529,7 +530,7 @@ test("a keeper that gave its machine away follows it rather than failing", async
   const keeper = await keeperContext.newPage();
   const taker = await takerContext.newPage();
   try {
-    await keeper.goto(appUrl("/?demo=nginx"), { waitUntil: "domcontentloaded" });
+    await gotoMachine(keeper, "nginx");
     await taker.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await expect(keeper.frameLocator('iframe[title="nginx"]').locator("body"))
       .toContainText("Hello from nginx on WebAssembly!", { timeout: 300_000 });

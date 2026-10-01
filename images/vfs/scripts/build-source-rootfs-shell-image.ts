@@ -5,11 +5,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
   parseKandeloDemoConfig,
-  resolveDemoPresentation,
+  resolveDemoInit,
   validateKandeloDemoConfig,
   type KandeloDemoConfig,
 } from "../../../web-libs/kandelo-session/src/demo-config";
@@ -25,6 +26,7 @@ import {
   saveImage,
   sourceDateEpochMilliseconds,
   writeVfsBinary,
+  writeVfsFile,
 } from "./vfs-image-helpers";
 import { SHELL_LAZY_BINARY_SPECS } from "../lib/init/shell-binaries";
 import {
@@ -37,15 +39,41 @@ import {
 } from "./source-rootfs-shell-overlay";
 
 const REGULAR_FILE_MODE = 0o100000;
+const DIRECTORY_MODE = 0o040000;
 const SYMBOLIC_LINK_MODE = 0o120000;
 const FILE_TYPE_MASK = 0o170000;
 const EXECUTE_BITS = 0o111;
 
+// WHY: the SDL2 GLSL playground's shader presets are repository-owned source
+// text, not a resolver-published package artifact — same status as the demo
+// config JSON above. Read directly from the tracked programs/ tree rather
+// than through a resolver dependency.
+const SDL2_PRESET_ROOT = fileURLToPath(
+  new URL("../../../programs/sdl2/presets", import.meta.url),
+);
+const SDL2_SHADER_PRESETS: ReadonlyArray<{
+  guestPath: string;
+  sourcePath: string;
+}> = [
+  { guestPath: "image/plasma.frag", sourcePath: "image/plasma.frag" },
+  { guestPath: "image/audio_bars.frag", sourcePath: "image/audio_bars.frag" },
+  { guestPath: "image/tunnelwisp.frag", sourcePath: "image/tunnelwisp.frag" },
+  { guestPath: "sound/tunnelwisp.frag", sourcePath: "sound/tunnelwisp.frag" },
+  { guestPath: "sound/sine.frag", sourcePath: "sound/sine.frag" },
+  { guestPath: "sound/fm_bell.frag", sourcePath: "sound/fm_bell.frag" },
+  { guestPath: "sound/noise_sweep.frag", sourcePath: "sound/noise_sweep.frag" },
+  { guestPath: "sound/chord.frag", sourcePath: "sound/chord.frag" },
+];
+
 export interface SourceRootfsShellInputs {
   rootfsPath: string;
   bashPath: string;
-  fbdoomPath: string;
-  modesetPath: string;
+  wldesktopPath: string;
+  omarchydesktopPath: string;
+  omarchyThemeHookPath: string;
+  desktopDataPath: string;
+  libinputQuirksPath: string;
+  espeakNgDataPath: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
   outFile: string;
@@ -53,7 +81,26 @@ export interface SourceRootfsShellInputs {
   sourceDateEpoch?: string;
 }
 
-const REQUIRED_BASH_ALIASES = ["/bin/bash", "/usr/bin/bash"] as const;
+// Every image binds bash as /bin/sh (docs/package-management.md); check
+// the sh aliases, not only the bash names, so a regression cannot pass.
+const REQUIRED_BASH_ALIASES = [
+  "/bin/bash",
+  "/usr/bin/bash",
+  "/bin/sh",
+  "/usr/bin/sh",
+] as const;
+
+/**
+ * The only Wasm programs this composer may write eagerly, together with every
+ * hard link to them (Bash is also /bin/sh). Bash is the account shell: login
+ * execs it on every boot, before any machine could benefit from deferring it.
+ * Every other program is a lazy file (SHELL_LAZY_BINARY_SPECS).
+ * WHY enforce it: each eager byte is downloaded by every visitor before the
+ * machine boots, and eager programs accumulate one convenient addition at a
+ * time — 2.4 MB of compressed image had grown to 4.1 MB this way.
+ */
+const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set(["/usr/bin/bash"]);
+const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d] as const;
 export const SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES = [
   ...readSourceRootfsShellResolverDependencies(),
 ] as const;
@@ -116,6 +163,48 @@ function readRegularInput(path: string, label: string): Uint8Array {
   return new Uint8Array(readFileSync(path));
 }
 
+/**
+ * Unpack a package's data zip under `root`, as ordinary files (0644).
+ *
+ * For data a program opens from a compiled-in directory by plain open/read —
+ * espeak-ng's voices, libinput's device quirks — rather than through the
+ * range-mapped reads a lazy archive mount serves.
+ */
+function unpackDataZip(fs: MemoryFileSystem, root: string, zipBytes: Uint8Array): void {
+  ensureDirRecursive(fs, root);
+  for (const entry of parseZipCentralDirectory(zipBytes)) {
+    if (entry.isDirectory) continue;
+    const target = `${root}/${entry.fileName}`;
+    ensureDirRecursive(fs, target.slice(0, target.lastIndexOf("/")));
+    writeVfsBinary(fs, target, extractZipEntry(zipBytes, entry), 0o644);
+  }
+}
+
+/**
+ * Bake the SDL2 GLSL playground's shader presets into the image.
+ *
+ * The playground's source-resolution chain is
+ *   1. /home/shaders/<mode>/current.frag       (user-editable)
+ *   2. /usr/share/shaders/<mode>/<preset>.frag (preset, baked here)
+ *   3. built-in fallback compiled into main.c
+ * tunnelwisp is the boot default for both modes; the others are loadable
+ * through the editor's Ctrl+L preset browser.
+ */
+function writeSdl2ShaderPresets(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/usr/share/shaders/image");
+  ensureDirRecursive(fs, "/usr/share/shaders/sound");
+  for (const preset of SDL2_SHADER_PRESETS) {
+    const source = decodeUtf8(
+      readRegularInput(
+        join(SDL2_PRESET_ROOT, preset.sourcePath),
+        `sdl2 shader preset ${preset.sourcePath}`,
+      ),
+      `sdl2 shader preset ${preset.sourcePath}`,
+    );
+    writeVfsFile(fs, `/usr/share/shaders/${preset.guestPath}`, source);
+  }
+}
+
 function decodeUtf8(bytes: Uint8Array, label: string): string {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -146,7 +235,106 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
     executable: "/usr/local/bin/modeset",
     command: "/usr/local/bin/modeset",
   },
+  quake: {
+    executable: "/usr/local/bin/quake",
+    command: "/usr/local/bin/quake",
+  },
+  scummvm: {
+    executable: "/usr/local/bin/scummvm",
+    command: "/usr/local/bin/scummvm",
+  },
 } as const;
+
+/**
+ * The Quake software demo's launch wrapper, written eagerly to
+ * /usr/local/bin/quake. It extracts id1/pak0.pak from id's original shareware
+ * archive on first launch using the image's own lazy tools (unzip -> lha), then
+ * execs the lazy engine at /usr/bin/quake with the shareware basedir. Using an
+ * absolute engine path avoids recursing back into this wrapper via PATH. The
+ * step is idempotent and surfaces failure honestly; the engine then reports its
+ * own missing-data error rather than faking success.
+ */
+const QUAKE_LAUNCH_SCRIPT = `#!/bin/sh
+set -e
+BASE=/usr/share/quake
+PAK="$BASE/id1/pak0.pak"
+ZIP="$BASE/quake106.zip"
+if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
+    echo "quake: extracting shareware data from quake106.zip..." >&2
+    mkdir -p "$BASE/id1"
+    cd "$BASE"
+    unzip -o "$ZIP" >/dev/null
+    lha xf resource.1 >/dev/null 2>&1 || true
+    src="$(find "$BASE" -iname 'pak0.pak' 2>/dev/null | head -n1)"
+    if [ -n "$src" ] && [ "$src" != "$PAK" ]; then cp "$src" "$PAK"; fi
+    if [ -f "$PAK" ]; then
+        echo "quake: extracted id1/pak0.pak" >&2
+    else
+        echo "quake: extraction failed; no pak0.pak produced" >&2
+    fi
+fi
+exec /usr/bin/quake -basedir "$BASE" "$@"
+`;
+
+/**
+ * The ScummVM demo's launch wrapper, written eagerly to /usr/local/bin/scummvm.
+ * It execs the lazy engine at /usr/bin/scummvm (an absolute path, so PATH
+ * cannot recurse into this wrapper) after two pieces of setup:
+ *
+ * - SDL's display follows where it is launched. Inside a Wayland session (a
+ *   compositor's socket at $XDG_RUNTIME_DIR/wayland-0, e.g. from Omarchy's
+ *   launcher or a terminal on that desktop) SDL picks its Wayland backend and
+ *   ScummVM opens as a window. On a bare display (the ScummVM machine) the
+ *   video driver is pinned to KMSDRM, and because Kandelo has no libudev,
+ *   SDL's evdev layer only finds the kernel's input devices when
+ *   SDL_EVDEV_DEVICES lists them (class 2 = keyboard, 1 = mouse). Audio is
+ *   OSS either way.
+ * - The config lives in the user's home, because ScummVM rewrites it whenever
+ *   the user adds a game or changes an option. The first launch seeds it so
+ *   the launcher's "Add Game" browser opens in the upload directory.
+ *   gui_scale is ScummVM's own user multiplier and stays at its default of
+ *   100%; the display's factor comes from SDL's display DPI, which SDL
+ *   computes from the physical size the kernel reports on the connector
+ *   (KMSDRM) or the compositor reports on wl_output (Wayland).
+ *
+ * It then stays alive beside the engine to unpack uploads. "Load game data"
+ * writes one archive to $GAMES/upload.zip while ScummVM keeps running (the
+ * user keeps their place in the launcher), and nothing else can run the
+ * extraction: the machine's terminal is ScummVM's. The wrapper polls for the
+ * archive — inotify is unimplemented (ENOSYS), and polling is what a watcher
+ * falls back to — unzips it in place, and removes it so the peak filesystem
+ * cost is one archive plus its contents. The host writes the file in one
+ * kernel-worker task, so the wrapper never sees a partial archive.
+ */
+const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
+set -e
+GAMES=/usr/share/scummvm-games
+INI="\${HOME:-/home/maker}/scummvm.ini"
+if [ ! -f "$INI" ]; then
+    printf '[scummvm]\\ngui_scale=100\\nbrowser_lastpath=%s\\n' "$GAMES" > "$INI"
+fi
+export SDL_AUDIODRIVER=dsp
+if [ -z "\${XDG_RUNTIME_DIR:-}" ] || [ ! -S "$XDG_RUNTIME_DIR/\${WAYLAND_DISPLAY:-wayland-0}" ]; then
+    export SDL_VIDEODRIVER=kmsdrm
+    export SDL_EVDEV_DEVICES=2:/dev/input/event0,1:/dev/input/event1
+fi
+/usr/bin/scummvm --config="$INI" "$@" &
+engine=$!
+set +e
+while kill -0 "$engine" 2>/dev/null; do
+    if [ -f "$GAMES/upload.zip" ]; then
+        echo "scummvm: extracting uploaded game data..." >&2
+        if unzip -o -q "$GAMES/upload.zip" -d "$GAMES"; then
+            echo "scummvm: extracted into $GAMES; add it from the launcher" >&2
+        else
+            echo "scummvm: could not extract the upload (not a zip archive?)" >&2
+        fi
+        rm -f "$GAMES/upload.zip"
+    fi
+    sleep 1
+done
+wait "$engine"
+`;
 
 export function composeSourceRootfsDemoConfig(
   basePath: string,
@@ -157,13 +345,20 @@ export function composeSourceRootfsDemoConfig(
     profileOverlayPath,
     "source-rootfs demo profile overlay",
   );
-  if (
-    overlay.presentation !== undefined ||
-    overlay.assets !== undefined ||
-    overlay.guide !== undefined
-  ) {
+  // Composition merges `profiles` and takes every other top-level field
+  // verbatim from the base, so anything else the overlay declares is silently
+  // discarded. Reject by ALLOW-LIST rather than by naming the block keys: an
+  // enumeration of known blocks rots the moment KandeloDemoConfig grows a key
+  // (it already missed `identity`, `runtime`, `init`, `web`, `display`, and
+  // `defaultProfile`), and a rotted guard is worse than none because it reads
+  // as protection.
+  const strayOverlayKeys = Object.keys(overlay)
+    .filter((key) => key !== "version" && key !== "profiles")
+    .sort();
+  if (strayOverlayKeys.length > 0) {
     throw new Error(
-      "source-rootfs demo profile overlay must contain only named profiles",
+      "source-rootfs demo profile overlay must contain only named profiles, "
+        + `but declares: ${strayOverlayKeys.join(", ")}`,
     );
   }
   const baseProfiles = base.profiles ?? {};
@@ -236,8 +431,9 @@ function requireOwnedDemoCommands(
   for (const [profileId, expected] of Object.entries(
     SOURCE_ROOTFS_DEMO_COMMANDS,
   )) {
-    const presentation = resolveDemoPresentation(config, profileId);
-    if (presentation?.autoCommand !== expected.command) {
+    const init = resolveDemoInit(config, profileId);
+    if (init === null || !("shellCommand" in init)
+      || init.shellCommand !== expected.command) {
       throw new Error(
         `source-rootfs demo profile ${profileId} must launch ${expected.command}`,
       );
@@ -494,7 +690,13 @@ function strictResolverFromDependencyEnvironment(
         `${key} must be a real resolver-owned directory: ${root}`,
       );
     }
-    const artifact = join(root, basename(resolverPath));
+    // A package's program is its output root's basename; a runtime file
+    // keeps its path under the package (programs/<pkg>/share/...), which
+    // mirrors the package's output tree.
+    const packagePrefix = `programs/${dependency}/`;
+    const artifact = resolverPath.startsWith(packagePrefix)
+      ? join(root, resolverPath.slice(packagePrefix.length))
+      : join(root, basename(resolverPath));
     readRegularInput(artifact, `${dependency} dependency output`);
     return artifact;
   };
@@ -520,6 +722,76 @@ function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
     fs.close(fd);
   }
   return bytes;
+}
+
+/**
+ * Paths of the regular files whose bytes are stored in the image and begin
+ * with the Wasm magic. Lazy files and lazy-archive trees are skipped without
+ * being read, so the walk never materializes deferred content.
+ */
+function eagerWasmPrograms(fs: MemoryFileSystem): Set<string> {
+  const programs = new Set<string>();
+  const magic = new Uint8Array(WASM_MAGIC.length);
+  const walk = (dir: string): void => {
+    const handle = fs.opendir(dir);
+    try {
+      for (let entry = fs.readdir(handle); entry; entry = fs.readdir(handle)) {
+        if (entry.name === "." || entry.name === "..") continue;
+        const path = dir === "/" ? `/${entry.name}` : `${dir}/${entry.name}`;
+        if (fs.isPathDeferred(path)) continue;
+        const stat = fs.lstat(path);
+        const type = stat.mode & FILE_TYPE_MASK;
+        if (type === DIRECTORY_MODE) {
+          walk(path);
+          continue;
+        }
+        if (
+          type !== REGULAR_FILE_MODE ||
+          fs.getLazyEntry(path) !== null ||
+          stat.size < magic.byteLength
+        ) {
+          continue;
+        }
+        const fd = fs.open(path, 0, 0);
+        try {
+          if (fs.read(fd, magic, null, magic.byteLength) !== magic.byteLength) {
+            throw new Error(`short VFS read for ${path}`);
+          }
+        } finally {
+          fs.close(fd);
+        }
+        if (WASM_MAGIC.every((byte, index) => magic[index] === byte)) {
+          programs.add(path);
+        }
+      }
+    } finally {
+      fs.closedir(handle);
+    }
+  };
+  walk("/");
+  return programs;
+}
+
+function requireLazyShellPrograms(
+  sourcePrograms: ReadonlySet<string>,
+  fs: MemoryFileSystem,
+): void {
+  const allowedInodes = new Set(
+    [...EAGER_SHELL_PROGRAMS].map((path) => fs.stat(path).ino),
+  );
+  const added = [...eagerWasmPrograms(fs)]
+    .filter(
+      (path) =>
+        !sourcePrograms.has(path) && !allowedInodes.has(fs.lstat(path).ino),
+    )
+    .sort();
+  if (added.length > 0) {
+    throw new Error(
+      "source-rootfs shell must add programs as lazy files " +
+        "(SHELL_LAZY_BINARY_SPECS), but wrote eager Wasm at: " +
+        added.join(", "),
+    );
+  }
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -646,6 +918,9 @@ export async function buildSourceRootfsShellImage(
   // authenticate atomic seals before the source image gains that authority.
   await fs.verifyImportedLazyAtomicGroupSeals();
   const terminalSession = readExperimentalTerminalSession(fs);
+  // The rootfs owns its own eager programs (login); only what this composer
+  // adds is held to the lazy default.
+  const sourceEagerPrograms = eagerWasmPrograms(fs);
   const demo = composeSourceRootfsDemoConfig(
     inputs.demoConfigPath,
     inputs.demoProfileOverlayPath,
@@ -671,8 +946,30 @@ export async function buildSourceRootfsShellImage(
   const unrelatedLazyBefore = lazyRecords(fs, omittedLazyIdentities);
 
   const bash = readRegularInput(inputs.bashPath, "bash dependency");
-  const fbdoom = readRegularInput(inputs.fbdoomPath, "fbdoom dependency");
-  const modeset = readRegularInput(inputs.modesetPath, "modeset dependency");
+  const wldesktop = readRegularInput(
+    inputs.wldesktopPath,
+    "wldesktop launcher dependency",
+  );
+  const omarchydesktop = readRegularInput(
+    inputs.omarchydesktopPath,
+    "omarchydesktop launcher dependency",
+  );
+  const omarchyThemeHook = readRegularInput(
+    inputs.omarchyThemeHookPath,
+    "omarchy theme hook dependency",
+  );
+  const desktopData = readRegularInput(
+    inputs.desktopDataPath,
+    "desktop data dependency",
+  );
+  const libinputQuirks = readRegularInput(
+    inputs.libinputQuirksPath,
+    "libinput quirks dependency",
+  );
+  const espeakNgData = readRegularInput(
+    inputs.espeakNgDataPath,
+    "espeak-ng data dependency",
+  );
 
   // WHY: Bash remains the ordinary account shell and is therefore eager after
   // login. Opening its canonical alias follows a symlink when present,
@@ -692,14 +989,64 @@ export async function buildSourceRootfsShellImage(
   requireCompleteProductShellContract(fs);
 
   ensureDirRecursive(fs, "/usr/local/bin");
-  writeVfsBinary(fs, "/usr/local/bin/fbdoom", fbdoom, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
+  // The desktops' launchers are small scripts, written eagerly. Every Wasm
+  // program they exec (wlcompositor, wlterm, klauncher, foot, Waybar, ...)
+  // is a lazy file registered by the overlay above, so a machine that never
+  // starts a desktop never fetches them.
+  writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/omarchy-theme-changed", omarchyThemeHook, 0o755);
+  // Configs, themes, launcher entries, fontconfig and D-Bus configs, and the
+  // font: everything the desktops read is image data here, not page staging.
+  unpackDataZip(fs, "/usr/share/kandelo", desktopData);
+  // wlcompositor's statically linked libinput reads its device quirks from
+  // LIBINPUT_QUIRKS_DIR, compiled in as /usr/share/libinput.
+  unpackDataZip(fs, "/usr/share/libinput", libinputQuirks);
+  // The Quake engine, unzip, and lha are lazy /usr/bin binaries; only this
+  // small extraction+launch wrapper is written eagerly.
+  writeVfsBinary(
+    fs,
+    "/usr/local/bin/quake",
+    new TextEncoder().encode(QUAKE_LAUNCH_SCRIPT),
+    0o755,
+  );
+  // The quake profile stages quake106.zip into this basedir at page load, and
+  // the wrapper (running as the unprivileged demo user) extracts id1/pak0.pak
+  // beneath it. The directory must exist (the asset writer does not create
+  // parents) and be world-writable so the demo user can create id1/ and write
+  // the extracted pak.
+  ensureDirRecursive(fs, "/usr/share");
+  ensureDirRecursive(fs, "/usr/share/quake", 0o777);
+  // ScummVM: the engine and its GUI data are lazy; only the launch wrapper is
+  // eager. Game data is the user's own (no Kandelo package carries a
+  // commercial SCUMM title), so the profile takes it as an upload into this
+  // directory and the unprivileged demo user unzips it in place — it must be
+  // world-writable, like the Quake basedir above.
+  writeVfsBinary(
+    fs,
+    "/usr/local/bin/scummvm",
+    new TextEncoder().encode(SCUMMVM_LAUNCH_SCRIPT),
+    0o755,
+  );
+  ensureDirRecursive(fs, "/usr/share/scummvm-games", 0o777);
+  // Create the id1 game dir too: the bring-your-own-pak ingest writes
+  // /usr/share/quake/id1/pak0.pak directly (host.writeFile requires the parent
+  // to exist), and that path must work even offline when no quake106.zip was
+  // staged and the wrapper's own `mkdir -p id1` never ran.
+  ensureDirRecursive(fs, "/usr/share/quake/id1", 0o777);
+  // /usr/bin/espeak-ng itself is a lazy file.
+  // libespeak-ng's PATH_ESPEAK_DATA is compiled in as /usr/share.
+  unpackDataZip(fs, "/usr/share/espeak-ng-data", espeakNgData);
+  writeSdl2ShaderPresets(fs);
   // WHY: the package shell must not promise optional programs it does not own.
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot
   // advertise a demo that boots successfully but never launches its workload.
   requireOwnedDemoCommands(fs, demo);
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demo, 0o644);
+
+  // Checked before saving so a rejected composition writes no output.
+  requireLazyShellPrograms(sourceEagerPrograms, fs);
 
   // WHY: Bash is the one intentional eager identity. Every other source-rootfs
   // first-use download must retain the same path, URL, size, and tree metadata.
@@ -749,8 +1096,12 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
   const allowed = new Set([
     "--rootfs",
     "--bash",
-    "--fbdoom",
-    "--modeset",
+    "--wldesktop",
+    "--omarchydesktop",
+    "--omarchy-theme-hook",
+    "--desktop-data",
+    "--libinput-quirks",
+    "--espeak-ng-data",
     "--demo-config",
     "--demo-profile-overlay",
     "--dependency-contract",
@@ -768,8 +1119,13 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     ) {
       throw new Error(
         "usage: build-source-rootfs-shell-image.ts " +
-          "--rootfs <rootfs.vfs> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
-          "--modeset <modeset.wasm> " +
+          "--rootfs <rootfs.vfs.zst> --bash <bash.wasm> " +
+          "--wldesktop <wldesktop> " +
+          "--omarchydesktop <omarchydesktop> " +
+          "--omarchy-theme-hook <omarchy-theme-changed> " +
+          "--desktop-data <kandelo-desktop-data.zip> " +
+          "--libinput-quirks <libinput-quirks.zip> " +
+          "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
           "--out <shell.vfs.zst>",
@@ -783,8 +1139,12 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
   return {
     rootfsPath: values.get("--rootfs")!,
     bashPath: values.get("--bash")!,
-    fbdoomPath: values.get("--fbdoom")!,
-    modesetPath: values.get("--modeset")!,
+    wldesktopPath: values.get("--wldesktop")!,
+    omarchydesktopPath: values.get("--omarchydesktop")!,
+    omarchyThemeHookPath: values.get("--omarchy-theme-hook")!,
+    desktopDataPath: values.get("--desktop-data")!,
+    libinputQuirksPath: values.get("--libinput-quirks")!,
+    espeakNgDataPath: values.get("--espeak-ng-data")!,
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
     outFile: values.get("--out")!,

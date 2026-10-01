@@ -4979,6 +4979,7 @@ fn marshalled_structs() -> Value {
             st_ctime_sec,
             st_ctime_nsec,
             _pad,
+            st_rdev,
         }),
     );
     structs.insert(

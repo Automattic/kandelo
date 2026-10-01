@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gotoMachine } from "./support/kandelo-machine";
 import { appUrl, networkButton, openNetworkPopover } from "./support/peer-pair";
 
 /**
@@ -82,9 +83,7 @@ test("connects two computers by session name", async ({
     const sharer = await sharerContext.newPage();
     const viewer = await viewerContext.newPage();
     const query = `signalling=${encodeURIComponent(signallingUrl)}`;
-    await sharer.goto(appUrl(`/?demo=shell&${query}`), {
-      waitUntil: "domcontentloaded",
-    });
+    await gotoMachine(sharer, "shell", { search: { signalling: signallingUrl } });
     await viewer.goto(appUrl(`/?${query}`), { waitUntil: "domcontentloaded" });
 
     // A name outside the rule is refused on the computer, before any request.

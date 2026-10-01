@@ -9,7 +9,7 @@
  * Stays in `host/test/vfs/` (not Playwright) because the layering is a
  * pure data construction with no DOM/Worker dependency — replicating
  * it here gives us fast Vitest feedback and avoids requiring a built
- * `rootfs.vfs` on disk.
+ * `rootfs.vfs.zst` on disk.
  */
 
 import { describe, it, expect, beforeAll } from "vitest";

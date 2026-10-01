@@ -394,6 +394,14 @@ describe("live replica join", () => {
         );
         const beforeDrop = printedSeconds(replicaOut.read()).length;
 
+        // A resume needs a position to resume from, so the wire dies only
+        // once the first streamed decision has reached the viewer.
+        await until(
+          () => position !== null,
+          FOLLOW_LIMIT_MS,
+          () => "no streamed decision reached the viewer",
+        );
+
         // The link dies mid-follow. The recording is suspended, not stopped,
         // and the replica's queue is left open — it parks at the log's end.
         const suspended = serving.suspend();

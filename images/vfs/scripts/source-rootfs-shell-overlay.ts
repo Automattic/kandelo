@@ -5,13 +5,14 @@ import { symlink } from "../../../host/src/vfs/image-helpers";
 import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
+  shellLazySpecDependency,
+  shellLazySpecMode,
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
-  registerManShellProfile,
-  registerPythonShellProfile,
+  registerShellProfileScripts,
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
@@ -35,12 +36,12 @@ export function populateSourceRootfsShellOverlay(
 
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (fs.getLazyEntry(spec.vfsPath) === null) {
-      const source = resolveArtifact(spec.resolverPath, spec.id);
+      const source = resolveArtifact(spec.resolverPath, shellLazySpecDependency(spec));
       fs.registerLazyFile(
         spec.vfsPath,
         shellLazyPlaceholderUrl(spec),
         statSync(source).size,
-        0o755,
+        shellLazySpecMode(spec),
       );
     }
     for (const alias of spec.symlinks) {
@@ -78,6 +79,9 @@ export function populateSourceRootfsShellOverlay(
     symlink(fs, target, alias);
   }
 
-  registerPythonShellProfile(fs);
-  registerManShellProfile(fs);
+  // Every /etc/profile.d script this image ships, from the one list both
+  // shell-family builders call. Listing individual registrations here is what
+  // let the maker account's identity script ship in the layered base image
+  // but not in this one.
+  registerShellProfileScripts(fs);
 }

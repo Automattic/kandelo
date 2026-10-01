@@ -25,12 +25,28 @@ wasm_require_no_legacy_asyncify() {
     fi
 }
 
-# Reject unresolved imports in Kandelo's reserved libc/host namespace unless
-# the host deliberately implements that exact API. The SDK linker permits
-# undefined symbols so packages can retain real host/kernel imports. Without
-# this boundary, an up-to-date glue object linked against a stale sysroot can
-# turn a private libc helper into an env import; the generic host stub then
-# lets the program instantiate and traps only when the helper is called.
+# Reject unresolved imports in the namespaces Kandelo reserves for itself
+# unless the host deliberately implements that exact API. The SDK linker
+# permits undefined symbols so packages can retain real host/kernel imports.
+# Without this boundary, an up-to-date glue object linked against a stale
+# sysroot can turn a private libc helper into an env import; the generic host
+# stub then lets the program instantiate and traps only when the helper is
+# called.
+#
+# Two reserved families, matching `is_reserved_env_import_name` in
+# crates/fork-instrument/src/contract_inventory.rs:
+#
+#   * `__wasm_posix_*` — private libc/glue helpers.
+#   * `drmFoo` / `gbm_foo` / `eglFoo` / `glFoo` — entry points of the sysroot
+#     platform libraries scripts/build-{dri,gles}-stubs.sh install. The host
+#     implements none of them by name (guests reach the real implementation
+#     through /dev/dri ioctls), so seeing one as an import always means the
+#     link did not pick the archive up. That is exactly how kandelo.dev came
+#     to ship an sdl2.wasm that died on `env.drmAuthMagic`.
+#
+# A missing entry point is therefore a loud build failure, not a runtime trap:
+# add the symbol to the relevant sysroot library, or link the library the
+# program is already calling into.
 _wasm_reserved_env_import_inventory() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 2
@@ -69,7 +85,7 @@ wasm_require_approved_reserved_env_imports() {
         fi
         if ! rejected="$(
             _wasm_stream_awk '
-            / <- env\.__wasm_posix_/ {
+            / <- env\.(__wasm_posix_|gbm_|drm[A-Z]|egl[A-Z]|gl[A-Z])/ {
                 identity = $0
                 sub(/^.* <- /, "", identity)
                 # This timer callback is an intentional host API used by PHP.
@@ -91,7 +107,9 @@ wasm_require_approved_reserved_env_imports() {
         while IFS= read -r identity; do
             [ -n "$identity" ] && echo "       $identity" >&2
         done <<<"$rejected"
-        echo "       Rebuild the sysroot or explicitly add a host-owned API to the guard." >&2
+        echo "       Rebuild the sysroot (scripts/dev-shell.sh ./run.sh setup), link the" >&2
+        echo "       sysroot library the program calls into, implement the missing entry" >&2
+        echo "       point, or explicitly add a host-owned API to the guard." >&2
         return 1
     fi
 }

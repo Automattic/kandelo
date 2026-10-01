@@ -1,5 +1,6 @@
-# Claude
-.claude/
+# Claude — local state stays private; shared agent skills are checked in.
+.claude/*
+!.claude/skills/
 
 # Build artifacts
 /target
@@ -157,10 +158,14 @@ packages/registry/*/package.pr.toml
 .*.kandelo-index.lock
 
 # SDL2 playground: auto-generated TTF→C-byte-array header.
-# Regenerated from programs/sdl2/third_party/Inconsolata-Regular.ttf by
+# Regenerated from third_party/Inconsolata-Regular.ttf by
 # scripts/build-programs.sh on every build.
 programs/sdl2/third_party/inconsolata_ttf.h
 
 # Durable Nix GC root for the dev shell closure (scripts/dev-shell.sh);
 # prevents background GC from evicting build tools mid-build.
 /.nix-dev-shell/
+
+# Rust guest fixture build outputs (wasm is already ignored globally).
+programs/rust/*/target/
+programs/rust/*/Cargo.lock

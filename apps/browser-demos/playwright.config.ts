@@ -92,16 +92,25 @@ for (const key of browserEnvironmentKeys) {
   }
 }
 
-// Nix dev-shell build/linker paths are for toolchain commands, not
-// downloaded Playwright browser binaries. WebKitGTK reads more host
-// environment than Chromium/Firefox and can crash before navigation.
-const launchOptions = {
-  env: browserLaunchEnv,
-  args:
-    protectedBrowserBaseUrl === undefined
-    ? undefined
-    : ["--proxy-bypass-list=<-loopback>"],
-};
+const sharedLaunchArgs =
+  protectedBrowserBaseUrl === undefined
+    ? []
+    : ["--proxy-bypass-list=<-loopback>"];
+
+// Chromium lets an origin with a history of audible playback (its Media
+// Engagement Index) start Web Audio without a user gesture. Playwright's
+// contexts share that history within one browser process, so after a test
+// plays sound, a later test on the same origin could find audio already
+// running, depending on which worker ran what first. Tests that assert the
+// no-gesture state (kandelo-audio-toast) need the policy a first-time
+// visitor gets, so turn off the engagement bypass for the test browser.
+// Chromium replaces host ICE candidates with mDNS names, which headless test
+// contexts cannot resolve, so a loopback WebRTC link between two contexts
+// never connects without the second feature switched off.
+const chromiumLaunchArgs = [
+  ...sharedLaunchArgs,
+  "--disable-features=MediaEngagementBypassAutoplayPolicies,WebRtcHideLocalIpsWithMdns",
+];
 
 export default defineConfig({
   testDir: join(__dirname, "test"),
@@ -124,7 +133,13 @@ export default defineConfig({
       assembledSiteRoot === undefined
         ? undefined
         : { "Accept-Encoding": "identity" },
-    launchOptions,
+    // Nix dev-shell build/linker paths are for toolchain commands, not
+    // downloaded Playwright browser binaries. WebKitGTK reads more host
+    // environment than Chromium/Firefox and can crash before navigation.
+    launchOptions: {
+      env: browserLaunchEnv,
+      args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
+    },
     proxy:
       protectedBrowserBaseUrl === undefined
       ? undefined
@@ -165,16 +180,7 @@ export default defineConfig({
       use: {
         browserName: "chromium",
         channel: "chromium",
-        // Chromium replaces host ICE candidates with mDNS names, which
-        // headless test contexts cannot resolve, so a loopback WebRTC
-        // link between two contexts never connects without this flag.
-        launchOptions: {
-          ...launchOptions,
-          args: [
-            ...(launchOptions.args ?? []),
-            "--disable-features=WebRtcHideLocalIpsWithMdns",
-          ],
-        },
+        launchOptions: { env: browserLaunchEnv, args: chromiumLaunchArgs },
       },
     },
     {
@@ -185,7 +191,8 @@ export default defineConfig({
       use: {
         browserName: "firefox",
         launchOptions: {
-          ...launchOptions,
+          env: browserLaunchEnv,
+          args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
           firefoxUserPrefs: { "media.volume_scale": "0.0" },
         },
       },

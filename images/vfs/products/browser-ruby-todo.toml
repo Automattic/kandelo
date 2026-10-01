@@ -31,19 +31,25 @@ ephemeral = true
 # Single-process server: boot the resident Ruby directly as init (pid 1). No
 # dinit is needed for one long-running process, and it keeps the browser's
 # kernel-owned boot from depending on dinit service discovery.
+#
+# It runs as the unprivileged `maker` account (uid/gid 1000), matching
+# `init.uid`/`init.gid` in packages/registry/ruby/ruby-todo-demo.json so the
+# Node and browser hosts boot the same machine. Nothing here needs root: the
+# SQLite database lives under /tmp (mode 1777), :8080 is an unprivileged
+# port, and the app tree at /var/lib/todo is world-readable.
 [boot]
 argv = ["/usr/bin/ruby", "/var/lib/todo/server.rb"]
 cwd = "/var/lib/todo"
-uid = 0
-gid = 0
+uid = 1000
+gid = 1000
 
 [boot.env]
-HOME = "/root"
-LOGNAME = "root"
+HOME = "/home/maker"
+LOGNAME = "maker"
 PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 TMPDIR = "/tmp"
 TODO_DB = "/tmp/todo.sqlite3"
-USER = "root"
+USER = "maker"
 
 [evidence.node]
 test = "ruby-todo-vfs-node-startup"

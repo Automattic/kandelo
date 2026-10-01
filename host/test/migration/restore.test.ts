@@ -306,6 +306,7 @@ describe("checkpoint validation", () => {
             w: 8,
             h: 8,
             stride: 32,
+            creatorPid: pid,
             pids: [pid],
             bindings: [{ pid, addr: 0, len: 256 }],
             pixels: new Uint8Array(256),
@@ -327,7 +328,7 @@ describe("checkpoint validation", () => {
 
       await refusal((checkpoint) => {
         const kms = modeset(checkpoint);
-        kms.buffers[0]!.pids = [424242];
+        kms.buffers[0]!.pids = [checkpoint.processes[0]!.pid, 424242];
         checkpoint.kms = kms;
       }, /held by pid 424242, which has no process bucket/);
 
@@ -336,6 +337,12 @@ describe("checkpoint validation", () => {
         kms.buffers[0]!.pids = [];
         checkpoint.kms = kms;
       }, /buffer object 100 is held by no process/);
+
+      await refusal((checkpoint) => {
+        const kms = modeset(checkpoint);
+        kms.buffers[0]!.creatorPid = 424242;
+        checkpoint.kms = kms;
+      }, /names creator pid 424242, which holds no handle to it/);
 
       await refusal((checkpoint) => {
         const kms = modeset(checkpoint);
@@ -361,29 +368,6 @@ describe("checkpoint validation", () => {
         kms.masterPid = 424242;
         checkpoint.kms = kms;
       }, /DRM master is pid 424242, which has no process bucket/);
-
-      await refusal((checkpoint) => {
-        (checkpoint as { epolls: unknown }).epolls = undefined;
-      }, "carries no epoll list");
-
-      await refusal((checkpoint) => {
-        checkpoint.epolls = [{ pid: 424242, epfd: 3, interests: [] }];
-      }, /an epoll mirror names pid 424242, which has no process bucket/);
-
-      await refusal((checkpoint) => {
-        checkpoint.epolls = [{
-          pid: checkpoint.processes[0]!.pid,
-          epfd: 3,
-          interests: [{ fd: 4, events: 1, data: "not a number" }],
-        }];
-      }, /carries unusable data for fd 4/);
-
-      await refusal((checkpoint) => {
-        checkpoint.epolls = [
-          { pid: checkpoint.processes[0]!.pid, epfd: 3, interests: [] },
-          { pid: checkpoint.processes[0]!.pid, epfd: 3, interests: [] },
-        ];
-      }, /carries two mirrors for epoll fd 3/);
 
       // The corruptions above never touched the captured object itself.
       await expect(
@@ -599,21 +583,11 @@ describe("checkpoint validation", () => {
     "serves epoll_wait from a restored machine",
     { timeout: 120_000 },
     async () => {
-      // The host answers epoll_pwait from its mirror of the interest list,
-      // built by watching epoll_ctl. The captured guest registered its pipe
-      // before the freeze, so the mirror must arrive with the checkpoint —
-      // a restore without it answers EBADF and the guest's tick dies.
+      // The kernel owns the epoll interest list, so it rides inside the
+      // kernel memory copy. The captured guest registered its pipe before
+      // the freeze; a restore that lost the registration answers EBADF and
+      // the guest's tick dies.
       const checkpoint = await captureRealCheckpoint("checkpoint-epoll.wasm");
-      const pid = checkpoint.processes[0]!.pid;
-      expect(checkpoint.epolls).toEqual([{
-        pid,
-        epfd: expect.any(Number),
-        interests: [{
-          fd: expect.any(Number),
-          events: expect.any(Number),
-          data: expect.any(String),
-        }],
-      }]);
 
       let output = "";
       let sawTick = () => {};

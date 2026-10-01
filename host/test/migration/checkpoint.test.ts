@@ -145,7 +145,6 @@ function testMachine(sources: CheckpointProcessSource[]): TestMachine {
       framebuffers: () => [],
       kmsState: () => state.kms,
       glContexts: () => state.glContexts,
-      epollInterests: () => [],
       monotonicNowNs: () => 7_000_000_000,
       kernelAbiVersion: () => KERNEL_ABI,
       liveProcesses: () => sources,
@@ -173,6 +172,7 @@ function modesetKms(masterPid: number): CheckpointKmsState {
       w: 32,
       h: 32,
       stride: 128,
+      creatorPid: masterPid,
       pids: [masterPid],
       bindings: [{ pid: masterPid, addr: 0, len: 4096 }],
       pixels: new Uint8Array(4096).fill(0xab),
@@ -216,7 +216,7 @@ describe("machine checkpoint freeze", () => {
     expect(result.checkpoint.processes[0]!.memory.byteLength)
       .toBe(PROCESS_MEMORY_BYTES);
     expect(result.checkpoint.processes[0]!.argv).toEqual(["/bin/program-4"]);
-    expect(result.checkpoint.format).toBe(7);
+    expect(result.checkpoint.format).toBe(8);
     expect(result.checkpoint.kernelAbiVersion).toBe(KERNEL_ABI);
     expect(
       new Uint8Array(result.checkpoint.processes[0]!.programBytes),

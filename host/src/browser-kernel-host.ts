@@ -13,6 +13,7 @@ import {
   type LazyDownloadEvent,
 } from "./vfs/memory-fs";
 import { FramebufferRegistry } from "./framebuffer/registry";
+import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import {
   machineCheckpointTransferList,
@@ -28,6 +29,7 @@ import type {
   ReplicationReplicaHashResponse,
   ReplicationSealResponse,
   VfsFileSnapshot,
+  DestroyProgressEvent,
 } from "./browser-kernel-protocol";
 import type { ReplicationLogEntry } from "./replication/log";
 import type { ReplicationReplaySpec } from "./replication/worker";
@@ -46,10 +48,15 @@ import opfsProxyWorkerUrl from "./vfs/opfs-worker.ts?worker&url";
 import { OPFS_CHANNEL_SIZE } from "./vfs/opfs-channel";
 import type { OpfsMountInit } from "./browser-kernel-protocol";
 import {
-  DEFAULT_MAX_PAGES,
   DEFAULT_MAX_WORKERS,
   WASM_PAGE_SIZE,
 } from "./constants";
+import {
+  clampProcessMaxPages,
+  DESKTOP_MEMORY_PROFILE,
+  detectRuntimeMemoryProfile,
+  type RuntimeMemoryProfile,
+} from "./runtime-memory-profile";
 import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
@@ -59,7 +66,9 @@ import type { MountSpec } from "./vfs/default-mounts";
 import { FILE_MODES } from "./generated/abi";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
+import { pcmControlWords } from "./audio/pcm-transport";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
+import { AudioActivityLatch } from "./audio/audio-activity-latch";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
@@ -89,9 +98,25 @@ export interface BrowserKernelOpfsMount {
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
-  /** Maximum wasm memory pages per process (default: 16384 = 1GB). This caps
-   *  guest brk/mmap growth; initial process memory is computed separately. */
+  /**
+   * Maximum wasm memory pages per process. This caps guest brk/mmap growth;
+   * initial process memory is computed separately.
+   *
+   * Defaults to this host's runtime memory profile (1 GiB on engines that
+   * reserve address space lazily, 256 MiB on WebKit, which charges declared
+   * ceilings against a reservation pool). A request above the profile's
+   * budget is clamped to it and reported through `onHostDiagnostic`, because
+   * silently handing a guest less address space than a demo asked for would
+   * hide the real platform boundary.
+   */
   maxMemoryPages?: number;
+  /**
+   * Override the detected runtime memory profile by id ("desktop" or
+   * "constrained"). Intended for tests and deliberate product decisions; the
+   * chosen id is reported through `onHostDiagnostic` when it is not the
+   * default desktop budget.
+   */
+  memoryProfile?: string;
   /**
    * Allocation-admission budget sampled from simultaneously live process
    * address spaces before each new allocation.
@@ -167,7 +192,7 @@ export interface BrowserKernelBootOptions {
   kernelWasm?: ArrayBuffer;
   /**
    * Pre-built VFS image bytes from {@link MemoryFileSystem.saveImage}, OR
-   * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs`
+   * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs.zst`
    * shipped with the worker entry. The worker takes ownership; the main
    * thread no longer has FS access.
    */
@@ -259,7 +284,7 @@ export interface BrowserKernelOwnedImageInitOptions {
 }
 
 async function fetchDefaultBrowserKernelArtifact(
-  kind: "kernelWasm" | "rootfsVfs",
+  kind: "kernelWasm",
 ): Promise<ArrayBuffer> {
   // WHY: explicit-byte consumers, including trust-boundary tests and embedded
   // hosts, must not require the demo build's default kernel/rootfs artifacts.
@@ -273,6 +298,29 @@ async function fetchDefaultBrowserKernelArtifact(
   );
 }
 
+/**
+ * Fetch the canonical rootfs image for `vfsImage: "default"`.
+ *
+ * Resolved through {@link browserDefaultRootfsVfsUrl} so the rootfs stays an
+ * on-demand chunk: it is a supporting artifact (empty-filesystem `/etc`
+ * seeding, the network demo's machine, explicit `"default"` callers), not
+ * something every boot should transfer.
+ */
+async function fetchDefaultRootfsVfsImage(): Promise<ArrayBuffer> {
+  const { browserDefaultRootfsVfsUrl } = await import(
+    "./browser-kernel-default-artifacts"
+  );
+  const url = await browserDefaultRootfsVfsUrl();
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `vfsImage:"default" could not fetch the canonical rootfs image ` +
+        `(${response.status} ${response.statusText})`,
+    );
+  }
+  return response.arrayBuffer();
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
@@ -281,6 +329,9 @@ export class BrowserKernel {
    *  and fixed (1 MiB); the live VFS is owned by the worker, not here. */
   private shmSab: SharedArrayBuffer;
   private maxPages: number;
+  private readonly memoryProfile: RuntimeMemoryProfile;
+  /** Set when a caller asked for more per-process pages than the budget allows. */
+  private readonly clampedProcessMaxPagesFrom: number | undefined;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "env">
   > &
@@ -330,9 +381,29 @@ export class BrowserKernel {
   private pcmDriver: BrowserPcmDriver | null = null;
   /** Live OPFS proxy workers plus their per-workspace Web Lock releasers. */
   private opfsWorkers: Array<{ worker: Worker; releaseLock: () => void }> = [];
+  private destroyProgress = createDestroyProgressFanout();
+  private audioActivity: AudioActivityLatch | null = null;
+  private audioActivityListeners = new Set<(active: boolean) => void>();
 
   constructor(options: BrowserKernelOptions = {}) {
-    this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
+    // Resolve the reservation budget before anything sizes an address space.
+    // On WebKit a declared ceiling is charged whether or not it is used, so
+    // this is a real allocation decision, not presentation.
+    this.memoryProfile = detectRuntimeMemoryProfile(
+      typeof navigator === "undefined"
+        ? {}
+        : {
+          userAgent: navigator.userAgent,
+          maxTouchPoints: navigator.maxTouchPoints,
+        },
+      options.memoryProfile,
+    );
+    const clampedPages = clampProcessMaxPages(
+      options.maxMemoryPages,
+      this.memoryProfile,
+    );
+    this.maxPages = clampedPages.pages;
+    this.clampedProcessMaxPagesFrom = clampedPages.clampedFrom;
     const corsProxy = validateBrowserCorsProxyConfig(options.corsProxy);
     this.options = {
       maxWorkers: DEFAULT_MAX_WORKERS,
@@ -355,6 +426,43 @@ export class BrowserKernel {
     // nothing large accumulates on the main thread across image switches.
     this.shmSab = new SharedArrayBuffer(1024 * 1024);
     MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
+  }
+
+  /**
+   * Surface a non-default memory budget, and any address space a caller asked
+   * for but did not get.
+   *
+   * A clamp is a real capability reduction — a guest that would have been able
+   * to grow to 1 GiB now cannot — so it must be visible rather than silently
+   * applied. The default desktop budget changes nothing and stays quiet.
+   */
+  private reportMemoryProfile(): void {
+    const notes: string[] = [];
+    if (this.memoryProfile.id !== DESKTOP_MEMORY_PROFILE.id) {
+      notes.push(
+        `memory profile "${this.memoryProfile.id}": ` +
+          `${this.memoryProfile.processMaxPages} pages per process, ` +
+          `${this.memoryProfile.kernelMaxPages} kernel pages, ` +
+          `${Math.round(this.memoryProfile.imageMemfsMaxBytes / (1024 * 1024))} MiB rootfs budget`,
+      );
+    }
+    if (this.clampedProcessMaxPagesFrom !== undefined) {
+      notes.push(
+        `requested ${this.clampedProcessMaxPagesFrom} pages per process, ` +
+          `capped at ${this.maxPages} by this host's memory budget`,
+      );
+    }
+    if (notes.length === 0) return;
+    const diagnostic: HostDiagnostic = {
+      pid: 0,
+      source: "kernel host",
+      message: `[BrowserKernel] ${notes.join("; ")}`,
+    };
+    try {
+      this.options.onHostDiagnostic?.(diagnostic);
+    } catch (callbackError) {
+      console.error("[BrowserKernel] onHostDiagnostic callback failed:", callbackError);
+    }
   }
 
   /**
@@ -410,8 +518,7 @@ export class BrowserKernel {
         ? Promise.resolve(options.kernelWasm)
         : fetchDefaultBrowserKernelArtifact("kernelWasm"),
       options.vfsImage === "default"
-        ? fetchDefaultBrowserKernelArtifact("rootfsVfs")
-            .then((b) => new Uint8Array(b))
+        ? fetchDefaultRootfsVfsImage().then((b) => new Uint8Array(b))
         : Promise.resolve(options.vfsImage),
     ]);
 
@@ -675,6 +782,8 @@ export class BrowserKernel {
       }
     };
 
+    this.reportMemoryProfile();
+
     try {
       await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -733,6 +842,9 @@ export class BrowserKernel {
           config: {
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
+            kernelMaxPages: this.memoryProfile.kernelMaxPages,
+            imageMemfsMaxBytes: this.memoryProfile.imageMemfsMaxBytes,
+            memoryProfileId: this.memoryProfile.id,
             maxProcessMemoryBytes:
               this.options.maxProcessMemoryBytes
               ?? this.options.maxWorkers * this.maxPages * WASM_PAGE_SIZE,
@@ -1319,6 +1431,13 @@ export class BrowserKernel {
     };
   }
 
+  /** Subscribe to teardown progress while `destroy()` reaps processes. */
+  subscribeDestroyProgress(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void {
+    return this.destroyProgress.subscribe(cb);
+  }
+
   private syscallListeners = new Set<(event: SyscallTraceEvent) => void>();
   private syscallPollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -1590,12 +1709,28 @@ export class BrowserKernel {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
     this.sendToKernel(
       { type: "kms_attach_canvas", crtcId, canvas, stats, opts },
       [canvas],
     );
+  }
+
+  /**
+   * Report the CRTC canvas's current display size in device pixels.
+   * Feeds the virtual connector's PREFERRED mode and the vblank pump's
+   * `webgl2-scanout` presenter, which resizes the drawing buffer and
+   * GPU-scales the scanout into it. Feed from a ResizeObserver on the
+   * placeholder canvas element.
+   */
+  kmsSetDisplaySize(
+    crtcId: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
+  ): void {
+    this.sendToKernel({ type: "kms_set_display_size", crtcId, width, height, physicalMm });
   }
 
   /**
@@ -1668,6 +1803,35 @@ export class BrowserKernel {
       return () => {};
     }
     return this.pcmDriver.subscribe(listener);
+  }
+
+  /**
+   * Has a guest in this machine opened the audio device?
+   *
+   * Orthogonal to `getAudioState()`, which describes the host sink. This
+   * describes whether anything in the machine ever asked for one, and is what
+   * lets a UI tell an idle sink from a broken one instead of warning every
+   * machine about a device it never used.
+   */
+  getAudioActivity(): boolean {
+    return this.audioActivity?.active ?? false;
+  }
+
+  onAudioActivityChange(listener: (active: boolean) => void): () => void {
+    this.audioActivityListeners.add(listener);
+    listener(this.getAudioActivity());
+    this.audioActivity?.start();
+    return () => {
+      this.audioActivityListeners.delete(listener);
+      if (this.audioActivityListeners.size === 0) this.audioActivity?.stop();
+    };
+  }
+
+  private emitAudioActivity(): void {
+    const active = this.getAudioActivity();
+    for (const cb of this.audioActivityListeners) {
+      try { cb(active); } catch { /* listener errors don't break the loop */ }
+    }
   }
 
   // ── PTY methods ──
@@ -1865,6 +2029,9 @@ export class BrowserKernel {
     await this.pcmDriver?.close().catch(() => {});
     this.pcmDriver = null;
     this.pcmTransport = null;
+    this.audioActivity?.stop();
+    this.audioActivity = null;
+    this.audioActivityListeners.clear();
     // WHY: process/pthread Workers are owned beneath the kernel worker. After
     // the worker's bounded graceful attempt, terminating this outer realm is
     // the final release fence for aliases that could not be detached exactly.
@@ -1886,6 +2053,7 @@ export class BrowserKernel {
     this.ptyOutputCallbacks.clear();
     this.options.onHttpBridgePendingRequests?.(0);
     this.lazyDownloadListeners.clear();
+    this.destroyProgress.clear();
     // Release every main-thread reference to shared buffers this kernel held.
     // `fbMemoryByPid`/`framebuffers` retain typed-array views over process
     // `WebAssembly.Memory` (up to 1 GiB max each) posted from the worker for
@@ -2011,6 +2179,14 @@ export class BrowserKernel {
       case "ready": {
         if (msg.pcmTransport) {
           this.pcmTransport = msg.pcmTransport;
+          // Demand is a different fact from sink state: this watches whether
+          // anything in the machine ever opens /dev/dsp. It samples the header
+          // the kernel already publishes, and stops for good once it latches.
+          this.audioActivity = new AudioActivityLatch(
+            pcmControlWords(msg.pcmTransport),
+            () => this.emitAudioActivity(),
+          );
+          if (this.audioActivityListeners.size > 0) this.audioActivity.start();
           if (
             typeof globalThis.AudioContext === "function" ||
             "webkitAudioContext" in globalThis
@@ -2241,6 +2417,9 @@ export class BrowserKernel {
         for (const listener of [...this.replicationHttpMissListeners]) {
           listener(msg.key);
         }
+        break;
+      case "destroy_progress":
+        this.destroyProgress.emit(msg.event);
         break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol

@@ -100,7 +100,7 @@
     },
     "./wasm": "./wasm/kernel.wasm",
     "./kernel.wasm": "./wasm/kernel.wasm",
-    "./rootfs.vfs": "./wasm/rootfs.vfs",
+    "./rootfs.vfs.zst": "./wasm/rootfs.vfs.zst",
     "./wasm/*": "./wasm/*",
     "./package.json": "./package.json"
   },

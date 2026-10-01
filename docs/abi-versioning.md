@@ -856,16 +856,147 @@ separate Node.js/real-Chromium results belong in the draft PR evidence ledger
 after the candidate is frozen. No latency improvement or broad performance
 no-regression is claimed here.
 
-### ABI 44 machine checkpoint and restore
+### ABI 44 device identity and the Wayland stack
 
-ABI 44 versions the machine-migration contract: a running machine can be
+ABI 44 exists because `WasmStat` changed shape: it grows from 88 to 96
+bytes with a trailing `st_rdev: u64` (offset 88, the slot libc's
+`struct kstat` already reserved). Virtual device nodes report a
+Linux-encoded `dev_t` -- `/dev/input/event{N}` is char major 13, minor
+64+N -- because the real libinput path backend is handed only a node's
+`st_rdev` (`udev_device_new_from_devnum`) and must recover the node from
+it. Every artifact built against ABI 43 must be rebuilt; strict
+`__abi_version` equality already refuses to mix them.
+
+The rest of the Wayland stack's contract changes ride the same epoch. The
+structural ones are recorded in the snapshot; the semantic ones change
+what an existing call returns, which the snapshot cannot see, so they are
+listed here:
+
+- **`SO_PEERCRED`** (`struct ucred {pid, uid, gid}`), with Linux's
+  capture points: an accepted AF_UNIX stream socket reports the process
+  that called `connect()`, the connecting socket reports the listener as
+  of `listen()`, a socketpair and a listener report their creator, and a
+  socket with no AF_UNIX peer reports `{0, -1, -1}`. Before this epoch
+  the kernel did not implement the option: `getsockopt(SO_PEERCRED)`
+  failed with `ENOPROTOOPT`.
+- **evdev ioctls**: `EVIOCGPHYS`/`EVIOCGUNIQ`/`EVIOCGPROP` join the
+  caller-length `E`-magic families that libevdev issues while it
+  constructs a device.
+- **`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`**: an in/out ioctl that binds a
+  bo imported from another process as a GL texture on the caller's GL
+  session (GPU compositing).
+- **Blocking `read()` of `/dev/dri/card0`** with no event queued now waits
+  for one (the host parks it until the vblank tick delivers flip
+  completions), as Linux's `drm_read` does. It used to return 0 -- end of
+  file -- which libdrm's `drmHandleEvent` took as "no event", so a program
+  that page-flipped and then waited flipped again into `EBUSY`.
+- **`lseek()` on a prime-bo fd** behaves like a Linux dma-buf: only
+  offset 0 with `SEEK_SET` or `SEEK_END`, and `SEEK_END` reports the
+  buffer's size. It used to fail as an unsupported seek.
+- **epoll registrations** are keyed on (fd, open file description), as on
+  Linux: one survives `close(fd)` while a `dup` keeps its description
+  open, ends once the last fd to it closes, and a new file reusing the fd
+  number is a separate registration. Before, a registration was keyed on
+  the fd number alone and outlived its file. Epoll instances now also cross
+  `fork()` and `posix_spawn()` with their registrations (the child's
+  inherited epoll fd used to name no instance), and the host's `epoll_wait`
+  evaluates the kernel's registrations instead of keeping its own mirror;
+  the new `kernel_epoll_watched_fd(pid, index)` export lists the fds a
+  parked wait registers wakeups on. Fork state moves to `FORK_VERSION` 16
+  to carry the instances (and each socket's peer credentials).
+- **An epoll fd inside `poll()` or another epoll** reports `POLLIN` when
+  one of its registrations is ready, as on Linux (nesting is followed four
+  levels deep). It used to report never ready, so an event loop that
+  watches an inner epoll fd -- libinput's inside libwayland's -- never woke.
+- **A PRIME buffer fd passed over `SCM_RIGHTS`** holds its own reference
+  to the buffer while in flight, as a Linux dma-buf fd does. The sender
+  may close its copy as soon as `sendmsg()` returns; that used to drop the
+  last reference and destroy the buffer before the receiver imported it.
+
+Each semantic change corrects behavior toward Linux without changing a
+layout. They share this epoch rather than taking their own because a
+binary built against ABI 43 cannot run against an ABI 44 kernel at all;
+no artifact can observe the old semantics under the new number.
+
+### ABI 45 the DRI desktop stack
+
+The Hyprland-class compositor, the toolkit ports behind foot, Waybar and
+mako, the Omarchy desktop shell, Qt with Quickshell, and ScummVM change
+the kernel's host-facing contract, so they take a new epoch. Every artifact built against ABI 44
+must be rebuilt.
+
+Structural changes (recorded in the snapshot):
+
+- **`host_gl_present` returns a status.** The kernel import changed from
+  `(i32) -> ()` to `(i32) -> (i32)`, so a GPU-tier present can report
+  failure to the guest's `eglSwapBuffers`. A host built for ABI 44
+  provides the old signature and cannot instantiate this kernel.
+- **GPU-tier buffer objects.** `DRM_IOCTL_WPK_CREATE_GPU_BO` used to fail
+  with `ENOSYS`; it now allocates a bo backed by a host WebGL2 texture and
+  framebuffer through the new `host_gbm_gpu_bo_create` import, and joins
+  the ioctl contract table. Without a shared GL context (headless Node, or
+  before the compositor's context exists) the host returns `ENOSYS` and
+  the guest falls back to a CPU dumb bo.
+- **`GLIO_CREATE_SURFACE` attributes** grow from 12 to 20 bytes: a
+  reserved field names the bo whose framebuffer the window surface
+  renders into.
+- **A new `host_kms_connector_mm` import** reports the display's physical
+  size, which `DRM_IOCTL_MODE_GETCONNECTOR` now returns in
+  `mm_width`/`mm_height` (they were always 0). A host built for ABI 44
+  lacks the import and cannot instantiate this kernel. Host imports are not
+  in the structural snapshot, which is why this is listed by hand.
+- **`kernel_swap_poll_sigmask` / `kernel_restore_poll_sigmask`** exports
+  let the host hold an epoll_pwait signal mask for the whole wait. The
+  host still runs epoll_pwait itself (it converts the wait to poll
+  retries), so without them the mask argument would be ignored and a
+  signal the caller unblocks only inside the wait would never arrive.
+
+Semantic changes (not visible to the snapshot):
+
+- **epoll_pwait's signal mask covers the whole wait,** and a signal that
+  the mask allows ends a parked wait so its handler runs. Before, a
+  thread parked in epoll_pwait never saw a signal until the wait ended
+  on its own (foot reaps children with SIGCHLD from exactly that wait).
+- **SA_RESTART alone decides** whether a wait interrupted by a handler
+  restarts; a handler without it now makes the call fail with `EINTR`.
+- **sendmsg and recvmsg gather every iovec,** not only the first.
+- **A new thread's initial stack pointer is 16-byte aligned,** which C++
+  and varargs code require.
+- **The GL command stream gains three ops and a query:**
+  `OP_DETACH_SHADER`, `OP_VERTEX_ATTRIB_4FV`, `OP_DELETE_FRAMEBUFFERS` and
+  `QOP_GET_SHADER_PRECISION_FORMAT` (`crates/shared` `gl` module,
+  `libc/glue/gl_abi.h`). A guest GLES library that emits them needs a host
+  that decodes them.
+- **`/dev/input/event1` is an absolute pointer.** It no longer advertises
+  `REL_X`/`REL_Y` (only the wheel axes stay relative), so consumers such as
+  SDL's evdev backend read its `EV_ABS` positions, and its `EVIOCGABS`
+  range follows the connector mode the display advertises. Before, the host
+  faked absolute positions by pegging a relative cursor to the origin.
+- **`inotify_init`, `inotify_add_watch` and `inotify_rm_watch` fail with
+  `ENOSYS`.** They used to succeed with an fd that never delivered events,
+  which kept Qt's and glib's file watchers from taking their polling
+  fallback.
+- **A `MAP_FIXED` mapping inside an existing mapping carves it,** leaving
+  the rest of the old mapping in place, rather than evicting the whole
+  mapping.
+
+These share one epoch because a binary or host built for ABI 44 cannot
+run against an ABI 45 kernel at all.
+
+### ABI 46 machine checkpoint and restore
+
+ABI 46 versions the machine-migration contract: a running machine can be
 frozen into a checkpoint, torn down, and restored — in the same tab, in
-another tab, or on another host.
+another tab, or on another host. Every artifact built against ABI 45 must
+be rebuilt.
 
 The syscall channel reserves an 8-byte checkpoint request area directly
 below the 56-byte signal delivery area, at the tail of the 65,536-byte
-data buffer. It holds one `u32` request word. The host publishes the word
-before completing a process's pending syscall; libc's post-syscall
+data buffer. It holds one `u32` request word, a bit set: the host publishes
+`CHECKPOINT_REQUEST_UNWIND` before completing a process's pending syscall,
+and `CHECKPOINT_REQUEST_RESTART` beside it when the freeze completed a
+parked blocking syscall with `EINTR` so the process reaches the trampoline
+at all, telling the guest to resubmit that syscall once the rewind returns; libc's post-syscall
 trampoline clears it and calls the new process import
 `kernel.kernel_checkpoint`. The import takes nothing and returns nothing:
 the capture pass unwinds the call stack into linear memory instead of
