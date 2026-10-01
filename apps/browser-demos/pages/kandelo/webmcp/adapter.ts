@@ -22,6 +22,8 @@ const decoder = new TextDecoder();
 const RETAINED_BYTES = 256 * 1024;
 const MAX_TERMINALS = 32;
 const MAX_REQUESTS = 256;
+// Codes a call throws before it performs anything, so a retry must run it again.
+const UNPERFORMED = new Set(['NOT_READY', 'ABORTED']);
 const controls: Record<string, string> = { enter: '\r', ctrl_c: '\x03', ctrl_d: '\x04', ctrl_z: '\x1a', tab: '\t', escape: '\x1b', backspace: '\x7f', up: '\x1b[A', down: '\x1b[B', left: '\x1b[D', right: '\x1b[C' };
 
 class OutputBuffer {
@@ -38,6 +40,11 @@ class OutputBuffer {
   }
 }
 type RetryRecord = { fingerprint: string; result: Promise<Record<string, unknown>> };
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)]));
+}
 const documentRequests = new WeakMap<KernelHost, Map<string, RetryRecord>>();
 
 interface TerminalRecord { terminal: ShellTerminal; output: OutputBuffer; pty?: PtyHandle; pending?: Promise<void>; error?: string; off?: () => void; queue: Promise<void> }
@@ -325,15 +332,19 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
   async function invoke(name: string, args: Record<string, unknown>, signal?: AbortSignal) {
     if (args.requestId === undefined) return execute(name, args, signal);
     const key = `${name}:${args.requestId}`;
-    const fingerprint = JSON.stringify(Object.fromEntries(Object.entries(args).sort(([a], [b]) => a.localeCompare(b))));
+    const fingerprint = JSON.stringify(canonical(args));
     const prior = requests.get(key);
     if (prior) {
       if (prior.fingerprint !== fingerprint) throw new ToolError('REQUEST_CONFLICT', 'Retry key was already used with different arguments');
       return prior.result;
     }
-    if (requests.size >= MAX_REQUESTS) throw new ToolError('LIMIT_EXCEEDED', 'Document retry-key capacity reached; no mutation performed');
+    if (requests.size >= MAX_REQUESTS) requests.delete(requests.keys().next().value!);
     const result = execute(name, args, signal);
-    requests.set(key, { fingerprint, result });
+    const record = { fingerprint, result };
+    requests.set(key, record);
+    result.catch(error => {
+      if (error instanceof ToolError && UNPERFORMED.has(error.code) && requests.get(key) === record) requests.delete(key);
+    });
     return result;
   }
   // Registration is serialized across StrictMode teardown/remount, so an old

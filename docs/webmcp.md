@@ -203,9 +203,10 @@ replacement unregisters everything and registers the next image's tools afresh.
   snapshots of modified files, processes or terminal state.
 - `requestId` deduplicates launch, terminal creation and command requests within
   one document, including concurrent repeats and application remounts. Reusing a key with changed
-  arguments returns `REQUEST_CONFLICT`. At most 256 retry records are retained;
-  further keys fail with `LIMIT_EXCEEDED`, without evicting old keys and risking a
-  duplicate mutation. Navigation starts a new retry lifetime. A result cached before remount may carry an old terminal ID; rediscover terminals instead of creating another one.
+  arguments returns `REQUEST_CONFLICT`, at any depth of the arguments. At most 256
+  retry records are retained; a new key forgets the oldest one. A call that fails
+  with `NOT_READY` or `ABORTED` performed nothing and keeps no record, so a retry
+  runs it again. Navigation starts a new retry lifetime. A result cached before remount may carry an old terminal ID; rediscover terminals instead of creating another one.
 - Computer reboot/replacement invalidates generation-qualified terminal IDs and
   cursors and disposes adapter buffers/subscriptions. It never reruns input.
   Tool cancellation is checked before mutations and after asynchronous setup;
