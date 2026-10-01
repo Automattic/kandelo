@@ -140,7 +140,7 @@ static char *login_shell_argv0(const char *shell) {
 }
 
 static void usage(const char *argv0) {
-    fprintf(stderr, "usage: %s [-p] [-f username] [username]\n", argv0);
+    fprintf(stderr, "usage: %s [-p] [-f username] [-c username] [username]\n", argv0);
 }
 
 int main(int argc, char **argv) {
@@ -150,14 +150,21 @@ int main(int argc, char **argv) {
     struct passwd *pw = NULL;
     int preauthenticated = 0;
     int preserve_environment = 0;
+    int check_only = 0;
     int opt;
 
-    while ((opt = getopt(argc, argv, "f:p")) != -1) {
+    /* -c is the check hyprlock puts to PAM. */
+    while ((opt = getopt(argc, argv, "c:f:p")) != -1) {
         switch (opt) {
+            case 'c': requested_user = optarg; check_only = 1; break;
             case 'f': requested_user = optarg; preauthenticated = 1; break;
             case 'p': preserve_environment = 1; break;
             default: usage(argv[0]); return 2;
         }
+    }
+    if (check_only && (preauthenticated || preserve_environment)) {
+        usage(argv[0]);
+        return 2;
     }
     if (argc - optind > 1 || (requested_user && optind < argc)) {
         usage(argv[0]);
@@ -187,6 +194,13 @@ int main(int argc, char **argv) {
             fputs("Login incorrect\n", stderr);
             return 1;
         }
+    } else if (check_only) {
+        if (!fgets(password, sizeof(password), stdin)) return 1;
+        password[strcspn(password, "\n")] = '\0';
+        int ok = authenticate(username, password, &pw) == 0;
+        scrub(password);
+        if (!ok) sleep(1);
+        return ok ? 0 : 1;
     } else {
         if (read_field("Password: ", password, sizeof(password), 1) != 0) {
             scrub(password);

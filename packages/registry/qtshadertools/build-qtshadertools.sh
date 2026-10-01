@@ -20,12 +20,14 @@
 #     WASM_POSIX_DEP_LIBCXX_DIR        WASM_POSIX_DEP_LIBPNG_DIR
 #     WASM_POSIX_DEP_ZLIB_DIR          WASM_POSIX_DEP_LIBXKBCOMMON_DIR
 #     WASM_POSIX_DEP_FREETYPE_DIR      WASM_POSIX_DEP_LIBWAYLAND_DIR
-#     WASM_POSIX_DEP_FONTCONFIG_DIR
+#     WASM_POSIX_DEP_FONTCONFIG_DIR    WASM_POSIX_DEP_LIBDBUS_DIR
 #
 # libQt6ShaderTools links Qt::Gui, and the Qt6Gui CMake package loads
 # only when every third-party library qtbase was configured against
 # resolves too — so this recipe carries qtbase's full dependency set
-# even though ShaderTools itself touches none of them.
+# even though ShaderTools itself touches none of them. That set now
+# includes libdbus: Qt6Gui depends on Qt6DBus, whose config finds
+# dbus-1 through pkg-config.
 
 set -euo pipefail
 
@@ -68,6 +70,7 @@ HARFBUZZ_PREFIX="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not 
 LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?WASM_POSIX_DEP_LIBPNG_DIR not set (must be invoked via cargo xtask build-deps resolve qtshadertools)}"
 LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set (must be invoked via cargo xtask build-deps resolve qtshadertools)}"
 LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set (must be invoked via cargo xtask build-deps resolve qtshadertools)}"
+LIBDBUS_PREFIX="${WASM_POSIX_DEP_LIBDBUS_DIR:?WASM_POSIX_DEP_LIBDBUS_DIR not set (must be invoked via cargo xtask build-deps resolve qtshadertools)}"
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
@@ -114,6 +117,7 @@ DEP_PREFIXES=(
     "$LIBPNG_PREFIX"
     "$LIBXKBCOMMON_PREFIX"
     "$LIBWAYLAND_PREFIX"
+    "$LIBDBUS_PREFIX"
 )
 
 # pkg-config must see only the resolved dependency prefixes (the qtbase

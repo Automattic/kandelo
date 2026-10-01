@@ -17,6 +17,13 @@
  *      libxkbcommon keymap path) and receive a host-injected key + a
  *      pointer button, forwarded by the compositor from libinput.
  *
+ * With WLC_SHELL=1 it plays the desktop shell's part instead
+ * (host/test/wlcompositor-shell-protocols-smoke.test.ts): it registers a
+ * hyprland-global-shortcuts shortcut, asks ext-idle-notify for a 300 ms
+ * idle notification, maps its window, and once the compositor fires the
+ * shortcut it locks the session through ext-session-lock — a lock surface
+ * the size of the output, the keyboard on it, unlock on the first key.
+ *
  * Prints markers the test asserts and exits 0. The compositor exits 0
  * once we disconnect.
  */
@@ -39,6 +46,9 @@
 #include "xdg-output-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
+#include "ext-session-lock-v1-client-protocol.h"
+#include "ext-idle-notify-v1-client-protocol.h"
+#include "hyprland-global-shortcuts-v1-client-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 
@@ -60,6 +70,9 @@ struct client {
     struct zxdg_output_manager_v1 *xdg_output_mgr;
     struct wp_viewporter *viewporter;
     struct wp_fractional_scale_manager_v1 *fractional_scale_mgr;
+    struct ext_session_lock_manager_v1 *lock_mgr;
+    struct ext_idle_notifier_v1 *idle_notifier;
+    struct hyprland_global_shortcuts_manager_v1 *shortcuts_mgr;
 
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
@@ -77,6 +90,12 @@ struct client {
     int32_t output_scale;   /* wl_output.scale */
     int32_t entered_scale;  /* the scale of the output wl_surface.enter named,
                              * 0 until the enter arrives */
+    int32_t output_w, output_h;   /* the mode, for a lock surface's size */
+    /* WLC_SHELL: the shortcut fired (press then release), the lock reached
+     * `locked` or `finished`, the lock surface's configure serial. */
+    int shortcut_released;
+    int locked, lock_finished;
+    uint32_t lock_serial;
 };
 
 /* ---- wp_presentation --------------------------------------------------- */
@@ -98,6 +117,9 @@ static void output_geometry(void *data, struct wl_output *o, int32_t x,
                             const char *model, int32_t transform) {}
 static void output_mode(void *data, struct wl_output *o, uint32_t flags,
                         int32_t w, int32_t h, int32_t refresh) {
+    struct client *c = data;
+    c->output_w = w;
+    c->output_h = h;
     printf("OUTPUT_MODE w=%d h=%d\n", w, h);
     fflush(stdout);
 }
@@ -180,7 +202,77 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
     else if (strcmp(iface, "wp_fractional_scale_manager_v1") == 0)
         c->fractional_scale_mgr = wl_registry_bind(
             reg, name, &wp_fractional_scale_manager_v1_interface, 1);
+    else if (strcmp(iface, "ext_session_lock_manager_v1") == 0)
+        c->lock_mgr = wl_registry_bind(
+            reg, name, &ext_session_lock_manager_v1_interface, 1);
+    else if (strcmp(iface, "ext_idle_notifier_v1") == 0)
+        c->idle_notifier = wl_registry_bind(
+            reg, name, &ext_idle_notifier_v1_interface, version < 2 ? version : 2);
+    else if (strcmp(iface, "hyprland_global_shortcuts_manager_v1") == 0)
+        c->shortcuts_mgr = wl_registry_bind(
+            reg, name, &hyprland_global_shortcuts_manager_v1_interface, 1);
 }
+
+/* ---- the shell's protocols (WLC_SHELL) --------------------------------- */
+
+static void shortcut_pressed(void *data, struct hyprland_global_shortcut_v1 *s,
+                             uint32_t sec_hi, uint32_t sec_lo, uint32_t nsec) {
+    printf("SHORTCUT_EVENT pressed\n");
+    fflush(stdout);
+}
+static void shortcut_released(void *data, struct hyprland_global_shortcut_v1 *s,
+                              uint32_t sec_hi, uint32_t sec_lo, uint32_t nsec) {
+    struct client *c = data;
+    c->shortcut_released = 1;
+    printf("SHORTCUT_EVENT released\n");
+    fflush(stdout);
+}
+static const struct hyprland_global_shortcut_v1_listener shortcut_listener = {
+    .pressed = shortcut_pressed,
+    .released = shortcut_released,
+};
+
+static void idle_idled(void *data, struct ext_idle_notification_v1 *n) {
+    printf("IDLE_EVENT idled\n");
+    fflush(stdout);
+}
+static void idle_resumed(void *data, struct ext_idle_notification_v1 *n) {
+    printf("IDLE_EVENT resumed\n");
+    fflush(stdout);
+}
+static const struct ext_idle_notification_v1_listener idle_listener = {
+    .idled = idle_idled,
+    .resumed = idle_resumed,
+};
+
+static void lock_locked(void *data, struct ext_session_lock_v1 *l) {
+    struct client *c = data;
+    c->locked = 1;
+    printf("LOCK_EVENT locked\n");
+    fflush(stdout);
+}
+static void lock_finished(void *data, struct ext_session_lock_v1 *l) {
+    struct client *c = data;
+    c->lock_finished = 1;
+    printf("LOCK_EVENT finished\n");
+    fflush(stdout);
+}
+static const struct ext_session_lock_v1_listener lock_listener = {
+    .locked = lock_locked,
+    .finished = lock_finished,
+};
+
+static void lock_surface_configure(void *data,
+                                   struct ext_session_lock_surface_v1 *ls,
+                                   uint32_t serial, uint32_t w, uint32_t h) {
+    struct client *c = data;
+    c->lock_serial = serial;
+    printf("LOCK_CONFIGURE w=%u h=%u\n", w, h);
+    fflush(stdout);
+}
+static const struct ext_session_lock_surface_v1_listener lock_surface_listener = {
+    .configure = lock_surface_configure,
+};
 
 /* ---- xdg-output / fractional-scale ------------------------------------- */
 
@@ -431,37 +523,84 @@ static int connect_socket(void) {
 /* Allocate a renderD128 dumb-bo, paint it, and wrap it as a wl_shm buffer
  * whose pool fd is the bo's prime-fd — the shared path the compositor
  * imports. Returns the wl_buffer (bo kept alive for its lifetime). */
-static struct wl_buffer *make_buffer(struct client *c) {
+static struct wl_buffer *make_buffer_sized(struct client *c, int32_t w,
+                                           int32_t h, uint32_t color) {
     int render = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
     if (render < 0) { perror("open renderD128"); return NULL; }
     struct gbm_device *gbm = gbm_create_device(render);
     if (!gbm) { fprintf(stderr, "gbm_create_device\n"); return NULL; }
-    struct gbm_bo *bo = gbm_bo_create(gbm, WIN_W, WIN_H, GBM_FORMAT_XRGB8888,
+    struct gbm_bo *bo = gbm_bo_create(gbm, (uint32_t)w, (uint32_t)h,
+                                      GBM_FORMAT_XRGB8888,
                                       GBM_BO_USE_LINEAR | GBM_BO_USE_SCANOUT);
     if (!bo) { fprintf(stderr, "gbm_bo_create\n"); return NULL; }
 
     uint32_t stride = 0;
     void *map_data = NULL;
-    uint32_t *px = gbm_bo_map(bo, 0, 0, WIN_W, WIN_H, 0, &stride, &map_data);
+    uint32_t *px = gbm_bo_map(bo, 0, 0, (uint32_t)w, (uint32_t)h, 0, &stride,
+                              &map_data);
     if (!px) { fprintf(stderr, "gbm_bo_map\n"); return NULL; }
     uint32_t stride_px = stride / 4;
-    for (int y = 0; y < WIN_H; y++)
-        for (int x = 0; x < WIN_W; x++)
-            px[y * stride_px + x] = RED;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            px[y * stride_px + x] = color;
     gbm_bo_unmap(bo, map_data);
 
     int prime = gbm_bo_get_fd(bo);
     if (prime < 0) { fprintf(stderr, "gbm_bo_get_fd\n"); return NULL; }
 
     struct wl_shm_pool *pool =
-        wl_shm_create_pool(c->shm, prime, (int32_t)(stride * WIN_H));
+        wl_shm_create_pool(c->shm, prime, (int32_t)(stride * (uint32_t)h));
     struct wl_buffer *buf = wl_shm_pool_create_buffer(
-        pool, 0, WIN_W, WIN_H, (int32_t)stride, WL_SHM_FORMAT_XRGB8888);
+        pool, 0, w, h, (int32_t)stride, WL_SHM_FORMAT_XRGB8888);
     wl_shm_pool_destroy(pool);   /* the buffer keeps the pool alive */
     close(prime);                /* wl_shm dup'd it into the pool */
     printf("BUFFER stride=%u\n", stride);
     fflush(stdout);
     return buf;
+}
+static struct wl_buffer *make_buffer(struct client *c) {
+    return make_buffer_sized(c, WIN_W, WIN_H, RED);
+}
+
+/* WLC_SHELL, once the window is mapped: wait for the shortcut the
+ * compositor's `global` bind fires, lock the session with a lock surface
+ * the size of the output, take one key on it, unlock, and leave. */
+static int run_shell_protocols(struct client *c, struct wl_display *display,
+                               struct ext_session_lock_manager_v1 *lock_mgr) {
+    while (!c->shortcut_released)
+        if (wl_display_dispatch(display) < 0) { fprintf(stderr, "dispatch\n"); return 1; }
+
+    struct ext_session_lock_v1 *lock = ext_session_lock_manager_v1_lock(lock_mgr);
+    ext_session_lock_v1_add_listener(lock, &lock_listener, c);
+    /* Lock surfaces go up right away, before `locked`, as the protocol asks. */
+    struct wl_surface *ls = wl_compositor_create_surface(c->compositor);
+    struct ext_session_lock_surface_v1 *lock_surface =
+        ext_session_lock_v1_get_lock_surface(lock, ls, c->output);
+    ext_session_lock_surface_v1_add_listener(lock_surface, &lock_surface_listener, c);
+    while (!c->lock_serial && !c->lock_finished)
+        if (wl_display_dispatch(display) < 0) { fprintf(stderr, "dispatch\n"); return 1; }
+    if (c->lock_finished) { fprintf(stderr, "lock refused\n"); return 1; }
+    ext_session_lock_surface_v1_ack_configure(lock_surface, c->lock_serial);
+    struct wl_buffer *buffer =
+        make_buffer_sized(c, c->output_w, c->output_h, 0x00202040u);
+    if (!buffer) return 1;
+    wl_surface_attach(ls, buffer, 0, 0);
+    wl_surface_damage(ls, 0, 0, c->output_w, c->output_h);
+    wl_surface_commit(ls);
+
+    c->got_key = 0;
+    while (!(c->locked && c->got_key))
+        if (wl_display_dispatch(display) < 0) { fprintf(stderr, "dispatch\n"); return 1; }
+    printf("LOCK_KEY key=%u\n", c->key_code);
+    fflush(stdout);
+
+    ext_session_lock_v1_unlock_and_destroy(lock);
+    ext_session_lock_surface_v1_destroy(lock_surface);
+    wl_surface_destroy(ls);
+    wl_display_roundtrip(display);
+    printf("SHELL_PROTOCOLS_OK\n");
+    fflush(stdout);
+    return 0;
 }
 
 int main(void) {
@@ -541,6 +680,28 @@ int main(void) {
         wl_display_roundtrip(display);
     }
 
+    /* Optional: the shell's protocols. The shortcut and the idle notification
+     * are registered before the window maps, so the compositor's config can
+     * already name the shortcut and the idle timer starts at 300 ms. */
+    struct ext_idle_notification_v1 *idle = NULL;
+    if (getenv("WLC_SHELL")) {
+        if (!c.lock_mgr || !c.idle_notifier || !c.shortcuts_mgr) {
+            fprintf(stderr, "missing shell globals: lock=%p idle=%p shortcuts=%p\n",
+                    (void *)c.lock_mgr, (void *)c.idle_notifier,
+                    (void *)c.shortcuts_mgr);
+            return 1;
+        }
+        struct hyprland_global_shortcut_v1 *sc =
+            hyprland_global_shortcuts_manager_v1_register_shortcut(
+                c.shortcuts_mgr, "foo", "wlclient-test", "the test shortcut",
+                "CTRL+F1");
+        hyprland_global_shortcut_v1_add_listener(sc, &shortcut_listener, &c);
+        idle = ext_idle_notifier_v1_get_idle_notification(c.idle_notifier, 300,
+                                                          c.seat);
+        ext_idle_notification_v1_add_listener(idle, &idle_listener, &c);
+        wl_display_roundtrip(display);
+    }
+
     wl_surface_commit(c.surface);
 
     /* Wait for the initial configure before attaching a buffer. */
@@ -589,6 +750,13 @@ int main(void) {
     printf("CLIENT_MAPPED\n");
     printf("CLIENT_READY\n");   /* signal to the test to inject input */
     fflush(stdout);
+
+    if (idle) {
+        int rc = run_shell_protocols(&c, display, c.lock_mgr);
+        ext_idle_notification_v1_destroy(idle);
+        wl_display_disconnect(display);
+        return rc;
+    }
 
     /* Receive one host-injected key and one pointer button, forwarded by
      * the compositor from libinput — or exit if the compositor closes us

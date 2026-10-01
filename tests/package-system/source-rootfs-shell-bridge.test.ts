@@ -224,12 +224,11 @@ function fixturePaths(root: string) {
   const rootfsPath = join(root, "rootfs.vfs.zst");
   const bashPath = join(root, "bash.wasm");
   const espeakNgDataPath = join(root, "espeak-ng-data.zip");
-  // The files the composer writes eagerly: the desktops' launchers, the
-  // Omarchy theme hook, and the data archives. Their programs are lazy
-  // files, written below with every other SHELL_LAZY_BINARY_SPECS entry.
+  // The files the composer writes eagerly: the desktops' launchers and the
+  // data archives. Their programs are lazy files, written below with every
+  // other SHELL_LAZY_BINARY_SPECS entry.
   const wldesktopPath = join(root, "wldesktop");
   const omarchydesktopPath = join(root, "omarchydesktop");
-  const omarchyThemeHookPath = join(root, "omarchy-theme-changed");
   const desktopDataPath = join(root, "kandelo-desktop-data.zip");
   const libinputQuirksPath = join(root, "libinput-quirks.zip");
   const demoConfigPath = join(
@@ -246,7 +245,6 @@ function fixturePaths(root: string) {
   );
   writeFileSync(wldesktopPath, "#!/bin/sh\nexec wlterm\n");
   writeFileSync(omarchydesktopPath, "#!/bin/sh\nexec wlcompositor\n");
-  writeFileSync(omarchyThemeHookPath, "#!/usr/bin/bash\nexit 0\n");
   writeFileSync(
     desktopDataPath,
     zipSync({
@@ -342,7 +340,6 @@ function fixturePaths(root: string) {
     espeakNgDataPath,
     wldesktopPath,
     omarchydesktopPath,
-    omarchyThemeHookPath,
     desktopDataPath,
     libinputQuirksPath,
     demoConfigPath,
@@ -656,7 +653,6 @@ describe("canonical source-rootfs shell", () => {
     for (const [guest, host] of [
       ["/usr/local/bin/wldesktop", paths.wldesktopPath],
       ["/usr/local/bin/omarchydesktop", paths.omarchydesktopPath],
-      ["/usr/local/bin/omarchy-theme-changed", paths.omarchyThemeHookPath],
     ]) {
       expect(readVfsFile(fs, guest), guest).toEqual(
         new Uint8Array(readFileSync(host)),
@@ -1067,7 +1063,6 @@ describe("canonical source-rootfs shell", () => {
     for (const name of [
       "wldesktop",
       "omarchydesktop",
-      "omarchy-theme-changed",
       "kandelo-desktop-data.zip",
       "libinput-quirks.zip",
     ]) {
@@ -1161,9 +1156,6 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     );
     expect(invocation).toContain(`--wldesktop ${waylandDemoDir}/wldesktop`);
     expect(invocation).toContain(`--omarchydesktop ${waylandDemoDir}/omarchydesktop`);
-    expect(invocation).toContain(
-      `--omarchy-theme-hook ${waylandDemoDir}/omarchy-theme-changed`,
-    );
     expect(invocation).toContain(
       `--desktop-data ${waylandDemoDir}/kandelo-desktop-data.zip`,
     );

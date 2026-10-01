@@ -95,6 +95,9 @@
 #include "xdg-output-v1-server-protocol.h"
 #include "viewporter-server-protocol.h"
 #include "fractional-scale-v1-server-protocol.h"
+#include "ext-session-lock-v1-server-protocol.h"
+#include "ext-idle-notify-v1-server-protocol.h"
+#include "hyprland-global-shortcuts-v1-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-names.h>
@@ -168,7 +171,7 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 
 enum bind_action {
     ACT_EXEC, ACT_WORKSPACE, ACT_MOVE_TO_WS, ACT_KILL,
-    ACT_CYCLE_NEXT, ACT_CYCLE_PREV, ACT_THEME, ACT_SWAP,
+    ACT_CYCLE_NEXT, ACT_CYCLE_PREV, ACT_THEME, ACT_SWAP, ACT_GLOBAL,
 };
 
 /* One `bind = MODS, KEY, DISPATCHER, ARGS` rule. sym is the BASE-level keysym
@@ -224,6 +227,10 @@ struct surface {
     int layer_dirty;                    /* a layer-shell request is waiting for
                                          * the commit that applies it */
     int layer_announced;                /* LAYER marker printed while mapped */
+    /* ext-session-lock role: the surface shown while the session is locked.
+     * Full-output, above everything, and the only thing input reaches. */
+    struct wl_resource *lock_surface;
+    int lock_acked;
     char app_id[32];
     char title[96];                     /* xdg_toplevel.set_title, for the bar */
     int32_t x, y;                       /* top-left on the output */
@@ -304,6 +311,26 @@ struct shm_buffer {
 /* ---- compositor singleton ---------------------------------------------- */
 
 struct kwlctl_conn;   /* one control-socket connection (defined with the IPC) */
+
+/* One hyprland_global_shortcut_v1: a client asked the compositor to own a
+ * key combination for it and report presses, the way Quickshell's
+ * GlobalShortcut does under Hyprland. */
+struct global_shortcut {
+    struct wl_resource *resource;
+    char app_id[64];
+    char id[64];
+    struct wl_list link;
+};
+
+/* One ext_idle_notification_v1: idles when no input arrives for timeout_ms,
+ * resumes on the next input. */
+struct idle_notification {
+    struct wl_resource *resource;
+    uint32_t timeout_ms;
+    int idled;
+    struct wl_event_source *timer;
+    struct wl_list link;
+};
 
 /* An output-space rectangle: a tile, or the work area left over once the
  * anchored layer surfaces have taken their exclusive zones. */
@@ -402,6 +429,16 @@ struct compositor {
     struct keybind binds[MAX_BINDS];
     int n_binds;
 
+    /* hyprland-global-shortcuts: what clients registered, by app_id and id;
+     * a `global` bind fires the matching one. The release goes to the
+     * shortcut the press went to, whatever the modifiers are by then. */
+    struct wl_list shortcuts;
+    struct global_shortcut *shortcut_pressed;
+    uint32_t shortcut_key;
+
+    /* ext-idle-notify: one timer per notification, restarted by any input. */
+    struct wl_list idle_notifications;
+
     /* Bound seat resources (across all clients; routed per-client). */
     /* Every bound wl_keyboard / wl_pointer / wl_output, linked through
      * wl_resource_get_link. Lists, not fixed arrays: a capped array
@@ -448,6 +485,20 @@ static struct {
     .current = -1,
 };
 
+/* ---- session lock -------------------------------------------------------- */
+
+/* ext-session-lock: while `locked`, every frame is the lock surface over an
+ * opaque black output, and input reaches nothing else. A lock client that
+ * dies leaves the session locked (the protocol forbids unlocking for it);
+ * the next lock request takes the session over. */
+static struct {
+    struct wl_resource *lock;      /* the ext_session_lock_v1 holding the session */
+    int locked;
+    int announce;                  /* send `locked` once a blanked frame flipped */
+    struct surface *role_surface;  /* the surface holding the lock-surface role */
+    struct surface *surface;       /* that surface once it mapped */
+} lk;
+
 /* ---- GPU compositing state (GLES via renderD128) ----------------------- */
 
 static struct {
@@ -491,6 +542,10 @@ static void ptr_send_frame(struct wl_resource *p) {
         wl_pointer_send_frame(p);
 }
 static int theme_switch(const char *arg);
+static void idle_activity(void);
+static void lock_focus_restore(void);
+static void shortcut_send(struct global_shortcut *sc, int pressed);
+static void global_shortcut_press(const char *param, uint32_t key);
 static void kwlctl_emit(const char *fmt, ...);
 static void kwlctl_exec(char *args);
 static void workspaces_sync(void);
@@ -500,7 +555,7 @@ static void workspaces_sync(void);
  * so it shows on every workspace. A subsurface shows with its parent. */
 static int surface_visible(const struct surface *s) {
     if (s->parent) return s->mapped && surface_visible(s->parent);
-    if (s->layer_surface) return s->mapped;
+    if (s->layer_surface || s->lock_surface) return s->mapped;
     return s->mapped && s->workspace == g.active_ws;
 }
 
@@ -547,7 +602,7 @@ static void zorder_remove(struct surface *s) {
  * the window stack, where retile() hands it a tile: the whole usable area
  * whenever the workspace holds no windows. */
 static void zorder_raise(struct surface *s) {
-    if (s->layer_surface) return;
+    if (s->layer_surface || s->lock_surface) return;
     if (g.n_surfaces && g.zorder[g.n_surfaces - 1] == s) return;
     zorder_remove(s);
     zorder_add(s);
@@ -562,6 +617,10 @@ static int surface_contains(const struct surface *s, double x, double y) {
  * compositing order decides: overlay/top layer surfaces first, then windows,
  * then the background/bottom layers. */
 static struct surface *surface_at(double x, double y) {
+    if (lk.locked) {
+        if (lk.surface && surface_contains(lk.surface, x, y)) return lk.surface;
+        return NULL;
+    }
     for (int i = g.n_layers - 1; i >= 0; i--)
         if (layer_in_band(g.layers[i], 1) && surface_contains(g.layers[i], x, y))
             return g.layers[i];
@@ -989,7 +1048,16 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
     s->pending_attached = 0;
     /* attach(NULL) + commit is how a client hides its surface. (A pending
      * buffer destroyed before commit also lands here, as in Weston.) */
-    if (!s->pending_buffer) { unmap_surface(s); return; }
+    if (!s->pending_buffer) {
+        if (s->lock_surface) {
+            wl_resource_post_error(s->lock_surface,
+                                   EXT_SESSION_LOCK_SURFACE_V1_ERROR_NULL_BUFFER,
+                                   "lock surface committed with no buffer");
+            return;
+        }
+        unmap_surface(s);
+        return;
+    }
 
     /* Only an xdg_toplevel whose configure the client has acked may show a
      * buffer. xdg-shell makes a buffer before that a client error; a
@@ -1067,6 +1135,39 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         return;
     }
 
+    /* A lock surface must have acked the configure and must match the
+     * output exactly; both are protocol errors otherwise. */
+    if (s->lock_surface) {
+        if (!s->lock_acked) {
+            wl_resource_post_error(
+                s->lock_surface,
+                EXT_SESSION_LOCK_SURFACE_V1_ERROR_COMMIT_BEFORE_FIRST_ACK,
+                "lock surface committed before ack_configure");
+            return;
+        }
+        if (s->w != (int32_t)g.width || s->h != (int32_t)g.height) {
+            wl_resource_post_error(
+                s->lock_surface,
+                EXT_SESSION_LOCK_SURFACE_V1_ERROR_DIMENSIONS_MISMATCH,
+                "lock surface is %dx%d, output is %ux%u", s->w, s->h,
+                g.width, g.height);
+            return;
+        }
+        if (!s->mapped) {
+            s->mapped = 1;
+            send_surface_enter(s);
+            lk.surface = s;
+            if (lk.locked) {
+                kbd_set_focus(s);
+                ptr_refresh_focus();
+            }
+            printf("LOCK_SURFACE w=%d h=%d\n", s->w, s->h);
+            fflush(stdout);
+        }
+        schedule_repaint();
+        return;
+    }
+
     if (s->layer_surface) {
         if (!s->mapped) {
             s->mapped = 1;
@@ -1077,7 +1178,8 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
             /* A launcher-style surface asks for the keyboard and gets it for
              * as long as it lives. */
             if (s->kb_interactive ==
-                ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
+                    ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE &&
+                !lk.locked)
                 kbd_set_focus(s);
             ptr_refresh_focus();
         }
@@ -1099,16 +1201,19 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
          * floating desktop places individually by app_id. */
         if (g.layout == LAYOUT_FLOATING && !s->placed) place_surface(s);
         zorder_raise(s);
+        /* Hyprland's order: the workspace exists, the window opens, then it
+         * takes focus. Quickshell's IPC module creates an untitled toplevel
+         * for an `activewindowv2` it has not seen an `openwindow` for. */
+        workspaces_sync();
+        kwlctl_emit("openwindow>>%p,%d,%s,%s", (void *)s, s->workspace,
+                    s->app_id, s->title);
         /* A newly mapped window takes keyboard focus (and pointer focus if
          * the cursor happens to be over it) — unless a layer surface holds
          * the keyboard exclusively. A window that maps while the launcher
          * is open would otherwise swallow the keys typed into it. */
-        if (!layer_kb_grab()) kbd_set_focus(s);
+        if (!layer_kb_grab() && !lk.locked) kbd_set_focus(s);
         ptr_refresh_focus();
         retile();   /* no-op when floating */
-        kwlctl_emit("openwindow>>%p,%d,%s,%s", (void *)s, s->workspace,
-                    s->app_id, s->title);
-        workspaces_sync();
     }
     schedule_repaint();
 }
@@ -1161,6 +1266,11 @@ static void surface_resource_destroy(struct wl_resource *r) {
         layer_remove(s);
     }
     if (s->subsurface) wl_resource_set_user_data(s->subsurface, NULL);
+    if (s->lock_surface) {
+        wl_resource_set_user_data(s->lock_surface, NULL);
+        if (lk.surface == s) lk.surface = NULL;
+        if (lk.role_surface == s) lk.role_surface = NULL;
+    }
     if (s->viewport) wl_resource_set_user_data(s->viewport, NULL);
     if (s->fractional_scale)
         wl_resource_set_user_data(s->fractional_scale, NULL);
@@ -1173,8 +1283,7 @@ static void surface_resource_destroy(struct wl_resource *r) {
     if (g.kbd_focus == s) {
         g.kbd_focus = NULL;
         /* Hand focus to the new top window on the visible workspace, if any. */
-        struct surface *grab = layer_kb_grab();
-        kbd_set_focus(grab ? grab : topmost_on_ws(g.active_ws));
+        lock_focus_restore();
     }
     if (g.ptr_focus == s) g.ptr_focus = NULL;
     if (g.grab == s) g.grab = NULL;
@@ -2322,7 +2431,7 @@ static void kbd_set_focus(struct surface *s) {
     g.kbd_focus = s;
     /* Nothing focused, or a shell component took the keyboard: either way no
      * window is active, and the bar clears its title. */
-    if (!s || s->layer_surface) {
+    if (!s || s->layer_surface || s->lock_surface) {
         kwlctl_emit("activewindow>>,");
         kwlctl_emit("activewindowv2>>");
     }
@@ -2335,7 +2444,7 @@ static void kbd_set_focus(struct surface *s) {
     }
     wl_array_release(&keys);
     schedule_repaint();   /* focus border moved */
-    if (s->layer_surface) return;
+    if (s->layer_surface || s->lock_surface) return;
     kwlctl_emit("activewindow>>%s,%s", s->app_id, s->title);
     kwlctl_emit("activewindowv2>>%p", (void *)s);
     /* Observable focus marker: keyboard focus only moves to a window once its
@@ -2804,6 +2913,7 @@ static void send_all_frame_callbacks(void) {
         send_frame_callbacks(g.zorder[i]);
     for (int i = 0; i < g.n_layers; i++)
         send_frame_callbacks(g.layers[i]);
+    if (lk.surface) send_frame_callbacks(lk.surface);
 }
 
 /* ====================================================================== */
@@ -2837,6 +2947,7 @@ static void send_all_presentation_feedback(uint32_t sec, uint32_t nsec,
         send_presentation_feedback(g.zorder[i], sec, nsec, seq);
     for (int i = 0; i < g.n_layers; i++)
         send_presentation_feedback(g.layers[i], sec, nsec, seq);
+    if (lk.surface) send_presentation_feedback(lk.surface, sec, nsec, seq);
 }
 
 static void presentation_destroy(struct wl_client *c, struct wl_resource *r) {
@@ -3439,6 +3550,15 @@ static int repaint_gl(void) {
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
+    if (lk.locked) {
+        /* A locked output is opaque black under the lock surface alone. */
+        if (lk.surface && lk.surface->buffer) {
+            struct shm_buffer *b = wl_resource_get_user_data(lk.surface->buffer);
+            unsigned t = b ? shm_buffer_gl_texture(b) : 0;
+            if (t) glc_draw_tex(t, 0, 0, 0, (int32_t)g.pw, (int32_t)g.ph);
+        }
+        return eglSwapBuffers(glc.dpy, glc.srf) == EGL_TRUE;
+    }
     glc_draw_tex(glc.wallpaper_tex, 0, 0, 0, (int32_t)g.pw, (int32_t)g.ph);
     for (int i = 0; i < g.n_layers; i++)
         if (g.layers[i]->frame_tex && layer_in_band(g.layers[i], 0))
@@ -3567,11 +3687,16 @@ static void repaint(void) {
         }
         uint32_t stride_px = stride / 4;
 
+        struct surface *top = NULL;
+        if (lk.locked) {
+            for (uint32_t y = 0; y < g.ph; y++)
+                memset(dst + (size_t)y * stride_px, 0, (size_t)g.pw * 4);
+            if (lk.surface) blit_surface(lk.surface, dst, stride_px);
+        } else {
         for (uint32_t y = 0; y < g.ph; y++)
             memcpy(dst + (size_t)y * stride_px,
                    g.wallpaper + (size_t)y * g.pw, (size_t)g.pw * 4);
 
-        struct surface *top = NULL;
         for (int i = 0; i < g.n_layers; i++)
             if (layer_in_band(g.layers[i], 0))
                 blit_surface(g.layers[i], dst, stride_px);
@@ -3586,6 +3711,7 @@ static void repaint(void) {
         for (int i = 0; i < g.n_layers; i++)
             if (layer_in_band(g.layers[i], 1))
                 blit_surface(g.layers[i], dst, stride_px);
+        }
         /* One-shot proof that a client's pixels crossed the process
          * boundary: sample a pixel inside the topmost surface. If the
          * gbm_bo_import path (§8.1) worked, this is the client's color; if
@@ -3663,6 +3789,14 @@ static void on_flip(int fd, unsigned int seq, unsigned int sec,
         g.pending_bo = NULL;
         send_all_frame_callbacks();
         send_all_presentation_feedback(sec, usec * 1000u, seq);
+        /* The frame that just flipped was drawn locked, so nothing unlocked
+         * is visible any more: only now may the lock client hear `locked`. */
+        if (lk.announce && lk.lock) {
+            lk.announce = 0;
+            ext_session_lock_v1_send_locked(lk.lock);
+            printf("SESSION_LOCKED\n");
+            fflush(stdout);
+        }
     }
     if (g.repaint_needed && !g.pending_bo) {
         g.repaint_needed = 0;
@@ -3778,6 +3912,7 @@ static void run_dispatch(const struct keybind *b) {
     case ACT_CYCLE_PREV:   focus_cycle(-1); break;
     case ACT_THEME:        theme_switch(b->param); break;
     case ACT_SWAP:         swap_window(b->param[0]); break;
+    case ACT_GLOBAL:       break;   /* try_keybind fires it with the key */
     }
 }
 
@@ -3790,7 +3925,11 @@ static int try_keybind(uint32_t key, uint32_t state) {
     xkb_keysym_t sym = base_keysym(key);
     for (int i = 0; i < g.n_binds; i++) {
         if (g.binds[i].mods != mods || g.binds[i].sym != sym) continue;
-        if (state == WL_KEYBOARD_KEY_STATE_PRESSED) run_dispatch(&g.binds[i]);
+        if (state != WL_KEYBOARD_KEY_STATE_PRESSED) return 1;
+        if (g.binds[i].action == ACT_GLOBAL)
+            global_shortcut_press(g.binds[i].param, key);
+        else
+            run_dispatch(&g.binds[i]);
         return 1;
     }
     return 0;
@@ -4009,6 +4148,7 @@ static void parse_bind_line(char *rhs) {
     else if (!strcmp(disp, "cycleprev"))  add_bind(mods, sym, ACT_CYCLE_PREV, 0, NULL);
     else if (!strcmp(disp, "theme"))      add_bind(mods, sym, ACT_THEME, 0, arg);
     else if (!strcmp(disp, "swapwindow")) add_bind(mods, sym, ACT_SWAP, 0, arg);
+    else if (!strcmp(disp, "global"))     add_bind(mods, sym, ACT_GLOBAL, 0, arg);
 }
 
 /* Load keybinds: parse WLC_CONFIG / WLC_CONFIG_PATH if present, else install
@@ -4069,8 +4209,16 @@ static void handle_keyboard(struct libinput_event_keyboard *k) {
         g.sent_group = grp;
     }
 
-    /* Compositor keybinds intercept the key before the focused client. */
-    if (try_keybind(key, state)) return;
+    idle_activity();
+    if (g.shortcut_pressed && key == g.shortcut_key &&
+        state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+        shortcut_send(g.shortcut_pressed, 0);
+        g.shortcut_pressed = NULL;
+        return;
+    }
+    /* Compositor keybinds intercept the key before the focused client — but
+     * not while the session is locked: the lock surface owns the keyboard. */
+    if (!lk.locked && try_keybind(key, state)) return;
 
     if (!g.kbd_focus) return;
     for_each_seat_res(res, &g.keyboards, g.kbd_focus->client) {
@@ -4111,6 +4259,7 @@ static void pointer_moved(void) {
 }
 
 static void handle_pointer_motion_abs(struct libinput_event_pointer *p) {
+    idle_activity();
     g.cursor_x = libinput_event_pointer_get_absolute_x_transformed(p, g.width);
     g.cursor_y = libinput_event_pointer_get_absolute_y_transformed(p, g.height);
     pointer_moved();
@@ -4124,6 +4273,7 @@ static void handle_pointer_motion_rel(struct libinput_event_pointer *p) {
      * The absolute path above needs no division: get_absolute_*_transformed
      * normalizes into whatever range it is handed, and it is handed the
      * logical one. */
+    idle_activity();
     double dx = libinput_event_pointer_get_dx(p) / (double)g.scale;
     double dy = libinput_event_pointer_get_dy(p) / (double)g.scale;
     g.cursor_x += dx;
@@ -4141,6 +4291,7 @@ static void handle_pointer_button(struct libinput_event_pointer *p) {
                   LIBINPUT_BUTTON_STATE_PRESSED;
     uint32_t state = pressed ? WL_POINTER_BUTTON_STATE_PRESSED
                              : WL_POINTER_BUTTON_STATE_RELEASED;
+    idle_activity();
     int was_down = g.buttons_down;
     g.buttons_down += pressed ? 1 : -1;
     if (g.buttons_down < 0) g.buttons_down = 0;
@@ -4172,7 +4323,7 @@ static void handle_pointer_button(struct libinput_event_pointer *p) {
         struct surface *s = surface_at(g.cursor_x, g.cursor_y);
         if (s) {
             zorder_raise(s);
-            if (!layer_kb_grab()) kbd_set_focus(s);
+            if (!layer_kb_grab() || s->lock_surface) kbd_set_focus(s);
         }
         ptr_refresh_focus();
     }
@@ -4237,6 +4388,365 @@ static const struct libinput_interface li_interface = {
 /* ====================================================================== */
 /* Client lifecycle                                                       */
 /* ====================================================================== */
+
+/* ====================================================================== */
+/* hyprland_global_shortcuts_v1 — key combinations owned for a client      */
+/* ====================================================================== */
+
+/* A `bind = MODS, KEY, global, app_id:id` line fires the shortcut a client
+ * registered under that app_id and id — how Quickshell's GlobalShortcut
+ * reaches the desktop's keys under Hyprland. The compositor keeps the key
+ * and reports press and release; the client decides what they mean. */
+
+static struct global_shortcut *shortcut_find(const char *app_id, const char *id) {
+    struct global_shortcut *sc;
+    wl_list_for_each(sc, &g.shortcuts, link)
+        if (!strcmp(sc->app_id, app_id) && !strcmp(sc->id, id)) return sc;
+    return NULL;
+}
+
+static void shortcut_send(struct global_shortcut *sc, int pressed) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint32_t hi = (uint32_t)((uint64_t)ts.tv_sec >> 32);
+    uint32_t lo = (uint32_t)ts.tv_sec;
+    uint32_t ns = (uint32_t)ts.tv_nsec;
+    if (pressed) hyprland_global_shortcut_v1_send_pressed(sc->resource, hi, lo, ns);
+    else hyprland_global_shortcut_v1_send_released(sc->resource, hi, lo, ns);
+    printf("SHORTCUT_%s app=%s id=%s\n", pressed ? "PRESSED" : "RELEASED",
+           sc->app_id, sc->id);
+    fflush(stdout);
+}
+
+static void global_shortcut_press(const char *param, uint32_t key) {
+    char app_id[64];
+    const char *colon = strchr(param, ':');
+    if (!colon) {
+        fprintf(stderr, "wlcompositor: global bind needs app_id:id, got %s\n", param);
+        return;
+    }
+    snprintf(app_id, sizeof(app_id), "%.*s", (int)(colon - param), param);
+    struct global_shortcut *sc = shortcut_find(app_id, colon + 1);
+    if (!sc) {
+        printf("SHORTCUT_UNBOUND app=%s id=%s\n", app_id, colon + 1);
+        fflush(stdout);
+        return;
+    }
+    shortcut_send(sc, 1);
+    g.shortcut_pressed = sc;
+    g.shortcut_key = key;
+}
+
+static void shortcut_destroy_req(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct hyprland_global_shortcut_v1_interface shortcut_impl = {
+    .destroy = shortcut_destroy_req,
+};
+static void shortcut_resource_destroy(struct wl_resource *r) {
+    struct global_shortcut *sc = wl_resource_get_user_data(r);
+    if (!sc) return;
+    if (g.shortcut_pressed == sc) g.shortcut_pressed = NULL;
+    wl_list_remove(&sc->link);
+    free(sc);
+}
+
+static void shortcuts_mgr_register(struct wl_client *client,
+                                   struct wl_resource *r, uint32_t id,
+                                   const char *shortcut_id, const char *app_id,
+                                   const char *description,
+                                   const char *trigger_description) {
+    if (shortcut_find(app_id, shortcut_id)) {
+        wl_resource_post_error(r, HYPRLAND_GLOBAL_SHORTCUTS_MANAGER_V1_ERROR_ALREADY_TAKEN,
+                               "shortcut %s:%s is already registered", app_id,
+                               shortcut_id);
+        return;
+    }
+    struct global_shortcut *sc = calloc(1, sizeof(*sc));
+    if (!sc) { wl_client_post_no_memory(client); return; }
+    struct wl_resource *res = wl_resource_create(
+        client, &hyprland_global_shortcut_v1_interface,
+        wl_resource_get_version(r), id);
+    if (!res) { free(sc); wl_client_post_no_memory(client); return; }
+    sc->resource = res;
+    snprintf(sc->app_id, sizeof(sc->app_id), "%s", app_id);
+    snprintf(sc->id, sizeof(sc->id), "%s", shortcut_id);
+    wl_resource_set_implementation(res, &shortcut_impl, sc,
+                                   shortcut_resource_destroy);
+    wl_list_insert(&g.shortcuts, &sc->link);
+    printf("SHORTCUT_REGISTERED app=%s id=%s\n", sc->app_id, sc->id);
+    fflush(stdout);
+}
+static void shortcuts_mgr_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct hyprland_global_shortcuts_manager_v1_interface shortcuts_mgr_impl = {
+    .register_shortcut = shortcuts_mgr_register,
+    .destroy = shortcuts_mgr_destroy,
+};
+static void shortcuts_mgr_bind(struct wl_client *client, void *data,
+                               uint32_t version, uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        client, &hyprland_global_shortcuts_manager_v1_interface, version, id);
+    if (!r) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(r, &shortcuts_mgr_impl, NULL, NULL);
+}
+
+/* ====================================================================== */
+/* ext_idle_notifier_v1 — "the user has been idle for N ms"               */
+/* ====================================================================== */
+
+/* Each notification runs its own timer from the last input event; input
+ * from the keyboard or pointer counts as activity. No idle inhibitor exists
+ * here (the compositor does not offer zwp_idle_inhibit_manager_v1), so the
+ * two request kinds behave the same. */
+
+static int idle_timer_fired(void *data) {
+    struct idle_notification *n = data;
+    if (n->idled) return 0;
+    n->idled = 1;
+    ext_idle_notification_v1_send_idled(n->resource);
+    printf("IDLE timeout=%u idled\n", n->timeout_ms);
+    fflush(stdout);
+    return 0;
+}
+
+static void idle_activity(void) {
+    struct idle_notification *n;
+    wl_list_for_each(n, &g.idle_notifications, link) {
+        if (n->idled) {
+            n->idled = 0;
+            ext_idle_notification_v1_send_resumed(n->resource);
+            printf("IDLE timeout=%u resumed\n", n->timeout_ms);
+            fflush(stdout);
+        }
+        /* A zero timeout means "as soon as the seat is inactive"; 0 would
+         * disarm the timer instead. */
+        wl_event_source_timer_update(n->timer, n->timeout_ms ? (int)n->timeout_ms : 1);
+    }
+}
+
+static void idle_notification_destroy_req(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct ext_idle_notification_v1_interface idle_notification_impl = {
+    .destroy = idle_notification_destroy_req,
+};
+static void idle_notification_resource_destroy(struct wl_resource *r) {
+    struct idle_notification *n = wl_resource_get_user_data(r);
+    if (!n) return;
+    wl_event_source_remove(n->timer);
+    wl_list_remove(&n->link);
+    free(n);
+}
+
+static void idle_notifier_get(struct wl_client *client, struct wl_resource *r,
+                              uint32_t id, uint32_t timeout,
+                              struct wl_resource *seat) {
+    struct idle_notification *n = calloc(1, sizeof(*n));
+    if (!n) { wl_client_post_no_memory(client); return; }
+    n->timer = wl_event_loop_add_timer(g.loop, idle_timer_fired, n);
+    if (!n->timer) { free(n); wl_client_post_no_memory(client); return; }
+    struct wl_resource *res = wl_resource_create(
+        client, &ext_idle_notification_v1_interface, wl_resource_get_version(r), id);
+    if (!res) {
+        wl_event_source_remove(n->timer);
+        free(n);
+        wl_client_post_no_memory(client);
+        return;
+    }
+    n->resource = res;
+    n->timeout_ms = timeout;
+    wl_resource_set_implementation(res, &idle_notification_impl, n,
+                                   idle_notification_resource_destroy);
+    wl_list_insert(&g.idle_notifications, &n->link);
+    wl_event_source_timer_update(n->timer, timeout ? (int)timeout : 1);
+    printf("IDLE_NOTIFICATION timeout=%u\n", timeout);
+    fflush(stdout);
+}
+static void idle_notifier_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct ext_idle_notifier_v1_interface idle_notifier_impl = {
+    .destroy = idle_notifier_destroy,
+    .get_idle_notification = idle_notifier_get,
+    .get_input_idle_notification = idle_notifier_get,
+};
+static void idle_notifier_bind(struct wl_client *client, void *data,
+                               uint32_t version, uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        client, &ext_idle_notifier_v1_interface, version, id);
+    if (!r) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(r, &idle_notifier_impl, NULL, NULL);
+}
+
+/* ====================================================================== */
+/* ext_session_lock_v1 — the lock screen                                   */
+/* ====================================================================== */
+
+/* Keyboard and pointer focus after the lock surface goes away or the session
+ * unlocks: the exclusive layer surface if one holds the keyboard, else the
+ * top window. */
+static void lock_focus_restore(void) {
+    struct surface *grab = layer_kb_grab();
+    kbd_set_focus(grab ? grab : topmost_on_ws(g.active_ws));
+    ptr_refresh_focus();
+}
+
+static void lock_surface_destroy_req(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void lock_surface_ack_configure(struct wl_client *c, struct wl_resource *r,
+                                       uint32_t serial) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) return;
+    if (serial != s->configure_serial) {
+        wl_resource_post_error(r, EXT_SESSION_LOCK_SURFACE_V1_ERROR_INVALID_SERIAL,
+                               "ack of serial %u, configure was %u", serial,
+                               s->configure_serial);
+        return;
+    }
+    s->lock_acked = 1;
+}
+static const struct ext_session_lock_surface_v1_interface lock_surface_impl = {
+    .destroy = lock_surface_destroy_req,
+    .ack_configure = lock_surface_ack_configure,
+};
+static void lock_surface_resource_destroy(struct wl_resource *r) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) return;
+    s->lock_surface = NULL;
+    s->lock_acked = 0;
+    s->mapped = 0;
+    if (lk.role_surface == s) lk.role_surface = NULL;
+    if (lk.surface == s) {
+        lk.surface = NULL;
+        /* The output falls back to solid black until the client maps a new
+         * one or the session unlocks. */
+        if (lk.locked) {
+            printf("LOCK_SURFACE_GONE\n");
+            fflush(stdout);
+        }
+    }
+    if (g.kbd_focus == s) {
+        g.kbd_focus = NULL;
+        if (!lk.locked) lock_focus_restore();
+    }
+    if (g.ptr_focus == s) g.ptr_focus = NULL;
+    s->n_frame_cbs = 0;
+    schedule_repaint();
+}
+
+static void lock_get_lock_surface(struct wl_client *client, struct wl_resource *r,
+                                  uint32_t id, struct wl_resource *surface,
+                                  struct wl_resource *output) {
+    struct surface *s = wl_resource_get_user_data(surface);
+    if (s->xdg_surface || s->layer_surface || s->lock_surface || s->subsurface) {
+        wl_resource_post_error(r, EXT_SESSION_LOCK_V1_ERROR_ROLE,
+                               "surface already has a role");
+        return;
+    }
+    if (s->buffer || s->pending_buffer) {
+        wl_resource_post_error(r, EXT_SESSION_LOCK_V1_ERROR_ALREADY_CONSTRUCTED,
+                               "surface already has a buffer");
+        return;
+    }
+    if (lk.role_surface) {
+        wl_resource_post_error(r, EXT_SESSION_LOCK_V1_ERROR_DUPLICATE_OUTPUT,
+                               "the output already has a lock surface");
+        return;
+    }
+    struct wl_resource *res = wl_resource_create(
+        client, &ext_session_lock_surface_v1_interface, wl_resource_get_version(r), id);
+    if (!res) { wl_client_post_no_memory(client); return; }
+    s->lock_surface = res;
+    s->lock_acked = 0;
+    lk.role_surface = s;
+    snprintf(s->app_id, sizeof(s->app_id), "session-lock");
+    wl_resource_set_implementation(res, &lock_surface_impl, s,
+                                   lock_surface_resource_destroy);
+    /* Exact requirement: the lock surface covers the whole logical output. */
+    s->configure_serial = wl_display_next_serial(g.display);
+    ext_session_lock_surface_v1_send_configure(res, s->configure_serial,
+                                               g.width, g.height);
+}
+
+static void lock_unlock_and_destroy(struct wl_client *c, struct wl_resource *r) {
+    if (r != lk.lock || !lk.locked || lk.announce) {
+        wl_resource_post_error(r, EXT_SESSION_LOCK_V1_ERROR_INVALID_UNLOCK,
+                               "unlock without a locked event");
+        return;
+    }
+    lk.locked = 0;
+    lk.lock = NULL;
+    printf("SESSION_UNLOCKED\n");
+    fflush(stdout);
+    /* Whatever the lock surface held goes back to the desktop; the lock
+     * surface itself stays mapped until the client destroys it, hidden by
+     * the unlocked render order. */
+    if (g.kbd_focus && g.kbd_focus->lock_surface) g.kbd_focus = NULL;
+    lock_focus_restore();
+    schedule_repaint();
+    wl_resource_destroy(r);
+}
+static void lock_destroy_req(struct wl_client *c, struct wl_resource *r) {
+    if (r == lk.lock && lk.locked) {
+        wl_resource_post_error(r, EXT_SESSION_LOCK_V1_ERROR_INVALID_DESTROY,
+                               "destroy while locked; use unlock_and_destroy");
+        return;
+    }
+    wl_resource_destroy(r);
+}
+static const struct ext_session_lock_v1_interface lock_impl = {
+    .destroy = lock_destroy_req,
+    .get_lock_surface = lock_get_lock_surface,
+    .unlock_and_destroy = lock_unlock_and_destroy,
+};
+static void lock_resource_destroy(struct wl_resource *r) {
+    if (lk.lock != r) return;
+    lk.lock = NULL;
+    lk.announce = 0;
+    if (lk.locked) {
+        printf("SESSION_LOCK_CLIENT_GONE\n");
+        fflush(stdout);
+    }
+}
+
+static void lock_mgr_lock(struct wl_client *client, struct wl_resource *r,
+                          uint32_t id) {
+    struct wl_resource *res = wl_resource_create(
+        client, &ext_session_lock_v1_interface, wl_resource_get_version(r), id);
+    if (!res) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(res, &lock_impl, NULL, lock_resource_destroy);
+    if (lk.lock) {
+        ext_session_lock_v1_send_finished(res);
+        printf("SESSION_LOCK_REFUSED\n");
+        fflush(stdout);
+        return;
+    }
+    lk.lock = res;
+    lk.locked = 1;
+    lk.announce = 1;
+    /* Blank now; `locked` follows once that frame is on screen (on_flip).
+     * Input stops reaching the desktop from this point. */
+    kbd_set_focus(lk.surface);
+    ptr_refresh_focus();
+    schedule_repaint();
+}
+static void lock_mgr_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct ext_session_lock_manager_v1_interface lock_mgr_impl = {
+    .destroy = lock_mgr_destroy,
+    .lock = lock_mgr_lock,
+};
+static void lock_mgr_bind(struct wl_client *client, void *data,
+                          uint32_t version, uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        client, &ext_session_lock_manager_v1_interface, version, id);
+    if (!r) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(r, &lock_mgr_impl, NULL, NULL);
+}
 
 static void client_destroyed(struct wl_listener *listener, void *data) {
     free(listener);
@@ -5091,6 +5601,8 @@ int main(void) {
     wl_list_init(&g.keyboards);
     wl_list_init(&g.pointers);
     wl_list_init(&g.outputs);
+    wl_list_init(&g.shortcuts);
+    wl_list_init(&g.idle_notifications);
     g.loop = wl_display_get_event_loop(g.display);
 
     /* Layout policy. Absent/unknown WLC_LAYOUT keeps the floating desktop so
@@ -5158,6 +5670,12 @@ int main(void) {
                           1, NULL, fractional_scale_mgr_bind) ||
         !wl_global_create(g.display, &wl_data_device_manager_interface, 3,
                           NULL, data_dm_bind) ||
+        !wl_global_create(g.display, &ext_session_lock_manager_v1_interface, 1,
+                          NULL, lock_mgr_bind) ||
+        !wl_global_create(g.display, &ext_idle_notifier_v1_interface, 2, NULL,
+                          idle_notifier_bind) ||
+        !wl_global_create(g.display, &hyprland_global_shortcuts_manager_v1_interface,
+                          1, NULL, shortcuts_mgr_bind) ||
         !wl_global_create(g.display, &wl_seat_interface, 5, NULL, seat_bind) ||
         !wl_global_create(g.display, &wl_output_interface, 4, NULL,
                           output_bind)) {

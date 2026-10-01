@@ -70,7 +70,6 @@ export interface SourceRootfsShellInputs {
   bashPath: string;
   wldesktopPath: string;
   omarchydesktopPath: string;
-  omarchyThemeHookPath: string;
   desktopDataPath: string;
   libinputQuirksPath: string;
   espeakNgDataPath: string;
@@ -954,10 +953,6 @@ export async function buildSourceRootfsShellImage(
     inputs.omarchydesktopPath,
     "omarchydesktop launcher dependency",
   );
-  const omarchyThemeHook = readRegularInput(
-    inputs.omarchyThemeHookPath,
-    "omarchy theme hook dependency",
-  );
   const desktopData = readRegularInput(
     inputs.desktopDataPath,
     "desktop data dependency",
@@ -990,14 +985,14 @@ export async function buildSourceRootfsShellImage(
 
   ensureDirRecursive(fs, "/usr/local/bin");
   // The desktops' launchers are small scripts, written eagerly. Every Wasm
-  // program they exec (wlcompositor, wlterm, klauncher, foot, Waybar, ...)
+  // program they exec (wlcompositor, wlterm, foot, Quickshell, ...)
   // is a lazy file registered by the overlay above, so a machine that never
   // starts a desktop never fetches them.
   writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/omarchy-theme-changed", omarchyThemeHook, 0o755);
-  // Configs, themes, launcher entries, fontconfig and D-Bus configs, and the
-  // font: everything the desktops read is image data here, not page staging.
+  // Configs, themes, .desktop entries, the shell's QML, fontconfig and D-Bus
+  // configs, and the font: everything the desktops read is image data here,
+  // not page staging.
   unpackDataZip(fs, "/usr/share/kandelo", desktopData);
   // wlcompositor's statically linked libinput reads its device quirks from
   // LIBINPUT_QUIRKS_DIR, compiled in as /usr/share/libinput.
@@ -1098,7 +1093,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--bash",
     "--wldesktop",
     "--omarchydesktop",
-    "--omarchy-theme-hook",
     "--desktop-data",
     "--libinput-quirks",
     "--espeak-ng-data",
@@ -1122,7 +1116,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--rootfs <rootfs.vfs.zst> --bash <bash.wasm> " +
           "--wldesktop <wldesktop> " +
           "--omarchydesktop <omarchydesktop> " +
-          "--omarchy-theme-hook <omarchy-theme-changed> " +
           "--desktop-data <kandelo-desktop-data.zip> " +
           "--libinput-quirks <libinput-quirks.zip> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
@@ -1141,7 +1134,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     bashPath: values.get("--bash")!,
     wldesktopPath: values.get("--wldesktop")!,
     omarchydesktopPath: values.get("--omarchydesktop")!,
-    omarchyThemeHookPath: values.get("--omarchy-theme-hook")!,
     desktopDataPath: values.get("--desktop-data")!,
     libinputQuirksPath: values.get("--libinput-quirks")!,
     espeakNgDataPath: values.get("--espeak-ng-data")!,

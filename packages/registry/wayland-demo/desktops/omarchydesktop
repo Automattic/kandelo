@@ -1,15 +1,17 @@
 #!/bin/sh
 # Start the Omarchy-shaped desktop and stay in the foreground until it ends.
 #
-# The tiling compositor with its shell on top: a D-Bus session bus, mako for
-# notifications, and unmodified Waybar on a wlr-layer-shell surface. The
-# desktop comes up bare -- wallpaper and bar, no windows; the visitor opens
-# clients through the keybindings or the launcher (CTRL+Space).
+# The tiling compositor with its shell on top: a D-Bus session bus and one
+# Quickshell process, which draws the wallpaper, the bar, the launcher and
+# menu, the notifications, the on-screen display and the lock screen from
+# /usr/share/kandelo/quickshell — the way Omarchy v4 runs its shell. The
+# desktop comes up bare, wallpaper and bar; the visitor opens clients through
+# the keybindings or the launcher (CTRL+Space).
 #
 # Everything this desktop reads is image data under /usr/share/kandelo: the
 # compositor config, themes (/usr/share/kandelo/themes, the compositor's
-# default), launcher entries, and the Waybar, mako, D-Bus and fontconfig
-# configurations. Nothing is staged by the page.
+# default), the .desktop entries the launcher lists, the shell's QML, and the
+# D-Bus and fontconfig configurations. Nothing is staged by the page.
 set -u
 
 SOCKET=/tmp/wayland-0
@@ -17,18 +19,22 @@ BUS=/tmp/dbus-session.socket
 HYPR_IPC=/tmp/hypr/wlcompositor/.socket.sock
 DATA=/usr/share/kandelo
 
-# Every desktop process gets the session bus: the compositor passes it on to
-# what it execs (notify-send on a theme switch, launched terminals).
+# Every desktop process gets the session bus: notify-send (the compositor's
+# theme hook) reaches the shell's notification server over it.
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS"
 export FONTCONFIG_FILE="$DATA/fonts/fonts.conf"
 # The session's runtime directory. A login manager normally provides it; here
-# the desktop's session script does. Stock clients (mako, Waybar, foot) find
+# the desktop's session script does. Stock clients (Quickshell, foot) find
 # the compositor's socket as $XDG_RUNTIME_DIR/wayland-0, and /tmp is the one
 # directory every uid can write under this kernel (see wldesktop).
 export XDG_RUNTIME_DIR=/tmp
-# QtQuick clients (Quickshell) render through the software scenegraph:
-# a Wayland client has no GL surface of its own here.
+# The launcher lists $XDG_DATA_DIRS/applications/*.desktop.
+export XDG_DATA_DIRS=$DATA:/usr/share
+# QtQuick clients render through the software scenegraph: a Wayland client
+# has no GL surface of its own here.
 export QT_QUICK_BACKEND=software
+# The shell talks to the compositor over the Hyprland IPC socket pair.
+export HYPRLAND_INSTANCE_SIGNATURE=wlcompositor
 
 # Wait for a socket path, failing if the process that should bind it died.
 wait_socket() {
@@ -57,20 +63,11 @@ compositor_pid=$!
 
 wait_socket "$SOCKET" "$compositor_pid" wlcompositor || exit 1
 wait_socket "$BUS" "$bus_pid" dbus-daemon || exit 1
-
-# mako and Waybar connect to their sockets exactly once (no retry), so they
-# start only after the compositor and the bus are up. Waybar is also a
-# Gtk::Application, so it needs the session bus, and it talks to the
-# compositor over the Hyprland IPC socket pair. `-l debug` makes the bar log
-# every IPC event it receives, which keeps it legible in the terminal.
-/usr/local/bin/mako --config "$DATA/mako/config" &
 wait_socket "$HYPR_IPC" "$compositor_pid" wlcompositor || exit 1
-# The theme hook rewrites the bar's stylesheet on a switch, so the bar reads
-# a writable copy on /tmp rather than the image's.
-cp "$DATA/waybar/style.css" /tmp/waybar-style.css
-HYPRLAND_INSTANCE_SIGNATURE=wlcompositor \
-    /usr/local/bin/waybar -l debug \
-        -c "$DATA/waybar/config.jsonc" -s /tmp/waybar-style.css &
+
+# The shell connects to its sockets exactly once, so it starts only after the
+# compositor and the bus are up.
+/usr/local/bin/quickshell -p "$DATA/quickshell/shell.qml" &
 
 # The compositor's lifetime is the desktop's.
 wait "$compositor_pid"

@@ -40,6 +40,7 @@ if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]
 fi
 
 QTBASE="${WASM_POSIX_DEP_QTBASE_DIR:?WASM_POSIX_DEP_QTBASE_DIR not set (must be invoked via cargo xtask build-deps resolve qtgallery)}"
+LIBDBUS="${WASM_POSIX_DEP_LIBDBUS_DIR:?WASM_POSIX_DEP_LIBDBUS_DIR not set}"
 FONTCONFIG="${WASM_POSIX_DEP_FONTCONFIG_DIR:?WASM_POSIX_DEP_FONTCONFIG_DIR not set}"
 FREETYPE="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not set}"
 HARFBUZZ="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not set}"
@@ -53,7 +54,10 @@ ZLIB="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 LIBCXX="${WASM_POSIX_DEP_LIBCXX_DIR:?WASM_POSIX_DEP_LIBCXX_DIR not set}"
 
 source "$REPO_ROOT/sdk/activate.sh"
-export WASM_POSIX_SYSROOT="$REPO_ROOT/sysroot"
+WASM_POSIX_SYSROOT="$(
+    kandelo_package_prepare_private_sysroot qtgallery "$REPO_ROOT/sysroot" libcxx
+)"
+export WASM_POSIX_SYSROOT
 
 for tool in wasm32posix-c++ wasm-objdump; do
     command -v "$tool" >/dev/null || {
@@ -75,8 +79,10 @@ wasm32posix-c++ \
     "$QTBASE/plugins/wayland-shell-integration/libxdg-shell.a" \
     "$QTBASE/lib/libQt6WaylandClient.a" \
     "$QTBASE/lib/libQt6Gui.a" \
+    "$QTBASE/lib/libQt6DBus.a" \
     "$QTBASE/lib/libQt6Core.a" \
     "$QTBASE/lib/libQt6BundledPcre2.a" \
+    "$LIBDBUS/lib/libdbus-1.a" \
     "$FONTCONFIG/lib/libfontconfig.a" \
     "$FREETYPE/lib/libfreetype.a" \
     "$HARFBUZZ/lib/libharfbuzz.a" \

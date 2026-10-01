@@ -107,19 +107,20 @@ const SETUP_FAILURE = /configured command failed/;
 const DESKTOP_FAILURE = /omarchydesktop: /;
 
 // A launcher session that is up and not yet dismissed: the last
-// KLAUNCHER_READY on screen with no KLAUNCHER_EXIT after it. A key typed
+// LAUNCHER_READY on screen with no LAUNCHER_EXIT after it. A key typed
 // before the launcher holds the keyboard goes to the focused window, exactly
 // as it would on the real desktop, so each session is awaited this way.
-const OPEN_LAUNCHER = /KLAUNCHER_READY n=\d+(?![\s\S]*KLAUNCHER_EXIT)/;
+const OPEN_LAUNCHER = /LAUNCHER_READY n=\d+(?![\s\S]*LAUNCHER_EXIT)/;
 
 /**
  * The Omarchy machine boots the tiling compositor with the desktop shell
- * Omarchy is made of — a layer-shell status bar reserving the top strip, a
- * launcher on CTRL+Space, notifications, and switchable themes — and every
- * piece is driven from the keyboard. Skips (via gotoOrSkip) when the binaries
- * aren't built.
+ * Omarchy v4 is made of — one Quickshell process drawing the wallpaper, a
+ * layer-shell status bar reserving the top strip, a launcher on CTRL+Space,
+ * notifications, an on-screen display, and a lock screen, over switchable
+ * themes — and every piece is driven from the keyboard. Skips (via
+ * gotoOrSkip) when the binaries aren't built.
  */
-test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and live theme switching", async ({ page, browserName }) => {
+test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launcher, notifications and lock screen", async ({ page }) => {
   test.setTimeout(300_000);
 
   await launchOmarchy(page);
@@ -144,16 +145,24 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   expect(boot, "the configured theme was not loaded").toMatch(/THEME tokyo-night/);
   expect(boot, "the compositor did not select the tiler").toMatch(/WLC_LAYOUT dwindle/);
 
-  // Gate 2: the bar is unmodified Waybar on a real layer-shell surface —
-  // anchored across the top, and its hyprland modules attached to the
-  // compositor's Hyprland IPC event socket (HYPR_LISTENER). The bar's height
-  // is read now, while its LAYER line is on screen.
-  await expectTerminal(page, /LAYER ns=waybar layer=2 x=0 y=0 w=\d+ h=\d+/, 120_000);
+  // Gate 2: the shell is one Quickshell process on real layer-shell
+  // surfaces — the wallpaper on the background layer, the bar anchored
+  // across the top — attached to the compositor's Hyprland IPC event socket
+  // (HYPR_LISTENER) for its workspaces and window title, and holding the
+  // shortcuts the compositor's `global` binds fire. The bar's height is read
+  // now, while its LAYER line is on screen.
+  await expectTerminal(page, /LAYER ns=wallpaper layer=0 /, 120_000);
+  await expectTerminal(page, /LAYER ns=bar layer=2 x=0 y=0 w=\d+ h=\d+/, 120_000);
   const barHeight = Number(
-    (await terminalText(page)).match(/LAYER ns=waybar layer=2 x=0 y=0 w=\d+ h=(\d+)/)![1],
+    (await terminalText(page)).match(/LAYER ns=bar layer=2 x=0 y=0 w=\d+ h=(\d+)/)![1],
   );
-  expect(barHeight, "waybar reserved no strip").toBeGreaterThan(0);
+  expect(barHeight, "the bar reserved no strip").toBeGreaterThan(0);
   await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 120_000);
+  await expectTerminal(page, /SHORTCUT_REGISTERED app=quickshell id=launcher/, 120_000);
+  await expectTerminal(page, /SHORTCUT_REGISTERED app=quickshell id=lock/, 120_000);
+  // The notification server owns the session bus name before anything
+  // sends: notify-send would otherwise fail on the first theme switch.
+  await expectTerminal(page, /SHELL_READY/, 120_000);
   expect(await terminalText(page), "a desktop service failed to start")
     .not.toMatch(DESKTOP_FAILURE);
 
@@ -206,12 +215,12 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     )
     .toBeGreaterThan(12_000);
 
-  // Gate 4b: the desktop keeps compositing on the GPU. Waybar's cursor theme
-  // arrives as a buffer packed at a non-zero offset in its pool, which has no
-  // GL texture; treating that as a GL failure used to tear the compositor's
-  // EGL session down seconds after boot and leave the canvas on its last GL
-  // frame — a desktop that looks alive but never repaints again. The pane's
-  // badge reads the presenter out of the KMS stats: "webgl2-gl" is the
+  // Gate 4b: the desktop keeps compositing on the GPU. A buffer packed at a
+  // non-zero offset in its pool (a cursor theme's) has no GL texture;
+  // treating that as a GL failure used to tear the compositor's EGL session
+  // down seconds after boot and leave the canvas on its last GL frame — a
+  // desktop that looks alive but never repaints again. The pane's badge
+  // reads the presenter out of the KMS stats: "webgl2-gl" is the
   // compositor's own context, "webgl2" the pump's CPU-composite fallback.
   await expect(page.locator("text=/flips ·/").first())
     .toContainText(/webgl2-gl/i, { timeout: 30_000 });
@@ -219,30 +228,31 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   expect(await terminalText(page), "GPU compositing was torn down")
     .not.toMatch(/GPU compositing failed/);
 
-  // Gate 5: CTRL+Space opens the launcher. It is an overlay layer surface that
-  // takes the keyboard away from the focused terminal, so the keys that follow
-  // filter its list instead of being typed into the shell.
+  // Gate 5: CTRL+Space fires the shortcut Quickshell registered, and the
+  // launcher opens: an overlay layer surface that takes the keyboard away
+  // from the focused terminal, so the keys that follow filter its list
+  // instead of being typed into the shell.
   await pressCtrl(page, "Space");
+  await expectTerminal(page, /SHORTCUT_PRESSED app=quickshell id=launcher/, 60_000);
   await expectTerminal(page, /LAYER ns=launcher layer=3 /, 60_000);
-  await expectTerminal(page, /KLAUNCHER_READY n=9/, 60_000);
+  await expectTerminal(page, /LAUNCHER_READY n=8/, 60_000);
 
-  // "te" narrows the nine entries (Clock, Nano, NetHack, Paint, Quickshell,
-  // ScummVM, Terminal, Theme Gallery, Vim) to Terminal alone — "t" alone
-  // still matches Paint.
+  // "te" narrows the eight entries (Clock, Nano, NetHack, Paint, ScummVM,
+  // Terminal, Theme Gallery, Vim) to Terminal alone — "t" alone still
+  // matches Paint.
   await pressKeys(page, ["KeyT", "KeyE"]);
-  await expectTerminal(page, /KLAUNCHER_FILTER q=te n=1/, 60_000);
+  await expectTerminal(page, /LAUNCHER_FILTER q=te n=1/, 60_000);
 
-  // Enter launches the one match (Terminal) through the compositor's kwlctl
-  // socket and dismisses the launcher. The entry runs an unmodified upstream
-  // client, stock foot 1.17.2 — wl_display_connect via XDG_RUNTIME_DIR,
-  // fontconfig resolving "monospace" through the image's fonts.conf, fcft
-  // rasterizing the image's Inconsolata. The desktop went in with three
-  // tiled windows, so foot shows up as a fourth tile — the connection count
-  // alone would not prove it, since the launcher's own session ends at the
-  // same moment and frees its slot.
+  // Enter launches the one match (Terminal) through the compositor's Hyprland
+  // IPC (`dispatch exec`) and dismisses the launcher. The entry runs an
+  // unmodified upstream client, stock foot 1.17.2 — wl_display_connect via
+  // XDG_RUNTIME_DIR, fontconfig resolving "monospace" through the image's
+  // fonts.conf, fcft rasterizing the image's Inconsolata. The desktop went
+  // in with three tiled windows, so foot shows up as a fourth tile — the
+  // connection count alone would not prove it.
   await pressKeys(page, ["Enter"]);
-  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot /, 60_000);
-  await expectTerminal(page, /KLAUNCHER_EXIT/, 60_000);
+  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot /, 60_000);
+  await expectTerminal(page, /LAUNCHER_EXIT/, 60_000);
   await expectTerminal(page, /TILE n=4 i=3 /, 120_000);
   expect(await syslogText(page), "foot binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
@@ -260,7 +270,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await pressCtrl(page, "Space");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyV", "KeyI", "Enter"]);
-  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot [^\n]*\/usr\/bin\/vim/, 60_000);
+  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot [^\n]*\/usr\/bin\/vim/, 60_000);
   await expectTerminal(page, /TILE n=5 i=4 /, 120_000);
   expect(await syslogText(page), "vim binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
@@ -274,7 +284,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await pressCtrl(page, "Space");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyG", "KeyA", "Enter"]);
-  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/qtgallery/, 60_000);
+  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/local\/bin\/qtgallery/, 60_000);
   await expectTerminal(page, /GALLERY_PLATFORM=wayland/, 120_000);
   await expectTerminal(page, /GALLERY_THEMES n=6/, 120_000);
   await expectTerminal(page, /TILE n=6 i=5 /, 120_000);
@@ -287,76 +297,63 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // The card→dispatch→theme-switch loop is proven by the Node smoke
   // (host/test/qtgallery-smoke.test.ts); this gate proves the browser half.
   await expectTerminal(page, /GLDRAW app_id=qtgallery/, 60_000);
-
-  // Gate 5e: a QtQuick application through the same path. "qu" narrows to
-  // Quickshell; its entry runs quickshell with the image's island.qml. The
-  // QML engine loads, the scenegraph renders through the software
-  // adaptation (QT_QUICK_BACKEND=software from the desktop's environment),
-  // and the PanelWindow maps as a wlr-layer-shell surface under Quickshell's
-  // default namespace — layer surfaces never emit GLDRAW, so the LAYER line
-  // is the mapping proof. Firefox is excluded: the running desktop's wasm
-  // code plus Quickshell's main and pthread modules exceeds SpiderMonkey's
-  // fixed 2 GiB per-process executable-code arena, so Quickshell's first
-  // QThread::start fails — see
-  // docs/browser-support.md#firefox-executable-code-limit.
-  if (browserName !== "firefox") {
-    await pressCtrl(page, "Space");
-    await expectTerminal(page, OPEN_LAUNCHER, 60_000);
-    await pressKeys(page, ["KeyQ", "KeyU", "Enter"]);
-    await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/quickshell/, 60_000);
-    await expectTerminal(page, /LAYER ns=quickshell /, 120_000);
-  }
+  // The bar follows the focus: the gallery's title reached it over the
+  // Hyprland IPC event socket.
+  await expectTerminal(page, /BAR_WINDOW title=Theme Gallery/, 60_000);
 
   // Gate 6: CTRL+SHIFT+Space cycles the theme. One palette file repaints the
   // whole desktop — the compositor's borders, gaps and wallpaper, and the
-  // bar's: the switch runs the `notify =` hook, which reads the new
-  // theme.conf, writes the bar's stylesheet from it, and sends Waybar
-  // SIGUSR2. The bar answers that from a detached thread blocked on a signal
-  // pipe, so "Reloading..." is also the proof that a signal reaches a
-  // multi-threaded process.
+  // shell's: the compositor emits `theme>>` on its event socket, and the
+  // shell re-reads the new theme.conf for its bar, wallpaper and launcher,
+  // and shows the switch on its on-screen display.
   await pressCtrl(page, "Space", true);
   await expectTerminal(page, /THEME (catppuccin|everforest|gruvbox|nord|rose-pine)/, 60_000);
-  await expectTerminal(
-    page,
-    /THEME_HOOK theme=(catppuccin|everforest|gruvbox|nord|rose-pine) bar=#[0-9a-f]{6} bar_pid=\d+/,
-    60_000,
-  );
-  await expectTerminal(page, /Reloading\.\.\./, 60_000);
+  await expectTerminal(page, /SHELL_THEME name=(catppuccin|everforest|gruvbox|nord|rose-pine)/, 60_000);
+  await expectTerminal(page, /LAYER ns=osd /, 60_000);
   // The switch also spawns the configured notifier: notify-send routes a
   // real org.freedesktop.Notifications.Notify over the dbus-daemon session
-  // bus, mako answers with the assigned id and maps the toast as a
-  // layer-shell surface.
+  // bus, the shell's notification server answers with the assigned id and
+  // maps the card as a layer-shell surface.
   await expectTerminal(page, /NOTIFY_ID id=\d+/, 60_000);
+  await expectTerminal(page, /NOTIFICATION id=\d+ summary=Theme/, 60_000);
   await expectTerminal(page, /LAYER ns=notifications /, 60_000);
 
-  // Gate 6b: CTRL+ALT+Space opens the Omarchy menu — the same launcher binary
-  // at its root level. Down+Enter descends into the theme list, and Enter on
-  // an entry dispatches the switch through kwlctl.
+  // Gate 6b: CTRL+ALT+Space opens the Omarchy menu — the same launcher at
+  // its root level. Down+Enter descends into the theme list, and Enter on
+  // an entry dispatches the switch through the Hyprland IPC.
   await pressCtrl(page, "Space", false, true);
-  await expectTerminal(page, /KLAUNCHER_LEVEL root/, 60_000);
+  await expectTerminal(page, /LAUNCHER_LEVEL root/, 60_000);
   await pressKeys(page, ["ArrowDown", "Enter"]);
-  await expectTerminal(page, /KLAUNCHER_LEVEL themes/, 60_000);
+  await expectTerminal(page, /LAUNCHER_LEVEL themes/, 60_000);
   await pressKeys(page, ["Enter"]);
-  await expectTerminal(page, /KLAUNCHER_THEME name=[a-z-]+/, 60_000);
+  await expectTerminal(page, /LAUNCHER_THEME name=[a-z-]+/, 60_000);
 
   // Gate 7: the bar tracks the desktop. CTRL+2 switches workspace, and the
-  // bar's hyprland/workspaces module reads the switch off the Hyprland IPC
-  // event socket — which is what moves its active pill. Waybar logs every
-  // event it receives (it runs at -l debug), so the bar's own line is the
-  // proof the feed arrived; the compositor's WORKSPACE marker only proves it
-  // was sent.
-  // The theme switch above reloads Waybar, which re-dumps its widget tree
-  // (about 40 lines at -l debug) and then re-maps the bar. Wait for the
-  // re-map first: if the dump lands after CTRL+2, it scrolls the WORKSPACE
-  // marker off the visible rows this gate reads.
-  await expectTerminal(
-    page,
-    /Bar configured \(width: \d+, height: \d+\)[\s\S]*LAYER ns=waybar layer=2 /,
-    60_000,
-  );
+  // shell's Hyprland module reads the switch off the Hyprland IPC event
+  // socket — which is what moves its active workspace. The bar prints the
+  // workspace it now shows, so its own line is the proof the feed arrived;
+  // the compositor's WORKSPACE marker only proves it was sent.
   await pressCtrl(page, "2");
   await expectTerminal(page, /WORKSPACE active=2/, 60_000);
-  await expectTerminal(page, /hyprland IPC received workspacev2>>2,2/, 60_000);
+  await expectTerminal(page, /BAR_WORKSPACE active=2/, 60_000);
+
+  // Gate 8: CTRL+Escape locks the session through ext-session-lock. The
+  // compositor blanks the output, gives the lock surface the keyboard, and
+  // sends `locked` only once a blanked frame has flipped. Typing the wrong
+  // password keeps it locked; the image's own credential check (login -c)
+  // accepts the demo user's password and the session unlocks.
+  await pressCtrl(page, "Escape");
+  await expectTerminal(page, /SHORTCUT_PRESSED app=quickshell id=lock/, 60_000);
+  await expectTerminal(page, /LOCK_ENGAGED/, 60_000);
+  await expectTerminal(page, /SESSION_LOCKED/, 60_000);
+  await expectTerminal(page, /LOCK_SURFACE w=\d+ h=\d+/, 60_000);
+  await pressKeys(page, ["KeyX", "Enter"]);
+  await expectTerminal(page, /LOCK_ATTEMPT ok=0/, 60_000);
+  expect(await terminalText(page), "a wrong password unlocked the session")
+    .not.toMatch(/SESSION_UNLOCKED/);
+  await pressKeys(page, ["KeyK", "KeyA", "KeyN", "KeyD", "KeyE", "KeyL", "KeyO", "Enter"]);
+  await expectTerminal(page, /LOCK_ATTEMPT ok=1/, 60_000);
+  await expectTerminal(page, /SESSION_UNLOCKED/, 60_000);
 });
 
 // A client killed by the compositor, or a buffer the compositor could not map.
@@ -455,7 +452,7 @@ test("Kandelo omarchy runs ScummVM as a GL window that takes its tile's size", a
   await pressCtrl(page, "Space");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyS", "KeyC", "KeyU", "Enter"]);
-  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/scummvm/, 60_000);
+  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/local\/bin\/scummvm/, 60_000);
 
   // It maps as the only window, is tiled, and the GPU path draws its buffer.
   await expectTerminal(page, /TILE n=1 i=0 x=\d+ y=\d+ w=\d+ h=\d+/, 180_000);
