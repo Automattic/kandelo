@@ -61,6 +61,8 @@ pub const ABORT_SELECTOR_SIZE: u32 = 16;
 pub mod names {
     pub const GLOBAL_STATE: &str = "_wpk_fork_state";
     pub const GLOBAL_BUF: &str = "_wpk_fork_buf";
+    pub const GLOBAL_CALL_INDEX: &str = "_wpk_fork_call_index";
+    pub const GLOBAL_FRAME: &str = "_wpk_fork_frame";
 
     pub const EXPORT_UNWIND_BEGIN: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_BEGIN;
     pub const EXPORT_UNWIND_END: &str = wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_END;
@@ -231,6 +233,23 @@ pub struct SavedGlobal {
 pub struct Runtime {
     pub state_global: GlobalId,
     pub buf_global: GlobalId,
+    /// Call index of the activation frame most recently selected for replay
+    /// (consumed by a preamble) or for unwinding (reserved at a call site).
+    ///
+    /// Generated code reads it only while `state >= REWINDING` or inside the
+    /// postamble, after one of those selections in the same activation; its
+    /// value is otherwise stale and never consulted. WHY a global: replay
+    /// dispatch at every fork-bearing region previously re-read
+    /// `frame.call_index` through `*(_wpk_fork_buf)`, an 8-byte sequence
+    /// repeated per region. It is not snapshotted and not host-visible.
+    pub call_index_global: GlobalId,
+    /// Payload address of the frame most recently consumed for replay. Like
+    /// `call_index_global`, it is instance-private, never snapshotted, and
+    /// read only by the replay preamble directly after selection. WHY: a
+    /// shared restore helper cannot return every scalar as multiple results
+    /// without enlarging each caller's native stack frame, so the preamble
+    /// loads the remaining scalars through this cursor instead.
+    pub frame_global: GlobalId,
     pub buf_type: ValType,
 
     pub unwind_begin: FunctionId,
@@ -407,6 +426,20 @@ fn inject_runtime_with_frame_storage(
         /* shared */ false,
         zero_const(ptr_ty),
     );
+    // Instance-private replay cursor; see `Runtime::call_index_global`. Added
+    // after the saveable-globals scan, so it is never snapshotted.
+    let call_index_global = module.globals.add_local(
+        ValType::I32,
+        /* mutable */ true,
+        /* shared */ false,
+        ConstExpr::Value(Value::I32(0)),
+    );
+    let frame_global = module.globals.add_local(
+        ptr_ty,
+        /* mutable */ true,
+        /* shared */ false,
+        zero_const(ptr_ty),
+    );
 
     let (
         frame_reserve,
@@ -562,6 +595,8 @@ fn inject_runtime_with_frame_storage(
 
     module.globals.get_mut(state_global).name = Some(names::GLOBAL_STATE.into());
     module.globals.get_mut(buf_global).name = Some(names::GLOBAL_BUF.into());
+    module.globals.get_mut(call_index_global).name = Some(names::GLOBAL_CALL_INDEX.into());
+    module.globals.get_mut(frame_global).name = Some(names::GLOBAL_FRAME.into());
     module.funcs.get_mut(unwind_begin).name = Some(names::EXPORT_UNWIND_BEGIN.into());
     module.funcs.get_mut(unwind_end).name = Some(names::EXPORT_UNWIND_END.into());
     module.funcs.get_mut(rewind_begin).name = Some(names::EXPORT_REWIND_BEGIN.into());
@@ -573,6 +608,8 @@ fn inject_runtime_with_frame_storage(
     Runtime {
         state_global,
         buf_global,
+        call_index_global,
+        frame_global,
         buf_type: ptr_ty,
         unwind_begin,
         unwind_end,

@@ -388,12 +388,13 @@ fn bucketed_depth_indirect_dispatcher_passes_v8_limit() {
     }
 }
 
-/// Every per-call private-tag handler must target `$unwind_save` after a
-/// successful reservation and the live-restart loop after synchronous
-/// allocation failure. A regression re-pointing a site at a leaf-local
-/// `$child_K` / `$dispatch_normal` would still validate as wasm but scramble
-/// the fork frame on the next REWIND. Exact target counts pin one statically
-/// indexed boundary per lexical call, with no function-wide selector handler.
+/// Every per-call private-tag handler must reach the function's one shared
+/// unwind handler with its static call index, and that handler must target
+/// the postamble after a successful reservation and the live-restart loop
+/// after synchronous allocation failure. A regression re-pointing a site at a
+/// leaf-local `$child_K` / `$dispatch_normal` would still validate as wasm but
+/// scramble the fork frame on the next REWIND. Exact target counts pin one
+/// statically indexed boundary per lexical call.
 ///
 /// N=33 straddles `BUCKET_SIZE=32` to force one full leaf + one
 /// singleton leaf — exercises both first-leaf and last-leaf paths.
@@ -415,7 +416,16 @@ fn leaf_unwind_br_targets_function_level_unwind_save() {
                 panic!("dispatcher should be local");
             };
 
-            let unwind_save = dispatcher_unwind_save(local);
+            // loop $restart (block $postamble (block $handler (result i32)
+            //   (block $unwind_save ...) br $postamble) <select> br_if
+            //   $postamble br $restart) <postamble>
+            let postamble = dispatcher_unwind_save(local);
+            let Some((Instr::Block(ir::Block { seq: handler }), _)) =
+                local.block(postamble).instrs.first()
+            else {
+                panic!("{label} N={n}: expected a shared unwind handler block");
+            };
+            let handler = *handler;
             let restart_loop = local
                 .block(local.entry_block())
                 .instrs
@@ -427,29 +437,46 @@ fn leaf_unwind_br_targets_function_level_unwind_save() {
                 .next_back()
                 .expect("expected live-restart loop");
             let targets = collect_br_targets(local);
+            let count = |wanted: InstrSeqId| targets.iter().filter(|&&t| t == wanted).count();
 
             assert_eq!(
-                targets
-                    .iter()
-                    .filter(|&&target| target == unwind_save)
-                    .count(),
+                count(handler),
                 n,
-                "{label} N={n}: each static call boundary must branch to unwind-save after commit",
+                "{label} N={n}: each static call boundary must branch to the shared handler",
             );
             assert_eq!(
-                targets
-                    .iter()
-                    .filter(|&&target| target == restart_loop)
-                    .count(),
-                n,
-                "{label} N={n}: each static call boundary must branch to restart on allocation failure",
+                count(restart_loop),
+                1,
+                "{label} N={n}: the shared handler restarts on allocation failure",
+            );
+            assert_eq!(
+                count(postamble),
+                1,
+                "{label} N={n}: an invalid replay index leaves for the postamble",
+            );
+            let handler_tail: Vec<&Instr> = local
+                .block(postamble)
+                .instrs
+                .iter()
+                .map(|(instruction, _)| instruction)
+                .collect();
+            assert!(
+                matches!(handler_tail.as_slice(), [
+                    Instr::Block(_),
+                    Instr::Const(_),
+                    Instr::Call(_),
+                    Instr::BrIf(ir::BrIf { block }),
+                    Instr::Br(ir::Br { block: restart }),
+                ] if *block == postamble && *restart == restart_loop),
+                "{label} N={n}: the handler selects the frame, then commits to the \
+                 postamble or restarts: {handler_tail:?}",
             );
             assert_eq!(
                 targets.len(),
-                3 * n,
-                "{label} N={n}: expected one normal result-boundary branch, \
-                 one successful-unwind branch, and one abort-restart branch \
-                 per static call",
+                2 * n + 2,
+                "{label} N={n}: expected one normal result-boundary branch and \
+                 one handler branch per static call, plus the handler's restart \
+                 and invalid-index exits",
             );
         }
     }

@@ -1176,12 +1176,12 @@ fn frame_reserve_sizes(bytes: &[u8], export_name: &str) -> Vec<i32> {
                     }),
                     _,
                 )) = index
-                    .checked_sub(2)
+                    .checked_sub(1)
                     .and_then(|previous| instructions.get(previous))
                 else {
                     panic!(
-                        "unwind-frame selector must be preceded by its exact \
-                         static size and call index"
+                        "unwind-frame selector must be immediately preceded \
+                         by its exact static frame size"
                     );
                 };
                 sizes.push(*size);
@@ -1241,10 +1241,11 @@ fn nested_of(instr: &Instr) -> Vec<InstrSeqId> {
     }
 }
 
-/// Returns true if the function contains any `br_table` anywhere in
-/// its body. Under the switch-dispatch transform every fork-path
-/// function with one or more fork-path calls carries exactly one
-/// top-level dispatch br_table.
+/// Returns true if the function contains a switch-dispatch replay
+/// selection: a `br_table` over the call index, or (for a region with one
+/// landing) a single-target `state >= REWINDING; br_if $POST_0` guard.
+/// Guard-dispatch, which re-ran the body under per-call if/else gates, has
+/// neither.
 fn has_top_level_br_table_dispatch(module: &Module, func_name: &str) -> bool {
     let id = find_func(module, func_name);
     let f = local_func(module, id);
@@ -1252,6 +1253,37 @@ fn has_top_level_br_table_dispatch(module: &Module, func_name: &str) -> bool {
     walk_all(f, f.entry_block(), 0, &mut |_, _, instr| {
         if matches!(instr, Instr::BrTable(_)) {
             found = true;
+        }
+    });
+    found || find_single_target_guard(f).is_some()
+}
+
+/// The landing block holding a spliced single-target replay guard
+/// (`global.get state; i32.const 2; i32.ge_u; br_if <that block>`).
+fn find_single_target_guard(f: &LocalFunction) -> Option<InstrSeqId> {
+    let mut found = None;
+    walk_all(f, f.entry_block(), 0, &mut |seq, _, _| {
+        if found.is_some() {
+            return;
+        }
+        let instrs = &f.block(seq).instrs;
+        if instrs.windows(4).any(|w| {
+            matches!(w[0].0, Instr::GlobalGet(_))
+                && matches!(
+                    w[1].0,
+                    Instr::Const(Const {
+                        value: Value::I32(2)
+                    })
+                )
+                && matches!(
+                    w[2].0,
+                    Instr::Binop(Binop {
+                        op: BinaryOp::I32GeU
+                    })
+                )
+                && matches!(&w[3].0, Instr::BrIf(br) if br.block == seq)
+        }) {
+            found = Some(seq);
         }
     });
     found
@@ -1302,15 +1334,12 @@ fn call_appears_inside_dispatch_body(
     // of `(if state==REWIND then br_table end)`. The if-then's parent
     // is the `$dispatch_normal` block. $dispatch_normal's parent block
     // is $POST_0.
-    let dispatch_if_then = match dispatch_normal {
-        Some(s) => s,
-        None => return false, // no dispatch at all
-    };
-
-    let dispatch_normal_seq = find_parent_containing_ifelse(f, f.entry_block(), dispatch_if_then);
-    let post_0_seq = match dispatch_normal_seq {
+    // The br_table now follows a `state < REWINDING; br_if` guard directly
+    // inside $dispatch_normal, whose parent block is $POST_0. A one-landing
+    // dispatch is instead spliced straight into $POST_0 as a guard.
+    let post_0_seq = match dispatch_normal {
         Some(ds) => find_parent_containing_block(f, f.entry_block(), ds),
-        None => return false,
+        None => find_single_target_guard(f),
     };
     let post_0 = match post_0_seq {
         Some(p) => p,
@@ -1335,28 +1364,6 @@ fn call_appears_inside_dispatch_body(
         }
     });
     in_body
-}
-
-/// Find the sequence S such that S contains an `Instr::IfElse` whose
-/// consequent equals `target`.
-fn find_parent_containing_ifelse(
-    f: &LocalFunction,
-    seq: InstrSeqId,
-    target: InstrSeqId,
-) -> Option<InstrSeqId> {
-    for (instr, _) in &f.block(seq).instrs {
-        if let Instr::IfElse(ie) = instr {
-            if ie.consequent == target || ie.alternative == target {
-                return Some(seq);
-            }
-        }
-        for child in nested_of(instr) {
-            if let Some(v) = find_parent_containing_ifelse(f, child, target) {
-                return Some(v);
-            }
-        }
-    }
-    None
 }
 
 /// Find the sequence S such that S contains an `Instr::Block { seq: target }`.

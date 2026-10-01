@@ -43,6 +43,7 @@ pub mod module_gc_codec;
 pub mod module_state;
 pub mod reference_analysis;
 pub mod runtime;
+pub mod size_attribution;
 pub mod static_reference_catalog;
 
 /// Fresh instances rebuild this fixed catalog from the module's static element
@@ -295,8 +296,19 @@ fn prepare_fork_path(
 /// can remain live beside a fork-capable activation, so their mutable globals,
 /// tables, and segment lifetimes remain part of the child process image.
 pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
+    #[cfg(feature = "size-attribution")]
+    let mut module =
+        size_attribution::parse_for_report(input).context("failed to parse input wasm module")?;
+    #[cfg(not(feature = "size-attribution"))]
     let mut module =
         walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
+    #[cfg(feature = "size-attribution")]
+    let original_locals: Vec<FunctionId> = module
+        .funcs
+        .iter()
+        .filter(|function| matches!(function.kind, walrus::FunctionKind::Local(_)))
+        .map(|function| function.id())
+        .collect();
     reject_preinstrumented_artifact(&module)?;
     legacy_dlopen::lower(&mut module)?;
 
@@ -496,6 +508,16 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // see `instrument_one_function_switch` / `instrument_one_function_nested_switch`
     // for the actual transform.
 
+    #[cfg(feature = "size-attribution")]
+    if let Some(path) = std::env::var_os("WPK_FORK_SIZE_ATTRIBUTION") {
+        let output = size_attribution::emit_with_report(
+            &mut module,
+            input,
+            &original_locals,
+            std::path::Path::new(&path),
+        )?;
+        return restore_leading_dylink_section(input, output);
+    }
     let output = module.emit_wasm();
     restore_leading_dylink_section(input, output)
 }
