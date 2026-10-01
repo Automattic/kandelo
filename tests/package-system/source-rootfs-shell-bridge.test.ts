@@ -650,6 +650,12 @@ describe("canonical source-rootfs shell", () => {
     expect(text(readVfsFile(fs, "/usr/share/espeak-ng-data/en/en_dict"))).toBe(
       "espeak voice data fixture",
     );
+    // Ctrl+C at the machine's terminal must stop ScummVM itself. The wrapper
+    // runs the engine in the background, where POSIX has SIGINT ignored, so
+    // the wrapper must forward it or the old engine keeps the display.
+    expect(text(readVfsFile(fs, "/usr/local/bin/scummvm"))).toContain(
+      `trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; exit 130' INT TERM`,
+    );
     // The desktops' launchers are eager scripts on PATH (the programs they
     // exec are the lazy files above), and wlcompositor's statically linked
     // libinput finds its device quirks at LIBINPUT_QUIRKS_DIR.

@@ -305,6 +305,14 @@ exec /usr/bin/quake -basedir "$BASE" "$@"
  * falls back to — unzips it in place, and removes it so the peak filesystem
  * cost is one archive plus its contents. The host writes the file in one
  * kernel-worker task, so the wrapper never sees a partial archive.
+ *
+ * Because the engine runs as an asynchronous list in a non-interactive shell,
+ * POSIX has it start with SIGINT and SIGQUIT ignored, so Ctrl+C at the
+ * machine's terminal (and the ScummVM machine's dock action, which sends
+ * exactly that) would kill only this wrapper and orphan an engine still
+ * holding the display. The trap forwards the interrupt as SIGTERM, which the
+ * engine does not ignore (SDL turns it into a normal quit), and waits for it,
+ * so the shell prompt returns only once the display is free.
  */
 const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
 set -e
@@ -320,6 +328,7 @@ if [ -z "\${XDG_RUNTIME_DIR:-}" ] || [ ! -S "$XDG_RUNTIME_DIR/\${WAYLAND_DISPLAY
 fi
 /usr/bin/scummvm --config="$INI" "$@" &
 engine=$!
+trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; exit 130' INT TERM
 set +e
 while kill -0 "$engine" 2>/dev/null; do
     if [ -f "$GAMES/upload.zip" ]; then
