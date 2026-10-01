@@ -94,6 +94,11 @@ it with `mkdir -p` first. On a name clash the maker's file wins, and deleting
 that file falls back to the shipped one. Both directories are watched: writing,
 replacing or deleting a file registers or unregisters its tool without a reload.
 
+`/home/maker/mcp` is a trust boundary. Every program that runs as `maker` can
+write to it, and the agent runs as `maker` too. A tool there is as trustworthy
+as the guest itself: any guest program, or the agent, can add or replace one,
+and its description reaches the agent as untrusted text.
+
 ```json
 {
   "description": "Evaluate an arithmetic expression",
