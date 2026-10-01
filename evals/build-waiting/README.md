@@ -101,6 +101,45 @@ pattern.
 
   Any of these in 2 or more sessions means revise or remove.
 
+**Pre-landing smoke test (2026-09-30, 1 rep, Sonnet): harm found, guidance
+revised.** The first guidance said to run `agent-job wait` in the
+background and end the turn. A headless session did exactly that and ended
+without an answer (score 0.00). The no-tools arm ran the 2.5-minute build
+in the foreground in one call (score 1.00).
+
+What changed in response:
+- runs under the Bash tool's 10-minute limit now go in the foreground;
+- `agent-job wait` defaults to a 540 s timeout and is simply repeated;
+- ending the turn to wait is limited to interactive main sessions;
+- `run.py` gained a 12-minute task, where waiting actually matters.
+
+**A/B after the revision (2026-09-30, 3 reps per arm, Sonnet,
+`run.py`):**
+
+| task | arm | score | cost $ | turns | waits |
+|---|---|---:|---:|---:|---:|
+| wait-and-report (2.5 min) | tools-on | 1.00 | 0.072 | 3.0 | 0.0 |
+| wait-and-report (2.5 min) | tools-off | 0.00 | 0.064 | 2.0 | 0.0 |
+| long-build (12 min) | tools-on | 1.00 | 0.100 | 5.7 | 2.0 |
+| long-build (12 min) | tools-off | 0.00 | 0.064 | 2.0 | 0.0 |
+| quiet-build (2.5 min, silent) | tools-on | 1.00 | 0.065 | 2.0 | 1.0 |
+| quiet-build (2.5 min, silent) | tools-off | 1.00 | 0.063 | 2.0 | 0.0 |
+
+Scores came to 9/9 with the tools and 3/9 without.
+
+- **Why tools-off failed:** each failed run put the build in the
+  background and ended the turn ("I'll report back when it finishes"). A
+  headless session stops there.
+- **What tools-on did:** ran the short builds in one foreground call, and
+  waited on the 12-minute build with two `agent-job wait` calls.
+- **Cost:** the correctness clause holds, but the cost clause as written
+  ("at most as costly") does not. Raw cost was $0.079 against $0.064 per
+  run (+23%), mostly one turn spent reading the guidance. Per correct
+  answer, it was $0.079 against $0.192.
+- **Scope:** the A/B covers headless sessions, which end their turn the same
+  way subagents do. It does not cover interactive main sessions, where a
+  completion notice would have rescued the tools-off arm.
+
 ### 2. Tree-change stamp (part of `agent-job result`)
 
 When the tracked working tree changes between a job's start and its end, the
@@ -181,6 +220,12 @@ in CI.
 - **Keep if:** median time saved per local run is ≥ 15 s.
 - **Remove if:** a skipped install ever leaves a stale `node_modules` that
   fails a run.
+
+**Result (2026-09-30): removed before landing.** With a warm npm cache,
+`npm ci` for the repo root plus `host/` took 3.2 s, and the skip path took
+0.1 s. That saves about 3 s per local run, well under the 15 s rule. Since
+races were also rare (1 in 2 months), neither half earned its code. Revisit
+only if `npm ci` becomes slow, or if races recur.
 
 ### 8. Wait-pattern hook (personal, `~/.claude/hooks`)
 

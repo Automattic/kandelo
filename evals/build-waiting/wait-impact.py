@@ -58,6 +58,15 @@ COLLISIONS = {
 DEAD_SUITE = re.compile(r"Discovered 0 tests|tests\[@\]: unbound variable")
 EMPTY_FILTER = re.compile(r"No test files found")
 CLOSURE = re.compile(r"Package artifact closure is incomplete")
+# Lines the tools print, counted in tool output (see README.md per tool).
+MARKERS = {
+    "suite_health_lines": re.compile(r"\[suite-health\] files "),
+    "suite_health_warnings": re.compile(r"\[suite-health\] WARN "),
+    "xfail_mismatches": re.compile(r"^XFAIL-MISMATCH ", re.M),
+    "program_index_lock_waits": re.compile(r"waiting for program-index lock"),
+    "closure_preflights": re.compile(r"^artifact closures: \d+ ok", re.M),
+    "tree_changed_warnings": re.compile(r"WARNING: tree changed during run"),
+}
 NOTIFY = re.compile(r"<task-id>([^<]+)</task-id>.*?<status>([^<]+)</status>", re.S)
 # A command that uses the build-waiting tools (see README.md).
 TOOLS = re.compile(r"scripts/agent-job\b|\bagent-job\s+(start|wait|status|result|list)\b")
@@ -86,6 +95,8 @@ def produced_by_run(name, inp):
         return bool(TASK_OUTPUT.search(path))
     if name != "Bash":
         return False
+    if TOOLS.search(cmd) or "check-artifact-closures" in cmd:
+        return True
     if re.search(r"\.(rs|md|ts|py|json)\b|/memory/", cmd) and not (BUILD.search(cmd) or VALIDATION.search(cmd)):
         return False  # a grep or cat of source/docs that may quote the error text
     return bool(BUILD.search(cmd) or VALIDATION.search(cmd) or TASK_OUTPUT.search(cmd))
@@ -117,7 +128,7 @@ def new_stream():
     return dict(cost=0.0, wait_cost=0.0, wait_turns=0, sleep_turns=0, pgrep_waiters=0, pid_waiters=0,
                 process_probes=0, monitor_calls=0, long_jobs=0, job_seconds=[], polls_per_job=[],
                 mutations_mid_validation=0, concurrent_validation=0, foreground_waits=0,
-                foreground_wait_seconds=0.0, collisions=collections.Counter(), collision_streams=set(), dead_suite=0, empty_filter=0, closure=0,
+                foreground_wait_seconds=0.0, collisions=collections.Counter(), collision_streams=set(), markers=collections.Counter(), dead_suite=0, empty_filter=0, closure=0,
                 tool_uses=0, start=None, gap_rewrites=0, gap_rewrite_cost=0.0, used_tools=False, last_turn=None, examples=collections.defaultdict(list))
 
 
@@ -214,6 +225,9 @@ def scan_file(path, since, until, n_examples):
                 add_example("dead suite", txt[max(0, txt.find(DEAD_SUITE.search(txt).group(0)) - 80):])
             if produced and EMPTY_FILTER.search(txt):
                 S["empty_filter"] += 1
+            if produced:
+                for name, rx in MARKERS.items():
+                    S["markers"][name] += len(rx.findall(txt))
             if produced and CLOSURE.search(txt):
                 S["closure"] += 1
             res = e.get("toolUseResult")
@@ -299,6 +313,45 @@ def scan_file(path, since, until, n_examples):
     return S
 
 
+def tool_logs(since, until):
+    """Numbers the tools record themselves, for the keep rules in README.md."""
+    root = os.path.expanduser(os.environ.get("KANDELO_AGENT_JOBS_DIR", "~/.cache/kandelo/agent-jobs"))
+    lo, hi = datetime.fromisoformat(since).timestamp(), datetime.fromisoformat(until[:10] if until[:4] != "9999" else "9999-01-01").timestamp()
+
+    def rows(path, key="at"):
+        try:
+            with open(path) as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if lo <= (r.get(key) or 0) < hi:
+                        yield r
+        except OSError:
+            return
+
+    out = {}
+    jobs = list(rows(os.path.join(root, "ledger.jsonl"), "started"))
+    errs = [abs(j["duration"] - j["usual_duration"]) / j["duration"] for j in jobs
+            if j.get("usual_duration") and j.get("duration")]
+    out["agent_job"] = dict(
+        jobs=len(jobs), failed=sum(1 for j in jobs if j.get("exit_code")),
+        tree_changed=sum(1 for j in jobs if j.get("tree_changed") or j.get("head_changed")),
+        usual_duration_median_abs_error=round(statistics.median(errs), 2) if errs else None,
+    )
+    hook = list(rows(os.path.join(root, "hook-log.jsonl")))
+    out["wait_guard"] = dict(collections.Counter(r["rule"] for r in hook))
+    out["wait_guard"]["sessions"] = len({r.get("session_id") for r in hook})
+    base = os.environ.get("KANDELO_SOURCE_CACHE_ROOT") or os.path.expanduser("~/.cache/kandelo/source-only")
+    runs = [r for r in rows(os.path.join(base, "timings", "runs.jsonl"))
+            if r.get("predicted_seconds") and r.get("actual_seconds") and r.get("built")]
+    errs = [abs(r["predicted_seconds"] - r["actual_seconds"]) / r["actual_seconds"] for r in runs]
+    out["local_build_estimate"] = dict(
+        builds=len(runs), median_abs_error=round(statistics.median(errs), 2) if errs else None)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default="2026-08-01")
@@ -375,8 +428,10 @@ def main():
             dead_suite_outputs=T["dead_suite"],
             empty_filter_outputs=T["empty_filter"],
             closure_incomplete_outputs=T["closure"],
+            **{f"marker_{k}": T["markers"][k] for k in MARKERS},
         )
     report["sessions"] = len(sessions)
+    report["tool_logs"] = tool_logs(args.since, args.until)
 
     def med(xs):
         return statistics.median(xs) if xs else None
@@ -416,6 +471,9 @@ def main():
         a, b = report["main"][k], report["subagent"][k]
         fmt = lambda v: f"{v:,}" if isinstance(v, int) else str(v)
         print(f"{k:34s} {fmt(a):>14s} {fmt(b):>14s}")
+    print("\nTool logs (ledger, hook log, local-build timings):")
+    for k, v in report["tool_logs"].items():
+        print(f"  {k}: {v}")
     if args.examples:
         for kind, T in totals.items():
             for k, v in T["examples"].items():
