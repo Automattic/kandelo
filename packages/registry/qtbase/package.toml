@@ -1,10 +1,11 @@
 # Per-library manifest consumed by `cargo xtask build-deps`.
 # Schema: see docs/package-management.md.
 #
-# Qt 6 QtCore, QtGui, QtWidgets, QtWaylandClient, QtConcurrent and QtXml, static,
-# for wasm32. The base of the Qt stack Omarchy v4 needs: v4 folds Waybar,
-# Walker, Mako, SwayOSD, hyprlock, hypridle, swaybg and polkit-gnome into
-# a single Quickshell QML process, and Quickshell is a QtQuick client.
+# Qt 6 QtCore, QtGui, QtWidgets, QtNetwork, QtDBus, QtWaylandClient,
+# QtConcurrent and QtXml, static, for wasm32. The base of the Qt stack
+# Omarchy v4 needs: v4 folds Waybar, Walker, Mako, SwayOSD, hyprlock,
+# hypridle, swaybg and polkit-gnome into a single Quickshell QML process,
+# and Quickshell is a QtQuick client.
 #
 # Qt 6.10 moved the Wayland client platform plugin into qtbase, so the
 # `wayland` QPA plugin and the xdg-shell integration ship from here
@@ -12,7 +13,13 @@
 #
 # QtWidgets is on — Quickshell's QuickControls2 style impls need it.
 # QtNetwork is on without ssl — Quickshell's IPC rides QLocalSocket.
-# QtSql, QtTest and QtDBus are off, and so is
+# QtDBus is on, linked against the registry's libdbus: Quickshell's
+# notification server is the freedesktop D-Bus service notify-send
+# talks to. dbus-manager-on-thread-on-wasm.patch keeps the connection
+# manager off a thread of its own, because a guest thread costs the
+# browser a second compiled copy of the module
+# (docs/browser-support.md#firefox-executable-code-limit).
+# QtSql and QtTest are off, and so is
 # OpenGL — the Wayland client runs on wl_shm; QtQuick renders through
 # its software scenegraph, so no GL surface is required. QProcess is on:
 # forkfd-generic-on-wasm.patch keeps Qt's bundled forkfd on its generic
@@ -36,6 +43,7 @@ depends_on = [
   "libpng@1.6.43",
   "libxkbcommon@1.7.0",
   "libwayland@1.24.0",
+  "libdbus@1.14.10",
 ]
 
 [source]
@@ -69,6 +77,7 @@ libs = [
   "lib/libQt6Gui.a",
   "lib/libQt6Widgets.a",
   "lib/libQt6Network.a",
+  "lib/libQt6DBus.a",
   "lib/libQt6WaylandClient.a",
   "lib/libQt6Concurrent.a",
   "lib/libQt6Xml.a",
@@ -79,6 +88,7 @@ headers = [
   "include/QtGui",
   "include/QtWidgets",
   "include/QtNetwork",
+  "include/QtDBus",
   "include/QtWaylandClient",
   "include/QtConcurrent",
   "include/QtXml",

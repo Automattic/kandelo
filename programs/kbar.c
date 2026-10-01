@@ -13,19 +13,22 @@
  *          stats or none)
  *
  * State comes from the compositor's kwlctl socket — the same feed Waybar's
- * hyprland modules consume from hyprctl: one `workspaces` / `activewindow` /
- * `theme` query at startup, then the `--listen` event stream (`workspace>>N`,
+ * hyprland modules consume from hyprctl: subscribe to `--listen`, then query
+ * `workspaces` / `activewindow` / `theme` at startup. The event stream
+ * (`workspace>>N`,
  * `activewindow>>class,title`, `theme>>name`). The bar polls that socket
  * alongside the Wayland fd, so it repaints on an event immediately and
  * otherwise once a second for the clock.
  *
  * Markers on stdout for the smoke gates:
  *   KBAR_READY w=.. h=..   — layer surface mapped + first frame committed
+ *   KBAR_LISTENING        — compositor acknowledged the event subscription
  *   KBAR_WORKSPACE n=..    — active workspace changed
  *   KBAR_FOCUS app=..      — focused window changed
  *   KBAR_THEME name=..     — palette reloaded
  *   KBAR_EXIT              — clean shutdown
  */
+#include <errno.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -125,6 +128,33 @@ static int kwlctl_connect(void) {
         if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) return fd;
         usleep(10000);
     }
+    close(fd);
+    return -1;
+}
+
+/* Subscribe before reading initial state: changes during the queries or the
+ * first frame commit must remain queued, rather than disappear in between. */
+static int kwlctl_listen(void) {
+    int fd = kwlctl_connect();
+    if (fd < 0) {
+        fprintf(stderr, "kbar: cannot connect to the control stream\n");
+        return -1;
+    }
+    if (write(fd, "--listen\n", 9) != 9) goto failed;
+    char ack[10];
+    size_t got = 0;
+    while (got < sizeof(ack)) {
+        ssize_t n = read(fd, ack + got, sizeof(ack) - got);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) goto failed;
+        got += (size_t)n;
+    }
+    if (memcmp(ack, "listening\n", sizeof(ack))) goto failed;
+    printf("KBAR_LISTENING\n");
+    fflush(stdout);
+    return fd;
+failed:
+    fprintf(stderr, "kbar: control stream subscription failed\n");
     close(fd);
     return -1;
 }
@@ -272,18 +302,13 @@ int main(void) {
     struct wpk_font *font = wpk_font_load_default(FONT_PX);
     if (!font) { fprintf(stderr, "kbar: no font\n"); return 1; }
 
+    int ctl = kwlctl_listen();
     sync_state();
     struct wpk_surface *surf = kwl_window_surface(win);
     render(surf, font);
     kwl_window_commit(win);
     printf("KBAR_READY w=%d h=%d\n", surf->w, surf->h);
     fflush(stdout);
-
-    int ctl = kwlctl_connect();
-    if (ctl >= 0 && write(ctl, "--listen\n", 9) != 9) {
-        close(ctl);
-        ctl = -1;
-    }
 
     int running = 1;
     while (running) {

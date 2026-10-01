@@ -187,6 +187,12 @@ describe("wlcompositor — theme system", () => {
         // A shell client subscribes to the stream before the switch.
         host.spawn(kbarBytes, ["kbar"], { env: [`KANDELO_THEME_DIR=${themeDir}`] });
         await waitFor(out, /KBAR_THEME name=aaa-wide/, 20_000, dump);
+        // The initial palette must follow the acknowledged subscription;
+        // otherwise an immediate theme switch can disappear before listening.
+        expect(out.value.indexOf("KBAR_LISTENING"), dump()).toBeGreaterThanOrEqual(0);
+        expect(out.value.indexOf("KBAR_LISTENING"), dump()).toBeLessThan(
+          out.value.indexOf("KBAR_THEME name=aaa-wide"),
+        );
 
         // 2) Cycle to the next installed theme without a restart.
         out.value = "";

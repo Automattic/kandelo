@@ -30,6 +30,7 @@ depends_on = [
   "libffi@0.1.0",
   "libxml2@2.13.8",
   "libiconv@1.17",
+  "libdbus@1.14.10",
 ]
 
 [source]

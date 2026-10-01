@@ -208,6 +208,10 @@ name = "harfbuzz"
 class = "platform"
 
 [[packages]]
+name = "hyprland-protocols"
+class = "platform"
+
+[[packages]]
 name = "icu"
 class = "platform"
 
@@ -253,6 +257,10 @@ class = "platform"
 
 [[packages]]
 name = "libcxx"
+class = "platform"
+
+[[packages]]
+name = "libdbus"
 class = "platform"
 
 [[packages]]

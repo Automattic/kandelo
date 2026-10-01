@@ -67,6 +67,7 @@ LIBINPUT="${WASM_POSIX_DEP_LIBINPUT_DIR:?resolve wayland-demo through cargo xtas
 # lib/include prefix, so the resolver exports no *_DIR for it. The
 # reviewed copy in-tree is the same file scripts/build-programs.sh scans.
 PROTOCOLS="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:-}"
+HYPRLAND_PROTOCOLS="${WASM_POSIX_DEP_HYPRLAND_PROTOCOLS_DIR:?resolve wayland-demo through cargo xtask build-deps}"
 
 # --- Generate the Wayland protocol glue -------------------------------
 GEN="$WORK_DIR/gen"
@@ -91,6 +92,8 @@ PROTOCOL_LIST=(
     "fractional-scale-v1:fractional-scale-v1"
     "wlr-data-control-v1:wlr-data-control-unstable-v1"
     "ext-data-control-v1:ext-data-control-v1"
+    "ext-session-lock-v1:ext-session-lock-v1"
+    "ext-idle-notify-v1:ext-idle-notify-v1"
 )
 echo "==> Generating Wayland protocol glue from $XML_DIR..."
 for entry in "${PROTOCOL_LIST[@]}"; do
@@ -101,6 +104,14 @@ for entry in "${PROTOCOL_LIST[@]}"; do
     wayland-scanner server-header "$xml" "$GEN/$stem-server-protocol.h"
     wayland-scanner client-header "$xml" "$GEN/$stem-client-protocol.h"
 done
+# hyprland-global-shortcuts-v1 comes from hyprland-protocols, not
+# wayland-protocols: the compositor serves it so a `global` bind reaches
+# the shortcut Quickshell registered.
+HYPR_XML="$HYPRLAND_PROTOCOLS/share/hyprland-protocols/protocols/hyprland-global-shortcuts-v1.xml"
+[ -f "$HYPR_XML" ] || { echo "ERROR: protocol XML not found: $HYPR_XML" >&2; exit 1; }
+wayland-scanner private-code  "$HYPR_XML" "$GEN/hyprland-global-shortcuts-v1-protocol.c"
+wayland-scanner server-header "$HYPR_XML" "$GEN/hyprland-global-shortcuts-v1-server-protocol.h"
+wayland-scanner client-header "$HYPR_XML" "$GEN/hyprland-global-shortcuts-v1-client-protocol.h"
 
 # --- In-tree libraries into the private sysroot -----------------------
 LLVM_AR="$(command -v llvm-ar || command -v ar)"
@@ -134,6 +145,9 @@ wasm32posix-cc "${CFLAGS[@]}" -I"$GEN" -I"$LIBINPUT/include" $PKG_CFLAGS \
     "$GEN/fractional-scale-v1-protocol.c" \
     "$GEN/wlr-data-control-v1-protocol.c" \
     "$GEN/ext-data-control-v1-protocol.c" \
+    "$GEN/ext-session-lock-v1-protocol.c" \
+    "$GEN/ext-idle-notify-v1-protocol.c" \
+    "$GEN/hyprland-global-shortcuts-v1-protocol.c" \
     "$SYSROOT/lib/libwayland-server.a" \
     "$SYSROOT/lib/libwpkdraw.a" \
     "$SYSROOT/lib/libxkbcommon.a" \
@@ -198,12 +212,11 @@ wasm32posix-cc "${CFLAGS[@]}" -I"$SYSROOT/include/glib-2.0" \
 # --- launchers and desktop data ----------------------------------------
 # wldesktop starts the floating demo desktop; hyprdesktop and omarchydesktop
 # start the tiling desktop and the Omarchy-shaped one. Omarchy's configs,
-# themes and launcher entries are image data under /usr/share/kandelo, packed
-# into one archive the image builder unpacks there. The Hyprland desktop is
-# not in any image by default, so its launcher and config are separate
-# artifacts an image that wants it installs.
-for launcher in wldesktop desktops/hyprdesktop desktops/omarchydesktop \
-                desktops/omarchy-theme-changed; do
+# themes, .desktop entries and shell QML are image data under
+# /usr/share/kandelo, packed into one archive the image builder unpacks
+# there. The Hyprland desktop is not in any image by default, so its
+# launcher and config are separate artifacts an image that wants it installs.
+for launcher in wldesktop desktops/hyprdesktop desktops/omarchydesktop; do
     cp "$HERE/$launcher" "$WORK_DIR/$(basename "$launcher")"
     chmod 0755 "$WORK_DIR/$(basename "$launcher")"
 done
@@ -234,7 +247,7 @@ for prog in wlcompositor wlterm wlclock wlpaint klauncher notify-send kclipd; do
     install_local_binary wayland-demo "$WORK_DIR/$prog.wasm" "$prog.wasm"
 done
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    for launcher in wldesktop hyprdesktop omarchydesktop omarchy-theme-changed; do
+    for launcher in wldesktop hyprdesktop omarchydesktop; do
         install -m 0755 "$WORK_DIR/$launcher" "$WASM_POSIX_DEP_OUT_DIR/$launcher"
     done
     install -m 0644 "$WORK_DIR/kandelo-desktop-data.zip" \

@@ -402,7 +402,7 @@ Located in `apps/browser-demos/pages/`:
 | modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
-| omarchy | wlcompositor (dwindle) + dbus-daemon + mako + Waybar + klauncher + qtgallery + Quickshell | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor, mako and Waybar; windows, including the Qt clients, are opened from the launcher and keybinds. |
+| omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The image itself is 1.8 MB compressed. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -698,106 +698,128 @@ eight-window launch storm that guards the kernel's SCM_RIGHTS fd delivery).
 
 ### Omarchy desktop demo
 
-The Omarchy-style desktop machine (`?vfs=<shell image>&profile=omarchy`) is
-the tiling desktop above plus the shell that makes it a desktop: a status
-bar, a launcher, notifications, and themes. Omarchy is not a program but a set of
-files layered over Hyprland, so this machine is the same `wlcompositor`
-binary with its own `/usr/share/kandelo/omarchy/wlcompositor.conf`, an app
-registry under `/usr/share/kandelo/apps`, and six themes under
+The Omarchy-style desktop machine (`?vfs=<shell image>&profile=omarchy`)
+is the tiling desktop above plus the shell that makes it a desktop: a
+wallpaper, a status bar, a launcher, notifications, an on-screen display,
+a lock screen, and themes. Omarchy is not a program but a set of files
+layered over Hyprland, and Omarchy v4 folds its shell — what used to be
+swaybg, Waybar, Walker, mako, SwayOSD, hyprlock and hypridle — into one
+Quickshell QML process. This machine does the same: it is the same
+`wlcompositor` binary with its own
+`/usr/share/kandelo/omarchy/wlcompositor.conf`, `.desktop` entries under
+`/usr/share/kandelo/applications`, the shell's QML under
+`/usr/share/kandelo/quickshell`, and six themes under
 `/usr/share/kandelo/themes`. All of it is image data: the `wayland-demo`
 package builds it into `kandelo-desktop-data.zip`, which the shell image
 unpacks under `/usr/share/kandelo`. The image declares one command,
 `/usr/local/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
-and the compositor, waits for both sockets, then starts mako and Waybar.
+and the compositor, waits for both sockets and the compositor's Hyprland
+IPC socket, then starts **Quickshell 0.3.1** on the image's `shell.qml`.
 Nothing is staged by the page.
 
 The desktop comes up bare: wallpaper and bar, no windows. As in Omarchy,
-the diamond at the bar's far left opens the Omarchy menu on click (Waybar's
-`custom/omarchy` module runs `klauncher --menu`), so the launcher is
-reachable without a keyboard shortcut. The desktop draws no cursor of its
-own, so the browser's pointer stays visible over it (`hostPointer`). Every client is one
-the user opens, through the binds below or the launcher. The demo stays alive
-on the compositor's own process rather than on a foreground terminal.
+the diamond at the bar's far left opens the Omarchy menu on click, so the
+launcher is reachable without a keyboard shortcut. The desktop draws no
+cursor of its own, so the browser's pointer stays visible over it
+(`hostPointer`). Every client is one the user opens, through the binds
+below or the launcher. The demo stays alive on the compositor's own
+process rather than on a foreground terminal.
 
-- **The bar.** Unmodified upstream **Waybar 0.14.0** — the real GTK3 bar, on
-  the ported gtkmm/gtk-layer-shell stack, reading a translated version of
-  Omarchy's own `config.jsonc` and `style.css` (from
-  `/usr/share/kandelo/waybar`; the stylesheet is copied to
-  `/tmp/waybar-style.css` so a theme switch can rewrite it). `gtk_layer_shell` anchors it across the top with an
-  exclusive zone, so the windows tile *under* it rather than behind it. Its
-  `hyprland/workspaces` and `hyprland/window` modules speak Hyprland IPC to
-  the compositor's socket pair at `/tmp/hypr/wlcompositor/` — `j/`-prefixed
-  JSON queries plus the `event>>data` stream — exactly as they would to
-  hyprctl. Modules that need hardware or daemons this kernel does not serve
-  (battery, cpu, memory, network, pulseaudio, tray) are not part of the
-  build, and the clock is Waybar's `simpleclock` (no timezone database).
-  The compositor has no `xdg_popup` yet, so tooltips and menus are
-  refused: `xdg_surface.get_popup` is a protocol error for the requesting
-  client (its positioner is a real object, so the refusal never takes the
-  compositor down). Waybar's modules therefore run with `"tooltip": false`.
-  Popup support is a follow-up.
-  GDK backs the bar's `wl_shm` pools with `gbm` prime-fd dumb bos (the
-  gtk3 package's `wayland-shm-gbm-pool.patch`, foot's contract), which is
-  what carries its pixels across to the compositor. The bar runs at
-  `-l debug`, so every Hyprland IPC event it consumes shows up in the
-  machine's terminal next to the compositor's own marker.
-- **Notifications.** The demo boots a `dbus-daemon` session bus and
-  unmodified upstream mako on it. A theme switch reaches `notify-send`
-  through the config's `notify =` hook (the theme script above execs it) — a real
-  `org.freedesktop.Notifications.Notify` call over the bus, which mako
-  renders as a layer-shell toast in the top-right corner that dismisses
-  itself after five seconds. The bus address
+The shell reaches the compositor three ways, each a protocol real Hyprland
+serves: **hyprland-global-shortcuts-v1**, so a `bind = SUPER, space,
+global, quickshell:launcher` line in the compositor's config fires the
+shortcut the shell registered under that name (the shell never sees the
+key, only the press and release); the **Hyprland IPC** socket pair at
+`/tmp/hypr/wlcompositor/` — `j/`-prefixed JSON queries and the
+`event>>data` stream — for workspaces, the focused window, `dispatch exec`
+and `dispatch theme`; and **ext-session-lock-v1** and
+**ext-idle-notify-v1** for the lock screen and the idle monitor. The
+QML engine renders through the scenegraph's software adaptation
+(`QT_QUICK_BACKEND=software`, which `omarchydesktop` exports to the whole
+desktop), and every window of the shell is a wlr-layer-shell surface.
+
+- **The wallpaper.** A background-layer surface painting the theme's
+  gradient, with the keybind hints, over the compositor's own wallpaper
+  (`Wallpaper.qml`). It is swaybg's place: a client, not the compositor,
+  owns what the desktop shows behind the windows.
+- **The bar.** A top-layer surface anchored across the top with an
+  exclusive zone, so the windows tile *under* it rather than behind it
+  (`Bar.qml`). The Omarchy diamond, five workspaces (the focused one in
+  the accent colour, occupied ones in the foreground colour), the clock,
+  and the focused window's title. Workspaces and the title come from the
+  `Hyprland` singleton of Quickshell's Hyprland module, which reads
+  `j/monitors`, `j/workspaces` and `j/clients` from the request socket and
+  follows `workspacev2`, `openwindow`, `activewindowv2` and the rest on
+  the event socket — exactly as it would under Hyprland.
+- **Notifications.** The shell's `NotificationServer` owns
+  `org.freedesktop.Notifications` on the `dbus-daemon` session bus
+  (`Notifications.qml`), through QtDBus linked against the registry's
+  `libdbus`. A theme switch reaches `notify-send` through the config's
+  `notify =` hook — a real `org.freedesktop.Notifications.Notify` call
+  over the bus, which the shell renders as a card in the top-right corner
+  that expires after five seconds or on click. The bus address
   (`DBUS_SESSION_BUS_ADDRESS`) is in every desktop process's
   environment, so `notify-send` also works from any terminal.
-- **The launcher.** `Ctrl+Space` opens `klauncher`, an overlay-layer surface
-  that takes the keyboard exclusively — so what you type filters its list
-  instead of reaching the terminal underneath. Type to narrow, `Up`/`Down` to
-  move, `Enter` to launch (the compositor spawns it and it tiles in), `Esc` to
-  dismiss. Entries come from `/usr/share/kandelo/apps`, one file per app. The
-  registry offers real software from the shell image alongside the demo
-  clients: Vim, NetHack and Nano run unmodified inside foot (their
-  binaries lazy-fetch from the image's archives on first launch), as does
-  the terminal `Ctrl+Return` opens. foot rather than `wlterm`: `wlterm`
-  advertises `TERM=vt100` but does not implement the VT100 line-drawing
-  character set, so curses borders come out as letters. foot is stock
-  upstream foot 1.17.2, a Wayland client of its own on the ported font
-  stack —
-  freetype/fontconfig/fcft rasterizing the image's Inconsolata through
-  `/usr/share/kandelo/fonts/fonts.conf` (`FONTCONFIG_FILE`) — not a
-  `wlterm` wrapper (see
+- **The launcher.** `Ctrl+Space` opens the launcher (`Launcher.qml`), an
+  overlay-layer surface that takes the keyboard exclusively — so what you
+  type filters its list instead of reaching the terminal underneath. Type
+  to narrow, `Up`/`Down` to move, `Enter` to launch (`dispatch exec` over
+  the Hyprland IPC: the compositor spawns it and it tiles in), `Esc` to
+  dismiss. Entries are the `.desktop` files under
+  `/usr/share/kandelo/applications`, read by Quickshell's `DesktopEntries`
+  from `XDG_DATA_DIRS`. The registry offers real software from the shell
+  image alongside the demo clients: Vim, NetHack and Nano run unmodified
+  inside foot (their binaries lazy-fetch from the image's archives on
+  first launch), as does the terminal `Ctrl+Return` opens. foot rather
+  than `wlterm`: `wlterm` advertises `TERM=vt100` but does not implement
+  the VT100 line-drawing character set, so curses borders come out as
+  letters. foot is stock upstream foot 1.17.2, a Wayland client of its own
+  on the ported font stack — freetype/fontconfig/fcft rasterizing the
+  image's Inconsolata through `/usr/share/kandelo/fonts/fonts.conf`
+  (`FONTCONFIG_FILE`) — not a `wlterm` wrapper (see
   [architecture.md](architecture.md#stock-upstream-clients-foot--the-font-stack)).
-  The Theme Gallery entry is the first Qt client: a `QRasterWindow` from
-  the `qtgallery` package, painting one card per installed theme — each a
+  The Theme Gallery entry is a Qt client: a `QRasterWindow` from the
+  `qtgallery` package, painting one card per installed theme — each a
   miniature desktop rendered from that theme's own `theme.conf` palette —
   through QtGui's raster engine and the wayland QPA plugin onto `wl_shm`,
   antialiased where the wpkdraw clients are not. Clicking a card (or
   arrows + Enter) writes `dispatch theme <name>` to the compositor's
-  kwlctl socket, and the whole desktop restyles; a second card row swaps
-  the running Quickshell between the image's QML shells. It reads the same
+  kwlctl socket, and the whole desktop restyles. It reads the same
   `/usr/share/kandelo/fonts/fonts.conf`, which aliases `sans-serif`
-  alongside `monospace` to the image's Inconsolata for it. `Esc` or `Q` closes it. The Quickshell
-  entry is the first QtQuick client: **Quickshell 0.3.1** runs the image's
-  `/usr/share/kandelo/quickshell/island.qml`, the QML engine renders through
-  the scenegraph's software adaptation (`QT_QUICK_BACKEND=software`, which
-  `omarchydesktop` exports to the whole desktop), and its `PanelWindow` maps as a wlr-layer-shell
-  clock island floating above the bottom edge — except on Firefox, see
-  [the executable-code limit below](#firefox-executable-code-limit).
-- **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same launcher
-  at its root level (Apps, Theme). `Enter` descends; the Theme submenu lists
-  the installed themes and `Enter` switches live. `Esc` in a submenu goes
-  back to the root; `Esc` at the root dismisses.
+  alongside `monospace` to the image's Inconsolata for it. `Esc` or `Q`
+  closes it.
+- **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same
+  launcher at its root level (Apps, Theme). `Enter` descends; the Theme
+  submenu lists the installed themes and `Enter` switches live. `Esc` in a
+  submenu goes back to the root; `Esc` at the root dismisses.
+- **The on-screen display.** A short-lived pill above the bottom edge
+  (`Osd.qml`) names what just changed — the theme, on a switch. SwayOSD's
+  volume, brightness and caps-lock triggers have no source on this
+  machine: the kernel exposes no mixer or backlight, and the compositor
+  reports no lock-key state.
+- **The lock screen.** `Ctrl+Escape` locks the session (`LockScreen.qml`)
+  through ext-session-lock: the compositor blanks the output, renders only
+  the lock surface (the clock, the user, a password field), gives it the
+  keyboard, and sends `locked` once a blanked frame has flipped. The
+  password goes to `login -c maker`, the image's own credential check
+  against `/etc/shadow` (the demo user's password is the one the login
+  machine documents); on success the shell sends `unlock_and_destroy` and
+  the desktop returns, otherwise the field clears and the session stays
+  locked. If the shell dies while locked, the compositor keeps the session
+  locked, as the protocol requires. An `IdleMonitor` on ext-idle-notify
+  locks the session after ten minutes without input — hypridle's job.
+  hyprlock authenticates through PAM; there is no PAM here, and `login -c`
+  is the same `crypt(3)` check the image's login program runs.
 - **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night, Catppuccin, Gruvbox,
-  Nord, Everforest and Rosé Pine. One palette file drives the whole desktop at
-  once: the compositor's window borders, gaps and wallpaper, the
-  launcher's own colours, which it reloads when the compositor broadcasts the
-  switch, and the bar's. Waybar reads its stylesheet once per load, as
-  upstream does, so the switch takes the path a real Omarchy session takes:
-  the compositor's `notify =` hook (`/usr/local/bin/omarchy-theme-changed`)
-  writes `/tmp/waybar-style.css` from the new `theme.conf` and sends
-  Waybar `SIGUSR2`, which reloads it. The hook then execs `notify-send`, so
-  the toast is the same one. The themes paint gradient wallpapers; their
-  real Omarchy backgrounds are a short-term follow-up (see the wallpaper
-  note in the Wayland section above).
+  Nord, Everforest and Rosé Pine. One palette file drives the whole
+  desktop at once: the compositor's window borders, gaps and wallpaper,
+  and everything the shell draws. The compositor emits `theme>><name>` on
+  its event socket, the shell re-reads that theme's `theme.conf`
+  (`Theme.qml`), and its wallpaper, bar, launcher, cards and lock screen
+  take the new palette; the `notify =` hook runs `notify-send`, so the
+  switch also shows as a notification. The themes paint gradient
+  wallpapers; their real Omarchy backgrounds are a short-term follow-up
+  (see the wallpaper note in the Wayland section above).
 - **The rest of the keybinds:** `Ctrl+Return` a terminal, `Ctrl+K` a
   clock, `Ctrl+P` a paint canvas; `Ctrl+W` or `Ctrl+Shift+W` closes the
   focused window (the second form leaves a terminal's `Ctrl+W` word-erase
@@ -826,7 +848,7 @@ on the compositor's own process rather than on a foreground terminal.
   routed by the same terminal tag. In foot, select text with the mouse,
   then `Cmd+C`, `Ctrl+Shift+C` or `Ctrl+Insert`, and paste with `Cmd+V`,
   `Ctrl+V`, `Ctrl+Shift+V` or `Shift+Insert`. Today foot is the only client on this desktop that reads the
-  clipboard; klauncher, Waybar, mako and the Qt demos take no pasted
+  clipboard; the Quickshell shell and the Qt gallery take no pasted
   text.
 - **Paste from your own clipboard.** Text copied anywhere on your
   computer pastes into the desktop with the same chord: `Cmd+V` on macOS,
@@ -862,6 +884,9 @@ on the compositor's own process rather than on a foreground terminal.
   Internals log says so). Automated tests cover Chromium; other engines
   are verified by hand.
 
+polkit-gnome has no counterpart here: the machine runs no polkit, so
+there is no authentication agent to replace.
+
 #### What is not real yet (deferred work)
 
 The Omarchy machine is an honest imitation in two places, and the gaps
@@ -870,8 +895,10 @@ follow-ups, not as the end state.
 
 - **The compositor is Kandelo's `wlcompositor`, not Hyprland.** It
   implements the subset of Hyprland the desktop needs — dwindle tiling,
-  workspaces, a config-driven bind table, and a hyprctl-shaped IPC socket
-  that Waybar's Hyprland modules talk to — and every behaviour it lacks
+  workspaces, a config-driven bind table, a hyprctl-shaped IPC socket
+  that Quickshell's Hyprland module talks to, and the global-shortcut,
+  session-lock and idle-notify protocols the shell needs — and every
+  behaviour it lacks
   is behaviour real Hyprland has (popups and tooltips, window swapping
   beyond `swapwindow`, animations, the full dispatcher set). **Deferred:
   port real Hyprland.** It needs platform work first: Hyprland renders
@@ -884,11 +911,16 @@ follow-ups, not as the end state.
   its pixman software renderer is the fallback if the EGL work proves
   too large. The dependency graph, each platform gap and a build order
   are in `docs/plans/2026-09-30-real-hyprland-port-inventory.md`.
-- **The launcher is `klauncher`, not walker.** Omarchy's launcher is
-  walker (GTK4); `klauncher` is a Kandelo-authored stand-in that reads
-  `/usr/share/kandelo/apps`. **Deferred** with the Hyprland port, as are
-  Omarchy's other daemons (hyprlock, hypridle, swaybg, swayosd) and its
-  own scripts.
+- **The shell is this repository's QML, not Omarchy's.** Omarchy v4's
+  Quickshell configuration is written against real Hyprland and against
+  services this machine does not run (PipeWire, UPower, NetworkManager,
+  Bluetooth, the system tray). The shell in
+  `packages/registry/wayland-demo/desktops/data/quickshell/` plays the
+  same roles — wallpaper, bar, launcher and menu, notifications, OSD,
+  lock screen, idle monitor — on the same protocols and the same
+  Quickshell modules, but it is Kandelo's own configuration. **Deferred:**
+  run Omarchy's shell files themselves, once the Hyprland port and the
+  services they read exist.
 
 Smaller gaps, each a follow-up:
 
@@ -900,8 +932,10 @@ Smaller gaps, each a follow-up:
   Also missing: the clipboard manager Omarchy opens on `Super+Ctrl+V`,
   drag-and-drop, the primary (middle-click) selection, and text formats
   other than plain text.
-- **No `xdg_popup`**, so tooltips and menus are refused (see the bar,
-  above).
+- **No `xdg_popup`**, so tooltips and menus are refused:
+  `xdg_surface.get_popup` is a protocol error for the requesting client
+  (its positioner is a real object, so the refusal never takes the
+  compositor down). Popup support is a follow-up.
 - **Super needs fullscreen keyboard lock.** Omarchy binds everything on
   Super; browsers keep Cmd/Win (Cmd+W closes the tab), so every bind is
   mirrored on Ctrl, which shadows terminal keys such as Ctrl+W. Chromium's
@@ -921,14 +955,15 @@ Smaller gaps, each a follow-up:
 #### Quickshell QML limits
 
 One host cost bounds Quickshell in the browser: compiled wasm code.
-`quickshell.wasm` is ~78 MB and Chromium compiles it to hundreds of MB of
-machine code, on top of the running desktop (compositor, Waybar,
-qtgallery, foot, mako, dbus-daemon). An earlier version of this section
-said every Web Worker compiles its own copy because isolates do not share
-a posted module's code. Measurement does not support that: one
-`WebAssembly.Module` posted to several workers shares its machine code in
-V8 and JavaScriptCore, and only a separate compilation of the same bytes
-makes another copy (see
+`quickshell.wasm` is 82 MB (82,203,777 bytes: a MinSizeRel build with the
+QtDBus, Hyprland, session-lock and socket modules the shell uses) and
+Chromium compiles it to hundreds of MB of machine code, on top of the
+running desktop (compositor, qtgallery, foot, dbus-daemon). An earlier
+version of this section said every Web Worker compiles its own copy
+because isolates do not share a posted module's code. Measurement does
+not support that: one `WebAssembly.Module` posted to several workers
+shares its machine code in V8 and JavaScriptCore, and only a separate
+compilation of the same bytes makes another copy (see
 [architecture.md](architecture.md#compiled-module-sharing)). The kernel
 worker compiles each distinct program once while a copy is alive and posts
 that module to every process and thread worker that runs it. A guest
@@ -936,8 +971,8 @@ pthread runs the thread-patched variant of the program's bytes, which is a
 second module: compiled once per program, then shared by every thread of
 every process running those bytes.
 
-Two facts about this cost were established by measurement, correcting two
-earlier half-explanations:
+Two facts about this cost were established by measurement on the earlier
+single-panel shells, and they still decide what a shell may do:
 
 - It is **not** a guest leak. The guest process holds a flat ~55 MB
   through a 50/s repaint storm on the Node host; only the browser tab's
@@ -947,84 +982,115 @@ earlier half-explanations:
   thread cuts below, 13→17 workers moved the tab from ~4 GB to its ~10 GB
   ceiling). Independently, a content-heavy shell compiles more cold Qt/ICU
   code in every worker: a nested-item panel with localized
-  `Qt.formatDateTime` name fields (`dddd`, `MMMM`) maps at ~9 GB where the
-  single-item numeric shell settles at ~5 GB with the same worker count.
+  `Qt.formatDateTime` name fields (`dddd`, `MMMM`) mapped at ~9 GB where
+  a single-item numeric shell settled at ~5 GB with the same worker count.
   Both the worker count and the shell content are real; neither alone is
   the whole story.
 
-The port cuts the per-worker copies three ways:
+The port keeps every helper thread of a Qt client on the main thread, so
+the shell process is one worker and one compiled copy:
 
-- **Fewer threads.** The QML type loader runs synchronously
+- **No Qt helper threads.** The QML type loader runs synchronously
   (`FEATURE_qml_type_loader_thread=OFF` in `build-qtdeclarative.sh`, Qt's
   own single-threaded wasm shape), Quickshell's logger runs on the main
   thread (`packages/registry/quickshell/src/on-thread-logger-on-wasm.patch`),
-  and the Wayland QPA pumps the display fd from a `QSocketNotifier` on
-  the main loop instead of its two reader threads
-  (`packages/registry/qtbase/src/wayland-fd-notifier-on-wasm.patch`).
-  A Qt client on this port runs single-threaded.
+  the Wayland QPA pumps the display fd from a `QSocketNotifier` on the
+  main loop instead of its two reader threads
+  (`packages/registry/qtbase/src/wayland-fd-notifier-on-wasm.patch`), and
+  QtDBus's connection manager lives on the main thread, its blocking
+  queued calls made direct and `waitForFinished` blocking in libdbus
+  (`packages/registry/qtbase/src/dbus-manager-on-thread-on-wasm.patch`).
+  The scene graph renders in software on the main thread
+  (`QT_QUICK_BACKEND=software`, set by `omarchydesktop`).
 
-- **One instance across shell swaps.** The gallery's shell cards no
-  longer kill and respawn Quickshell — a respawn recompiles the process
-  module and its thread-patched twin from scratch while the old copies
-  await GC, which is what crashed a second or third swap. qtgallery
-  stages the selected QML as `/tmp/qtgallery-active.qml` once, starts one
-  Quickshell on it, and later cards rewrite the file in place; Quickshell's
-  own file watcher reloads the config inside the running process.
+- **No thread-pool work from the shell.** `Theme.qml` reads theme files
+  with `FileView { blockAllReads: true }`: an asynchronous read runs on
+  Qt's thread pool, and `blockLoading` only blocks the first read.
+  Quickshell's desktop-entry index scans synchronously at start; only a
+  rescan after a change under an `applications/` directory uses the pool,
+  and nothing on the machine writes there while the desktop runs.
 
 - **A watcher that actually fires.** The kernel used to stub
   `inotify_init` with a fake-success fd that never delivered events,
-  which silently disabled the file watching that the reload path needs —
-  Qt's `QFileSystemWatcher` (and glib's `GFileMonitor`) only fall back to
-  their polling engines when `inotify_init` *fails*. The stubs now return
+  which silently disabled the file watching Qt's `QFileSystemWatcher`
+  (and glib's `GFileMonitor`) rely on — both only fall back to their
+  polling engines when `inotify_init` *fails*. The stubs now return
   `ENOSYS` and the pollers work everywhere.
 
-Together these roughly halved the tab baseline (single-item shells that
-crashed at ~10 GB now settle at ~5 GB and survive), which is why the
-image's shells run where they used to die. The ceiling is not gone,
-though. Two cases still cross it and bound what a shell may do:
+Measured with the shell in
+`packages/registry/wayland-demo/desktops/data/quickshell/` — wallpaper,
+a bar with five workspaces, the window title and a numeric clock, the
+launcher and menu, notification cards, the OSD and the lock screen —
+through the full gate list of `kandelo-omarchy.spec.ts`, which also
+runs qtgallery and three foot terminals beside the shell. The figures
+are the peak resident size of the page's content process, sampled every
+5 s on macOS:
 
-- **Content-heavy shells.** A panel with more than one item, a localized
+| Engine | Content process | Peak resident size |
+|---|---|---|
+| Chromium | renderer | 5.2 GB |
+| Firefox | content process | 5.1 GB |
+| WebKit | WebContent | 7.1 GB |
+
+Two things still bound what a shell may do:
+
+- **Content-heavy shells.** A panel with nested items, a localized
   `Qt.formatDateTime` name field (`dddd`, `ddd`, `MMMM`, `MMM`), or
   `font.bold` (synthesized, since the image ships only a regular
-  Inconsolata face) compiles enough extra cold code per worker to reach
-  the ceiling on its own. The shells in
-  `packages/registry/wayland-demo/desktops/data/quickshell/` stay
-  in the tested envelope: one item, numeric date fields, regular weight.
-
-- **The reload transient.** A live config reload briefly holds two engine
-  generations, and its spike still crosses the ceiling on some swaps. The
-  single-instance path removed the far larger respawn recompile, but the
-  reload spike itself is not yet bounded.
-
-Both remain open; the fix belongs in the Qt/Quickshell layer, below this
-demo.
+  Inconsolata face) compiles extra cold code in the shell's worker. The
+  bar keeps numeric date fields and the regular weight.
+- **Any thread.** A `pthread_create` from Quickshell — a helper thread
+  re-enabled, an asynchronous `FileView` read, a desktop-entry rescan —
+  costs a compiled copy on Chromium and WebKit and does not fit on
+  Firefox at all (next section).
 
 #### Firefox executable-code limit
 
 SpiderMonkey reserves one fixed 2 GiB region per content process for all
 JIT and wasm compiled code (`MaxCodeBytesPerProcess`), shared by every
-worker on the page. Compiled wasm code is several times the module's size:
-the 93 MB `quickshell.wasm` alone costs ~620 MB of that region. With the
-full desktop running — compositor, Waybar, qtgallery, foot, mako, dbus-daemon,
-klauncher — the region already holds ~1.2 GB of live code. Quickshell's
-launch compile fits (~1.9 GB), but its first `pthread_create` compiles the
-thread-patched module as a second full copy (once per program; later
-threads reuse it), which cannot fit; the compile
+worker on the page. Compiled wasm code is several times the module's
+size, so the region holds one compiled copy of `quickshell.wasm` next to
+the rest of the desktop, and not two: the first `pthread_create` in
+Quickshell compiles the thread-patched module as a second full copy (once
+per program; later threads reuse it), the compile
 throws SpiderMonkey's `InternalError: out of memory`, Qt logs
-`QThread::start: Thread creation error`, and the panel never maps. The
-thread cuts above shrink how many second copies a Qt client makes but do
-not lift the 2 GiB cap, and a single desktop-plus-Quickshell code image
-already exceeds it, so Firefox stays excluded. Chrome and WebKit have no
-fixed per-process code cap, so the same desktop passes there. This is an engine limit, not a memory shortage — the process RSS
-stays far below the machine's capacity when it hits. The omarchy spec
-therefore skips its Quickshell gate (5e) on Firefox; everything up to and
-after it runs on all three engines.
+`QThread::start: Thread creation error`, and the surface that thread was
+for never maps. This is an engine limit, not a memory shortage — the
+process RSS stays far below the machine's capacity when it hits. Chromium
+and WebKit have no fixed per-process code cap.
+
+The thread cuts above are what make the desktop fit. The shell process
+creates no thread, so the region holds one copy of it, and the Omarchy
+spec runs every gate — bar, launcher, Qt gallery, theme switch,
+notifications, menu, workspace switch, lock and unlock — on Firefox as
+on Chromium (`kandelo-omarchy.spec.ts`, `--project=firefox`, both
+tests, run by hand: CI runs the spec on Chromium only). The content
+process peaked at 5.1 GB resident during that run.
+
+The spec reads only the terminal rows on screen, and a theme switch
+prints more lines than the terminal has rows: the compositor retiles on
+every layer-surface commit, even when the work area is unchanged, and a
+switch re-commits every shell layer. The launcher's `LAUNCHER_THEME`
+line can scroll off between two polls, which one Firefox run in three
+hit. The gap is in the spec's observation, not the shell; retiling only
+when the work area changes is the compositor follow-up that closes it.
+
+WebKit passes the desktop test and fails the launch-storm test: after
+the eight `CTRL+K` launches the machine stops presenting frames (the
+Modeset badge's flip count freezes) and the terminal never repaints,
+while the page itself still answers. It happens only when the test reads
+the terminal every 100 ms during the storm, which is what `expect.poll`
+does; a hand-run probe that sends the same eight launches and reads the
+terminal every 5 s reaches `TILE n=8` in 5 s, and one launch under
+100 ms reads is fine. Chromium and Firefox run the same storm under the same polling
+and pass. The cause is not traced; it is a WebKit host interaction, not
+a shell or compositor behaviour, and it is open.
 
 See
 [architecture.md](architecture.md#desktop-shell-zwlr_layer_shell_v1-kbar-klauncher-themes).
 Gated node-side by
-`host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts`,
-`host/test/{waybar,mako}-smoke.test.ts` and in the browser by
+`host/test/wlcompositor-{layer-shell,theme,shell-protocols}-smoke.test.ts`,
+`host/test/quickshell-shell-smoke.test.ts` and in the browser by
 `apps/browser-demos/test/kandelo-omarchy.spec.ts`.
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open

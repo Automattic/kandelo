@@ -216,7 +216,7 @@
     "omarchy": {
       "identity": {
         "title": "Omarchy-style desktop",
-        "summary": "Omarchy's desktop shell on Kandelo's own Hyprland-compatible compositor, not Hyprland itself: unmodified upstream Waybar on a wlr-layer-shell surface, mako notifications over a D-Bus session bus, a launcher on CTRL+Space, and six colour themes. The launcher also runs two Qt clients: Theme Gallery, whose cards restyle the whole desktop, and Quickshell, a QML shell. It starts bare; open clients from the launcher or with CTRL+Return (terminal) and CTRL+K (clock).",
+        "summary": "Omarchy's desktop shell on Kandelo's own Hyprland-compatible compositor, not Hyprland itself: one Quickshell process, as in Omarchy v4, draws the wallpaper, the bar, the launcher (CTRL+Space) and menu (CTRL+ALT+Space), the notifications over a D-Bus session bus, the on-screen display, and the lock screen (CTRL+Escape); six colour themes restyle all of it live. The launcher also runs the Theme Gallery, a Qt client whose cards switch the theme. It starts bare; open clients from the launcher or with CTRL+Return (terminal) and CTRL+K (clock).",
         "accent": "#7aa2f7",
         "glyph": "O",
         "packages": [

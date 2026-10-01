@@ -13,6 +13,7 @@ version = "0.1.0"
 kernel_abi = 44
 depends_on = [
   "qtbase@6.10.2",
+  "libdbus@1.14.10",
   "fontconfig@2.15.0",
   "freetype@2.13.3",
   "harfbuzz@10.1.0",

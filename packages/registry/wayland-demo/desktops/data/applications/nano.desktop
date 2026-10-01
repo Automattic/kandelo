@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Nano
+Exec=/usr/local/bin/foot --config=/usr/share/kandelo/foot/foot.ini /usr/bin/nano
