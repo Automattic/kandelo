@@ -223,6 +223,10 @@ export class GlContextRegistry {
     for (const entry of b.foreignTextures.values()) {
       b.gl?.deleteTexture(entry.tex);
     }
+    if (b.shadow.defaultVao) {
+      b.gl?.deleteVertexArray(b.shadow.defaultVao);
+      b.shadow.defaultVao = null;
+    }
     if (b.presentTarget) {
       b.gl?.deleteFramebuffer(b.presentTarget.fbo);
       b.gl?.deleteTexture(b.presentTarget.tex);

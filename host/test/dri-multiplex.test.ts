@@ -11,6 +11,7 @@ const FRAME = { memorySab: new SharedArrayBuffer(0), off: 0, len: FRAME_LEN };
 
 class RecordingGl {
   log: Array<[string, unknown[]]> = [];
+  createVertexArray() { const vao = {}; this.log.push(["createVertexArray", [vao]]); return vao; }
   bindVertexArray(v: unknown) { this.log.push(["bindVertexArray", [v]]); }
   bindFramebuffer(t: number, f: unknown) { this.log.push(["bindFramebuffer", [t, f]]); }
   viewport(...a: number[]) { this.log.push(["viewport", a]); }

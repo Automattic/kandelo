@@ -25,7 +25,8 @@ export class GlMuxer {
     const s = target.shadow;
     const gl = this.gl;
 
-    gl.bindVertexArray(s.vao);
+    if (s.vao === null && s.defaultVao === null) s.defaultVao = gl.createVertexArray();
+    gl.bindVertexArray(s.vao ?? s.defaultVao);
     gl.bindFramebuffer(GL_FRAMEBUFFER, s.fbo);
     gl.viewport(...s.viewport);
 
