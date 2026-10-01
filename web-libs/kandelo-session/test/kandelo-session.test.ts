@@ -1073,6 +1073,42 @@ describe("LiveKernelHost: shell command queue", () => {
     expect(writePids).toEqual([37]);
   });
 
+  it("keeps the running terminal's size on an attach without one", async () => {
+    const resizes: Array<[number, number, number]> = [];
+    const spawnFromVfs = vi.fn(async () => ({
+      pid: 41,
+      exit: new Promise<number>(() => {}),
+    }));
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawnFromVfs,
+        onPtyOutput() {},
+        ptyResize(pid: number, rows: number, cols: number) {
+          resizes.push([pid, rows, cols]);
+        },
+        ptyWrite() {},
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/usr/bin/dash",
+      argv: ["dash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/maker",
+    });
+
+    await host.attachPty("/dev/pts/0");
+    await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+    await host.attachPty("/dev/pts/0");
+
+    expect(spawnFromVfs).toHaveBeenCalledWith(
+      "/usr/bin/dash",
+      ["dash", "-l", "-i"],
+      expect.objectContaining({ ptyCols: 80, ptyRows: 24 }),
+    );
+    expect(resizes).toEqual([[41, 30, 100]]);
+  });
+
   it("starts an image-owned shell from the VFS without redundant program bytes", async () => {
     const spawnFromVfs = vi.fn(async () => ({
       pid: 41,

@@ -935,6 +935,7 @@ export interface KernelHost {
   subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void;
 
   // shell / pty
+  /** Without `opts`, a running terminal keeps its size and a new one starts at 80 by 24. */
   attachPty(path?: string, opts?: { cols: number; rows: number }): Promise<PtyHandle>;
   /** Remove the logical PTY, including its process and pending restart. */
   removePty(path: string): void;
@@ -1892,7 +1893,7 @@ export class LiveKernelHost implements KernelHost {
 
   async attachPty(
     path: string = "/dev/pts/0",
-    opts: { cols: number; rows: number } = { cols: 80, rows: 24 },
+    opts?: { cols: number; rows: number },
   ): Promise<PtyHandle> {
     if (!this.kernel) {
       throw new Error(
@@ -1919,9 +1920,7 @@ export class LiveKernelHost implements KernelHost {
       ),
     );
 
-    session.cols = opts.cols;
-    session.rows = opts.rows;
-    if (session.pid > 0 && !session.closed) {
+    if (opts && session.pid > 0 && !session.closed) {
       kernel.ptyResize(session.pid, opts.rows, opts.cols);
     }
 
@@ -1997,7 +1996,7 @@ export class LiveKernelHost implements KernelHost {
     kernel: KernelLike,
     shell: LiveKernelHostOptions["shell"],
     policy: TerminalSessionPolicy | undefined,
-    opts: { cols: number; rows: number },
+    opts: { cols: number; rows: number } | undefined,
   ): Promise<LivePtySession> {
     let session = this.ptySessions.get(sessionKey);
     if (session && !session.closed && !(await this.isPtySessionAlive(session.pid))) {
@@ -2032,12 +2031,12 @@ export class LiveKernelHost implements KernelHost {
         dataListeners: new ListenerSet<Uint8Array>(),
         history: [],
         closed: true,
-        cols: opts.cols,
-        rows: opts.rows,
+        cols: opts?.cols ?? 80,
+        rows: opts?.rows ?? 24,
         supervised: policy !== undefined,
       };
       this.ptySessions.set(sessionKey, session);
-    } else {
+    } else if (opts) {
       session.cols = opts.cols;
       session.rows = opts.rows;
     }
