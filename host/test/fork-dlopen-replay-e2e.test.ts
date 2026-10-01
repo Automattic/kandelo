@@ -375,6 +375,137 @@ describe.skipIf(!hasSysroot || !hasKernel)("fork after dlopen end-to-end", () =>
     expect(result.forkCount).toBe(1n);
   });
 
+  it("lets a pthread rebuild a library that takes a main-program function's address", { timeout: 30_000 }, async () => {
+    // A GOT.func import (here main_helper, in C++ typically
+    // __cxa_pure_virtual from every vtable) is a table index the loading
+    // Worker computed. A pthread started afterwards rebuilds the library from
+    // the process archive and once demanded a fork snapshot of that value,
+    // which only fork children have. The failed rebuild then unmapped the
+    // live library's data, so the next mmap zero-filled its strings, and the
+    // thread never started.
+    const soPath = buildSharedLib(
+      `
+      extern int main_helper(int);
+      static const char greeting[] = "library data intact";
+      const char *library_greeting(void) { return greeting; }
+      int (*library_helper(void))(int) { return main_helper; }
+      `,
+      "libgotfuncthread",
+    );
+    const wasmPath = buildMainProgram(`
+      #include <dlfcn.h>
+      #include <pthread.h>
+      #include <stdio.h>
+      #include <string.h>
+      #include <sys/mman.h>
+
+      int main_helper(int value) { return value * 2; }
+      typedef const char *(*greeting_fn)(void);
+      typedef int (*(*helper_fn)(void))(int);
+      static helper_fn library_helper;
+      static int thread_result = -1;
+
+      static void *run_thread(void *unused) {
+        (void)unused;
+        thread_result = library_helper()(21);
+        return NULL;
+      }
+
+      int main(int argc, char **argv) {
+        void *side = dlopen(argv[1], RTLD_NOW);
+        if (!side) {
+          fprintf(stderr, "dlopen: %s\\n", dlerror());
+          return 2;
+        }
+        greeting_fn greeting = (greeting_fn)dlsym(side, "library_greeting");
+        library_helper = (helper_fn)dlsym(side, "library_helper");
+        if (!greeting || !library_helper || library_helper()(5) != 10) return 3;
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, run_thread, NULL) != 0) return 4;
+        if (pthread_join(thread, NULL) != 0) return 5;
+        if (thread_result != 42) return 6;
+        void *mapping = mmap(NULL, 1 << 20, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (mapping == MAP_FAILED) return 7;
+        if (strcmp(greeting(), "library data intact") != 0) return 8;
+        puts("late pthread GOT.func ok");
+        return 0;
+      }
+    `, "test-late-pthread-got-func", ["dlopen"]);
+
+    const result = await runCentralizedProgram({
+      programPath: wasmPath,
+      argv: ["late-pthread-got-func", soPath],
+      timeout: 20_000,
+      io: io(),
+    });
+
+    expect(result.stderr).not.toContain("has no saved GOT.func");
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(result.stdout).toContain("late pthread GOT.func ok");
+  });
+
+  it("lets a pthread created after dlopen call the loaded library", { timeout: 30_000 }, async () => {
+    // A thread Worker started after dlopen rebuilds its own table from the
+    // process archive. dlopen's initialization trampoline once took a table
+    // slot after the library's base was recorded, so the main thread placed
+    // exports one slot later than the replay did and every pointer the
+    // library handed out was off by one on later threads.
+    const soPath = buildSharedLib(
+      `
+      typedef int (*step_fn)(int);
+      static int increment(int value) { return value + 1; }
+      static step_fn relocated_step = increment;
+      int late_thread_value(int value) { return relocated_step(value); }
+      `,
+      "liblatethread",
+    );
+    const wasmPath = buildMainProgram(`
+      #include <dlfcn.h>
+      #include <pthread.h>
+      #include <stdio.h>
+
+      typedef int (*value_fn)(int);
+      static value_fn late_value;
+      static int thread_result = -1;
+
+      static void *run_thread(void *unused) {
+        (void)unused;
+        thread_result = late_value(41);
+        return NULL;
+      }
+
+      int main(int argc, char **argv) {
+        void *side = dlopen(argv[1], RTLD_NOW);
+        if (!side) {
+          fprintf(stderr, "dlopen: %s\\n", dlerror());
+          return 2;
+        }
+        late_value = (value_fn)dlsym(side, "late_thread_value");
+        if (!late_value || late_value(40) != 41) return 3;
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, run_thread, NULL) != 0) return 4;
+        if (pthread_join(thread, NULL) != 0) return 5;
+        if (thread_result != 42) return 6;
+        puts("late pthread dlopen ok");
+        return 0;
+      }
+    `, "test-late-pthread-dlopen", ["dlopen"]);
+    // ["dlopen"] selects -Wl,--export-all: plugin hosts (ScummVM, PHP) link
+    // that way so side modules resolve their imports against the program.
+
+    const result = await runCentralizedProgram({
+      programPath: wasmPath,
+      argv: ["late-pthread-dlopen", soPath],
+      timeout: 30_000,
+      io: io(),
+    });
+
+    expect(result.stderr).not.toContain("table index is out of bounds");
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(result.stdout).toContain("late pthread dlopen ok");
+  });
+
   it("blocks a foreign pthread until the staged loader owner commits", { timeout: 30_000 }, async () => {
     const slowPath = buildSharedLib(
       `

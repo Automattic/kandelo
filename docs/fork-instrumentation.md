@@ -381,6 +381,21 @@ wrong-width, or conflicting state fails before continuation replay. This is
 a host reconstruction correction within ABI 43: it does not change the KFMS
 wire format or require rebuilt guest artifacts.
 
+Only a fork child has that snapshot. A pthread Worker started after a
+`dlopen`, or any live Worker reconciling a peer's publication, shares the
+process and rebuilds each GOT cell the way the publishing Worker computed
+it: by the loader's own resolution, which reproduces the publisher's table
+index because replay places the same modules at the same archived table
+bases in the same order. The activation says which applies
+(`replayImportState`: `"saved"` for a fork child, `"resolved"` otherwise).
+Before this distinction a later pthread demanded a fork snapshot for any
+side module that took the address of a main-program function (in C++, every
+vtable with a pure virtual references `__cxa_pure_virtual`), so its rebuild
+failed. A failed replay also releases only its own Worker's index of the
+memory it adopted: that region is the process's live mapping (or a fork
+child's copy of it), and unmapping it would let the next `mmap` hand the
+same addresses out zero-filled under the library still using them.
+
 Pthread workers have distinct Wasm instances, tables, tags, and Stores; no
 JavaScript reference is copied between them. Each pthread therefore owns a
 local dynamic-linker replica driven by the process archive's generation

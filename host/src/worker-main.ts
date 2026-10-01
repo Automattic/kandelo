@@ -842,6 +842,9 @@ function createProcessDylinkActivationOwner(
       return {
         activationId,
         env,
+        // Only a fork child has a capture-time snapshot. Every other Worker
+        // shares the live process and rebuilds GOT cells deterministically.
+        replayImportState: options.isForkChild ? "saved" : "resolved",
         savedMutableGlobalImport(moduleName, importName) {
           if (!options.isForkChild) return undefined;
           if (!childImportedStatePlanner) {

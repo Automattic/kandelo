@@ -617,6 +617,21 @@ export interface PreparedDylinkForkActivation {
     importName: string,
   ): number | bigint | undefined;
   /**
+   * Where a replayed module's mutable GOT cells come from.
+   *
+   * Absent or `"saved"`: a fork child restores each cell from its exact KFMS
+   * snapshot through `savedMutableGlobalImport`, because the child's copied
+   * memory already holds pointers the parent derived from those values.
+   *
+   * `"resolved"`: a Worker sharing the live process (a pthread replica, or a
+   * peer reconciling another Worker's publication) has no snapshot. It
+   * re-runs the loader's own resolution, which reproduces the publisher's
+   * cells because replay places the same modules at the same archived table
+   * bases in the same order; loader-owned table entries are deterministic
+   * module recipes, not published state.
+   */
+  readonly replayImportState?: "saved" | "resolved";
+  /**
    * Wrap the loader's final lazy import object immediately before
    * instantiation. Imported-global/table ownership observes the engine's exact
    * property reads, including duplicate `(module, name)` declarations.
@@ -1471,6 +1486,7 @@ function* instantiateSharedLibrarySteps(
       }
       if (
         replay !== undefined
+        && preparedActivation.replayImportState !== "resolved"
         && typeof preparedActivation.savedMutableGlobalImport !== "function"
       ) {
         throw new TypeError(
@@ -1647,7 +1663,12 @@ function* instantiateSharedLibrarySteps(
         );
       }
       let resolvedFunctionAddress: WasmAddress | undefined;
-      if (kind === "func" && replay && preparedActivation) {
+      if (
+        kind === "func"
+        && replay
+        && preparedActivation
+        && preparedActivation.replayImportState !== "resolved"
+      ) {
         const saved = preparedActivation.savedMutableGlobalImport!(
           "GOT.func",
           symName,
@@ -2303,12 +2324,19 @@ function* instantiateSharedLibrarySteps(
     if (options.heapPointer && heapRollbackValue !== undefined) {
       options.heapPointer.value = heapRollbackValue;
     }
-    if (options.deallocateMemory) {
-      for (const allocation of allocations.reverse()) {
-        try {
-          options.deallocateMemory(allocation.address, allocation.size);
-        } catch { /* preserve cause */ }
-      }
+    for (const allocation of allocations.reverse()) {
+      try {
+        if (replay) {
+          // WHY: replay adopted a mapping the process already owns: a fork
+          // child's copy, or the live region a peer Worker is executing. A
+          // failed rebuild in this Worker must drop only its own index.
+          // Unmapping it would let the next mmap hand the same addresses
+          // out zero-filled underneath the library that still uses them.
+          options.forgetMemoryAllocation?.(allocation);
+        } else {
+          options.deallocateMemory?.(allocation.address, allocation.size);
+        }
+      } catch { /* preserve cause */ }
     }
     if (activationReleaseError !== undefined) {
       throw new AggregateError(
@@ -3400,6 +3428,17 @@ export class DynamicLinker {
    * Zero means initialization is complete. The selected function remains
    * rooted in one transaction-owned table slot until the following call.
    */
+  /** Append one table slot for a transaction's initialization trampoline. */
+  private reserveInitializationSlot(): number {
+    let index = tableLength(this.options.table);
+    if (index === 0) {
+      growTable(this.options.table, 1);
+      index = 1;
+    }
+    growTable(this.options.table, 1);
+    return index;
+  }
+
   nextDlopenInitialization(token: number): number {
     const transaction = this.pendingDlopens.get(token);
     if (!transaction) {
@@ -3419,6 +3458,24 @@ export class DynamicLinker {
         transaction.currentStep = undefined;
       }
       transaction.awaitingCompletion = false;
+      // Reserve the initialization trampoline slot before the loader runs its
+      // next step. The step that yields the first initializer also computes
+      // the library's table base and places its exports; a slot appended
+      // after that sits between the recorded base and the exports. A pthread
+      // Worker rebuilding its table from the process archive never issues
+      // initializers (and, unlike a fork child, has no saved GOT values to
+      // place exports by), so it put every export one slot lower than this
+      // Worker did and later threads called function pointers that were off
+      // by one. Reserved first, the slot is below the recorded base, which
+      // replay already pads up to. A library that is already loaded computes
+      // no new base, so it needs no early slot.
+      const alreadyLoaded = this.options.loadedLibraries.get(transaction.name);
+      if (
+        transaction.tableIndex === undefined
+        && (alreadyLoaded === undefined || alreadyLoaded.loadState !== "loaded")
+      ) {
+        transaction.tableIndex = this.reserveInitializationSlot();
+      }
       const cursor = transaction.steps.next();
       if (cursor.done) {
         transaction.loaded = cursor.value;
@@ -3434,16 +3491,8 @@ export class DynamicLinker {
         return 0;
       }
 
-      let index = transaction.tableIndex;
-      if (index === undefined) {
-        index = tableLength(this.options.table);
-        if (index === 0) {
-          growTable(this.options.table, 1);
-          index = 1;
-        }
-        growTable(this.options.table, 1);
-        transaction.tableIndex = index;
-      }
+      const index = transaction.tableIndex ?? this.reserveInitializationSlot();
+      transaction.tableIndex = index;
       if (!Number.isSafeInteger(index) || index <= 0 || index > 0x7fff_ffff) {
         throw new RangeError(
           `${transaction.name}: initialization table index ${String(index)} is invalid`,
