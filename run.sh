@@ -7,6 +7,9 @@
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh local-build [--json] Build all local SourceOnly VFS products
+#   ./run.sh local-build --plan [--json]
+#                                 Preview it: cache hits, nodes to build, and
+#                                 an estimated duration
 #   ./run.sh cache-gc [args]      Garbage-collect the shared SourceOnly build
 #                                 cache (dry run unless --apply)
 #   ./run.sh run <example> [args] Run a Node.js example
@@ -2510,6 +2513,49 @@ cmd_cache_gc() {
 }
 
 cmd_local_build() {
+    # `--plan` previews this exact build without running it: which nodes are
+    # cache hits, which will build, and an estimate from recorded timings.
+    # It uses the release xtask binary because the debug build `cargo run`
+    # produces takes 6-15 s to plan, against about 1 s here; see
+    # docs/package-management.md.
+    if [ "${1:-}" = "--plan" ]; then
+        shift
+        local plan_json=()
+        if [ "${1:-}" = "--json" ]; then
+            plan_json=(--json)
+            shift
+        fi
+        if [ $# -ne 0 ]; then
+            err "Usage: $0 local-build --plan [--json]"
+            exit 2
+        fi
+        # One dev-shell entry for both the freshness build and the plan: the
+        # plan must run inside the declared shell (toolchain identity is part
+        # of every cache key, so outside it nodes look unbuilt), and each
+        # `nix develop` costs seconds, or minutes on a loaded machine.
+        local host="$KANDELO_XTASK_HOST_TRIPLE"
+        [ -n "$host" ] || { err "could not determine the host target (is rustc installed?)"; exit 1; }
+        # The plan's stdout goes to a file written inside the shell, because
+        # shell-hook banners share the launcher's stdout and would corrupt
+        # --json (the same reason cmd_local_build below uses a result file).
+        local plan_out status=0
+        plan_out="$(mktemp "${TMPDIR:-/tmp}/kandelo-local-build-plan.XXXXXX")"
+        bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
+            set -e
+            cd "$1"
+            cargo build --release -p xtask --target "$2" --quiet >&2
+            out="$3"
+            shift 3
+            "$@" > "$out"' kandelo-local-build-plan "$REPO_ROOT" "$host" "$plan_out" \
+            "$REPO_ROOT/target/$host/release/xtask" local-build plan \
+            --set "$REPO_ROOT/packages/sets/local-supported.toml" --status \
+            --source-cache-root "${KANDELO_SOURCE_CACHE_ROOT:-$HOME/.cache/kandelo/source-only}" \
+            --output-root "$REPO_ROOT/local-binaries/source-only-v1" --product all --jobs 16 \
+            "${plan_json[@]+"${plan_json[@]}"}" >&2 || status=$?
+        command cat -- "$plan_out"
+        rm -f -- "$plan_out"
+        return "$status"
+    fi
     local emit_json=0
     if [ "${1:-}" = "--json" ]; then
         emit_json=1

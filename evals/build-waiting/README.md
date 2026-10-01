@@ -49,6 +49,8 @@ quotes them.
 | Edits to the worktree while a test run was outstanding | 29 | 20 |
 | Locked runs (vitest, `run.sh test`, `ci-run-test-suite.sh`, `npm ci`) launched while another was running in the same worktree | 5 | 8 |
 | Program-index race errors (sessions affected) | 9 (7) | 26 (6) |
+| … of which "index target changed before publication" | 3 (3) | 11 (4) |
+| … of which "package registry changed while generating" | 8 (6) | 22 (5) |
 | `npm ci` `EEXIST` races (sessions affected) | 1 (1) | 0 |
 | Silent empty suites (`Discovered 0 tests`) | 5 | 3 |
 | "Package artifact closure is incomplete" seen in run output | 55 | 77 |
@@ -208,6 +210,21 @@ it cannot be left stale.
 - **Keep if:** there are zero race errors after it lands, and no lock wait
   exceeds the holder's own run time.
 - **Remove if:** it causes any hang.
+
+**Built (2026-09-30), and it fixes the smaller half.** Two different errors
+were counted together above:
+
+- **"Index target changed before publication" (14 in 7 sessions):** a
+  writer snapshotted the index *before* taking the lock, so a
+  byte-identical rename by another writer made it fail. The lock is now
+  taken first, and an identical index is not rewritten. Three regression
+  tests fail on the old order and pass on the new.
+- **"Package registry changed while generating" (30 in 11 sessions):** a
+  hashed build input changes between the two projection passes. That is
+  a different cause, and it is not fixed. The lead, unconfirmed: inputs
+  such as `host/src/generated/abi.ts` being rewritten during concurrent
+  runs. The keep rule applies to the first error only; the second is an
+  open defect.
 
 ### 7. `npm ci` lock and up-to-date skip (`ci-run-test-suite.sh`)
 

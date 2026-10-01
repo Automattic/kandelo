@@ -51,7 +51,10 @@ PROBE_HEAD = re.compile(r"^(ps|pgrep|lsof|du|tail|head|wc|ls|stat|date|echo|true
 PROCESS_PROBE = re.compile(r"(^|[;&|(]\s*)(ps\b|pgrep\b|lsof\b|du\s+-s)")
 TASK_OUTPUT = re.compile(r"/tasks/[^/\s]+\.output|\.log\b")
 COLLISIONS = {
-    "program-index race": re.compile(r"package registry changed while generating|program package index target changed"),
+    # Fixed by taking the publication lock before the snapshot (tool 6).
+    "program-index target race": re.compile(r"program package index target changed"),
+    # Not fixed: a hashed build input changed between the two projection passes.
+    "registry changed during index": re.compile(r"package registry changed (while generating|after the program package)"),
     "npm ci race": re.compile(r"EEXIST[^\n]{0,200}node_modules"),
 }
 # A suite that ran nothing. "No test files found" exits 1 (loud); the others can exit 0.
