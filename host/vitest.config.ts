@@ -55,6 +55,10 @@ export default defineConfig({
       "../scripts/vfs-product-catalog.test.mjs",
     ],
     globalSetup: ["test/global-setup.ts"],
+    // The suite-health line separates files that never ran (load errors)
+    // from files whose tests failed, and warns on zero-test runs. See
+    // test/support/suite-health-reporter.ts.
+    reporters: ["default", "./test/support/suite-health-reporter.ts"],
     // Keep test files in child processes. The suite itself starts many
     // worker_threads and large shared Wasm memories; nesting that work inside
     // Vitest's thread pool has historically made task reporting unreliable
