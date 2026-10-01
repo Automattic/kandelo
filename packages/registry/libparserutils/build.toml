@@ -1,0 +1,9 @@
+script_path = "packages/registry/libparserutils/build-libparserutils.sh"
+inputs = [
+  "packages/registry/libparserutils/build-libparserutils.sh",
+  "scripts/netsurf-library-build.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

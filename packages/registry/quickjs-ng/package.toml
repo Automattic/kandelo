@@ -1,0 +1,35 @@
+# Per-library manifest for QuickJS-NG. See docs/package-management.md.
+#
+# QuickJS-NG is a small, embeddable JavaScript engine written in portable C.
+# ELinks links it to run the scripts in the pages it renders; nothing in the
+# engine is specific to ELinks, so it is packaged as an ordinary library.
+#
+# Only the engine (libqjs.a) is built. quickjs-libc (the `std`/`os` modules
+# used by the standalone `qjs` interpreter) is left out: no consumer embeds
+# it, and shipping it would promise a module surface nobody has exercised on
+# Kandelo.
+
+kind = "library"
+
+name = "quickjs-ng"
+version = "0.17.0"
+kernel_abi = 44
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.17.0.tar.gz"
+sha256 = "559bc4c420475e55c7ab4510adbc562f55d7524d75e8e89d79ce4bb02f5687d9"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/quickjs-ng/quickjs/blob/v0.17.0/LICENSE"
+
+[build]
+script_path = "packages/registry/quickjs-ng/build-quickjs-ng.sh"
+
+[outputs]
+libs = ["lib/libqjs.a"]
+headers = ["include/quickjs-ng/quickjs.h"]
+pkgconfig = ["lib/pkgconfig/quickjs-ng.pc"]

@@ -58,6 +58,7 @@ import sdl2WasmUrl from "@binaries/programs/wasm32/sdl2.wasm?url";
 import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 import modesetWasmUrl from "@binaries/programs/wasm32/modeset.wasm?url";
 import espeakNgWasmUrl from "@binaries/programs/wasm32/espeak-ng/espeak-ng.wasm?url";
+import elinksWasmUrl from "@binaries/programs/wasm32/elinks.wasm?url";
 
 export {
   assertShellLazyUrlsResolved,
@@ -117,6 +118,7 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/fbdoom.wasm": fbdoomWasmUrl,
   "programs/modeset.wasm": modesetWasmUrl,
   "programs/espeak-ng/espeak-ng.wasm": espeakNgWasmUrl,
+  "programs/elinks.wasm": elinksWasmUrl,
 };
 
 const SHELL_LAZY_PLACEHOLDER_URLS = new Map(

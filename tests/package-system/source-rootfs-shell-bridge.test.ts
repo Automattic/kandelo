@@ -709,6 +709,14 @@ describe("canonical source-rootfs shell", () => {
       "defaultBranch = main",
     );
     expect(text(readVfsFile(fs, "/etc/profile"))).toContain("NETHACKOPTIONS");
+    // The image turns page JavaScript on for ELinks; upstream's default is
+    // off, so losing this file would silently disable the QuickJS engine the
+    // elinks package is built with.
+    const elinksConf = text(readVfsFile(fs, "/etc/elinks/elinks.conf"));
+    expect(elinksConf).toContain("set ecmascript.enable = 1");
+    // 24-bit color keeps ELinks's menus readable under themes that recolor
+    // the 16 base palette entries (the default Kandelo theme does).
+    expect(elinksConf).toContain("set terminal.xterm-256color.colors = 4");
     expect(fs.stat("/home/.nethack")).toMatchObject({
       uid: 1000,
       gid: 1000,

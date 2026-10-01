@@ -2103,6 +2103,46 @@ exits can exceed it. JavaScript cannot hard-bound native backing that the
 browser engine has not reclaimed. Garbage-collection observations and bounded,
 coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
+### Text-mode web browsing (ELinks) in the browser
+
+The shell image ships ELinks, a text-mode web browser, built with the
+QuickJS-NG JavaScript engine. `elinks <url>` browses interactively and
+`elinks -dump <url>` prints a page as text. The image's
+`/etc/elinks/elinks.conf` turns page JavaScript on (upstream ships it off) and
+selects 24-bit color; both are ordinary ELinks options a user can change.
+
+On the Node.js host ELinks uses real TCP sockets. In the browser its requests
+cross the same boundary as every other guest HTTP client (the CORS proxy
+profile is described under [Kandelo session UI](#kandelo-session-ui)): the
+kernel terminates the guest's TLS locally and re-issues the request with
+`fetch()` through the CORS proxy. Plain page loads work that way — fetching
+`example.com`, Hacker News, a Wikipedia article, DuckDuckGo's HTML search
+results, and CNN's lite site were each checked in Chromium. The boundary does
+change what a browser-hosted ELinks can do:
+
+- **No cookies, so no logins.** The Fetch API never exposes `Set-Cookie`
+  response headers to script, so they cannot be relayed to the guest and
+  ELinks never learns a site's cookies. Sites that need a session (logins,
+  carts, consent walls that set a cookie) do not work. This is a browser
+  limit, not an ELinks setting: ELinks's own cookie support is compiled in and
+  works on Node.js. A request that does carry a `Cookie` header is refused
+  before dispatch rather than sent without it, as described above.
+- **Sites see the real browser's `User-Agent`.** `User-Agent`,
+  `Accept-Language`, and `Referer` are set by the browser on every `fetch()`;
+  ELinks's values never reach the site. A site that serves simplified HTML to
+  text browsers by sniffing the user agent will serve its full page instead.
+- **HTTP and HTTPS only.** ELinks is built with Gopher, Gemini, finger, and
+  FTP support, but those need raw TCP, which a browser cannot open. They have
+  not been tested on Node.js either.
+- **Form submission is untested.** A `POST` crosses the proxy only with the
+  request headers the proxy profile allows; ELinks's form posts have not been
+  checked against it.
+
+The ELinks build itself leaves out features whose libraries Kandelo does not
+package: translations (the interface is English), regular-expression search,
+international domain names, XBEL bookmark import/export, and brotli or zstd
+content decoding. `elinks -version` lists what is compiled in.
+
 ### npm registry access in the browser
 
 The Node demo uses npm's canonical `https://registry.npmjs.org/` registry.

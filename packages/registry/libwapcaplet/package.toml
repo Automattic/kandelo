@@ -1,0 +1,35 @@
+# Per-library manifest for libwapcaplet. See docs/package-management.md.
+#
+# libwapcaplet interns strings: each distinct string is stored once and
+# compared by pointer. libcss and libdom use it for element names, attribute
+# names and CSS identifiers, which is why both of them depend on it.
+#
+# Built with the NetSurf project's own build system (the
+# netsurf-buildsystem-source package) through scripts/netsurf-library-build.sh.
+
+kind = "library"
+
+name = "libwapcaplet"
+version = "0.4.3"
+kernel_abi = 44
+depends_on = [
+  "netsurf-buildsystem-source@1.10",
+]
+arches = ["wasm32"]
+
+[source]
+url = "https://download.netsurf-browser.org/libs/releases/libwapcaplet-0.4.3-src.tar.gz"
+sha256 = "9b2aa1dd6d6645f8e992b3697fdbd87f0c0e1da5721fa54ed29b484d13160c5c"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://git.netsurf-browser.org/libwapcaplet.git/tree/COPYING?h=release/0.4.3"
+
+[build]
+script_path = "packages/registry/libwapcaplet/build-libwapcaplet.sh"
+
+[outputs]
+libs = ["lib/libwapcaplet.a"]
+headers = ["include/libwapcaplet"]
+pkgconfig = ["lib/pkgconfig/libwapcaplet.pc"]
