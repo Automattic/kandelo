@@ -33,7 +33,13 @@ export const HOST_PATH_ROOTS: readonly string[] = [
   '/usr/lib',
   '/usr/local/include',
   '/usr/local/lib',
+  // Homebrew (Apple silicon prefix, Intel keg and opt trees) and MacPorts.
+  // Listed on every platform so the guard's verdict never depends on what
+  // the build machine happens to have installed.
   '/opt/homebrew',
+  '/usr/local/Cellar',
+  '/usr/local/opt',
+  '/opt/local',
   // macOS SDKs and toolchains. These are where `xcrun --show-sdk-path`
   // points outside Nix; inside the dev shell it points into /nix/store.
   // Listing them avoids spawning xcrun on every compile.

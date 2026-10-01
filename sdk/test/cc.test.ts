@@ -402,6 +402,9 @@ describe('host-path guard', () => {
     ['-Wl,-L,dir', [`-Wl,-L,${NIX_LIB}`]],
     ['-Xlinker -L', ['-Xlinker', `-L${NIX_LIB}`]],
     ['response file', ['@flags.rsp']],
+    ['MacPorts', ['-I/opt/local/include']],
+    ['Intel Homebrew keg', ['-L/usr/local/Cellar/libpng/1.6.43/lib']],
+    ['Intel Homebrew opt', ['-isystem', '/usr/local/opt/zlib/include']],
   ];
   const readResponseFile = (path: string) =>
     path === 'flags.rsp' ? { contents: `-I"${NIX_INCLUDE}"`, identity: '/rsp/flags.rsp' } : null;

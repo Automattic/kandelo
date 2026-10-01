@@ -420,8 +420,10 @@ search directory on their command line before compiling:
 A directory is a host directory when it resolves (relative paths against the
 working directory) to `/nix/store`, `/usr/include`, `/usr/lib`,
 `/usr/local/include`, `/usr/local/lib`, `/opt/homebrew`,
+`/usr/local/Cellar`, `/usr/local/opt`, `/opt/local` (MacPorts),
 `/Library/Developer/CommandLineTools`, `/Applications/Xcode.app`, or an
-absolute `SDKROOT`, or to anything below them. Nothing under those roots is a
+absolute `SDKROOT`, or to anything below them. The list is the same on every
+platform, so the verdict does not depend on what the machine has installed. Nothing under those roots is a
 WebAssembly artifact. Sysroot-relative spellings (`-I=/usr/include`) name the
 target sysroot and are not host directories. Native host compilers (`cc`,
 `clang`) are not wrapped and are unaffected.
