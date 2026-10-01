@@ -1038,6 +1038,13 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner server-header "$FRACSCALE_XML" "$WLC_GEN/fractional-scale-v1-server-protocol.h"
     wayland-scanner client-header "$FRACSCALE_XML" "$WLC_GEN/fractional-scale-v1-client-protocol.h"
 
+    # Same for zwlr_data_control_manager_v1: the clipboard protocol a
+    # windowless tool sets the selection through. wlclip-test drives it.
+    DATACTL_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/wlr-data-control-unstable-v1.xml"
+    wayland-scanner private-code  "$DATACTL_XML" "$WLC_GEN/wlr-data-control-v1-protocol.c"
+    wayland-scanner server-header "$DATACTL_XML" "$WLC_GEN/wlr-data-control-v1-server-protocol.h"
+    wayland-scanner client-header "$DATACTL_XML" "$WLC_GEN/wlr-data-control-v1-client-protocol.h"
+
     # libwayland-egl (step 12a): the wl_egl_window shim that SDL2's upstream
     # Wayland+GLES backend uses as its EGLNativeWindowType (see
     # libc/glue/libwayland-egl.c). Built + shipped by the libwayland
@@ -1069,6 +1076,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             "$WLC_GEN/xdg-output-v1-protocol.c" \
             "$WLC_GEN/viewporter-protocol.c" \
             "$WLC_GEN/fractional-scale-v1-protocol.c" \
+            "$WLC_GEN/wlr-data-control-v1-protocol.c" \
             "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libwayland-server.a" \
             "$SYSROOT/lib/libwpkdraw.a" \
@@ -1119,6 +1127,27 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             -o "$kwlctl_wasm"
         "$FORK_INSTRUMENT" "$kwlctl_wasm" -o "$kwlctl_wasm.instr"
         mv "$kwlctl_wasm.instr" "$kwlctl_wasm"
+    fi
+
+    # Clipboard client: the wl_data_device selection and the
+    # zwlr_data_control path, in the roles
+    # host/test/wlcompositor-clipboard-smoke.test.ts gives it.
+    if [ -f "$REPO_ROOT/programs/wlcompositor/wlclip-test.c" ]; then
+        clip_wasm="$OUT_DIR_32/wlclip-test.wasm"
+        echo "  Compiling wlclip-test (clipboard client)..."
+        "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+            "$REPO_ROOT/programs/wlcompositor/wlclip-test.c" \
+            "$WLC_GEN/xdg-shell-protocol.c" \
+            "$WLC_GEN/wlr-data-control-v1-protocol.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$SYSROOT/lib/libwayland-client.a" \
+            "$SYSROOT/lib/libxkbcommon.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libffi.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$clip_wasm"
+        "$FORK_INSTRUMENT" "$clip_wasm" -o "$clip_wasm.instr"
+        mv "$clip_wasm.instr" "$clip_wasm"
     fi
 
     # dmabuf client (PR11): drives the zwp_linux_dmabuf_v1 buffer path so
