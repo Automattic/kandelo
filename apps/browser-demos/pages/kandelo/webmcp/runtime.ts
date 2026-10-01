@@ -1,7 +1,14 @@
 import { resetPreviewProgress } from "../panes/preview-progress";
 import type { BrowserKernel } from "@host/browser-kernel-host";
 import type { KernelHost } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import { DIRENT_TYPES } from "@host/generated/abi";
 import { guestPath, ToolError } from "./contract";
+
+const DIRENT_TYPE_NAMES: Record<number, string> = {
+  [DIRENT_TYPES.DT_DIR]: "directory",
+  [DIRENT_TYPES.DT_REG]: "file",
+  [DIRENT_TYPES.DT_LNK]: "symlink",
+};
 
 // References only: lifecycle and process ownership remain with the existing host.
 type Runtime = { kernel: BrowserKernel; unsubscribe: () => void };
@@ -82,9 +89,23 @@ export async function writeGuestFile(host: KernelHost, path: string, bytes: Uint
 export async function listGuestDirectory(host: KernelHost, path: string) {
   guestPath(path);
   const runtime = requireRuntime(host);
-  const entries = await runtime.kernel.listDirectoryFromVfs(path);
+  const entries = await runtime.kernel.readDirFromVfs(path);
   assertCurrent(host, runtime);
-  return entries;
+  if (entries === null) {
+    throw new ToolError("FILE_NOT_FOUND", "The path does not identify a readable guest directory.", { path });
+  }
+  // list_files paginates a fresh listing, so offset/limit only line up across
+  // calls while the order is stable.
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return entries.map(({ name, type, mode, size, uid, gid, target }) => ({
+    name,
+    type: DIRENT_TYPE_NAMES[type] ?? "other",
+    mode,
+    size,
+    uid,
+    gid,
+    ...(target === undefined ? {} : { target }),
+  }));
 }
 
 export async function startGuestJob(host: KernelHost, id: string, args: { script: string; cwd?: string; env?: Record<string, string>; timeoutMs?: number }) {

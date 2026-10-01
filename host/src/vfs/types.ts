@@ -87,7 +87,27 @@ export interface FileSystemBackend {
   /** A thrown error must leave the next directory entry unconsumed. */
   readdir(handle: number): DirEntry | null;
   closedir(handle: number): void;
+
+  // Change notification
+  /** Report `modify` and `delete` events for paths relative to this backend. */
+  subscribeChanges?(listener: VfsChangeListener): () => void;
 }
+
+export type VfsChangeKind = "modify" | "delete";
+
+/**
+ * A name in this filesystem changed. `modify` fires when a handle opened for
+ * writing closes or a rename gives the name new content; `delete` fires when
+ * a name is unlinked or renamed away. Writes through a memory mapping do not
+ * pass through a handle and are not reported.
+ */
+export interface VfsChangeEvent {
+  kind: VfsChangeKind;
+  path: string;
+  t: number;
+}
+
+export type VfsChangeListener = (event: VfsChangeEvent) => void;
 
 export interface TimeProvider {
   clockGettime(clockId: number): { sec: number; nsec: number };

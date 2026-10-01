@@ -32,6 +32,8 @@ import type {
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { VfsChangeEvent } from "./vfs/types";
+import { vfsPathIsWithin } from "./vfs/vfs";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
 import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import {
@@ -229,6 +231,7 @@ export class NodeKernelHost {
   private options: NodeKernelHostOptions;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
   private destroyProgress = createDestroyProgressFanout();
+  private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
 
   constructor(options?: NodeKernelHostOptions) {
     this.options = options ?? {};
@@ -957,6 +960,27 @@ export class NodeKernelHost {
   }
 
   /**
+   * Subscribe to changes of paths under `prefix` in the worker-owned VFS. The
+   * worker forwards events only while a prefix is watched, so nothing crosses
+   * the worker boundary when nobody's listening.
+   */
+  subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void {
+    let listeners = this.vfsChangeListeners.get(prefix);
+    if (!listeners) {
+      listeners = new Set();
+      this.vfsChangeListeners.set(prefix, listeners);
+      this.sendToWorker({ type: "watch_vfs_changes", prefix, enabled: true });
+    }
+    listeners.add(cb);
+    return () => {
+      const current = this.vfsChangeListeners.get(prefix);
+      if (!current?.delete(cb) || current.size > 0) return;
+      this.vfsChangeListeners.delete(prefix);
+      this.sendToWorker({ type: "watch_vfs_changes", prefix, enabled: false });
+    };
+  }
+
+  /**
    * Read a regular file from the existing worker-owned VFS. This is the Node
    * peer of BrowserKernel.readFileFromVfs(); it never falls back to an ambient
    * host path and may materialize a deferred VFS entry.
@@ -1057,6 +1081,7 @@ export class NodeKernelHost {
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
     this.destroyProgress.clear();
+    this.vfsChangeListeners.clear();
     if (gracefulDetachFailure || realmTerminationFailure) {
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -1216,6 +1241,9 @@ export class NodeKernelHost {
       case "destroy_progress":
         this.destroyProgress.emit(msg.event);
         break;
+      case "vfs_change":
+        this.emitVfsChange(msg.event);
+        break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol
         // grows. Runtime values still originate outside TypeScript, so make a
@@ -1241,6 +1269,19 @@ export class NodeKernelHost {
         listener(event);
       } catch {
         // One observer must not starve the remaining listeners.
+      }
+    }
+  }
+
+  private emitVfsChange(event: VfsChangeEvent): void {
+    for (const [prefix, listeners] of this.vfsChangeListeners) {
+      if (!vfsPathIsWithin(prefix, event.path)) continue;
+      for (const listener of listeners) {
+        try {
+          listener(event);
+        } catch {
+          // One observer must not starve the remaining listeners.
+        }
       }
     }
   }

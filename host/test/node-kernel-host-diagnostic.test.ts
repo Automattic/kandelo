@@ -93,3 +93,55 @@ describe("NodeKernelHost lazy VFS transport events", () => {
     expect(survivingSubscriber).toHaveBeenCalledWith(event);
   });
 });
+
+describe("NodeKernelHost VFS change events", () => {
+  const inside = { kind: "modify" as const, path: "/home/maker/mcp/foo.json", t: 1 };
+  const outside = { kind: "delete" as const, path: "/home/maker/foo.json", t: 2 };
+
+  it("watches a prefix in the worker while subscribers exist and fans out matching events", () => {
+    const postMessage = vi.fn();
+    const host = new NodeKernelHost();
+    (host as unknown as { worker: unknown }).worker = { postMessage };
+    const testable = host as unknown as TestableNodeKernelHost;
+    const first = vi.fn();
+    const second = vi.fn();
+
+    const offFirst = host.subscribeVfsChanges("/home/maker/mcp", first);
+    const offSecond = host.subscribeVfsChanges("/home/maker/mcp", second);
+    expect(postMessage.mock.calls.map(([message]) => message)).toEqual([
+      { type: "watch_vfs_changes", prefix: "/home/maker/mcp", enabled: true },
+    ]);
+
+    testable.handleWorkerMessage({ type: "vfs_change", event: inside });
+    testable.handleWorkerMessage({ type: "vfs_change", event: outside });
+    expect(first).toHaveBeenCalledExactlyOnceWith(inside);
+    expect(second).toHaveBeenCalledExactlyOnceWith(inside);
+
+    offFirst();
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    offSecond();
+    expect(postMessage.mock.calls.at(-1)?.[0]).toEqual({
+      type: "watch_vfs_changes",
+      prefix: "/home/maker/mcp",
+      enabled: false,
+    });
+    testable.handleWorkerMessage({ type: "vfs_change", event: inside });
+    expect(first).toHaveBeenCalledTimes(1);
+  });
+
+  it("isolates throwing subscribers from the rest of delivery", () => {
+    const host = new NodeKernelHost();
+    (host as unknown as { worker: unknown }).worker = { postMessage: vi.fn() };
+    host.subscribeVfsChanges("/home/maker/mcp", () => {
+      throw new Error("first subscriber failed");
+    });
+    const survivingSubscriber = vi.fn();
+    host.subscribeVfsChanges("/home/maker/mcp", survivingSubscriber);
+
+    const testable = host as unknown as TestableNodeKernelHost;
+    expect(() => {
+      testable.handleWorkerMessage({ type: "vfs_change", event: inside });
+    }).not.toThrow();
+    expect(survivingSubscriber).toHaveBeenCalledWith(inside);
+  });
+});
