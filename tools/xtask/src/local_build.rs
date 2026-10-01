@@ -1603,11 +1603,19 @@ fn run_plan_status(args: LocalBuildPlanStatusArgsV1) -> Result<(), String> {
 
     let mut will_run = BTreeSet::new();
     let mut nodes = Vec::new();
-    // Dependency order, so the listing reads the way the build proceeds.
-    for node in graph.plan.levels.iter().flatten() {
-        if !selected.contains_key(node) {
-            continue;
-        }
+    // Dependency order, so the listing reads the way the build proceeds. The
+    // plan's levels hold only buildable nodes; selected `Source`-kind
+    // packages still run a child, so list them after the levels.
+    let mut ordered = graph
+        .plan
+        .levels
+        .iter()
+        .flatten()
+        .filter(|node| selected.contains_key(*node))
+        .collect::<Vec<_>>();
+    let leveled = ordered.iter().copied().collect::<BTreeSet<_>>();
+    ordered.extend(selected.keys().filter(|node| !leveled.contains(node)));
+    for node in ordered {
         let status = if skip.contains_key(node) {
             PlanNodeStatusV1::Cached
         } else {
