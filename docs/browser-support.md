@@ -1673,6 +1673,61 @@ the image-owned command. Write, signal, timeout, and command-dispatch failures
 remain visible. An absent `ingest` block means the image exposes no upload
 capability; the loader does not infer one from a package or profile name.
 
+A profile may also declare up to four dock buttons that replace the machine's
+foreground program. The browser UI shows them on the display surface's dock,
+before the ingest control:
+
+```json
+{
+  "dockActions": [
+    {
+      "id": "steel-sky",
+      "label": "Play Beneath a Steel Sky",
+      "description": "Shown as the button's tooltip",
+      "restart": "/usr/local/bin/scummvm-play steel-sky"
+    },
+    {
+      "id": "freeware",
+      "label": "More freeware games",
+      "menu": [
+        {
+          "id": "lure",
+          "label": "Lure of the Temptress",
+          "detail": "6 MB",
+          "restart": "/usr/local/bin/scummvm-play lure"
+        },
+        {
+          "id": "helga-deep-in-trouble",
+          "label": "Helga Deep in Trouble",
+          "unavailable": "needs the Wintermute engine's JPEG support"
+        }
+      ]
+    }
+  ]
+}
+```
+
+An action declares exactly one of `restart` (the button runs it) or `menu`
+(the button opens a list of up to 40 entries, and the chosen entry's
+`restart` runs the same way). An entry's optional `detail` is shown beside
+its label and `group` collects entries under a heading. An entry the image
+knows about but cannot run declares `unavailable`, the reason, instead of
+`restart`; the menu shows it disabled with that reason, so the gap stays
+visible rather than silently missing.
+
+A display machine's command (its `init.shellCommand`) is a long-lived program
+that owns the machine's terminal and a single-owner display device, so running
+something else means ending that program first. A click does what a person at
+the terminal would: the host types the interrupt character (Ctrl+C) into the
+machine's shell PTY, which the kernel's line discipline delivers as `SIGINT`
+to the foreground process group, and waits for the shell's prompt to come
+back (`KernelHost.interruptShellForeground`). The prompt is the evidence the
+program exited and released its devices; if it does not appear within ten
+seconds the action fails visibly and the command is not sent. Only then is
+`restart` written to the shell, exactly as if typed. Like `ingest.onLoad`,
+`restart` is the image author's command, never user input. `id`s must be
+unique within the profile, and entry `id`s within their menu.
+
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
 version. The loader validates every profile before using any of them, so a

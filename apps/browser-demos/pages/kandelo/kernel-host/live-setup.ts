@@ -44,6 +44,7 @@ import { webPreviewForMachineChromeMessage } from "../../../../../web-libs/kande
 import { resolveInitArgv } from "../../../../../web-libs/kandelo-session/src/init-boot-identity";
 import {
   genericDemoPresentation,
+  resolveDemoDockActions,
   resolveDemoGuide,
   resolveDemoIdentity,
   resolveDemoIngest,
@@ -1340,6 +1341,7 @@ async function bootProfile(
   // Ingest is an image-owned capability. Absence is valid and must not be
   // replaced with a package- or profile-name-specific UI promise.
   host.setDemoIngest(resolveDemoIngest(imageConfig, profileId));
+  host.setDemoDockActions(resolveDemoDockActions(imageConfig, profileId));
   // The one command this machine asked its login shell to run, if any. Read
   // once here: `init` is the single block that says what a machine runs.
   const machineShellCommand = shellCommandForMachine(machine.init);

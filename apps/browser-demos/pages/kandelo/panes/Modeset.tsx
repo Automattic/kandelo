@@ -14,6 +14,7 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
 import { DemoSurfaceDockControls, IngestControl } from "./Framebuffer";
+import { useDockActions } from "./DockActions";
 import { useFittedCanvasStyle } from "./canvasFit";
 
 // modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
@@ -80,6 +81,8 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
   const [canvas, setCanvas] = React.useState<HTMLCanvasElement | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [stats, setStats] = React.useState<KmsStats>(ZERO_STATS);
+  // The flip counter tells a dock action when its replacement is drawing.
+  const dockActions = useDockActions("kms", status === "running" ? stats.commitCount : null);
 
   // Mount the host's display canvas for this CRTC rather than rendering one:
   // a program's WebGL context is bound to that canvas for good, so a
@@ -384,6 +387,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
       status={statusLabel}
       active={hasFrame}
     >
+      {dockActions.controls}
       {ingest && status === "running" && (
         <IngestControl
           accept={ingest.accept}
@@ -395,7 +399,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
         />
       )}
     </DemoSurfaceDockControls>
-  ), [busy, crtcId, hasFrame, ingest, ingestFile, ingestName, status, statusLabel]);
+  ), [busy, crtcId, dockActions.controls, hasFrame, ingest, ingestFile, ingestName, status, statusLabel]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -428,6 +432,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
               : <>Waiting for the kernel to reach 'running'.</>}
           </div>
         )}
+        {dockActions.toasts}
         {busy && (
           <div className="kdemo-toast" data-testid="kms-ingest-busy">
             {ingestName ? `loading ${ingestName}…` : "loading…"}
