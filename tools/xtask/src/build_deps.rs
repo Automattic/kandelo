@@ -9365,6 +9365,34 @@ pub(crate) fn source_only_skip_receipt_if_clean(
     output_root: &Path,
     memo: &mut BTreeMap<String, [u8; 32]>,
 ) -> Option<PackageNodeReceiptV1> {
+    source_only_skip_receipt_if_clean_with_use(
+        target,
+        registry,
+        arch,
+        abi_version,
+        roots,
+        output_root,
+        memo,
+        true,
+    )
+}
+
+/// [`source_only_skip_receipt_if_clean`] with control over its one write:
+/// `record_use = false` leaves the generation's last-used stamp alone, for a
+/// read-only dry run (`local-build plan --status`) that must not make an
+/// unused generation look recently used to `cache-gc`.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn source_only_skip_receipt_if_clean_with_use(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    record_use: bool,
+) -> Option<PackageNodeReceiptV1> {
     if target.kind == ManifestKind::Source {
         return None;
     }
@@ -9409,7 +9437,9 @@ pub(crate) fn source_only_skip_receipt_if_clean(
         }
     }
     // A skipped node is still a cache hit: record the use for `cache_gc`.
-    crate::cache_gc::touch_generation_last_used(&canonical, &cache_key_sha256);
+    if record_use {
+        crate::cache_gc::touch_generation_last_used(&canonical, &cache_key_sha256);
+    }
     Some(receipt)
 }
 
@@ -37506,6 +37536,42 @@ commit = "1111111111111111111111111111111111111111"
         let _override =
             crate::install_repo_root_override(fs::canonicalize(&repo).unwrap()).unwrap();
 
+        // `plan --status` runs the same check as a dry run: same answer, but
+        // it must not refresh the generation's last-used stamp.
+        fn last_used_stamps(dir: &Path) -> Vec<PathBuf> {
+            let mut found = Vec::new();
+            for entry in fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    found.extend(last_used_stamps(&path));
+                } else if path.to_string_lossy().ends_with(".kandelo-last-used") {
+                    found.push(path);
+                }
+            }
+            found
+        }
+        for stamp in last_used_stamps(&roots.compiled) {
+            fs::remove_file(stamp).unwrap();
+        }
+        let mut memo_dry = BTreeMap::new();
+        assert_eq!(
+            source_only_skip_receipt_if_clean_with_use(
+                &target,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                &roots,
+                &output,
+                &mut memo_dry,
+                false,
+            ),
+            Some(receipt.clone()),
+        );
+        assert!(
+            last_used_stamps(&roots.compiled).is_empty(),
+            "a dry-run skip check must not write a last-used stamp"
+        );
+
         let mut memo = BTreeMap::new();
         assert_eq!(
             source_only_skip_receipt_if_clean(
@@ -37513,6 +37579,11 @@ commit = "1111111111111111111111111111111111111111"
             ),
             Some(receipt.clone()),
             "a clean built node must be skippable with its persisted receipt"
+        );
+        assert_eq!(
+            last_used_stamps(&roots.compiled).len(),
+            1,
+            "a real skip records the cache hit for cache-gc"
         );
 
         // A mirror left by an earlier cache key sits at the same path with
