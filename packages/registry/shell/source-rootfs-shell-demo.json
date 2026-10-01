@@ -176,30 +176,6 @@
         "hostPointer": true
       }
     },
-    "espeak": {
-      "identity": {
-        "title": "OSS - Espeak-NG",
-        "summary": "The kernel speaks: espeak-ng synthesises text directly through libpcaudio's OSS backend.",
-        "accent": "#f48fb1",
-        "glyph": "T",
-        "packages": [
-          "bash@local",
-          "coreutils@local"
-        ]
-      },
-      "init": {
-        "shellCommand": "/usr/bin/espeak-ng \"Welcome to Kandelo, the WebAssembly POSIX kernel\""
-      },
-      "presentation": {
-        "bootPrimary": "syslog",
-        "runningPrimary": [
-          "terminal",
-          "syslog"
-        ],
-        "terminalAccess": "primary",
-        "internalsAccess": "drawer"
-      }
-    },
     "wayland": {
       "identity": {
         "title": "Wayland desktop",

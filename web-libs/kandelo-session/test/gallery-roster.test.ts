@@ -135,7 +135,6 @@ describe("parseGalleryRoster", () => {
       "sdl2",
       "scummvm",
       "omarchy",
-      "espeak",
     ]);
     // The floating Wayland desktop left the gallery when Omarchy joined it;
     // it still boots by URL (?profile=wayland) for its compositor specs.
