@@ -48,6 +48,12 @@ import scummvmModernUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/sc
 import scummvmClassicUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/scummclassic.zip?url";
 import scummvmGuiIconsUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/gui-icons.dat?url";
 import scummvmFontsUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/fonts.dat?url";
+import retroNesWasmUrl from "@binaries/programs/wasm32/kandelo-retro/kandelo-retro.wasm?url";
+import retroGenesisWasmUrl from "@binaries/programs/wasm32/kandelo-retro/kandelo-retro-genesis.wasm?url";
+import retroSnesWasmUrl from "@binaries/programs/wasm32/kandelo-retro/kandelo-retro-snes.wasm?url";
+import retroRomNesUrl from "@binaries/programs/wasm32/kandelo-retro/share/kandelo-retro/roms/240pee.nes?url";
+import retroRomMdUrl from "@binaries/programs/wasm32/kandelo-retro/share/kandelo-retro/roms/240pSuite-md-1.21.bin?url";
+import retroRomSnesUrl from "@binaries/programs/wasm32/kandelo-retro/share/kandelo-retro/roms/240pSuite-snes-1.03.sfc?url";
 
 export {
   assertShellLazyUrlsResolved,
@@ -91,6 +97,12 @@ const SHELL_LAZY_ASSET_URLS: Record<(typeof SHELL_LAZY_BINARY_SPECS)[number]["id
   "scummvm-theme-classic": scummvmClassicUrl,
   "scummvm-gui-icons": scummvmGuiIconsUrl,
   "scummvm-fonts": scummvmFontsUrl,
+  "kandelo-retro": retroNesWasmUrl,
+  "kandelo-retro-genesis": retroGenesisWasmUrl,
+  "kandelo-retro-snes": retroSnesWasmUrl,
+  "kandelo-retro-rom-nes": retroRomNesUrl,
+  "kandelo-retro-rom-md": retroRomMdUrl,
+  "kandelo-retro-rom-snes": retroRomSnesUrl,
 };
 
 const SHELL_LAZY_PLACEHOLDER_URLS = new Map(

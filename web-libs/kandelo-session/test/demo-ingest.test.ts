@@ -7,6 +7,7 @@ import {
 } from "../src/demo-config";
 import {
   IngestError,
+  ingestFileName,
   runDemoIngest,
   waitForProcessExit,
   type IngestFileLike,
@@ -43,6 +44,7 @@ function ingestHost(overrides: Partial<KernelHost> = {}): KernelHost {
     writeFile: vi.fn(async () => {}),
     signalProcess: vi.fn(async () => true),
     dispatchShellCommand: vi.fn(async () => {}),
+    noteDemoIngest: vi.fn(),
     ...overrides,
   } as unknown as KernelHost;
 }
@@ -122,6 +124,65 @@ describe("demo ingest transaction", () => {
       "signal:41:15",
       "dispatch:fbdoom -iwad /user.wad",
     ]);
+  });
+
+  it("records where the ingested file came from once the write lands", async () => {
+    const noteDemoIngest = vi.fn();
+    const host = ingestHost({ noteDemoIngest });
+    await runDemoIngest(host, INGEST, file("custom.wad", 4, [1, 2, 3, 4]));
+    expect(noteDemoIngest).toHaveBeenCalledWith({ kind: "upload", name: "custom.wad" });
+
+    const input = {
+      id: "wad", filename: "custom.wad", byteLength: 4, sha256: "0".repeat(64),
+      source: { kind: "resolver" as const, resolver: "example", locator: "x" },
+    };
+    await runDemoIngest(host, INGEST, file("custom.wad", 4, [1, 2, 3, 4]), {
+      source: { kind: "input", input },
+    });
+    expect(noteDemoIngest).toHaveBeenLastCalledWith({ kind: "input", input });
+  });
+
+  it("records nothing for a file that was rejected or never written", async () => {
+    const noteDemoIngest = vi.fn();
+    await expect(
+      runDemoIngest(ingestHost({ noteDemoIngest }), INGEST, file("notes.txt", 4, [1, 2, 3, 4])),
+    ).rejects.toMatchObject({ reason: "extension" });
+    await expect(
+      runDemoIngest(
+        ingestHost({
+          noteDemoIngest,
+          writeFile: vi.fn(async () => { throw new Error("ENOSPC"); }),
+        }),
+        INGEST,
+        file("custom.wad", 4, [1, 2, 3, 4]),
+      ),
+    ).rejects.toMatchObject({ reason: "write-failed" });
+    expect(noteDemoIngest).not.toHaveBeenCalled();
+  });
+
+  it("writes the file's own name to namePath after the file, as data", async () => {
+    const writes: string[] = [];
+    const host = ingestHost({
+      writeFile: vi.fn(async (path: string, bytes: Uint8Array) => {
+        writes.push(`${path}=${new TextDecoder().decode(bytes)}`);
+      }),
+    });
+    await runDemoIngest(
+      host,
+      { ...INGEST, namePath: "/user.wad.name" },
+      file("maps/Doom (Europe).wad", 3, [1, 2, 3]),
+    );
+    expect(writes).toEqual(["/user.wad=\u0001\u0002\u0003", "/user.wad.name=Doom (Europe).wad"]);
+    expect(ingestFileName("a\\b\u0007c.wad")).toBe("b_c.wad");
+    expect(new TextEncoder().encode(ingestFileName("é".repeat(400))).byteLength).toBeLessThanOrEqual(255);
+  });
+
+  it("rejects a namePath that is unsafe or is the target itself", () => {
+    const config = (ingest: object) => ({ version: 1, profiles: { p: { ingest } } });
+    expect(() => validateKandeloDemoConfig(config({ ...INGEST, namePath: "rel/name" }) as never))
+      .toThrow(/namePath/);
+    expect(() => validateKandeloDemoConfig(config({ ...INGEST, namePath: "/user.wad" }) as never))
+      .toThrow(/must differ/);
   });
 
   it("rechecks actual bytes before writing", async () => {

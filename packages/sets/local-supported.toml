@@ -1,7 +1,11 @@
 schema = 1
 policy = "source-only-v1"
 dependency_only = [
+  "genesis-plus-gx-source",
   "pcre2-source",
+  "retro-rom-240p-md",
+  "retro-rom-240p-snes",
+  "snes9x-source",
   "wordpress-sqlite-integration-source",
 ]
 registry_non_roots = []
@@ -197,6 +201,10 @@ class = "platform"
 [[packages]]
 name = "jsoncpp"
 class = "platform"
+
+[[packages]]
+name = "kandelo-retro"
+class = "user-software"
 
 [[packages]]
 name = "kandelo-sdk"

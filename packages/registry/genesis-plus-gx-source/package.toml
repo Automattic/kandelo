@@ -1,0 +1,15 @@
+# Genesis Plus GX (libretro), pinned by commit. kandelo-retro links it
+# statically into kandelo-retro-genesis.wasm; nothing is published from this
+# source tree on its own.
+kind = "source"
+name = "genesis-plus-gx-source"
+version = "fa4dca561e08d5be9077419f7b255e1da213ed21"
+
+[source]
+url = "https://github.com/libretro/Genesis-Plus-GX/archive/fa4dca561e08d5be9077419f7b255e1da213ed21.tar.gz"
+sha256 = "8dec590d85a0248043b43a7848d6c50206e5dd2c19f29f8db94ede946ce65bdd"
+provider = "archive"
+
+[license]
+spdx = "LicenseRef-Genesis-Plus-GX"
+url = "https://github.com/libretro/Genesis-Plus-GX/blob/fa4dca561e08d5be9077419f7b255e1da213ed21/LICENSE.txt"

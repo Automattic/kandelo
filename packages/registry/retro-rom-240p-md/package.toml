@@ -1,0 +1,16 @@
+# The 240p Test Suite for Mega Drive / Genesis (Artemio Urbina and
+# contributors), release 1.21, exactly as upstream publishes it. kandelo-retro
+# installs the ROM inside as a starter ROM so the Mega Drive core has something
+# to run that is free to redistribute.
+kind = "source"
+name = "retro-rom-240p-md"
+version = "1.21"
+
+[source]
+url = "https://downloads.sourceforge.net/project/testsuite240p/OldFiles/Sega_Genesis-MegaDrive-SegaCD_MegaCD/240pSuite-GenesisMD-1.21.zip"
+sha256 = "2054524a7f8695d8df7f4cf1a773af6b26d4c7fe7f74d8f115fab2641a5a9dc5"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-only"
+url = "https://github.com/ArtemioUrbina/240pTestSuite"

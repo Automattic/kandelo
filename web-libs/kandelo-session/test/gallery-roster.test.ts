@@ -134,6 +134,7 @@ describe("parseGalleryRoster", () => {
       "modeset",
       "sdl2",
       "scummvm",
+      "retro",
       "omarchy",
       "espeak",
     ]);

@@ -382,6 +382,7 @@ Located in `apps/browser-demos/pages/`:
 | espeak | espeak-ng | dinit | Speech synthesis through upstream pcaudiolib's OSS backend, so playback rides the same `/dev/dsp` path as the doom demo. The binary and the voice data both come from the `espeak-ng` package closure — the data as the `espeak-ng-data.zip` runtime file, unpacked into `/usr/share/espeak-ng-data` while the image is composed, because libespeak-ng's `PATH_ESPEAK_DATA` is fixed at build time. |
 | modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package and is baked into the image before boot; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. No game ships; the profile takes a zipped game as an upload. |
+| retro | kandelo-retro (FCEUmm, Genesis Plus GX, Snes9x) | dinit | NES, SNES and Mega Drive emulation on `/dev/fb0` with OSS audio through `/dev/dsp` — see [Retro console demo](#retro-console-demo). The image declares `/usr/local/bin/retro-run`, a launcher that picks the core from the ROM's contents. The three programs and three starter ROMs are lazy files from the `kandelo-retro` package closure; the profile's `ingest` takes a ROM through **Load ROM**. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package and are baked into the image before boot; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + mako + Waybar + klauncher + qtgallery + Quickshell | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor, mako and Waybar; windows, including the Qt clients, are opened from the launcher and keybinds. |
 
@@ -958,6 +959,89 @@ against deterministic WAVs and compares the Node sink's consumed PCM exactly.
 Browser output remains a manual audible check because the production
 AudioWorklet intentionally exposes transport cursors, not rendered samples.
 
+### Retro console demo
+
+The `retro` machine runs one of three libretro cores on `/dev/fb0`, each
+linked statically into the same small frontend (`kandelo-retro`):
+FCEUmm for NES, Genesis Plus GX for Mega Drive, Master System and Game Gear,
+and Snes9x for SNES. It starts on the NES build of the 240p Test Suite; the
+package also carries the Mega Drive and SNES builds. All three are free to
+redistribute. They and the three programs are lazy files, so only the ROM and
+the core that actually run are fetched.
+
+- **Choosing the core.** `/usr/local/bin/retro-run` reads the ROM's own bytes:
+  the iNES magic, `SEGA` at offset 0x100, `TMR SEGA` near the end of a Master
+  System or Game Gear ROM, and the SNES header's checksum and complement. It
+  does not use the file's extension, which is often wrong. A file that matches
+  none of these is rejected with a message on the terminal; no core is
+  started. The launcher is a bash script that reads the ROM's first 64 KiB
+  once (`od | tr`) and does everything else with builtins, because each
+  process it starts costs real time in Kandelo: probing each offset with its
+  own `dd | od | tr` pipeline took about 25 processes to reach the SNES test
+  and made a SNES start take 7 s in Chromium and 11 s in WebKit, against
+  about 1.2 s and 2 s now.
+- **The ROM's name still matters.** FCEUmm takes an iNES 1.0 NES ROM's TV
+  system from tags in its name, such as `(E)` or `(Europe)` for PAL (an
+  NES 2.0 header carries its own region, which wins), and a European game run
+  as NTSC plays fast and high-pitched. The launcher
+  therefore starts the core on a link named after the ROM, with the extension
+  its contents chose: `/tmp/kandelo-retro/Mega Man 2 (E) _!_.nes`. The name
+  comes from the boot input's filename, the image path, or, for a loaded file,
+  the ingest's `namePath` (`/var/lib/kandelo-retro/rom.name`). Only letters,
+  digits, spaces and `._()!,&+-` survive; anything else becomes `_`.
+- **Loading a ROM.** **From file…** (or dropping a file on the display) writes
+  the file to `/var/lib/kandelo-retro/rom`, stops the running emulator, and
+  runs the launcher again. The cap is 16 MiB. The upload lives in the
+  machine's filesystem and is gone when the machine is. The dock's NES, SNES
+  and Mega Drive buttons load that system's starter ROM the same way, and the
+  dock names the ROM that is running.
+- **Reset and power.** The dock's save, reset and power controls are icon
+  buttons in one pill, each named by its tooltip and accessible label.
+  **Reset** stops the emulator and runs the launcher
+  again on the same ROM; **Power off** stops it and leaves `/dev/fb0` free,
+  and **Power on** runs the launcher again. A state delivered by a link is
+  applied to the first run after boot only, so Reset and Power on start the
+  ROM from its beginning, as a console's own buttons do.
+- **Input.** Arrow keys are the D-pad, Enter is Start, Right Shift is Select,
+  Z/X are B/A, A/S are Y/X, and Q/W are the shoulder buttons. A key pressed
+  and released within one frame still counts as pressed for that frame, so
+  quick taps, including taps on the touch controls, are not lost.
+- **Library.** The profile's `library` offers the three starter ROMs, a few
+  homebrew and public-domain games on the Internet Archive, and a search of
+  the Archive for each system; see
+  [Kandelo demo metadata](#kandelo-demo-metadata). A ZIP on the Archive opens
+  to list its ROMs, and only the chosen ROM is downloaded; a ZIP of per-game
+  ZIPs opens one level further.
+- **Save states in links.** The profile declares a `checkpoint` (see
+  [Kandelo demo metadata](#kandelo-demo-metadata)). The frontend saves on
+  SIGUSR1; `/usr/local/bin/retro-checkpoint` sends it and waits, for at most
+  eight seconds, for the frontend to confirm a complete state by echoing back
+  a fresh nonce. **Save state** in the dock takes a checkpoint and writes the
+  link into the page's own address, so reloading or bookmarking the page
+  restores the game; Share offers the same checkpoint as a check box. The
+  launcher starts the core with `--state` when a link delivers one. A state of
+  a ROM loaded from the visitor's device cannot be shared, and a state too big
+  for a link is refused with its size. Whether a state fits depends on the
+  core and on how well that moment of the game compresses; the NES test
+  suite's does.
+- **Audio paces the game.** The frontend asks `/dev/dsp` for a 32 KiB queue
+  (`SNDCTL_DSP_SETFRAGMENT`) instead of the default 4 KiB, about one frame at
+  48 kHz. After each frame it reads how much sound is queued
+  (`SNDCTL_DSP_GETODELAY`): below 60 ms the next frame runs at once, above it
+  the loop sleeps for the excess. The sound card's clock therefore sets the
+  frame rate, and the queue keeps a 60 ms lead that absorbs a late frame. A
+  frontend that paced by the wall clock kept the queue near empty, so any
+  late frame was a gap in the sound, heard as stutter and grain. If the queue
+  still runs dry, the emulator is slower than real time; the frontend says so
+  on the terminal, at most every ten seconds.
+- **Audio before a gesture.** `/dev/dsp` applies backpressure while the
+  browser holds audio suspended (see above). The frontend waits at most
+  100 ms for room in the queue, then drops samples until a write gets through
+  again, so the game runs silently rather than freezing on its first frame.
+  Until a write gets through, the wall clock paces the frames.
+- **Not supported.** Battery saves, controller remapping, a second player,
+  and any system other than the ones listed.
+
 ### ScummVM demo
 
 The ScummVM machine (`?vfs=<shell image>&profile=scummvm`) runs unmodified
@@ -1527,7 +1611,9 @@ compressed bytes, decompresses (gzip-transported payloads are supported),
 and verifies the final sha256+byteLength before writing to the VFS. Inputs
 are all-or-nothing: if any input fails verification, no changes occur.
 Resolver-kind inputs fail materialization loudly when no resolver is
-registered (the production registry is empty; inline sources only today).
+registered. The browser app registers one, `internet-archive` (see the
+`library` block under [Kandelo demo metadata](#kandelo-demo-metadata)); a
+link naming any other resolver fails its boot with that name.
 
 Opening a script link boots the machine selected by the query parameters
 (the fragment cannot select an image the query parameters could not) and
@@ -1683,6 +1769,142 @@ uses the kernel signal path and bounded process/device waits before dispatching
 the image-owned command. Write, signal, timeout, and command-dispatch failures
 remain visible. An absent `ingest` block means the image exposes no upload
 capability; the loader does not infer one from a package or profile name.
+
+An ingest may also declare `namePath`, an absolute path (other than
+`targetPath`) the browser writes the file's own name to, after the file: the
+last path component, control characters replaced, at most 255 bytes. It is
+for programs that read meaning from a name, as an emulator reads a ROM's
+region from `(Europe)`. The name is data in a file, never part of a command,
+and stays untrusted: the image decides what to accept from it.
+
+The browser remembers where the machine's last ingested file came from: a
+file picked or dropped from the visitor's device, or a file fetched through a
+boot-input resolver. A share link can only name content the opener's browser
+could fetch again, so this origin decides whether a checkpoint (below) can be
+shared.
+
+A profile with an `ingest` may also declare a library of things to load:
+
+```json
+{
+  "library": {
+    "provider": "internet-archive",
+    "inputId": "rom",
+    "groups": [
+      { "label": "NES", "query": "mediatype:software AND subject:\"NES\"" }
+    ],
+    "featured": [
+      { "item": "carpetshark", "title": "Carpet Shark", "group": "NES" }
+    ],
+    "bundled": [
+      { "path": "/usr/share/kandelo-retro/roms/240pee.nes", "title": "240p Test Suite", "group": "NES" }
+    ],
+    "maxArchiveBytes": 67108864
+  }
+}
+```
+
+The framebuffer dock splits the ingest control into **From file…** and
+**Search**. The second opens a drawer that offers the image's
+`bundled` files, its `featured` Internet Archive items, and a search of the
+Internet Archive within one of the image's `groups`, run as the visitor types.
+The visitor's search words are only ever quoted into the group's query, so
+they cannot widen it. Opening an item lists its files whose extensions the
+`ingest` accepts, and its ZIP files, which open to list their members; a ZIP
+member that is itself a ZIP opens one level further. Each list has a filter
+that narrows it by name and pages through what matches. The drawer is hidden,
+not removed, when it closes, so its search and whatever was opened are still
+there when it reopens. Search and item metadata come directly from
+`archive.org`, which sends CORS headers; file bytes and item thumbnails come
+through the CORS proxy, because their hosts send neither CORS nor
+Cross-Origin-Resource-Policy headers and the page is cross-origin isolated.
+
+A `bundled` entry may set `"default": true` (at most one) to say that the
+image's init runs it when a boot names nothing else. The dock uses that to
+name what a fresh machine is running, and offers one button per group that
+has a `bundled` entry, which loads that entry through the ingest.
+
+A ZIP member is extracted without downloading the archive: one suffix range
+read finds the end records (ZIP64 included), one more reads the central
+directory if it starts earlier, and one reads the member's local header and
+data. A relay that ignores `Range` gets the whole archive instead, up to
+`maxArchiveBytes` (64 MiB by default, at most 256 MiB); a larger archive is
+refused with that reason. A nested ZIP cannot be read by range, so it is
+fetched whole under the same cap, and its member is inflated into a buffer of
+exactly the size its directory declares, already checked against
+`ingest.maxBytes`. Encrypted members, members compressed with anything
+but store or deflate, and members over `ingest.maxBytes` are listed but cannot
+be picked. The directory is untrusted: every offset and size is checked against
+the archive's length before use.
+
+Whatever is picked goes through the same ingest as a dropped file. The panel
+also records where it came from, so a checkpoint link can name it: a file from
+the Internet Archive becomes a boot input of kind `resolver`, resolver
+`internet-archive`, with locator `{ "item", "file", "member"?, "inner"? }`
+(`inner` names a member of the nested ZIP `member`), under the
+library's `inputId`; a `bundled` file is named by boot parameter `ingestPath`.
+The opener's browser fetches a resolver input again through the same client,
+never reads more than the link's declared byte length, and rejects it unless
+its SHA-256 matches, before anything is written to the machine. The resolver
+is registered by the browser app; a link can only name it.
+
+A profile may also declare a checkpoint capability, the inverse of `ingest`:
+
+```json
+{
+  "checkpoint": {
+    "capture": {
+      "argv": ["/usr/local/bin/retro-checkpoint"],
+      "path": "/tmp/kandelo-retro.state",
+      "maxBytes": 2097152
+    },
+    "inputId": "state",
+    "filename": "retro.state",
+    "label": "Include save state"
+  }
+}
+```
+
+The browser runs `capture.argv` with no terminal (a `#!` script runs through
+its interpreter, as execve would) and takes its exit status as the only signal:
+exit 0 means `capture.path` holds a complete checkpoint made for this request,
+and any other status means there is none, so the file is not read. It reads
+the file through the kernel worker and rejects an empty file or one over
+`maxBytes`, which cannot exceed 2 MiB because the checkpoint travels in a link
+as a gzip-compressed inline boot input. The Share dialog offers it as a check
+box, and the framebuffer dock offers **Save state**, which writes the same
+link into the page's address with `history.replaceState`, so a reload boots
+it. Loading something else afterwards removes that fragment again, because it
+would restore the earlier content. The link carries the checkpoint as input
+`inputId`, plus what names the machine's content: the inputs and
+`ingestPath` parameter it booted with while nothing has been ingested since
+(not the link's script or an earlier checkpoint), the resolver input an
+ingested file was fetched through, or the `ingestPath` of a `bundled` file. A
+checkpoint of a file from the visitor's own device is refused before anything
+is captured, because no link could deliver that file to the opener. A
+checkpoint whose compressed size exceeds a link's 32 KiB inline cap fails with
+its size. Restoring is the image's job: the opener's boot materializes the
+checkpoint at `/run/kandelo/inputs/<inputId>/<filename>` and the profile's own
+init decides what to do with it.
+
+Ingest machines with an `onLoad.restart` also get **Reset** and
+**Power off/on** in the framebuffer dock. They act on the process that owns
+`/dev/fb0`, with the same steps an ingest uses: SIGTERM and a bounded wait for
+the process to exit and release the device, then the image's restart command.
+
+After a restart command is dispatched, by a load, Reset or Power on, the
+dock watches the machine's process events from before the dispatch. The start
+succeeds when a process other than the previous owner binds `/dev/fb0`. It
+fails at once, with a pointer to the terminal, when every process spawned
+since the dispatch has exited without binding, as when a launcher refuses a
+file. A 60-second limit covers anything else.
+
+The framebuffer surface is normally available only while some process has
+`/dev/fb0` bound, so a program that exits hands the view back to the terminal.
+On a machine whose ingest declares `onLoad.restart`, the surface stays
+available once something has drawn on it, until the machine stops: its
+program is restarted in place by design, and the pane has to stay to show the
+restart, the powered-off display and the controls that bring it back.
 
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported

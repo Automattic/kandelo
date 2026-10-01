@@ -23,6 +23,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -136,6 +137,41 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.stdout).toContain("SCRATCH size=24");
     expect(result.stdout).toContain("content=scratch-mount-roundtrip");
+  });
+
+  it("spawns a #! script from the VFS through its interpreter", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-node-script-"));
+    const script = join(fixtureRoot, "bin", "say");
+    mkdirSync(dirname(script), { recursive: true });
+    writeFileSync(
+      script,
+      '#!/bin/sh\nprintf "%s|%s" "$0" "$1" > /tmp/kandelo-run/out\nexit 7\n',
+    );
+    chmodSync(script, 0o755);
+    const host = new NodeKernelHost({
+      rootfsImage: "default" as const,
+      sessionSeedTrees: [{
+        sourcePath: fixtureRoot,
+        destinationPath: "/tmp/kandelo-run",
+      }],
+    });
+
+    try {
+      await host.init();
+      const { exit } = await host.spawnFromVfs(
+        "/tmp/kandelo-run/bin/say",
+        ["/tmp/kandelo-run/bin/say", "hello"],
+        { env: ["PATH=/usr/bin:/bin"] },
+      );
+      await expect(exit).resolves.toBe(7);
+      // The script saw itself as $0 and its own argument as $1.
+      await expect(host.readFileFromVfs("/tmp/kandelo-run/out")).resolves.toEqual(
+        new TextEncoder().encode("/tmp/kandelo-run/bin/say|hello"),
+      );
+    } finally {
+      await host.destroy();
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it("lists and stats the worker-owned VFS for the main thread", async () => {

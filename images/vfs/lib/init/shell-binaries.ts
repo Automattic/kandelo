@@ -175,6 +175,54 @@ export const SHELL_LAZY_BINARY_SPECS = [
     symlinks: [],
     mode: 0o644,
   },
+  // kandelo-retro: one libretro frontend linked against three cores, plus a
+  // starter ROM for each (the package's declared runtime_files).
+  // /usr/local/bin/retro-run is the image's launcher; it picks the core from
+  // the ROM's contents and execs one of these.
+  {
+    id: "kandelo-retro",
+    resolverPath: "programs/kandelo-retro/kandelo-retro.wasm",
+    vfsPath: "/usr/bin/kandelo-retro",
+    symlinks: [],
+  },
+  {
+    id: "kandelo-retro-genesis",
+    dependency: "kandelo-retro",
+    resolverPath: "programs/kandelo-retro/kandelo-retro-genesis.wasm",
+    vfsPath: "/usr/bin/kandelo-retro-genesis",
+    symlinks: [],
+  },
+  {
+    id: "kandelo-retro-snes",
+    dependency: "kandelo-retro",
+    resolverPath: "programs/kandelo-retro/kandelo-retro-snes.wasm",
+    vfsPath: "/usr/bin/kandelo-retro-snes",
+    symlinks: [],
+  },
+  {
+    id: "kandelo-retro-rom-nes",
+    dependency: "kandelo-retro",
+    resolverPath: "programs/kandelo-retro/share/kandelo-retro/roms/240pee.nes",
+    vfsPath: "/usr/share/kandelo-retro/roms/240pee.nes",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "kandelo-retro-rom-md",
+    dependency: "kandelo-retro",
+    resolverPath: "programs/kandelo-retro/share/kandelo-retro/roms/240pSuite-md-1.21.bin",
+    vfsPath: "/usr/share/kandelo-retro/roms/240pSuite-md-1.21.bin",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "kandelo-retro-rom-snes",
+    dependency: "kandelo-retro",
+    resolverPath: "programs/kandelo-retro/share/kandelo-retro/roms/240pSuite-snes-1.03.sfc",
+    vfsPath: "/usr/share/kandelo-retro/roms/240pSuite-snes-1.03.sfc",
+    symlinks: [],
+    mode: 0o644,
+  },
   // The Qt clients the launcher offers. quickshell.wasm alone is ~93 MB.
   { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/local/bin/qtgallery", symlinks: [] },
   { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/local/bin/quickshell", symlinks: [] },

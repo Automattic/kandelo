@@ -219,6 +219,74 @@ function parseShebang(bytes: Uint8Array): {
   return { interpreter: match[1]!, argument: match[2] };
 }
 
+/** What a host-initiated spawn of a VFS path actually runs. */
+export interface TopLevelSpawnProgram {
+  bytes: ArrayBuffer;
+  /** The file the kernel loads: the path itself, or its script interpreter. */
+  path: string;
+  argv: string[];
+}
+
+export class TopLevelSpawnError extends Error {
+  constructor(readonly code: "ENOENT" | "ENOEXEC", message: string) {
+    super(`${code}: ${message}`);
+    this.name = "TopLevelSpawnError";
+  }
+}
+
+/**
+ * Resolve a host-initiated spawn of `path` the way execve resolves a guest's:
+ * a WebAssembly module runs as itself, and a file starting with `#!` runs its
+ * interpreter with the script's path in place of argv[0], exactly as
+ * launchPreparedExecTarget does for a guest exec. As there, only one level of
+ * interpretation is followed: an interpreter that is itself a script is
+ * ENOEXEC.
+ *
+ * WHY here and not in each worker: both kernel workers spawn top-level
+ * processes, and a script that runs from a shell but not from the host is the
+ * kind of Node/browser or guest/host divergence the platform must not have.
+ */
+export async function resolveTopLevelSpawnProgram(
+  path: string,
+  argv: readonly string[],
+  read: (path: string) => Promise<ArrayBuffer | null>,
+): Promise<TopLevelSpawnProgram> {
+  const bytes = await read(path);
+  if (bytes === null) throw new TopLevelSpawnError("ENOENT", path);
+  if (isWasmModuleBytes(bytes)) return { bytes, path, argv: [...argv] };
+
+  const script = parseShebang(new Uint8Array(bytes));
+  if (script === null) {
+    throw new TopLevelSpawnError(
+      "ENOEXEC",
+      `${path} is neither a WebAssembly module nor a #! script`,
+    );
+  }
+  const interpreterBytes = await read(script.interpreter);
+  if (interpreterBytes === null) {
+    throw new TopLevelSpawnError(
+      "ENOENT",
+      `${script.interpreter} (the interpreter named by ${path})`,
+    );
+  }
+  if (!isWasmModuleBytes(interpreterBytes)) {
+    throw new TopLevelSpawnError(
+      "ENOEXEC",
+      `${script.interpreter} (the interpreter named by ${path}) is not a WebAssembly module`,
+    );
+  }
+  return {
+    bytes: interpreterBytes,
+    path: script.interpreter,
+    argv: [
+      script.interpreter,
+      ...(script.argument ? [script.argument] : []),
+      path,
+      ...argv.slice(1),
+    ],
+  };
+}
+
 function preparedTargetToken(result: number): number {
   if (Number.isSafeInteger(result) && result > 0) return result;
   throw new PreparedExecTargetError(

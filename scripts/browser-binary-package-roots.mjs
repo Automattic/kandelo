@@ -31,7 +31,11 @@ export const localOnlyBrowserImports = new Set([
 ]);
 
 export const registryPackagesWithoutBuildToml = new Set([
+  "genesis-plus-gx-source",
   "pcre2-source",
+  "retro-rom-240p-md",
+  "retro-rom-240p-snes",
+  "snes9x-source",
   "sqlite-cli",
   "wordpress-sqlite-integration-source",
 ]);

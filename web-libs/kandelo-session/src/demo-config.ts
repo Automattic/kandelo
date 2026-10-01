@@ -97,7 +97,99 @@ export interface DemoIngestConfig {
   maxBytes: number;
   /** Human-facing control label, e.g. "Load ROM". */
   label?: string;
+  /**
+   * Fixed absolute path the loaded file's own name is written to, as data,
+   * after the file itself. For programs that read meaning from a name (an
+   * emulator takes a ROM's region from "(Europe)"). The name never reaches
+   * a command line; the image decides how far to trust it.
+   */
+  namePath?: string;
   onLoad?: DemoIngestOnLoadConfig;
+}
+
+/**
+ * How to take a checkpoint of what a machine is running.
+ *
+ * `argv` is an author-provided command from the VFS image, never user input.
+ * It must leave a complete checkpoint at `path` and exit 0; any other exit
+ * status means there is no checkpoint, whatever `path` holds.
+ */
+export interface DemoCheckpointCaptureConfig {
+  argv: string[];
+  /** Fixed absolute path the command writes the checkpoint to. */
+  path: string;
+  /** Hard cap on the checkpoint's size, enforced before it leaves the machine. */
+  maxBytes: number;
+}
+
+/**
+ * Declarative "save where I am" capability — the inverse of `ingest`. The
+ * image says how a checkpoint is produced and under which boot-input name it
+ * returns; the machine's own init decides what to do with a checkpoint it
+ * finds at `/run/kandelo/inputs/<inputId>/<filename>` on a later boot.
+ * Content-neutral: nothing here knows what the bytes mean.
+ */
+export interface DemoCheckpointConfig {
+  capture: DemoCheckpointCaptureConfig;
+  /** Boot-input id the checkpoint travels under in a share link. */
+  inputId: string;
+  /** Basename the checkpoint is materialized as on the next boot. */
+  filename: string;
+  /** Human-facing control label, e.g. "Include save state". */
+  label?: string;
+}
+
+/** One search scope a library offers, e.g. one console's ROMs. */
+export interface DemoLibraryGroupConfig {
+  label: string;
+  /** Provider query clause every search in this group is ANDed with. */
+  query: string;
+}
+
+/** An item the library suggests before anyone searches. */
+export interface DemoLibraryFeaturedConfig {
+  /** The provider's identifier for the item. */
+  item: string;
+  title: string;
+  note?: string;
+  /** Label of the group it belongs to, for display. */
+  group?: string;
+}
+
+/** A file already in the image that the library offers alongside remote ones. */
+export interface DemoLibraryBundledConfig {
+  path: string;
+  title: string;
+  group?: string;
+  /**
+   * The image's own init loads this file when a boot names nothing else, so
+   * the UI can name what a fresh machine is running. At most one entry.
+   */
+  default?: boolean;
+}
+
+/**
+ * Declarative "find something to load" capability: where to search, what to
+ * suggest, and which files the image already carries. What the library
+ * finds is loaded through the profile's `ingest`, so a library requires one.
+ * Content-neutral: the image supplies every query and title.
+ */
+export interface DemoLibraryConfig {
+  /** The only provider today. Its searches and downloads are public. */
+  provider: "internet-archive";
+  /**
+   * Boot-input id a library file travels under in a share link, so an
+   * opener's machine can fetch the same verified bytes again.
+   */
+  inputId: string;
+  groups: DemoLibraryGroupConfig[];
+  featured?: DemoLibraryFeaturedConfig[];
+  bundled?: DemoLibraryBundledConfig[];
+  /**
+   * Largest archive downloaded whole when a server or relay ignores Range,
+   * so a member can still be extracted. Defaults to 64 MiB.
+   */
+  maxArchiveBytes?: number;
 }
 
 /**
@@ -275,6 +367,8 @@ export interface KandeloDemoProfileConfig {
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
+  checkpoint?: DemoCheckpointConfig;
+  library?: DemoLibraryConfig;
   runtime?: DemoRuntimeConfigInput;
   init?: DemoInitConfig;
   web?: DemoWebConfigInput;
@@ -367,6 +461,8 @@ const PROFILE_ONLY_KEYS = [
   "assets",
   "guide",
   "ingest",
+  "checkpoint",
+  "library",
   "runtime",
   "init",
   "web",
@@ -447,6 +543,26 @@ export function resolveDemoIngest(
   return profile?.ingest === undefined
     ? null
     : normalizeIngest(profile.ingest, `profiles.${profileId}.ingest`);
+}
+
+export function resolveDemoLibrary(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoLibraryConfig | null {
+  const profile = profileConfig(config, profileId);
+  return profile?.library === undefined
+    ? null
+    : normalizeLibrary(profile.library, `profiles.${profileId}.library`);
+}
+
+export function resolveDemoCheckpoint(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoCheckpointConfig | null {
+  const profile = profileConfig(config, profileId);
+  return profile?.checkpoint === undefined
+    ? null
+    : normalizeCheckpoint(profile.checkpoint, `profiles.${profileId}.checkpoint`);
 }
 
 /** Upper bound on any image-declared cap, so a bad image can't ask the browser
@@ -926,6 +1042,14 @@ function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
   if (typeof value.label === "string" && value.label.length > 0) {
     ingest.label = value.label;
   }
+  if (value.namePath !== undefined) {
+    const namePath = requiredString(value.namePath, `${field}.namePath`);
+    validateAbsoluteNormalizedPath(namePath, `${field}.namePath`);
+    if (namePath === targetPath) {
+      throw new Error(`${field}.namePath must differ from ${field}.targetPath`);
+    }
+    ingest.namePath = namePath;
+  }
   if (value.onLoad !== undefined) {
     if (!isRecord(value.onLoad)) {
       throw new Error(`${field}.onLoad must be an object`);
@@ -935,6 +1059,190 @@ function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
     };
   }
   return ingest;
+}
+
+/** A checkpoint travels in a share link as an inline boot input, so it can
+ *  never usefully exceed that transport's inflated cap
+ *  (boot-descriptor.ts `HARD_CAPS.maxInlineInflatedInputBytes`). An image that
+ *  asks for more is declaring something no link could carry. */
+const CHECKPOINT_MAX_BYTES_CEILING = 2 * 1024 * 1024;
+const CHECKPOINT_MAX_ARGV = 16;
+const CHECKPOINT_MAX_ARG_CHARS = 1024;
+
+function normalizeCheckpoint(value: unknown, field: string): DemoCheckpointConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  if (!isRecord(value.capture)) {
+    throw new Error(`${field}.capture must be an object`);
+  }
+  const rawArgv = value.capture.argv;
+  if (
+    !Array.isArray(rawArgv) || rawArgv.length === 0
+    || rawArgv.length > CHECKPOINT_MAX_ARGV
+  ) {
+    throw new Error(
+      `${field}.capture.argv must be an array of 1 to ${CHECKPOINT_MAX_ARGV} strings`,
+    );
+  }
+  const argv = rawArgv.map((arg, index) => {
+    const text = stringField(arg, `${field}.capture.argv[${index}]`);
+    if (text.length > CHECKPOINT_MAX_ARG_CHARS || text.includes("\0")) {
+      throw new Error(`${field}.capture.argv[${index}] is too long or contains NUL`);
+    }
+    return text;
+  });
+  // The command is spawned by path, not looked up on a PATH the image does
+  // not control at capture time.
+  validateAbsoluteNormalizedPath(argv[0], `${field}.capture.argv[0]`);
+
+  const path = requiredString(value.capture.path, `${field}.capture.path`);
+  validateAbsoluteNormalizedPath(path, `${field}.capture.path`);
+
+  const maxBytes = value.capture.maxBytes;
+  if (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error(`${field}.capture.maxBytes must be a positive integer`);
+  }
+  if (maxBytes > CHECKPOINT_MAX_BYTES_CEILING) {
+    throw new Error(
+      `${field}.capture.maxBytes exceeds the ${CHECKPOINT_MAX_BYTES_CEILING}-byte ceiling`,
+    );
+  }
+
+  // Same rules a boot descriptor applies to an input's id and filename, so a
+  // declared checkpoint can always be encoded into a link.
+  const inputId = requiredString(value.inputId, `${field}.inputId`);
+  if (inputId.length > 64 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(inputId)) {
+    throw new Error(`${field}.inputId must be a short identifier`);
+  }
+  const filename = requiredString(value.filename, `${field}.filename`);
+  if (
+    filename === "." || filename === ".." || filename.length > 255
+    || filename.includes("/") || filename.includes("\\")
+    || /[\x00-\x1f\x7f]/.test(filename)
+  ) {
+    throw new Error(`${field}.filename must be a safe basename`);
+  }
+
+  const checkpoint: DemoCheckpointConfig = {
+    capture: { argv, path, maxBytes },
+    inputId,
+    filename,
+  };
+  if (typeof value.label === "string" && value.label.length > 0) {
+    checkpoint.label = value.label;
+  }
+  return checkpoint;
+}
+
+const LIBRARY_MAX_GROUPS = 16;
+const LIBRARY_MAX_FEATURED = 64;
+const LIBRARY_MAX_BUNDLED = 32;
+const LIBRARY_MAX_QUERY_CHARS = 512;
+const LIBRARY_MAX_TEXT_CHARS = 200;
+const LIBRARY_DEFAULT_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const LIBRARY_ARCHIVE_BYTES_CEILING = 256 * 1024 * 1024;
+
+function normalizeLibrary(value: unknown, field: string): DemoLibraryConfig {
+  if (!isRecord(value)) throw new Error(`${field} must be an object`);
+  if (value.provider !== "internet-archive") {
+    throw new Error(`${field}.provider must be "internet-archive"`);
+  }
+  const inputId = requiredString(value.inputId, `${field}.inputId`);
+  if (inputId.length > 64 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(inputId)) {
+    throw new Error(`${field}.inputId must be a short identifier`);
+  }
+  const text = (raw: unknown, name: string, max = LIBRARY_MAX_TEXT_CHARS) => {
+    const out = requiredString(raw, name);
+    if (out.length > max) throw new Error(`${name} is longer than ${max} characters`);
+    return out;
+  };
+  const list = (raw: unknown, name: string, max: number, required: boolean) => {
+    if (raw === undefined && !required) return [];
+    if (!Array.isArray(raw) || (required && raw.length === 0) || raw.length > max) {
+      throw new Error(`${name} must be an array of ${required ? 1 : 0} to ${max} entries`);
+    }
+    return raw.map((entry, index) => {
+      if (!isRecord(entry)) throw new Error(`${name}[${index}] must be an object`);
+      return entry;
+    });
+  };
+
+  const groups = list(value.groups, `${field}.groups`, LIBRARY_MAX_GROUPS, true).map(
+    (group, index) => ({
+      label: text(group.label, `${field}.groups[${index}].label`),
+      query: text(group.query, `${field}.groups[${index}].query`, LIBRARY_MAX_QUERY_CHARS),
+    }),
+  );
+  if (new Set(groups.map((group) => group.label)).size !== groups.length) {
+    throw new Error(`${field}.groups must have distinct labels`);
+  }
+  const labels = new Set(groups.map((group) => group.label));
+  const groupOf = (raw: unknown, name: string): { group?: string } => {
+    if (raw === undefined) return {};
+    const group = text(raw, name);
+    if (!labels.has(group)) throw new Error(`${name} names no declared group`);
+    return { group };
+  };
+
+  const featured = list(value.featured, `${field}.featured`, LIBRARY_MAX_FEATURED, false).map(
+    (entry, index) => {
+      const name = `${field}.featured[${index}]`;
+      const item = text(entry.item, `${name}.item`, 128);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(item)) {
+        throw new Error(`${name}.item must be an Internet Archive identifier`);
+      }
+      return {
+        item,
+        title: text(entry.title, `${name}.title`),
+        ...(entry.note === undefined ? {} : { note: text(entry.note, `${name}.note`) }),
+        ...groupOf(entry.group, `${name}.group`),
+      };
+    },
+  );
+
+  const bundled = list(value.bundled, `${field}.bundled`, LIBRARY_MAX_BUNDLED, false).map(
+    (entry, index) => {
+      const name = `${field}.bundled[${index}]`;
+      const path = requiredString(entry.path, `${name}.path`);
+      validateAbsoluteNormalizedPath(path, `${name}.path`);
+      if (entry.default !== undefined && typeof entry.default !== "boolean") {
+        throw new Error(`${name}.default must be a boolean`);
+      }
+      return {
+        path,
+        title: text(entry.title, `${name}.title`),
+        ...groupOf(entry.group, `${name}.group`),
+        ...(entry.default === true ? { default: true } : {}),
+      };
+    },
+  );
+  if (bundled.filter((entry) => entry.default).length > 1) {
+    throw new Error(`${field}.bundled may mark at most one entry as the default`);
+  }
+
+  let maxArchiveBytes = LIBRARY_DEFAULT_ARCHIVE_BYTES;
+  if (value.maxArchiveBytes !== undefined) {
+    const raw = value.maxArchiveBytes;
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
+      throw new Error(`${field}.maxArchiveBytes must be a positive integer`);
+    }
+    if (raw > LIBRARY_ARCHIVE_BYTES_CEILING) {
+      throw new Error(
+        `${field}.maxArchiveBytes exceeds the ${LIBRARY_ARCHIVE_BYTES_CEILING}-byte ceiling`,
+      );
+    }
+    maxArchiveBytes = raw;
+  }
+
+  return {
+    provider: "internet-archive",
+    inputId,
+    groups,
+    ...(featured.length > 0 ? { featured } : {}),
+    ...(bundled.length > 0 ? { bundled } : {}),
+    maxArchiveBytes,
+  };
 }
 
 /**
@@ -985,6 +1293,15 @@ function validateProfileFields(
   }
   if (value.ingest !== undefined) {
     normalizeIngest(value.ingest, `${field}.ingest`);
+  }
+  if (value.checkpoint !== undefined) {
+    normalizeCheckpoint(value.checkpoint, `${field}.checkpoint`);
+  }
+  if (value.library !== undefined) {
+    if (value.ingest === undefined) {
+      throw new Error(`${field}.library requires ${field}.ingest to load what it finds`);
+    }
+    normalizeLibrary(value.library, `${field}.library`);
   }
 }
 

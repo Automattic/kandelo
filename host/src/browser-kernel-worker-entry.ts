@@ -34,6 +34,11 @@ import type {
   PreparedExecLaunchRequest,
 } from "./exec-target";
 import {
+  resolveTopLevelSpawnProgram,
+  TopLevelSpawnError,
+  type TopLevelSpawnProgram,
+} from "./exec-target";
+import {
   listPreparedPlatformDirectory,
   readPreparedPlatformFile,
   statPreparedPlatformPath,
@@ -1405,13 +1410,24 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     if (msg.programBytes) {
       programBytes = msg.programBytes;
     } else if (msg.programPath) {
-      // Read from shared filesystem
-      const bytes = await readExecFileFromFs(msg.programPath);
-      if (!bytes) {
-        respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
-        return;
+      // Read from the kernel-owned filesystem, resolving a #! script to its
+      // interpreter exactly as a guest execve would.
+      let resolved: TopLevelSpawnProgram;
+      try {
+        resolved = await resolveTopLevelSpawnProgram(
+          msg.programPath,
+          msg.argv,
+          readExecFileFromFs,
+        );
+      } catch (error) {
+        if (error instanceof TopLevelSpawnError) {
+          respondError(msg.requestId, error.message);
+          return;
+        }
+        throw error;
       }
-      programBytes = bytes;
+      programBytes = resolved.bytes;
+      msg = { ...msg, programPath: resolved.path, argv: resolved.argv };
     } else {
       respondError(msg.requestId, "No programBytes or programPath");
       return;

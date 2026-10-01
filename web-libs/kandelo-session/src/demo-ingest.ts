@@ -13,7 +13,7 @@
 // exited and the kernel's exit path has released the binding.
 
 import type { DemoIngestConfig } from "./demo-config";
-import type { KernelHost } from "./kernel-host";
+import type { DemoIngestSource, KernelHost } from "./kernel-host";
 
 /** POSIX SIGTERM. Default disposition terminates a process with no handler. */
 export const SIGTERM = 15;
@@ -63,6 +63,24 @@ export interface RunDemoIngestOptions {
   onPhase?: (phase: IngestPhase) => void;
   /** How long to wait for the old process to go away. */
   stopTimeoutMs?: number;
+  /**
+   * Where the file came from. Defaults to an upload from the visitor's
+   * device; a caller that fetched the bytes through a boot-input resolver
+   * passes that input so the content can later be named in a share link.
+   */
+  source?: DemoIngestSource;
+}
+
+/**
+ * The name written to `namePath`: the last path component, without control
+ * characters, at most 255 UTF-8 bytes. Still untrusted data for the image.
+ */
+export function ingestFileName(name: string): string {
+  const base = name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1);
+  let out = base.replace(/[\u0000-\u001f\u007f]/g, "_");
+  const encoder = new TextEncoder();
+  while (encoder.encode(out).byteLength > 255) out = out.slice(0, -1);
+  return out || "file";
 }
 
 /** Lowercase extension of a filename, including the dot. "" when none. */
@@ -113,6 +131,7 @@ export async function runDemoIngest(
     waitForRelease,
     onPhase = () => {},
     stopTimeoutMs = 10_000,
+    source = { kind: "upload", name: file.name },
   } = options;
 
   onPhase("validating");
@@ -140,6 +159,23 @@ export async function runDemoIngest(
       `could not write ${ingest.targetPath}: ${errorText(err)}`,
     );
   }
+  if (ingest.namePath) {
+    try {
+      await host.writeFile(
+        ingest.namePath,
+        new TextEncoder().encode(ingestFileName(file.name)),
+        0o644,
+      );
+    } catch (err) {
+      throw new IngestError(
+        "write-failed",
+        `could not write ${ingest.namePath}: ${errorText(err)}`,
+      );
+    }
+  }
+  // The file at targetPath is now this one, whether or not the restart below
+  // succeeds, so its origin is recorded as soon as the write lands.
+  host.noteDemoIngest(source);
 
   if (!ingest.onLoad) {
     onPhase("done");
@@ -148,47 +184,19 @@ export async function runDemoIngest(
 
   if (targetPid !== null) {
     onPhase("stopping");
-    // Start watching before signalling, or a fast exit lands before we listen.
-    // The abort signal also guarantees bounded listener lifetime on timeout.
-    const releaseAbort = new AbortController();
-    let releasePromise: Promise<void>;
     try {
-      releasePromise = waitForRelease
-        ? waitForRelease(targetPid, releaseAbort.signal)
-        : waitForProcessExit(host, targetPid, {
-            signal: releaseAbort.signal,
-          });
-    } catch (error) {
-      releasePromise = Promise.reject(error);
-    }
-    const released = waitUntil(
-      releasePromise,
-      stopTimeoutMs,
-      `process ${targetPid} did not exit within ${stopTimeoutMs}ms`,
-    );
-    // If signalProcess throws we never await `released`; keep its eventual
-    // timeout rejection from surfacing as an unhandled rejection.
-    released.catch(() => {});
-    try {
-      // An already-dead pid resolves false. The subscribed-then-enumerated
-      // release wait still settles truthfully without requiring a future event.
-      await host.signalProcess(targetPid, SIGTERM);
-      await released;
+      await stopDemoProgram(host, targetPid, { waitForRelease, stopTimeoutMs });
     } catch (err) {
       throw new IngestError(
         "restart-failed",
         `wrote ${ingest.targetPath} but could not stop pid ${targetPid}: ${errorText(err)}`,
       );
-    } finally {
-      releaseAbort.abort();
     }
   }
 
   onPhase("starting");
   try {
-    // The command is a long-lived foreground program. Wait for the PTY write,
-    // not for a new shell prompt, and propagate any dispatch failure.
-    await host.dispatchShellCommand(ingest.onLoad.restart);
+    await startDemoProgram(host, ingest);
   } catch (err) {
     throw new IngestError(
       "restart-failed",
@@ -196,6 +204,70 @@ export async function runDemoIngest(
     );
   }
   onPhase("done");
+}
+
+export interface StopDemoProgramOptions {
+  /** See `RunDemoIngestOptions.waitForRelease`. */
+  waitForRelease?: (pid: number, signal: AbortSignal) => Promise<void>;
+  /** How long to wait for the process to go away. Defaults to 10 seconds. */
+  stopTimeoutMs?: number;
+}
+
+/**
+ * SIGTERM the program that consumes the ingested file and resolve once it
+ * has released what a replacement needs. This is "power off": the program
+ * gets the same signal a shutdown would send it, and nothing is restarted.
+ */
+export async function stopDemoProgram(
+  host: KernelHost,
+  pid: number,
+  options: StopDemoProgramOptions = {},
+): Promise<void> {
+  const { waitForRelease, stopTimeoutMs = 10_000 } = options;
+  // Start watching before signalling, or a fast exit lands before we listen.
+  // The abort signal also guarantees bounded listener lifetime on timeout.
+  const releaseAbort = new AbortController();
+  let releasePromise: Promise<void>;
+  try {
+    releasePromise = waitForRelease
+      ? waitForRelease(pid, releaseAbort.signal)
+      : waitForProcessExit(host, pid, { signal: releaseAbort.signal });
+  } catch (error) {
+    releasePromise = Promise.reject(error);
+  }
+  const released = waitUntil(
+    releasePromise,
+    stopTimeoutMs,
+    `process ${pid} did not exit within ${stopTimeoutMs}ms`,
+  );
+  // If signalProcess throws we never await `released`; keep its eventual
+  // timeout rejection from surfacing as an unhandled rejection.
+  released.catch(() => {});
+  try {
+    // An already-dead pid resolves false. The subscribed-then-enumerated
+    // release wait still settles truthfully without requiring a future event.
+    await host.signalProcess(pid, SIGTERM);
+    await released;
+  } finally {
+    releaseAbort.abort();
+  }
+}
+
+/**
+ * Start the image's `onLoad.restart` command, which consumes whatever file
+ * is at `targetPath` now. This is "power on"; a reset is a stop followed by
+ * this. Throws when the image declares no restart command.
+ */
+export async function startDemoProgram(
+  host: KernelHost,
+  ingest: DemoIngestConfig,
+): Promise<void> {
+  if (!ingest.onLoad) {
+    throw new Error("this machine declares no command to start its program");
+  }
+  // The command is a long-lived foreground program. Wait for the PTY write,
+  // not for a new shell prompt, and propagate any dispatch failure.
+  await host.dispatchShellCommand(ingest.onLoad.restart);
 }
 
 /**

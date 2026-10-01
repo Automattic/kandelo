@@ -1,0 +1,10 @@
+script_path = "packages/registry/kandelo-retro/build-kandelo-retro.sh"
+inputs = [
+  "packages/registry/kandelo-retro/build-kandelo-retro.sh",
+  "packages/registry/kandelo-retro/frontend/main.c",
+  "packages/registry/kandelo-retro/LICENSE-MAP.md",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
