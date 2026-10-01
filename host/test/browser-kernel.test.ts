@@ -794,6 +794,32 @@ describe("BrowserKernel", () => {
     expect(await readPromise).toEqual(bytes);
   });
 
+  it("readTreeFromVfs round-trips a directory to the worker and back", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    void kernel.boot({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0), argv: ["/init"] });
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    w.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const readPromise = kernel.readTreeFromVfs("/home/maker");
+    await new Promise((r) => setTimeout(r, 0));
+    const read = w.lastMessage("read_vfs_tree");
+    expect(read.path).toBe("/home/maker");
+    const entries = [
+      { path: "hello.txt", kind: "file", mode: 0o644, bytes: new Uint8Array([1]) },
+    ];
+    w.simulateMessage({ type: "response", requestId: read.requestId, result: entries });
+    expect(await readPromise).toEqual(entries);
+
+    const badPromise = kernel.readTreeFromVfs("/home/maker");
+    await new Promise((r) => setTimeout(r, 0));
+    const bad = w.lastMessage("read_vfs_tree");
+    w.simulateMessage({ type: "response", requestId: bad.requestId, result: null });
+    await expect(badPromise).rejects.toThrow(/invalid VFS tree/);
+  });
+
   it("signalProcess round-trips through the browser kernel worker", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });

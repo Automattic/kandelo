@@ -190,6 +190,13 @@ export interface ReadVfsFileMessage {
   includeMode?: boolean;
 }
 
+export interface ReadVfsTreeMessage {
+  type: "read_vfs_tree";
+  requestId: number;
+  /** Directory whose tree is read; the reply lists `VfsTreeEntry` values. */
+  path: string;
+}
+
 export interface WriteVfsFileMessage {
   type: "write_vfs_file";
   requestId: number;
@@ -711,6 +718,7 @@ export type MainToKernelMessage =
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage
+  | ReadVfsTreeMessage
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
   | ExportRootfsImageMessage

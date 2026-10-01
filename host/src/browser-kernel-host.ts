@@ -7,6 +7,7 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
+import type { VfsTreeEntry } from "./vfs/tree";
 import {
   MemoryFileSystem,
   type LazyDownloadEvent,
@@ -1744,6 +1745,24 @@ export class BrowserKernel {
       path,
     });
     return (result as Uint8Array | null) ?? null;
+  }
+
+  /**
+   * Read the directory tree under `path` from the worker-owned VFS: every
+   * entry with its mode, regular files with their bytes, symlinks with their
+   * target. The main thread never receives the live VFS SharedArrayBuffer.
+   */
+  async readTreeFromVfs(path: string): Promise<VfsTreeEntry[]> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_tree",
+      requestId,
+      path,
+    });
+    if (!Array.isArray(result)) {
+      throw new Error("kernel worker returned an invalid VFS tree");
+    }
+    return result as VfsTreeEntry[];
   }
 
   /**

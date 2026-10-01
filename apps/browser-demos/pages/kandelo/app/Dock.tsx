@@ -2,7 +2,7 @@ import * as React from "react";
 import markUrl from "../assets/kandelo-mark.png";
 import type { MachineStatus } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
-export type DockPaneId = "gallery";
+export type DockPaneId = "gallery" | "machines";
 export type DockViewId = "demo" | "terminal";
 
 const REPOSITORY_URL = "https://github.com/Automattic/kandelo";
@@ -57,6 +57,13 @@ const NETWORK_ITEM: DockItem<"network"> = {
   icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="3.6" cy="4" r="1.8" /><circle cx="12.4" cy="4" r="1.8" /><circle cx="8" cy="12.4" r="1.8" /><path d="M5.4 4h5.2M4.5 5.6 7 10.8M11.5 5.6 9 10.8" /></svg>,
 };
 
+const SAVE_ITEM: DockItem<"save"> = {
+  id: "save",
+  label: "Save",
+  title: "Save this machine in this browser",
+  icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M3 2.5h8l2 2v9H3z" /><path d="M5 2.5v3.5h5V2.5" /><rect x="5" y="9" width="6" height="4.5" rx=".6" /></svg>,
+};
+
 const THEME_ITEM: DockItem<"theme"> = {
   id: "theme",
   label: "Theme",
@@ -70,6 +77,12 @@ const PANE_ITEMS: DockItem<DockPaneId>[] = [
     label: "New",
     title: "Launch new machine",
     icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M8 3v10M3 8h10" /></svg>,
+  },
+  {
+    id: "machines",
+    label: "Machines",
+    title: "Open a machine saved in this browser",
+    icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="2.5" y="2.5" width="11" height="4" rx="1" /><rect x="2.5" y="9.5" width="11" height="4" rx="1" /><path d="M5 4.5h.01M5 11.5h.01" strokeLinecap="round" strokeWidth="1.8" /></svg>,
   },
 ];
 
@@ -105,6 +118,7 @@ export const Dock: React.FC<{
   guidePopup?: React.ReactNode;
   internalsPopup?: React.ReactNode;
   networkPopup?: React.ReactNode;
+  savePopup?: React.ReactNode;
   themePopup?: React.ReactNode;
   guideAvailable: boolean;
   guideOpen: boolean;
@@ -112,6 +126,10 @@ export const Dock: React.FC<{
   internalsOpen: boolean;
   networkOpen: boolean;
   networkConnected: boolean;
+  saveOpen: boolean;
+  saveAvailable: boolean;
+  /** Whether the running machine is saved in this browser. */
+  saved: boolean;
   themeOpen: boolean;
   shareAvailable: boolean;
   status: MachineStatus;
@@ -142,11 +160,13 @@ export const Dock: React.FC<{
   onToggleGuide: () => void;
   onToggleInternals: () => void;
   onToggleNetwork: () => void;
+  onToggleSave: () => void;
   onToggleTheme: () => void;
   onOpenShare: () => void;
   onCloseGuide: () => void;
   onCloseInternals: () => void;
   onCloseNetwork: () => void;
+  onCloseSave: () => void;
   onCloseTheme: () => void;
   onHeightChange: (height: number) => void;
   onLayoutChange?: (layout: DockLayoutState) => void;
@@ -157,6 +177,7 @@ export const Dock: React.FC<{
   guidePopup,
   internalsPopup,
   networkPopup,
+  savePopup,
   themePopup,
   guideAvailable,
   guideOpen,
@@ -166,6 +187,9 @@ export const Dock: React.FC<{
   networkConnected,
   role,
   roleName,
+  saveOpen,
+  saveAvailable,
+  saved,
   themeOpen,
   shareAvailable,
   status,
@@ -176,11 +200,13 @@ export const Dock: React.FC<{
   onToggleGuide,
   onToggleInternals,
   onToggleNetwork,
+  onToggleSave,
   onToggleTheme,
   onOpenShare,
   onCloseGuide,
   onCloseInternals,
   onCloseNetwork,
+  onCloseSave,
   onCloseTheme,
   onHeightChange,
   onLayoutChange,
@@ -191,10 +217,12 @@ export const Dock: React.FC<{
   const guideButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const internalsButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const networkButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const saveButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const themeButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const guidePopoverRef = React.useRef<HTMLDivElement | null>(null);
   const internalsPopoverRef = React.useRef<HTMLDivElement | null>(null);
   const networkPopoverRef = React.useRef<HTMLDivElement | null>(null);
+  const savePopoverRef = React.useRef<HTMLDivElement | null>(null);
   const themePopoverRef = React.useRef<HTMLDivElement | null>(null);
   const compactClampPausedUntilRef = React.useRef(0);
   const dragRef = React.useRef<{
@@ -213,6 +241,7 @@ export const Dock: React.FC<{
   const guideAnchor = useDockPopoverAnchor(guideOpen, guidePopup, shellRef, guideButtonRef, 380);
   const internalsAnchor = useDockPopoverAnchor(internalsOpen, internalsPopup, shellRef, internalsButtonRef, 980);
   const networkAnchor = useDockPopoverAnchor(networkOpen, networkPopup, shellRef, networkButtonRef, 460);
+  const saveAnchor = useDockPopoverAnchor(saveOpen, savePopup, shellRef, saveButtonRef, 400);
   const themeAnchor = useDockPopoverAnchor(themeOpen, themePopup, shellRef, themeButtonRef, 360);
   const statusLabel = formatMachineStatus(status);
   const title = machineTitle || "Kandelo machine";
@@ -284,11 +313,12 @@ export const Dock: React.FC<{
     onCloseGuide();
     onCloseInternals();
     onCloseNetwork();
+    onCloseSave();
     onCloseTheme();
-  }, [collapsed, onCloseGuide, onCloseInternals, onCloseNetwork, onCloseTheme]);
+  }, [collapsed, onCloseGuide, onCloseInternals, onCloseNetwork, onCloseSave, onCloseTheme]);
 
   React.useEffect(() => {
-    if (!guideOpen && !internalsOpen && !networkOpen && !themeOpen) return;
+    if (!guideOpen && !internalsOpen && !networkOpen && !saveOpen && !themeOpen) return;
 
     const handleOutsidePointerDown = (event: PointerEvent) => {
       const target = event.target;
@@ -312,6 +342,12 @@ export const Dock: React.FC<{
         }
       }
 
+      if (saveOpen) {
+        if (!savePopoverRef.current?.contains(target) && !saveButtonRef.current?.contains(target)) {
+          onCloseSave();
+        }
+      }
+
       if (themeOpen) {
         if (!themePopoverRef.current?.contains(target) && !themeButtonRef.current?.contains(target)) {
           onCloseTheme();
@@ -325,16 +361,19 @@ export const Dock: React.FC<{
     guideOpen,
     internalsOpen,
     networkOpen,
+    saveOpen,
     themeOpen,
     onCloseGuide,
     onCloseInternals,
     onCloseNetwork,
+    onCloseSave,
     onCloseTheme,
   ]);
 
   const guidePopoverStyle = popoverStyle(guideAnchor, 380);
   const internalsPopoverStyle = popoverStyle(internalsAnchor, 980);
   const networkPopoverStyle = popoverStyle(networkAnchor, 460);
+  const savePopoverStyle = popoverStyle(saveAnchor, 400);
   const themePopoverStyle = popoverStyle(themeAnchor, 360);
   const expandedDockWidth = dockCenter !== null
     ? Math.ceil(2 * Math.max(dockCenter, viewportWidth - dockCenter))
@@ -588,6 +627,19 @@ export const Dock: React.FC<{
                   <span className="kdock-label">{NETWORK_ITEM.label}</span>
                 </button>
                 <button
+                  ref={saveButtonRef}
+                  type="button"
+                  className={saved ? "kdock-item is-saved" : "kdock-item"}
+                  aria-pressed={saveOpen}
+                  aria-expanded={saveOpen}
+                  title={SAVE_ITEM.title}
+                  disabled={!saveAvailable}
+                  onClick={onToggleSave}
+                >
+                  <span className="kdock-icon">{SAVE_ITEM.icon}</span>
+                  <span className="kdock-label">{SAVE_ITEM.label}</span>
+                </button>
+                <button
                   ref={themeButtonRef}
                   type="button"
                   className="kdock-item"
@@ -676,6 +728,31 @@ export const Dock: React.FC<{
             onClick={(event) => event.stopPropagation()}
           >
             {networkPopup}
+          </div>
+        </>
+      )}
+
+      {saveOpen && savePopup && savePopoverStyle && (
+        <>
+          <div
+            className="kdock-popover-dismiss-layer"
+            aria-hidden="true"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              onCloseSave();
+            }}
+          />
+          <div
+            ref={savePopoverRef}
+            className="kdock-popover kdock-save-popover"
+            role="dialog"
+            aria-label="Save"
+            style={savePopoverStyle}
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerUp={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            {savePopup}
           </div>
         </>
       )}

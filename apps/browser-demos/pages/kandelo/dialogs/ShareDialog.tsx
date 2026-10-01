@@ -14,6 +14,8 @@ import {
   createInlineBootInput,
   decodeInlineBootInputText,
 } from "../../../../../web-libs/kandelo-session/src/boot-inputs";
+import { ephemeralDescriptor } from "../../../../../web-libs/kandelo-session/src/persistent-machine";
+import { machineUrl } from "../url-state";
 import type {
   BootDescriptor,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
@@ -57,8 +59,10 @@ export const SharePanel: React.FC<SharePanelProps> = ({
   const [error, setError] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
 
+  // A saved machine's workspace is this browser's; the link carries the
+  // machine's image and boot, and the opener runs them on memory.
   const baseDescriptor: BootDescriptor = React.useMemo(
-    () => presetDesc ?? host.getBootDescriptor(),
+    () => ephemeralDescriptor(presetDesc ?? host.getBootDescriptor()),
     [presetDesc, host],
   );
 
@@ -95,7 +99,7 @@ export const SharePanel: React.FC<SharePanelProps> = ({
       try {
         const trimmed = script.trim();
         if (!trimmed) {
-          if (!cancelled) { setUrl(workingShareUrl(null)); setError(null); }
+          if (!cancelled) { setUrl(workingShareUrl(baseDescriptor, null)); setError(null); }
           return;
         }
         const text = script.endsWith("\n") ? script : `${script}\n`;
@@ -118,7 +122,7 @@ export const SharePanel: React.FC<SharePanelProps> = ({
           },
         };
         const { fragment } = await encodeBootDescriptor(desc);
-        if (!cancelled) { setUrl(workingShareUrl(fragment)); setError(null); }
+        if (!cancelled) { setUrl(workingShareUrl(baseDescriptor, fragment)); setError(null); }
       } catch (err) {
         if (!cancelled) {
           setUrl("");
@@ -246,11 +250,11 @@ export const SharePanel: React.FC<SharePanelProps> = ({
 /**
  * Links must open in THIS app. The codec's buildShareUrl() path modes
  * (/c/<id>, /m/…, /p/…) have no routes here, so the working link is the
- * current page URL (which already carries ?demo=/?vfs= machine identity)
- * plus the descriptor fragment.
+ * page URL that names the machine (?demo=/?vfs=) plus the descriptor
+ * fragment.
  */
-function workingShareUrl(fragment: string | null): string {
-  const url = new URL(window.location.href);
+function workingShareUrl(descriptor: BootDescriptor, fragment: string | null): string {
+  const url = new URL(machineUrl(descriptor));
   url.hash = fragment ?? "";
   return url.href;
 }

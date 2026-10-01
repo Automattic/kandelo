@@ -162,6 +162,11 @@ export interface KernelLike {
    */
   writeFileToVfs?(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
   /**
+   * Read the directory tree under `path` from the kernel-owned VFS. Mirrors
+   * `host/src/vfs/tree.ts: readVfsTree`.
+   */
+  readTreeFromVfs?(path: string): Promise<VfsTreeEntry[]>;
+  /**
    * Freeze this machine, read it whole, and resume it. The machine keeps
    * running: every buffer in the result is a copy the freeze took, which is
    * what a restore on another computer consumes. Mirrors
@@ -845,6 +850,26 @@ export interface VfsDirent {
   target?: string;                  // for symlinks
 }
 
+/**
+ * One entry of a directory tree read out of the VFS, path relative to the
+ * root that was read. Mirrors `host/src/vfs/tree.ts: VfsTreeEntry`.
+ */
+export type VfsTreeEntry =
+  | { readonly path: string; readonly kind: "directory"; readonly mode: number }
+  | {
+      readonly path: string;
+      readonly kind: "file";
+      readonly mode: number;
+      readonly bytes: Uint8Array;
+    }
+  | {
+      readonly path: string;
+      readonly kind: "symlink";
+      readonly mode: number;
+      readonly target: string;
+    }
+  | { readonly path: string; readonly kind: "other"; readonly mode: number };
+
 export interface MountInfo {
   source: string;                   // "kandelo-vfs", "tmpfs"
   target: string;                   // "/", "/proc"
@@ -1145,6 +1170,8 @@ export interface KernelHost {
   readFile(path: string): Promise<Uint8Array>;
   readFileText(path: string): Promise<string>;
   readDir(path: string): Promise<VfsDirent[]>;
+  /** The whole tree under `path`, files with their bytes, through the kernel. */
+  readTree(path: string): Promise<VfsTreeEntry[]>;
   stat(path: string): Promise<VfsDirent | null>;
   /**
    * Write `bytes` to `path` in the live guest VFS. The parent directory must
@@ -2967,6 +2994,16 @@ export class LiveKernelHost implements KernelHost {
 
   async readFileText(path: string): Promise<string> {
     return new TextDecoder().decode(await this.readFile(path));
+  }
+
+  async readTree(path: string): Promise<VfsTreeEntry[]> {
+    if (!this.kernel?.readTreeFromVfs) {
+      throw new Error(
+        `LiveKernelHost.readTree(${path}): the attached kernel cannot read ` +
+        `a VFS tree (no readTreeFromVfs).`,
+      );
+    }
+    return this.kernel.readTreeFromVfs(path);
   }
 
   /**

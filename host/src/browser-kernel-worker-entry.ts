@@ -69,6 +69,7 @@ import {
   type HttpResponse,
 } from "./networking/in-kernel-http";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
+import { readVfsTree } from "./vfs/tree";
 import { ensureMountPointDirectories } from "./vfs/default-mounts";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -4702,6 +4703,25 @@ async function handleReadVfsFile(
   }
 }
 
+async function handleReadVfsTree(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_tree" }>,
+) {
+  if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    // Reading every file under the root can materialize lazy files, so the
+    // whole walk is serialized with snapshots like a single file read.
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "read or materialize a rootfs tree",
+    );
+    respond(msg.requestId, await readVfsTree(io, msg.path));
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
 // Mutate the mounted filesystem from inside its owning worker. This keeps the
 // VFS SAB off the persistent browser main thread while allowing harnesses to
 // stage transient files between process spawns.
@@ -5393,6 +5413,7 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "terminate_process": void handleTerminateProcess(msg); break;
     case "read_vfs_file": void handleReadVfsFile(msg); break;
+    case "read_vfs_tree": void handleReadVfsTree(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;

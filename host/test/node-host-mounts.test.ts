@@ -167,6 +167,15 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
           host.readFileFromVfs("/tmp/kandelo-run/suite/fixture"),
         ).resolves.toEqual(new TextEncoder().encode("seed"));
       }
+      await expect(first.readTreeFromVfs("/tmp/kandelo-run")).resolves.toEqual([
+        { path: "suite", kind: "directory", mode: expect.any(Number) },
+        {
+          path: "suite/fixture",
+          kind: "file",
+          mode: expect.any(Number),
+          bytes: new TextEncoder().encode("seed"),
+        },
+      ]);
 
       expect(
         await first.spawn(programBytes, [

@@ -46,6 +46,7 @@ import {
   HostRandomProvider,
   MemoryFileSystem,
   readPreparedPlatformFile,
+  readVfsTree,
 } from "./vfs";
 import {
   ReplicationLogRecorder,
@@ -4629,6 +4630,32 @@ async function handleReadVfsFile(
   }
 }
 
+async function handleReadVfsTree(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_tree" }>,
+) {
+  const io = vfsExecIO;
+  if (!io) {
+    respondError(msg.requestId, "VFS is not initialized");
+    return;
+  }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    // Reading every file under the root can materialize deferred files, so
+    // the whole walk is serialized with snapshots like a single file read.
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "read or materialize a rootfs tree",
+    );
+    respond(msg.requestId, await readVfsTree(io, msg.path));
+  } catch (error) {
+    respondError(
+      msg.requestId,
+      error instanceof Error ? error.message : String(error),
+    );
+  } finally {
+    releaseMutation?.();
+  }
+}
+
 function handleWriteVfsFile(
   msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>,
 ) {
@@ -4768,6 +4795,9 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "read_vfs_file":
       void handleReadVfsFile(msg);
+      break;
+    case "read_vfs_tree":
+      void handleReadVfsTree(msg);
       break;
     case "write_vfs_file":
       handleWriteVfsFile(msg);

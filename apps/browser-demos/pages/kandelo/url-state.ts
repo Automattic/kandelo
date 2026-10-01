@@ -76,6 +76,42 @@ export function replaceGalleryItemUrl(item: GalleryItem): void {
   window.history.replaceState(window.history.state, "", next);
 }
 
+/**
+ * Point the address bar at the bare page without leaving the document.
+ *
+ * A saved machine is found in this browser's list, not in a URL: a `?demo=`
+ * or `?vfs=` address reloaded after saving would boot a fresh machine on
+ * memory beside the saved one. The bare page shows the list instead.
+ */
+export function replaceBareUrl(): void {
+  const url = new URL(currentHref());
+  url.search = "";
+  url.hash = "";
+  if (url.href === window.location.href) return;
+  window.history.replaceState(window.history.state, "", url.href);
+}
+
+/**
+ * The page URL that boots the machine `descriptor` describes, for a link.
+ *
+ * The address bar names the machine it booted through `?demo=` and `?vfs=`,
+ * and a link is that address. A saved machine's address is the bare page,
+ * so its link names the machine from the descriptor instead.
+ */
+export function machineUrl(
+  descriptor: BootDescriptor,
+  href = currentHref(),
+): string {
+  const url = new URL(href);
+  url.hash = "";
+  const named = url.searchParams.has("demo") || firstVfsImageQueryValue(url.searchParams) !== null;
+  if (named) return url.href;
+  url.searchParams.set("demo", descriptor.id);
+  const vfsImageUrl = vfsImageUrlFromDescriptor(descriptor, href);
+  if (vfsImageUrl) url.searchParams.set(VFS_IMAGE_QUERY_PARAM, vfsImageUrl);
+  return url.href;
+}
+
 export function vfsImageUrlFromDescriptor(
   descriptor: BootDescriptor,
   baseHref = currentHref(),

@@ -671,6 +671,25 @@ describe("LiveKernelHost: framebuffer sharing", () => {
   });
 });
 
+describe("LiveKernelHost: VFS tree", () => {
+  it("reads the tree through the attached kernel", async () => {
+    const host = new LiveKernelHost({ status: "running" });
+    const entries = [{ path: "hello.txt", kind: "file", mode: 0o644, bytes: new Uint8Array([1]) }];
+    const readTreeFromVfs = vi.fn(async () => entries);
+    host.attachKernel({ readTreeFromVfs } as any);
+
+    await expect(host.readTree("/home/maker")).resolves.toBe(entries);
+    expect(readTreeFromVfs).toHaveBeenCalledWith("/home/maker");
+  });
+
+  it("refuses without a kernel that can read a tree", async () => {
+    await expect(new LiveKernelHost().readTree("/home/maker")).rejects.toThrow(/readTreeFromVfs/);
+    const host = new LiveKernelHost();
+    host.attachKernel({} as any);
+    await expect(host.readTree("/home/maker")).rejects.toThrow(/readTreeFromVfs/);
+  });
+});
+
 describe("LiveKernelHost: machine handover", () => {
   const FROZEN = { processes: [{ pid: 7 }, { pid: 9 }] };
 

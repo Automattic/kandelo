@@ -1795,8 +1795,12 @@ A workspace already held by another tab or kernel fails the boot rather than
 admitting a second writer. Workers and locks are released on destroy,
 including on boots that fail before the kernel worker exists.
 
-The kernel worker extends `DEFAULT_MOUNT_SPEC` with the requested entries and
-resolves them through the same verified resolver. `ensureMountPointDirectories`
+The kernel worker lays the requested entries over `DEFAULT_MOUNT_SPEC` with
+`withOpfsWorkspaces` and resolves the result through the same verified
+resolver. A workspace at a path the canonical layout gives to a scratch mount
+takes that mount's place, so a boot can put `/home/maker` itself on browser
+storage; every other entry stays, and a workspace aimed at the root image is
+still the duplicate `validateSpec` rejects. `ensureMountPointDirectories`
 creates each mount point directory in the mount that owns its parent path,
 walking the owner chain so every mount in between has its directory in the
 filesystem beneath it. A workspace nested under another mount (for example

@@ -11,6 +11,10 @@ import { EmptyState } from "../views/EmptyState";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { SharedMachine } from "../panes/SharedMachine";
 import { NetworkPopup } from "./NetworkPopup";
+import { SavePopup } from "./SavePopup";
+import { MachinesList } from "./MachinesList";
+import { usePersistentMachines } from "./persistent-machines";
+import { ephemeralDescriptor } from "../../../../../web-libs/kandelo-session/src/persistent-machine";
 import { useMachineHandover } from "./machine-handover";
 import { useMachineReplication } from "./machine-replication";
 import { usePeerNickname } from "./peer-nickname";
@@ -62,6 +66,10 @@ const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
     title: "Launch New Machine",
     subtitle: "Choose a published Kandelo machine or local demo image to boot.",
   },
+  machines: {
+    title: "Saved Machines",
+    subtitle: "Machines saved in this browser. Open one to boot it on its own files.",
+  },
 };
 
 export const App: React.FC = () => {
@@ -83,6 +91,7 @@ export const App: React.FC = () => {
   const [shareOpen, setShareOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [networkOpen, setNetworkOpen] = React.useState(false);
+  const [saveOpen, setSaveOpen] = React.useState(false);
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
   const [themeOpen, setThemeOpen] = React.useState(false);
@@ -119,6 +128,7 @@ export const App: React.FC = () => {
     replication.promote,
   );
   const names = usePeerNickname(peer.link);
+  const persistent = usePersistentMachines();
 
   const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
   React.useEffect(() => {
@@ -196,6 +206,7 @@ export const App: React.FC = () => {
     setDemoGuidePopup(null);
     setInternalsOpen(false);
     setNetworkOpen(false);
+    setSaveOpen(false);
     setThemeOpen(false);
   }, [desc.id]);
 
@@ -214,6 +225,7 @@ export const App: React.FC = () => {
     setInternalsOpen(false);
     setDemoGuideOpen(false);
     setNetworkOpen(false);
+    setSaveOpen(false);
     setThemeOpen(false);
     setDockPane((current) => current === pane ? null : pane);
   }, []);
@@ -222,6 +234,7 @@ export const App: React.FC = () => {
     setDockPane(null);
     setInternalsOpen(false);
     setNetworkOpen(false);
+    setSaveOpen(false);
     setThemeOpen(false);
     surface.chooseView(view);
   }, [surface]);
@@ -231,6 +244,7 @@ export const App: React.FC = () => {
     setDockPane(null);
     setInternalsOpen(false);
     setNetworkOpen(false);
+    setSaveOpen(false);
     setThemeOpen(false);
     setDemoGuideOpen((open) => !open);
   }, [demoGuide]);
@@ -240,6 +254,7 @@ export const App: React.FC = () => {
     setDockPane(null);
     setDemoGuideOpen(false);
     setNetworkOpen(false);
+    setSaveOpen(false);
     setThemeOpen(false);
     setInternalsOpen((open) => !open);
   }, [surface.canUseInternals]);
@@ -248,8 +263,18 @@ export const App: React.FC = () => {
     setDockPane(null);
     setDemoGuideOpen(false);
     setInternalsOpen(false);
+    setSaveOpen(false);
     setThemeOpen(false);
     setNetworkOpen((open) => !open);
+  }, []);
+
+  const toggleSave = React.useCallback(() => {
+    setDockPane(null);
+    setDemoGuideOpen(false);
+    setInternalsOpen(false);
+    setNetworkOpen(false);
+    setThemeOpen(false);
+    setSaveOpen((open) => !open);
   }, []);
 
   const toggleTheme = React.useCallback(() => {
@@ -257,11 +282,14 @@ export const App: React.FC = () => {
     setDemoGuideOpen(false);
     setInternalsOpen(false);
     setNetworkOpen(false);
+    setSaveOpen(false);
     setThemeOpen((open) => !open);
   }, []);
 
+  // A pasted link is another page's input. Whatever workspace it names, it
+  // boots on memory: this browser's saved machines open from their list only.
   const applyDescriptor = React.useCallback((d: BootDescriptor) => {
-    void host.applyBootDescriptor(d).then(closeDockPane).catch((err) => {
+    void host.applyBootDescriptor(ephemeralDescriptor(d)).then(closeDockPane).catch((err) => {
       console.warn("applyBootDescriptor failed:", err);
     });
   }, [host, closeDockPane]);
@@ -401,6 +429,9 @@ export const App: React.FC = () => {
       onLaunchItem={onLaunchGalleryItem}
       onBrowseAll={() => setDockPane("gallery")}
       onApplyDescriptor={applyDescriptor}
+      savedMachines={persistent.machines.length > 0 || persistent.listFailure !== null
+        ? <MachinesList persistent={persistent} compact />
+        : null}
       peerNote={peer.link
         ? handover.handedOver
           ? "You handed this machine over. It is starting on the other computer."
@@ -483,6 +514,9 @@ export const App: React.FC = () => {
                 onLaunch={onLaunchGalleryItem}
               />
             )}
+            {dockPane === "machines" && (
+              <MachinesList persistent={persistent} />
+            )}
           </DockPane>
         </>
       )}
@@ -522,6 +556,13 @@ export const App: React.FC = () => {
             onNicknameChange={names.setNickname}
           />
         }
+        savePopup={
+          <SavePopup
+            descriptor={desc}
+            persistent={persistent}
+            onOpenMachines={() => selectDockPane("machines")}
+          />
+        }
         themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
         guideAvailable={!isEmpty && demoGuide !== null}
         guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
@@ -529,6 +570,11 @@ export const App: React.FC = () => {
         internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
         networkOpen={networkOpen}
         networkConnected={peer.link !== null}
+        saveOpen={saveOpen}
+        // A replica is another computer's machine: saving it here would keep
+        // a copy that machine's owner never handed over.
+        saveAvailable={surface.status === "running" && !replication.replicating}
+        saved={persistent.current !== null}
         role={pairRole}
         roleName={pairRoleName}
         themeOpen={themeOpen}
@@ -550,11 +596,13 @@ export const App: React.FC = () => {
         onToggleGuide={toggleDemoGuide}
         onToggleInternals={toggleInternals}
         onToggleNetwork={toggleNetwork}
+        onToggleSave={toggleSave}
         onToggleTheme={toggleTheme}
         onOpenShare={() => setShareOpen(true)}
         onCloseGuide={() => setDemoGuideOpen(false)}
         onCloseInternals={() => setInternalsOpen(false)}
         onCloseNetwork={() => setNetworkOpen(false)}
+        onCloseSave={() => setSaveOpen(false)}
         onCloseTheme={() => setThemeOpen(false)}
         onHeightChange={setDockHeight}
         onLayoutChange={onDockLayoutChange}

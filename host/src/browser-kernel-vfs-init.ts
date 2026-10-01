@@ -2,6 +2,7 @@ import type { MountConfig } from "./vfs/types";
 import {
   DEFAULT_MOUNT_SPEC,
   resolveForBrowser,
+  withOpfsWorkspaces,
   type MountSpec,
 } from "./vfs/default-mounts";
 import type { OpfsMountInit } from "./browser-kernel-protocol";
@@ -31,17 +32,7 @@ export function restoreBrowserKernelInitMounts(
   // three-engine trust test. Reimplementing only the seal check in a fixture
   // could pass while the real worker accidentally bypassed it.
   const opfsMounts = options.opfsMounts ?? [];
-  const spec: MountSpec[] = [
-    ...rootfsMountSpec,
-    ...opfsMounts.map((m) => ({
-      path: m.path,
-      source: "opfs" as const,
-      opfsName: m.name,
-      // A workspace is guest-writable storage, so like every scratch mount
-      // it must not grant set-ID credentials on exec.
-      nosuid: true,
-    })),
-  ];
+  const spec = withOpfsWorkspaces(rootfsMountSpec, opfsMounts);
   const opfsChannels = Object.fromEntries(
     opfsMounts.map((m) => [m.path, m.channelSab]),
   );

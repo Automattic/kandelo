@@ -9,5 +9,8 @@ export * from "./demo-guides";
 export * from "./experimental-terminal-session";
 export * from "./demo-ingest";
 export * from "./deployment-scope";
+export * from "./machine-name";
+export * from "./persistent-machine";
+export * from "./opfs-workspace";
 export * from "./vfs-asset-group";
 export { normalizeImageOwnedLazyReference } from "./vfs-asset-group-reference";

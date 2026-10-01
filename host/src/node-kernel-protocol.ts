@@ -252,6 +252,13 @@ export interface ReadVfsFileMessage {
   path: string;
 }
 
+export interface ReadVfsTreeMessage {
+  type: "read_vfs_tree";
+  requestId: number;
+  /** Directory whose tree is read; the reply lists `VfsTreeEntry` values. */
+  path: string;
+}
+
 /** Create or replace one regular file through the worker-owned VFS. */
 export interface WriteVfsFileMessage {
   type: "write_vfs_file";
@@ -602,6 +609,7 @@ export type MainToKernelMessage =
   | DestroyMessage
   | ExportRootfsImageMessage
   | ReadVfsFileMessage
+  | ReadVfsTreeMessage
   | WriteVfsFileMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage

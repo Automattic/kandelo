@@ -255,6 +255,59 @@ there rejects with an explicit proxy-init error naming the workspace; the
 cross-browser spec pins that as the required failure mode. The older
 per-backend OPFS specs still self-skip outside Chromium.
 
+### Saved machines
+
+The Kandelo page's **Save** dock button turns the running machine into a
+saved machine: a machine whose home directory (the `HOME` of its boot
+descriptor, `/home/maker` for the shell images) is an `opfs` workspace instead
+of the scratch mount. Saving copies the home directory's regular files and
+directories into a new workspace from the page, through the `KernelHost` VFS
+reads and the File System API, then reboots the machine on the descriptor that
+mounts the workspace at home. The reboot is stated in the popup before the
+button is pressed: the files carry over, the running programs do not. Entries
+a workspace cannot hold — symlinks, pipes, sockets, devices — are listed in the
+popup afterwards, not approximated.
+
+What a saved machine is:
+
+- A record in this browser profile's `localStorage`
+  (`kandelo.persistent-machines.v1`): an id, a three-word name, the boot
+  descriptor, and two instants. The id is the workspace name under
+  `kandelo-opfs/`. `web-libs/kandelo-session/src/persistent-machine.ts` owns
+  the record and its validation; a corrupt list is reported in the UI, not
+  shown as empty.
+- The workspace itself, with everything the machine wrote under its home
+  directory as it wrote it.
+
+What it promises and does not:
+
+- Files under the home directory survive closing the tab, reloading, and
+  rebooting, subject to the origin-storage durability limits above. Nothing
+  else survives: opening a saved machine boots its image again and runs its
+  boot command on those files. Files outside the home directory are the
+  image's and the scratch mounts', as for any other machine.
+- The record and the workspace live in one browser profile on one device.
+  Clearing this site's data deletes both. Nothing is synced, verified, or
+  carried in a share link: **Share** on a saved machine names the image with
+  `?demo=` and `?vfs=` taken from the descriptor, since the address bar is
+  bare, and a script fragment encodes `ephemeralDescriptor(...)`, the same
+  machine on memory. A pasted link is booted the same way whatever workspace
+  it names, so a link can never mount this browser's storage.
+- One tab runs a saved machine at a time, by the workspace lock above. A
+  second tab that opens it fails its boot with the lock error, visibly, as
+  status `Error`. Deleting a machine takes the same lock first and is refused
+  while the machine runs anywhere; delete removes the workspace directory and
+  then the record.
+- Ownership, permission bits, and timestamps under the home directory are the
+  synthesized OPFS values described in the filesystem section above.
+
+The machine is opened, renamed, and deleted from the **Machines** dock pane
+and from the landing page, which lists saved machines above the presets. After
+a save or an open the page URL is replaced by the bare page URL: a `?demo=` or
+`?vfs=` address would boot a fresh machine on memory on reload, while the bare
+page shows the list. `kandelo-saved-machine.spec.ts` covers the round trip in
+Chromium.
+
 ### Terminal
 - PTY support with full line discipline
 - Interactive stdin via `appendStdinData` for incremental input
@@ -710,12 +763,14 @@ inline input, 2 MiB inflated per input, aggregate input size, 32 KiB
 parameters JSON. Zero-byte inputs are accepted; the dialog simply skips
 empty scripts during authoring.
 
-Scripts currently run without a confirmation step because every machine the
-browser app boots is ephemeral. This is a load-bearing boundary: before any
-persistent or restored-machine feature ships, script links must gain an
-explicit show-the-script consent step (see the warning at the execution
-site in `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` and
-`docs/superpowers/specs/2026-09-21-script-bearing-links-design.md`).
+Scripts currently run without a confirmation step because every machine a
+link boots is ephemeral: a link's mounts are not applied at page load, and a
+pasted link is booted as `ephemeralDescriptor(...)`, so a script never runs
+inside a saved machine's workspace. This is a load-bearing boundary: before a
+link can boot into persistent or restored machine state, script links must
+gain an explicit show-the-script consent step (see the warning at the
+execution site in `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`
+and `docs/superpowers/specs/2026-09-21-script-bearing-links-design.md`).
 
 ### Kandelo demo metadata
 

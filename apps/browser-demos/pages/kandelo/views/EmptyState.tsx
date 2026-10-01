@@ -29,6 +29,13 @@ export interface EmptyStateProps {
    */
   peerNote?: string | null;
   /**
+   * The machines saved in this browser, or null when there are none.
+   *
+   * Rendered above the presets: a person who saved a machine came back for
+   * it, not for a fresh one.
+   */
+  savedMachines?: React.ReactNode;
+  /**
    * Whether this computer is watching the other computer's machine.
    *
    * A watcher holds no machine of its own and is not meant to start one: the
@@ -39,7 +46,7 @@ export interface EmptyStateProps {
 
 export const EmptyState: React.FC<EmptyStateProps> = ({
   onLaunchItem, onBrowseAll, onApplyDescriptor, peerNote = null,
-  watching = false,
+  savedMachines = null, watching = false,
 }) => {
   const [door, setDoor] = React.useState<Door>(null);
   const [pasteUrl, setPasteUrl] = React.useState("");
@@ -96,6 +103,15 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     <div className="kempty">
       <div className="kempty-inner">
         {hero}
+
+        {savedMachines && (
+          <div className="kempty-featured kempty-saved">
+            <div className="kempty-featured-row">
+              <div className="kempty-featured-lbl">Your machines</div>
+            </div>
+            {savedMachines}
+          </div>
+        )}
 
         <div className="kempty-doors">
           <button

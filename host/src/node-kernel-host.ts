@@ -12,6 +12,7 @@
  *   const exitCode = await host.spawn(programBytes, ["hello"], { env: [...] });
  *   await host.destroy();
  */
+import type { VfsTreeEntry } from "./vfs/tree";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1213,6 +1214,26 @@ export class NodeKernelHost {
     return () => {
       this.lazyDownloadListeners.delete(cb);
     };
+  }
+
+  /**
+   * Read the directory tree under `path` from the worker-owned VFS. This is
+   * the Node peer of BrowserKernel.readTreeFromVfs().
+   */
+  async readTreeFromVfs(path: string): Promise<VfsTreeEntry[]> {
+    if (!this.initialized) {
+      throw new Error("VFS read requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_tree",
+      requestId,
+      path,
+    });
+    if (!Array.isArray(result)) {
+      throw new Error("kernel worker returned an invalid VFS tree");
+    }
+    return result as VfsTreeEntry[];
   }
 
   /**

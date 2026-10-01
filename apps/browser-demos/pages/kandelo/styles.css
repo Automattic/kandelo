@@ -1078,6 +1078,10 @@
   --kdock-popover-width: 460px;
 }
 
+.kdock-save-popover {
+  --kdock-popover-width: 400px;
+}
+
 .kdock-internals-popover {
   --kdock-popover-width: 980px;
   height: min(680px, calc(100dvh - var(--kdock-popover-bottom, 100px) - 12px));
@@ -4898,8 +4902,237 @@
   line-height: 1.4;
 }
 
-.kdock-item.is-connected .kdock-icon {
+.kdock-item.is-connected .kdock-icon,
+.kdock-item.is-saved .kdock-icon {
   color: var(--k-ok, var(--k-accent, currentColor));
+}
+
+.ksave-popup {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  background: var(--k-surface);
+  color: var(--k-text);
+}
+
+.ksave-section {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ksave-label {
+  color: var(--k-text-muted);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.ksave-text {
+  margin: 0;
+  color: var(--k-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ksave-button {
+  align-self: flex-start;
+  padding: 6px 10px;
+  border: 1px solid var(--k-border);
+  border-radius: 8px;
+  background: var(--k-surface-raised, transparent);
+  color: var(--k-text);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ksave-button:hover:not(:disabled) {
+  border-color: var(--k-accent, var(--k-border));
+}
+
+.ksave-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.ksave-button-primary {
+  background: var(--k-accent);
+  border-color: var(--k-accent);
+  color: #fff;
+  font-weight: 680;
+}
+
+.ksave-button-primary:hover:not(:disabled) {
+  background: var(--k-accent-fire);
+  border-color: var(--k-accent-fire);
+}
+
+.ksave-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ksave-name-label {
+  color: var(--k-text-muted);
+  font-size: 12px;
+}
+
+.ksave-name-input,
+.kmachines-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--k-border);
+  border-radius: 8px;
+  background: var(--k-surface);
+  color: var(--k-text);
+  font-family: var(--k-font-mono, monospace);
+  font-size: 12px;
+}
+
+.ksave-skipped {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--k-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ksave-failure,
+.kmachines-failure {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--k-err) 12%, var(--k-surface));
+  color: var(--k-err);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.kmachines {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.kmachines-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kmachines-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-surface);
+}
+
+.kmachines-row[data-running="true"] {
+  background: color-mix(in oklch, var(--k-accent) 9%, var(--k-surface));
+}
+
+.kmachines-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.kmachines-name {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--k-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 680;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kmachines-name:disabled {
+  cursor: default;
+}
+
+.kmachines-meta,
+.kmachines-empty,
+.kmachines-note {
+  color: var(--k-text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.kmachines-note {
+  margin: 0;
+}
+
+.kmachines-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.kmachines-btn {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--k-border);
+  background: var(--k-surface);
+  color: var(--k-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.kmachines-btn:hover:not(:disabled) {
+  background: var(--k-surface-alt);
+  border-color: var(--k-border-strong);
+}
+
+.kmachines-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.kmachines-btn-primary {
+  background: var(--k-accent);
+  border-color: var(--k-accent);
+  color: #fff;
+}
+
+.kmachines-btn-primary:hover:not(:disabled) {
+  background: var(--k-accent-fire);
+  border-color: var(--k-accent-fire);
+}
+
+.kmachines-btn-danger {
+  background: var(--k-err);
+  border-color: var(--k-err);
+  color: #fff;
+}
+
+.kempty-saved .kmachines-row {
+  text-align: left;
 }
 
 .kshared-machine {
