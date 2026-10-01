@@ -57,6 +57,56 @@ rustc -vV | awk '/^host/ {print $2}'
 `scripts/ci-run-test-suite.sh` does not currently expose an `abi` suite; run
 `bash scripts/check-abi-version.sh` separately for ABI-adjacent changes.
 
+## Waiting on long builds and suites
+
+`./run.sh setup`, `local-build`, full Vitest, and the conformance suites run
+for 10 to 40 minutes. In August and September 2026, agents spent about 12%
+of their input tokens on poll turns and on cache rewrites after long blocking
+calls. They also waited on `pgrep -f` patterns that matched the waiting shell
+itself, and edited files a run was still reading. `scripts/agent-job` removes
+those choices:
+
+A run that fits in one Bash call, under the tool's 10-minute limit, needs
+none of this. Run it in the foreground with output to a log file
+(`cmd > .context/x.log 2>&1; echo exit=$?`): that is one call and no waiting
+turns. For anything longer:
+
+```bash
+scripts/agent-job start -- scripts/dev-shell.sh ./run.sh setup   # prints a job id
+scripts/agent-job wait <id>      # blocks on the job's PID for up to 9 min; exit 124 = still running, run it again
+scripts/agent-job status [<id>]  # elapsed vs usual duration, local-build progress, live processes
+scripts/agent-job result <id>    # exit status, tree-changed warning, [suite-health] lines, log tail
+```
+
+- **Waiting:** repeat `agent-job wait <id>` in the foreground until it
+  returns the job's status. That is one turn per 9 minutes, never a
+  `sleep`/`tail` poll. An interactive main session may instead run
+  `agent-job wait <id> --timeout 0` with `run_in_background` and end its
+  turn, to be woken by the completion notice. A headless (`claude -p`)
+  session or a subagent must never end its turn to wait: it stops there,
+  and the result is lost.
+- **Subagents** must not wait on whole-tree builds or full suites. A
+  subagent's prompt cache expires after 5 minutes, so every long blocking
+  call rewrites its whole context. Build what a subagent needs before
+  dispatching it. A subagent that discovers it needs one reports the command
+  back instead of running it.
+- **Locked runs:** `agent-job start` refuses a second locked run (vitest,
+  `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup, local-build) in the
+  same worktree while one is running. Those runs race each other.
+- **Tree changes:** if tracked or untracked files change during a run, the
+  result says `tree changed during run`. That result describes a tree that no
+  longer exists, so re-run before citing it.
+- **Before a suite**, `npx tsx scripts/check-artifact-closures.ts` reports
+  any program package whose artifact closure would fail to resolve with
+  "Package artifact closure is incomplete". It takes about 3 s once warm, and
+  saves the minutes a suite would spend reaching the same error.
+- **Every Vitest run** ends with a `[suite-health]` line. `WARN` means part
+  of the suite did not run (a load error or zero tests). Read it before
+  citing a pass.
+
+Whether each of these helps is measured, with a rule for keeping or removing
+it, in `evals/build-waiting/README.md`.
+
 ## Preparing a fresh checkout or worktree to run the suites
 
 The Vitest, browser, libc, posix, and sortix suites need built artifacts and
