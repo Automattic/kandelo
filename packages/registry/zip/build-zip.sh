@@ -37,16 +37,17 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download zip source ---
+# --- Stage the pinned zip source ---
+# Under the resolver the verified, unpacked source arrives in
+# WASM_POSIX_DEP_SOURCE_DIR (from the resolver's source-archive cache, so a
+# rebuild does not depend on the upstream mirror being up); a direct run
+# downloads the archive and checks its sha256.
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-http://downloads.sourceforge.net/infozip/zip${ZIP_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-f0e8bb1f9b7eb0b01285495a2699df3a4b766784c1765a8f1aeedf63c0806369}"
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading zip $ZIP_VERSION..."
-    TARBALL="zip${ZIP_VERSION}.tar.gz"
-    URL="https://downloads.sourceforge.net/infozip/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL -L "$URL" -o "$WORK_DIR/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "$WORK_DIR/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$WORK_DIR/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging pinned zip $ZIP_VERSION source..."
+    kandelo_package_stage_verified_source zip "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
 fi
 
 cd "$SRC_DIR"
