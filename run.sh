@@ -539,7 +539,26 @@ bootstrap_target() {
         err "bootstrap_target $target: could not build xtask"
         return 1
     }
-    bash "$REPO_ROOT/scripts/dev-shell.sh" "$xtask" bootstrap "$target" "$@"
+    local_build_events_env
+    bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
+        "$xtask" bootstrap "$target" "$@"
+}
+
+# local_build_events_env: set LOCAL_BUILD_EVENTS_ENV to an `env` prefix that
+# carries KANDELO_LOCAL_BUILD_EVENTS (the local-build scheduler's JSON-lines
+# progress file, read by scripts/agent-job) into the dev shell, or to an
+# empty array when the caller did not set it. dev-shell.sh starts from an
+# empty environment and keeps only its fixed --keep list; that list is not
+# extended here because scripts/dev-shell.sh is a global package toolchain
+# input, so any edit to it changes every package cache key and forces a full
+# rebuild. The variable only names where progress is reported and cannot
+# change what is built, so it is forwarded per call instead.
+local_build_events_env() {
+    LOCAL_BUILD_EVENTS_ENV=()
+    if [ -n "${KANDELO_LOCAL_BUILD_EVENTS:-}" ]; then
+        LOCAL_BUILD_EVENTS_ENV=(env "KANDELO_LOCAL_BUILD_EVENTS=$KANDELO_LOCAL_BUILD_EVENTS")
+    fi
 }
 
 need_kernel() {
@@ -2516,8 +2535,10 @@ cmd_local_build() {
     # Write the helper's machine result inside that shell: Nix warnings and
     # shell-hook banners share the launcher's stdout, so capturing the outer
     # stream would corrupt the JSON protocol before jq can validate it.
+    local_build_events_env
     local command=(
         bash "$REPO_ROOT/scripts/dev-shell.sh"
+        ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"}
         bash -c 'exec bash "$1" >"$2"' kandelo-local-build "$helper" "$result_file"
     )
 
@@ -2603,7 +2624,9 @@ cmd_local_build() {
 # build. Delegates to xtask bootstrap (scripts/setup.sh) inside the
 # repository dev shell; see docs/agent-guidance/packages-and-builds.md.
 cmd_setup() {
+    local_build_events_env
     exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
         bash "$REPO_ROOT/scripts/setup.sh" "$@"
 }
 
