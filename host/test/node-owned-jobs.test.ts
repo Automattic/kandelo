@@ -40,6 +40,8 @@ async function createRootfs(): Promise<Uint8Array> {
       fs.close(fd);
     }
   }
+  fs.symlink("/missing", "/bin/foo");
+  fs.symlink("/bin/echo", "/bin/bar");
   return fs.saveImage();
 }
 
@@ -205,6 +207,24 @@ describe.skipIf(!haveKernel || !havePrograms)("NodeKernelHost raw VFS surface", 
       expect(echo!.mode & 0o777).toBe(0o755);
       expect(echo!.size).toBeGreaterThan(0);
       expect(await host.readDirFromVfs("/absent")).toBeNull();
+    } finally {
+      await host.destroy();
+    }
+  }, 60_000);
+
+  it("lists a symlink as itself, dangling or not", async () => {
+    const host = await bootedHost();
+    try {
+      const entries = await host.readDirFromVfs("/bin");
+      const echo = entries!.find((entry) => entry.name === "echo")!;
+      const foo = entries!.find((entry) => entry.name === "foo");
+      const bar = entries!.find((entry) => entry.name === "bar");
+      expect(foo).toMatchObject({ target: "/missing" });
+      expect(foo!.mode & 0o170000).toBe(0o120000);
+      expect(bar).toMatchObject({ target: "/bin/echo" });
+      expect(bar!.mode & 0o170000).toBe(0o120000);
+      expect(bar!.size).toBe("/bin/echo".length);
+      expect(bar!.size).not.toBe(echo.size);
     } finally {
       await host.destroy();
     }
