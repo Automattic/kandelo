@@ -1,4 +1,4 @@
-import type { OwnedJobs } from "./owned-jobs";
+import type { OwnedJobRead } from "./owned-jobs";
 /**
  * BrowserKernel — Thin proxy that communicates with a dedicated kernel
  * web worker via MessagePort. The kernel worker owns the Wasm instance
@@ -23,6 +23,7 @@ import type {
   KernelToMainMessage,
   VfsDirEntry,
   VfsFileSnapshot,
+  VfsOwner,
   DestroyProgressEvent,
 } from "./browser-kernel-protocol";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
@@ -256,6 +257,13 @@ async function fetchDefaultRootfsVfsImage(): Promise<ArrayBuffer> {
     );
   }
   return response.arrayBuffer();
+}
+
+export interface VfsWriteOptions {
+  /** Fail with EEXIST rather than replace an existing path. */
+  exclusive?: boolean;
+  /** Owner to give the written path; the worker's own identity otherwise. */
+  owner?: VfsOwner;
 }
 
 export class BrowserKernel {
@@ -1417,9 +1425,15 @@ export class BrowserKernel {
   }
 
   /** Read bounded output and observed termination of a worker-owned command family. */
-  async readOwnedJob(jobId: string, offset?: number, limit?: number, cancel = false): Promise<ReturnType<OwnedJobs['read']>> {
+  async readOwnedJob(jobId: string, offset?: number, limit?: number, cancel = false): Promise<OwnedJobRead> {
     const requestId = this.nextRequestId++;
-    return await this.request(requestId, { type: cancel ? "cancel_owned_job" : "read_owned_job", requestId, jobId, offset, limit }) as ReturnType<OwnedJobs['read']>;
+    return await this.request(requestId, { type: cancel ? "cancel_owned_job" : "read_owned_job", requestId, jobId, offset, limit }) as OwnedJobRead;
+  }
+
+  /** Forget a finished job's record and free its slot. Rejects while the family is live. */
+  async releaseOwnedJob(jobId: string): Promise<void> {
+    const requestId = this.nextRequestId++;
+    await this.request(requestId, { type: "release_owned_job", requestId, jobId });
   }
 
 
@@ -1479,13 +1493,14 @@ export class BrowserKernel {
     path: string,
     data: Uint8Array,
     mode = 0o644,
-    exclusive = false,
+    options: VfsWriteOptions = {},
   ): Promise<void> {
     const requestId = this.nextRequestId++;
     const owned = data.slice();
     await this.request(requestId, {
       type: "write_vfs_file",
-      exclusive,
+      exclusive: options.exclusive,
+      owner: options.owner,
       requestId,
       path,
       data: owned,

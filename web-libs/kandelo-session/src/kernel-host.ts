@@ -192,6 +192,50 @@ export interface KernelDirEntry {
   target?: string;
 }
 
+/**
+ * One read of a worker-owned command family. The worker retains a bounded tail
+ * of the family's output, so a cursor older than `oldest` has expired.
+ */
+export type KernelOwnedJobRead =
+  | { expired: true; oldest: number }
+  | {
+      expired: false;
+      /** The pid the family was started as. */
+      pid: number;
+      status: "running" | "cancelling" | "cancelled" | "timed_out" | "completed";
+      /** Exit status of the family's root, null while it still runs. */
+      exitCode: number | null;
+      /** True once every member of the family has been observed to terminate. */
+      terminationObserved: boolean;
+      chunks: Array<{ stream: "stdout" | "stderr"; bytes: Uint8Array }>;
+      /** Cursor to pass to the next read. */
+      next: number;
+      hasMore: boolean;
+      /** True when retained output had already been dropped before this read. */
+      truncated: boolean;
+    };
+
+export interface KernelOwnedJobOptions {
+  /** Cancel the family after this many milliseconds. The worker enforces it. */
+  timeoutMs: number;
+  env?: string[];
+  cwd?: string;
+  uid?: number;
+  gid?: number;
+}
+
+export interface VfsOwner {
+  uid: number;
+  gid: number;
+}
+
+export interface VfsWriteOptions {
+  /** Fail with EEXIST rather than replace an existing path. */
+  exclusive?: boolean;
+  /** Owner to give the written path; the VFS-owning worker's identity otherwise. */
+  owner?: VfsOwner;
+}
+
 export interface KernelLike {
   /** Legacy synchronous VFS surface; worker-owned hosts intentionally omit it. */
   readonly fs?: FileSystemLike;
@@ -214,7 +258,12 @@ export interface KernelLike {
    * exist. The kernel worker owns the filesystem, so this is an async
    * round-trip (unlike the deprecated synchronous {@link fs}).
    */
-  writeFileToVfs?(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
+  writeFileToVfs?(
+    path: string,
+    bytes: Uint8Array,
+    mode?: number,
+    options?: VfsWriteOptions,
+  ): Promise<void>;
   /**
    * Read a regular file through the VFS-owning worker. Resolves `null` when
    * the path is absent or not a regular file.
@@ -356,6 +405,7 @@ export interface KernelLike {
     programPath: string,
     argv: string[],
     options?: {
+      ownedJob?: { id: string; timeoutMs: number };
       env?: string[];
       cwd?: string;
       uid?: number;
@@ -366,6 +416,22 @@ export interface KernelLike {
       ptyRows?: number;
     },
   ): Promise<{ pid: number; exit: Promise<number> }>;
+  /**
+   * Read a worker-owned command family, optionally cancelling it first. Both
+   * the browser and the Node kernel worker own jobs; a kernel that predates
+   * the surface omits this method.
+   */
+  readOwnedJob?(
+    jobId: string,
+    offset?: number,
+    limit?: number,
+    cancel?: boolean,
+  ): Promise<KernelOwnedJobRead>;
+  /**
+   * Forget a finished job's record. Rejects while any member of the family is
+   * still live.
+   */
+  releaseOwnedJob?(jobId: string): Promise<void>;
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
   ptyWrite(pid: number, data: Uint8Array): void;
   ptyResize(pid: number, rows: number, cols: number): void;
@@ -834,11 +900,6 @@ export interface GalleryQuery {
 
 // ── The interface ──────────────────────────────────────────────────────────
 
-export interface ShellCommandOptions {
-  /** Sends Ctrl-C to the shell when aborted. */
-  signal?: AbortSignal;
-}
-
 export interface KernelHost {
   // status
   getStatus(): MachineStatus;
@@ -874,16 +935,19 @@ export interface KernelHost {
   subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void;
 
   // shell / pty
+  /** Without `opts`, a running terminal keeps its size and a new one starts at 80 by 24. */
   attachPty(path?: string, opts?: { cols: number; rows: number }): Promise<PtyHandle>;
   /** Remove the logical PTY, including its process and pending restart. */
   removePty(path: string): void;
   /** Resolve after a command has been written, without waiting for a prompt. */
   dispatchShellCommand(command: string): Promise<void>;
+  runShellCommand(command: string): Promise<void>;
   /**
-   * Write a command into the persistent PTY-backed shell, wait for the next
-   * prompt, and resolve with what the terminal printed in between.
+   * Show `text` on the terminal attached at `path` without sending anything
+   * to the guest: the bytes reach the terminal's output listeners and its
+   * replay history only. Returns false when no terminal is attached there.
    */
-  runShellCommand(command: string, options?: ShellCommandOptions): Promise<string>;
+  injectPtyOutput(path: string, text: string): boolean;
 
   // VFS / procfs
   readFile(path: string): Promise<Uint8Array>;
@@ -901,6 +965,47 @@ export interface KernelHost {
    * present at boot never emit; list the directory once, then watch it.
    */
   subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void;
+
+  // Raw peers of readFile/readDir/writeFile. These report the values the VFS
+  // holds rather than the strings the Inspector renders, and a path that is
+  // not there resolves null instead of throwing. Callers that present a
+  // listing to a person want readFile/readDir; callers that hand bytes and
+  // numbers to a program want these.
+  readVfsFile(path: string): Promise<Uint8Array | null>;
+  readVfsDir(path: string): Promise<KernelDirEntry[] | null>;
+  writeVfsFile(
+    path: string,
+    bytes: Uint8Array,
+    mode?: number,
+    options?: VfsWriteOptions,
+  ): Promise<void>;
+
+  // owned jobs
+  /**
+   * Start `program` as a command family this host owns. Ownership survives
+   * exec, fork and setsid, so cancelling the job terminates every descendant
+   * and the job reports the root's exit status once all of them are gone.
+   */
+  startOwnedJob(
+    id: string,
+    program: string,
+    argv: string[],
+    options: KernelOwnedJobOptions,
+  ): Promise<void>;
+  /** Read one owned job, cancelling it first when `cancel` is true. */
+  readOwnedJob(
+    id: string,
+    offset?: number,
+    limit?: number,
+    cancel?: boolean,
+  ): Promise<KernelOwnedJobRead>;
+  /**
+   * Forget a finished job's record and free the slot it holds. A kernel holds
+   * a bounded number of job records, so a caller that runs many commands
+   * releases the ones it has finished reading. Rejects while the family is
+   * still live, and a released job reads back as an unknown job.
+   */
+  releaseOwnedJob(id: string): Promise<void>;
 
   // process control
   /**
@@ -1020,15 +1125,10 @@ function clampPendingRequestCount(count: number): number {
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
 }
 
-function plainPtyText(buffer: string): string {
-  return buffer
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "");
-}
-
 function ptyBufferEndsWithPrompt(buffer: string, prompt: string | null = null): boolean {
-  const plain = plainPtyText(buffer);
+  const plain = buffer
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "\n");
   if (prompt) return plain.endsWith(prompt);
   // Do not treat the shell continuation prompt (`> `) as ready. The demo
   // guide sends heredocs through this path, and PS2 appears before the command
@@ -1041,34 +1141,13 @@ function shellPrompt(shell: NonNullable<LiveKernelHostOptions["shell"]>): string
   return ps1 ? ps1.slice("PS1=".length) : null;
 }
 
-/**
- * The text a command produced between its echoed input and the next prompt.
- * Without a known prompt the whole last line is the prompt.
- */
-function shellCommandOutput(buffer: string, command: string, prompt: string | null): string {
-  const lines = plainPtyText(buffer).split("\n");
-  const echoedLines = command.replace(/\n$/, "").split("\n").length;
-  const output = lines.slice(echoedLines);
-  if (output.length === 0) return "";
-  const last = output[output.length - 1]!;
-  output[output.length - 1] = prompt && last.endsWith(prompt) ? last.slice(0, -prompt.length) : "";
-  return output.join("\n");
-}
-
-/**
- * With `afterInput`, a prompt counts only once an input line has been echoed
- * back: a shell redraws its prompt on a resize without running anything.
- */
 function waitForPtyReadiness(
   pty: PtyHandle,
-  opts: { includeHistory?: boolean; afterInput?: boolean; timeoutMs?: number; prompt?: string | null } = {},
-): Promise<string> {
+  opts: { includeHistory?: boolean; timeoutMs?: number; prompt?: string | null } = {},
+): Promise<void> {
   const includeHistory = opts.includeHistory ?? true;
-  const afterInput = opts.afterInput ?? false;
   const timeoutMs = opts.timeoutMs ?? 1200;
   const prompt = opts.prompt ?? null;
-  const ready = (text: string) =>
-    (!afterInput || plainPtyText(text).includes("\n")) && ptyBufferEndsWithPrompt(text, prompt);
   return new Promise((resolve, reject) => {
     let done = false;
     let buffer = "";
@@ -1078,7 +1157,7 @@ function waitForPtyReadiness(
       done = true;
       clearTimeout(timer);
       off();
-      resolve(buffer);
+      resolve();
     };
     const fail = () => {
       if (done) return;
@@ -1092,10 +1171,10 @@ function waitForPtyReadiness(
     off = pty.onData((bytes) => {
       if (!includeHistory && replayingHistory) return;
       buffer += decoder.decode(bytes, { stream: true });
-      if (ready(buffer)) finish();
+      if (ptyBufferEndsWithPrompt(buffer, prompt)) finish();
     });
     replayingHistory = false;
-    if (includeHistory && ready(buffer)) finish();
+    if (includeHistory && ptyBufferEndsWithPrompt(buffer, prompt)) finish();
   });
 }
 
@@ -1278,7 +1357,7 @@ export class LiveKernelHost implements KernelHost {
   private terminalSessions?: TerminalSessionPolicy;
   private ptySessions = new Map<string, LivePtySession>();
   private ptyAttachPromises = new Map<string, Promise<LivePtySession>>();
-  private ptyCommandQueues = new Map<string, Promise<unknown>>();
+  private ptyCommandQueues = new Map<string, Promise<void>>();
   /**
    * Active PTY shell pids keyed by pid. Used by attachFramebuffer to route
    * input through the PTY master so a framebuffer-bound process forked from
@@ -1478,14 +1557,13 @@ export class LiveKernelHost implements KernelHost {
 
   private async startShellCommand(
     command: string,
-    signal?: AbortSignal,
-  ): Promise<{ completion: Promise<string> }> {
+  ): Promise<{ completion: Promise<void> }> {
     const sessionKey = "/dev/pts/0";
     const previousCommandDone =
       this.ptyCommandQueues.get(sessionKey) ?? Promise.resolve();
-    let resolveCommandDone!: (output: string) => void;
+    let resolveCommandDone!: () => void;
     let rejectCommandDone!: (err: unknown) => void;
-    const commandDone = new Promise<string>((resolve, reject) => {
+    const commandDone = new Promise<void>((resolve, reject) => {
       resolveCommandDone = resolve;
       rejectCommandDone = reject;
     });
@@ -1499,8 +1577,7 @@ export class LiveKernelHost implements KernelHost {
 
     try {
       await previousCommandDone.catch(() => {});
-      const size = this.ptySessions.get(sessionKey);
-      const pty = await this.attachPty(sessionKey, size ? { cols: size.cols, rows: size.rows } : { cols: 100, rows: 30 });
+      const pty = await this.attachPty(sessionKey, { cols: 100, rows: 30 });
       const terminalProgram = this.shell ?? this.terminalSessions?.initial;
       const prompt = terminalProgram ? shellPrompt(terminalProgram) : null;
       await waitForPtyReadiness(pty, {
@@ -1510,16 +1587,11 @@ export class LiveKernelHost implements KernelHost {
       }).catch(() => {});
       const completion = waitForPtyReadiness(pty, {
         includeHistory: false,
-        afterInput: true,
         timeoutMs: 300_000,
         prompt,
-      }).then((buffer) => shellCommandOutput(buffer, command, prompt));
+      });
       void completion.then(resolveCommandDone, rejectCommandDone);
-      const interrupt = () => pty.write("\x03");
-      signal?.addEventListener("abort", interrupt, { once: true });
-      void completion.finally(() => signal?.removeEventListener("abort", interrupt)).catch(() => {});
       pty.write(command.endsWith("\n") ? command : `${command}\n`);
-      if (signal?.aborted) interrupt();
       return { completion: commandDone };
     } catch (err) {
       rejectCommandDone(err);
@@ -1537,9 +1609,16 @@ export class LiveKernelHost implements KernelHost {
   }
 
   /** Write a command and wait until the shell presents its next prompt. */
-  async runShellCommand(command: string, options: ShellCommandOptions = {}): Promise<string> {
-    const { completion } = await this.startShellCommand(command, options.signal);
-    return completion;
+  async runShellCommand(command: string): Promise<void> {
+    const { completion } = await this.startShellCommand(command);
+    await completion;
+  }
+
+  injectPtyOutput(path: string, text: string): boolean {
+    const session = this.ptySessions.get(path || "/dev/pts/0");
+    if (!session || session.closed) return false;
+    this.emitPtyData(session, new TextEncoder().encode(text));
+    return true;
   }
 
   /** Update the status and fan out to subscribers. */
@@ -1814,7 +1893,7 @@ export class LiveKernelHost implements KernelHost {
 
   async attachPty(
     path: string = "/dev/pts/0",
-    opts: { cols: number; rows: number } = { cols: 80, rows: 24 },
+    opts?: { cols: number; rows: number },
   ): Promise<PtyHandle> {
     if (!this.kernel) {
       throw new Error(
@@ -1841,9 +1920,7 @@ export class LiveKernelHost implements KernelHost {
       ),
     );
 
-    session.cols = opts.cols;
-    session.rows = opts.rows;
-    if (session.pid > 0 && !session.closed) {
+    if (opts && session.pid > 0 && !session.closed) {
       kernel.ptyResize(session.pid, opts.rows, opts.cols);
     }
 
@@ -1919,7 +1996,7 @@ export class LiveKernelHost implements KernelHost {
     kernel: KernelLike,
     shell: LiveKernelHostOptions["shell"],
     policy: TerminalSessionPolicy | undefined,
-    opts: { cols: number; rows: number },
+    opts: { cols: number; rows: number } | undefined,
   ): Promise<LivePtySession> {
     let session = this.ptySessions.get(sessionKey);
     if (session && !session.closed && !(await this.isPtySessionAlive(session.pid))) {
@@ -1954,12 +2031,12 @@ export class LiveKernelHost implements KernelHost {
         dataListeners: new ListenerSet<Uint8Array>(),
         history: [],
         closed: true,
-        cols: opts.cols,
-        rows: opts.rows,
+        cols: opts?.cols ?? 80,
+        rows: opts?.rows ?? 24,
         supervised: policy !== undefined,
       };
       this.ptySessions.set(sessionKey, session);
-    } else {
+    } else if (opts) {
       session.cols = opts.cols;
       session.rows = opts.rows;
     }
@@ -2280,6 +2357,85 @@ export class LiveKernelHost implements KernelHost {
       );
     }
     return this.kernel.subscribeVfsChanges(prefix, cb);
+  }
+
+  async readVfsFile(path: string): Promise<Uint8Array | null> {
+    if (!this.kernel?.readFileFromVfs) {
+      throw new Error("LiveKernelHost.readVfsFile: the attached kernel has no VFS surface.");
+    }
+    return this.kernel.readFileFromVfs(path);
+  }
+
+  async readVfsDir(path: string): Promise<KernelDirEntry[] | null> {
+    if (!this.kernel?.readDirFromVfs) {
+      throw new Error("LiveKernelHost.readVfsDir: the attached kernel has no VFS surface.");
+    }
+    return this.kernel.readDirFromVfs(path);
+  }
+
+  async writeVfsFile(
+    path: string,
+    bytes: Uint8Array,
+    mode = 0o644,
+    options: VfsWriteOptions = {},
+  ): Promise<void> {
+    if (!this.kernel?.writeFileToVfs) {
+      throw new Error(
+        `LiveKernelHost.writeVfsFile(${path}): the attached kernel cannot write ` +
+        `to the VFS (no writeFileToVfs).`,
+      );
+    }
+    await this.kernel.writeFileToVfs(path, bytes, mode, options);
+  }
+
+  // ── KernelHost: owned jobs ──────────────────────────────────────────────
+
+  async startOwnedJob(
+    id: string,
+    program: string,
+    argv: string[],
+    options: KernelOwnedJobOptions,
+  ): Promise<void> {
+    if (!this.kernel?.spawnFromVfs || !this.kernel.readOwnedJob) {
+      throw new Error(
+        "LiveKernelHost.startOwnedJob: the attached kernel cannot own a command family.",
+      );
+    }
+    const spawned = await this.kernel.spawnFromVfs(program, argv, {
+      ownedJob: { id, timeoutMs: options.timeoutMs },
+      cwd: options.cwd,
+      env: options.env,
+      uid: options.uid,
+      gid: options.gid,
+      // An owned job has no interactive input; empty stdin reads EOF at once.
+      stdin: new Uint8Array(0),
+    });
+    // The job record carries lifecycle and output. Consume the separate root
+    // exit so destroying the machine mid-command cannot reject unhandled.
+    void spawned.exit.catch(() => {});
+  }
+
+  async readOwnedJob(
+    id: string,
+    offset?: number,
+    limit?: number,
+    cancel = false,
+  ): Promise<KernelOwnedJobRead> {
+    if (!this.kernel?.readOwnedJob) {
+      throw new Error(
+        "LiveKernelHost.readOwnedJob: the attached kernel cannot own a command family.",
+      );
+    }
+    return this.kernel.readOwnedJob(id, offset, limit, cancel);
+  }
+
+  async releaseOwnedJob(id: string): Promise<void> {
+    if (!this.kernel?.releaseOwnedJob) {
+      throw new Error(
+        "LiveKernelHost.releaseOwnedJob: the attached kernel cannot own a command family.",
+      );
+    }
+    await this.kernel.releaseOwnedJob(id);
   }
 
   // ── KernelHost: process control ─────────────────────────────────────────

@@ -113,7 +113,7 @@ export interface InitMessage {
 }
 
 export interface OwnedJobMessage {
-  type: "read_owned_job" | "cancel_owned_job";
+  type: "read_owned_job" | "cancel_owned_job" | "release_owned_job";
   requestId: number;
   jobId: string;
   offset?: number;
@@ -188,7 +188,15 @@ export interface WriteVfsFileMessage {
   path: string;
   data: Uint8Array;
   mode: number;
+  /** Fail with EEXIST rather than replace an existing path. */
   exclusive?: boolean;
+  /** Owner to give the written path; the worker's own identity otherwise. */
+  owner?: VfsOwner;
+}
+
+export interface VfsOwner {
+  uid: number;
+  gid: number;
 }
 
 export interface UnlinkVfsFileMessage {

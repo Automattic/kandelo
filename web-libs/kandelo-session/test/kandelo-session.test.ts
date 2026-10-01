@@ -409,6 +409,108 @@ describe("LiveKernelHost: worker-owned VFS", () => {
   });
 });
 
+describe("LiveKernelHost: raw VFS surface", () => {
+  it("reports a missing path as null rather than an error", async () => {
+    const host = new LiveKernelHost({
+      kernel: {
+        readFileFromVfs: async () => null,
+        readDirFromVfs: async () => null,
+      } as any,
+    });
+
+    expect(await host.readVfsFile("/absent")).toBeNull();
+    expect(await host.readVfsDir("/absent")).toBeNull();
+  });
+
+  it("forwards the mode, the exclusive flag and the owner to the worker write", async () => {
+    const writeFileToVfs = vi.fn(async () => {});
+    const host = new LiveKernelHost({ kernel: { writeFileToVfs } as any });
+    const options = { exclusive: true, owner: { uid: 1000, gid: 1000 } };
+
+    await host.writeVfsFile("/tmp/foo", new Uint8Array([1]), 0o600, options);
+    expect(writeFileToVfs).toHaveBeenCalledWith("/tmp/foo", new Uint8Array([1]), 0o600, options);
+
+    await host.writeVfsFile("/tmp/foo", new Uint8Array([1]));
+    expect(writeFileToVfs).toHaveBeenLastCalledWith("/tmp/foo", new Uint8Array([1]), 0o644, {});
+  });
+
+  it("rejects raw operations when the kernel has no worker VFS surface", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({} as any);
+    await expect(host.readVfsFile("/etc/passwd")).rejects.toThrow("no VFS surface");
+    await expect(host.readVfsDir("/etc")).rejects.toThrow("no VFS surface");
+    await expect(host.writeVfsFile("/etc/passwd", new Uint8Array())).rejects.toThrow("no writeFileToVfs");
+  });
+});
+
+describe("LiveKernelHost: owned jobs", () => {
+  const ownedJobKernel = (exit: Promise<number>) => {
+    const spawnFromVfs = vi.fn(async () => ({ pid: 7, exit }));
+    const readOwnedJob = vi.fn(async () => ({ expired: true as const, oldest: 0 }));
+    const releaseOwnedJob = vi.fn(async () => {});
+    return { spawnFromVfs, readOwnedJob, releaseOwnedJob };
+  };
+
+  it("names the family, bounds it and gives it an immediate stdin EOF", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.startOwnedJob("job-1", "/bin/bash", ["bash", "-c", "true"], {
+      timeoutMs: 1234,
+      cwd: "/home/maker",
+      env: ["FOO=bar"],
+      uid: 1000,
+      gid: 1000,
+    });
+
+    expect(kernel.spawnFromVfs).toHaveBeenCalledWith("/bin/bash", ["bash", "-c", "true"], {
+      ownedJob: { id: "job-1", timeoutMs: 1234 },
+      cwd: "/home/maker",
+      env: ["FOO=bar"],
+      uid: 1000,
+      gid: 1000,
+      stdin: new Uint8Array(0),
+    });
+  });
+
+  it("consumes the root exit so a destroyed machine cannot reject unhandled", async () => {
+    const kernel = ownedJobKernel(Promise.reject(new Error("computer destroyed")));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.startOwnedJob("job-1", "/bin/bash", ["bash"], { timeoutMs: 1 });
+    // An unconsumed rejection surfaces within this tick and fails the file.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("forwards the cursor and the cancel flag to the worker", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.readOwnedJob("job-1", 16, 64, true);
+
+    expect(kernel.readOwnedJob).toHaveBeenCalledWith("job-1", 16, 64, true);
+  });
+
+  it("forwards a release to the worker", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.releaseOwnedJob("job-1");
+
+    expect(kernel.releaseOwnedJob).toHaveBeenCalledWith("job-1");
+  });
+
+  it("rejects when the attached kernel cannot own a command family", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({ spawnFromVfs: async () => ({ pid: 1, exit: Promise.resolve(0) }) } as any);
+    await expect(
+      host.startOwnedJob("job-1", "/bin/bash", ["bash"], { timeoutMs: 1 }),
+    ).rejects.toThrow("cannot own a command family");
+    await expect(host.readOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
+    await expect(host.releaseOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
+  });
+});
+
 describe("LiveKernelHost: VFS change events", () => {
   it("delegates prefix subscriptions to the attached kernel", () => {
     const offKernel = vi.fn();
@@ -971,6 +1073,42 @@ describe("LiveKernelHost: shell command queue", () => {
     expect(writePids).toEqual([37]);
   });
 
+  it("keeps the running terminal's size on an attach without one", async () => {
+    const resizes: Array<[number, number, number]> = [];
+    const spawnFromVfs = vi.fn(async () => ({
+      pid: 41,
+      exit: new Promise<number>(() => {}),
+    }));
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawnFromVfs,
+        onPtyOutput() {},
+        ptyResize(pid: number, rows: number, cols: number) {
+          resizes.push([pid, rows, cols]);
+        },
+        ptyWrite() {},
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/usr/bin/dash",
+      argv: ["dash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/maker",
+    });
+
+    await host.attachPty("/dev/pts/0");
+    await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+    await host.attachPty("/dev/pts/0");
+
+    expect(spawnFromVfs).toHaveBeenCalledWith(
+      "/usr/bin/dash",
+      ["dash", "-l", "-i"],
+      expect.objectContaining({ ptyCols: 80, ptyRows: 24 }),
+    );
+    expect(resizes).toEqual([[41, 30, 100]]);
+  });
+
   it("starts an image-owned shell from the VFS without redundant program bytes", async () => {
     const spawnFromVfs = vi.fn(async () => ({
       pid: 41,
@@ -1083,7 +1221,7 @@ describe("LiveKernelHost: shell command queue", () => {
     expect(completed).toBe(false);
 
     releaseFinalPrompt();
-    expect(await command).toBe("ok\n");
+    await command;
     expect(completed).toBe(true);
   });
 
@@ -1135,117 +1273,20 @@ describe("LiveKernelHost: shell command queue", () => {
     expect(completed).toBe(true);
   });
 
-  it("resolves a shell command with what the terminal printed after the echoed input", async () => {
-    const encoder = new TextEncoder();
-    let onOutput: ((data: Uint8Array) => void) | null = null;
-    const host = new LiveKernelHost({
-      kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
-        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
-        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
-          onOutput = callback;
-          callback(encoder.encode("kandelo$ "));
-        },
-        ptyResize() {},
-        ptyWrite(_pid: number, _data: Uint8Array) {
-          onOutput?.(encoder.encode("echo 'scale=20; 4*a(1)' | bc -l\r\n"));
-          onOutput?.(encoder.encode("3.14159265358979323844\r\n\x1b[0mkandelo$ "));
-        },
-      } as any,
-    });
-    host.setDefaultShell({
-      programPath: "/bin/bash",
-      programBytes: new ArrayBuffer(0),
-      argv: ["bash", "-l", "-i"],
-      env: ["PS1=kandelo$ "],
-      cwd: "/home/maker",
-    });
-
-    expect(await host.runShellCommand("echo 'scale=20; 4*a(1)' | bc -l"))
-      .toBe("3.14159265358979323844\n");
-  });
-
-  it("drops the whole prompt line from a shell command's output when PS1 is unknown", async () => {
-    const encoder = new TextEncoder();
-    let onOutput: ((data: Uint8Array) => void) | null = null;
-    const host = new LiveKernelHost({
-      kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
-        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
-        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
-          onOutput = callback;
-          callback(encoder.encode("maker@kandelo:~$ "));
-        },
-        ptyResize() {},
-        ptyWrite(_pid: number, _data: Uint8Array) {
-          onOutput?.(encoder.encode("pwd\r\n/home/maker\r\nmaker@kandelo:~$ "));
-        },
-      } as any,
-    });
-    host.setDefaultShell({
-      programPath: "/bin/bash",
-      programBytes: new ArrayBuffer(0),
-      argv: ["bash", "-l", "-i"],
-      cwd: "/home/maker",
-    });
-
-    expect(await host.runShellCommand("pwd")).toBe("/home/maker\n");
-  });
-
-  it("sends Ctrl-C to the shell when a shell command's signal aborts", async () => {
+  it("shows injected text on an attached terminal without writing to the guest", async () => {
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
-    const writes: string[] = [];
-    let onOutput: ((data: Uint8Array) => void) | null = null;
+    const writes: Uint8Array[] = [];
     const host = new LiveKernelHost({
       kernel: {
         fs: makeFs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
-          onOutput = callback;
           callback(encoder.encode("kandelo$ "));
         },
         ptyResize() {},
         ptyWrite(_pid: number, data: Uint8Array) {
-          const text = decoder.decode(data);
-          writes.push(text);
-          if (text === "\x03") onOutput?.(encoder.encode("^C\r\nkandelo$ "));
-          else onOutput?.(encoder.encode(text));
-        },
-      } as any,
-    });
-    host.setDefaultShell({
-      programPath: "/bin/bash",
-      programBytes: new ArrayBuffer(0),
-      argv: ["bash", "-l", "-i"],
-      env: ["PS1=kandelo$ "],
-      cwd: "/home/maker",
-    });
-    const controller = new AbortController();
-
-    const command = host.runShellCommand("sleep 60", { signal: controller.signal });
-    await vi.waitFor(() => expect(writes).toEqual(["sleep 60\n"]));
-    controller.abort();
-
-    expect(await command).toBe("^C\n");
-    expect(writes).toEqual(["sleep 60\n", "\x03"]);
-  });
-
-  it("ignores a prompt redrawn before the echoed input when waiting for a shell command", async () => {
-    const encoder = new TextEncoder();
-    let onOutput: ((data: Uint8Array) => void) | null = null;
-    const host = new LiveKernelHost({
-      kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
-        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
-        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
-          onOutput = callback;
-          callback(encoder.encode("kandelo$ "));
-        },
-        ptyResize() {},
-        ptyWrite(_pid: number, _data: Uint8Array) {
-          onOutput?.(encoder.encode("\r\x1b[K\rkandelo$ "));
-          onOutput?.(encoder.encode("pwd\r\n/home/maker\r\nkandelo$ "));
+          writes.push(data);
         },
       } as any,
     });
@@ -1257,41 +1298,20 @@ describe("LiveKernelHost: shell command queue", () => {
       cwd: "/home/maker",
     });
 
-    expect(await host.runShellCommand("pwd")).toBe("/home/maker\n");
-  });
+    expect(host.injectPtyOutput("/dev/pts/0", "[agent] ls")).toBe(false);
 
-  it("runs a shell command at the terminal's current size", async () => {
-    const encoder = new TextEncoder();
-    const resizes: Array<{ rows: number; cols: number }> = [];
-    let onOutput: ((data: Uint8Array) => void) | null = null;
-    const host = new LiveKernelHost({
-      kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
-        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
-        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
-          onOutput = callback;
-          callback(encoder.encode("kandelo$ "));
-        },
-        ptyResize(_pid: number, rows: number, cols: number) {
-          resizes.push({ rows, cols });
-        },
-        ptyWrite(_pid: number, _data: Uint8Array) {
-          onOutput?.(encoder.encode("pwd\r\n/home/maker\r\nkandelo$ "));
-        },
-      } as any,
-    });
-    host.setDefaultShell({
-      programPath: "/bin/bash",
-      programBytes: new ArrayBuffer(0),
-      argv: ["bash", "-l", "-i"],
-      env: ["PS1=kandelo$ "],
-      cwd: "/home/maker",
-    });
-    await host.attachPty("/dev/pts/0", { cols: 120, rows: 40 });
-    resizes.length = 0;
+    const pty = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    const seen: string[] = [];
+    pty.onData((bytes) => seen.push(decoder.decode(bytes)));
+    expect(host.injectPtyOutput("/dev/pts/0", "[agent] ls")).toBe(true);
+    expect(seen).toContain("[agent] ls");
+    expect(writes).toEqual([]);
 
-    expect(await host.runShellCommand("pwd")).toBe("/home/maker\n");
-    expect(resizes).toEqual([{ rows: 40, cols: 120 }]);
+    const later = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    const replayed: string[] = [];
+    later.onData((bytes) => replayed.push(decoder.decode(bytes)));
+    expect(replayed).toContain("[agent] ls");
+    expect(host.injectPtyOutput("/dev/pts/9", "[agent] ls")).toBe(false);
   });
 
   it("serializes concurrent PTY attaches for the same terminal session", async () => {

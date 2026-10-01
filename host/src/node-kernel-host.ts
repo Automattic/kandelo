@@ -28,7 +28,10 @@ import type {
   KernelToMainMessage,
   ResolveExecRequestMessage,
   DestroyProgressEvent,
+  VfsDirEntry,
+  VfsOwner,
 } from "./node-kernel-protocol";
+import type { OwnedJobRead } from "./owned-jobs";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
@@ -189,7 +192,16 @@ export interface NodeKernelHostOptions {
   sessionSeedTrees?: readonly NodeSessionSeedTree[];
 }
 
+export interface VfsWriteOptions {
+  /** Fail with EEXIST rather than replace an existing path. */
+  exclusive?: boolean;
+  /** Owner to give the written path; the worker's own identity otherwise. */
+  owner?: VfsOwner;
+}
+
 export interface SpawnOptions {
+  /** Own this process and its descendants as one cancellable command family. */
+  ownedJob?: { id: string; timeoutMs: number };
   env?: string[];
   cwd?: string;
   /** Initial real/effective user ID for the process. */
@@ -487,6 +499,7 @@ export class NodeKernelHost {
 
     const pid = await this.request(requestId, {
       type: "spawn",
+      ownedJob: options?.ownedJob,
       requestId,
       ...program,
       // Avoid forwarding externally compiled WebAssembly.Module objects through
@@ -1003,6 +1016,51 @@ export class NodeKernelHost {
   }
 
   /**
+   * List one directory of the existing worker-owned VFS. This is the Node peer
+   * of BrowserKernel.readDirFromVfs(); a missing or unreadable path resolves
+   * null rather than throwing.
+   */
+  async readDirFromVfs(path: string): Promise<VfsDirEntry[] | null> {
+    if (!this.initialized) {
+      throw new Error("VFS read requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_dir",
+      requestId,
+      path,
+    });
+    return (result as VfsDirEntry[] | null) ?? null;
+  }
+
+  /** Read bounded output and observed termination of a worker-owned command family. */
+  async readOwnedJob(
+    jobId: string,
+    offset?: number,
+    limit?: number,
+    cancel = false,
+  ): Promise<OwnedJobRead> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: cancel ? "cancel_owned_job" : "read_owned_job",
+      requestId,
+      jobId,
+      offset,
+      limit,
+    }) as OwnedJobRead;
+  }
+
+  /** Forget a finished job's record and free its slot. Rejects while the family is live. */
+  async releaseOwnedJob(jobId: string): Promise<void> {
+    const requestId = this._nextRequestId++;
+    await this.request(requestId, {
+      type: "release_owned_job",
+      requestId,
+      jobId,
+    });
+  }
+
+  /**
    * Create or replace a regular file in the worker-owned VFS. The parent
    * directory must already exist, matching the browser host's raw mutation
    * capability.
@@ -1011,6 +1069,7 @@ export class NodeKernelHost {
     path: string,
     data: Uint8Array,
     mode = 0o644,
+    options: VfsWriteOptions = {},
   ): Promise<void> {
     if (!this.initialized) {
       throw new Error("VFS write requires an initialized kernel");
@@ -1025,6 +1084,8 @@ export class NodeKernelHost {
         path,
         data: owned,
         mode: mode & FILE_MODES.S_MODE_BITS,
+        exclusive: options.exclusive,
+        owner: options.owner,
       },
       [owned.buffer],
     );

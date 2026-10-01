@@ -1,12 +1,12 @@
 import { getPreviewProgress } from "../panes/preview-progress";
 import type { DmesgLine, GalleryItem, KernelHost, PtyHandle } from '../../../../../web-libs/kandelo-session/src/kernel-host';
 import type { ShellTerminal } from '../panes/Shell';
-import { descriptorFromGalleryItem } from '../gallery-descriptor';
 import { galleryItemUrl } from '../url-state';
-import { encodeBootDescriptor, HARD_CAPS } from '../../../../../web-libs/kandelo-session/src/boot-descriptor';
-import { createInlineBootInput } from '../../../../../web-libs/kandelo-session/src/boot-inputs';
-import { contracts, guestPath, ToolError, validate, type Schema } from './contract';
-import { getWebMcpRuntimeCapabilities, listGuestDirectory, startGuestJob, readGuestJob, readGuestFile, writeGuestFile } from './runtime';
+import { contracts, guestPath, ToolError, type Schema } from './contract';
+import { buildLaunchLink } from './launch-link';
+import { modelContextOf } from './model-context';
+import { builtInTool, objectSchema, registerTool } from './registry';
+import { announceGuestScript, getWebMcpRuntimeCapabilities, jobStreams, listGuestDirectory, startGuestJob, readGuestJob, readGuestFile, writeGuestFile } from './runtime';
 
 export interface AppBindings {
   host: KernelHost;
@@ -17,14 +17,13 @@ export interface AppBindings {
   launch(item: GalleryItem): Promise<void>;
   navigatePreview(path: string): boolean;
 }
-interface ModelContext {
-  registerTool(tool: { name: string; description: string; inputSchema: Schema; annotations: { readOnlyHint: boolean; untrustedContentHint: boolean }; execute(args: Record<string, unknown>, options: { signal: AbortSignal }): Promise<string> }, options: { signal: AbortSignal }): Promise<void>;
-}
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const RETAINED_BYTES = 256 * 1024;
 const MAX_TERMINALS = 32;
 const MAX_REQUESTS = 256;
+// Codes a call throws before it performs anything, so a retry must run it again.
+const UNPERFORMED = new Set(['NOT_READY', 'ABORTED']);
 const controls: Record<string, string> = { enter: '\r', ctrl_c: '\x03', ctrl_d: '\x04', ctrl_z: '\x1a', tab: '\t', escape: '\x1b', backspace: '\x7f', up: '\x1b[A', down: '\x1b[B', left: '\x1b[D', right: '\x1b[C' };
 
 class OutputBuffer {
@@ -41,14 +40,19 @@ class OutputBuffer {
   }
 }
 type RetryRecord = { fingerprint: string; result: Promise<Record<string, unknown>> };
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)]));
+}
 const documentRequests = new WeakMap<KernelHost, Map<string, RetryRecord>>();
 
 interface TerminalRecord { terminal: ShellTerminal; output: OutputBuffer; pty?: PtyHandle; pending?: Promise<void>; error?: string; off?: () => void; queue: Promise<void> }
 
 /** One adapter per mounted app; no tools or capabilities are installed in preview frames. */
 export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: () => void } {
-  const context = (document as Document & { modelContext?: ModelContext }).modelContext;
-  if (!context?.registerTool) return () => {};
+  const context = modelContextOf(document);
+  if (!context) return () => {};
   const controller = new AbortController();
   const host = get().host;
   let generationId = crypto.randomUUID();
@@ -90,6 +94,7 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
     if (generationId !== id || disposed) throw new ToolError('STALE_SESSION', 'Computer was replaced; rediscover current IDs');
   }
   function qualified(id: string) { return `${generationId}:${id}`; }
+  function activeTerminalPath() { return get().terminals.find(t => t.id === get().activeTerminalId)?.path ?? null; }
   function parseCursor(raw: unknown, stream: string, oldest: number, end: number): number {
     if (raw === undefined) return oldest;
     const prefix = `${generationId}:${stream}:`;
@@ -131,9 +136,6 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
     for (const [id, record] of terminals) {
       if (!visible.has(id)) { record.off?.(); record.pty?.close(); terminals.delete(id); }
     }
-    if (host.getStatus() === "running" && host.getSurfaceAvailability().terminal) {
-      for (const terminal of get().terminals.slice(0, MAX_TERMINALS)) ensureTerminal(terminal);
-    }
   }
   async function profile(id: string) {
     const item = (await host.galleryQuery({ tab: 'presets' })).find(p => p.id === id);
@@ -159,14 +161,7 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
       throw error;
     }
     if (result.expired) throw new ToolError('OUTPUT_EXPIRED', 'Job output is no longer retained', { oldestCursor: `${prefix}${result.oldest}`, truncated: true });
-    const decode = (stream: 'stdout' | 'stderr') => {
-      const chunks = result.chunks.filter(chunk => chunk.stream === stream);
-      const bytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.bytes.length, 0));
-      let index = 0;
-      for (const chunk of chunks) { bytes.set(chunk.bytes, index); index += chunk.bytes.length; }
-      return decoder.decode(bytes);
-    };
-    return { jobId, pid: result.pid, status: result.status, exitCode: result.exitCode, terminationObserved: result.terminationObserved, stdout: decode('stdout'), stderr: decode('stderr'), nextCursor: `${prefix}${result.next}`, hasMore: result.hasMore, truncated: result.truncated };
+    return { jobId, pid: result.pid, status: result.status, exitCode: result.exitCode, terminationObserved: result.terminationObserved, ...jobStreams(result.chunks), nextCursor: `${prefix}${result.next}`, hasMore: result.hasMore, truncated: result.truncated };
   }
   async function execute(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     checkSignal(signal);
@@ -199,6 +194,7 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
         const jobId = qualified(`job-${crypto.randomUUID()}`);
         await startGuestJob(host, jobId, args as { script: string });
         sameGeneration(current);
+        announceGuestScript(host, activeTerminalPath(), args.script as string);
         const deadline = performance.now() + Number(args.waitMs ?? 1000);
         let result = await readJob(jobId);
         while (result.status === 'running' && performance.now() < deadline) {
@@ -220,6 +216,7 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
       case 'list_terminals': {
         if (host.getStatus() === 'running' && host.getSurfaceAvailability().terminal) {
           // Attach output observers to the same host-owned PTYs, never restart them.
+          for (const terminal of get().terminals.slice(0, MAX_TERMINALS)) ensureTerminal(terminal);
           await Promise.all([...terminals.values()].map(t => t.pending));
           sameGeneration(current);
         }
@@ -325,18 +322,9 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
       }
       case 'create_launch_link': {
         const item = args.profileId === undefined ? undefined : await resolvedProfile(args.profileId as string);
-        let descriptor = item ? descriptorFromGalleryItem(item, host.getBootDescriptor()) : host.getBootDescriptor();
-        if (item) descriptor = { ...descriptor, boot: { ...descriptor.boot, inputs: undefined, parameters: undefined } };
-        const url = new URL(item ? galleryItemUrl(item) : location.href);
-        if (args.startupScript !== undefined) {
-          const script = args.startupScript as string;
-          const bytes = encoder.encode(script.endsWith('\n') ? script : `${script}\n`);
-          if (bytes.length > HARD_CAPS.maxInlineInflatedInputBytes) throw new ToolError('LIMIT_EXCEEDED', 'Startup script exceeds inline inflated input limit');
-          descriptor = { ...descriptor, boot: { ...descriptor.boot, inputs: [await createInlineBootInput({ id: 'script', filename: 'kandelo-link.sh', bytes, compression: 'gzip' })], parameters: { runScript: 'script', runScriptShell: 'bash' } } };
-        }
-        url.hash = (await encodeBootDescriptor(descriptor)).fragment;
+        const link = await buildLaunchLink(host.getBootDescriptor(), item, item ? galleryItemUrl(item) : location.href, args.startupScript as string | undefined);
         checkSignal(signal); sameGeneration(current);
-        return { url: url.href, sizeBytes: encoder.encode(url.href).length, reproduces: 'Boot configuration and encoded startup inputs only; no modified files, processes or terminal state.' };
+        return link;
       }
       default: throw new ToolError('UNKNOWN_TOOL', name);
     }
@@ -344,15 +332,19 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
   async function invoke(name: string, args: Record<string, unknown>, signal?: AbortSignal) {
     if (args.requestId === undefined) return execute(name, args, signal);
     const key = `${name}:${args.requestId}`;
-    const fingerprint = JSON.stringify(Object.fromEntries(Object.entries(args).sort(([a], [b]) => a.localeCompare(b))));
+    const fingerprint = JSON.stringify(canonical(args));
     const prior = requests.get(key);
     if (prior) {
       if (prior.fingerprint !== fingerprint) throw new ToolError('REQUEST_CONFLICT', 'Retry key was already used with different arguments');
       return prior.result;
     }
-    if (requests.size >= MAX_REQUESTS) throw new ToolError('LIMIT_EXCEEDED', 'Document retry-key capacity reached; no mutation performed');
+    if (requests.size >= MAX_REQUESTS) requests.delete(requests.keys().next().value!);
     const result = execute(name, args, signal);
-    requests.set(key, { fingerprint, result });
+    const record = { fingerprint, result };
+    requests.set(key, record);
+    result.catch(error => {
+      if (error instanceof ToolError && UNPERFORMED.has(error.code) && requests.get(key) === record) requests.delete(key);
+    });
     return result;
   }
   // Registration is serialized across StrictMode teardown/remount, so an old
@@ -360,18 +352,9 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
   registration = registration.catch(() => {}).then(async () => {
     for (const [name, description, readOnlyHint, properties, required] of contracts) {
       if (controller.signal.aborted) break;
-      const inputSchema: Schema = { type: 'object', properties: properties as Record<string, Schema>, required: [...required], additionalProperties: false };
-      await context.registerTool({ name: `kandelo_${name}`, description, inputSchema, annotations: { readOnlyHint, untrustedContentHint: true }, execute: async (args, options) => {
-        try {
-          validate(args, inputSchema);
-          const result = await invoke(name, args, options?.signal);
-          return JSON.stringify({ ok: true, ...result });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const code = error instanceof ToolError ? error.code : /no synchronous VFS surface|no writeFileToVfs/.test(message) ? 'UNSUPPORTED_CAPABILITY' : /ENOENT/.test(message) ? 'FILE_NOT_FOUND' : 'OPERATION_FAILED';
-          return JSON.stringify({ ok: false, error: { code, message, ...(error instanceof ToolError ? error.details : {}) } });
-        }
-      } }, { signal: controller.signal });
+      const schema = objectSchema(properties as Record<string, Schema>, required);
+      const tool = builtInTool(name, description, readOnlyHint, schema, (args, signal) => invoke(name, args, signal));
+      await registerTool(context, tool, controller.signal);
     }
   }).catch(error => { if (!controller.signal.aborted) console.warn('WebMCP registration failed', error); });
   sync();

@@ -88,9 +88,20 @@ export interface InitMessage {
   enableTcpNetwork?: boolean;
 }
 
+/** Read, cancel or release one worker-owned command family. */
+export interface OwnedJobMessage {
+  type: "read_owned_job" | "cancel_owned_job" | "release_owned_job";
+  requestId: number;
+  jobId: string;
+  offset?: number;
+  limit?: number;
+}
+
 export interface SpawnMessage {
   type: "spawn";
   requestId: number;
+  /** Own this process and its descendants as one cancellable command family. */
+  ownedJob?: { id: string; timeoutMs: number };
   /**
    * Supply exactly one program source. `programPath` resolves inside the
    * worker-owned VFS and is the Node peer of BrowserKernel.spawnFromVfs().
@@ -229,6 +240,25 @@ export interface ReadVfsFileMessage {
   path: string;
 }
 
+export interface VfsDirEntry {
+  name: string;
+  /** Linux `d_type` of the entry as the backing store reported it. */
+  type: number;
+  mode: number;
+  size: number;
+  uid: number;
+  gid: number;
+  /** Link target when the entry is a symlink. */
+  target?: string;
+}
+
+/** List one directory through the worker-owned VFS. */
+export interface ReadVfsDirMessage {
+  type: "read_vfs_dir";
+  requestId: number;
+  path: string;
+}
+
 /** Create or replace one regular file through the worker-owned VFS. */
 export interface WriteVfsFileMessage {
   type: "write_vfs_file";
@@ -236,6 +266,15 @@ export interface WriteVfsFileMessage {
   path: string;
   data: Uint8Array;
   mode: number;
+  /** Fail with EEXIST rather than replace an existing path. */
+  exclusive?: boolean;
+  /** Owner to give the written path; the worker's own identity otherwise. */
+  owner?: VfsOwner;
+}
+
+export interface VfsOwner {
+  uid: number;
+  gid: number;
 }
 
 /** Request the kernel's per-process fork counter. The kernel-worker entry
@@ -416,7 +455,9 @@ export type MainToKernelMessage =
   | DestroyMessage
   | ExportRootfsImageMessage
   | ReadVfsFileMessage
+  | ReadVfsDirMessage
   | WriteVfsFileMessage
+  | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | GetSpawnScratchCapacityRequestMessage

@@ -592,7 +592,11 @@ const activeBridgeRequests = new Set<number>();
 const ownedJobs = new OwnedJobs(pid => {
   // A committed child can still be awaiting its Worker; let launch settle first.
   if (processes.has(pid)) kernelWorker.signalProcess(pid, 9);
-}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family));
+}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => reportHostDiagnostic({
+  pid: 0,
+  source: "owned job reap",
+  message: `[browser-kernel-worker] failed to reap an exited owned job family: ${formatError(error)}`,
+}));
 
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   if (msg.type === "stdout" || msg.type === "stderr") ownedJobs.output(msg.pid, msg.type, msg.data);
@@ -1612,7 +1616,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
         }
       }
     }
-    if (createdPid !== undefined && !processes.has(createdPid)) { ownedJobs.exited(createdPid, 127); ownedJobs.detached(createdPid); }
+    if (createdPid !== undefined && !processes.has(createdPid)) ownedJobs.abandon(createdPid);
     respondError(msg.requestId, String(e));
   } finally {
     releaseMutation?.();
@@ -3839,10 +3843,9 @@ function describeVfsDirEntry(
   const path = dir.endsWith("/") ? dir + entry.name : `${dir}/${entry.name}`;
   let stat;
   try {
-    stat = io.stat(path);
+    stat = io.lstat(path);
   } catch {
-    // A dangling symlink or an entry unlinked mid-listing is not an error for
-    // the whole directory.
+    // An entry unlinked mid-listing is not an error for the whole directory.
     return null;
   }
   let target: string | undefined;
@@ -3904,6 +3907,7 @@ function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs
     // open(O_CREAT) preserves an existing file's mode. Apply the caller's
     // requested mode explicitly so replacement and creation behave alike.
     io.chmod(msg.path, msg.mode & FILE_MODES.S_MODE_BITS);
+    if (msg.owner) io.chown(msg.path, msg.owner.uid, msg.owner.gid);
     respond(msg.requestId, true);
   } catch (err) {
     if (fd !== null) {
@@ -4073,6 +4077,11 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
         `failed to detach exact process generation for pid ${pid}`,
       );
       return;
+    }
+    // A forced terminate posts no exit. A superseded pid belongs to its exec successor.
+    if (detachResult.detachDisposition === "removed-or-absent") {
+      ownedJobs.exited(pid, msg.status);
+      ownedJobs.detached(pid);
     }
   } else {
     try {
@@ -4562,6 +4571,12 @@ sw.onmessage = (e: MessageEvent) => {
       try {
         if (msg.type === "cancel_owned_job") ownedJobs.cancel(msg.jobId);
         respond(msg.requestId, ownedJobs.read(msg.jobId, msg.offset, msg.limit));
+      } catch (error) { respondError(msg.requestId, formatError(error)); }
+      break;
+    case "release_owned_job":
+      try {
+        ownedJobs.release(msg.jobId);
+        respond(msg.requestId, true);
       } catch (error) { respondError(msg.requestId, formatError(error)); }
       break;
     case "spawn":
