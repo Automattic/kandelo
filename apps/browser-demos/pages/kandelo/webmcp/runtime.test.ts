@@ -4,10 +4,12 @@ import test from "node:test";
 import type { KernelHost, KernelOwnedJobRead, MachineStatus } from "../kernel-host";
 import { ToolError } from "./contract.ts";
 import {
+  announceGuestScript,
   getWebMcpRuntimeCapabilities,
   passwdAccount,
   readGuestFile,
   readGuestJob,
+  runGuestScript,
   setWebMcpSession,
   startGuestJob,
   writeGuestFile,
@@ -20,6 +22,7 @@ type Calls = {
   jobs: Array<[string, string, string[], unknown]>;
   jobReads: Array<[string, number | undefined, number | undefined, boolean | undefined]>;
   jobReleases: string[];
+  announced: Array<[string, string]>;
 };
 
 const encoder = new TextEncoder();
@@ -40,7 +43,7 @@ const completed: KernelOwnedJobRead = {
 };
 
 function fakeHost(overrides: Partial<KernelHost> = {}) {
-  const calls: Calls = { reads: [], writes: [], jobs: [], jobReads: [], jobReleases: [] };
+  const calls: Calls = { reads: [], writes: [], jobs: [], jobReads: [], jobReleases: [], announced: [] };
   const listeners: Array<(status: MachineStatus) => void> = [];
   let status: MachineStatus = "running";
   const host = {
@@ -66,6 +69,10 @@ function fakeHost(overrides: Partial<KernelHost> = {}) {
     },
     releaseOwnedJob: async (id: string) => {
       calls.jobReleases.push(id);
+    },
+    injectPtyOutput: (path: string, text: string) => {
+      calls.announced.push([path, text]);
+      return true;
     },
     ...overrides,
   } as unknown as KernelHost;
@@ -273,4 +280,64 @@ test("a released job that the kernel no longer knows does not block the ones beh
     await startGuestJob(host, `job-${index}`, { script: "true" });
   }
   assert.deepEqual(attempts, ["job-0", "job-1", "job-2"]);
+});
+
+test("a script run to completion collects both streams across reads and releases its job", async () => {
+  const reads: KernelOwnedJobRead[] = [
+    { ...completed, status: "running", exitCode: null, terminationObserved: false, chunks: [{ stream: "stdout", bytes: encoder.encode("3.") }], next: 2, hasMore: true },
+    { ...completed, status: "running", exitCode: null, terminationObserved: false, chunks: [{ stream: "stderr", bytes: encoder.encode("warn\n") }], next: 7, hasMore: false },
+    { ...completed, chunks: [{ stream: "stdout", bytes: encoder.encode("14\n") }], next: 10 },
+  ];
+  const { host, calls } = attached({ readOwnedJob: async () => reads.shift() ?? completed });
+
+  const result = await runGuestScript(host, "echo 3.14", { timeoutMs: 1000 });
+
+  assert.deepEqual(result, { stdout: "3.14\n", stderr: "warn\n", exitCode: 0, status: "completed", terminationObserved: true, truncated: false });
+  assert.equal(calls.jobs.length, 1);
+  assert.deepEqual(calls.jobReleases, [calls.jobs[0]![0]]);
+});
+
+test("a script that prints without end keeps its last 256 KiB of output", async () => {
+  let reads = 0;
+  const { host } = attached({
+    readOwnedJob: async () => {
+      reads += 1;
+      const bytes = new Uint8Array(65536).fill(reads === 5 ? 0x62 : 0x61);
+      return { ...completed, chunks: [{ stream: "stdout", bytes }], next: reads * 65536, hasMore: reads < 5 };
+    },
+  });
+
+  const result = await runGuestScript(host, "yes", { timeoutMs: 1000 });
+
+  assert.equal(result.stdout.length, 4 * 65536);
+  assert.ok(result.stdout.endsWith("b".repeat(65536)));
+  assert.equal(result.truncated, true);
+});
+
+test("a script whose call is aborted is cancelled once and still released", async () => {
+  const controller = new AbortController();
+  const cancels: boolean[] = [];
+  let polls = 0;
+  const { host, calls } = attached({
+    readOwnedJob: async (_id: string, _offset?: number, _limit?: number, cancel?: boolean) => {
+      cancels.push(Boolean(cancel));
+      polls += 1;
+      if (polls === 1) controller.abort();
+      if (polls < 3) return { ...completed, status: "running", exitCode: null, terminationObserved: false };
+      return { ...completed, status: "cancelled", exitCode: 137 };
+    },
+  });
+
+  const result = await runGuestScript(host, "sleep 60", { timeoutMs: 1000, signal: controller.signal });
+
+  assert.deepEqual(cancels, [false, true, false]);
+  assert.equal(result.status, "cancelled");
+  assert.equal(calls.jobReleases.length, 1);
+});
+
+test("a script announces its first line on the terminal without sending input", () => {
+  const { host, calls } = attached();
+  announceGuestScript(host, "/dev/pts/1", "echo hi\nls\n");
+  announceGuestScript(host, null, "echo hi");
+  assert.deepEqual(calls.announced, [["/dev/pts/1", "\r\n\x1b[2m[agent] echo hi ...\x1b[0m\r\n"]]);
 });

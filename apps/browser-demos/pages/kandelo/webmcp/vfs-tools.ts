@@ -1,7 +1,7 @@
 // Tool definitions live in two directories: /etc/mcp ships with the image and
 // /home/maker/mcp belongs to the maker; on a name clash the maker's file wins.
 // One JSON file per tool, named after the tool: `{ description, inputSchema,
-// command }`. The command is typed into the machine's visible shell; it may
+// command }`. The command runs as an owned job of the agent's account; it may
 // carry `{param}` placeholders filled from the call arguments, or `{param:q}`
 // to substitute the value as one shell-quoted word.
 

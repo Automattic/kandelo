@@ -100,9 +100,23 @@ replacing or deleting a file registers or unregisters its tool without a reload.
 }
 ```
 
-`command` is typed into the machine's visible shell, and the call resolves with
-what the terminal printed before the next prompt, as `{ok:true,output}`.
-Aborting the call sends Ctrl-C to the shell.
+`command` runs as an owned job of the agent's account (see "Structured jobs"),
+exactly as `kandelo_run_command` would run it, with a 30 second timeout that the
+kernel worker enforces. The call resolves once every process of the command has
+terminated, or once the timeout has passed without that observation, and the
+job record is released, so image-declared calls never count against the
+session's retained jobs. The result is
+`{ok:true,stdout,stderr,exitCode,status,terminationObserved,truncated}`, the
+same fields `kandelo_read_job` reports. The result keeps the last 256 KiB of
+combined output; `truncated` is true when output was dropped, either past that
+limit or because the kernel's 256 KiB window overflowed before the call could
+read it. Aborting the call cancels the whole command family.
+
+The command is not typed into a terminal, so nothing an agent runs can land in
+a program the user is interacting with. It is announced instead: the active
+terminal shows a dim `[agent] <command>` line, delivered to the terminal's
+output only. That line is not input, so it runs nothing, and the shell does not
+redraw its prompt after it.
 
 A placeholder is filled from the call arguments: a string verbatim, any other
 value JSON-encoded. Two spellings decide how the shell then reads it.
@@ -283,7 +297,8 @@ account's home directory and login shell come from the image's own
 directory and an environment made of the host's POSIX baseline (`PATH`, `HOME`,
 `USER`, `LOGNAME`, `TMPDIR`, `TERM`, the SSL certificate paths), then the
 call's own `env` entries, which override it. `kandelo_write_file` gives the
-files it creates to the same account.
+files it creates to the same account. Every script the agent runs is announced
+on the active terminal as a dim `[agent] <first line>` output line.
 
 The owned family is a host primitive, not a WebMCP feature. The Node and browser
 kernel workers both implement it, and `NodeKernelHost` exposes the same
