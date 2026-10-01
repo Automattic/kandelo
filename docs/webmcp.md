@@ -267,6 +267,14 @@ Jobs retain 256 KiB of combined stdout/stderr and at most 64 job records per
 computer. Read cursors advance across both streams and report overflow explicitly.
 Output is UTF-8 text; byte limits can split multibyte sequences as with terminals.
 
+A job record outlives its command so its output stays readable. Kandelo therefore
+forgets every finished job of a session outside its newest 32, so a session is
+bounded by the commands it runs at once rather than by the commands it has ever
+run. `kandelo_read_job` on a forgotten job returns `UNKNOWN_JOB`; read a job's
+output before running 32 more commands. A job that is still running is never
+forgotten. Starting a command when the computer already holds 64 job records
+fails with `LIMIT_EXCEEDED`, because 64 records is the kernel's real limit.
+
 Every job runs as the agent's guest account: the `maker` account (uid 1000)
 the terminal logs into, so the agent and the user own the same files. The
 account's home directory and login shell come from the image's own
@@ -279,7 +287,8 @@ files it creates to the same account.
 
 The owned family is a host primitive, not a WebMCP feature. The Node and browser
 kernel workers both implement it, and `NodeKernelHost` exposes the same
-`spawnFromVfs(..., { ownedJob })` and `readOwnedJob()` calls as `BrowserKernel`.
+`spawnFromVfs(..., { ownedJob })`, `readOwnedJob()` and `releaseOwnedJob()` calls
+as `BrowserKernel`.
 `docs/architecture.md` describes the primitive under "Owned command families
 (jobs)".
 

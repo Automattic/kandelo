@@ -103,6 +103,7 @@ test("a plain error is classified by its message", async () => {
   assert.equal(await codeOf("the kernel has no synchronous VFS surface"), "UNSUPPORTED_CAPABILITY");
   assert.equal(await codeOf("no writeFileToVfs on this kernel"), "UNSUPPORTED_CAPABILITY");
   assert.equal(await codeOf("ENOENT: /nope"), "FILE_NOT_FOUND");
+  assert.equal(await codeOf("Job capacity reached (64 per computer)"), "LIMIT_EXCEEDED");
   assert.equal(await codeOf("something else broke"), "OPERATION_FAILED");
 });
 

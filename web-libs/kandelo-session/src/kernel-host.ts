@@ -427,6 +427,11 @@ export interface KernelLike {
     limit?: number,
     cancel?: boolean,
   ): Promise<KernelOwnedJobRead>;
+  /**
+   * Forget a finished job's record. Rejects while any member of the family is
+   * still live.
+   */
+  releaseOwnedJob?(jobId: string): Promise<void>;
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
   ptyWrite(pid: number, data: Uint8Array): void;
   ptyResize(pid: number, rows: number, cols: number): void;
@@ -996,6 +1001,13 @@ export interface KernelHost {
     limit?: number,
     cancel?: boolean,
   ): Promise<KernelOwnedJobRead>;
+  /**
+   * Forget a finished job's record and free the slot it holds. A kernel holds
+   * a bounded number of job records, so a caller that runs many commands
+   * releases the ones it has finished reading. Rejects while the family is
+   * still live, and a released job reads back as an unknown job.
+   */
+  releaseOwnedJob(id: string): Promise<void>;
 
   // process control
   /**
@@ -2445,6 +2457,15 @@ export class LiveKernelHost implements KernelHost {
       );
     }
     return this.kernel.readOwnedJob(id, offset, limit, cancel);
+  }
+
+  async releaseOwnedJob(id: string): Promise<void> {
+    if (!this.kernel?.releaseOwnedJob) {
+      throw new Error(
+        "LiveKernelHost.releaseOwnedJob: the attached kernel cannot own a command family.",
+      );
+    }
+    await this.kernel.releaseOwnedJob(id);
   }
 
   // ── KernelHost: process control ─────────────────────────────────────────

@@ -447,7 +447,8 @@ describe("LiveKernelHost: owned jobs", () => {
   const ownedJobKernel = (exit: Promise<number>) => {
     const spawnFromVfs = vi.fn(async () => ({ pid: 7, exit }));
     const readOwnedJob = vi.fn(async () => ({ expired: true as const, oldest: 0 }));
-    return { spawnFromVfs, readOwnedJob };
+    const releaseOwnedJob = vi.fn(async () => {});
+    return { spawnFromVfs, readOwnedJob, releaseOwnedJob };
   };
 
   it("names the family, bounds it and gives it an immediate stdin EOF", async () => {
@@ -490,6 +491,15 @@ describe("LiveKernelHost: owned jobs", () => {
     expect(kernel.readOwnedJob).toHaveBeenCalledWith("job-1", 16, 64, true);
   });
 
+  it("forwards a release to the worker", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.releaseOwnedJob("job-1");
+
+    expect(kernel.releaseOwnedJob).toHaveBeenCalledWith("job-1");
+  });
+
   it("rejects when the attached kernel cannot own a command family", async () => {
     const host = new LiveKernelHost();
     host.attachKernel({ spawnFromVfs: async () => ({ pid: 1, exit: Promise.resolve(0) }) } as any);
@@ -497,6 +507,7 @@ describe("LiveKernelHost: owned jobs", () => {
       host.startOwnedJob("job-1", "/bin/bash", ["bash"], { timeoutMs: 1 }),
     ).rejects.toThrow("cannot own a command family");
     await expect(host.readOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
+    await expect(host.releaseOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
   });
 });
 

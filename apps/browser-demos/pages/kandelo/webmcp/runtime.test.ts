@@ -19,6 +19,7 @@ type Calls = {
   writes: Array<[string, Uint8Array, number | undefined, unknown]>;
   jobs: Array<[string, string, string[], unknown]>;
   jobReads: Array<[string, number | undefined, number | undefined, boolean | undefined]>;
+  jobReleases: string[];
 };
 
 const encoder = new TextEncoder();
@@ -39,7 +40,7 @@ const completed: KernelOwnedJobRead = {
 };
 
 function fakeHost(overrides: Partial<KernelHost> = {}) {
-  const calls: Calls = { reads: [], writes: [], jobs: [], jobReads: [] };
+  const calls: Calls = { reads: [], writes: [], jobs: [], jobReads: [], jobReleases: [] };
   const listeners: Array<(status: MachineStatus) => void> = [];
   let status: MachineStatus = "running";
   const host = {
@@ -62,6 +63,9 @@ function fakeHost(overrides: Partial<KernelHost> = {}) {
     readOwnedJob: async (id: string, offset?: number, limit?: number, cancel?: boolean) => {
       calls.jobReads.push([id, offset, limit, cancel]);
       return completed;
+    },
+    releaseOwnedJob: async (id: string) => {
+      calls.jobReleases.push(id);
     },
     ...overrides,
   } as unknown as KernelHost;
@@ -210,4 +214,63 @@ test("a machine that changed under an operation reports STALE_SESSION", async ()
     readGuestFile(fake.host, "/tmp/foo"),
     (error: ToolError) => error.code === "STALE_SESSION",
   );
+});
+
+test("a session releases its oldest finished jobs before starting a new one", async () => {
+  const { host, calls } = attached();
+  for (let index = 0; index < 32; index++) {
+    await startGuestJob(host, `job-${index}`, { script: "true" });
+  }
+  assert.deepEqual(calls.jobReleases, []);
+  for (let index = 32; index < 35; index++) {
+    await startGuestJob(host, `job-${index}`, { script: "true" });
+  }
+  assert.deepEqual(calls.jobReleases, ["job-0", "job-1"]);
+  assert.equal(calls.jobs.length, 35);
+});
+
+test("a job that is still running does not hold back the finished jobs behind it", async () => {
+  const released: string[] = [];
+  const { host, calls } = attached({
+    releaseOwnedJob: async (id: string) => {
+      if (id === "job-0") throw new Error("JOB_RUNNING");
+      released.push(id);
+    },
+  });
+  for (let index = 0; index < 40; index++) {
+    await startGuestJob(host, `job-${index}`, { script: "true" });
+  }
+  assert.equal(calls.jobs.length, 40);
+  assert.deepEqual(released, ["job-1", "job-2", "job-3", "job-4", "job-5", "job-6"]);
+});
+
+test("two jobs started at once release each finished job exactly once", async () => {
+  const kernel = new Set<string>();
+  const { host } = attached({
+    startOwnedJob: async (id: string) => { kernel.add(id); },
+    releaseOwnedJob: async (id: string) => {
+      await Promise.resolve();
+      if (!kernel.delete(id)) throw new Error("UNKNOWN_JOB");
+    },
+  });
+  for (let index = 0; index < 33; index++) {
+    await startGuestJob(host, `job-${index}`, { script: "true" });
+  }
+  await Promise.all([startGuestJob(host, "job-33", { script: "true" }), startGuestJob(host, "job-34", { script: "true" })]);
+  await startGuestJob(host, "job-35", { script: "true" });
+  assert.deepEqual([...kernel].sort(), Array.from({ length: 33 }, (_, index) => `job-${index + 3}`).sort());
+});
+
+test("a released job that the kernel no longer knows does not block the ones behind it", async () => {
+  const attempts: string[] = [];
+  const { host } = attached({
+    releaseOwnedJob: async (id: string) => {
+      attempts.push(id);
+      if (id === "job-0") throw new Error("UNKNOWN_JOB");
+    },
+  });
+  for (let index = 0; index < 36; index++) {
+    await startGuestJob(host, `job-${index}`, { script: "true" });
+  }
+  assert.deepEqual(attempts, ["job-0", "job-1", "job-2"]);
 });

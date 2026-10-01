@@ -86,6 +86,8 @@ function toolErrorOf(error: unknown): Record<string, unknown> {
     ? "UNSUPPORTED_CAPABILITY"
     : /ENOENT/.test(message)
       ? "FILE_NOT_FOUND"
-      : "OPERATION_FAILED";
+      : /Job capacity reached/.test(message)
+        ? "LIMIT_EXCEEDED"
+        : "OPERATION_FAILED";
   return { code, message };
 }

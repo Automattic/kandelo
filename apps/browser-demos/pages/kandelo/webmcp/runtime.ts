@@ -25,15 +25,22 @@ interface Account {
 
 const FALLBACK_ACCOUNT: Account = { home: "/", shell: "/bin/sh" };
 
-// Identity this session holds. The session object exists so a machine that
-// changed under an in-flight operation is reported rather than silently
-// retried.
+// Identity and the job records this session holds. The identity exists so a
+// machine that changed under an in-flight operation is reported rather than
+// silently retried.
 type Session = {
   unsubscribe: () => void;
+  jobs: string[];
   identity: WebMcpIdentity;
   account: Promise<Account> | null;
 };
 const sessions = new WeakMap<KernelHost, Session>();
+
+// A kernel holds 64 job records at once, and a record outlives its command so
+// its output stays readable. Keeping fewer than that per session leaves room
+// for families still running, so an agent's session is bounded by the commands
+// it runs at once rather than by the commands it has ever run.
+const RETAINED_JOBS = 32;
 
 const decoder = new TextDecoder();
 
@@ -42,7 +49,7 @@ export function setWebMcpSession(host: KernelHost, identity: WebMcpIdentity | nu
   sessions.get(host)?.unsubscribe();
   sessions.delete(host);
   if (!identity) return;
-  const session: Session = { unsubscribe: () => {}, identity, account: null };
+  const session: Session = { unsubscribe: () => {}, jobs: [], identity, account: null };
   sessions.set(host, session);
   session.unsubscribe = host.subscribeStatus(status => {
     if (status === "halted" && sessions.get(host) === session) setWebMcpSession(host, null);
@@ -162,6 +169,23 @@ function jobEnv(baseline: string[], home: string, overrides: Record<string, stri
   return [...env].map(([name, value]) => `${name}=${value}`);
 }
 
+/**
+ * Forget the finished jobs of this session outside its newest ones. A job
+ * that is still live refuses release and stays, without holding back the
+ * finished jobs around it. A parallel call can release the same job first,
+ * so a job leaves the list by its id.
+ */
+async function releaseFinishedJobs(host: KernelHost, session: Session): Promise<void> {
+  for (const id of session.jobs.slice(0, -RETAINED_JOBS)) {
+    try {
+      await host.releaseOwnedJob(id);
+    } catch (error) {
+      if (!String(error).includes("UNKNOWN_JOB")) continue;
+    }
+    session.jobs = session.jobs.filter(job => job !== id);
+  }
+}
+
 export async function startGuestJob(host: KernelHost, id: string, args: { script: string; cwd?: string; env?: Record<string, string>; timeoutMs?: number }) {
   const session = requireSession(host);
   for (const [name, value] of Object.entries(args.env ?? {})) {
@@ -169,6 +193,8 @@ export async function startGuestJob(host: KernelHost, id: string, args: { script
   }
   if (args.script.includes("\0")) throw new ToolError("INVALID_ARGUMENT", "Script must not contain NUL");
   const account = await sessionAccount(host, session);
+  assertCurrent(host, session);
+  await releaseFinishedJobs(host, session);
   assertCurrent(host, session);
   const { uid, gid, env } = session.identity;
   await host.startOwnedJob(id, account.shell, [account.shell.slice(account.shell.lastIndexOf("/") + 1), "-c", args.script], {
@@ -178,6 +204,7 @@ export async function startGuestJob(host: KernelHost, id: string, args: { script
     gid,
     timeoutMs: args.timeoutMs ?? 30000,
   });
+  session.jobs.push(id);
   assertCurrent(host, session);
 }
 
