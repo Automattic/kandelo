@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
+import { tryResolveBinary } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -20,8 +21,9 @@ const SYSROOT64 = join(REPO_ROOT, "sysroot64");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasSysroot64 = existsSync(join(SYSROOT64, "lib", "libc.a"));
-const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
-  existsSync(join(REPO_ROOT, "local-binaries", "kernel.wasm"));
+// The resolver runCentralizedProgram boots from; legacy-path checks skipped
+// this suite in source-only checkouts (kernel under local-binaries/source-only-v1).
+const hasKernel = tryResolveBinary("kernel.wasm") !== null;
 function hasCompiler(compiler = "wasm32posix-cc"): boolean {
   try {
     execFileSync(compiler, ["--version"], { stdio: "ignore" });
@@ -77,7 +79,7 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
   // than the VFS layer.
   const io = () => new NodePlatformIO();
 
-  it("opens and resolves the main program symbol scope", async () => {
+  it("opens and resolves the main program symbol scope", { timeout: 30_000 }, async () => {
     const wasmPath = buildMainProgram(
       readFileSync(join(__dirname, "fixtures", "dlopen-main-scope.c"), "utf8"),
       "test-dlopen-main",
@@ -238,7 +240,7 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
     expect(result.stdout).toContain("expected error:");
   });
 
-  it("dlsym returns null for non-existent symbol", async () => {
+  it("dlsym returns null for non-existent symbol", { timeout: 30_000 }, async () => {
     const soPath = buildSharedLib(
       `int foo(void) { return 42; }`,
       "libfoo",

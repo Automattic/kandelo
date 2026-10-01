@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
+import { tryResolveBinary } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -45,8 +46,10 @@ const WASM_LD = llvmTool("wasm-ld");
 const FORK_INSTRUMENT = join(REPO_ROOT, "scripts", "run-wasm-fork-instrument.sh");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
-const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
-  existsSync(join(REPO_ROOT, "local-binaries", "kernel.wasm"));
+// Ask the same resolver runCentralizedProgram boots from. Checking only the
+// legacy binaries/ and local-binaries/ paths skipped this whole suite in a
+// source-only checkout, whose kernel lives under local-binaries/source-only-v1.
+const hasKernel = tryResolveBinary("kernel.wasm") !== null;
 
 const BUILD_DIR = join(tmpdir(), "wasm-fork-dlopen-replay-e2e");
 
