@@ -162,6 +162,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "elinks",
+      "version": "0.20.0",
+      "role": "lazy-file"
+    },
+    {
       "name": "vim-browser-bundle",
       "version": "9.1.0900",
       "role": "lazy-archive"

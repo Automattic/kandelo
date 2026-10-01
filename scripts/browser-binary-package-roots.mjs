@@ -31,6 +31,7 @@ export const localOnlyBrowserImports = new Set([
 ]);
 
 export const registryPackagesWithoutBuildToml = new Set([
+  "netsurf-buildsystem-source",
   "pcre2-source",
   "sqlite-cli",
   "wordpress-sqlite-integration-source",

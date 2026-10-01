@@ -1,0 +1,18 @@
+# The NetSurf project's shared build system: GNU make fragments that every
+# NetSurf library's Makefile includes. It is a build-time input only — the
+# libraries read these fragments while building and nothing from this tree
+# is installed — so it is declared as a source-kind package that
+# libwapcaplet, libparserutils, libhubbub, libcss and libdom depend on.
+# See scripts/netsurf-library-build.sh.
+kind = "source"
+name = "netsurf-buildsystem-source"
+version = "1.10"
+
+[source]
+url = "https://download.netsurf-browser.org/libs/releases/buildsystem-1.10.tar.gz"
+sha256 = "3d3e39d569e44677c4b179129bde614c65798e2b3e6253160239d1fd6eae4d79"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://git.netsurf-browser.org/buildsystem.git/tree/COPYING?h=release/1.10"

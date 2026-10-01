@@ -29,6 +29,7 @@ Real, unmodified software compiled to WebAssembly:
 | Ruby | 3.3 | Interpreter with core stdlib |
 | SpiderMonkey | 140 ESR | JavaScript engine backing the Node.js-compatible runtime with Intl, SharedArrayBuffer, worker_threads, and npm package installs. |
 | GNU nano | 8.3 | Terminal text editor |
+| ELinks | 0.20 | Text-mode web browser: tables, tabs, HTTPS, and page JavaScript via QuickJS-NG. Carries two small portability patches (see `packages/registry/elinks/patches/`) |
 | dash | 0.5.12 | POSIX shell with pipes, redirects, job control |
 | GNU coreutils | 9.6 | 50+ utilities (ls, cat, sort, wc, etc.) |
 | GNU grep | 3.11 | Regular expression search |
@@ -359,6 +360,7 @@ bash packages/registry/perl/build-perl.sh           # Perl 5.40
 bash packages/registry/ruby/build-ruby.sh           # Ruby 3.3
 bash packages/registry/spidermonkey/build-spidermonkey.sh # SpiderMonkey JS + Node.js compat
 bash packages/registry/nano/build-nano.sh           # GNU nano 8.3
+cargo xtask build-deps resolve elinks               # ELinks 0.20 + QuickJS-NG (builds its library deps first)
 bash packages/registry/curl/build-curl.sh           # curl
 bash packages/registry/netcat/build-netcat.sh        # GNU Netcat 0.7.1
 bash packages/registry/make/build-make.sh           # GNU make

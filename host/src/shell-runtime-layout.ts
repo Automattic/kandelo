@@ -45,6 +45,40 @@ export function populateShellRuntimeLayout(fs: MemoryFileSystem): void {
   ].join("\n");
   writeVfsFile(fs, "/etc/gitconfig", gitconfig);
 
+  // ELinks reads this system-wide file before the user's own
+  // ~/.config/elinks/elinks.conf, so everything here is only a default.
+  //
+  // WHY enable scripts: upstream ELinks ships with page JavaScript off. The
+  // Kandelo package is built with the QuickJS-NG engine so that pages which
+  // build their content with scripts are readable, and a browser that needs
+  // a hidden option flipped before that works would not deliver it.
+  //
+  // WHY 24-bit color: ELinks has no terminfo here and picks its color depth
+  // from a built-in table keyed by $TERM; for xterm-256color (what
+  // /etc/profile.d exports) that is the 256-color palette. ELinks draws its
+  // menus and dialogs as palette entry 0 on entry 15, assuming those are
+  // black and white. A terminal theme is free to recolor the first 16
+  // entries, and Kandelo's default light theme makes "white" dark so that
+  // white text stays readable on a cream background, which turned every
+  // ELinks dialog dark-on-dark. Kandelo's terminal renders 24-bit color, so
+  // say so: ELinks then sends exact RGB values that no theme reinterprets.
+  const elinksConf = [
+    "## System-wide ELinks defaults for Kandelo shell images.",
+    "## Override them in ~/.config/elinks/elinks.conf or the options manager.",
+    "",
+    "## Run the JavaScript in pages (upstream default: 0).",
+    "set ecmascript.enable = 1",
+    "",
+    "## Color depth for TERM=xterm-256color: 4 is 24-bit color (upstream",
+    "## default: 3, the 256-color palette). The Kandelo terminal renders",
+    "## 24-bit color, and exact colors keep menus and dialogs readable under",
+    "## themes that recolor the 16 base palette entries.",
+    "set terminal.xterm-256color.colors = 4",
+    "",
+  ].join("\n");
+  ensureDirRecursive(fs, "/etc/elinks");
+  writeVfsFile(fs, "/etc/elinks/elinks.conf", elinksConf);
+
   const profile = [
     "alias ls='ls --color=auto'",
     "alias grep='grep --color=auto'",

@@ -1,6 +1,7 @@
 schema = 1
 policy = "source-only-v1"
 dependency_only = [
+  "netsurf-buildsystem-source",
   "pcre2-source",
   "wordpress-sqlite-integration-source",
 ]
@@ -100,6 +101,10 @@ class = "user-software"
 
 [[packages]]
 name = "dinit"
+class = "user-software"
+
+[[packages]]
+name = "elinks"
 class = "user-software"
 
 [[packages]]
@@ -219,11 +224,19 @@ name = "lhasa"
 class = "user-software"
 
 [[packages]]
+name = "libcss"
+class = "platform"
+
+[[packages]]
 name = "libcurl"
 class = "platform"
 
 [[packages]]
 name = "libcxx"
+class = "platform"
+
+[[packages]]
+name = "libdom"
 class = "platform"
 
 [[packages]]
@@ -243,11 +256,19 @@ name = "libffi"
 class = "platform"
 
 [[packages]]
+name = "libhubbub"
+class = "platform"
+
+[[packages]]
 name = "libiconv"
 class = "platform"
 
 [[packages]]
 name = "libinput"
+class = "platform"
+
+[[packages]]
+name = "libparserutils"
 class = "platform"
 
 [[packages]]
@@ -260,6 +281,10 @@ class = "platform"
 
 [[packages]]
 name = "libudev"
+class = "platform"
+
+[[packages]]
+name = "libwapcaplet"
 class = "platform"
 
 [[packages]]
@@ -438,6 +463,10 @@ class = "user-software"
 
 [[packages]]
 name = "qtshadertools"
+class = "platform"
+
+[[packages]]
+name = "quickjs-ng"
 class = "platform"
 
 [[packages]]
