@@ -268,6 +268,13 @@ export interface WriteVfsFileMessage {
   mode: number;
   /** Fail with EEXIST rather than replace an existing path. */
   exclusive?: boolean;
+  /** Owner to give the written path; the worker's own identity otherwise. */
+  owner?: VfsOwner;
+}
+
+export interface VfsOwner {
+  uid: number;
+  gid: number;
 }
 
 /** Request the kernel's per-process fork counter. The kernel-worker entry

@@ -3907,6 +3907,7 @@ function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs
     // open(O_CREAT) preserves an existing file's mode. Apply the caller's
     // requested mode explicitly so replacement and creation behave alike.
     io.chmod(msg.path, msg.mode & FILE_MODES.S_MODE_BITS);
+    if (msg.owner) io.chown(msg.path, msg.owner.uid, msg.owner.gid);
     respond(msg.requestId, true);
   } catch (err) {
     if (fd !== null) {

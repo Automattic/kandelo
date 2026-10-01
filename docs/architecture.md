@@ -1847,8 +1847,10 @@ private inodes and publication-before-`ready` establish ownership.
 
 `NodeKernelHost` exposes the same raw worker-owned VFS operations as
 `BrowserKernel`: `readFileFromVfs`, `readDirFromVfs` and `writeFileToVfs`, whose
-`exclusive` flag makes an existing path fail with `EEXIST` instead of being
-replaced. A missing path resolves `null` rather than throwing, on both hosts.
+options make the write exclusive (`exclusive`, so an existing path fails with
+`EEXIST` instead of being replaced) and name the owner the written path gets
+(`owner: { uid, gid }`; without it the path keeps the worker's own identity). A
+missing path resolves `null` rather than throwing, on both hosts.
 
 `execPrograms` and `execProgramBytes` are spawn-preflight inputs only. They
 cannot authorize `execve` or `execveat`, whose executable bytes and metadata

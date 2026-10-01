@@ -234,13 +234,24 @@ describe.skipIf(!haveKernel || !havePrograms)("NodeKernelHost raw VFS surface", 
     const host = await bootedHost();
     try {
       const bytes = new Uint8Array([1, 2, 3]);
-      await host.writeFileToVfs("/tmp/created", bytes, 0o644, true);
+      await host.writeFileToVfs("/tmp/created", bytes, 0o644, { exclusive: true });
       expect(await host.readFileFromVfs("/tmp/created")).toEqual(bytes);
       await expect(
-        host.writeFileToVfs("/tmp/created", bytes, 0o644, true),
+        host.writeFileToVfs("/tmp/created", bytes, 0o644, { exclusive: true }),
       ).rejects.toThrow(/EEXIST|exists/i);
       await host.writeFileToVfs("/tmp/created", new Uint8Array([4]), 0o644);
       expect(await host.readFileFromVfs("/tmp/created")).toEqual(new Uint8Array([4]));
+    } finally {
+      await host.destroy();
+    }
+  }, 60_000);
+
+  it("gives a written file the owner the caller names", async () => {
+    const host = await bootedHost();
+    try {
+      await host.writeFileToVfs("/tmp/owned", new Uint8Array([1]), 0o644, { owner: { uid: 1000, gid: 1000 } });
+      const entries = await host.readDirFromVfs("/tmp");
+      expect(entries!.find((entry) => entry.name === "owned")).toMatchObject({ uid: 1000, gid: 1000 });
     } finally {
       await host.destroy();
     }

@@ -74,7 +74,7 @@ export async function writeGuestFile(host: KernelHost, path: string, bytes: Uint
   const runtime = requireRuntime(host);
   if (bytes.byteLength > 65536) throw new ToolError("INVALID_ARGUMENT", "Guest writes are limited to 65536 decoded bytes.");
   try {
-    await runtime.kernel.writeFileToVfs(path, bytes, 0o644, !overwrite);
+    await runtime.kernel.writeFileToVfs(path, bytes, 0o644, { exclusive: !overwrite });
   } catch (error) {
     assertCurrent(host, runtime);
     if (/EEXIST|already exists|file exists/i.test(String(error))) throw new ToolError("FILE_EXISTS", "The guest path already exists; no bytes were written.", { path });

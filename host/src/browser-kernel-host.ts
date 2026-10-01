@@ -23,6 +23,7 @@ import type {
   KernelToMainMessage,
   VfsDirEntry,
   VfsFileSnapshot,
+  VfsOwner,
   DestroyProgressEvent,
 } from "./browser-kernel-protocol";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
@@ -256,6 +257,13 @@ async function fetchDefaultRootfsVfsImage(): Promise<ArrayBuffer> {
     );
   }
   return response.arrayBuffer();
+}
+
+export interface VfsWriteOptions {
+  /** Fail with EEXIST rather than replace an existing path. */
+  exclusive?: boolean;
+  /** Owner to give the written path; the worker's own identity otherwise. */
+  owner?: VfsOwner;
 }
 
 export class BrowserKernel {
@@ -1485,13 +1493,14 @@ export class BrowserKernel {
     path: string,
     data: Uint8Array,
     mode = 0o644,
-    exclusive = false,
+    options: VfsWriteOptions = {},
   ): Promise<void> {
     const requestId = this.nextRequestId++;
     const owned = data.slice();
     await this.request(requestId, {
       type: "write_vfs_file",
-      exclusive,
+      exclusive: options.exclusive,
+      owner: options.owner,
       requestId,
       path,
       data: owned,

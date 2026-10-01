@@ -29,6 +29,7 @@ import type {
   ResolveExecRequestMessage,
   DestroyProgressEvent,
   VfsDirEntry,
+  VfsOwner,
 } from "./node-kernel-protocol";
 import type { OwnedJobRead } from "./owned-jobs";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
@@ -189,6 +190,13 @@ export interface NodeKernelHostOptions {
    * resolves.
    */
   sessionSeedTrees?: readonly NodeSessionSeedTree[];
+}
+
+export interface VfsWriteOptions {
+  /** Fail with EEXIST rather than replace an existing path. */
+  exclusive?: boolean;
+  /** Owner to give the written path; the worker's own identity otherwise. */
+  owner?: VfsOwner;
 }
 
 export interface SpawnOptions {
@@ -1061,7 +1069,7 @@ export class NodeKernelHost {
     path: string,
     data: Uint8Array,
     mode = 0o644,
-    exclusive = false,
+    options: VfsWriteOptions = {},
   ): Promise<void> {
     if (!this.initialized) {
       throw new Error("VFS write requires an initialized kernel");
@@ -1076,7 +1084,8 @@ export class NodeKernelHost {
         path,
         data: owned,
         mode: mode & FILE_MODES.S_MODE_BITS,
-        exclusive,
+        exclusive: options.exclusive,
+        owner: options.owner,
       },
       [owned.buffer],
     );
