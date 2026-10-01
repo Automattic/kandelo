@@ -484,3 +484,65 @@ test("Kandelo omarchy runs ScummVM as a GL window that takes its tile's size", a
   expect(await terminalText(page), "a client failed while ScummVM ran")
     .not.toMatch(CLIENT_FAILURE);
 });
+
+/**
+ * Copy and paste between two foot terminals, through the compositor's Wayland
+ * selection and Omarchy's universal-clipboard binds. Nothing here touches the
+ * host clipboard: foot A owns the selection, foot B reads it over a pipe the
+ * compositor hands from one client to the other.
+ *
+ * The pasted text is a command, so the paste is observable end to end: foot B
+ * runs what it received, and the toast it raises maps as mako's layer surface.
+ * SUPER+C (Cmd+C on macOS) copies, exercising the SUPER bind; Ctrl+V pastes,
+ * exercising the one CTRL mirror. Both must reach foot as Ctrl+Shift+C/V,
+ * because foot carries the `terminal` tag.
+ */
+test("Kandelo omarchy copies and pastes between foot windows through the Wayland clipboard", async ({ page }) => {
+  test.setTimeout(300_000);
+
+  await launchOmarchy(page);
+  await openSurface(page, "Internals");
+  await expect
+    .poll(() => syslogText(page), { timeout: 180_000 })
+    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
+  await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
+
+  // An empty workspace, so the two terminals are the only windows.
+  await pressCtrl(page, "3");
+  await expectTerminal(page, /WORKSPACE active=3/, 30_000);
+
+  // foot A prints the command. Its own echo line and its output both contain
+  // the text, so the search below lands on exactly these bytes either way.
+  await pressCtrl(page, "Enter");
+  await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=1 i=0 /, 60_000);
+  await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
+  await openSurface(page, "Demo");
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.type("echo notify-send clip-ok\n", { delay: 20 });
+
+  // Select it from the keyboard (foot's scrollback search, committed with
+  // Enter), then copy with SUPER+C.
+  await pressCtrl(page, "KeyR", true);
+  await page.keyboard.type("notify-send clip-ok", { delay: 20 });
+  await page.keyboard.press("Enter");
+  await page.keyboard.down("Meta");
+  await page.keyboard.press("KeyC");
+  await page.keyboard.up("Meta");
+  await expectTerminal(page, /SENDSHORTCUT app_id=foot mods=0x6 key=46/, 30_000);
+  await expectTerminal(page, /SELECTION_SET via=data-device mimes=\d+/, 30_000);
+
+  // foot B takes focus and pastes with Ctrl+V; the paste reaches it as
+  // Ctrl+Shift+V and foot B asks the compositor for the text.
+  await pressCtrl(page, "Enter");
+  await expectTerminal(page, /TILE n=2 i=1 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=2 i=1 /, 60_000);
+  await page.waitForTimeout(3_000); // let foot B's shell reach its prompt
+  await pressCtrl(page, "KeyV");
+  await expectTerminal(page, /SENDSHORTCUT app_id=foot mods=0x6 key=47/, 30_000);
+  await expectTerminal(page, /SELECTION_RECEIVE mime=text\/plain;charset=utf-8/, 30_000);
+
+  // The pasted bytes are the command foot A held: running it raises the toast.
+  await pressKeys(page, ["Enter"]);
+  await expectTerminal(page, /LAYER ns=notifications /, 60_000);
+  expect(await terminalText(page), "a client failed during copy and paste")
+    .not.toMatch(CLIENT_FAILURE);
+});
