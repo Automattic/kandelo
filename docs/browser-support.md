@@ -668,9 +668,9 @@ eight-window launch storm that guards the kernel's SCM_RIGHTS fd delivery).
 
 ### Omarchy desktop demo
 
-The Omarchy desktop machine (`?vfs=<shell image>&profile=omarchy`) is the
-tiling desktop above plus the shell that makes it a desktop: a status bar,
-a launcher, notifications, and themes. Omarchy is not a program but a set of
+The Omarchy-style desktop machine (`?vfs=<shell image>&profile=omarchy`) is
+the tiling desktop above plus the shell that makes it a desktop: a status
+bar, a launcher, notifications, and themes. Omarchy is not a program but a set of
 files layered over Hyprland, so this machine is the same `wlcompositor`
 binary with its own `/usr/share/kandelo/omarchy/wlcompositor.conf`, an app
 registry under `/usr/share/kandelo/apps`, and six themes under
