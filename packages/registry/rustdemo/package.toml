@@ -1,0 +1,36 @@
+# Per-library manifest for rustdemo. See docs/package-management.md.
+#
+# rustdemo is the REFERENCE "Rust library" package: a small Rust crate with
+# a C ABI, built as a `staticlib` for wasm32-unknown-kandelo and installed
+# like any other library so C/C++ packages can link it. It is the template a
+# real Rust-based library (e.g. the Rust core of librsvg) follows.
+#
+# The source is in-tree (packages/registry/rustdemo/crate + include), so the
+# [source] block carries a sentinel URL + zero sha (provider = repository);
+# no upstream archive is fetched. This matches the libffi / libinput-lite
+# in-tree-only convention.
+
+kind = "library"
+
+name = "rustdemo"
+version = "0.1.0"
+kernel_abi = 45
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://example.invalid/rustdemo-0.1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/Automattic/kandelo/blob/main/packages/registry/rustdemo/crate/src/lib.rs"
+
+[build]
+script_path = "packages/registry/rustdemo/build-rustdemo.sh"
+
+[outputs]
+libs = ["lib/librustdemo.a"]
+headers = ["include/rustdemo.h"]
+pkgconfig = ["lib/pkgconfig/rustdemo.pc"]

@@ -1,0 +1,18 @@
+[package]
+name = "rustdemo"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rustdemo"
+path = "src/lib.rs"
+crate-type = ["staticlib"]
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
+
+# Detach from the repo-root cargo workspace.
+[workspace]

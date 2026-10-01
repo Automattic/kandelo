@@ -1,0 +1,12 @@
+script_path = "packages/registry/rustdemo-check/build-rustdemo-check.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "adc333c8b1d4b3b7fecb171bb69024affa72fbca"
+revision    = 1
+
+# This program's own source is in-tree; the rustdemo library it links is a
+# declared dependency (depends_on), tracked by rustdemo's own cache identity,
+# not re-listed here.
+inputs = [
+  "packages/registry/rustdemo-check/build-rustdemo-check.sh",
+  "packages/registry/rustdemo-check/src/main.c",
+]
