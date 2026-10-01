@@ -22,7 +22,6 @@ import type { Reporter, SerializedError, TestModule, TestRunEndReason } from "vi
 const DOMINANT_SHARE = 0.5;
 const DOMINANT_MIN_FILES = 3;
 const MAX_CAUSES = 5;
-const MAX_SKIPPED_FILES = 5;
 
 function causeOf(error: SerializedError, root: string): string {
   const first = (error.message || error.name || "unknown error").split("\n")[0];
@@ -55,7 +54,6 @@ export default class SuiteHealthReporter implements Reporter {
     let failed = 0;
     let skipped = 0;
     const loadFailures = new Map<string, string[]>();
-    const wholeFileSkips: string[] = [];
 
     for (const module of testModules) {
       let moduleTests = 0;
@@ -77,16 +75,14 @@ export default class SuiteHealthReporter implements Reporter {
         const files = loadFailures.get(cause) ?? [];
         files.push(module.relativeModuleId);
         loadFailures.set(cause, files);
-      } else if (moduleTests > 0 && moduleSkipped === moduleTests) {
-        wholeFileSkips.push(module.relativeModuleId);
       }
     }
 
     const loadFailed = [...loadFailures.values()].reduce((n, files) => n + files.length, 0);
     const lines: string[] = [];
     lines.push(
-      `[suite-health] files ${testModules.length} (${loadFailed} did not load, ` +
-        `${wholeFileSkips.length} fully skipped); tests ${passed + failed + skipped}: ` +
+      `[suite-health] files ${testModules.length} (${loadFailed} did not load); ` +
+        `tests ${passed + failed + skipped}: ` +
         `${passed} passed, ${failed} failed, ${skipped} skipped` +
         (unhandledErrors.length ? `; ${unhandledErrors.length} unhandled errors` : "") +
         `; run ${reason}`,
@@ -115,11 +111,6 @@ export default class SuiteHealthReporter implements Reporter {
       if (causes.length > MAX_CAUSES) {
         lines.push(`[suite-health]   ... ${causes.length - MAX_CAUSES} more causes`);
       }
-    }
-    if (wholeFileSkips.length > 0) {
-      const shown = wholeFileSkips.slice(0, MAX_SKIPPED_FILES).join(", ");
-      const more = wholeFileSkips.length > MAX_SKIPPED_FILES ? `, +${wholeFileSkips.length - MAX_SKIPPED_FILES} more` : "";
-      lines.push(`[suite-health] info: every test skipped in ${shown}${more}`);
     }
     process.stdout.write(`\n${lines.join("\n")}\n`);
   }

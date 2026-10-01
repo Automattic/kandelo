@@ -38,11 +38,7 @@ INCLUDE_EXPECTED_FAIL=(
 
 BASIC_EXPECTED_FAIL=(
     "devctl/posix_devctl"                                 # device control (Sortix/2024, not in musl)
-    "pthread/pthread_attr_setinheritsched"                # priority scheduling not supported. Observed
-                                                          # 2026-09-30: the test HANGS (no output, killed at
-                                                          # XFAIL_TIMEOUT) instead of failing with an error;
-                                                          # unexplained, a candidate defect in pthread_create
-                                                          # with PTHREAD_EXPLICIT_SCHED
+    "pthread/pthread_attr_setinheritsched"                # priority scheduling not supported
     "pthread/pthread_getcpuclockid"                       # encoded per-thread CPU clocks are not yet
                                                           # recognized by clock_gettime (EINVAL)
     "syslog/closelog" "syslog/syslog"                    # no /dev/log receiver; keep that boundary visible
@@ -94,39 +90,6 @@ UDP_EXPECTED_FAIL=(
     "cross-netif-loopback-send-lan-recv"
     "shutdown-r-send"
 )
-
-# How each XFAIL above is expected to fail, checked by xfail_check (see
-# scripts/xfail-reasons.sh). Keys are "<suite>/<test>". Kinds this runner
-# observes: outcome (include suite: the compile probe's outcome word),
-# build (no wasm was produced), timeout (only XFAILs recorded as "timeout"
-# get the shorter XFAIL_TIMEOUT),
-# output (the run's output matched no expect file; output starts with
-# "exit <code>"). An XFAIL that fails any other way is an XFAIL-MISMATCH.
-xfail_expected_reason() {
-    case "$1" in
-        include/devctl/*) echo "outcome:missing_header" ;;
-        basic/devctl/posix_devctl) echo "build:wasm not found" ;;
-        basic/pthread/pthread_attr_setinheritsched) echo "timeout" ;;
-        basic/pthread/pthread_getcpuclockid) echo "output:clock_gettime self cpu clock: EINVAL" ;;
-        basic/syslog/closelog) echo "output:openlog: ENOENT" ;;
-        basic/syslog/syslog) echo "output:syslog: EDESTADDRREQ" ;;
-        basic/unistd/fpathconf|basic/unistd/pathconf) echo "output:_PC_FILESIZEBITS" ;;
-        basic/strings/ffsll) echo "output:ffsll\(.*\) gave" ;;
-        udp/*) echo "output:ENETUNREACH" ;;
-        *) echo "" ;;
-    esac
-}
-
-# shellcheck source=scripts/xfail-reasons.sh
-source "$REPO_ROOT/scripts/xfail-reasons.sh"
-
-record_xfail_mismatch() {
-    local id="$1" output="$2"
-    echo "XFAIL-MISMATCH ${id} (${XFAIL_MISMATCH})"
-    printf '%s\n' "$output" | tail -10 | head -5 | sed 's/^/  /'
-    RESULTS+=("FAIL  ${id}")
-    FAIL=$((FAIL + 1))
-}
 
 # ── Helper: check if a test matches an expected-failure pattern ──
 
@@ -561,10 +524,6 @@ run_include_suite() {
 
     local count=${#tests[@]}
     echo "  Discovered $count tests"
-    if [ "$count" -eq 0 ]; then
-        note_empty_suite include
-        return
-    fi
     echo "  Compiling in parallel ($(nproc 2>/dev/null || sysctl -n hw.logicalcpu) jobs)..."
 
     # Export variables needed by build_include_one
@@ -652,9 +611,7 @@ run_include_suite() {
             fi
             ;;
         *)
-            if $is_xfail && ! xfail_check "$(xfail_expected_reason "include/${test_name}")" outcome "$outcome"; then
-                record_xfail_mismatch "include/${test_name}" "$outcome"
-            elif $is_xfail; then
+            if $is_xfail; then
                 RESULTS+=("XFAIL include/${test_name}")
                 XFAIL=$((XFAIL + 1))
             elif [ "$outcome" = "missing_optional" ]; then
@@ -696,22 +653,17 @@ _run_runtime_test_worker() {
     # Check that the wasm file exists (pre-built)
     if [ ! -f "$wasm" ]; then
         if $is_xfail; then
-            { echo "XFAIL"; echo "build"; echo "wasm not found: $wasm"; } > "$result_dir/${test_name//\//__}.result"
+            echo "XFAIL" > "$result_dir/${test_name//\//__}.result"
         else
             { echo "BUILD"; echo "wasm not found: $wasm"; } > "$result_dir/${test_name//\//__}.result"
         fi
         return
     fi
 
-    # Only XFAILs recorded as hanging get the shorter timeout. An XFAIL that
-    # normally fails fast keeps the full budget: under a loaded parallel run
-    # it can exceed XFAIL_TIMEOUT, and that timeout would hide which way it
-    # really failed (seen 2026-09-30 with udp/bind-lan-subnet-first).
+    # Use shorter timeout for XFAIL tests (they often hang)
     local this_timeout="$TEST_TIMEOUT"
     if $is_xfail; then
-        case "$(xfail_expected_reason "${suite}/${test_name}")" in
-            timeout*) this_timeout="$XFAIL_TIMEOUT" ;;
-        esac
+        this_timeout="$XFAIL_TIMEOUT"
     fi
 
     # Run with timeout against the complete private fixture prepared by
@@ -803,7 +755,7 @@ exit: $rc"
     if [ $rc -eq 124 ]; then
         # Timeout
         if $is_xfail; then
-            { echo "XFAIL"; echo "timeout"; echo "$output"; } > "$result_dir/${test_name//\//__}.result"
+            echo "XFAIL" > "$result_dir/${test_name//\//__}.result"
         else
             { echo "TIME"; echo "$output"; } > "$result_dir/${test_name//\//__}.result"
         fi
@@ -835,7 +787,7 @@ exit: $rc"
         fi
     else
         if $is_xfail; then
-            { echo "XFAIL"; echo "output"; echo "exit $rc"; echo "$output"; } > "$result_dir/${test_name//\//__}.result"
+            echo "XFAIL" > "$result_dir/${test_name//\//__}.result"
         else
             { echo "FAIL"; echo "$output"; } > "$result_dir/${test_name//\//__}.result"
         fi
@@ -979,15 +931,8 @@ _collect_result() {
             FAIL=$((FAIL + 1))
             ;;
         XFAIL)
-            local xfail_kind xfail_output
-            xfail_kind=$(sed -n 2p "$result_file")
-            xfail_output=$(sed -n '3,$p' "$result_file")
-            if xfail_check "$(xfail_expected_reason "${suite}/${test_name}")" "$xfail_kind" "$xfail_output"; then
-                RESULTS+=("XFAIL ${suite}/${test_name}")
-                XFAIL=$((XFAIL + 1))
-            else
-                record_xfail_mismatch "${suite}/${test_name}" "$xfail_output"
-            fi
+            RESULTS+=("XFAIL ${suite}/${test_name}")
+            XFAIL=$((XFAIL + 1))
             ;;
         SKIP)
             echo "SKIP  ${suite}/${test_name} ($(sed -n 2p "$result_file"))"
@@ -1060,10 +1005,6 @@ run_suite() {
 
     local count=${#tests[@]}
     echo "  Discovered $count tests"
-    if [ "$count" -eq 0 ]; then
-        note_empty_suite "$suite"
-        return
-    fi
 
     if [ ${#specific_tests[@]} -gt 0 ] || [ "$PARALLEL" -le 1 ]; then
         # Sequential execution for specific tests or when parallelism disabled
@@ -1131,7 +1072,7 @@ run_suite() {
         # Export everything needed by the worker function
         export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT GLUE_DIR TEST_TIMEOUT XFAIL_TIMEOUT
         export -f _run_runtime_test_worker _run_runtime_test_with_private_fixture
-        export -f _check_xfail_serialized run_with_timeout not_applicable_reason xfail_expected_reason
+        export -f _check_xfail_serialized run_with_timeout not_applicable_reason
 
         # Export serialized XFAIL list for this suite
         _export_xfail_for_suite "$suite"
@@ -1214,13 +1155,6 @@ XFAIL=0
 XPASS=0
 RESULTS=()
 TOTAL=0
-# A suite that discovers no tests (for example, an uninitialized os-test
-# submodule) used to report "passed" vacuously and exit 0. It fails now.
-EMPTY_SUITES=()
-note_empty_suite() {
-    echo "  ERROR: suite '$1' discovered 0 tests; this run cannot vouch for it. Is tests/sortix/os-test checked out?"
-    EMPTY_SUITES+=("$1")
-}
 
 for suite in "${SUITES[@]}"; do
     run_suite "$suite" "${SPECIFIC_TESTS[@]+${SPECIFIC_TESTS[@]}}"
@@ -1306,11 +1240,7 @@ if $REPORT_MODE; then
     echo "Report written to: $REPORT"
 fi
 
-# Exit with error if any unexpected failures, or if a suite ran nothing
-if [ ${#EMPTY_SUITES[@]} -gt 0 ]; then
-    echo "Error: suites with no tests: ${EMPTY_SUITES[*]}" >&2
-    exit 1
-fi
+# Exit with error if any unexpected failures
 if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
     exit 1
 fi

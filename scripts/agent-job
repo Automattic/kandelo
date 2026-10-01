@@ -26,8 +26,8 @@ raced the first. This tool removes those choices:
       What is running: elapsed vs the usual duration, log age, local-build
       node progress, and every process in the job with command line and age.
   agent-job result <id>
-      Exit status, duration, whether the tracked tree changed during the run,
-      the [suite-health] line if any, and the last lines of the log.
+      Exit status, duration, the [suite-health] lines if any, and the last
+      lines of the log.
   agent-job list
       Recent jobs in this worktree.
 
@@ -41,7 +41,6 @@ fresh worktree before anything has been compiled. It uses the standard
 library only.
 """
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -82,32 +81,6 @@ def git(*args, cwd):
 def worktree_of(cwd):
     top = git("rev-parse", "--show-toplevel", cwd=cwd)
     return top.decode().strip() if top else os.path.realpath(cwd)
-
-
-def tree_fingerprint(worktree):
-    """Hash of HEAD plus every non-ignored changed or untracked file's size and mtime.
-
-    Ignored paths (build outputs, caches, .context) are excluded, so a run
-    writing its own artifacts does not count as a tree change.
-    """
-    head = git("rev-parse", "HEAD", cwd=worktree) or b""
-    status = git("status", "--porcelain=v1", "-z", "-uall", "--ignore-submodules=all", cwd=worktree)
-    if status is None:
-        return None, {}
-    entries = {}
-    for rec in status.split(b"\0"):
-        if len(rec) < 4:
-            continue
-        path = rec[3:].decode(errors="replace")
-        try:
-            st = os.stat(os.path.join(worktree, path))
-            entries[path] = f"{st.st_size}:{st.st_mtime_ns}"
-        except OSError:
-            entries[path] = "missing"
-    h = hashlib.sha256(head)
-    for p in sorted(entries):
-        h.update(f"{p}\0{entries[p]}\0".encode())
-    return h.hexdigest(), entries
 
 
 WRAPPERS = re.compile(r"^(\S*dev-shell\.sh|bash|sh|-c|-lc|-euo|pipefail|nohup|env|time|exec)$")
@@ -231,17 +204,11 @@ def supervise(d):
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     code = child.wait()
     end = now()
-    fp, entries = tree_fingerprint(meta["worktree"])
-    start_entries = meta.get("tree_entries") or {}
-    changed = sorted(p for p in set(start_entries) | set(entries) if start_entries.get(p) != entries.get(p))
     result = dict(
         exit_code=code if code >= 0 else 128 - code,
         signal=-code if code < 0 else None,
         ended=end,
         duration=round(end - meta["started"], 1),
-        tree_changed=bool(meta.get("tree_fingerprint")) and fp != meta.get("tree_fingerprint"),
-        head_changed=(git("rev-parse", "HEAD", cwd=meta["worktree"]) or b"").decode().strip() != meta.get("head"),
-        changed_paths=changed[:20],
     )
     write_json(os.path.join(d, "result.json"), result)
     record = {k: meta.get(k) for k in ("id", "name", "key", "cmd", "cwd", "worktree", "started", "usual_duration")}
@@ -281,11 +248,9 @@ def cmd_start(args):
     job_id = f"{name}-{time.strftime('%m%d-%H%M%S')}-{os.urandom(2).hex()}"
     d = os.path.join(JOBS, job_id)
     os.makedirs(d)
-    fp, entries = tree_fingerprint(worktree)
     key = job_key(cmd)
     meta = dict(id=job_id, name=name, key=key, cmd=cmd, cwd=cwd, worktree=worktree, started=now(),
-                head=(git("rev-parse", "HEAD", cwd=worktree) or b"").decode().strip(),
-                tree_fingerprint=fp, tree_entries=entries, usual_duration=usual_duration(key))
+                usual_duration=usual_duration(key))
     write_json(os.path.join(d, "meta.json"), meta)
     sup = subprocess.Popen([sys.executable, os.path.abspath(__file__), "_supervise", d],
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -328,10 +293,6 @@ def print_result(job_id, d):
         f", signal {result['signal']})" if result.get("signal") else ")")
     print(f"{job_id}: {verdict} after {fmt_secs(result['duration'])}")
     print(f"command: {meta['cmd']}")
-    if result.get("tree_changed") or result.get("head_changed"):
-        what = "HEAD moved" if result.get("head_changed") else "tracked/untracked files changed"
-        print(f"WARNING: tree changed during run ({what}): {', '.join(result['changed_paths']) or '(commit)'}\n"
-              f"  This result describes a tree that no longer exists. Re-run before citing it.")
     lines = tail_lines(log, 4000)
     health = [l for l in lines[:-LOG_TAIL] if "[suite-health]" in l]
     for l in health[-8:]:
@@ -464,8 +425,7 @@ def cmd_list(args):
     for j, d in rows:
         state, meta, result = state_of(d)
         if state == "finished":
-            extra = f"exit {result['exit_code']} in {fmt_secs(result['duration'])}" + (
-                " TREE CHANGED" if result.get("tree_changed") else "")
+            extra = f"exit {result['exit_code']} in {fmt_secs(result['duration'])}"
         elif state == "running":
             extra = f"running {fmt_secs(now() - meta['started'])}"
         else:

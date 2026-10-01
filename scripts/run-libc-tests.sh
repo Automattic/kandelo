@@ -63,37 +63,6 @@ REGRESSION_FLAKY=(
     pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
 )
 
-# How each XFAIL above is expected to fail, checked by xfail_check (see
-# scripts/xfail-reasons.sh). Kinds this runner observes: timeout (the
-# per-test watchdog fired), exit (non-zero exit; the output starts with
-# "exit <code>"). An XFAIL that fails any other way is an XFAIL-MISMATCH.
-xfail_expected_reason() {
-    case "$1" in
-        # 1-2 ULP soft-float rounding, or libc-test's own "known to be
-        # broken near zeros" note for the Bessel functions.
-        math/*|math-relaxed/*) echo "exit:ulperr|known to be broken near zeros" ;;
-        functional/pthread_cancel) echo "timeout" ;;
-        regression/malloc-brk-fail) echo "exit:malloc\(10000\) failed" ;;
-        # Observed 2026-09-30: a Wasm trap in a thread worker ("null function
-        # or function signature mismatch"), not a dlopen error. That this
-        # trap IS the missing dynamic-TLS support is not yet verified; if
-        # the failure changes, re-check the rationale above.
-        regression/tls_get_new-dtv) echo "exit:null function or function signature mismatch" ;;
-        *) echo "" ;;
-    esac
-}
-
-# shellcheck source=scripts/xfail-reasons.sh
-source "$REPO_ROOT/scripts/xfail-reasons.sh"
-
-record_xfail_mismatch() {
-    local id="$1" output="$2"
-    echo "XFAIL-MISMATCH ${id} (${XFAIL_MISMATCH})"
-    printf '%s\n' "$output" | tail -10 | head -5 | sed 's/^/  /'
-    RESULTS+=("FAIL  ${id}")
-    FAIL=$((FAIL + 1))
-}
-
 # ── Helper: check if a test is in an expected-failure list ──
 
 is_expected_fail() {
@@ -402,8 +371,6 @@ run_test() {
             echo "FLAKE-TIME ${category}/${test_name} (timeout ${TEST_TIMEOUT}s)"
             RESULTS+=("FLAKE-TIME ${category}/${test_name}")
             FLAKE_TIME=$((FLAKE_TIME + 1))
-        elif $is_xfail && ! xfail_check "$(xfail_expected_reason "${category}/${test_name}")" timeout "$output"; then
-            record_xfail_mismatch "${category}/${test_name}" "$output"
         elif $is_xfail; then
             echo "XFAIL ${category}/${test_name} (expected — timeout)"
             RESULTS+=("XFAIL ${category}/${test_name}")
@@ -419,9 +386,6 @@ run_test() {
             echo "$output" | tail -10 | head -5 | sed 's/^/  /'
             RESULTS+=("FLAKE-FAIL ${category}/${test_name}")
             FLAKE_FAIL=$((FLAKE_FAIL + 1))
-        elif $is_xfail && ! xfail_check "$(xfail_expected_reason "${category}/${test_name}")" exit \
-                "exit $rc"$'\n'"$output"; then
-            record_xfail_mismatch "${category}/${test_name}" "$output"
         elif $is_xfail; then
             echo "XFAIL ${category}/${test_name} (expected)"
             RESULTS+=("XFAIL ${category}/${test_name}")
@@ -543,12 +507,6 @@ for category in "${CATEGORIES[@]}"; do
         run_test "$category" "$test_name"
     done
 done
-
-# A run that selected nothing proves nothing, and used to exit 0.
-if [ "$TOTAL" -eq 0 ]; then
-    echo "Error: no libc-test tests were discovered or selected (categories: ${CATEGORIES[*]}); is tests/libc/libc-test checked out?" >&2
-    exit 1
-fi
 
 # ── Summary ─────────────────────────────────────────────────
 

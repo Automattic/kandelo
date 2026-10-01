@@ -142,7 +142,7 @@ Scores came to 9/9 with the tools and 3/9 without.
   way subagents do. It does not cover interactive main sessions, where a
   completion notice would have rescued the tools-off arm.
 
-### 2. Tree-change stamp (part of `agent-job result`)
+### 2. Tree-change stamp (part of `agent-job result`): REMOVED
 
 When the tracked working tree changes between a job's start and its end, the
 result says `tree changed during run`.
@@ -184,7 +184,7 @@ dominant load error, or skips.
 - **Keep if:** at least 80% of the first 20 warnings are real.
 - **Remove if:** precision is below 80% after one revision.
 
-### 5. Conformance XFAIL reason check
+### 5. Conformance XFAIL reason check: MOVED OUT
 
 Every expected failure (XFAIL) in the libc, POSIX, and Sortix suites carries
 the reason it fails. The runner checks that the failure output matches that
@@ -331,10 +331,10 @@ sessions with the tools before they can be judged.
 | # | Tool | Evidence so far | Against its rule |
 |---|---|---|---|
 | 1 | `agent-job` | A/B 9/9 correct vs 3/9 without; +23% raw cost per run | Correctness met; raw-cost clause not met; transcripts pending |
-| 2 | Tree-change stamp | Fired 5 times during development; each was a real edit during the run, none caused by the run's own outputs | No false stamps yet |
+| 2 | Tree-change stamp | Fired 5 times during development, all for edits the run never read | Removed: saves no tokens |
 | 3 | Build progress | Real 154-node build: `status` showed 143/154 done, running nodes with ages, and the process tree | Transcript measure pending |
 | 4 | `[suite-health]` | Probe files: 3 load failures grouped to one cause and warned; zero-test run warned; full suite (482 files) raised no false warning | Precision pending (needs 20 warnings) |
-| 5 | XFAIL reasons | All 47 recorded and verified. Found a stale rationale (mlock/12-1) and 2 XFAILs that do not fail as documented. One false mismatch (short XFAIL timeout under load) was fixed by giving only "timeout" XFAILs the short budget | Met: caught a real mismatch on the first run |
+| 5 | XFAIL reasons | All 47 verified; found 3 real defects | Moved to `brandonpayton/xfail-reasons`: correctness, not tokens |
 | 6 | Program-index lock | Fixes "index target changed" (14 of 44 baseline errors); 3 regression tests | Pending; the other 30 errors are a separate open defect |
 | 7 | `npm ci` skip | Saved about 3 s per run | Failed; removed before landing |
 | 8 | Wait-guard hook | Replay over 118,477 past Bash calls: 20/20 sampled sleep-poll denials and 12/12 pgrep-waiter denials were real. The harness already blocks about 40% of leading sleeps | Not installed; opt-in |
@@ -342,6 +342,27 @@ sessions with the tools before they can be judged.
 | 9 | `local-build --plan` | Plan takes 2.3-6 s; first estimate 610 s against 1,095 s actual (44% error, load average ~100) | 1 of 10 builds |
 | 10 | Timing history | node-durations.jsonl and runs.jsonl recording | Judged through tools 1 and 9 |
 | 11 | Closure preflight | Catches a broken closure (negative test); 2.7 s warm, 12 s cold, 46 s cold at load ~100 | Warm runs meet 10 s; cold runs do not |
+
+## Token-efficiency review (2026-10-01): what was removed
+
+The maintainer asked that everything left in this change contribute to token
+savings. Two tools did not, so they were taken out:
+
+- **Tree-change stamp (tool 2): removed.** It makes results more truthful,
+  but it saves no turns, and in practice it would have added runs. All 5
+  stamps raised during development came from edits the run never read.
+  Following its advice ("re-run before citing") would have spent tokens on
+  re-runs that changed nothing.
+- **XFAIL reason checks and zero-test guards (tool 5): moved to their own
+  branch, `brandonpayton/xfail-reasons`.** They turn silent failures into
+  loud ones, which is a correctness gain, but they create investigation
+  work rather than removing any. They still found real defects (see tool
+  5) and belong in their own PR.
+- **The `[suite-health]` "every test skipped in …" line: removed.** It was
+  informational, and no agent workflow used it to skip work.
+
+The measurement scripts stay. They are how a tool that does not save tokens
+gets found and removed.
 
 ## What the analyzer cannot see
 

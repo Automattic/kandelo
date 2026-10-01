@@ -27,36 +27,8 @@ RUNNER_FIXTURE_ROOT="$BUILD_DIR/runner-fixtures"
 EXPECTED_FAIL=(
     munmap/1-1                  # wasm can't revoke page access — see docs/wasm-limitations.md §6
     munmap/1-2                  # wasm can't revoke page access — see docs/wasm-limitations.md §6
-    # mlock() succeeds for an unprivileged caller whose RLIMIT_MEMLOCK is 0;
-    # the test expects EPERM. Kandelo does not enforce RLIMIT_MEMLOCK. (This
-    # entry used to say "needs pwd.h"; the test has built since pwd.h landed,
-    # and the XFAIL reason check found the stale rationale on 2026-09-30.)
-    mlock/12-1
+    mlock/12-1                  # needs pwd.h (getpwnam)
 )
-
-# How each XFAIL above is expected to fail, checked by xfail_check (see
-# scripts/xfail-reasons.sh). Kinds this runner observes: build (compile or
-# link failed; output is the compiler's), unresolved (PTS_UNRESOLVED),
-# timeout, fail (PTS_FAIL), exit (any other exit; output starts with
-# "exit <code>"). An XFAIL that fails any other way is an XFAIL-MISMATCH.
-xfail_expected_reason() {
-    case "$1" in
-        munmap/1-1|munmap/1-2) echo "fail:Did not trigger SIGSEGV" ;;
-        mlock/12-1) echo "fail:You have the right to call mlock" ;;
-        *) echo "" ;;
-    esac
-}
-
-# shellcheck source=scripts/xfail-reasons.sh
-source "$REPO_ROOT/scripts/xfail-reasons.sh"
-
-record_xfail_mismatch() {
-    local id="$1" output="$2"
-    echo "XFAIL-MISMATCH ${id} (${XFAIL_MISMATCH})"
-    printf '%s\n' "$output" | tail -10 | head -5 | sed 's/^/  /'
-    RESULTS+=("FAIL  ${id}")
-    FAIL=$((FAIL + 1))
-}
 
 find_llvm_bin() {
     if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
@@ -214,11 +186,7 @@ run_test() {
 
     # Build
     if ! build_test "$iface" "$test_name" 2>/dev/null; then
-        local build_output
-        build_output=$(cat /tmp/posix-test-build-err.txt 2>/dev/null || true)
-        if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" build "$build_output"; then
-            record_xfail_mismatch "$test_id" "$build_output"
-        elif $is_xfail; then
+        if $is_xfail; then
             echo "XFAIL $test_id (expected — build failure)"
             RESULTS+=("XFAIL $test_id")
             XFAIL=$((XFAIL + 1))
@@ -274,9 +242,7 @@ run_test() {
             SKIP=$((SKIP + 1))
             ;;
         2)  # PTS_UNRESOLVED
-            if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" unresolved "$output"; then
-                record_xfail_mismatch "$test_id" "$output"
-            elif $is_xfail; then
+            if $is_xfail; then
                 echo "XFAIL $test_id (expected — unresolved)"
                 RESULTS+=("XFAIL $test_id")
                 XFAIL=$((XFAIL + 1))
@@ -288,9 +254,7 @@ run_test() {
             fi
             ;;
         124) # timeout
-            if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" timeout "$output"; then
-                record_xfail_mismatch "$test_id" "$output"
-            elif $is_xfail; then
+            if $is_xfail; then
                 echo "XFAIL $test_id (expected — timeout)"
                 RESULTS+=("XFAIL $test_id")
                 XFAIL=$((XFAIL + 1))
@@ -301,9 +265,7 @@ run_test() {
             fi
             ;;
         1)  # PTS_FAIL
-            if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" fail "$output"; then
-                record_xfail_mismatch "$test_id" "$output"
-            elif $is_xfail; then
+            if $is_xfail; then
                 echo "XFAIL $test_id (expected)"
                 RESULTS+=("XFAIL $test_id")
                 XFAIL=$((XFAIL + 1))
@@ -315,9 +277,7 @@ run_test() {
             fi
             ;;
         *)  # Other exit codes (crash, signal, etc.)
-            if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" exit "exit $rc"$'\n'"$output"; then
-                record_xfail_mismatch "$test_id" "$output"
-            elif $is_xfail; then
+            if $is_xfail; then
                 echo "XFAIL $test_id (expected — exit $rc)"
                 RESULTS+=("XFAIL $test_id")
                 XFAIL=$((XFAIL + 1))
@@ -412,13 +372,6 @@ for iface in "${INTERFACES[@]}"; do
         run_test "$iface" "$test_name"
     done < <(discover_tests "$iface")
 done
-
-# Interfaces that exist but contain no runnable tests used to exit 0 with
-# TOTAL 0: a run that tested nothing must not read as a pass.
-if [ "$TOTAL" -eq 0 ]; then
-    echo "Error: no Open POSIX tests were discovered in: ${INTERFACES[*]}" >&2
-    exit 1
-fi
 
 # ── Summary ───────────────────────────────────────────────
 

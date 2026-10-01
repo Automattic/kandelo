@@ -63,8 +63,8 @@ rustc -vV | awk '/^host/ {print $2}'
 for 10 to 40 minutes. In August and September 2026, agents spent about 12%
 of their input tokens on poll turns and on cache rewrites after long blocking
 calls. They also waited on `pgrep -f` patterns that matched the waiting shell
-itself, and edited files a run was still reading. `scripts/agent-job` removes
-those choices:
+itself and never returned, and started second runs that broke the first.
+`scripts/agent-job` removes those choices:
 
 A run that fits in one Bash call, under the tool's 10-minute limit, needs
 none of this. Run it in the foreground with output to a log file
@@ -75,7 +75,7 @@ turns. For anything longer:
 scripts/agent-job start -- ./run.sh setup   # prints a job id (run.sh enters the dev shell itself)
 scripts/agent-job wait <id>      # blocks on the job's PID for up to 9 min; exit 124 = still running, run it again
 scripts/agent-job status [<id>]  # elapsed vs usual duration, local-build progress, live processes
-scripts/agent-job result <id>    # exit status, tree-changed warning, [suite-health] lines, log tail
+scripts/agent-job result <id>    # exit status, [suite-health] lines, log tail
 ```
 
 - **Waiting:** repeat `agent-job wait <id>` in the foreground until it
@@ -98,17 +98,14 @@ scripts/agent-job result <id>    # exit status, tree-changed warning, [suite-hea
 - **Locked runs:** `agent-job start` refuses a second locked run (vitest,
   `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup, local-build) in the
   same worktree while one is running. Those runs race each other.
-- **Tree changes:** if tracked or untracked files change during a run, the
-  result says `tree changed during run`. That result describes a tree that no
-  longer exists, so re-run before citing it.
 - **Before a suite**, `npx tsx scripts/check-artifact-closures.ts` reports
   any program package whose artifact closure would fail to resolve with
   "Package artifact closure is incomplete". It takes about 3 s once warm, and
   saves the minutes a suite would spend reaching the same error.
-- **Every Vitest run** ends with a `[suite-health]` line. `WARN` means part
-  of the suite did not run (a load error or zero tests). Read it before
-  citing a pass.
-
+- **Every Vitest run** ends with a `[suite-health]` line. When many files
+  fail to load, it groups them by the missing thing, so one line replaces
+  scrolling hundreds of failure blocks. `WARN` means part of the suite did
+  not run (a load error or zero tests).
 - **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
   patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
   `pgrep -f` waiters, and subagents running whole-tree builds or full

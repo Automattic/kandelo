@@ -65,10 +65,8 @@ CLOSURE = re.compile(r"Package artifact closure is incomplete")
 MARKERS = {
     "suite_health_lines": re.compile(r"\[suite-health\] files "),
     "suite_health_warnings": re.compile(r"\[suite-health\] WARN "),
-    "xfail_mismatches": re.compile(r"^XFAIL-MISMATCH ", re.M),
     "program_index_lock_waits": re.compile(r"waiting for program-index lock"),
     "closure_preflights": re.compile(r"^artifact closures: \d+ ok", re.M),
-    "tree_changed_warnings": re.compile(r"WARNING: tree changed during run"),
 }
 NOTIFY = re.compile(r"<task-id>([^<]+)</task-id>.*?<status>([^<]+)</status>", re.S)
 # A command that uses the build-waiting tools (see README.md).
@@ -340,7 +338,6 @@ def tool_logs(since, until):
             if j.get("usual_duration") and j.get("duration")]
     out["agent_job"] = dict(
         jobs=len(jobs), failed=sum(1 for j in jobs if j.get("exit_code")),
-        tree_changed=sum(1 for j in jobs if j.get("tree_changed") or j.get("head_changed")),
         usual_duration_median_abs_error=round(statistics.median(errs), 2) if errs else None,
     )
     hook = list(rows(os.path.join(root, "hook-log.jsonl")))
