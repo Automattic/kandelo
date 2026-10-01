@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { KernelReentrantEntryError } from '../src/kernel-entry-gate';
 import { OwnedJobs } from '../src/owned-jobs';
 
 afterEach(() => vi.useRealTimers());
 describe('owned command families', () => {
   it('waits for every worker to detach and retries reaping before reporting completion', () => {
     vi.useFakeTimers();
-    const reap = vi.fn().mockImplementationOnce(() => { throw new Error('kernel busy'); });
+    const reap = vi.fn().mockImplementationOnce(() => { throw new KernelReentrantEntryError('owned job process reap'); });
     const jobs = new OwnedJobs(vi.fn(), 4096, reap);
     jobs.create('a', 10, 1000);
     jobs.inherit(10, 11);
@@ -20,6 +21,32 @@ describe('owned command families', () => {
     vi.advanceTimersByTime(10);
     expect(jobs.read('a')).toMatchObject({ status: 'completed', terminationObserved: true });
     expect(reap).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the first exit status when a member exit is reported twice', () => {
+    const jobs = new OwnedJobs(vi.fn(), 4096);
+    jobs.create('a', 10, 1000);
+    jobs.exited(10, 0);
+    jobs.exited(10, 137);
+    jobs.detached(10);
+    expect(jobs.read('a')).toMatchObject({ status: 'completed', exitCode: 0, terminationObserved: true });
+    jobs.release('a');
+  });
+
+  it('reports a reap that fails for any reason but contention and completes the job once', () => {
+    vi.useFakeTimers();
+    const failure = new Error('foo');
+    const reap = vi.fn(() => { throw failure; });
+    const fail = vi.fn();
+    const jobs = new OwnedJobs(vi.fn(), 4096, reap, fail);
+    jobs.create('a', 10, 1000);
+    jobs.exited(10, 0);
+    jobs.detached(10);
+    expect(jobs.read('a')).toMatchObject({ status: 'completed', terminationObserved: true });
+    vi.advanceTimersByTime(1000);
+    expect(reap).toHaveBeenCalledTimes(1);
+    expect(fail).toHaveBeenCalledWith(failure);
+    jobs.release('a');
   });
 
   it.each(['cancelled', 'timed_out'] as const)('reaps the full %s family after asynchronous detachment', reason => {

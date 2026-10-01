@@ -1,3 +1,5 @@
+import { KernelReentrantEntryError } from './kernel-entry-gate';
+
 type OwnedJobStatus = 'running' | 'cancelling' | 'cancelled' | 'timed_out' | 'completed';
 
 /** One read of a job. A cursor older than the retained tail has expired. */
@@ -24,7 +26,7 @@ export class OwnedJobs {
     start: number; end: number; timer: ReturnType<typeof setTimeout>;
   }>();
   private owners = new Map<number, string>();
-  constructor(private kill: (pid: number) => void, private retainedBytes = 256 * 1024, private reap: (pids: ReadonlySet<number>) => void = () => {}) {}
+  constructor(private kill: (pid: number) => void, private retainedBytes = 256 * 1024, private reap: (pids: ReadonlySet<number>) => void = () => {}, private fail: (error: unknown) => void = () => {}) {}
 
   create(id: string, pid: number, timeoutMs: number) {
     if (this.jobs.has(id)) throw new Error('Job ID already exists');
@@ -45,6 +47,7 @@ export class OwnedJobs {
     const id = this.owners.get(pid);
     if (!id) return;
     const job = this.jobs.get(id)!;
+    if (!job.members.has(pid)) return;
     if (pid === job.root) job.exitCode = status;
     job.members.delete(pid);
     if (!job.members.size) clearTimeout(job.timer);
@@ -65,12 +68,17 @@ export class OwnedJobs {
       // No live parent can still need waitpid's exit status. Keep the complete
       // family until here, including children that exited before their parent.
       this.reap(job.family);
-      job.cleaned = true;
-      for (const pid of job.family) this.owners.delete(pid);
-    } catch {
-      // Kernel entry contention must not turn signal delivery into completion.
-      job.timer = setTimeout(() => this.cleanup(id), 10);
+    } catch (error) {
+      if (error instanceof KernelReentrantEntryError) {
+        // Kernel entry contention must not turn signal delivery into completion.
+        job.timer = setTimeout(() => this.cleanup(id), 10);
+        return;
+      }
+      // Every member has exited and detached; only the kernel's process entries remain.
+      this.fail(error);
     }
+    job.cleaned = true;
+    for (const pid of job.family) this.owners.delete(pid);
   }
   output(pid: number, stream: 'stdout' | 'stderr', bytes: Uint8Array) {
     const id = this.owners.get(pid);

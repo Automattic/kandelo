@@ -30929,14 +30929,13 @@ export class CentralizedKernelWorker {
    */
   reapOwnedJobExitedProcesses(family: ReadonlySet<number>): void {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
-    const deferred = this.#runOrDeferKernelEntry(
+    this.#runImmediateKernelEntry(
       "owned job process reap",
       (entry) => {
         reapOwnedJobExitedProcessesFromKernel(entry.instance, family);
         return undefined;
       },
     );
-    if (deferred) throw new KernelReentrantEntryError("owned job process reap");
   }
 
   /** Reap one exited top-level process through the serialized kernel entry. */

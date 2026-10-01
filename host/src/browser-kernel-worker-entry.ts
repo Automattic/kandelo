@@ -592,7 +592,11 @@ const activeBridgeRequests = new Set<number>();
 const ownedJobs = new OwnedJobs(pid => {
   // A committed child can still be awaiting its Worker; let launch settle first.
   if (processes.has(pid)) kernelWorker.signalProcess(pid, 9);
-}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family));
+}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => reportHostDiagnostic({
+  pid: 0,
+  source: "owned job reap",
+  message: `[browser-kernel-worker] failed to reap an exited owned job family: ${formatError(error)}`,
+}));
 
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   if (msg.type === "stdout" || msg.type === "stderr") ownedJobs.output(msg.pid, msg.type, msg.data);
@@ -4073,6 +4077,11 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
         `failed to detach exact process generation for pid ${pid}`,
       );
       return;
+    }
+    // A forced terminate posts no exit. A superseded pid belongs to its exec successor.
+    if (detachResult.detachDisposition === "removed-or-absent") {
+      ownedJobs.exited(pid, msg.status);
+      ownedJobs.detached(pid);
     }
   } else {
     try {

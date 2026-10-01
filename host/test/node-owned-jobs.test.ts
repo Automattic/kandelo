@@ -149,6 +149,20 @@ describe.skipIf(!haveKernel || !havePrograms)("NodeKernelHost owned jobs", () =>
     }
   }, 60_000);
 
+  it("completes a job whose root is terminated from outside", async () => {
+    const host = await bootedHost();
+    try {
+      const { pid } = await host.spawnFromVfs("/bin/block-forever", ["block-forever"], {
+        ownedJob: { id: "terminated", timeoutMs: 30_000 },
+      });
+      await host.terminateProcess(pid, 137);
+      const read = await awaitTermination(host, "terminated");
+      expect(read).toMatchObject({ status: "completed", exitCode: 137 });
+    } finally {
+      await host.destroy();
+    }
+  }, 60_000);
+
   it("keeps no job for a spawn that fails before its root launches", async () => {
     const host = await bootedHost();
     try {
