@@ -1249,6 +1249,8 @@ export class LiveKernelHost implements KernelHost {
   private demoCheckpoint: DemoCheckpointConfig | null = null;
   private demoLibrary: DemoLibraryConfig | null = null;
   private demoIngestSource: DemoIngestSource | null = null;
+  /** Some process has bound a framebuffer since this kernel started. */
+  private framebufferHasDrawn = false;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
   private offLazyDownloads: (() => void) | null = null;
@@ -1347,6 +1349,7 @@ export class LiveKernelHost implements KernelHost {
     this.offAudioActivity = null;
     this.invalidatePtySessions(previousKernel);
     this.kernel = kernel;
+    this.framebufferHasDrawn = false;
     if (kernel.framebuffers) {
       this.offFramebufferAvailability = kernel.framebuffers.onChange(() => {
         this.refreshFramebufferAvailability();
@@ -1461,6 +1464,7 @@ export class LiveKernelHost implements KernelHost {
     // was ingested before is not what this one is running.
     this.demoIngestSource = null;
     this.demoIngestListeners.emit(this.getDemoIngest());
+    this.refreshFramebufferAvailability();
   }
 
   getDemoIngestSource(): DemoIngestSource | null {
@@ -1685,8 +1689,16 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private refreshFramebufferAvailability(): void {
+    const bound = Boolean(this.kernel?.framebuffers?.list().length);
+    if (bound) this.framebufferHasDrawn = true;
     this.setSurfaceAvailability({
-      framebuffer: Boolean(this.kernel?.framebuffers?.list().length),
+      // A machine whose image restarts its display program in place (an
+      // ingest with `onLoad.restart`: a load, Reset, Power off/on) keeps the
+      // surface between owners, so the pane can show the restart, the
+      // powered-off display and its controls. Elsewhere the surface follows
+      // the owner, so a program that exits hands the view back to the shell.
+      framebuffer: bound
+        || (this.framebufferHasDrawn && this.demoIngest?.onLoad !== undefined),
     });
   }
 
@@ -1751,6 +1763,7 @@ export class LiveKernelHost implements KernelHost {
     this.offAudioState = null;
     this.offAudioActivity?.();
     this.offAudioActivity = null;
+    this.framebufferHasDrawn = false;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
     this.setDemoIngest(null);

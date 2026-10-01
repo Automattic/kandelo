@@ -175,7 +175,9 @@ describe("checkpoint boot inputs", () => {
 
   it("keeps the inputs the machine booted with while nothing was ingested", async () => {
     const stale: BootInput = { ...ROM, id: "state", filename: "app.state" };
-    const { inputs } = await createCheckpointBootInputs(host(), CHECKPOINT, [ROM, stale]);
+    const { inputs } = await createCheckpointBootInputs(host(), CHECKPOINT, {
+      inputs: [ROM, stale],
+    });
     // The content input survives; the previous link's state is replaced.
     expect(inputs.map((input) => input.id)).toEqual(["rom", "state"]);
     expect(inputs[0]).toEqual(ROM);
@@ -187,7 +189,7 @@ describe("checkpoint boot inputs", () => {
     const { inputs } = await createCheckpointBootInputs(
       host({ source: { kind: "input", input: other } }),
       CHECKPOINT,
-      [ROM],
+      { inputs: [ROM] },
     );
     // What the machine booted with is no longer what it runs.
     expect(inputs.map((input) => input.filename)).toEqual(["other.bin", "app.state"]);
@@ -197,15 +199,45 @@ describe("checkpoint boot inputs", () => {
     const { inputs, parameters } = await createCheckpointBootInputs(
       host({ source: { kind: "image", path: "/usr/share/app/demo.bin" } }),
       CHECKPOINT,
-      [ROM],
+      { inputs: [ROM] },
     );
     expect(inputs.map((input) => input.id)).toEqual(["state"]);
     expect(parameters).toEqual({ ingestPath: "/usr/share/app/demo.bin" });
   });
 
+  it("drops a link script the machine booted with; it is not content", async () => {
+    const script: BootInput = { ...ROM, id: "script", filename: "kandelo-link.sh" };
+    const { inputs } = await createCheckpointBootInputs(host(), CHECKPOINT, {
+      inputs: [ROM, script],
+      parameters: { runScript: "script", runScriptShell: "bash" },
+    });
+    expect(inputs.map((input) => input.id)).toEqual(["rom", "state"]);
+  });
+
+  it("keeps the image path a link booted with while nothing was ingested", async () => {
+    // Saving again from a machine opened from a checkpoint link must name the
+    // same content, or the next opener restores the state onto the default.
+    const { inputs, parameters } = await createCheckpointBootInputs(host(), CHECKPOINT, {
+      inputs: [{ ...ROM, id: "state", filename: "app.state" }],
+      parameters: { ingestPath: "/usr/share/app/demo.bin" },
+    });
+    expect(inputs.map((input) => input.id)).toEqual(["state"]);
+    expect(parameters).toEqual({ ingestPath: "/usr/share/app/demo.bin" });
+  });
+
+  it("drops the booted image path once something else was ingested", async () => {
+    const other: BootInput = { ...ROM, filename: "other.bin" };
+    const { parameters } = await createCheckpointBootInputs(
+      host({ source: { kind: "input", input: other } }),
+      CHECKPOINT,
+      { parameters: { ingestPath: "/usr/share/app/demo.bin" } },
+    );
+    expect(parameters).toBeUndefined();
+  });
+
   it("refuses, without capturing, when the content came from the visitor's device", async () => {
     const h = host({ source: { kind: "upload", name: "mine.bin" } });
-    const failure = await createCheckpointBootInputs(h, CHECKPOINT, [ROM]).catch((e) => e);
+    const failure = await createCheckpointBootInputs(h, CHECKPOINT, { inputs: [ROM] }).catch((e) => e);
     expect(failure).toBeInstanceOf(CheckpointError);
     expect(failure.reason).toBe("unshareable-content");
     expect(failure.message).toContain("mine.bin");

@@ -16,29 +16,40 @@
 
 import * as React from "react";
 import {
+  useDemoCheckpoint,
   useDemoIngest,
   useDemoLibrary,
   useKernelHost,
   usePresentation,
   useStatus,
 } from "../kernel-host/react";
-import { LibraryDialog } from "./Library";
+import { LibraryDrawer, type LibraryPick } from "./Library";
 import {
   attachLinuxMediumRawKeyboard,
   attachPointerLockMouse,
   type PointerLockMouseHandle,
 } from "../../../../../host/src/framebuffer/browser-controls";
 import type {
+  BootDescriptor,
   DemoIngestSource,
   FramebufferHandle,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { DemoLibraryConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import {
   IngestError,
   runDemoIngest,
+  startDemoProgram,
+  stopDemoProgram,
   waitForProcessExit,
   type IngestFileLike,
   type IngestPhase,
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
+import {
+  createCheckpointBootInputs,
+  INGEST_PATH_PARAMETER,
+} from "../../../../../web-libs/kandelo-session/src/demo-checkpoint";
+import { composeShareDescriptor } from "../../../../../web-libs/kandelo-session/src/share-link";
+import { encodeBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import { useFittedCanvasStyle } from "./canvasFit";
 import {
   createTouchKeySender,
@@ -51,6 +62,31 @@ import {
 } from "./TouchControls";
 
 const FRAMEBUFFER_REBIND_TIMEOUT_MS = 10_000;
+const SAVED_NOTICE_MS = 2_000;
+
+/** What the dock names as running: a title, and the library group it is in. */
+interface LoadedContent {
+  title: string;
+  group?: string;
+}
+
+/**
+ * What a freshly booted machine runs, as far as its boot says: a library
+ * file the boot link delivered, an image file it named by path, or the
+ * image's declared default. Null when none of those says.
+ */
+function bootedContent(
+  library: DemoLibraryConfig | null,
+  descriptor: BootDescriptor,
+): LoadedContent | null {
+  if (!library) return null;
+  const input = descriptor.boot.inputs?.find((entry) => entry.id === library.inputId);
+  if (input) return { title: input.filename };
+  const path = descriptor.boot.parameters?.[INGEST_PATH_PARAMETER];
+  const named = library.bundled?.find((entry) =>
+    typeof path === "string" ? entry.path === path : entry.default === true);
+  return named ? { title: named.title, ...(named.group ? { group: named.group } : {}) } : null;
+}
 
 export interface FramebufferProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
@@ -66,7 +102,29 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   const status = useStatus();
   const ingest = useDemoIngest();
   const library = useDemoLibrary();
+  const checkpoint = useDemoCheckpoint();
   const [libraryOpen, setLibraryOpen] = React.useState(false);
+  const [content, setContent] = React.useState<LoadedContent | null>(
+    () => bootedContent(library, host.getBootDescriptor()),
+  );
+  const [control, setControl] = React.useState<string | null>(null);
+  const [stateSaved, setStateSaved] = React.useState(false);
+  // Power off is a state of the machine the dock put it in, distinct from
+  // "nothing has bound /dev/fb0 yet" while it boots.
+  const [poweredOff, setPoweredOff] = React.useState(false);
+  const [hasBound, setHasBound] = React.useState(false);
+  // The address-bar fragment that holds a checkpoint of this machine's
+  // current content: one Save state wrote, or the link this page booted from
+  // when that link carried a checkpoint.
+  const savedHashRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!checkpoint || !window.location.hash.startsWith("#k1=")) return;
+    const booted = host.getBootDescriptor().boot.inputs ?? [];
+    if (booted.some((input) => input.id === checkpoint.inputId)) {
+      savedHashRef.current ??= window.location.hash;
+    }
+  }, [checkpoint, host]);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
   const presentation = usePresentation();
   const coarsePointer = useCoarsePointer();
   const stageRef = React.useRef<HTMLDivElement>(null);
@@ -99,8 +157,15 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     try {
       handle = host.attachFramebuffer(canvasRef.current);
       handleRef.current = handle;
-      setBoundPid(handle.getBoundPid());
-      offBound = handle.onBoundPidChange(setBoundPid);
+      const onBound = (pid: number | null) => {
+        setBoundPid(pid);
+        if (pid !== null) {
+          setHasBound(true);
+          setPoweredOff(false);
+        }
+      };
+      onBound(handle.getBoundPid());
+      offBound = handle.onBoundPidChange(onBound);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -240,8 +305,8 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       let off = () => {};
       const timer = window.setTimeout(() => {
         finish(new Error(
-          `replacement did not bind /dev/fb0 within `
-            + `${FRAMEBUFFER_REBIND_TIMEOUT_MS}ms`,
+          `nothing took /dev/fb0 within ${FRAMEBUFFER_REBIND_TIMEOUT_MS / 1000} s `
+            + "of starting the program; the terminal shows its output",
         ));
       }, FRAMEBUFFER_REBIND_TIMEOUT_MS);
       const finish = (error?: Error) => {
@@ -263,8 +328,9 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   const ingestFile = React.useCallback(async (
     file: IngestFileLike,
     source?: DemoIngestSource,
+    loaded?: LoadedContent,
   ) => {
-    if (!ingest || ingestPhase !== null) return;
+    if (!ingest || ingestPhase !== null || control !== null) return;
     setIngestError(null);
     setIngestName(file.name);
     try {
@@ -274,6 +340,15 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
         onPhase: setIngestPhase,
         ...(source ? { source } : {}),
       });
+      setContent(loaded ?? { title: file.name });
+      // A checkpoint in the address bar belongs to what ran before;
+      // reloading it would restore that, not this.
+      if (savedHashRef.current !== null && window.location.hash === savedHashRef.current) {
+        const url = new URL(window.location.href);
+        url.hash = "";
+        window.history.replaceState(window.history.state, "", url.href);
+      }
+      savedHashRef.current = null;
       // runDemoIngest returns as soon as the relaunch is dispatched; keep the
       // indicator up until the new process actually owns the framebuffer.
       await waitForFbBind();
@@ -283,11 +358,112 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           : err instanceof Error ? err.message
           : String(err),
       );
+      throw err;
     } finally {
       setIngestPhase(null);
       setIngestName(null);
     }
-  }, [host, ingest, ingestPhase, waitForFbBind, waitForFbRelease]);
+  }, [control, host, ingest, ingestPhase, waitForFbBind, waitForFbRelease]);
+
+  const closeLibrary = React.useCallback(() => setLibraryOpen(false), []);
+
+  const pickFromLibrary = React.useCallback(async (pick: LibraryPick) => {
+    await ingestFile({
+      name: pick.name,
+      size: pick.bytes.byteLength,
+      arrayBuffer: async () => Uint8Array.from(pick.bytes).buffer,
+    }, pick.source, {
+      title: (pick.source.kind === "image"
+        ? library?.bundled?.find((entry) =>
+          pick.source.kind === "image" && entry.path === pick.source.path)?.title
+        : undefined) ?? pick.name,
+      ...(pick.group ? { group: pick.group } : {}),
+    });
+    setLibraryOpen(false);
+  }, [ingestFile, library]);
+
+  /** One dock control at a time; its failure is shown like an ingest's. */
+  const runControl = React.useCallback(async (label: string, step: () => Promise<void>) => {
+    if (control !== null || ingestPhase !== null) return;
+    setControl(label);
+    setIngestError(null);
+    try {
+      await step();
+    } catch (err) {
+      setIngestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setControl(null);
+    }
+  }, [control, ingestPhase]);
+
+  // Reset and power act on the program the image's ingest restarts, which is
+  // whatever owns /dev/fb0. They use the same stop and start an ingest does.
+  const reset = () => void runControl("resetting…", async () => {
+    const pid = handleRef.current?.getBoundPid() ?? null;
+    if (!ingest || pid === null) return;
+    await stopDemoProgram(host, pid, { waitForRelease: waitForFbRelease });
+    await startDemoProgram(host, ingest);
+    await waitForFbBind();
+  });
+
+  const togglePower = () => void runControl(
+    boundPid === null ? "powering on…" : "powering off…",
+    async () => {
+      const pid = handleRef.current?.getBoundPid() ?? null;
+      if (!ingest) return;
+      if (pid !== null) {
+        await stopDemoProgram(host, pid, { waitForRelease: waitForFbRelease });
+        setPoweredOff(true);
+      } else {
+        await startDemoProgram(host, ingest);
+        await waitForFbBind();
+      }
+    },
+  );
+
+  // Save state: the same checkpoint link Share builds, written into the
+  // address bar in place, so reloading or bookmarking the page restores it.
+  const saveState = () => void runControl("saving state…", async () => {
+    if (!checkpoint) return;
+    const descriptor = host.getBootDescriptor();
+    const linked = composeShareDescriptor(descriptor, {
+      checkpoint: await createCheckpointBootInputs(host, checkpoint, descriptor.boot),
+    })!;
+    const { fragment } = await encodeBootDescriptor(linked);
+    const url = new URL(window.location.href);
+    url.hash = fragment;
+    window.history.replaceState(window.history.state, "", url.href);
+    savedHashRef.current = url.hash;
+    setStateSaved(true);
+  });
+  React.useEffect(() => {
+    if (!stateSaved) return;
+    const timer = window.setTimeout(() => setStateSaved(false), SAVED_NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [stateSaved]);
+
+  const switchGroup = (group: string) => {
+    const entry = library?.bundled?.find((candidate) => candidate.group === group);
+    if (!entry || busy) return;
+    void (async () => {
+      let bytes: Uint8Array;
+      try {
+        bytes = await host.readFile(entry.path);
+      } catch (err) {
+        setIngestError(`could not read ${entry.path}: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      await ingestFile(
+        {
+          name: entry.path.slice(entry.path.lastIndexOf("/") + 1),
+          size: bytes.byteLength,
+          arrayBuffer: async () => Uint8Array.from(bytes).buffer,
+        },
+        { kind: "image", path: entry.path },
+        { title: entry.title, group },
+      );
+    })().catch(() => {});
+  };
 
   const showCanvas = status === "running" && !error;
   const showHint = showCanvas && boundPid === null;
@@ -323,36 +499,124 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     ? "captured · click locks mouse"
     : boundPid !== null ? "click to play" : "waiting for /dev/fb0";
   const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, 16 / 10);
-  const busy = ingestPhase !== null;
+  const busy = ingestPhase !== null || control !== null;
+  const running = status === "running";
+  const switchable = library?.groups.filter((group) =>
+    library.bundled?.some((entry) => entry.group === group.label)) ?? [];
+  const busyLabel = control ?? (ingestName ? `loading ${ingestName}…` : "loading…");
+  const dockStatus = busy
+    ? busyLabel
+    : stateSaved
+      ? "state saved to link"
+      : poweredOff && boundPid === null
+        ? "powered off"
+        : captureLabel;
   const dockControls = React.useMemo(() => (
     <DemoSurfaceDockControls
       title={`FRAMEBUFFER · /DEV/FB0${boundPid !== null ? ` · pid ${boundPid}` : ""}`}
-      status={captureLabel}
+      status={dockStatus}
       active={focused || mouseCaptured}
     >
-      {ingest && status === "running" && (
-        <IngestControl
-          accept={ingest.accept}
-          label={ingest.label ?? "Load file"}
-          busy={busy}
-          busyLabel={ingestName ? `loading ${ingestName}…` : "loading…"}
-          testIdPrefix="fb"
-          onFile={ingestFile}
-        />
+      {ingest && running && switchable.length > 1 && (
+        <div className="kfb-system-switcher" role="group" aria-label="Switch to">
+          {switchable.map((group) => (
+            <button
+              key={group.label}
+              type="button"
+              aria-pressed={content?.group === group.label}
+              data-testid={`fb-group-${group.label}`}
+              disabled={busy}
+              title={`Load ${group.label}'s included file`}
+              onClick={() => { if (content?.group !== group.label) switchGroup(group.label); }}
+            >
+              {group.label}
+            </button>
+          ))}
+        </div>
       )}
-      {ingest && library && status === "running" && (
-        <button
-          type="button"
-          className="kdemo-surface-action"
-          data-testid="fb-library-button"
-          disabled={busy}
-          onClick={() => setLibraryOpen(true)}
-        >
-          Library
-        </button>
+      {ingest && running && content && (
+        <span className="kfb-current-rom" title={content.title} data-testid="fb-current-content">
+          <span>NOW</span>
+          {content.title}
+        </span>
+      )}
+      {ingest?.onLoad && running && (
+        <div className="kfb-emulator-controls" role="group" aria-label="Machine controls">
+          {checkpoint && (
+            <button
+              type="button"
+              data-testid="fb-save-state"
+              disabled={busy || boundPid === null}
+              title="Save where this machine is into the page's address, so reloading restores it"
+              onClick={saveState}
+            >
+              {stateSaved ? "State saved" : "Save state"}
+            </button>
+          )}
+          <button
+            type="button"
+            data-testid="fb-reset"
+            disabled={busy || boundPid === null}
+            title="Restart the program with what is loaded now"
+            onClick={reset}
+          >
+            Reset
+          </button>
+          <button
+            type="button"
+            data-testid="fb-power"
+            disabled={busy || (boundPid === null && !hasBound)}
+            title={boundPid === null ? "Start the program again" : "Stop the program"}
+            onClick={togglePower}
+          >
+            {boundPid === null ? "Power on" : "Power off"}
+          </button>
+        </div>
+      )}
+      {ingest && running && (
+        <div className="kfb-load-rom-split" role="group" aria-label={ingest.label ?? "Load file"}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ingest.accept.join(",")}
+            data-testid="fb-ingest-input"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              // Reset so re-picking the same file fires change again.
+              e.target.value = "";
+              if (file) void ingestFile(file).catch(() => {});
+            }}
+          />
+          <button
+            type="button"
+            className={library ? "kfb-load-rom" : "kfb-load-rom kfb-load-rom-only"}
+            data-testid="fb-ingest-button"
+            disabled={busy}
+            title={`${ingest.label ?? "Load file"} (or drop one onto the screen)`}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {busy && ingestPhase !== null ? busyLabel : library ? "From file…" : ingest.label ?? "Load file"}
+          </button>
+          {library && (
+            <button
+              type="button"
+              className="kfb-load-rom-archive"
+              data-testid="fb-library-button"
+              disabled={busy}
+              aria-haspopup="dialog"
+              aria-expanded={libraryOpen}
+              onClick={() => setLibraryOpen(true)}
+            >
+              From Internet Archive…
+            </button>
+          )}
+        </div>
       )}
     </DemoSurfaceDockControls>
-  ), [boundPid, busy, captureLabel, focused, ingest, ingestFile, ingestName, library, mouseCaptured, status]);
+    // The control callbacks close over state already listed here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [boundPid, busy, busyLabel, checkpoint, content, dockStatus, focused, hasBound, ingest, ingestPhase, library, libraryOpen, mouseCaptured, running, stateSaved, switchable.length]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -375,7 +639,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       e.preventDefault();
       setDragActive(false);
       const file = e.dataTransfer.files?.[0];
-      if (file) void ingestFile(file);
+      if (file) void ingestFile(file).catch(() => {});
     },
   } : {};
 
@@ -386,18 +650,15 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       data-drag-active={dragActive ? "true" : "false"}
       {...dropHandlers}
     >
-      {libraryOpen && ingest && library && (
-        <LibraryDialog
+      {ingest && library && (
+        <LibraryDrawer
+          open={libraryOpen}
           library={library}
           ingest={ingest}
-          onClose={() => setLibraryOpen(false)}
-          onPick={async ({ name, bytes, source }) => {
-            await ingestFile({
-              name,
-              size: bytes.byteLength,
-              arrayBuffer: async () => Uint8Array.from(bytes).buffer,
-            }, source);
-          }}
+          {...(content?.group ? { group: content.group } : {})}
+          disabled={busy}
+          onClose={closeLibrary}
+          onPick={pickFromLibrary}
         />
       )}
       <canvas

@@ -14,7 +14,12 @@
 import { BootDescriptorError } from "./boot-descriptor";
 import { createInlineBootInput } from "./boot-inputs";
 import type { DemoCheckpointConfig } from "./demo-config";
-import type { BootInput, BootParameters, KernelHost } from "./kernel-host";
+import type {
+  BootCommand,
+  BootInput,
+  BootParameters,
+  KernelHost,
+} from "./kernel-host";
 
 export type CheckpointRejection =
   | "capture-failed"
@@ -107,19 +112,23 @@ export interface CheckpointLinkContent {
  */
 export const INGEST_PATH_PARAMETER = "ingestPath";
 
+/** What the machine booted with: the `boot` block of its descriptor. */
+export type BootedContent = Pick<BootCommand, "inputs" | "parameters">;
+
 /**
  * The boot inputs (and, for image content, the parameter) that put a later
  * machine back where this one is: the checkpoint, plus whatever names the
  * content it belongs to.
  *
- * `bootInputs` are the inputs this machine itself booted with. They are kept
- * only while nothing has been ingested since boot, because only then is the
- * machine still running what they delivered.
+ * `booted` is what this machine itself booted with. It still names the
+ * content only while nothing has been ingested since boot, because only then
+ * is the machine still running what it delivered. A link script it carried
+ * is not content, and neither is an earlier checkpoint: both are dropped.
  */
 export async function createCheckpointBootInputs(
   host: CheckpointHost,
   checkpoint: DemoCheckpointConfig,
-  bootInputs: readonly BootInput[] = [],
+  booted: BootedContent = {},
   options: CaptureDemoCheckpointOptions = {},
 ): Promise<CheckpointLinkContent> {
   const source = host.getDemoIngestSource();
@@ -131,17 +140,26 @@ export async function createCheckpointBootInputs(
       "cannot name it and a checkpoint of it would restore onto something else.",
     );
   }
+  const runScript = booted.parameters?.runScript;
+  const bootedPath = booted.parameters?.[INGEST_PATH_PARAMETER];
   const content = source?.kind === "input"
     ? [source.input]
     : source?.kind === "image"
       ? []
-      : bootInputs.filter((input) => input.id !== checkpoint.inputId);
+      : (booted.inputs ?? []).filter(
+        (input) => input.id !== checkpoint.inputId && input.id !== runScript,
+      );
   if (content.some((input) => input.id === checkpoint.inputId)) {
     throw new CheckpointError(
       "unshareable-content",
       `the loaded content uses the checkpoint's own input id "${checkpoint.inputId}"`,
     );
   }
+  const contentPath = source?.kind === "image"
+    ? source.path
+    : source === null && typeof bootedPath === "string"
+      ? bootedPath
+      : undefined;
 
   const bytes = await captureDemoCheckpoint(host, checkpoint, options);
   let state: BootInput;
@@ -165,9 +183,9 @@ export async function createCheckpointBootInputs(
   }
   return {
     inputs: [...content.map((input) => structuredClone(input)), state],
-    ...(source?.kind === "image"
-      ? { parameters: { [INGEST_PATH_PARAMETER]: source.path } }
-      : {}),
+    ...(contentPath === undefined
+      ? {}
+      : { parameters: { [INGEST_PATH_PARAMETER]: contentPath } }),
   };
 }
 

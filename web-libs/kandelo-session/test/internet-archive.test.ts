@@ -6,11 +6,14 @@ import {
   buildArchiveSearchUrl,
   createInternetArchiveResolver,
   downloadArchiveFile,
+  downloadArchiveThumbnail,
   getArchiveItem,
   parseArchiveLocator,
   readArchiveLocator,
+  readArchiveNestedZip,
   readArchiveZip,
   readArchiveZipMember,
+  readNestedZipMember,
   searchArchive,
   zipMemberProblem,
   type ArchiveFetch,
@@ -24,7 +27,13 @@ import { materializeBootInputs } from "../src/boot-inputs";
 import type { BootDescriptor, BootInput } from "../src/kernel-host";
 
 const ROM = Uint8Array.from({ length: 300 }, (_, i) => (i * 7) & 0xff);
-const ZIP = zipSync({ "games/demo.nes": ROM, "readme.txt": new TextEncoder().encode("hi") });
+const INNER = zipSync({ "Demo (USA).nes": ROM, "Demo (USA).txt": new TextEncoder().encode("x") });
+const ZIP = zipSync({
+  "games/demo.nes": ROM,
+  "readme.txt": new TextEncoder().encode("hi"),
+  // Stored, as collections usually store already-compressed per-game ZIPs.
+  "sets/demo.zip": [INNER, { level: 0 }],
+});
 
 const METADATA = {
   metadata: { identifier: "demo-item", title: "Demo item" },
@@ -134,7 +143,8 @@ describe("Internet Archive items", () => {
     const { fetchImpl } = archive();
     const item = await getArchiveItem("demo-item", { fetch: fetchImpl });
     const directory = await readArchiveZip(item, "set.zip", { fetch: fetchImpl });
-    expect(directory.entries.map((entry) => entry.fileName)).toEqual(["games/demo.nes", "readme.txt"]);
+    expect(directory.entries.map((entry) => entry.fileName))
+      .toEqual(["games/demo.nes", "readme.txt", "sets/demo.zip"]);
     expect(zipMemberProblem(directory.entries[0], 1024)).toBeNull();
     expect(zipMemberProblem(directory.entries[0], 10)).toMatch(/over the 10-byte limit/);
     await expect(
@@ -144,12 +154,59 @@ describe("Internet Archive items", () => {
       readArchiveZipMember(item, "set.zip", directory, "nope.nes", { fetch: fetchImpl, maxBytes: 1024 }),
     ).rejects.toThrow(/has no member nope.nes/);
   });
+
+  it("opens a ZIP inside a ZIP and extracts one of its members", async () => {
+    const { fetchImpl } = archive();
+    const item = await getArchiveItem("demo-item", { fetch: fetchImpl });
+    const directory = await readArchiveZip(item, "set.zip", { fetch: fetchImpl });
+    const nested = await readArchiveNestedZip(item, "set.zip", directory, "sets/demo.zip", {
+      fetch: fetchImpl,
+    });
+    expect(nested.entries.map((entry) => entry.fileName))
+      .toEqual(["Demo (USA).nes", "Demo (USA).txt"]);
+    expect(readNestedZipMember(nested, "Demo (USA).nes", 1024)).toEqual(ROM);
+    expect(() => readNestedZipMember(nested, "Demo (USA).nes", 10)).toThrow(/over the 10-byte limit/);
+    expect(() => readNestedZipMember(nested, "nope.nes", 1024)).toThrow(/has no member nope.nes/);
+    // The nested ZIP is read whole, so its own size is held to the archive cap.
+    await expect(readArchiveNestedZip(item, "set.zip", directory, "sets/demo.zip", {
+      fetch: fetchImpl,
+      maxArchiveBytes: 16,
+    })).rejects.toThrow(/over the 16-byte limit/);
+    await expect(readArchiveNestedZip(item, "set.zip", directory, "games/demo.nes", {
+      fetch: fetchImpl,
+    })).rejects.toThrow(/could not read games\/demo.nes as a ZIP/);
+  });
+});
+
+describe("Internet Archive thumbnails", () => {
+  it("returns a same-origin image Blob and refuses anything else", async () => {
+    const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0]);
+    let asked = "";
+    const blob = await downloadArchiveThumbnail("demo-item", {
+      fetch: async (url) => {
+        asked = url;
+        return new Response(jpeg, { headers: { "Content-Type": "image/jpeg; charset=UTF-8" } });
+      },
+    });
+    expect(asked).toBe("https://archive.org/services/img/demo-item");
+    expect(blob.type).toBe("image/jpeg");
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(jpeg);
+    await expect(downloadArchiveThumbnail("demo-item", {
+      fetch: async () => new Response("<svg/>", { headers: { "Content-Type": "image/svg+xml" } }),
+    })).rejects.toThrow(/not an image/);
+    await expect(downloadArchiveThumbnail("bad/id", { fetch: async () => new Response() }))
+      .rejects.toThrow(/not an Internet Archive identifier/);
+  });
 });
 
 describe("Internet Archive locators and the boot-input resolver", () => {
   it("accepts exactly item, file and an optional member", () => {
     expect(parseArchiveLocator({ item: "demo-item", file: "set.zip", member: "games/demo.nes" }))
       .toEqual({ item: "demo-item", file: "set.zip", member: "games/demo.nes" });
+    expect(parseArchiveLocator({ item: "demo-item", file: "set.zip", member: "a.zip", inner: "b.nes" }))
+      .toEqual({ item: "demo-item", file: "set.zip", member: "a.zip", inner: "b.nes" });
+    expect(() => parseArchiveLocator({ item: "demo-item", file: "set.zip", inner: "b.nes" }))
+      .toThrow(/inside a member/);
     expect(() => parseArchiveLocator({ item: "demo-item", file: "a", url: "https://x" }))
       .toThrow(/unexpected locator field/);
     expect(() => parseArchiveLocator({ item: "demo-item", file: "../../etc/passwd" }))
@@ -188,6 +245,14 @@ describe("Internet Archive locators and the boot-input resolver", () => {
     expect(written.get("/run/kandelo/inputs/rom/demo.nes")).toEqual(ROM);
   });
 
+  it("resolves a member of a nested ZIP", async () => {
+    const { fetchImpl } = archive();
+    await expect(readArchiveLocator(
+      { item: "demo-item", file: "set.zip", member: "sets/demo.zip", inner: "Demo (USA).nes" },
+      { fetch: fetchImpl, metadataFetch: fetchImpl, maxBytes: ROM.length },
+    )).resolves.toEqual(ROM);
+  });
+
   it("never downloads more than the link says the file is", async () => {
     const { fetchImpl } = archive();
     const resolver = createInternetArchiveResolver({ fetch: fetchImpl, metadataFetch: fetchImpl });
@@ -223,6 +288,8 @@ describe("image-owned library metadata", () => {
     ["a featured entry in an undeclared group", withIngest({ ...library, featured: [{ item: "x", title: "X", group: "SNES" }] }), /names no declared group/],
     ["a featured entry that is not an identifier", withIngest({ ...library, featured: [{ item: "a/b", title: "X" }] }), /Internet Archive identifier/],
     ["a relative bundled path", withIngest({ ...library, bundled: [{ path: "roms/x.nes", title: "X" }] }), /must be absolute/],
+    ["two default bundled entries", withIngest({ ...library, bundled: [{ path: "/a.nes", title: "A", default: true }, { path: "/b.nes", title: "B", default: true }] }), /at most one entry as the default/],
+    ["a non-boolean default", withIngest({ ...library, bundled: [{ path: "/a.nes", title: "A", default: "yes" }] }), /default must be a boolean/],
     ["an archive cap past the ceiling", withIngest({ ...library, maxArchiveBytes: 512 * 1024 * 1024 }), /ceiling/],
   ])("rejects %s", (_label, config, message) => {
     expect(() => validateKandeloDemoConfig(config as never)).toThrow(message);

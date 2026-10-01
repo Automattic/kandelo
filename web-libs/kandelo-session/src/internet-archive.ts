@@ -15,8 +15,10 @@
 import type { BootInputResolver } from "./boot-inputs";
 import type { BootJsonValue } from "./kernel-host";
 import {
+  extractZipEntryBounded,
   fetchZipCentralDirectory,
   fetchZipMember,
+  parseZipCentralDirectory,
   type RemoteZipDirectory,
   type ZipEntry,
 } from "../../../host/src/vfs/zip";
@@ -50,11 +52,16 @@ export interface ArchiveItem {
   files: ArchiveFile[];
 }
 
-/** Where one file (or one member of a ZIP file) of an item is. */
+/**
+ * Where one file of an item is: the file itself, one member of a ZIP file,
+ * or one member (`inner`) of a ZIP that is itself a member of a ZIP file.
+ * Collections of games are often a ZIP of per-game ZIPs.
+ */
 export interface ArchiveLocator {
   item: string;
   file: string;
   member?: string;
+  inner?: string;
 }
 
 export interface ArchiveRequestOptions {
@@ -68,7 +75,10 @@ export interface ArchiveDownloadOptions {
   fetch: ArchiveFetch;
   /** Hard cap on the file's (or member's) size. */
   maxBytes: number;
-  /** Largest ZIP downloaded whole when a relay ignores Range. */
+  /**
+   * Largest ZIP downloaded whole when a relay ignores Range, and largest
+   * nested ZIP read into memory. Defaults to 64 MiB.
+   */
   maxArchiveBytes?: number;
   signal?: AbortSignal;
 }
@@ -93,6 +103,7 @@ const MAX_METADATA_FILES = 50_000;
 const MAX_IDENTIFIER_CHARS = 128;
 const MAX_FILE_NAME_CHARS = 2_048;
 const MAX_ZIP_ENTRIES = 100_000;
+const DEFAULT_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 
 export function validateArchiveIdentifier(identifier: string): string {
   if (
@@ -353,6 +364,32 @@ export function archiveFileUrl(item: ArchiveItem, name: string): string {
   return `https://${validateServer(item.server)}/${path}`;
 }
 
+const MAX_THUMBNAIL_BYTES = 512 * 1024;
+
+/**
+ * An item's thumbnail image. The image service sends no CORS or CORP headers,
+ * so a cross-origin-isolated page cannot show it with a plain <img>: it is
+ * fetched through the caller's fetch (the CORS proxy) and handed back as a
+ * same-origin Blob, capped and checked to be an image.
+ */
+export async function downloadArchiveThumbnail(
+  identifier: string,
+  options: { fetch: ArchiveFetch; signal?: AbortSignal },
+): Promise<Blob> {
+  const url = `https://archive.org/services/img/${encodeURIComponent(validateArchiveIdentifier(identifier))}`;
+  const response = await options.fetch(url, { method: "GET", signal: options.signal });
+  if (!response.ok) {
+    throw new ArchiveError("E_HTTP", `thumbnail for ${identifier} failed: HTTP ${response.status}`);
+  }
+  const type = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (!/^image\/(?:jpeg|png|gif|webp)$/.test(type)) {
+    await response.body?.cancel().catch(() => {});
+    throw new ArchiveError("E_THUMBNAIL", `thumbnail for ${identifier} is not an image`);
+  }
+  const bytes = await readBounded(response, MAX_THUMBNAIL_BYTES, `thumbnail for ${identifier}`);
+  return new Blob([Uint8Array.from(bytes)], { type });
+}
+
 function findFile(item: ArchiveItem, name: string): ArchiveFile {
   const file = item.files.find((candidate) => candidate.name === name);
   if (!file) throw new ArchiveError("E_NOT_FOUND", `${item.identifier} has no file ${name}`);
@@ -398,7 +435,7 @@ export async function readArchiveZip(
       fetch: options.fetch,
       signal: options.signal,
       parse: { names: "display", maxEntries: MAX_ZIP_ENTRIES },
-      maxWholeArchiveBytes: options.maxArchiveBytes ?? 64 * 1024 * 1024,
+      maxWholeArchiveBytes: options.maxArchiveBytes ?? DEFAULT_MAX_ARCHIVE_BYTES,
     });
   } catch (err) {
     throw new ArchiveError(
@@ -446,13 +483,79 @@ export async function readArchiveZipMember(
   });
 }
 
+/** A ZIP that is a member of an item's ZIP, read whole into memory. */
+export interface NestedZip {
+  /** The member's name in the outer ZIP. */
+  name: string;
+  bytes: Uint8Array;
+  entries: ZipEntry[];
+}
+
+/**
+ * Read a member of an item's ZIP that is itself a ZIP. A nested ZIP cannot be
+ * read by range, so it is fetched whole, capped at `maxArchiveBytes`.
+ */
+export async function readArchiveNestedZip(
+  item: ArchiveItem,
+  name: string,
+  directory: RemoteZipDirectory,
+  member: string,
+  options: Omit<ArchiveDownloadOptions, "maxBytes">,
+): Promise<NestedZip> {
+  const bytes = await readArchiveZipMember(item, name, directory, member, {
+    ...options,
+    maxBytes: options.maxArchiveBytes ?? DEFAULT_MAX_ARCHIVE_BYTES,
+  });
+  try {
+    return {
+      name: member,
+      bytes,
+      entries: parseZipCentralDirectory(bytes, { names: "display", maxEntries: MAX_ZIP_ENTRIES }),
+    };
+  } catch (err) {
+    throw new ArchiveError(
+      "E_ZIP",
+      `could not read ${member} as a ZIP archive: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/** Extract one member of a nested ZIP, capped at `maxBytes`. */
+export function readNestedZipMember(
+  nested: NestedZip,
+  inner: string,
+  maxBytes: number,
+): Uint8Array {
+  const matches = nested.entries.filter((entry) => entry.fileName === inner);
+  if (matches.length !== 1) {
+    throw new ArchiveError(
+      "E_MEMBER",
+      matches.length === 0
+        ? `${nested.name} has no member ${inner}`
+        : `${nested.name} has ${matches.length} members named ${inner}`,
+    );
+  }
+  const problem = zipMemberProblem(matches[0], maxBytes);
+  if (problem) throw new ArchiveError("E_MEMBER", `${inner} is ${problem}`);
+  try {
+    // The central directory is untrusted: bound the inflate by its own claim,
+    // which zipMemberProblem has already held to the cap.
+    return extractZipEntryBounded(nested.bytes, matches[0], matches[0].uncompressedSize);
+  } catch (err) {
+    throw new ArchiveError(
+      "E_MEMBER",
+      `could not extract ${inner}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 /** Parse a boot input's locator strictly: exactly these keys, all strings. */
 export function parseArchiveLocator(value: BootJsonValue): ArchiveLocator {
   if (!isRecord(value)) {
     throw new ArchiveError("E_LOCATOR", "an Internet Archive locator must be an object");
   }
   const keys = Object.keys(value);
-  if (keys.some((key) => key !== "item" && key !== "file" && key !== "member")) {
+  if (keys.some((key) => !["item", "file", "member", "inner"].includes(key))) {
     throw new ArchiveError("E_LOCATOR", `unexpected locator field in ${keys.join(", ")}`);
   }
   if (typeof value.item !== "string" || typeof value.file !== "string") {
@@ -461,10 +564,14 @@ export function parseArchiveLocator(value: BootJsonValue): ArchiveLocator {
   if (value.member !== undefined && typeof value.member !== "string") {
     throw new ArchiveError("E_LOCATOR", "a locator's member must be a string");
   }
+  if (value.inner !== undefined && (typeof value.inner !== "string" || value.member === undefined)) {
+    throw new ArchiveError("E_LOCATOR", "a locator's inner must be a string, inside a member");
+  }
   return {
     item: validateArchiveIdentifier(value.item),
     file: validateFileName(value.file),
     ...(value.member === undefined ? {} : { member: value.member }),
+    ...(value.inner === undefined ? {} : { inner: value.inner }),
   };
 }
 
@@ -473,6 +580,7 @@ export function archiveLocatorJson(locator: ArchiveLocator): BootJsonValue {
     item: locator.item,
     file: locator.file,
     ...(locator.member === undefined ? {} : { member: locator.member }),
+    ...(locator.inner === undefined ? {} : { inner: locator.inner }),
   };
 }
 
@@ -489,7 +597,11 @@ export async function readArchiveLocator(
     return downloadArchiveFile(item, locator.file, options);
   }
   const directory = await readArchiveZip(item, locator.file, options);
-  return readArchiveZipMember(item, locator.file, directory, locator.member, options);
+  if (locator.inner === undefined) {
+    return readArchiveZipMember(item, locator.file, directory, locator.member, options);
+  }
+  const nested = await readArchiveNestedZip(item, locator.file, directory, locator.member, options);
+  return readNestedZipMember(nested, locator.inner, options.maxBytes);
 }
 
 /**

@@ -139,7 +139,7 @@ test("Load ROM picks the core from the ROM's contents, not its name", async ({ p
   test.setTimeout(600_000);
   requireStarterRoms();
   const canvas = await bootRetro(page);
-  await expect(page.getByTestId("fb-ingest-button")).toHaveText(/load rom/i);
+  await expect(page.getByTestId("fb-ingest-button")).toHaveText(/from file/i);
 
   // A real Mega Drive ROM under its own extension.
   await loadRom(page, canvas, MD_ROM);
@@ -173,9 +173,13 @@ test("a file that is not a ROM it knows starts no core at all", async ({ page })
     buffer: noise,
   });
 
-  // The old emulator is stopped, nothing takes /dev/fb0, and the launcher
-  // says why on the machine's terminal.
+  // The old emulator is stopped and nothing takes /dev/fb0. The display
+  // stays (this machine restarts its program in place) and says the start
+  // failed; the launcher says why on the machine's terminal.
   await expect.poll(() => boundPid(page), { timeout: 90_000 }).toBeNull();
+  await expect(page.getByTestId("fb-ingest-error"))
+    .toContainText(/nothing took \/dev\/fb0 .* the terminal shows its output/, { timeout: 30_000 });
+  await page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }).click();
   await expect(
     page.getByText(/retro-run: .* is not a recognised NES, SNES, Mega Drive/).first(),
   ).toBeVisible({ timeout: 30_000 });
@@ -314,16 +318,135 @@ async function openLibrary(page: Page): Promise<void> {
   await expect(page.getByRole("dialog", { name: "Library" })).toBeVisible();
 }
 
-test("the library loads a ROM the image already carries", async ({ page }) => {
+async function releasePointer(page: Page): Promise<void> {
+  // Clicking the display captured the mouse. Release it the way the
+  // browser's own Esc does (Playwright's key presses do not reach the
+  // browser's pointer-lock handling), so the dock can be clicked.
+  if (await page.evaluate(() => document.pointerLockElement !== null)) {
+    await page.evaluate(() => document.exitPointerLock());
+  }
+  await expect(page.getByText(/MOUSE LOCKED/i)).toHaveCount(0, { timeout: 10_000 });
+}
+
+test("the library loads a ROM the image already carries, and keeps its place when closed", async ({ page }) => {
   test.setTimeout(420_000);
   const canvas = await bootRetro(page);
+  await expect(page.getByTestId("fb-current-content")).toContainText("240p Test Suite");
+  await expect(page.getByTestId("fb-group-NES")).toHaveAttribute("aria-pressed", "true");
+
+  // The drawer is hidden, not torn down: what the visitor chose is still
+  // there when it opens again.
   await openLibrary(page);
-  await page.getByTestId("library-group").selectOption("SNES");
-  await page.getByTestId("library-bundled").getByRole("button", { name: "240p Test Suite" }).click();
+  await expect(page.getByTestId("library-group-NES")).toHaveAttribute("aria-pressed", "true");
+  await page.getByTestId("library-group-SNES").click();
+  await page.getByTestId("library-query").fill("test suite");
+  await page.getByRole("button", { name: "Close library" }).click();
   await expect(page.getByRole("dialog", { name: "Library" })).toHaveCount(0);
+  await openLibrary(page);
+  await expect(page.getByTestId("library-group-SNES")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("library-query")).toHaveValue("test suite");
+
+  await page.getByTestId("library-bundled")
+    .getByRole("button", { name: "Play 240p Test Suite" }).click();
+  await expect(page.getByRole("dialog", { name: "Library" })).toHaveCount(0, { timeout: 90_000 });
   await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
     .toMatch(/\/usr\/bin\/kandelo-retro-snes \/tmp\/kandelo-retro\/rom\.sfc/);
   await awaitRender(canvas);
+  await expect(page.getByTestId("fb-group-SNES")).toHaveAttribute("aria-pressed", "true");
+});
+
+test("the dock switches consoles, resets, and powers the machine off and on", async ({ page }) => {
+  test.setTimeout(600_000);
+  const canvas = await bootRetro(page);
+
+  // The console switcher loads that console's included ROM.
+  await page.getByTestId("fb-group-Mega Drive").click();
+  await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
+    .toMatch(/\/usr\/bin\/kandelo-retro-genesis \/tmp\/kandelo-retro\/rom\.md/);
+  await awaitRender(canvas);
+  await expect(page.getByTestId("fb-group-Mega Drive")).toHaveAttribute("aria-pressed", "true");
+
+  // Reset is a new emulator process on the same ROM.
+  const before = await boundPid(page);
+  await page.getByTestId("fb-reset").click();
+  await expect.poll(async () => {
+    const pid = await boundPid(page);
+    return pid !== null && pid !== before;
+  }, { timeout: 90_000 }).toBe(true);
+  await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
+    .toMatch(/\/usr\/bin\/kandelo-retro-genesis \/tmp\/kandelo-retro\/rom\.md$/);
+
+  // Power off stops the emulator and leaves nothing on /dev/fb0.
+  await page.getByTestId("fb-power").click();
+  await expect.poll(() => boundPid(page), { timeout: 90_000 }).toBeNull();
+  await expect(page.getByTestId("fb-power")).toHaveText("Power on");
+  await expect(page.locator(".kdemo-surface-badge")).toHaveText(/powered off/i);
+  await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
+    .toBe("0 emulator processes");
+
+  // Power on starts it again on the same ROM.
+  await page.getByTestId("fb-power").click();
+  await expect.poll(() => boundPid(page), { timeout: 90_000 }).not.toBeNull();
+  await awaitRender(canvas);
+  await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
+    .toMatch(/\/usr\/bin\/kandelo-retro-genesis /);
+});
+
+test("Save state puts the game in the address bar, and reloading restores it", async ({ page }) => {
+  test.setTimeout(600_000);
+  const canvas = await bootRetro(page);
+  await canvas.click();
+  await settledDigest(canvas);
+  const firstRows = await frameRows(canvas);
+  await page.keyboard.press("ArrowRight");
+  await waitForRows(canvas, firstRows, PAGE_TURN);
+
+  await releasePointer(page);
+  expect(new URL(page.url()).hash).toBe("");
+  await page.getByTestId("fb-save-state").click();
+  await expect(page.locator(".kdemo-surface-badge")).toHaveText(/state saved/i, { timeout: 60_000 });
+  await expect(page.getByTestId("fb-ingest-error")).toHaveCount(0);
+  expect(new URL(page.url()).hash).toMatch(/^#k1=/);
+
+  // Reload: the machine comes back on the page it was saved on, so Left
+  // turns back a page and Right returns to the restored frame.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const reloaded = page.locator("canvas.kframebuffer-canvas").first();
+  await expect(reloaded).toBeVisible({ timeout: 180_000 });
+  await awaitRender(reloaded);
+  await expect.poll(() => emulatorCommand(page), { timeout: 30_000 })
+    .toMatch(/--state \/run\/kandelo\/inputs\/state\/retro\.state$/);
+  await reloaded.click();
+  await settledDigest(reloaded);
+  const restoredRows = await frameRows(reloaded);
+  await page.keyboard.press("ArrowLeft");
+  await waitForRows(reloaded, restoredRows, PAGE_TURN);
+
+  // The saved state is where the link starts, not a property of the ROM:
+  // Reset starts the same ROM from its beginning.
+  await releasePointer(page);
+  await page.getByTestId("fb-reset").click();
+  await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
+    .toMatch(/\/usr\/bin\/kandelo-retro \/tmp\/kandelo-retro\/rom\.nes$/);
+  expect(new URL(page.url()).hash).toMatch(/^#k1=/);
+
+  // Loading another ROM leaves the saved game behind, so the address no
+  // longer claims to restore this machine.
+  await page.getByTestId("fb-group-SNES").click();
+  await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
+    .toMatch(/\/usr\/bin\/kandelo-retro-snes /);
+  expect(new URL(page.url()).hash).toBe("");
+});
+
+test("Save state refuses a ROM that came from the visitor's own device", async ({ page }) => {
+  test.setTimeout(420_000);
+  requireStarterRoms();
+  const canvas = await bootRetro(page);
+  await loadRom(page, canvas, MD_ROM);
+  await expect(page.getByTestId("fb-current-content")).toContainText("240pSuite-md-1.21.bin");
+  await page.getByTestId("fb-save-state").click();
+  await expect(page.getByTestId("fb-ingest-error")).toContainText(/came from this device/);
+  expect(new URL(page.url()).hash).toBe("");
 });
 
 test("the library plays an Internet Archive ROM, and a checkpoint link fetches it again", async ({ page, context }) => {
@@ -332,8 +455,9 @@ test("the library plays an Internet Archive ROM, and a checkpoint link fetches i
   const canvas = await bootRetro(page);
 
   await openLibrary(page);
-  await page.getByTestId("library-featured").getByRole("button", { name: /Carpet Shark/ }).click();
-  await page.getByTestId("library-files").getByRole("button", { name: /CarpetShark\.nes/ }).click();
+  await page.getByTestId("library-featured").getByRole("button", { name: "Open Carpet Shark" }).click();
+  await page.getByTestId("library-files")
+    .getByRole("button", { name: /^Play .*CarpetShark\.nes$/ }).click();
   await expect(page.getByRole("dialog", { name: "Library" })).toHaveCount(0, { timeout: 120_000 });
   await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
     .toMatch(/\/usr\/bin\/kandelo-retro \/tmp\/kandelo-retro\/rom\.nes/);
@@ -365,14 +489,17 @@ test("the library extracts one ROM from an Internet Archive ZIP", async ({ page 
   test.skip(!(await archiveReachable()), "archive.org unreachable (offline)");
   const canvas = await bootRetro(page);
   await openLibrary(page);
-  await page.getByTestId("library-group").selectOption("Mega Drive");
-  await page.getByTestId("library-featured").getByRole("button", { name: /Capoeira Boy/ }).click();
-  const files = page.getByTestId("library-files");
-  await expect(files.getByRole("button").first()).toBeVisible({ timeout: 60_000 });
-  await files.getByRole("button", { name: /open archive/ }).first().click();
+  await page.getByTestId("library-group-Mega Drive").click();
+  await page.getByTestId("library-featured").getByRole("button", { name: "Open Capoeira Boy" }).click();
+  // The item's only loadable file is a ZIP, so it opens by itself.
   const members = page.getByTestId("library-members");
-  await expect(members.getByRole("button").first()).toBeVisible({ timeout: 120_000 });
-  await members.getByRole("button").first().click();
+  await expect(members.getByRole("button", { name: /^Play / }).first()).toBeVisible({ timeout: 120_000 });
+  // The filter narrows the members by name; nothing matches nonsense.
+  await page.getByTestId("library-member-filter").fill("no such rom zzz");
+  await expect(members.getByRole("button", { name: /^Play / })).toHaveCount(0);
+  await expect(members).toContainText("No entry names match the filter.");
+  await page.getByTestId("library-member-filter").fill("");
+  await members.getByRole("button", { name: /^Play / }).first().click();
   await expect(page.getByRole("dialog", { name: "Library" })).toHaveCount(0, { timeout: 120_000 });
   await expect.poll(() => emulatorCommand(page), { timeout: 90_000 })
     .toMatch(/\/usr\/bin\/kandelo-retro-genesis /);

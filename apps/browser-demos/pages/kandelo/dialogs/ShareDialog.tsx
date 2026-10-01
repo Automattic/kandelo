@@ -16,6 +16,11 @@ import {
   decodeInlineBootInputText,
 } from "../../../../../web-libs/kandelo-session/src/boot-inputs";
 import { createCheckpointBootInputs } from "../../../../../web-libs/kandelo-session/src/demo-checkpoint";
+import {
+  composeShareDescriptor,
+  LINK_SCRIPT_FILENAME,
+  LINK_SCRIPT_INPUT_ID,
+} from "../../../../../web-libs/kandelo-session/src/share-link";
 import type {
   BootDescriptor,
   BootInput,
@@ -79,17 +84,11 @@ export const SharePanel: React.FC<SharePanelProps> = ({
   const takeCheckpoint = React.useCallback(async () => {
     if (!checkpoint) return;
     setCheckpointState({ kind: "capturing" });
-    // Inputs the machine booted with still describe its content until
-    // something is ingested; the link script is not part of that content.
-    const runScript = baseDescriptor.boot.parameters?.runScript;
-    const carried = (baseDescriptor.boot.inputs ?? []).filter(
-      (input) => input.id !== runScript,
-    );
     try {
       const { inputs, parameters } = await createCheckpointBootInputs(
         host,
         checkpoint,
-        carried,
+        baseDescriptor.boot,
       );
       const state = inputs[inputs.length - 1];
       setCheckpointState({
@@ -138,55 +137,34 @@ export const SharePanel: React.FC<SharePanelProps> = ({
     void (async () => {
       try {
         const trimmed = script.trim();
-        const checkpointInputs = checkpointState.kind === "ready"
-          ? checkpointState.inputs
-          : [];
-        const checkpointParameters = checkpointState.kind === "ready"
-          ? checkpointState.parameters
-          : undefined;
-        if (!trimmed && checkpointInputs.length === 0) {
+        const desc = composeShareDescriptor(baseDescriptor, {
+          ...(checkpointState.kind === "ready"
+            ? {
+              checkpoint: {
+                inputs: checkpointState.inputs,
+                ...(checkpointState.parameters
+                  ? { parameters: checkpointState.parameters }
+                  : {}),
+              },
+            }
+            : {}),
+          ...(trimmed
+            ? {
+              script: await createInlineBootInput({
+                id: LINK_SCRIPT_INPUT_ID,
+                filename: LINK_SCRIPT_FILENAME,
+                bytes: new TextEncoder().encode(
+                  script.endsWith("\n") ? script : `${script}\n`,
+                ),
+                compression: "gzip",
+              }),
+            }
+            : {}),
+        });
+        if (!desc) {
           if (!cancelled) { setUrl(workingShareUrl(null)); setError(null); }
           return;
         }
-        const scriptInputs = trimmed
-          ? [await createInlineBootInput({
-            id: "script",
-            filename: "kandelo-link.sh",
-            bytes: new TextEncoder().encode(
-              script.endsWith("\n") ? script : `${script}\n`,
-            ),
-            compression: "gzip",
-          })]
-          : [];
-        const desc: BootDescriptor = {
-          ...baseDescriptor,
-          boot: {
-            // BOOT IDENTITY COMES FROM THE IMAGE: argv/cwd/env carried here
-            // would just be the CURRENT machine's, which the opener's boot
-            // ignores (with a visible log line) in favour of its own image's
-            // init. This placeholder only satisfies validateBootDescriptor's
-            // non-empty-argv/cwd/env schema requirement; every Kandelo
-            // browser image can run this default interactive login session,
-            // so it is truthful even though it is never actually launched.
-            argv: ["bash", "-l", "-i"],
-            cwd: "/",
-            env: {},
-            inputs: [...checkpointInputs, ...scriptInputs],
-            // Record the shell that should run the script so the opener's
-            // machine executes it directly (`<shell> script`) with no visible
-            // `command -v bash` probe. Every Kandelo browser image provides
-            // bash as its default shell, and the opener boots the same image
-            // this link carries, so the choice is a property of the link.
-            ...(trimmed || checkpointParameters
-              ? {
-                parameters: {
-                  ...(checkpointParameters ?? {}),
-                  ...(trimmed ? { runScript: "script", runScriptShell: "bash" } : {}),
-                },
-              }
-              : {}),
-          },
-        };
         const { fragment } = await encodeBootDescriptor(desc);
         if (!cancelled) { setUrl(workingShareUrl(fragment)); setError(null); }
       } catch (err) {
@@ -354,7 +332,7 @@ export const SharePanel: React.FC<SharePanelProps> = ({
  * current page URL (which already carries ?vfs=<image>&profile=<id> machine
  * identity) plus the descriptor fragment.
  */
-function workingShareUrl(fragment: string | null): string {
+export function workingShareUrl(fragment: string | null): string {
   const url = new URL(window.location.href);
   url.hash = fragment ?? "";
   return url.href;

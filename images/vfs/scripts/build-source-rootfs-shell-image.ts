@@ -396,7 +396,11 @@ mkdir -p "$RUN" || exit 1
 LINK="$RUN/rom.$EXT"
 ln -sf "$ROM" "$LINK" || exit 1
 
-if [ -n "$STATE" ]; then
+# A boot link's save state is where the machine was when the link was made,
+# so it applies to the first run after boot only. Reset and power-on start
+# the same ROM from its beginning, as a console's own buttons do.
+if [ -n "$STATE" ] && [ ! -e "$RUN/state-applied" ]; then
+    : > "$RUN/state-applied" || exit 1
     exec "$CORE" "$LINK" --state "$STATE"
 fi
 exec "$CORE" "$LINK"

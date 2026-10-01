@@ -798,6 +798,43 @@ describe("LiveKernelHost: machine PCM lifecycle", () => {
     framebuffer.close();
   });
 
+  it("keeps the framebuffer surface between owners only for a machine that restarts its program", () => {
+    let bound: unknown[] = [];
+    let changed: () => void = () => {};
+    const host = new LiveKernelHost({
+      kernel: {
+        framebuffers: {
+          list: () => bound,
+          onChange: (cb: () => void) => { changed = cb; return () => {}; },
+        },
+      } as never,
+    });
+    const own = (next: unknown[]) => { bound = next; changed(); };
+
+    // Without an ingest restart, the surface follows the owner, so a program
+    // that exits hands the view back.
+    own([{ pid: 7 }]);
+    expect(host.getSurfaceAvailability().framebuffer).toBe(true);
+    own([]);
+    expect(host.getSurfaceAvailability().framebuffer).toBe(false);
+
+    // With one, a restart or power-off between owners keeps it.
+    host.setDemoIngest({
+      accept: [".nes"],
+      targetPath: "/rom",
+      maxBytes: 1024,
+      onLoad: { restart: "/usr/local/bin/run" },
+    });
+    expect(host.getSurfaceAvailability().framebuffer).toBe(true);
+    own([{ pid: 8 }]);
+    own([]);
+    expect(host.getSurfaceAvailability().framebuffer).toBe(true);
+
+    // A fresh kernel has drawn nothing yet.
+    host.detachKernel();
+    expect(host.getSurfaceAvailability().framebuffer).toBe(false);
+  });
+
   it("reports guest audio demand from the kernel and defaults to false without it", () => {
     let emit: ((active: boolean) => void) | null = null;
     let active = false;

@@ -976,10 +976,17 @@ the core that actually run are fetched.
   and the ingest contract never passes the uploaded name to the restart
   command. A file that matches none of these is rejected with a message on
   the terminal; no core is started.
-- **Loading a ROM.** **Load ROM** (or dropping a file on the display) writes
+- **Loading a ROM.** **From file…** (or dropping a file on the display) writes
   the file to `/var/lib/kandelo-retro/rom`, stops the running emulator, and
   runs the launcher again. The cap is 16 MiB. The upload lives in the
-  machine's filesystem and is gone when the machine is.
+  machine's filesystem and is gone when the machine is. The dock's NES, Mega
+  Drive and SNES buttons load that system's starter ROM the same way, and the
+  dock names the ROM that is running.
+- **Reset and power.** **Reset** stops the emulator and runs the launcher
+  again on the same ROM; **Power off** stops it and leaves `/dev/fb0` free,
+  and **Power on** runs the launcher again. A state delivered by a link is
+  applied to the first run after boot only, so Reset and Power on start the
+  ROM from its beginning, as a console's own buttons do.
 - **Input.** Arrow keys are the D-pad, Enter is Start, Right Shift is Select,
   Z/X are B/A, A/S are Y/X, and Q/W are the shoulder buttons. A key pressed
   and released within one frame still counts as pressed for that frame, so
@@ -988,12 +995,15 @@ the core that actually run are fetched.
   homebrew and public-domain games on the Internet Archive, and a search of
   the Archive for each system; see
   [Kandelo demo metadata](#kandelo-demo-metadata). A ZIP on the Archive opens
-  to list its ROMs, and only the chosen ROM is downloaded.
+  to list its ROMs, and only the chosen ROM is downloaded; a ZIP of per-game
+  ZIPs opens one level further.
 - **Save states in links.** The profile declares a `checkpoint` (see
   [Kandelo demo metadata](#kandelo-demo-metadata)). The frontend saves on
   SIGUSR1; `/usr/local/bin/retro-checkpoint` sends it and waits, for at most
   eight seconds, for the frontend to confirm a complete state by echoing back
-  a fresh nonce. The
+  a fresh nonce. **Save state** in the dock takes a checkpoint and writes the
+  link into the page's own address, so reloading or bookmarking the page
+  restores the game; Share offers the same checkpoint as a check box. The
   launcher starts the core with `--state` when a link delivers one. A state of
   a ROM loaded from the visitor's device cannot be shared, and a state too big
   for a link is refused with its size. Whether a state fits depends on the
@@ -1762,21 +1772,35 @@ A profile with an `ingest` may also declare a library of things to load:
 }
 ```
 
-The framebuffer dock shows a **Library** button next to the ingest control.
-Its panel offers the image's `bundled` files, its `featured` Internet Archive
-items, and a search of the Internet Archive within one of the image's `groups`.
+The framebuffer dock splits the ingest control into **From file…** and
+**From Internet Archive…**. The second opens a drawer that offers the image's
+`bundled` files, its `featured` Internet Archive items, and a search of the
+Internet Archive within one of the image's `groups`, run as the visitor types.
 The visitor's search words are only ever quoted into the group's query, so
 they cannot widen it. Opening an item lists its files whose extensions the
-`ingest` accepts, and its ZIP files, which open to list their members. Search
-and item metadata come directly from `archive.org`, which sends CORS headers;
-file bytes come from the item's own download host through the CORS proxy.
+`ingest` accepts, and its ZIP files, which open to list their members; a ZIP
+member that is itself a ZIP opens one level further. Each list has a filter
+that narrows it by name and pages through what matches. The drawer is hidden,
+not removed, when it closes, so its search and whatever was opened are still
+there when it reopens. Search and item metadata come directly from
+`archive.org`, which sends CORS headers; file bytes and item thumbnails come
+through the CORS proxy, because their hosts send neither CORS nor
+Cross-Origin-Resource-Policy headers and the page is cross-origin isolated.
+
+A `bundled` entry may set `"default": true` (at most one) to say that the
+image's init runs it when a boot names nothing else. The dock uses that to
+name what a fresh machine is running, and offers one button per group that
+has a `bundled` entry, which loads that entry through the ingest.
 
 A ZIP member is extracted without downloading the archive: one suffix range
 read finds the end records (ZIP64 included), one more reads the central
 directory if it starts earlier, and one reads the member's local header and
 data. A relay that ignores `Range` gets the whole archive instead, up to
 `maxArchiveBytes` (64 MiB by default, at most 256 MiB); a larger archive is
-refused with that reason. Encrypted members, members compressed with anything
+refused with that reason. A nested ZIP cannot be read by range, so it is
+fetched whole under the same cap, and its member is inflated into a buffer of
+exactly the size its directory declares, already checked against
+`ingest.maxBytes`. Encrypted members, members compressed with anything
 but store or deflate, and members over `ingest.maxBytes` are listed but cannot
 be picked. The directory is untrusted: every offset and size is checked against
 the archive's length before use.
@@ -1784,7 +1808,8 @@ the archive's length before use.
 Whatever is picked goes through the same ingest as a dropped file. The panel
 also records where it came from, so a checkpoint link can name it: a file from
 the Internet Archive becomes a boot input of kind `resolver`, resolver
-`internet-archive`, with locator `{ "item", "file", "member"? }`, under the
+`internet-archive`, with locator `{ "item", "file", "member"?, "inner"? }`
+(`inner` names a member of the nested ZIP `member`), under the
 library's `inputId`; a `bundled` file is named by boot parameter `ingestPath`.
 The opener's browser fetches a resolver input again through the same client,
 never reads more than the link's declared byte length, and rejects it unless
@@ -1815,15 +1840,32 @@ and any other status means there is none, so the file is not read. It reads
 the file through the kernel worker and rejects an empty file or one over
 `maxBytes`, which cannot exceed 2 MiB because the checkpoint travels in a link
 as a gzip-compressed inline boot input. The Share dialog offers it as a check
-box. The link carries the checkpoint as input `inputId`, plus the inputs that
-name the machine's content: the ones it booted with while nothing has been
-ingested since, or the resolver input an ingested file was fetched through. A
+box, and the framebuffer dock offers **Save state**, which writes the same
+link into the page's address with `history.replaceState`, so a reload boots
+it. Loading something else afterwards removes that fragment again, because it
+would restore the earlier content. The link carries the checkpoint as input
+`inputId`, plus what names the machine's content: the inputs and
+`ingestPath` parameter it booted with while nothing has been ingested since
+(not the link's script or an earlier checkpoint), the resolver input an
+ingested file was fetched through, or the `ingestPath` of a `bundled` file. A
 checkpoint of a file from the visitor's own device is refused before anything
 is captured, because no link could deliver that file to the opener. A
 checkpoint whose compressed size exceeds a link's 32 KiB inline cap fails with
 its size. Restoring is the image's job: the opener's boot materializes the
 checkpoint at `/run/kandelo/inputs/<inputId>/<filename>` and the profile's own
 init decides what to do with it.
+
+Ingest machines with an `onLoad.restart` also get **Reset** and
+**Power off/on** in the framebuffer dock. They act on the process that owns
+`/dev/fb0`, with the same steps an ingest uses: SIGTERM and a bounded wait for
+the process to exit and release the device, then the image's restart command.
+
+The framebuffer surface is normally available only while some process has
+`/dev/fb0` bound, so a program that exits hands the view back to the terminal.
+On a machine whose ingest declares `onLoad.restart`, the surface stays
+available once something has drawn on it, until the machine stops: its
+program is restarted in place by design, and the pane has to stay to show the
+restart, the powered-off display and the controls that bring it back.
 
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported

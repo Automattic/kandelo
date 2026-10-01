@@ -231,7 +231,7 @@
           { "item": "till-hat-demo-a", "title": "Till & Hat Demo A", "note": "homebrew demo", "group": "SNES" }
         ],
         "bundled": [
-          { "path": "/usr/share/kandelo-retro/roms/240pee.nes", "title": "240p Test Suite", "group": "NES" },
+          { "path": "/usr/share/kandelo-retro/roms/240pee.nes", "title": "240p Test Suite", "group": "NES", "default": true },
           { "path": "/usr/share/kandelo-retro/roms/240pSuite-md-1.21.bin", "title": "240p Test Suite", "group": "Mega Drive" },
           { "path": "/usr/share/kandelo-retro/roms/240pSuite-snes-1.03.sfc", "title": "240p Test Suite", "group": "SNES" }
         ]

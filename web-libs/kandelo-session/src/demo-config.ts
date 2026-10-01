@@ -154,6 +154,11 @@ export interface DemoLibraryBundledConfig {
   path: string;
   title: string;
   group?: string;
+  /**
+   * The image's own init loads this file when a boot names nothing else, so
+   * the UI can name what a fresh machine is running. At most one entry.
+   */
+  default?: boolean;
 }
 
 /**
@@ -1186,13 +1191,20 @@ function normalizeLibrary(value: unknown, field: string): DemoLibraryConfig {
       const name = `${field}.bundled[${index}]`;
       const path = requiredString(entry.path, `${name}.path`);
       validateAbsoluteNormalizedPath(path, `${name}.path`);
+      if (entry.default !== undefined && typeof entry.default !== "boolean") {
+        throw new Error(`${name}.default must be a boolean`);
+      }
       return {
         path,
         title: text(entry.title, `${name}.title`),
         ...groupOf(entry.group, `${name}.group`),
+        ...(entry.default === true ? { default: true } : {}),
       };
     },
   );
+  if (bundled.filter((entry) => entry.default).length > 1) {
+    throw new Error(`${field}.bundled may mark at most one entry as the default`);
+  }
 
   let maxArchiveBytes = LIBRARY_DEFAULT_ARCHIVE_BYTES;
   if (value.maxArchiveBytes !== undefined) {
