@@ -42,8 +42,18 @@ const EV_KEY = 0x01;
 const EV_SYN = 0x00;
 const SYN_REPORT = 0x00;
 const KEY_V = 47;
+const KEY_C = 46;
+const KEY_INSERT = 110;
+const KEY_LEFTSHIFT = 42;
 const KEY_LEFTCTRL = 29;
 const KEY_LEFTMETA = 125;
+// The client also logs the modifier presses themselves; the routing under
+// test is in the mods of the other keys.
+const MODIFIER_KEYS = new Set([KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_LEFTMETA]);
+const keyPresses = (log: string) =>
+  [...log.matchAll(/CLIP_KEY key=(\d+) state=1 mods=\S+/g)]
+    .filter((m) => !MODIFIER_KEYS.has(Number(m[1])))
+    .map((m) => m[0]);
 
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -167,7 +177,7 @@ describe("wlcompositor — clipboard selection", () => {
   );
 
   it.skipIf(!hasBinaries)(
-    "SUPER+V and CTRL+V paste by terminal tag, without leaking SUPER",
+    "SUPER+V, CTRL+V and the Insert chords route by terminal tag, without leaking SUPER",
     async () => {
       const compositorBytes = loadBytes(compositorBin!);
       const clipBytes = loadBytes(clipBin!);
@@ -183,6 +193,8 @@ describe("wlcompositor — clipboard selection", () => {
         "windowrule = tag +terminal, class:(Alacritty|kitty|com.mitchellh.ghostty|foot|org\\.codeberg\\.dnkl\\.foot|wezterm|org\\.omarchy\\..*|TUI\\..*)",
         "bind = SUPER, V, kandelo:sendshortcutiftag, terminal, CTRL SHIFT, V, CTRL, V",
         "bind = CTRL, V, kandelo:sendshortcutiftag, terminal, CTRL SHIFT, V, CTRL, V",
+        "bind = SHIFT, Insert, kandelo:sendshortcutiftag, terminal, CTRL SHIFT, V, CTRL, V",
+        "bind = CTRL, Insert, kandelo:sendshortcutiftag, terminal, CTRL SHIFT, C, CTRL, C",
         "bind = SUPER, A, sendshortcut, CTRL, A,",
         "",
       ].join("\n"));
@@ -211,13 +223,13 @@ describe("wlcompositor — clipboard selection", () => {
           env: [`WLC_CONFIG=${confPath}`],
         }).catch(() => {});
         await waitFor(() => out.all, "COMPOSITOR_UP", 20_000, dump);
-        expect(out.all, dump()).toContain(`BINDS_LOADED n=3 source=${confPath}`);
+        expect(out.all, dump()).toContain(`BINDS_LOADED n=5 source=${confPath}`);
         expect(out.all, dump()).toContain("WINDOWRULES_LOADED n=1");
 
         // An untagged window first. It stays up while the terminal comes and
         // goes: the compositor exits once its last client disconnects.
         const appExit = host.spawn(
-          clipBytes, ["wlclip-test", "--app-id", "org.example.editor", "keys", "1"],
+          clipBytes, ["wlclip-test", "--app-id", "org.example.editor", "keys", "2"],
           { onStarted: (pid) => out.name("app", pid) },
         );
         await waitFor(() => out.of("app"), "CLIP_KEYS_READY", 20_000, dump);
@@ -225,7 +237,7 @@ describe("wlcompositor — clipboard selection", () => {
         // A window whose app_id is foot's: tagged terminal. It maps last, so
         // it holds keyboard focus.
         const footExit = host.spawn(
-          clipBytes, ["wlclip-test", "--app-id", "foot", "keys", "2"],
+          clipBytes, ["wlclip-test", "--app-id", "foot", "keys", "4"],
           { onStarted: (pid) => out.name("foot", pid) },
         );
         await waitFor(() => out.of("foot"), "CLIP_KEYS_READY", 20_000, dump);
@@ -245,23 +257,29 @@ describe("wlcompositor — clipboard selection", () => {
         );
         expect(out.all, dump()).toMatch(/SENDSHORTCUT app_id=foot mods=0x6 key=47/);
 
-        // CTRL+V (the browser-usable mirror) does the same for a terminal.
+        // CTRL+V (the browser-usable mirror) and SHIFT+Insert do the same
+        // for a terminal; CTRL+Insert becomes the terminal's copy chord.
         chord(KEY_LEFTCTRL, KEY_V);
+        chord(KEY_LEFTSHIFT, KEY_INSERT);
+        chord(KEY_LEFTCTRL, KEY_INSERT);
         expect(await footExit, dump()).toBe(0);
-        const footKeys = out.of("foot").match(/CLIP_KEY key=47 state=1 mods=\S+/g);
-        expect(footKeys, dump()).toEqual([
-          "CLIP_KEY key=47 state=1 mods=ctrl+shift",
-          "CLIP_KEY key=47 state=1 mods=ctrl+shift",
+        expect(keyPresses(out.of("foot")), dump()).toEqual([
+          `CLIP_KEY key=${KEY_V} state=1 mods=ctrl+shift`,
+          `CLIP_KEY key=${KEY_V} state=1 mods=ctrl+shift`,
+          `CLIP_KEY key=${KEY_V} state=1 mods=ctrl+shift`,
+          `CLIP_KEY key=${KEY_C} state=1 mods=ctrl+shift`,
         ]);
 
         // Focus falls back to the untagged window, which gets plain Ctrl+V
         // from the same bind.
         await waitFor(() => out.of("app"), /CLIP_ENTER[\s\S]*CLIP_ENTER/, 10_000, dump);
         chord(KEY_LEFTMETA, KEY_V);
+        chord(KEY_LEFTCTRL, KEY_INSERT);
         expect(await appExit, dump()).toBe(0);
-        expect(out.of("app"), dump()).toContain(
-          `CLIP_KEY key=${KEY_V} state=1 mods=ctrl\n`,
-        );
+        expect(keyPresses(out.of("app")), dump()).toEqual([
+          `CLIP_KEY key=${KEY_V} state=1 mods=ctrl`,
+          `CLIP_KEY key=${KEY_C} state=1 mods=ctrl`,
+        ]);
         expect(out.of("app"), dump()).not.toMatch(/key=47 state=1 mods=\S*super/);
       } finally {
         await host.destroy().catch(() => {});
