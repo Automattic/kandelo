@@ -401,6 +401,9 @@ These flags are common in build systems but irrelevant for Wasm:
 - `-lrt`, `-lresolv`, `-lm`, `-lcrypt`, `-lutil` (all in musl libc.a)
 - `-rdynamic`, `-Wl,-Bsymbolic`
 - `-Wl,-rpath,*`, `-Wl,-soname,*`, `-Wl,--version-script*`
+- `-Wl,--start-group`, `-Wl,--end-group` (wasm-ld rejects them; like ELF lld it
+  resolves archive members regardless of command-line order)
+- `-lgcc_s` (no shared libgcc; intrinsics come from the compiler runtime)
 
 ## Autoconf Projects
 
@@ -506,6 +509,43 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib \
 
 See `packages/registry/redis/build-redis.sh` for the complete build script.
 
+## Meson Projects
+
+The dev shell provides `meson`, and the SDK ships a cross file that points
+Meson at the target instead of the build machine:
+
+```bash
+source sdk/activate.sh   # or run inside scripts/dev-shell.sh
+PKG_CONFIG_PATH=<dep-prefix>/lib/pkgconfig \
+  meson setup --cross-file sdk/meson/wasm32posix.ini build
+ninja -C build
+```
+
+`sdk/meson/wasm32posix.ini` uses the SDK wrappers as its `[binaries]`, so the
+compile and link contract is the same as every other build path. It declares
+`system = 'linux'` / `cpu_family = 'wasm32'` (the same musl/POSIX identity
+`sdk/config.site` and the CMake toolchains use; it does not define
+`__linux__`), sets `needs_exe_wrapper = true`, builds static libraries, and
+disables `b_lundef`/`b_asneeded`/`b_pie`. It deliberately does not set
+`sys_root`: Meson would export `PKG_CONFIG_SYSROOT_DIR`, which corrupts the
+absolute-prefix `.pc` files.
+
+Two options keep dependency resolution on the package path:
+
+- `prefer_static = true` — Kandelo has no shared libraries, so every
+  `dependency()` lookup is static and pkg-config runs with `--static`. That
+  pulls each package's `Requires.private`/`Libs.private` (cairo needs pixman,
+  fontconfig needs libxml2), so `PKG_CONFIG_PATH` must cover the full
+  transitive dependency closure, not just the direct dependencies.
+- `wrap_mode = 'nofallback'` — a `dependency()` that misses fails the
+  configure instead of silently downloading and building an upstream
+  subproject (Meson "wrap") in place of the resolver-provided package.
+
+Meson's feature probes are link tests, so the cross file runs the compilers
+with `WASM_POSIX_LINK_UNDEFINED=error` (see below). Under the default link
+contract a missing function links as an `env` import, which would make a bare
+`cc.has_function()` report every missing libc function as present.
+
 ## Fork instrumentation (`wasm-fork-instrument`)
 
 Programs that call `fork()` or fork-like APIs need the in-tree
@@ -548,6 +588,7 @@ exported ABI, save-buffer format, and the dispatch-scheme decisions.
 | `WASM_POSIX_LLVM_DIR` | Path to LLVM bin directory |
 | `WASM_POSIX_SYSROOT` | Override sysroot path (default: `<repo>/sysroot`) |
 | `WASM_POSIX_GLUE_DIR` | Override glue directory (default: `<repo>/libc/glue`) |
+| `WASM_POSIX_LINK_UNDEFINED` | Executable undefined-symbol policy. `import` (default) keeps `--allow-undefined`: any undefined symbol becomes an `env` import. `error` rejects undefined symbols except the syscall glue's contract imports (`libc/glue/contract-imports.syms`), making link-test feature probes truthful. Other values are rejected. |
 
 ## Running Programs
 
