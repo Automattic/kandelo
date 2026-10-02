@@ -629,3 +629,79 @@ test("Kandelo omarchy pastes text from the host clipboard into foot", async ({ p
   expect(await terminalText(page), "a client failed during host paste")
     .not.toMatch(CLIENT_FAILURE);
 });
+
+/**
+ * Copy-out: a copy chord over the desktop puts the guest's new selection on
+ * the host clipboard. foot copies its selection; kclipd sees the desktop's
+ * selection change through ext_data_control_v1, reads the text, and reports
+ * it on /dev/kandelo/clipboard; the page, which started waiting on the
+ * chord's keydown, writes it to the host clipboard. Both Linux/Windows copy
+ * chords are exercised: Ctrl+Shift+C reaches foot as itself, Ctrl+Insert
+ * through the compositor's bind. Then Ctrl+C — SIGINT in a terminal, which
+ * copies nothing — must leave the host clipboard exactly as it was.
+ *
+ * Reading the host clipboard needs Chromium's clipboard permissions; the
+ * other engines are verified by hand (docs/browser-support.md).
+ */
+test("Kandelo omarchy copies foot's selection to the host clipboard", async ({ page, browserName, context }) => {
+  test.skip(browserName !== "chromium", "reads the host clipboard through Chromium's permission grant");
+  test.setTimeout(300_000);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+
+  await launchOmarchy(page);
+  await openSurface(page, "Internals");
+  await expect
+    .poll(() => syslogText(page), { timeout: 180_000 })
+    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
+  await expectTerminal(page, /KCLIPD_READY/, 180_000);
+  await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
+
+  await pressCtrl(page, "5");
+  await expectTerminal(page, /WORKSPACE active=5/, 30_000);
+  await pressCtrl(page, "Enter");
+  await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=1 i=0 /, 60_000);
+  await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
+  await page.waitForTimeout(3_000); // let foot's shell reach its prompt
+  await openSurface(page, "Demo");
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.type("echo copyout-first; echo copyout-second\n", { delay: 20 });
+  await page.evaluate(() => navigator.clipboard.writeText("host-before"));
+
+  const select = async (text: string) => {
+    await pressCtrl(page, "KeyR", true);
+    await page.keyboard.type(text, { delay: 20 });
+    await page.keyboard.press("Enter");
+  };
+
+  // Ctrl+Shift+C: the terminal's own copy chord.
+  // The chords go straight to the keyboard: a click could clear foot's
+  // selection.
+  await select("copyout-first");
+  await page.keyboard.press("Control+Shift+KeyC");
+  await expectTerminal(page, /KCLIPD_COPIED len=13/, 30_000);
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()), { timeout: 10_000 })
+    .toBe("copyout-first");
+
+  // Ctrl+Insert: the CUA chord, which the compositor turns into foot's copy.
+  await select("copyout-second");
+  await page.keyboard.press("Control+Insert");
+  await expectTerminal(page, /SENDSHORTCUT app_id=foot mods=0x6 key=46/, 30_000);
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()), { timeout: 10_000 })
+    .toBe("copyout-second");
+
+  // Ctrl+C copies nothing in a terminal: once the copy-out wait expires
+  // (Internals logs the timeout; the terminal only holds the rows on
+  // screen, so its markers cannot be counted), the host clipboard still
+  // holds what it had.
+  await page.evaluate(() => navigator.clipboard.writeText("host-after"));
+  await pressCtrl(page, "KeyC");
+  await openSurface(page, "Internals");
+  await expect
+    .poll(() => syslogText(page), { timeout: 10_000 })
+    .toMatch(/clipboard: copy chord copied nothing to the host \(timeout\)/);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("host-after");
+  expect(await terminalText(page), "a client failed during copy-out")
+    .not.toMatch(CLIENT_FAILURE);
+});

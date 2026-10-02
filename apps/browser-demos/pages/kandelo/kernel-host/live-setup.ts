@@ -24,6 +24,10 @@ import {
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
+import {
+  CopyOutFailure,
+  startHostClipboardCopyOut,
+} from "../../../../../host/src/input/clipboard-copy-out";
 import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
 import {
   resolveBrowserCorsProxyConfig,
@@ -1839,6 +1843,22 @@ function attachDeclaredInputSource(
             onFailure: (failure) => host.reportClipboardPasteFailure(failure),
             onNoPaste: () =>
               tick("clipboard: paste chord produced no browser paste event; sent as keys"),
+          },
+          // Copy-out: a copy chord over the machine puts the guest's next
+          // selection on the host clipboard. Nothing copied in time (Ctrl+C
+          // in a terminal is SIGINT) leaves the host clipboard as it was.
+          copy: {
+            onCopyGesture: () => {
+              const copied = startHostClipboardCopyOut(() => kernel.waitForGuestClipboardText());
+              copied.then(
+                (text) => tick(`clipboard: copied ${text.length} characters to the host`),
+                (error: unknown) => tick(
+                  `clipboard: copy chord copied nothing to the host (${
+                    error instanceof CopyOutFailure ? error.reason : String(error)})`,
+                ),
+              );
+              return copied;
+            },
           },
         }
         : {}),

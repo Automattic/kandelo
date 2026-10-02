@@ -631,11 +631,152 @@ describe("BrowserInputSource — paste gesture", () => {
     expect(failures).toEqual([{ reason: "no-agent", discardedKeystrokes: 1 }]);
   });
 
+  it("treats Shift+Insert as a paste chord", async () => {
+    const KEY_LEFTSHIFT = 42;
+    const KEY_INSERT = 110;
+    key("keydown", { code: "ShiftLeft", key: "Shift", shiftKey: true });
+    key("keydown", { code: "Insert", key: "Insert", shiftKey: true });
+    expect(paste("from Insert")).toBe(true);
+    expect(offers).toEqual(["from Insert"]);
+    expect(keys()).toEqual([[KEY_LEFTSHIFT, 1]]);
+    answer({ ok: true, seq: 1 });
+    await nextTask();
+    expect(keys()).toEqual([[KEY_LEFTSHIFT, 1], [KEY_INSERT, 1]]);
+  });
+
   it("pastes the guest's own selection when the clipboard holds no text", async () => {
     cmdV();
     paste("");
     await nextTask();
     expect(offers).toEqual([]);
     expect(keys()).toEqual([[KEY_LEFTMETA, 1], [KEY_V, 1]]);
+  });
+});
+
+/**
+ * Copy-out (`opts.copy`): a copy chord over the desktop starts the host
+ * clipboard write before the chord reaches the guest, and leaves the
+ * chord's keys flowing as usual — the guest decides whether it copies.
+ */
+describe("BrowserInputSource — copy gesture", () => {
+  const KEY_LEFTCTRL = 29;
+  const KEY_LEFTSHIFT = 42;
+  const KEY_C = 46;
+  const KEY_V = 47;
+
+  let target: FakeTarget;
+  let recorded: InputEvent[];
+  let gestures: number;
+  let keysAtGesture: number[][][];
+  let copied: (text: string) => void;
+  let offers: string[];
+  let src: BrowserInputSource;
+
+  const keys = () =>
+    recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+  const nextTask = () => new Promise((r) => setTimeout(r, 0));
+  const key = (type: "keydown" | "keyup", init: Record<string, unknown>) => {
+    let prevented = false;
+    target.fire(type, {
+      repeat: false,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      ...init,
+      preventDefault() { prevented = true; },
+    });
+    return prevented;
+  };
+
+  beforeEach(() => {
+    target = new FakeTarget();
+    vi.stubGlobal("document", Object.assign(new FakeTarget(), { pointerLockElement: null }));
+    recorded = [];
+    gestures = 0;
+    keysAtGesture = [];
+    offers = [];
+    src = new BrowserInputSource(target, {
+      paste: {
+        offer: (text) => {
+          offers.push(text);
+          return Promise.resolve({ ok: true, seq: offers.length });
+        },
+      },
+      copy: {
+        onCopyGesture: () => {
+          gestures++;
+          keysAtGesture.push(keys());
+          return new Promise<string>((resolve) => { copied = resolve; });
+        },
+      },
+    });
+    src.start((ev) => recorded.push(ev));
+  });
+
+  afterEach(() => {
+    src.stop();
+    vi.unstubAllGlobals();
+  });
+
+  it("arms on each copy chord before the chord's key reaches the guest", () => {
+    const KEY_X = 45;
+    const KEY_INSERT = 110;
+    const chords: Array<[string, string, number, Record<string, boolean>]> = [
+      ["KeyC", "c", KEY_C, { metaKey: true }],
+      ["KeyX", "x", KEY_X, { metaKey: true }],
+      ["KeyC", "c", KEY_C, { ctrlKey: true }],
+      ["KeyC", "C", KEY_C, { ctrlKey: true, shiftKey: true }],
+      ["Insert", "Insert", KEY_INSERT, { ctrlKey: true }],
+    ];
+    const presses = (list: number[][], code: number) =>
+      list.filter(([c, v]) => c === code && v === 1).length;
+    chords.forEach(([code, k, evdev, mods], i) => {
+      const label = `${k} ${JSON.stringify(mods)}`;
+      const before = presses(keys(), evdev);
+      key("keydown", { code, key: k, ...mods });
+      expect(gestures, label).toBe(i + 1);
+      // Armed before the chord's press was emitted, so the guest's copy
+      // cannot land before the host starts waiting for it.
+      expect(presses(keysAtGesture[i], evdev), label).toBe(before);
+      expect(presses(keys(), evdev), label).toBe(before + 1);
+      key("keyup", { code, key: k, ...mods });
+    });
+  });
+
+  it("does not arm on chords that cannot copy", () => {
+    key("keydown", { code: "KeyC", key: "c" });
+    key("keydown", { code: "KeyC", key: "c", ctrlKey: true, altKey: true });
+    key("keydown", { code: "KeyC", key: "c", ctrlKey: true, metaKey: true });
+    key("keydown", { code: "KeyC", key: "c", ctrlKey: true, repeat: true });
+    key("keydown", { code: "Insert", key: "Insert", shiftKey: true });
+    expect(gestures).toBe(0);
+  });
+
+  it("delivers Ctrl+C to the guest unchanged (a terminal's SIGINT)", () => {
+    key("keydown", { code: "ControlLeft", key: "Control", ctrlKey: true });
+    key("keydown", { code: "KeyC", key: "c", ctrlKey: true });
+    expect(gestures).toBe(1);
+    expect(keysAtGesture[0]).toEqual([[KEY_LEFTCTRL, 1]]);
+    expect(keys()).toEqual([[KEY_LEFTCTRL, 1], [KEY_C, 1]]);
+  });
+
+  it("does not re-offer text the guest just copied out", async () => {
+    key("keydown", { code: "ControlLeft", key: "Control", ctrlKey: true });
+    key("keydown", { code: "ShiftLeft", key: "Shift", ctrlKey: true, shiftKey: true });
+    key("keydown", { code: "KeyC", key: "C", ctrlKey: true, shiftKey: true });
+    expect(keys()).toEqual([[KEY_LEFTCTRL, 1], [KEY_LEFTSHIFT, 1], [KEY_C, 1]]);
+    copied("from the guest");
+    await nextTask();
+    // Pasting it back: the guest's selection already holds it, so the
+    // chord goes straight through without an offer.
+    key("keydown", { code: "KeyV", key: "V", ctrlKey: true, shiftKey: true });
+    target.fire("paste", {
+      clipboardData: { getData: (t: string) => (t === "text/plain" ? "from the guest" : "") },
+      preventDefault() {},
+    });
+    await nextTask();
+    expect(offers).toEqual([]);
+    expect(keys()).toContainEqual([KEY_V, 1]);
   });
 });

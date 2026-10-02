@@ -94,10 +94,24 @@ const MODIFIER_KEY_CODES: ReadonlySet<number> = new Set(
  * Ctrl+V is not one on macOS — so this only makes a keydown a candidate.
  */
 function isPasteChordCandidate(e: KeyboardEvent): boolean {
-  return (e.key === "v" || e.key === "V")
-    && !e.repeat
-    && e.metaKey !== e.ctrlKey
-    && !e.altKey;
+  if (e.repeat || e.altKey) return false;
+  // Shift+Insert: the CUA paste chord on Linux and Windows.
+  if (e.key === "Insert") return e.shiftKey && !e.ctrlKey && !e.metaKey;
+  return (e.key === "v" || e.key === "V") && e.metaKey !== e.ctrlKey;
+}
+
+/**
+ * Chords that may make the guest copy (or cut): Cmd+C/X on macOS;
+ * Ctrl+C/X, Ctrl+Shift+C (the terminal convention) and Ctrl+Insert
+ * elsewhere. Arming on one that copies nothing — Ctrl+C in a terminal is
+ * SIGINT — is harmless: the guest reports no new selection, and the host
+ * clipboard is left alone.
+ */
+function isCopyChordCandidate(e: KeyboardEvent): boolean {
+  if (e.repeat || e.altKey || e.metaKey === e.ctrlKey) return false;
+  const key = e.key.toLowerCase();
+  if (key === "c" || key === "x") return true;
+  return e.key === "Insert" && e.ctrlKey && !e.shiftKey;
 }
 
 /**
@@ -127,6 +141,16 @@ export interface BrowserPasteHandler {
   /** A paste chord the browser did not turn into a `paste` event in time;
    *  it went to the guest as ordinary keys. */
   onNoPaste?(): void;
+}
+
+/** Wires copy gestures over the desktop to the host clipboard. */
+export interface BrowserCopyHandler {
+  /**
+   * Called synchronously from the copy chord's keydown, before the chord
+   * reaches the guest (see `startHostClipboardCopyOut`). Resolves with the
+   * text that reached the host clipboard.
+   */
+  onCopyGesture(): Promise<string>;
 }
 
 /** A paste chord awaiting the browser's verdict, then the guest's answer. */
@@ -206,6 +230,8 @@ export class BrowserInputSource implements InputSource {
    *   reaches the guest only once the guest's agent has installed it. If
    *   no `paste` follows within PASTE_DECISION_MS, the chord is ordinary
    *   keys.
+   * @param opts.copy  Copy-out: on a copy chord over the desktop, the
+   *   guest's next selection is written to the host clipboard.
    * @param opts.shouldCapture  Consulted at the top of every handler. When
    *   it returns `false` the event is left entirely to the browser — no
    *   `preventDefault`, no evdev emission — so the surrounding app chrome
@@ -222,6 +248,7 @@ export class BrowserInputSource implements InputSource {
       onResize?: () => void;
       shouldCapture?: (e: Event) => boolean;
       paste?: BrowserPasteHandler;
+      copy?: BrowserCopyHandler;
     } = {},
   ) {}
 
@@ -351,6 +378,16 @@ export class BrowserInputSource implements InputSource {
     }
     const key = charToKey(e.key) ?? codeToKey(e.code);
     if (key === null) return;
+    if (this.opts.copy && !this.pendingPaste && isCopyChordCandidate(e)) {
+      // Before the chord's keys go out, so the wait samples the guest's
+      // selection generation ahead of the copy it is waiting for.
+      this.opts.copy.onCopyGesture().then(
+        // Host and guest now hold the same text, so a later paste of it is
+        // not re-offered — and a host copy of anything else is.
+        (text) => { this.lastOfferedText = text; },
+        () => {},
+      );
+    }
     if (this.opts.paste && !this.pendingPaste && isPasteChordCandidate(e)) {
       // Leave the keydown to the browser so its paste binding can fire
       // `paste`; hold the chord until we know what it was.
