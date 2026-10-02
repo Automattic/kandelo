@@ -20,6 +20,17 @@
 //!                         Stream one exact regular package-archive member to
 //!                         a new output file without exposing partial bytes.
 //!   local-build           Resolve and source-build a package closure locally.
+//!                         `plan --set <file> --status [--json]` is a
+//!                         read-only dry run listing each node as cached or
+//!                         will-run, with an estimated duration from recorded
+//!                         timings, so a caller knows before starting whether
+//!                         the build takes seconds or tens of minutes. `run`
+//!                         appends scheduler events as JSON lines to
+//!                         `$KANDELO_LOCAL_BUILD_EVENTS` when set, so
+//!                         `scripts/agent-job status` can report progress,
+//!                         and records per-node and per-run durations under
+//!                         `<source cache root>/timings/` to feed that
+//!                         estimate.
 //!   bootstrap             One-command hermetic build: fork-instrument host
 //!                         tool, then the local-build engine over the whole
 //!                         supported set, then the TypeScript host build.
@@ -59,6 +70,7 @@ mod host_tool_probe;
 mod local_abi_identity;
 mod local_build;
 mod local_build_executor;
+mod local_build_timing;
 mod package_archive_limits;
 mod package_matrix;
 mod pkg_manifest;

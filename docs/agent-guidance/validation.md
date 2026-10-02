@@ -57,6 +57,71 @@ rustc -vV | awk '/^host/ {print $2}'
 `scripts/ci-run-test-suite.sh` does not currently expose an `abi` suite; run
 `bash scripts/check-abi-version.sh` separately for ABI-adjacent changes.
 
+## Waiting on long builds and suites
+
+`./run.sh setup`, `local-build`, full Vitest, and the conformance suites run
+for 10 to 40 minutes. In August and September 2026, agents spent about 12%
+of their input tokens on poll turns and on cache rewrites after long blocking
+calls. They also waited on `pgrep -f` patterns that matched the waiting shell
+itself and never returned, and started second runs that broke the first.
+`scripts/agent-job` removes those choices:
+
+A run that fits in one Bash call, under the tool's 10-minute limit, needs
+none of this. Run it in the foreground with output to a log file
+(`cmd > .context/x.log 2>&1; echo exit=$?`): that is one call and no waiting
+turns. For anything longer:
+
+```bash
+scripts/agent-job start -- ./run.sh setup   # prints a job id (run.sh enters the dev shell itself)
+scripts/agent-job wait <id>      # blocks on the job's PID for up to 9 min; exit 124 = still running, run it again
+scripts/agent-job status [<id>]  # elapsed vs usual duration, local-build progress, live processes
+scripts/agent-job result <id>    # exit status, [suite-health] lines, log tail
+```
+
+- **Waiting:** repeat `agent-job wait <id>` in the foreground until it
+  returns the job's status. That is one turn per 9 minutes, never a
+  `sleep`/`tail` poll. An interactive main session may instead run
+  `agent-job wait <id> --timeout 0` with `run_in_background` and end its
+  turn, to be woken by the completion notice. A headless (`claude -p`)
+  session or a subagent must never end its turn to wait: it stops there,
+  and the result is lost.
+- **Subagents** must not wait on whole-tree builds or full suites. A
+  subagent's prompt cache expires after 5 minutes, so every long blocking
+  call rewrites its whole context. Build what a subagent needs before
+  dispatching it. A subagent that discovers it needs one reports the command
+  back instead of running it.
+- **Progress:** for `./run.sh setup`, `local-build`, and `build <target>`,
+  `agent-job status` shows nodes done out of the total. Start them as
+  `./run.sh …`, not under `scripts/dev-shell.sh`, which drops the events
+  variable. `./run.sh local-build --plan` previews a build (cache hits,
+  nodes to build, estimated time) before you start it.
+- **Locked runs:** `agent-job start` refuses a second locked run (vitest,
+  `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup, local-build) in the
+  same worktree while one is running. Those runs race each other.
+- **Before a suite**, `npx tsx scripts/check-artifact-closures.ts` reports
+  any program package whose artifact closure would fail to resolve with
+  "Package artifact closure is incomplete". It takes about 3 s once warm, and
+  saves the minutes a suite would spend reaching the same error.
+- **Every Vitest run** ends with a `[suite-health]` line. When many files
+  fail to load, it groups them by the missing thing, so one line replaces
+  scrolling hundreds of failure blocks. `WARN` means part of the suite did
+  not run (a load error or zero tests).
+- **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
+  patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
+  `pgrep -f` waiters, and subagents running whole-tree builds or full
+  suites, and every denial says what to do instead. It is opt-in.
+  - **Install or update** with
+    `python3 .claude/hooks/install-hooks.py --user` (all your sessions) or
+    `--project-local` (this checkout only). It edits only its own entry,
+    keeps a `.bak` of the settings file, and changes nothing when run again.
+  - **Check for a stale copy** with `--check`, which exits 1 when the
+    installed hook is out of date. `--uninstall` removes it.
+  - **Scope:** the hook acts only in checkouts that contain
+    `scripts/agent-job`.
+
+Whether each of these helps is measured, with a rule for keeping or removing
+it, in `evals/build-waiting/README.md`.
+
 ## Preparing a fresh checkout or worktree to run the suites
 
 The Vitest, browser, libc, posix, and sortix suites need built artifacts and

@@ -6011,6 +6011,34 @@ where
     F: FnMut(&Path, &Path) -> std::io::Result<()>,
     R: FnMut() -> Result<Vec<u8>, String>,
 {
+    write_program_package_index_atomically_with_hooks(
+        output,
+        bytes,
+        refresh_source,
+        replace,
+        &mut || {},
+    )
+}
+
+/// `before_lock` runs after the caller computed `bytes` and immediately before
+/// this writer asks for the publication lock: the exact window in which a
+/// cooperating writer may publish. It exists because the "target changed
+/// before publication" race only reproduces by timing in real concurrent
+/// runs; the hook lets tests interleave a competing publication into that
+/// window deterministically, so the lock-before-snapshot order stays pinned
+/// by a test rather than by luck. Production passes a no-op.
+fn write_program_package_index_atomically_with_hooks<F, R, B>(
+    output: &Path,
+    bytes: &[u8],
+    refresh_source: &mut R,
+    replace: &mut F,
+    before_lock: &mut B,
+) -> Result<(), String>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+    R: FnMut() -> Result<Vec<u8>, String>,
+    B: FnMut(),
+{
     let parent = output
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -6023,7 +6051,49 @@ where
         )
     })?;
     let output = parent.join(file_name);
+    before_lock();
+
+    // All xtask index publishers (vitest global setup, every vitest worker's
+    // context ensure, build-programs.sh, prepare-host-package.sh, and
+    // local-build/bootstrap) coordinate through one durable lock inode. Take
+    // it BEFORE snapshotting the target: the snapshot is the compare half of
+    // a compare-and-swap, so a snapshot taken outside the lock goes stale the
+    // moment another writer renames its own (usually byte-identical) index
+    // into place, and this writer then failed with "target changed before
+    // publication" for no real conflict (14 such failures across 7 agent
+    // sessions in Aug-Sep 2026, from concurrent vitest and build runs over an
+    // unchanged registry). Holding the lock from snapshot
+    // through rename and the parent-directory sync makes the CAS atomic with
+    // respect to every cooperating writer; the snapshot validation below
+    // still catches a non-cooperating writer (an editor, `git checkout`).
+    //
+    // The caller's projection pass that produced `bytes` deliberately runs
+    // before the lock. It takes seconds and is pure with respect to the index
+    // file, so holding the lock across it would only serialize concurrent
+    // test runs without making publication any safer: the refresh below
+    // re-derives the projection under the lock whenever this writer would
+    // actually replace the target.
+    let _publication_lock = lock_program_package_index_publication(&parent, file_name)?;
     let target_snapshot = inspect_program_package_index_target(&output)?;
+
+    // Concurrent writers over one unchanged registry compute identical bytes.
+    // When the target already holds them, publishing would only swap in a new
+    // inode with the same contents, so return without renaming: readers and
+    // later writers see an undisturbed file. The staged file would inherit the
+    // target's own permissions, so equal bytes are the whole comparison.
+    // Skipping the source refresh here is safe: nothing is overwritten, so a
+    // stale writer cannot regress a newer index.
+    if let Some(LocalMirrorEntrySnapshot {
+        kind: LocalMirrorEntryKind::Regular { len, sha256 },
+        ..
+    }) = &target_snapshot.entry
+    {
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        if *len == bytes.len() as u64 && *sha256 == digest {
+            return Ok(());
+        }
+    }
+
     let existing_permissions = target_snapshot.permissions.clone();
     let (transaction_root, stage, mut stage_file, stage_identity) =
         reserve_program_package_index_transaction(&parent, file_name)?;
@@ -6062,15 +6132,6 @@ where
             .map_err(|e| format!("sync staged program package index {}: {e}", stage.display()))?;
         drop(stage_file);
 
-        // The target snapshot check and overwriting rename are not a compare-
-        // and-swap by themselves: another generator could replace the target
-        // after validation and then be overwritten by this writer. All xtask
-        // index publishers coordinate through one durable lock inode. Keep the
-        // lock through source refresh, target validation, replacement, and the
-        // parent-directory sync so an older cooperating writer can never land
-        // after a newer one in that gap.
-        let _publication_lock = lock_program_package_index_publication(&parent, file_name)?;
-
         // Recompute the complete registry projection at the publication
         // boundary. A writer that staged an older registry snapshot must not
         // overwrite an index generated after the recipe graph changed.
@@ -6083,10 +6144,10 @@ where
             );
         }
 
-        // Refuse when another writer changed the old target after our initial
-        // snapshot. This is a cooperative compare-and-swap boundary: writers
-        // over unchanged source stage byte-identical content, while stale
-        // writers fail either this check or the source refresh above.
+        // Refuse when the target changed after the snapshot taken under the
+        // lock. Cooperating writers cannot get here (they wait on the lock),
+        // so this catches only a non-cooperating replacement; stale
+        // cooperating writers fail the source refresh above instead.
         validate_program_package_index_target_snapshot(&output, &target_snapshot)?;
         replace(&stage, &output).map_err(|e| {
             format!(
@@ -6151,12 +6212,31 @@ fn lock_program_package_index_publication(
             lock_path.display()
         )
     })?;
-    lock.lock().map_err(|e| {
-        format!(
-            "lock program package index publication {}: {e}",
-            lock_path.display()
-        )
-    })?;
+    // Try first so a contended wait is visible. A bare blocking `lock()`
+    // looks exactly like a hang to whoever is watching the build, and the
+    // contention it hides cannot be measured. Printing one line, only when
+    // the lock is actually held elsewhere, tells the watcher that this writer
+    // is waiting for another index publication to finish, and lets the
+    // build-waiting eval (evals/build-waiting) count lock waits from
+    // transcripts. An uncontended lock prints nothing.
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            eprintln!("waiting for program-index lock ({})", lock_path.display());
+            lock.lock().map_err(|e| {
+                format!(
+                    "lock program package index publication {}: {e}",
+                    lock_path.display()
+                )
+            })?;
+        }
+        Err(std::fs::TryLockError::Error(e)) => {
+            return Err(format!(
+                "lock program package index publication {}: {e}",
+                lock_path.display()
+            ));
+        }
+    }
 
     let opened_metadata = lock.metadata().map_err(|e| {
         format!(
@@ -9294,6 +9374,38 @@ pub(crate) fn source_only_skip_receipt_if_clean(
     output_root: &Path,
     memo: &mut BTreeMap<String, [u8; 32]>,
 ) -> Option<PackageNodeReceiptV1> {
+    source_only_skip_receipt_if_clean_with_use(
+        target,
+        registry,
+        arch,
+        abi_version,
+        roots,
+        output_root,
+        memo,
+        true,
+    )
+}
+
+/// [`source_only_skip_receipt_if_clean`] with control over its one write:
+/// `record_use = false` leaves the generation's last-used stamp alone.
+///
+/// WHY: `local-build plan --status` must give the same cached/will-run answer
+/// as `run` while writing nothing. `cache-gc` evicts by last-used stamp, so a
+/// dry run that touched stamps would keep every generation it merely looked
+/// at alive as if a build had used it, and asking "how long would a build
+/// take?" would change what the cache keeps.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn source_only_skip_receipt_if_clean_with_use(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    record_use: bool,
+) -> Option<PackageNodeReceiptV1> {
     if target.kind == ManifestKind::Source {
         return None;
     }
@@ -9337,8 +9449,12 @@ pub(crate) fn source_only_skip_receipt_if_clean(
             return None;
         }
     }
-    // A skipped node is still a cache hit: record the use for `cache_gc`.
-    crate::cache_gc::touch_generation_last_used(&canonical, &cache_key_sha256);
+    // A skipped node is still a cache hit: record the use for `cache_gc`,
+    // which would otherwise evict a generation that every build is reusing.
+    // A dry run passes `record_use = false` (see the doc comment above).
+    if record_use {
+        crate::cache_gc::touch_generation_last_used(&canonical, &cache_key_sha256);
+    }
     Some(receipt)
 }
 
@@ -22034,6 +22150,110 @@ spdx = "MIT"
         .unwrap();
 
         assert_eq!(fs::read(&output).unwrap(), b"{\"generation\":\"new\"}\n");
+    }
+
+    /// Writer A publishes between writer B computing its bytes and B taking
+    /// the publication lock. Before the fix B snapshotted the target outside
+    /// the lock and failed with "target changed before publication" even
+    /// though A wrote exactly B's bytes.
+    #[cfg(unix)]
+    #[test]
+    fn program_package_projection_accepts_an_identical_publication_before_its_lock() {
+        use std::os::unix::fs::MetadataExt;
+        let root = tempdir("program-projection-identical-race");
+        let output = root.join("program-packages.json");
+        fs::write(&output, b"{\"generation\":\"old\"}\n").unwrap();
+        let bytes = b"{\"generation\":\"new\"}\n".to_vec();
+        let writer_a_output = output.clone();
+        let writer_a_bytes = bytes.clone();
+        let published_by_a = std::cell::Cell::new(None);
+        let mut writer_a_publishes = || {
+            let stage = writer_a_output.with_file_name("writer-a-stage");
+            fs::write(&stage, &writer_a_bytes).unwrap();
+            fs::rename(&stage, &writer_a_output).unwrap();
+            published_by_a.set(Some(fs::metadata(&writer_a_output).unwrap().ino()));
+        };
+        let expected = bytes.clone();
+        let mut refresh_source = || Ok(expected.clone());
+        let mut replace = |from: &Path, to: &Path| fs::rename(from, to);
+
+        write_program_package_index_atomically_with_hooks(
+            &output,
+            &bytes,
+            &mut refresh_source,
+            &mut replace,
+            &mut writer_a_publishes,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&output).unwrap(), bytes);
+        // B left A's identical publication in place rather than renaming a
+        // new inode over it.
+        assert_eq!(
+            Some(fs::metadata(&output).unwrap().ino()),
+            published_by_a.get()
+        );
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".index-transaction-")
+        }));
+    }
+
+    /// A different publication landing before B's lock is not a conflict
+    /// either: B re-derives its projection under the lock, and when that still
+    /// matches its staged bytes, B's index is the current one.
+    #[test]
+    fn program_package_projection_revalidates_a_different_publication_before_its_lock() {
+        let root = tempdir("program-projection-different-race");
+        let output = root.join("program-packages.json");
+        fs::write(&output, b"{\"generation\":\"old\"}\n").unwrap();
+        let bytes = b"{\"generation\":\"new\"}\n".to_vec();
+        let writer_a_output = output.clone();
+        let mut writer_a_publishes = || {
+            let stage = writer_a_output.with_file_name("writer-a-stage");
+            fs::write(&stage, b"{\"generation\":\"a\"}\n").unwrap();
+            fs::rename(&stage, &writer_a_output).unwrap();
+        };
+        let expected = bytes.clone();
+        let mut refresh_source = || Ok(expected.clone());
+        let mut replace = |from: &Path, to: &Path| fs::rename(from, to);
+
+        write_program_package_index_atomically_with_hooks(
+            &output,
+            &bytes,
+            &mut refresh_source,
+            &mut replace,
+            &mut writer_a_publishes,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&output).unwrap(), bytes);
+    }
+
+    #[test]
+    fn program_package_projection_leaves_an_identical_target_untouched() {
+        let root = tempdir("program-projection-identical-noop");
+        let output = root.join("program-packages.json");
+        let bytes = b"{\"generation\":\"same\"}\n";
+        fs::write(&output, bytes).unwrap();
+        let mut refresh_source = || -> Result<Vec<u8>, String> {
+            panic!("an identical target must not pay for a source refresh")
+        };
+        let mut replace = |_from: &Path, _to: &Path| -> std::io::Result<()> {
+            panic!("an identical target must not be replaced")
+        };
+
+        write_program_package_index_atomically_with_source(
+            &output,
+            bytes,
+            &mut refresh_source,
+            &mut replace,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&output).unwrap(), bytes);
     }
 
     #[test]
@@ -37331,6 +37551,42 @@ commit = "1111111111111111111111111111111111111111"
         let _override =
             crate::install_repo_root_override(fs::canonicalize(&repo).unwrap()).unwrap();
 
+        // `plan --status` runs the same check as a dry run: same answer, but
+        // it must not refresh the generation's last-used stamp.
+        fn last_used_stamps(dir: &Path) -> Vec<PathBuf> {
+            let mut found = Vec::new();
+            for entry in fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    found.extend(last_used_stamps(&path));
+                } else if path.to_string_lossy().ends_with(".kandelo-last-used") {
+                    found.push(path);
+                }
+            }
+            found
+        }
+        for stamp in last_used_stamps(&roots.compiled) {
+            fs::remove_file(stamp).unwrap();
+        }
+        let mut memo_dry = BTreeMap::new();
+        assert_eq!(
+            source_only_skip_receipt_if_clean_with_use(
+                &target,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                &roots,
+                &output,
+                &mut memo_dry,
+                false,
+            ),
+            Some(receipt.clone()),
+        );
+        assert!(
+            last_used_stamps(&roots.compiled).is_empty(),
+            "a dry-run skip check must not write a last-used stamp"
+        );
+
         let mut memo = BTreeMap::new();
         assert_eq!(
             source_only_skip_receipt_if_clean(
@@ -37338,6 +37594,11 @@ commit = "1111111111111111111111111111111111111111"
             ),
             Some(receipt.clone()),
             "a clean built node must be skippable with its persisted receipt"
+        );
+        assert_eq!(
+            last_used_stamps(&roots.compiled).len(),
+            1,
+            "a real skip records the cache hit for cache-gc"
         );
 
         // A mirror left by an earlier cache key sits at the same path with

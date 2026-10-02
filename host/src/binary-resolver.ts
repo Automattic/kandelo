@@ -809,6 +809,17 @@ function ensureProgramIndexesInSourceContext(): void {
   }
 }
 
+/**
+ * Run `operation` inside one program-index freshness boundary: the index is
+ * checked (and regenerated if stale) once, and resolver calls nested inside
+ * reuse that check. Exported for batch callers such as
+ * scripts/check-artifact-closures.ts, which resolves every package and would
+ * otherwise pay the multi-second freshness check once per package.
+ */
+export function withProgramIndexFreshness<T>(operation: () => T): T {
+  return withFreshProgramIndexes(["programs/"], operation);
+}
+
 function withFreshProgramIndexes<T>(
   relPaths: readonly string[],
   operation: () => T,
