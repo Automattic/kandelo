@@ -15199,13 +15199,20 @@ fn wasm_artifact_policy_failures_for(
 
     // A no-seed instrumenter invocation deliberately leaves frame hooks
     // unimported so an inert side module remains instantiable. Once a module
-    // imports kernel.kernel_fork or any linked-frame hook, however, all three
-    // hooks are one transactional ABI and publication must reject partial
-    // instrumentation before an archive can enter a resolver index.
+    // imports kernel.kernel_fork or any linked-frame hook, however, the three
+    // core hooks are one transactional ABI and publication must reject partial
+    // instrumentation before an archive can enter a resolver index. The other
+    // fork-runtime imports serve optional state: wasm-opt runs after
+    // instrumentation and removes them when nothing calls them, and Wasm code
+    // cannot call an import it does not declare. Present ones are still
+    // checked for duplicates and signatures below.
     let requires_linked_frame_imports = facts.imports_kernel_fork || present_fork_imports > 0;
     if requires_linked_frame_imports {
         let missing_imports = fork_imports
             .iter()
+            .filter(|requirement| {
+                wasm_posix_shared::abi::WPK_FORK_CORE_FRAME_IMPORTS.contains(&requirement.name)
+            })
             .filter(|requirement| {
                 !facts
                     .function_imports
@@ -15216,7 +15223,7 @@ fn wasm_artifact_policy_failures_for(
             .join(", ");
         if !missing_imports.is_empty() {
             failures.push(format!(
-                "has incomplete ABI 43 linked-frame imports; missing {missing_imports}"
+                "has incomplete linked-frame imports; missing {missing_imports}"
             ));
         }
         for requirement in fork_imports {
@@ -29374,7 +29381,7 @@ wasm = "bad.wasm"
     }
 
     #[test]
-    fn program_artifact_policy_rejects_each_missing_abi43_fork_import() {
+    fn program_artifact_policy_rejects_each_missing_core_frame_import_only() {
         let all_imports = wasm_posix_shared::abi::WPK_FORK_REQUIRED_IMPORTS
             .iter()
             .map(|requirement| requirement.name)
@@ -29400,10 +29407,17 @@ wasm = "bad.wasm"
                 &[linked_frame_descriptor(4)],
             );
             let failures = wasm_artifact_policy_failures(&bytes, ForkInstrumentationPolicy::Auto);
-            assert!(
-                failures.iter().any(|failure| failure.contains(missing)),
-                "missing {missing} was not reported: {failures:?}"
-            );
+            let reported = failures.iter().any(|failure| failure.contains(missing));
+            // Only the linked-frame core is all-or-nothing; wasm-opt removes
+            // the other runtime imports when nothing calls them (ABI 46).
+            if wasm_posix_shared::abi::WPK_FORK_CORE_FRAME_IMPORTS.contains(missing) {
+                assert!(reported, "missing {missing} was not reported: {failures:?}");
+            } else {
+                assert!(
+                    failures.is_empty(),
+                    "optional {missing} was required: {failures:?}"
+                );
+            }
         }
     }
 

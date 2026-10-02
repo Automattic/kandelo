@@ -2348,6 +2348,15 @@ pub mod abi {
     pub const WPK_FORK_FRAME_IMPORT_RESERVE: &str = "__wpk_fork_frame_reserve";
     pub const WPK_FORK_FRAME_IMPORT_COMMIT: &str = "__wpk_fork_frame_commit";
     pub const WPK_FORK_FRAME_IMPORT_NEXT: &str = "__wpk_fork_frame_next";
+    /// The linked-frame imports every instrumented activation calls. They are
+    /// all-or-nothing; the other `WPK_FORK_REQUIRED_IMPORTS` serve optional
+    /// state and may be absent when nothing calls them (ABI 46: wasm-opt runs
+    /// after instrumentation and removes unused imports).
+    pub const WPK_FORK_CORE_FRAME_IMPORTS: [&str; 3] = [
+        WPK_FORK_FRAME_IMPORT_RESERVE,
+        WPK_FORK_FRAME_IMPORT_COMMIT,
+        WPK_FORK_FRAME_IMPORT_NEXT,
+    ];
     pub const WPK_FORK_FRAME_IMPORT_PEEK: &str = "__wpk_fork_frame_peek";
     pub const WPK_FORK_RESUME_IMPORT_PEEK: &str = "__wpk_fork_resume_peek";
     pub const WPK_FORK_RESUME_IMPORT_TABLE: &str = "__wpk_fork_resume_table";
