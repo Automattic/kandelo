@@ -162,6 +162,38 @@ describe("BrowserInputSource", () => {
     expect(prevented).toBe(false);
   });
 
+  it("Meta's release releases a key that went down under it (macOS sends that key no keyup)", () => {
+    // Cmd+V on macOS: keydown Meta, keydown V, then only Meta's keyup.
+    target.fire("keydown", { code: "MetaLeft", key: "Meta", repeat: false, preventDefault() {} });
+    target.fire("keydown", { code: "KeyV", key: "v", repeat: false, metaKey: true, preventDefault() {} });
+    target.fire("keyup", { code: "MetaLeft", key: "Meta", repeat: false, preventDefault() {} });
+    // The next V is a fresh press, not a press of a key the guest holds.
+    target.fire("keydown", { code: "KeyV", key: "v", repeat: false, preventDefault() {} });
+    target.fire("keyup", { code: "KeyV", key: "v", repeat: false, preventDefault() {} });
+    const keys = recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+    // V (47) is released before Meta (125), while the guest still holds
+    // SUPER, so a SUPER+V bind swallows the release like its press.
+    expect(keys).toEqual([[125, 1], [47, 1], [47, 0], [125, 0], [47, 1], [47, 0]]);
+  });
+
+  it("a key released before Meta is released once", () => {
+    target.fire("keydown", { code: "MetaLeft", key: "Meta", repeat: false, preventDefault() {} });
+    target.fire("keydown", { code: "KeyC", key: "c", repeat: false, metaKey: true, preventDefault() {} });
+    target.fire("keyup", { code: "KeyC", key: "c", repeat: false, metaKey: true, preventDefault() {} });
+    target.fire("keyup", { code: "MetaLeft", key: "Meta", repeat: false, preventDefault() {} });
+    const keys = recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+    expect(keys).toEqual([[125, 1], [46, 1], [46, 0], [125, 0]]);
+  });
+
+  it("Meta dropped from the event flags also releases the keys pressed under it", () => {
+    // Meta's own keyup was missed (focus left the page); the next event's
+    // metaKey=false is the only sign it is up.
+    target.fire("keydown", { code: "KeyV", key: "v", repeat: false, metaKey: true, preventDefault() {} });
+    target.fire("keydown", { code: "KeyA", key: "a", repeat: false, metaKey: false, preventDefault() {} });
+    const keys = recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+    expect(keys).toEqual([[125, 1], [47, 1], [47, 0], [125, 0], [30, 1]]);
+  });
+
   it("keyup emits EV_KEY(code, 0) then SYN_REPORT", () => {
     target.fire("keyup", {
       code: "Escape",

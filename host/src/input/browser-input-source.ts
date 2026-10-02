@@ -105,6 +105,18 @@ export class BrowserInputSource implements InputSource {
   // Modifiers the guest currently holds down, by kind, with the key code
   // that was pressed for each (so the release matches the press).
   private heldModifiers = new Map<ModifierKind, number>();
+  // Non-modifier keys the guest holds down, by DOM `code` (the key's
+  // position, stable between its keydown and keyup), with the evdev code
+  // sent for each; and which of them went down while Meta was held.
+  // macOS delivers no keyup for a key released while Cmd is held, so a
+  // Cmd+V would otherwise leave V down in the guest forever, and libinput
+  // drops a press of a key it believes is already down: the next V typed
+  // would vanish. Releasing those keys when Meta goes up is the only signal
+  // the page gets. Elsewhere the real keyup usually arrives first and
+  // removes the key here; if it arrives after Meta's, the guest sees a
+  // second release, which evdev consumers ignore.
+  private heldKeys = new Map<string, number>();
+  private keysPressedUnderMeta = new Set<string>();
 
   /**
    * @param target  Event source to bind to (defaults to `window`).
@@ -256,6 +268,8 @@ export class BrowserInputSource implements InputSource {
     e.preventDefault();
     this.syncModifiers(e);
     this.emit(0, EV_KEY, key, e.repeat ? 2 : 1);
+    this.heldKeys.set(e.code, key);
+    if (this.heldModifiers.has("Meta")) this.keysPressedUnderMeta.add(e.code);
     this.frame(0);
   }
 
@@ -264,6 +278,7 @@ export class BrowserInputSource implements InputSource {
     const modifier = modifierKeyOf(e);
     if (modifier !== null) {
       e.preventDefault();
+      if (modifier.kind === "Meta") this.releaseKeysPressedUnderMeta();
       this.emit(0, EV_KEY, this.heldModifiers.get(modifier.kind) ?? modifier.key, 0);
       this.heldModifiers.delete(modifier.kind);
       this.frame(0);
@@ -272,9 +287,25 @@ export class BrowserInputSource implements InputSource {
     const key = charToKey(e.key) ?? codeToKey(e.code);
     if (key === null) return;
     e.preventDefault();
+    // Forget the key before syncing modifiers: a Meta release synced here
+    // would otherwise release it once on Meta's behalf and once below.
+    this.heldKeys.delete(e.code);
+    this.keysPressedUnderMeta.delete(e.code);
     this.syncModifiers(e);
     this.emit(0, EV_KEY, key, 0);
     this.frame(0);
+  }
+
+  /** Release every key still held that went down while Meta was held (see
+   *  `heldKeys`). Called just before the guest's Meta release. */
+  private releaseKeysPressedUnderMeta(): void {
+    for (const code of this.keysPressedUnderMeta) {
+      const key = this.heldKeys.get(code);
+      if (key === undefined) continue;
+      this.emit(0, EV_KEY, key, 0);
+      this.heldKeys.delete(code);
+    }
+    this.keysPressedUnderMeta.clear();
   }
 
   /**
@@ -294,6 +325,7 @@ export class BrowserInputSource implements InputSource {
         this.emit(0, EV_KEY, key, 1);
         this.heldModifiers.set(kind, key);
       } else if (!flag && held !== undefined) {
+        if (kind === "Meta") this.releaseKeysPressedUnderMeta();
         this.emit(0, EV_KEY, held, 0);
         this.heldModifiers.delete(kind);
       }
