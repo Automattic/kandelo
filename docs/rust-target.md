@@ -75,8 +75,8 @@ in a private sysroot:
   (submodule + patch), mirroring how `build-musl.sh` overlays
   `libc/musl-overlay` onto the `libc/musl` submodule. A libc version bump
   makes the patch fail loudly — the signal to refresh the delta.
-- `sdk/rust/std-overlay/` — the `library/std` `kandelo` pal arms and the
-  `library/unwind` `kandelo` arms (file-copy overlay onto the
+- `sdk/rust/std-overlay/` — `kandelo` arms in `library/std` (the unix
+  pal and errno) and `library/unwind` (file-copy overlay onto the
   toolchain's `rust-src`, which is not a submodule).
 - `scripts/build-rust-sysroot.sh` — assembles the fork (submodule +
   patch) and the private sysroot (mirror-by-symlink + patched `rust-src`),

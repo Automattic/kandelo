@@ -193,3 +193,13 @@
  cfg_select! {
      all(feature = "llvm-libunwind", feature = "system-llvm-libunwind") => {
          compile_error!("`llvm-libunwind` and `system-llvm-libunwind` cannot be enabled at the same time");
+--- a/library/std/src/sys/io/error/unix.rs
++++ b/library/std/src/sys/io/error/unix.rs
+@@ -10,6 +10,7 @@
+             target_os = "fuchsia",
+             target_os = "l4re",
+             target_os = "hurd",
++            target_os = "kandelo",
+         ),
+         link_name = "__errno_location"
+     )]
