@@ -64,14 +64,62 @@ they are the deliverable.
 - Full fork sweep: `cd host && npx vitest run test/fork- test/vfork-` —
   85 files at the batch's measurement (both prefixes needed; `test/fork-`
   alone misses every `vfork-` file). Every fork file is now expected
-  green; `host/test/expected-failures.json` holds 63 files, none of them
-  fork tests.
+  green; `host/test/expected-failures.json` held 63 files at the lane's
+  fork, none of them fork tests. (Lane F later banked 28 of them as
+  restored, in e9ad4cdb3; that banking did not come across, because this
+  branch's baseline was curated separately and lists 31 files as of
+  2026-10-02.)
+- The full-suite ratchet, `cd host && node test/suite-baseline.mjs`, must
+  print `RATCHET_EXIT=0` on the merged tree after `./run.sh setup`. On lane
+  F's final run it printed 1 with NO `UNBANKED:` list and three
+  non-banked reds: `posix-utils-lite/process-tools` (contention, green
+  alone) and `curl`/`php-concurrent-sqlite` (intermittent; green in three
+  other runs; `docs/future-improvements.md` has the evidence). Not Change
+  3's: both fail identically on the pre-Change-3 kernel in the same state.
 - `cargo test -p host-native --target aarch64-apple-darwin`: 8 pre-existing
   fork-reference failures, all trapping in `__wpk_fork_ref_gc_allocate`.
 - A hung sweep = a crashed guest OR a harness with no responder; the tell is
   a SHORT FILE COUNT in the summary, not the last line printed.
 - `K-03` in `fork-instrument-coverage` sits 1.5s under a 10s budget; it
   fails above ~18% machine slowdown. Contention, not a defect.
+
+> **Scope (added 2026-10-02 when porting this record to the integration
+> branch):** this section and "Tasks 12 and 13" below were measured on
+> `brandonpayton/lane-f-fork-inversion` (at `75fd2ce3f` and `e9ad4cdb3`),
+> commits that never merged here; the commits they cite before 39107aef7
+> are in this branch's history. Three statements are lane-F-only: the
+> `fm_set_format` refusal of a zero channel base with live mappings (F4)
+> is NOT in this branch's fork module; the K-03 budget change was ported
+> separately; and the 18-page endpoint and the `RESUME_ASSIGNMENT` static
+> are superseded here (see the SINCE notes in
+> `docs/superpowers/specs/2026-09-18-fork-dynamic-storage-design.md`). The
+> setup/stale-`kernel.wasm` finding no longer applies here; the other
+> findings are in `docs/future-improvements.md`.
+
+## End-of-change validation (2026-09-23, at `e9ad4cdb3`): PASS-WITH-FINDINGS
+
+Full report: `.superpowers/sdd/2026-09-21-fork-storage-conversion/change3-validation-report.md`
+(gitignored scratch; copy it if you need it after the workspace closes).
+
+| suite | Change 2 baseline | Change 3 |
+|---|---|---|
+| posix (Node) | 174 / 0 | 174 / 0 |
+| libc | 300 / 3 | 300 / 3, same names |
+| sortix `--all` | 5052 / 8 / 2 timeouts | 5053 / 8 / 1 timeout, same 8 |
+| host-native | 71 / 8 / 4 | 71 / 8 / 4, same 8 ("pump timed out") |
+| browser posix | — | 163 / 0, 10 XPASS (stale expected list) |
+
+Browser shell (Chromium): login, `ls /` exact, `FORKSUM_X:55`,
+`FORKEXEC_BINCOUNT:206`, `NESTED_FORK:abcd`, zero console errors.
+Placement baseline md5 `3f218130f68068a3a6941725dd241d7b` start and end.
+
+Findings the merger should know (all recorded in
+`docs/future-improvements.md`): `./run.sh setup` exited 0 with a STALE
+`kernel.wasm` symlink and only `verify-fresh` caught it — run
+`verify-fresh` after every setup and repoint; the Node conformance runners
+need `CC_aarch64_apple_darwin`/`HOST_CC` on a cold cargo cache; invoke
+`run-posix-tests.sh` as `bash scripts/...` (its shebang picks bash 3.2);
+`sigaltstack/9-1` is the one Node/browser divergence.
 
 ## Open for the MAINTAINER (not the merger)
 
@@ -95,12 +143,55 @@ they are the deliverable.
    shipping runtime implements shared reference types today (V8
    flag-only, no Firefox/Safari signal, wasmtime "unimplemented").
 
-## PENDING at writing (filled in when the batch lands)
+## Tasks 12 and 13: the batch and the measured record (landed 2026-09-22)
 
-- Task 12: batch verdict, red list, unproven guards by name.
-- Task 13: final ledger row, selftest deletion and its three ceilings,
-  remaining-static composition.
-- End-of-change browser + conformance run.
+**Task 12 (the test batch).** Every proof deferred by Tasks 1-11 ran or is
+named unproven below. Serial fork sweep (`test/fork- test/vfork-`, 85
+files): green. A forced-chunk build (`ARENA_CHUNK_BYTES = 4_096`) chained
+the record arena (field 101) and the scratch chain (field 104) and found
+no module defect; three test-arithmetic drifts it exposed are fixed
+(`39107aef7`). Full suite in both builds: 448 files. The GC-codec COW
+exclusion is retired with proof it was dead (`eae66a84b`). The vfork
+EAGAIN behaviour is pinned on Node only (native cannot reach it).
+
+Two regressions the batch caught, both fixed in-range and both worth
+knowing when bisecting:
+- `dd3f54657` (Task 10) broke EVERY native fork launch for two commits
+  ("fork-module stack top ... is not 16-byte aligned") until `99ee3c88e`
+  aligned the region base to 16. Do not bisect native across that pair.
+- `660e977df` (Task 6) shrank the region enough that `malloc-deep-fork`'s
+  "genuine OOM" case fit inside a 40 MiB budget; `8f51d8f1f` recalibrates
+  it to 32 MiB with the derivation.
+
+**Task 13 (the record).** `fm_arena_selftest` deleted; the three budget
+ceilings banked to 71/58/2. Measured endpoint: `regionBytes` **1,376,256
+= 18 pages + 196,608 slab**, static 88,728 bytes (align 8); cumulative
+**-2,424,832 bytes, 54 -> 18 pages**. The 23,192 bytes between here and
+17 pages are ONE static: `RESUME_ASSIGNMENT`, Change 2's 65,536-byte
+publish buffer (the rest is 21,204 `.data`, 1,544 `.rodata`, <500 of
+roots). The 1 MiB shadow stack dominates at 11.8:1; the plan's 17-page
+endpoint is a `RESUME_ASSIGNMENT` decision (its 8,192-record floor), not
+storage work. F4 decided: a release with no channel base is REFUSED, not
+silently leaked.
+
+**Unproven guards, by name** (green in every run, never forced red):
+`begin_capture_impl`'s reset ordering (no perturbation can open the
+window); the SIGKILL-contained vfork teardown's `channel_munmap`
+mechanism; `carve_borrowed_prefix`'s two guards (vfork e2e only); native
+reuse of retained chunks across vforks (native cannot run a second vfork
+from one parent — pre-existing).
+
+**Review findings still open (both LOW):** staging-capacity measures
+artifact-sized seeds only, the runtime-sized externref handover is
+unmeasured (review 1-7 F5); Task 6's replace leaves a half-state when the
+re-register fails and swallows the UAF detector on that path (F7).
+
+**Batch concerns for the maintainer:** `host/dist` freshness is ungated
+(a test routed through `worker-adapter` runs whatever the bundle holds);
+the borrowed child's failure-path region leak (`worker-main.ts:4151`) is
+pre-existing and open; load from other workspaces (up to 229) made every
+timing test unreliable — each load-attributed red was re-run alone at
+load <= 12 before being called load.
 
 ## Where the record lives
 
