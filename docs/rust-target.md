@@ -111,6 +111,31 @@ sysroot's `std`, so after a rebuild `wasm32posix-cargo` also discards the
 crate's `target/wasm32-unknown-kandelo-std/` output; a build that drives
 cargo directly against a changed sysroot needs a clean target directory.
 
+### Rust packages
+
+`packages/registry/librsvg/` (a library, through Meson and cargo-c) is
+the reference for a package whose build compiles Rust for the target.
+Its build script sources `packages/registry/librsvg/rust-build-env.sh`,
+which:
+
+- assembles a private sysroot in its work root
+  (`KANDELO_RUST_DIR=<work>/rust scripts/build-rust-sysroot.sh`) rather
+  than sharing `~/.kandelo/rust` with other checkouts (each package lists
+  the sysroot's sources, and this helper, in `build.toml` `inputs`: they
+  are not in the global toolchain fingerprint);
+- moves the lockfile's `libc` to the fork's exact version (`[patch]`
+  replaces only that version) with `cargo update -p libc --precise`;
+- vendors the remaining crates with `cargo vendor --locked` (Cargo checks
+  each against the lockfile's checksums), applies the package's crate
+  patches as path overrides, then builds offline;
+- writes these overrides to `$CARGO_HOME/config.toml`, because build
+  systems such as Meson run cargo from their build directory with
+  `--manifest-path`, and cargo finds `.cargo/config.toml` from its working
+  directory, not from the manifest.
+
+Programs that link such a library are fork-instrumented like any program
+whose libraries use `fork` (glib does).
+
 ### Rust libraries with a C API (cargo-c)
 
 The dev shell provides `cargo-c` (`cargo cbuild` / `cargo cinstall`),

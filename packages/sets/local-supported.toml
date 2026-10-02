@@ -276,6 +276,10 @@ name = "libpng"
 class = "platform"
 
 [[packages]]
+name = "librsvg"
+class = "platform"
+
+[[packages]]
 name = "libsigcxx"
 class = "platform"
 
