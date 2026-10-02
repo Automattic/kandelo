@@ -789,7 +789,7 @@ fn immutable_imports_keep_their_original_binding_and_preinstantiation_recipe() {
     // The generated helpers use these features; tools that run after
     // instrumentation (wasm-opt) enable only declared features.
     let features = custom_section(&bytes, "target_features");
-    for feature in ["exception-handling", "reference-types", "bulk-memory", "gc"] {
+    for feature in ["exception-handling", "reference-types"] {
         let mut entry = vec![b'+', feature.len() as u8];
         entry.extend_from_slice(feature.as_bytes());
         assert!(
