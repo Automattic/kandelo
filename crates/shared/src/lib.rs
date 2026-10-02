@@ -149,7 +149,16 @@ pub mod process_layout;
 ///     gains three ops and a query, /dev/input/event1 is an absolute
 ///     pointer, inotify fails with ENOSYS, and a MAP_FIXED mapping inside a
 ///     mapping carves it. docs/abi-versioning.md ("ABI 45") lists each.
-pub const ABI_VERSION: u32 = 45;
+/// 46: fork metadata survives tools that run after instrumentation. The
+///     imported-globals and imported-tables sections move to format 2: the
+///     record word that held the import's position is reserved (zero) and
+///     hosts find the import by kind, module and name, because wasm-opt may
+///     remove or reorder imports. Hosts require only the linked-frame
+///     imports (`__wpk_fork_frame_reserve/commit/next`) as a set; the other
+///     fork-runtime imports may be absent when the module never calls them.
+///     Instrumented modules declare `gc` in `target_features`.
+///     docs/abi-versioning.md ("ABI 46") lists each.
+pub const ABI_VERSION: u32 = 46;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -2257,7 +2266,11 @@ pub mod abi {
     /// constant initializers that observe imported globals.
     pub const WPK_FORK_IMPORTED_GLOBALS_SECTION: &str = "kandelo.wpk_fork.imported_globals";
     pub const WPK_FORK_IMPORTED_GLOBALS_MAGIC: [u8; 4] = *b"KFIG";
-    pub const WPK_FORK_IMPORTED_GLOBALS_VERSION: u16 = 1;
+    /// Format 2 (ABI 46): the record word at offset 20 is reserved and must
+    /// be zero. Format 1 stored the import's position there, which wasm-opt
+    /// invalidates by removing or reordering imports; hosts now resolve the
+    /// import by kind, module and name.
+    pub const WPK_FORK_IMPORTED_GLOBALS_VERSION: u16 = 2;
     pub const WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE: u16 = 16;
     pub const WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE: u16 = 24;
     pub const WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE: u8 = 1 << 0;
@@ -2266,7 +2279,8 @@ pub mod abi {
         WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE | WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED;
     pub const WPK_FORK_IMPORTED_TABLES_SECTION: &str = "kandelo.wpk_fork.imported_tables";
     pub const WPK_FORK_IMPORTED_TABLES_MAGIC: [u8; 4] = *b"KFIT";
-    pub const WPK_FORK_IMPORTED_TABLES_VERSION: u16 = 1;
+    /// Format 2 (ABI 46): as for imported globals, offset 20 is reserved.
+    pub const WPK_FORK_IMPORTED_TABLES_VERSION: u16 = 2;
     pub const WPK_FORK_IMPORTED_TABLES_HEADER_SIZE: u16 = 16;
     pub const WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE: u16 = 24;
     pub const WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64: u8 = 1 << 0;

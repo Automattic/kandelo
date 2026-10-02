@@ -385,12 +385,6 @@ function emptyImportedGlobalsDescriptor(): number[] {
   return importedGlobalsDescriptor([]);
 }
 
-const COMPLETE_FORK_SOURCE_TABLE_IMPORT_ORDINAL =
-  1 + WPK_FORK_REQUIRED_IMPORTS.length + 1;
-const COMPLETE_FORK_SOURCE_GLOBAL_IMPORT_ORDINAL =
-  COMPLETE_FORK_SOURCE_TABLE_IMPORT_ORDINAL
-  + WPK_FORK_REQUIRED_TABLE_IMPORTS.length;
-
 function importedGlobalsDescriptor(
   records: Array<{
     owner: number;
@@ -398,13 +392,11 @@ function importedGlobalsDescriptor(
     flags: number;
     module: string;
     name: string;
-    importOrdinal?: number;
+    reservedWord?: number;
   }>,
 ): number[] {
-  const encoded = records.map((record, index) => ({
+  const encoded = records.map((record) => ({
     ...record,
-    importOrdinal:
-      record.importOrdinal ?? COMPLETE_FORK_SOURCE_GLOBAL_IMPORT_ORDINAL + index,
     moduleBytes: new TextEncoder().encode(record.module),
     nameBytes: new TextEncoder().encode(record.name),
   }));
@@ -434,7 +426,7 @@ function importedGlobalsDescriptor(
     view.setUint8(offset + 9, record.flags);
     view.setUint32(offset + 12, record.moduleBytes.length, true);
     view.setUint32(offset + 16, record.nameBytes.length, true);
-    view.setUint32(offset + 20, record.importOrdinal, true);
+    view.setUint32(offset + 20, record.reservedWord ?? 0, true);
     bytes.set(
       record.moduleBytes,
       offset + WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE,
@@ -457,13 +449,11 @@ function importedTablesDescriptor(
     flags: number;
     module: string;
     name: string;
-    importOrdinal?: number;
+    reservedWord?: number;
   }>,
 ): number[] {
-  const encoded = records.map((record, index) => ({
+  const encoded = records.map((record) => ({
     ...record,
-    importOrdinal:
-      record.importOrdinal ?? COMPLETE_FORK_SOURCE_TABLE_IMPORT_ORDINAL + index,
     moduleBytes: new TextEncoder().encode(record.module),
     nameBytes: new TextEncoder().encode(record.name),
   }));
@@ -493,7 +483,7 @@ function importedTablesDescriptor(
     view.setUint8(offset + 9, record.flags);
     view.setUint32(offset + 12, record.moduleBytes.length, true);
     view.setUint32(offset + 16, record.nameBytes.length, true);
-    view.setUint32(offset + 20, record.importOrdinal, true);
+    view.setUint32(offset + 20, record.reservedWord ?? 0, true);
     bytes.set(
       record.moduleBytes,
       offset + WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE,
@@ -576,6 +566,7 @@ function completeForkWasm(options: {
   includeNativeStart?: boolean;
   abiVersion?: number;
   includeAbiMarker?: boolean;
+  omitRuntimeImports?: readonly string[];
 } = {}): ArrayBuffer {
   const pointerWidth = options.pointerWidth ?? 4;
   const exportPointerWidth = options.exportPointerWidth ?? pointerWidth;
@@ -617,11 +608,13 @@ function completeForkWasm(options: {
           ),
         }]
       : []),
-    ...WPK_FORK_REQUIRED_IMPORTS.map((requirement) => ({
-      module: requirement.module,
-      name: requirement.name,
-      typeIdx: internType(requirement.params, requirement.results, pointerWidth),
-    })),
+    ...WPK_FORK_REQUIRED_IMPORTS
+      .filter(({ name }) => !options.omitRuntimeImports?.includes(name))
+      .map((requirement) => ({
+        module: requirement.module,
+        name: requirement.name,
+        typeIdx: internType(requirement.params, requirement.results, pointerWidth),
+      })),
   ];
   const forkTypeIndices = WPK_FORK_REQUIRED_EXPORTS.map((requirement) =>
     internType(requirement.params, requirement.results, exportPointerWidth)
@@ -1031,10 +1024,30 @@ describe("wasm artifact policy helpers", () => {
       `missing required ${WPK_FORK_LINKED_FRAME_FORMAT_SECTION} descriptor`,
     );
     expect(failures.some((failure) =>
-      failure.startsWith("incomplete ABI 43 fork-runtime imports; missing ")
+      failure.startsWith("incomplete fork linked-frame imports; missing ")
       && failure.includes("env.__wpk_fork_frame_commit")
-      && failure.includes("env.__wpk_fork_ref_exn_define")
+      // Only the linked-frame core is all-or-nothing; wasm-opt may remove
+      // the optional runtime imports a module never calls.
+      && !failure.includes("env.__wpk_fork_ref_exn_define")
     )).toBe(true);
+  });
+
+  it("accepts optional fork-runtime imports that wasm-opt removed, but not the frame core", () => {
+    const optimized = completeForkWasm({
+      omitRuntimeImports: [
+        "__wpk_fork_frame_peek",
+        "__wpk_fork_ref_exn_define",
+        "__wpk_fork_module_state_table_dirty_mark",
+      ],
+    });
+    expect(describeWasmArtifactPolicyFailures(optimized, { expectedAbi: ABI_VERSION }))
+      .toEqual([]);
+
+    const noCommit = completeForkWasm({
+      omitRuntimeImports: ["__wpk_fork_frame_commit"],
+    });
+    expect(describeWasmArtifactPolicyFailures(noCommit, { expectedAbi: ABI_VERSION }))
+      .toContain("incomplete fork linked-frame imports; missing env.__wpk_fork_frame_commit");
   });
 
   it("accepts the complete ABI 43 contract for wasm32 and wasm64", () => {

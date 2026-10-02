@@ -36,6 +36,7 @@ import {
   readWasmFunctionArity,
   readWasmImportDescriptors,
   WASM_PAGE_SIZE,
+  WPK_FORK_CORE_FRAME_IMPORT_NAMES,
 } from "./constants";
 import {
   ABI_SYSCALLS,
@@ -65,7 +66,6 @@ import {
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE,
   WPK_FORK_REQUIRED_EXPORTS,
-  WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
   type ProcessForkMode,
 } from "./generated/abi";
@@ -2371,10 +2371,10 @@ function buildImportObject(
     moduleImports.some(
       (i) => i.module === "env" && i.name === name && i.kind === "function",
     );
-  const linkedFrameImports = WPK_FORK_REQUIRED_IMPORTS.filter(
-    ({ module }) => module === "env",
-  );
-  const linkedFrameImportCount = linkedFrameImports.filter(({ name }) =>
+  // Only the linked-frame core is all-or-nothing: wasm-opt may remove the
+  // other fork runtime imports when the module never calls them.
+  const linkedFrameImports = WPK_FORK_CORE_FRAME_IMPORT_NAMES;
+  const linkedFrameImportCount = linkedFrameImports.filter((name) =>
     importsFunction(name),
   ).length;
   if (

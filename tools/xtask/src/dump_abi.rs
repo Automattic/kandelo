@@ -6535,7 +6535,7 @@ fn program_artifact() -> Value {
             {"name": "reserved", "offset": 10, "size": 2},
             {"name": "module_name_length", "offset": 12, "size": 4},
             {"name": "field_name_length", "offset": 16, "size": 4},
-            {"name": "import_ordinal", "offset": 20, "size": 4}
+            {"name": "reserved_zero", "offset": 20, "size": 4}
         ]),
     );
     imported_globals.insert("section".into(), json!(WPK_FORK_IMPORTED_GLOBALS_SECTION));
@@ -6565,7 +6565,7 @@ fn program_artifact() -> Value {
             {"name": "reserved", "offset": 10, "size": 2},
             {"name": "module_name_length", "offset": 12, "size": 4},
             {"name": "field_name_length", "offset": 16, "size": 4},
-            {"name": "import_ordinal", "offset": 20, "size": 4}
+            {"name": "reserved_zero", "offset": 20, "size": 4}
         ]),
     );
     imported_tables.insert("section".into(), json!(WPK_FORK_IMPORTED_TABLES_SECTION));

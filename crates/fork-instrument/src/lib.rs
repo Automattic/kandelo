@@ -406,6 +406,11 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // fresh child.
     let staging_memory = module_state::ensure_staging_memory(&mut module);
     let gc_codec = module_gc_codec::declare(&mut module, staging_memory)?;
+    // The reference codecs test `i31` and struct/array references, so the
+    // module now uses GC instructions. Declare that the way the toolchain
+    // declares every other feature it used: tools that run later (wasm-opt
+    // enables only the features a module declares) must accept the output.
+    declare_used_target_feature(&mut module, "gc")?;
     let exception_codec = module_exception_codec::inject_with_reference_overrides(
         &mut module,
         staging_memory,
@@ -595,6 +600,69 @@ fn module_state_descriptor(pointer_width: linked_frames::PointerWidth) -> Vec<u8
     data
 }
 
+/// Record `feature` as used (`+`) in the `target_features` custom section,
+/// creating the section if the input had none.
+///
+/// The section is a vector of (prefix byte, name) pairs written by the
+/// linker. A module that explicitly disallows the feature (`-`) cannot carry
+/// fork instrumentation, so that is an error rather than a silent rewrite.
+fn declare_used_target_feature(module: &mut walrus::Module, feature: &str) -> Result<()> {
+    const SECTION: &str = "target_features";
+    let mut entries: Vec<(u8, String)> = Vec::new();
+    if let Some(section) = module.customs.remove_raw(SECTION) {
+        let data = &section.data;
+        let mut offset = 0usize;
+        let read_u32 = |offset: &mut usize| -> Result<u32> {
+            let mut reader = wasmparser::BinaryReader::new(&data[*offset..], 0);
+            let value = reader.read_var_u32().context("malformed target_features")?;
+            *offset += reader.original_position();
+            Ok(value)
+        };
+        let count = read_u32(&mut offset)?;
+        for _ in 0..count {
+            let prefix = *data.get(offset).context("truncated target_features")?;
+            offset += 1;
+            let len = read_u32(&mut offset)? as usize;
+            let name = data
+                .get(offset..offset + len)
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .context("malformed target_features name")?;
+            offset += len;
+            entries.push((prefix, name.to_owned()));
+        }
+        ensure!(offset == data.len(), "target_features has trailing bytes");
+    }
+    match entries.iter().find(|(_, name)| name == feature) {
+        Some((b'-', _)) => bail!("module disallows the `{feature}` feature that fork instrumentation requires"),
+        Some(_) => {}
+        None => entries.push((b'+', feature.to_owned())),
+    }
+    let mut data = Vec::new();
+    leb128_u32(&mut data, entries.len() as u32);
+    for (prefix, name) in &entries {
+        data.push(*prefix);
+        leb128_u32(&mut data, name.len() as u32);
+        data.extend_from_slice(name.as_bytes());
+    }
+    module.customs.add(RawCustomSection {
+        name: SECTION.into(),
+        data,
+    });
+    Ok(())
+}
+
+fn leb128_u32(out: &mut Vec<u8>, mut value: u32) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
 fn replace_custom_section(module: &mut walrus::Module, name: &str, data: Vec<u8>) {
     loop {
         let existing = module
@@ -677,4 +745,58 @@ fn u32_leb_len(mut value: u32) -> usize {
         len += 1;
     }
     len
+}
+
+#[cfg(test)]
+mod target_feature_tests {
+    use super::*;
+
+    fn features(module: &walrus::Module) -> Vec<u8> {
+        module
+            .customs
+            .iter()
+            .find(|(_, section)| section.name() == "target_features")
+            .map(|(_, section)| section.data(&Default::default()).into_owned())
+            .expect("target_features section")
+    }
+
+    #[test]
+    fn declares_gc_and_keeps_linker_features() {
+        let mut module = walrus::Module::default();
+        // count 2: +atomics, +exception-handling
+        let mut data = vec![2u8, b'+', 7];
+        data.extend_from_slice(b"atomics");
+        data.extend_from_slice(&[b'+', 18]);
+        data.extend_from_slice(b"exception-handling");
+        module.customs.add(RawCustomSection {
+            name: "target_features".into(),
+            data,
+        });
+        declare_used_target_feature(&mut module, "gc").unwrap();
+        declare_used_target_feature(&mut module, "gc").unwrap();
+        let mut expected = vec![3u8, b'+', 7];
+        expected.extend_from_slice(b"atomics");
+        expected.extend_from_slice(&[b'+', 18]);
+        expected.extend_from_slice(b"exception-handling");
+        expected.extend_from_slice(&[b'+', 2]);
+        expected.extend_from_slice(b"gc");
+        assert_eq!(features(&module), expected);
+    }
+
+    #[test]
+    fn creates_section_when_absent() {
+        let mut module = walrus::Module::default();
+        declare_used_target_feature(&mut module, "gc").unwrap();
+        assert_eq!(features(&module), [1, b'+', 2, b'g', b'c']);
+    }
+
+    #[test]
+    fn rejects_a_module_that_disallows_gc() {
+        let mut module = walrus::Module::default();
+        module.customs.add(RawCustomSection {
+            name: "target_features".into(),
+            data: vec![1, b'-', 2, b'g', b'c'],
+        });
+        assert!(declare_used_target_feature(&mut module, "gc").is_err());
+    }
 }

@@ -15,13 +15,13 @@ import {
   WPK_FORK_CAP_KNOWN_MASK,
   WPK_FORK_CAP_SIDE_ENTRY,
   WPK_FORK_REQUIRED_EXPORTS,
-  WPK_FORK_REQUIRED_IMPORTS,
 } from "./generated/abi";
 import {
   describeWasmForkArtifactContractFailures,
   extractAbiVersion,
   readWasmFunctionImports,
   type WasmFunctionImportType,
+  WPK_FORK_CORE_FRAME_IMPORT_NAMES,
 } from "./constants";
 import {
   FORK_UNWIND_TAG_IMPORT_MODULE,
@@ -1213,9 +1213,9 @@ function* instantiateSharedLibrarySteps(
   const importsFork = moduleImports.some((imp) =>
     imp.module === "env" && imp.name === "fork" && imp.kind === "function"
   );
-  const requiredForkFunctionImportNames = WPK_FORK_REQUIRED_IMPORTS
-    .filter(({ module }) => module === "env")
-    .map(({ name }) => name);
+  // Only the linked-frame core is all-or-nothing: wasm-opt may remove the
+  // other fork runtime imports when the module never calls them.
+  const requiredForkFunctionImportNames = WPK_FORK_CORE_FRAME_IMPORT_NAMES;
   const requiredForkFunctionImportCount =
     requiredForkFunctionImportNames.filter((importName) =>
       moduleImports.some((imp) =>

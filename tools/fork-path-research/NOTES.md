@@ -75,6 +75,15 @@ baseline 5.39 MB / 6.29 MB; typed+registry 4.85 / 5.75; +cancel rule
 Experiment-instrumenter baseline code is byte-identical to the shipped
 output.
 
+### Instrument before wasm-opt (measured, shipped pipelines)
+Instrumenting the raw link and then running the package's own wasm-opt
+pipeline shrinks the shipped file by 12-15% (quickshell 82.2 -> 71.6 MB).
+bash, ruby and python fork workloads produce identical output; all seven
+corpus programs pass host artifact policy once wasm-opt keeps the fork
+runtime imports. The only failure class seen: wasm-opt removes unused
+`__wpk_fork_*` imports, and the ABI 45 imported-globals/tables records
+stored import positions. ABI 46 removes both dependencies.
+
 ### Dynamic oracle (union of functions on stacks at kernel_fork)
 All observed functions are inside every static closure (soundness check).
 
