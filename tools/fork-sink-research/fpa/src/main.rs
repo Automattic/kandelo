@@ -159,7 +159,108 @@ struct Side {
     fn_types: HashMap<String, HashSet<u32>>,
     vslots: HashMap<String, HashSet<(u32, i64)>>,
     registered: HashMap<String, HashSet<String>>,
+    /// (registry, registering function) -> callbacks it registers.
+    reg_by_fn: HashMap<(String, String), HashSet<String>>,
     reg_unknown: HashMap<String, Vec<String>>,
+}
+
+/// FPA_GENERALIZE=<mangled \t demangled tsv>: function type ids compare with
+/// every pointer and reference type generalized (clang's
+/// -fsanitize-cfi-icall-generalize-pointers equivalence). Unparsed ids are
+/// kept as they are.
+fn gid(s: &str) -> String {
+    use std::sync::OnceLock;
+    static MAP: OnceLock<Option<HashMap<String, String>>> = OnceLock::new();
+    let m = MAP.get_or_init(|| {
+        let p = std::env::var("FPA_GENERALIZE").ok().filter(|s| !s.is_empty())?;
+        let mut m = HashMap::new();
+        for l in std::fs::read_to_string(p).unwrap().lines() {
+            if let Some((a, b)) = l.split_once('\t') {
+                if let Some(d) = b.strip_prefix("typeinfo name for ") {
+                    if let Some(g) = generalize_fn_type(d) {
+                        m.insert(a.to_string(), g);
+                    }
+                }
+            }
+        }
+        eprintln!("generalized {} function type ids", m.len());
+        Some(m)
+    });
+    match m {
+        Some(m) => m.get(s).cloned().unwrap_or_else(|| s.to_string()),
+        None => s.to_string(),
+    }
+}
+
+fn generalize_fn_type(d: &str) -> Option<String> {
+    let b = d.as_bytes();
+    let (mut angle, mut paren) = (0i32, 0i32);
+    let mut open = None;
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'<' => angle += 1,
+            b'>' => angle -= 1,
+            b'(' => {
+                if angle == 0 && paren == 0 && i > 0 && b[i - 1] == b' ' && open.is_none() {
+                    open = Some(i);
+                }
+                paren += 1;
+            }
+            b')' => paren -= 1,
+            _ => {}
+        }
+    }
+    let open = open?;
+    // Matching close paren of the parameter list.
+    let mut depth = 0i32;
+    let mut close = None;
+    for (i, &c) in b.iter().enumerate().skip(open) {
+        match c {
+            b'(' | b'<' | b'[' => depth += 1,
+            b')' | b'>' | b']' => {
+                depth -= 1;
+                if depth == 0 && c == b')' {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    let ret = d[..open].trim();
+    if ret.contains('(') {
+        return None; // returns a function pointer: leave as is
+    }
+    let mut parts = vec![];
+    let (mut depth, mut start) = (0i32, open + 1);
+    for i in open + 1..close {
+        match b[i] {
+            b'(' | b'<' | b'[' => depth += 1,
+            b')' | b'>' | b']' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(d[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(d[start..close].trim());
+    let g = |t: &str| -> String {
+        let mut x = t.trim();
+        for q in [" const", " volatile", " restrict"] {
+            while let Some(y) = x.strip_suffix(q) {
+                x = y.trim_end();
+            }
+        }
+        if x.ends_with('*') || x.ends_with('&') || x.contains("(*)") || x.contains("::*") {
+            "ptr".to_string()
+        } else {
+            t.to_string()
+        }
+    };
+    let ps: Vec<String> = parts.iter().filter(|p| !p.is_empty()).map(|p| g(p)).collect();
+    Some(format!("G:{}({}){}", g(ret), ps.join(","), d[close + 1..].trim()))
 }
 
 fn load_side(path: &str, sigs: &mut Interner) -> Side {
@@ -213,7 +314,7 @@ impl Side {
                 .or_default()
                 .push((f[3].to_string(), f.get(4).unwrap_or(&"").to_string())),
             "T" => {
-                let id = side.ids.id(f[2]);
+                let id = side.ids.id(&gid(f[2]));
                 side.fn_types.entry(f[1].into()).or_default().insert(id);
                 if let Some((_, fnr)) = cur.as_mut() {
                     fnr.types.push(id);
@@ -231,7 +332,7 @@ impl Side {
                 let i = site(&mut cur, f[2]);
                 let sig = sigs.id(f[3]);
                 let k = match f[4] {
-                    "icall" => Some((0, side.ids.id(f[5]), 0)),
+                    "icall" => Some((0, side.ids.id(&gid(f[5])), 0)),
                     "vcall" => Some((1, side.ids.id(f[5]), f[6].parse::<i64>().unwrap())),
                     _ => None,
                 };
@@ -293,6 +394,9 @@ impl Side {
                     }
                 }
                 name => {
+                    if let Some((fname, _)) = cur.as_ref() {
+                        side.reg_by_fn.entry((f[1].to_string(), fname.clone())).or_default().insert(name.to_string());
+                    }
                     side.registered.entry(f[1].into()).or_default().insert(name.to_string());
                 }
             },
@@ -568,7 +672,7 @@ fn bind<'s>(w: &Wasm, bi: &BindInputs, side: &'s mut Side, sigs: &mut Interner) 
         for l in std::fs::read_to_string(p).unwrap().lines() {
             let f: Vec<&str> = l.split('\t').collect();
             if f.len() == 3 {
-                let v = if f[0] == "glue" { f[2].to_string() } else { format!("{}/{}.calltypes", bi.side_dir, f[2]) };
+                let v = if f[0] == "glue" || f[2].starts_with('/') { f[2].to_string() } else { format!("{}/{}.calltypes", bi.side_dir, f[2]) };
                 aliases.entry((f[0].to_string(), f[1].to_string())).or_default().push(v);
             }
         }
@@ -712,6 +816,10 @@ struct Graph<'a> {
     hubs: Vec<Vec<(u32, Vec<String>)>>,
     /// Flow rule (field-sensitive function-pointer matching).
     flow: bool,
+    hub_first: bool,
+    noir_optimistic: bool,
+    drop: Vec<String>,
+    main_direct: bool,
     flow_cache: std::cell::RefCell<HashMap<String, Option<HashSet<(String, String)>>>>,
     reg_unknown: HashMap<String, Vec<String>>,
     by_sig_table: HashMap<u32, Vec<u32>>,
@@ -729,6 +837,27 @@ struct Rules {
     /// Field-sensitive function-pointer flow (MLTA-style; assumes no struct
     /// type punning).
     flow: bool,
+    /// What-if: registries asserted complete by a source audit (their
+    /// unknown markers are dropped). Not sound by itself.
+    known: Vec<String>,
+    /// At registry hubs, decide by registration before falling back to
+    /// signature matching for targets without type facts. Sound when the
+    /// registry is complete: an unregistered function cannot be dispatched
+    /// by the hub whatever its type.
+    hub_first: bool,
+    /// What-if upper bound on coverage: table functions without type facts
+    /// are never admitted at typed sites.
+    noir_optimistic: bool,
+    /// Attribution what-ifs (unsound): admission kinds never admitted.
+    drop: Vec<String>,
+    /// What-if: `main` is called directly by the crt, not through the table.
+    main_direct: bool,
+    /// What-if: functions whose indirect call edges are removed.
+    cutsite: Vec<String>,
+    /// pthread_cleanup_pop runs the handler its own lexical push installed
+    /// (POSIX requires push/pop pairs in one lexical scope): the hub inside
+    /// `_pthread_cleanup_pop` dispatches only to the caller's own handlers.
+    cleanup_lexical: bool,
 }
 
 fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: Rules) -> Graph<'a> {
@@ -744,8 +873,12 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
         irsites: vec![],
         hubs: vec![],
         flow: rules.flow,
+        hub_first: rules.hub_first,
+        noir_optimistic: rules.noir_optimistic,
+        drop: rules.drop.clone(),
+        main_direct: rules.main_direct,
         flow_cache: Default::default(),
-        reg_unknown: side.reg_unknown.clone(),
+        reg_unknown: side.reg_unknown.iter().filter(|(k, _)| !rules.known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
         by_sig_table: HashMap::new(),
         extra_registered: vec![],
         cut_cancel: 0,
@@ -807,10 +940,10 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
         let variants: Option<&Vec<&IrFn>> = if cands[f].is_empty() { None } else { Some(&cands[f]) };
         if let Some(vs) = variants {
             g.fty[f] = Some(vs.iter().flat_map(|v| v.types.iter().copied()).collect());
-        } else if name.starts_with(".Lcall_dtors") && side.ids.get("_ZTSFvPvE").is_some() {
+        } else if name.starts_with(".Lcall_dtors") && side.ids.get(&gid("_ZTSFvPvE")).is_some() {
             // Synthesized by LLVM's WebAssemblyLowerGlobalDtors as
             // `void call_dtors(void*)`; only ever registered with __cxa_atexit.
-            g.fty[f] = Some([side.ids.get("_ZTSFvPvE").unwrap()].into_iter().collect());
+            g.fty[f] = Some([side.ids.get(&gid("_ZTSFvPvE")).unwrap()].into_iter().collect());
         }
         let matching: Vec<usize> = variants
             .map(|vs| {
@@ -921,7 +1054,7 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
                         let entries: Vec<(u32, Vec<String>)> = hub_entries
                             .iter()
                             .filter_map(|&h| {
-                                let tid = side.ids.get(HUBS[h].2)?;
+                                let tid = side.ids.get(&gid(HUBS[h].2))?;
                                 s.icall.contains(&tid).then(|| (tid, HUBS[h].3.iter().map(|x| x.to_string()).collect()))
                             })
                             .collect();
@@ -946,6 +1079,30 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
                 _ => true,
             });
         }
+        if rules.main_direct && (name == "libc_start_main_stage2" || name == "__libc_start_main") {
+            // The crt calls main directly (the what-if's whole point).
+            for m in ["main", "__main_argc_argv", "__main_void"] {
+                for &t in w.by_name.get(m).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    edges.push(Edge { site: None, ir: None, target: Target::Direct(t) });
+                }
+            }
+        }
+        if rules.cutsite.iter().any(|c| c == name) {
+            edges.retain(|e| matches!(e.target, Target::Direct(_)));
+        }
+        if rules.cleanup_lexical {
+            if name == "_pthread_cleanup_pop" {
+                edges.retain(|e| matches!(e.target, Target::Direct(_)));
+            } else if w.direct[f].iter().any(|&c| w.names[c as usize] == "_pthread_cleanup_pop") {
+                if let Some(hs) = side.reg_by_fn.get(&("cleanup".to_string(), name.to_string())) {
+                    for h in hs {
+                        for &t in w.by_name.get(h).map(|v| v.as_slice()).unwrap_or(&[]) {
+                            edges.push(Edge { site: None, ir: None, target: Target::Direct(t) });
+                        }
+                    }
+                }
+            }
+        }
         g.edges[f] = edges;
     }
     let untyped_tab: Vec<&str> = (0..n).filter(|&f| w.in_table[f] && g.fty[f].is_none() && side.vslots.get(&w.names[f]).is_none()).map(|f| w.names[f].as_str()).collect();
@@ -959,6 +1116,20 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
 
 impl<'a> Graph<'a> {
     fn admit(&self, e: &Edge, t: u32, mode: Mode) -> Option<&'static str> {
+        let why = self.admit0(e, t, mode)?;
+        if self.drop.iter().any(|d| d == why) {
+            return None;
+        }
+        if self.main_direct && why != "direct" {
+            let n = &self.w.names[t as usize];
+            if n == "main" || n == "__main_argc_argv" || n == "__main_void" {
+                return None;
+            }
+        }
+        Some(why)
+    }
+
+    fn admit0(&self, e: &Edge, t: u32, mode: Mode) -> Option<&'static str> {
         let Target::Indirect { sig, typed, hub } = &e.target else { return Some("direct") };
         if self.w.sig[t as usize] != *sig || !self.w.in_table[t as usize] {
             return None;
@@ -974,8 +1145,25 @@ impl<'a> Graph<'a> {
         let tn = &self.w.names[t as usize];
         let ft = self.fty[t as usize].as_ref();
         let fv = self.side.vslots.get(tn);
+        if let (true, Mode::Registry, Some(h)) = (self.hub_first, mode, hub) {
+            // Every type id of this site is a hub id: registration decides.
+            let entries = &self.hubs[*h];
+            if !s.icall.is_empty() && s.vcall.is_empty() && s.icall.iter().all(|id| entries.iter().any(|(t, _)| t == id)) {
+                let reg = s.icall.iter().any(|id| {
+                    entries.iter().filter(|(t, _)| t == id).any(|(_, regs)| {
+                        regs.iter().any(|r| {
+                            self.reg_unknown.contains_key(r)
+                                || self.side.registered.get(r).map_or(false, |set| set.contains(tn))
+                                || self.extra_registered.iter().any(|(rr, n)| rr == r && n == tn)
+                        })
+                    })
+                });
+                let typed_ok = ft.is_none() || s.icall.iter().any(|id| ft.unwrap().contains(id));
+                return (reg && typed_ok).then_some("registry");
+            }
+        }
         if ft.is_none() && fv.is_none() {
-            return Some("untyped-target");
+            return (!self.noir_optimistic).then_some("untyped-target");
         }
         if let Some(ft) = ft {
             for id in &s.icall {
@@ -1635,6 +1823,13 @@ fn main() {
             "--rule" => match v().as_str() {
                 "cancel" => rules.cancel = true,
                 "flow" => rules.flow = true,
+                "hubfirst" => rules.hub_first = true,
+                "main-direct" => rules.main_direct = true,
+                "cleanup-lexical" => rules.cleanup_lexical = true,
+                r if r.starts_with("cutsite:") => rules.cutsite.push(r[8..].to_string()),
+                r if r.starts_with("drop:") => rules.drop.push(r[5..].to_string()),
+                "noir-optimistic" => rules.noir_optimistic = true,
+                r if r.starts_with("known:") => rules.known.push(r[6..].to_string()),
                 r if r.starts_with("cut:") => {
                     let (a, b) = r[4..].split_once('>').expect("cut:caller>callee");
                     rules.cuts.push((a.to_string(), b.to_string()));

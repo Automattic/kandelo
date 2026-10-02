@@ -1243,7 +1243,16 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let (pa, ra) = (pa.len(), ra.len());
                 let key = p.tkey[&c.ty];
                 let signal = p.signal_fns.contains(&self.f);
-                let (t, ext) = self.icall_targets(key, table_ix(m, c.table), idx, signal);
+                let (mut t, ext) = self.icall_targets(key, table_ix(m, c.table), idx, signal);
+                if self.cx.p.start_fns.contains(&self.f) {
+                    // main-direct what-if: the crt's own call reaches main
+                    // even when typed targets (CFI type mismatch) drop it.
+                    for &mf in &self.cx.p.main_fns {
+                        if p.skey[mf as usize] == key && !t.contains(&mf) {
+                            t.push(mf);
+                        }
+                    }
+                }
                 let why = format!("call_indirect {:?}{} ({} targets)", m.types.get(c.ty).params(), if signal { " [signal]" } else { "" }, t.len());
                 self.call(&mut st, t, ext, pa, ra, false, why);
             }

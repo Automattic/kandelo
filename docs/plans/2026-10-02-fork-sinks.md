@@ -761,3 +761,124 @@ Expected size under the prototype's rules, with no type facts and no gate
 The mechanism works, but large reductions need type facts (git 25, foot 4)
 or the gate (foot 2,368, git 4,553, bash 1,220).
 
+## C++ indirect-call resolution (2026-10-02, follow-up)
+
+The maintainer asked what better C++ indirect-call resolution could gain,
+without changing exception semantics. All numbers below are counts of
+instrumented functions, measured on the pre-`wasm-opt` research links with
+the research tools, not the shipped instrumenter. The rules throughout are:
+`--exc equiv` (exception semantics unchanged), signals by exact handler list
+(no gate), `main-direct`, sinks with the vfork contract.
+
+### Type facts today
+
+The other worktree (ljubljana, local branch
+`brandonpayton/fork-path-precision`) has research-grade type facts. They
+come from compiler plugin v3 (`KandeloCallTypes.cpp`), captured through
+research compiler shims for the 11 corpus programs. They are not in the SDK
+build. Three gaps showed up:
+
+- **Some libc++ objects had no facts.** These were `locale.cpp`,
+  `ios.instantiations.cpp`, `new.cpp`, `filesystem/operations.cpp` and
+  `thread.cpp`: 446 Quickshell functions, 261 of them in the function
+  table. The plugin is not at fault. clang crashes in
+  `WebAssemblyLowerEmscriptenEHSjLj` (code generation) when the CFI flags
+  are on, after the plugin has already run. Compiling those files with
+  `-emit-llvm -o /dev/null` produces their facts.
+- **No pointer generalization.** It is approximated here by demangling the
+  type ids and treating every pointer or reference parameter or return as
+  one type (`FPA_GENERALIZE`). This is clang's
+  `-fsanitize-cfi-icall-generalize-pointers` equivalence.
+- **The signal registry was "unknown" for every program.** For Qt the
+  causes are a vfork-safe helper that forwards `SIG_IGN`/`SIG_DFL`
+  (`QtVforkSafe::change_sigpipe`), musl's `__synccall` building its
+  `struct sigaction` from a constant, and a weak alias of musl's `signal`
+  counted as an address escape. All three are plugin conservatism, not
+  real unknown handlers. A source audit gives Quickshell's handlers as
+  forkfd's `sigchld_handler` and musl's synccall `handler`.
+
+### What keeps Qt programs large
+
+Each fpa rule was switched off in turn, and fsa was re-run on the result.
+The rules, with Quickshell's result when that rule is removed:
+
+| Rule | What it encodes | Quickshell without it |
+|---|---|---:|
+| Complete type facts (libc++) | real facts for the five objects above | 72,331 (exact types) |
+| Exact signal handler list | `known:signal`, audited | 107,019 (exact types, coverage assumed), 107,381 (generalized) |
+| Chained old handler | forkfd's `sigchld_handler` calls the previous handler; that pointer came from `sigaction(..., &old)`, so it is a registered handler (`cutsite:sigchld_handler`) | 10 (exact types), 107,381 (generalized) |
+| `main-direct` | the crt change already prototyped | 70,430 (exact types, coverage assumed) |
+
+"Coverage assumed" rows were measured before the libc++ facts existed,
+with untyped targets dropped as an optimistic stand-in. With all four rules
+and the real facts, Quickshell is **10** (today 108,860 on the link), exact or
+generalized types alike. qtgallery is **7** either way (today 26,586).
+
+What did not matter for Qt once those four were in place, even though each
+is a large source of imprecision in the fork-path closure:
+
+- class-hierarchy precision for virtual calls (dropping every vcall edge
+  changes nothing);
+- untyped sites (`std::function` invokers, which libc++ compiles without
+  CFI);
+- Qt's dynamic dispatch (`QMetaObject::activate` and every
+  `qt_static_metacall`);
+- the pthread-cleanup and cancellation edges.
+
+The reason is that the fork-path closure is still about 107,000 functions,
+but every path through that dispatch ends in a sink. QProcess forks
+through `vfork`, and its child never returns past `doFork`/`vforkfd`. Only
+fork sites whose child returns need precise callers. In Quickshell that is
+the `qs -d` daemonizing fork, and imprecise edges into it were what kept
+the set large.
+
+### Other programs (exact handler list asserted, generalized vs exact types)
+
+| Program | Today | Generalized | Exact | Note |
+|---|---:|---:|---:|---|
+| foot | 2,994 | 1,542 | 4 | C: `void *` callbacks merge under generalization |
+| git | 5,293 | 3,599 | 25 | same |
+| git-remote-http | 8,659 | 8,035 | 7,136 | curl |
+| waybar | 32,946 | 29,043 | 28,433 | child paths may throw (spdlog), so `equiv` keeps them open |
+| qtgallery | 26,586 | 7 | 7 | |
+| Quickshell (link) | 108,860 | 10 | 10 | |
+| bash / python / ruby / php | 1,940 / 9,166 / 9,755 / 20,369 | ≈ today | ≈ today | children genuinely return into the interpreter |
+
+The signal list was asserted complete for every program, but it was
+audited only for Quickshell. Assuming qtgallery has the same Qt handlers
+is a guess.
+
+Oracle (fork stacks observed at run time): no unsound stack in foot, git,
+bash, python or ruby under either type mode. Quickshell and qtgallery have
+no observed stacks.
+
+An earlier run reported foot as unsound. That was a modeling error in the
+`main-direct` what-if, fixed: the crt's own call to `main` must stay.
+
+### Uncertain
+
+- Exact types assume no call through an incompatible function-pointer
+  type. That is undefined behavior in C, but common in practice.
+  Generalized types are robust to the pointer case and cost C programs
+  heavily. A run-time guard at the uninstrumented `call_indirect` sites
+  (about 435 sites in Quickshell, per fpa's estimate) would turn a wrong
+  assumption into a loud failure. It changes behavior only for such
+  programs; that is the maintainer's decision.
+- Numbers on the shipped (`wasm-opt`ed) shape were not measured. Type facts
+  are keyed by function name, so they fit the order "instrument, then
+  `wasm-opt`". With about 10 instrumented functions that order no longer
+  has the +18.7% cost measured when 108,860 were instrumented.
+
+### Productizing (not started)
+
+- Ship the plugin with the SDK. Carry facts in a Wasm custom section of
+  each object, which `wasm-ld` concatenates, instead of SHA-keyed side
+  files.
+- Rebuild every package and sysroot archive with the plugin.
+- Fix the clang SjLj+CFI crash, or extract facts before code generation.
+- Plugin fixes for the signal registry: constant arguments into static
+  forwarders, constant-initialized `struct sigaction`, aliases not counted
+  as escapes. Add an `oldact` flow rule for chained handlers.
+- Port the typed targets into `crates/fork-instrument`. Fall back to
+  signature matching per object whenever facts are missing.
+
