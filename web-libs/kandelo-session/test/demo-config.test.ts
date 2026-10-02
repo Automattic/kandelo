@@ -63,6 +63,17 @@ describe("runtime block", () => {
     }))).not.toThrow();
   });
 
+  // The paste gesture rides on the DOM input source; without one the image
+  // would claim a clipboard the host never wires up.
+  it("rejects clipboard without evdev-input", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      runtime: { features: ["kms", "clipboard"] },
+    }))).toThrow(/"clipboard" requires "evdev-input"/);
+    expect(() => validateKandeloDemoConfig(withProfile({
+      runtime: { features: ["kms", "evdev-input", "clipboard"] },
+    }))).not.toThrow();
+  });
+
   // Review Focus 1: an untrusted image must not get to ask for 128 GiB.
   it("rejects an absurd memoryPages request", () => {
     expect(() => validateKandeloDemoConfig(withProfile({

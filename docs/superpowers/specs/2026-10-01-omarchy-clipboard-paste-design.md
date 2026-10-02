@@ -558,6 +558,12 @@ before Layers 2 and 3:
 10. **Agent:** a small C kclipd. Porting wl-clipboard is separate work.
 11. **Touch devices:** out of scope; recorded as a gap.
 
+Implementation note: Layer 3 step 2's "before the next task" was too short.
+In a real macOS browser (Brave), `paste` arrives a task or more after the
+Cmd+V keydown, because the browser runs Edit > Paste only after the page
+leaves the key unhandled; Playwright's synthetic chord hides this by firing
+`paste` in the same task. The gesture waits up to 500 ms instead.
+
 Also decided: the macOS missing-keyup-under-Cmd quirk is fixed in Phase 1
 (BrowserInputSource releases keys pressed under Meta when Meta goes up);
 the protocol XML stays in `packages/registry/wayland-protocols`, with
