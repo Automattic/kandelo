@@ -19,10 +19,12 @@ SHA256=$(command -v sha256sum)
 PY=$(command -v python3)
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$OUT/llvm" "$OUT/side" "$OUT/links" "$OUT/instr"
-for t in "$LLVM_BIN"/*; do ln -sf "$t" "$OUT/llvm/$(basename "$t")"; done
+for t in "$LLVM_BIN"/*; do
+  case "$(basename "$t")" in clang|clang++|wasm-ld) [ -e "$OUT/llvm/$(basename "$t")" ] && continue ;; esac
+  ln -sf "$t" "$OUT/llvm/$(basename "$t")"
+done
 for cc in clang clang++; do
-  rm -f "$OUT/llvm/$cc"
-  cat > "$OUT/llvm/$cc" <<SH
+  cat > "$OUT/llvm/.$cc.new" <<SH
 #!/bin/sh
 REAL="$LLVM_BIN/$cc"
 compile=0; wasm=0; out=""; prev=""; nsrc=0
@@ -53,21 +55,22 @@ fi
 if [ \$compile = 1 ] && [ \$wasm = 1 ] && [ \$nsrc -gt 1 ] && [ -z "\$out" ]; then
   echo "kandelo research shim: multi-source -c without -o is not captured" >&2
 fi
+# A compile-and-link command: compile each source with the plugin first and
+# link those objects instead, as the driver would internally.
+if [ \$compile = 0 ] && [ \$wasm = 1 ] && [ \$nsrc -ge 1 ] && [ -n "\$out" ]; then
+  case " \$* " in *" -###"*|*" -E "*|*" -S "*|*" -M "*|*" -MM "*|*" -fsyntax-only "*) exec "\$REAL" "\$@" ;; esac
+  case "\$out" in *conftest*|*CMakeScratch*|*CMakeTmp*|*TryCompile*|/dev/null) exec "\$REAL" "\$@" ;; esac
+  exec "$PY" "$HERE/split-link.py" "\$REAL" "$OUT" "$PLUGIN" "$SHA256" "\$@"
+fi
 exec "\$REAL" "\$@"
 SH
-  chmod +x "$OUT/llvm/$cc"
+  chmod +x "$OUT/llvm/.$cc.new" && mv -f "$OUT/llvm/.$cc.new" "$OUT/llvm/$cc"
 done
-rm -f "$OUT/llvm/wasm-ld"
-cat > "$OUT/llvm/wasm-ld" <<SH
+cat > "$OUT/llvm/.wasm-ld.new" <<SH
 #!/bin/sh
 REAL="$LLVM_BIN/wasm-ld"
-out=""; prev=""; keep=1
-for a in "\$@"; do
-  case "\$a" in -r|--relocatable|--shared|-shared|--version|-v|--help) keep=0 ;; esac
-  [ "\$prev" = "-o" ] && out="\$a"
-  prev="\$a"
-done
-case "\$out" in *conftest*|*CMakeScratch*|*CMakeTmp*|*TryCompile*|/dev/null|"") keep=0 ;; esac
+r=\$("$PY" "$HERE/ldargs.py" "\$@")
+keep=\${r%%	*}; out=\${r#*	}
 if [ \$keep = 0 ]; then exec "\$REAL" "\$@"; fi
 id="\$(basename "\$out")-\$\$-\$(date +%s)"
 "\$REAL" "\$@" -Map="$OUT/links/\$id.map" || exit \$?
@@ -76,8 +79,8 @@ cp "\$out" "$OUT/links/\$id.wasm"
 # Loose objects disappear with the build tree: hash them now.
 "$PY" "$HERE/map-inputs.py" "$OUT/links/\$id.map" > "$OUT/links/\$id.inputs"
 SH
-chmod +x "$OUT/llvm/wasm-ld"
-cat > "$OUT/instrument" <<SH
+chmod +x "$OUT/llvm/.wasm-ld.new" && mv -f "$OUT/llvm/.wasm-ld.new" "$OUT/llvm/wasm-ld"
+cat > "$OUT/.instrument.new" <<SH
 #!/bin/sh
 # Keep the input and output of each real instrumentation.
 REAL="$REAL_INSTR"
@@ -94,5 +97,11 @@ cp "\$in" "$OUT/instr/\$id.in.wasm"
 "\$REAL" "\$@" || exit \$?
 cp "\$out" "$OUT/instr/\$id.out.wasm"
 SH
-chmod +x "$OUT/instrument"
-echo "WASM_POSIX_LLVM_DIR=$OUT/llvm WASM_POSIX_FORK_INSTRUMENT=$OUT/instrument"
+chmod +x "$OUT/.instrument.new" && mv -f "$OUT/.instrument.new" "$OUT/instrument"
+# A shim LLVM_PREFIX for recipes that call $LLVM_PREFIX/bin/clang directly.
+mkdir -p "$OUT/prefix"
+for e in "${LLVM_PREFIX:-$(dirname "$LLVM_BIN")}"/*; do
+  [ "$(basename "$e")" = bin ] || ln -sfn "$e" "$OUT/prefix/$(basename "$e")"
+done
+ln -sfn "$OUT/llvm" "$OUT/prefix/bin"
+echo "WASM_POSIX_LLVM_DIR=$OUT/llvm WASM_POSIX_FORK_INSTRUMENT=$OUT/instrument LLVM_PREFIX=$OUT/prefix"

@@ -18,5 +18,5 @@ nix-store --realise "$LIB" --add-root "$OUT/llvm-lib-gcroot" --indirect >/dev/nu
 SRC=$(dirname "$0")/../plugin/KandeloCallTypes.cpp
 clang++ -std=c++17 -stdlib=libc++ -fno-rtti -fPIC -shared -O2 \
   -I"$DEV/include" "$SRC" -L"$LIB/lib" -lLLVM -Wl,-rpath,"$LIB/lib" \
-  -o "$OUT/KandeloCallTypes.dylib"
+  -o "$OUT/KandeloCallTypes.dylib.new" && mv -f "$OUT/KandeloCallTypes.dylib.new" "$OUT/KandeloCallTypes.dylib"
 echo "$OUT/KandeloCallTypes.dylib"

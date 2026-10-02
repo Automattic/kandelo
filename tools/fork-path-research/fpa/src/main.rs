@@ -284,6 +284,10 @@ struct Wasm {
     seeds: Vec<u32>,
     dyn_link: bool,
     module: Module,
+    consts: Vec<Vec<i64>>,
+    /// Table slot -> function, from active element segments with constant offsets.
+    slots: HashMap<i64, u32>,
+    by_name: HashMap<String, Vec<u32>>,
 }
 
 fn vt(t: ValType) -> &'static str {
@@ -298,6 +302,7 @@ fn vt(t: ValType) -> &'static str {
 }
 
 struct Calls<'a> {
+    consts: &'a mut Vec<i64>,
     direct: &'a mut Vec<u32>,
     indirect: &'a mut Vec<TypeId>,
     tail: &'a mut usize,
@@ -321,6 +326,11 @@ impl<'i, 'a> Visitor<'i> for Calls<'a> {
     fn visit_call_ref(&mut self, _: &CallRef) {
         *self.refs += 1;
     }
+    fn visit_const(&mut self, i: &Const) {
+        if let Value::I32(v) = i.value {
+            self.consts.push(v as i64);
+        }
+    }
 }
 
 fn load_wasm(path: &str, sigs: &mut Interner) -> Wasm {
@@ -338,6 +348,9 @@ fn load_wasm(path: &str, sigs: &mut Interner) -> Wasm {
         seeds: vec![],
         dyn_link: fork_instrument::call_graph::has_dynamic_linker_imports(&module),
         module: Module::default(),
+        consts: vec![vec![]; n],
+        slots: HashMap::new(),
+        by_name: HashMap::new(),
     };
     let sig_of = |m: &Module, t: TypeId, sigs: &mut Interner| {
         let ty = m.types.get(t);
@@ -354,7 +367,7 @@ fn load_wasm(path: &str, sigs: &mut Interner) -> Wasm {
             FunctionKind::Local(l) => {
                 let mut ind = vec![];
                 dfs_in_order(
-                    &mut Calls { direct: &mut w.direct[i], indirect: &mut ind, tail: &mut w.tail_calls, refs: &mut w.call_refs },
+                    &mut Calls { consts: &mut w.consts[i], direct: &mut w.direct[i], indirect: &mut ind, tail: &mut w.tail_calls, refs: &mut w.call_refs },
                     l,
                     l.entry_block(),
                 );
@@ -364,6 +377,18 @@ fn load_wasm(path: &str, sigs: &mut Interner) -> Wasm {
         }
     }
     for e in module.elements.iter() {
+        if let ElementKind::Active { offset, .. } = &e.kind {
+            if let Some(base) = match offset {
+                ConstExpr::Value(Value::I32(v)) => Some(*v as i64),
+                _ => None,
+            } {
+                if let ElementItems::Functions(v) = &e.items {
+                    for (k, f) in v.iter().enumerate() {
+                        w.slots.insert(base + k as i64, f.index() as u32);
+                    }
+                }
+            }
+        }
         if matches!(e.kind, ElementKind::Declared) {
             continue;
         }
@@ -377,6 +402,9 @@ fn load_wasm(path: &str, sigs: &mut Interner) -> Wasm {
                 }
             }
         }
+    }
+    for (i, nm) in w.names.iter().enumerate() {
+        w.by_name.entry(nm.clone()).or_default().push(i as u32);
     }
     w.seeds = fork_instrument::call_graph::find_import_funcs(&module, "kernel.kernel_fork")
         .into_iter()
@@ -467,11 +495,12 @@ fn map_code_entries(path: &str) -> Vec<(String, Vec<String>)> {
             continue;
         }
         if gap < 14 {
-            let input = match item.rfind(":(") {
-                Some(p) => item[..p].to_string(),
-                None => item.to_string(),
-            };
-            out.push((input, vec![]));
+            // `input:(symbol)`: the symbol is the object's own name for the
+            // function (e.g. __main_argc_argv for main).
+            match item.rfind(":(") {
+                Some(p) => out.push((item[..p].to_string(), vec![item[p + 2..item.len().saturating_sub(1)].to_string()])),
+                None => out.push((item.to_string(), vec![])),
+            }
         } else if let Some(last) = out.last_mut() {
             last.1.push(item.to_string());
         }
@@ -492,20 +521,16 @@ fn bind<'s>(w: &Wasm, bi: &BindInputs, side: &'s mut Side, sigs: &mut Interner) 
     let entries = map_code_entries(&bi.map);
     let locals: Vec<usize> = (0..w.names.len()).filter(|&i| !w.import[i]).collect();
     assert_eq!(entries.len(), locals.len(), "map CODE entries vs defined functions");
-    let loose: HashMap<String, String> = bi
-        .inputs
-        .as_ref()
-        .map(|p| {
-            std::fs::read_to_string(p)
-                .unwrap()
-                .lines()
-                .filter_map(|l| {
-                    let f: Vec<&str> = l.split('\t').collect();
-                    (f.len() >= 2 && f[1] != "-").then(|| (f[0].to_string(), f[1].to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // Hashes recorded at link time (loose objects and build-tree archives).
+    let mut loose: HashMap<String, Vec<String>> = HashMap::new();
+    if let Some(p) = &bi.inputs {
+        for l in std::fs::read_to_string(p).unwrap().lines() {
+            let f: Vec<&str> = l.split('\t').collect();
+            if f.len() >= 2 && f[1] != "-" {
+                loose.entry(f[0].to_string()).or_default().push(f[1].to_string());
+            }
+        }
+    }
     let mut aliases: HashMap<(String, String), Vec<String>> = HashMap::new();
     if let Some(p) = &bi.aliases {
         for l in std::fs::read_to_string(p).unwrap().lines() {
@@ -529,6 +554,13 @@ fn bind<'s>(w: &Wasm, bi: &BindInputs, side: &'s mut Side, sigs: &mut Interner) 
                 *how.entry("internal").or_default() += 1;
                 return vec![];
             }
+            if let Some(hs) = loose.get(input) {
+                let ps: Vec<String> = hs.iter().map(|h| format!("{}/{h}.calltypes", bi.side_dir)).filter(|p| exists(p)).collect();
+                if !ps.is_empty() {
+                    *how.entry("link-time-sha").or_default() += 1;
+                    return ps;
+                }
+            }
             if let (true, Some(open)) = (input.ends_with(')'), input.rfind('(')) {
                 let (ar, mem) = (&input[..open], &input[open + 1..input.len() - 1]);
                 let members = ar_cache.entry(ar.to_string()).or_insert_with(|| {
@@ -550,13 +582,6 @@ fn bind<'s>(w: &Wasm, bi: &BindInputs, side: &'s mut Side, sigs: &mut Interner) 
                 }
                 *how.entry("archive-none").or_default() += 1;
                 return vec![];
-            }
-            if let Some(h) = loose.get(input) {
-                let p = format!("{}/{h}.calltypes", bi.side_dir);
-                if exists(&p) {
-                    *how.entry("loose-sha").or_default() += 1;
-                    return vec![p];
-                }
             }
             let b = base(input);
             for g in ["channel_syscall", "compiler_rt", "cxxrt", "dlopen"] {
@@ -651,9 +676,18 @@ struct Graph<'a> {
     hub_type: Vec<u32>,
     reg_unknown: HashMap<String, Vec<String>>,
     by_sig_table: HashMap<u32, Vec<u32>>,
+    extra_registered: Vec<(String, String)>,
+    cut_cancel: usize,
 }
 
-fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>]) -> Graph<'a> {
+#[derive(Clone, Copy, Default)]
+struct Rules {
+    /// musl cancellation: pthread_exit from the cancel module only when a
+    /// writer of `pthread.cancel` (pthread_cancel, timer_create) is linked.
+    cancel: bool,
+}
+
+fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: Rules) -> Graph<'a> {
     let n = w.names.len();
     let mut g = Graph {
         w,
@@ -667,7 +701,10 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>]) -> Grap
         hub_type: vec![],
         reg_unknown: side.reg_unknown.clone(),
         by_sig_table: HashMap::new(),
+        extra_registered: vec![],
+        cut_cancel: 0,
     };
+    let cancel_writers = ["pthread_cancel", "timer_create"].iter().any(|n| w.by_name.contains_key(*n));
     for f in 0..n {
         if w.in_table[f] {
             g.by_sig_table.entry(w.sig[f]).or_default().push(f as u32);
@@ -680,6 +717,21 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>]) -> Grap
             continue;
         }
         let has_ir = !cands[f].is_empty();
+        if !has_ir && w.names[f].starts_with(".Lregister_call_dtors") {
+            // LLVM's WebAssemblyLowerGlobalDtors synthesizes this function
+            // after IR: it registers this object's `.Lcall_dtors*` with
+            // __cxa_atexit. Check that every table slot it names holds one.
+            let ok = w.direct[f].iter().all(|&c| w.names[c as usize] == "__cxa_atexit")
+                && w.consts[f].iter().all(|v| w.slots.get(v).map_or(true, |&t| w.names[t as usize].starts_with(".Lcall_dtors")));
+            if ok {
+                for v in &w.consts[f] {
+                    if let Some(&t) = w.slots.get(v) {
+                        g.extra_registered.push(("exit".to_string(), w.names[t as usize].clone()));
+                    }
+                }
+                continue;
+            }
+        }
         for &c in &w.direct[f] {
             for &(api, _, _, reg) in REG_APIS {
                 if w.names[c as usize] == api && !has_ir {
@@ -709,6 +761,10 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>]) -> Grap
         let variants: Option<&Vec<&IrFn>> = if cands[f].is_empty() { None } else { Some(&cands[f]) };
         if let Some(vs) = variants {
             g.fty[f] = Some(vs.iter().flat_map(|v| v.types.iter().copied()).collect());
+        } else if name.starts_with(".Lcall_dtors") && side.ids.get("_ZTSFvPvE").is_some() {
+            // Synthesized by LLVM's WebAssemblyLowerGlobalDtors as
+            // `void call_dtors(void*)`; only ever registered with __cxa_atexit.
+            g.fty[f] = Some([side.ids.get("_ZTSFvPvE").unwrap()].into_iter().collect());
         }
         let matching: Vec<usize> = variants
             .map(|vs| {
@@ -772,6 +828,15 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>]) -> Grap
                         continue;
                     }
                     let cname = w.names[c as usize].as_str();
+                    if rules.cancel
+                        && !cancel_writers
+                        && single
+                        && (cname == "__pthread_exit" || cname == "pthread_exit")
+                        && side.modules.names[chosen[0].module as usize].ends_with("thread/wasm32posix/pthread_cancel.c")
+                    {
+                        g.cut_cancel += 1;
+                        continue;
+                    }
                     if single {
                         let v = chosen[0];
                         let irs: Vec<usize> = v
@@ -824,6 +889,8 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>]) -> Grap
         }
         g.edges[f] = edges;
     }
+    let untyped_tab: Vec<&str> = (0..n).filter(|&f| w.in_table[f] && g.fty[f].is_none() && side.vslots.get(&w.names[f]).is_none()).map(|f| w.names[f].as_str()).collect();
+    eprintln!("table functions without type facts: {} (e.g. {:?})", untyped_tab.len(), &untyped_tab[..untyped_tab.len().min(12)]);
     eprintln!(
         "functions with IR: one variant {}, several variants {}, IR mismatch {}, no IR {}",
         stats[2], stats[3], stats[1], stats[0]
@@ -862,6 +929,7 @@ impl<'a> Graph<'a> {
                         if regs.iter().any(|r| {
                             self.reg_unknown.contains_key(r)
                                 || self.side.registered.get(r).map_or(false, |set| set.contains(tn))
+                                || self.extra_registered.iter().any(|(rr, n)| rr == r && n == tn)
                         }) {
                             return Some("registry");
                         }
@@ -1271,6 +1339,12 @@ fn census(a: &Analysis, r: &Result1) -> Vec<((u32, usize), usize)> {
         }
     }
     let mut out: Vec<((u32, usize), usize)> = site_of.iter().enumerate().map(|(i, &s)| (s, count[base as usize + i])).collect();
+    // Function nodes, reported with edge index usize::MAX.
+    for (i, &(f, c)) in nodes.iter().enumerate().skip(1) {
+        if c == 0 {
+            out.push(((f, usize::MAX), count[i]));
+        }
+    }
     out.sort_by(|a, b| b.1.cmp(&a.1));
     out
 }
@@ -1291,6 +1365,7 @@ fn main() {
     let mut cuts = 0usize;
     let mut explain: Vec<String> = vec![];
     let mut exclude_mode = None;
+    let mut rules = Rules::default();
     let mut i = 1;
     while i < args.len() {
         let a = args[i].as_str();
@@ -1312,6 +1387,10 @@ fn main() {
             "--cuts" => cuts = v().parse().unwrap(),
             "--explain" => explain.push(v()),
             "--exclude-fork-mode" => exclude_mode = Some(v().parse::<u64>().unwrap()),
+            "--rule" => match v().as_str() {
+                "cancel" => rules.cancel = true,
+                r => panic!("unknown rule {r}"),
+            },
             _ => panic!("unknown argument {a}"),
         }
         i += 1;
@@ -1356,7 +1435,10 @@ fn main() {
             None => side.defs.get(&w.names[f]).map(|v| v.iter().collect()).unwrap_or_default(),
         })
         .collect();
-    let g = build_graph(&w, &side, &cands);
+    let g = build_graph(&w, &side, &cands, rules);
+    if rules.cancel {
+        println!("rule cancel: {} direct calls to pthread_exit removed (writers linked: {})", g.cut_cancel, ["pthread_cancel", "timer_create"].iter().filter(|n| w.by_name.contains_key(**n)).count());
+    }
     let mut regs: Vec<_> = g.reg_unknown.iter().map(|(k, v)| format!("{k} ({})", v.first().cloned().unwrap_or_default())).collect();
     regs.sort();
     println!("unknown registries: {regs:?}");
@@ -1390,6 +1472,31 @@ fn main() {
             t1.elapsed().as_secs_f64(),
             kinds
         );
+        {
+            // Run-time safety net cost: every call_indirect in a function
+            // outside the closure whose Wasm type could dispatch to an
+            // instrumented table function needs a post-call state check.
+            let mut sigs_in: HashSet<u32> = HashSet::new();
+            for &f in &r.set {
+                if w.in_table[f as usize] {
+                    sigs_in.insert(w.sig[f as usize]);
+                }
+            }
+            let (mut sites, mut fns, mut all_sites) = (0usize, 0usize, 0usize);
+            for f in 0..w.names.len() {
+                if w.import[f] || r.set.contains(&(f as u32)) {
+                    continue;
+                }
+                all_sites += w.indirect[f].len();
+                let n = w.indirect[f].iter().filter(|s| sigs_in.contains(s)).count();
+                sites += n;
+                fns += (n > 0) as usize;
+            }
+            println!(
+                "  guard: {sites} call_indirect sites in {fns} uninstrumented functions need a check (of {all_sites} sites outside the closure); ~{} bytes at 8 B/site + 12 B/function",
+                sites * 8 + fns * 12
+            );
+        }
         if mode == Mode::Signature && !use_const && exclude_mode.is_none() {
             let extra = r.set.difference(&reference_set).count();
             let missing = reference_set.difference(&r.set).count();
@@ -1433,7 +1540,18 @@ fn main() {
                 let t2 = std::time::Instant::now();
                 let top = census(&a, &cur);
                 println!("  census round {round} (closure {}, {:.1}s): top dispatch sites by dominated functions", cur.set.len(), t2.elapsed().as_secs_f64());
+                let direct_only: HashSet<u32> = direct_only.iter().map(|f| f.index() as u32).collect();
+                let top: Vec<_> = top.into_iter().filter(|((f, ei), _)| *ei != usize::MAX || !direct_only.contains(f)).collect();
                 for (k, ((f, ei), cnt)) in top.iter().take(census_n).enumerate() {
+                    if *ei == usize::MAX {
+                        println!("   {:>2}. {:>6}  [function] {}", k + 1, cnt, trunc(&w.names[*f as usize], 110));
+                        if k < 8 {
+                            for l in a.chain(&cur, (*f, 0)).iter().take(14) {
+                                println!("          {l}");
+                            }
+                        }
+                        continue;
+                    }
                     let e = &g.edges[*f as usize][*ei];
                     let desc = match &e.target {
                         Target::Indirect { sig, typed, hub } => {
@@ -1463,7 +1581,7 @@ fn main() {
                 if round == cuts {
                     break;
                 }
-                if let Some(((f, ei), _)) = top.first() {
+                if let Some(((f, ei), _)) = top.iter().find(|((_, ei), _)| *ei != usize::MAX) {
                     a.blocked.insert((*f, *ei));
                 }
                 cur = a.run();

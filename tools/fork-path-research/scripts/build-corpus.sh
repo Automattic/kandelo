@@ -15,6 +15,6 @@ H=$(rustc -vV | awk '/^host/ {print $2}')
 X=${XTASK:-target/$H/debug/xtask}
 for p in "$@"; do
   start=$(date +%s)
-  "$X" build-deps --arch wasm32 --source-only resolve "$p" > "$CACHE/build-$p.log" 2>&1
+  "$X" build-deps --arch wasm32 --source-only ${FORCE:+--force-source-build} resolve "$p" > "$CACHE/build-$p.log" 2>&1
   echo "$p rc=$? secs=$(( $(date +%s) - start )) load=$(uptime | sed 's/.*averages*: //')"
 done

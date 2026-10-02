@@ -145,6 +145,7 @@ struct TagPass : PassInfoMixin<TagPass> {
         }
         CB->setMetadata("kandelo.vcall", MDNode::get(Ctx, ops));
       }
+      F.setMetadata("kandelo.hadtests", MDNode::get(Ctx, {}));
       // Delete the tests: the optimizer must see an ordinary build.
       for (CallInst *T : dead) {
         T->replaceAllUsesWith(ConstantInt::getTrue(Ctx));
@@ -208,6 +209,35 @@ Function *directCallee(CallBase *CB) {
   Value *V = CB->getCalledOperand()->stripPointerCasts();
   if (auto *GA = dyn_cast<GlobalAlias>(V)) return dyn_cast_or_null<Function>(GA->getAliaseeObject());
   return dyn_cast<Function>(V);
+}
+
+// Short description of how an untyped callee value was produced.
+std::string describe(Value *V, int depth = 0) {
+  V = V->stripPointerCasts();
+  std::string s;
+  raw_string_ostream os(s);
+  if (auto *I = dyn_cast<Instruction>(V)) {
+    os << I->getOpcodeName();
+    if (auto *L = dyn_cast<LoadInst>(I)) {
+      Value *P = L->getPointerOperand()->stripPointerCasts();
+      if (auto *G = dyn_cast<GlobalValue>(P)) os << "@" << demangle(G->getName().str());
+      else if (depth < 2) os << "(" << describe(P, depth + 1) << ")";
+    } else if (auto *G = dyn_cast<GetElementPtrInst>(I)) {
+      os << "<" << *G->getSourceElementType() << ">";
+      if (depth < 2) os << "(" << describe(G->getPointerOperand(), depth + 1) << ")";
+    } else if (auto *C = dyn_cast<CallBase>(I)) {
+      if (Function *F = C->getCalledFunction()) os << "@" << demangle(F->getName().str());
+    }
+  } else if (isa<Argument>(V)) {
+    os << "arg";
+  } else if (auto *G = dyn_cast<GlobalValue>(V)) {
+    os << "@" << demangle(G->getName().str());
+  } else {
+    os << "value";
+  }
+  std::string r = os.str();
+  for (char &c : r) if (c == '\t' || c == '\n') c = ' ';
+  return r.size() > 200 ? r.substr(0, 200) : r;
 }
 
 bool isSite(Instruction &I) {
@@ -384,7 +414,10 @@ struct EmitPass : PassInfoMixin<EmitPass> {
               any = true;
             }
           }
-          if (!any) os << "S\t" << fn << "\t" << s << "\t" << sig << "\tuntyped\n";
+          if (!any)
+            os << "S\t" << fn << "\t" << s << "\t" << sig << "\tuntyped\t"
+               << (F.getMetadata("kandelo.hadtests") ? "" : "fn-without-tests ")
+               << describe(CB->getCalledOperand()) << "\n";
         }
         for (unsigned a = 0; a < CB->arg_size(); ++a) {
           Value *A = CB->getArgOperand(a);
