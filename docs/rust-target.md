@@ -113,10 +113,10 @@ cargo directly against a changed sysroot needs a clean target directory.
 
 ### Rust packages
 
-`packages/registry/librsvg/` (a library, through Meson and cargo-c) is
-the reference for a package whose build compiles Rust for the target.
-Its build script sources `packages/registry/librsvg/rust-build-env.sh`,
-which:
+`packages/registry/librsvg/` (a library, through Meson and cargo-c) and
+`packages/registry/rsvg-convert/` (a program, through cargo) are the
+references for packages whose build compiles Rust for the target. Both
+source `packages/registry/librsvg/rust-build-env.sh`, which:
 
 - assembles a private sysroot in its work root
   (`KANDELO_RUST_DIR=<work>/rust scripts/build-rust-sysroot.sh`) rather
