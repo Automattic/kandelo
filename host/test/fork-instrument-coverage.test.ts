@@ -329,11 +329,16 @@ describe("fork_instrument_coverage / K-* callback fork roots", () => {
   // P-06. The child must rewind from the thread's fork buffer and enter the
   // saved pthread entry function, not `_start`.
   it("K-03 fork from pthread_cleanup_push handler (C4)", async () => {
+    // The same program budget as K-04..K-07. This was 7,000 ms, the tightest
+    // in the file, and the run takes ~7 s of a ~9.5 s test on an idle box: it
+    // timed out in every full-suite run under the pool's own load, on the
+    // HEAD module and the current one alike, while passing alone. A budget
+    // that only holds on an idle machine measures the machine, not the fork.
     await runFixture("programs/k_03_fork_in_pthread_cleanup.wasm", {
       contains: ["THREAD_STARTED", "IN_CLEANUP arg=42", "PRE_FORK", "CHILD: ok", "PASS: K-03"],
-      timeout: 7_000,
+      timeout: 10_000,
     });
-  }, 10_000);
+  }, 15_000);
 
   it("K-04 fork from qsort comparator (C3 indirect-callback pathological case)", async () => {
     await runFixture("programs/k_04_fork_in_qsort_comparator.wasm", {
