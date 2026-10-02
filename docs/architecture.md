@@ -890,6 +890,22 @@ when a new submission would reset their deadline. The shared
 `CentralizedKernelWorker` state machine provides the same behavior in Node.js
 and browser hosts.
 
+A syscall can also end its own process. When a write raises `SIGPIPE` or
+`SIGXFSZ`, Rust applies the signal's default action before the syscall
+returns. That includes a blocked pipe write retried after the last reader
+closed. The process is then already an `Exited` zombie when the host reads
+the result. Every host path that runs such a syscall checks for that signal
+death first and finishes the termination before it enters the kernel again:
+the generic channel path and its retry replay, vectored and large transfers,
+and `sendmsg`. `kernel_dequeue_signal` is defined only for live tasks and
+rejects an exited one with `ESRCH`, and the host treats that rejection as a
+fatal protocol failure. A path that skips the check therefore turns one
+process's `SIGPIPE` into the death of the whole kernel instance. A pending
+signal that a wait's mask unblocks (`ppoll`, `pselect`, `epoll_pwait`) takes
+a different route: the host's dequeue applies the default action itself and
+returns 0, and the check that follows every dequeue finishes the
+termination.
+
 For a signal-mask-swapping `ppoll` or `pselect`, each TID owns a LIFO stack of
 wait contexts. Each context records both the caller's saved mask and the
 replacement mask. An active frame accepts repeated kernel attempts. Once a
