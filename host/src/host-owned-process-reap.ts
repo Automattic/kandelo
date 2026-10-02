@@ -4,6 +4,27 @@ const ECHILD = 10;
 type GetParentPid = (pid: number) => number;
 type ReapExitedChild = (parentPid: number, childPid: number) => number;
 
+/** Reap a fully exited, detached host job without stealing a live parent's wait. */
+export function reapOwnedJobExitedProcesses(
+  kernelInstance: WebAssembly.Instance,
+  family: ReadonlySet<number>,
+): void {
+  const getParentPid = kernelInstance.exports.kernel_get_parent_pid as GetParentPid;
+  const reapExitedChild = kernelInstance.exports.kernel_reap_exited_child as ReapExitedChild;
+  // Children are inserted after their parents. Reap in reverse so parent
+  // records remain available until descendants have been collected.
+  for (const pid of Array.from(family).reverse()) {
+    const parent = getParentPid(pid);
+    if (parent === -ESRCH) continue; // A guest wait or normal host reap won.
+    if (parent < 0 || (parent !== 0 && !family.has(parent))) {
+      throw new Error(`Cannot reap job process ${pid}: unexpected parent ${parent}`);
+    }
+    // Rust atomically verifies both the parent and exited state.
+    const result = reapExitedChild(parent, pid);
+    if (result !== 0) throw new Error(`Cannot reap job process ${pid}: errno ${-result}`);
+  }
+}
+
 export type HostOwnedProcessReapResult =
   | "reaped"
   | "already-reaped"
