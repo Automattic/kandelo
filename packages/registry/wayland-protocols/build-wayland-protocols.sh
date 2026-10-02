@@ -56,6 +56,7 @@ presentation-time.xml stable presentation-time
 viewporter.xml stable viewporter
 xdg-shell.xml stable xdg-shell
 cursor-shape-v1.xml staging cursor-shape
+ext-data-control-v1.xml staging ext-data-control
 ext-background-effect-v1.xml staging ext-background-effect
 ext-idle-notify-v1.xml staging ext-idle-notify
 ext-workspace-v1.xml staging ext-workspace

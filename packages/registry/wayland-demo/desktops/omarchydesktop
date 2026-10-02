@@ -2,7 +2,8 @@
 # Start the Omarchy-shaped desktop and stay in the foreground until it ends.
 #
 # The tiling compositor with its shell on top: a D-Bus session bus, mako for
-# notifications, and unmodified Waybar on a wlr-layer-shell surface. The
+# notifications, unmodified Waybar on a wlr-layer-shell surface, and kclipd,
+# which turns host clipboard text into the desktop's selection. The
 # desktop comes up bare -- wallpaper and bar, no windows; the visitor opens
 # clients through the keybindings or the launcher (CTRL+Space).
 #
@@ -64,6 +65,10 @@ wait_socket "$BUS" "$bus_pid" dbus-daemon || exit 1
 # compositor over the Hyprland IPC socket pair. `-l debug` makes the bar log
 # every IPC event it receives, which keeps it legible in the terminal.
 /usr/local/bin/mako --config "$DATA/mako/config" &
+# The host-clipboard agent. It needs only the compositor; if it cannot start
+# (no /dev/kandelo/clipboard in an older kernel) it says why on stderr, the
+# desktop runs on, and a host paste reports that no agent is running.
+/usr/local/bin/kclipd &
 wait_socket "$HYPR_IPC" "$compositor_pid" wlcompositor || exit 1
 # The theme hook rewrites the bar's stylesheet on a switch, so the bar reads
 # a writable copy on /tmp rather than the image's.
