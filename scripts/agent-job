@@ -12,9 +12,10 @@ those choices:
 
   agent-job start [--name N] [--allow-concurrent] -- <command...>
       Start <command> (run by bash in the current directory) detached, with
-      its output in a log file. Prints the job id. Refuses to start a second
-      locked run (vitest, run.sh test, ci-run-test-suite.sh, npm ci, setup,
-      local-build) while one is running in the same worktree.
+      its output in a log file. Prints the job id. Several words run as
+      that exact argv; one quoted word runs as a shell string. Refuses to
+      start a second locked run (vitest, run.sh test, ci-run-test-suite.sh,
+      npm ci, setup, local-build) while one is running in the same worktree.
   agent-job wait <id> [--timeout SECONDS]
       Block until the job ends (keyed on its supervisor PID), then print the
       result and exit with the job's exit status. The default timeout, 540 s,
@@ -47,6 +48,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import signal
 import statistics
 import subprocess
@@ -265,10 +267,26 @@ def write_json(path, value):
 
 # ---------------------------------------------------------------- commands
 
+def shell_command(words):
+    """The bash -c string that runs what the caller wrote after `--`.
+
+    Two forms, both documented:
+      start -- ./run.sh setup                       several words: an argv
+      start -- "cd host && npx vitest run"          one word: a shell string
+    Several words are an argv the caller's shell already parsed, so they are
+    re-quoted to reach bash unchanged. A plain-space join dropped that
+    quoting: `start -- scripts/dev-shell.sh bash -c 'cd host && npx vitest'`
+    ran `bash -c cd` inside the dev shell and the vitest run outside it, from
+    the repo root, and every result of that run was invalid. One word is kept
+    verbatim, so pipes, `&&` and redirections in it work as typed.
+    """
+    return shlex.join(words) if len(words) > 1 else words[0]
+
+
 def cmd_start(args):
     if not args.command:
         sys.exit("agent-job start: give the command after --")
-    cmd = " ".join(args.command) if len(args.command) > 1 else args.command[0]
+    cmd = shell_command(args.command)
     cwd = os.getcwd()
     worktree = worktree_of(cwd)
     # Refuse a second locked run instead of letting it start. Two such runs

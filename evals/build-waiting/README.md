@@ -142,6 +142,22 @@ Scores came to 9/9 with the tools and 3/9 without.
   way subagents do. It does not cover interactive main sessions, where a
   completion notice would have rescued the tools-off arm.
 
+**Harm found in use (2026-10-01): a several-word command lost its
+quoting.** `agent-job start -- scripts/dev-shell.sh bash -c 'cd host && npx
+vitest …'` joined its words with plain spaces. The inner `bash -c` received
+only `cd`, and the vitest run went outside the dev shell, from the repo
+root. Every result of that 45-file run was invalid: it used the wrong vitest
+config and toolchain, and reported link errors and timeouts. This counts
+toward the "recorded exit status is wrong" harm signal (1 session so far).
+
+- **Fix (2026-10-02):** several words are re-quoted with `shlex.join`; one
+  word is still run verbatim as a shell string.
+- **Regression test:** `python3 evals/build-waiting/test_agent_job.py`.
+  It fails on the old join and passes on the fix. It also checks that
+  job keys, and with them the timing history, are unchanged for
+  `./run.sh setup`, `./run.sh local-build`, `ci-run-test-suite.sh`, and
+  dev-shell vitest runs.
+
 ### 2. Tree-change stamp (part of `agent-job result`): REMOVED
 
 When the tracked working tree changes between a job's start and its end, the
