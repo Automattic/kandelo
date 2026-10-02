@@ -2329,12 +2329,17 @@ without the next:
   sequence numbers and lengths, never the text.
 - **The gesture** (`BrowserInputSource`, images that declare the `clipboard`
   runtime feature): a Cmd/Ctrl+V keydown is not cancelled, so the browser's
-  own paste binding decides whether it was a paste. If `paste` fires in that
-  task, its `text/plain` is offered (unless it is empty or the text the guest
+  own paste binding decides whether it was a paste. If `paste` fires within
+  500 ms, its `text/plain` is offered (unless it is empty or the text the guest
   already accepted) and the chord, with every key typed meanwhile, is
   delivered only after the agent's acknowledgement — so "paste, Enter" cannot
   run the line before the text lands. If no `paste` follows, the chord is
-  ordinary keys. On failure the chord and held keys are dropped (modifier
+  ordinary keys (and Internals logs that). The window is not "until the
+  next task": on macOS the page sees the Cmd+V keydown first, and the
+  browser fires `paste` from its Edit menu only after the page leaves the
+  key unhandled, a task or more later. Playwright's synthetic chord fires
+  `paste` in the same task, so automated tests cannot catch a window that
+  is too short. Internals also logs each paste's length and outcome. On failure the chord and held keys are dropped (modifier
   transitions still go through) and the KMS pane shows the cause.
 
 The text exists in kernel memory only between the offer and the agent's read;

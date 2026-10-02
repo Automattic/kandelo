@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BrowserInputSource } from "../src/input/browser-input-source.js";
+import { BrowserInputSource, PASTE_DECISION_MS } from "../src/input/browser-input-source.js";
 import type { InputEvent } from "../src/input/input-source.js";
 
 /**
@@ -489,5 +489,153 @@ describe("BrowserInputSource — listener registration", () => {
       ).toBe(true);
     }
     vi.unstubAllGlobals();
+  });
+});
+
+/**
+ * The paste gesture (`opts.paste`, the `clipboard` runtime feature): a
+ * Cmd/Ctrl+V keydown is left to the browser; a `paste` event turns it into
+ * an offer, and the chord plus every key typed meanwhile wait for the
+ * guest's answer.
+ */
+describe("BrowserInputSource — paste gesture", () => {
+  const KEY_LEFTMETA = 125;
+  const KEY_LEFTCTRL = 29;
+  const KEY_V = 47;
+  const KEY_ENTER = 28;
+
+  let target: FakeTarget;
+  let recorded: InputEvent[];
+  let offers: string[];
+  let failures: Array<{ reason: string; discardedKeystrokes: number }>;
+  let noPastes: number;
+  let answer: (result: { ok: true; seq: number } | { ok: false; reason: "no-agent" }) => void;
+  let src: BrowserInputSource;
+
+  const keys = () =>
+    recorded.filter((e) => e.ev_type === 0x01).map((e) => [e.code, e.value]);
+  const nextTask = () => new Promise((r) => setTimeout(r, 0));
+  const key = (type: "keydown" | "keyup", init: Record<string, unknown>) => {
+    let prevented = false;
+    target.fire(type, {
+      repeat: false,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      ...init,
+      preventDefault() { prevented = true; },
+    });
+    return prevented;
+  };
+  const paste = (text: string) => {
+    let prevented = false;
+    target.fire("paste", {
+      clipboardData: { getData: (t: string) => (t === "text/plain" ? text : "") },
+      preventDefault() { prevented = true; },
+    });
+    return prevented;
+  };
+  const cmdV = () => {
+    key("keydown", { code: "MetaLeft", key: "Meta", metaKey: true });
+    return key("keydown", { code: "KeyV", key: "v", metaKey: true });
+  };
+
+  beforeEach(() => {
+    target = new FakeTarget();
+    vi.stubGlobal("document", Object.assign(new FakeTarget(), { pointerLockElement: null }));
+    recorded = [];
+    offers = [];
+    failures = [];
+    noPastes = 0;
+    src = new BrowserInputSource(target, {
+      paste: {
+        offer: (text) => {
+          offers.push(text);
+          return new Promise((resolve) => { answer = resolve; });
+        },
+        onFailure: (f) => failures.push(f),
+        onNoPaste: () => { noPastes++; },
+      },
+    });
+    src.start((ev) => recorded.push(ev));
+  });
+
+  afterEach(() => {
+    src.stop();
+    vi.unstubAllGlobals();
+  });
+
+  it("leaves a chord the browser does not paste to the guest as keys", async () => {
+    // Ctrl+V on macOS: the keydown is not cancelled, and no paste follows.
+    vi.useFakeTimers();
+    try {
+      key("keydown", { code: "ControlLeft", key: "Control", ctrlKey: true });
+      expect(key("keydown", { code: "KeyV", key: "v", ctrlKey: true })).toBe(false);
+      vi.advanceTimersByTime(PASTE_DECISION_MS - 1);
+      expect(keys()).toEqual([[KEY_LEFTCTRL, 1]]);
+      vi.advanceTimersByTime(1);
+      expect(keys()).toEqual([[KEY_LEFTCTRL, 1], [KEY_V, 1]]);
+      expect(offers).toEqual([]);
+      expect(noPastes).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for a paste that arrives tasks after the keydown (real macOS menu path)", async () => {
+    // Brave/Chrome on macOS: the keydown goes to the page first, and the
+    // Edit > Paste menu command fires `paste` in a later task.
+    cmdV();
+    await nextTask();
+    await nextTask();
+    expect(keys()).toEqual([[KEY_LEFTMETA, 1]]);
+    expect(paste("late text")).toBe(true);
+    expect(offers).toEqual(["late text"]);
+    answer({ ok: true, seq: 1 });
+    await nextTask();
+    expect(keys()).toEqual([[KEY_LEFTMETA, 1], [KEY_V, 1]]);
+    expect(noPastes).toBe(0);
+  });
+
+  it("offers the text, holds later keys, and delivers them after the guest accepts", async () => {
+    expect(cmdV()).toBe(false);
+    expect(paste("echo hi")).toBe(true);
+    expect(offers).toEqual(["echo hi"]);
+    key("keyup", { code: "KeyV", key: "v", metaKey: true });
+    key("keyup", { code: "MetaLeft", key: "Meta" });
+    key("keydown", { code: "Enter", key: "Enter" });
+    // Nothing past the Meta press reaches the guest before the answer.
+    expect(keys()).toEqual([[KEY_LEFTMETA, 1]]);
+    answer({ ok: true, seq: 1 });
+    await nextTask();
+    expect(keys()).toEqual([
+      [KEY_LEFTMETA, 1], [KEY_V, 1], [KEY_V, 0], [KEY_LEFTMETA, 0], [KEY_ENTER, 1],
+    ]);
+    // The same text again is not re-offered: the guest already has it,
+    // and an in-desktop copy made since must survive.
+    cmdV();
+    paste("echo hi");
+    await nextTask();
+    expect(offers).toEqual(["echo hi"]);
+  });
+
+  it("drops the chord and held keys when the paste fails, keeping modifiers true", async () => {
+    cmdV();
+    paste("rm -rf /tmp/x");
+    key("keydown", { code: "Enter", key: "Enter", metaKey: true });
+    key("keyup", { code: "MetaLeft", key: "Meta" });
+    answer({ ok: false, reason: "no-agent" });
+    await nextTask();
+    // Meta's press and release reach the guest; V and Enter never do.
+    expect(keys()).toEqual([[KEY_LEFTMETA, 1], [KEY_LEFTMETA, 0]]);
+    expect(failures).toEqual([{ reason: "no-agent", discardedKeystrokes: 1 }]);
+  });
+
+  it("pastes the guest's own selection when the clipboard holds no text", async () => {
+    cmdV();
+    paste("");
+    await nextTask();
+    expect(offers).toEqual([]);
+    expect(keys()).toEqual([[KEY_LEFTMETA, 1], [KEY_V, 1]]);
   });
 });

@@ -796,6 +796,22 @@ on the compositor's own process rather than on a foreground terminal.
   `Ctrl+V`. Today foot is the only client on this desktop that reads the
   clipboard; klauncher, Waybar, mako and the Qt demos take no pasted
   text.
+- **Paste from your own clipboard.** Text copied anywhere on your
+  computer pastes into the desktop with the same chord: `Cmd+V` on macOS,
+  `Ctrl+V` elsewhere. The page lets the browser's own paste happen, hands
+  the text to the machine (through `/dev/kandelo/clipboard` to `kclipd`,
+  which makes it the desktop's selection), and only then delivers the
+  chord, so the focused window pastes the new text; keys typed meanwhile
+  wait behind it. Line endings are converted to LF. The browser never
+  asks for clipboard permission, because the text comes from the paste
+  you made, and the page reads the clipboard only then. If the text
+  cannot be delivered — no agent running, over 1 MiB, or no answer within
+  two seconds — a toast in the desktop pane says why, and the chord and
+  the keys typed while it was pending are discarded rather than typed
+  into the window. Pasting the same host text twice in a row pastes the
+  desktop's current selection instead, so a copy made inside the desktop
+  since then is kept; the catch is that copying X on the host, Y in the
+  desktop, then X on the host again pastes Y.
 
 #### What is not real yet (deferred work)
 
@@ -827,14 +843,14 @@ follow-ups, not as the end state.
 
 Smaller gaps, each a follow-up:
 
-- **The desktop's clipboard is not the browser's.** Text copied on the
-  host does not paste into the desktop, and text copied in the desktop
-  does not reach the host clipboard. Pasting from the host needs a host
-  clipboard device, a guest agent that sets the Wayland selection from
-  it, and a browser paste gesture; the design is
+- **Copying out of the desktop does not reach your clipboard.** Pasting
+  in works (above); the reverse direction, and with it a true
+  "latest copy wins" between the two clipboards, is future work in
   `docs/superpowers/specs/2026-10-01-omarchy-clipboard-paste-design.md`.
   Also missing: the clipboard manager Omarchy opens on `Super+Ctrl+V`,
-  drag-and-drop, and the primary (middle-click) selection.
+  drag-and-drop, the primary (middle-click) selection, text formats other
+  than plain text, and pasting on iOS and iPadOS, which have no paste
+  chord.
 - **No `xdg_popup`**, so tooltips and menus are refused (see the bar,
   above).
 - **Super needs fullscreen keyboard lock.** Omarchy binds everything on
@@ -1684,8 +1700,12 @@ declare these blocks.
   computes `kandelo:shell@abi<N>` from the ABI it was built with, and real
   ABI compatibility is enforced by the `__abi_version` check on binaries.
 - `runtime` — what the machine needs: `features` (any of `framebuffer`,
-  `kms`, `kms-gl-scanout`, `evdev-input`) and `requests` (`memoryPages`,
-  `maxWorkers`) which the host clamps to its own policy. `kms-gl-scanout`
+  `kms`, `kms-gl-scanout`, `evdev-input`, `clipboard`) and `requests`
+  (`memoryPages`, `maxWorkers`) which the host clamps to its own policy.
+  `clipboard` says the image runs an agent on `/dev/kandelo/clipboard`
+  (kclipd), so the host turns a browser paste over the machine into an
+  offer on it; it rides on the DOM input source, so the parser rejects it
+  without `evdev-input`. `kms-gl-scanout`
   additionally routes the KMS surface through the vblank pump's WebGL2
   scanout presenter, which a Wayland compositor needs: its own GL context
   claims the canvas as the steady state, but the presenter has to cover

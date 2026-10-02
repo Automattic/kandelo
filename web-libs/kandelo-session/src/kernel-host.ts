@@ -3,6 +3,7 @@ import type {
   DemoGuideConfig,
   DemoIngestConfig,
 } from "./demo-config";
+import type { ClipboardPasteFailure } from "./clipboard-paste";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
@@ -932,6 +933,8 @@ export interface KernelHost {
   /** Dock buttons declared by the current VFS image; empty when none. */
   getDemoDockActions(): DemoDockActionConfig[];
   subscribeDemoDockActions(cb: (state: DemoDockActionConfig[]) => void): () => void;
+  /** Paste gestures that could not reach the guest (`clipboard` feature). */
+  subscribeClipboardPasteFailures(cb: (failure: ClipboardPasteFailure) => void): () => void;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -1192,6 +1195,7 @@ export class LiveKernelHost implements KernelHost {
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
   private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
   private demoDockActionListeners = new ListenerSet<DemoDockActionConfig[]>();
+  private clipboardPasteFailureListeners = new ListenerSet<ClipboardPasteFailure>();
   private audioStateListeners = new ListenerSet<MachineAudioState>();
   private audioActivityListeners = new ListenerSet<boolean>();
 
@@ -1405,6 +1409,11 @@ export class LiveKernelHost implements KernelHost {
   setDemoGuide(guide: DemoGuideConfig | null): void {
     this.demoGuide = guide ? structuredClone(guide) : null;
     this.demoGuideListeners.emit(this.getDemoGuide());
+  }
+
+  /** Report a paste gesture the guest never received (see clipboard-paste). */
+  reportClipboardPasteFailure(failure: ClipboardPasteFailure): void {
+    this.clipboardPasteFailureListeners.emit({ ...failure });
   }
 
   /** Update the optional file-ingest capability exposed by the current image. */
@@ -2952,6 +2961,12 @@ export class LiveKernelHost implements KernelHost {
 
   subscribeDemoDockActions(cb: (state: DemoDockActionConfig[]) => void): () => void {
     return this.demoDockActionListeners.add(cb);
+  }
+
+  subscribeClipboardPasteFailures(
+    cb: (failure: ClipboardPasteFailure) => void,
+  ): () => void {
+    return this.clipboardPasteFailureListeners.add(cb);
   }
 
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {
