@@ -950,12 +950,26 @@ AudioWorklet intentionally exposes transport cursors, not rendered samples.
 ### ScummVM demo
 
 The ScummVM machine (`?vfs=<shell image>&profile=scummvm`) runs unmodified
-upstream ScummVM's SCUMM engine fullscreen on `/dev/dri/card0`: SDL2's
+upstream ScummVM fullscreen on `/dev/dri/card0`: SDL2's
 KMSDRM backend takes DRM master and renders GLES2 straight to the display,
-and audio goes through OSS on `/dev/dsp`. The engine
+and audio goes through OSS on `/dev/dsp`. The program
 (`/usr/bin/scummvm`) and the GUI data the package declares as runtime files
 (themes, icons and fonts under `/usr/share/scummvm`) are lazy files in the
-shell image, fetched on first use. The machine's command is
+shell image, fetched on first use.
+
+Each engine is a separate plugin, `/usr/lib/scummvm/lib<engine>.so`, and
+also a lazy file: the SCUMM engine (with its `scumm-7-8` sub-engine) plus
+the engine of every freeware game below (Sky, Drascula, DreamWeb, Queen,
+God of Thunder, Griffon, Lure, ADL, Parallaction, CGE, CGE2, SLUDGE and
+WAGE). ScummVM's own plugin support loads them with `dlopen` in its
+"uncached" mode, opening only the one engine a game needs, by engine id
+(`sky` → `libsky.so`). Game detection stays in the program, so the launcher
+recognizes every game without loading an engine. A machine therefore
+downloads the program plus the one engine of the game it plays. SDL2's
+`SDL_LoadObject` is the real loader (the `sdl2` package builds with
+`--enable-loadso`), and the program links with `--export-all` so a plugin
+resolves every function it imports against it; the package build fails if
+any plugin import has no export to bind to. The machine's command is
 `/usr/local/bin/scummvm`, a small wrapper in the image that:
 
 - names SDL's backends in the environment. Kandelo has no libudev, so

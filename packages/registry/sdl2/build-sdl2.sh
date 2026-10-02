@@ -123,10 +123,15 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
 #
 # SDL_VIDEO_STATIC_ANGLE forces src/video/SDL_egl.c's LOAD_FUNC macro
 # down its static-link branch, so `_this->egl_data->eglFoo` binds to the
-# libEGL.a symbol instead of going through SDL_LoadFunction. With
-# --disable-loadso that loader returns NULL and EGL init fails before a
-# window can exist. The ANGLE in the name means "EGL symbols are linked
-# in, not dlopened" — the same path the Vita and WinRT builds take.
+# libEGL.a symbol instead of going through SDL_LoadFunction: there is no
+# libEGL.so for the loader to open. The ANGLE in the name means "EGL
+# symbols are linked in, not dlopened" — the same path the Vita and WinRT
+# builds take.
+#
+# SDL_LoadObject itself is real (--enable-loadso, backed by dlopen):
+# programs such as ScummVM load their own plugins through it. A program
+# that links -ldl gets Kandelo's dynamic loader; one that does not gets
+# musl's stub, which fails honestly with "Dynamic loading not supported".
 (
     cd "$BUILD_DIR"
     LIBDRM_CFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \
@@ -174,7 +179,7 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
         --disable-hidapi \
         --disable-sensor \
         --disable-power \
-        --disable-loadso \
+        --enable-loadso \
         --disable-libudev \
         --disable-dbus \
         --disable-ime \
@@ -186,7 +191,6 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
         CFLAGS="-O2 $REPRO_FLAGS -DSDL_VIDEO_STATIC_ANGLE=1" \
         CPPFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \
         LDFLAGS="-L$LIBDRM_PREFIX/lib -L$WASM_POSIX_SYSROOT/lib" \
-        ac_cv_func_dlopen=no \
         ac_cv_func_sysctlbyname=no \
         ac_cv_func_elf_aux_info=no \
         ac_cv_func_pthread_set_name_np=no \

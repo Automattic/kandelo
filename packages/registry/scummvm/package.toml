@@ -2,7 +2,8 @@
 #
 # Ports ScummVM (SCUMM engine with its scumm-7-8 sub-engine — Monkey
 # Island 1-3, Day of the Tentacle, Full Throttle, The Dig; the
-# HE/Humongous sub-engine stays off) to the
+# HE/Humongous sub-engine stays off — plus the engine of every freeware
+# game the ScummVM demo can fetch) to the
 # Kandelo SDL2 stack: Wayland video under wlcompositor (KMSDRM stays
 # compiled into libSDL2.a as the console path) with the GLES2 OpenGL
 # graphics manager presenting through wayland-egl, OSS audio through
@@ -64,6 +65,12 @@ probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[host_tools]]
+name = "wasm-objdump"
+version_constraint = ">=1.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
 name = "shasum"
 version_constraint = ">=6.0"
 probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
@@ -99,3 +106,64 @@ guest_path = "/usr/share/scummvm/gui-icons.dat"
 [[runtime_files]]
 artifact = "share/scummvm/fonts.dat"
 guest_path = "/usr/share/scummvm/fonts.dat"
+
+# Engine plugins. Each engine is a side module the program dlopen()s from
+# /usr/lib/scummvm (ScummVM's PLUGIN_DIRECTORY for --prefix=/usr) only when
+# a game needs it, so each is its own lazy file: a machine downloads the
+# program plus the one engine of the game it plays.
+
+[[runtime_files]]
+artifact = "lib/scummvm/libscumm.so"
+guest_path = "/usr/lib/scummvm/libscumm.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libsky.so"
+guest_path = "/usr/lib/scummvm/libsky.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libdrascula.so"
+guest_path = "/usr/lib/scummvm/libdrascula.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libdreamweb.so"
+guest_path = "/usr/lib/scummvm/libdreamweb.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libqueen.so"
+guest_path = "/usr/lib/scummvm/libqueen.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libgot.so"
+guest_path = "/usr/lib/scummvm/libgot.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libgriffon.so"
+guest_path = "/usr/lib/scummvm/libgriffon.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/liblure.so"
+guest_path = "/usr/lib/scummvm/liblure.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libadl.so"
+guest_path = "/usr/lib/scummvm/libadl.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libparallaction.so"
+guest_path = "/usr/lib/scummvm/libparallaction.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libcge.so"
+guest_path = "/usr/lib/scummvm/libcge.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libcge2.so"
+guest_path = "/usr/lib/scummvm/libcge2.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libsludge.so"
+guest_path = "/usr/lib/scummvm/libsludge.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libwage.so"
+guest_path = "/usr/lib/scummvm/libwage.so"

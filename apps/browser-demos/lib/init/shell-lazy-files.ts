@@ -48,6 +48,20 @@ import scummvmModernUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/sc
 import scummvmClassicUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/scummclassic.zip?url";
 import scummvmGuiIconsUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/gui-icons.dat?url";
 import scummvmFontsUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/fonts.dat?url";
+import scummvmEngineScummUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libscumm.so?url";
+import scummvmEngineSkyUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libsky.so?url";
+import scummvmEngineDrasculaUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libdrascula.so?url";
+import scummvmEngineDreamwebUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libdreamweb.so?url";
+import scummvmEngineQueenUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libqueen.so?url";
+import scummvmEngineGotUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libgot.so?url";
+import scummvmEngineGriffonUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libgriffon.so?url";
+import scummvmEngineLureUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/liblure.so?url";
+import scummvmEngineAdlUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libadl.so?url";
+import scummvmEngineParallactionUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libparallaction.so?url";
+import scummvmEngineCgeUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libcge.so?url";
+import scummvmEngineCge2Url from "@binaries/programs/wasm32/scummvm/lib/scummvm/libcge2.so?url";
+import scummvmEngineSludgeUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libsludge.so?url";
+import scummvmEngineWageUrl from "@binaries/programs/wasm32/scummvm/lib/scummvm/libwage.so?url";
 import wlcompositorWasmUrl from "@binaries/programs/wasm32/wayland-demo/wlcompositor.wasm?url";
 import wltermWasmUrl from "@binaries/programs/wasm32/wayland-demo/wlterm.wasm?url";
 import wlclockWasmUrl from "@binaries/programs/wasm32/wayland-demo/wlclock.wasm?url";
@@ -108,6 +122,20 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/scummvm/share/scummvm/scummclassic.zip": scummvmClassicUrl,
   "programs/scummvm/share/scummvm/gui-icons.dat": scummvmGuiIconsUrl,
   "programs/scummvm/share/scummvm/fonts.dat": scummvmFontsUrl,
+  "programs/scummvm/lib/scummvm/libscumm.so": scummvmEngineScummUrl,
+  "programs/scummvm/lib/scummvm/libsky.so": scummvmEngineSkyUrl,
+  "programs/scummvm/lib/scummvm/libdrascula.so": scummvmEngineDrasculaUrl,
+  "programs/scummvm/lib/scummvm/libdreamweb.so": scummvmEngineDreamwebUrl,
+  "programs/scummvm/lib/scummvm/libqueen.so": scummvmEngineQueenUrl,
+  "programs/scummvm/lib/scummvm/libgot.so": scummvmEngineGotUrl,
+  "programs/scummvm/lib/scummvm/libgriffon.so": scummvmEngineGriffonUrl,
+  "programs/scummvm/lib/scummvm/liblure.so": scummvmEngineLureUrl,
+  "programs/scummvm/lib/scummvm/libadl.so": scummvmEngineAdlUrl,
+  "programs/scummvm/lib/scummvm/libparallaction.so": scummvmEngineParallactionUrl,
+  "programs/scummvm/lib/scummvm/libcge.so": scummvmEngineCgeUrl,
+  "programs/scummvm/lib/scummvm/libcge2.so": scummvmEngineCge2Url,
+  "programs/scummvm/lib/scummvm/libsludge.so": scummvmEngineSludgeUrl,
+  "programs/scummvm/lib/scummvm/libwage.so": scummvmEngineWageUrl,
   "programs/wayland-demo/wlcompositor.wasm": wlcompositorWasmUrl,
   "programs/wayland-demo/wlterm.wasm": wltermWasmUrl,
   "programs/wayland-demo/wlclock.wasm": wlclockWasmUrl,

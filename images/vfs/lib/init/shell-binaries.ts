@@ -183,6 +183,20 @@ export const SHELL_LAZY_BINARY_SPECS = [
     symlinks: [],
     mode: 0o644,
   },
+  // ScummVM's engine plugins (the package's lib/scummvm runtime files).
+  // ScummVM dlopen()s only the engine a game needs, so each is its own lazy
+  // file: a machine downloads the engines of the games it plays.
+  ...[
+    "scumm", "sky", "drascula", "dreamweb", "queen", "got", "griffon",
+    "lure", "adl", "parallaction", "cge", "cge2", "sludge", "wage",
+  ].map((engine) => ({
+    id: `scummvm-engine-${engine}`,
+    dependency: "scummvm",
+    resolverPath: `programs/scummvm/lib/scummvm/lib${engine}.so`,
+    vfsPath: `/usr/lib/scummvm/lib${engine}.so`,
+    symlinks: [] as string[],
+    mode: 0o644,
+  })),
   // The Qt clients the launcher offers. quickshell.wasm alone is ~93 MB.
   { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/local/bin/qtgallery", symlinks: [] },
   { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/local/bin/quickshell", symlinks: [] },
