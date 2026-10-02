@@ -11,6 +11,11 @@
  * device, which is what the host waits for before it delivers the user's
  * paste chord.
  *
+ * In the other direction (copy-out), when anything else on the desktop sets
+ * the selection, kclipd reads it as text and writes it to the device as a
+ * KANDELO_CLIPBOARD_KIND_GUEST_TEXT record, which the host reads after the
+ * user's copy gesture and puts on the host clipboard.
+ *
  * kclipd owns the selection until something else replaces it; it serves
  * every paste (ext_data_control_source_v1.send) by writing the text into the
  * pipe the pasting client passed, without blocking its event loop, so a
@@ -73,7 +78,16 @@ static struct {
     int finished;
     struct writer writers[MAX_WRITERS];
     int n_writers;
-} k;
+    /* kclipd's selection while it holds it. The compositor cancels this
+     * source before it announces any replacement, so a selection event that
+     * arrives while it is set is the echo of kclipd's own set_selection —
+     * host text, not a guest copy to report back to the host. */
+    struct source *owned;
+    /* Copy-out: the desktop selection being read, if any. */
+    int reader_fd;
+    char *reader_buf;
+    size_t reader_len;
+} k = { .reader_fd = -1 };
 
 static void text_unref(struct text *t) {
     if (t && --t->refs == 0) free(t);
@@ -121,6 +135,7 @@ static void source_send(void *data, struct ext_data_control_source_v1 *s,
 static void source_cancelled(void *data, struct ext_data_control_source_v1 *s) {
     struct source *src = data;
     src->cancelled = 1;
+    if (k.owned == src) k.owned = NULL;
     ext_data_control_source_v1_destroy(s);
     text_unref(src->text);
     free(src);
@@ -133,27 +148,128 @@ static const struct ext_data_control_source_v1_listener source_listener = {
 
 /* ---- ext_data_control_device_v1 ---------------------------------------- */
 
-/* kclipd only writes the selection; offers it is shown are released. */
+/* The text types kclipd can read back for copy-out, best first. */
+struct offer_mimes {
+    int utf8, plain, utf8_string;
+};
 static void offer_offer(void *data, struct ext_data_control_offer_v1 *o,
-                        const char *mime) {}
+                        const char *mime) {
+    struct offer_mimes *m = data;
+    if (!strcmp(mime, "text/plain;charset=utf-8")) m->utf8 = 1;
+    else if (!strcmp(mime, "text/plain")) m->plain = 1;
+    else if (!strcmp(mime, "UTF8_STRING")) m->utf8_string = 1;
+}
 static const struct ext_data_control_offer_v1_listener offer_listener = {
     .offer = offer_offer,
 };
 static void device_data_offer(void *data, struct ext_data_control_device_v1 *d,
                               struct ext_data_control_offer_v1 *offer) {
-    ext_data_control_offer_v1_add_listener(offer, &offer_listener, NULL);
+    ext_data_control_offer_v1_add_listener(offer, &offer_listener,
+                                           calloc(1, sizeof(struct offer_mimes)));
 }
+
+static void reader_abandon(void) {
+    if (k.reader_fd >= 0) close(k.reader_fd);
+    free(k.reader_buf);
+    k.reader_fd = -1;
+    k.reader_buf = NULL;
+    k.reader_len = 0;
+}
+
+/* Copy-out: someone else set the selection. Read it as text through a pipe
+ * (non-blocking, from the main loop); a newer selection replaces a read in
+ * progress. */
 static void device_selection(void *data, struct ext_data_control_device_v1 *d,
                              struct ext_data_control_offer_v1 *offer) {
-    if (offer) ext_data_control_offer_v1_destroy(offer);
+    if (k.owned) {
+        if (offer) {
+            free(ext_data_control_offer_v1_get_user_data(offer));
+            ext_data_control_offer_v1_destroy(offer);
+        }
+        return;
+    }
+    if (!offer) return;
+    struct offer_mimes *m = ext_data_control_offer_v1_get_user_data(offer);
+    const char *mime = m->utf8 ? "text/plain;charset=utf-8"
+                     : m->plain ? "text/plain"
+                     : m->utf8_string ? "UTF8_STRING" : NULL;
+    free(m);
+    if (mime) {
+        int fds[2];
+        if (pipe(fds) == 0) {
+            reader_abandon();
+            fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+            fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+            fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK);
+            ext_data_control_offer_v1_receive(offer, mime, fds[1]);
+            close(fds[1]);
+            k.reader_fd = fds[0];
+        } else {
+            fprintf(stderr, "kclipd: pipe for copy-out: %s\n", strerror(errno));
+        }
+    }
+    ext_data_control_offer_v1_destroy(offer);
 }
+
+/* Read what the pipe has; at EOF, report the whole text to the device. */
+static void reader_pump(int dev) {
+    for (;;) {
+        char chunk[16384];
+        ssize_t n = read(k.reader_fd, chunk, sizeof(chunk));
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && errno == EAGAIN) return;
+        if (n < 0) {
+            fprintf(stderr, "kclipd: reading the selection: %s\n", strerror(errno));
+            reader_abandon();
+            return;
+        }
+        if (n == 0) break;
+        if (k.reader_len + (size_t)n > KANDELO_CLIPBOARD_MAX_TEXT_BYTES) {
+            /* Never a truncated copy: the host clipboard keeps what it had. */
+            fprintf(stderr, "kclipd: selection over %d bytes; not copied out\n",
+                    KANDELO_CLIPBOARD_MAX_TEXT_BYTES);
+            reader_abandon();
+            return;
+        }
+        char *grown = realloc(k.reader_buf, k.reader_len + (size_t)n);
+        if (!grown) { reader_abandon(); return; }
+        k.reader_buf = grown;
+        memcpy(k.reader_buf + k.reader_len, chunk, (size_t)n);
+        k.reader_len += (size_t)n;
+    }
+    size_t total = sizeof(struct kandelo_clipboard_record) + k.reader_len;
+    char *rec = malloc(total);
+    if (rec) {
+        struct kandelo_clipboard_record h = {
+            .version = KANDELO_CLIPBOARD_RECORD_VERSION,
+            .kind = KANDELO_CLIPBOARD_KIND_GUEST_TEXT,
+            .seq = 0,
+            .len = (uint32_t)k.reader_len,
+        };
+        memcpy(rec, &h, sizeof(h));
+        if (k.reader_len) memcpy(rec + sizeof(h), k.reader_buf, k.reader_len);
+        if (write(dev, rec, total) == (ssize_t)total) {
+            printf("KCLIPD_COPIED len=%zu\n", k.reader_len);
+            fflush(stdout);
+        } else {
+            /* Not UTF-8, or the device refused it: say so, copy nothing. */
+            fprintf(stderr, "kclipd: reporting the selection: %s\n", strerror(errno));
+        }
+        free(rec);
+    }
+    reader_abandon();
+}
+
 static void device_finished(void *data, struct ext_data_control_device_v1 *d) {
     k.finished = 1;
 }
 static void device_primary_selection(void *data,
                                      struct ext_data_control_device_v1 *d,
                                      struct ext_data_control_offer_v1 *offer) {
-    if (offer) ext_data_control_offer_v1_destroy(offer);
+    if (offer) {
+        free(ext_data_control_offer_v1_get_user_data(offer));
+        ext_data_control_offer_v1_destroy(offer);
+    }
 }
 static const struct ext_data_control_device_v1_listener device_listener = {
     .data_offer = device_data_offer,
@@ -250,6 +366,7 @@ static int handle_offer(int dev) {
     ext_data_control_source_v1_add_listener(src->resource, &source_listener, src);
     for (size_t i = 0; i < N_MIMES; i++)
         ext_data_control_source_v1_offer(src->resource, MIMES[i]);
+    k.owned = src;
     ext_data_control_device_v1_set_selection(k.device, src->resource);
     /* After the roundtrip the compositor has processed set_selection; a
      * source it rejected or that something replaced at once is cancelled. */
@@ -300,13 +417,17 @@ int main(void) {
             wl_display_dispatch_pending(k.display);
         wl_display_flush(k.display);
 
-        struct pollfd fds[2 + MAX_WRITERS];
+        /* dev, the compositor, the copy-out reader (-1 = none, which poll
+         * skips), then one entry per paste being written. */
+        struct pollfd fds[3 + MAX_WRITERS];
         fds[0] = (struct pollfd){ .fd = dev, .events = POLLIN };
         fds[1] = (struct pollfd){ .fd = wl_fd, .events = POLLIN };
+        fds[2] = (struct pollfd){ .fd = k.reader_fd, .events = POLLIN };
         for (int i = 0; i < k.n_writers; i++)
-            fds[2 + i] = (struct pollfd){ .fd = k.writers[i].fd, .events = POLLOUT };
+            fds[3 + i] = (struct pollfd){ .fd = k.writers[i].fd, .events = POLLOUT };
         int nw = k.n_writers;
-        if (poll(fds, (nfds_t)(2 + nw), -1) < 0) {
+        int reader = k.reader_fd;
+        if (poll(fds, (nfds_t)(3 + nw), -1) < 0) {
             wl_display_cancel_read(k.display);
             if (errno == EINTR) continue;
             fprintf(stderr, "kclipd: poll: %s\n", strerror(errno));
@@ -326,8 +447,12 @@ int main(void) {
         }
         /* Pump pastes from the end so writer_close's swap stays valid. */
         for (int i = nw - 1; i >= 0; i--)
-            if (fds[2 + i].revents && writer_pump(&k.writers[i]))
+            if (fds[3 + i].revents && writer_pump(&k.writers[i]))
                 writer_close(i);
+        /* Only if the reader polled is still the current one: a selection
+         * dispatched above may have replaced it. */
+        if (reader >= 0 && reader == k.reader_fd && fds[2].revents)
+            reader_pump(dev);
         if ((fds[0].revents & POLLIN) && handle_offer(dev) < 0) return 1;
     }
     fprintf(stderr, "kclipd: the compositor withdrew the data-control device\n");

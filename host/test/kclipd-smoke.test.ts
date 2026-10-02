@@ -9,8 +9,10 @@
  *
  * The offer resolves only once kclipd has installed the selection, which is
  * what lets the browser deliver the user's paste chord afterwards. A later
- * in-desktop copy replaces kclipd's selection, and a later host offer
- * replaces that. Skips if the binaries aren't built.
+ * in-desktop copy replaces kclipd's selection — and kclipd reports it back
+ * (copy-out), which NodeKernelHost.waitForGuestClipboardText returns — and
+ * a later host offer replaces that. kclipd's own selections are never
+ * reported back. Skips if the binaries aren't built.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -97,11 +99,23 @@ describe("kclipd — host clipboard into the Wayland selection", () => {
           `CLIP_PASTED len=${new TextEncoder().encode(hostText).length} text=${hostText}`,
         );
 
-        // An in-desktop copy replaces the host text...
-        host.spawn(clipBytes, ["wlclip-test", "copy", "copied in the guest"], {})
+        // kclipd's own selection (the host text) is not a guest copy.
+        expect(await host.waitForGuestClipboardText({ timeoutMs: 300 }), dump())
+          .toEqual({ ok: false, reason: "timeout" });
+        expect(all).not.toContain("KCLIPD_COPIED");
+
+        // An in-desktop copy replaces the host text, and copy-out hands it to
+        // a host that started waiting before the copy (as the browser does on
+        // the copy chord's keydown).
+        const guestText = "copied in the guest ✓";
+        const copiedOut = host.waitForGuestClipboardText({ timeoutMs: 20_000 });
+        host.spawn(clipBytes, ["wlclip-test", "copy", guestText], {})
           .catch(() => {});
         await waitFor(() => all, "CLIP_COPY_SET", 20_000, dump);
-        expect(await paste("guest copy")).toContain("text=copied in the guest");
+        expect(await copiedOut, dump()).toEqual({ ok: true, text: guestText });
+        expect(all).toContain(`KCLIPD_COPIED len=${new TextEncoder().encode(guestText).length}`);
+        expect(all).not.toMatch(/KCLIPD[^\n]*copied in the guest/);
+        expect(await paste("guest copy")).toContain(`text=${guestText}`);
 
         // ...and the next host offer replaces that.
         expect(await host.offerClipboardText("second host text")).toEqual({
@@ -109,6 +123,8 @@ describe("kclipd — host clipboard into the Wayland selection", () => {
           seq: expect.any(Number),
         });
         expect(await paste("second host offer")).toContain("text=second host text");
+        // Still exactly one copy-out: the second host offer was not echoed.
+        expect(all.match(/KCLIPD_COPIED/g)).toHaveLength(1);
       } finally {
         await host.destroy().catch(() => {});
       }
