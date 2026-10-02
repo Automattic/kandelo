@@ -20,6 +20,7 @@
 #     WASM_POSIX_DEP_SOURCE_SHA256   # expected sha256 of the tarball
 #     WASM_POSIX_DEP_FREETYPE_DIR    # resolved freetype prefix
 #     WASM_POSIX_DEP_GLIB_DIR        # resolved glib prefix
+#     WASM_POSIX_DEP_LIBCXX_DIR      # resolved libc++/libc++abi prefix
 
 set -euo pipefail
 
@@ -41,6 +42,7 @@ fi
 
 FREETYPE_PREFIX="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not set (must be invoked via cargo xtask build-deps resolve harfbuzz)}"
 GLIB_PREFIX="${WASM_POSIX_DEP_GLIB_DIR:?WASM_POSIX_DEP_GLIB_DIR not set}"
+LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:?WASM_POSIX_DEP_LIBCXX_DIR not set}"
 
 # The amalgam includes <cassert>. wasm32posix-c++ resolves libc++ headers
 # through the sysroot, so project a private sysroot with the resolved libcxx
@@ -110,6 +112,10 @@ for h in hb.h hb-aat.h hb-aat-layout.h hb-blob.h hb-buffer.h \
     cp "$SRC_DIR/src/$h" "$INSTALL_DIR/include/harfbuzz/"
 done
 
+# libharfbuzz.a is C++ and references the libc++/libc++abi runtime it was
+# compiled against (std::mutex, operator new, ...). A static archive carries
+# no record of that, so the .pc must: a C consumer (pango's tests, any C
+# program) links with the C driver, which does not add libc++ itself.
 cat > "$INSTALL_DIR/lib/pkgconfig/harfbuzz.pc" <<EOF
 prefix=$INSTALL_DIR
 libdir=\${prefix}/lib
@@ -118,7 +124,7 @@ includedir=\${prefix}/include
 Name: harfbuzz
 Description: harfbuzz for wasm32-posix-kernel (static, freetype backend)
 Version: $HARFBUZZ_VERSION
-Libs: -L\${libdir} -lharfbuzz
+Libs: -L\${libdir} -lharfbuzz -L$LIBCXX_PREFIX/lib -lc++ -lc++abi
 Cflags: -I\${includedir}/harfbuzz
 Requires.private: freetype2, glib-2.0
 EOF

@@ -64,8 +64,8 @@ if [ ! -d "$SRC_DIR" ]; then
     # ever needs one.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/giomodule-no-dbus-builtins.patch"
     # Route arity-changing callback casts (GDestroyNotify-as-GFunc,
-    # GCompareFunc-as-GCompareDataFunc, GClosureNotify casts) through
-    # typed thunks. Native ABIs tolerate the extra arguments; wasm's
+    # GCompareFunc-as-GCompareDataFunc, GClosureNotify casts, GTest
+    # test functions stored as GTestFixtureFunc) through typed thunks. Native ABIs tolerate the extra arguments; wasm's
     # typed call_indirect traps on them.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-signatures.patch"
     # GCredentials backend selection keys off platform macros;
@@ -435,19 +435,20 @@ for lib in glib gmodule gmodule-no-export gobject gio gio-unix gthread; do
         # Static build — gmodule and gmodule-no-export are the same
         # archive; gdk-pixbuf and GTK3 probe the no-export variant.
         gmodule | gmodule-no-export) libs="-lgmodule-2.0 -lglib-2.0" ;;
-        gobject) libs="-lgobject-2.0 -lglib-2.0 -lffi" ;;
+        gobject) libs="-lgobject-2.0 -lglib-2.0 -L$LIBFFI_PREFIX/lib -lffi" ;;
         # The unix symbols (gunixfdlist, gunixsocketaddress, …) are
         # compiled into libgio; gio-unix-2.0 is a probe-name shim for
         # consumers that require it (GTK3, dbus tools).
-        gio | gio-unix) libs="-lgio-2.0 -lgobject-2.0 -lgmodule-2.0 -lglib-2.0 -lffi -lz" ;;
+        gio | gio-unix) libs="-lgio-2.0 -lgobject-2.0 -lgmodule-2.0 -lglib-2.0 -L$LIBFFI_PREFIX/lib -lffi -L$ZLIB_PREFIX/lib -lz" ;;
         # Threading lives in libglib since 2.32; upstream still ships
         # a gthread-2.0.pc for consumers that probe it (pango 1.42).
         gthread) libs="-lglib-2.0" ;;
     esac
     # gregex.c lives in libglib-2.0, which every variant above links,
-    # so each one needs pcre2. The search path is absolute: consumer
+    # so each one needs pcre2. Every dependency library carries an
+    # absolute search path (pcre2 here, libffi and zlib above): consumer
     # build scripts compose PKG_CONFIG_PATH from their own declared
-    # prefixes and would not find a bare -lpcre2-8.
+    # prefixes and would not find a bare -lpcre2-8, -lffi, or -lz.
     libs="$libs -L$PCRE2_PREFIX/lib -lpcre2-8"
     cat > "$PC_DIR/$lib-2.0.pc" <<EOF
 prefix=$INSTALL_DIR
