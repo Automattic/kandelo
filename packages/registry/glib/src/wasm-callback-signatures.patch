@@ -951,3 +951,165 @@
                         weak_pointer_location);
  }
  
+--- a/glib/gtestutils.c	2026-10-01 20:54:49
++++ b/glib/gtestutils.c	2026-10-01 20:55:36
+@@ -677,6 +677,13 @@
+   void   (*fixture_test)     (void*, gconstpointer);
+   void   (*fixture_teardown) (void*, gconstpointer);
+   gpointer test_data;
++  /* wasm32-posix-kernel: the typed callbacks g_test_add_func() and
++   * g_test_add_data_func{,_full}() were given. Upstream stores them only
++   * cast to GTestFixtureFunc and calls them with two arguments; wasm's
++   * typed call_indirect traps on that arity change. */
++  GTestFunc      plain_test;
++  GTestDataFunc  data_test;
++  GDestroyNotify data_free;
+ };
+ struct GTestSuite
+ {
+@@ -2508,6 +2515,17 @@
+  *
+  * Since: 2.28
+  */
++static void
++test_add_vtable_typed (const char       *testpath,
++                       gsize             data_size,
++                       gconstpointer     test_data,
++                       GTestFixtureFunc  data_setup,
++                       GTestFixtureFunc  fixture_test_func,
++                       GTestFixtureFunc  data_teardown,
++                       GTestFunc         plain_test,
++                       GTestDataFunc     data_test,
++                       GDestroyNotify    data_free);
++
+ void
+ g_test_add_vtable (const char       *testpath,
+                    gsize             data_size,
+@@ -2515,6 +2533,21 @@
+                    GTestFixtureFunc  data_setup,
+                    GTestFixtureFunc  fixture_test_func,
+                    GTestFixtureFunc  data_teardown)
++{
++  test_add_vtable_typed (testpath, data_size, test_data, data_setup,
++                         fixture_test_func, data_teardown, NULL, NULL, NULL);
++}
++
++static void
++test_add_vtable_typed (const char       *testpath,
++                       gsize             data_size,
++                       gconstpointer     test_data,
++                       GTestFixtureFunc  data_setup,
++                       GTestFixtureFunc  fixture_test_func,
++                       GTestFixtureFunc  data_teardown,
++                       GTestFunc         plain_test,
++                       GTestDataFunc     data_test,
++                       GDestroyNotify    data_free)
+ {
+   gchar **segments;
+   guint ui;
+@@ -2559,6 +2592,9 @@
+             g_error ("duplicate test case path: %s", testpath);
+ 
+           tc = g_test_create_case (seg, data_size, test_data, data_setup, fixture_test_func, data_teardown);
++          tc->plain_test = plain_test;
++          tc->data_test = data_test;
++          tc->data_free = data_free;
+           g_test_suite_add (suite, tc);
+         }
+     }
+@@ -2816,7 +2852,8 @@
+   g_return_if_fail (testpath != NULL);
+   g_return_if_fail (testpath[0] == '/');
+   g_return_if_fail (test_func != NULL);
+-  g_test_add_vtable (testpath, 0, NULL, NULL, (GTestFixtureFunc) test_func, NULL);
++  test_add_vtable_typed (testpath, 0, NULL, NULL, (GTestFixtureFunc) test_func, NULL,
++                         test_func, NULL, NULL);
+ }
+ 
+ /**
+@@ -2862,7 +2899,8 @@
+   g_return_if_fail (testpath[0] == '/');
+   g_return_if_fail (test_func != NULL);
+ 
+-  g_test_add_vtable (testpath, 0, test_data, NULL, (GTestFixtureFunc) test_func, NULL);
++  test_add_vtable_typed (testpath, 0, test_data, NULL, (GTestFixtureFunc) test_func, NULL,
++                         NULL, test_func, NULL);
+ }
+ 
+ /**
+@@ -2889,9 +2927,10 @@
+   g_return_if_fail (testpath[0] == '/');
+   g_return_if_fail (test_func != NULL);
+ 
+-  g_test_add_vtable (testpath, 0, test_data, NULL,
+-                     (GTestFixtureFunc) test_func,
+-                     (GTestFixtureFunc) data_free_func);
++  test_add_vtable_typed (testpath, 0, test_data, NULL,
++                         (GTestFixtureFunc) test_func,
++                         (GTestFixtureFunc) data_free_func,
++                         NULL, test_func, data_free_func);
+ }
+ 
+ static gboolean
+@@ -3056,6 +3095,32 @@
+ 
+ static gboolean test_should_run (const char *test_path,
+                                  const char *cmp_path);
++
++/* wasm32-posix-kernel: call a case's test and teardown through the
++ * types they were registered with. fixture is tc->test_data whenever
++ * fixture_size is 0, which is the only shape the typed adders create,
++ * so each typed callback receives the argument upstream passes first. */
++static void
++test_case_call_test (GTestCase *tc,
++                     void      *fixture)
++{
++  if (tc->plain_test)
++    tc->plain_test ();
++  else if (tc->data_test)
++    tc->data_test (tc->test_data);
++  else
++    tc->fixture_test (fixture, tc->test_data);
++}
++
++static void
++test_case_call_teardown (GTestCase *tc,
++                         void      *fixture)
++{
++  if (tc->data_free)
++    tc->data_free (tc->test_data);
++  else
++    tc->fixture_teardown (fixture, tc->test_data);
++}
+ 
+ static gboolean
+ test_case_run (GTestCase  *tc,
+@@ -3112,7 +3177,7 @@
+               test_run_seed (test_run_seedstr);
+               if (tc->fixture_setup)
+                 tc->fixture_setup (fixture, tc->test_data);
+-              tc->fixture_test (fixture, tc->test_data);
++              test_case_call_test (tc, fixture);
+               test_trap_clear();
+               while (test_destroy_queue)
+                 {
+@@ -3122,8 +3187,9 @@
+                   g_slice_free (DestroyEntry, dentry);
+                 }
+               if (tc->fixture_teardown)
+-                tc->fixture_teardown (fixture, tc->test_data);
++                test_case_call_teardown (tc, fixture);
+               tc->fixture_teardown = NULL;
++              tc->data_free = NULL;
+               if (tc->fixture_size)
+                 g_free (fixture);
+               g_timer_stop (test_run_timer);
+@@ -3331,7 +3397,7 @@
+    * passed ownership of it into g_test_add_data_func_full() with a
+    * #GDestroyNotify. */
+   if (test_case->fixture_size == 0 && test_case->fixture_teardown != NULL)
+-    test_case->fixture_teardown (test_case->test_data, test_case->test_data);
++    test_case_call_teardown (test_case, test_case->test_data);
+ 
+   g_free (test_case->name);
+   g_slice_free (GTestCase, test_case);
