@@ -620,6 +620,15 @@ one lexical call for both normal execution and replay. The lexical fast path
 adds no ordinary-activation local and no continuation bytes; the
 non-consuming event lookup runs only during replay.
 
+Only activations that replay can enter from outside their lexical caller get
+a resume thunk and catalog record: functions exported, referenced by an
+element segment or `ref.func`, or targeted by a direct `return_call`. Every
+other activation is reachable only by direct calls from activations, which
+re-execute the call lexically. The catalog's ordinal-to-slot records are
+therefore sparse but still strictly ordered; a replay event naming a function
+without a thunk fails in the host with "fork replay target ... is not
+registered" rather than mis-resuming.
+
 A resume thunk enters its function with zero for every scalar parameter when
 that is the shorter encoding. The function's preamble restores each scalar
 parameter from the frame before any other code reads it, and its
@@ -698,11 +707,19 @@ sections:
   activation callees validate the next frame themselves; indirect, reference,
   and imported boundaries go through transport helpers that perform the
   process resume routing (see [Frame format](#frame-format)).
-- **Shared unwind handler.** A function with three or more fork-reaching call
-  sites gives each call boundary `i32.const <call index>; br $handler`; one
-  handler per function calls `__wpk_fork_select_unwind_frame(call_index,
-  frame_size)` and branches to the postamble or the abort restart. Functions
-  with fewer sites keep that sequence inline.
+- **One unwind catch per function.** Each function's body sits in a single
+  `try_table` that catches the private unwind tag; the handler calls
+  `__wpk_fork_select_unwind_frame(call_index, frame_size)` and branches to
+  the postamble or the abort restart. A function with two or more
+  fork-reaching call sites records each call's static index in one i32 local
+  (`i32.const <index>; local.set`) immediately before the call; a function
+  with one call site passes the constant zero and declares no local. A
+  per-call `try_table` with its result and catch blocks was the largest
+  per-call cost in the module and also the most expensive construct in
+  baseline-compiled code. The one local is not a per-reference, per-recipe,
+  or per-catch local: measured on the PR #701 recursion shape with two fork
+  call sites, it did not change the surviving recursion depth on V8 (Liftoff
+  and optimized) or SpiderMonkey (baseline and optimized).
 - **Shared frame codecs.** The postamble passes its ordinal, catch selector,
   and local-resident scalars to `__wpk_fork_frame_save_N`, which writes the
   header and scalars and, when nothing else writes the payload, commits it.
@@ -726,9 +743,13 @@ sections:
   followed by `global.get; br_table`; a region with one landing uses only the
   guard, and a landing with nothing before it needs no dispatch.
 
-Measured on Quickshell (29.4 MB raw link, 2026-10-01), the code section went
-from 67.1 MB to 40.8 MB. The added code per instrumented function went from a
-median of 370 bytes to 157 bytes (p90 1,697 to 710). Building the crate with
+Measured on Quickshell (29.4 MB raw link, 2026-10-02), the code section went
+from 67.1 MB to 38.0 MB and the file without its name section from 80.7 MB to
+51.4 MB. The added code per instrumented function went from a median of 370
+bytes to 158 bytes (p90 1,697 to 672). SpiderMonkey compiled 12 copies of the
+module before running out of memory with lazy tiering, up from 6 (7 with
+eager tier-2, up from 3). For bash, instrumentation overhead in the code
+section fell from 1.68 MB to 0.67 MB. Building the crate with
 `--features size-attribution` and setting `WPK_FORK_SIZE_ATTRIBUTION=<path>`
 writes a per-function TSV that attributes every output byte to the emitter
 that produced it; see `crates/fork-instrument/src/size_attribution.rs`.

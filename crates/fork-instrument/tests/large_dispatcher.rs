@@ -388,13 +388,12 @@ fn bucketed_depth_indirect_dispatcher_passes_v8_limit() {
     }
 }
 
-/// Every per-call private-tag handler must reach the function's one shared
-/// unwind handler with its static call index, and that handler must target
-/// the postamble after a successful reservation and the live-restart loop
-/// after synchronous allocation failure. A regression re-pointing a site at a
-/// leaf-local `$child_K` / `$dispatch_normal` would still validate as wasm but
-/// scramble the fork frame on the next REWIND. Exact target counts pin one
-/// statically indexed boundary per lexical call.
+/// Every lexical call must record its static index before calling, and the
+/// one function-wide private-tag catch must hand that index to frame
+/// selection, then target the postamble after a successful reservation and
+/// the live-restart loop after synchronous allocation failure. A wrong index
+/// would still validate as wasm but scramble the fork frame on the next
+/// REWIND.
 ///
 /// N=33 straddles `BUCKET_SIZE=32` to force one full leaf + one
 /// singleton leaf — exercises both first-leaf and last-leaf paths.
@@ -416,16 +415,17 @@ fn leaf_unwind_br_targets_function_level_unwind_save() {
                 panic!("dispatcher should be local");
             };
 
-            // loop $restart (block $postamble (block $handler (result i32)
-            //   (block $unwind_save ...) br $postamble) <select> br_if
+            // loop $restart (block $postamble (block $caught (try_table
+            //   (catch $unwind $caught) (block $unwind_save ...) br $postamble))
+            //   local.get $call_index <frame size> call $select br_if
             //   $postamble br $restart) <postamble>
             let postamble = dispatcher_unwind_save(local);
-            let Some((Instr::Block(ir::Block { seq: handler }), _)) =
-                local.block(postamble).instrs.first()
-            else {
-                panic!("{label} N={n}: expected a shared unwind handler block");
-            };
-            let handler = *handler;
+            let handler: Vec<&Instr> = local
+                .block(postamble)
+                .instrs
+                .iter()
+                .map(|(instruction, _)| instruction)
+                .collect();
             let restart_loop = local
                 .block(local.entry_block())
                 .instrs
@@ -436,47 +436,61 @@ fn leaf_unwind_br_targets_function_level_unwind_save() {
                 })
                 .next_back()
                 .expect("expected live-restart loop");
-            let targets = collect_br_targets(local);
-            let count = |wanted: InstrSeqId| targets.iter().filter(|&&t| t == wanted).count();
+            let [
+                Instr::Block(_),
+                Instr::LocalGet(ir::LocalGet { local: call_index }),
+                Instr::Const(_),
+                Instr::Call(_),
+                Instr::BrIf(ir::BrIf { block: committed }),
+                Instr::Br(ir::Br { block: restarted }),
+            ] = handler.as_slice()
+            else {
+                panic!("{label} N={n}: unexpected unwind handler: {handler:?}");
+            };
+            assert_eq!(*committed, postamble, "{label} N={n}: success commits");
+            assert_eq!(*restarted, restart_loop, "{label} N={n}: failure restarts");
 
+            // Every lexical call records its own static index first.
+            let mut recorded = Vec::new();
+            fn walk(local: &LocalFunction, seq: InstrSeqId, call_index: ir::LocalId, out: &mut Vec<i32>) {
+                for pair in local.block(seq).instrs.windows(2) {
+                    if let (
+                        Instr::Const(ir::Const { value: ir::Value::I32(value) }),
+                        Instr::LocalSet(ir::LocalSet { local }),
+                    ) = (&pair[0].0, &pair[1].0)
+                    {
+                        if *local == call_index {
+                            out.push(*value);
+                        }
+                    }
+                }
+                for (instr, _) in &local.block(seq).instrs {
+                    let children: Vec<InstrSeqId> = match instr {
+                        Instr::Block(ir::Block { seq }) | Instr::Loop(ir::Loop { seq }) => vec![*seq],
+                        Instr::IfElse(ir::IfElse { consequent, alternative }) => {
+                            vec![*consequent, *alternative]
+                        }
+                        Instr::TryTable(ir::TryTable { seq, .. }) => vec![*seq],
+                        _ => Vec::new(),
+                    };
+                    for child in children {
+                        walk(local, child, call_index, out);
+                    }
+                }
+            }
+            walk(local, local.entry_block(), *call_index, &mut recorded);
+            recorded.sort();
             assert_eq!(
-                count(handler),
-                n,
-                "{label} N={n}: each static call boundary must branch to the shared handler",
+                recorded,
+                (0..n as i32).collect::<Vec<_>>(),
+                "{label} N={n}: each static call records its own index",
             );
-            assert_eq!(
-                count(restart_loop),
-                1,
-                "{label} N={n}: the shared handler restarts on allocation failure",
-            );
-            assert_eq!(
-                count(postamble),
-                1,
-                "{label} N={n}: an invalid replay index leaves for the postamble",
-            );
-            let handler_tail: Vec<&Instr> = local
-                .block(postamble)
-                .instrs
-                .iter()
-                .map(|(instruction, _)| instruction)
-                .collect();
-            assert!(
-                matches!(handler_tail.as_slice(), [
-                    Instr::Block(_),
-                    Instr::Const(_),
-                    Instr::Call(_),
-                    Instr::BrIf(ir::BrIf { block }),
-                    Instr::Br(ir::Br { block: restart }),
-                ] if *block == postamble && *restart == restart_loop),
-                "{label} N={n}: the handler selects the frame, then commits to the \
-                 postamble or restarts: {handler_tail:?}",
-            );
+            let targets = collect_br_targets(local);
             assert_eq!(
                 targets.len(),
-                2 * n + 2,
-                "{label} N={n}: expected one normal result-boundary branch and \
-                 one handler branch per static call, plus the handler's restart \
-                 and invalid-index exits",
+                2,
+                "{label} N={n}: only the body's invalid-index exit and the \
+                 handler's restart remain as unconditional branches",
             );
         }
     }

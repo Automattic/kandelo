@@ -1104,69 +1104,65 @@ struct AbortDispatch {
     /// Cold module helper which reserves/selects the frame and writes the
     /// statically supplied call index, returning one on reservation success.
     frame_select: FunctionId,
-    /// Shared per-function unwind handler, used when the function has enough
-    /// fork-reaching call sites to amortize it. Each call boundary then only
-    /// pushes its static call index and branches here; see
-    /// `install_restart_structure`.
-    handler: Option<UnwindHandler>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct UnwindHandler {
-    /// `(result i32)` block whose end runs the frame selection for the call
-    /// index left on the stack.
-    block: InstrSeqId,
+    /// Empty block targeted by the function-wide private-tag catch; its end
+    /// runs frame selection for the call index of the interrupted call.
+    caught: InstrSeqId,
+    /// Body of the function-wide `try_table`.
+    try_body: InstrSeqId,
     /// Block whose end is the postamble.
     postamble: InstrSeqId,
+    /// Holds the static index of the fork-reaching call in progress. Absent
+    /// for a function with one call site, whose index is always zero.
+    call_index_local: Option<LocalId>,
 }
-
-/// Functions with at least this many fork-reaching call sites share one
-/// unwind handler. Each inline handler costs about 12 bytes per call site;
-/// the shared handler costs about 20 bytes per function plus 4 per call site.
-const SHARED_UNWIND_HANDLER_MIN_CALLS: usize = 3;
 
 impl AbortDispatch {
     fn new(
         local: &mut LocalFunction,
         restart_loop: InstrSeqId,
         frame_select: FunctionId,
-        call_sites: usize,
+        call_index_local: Option<LocalId>,
     ) -> Self {
-        let handler = (call_sites >= SHARED_UNWIND_HANDLER_MIN_CALLS).then(|| UnwindHandler {
-            block: local
-                .builder_mut()
-                .dangling_instr_seq(InstrSeqType::Simple(Some(ValType::I32)))
-                .id(),
-            postamble: local
+        let mut block = || {
+            local
                 .builder_mut()
                 .dangling_instr_seq(InstrSeqType::Simple(None))
-                .id(),
-        });
+                .id()
+        };
         AbortDispatch {
             restart_loop,
             frame_select,
-            handler,
+            caught: block(),
+            try_body: block(),
+            postamble: block(),
+            call_index_local,
         }
     }
 }
 
-/// Fill the abort-restart loop: the function body block, the optional shared
-/// unwind handler, and the postamble.
+/// Fill the abort-restart loop: the function body inside one function-wide
+/// private-tag catch, the shared frame selection, and the postamble.
 ///
 /// ```text
 /// loop $restart (result R)
-///   block $postamble            ;; only with a shared handler
-///     block $handler (result i32)
-///       block $unwind_save <body> end
-///       br $postamble           ;; invalid replay index (br_table default)
+///   block $postamble
+///     block $caught
+///       try_table (catch $__wpk_fork_unwind $caught)
+///         block $unwind_save <body> end
+///         br $postamble         ;; invalid replay index (br_table default)
+///       end
 ///     end
-///     <frame size>; call $select (call_index, frame_size)
+///     <call index>; <frame size>; call $select (call_index, frame_size)
 ///     br_if $postamble
 ///     br $restart
 ///   end
 ///   <postamble>
 /// end
 /// ```
+///
+/// WHY one catch per function: a private-tag `try_table` plus result and
+/// catch blocks around every fork-reaching call was the largest remaining
+/// per-call cost. Each call now records its static index in one local first.
 fn install_restart_structure(
     local: &mut LocalFunction,
     unwind_save: InstrSeqId,
@@ -1174,53 +1170,79 @@ fn install_restart_structure(
     ptr_ty: ValType,
     frame_size: u32,
     postamble: Vec<(Instr, InstrLocId)>,
+    unwind_tag: TagId,
 ) {
     let _attr = attr::scope(Attr::RestartLoop);
-    let first = match abort.handler {
-        None => unwind_save,
-        Some(handler) => {
-            {
-                let s = &mut local.block_mut(handler.block).instrs;
-                push_instr(s, Instr::Block(Block { seq: unwind_save }));
-                push_instr(
-                    s,
-                    Instr::Br(Br {
-                        block: handler.postamble,
-                    }),
-                );
+    {
+        let s = &mut local.block_mut(abort.try_body).instrs;
+        push_instr(s, Instr::Block(Block { seq: unwind_save }));
+        push_instr(
+            s,
+            Instr::Br(Br {
+                block: abort.postamble,
+            }),
+        );
+    }
+    {
+        let s = &mut local.block_mut(abort.caught).instrs;
+        push_instr(
+            s,
+            Instr::TryTable(TryTable {
+                seq: abort.try_body,
+                catches: vec![TryTableCatch::Catch {
+                    tag: unwind_tag,
+                    label: abort.caught,
+                }],
+            }),
+        );
+    }
+    {
+        let _attr = attr::scope(Attr::CallUnwindSelect);
+        let s = &mut local.block_mut(abort.postamble).instrs;
+        push_instr(
+            s,
+            Instr::Block(Block {
+                seq: abort.caught,
+            }),
+        );
+        match abort.call_index_local {
+            Some(call_index) => {
+                push_instr(s, Instr::LocalGet(LocalGet { local: call_index }));
             }
-            let _attr = attr::scope(Attr::CallUnwindSelect);
-            let s = &mut local.block_mut(handler.postamble).instrs;
-            push_instr(
+            None => push_instr(
                 s,
-                Instr::Block(Block {
-                    seq: handler.block,
+                Instr::Const(Const {
+                    value: Value::I32(0),
                 }),
-            );
-            push_instr(s, ptr_const(ptr_ty, frame_size as i64));
-            push_instr(
-                s,
-                Instr::Call(Call {
-                    func: abort.frame_select,
-                }),
-            );
-            push_instr(
-                s,
-                Instr::BrIf(walrus::ir::BrIf {
-                    block: handler.postamble,
-                }),
-            );
-            push_instr(
-                s,
-                Instr::Br(Br {
-                    block: abort.restart_loop,
-                }),
-            );
-            handler.postamble
+            ),
         }
-    };
+        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(
+            s,
+            Instr::Call(Call {
+                func: abort.frame_select,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::BrIf(walrus::ir::BrIf {
+                block: abort.postamble,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::Br(Br {
+                block: abort.restart_loop,
+            }),
+        );
+    }
     let restart_seq = &mut local.block_mut(abort.restart_loop).instrs;
-    push_instr(restart_seq, Instr::Block(Block { seq: first }));
+    push_instr(
+        restart_seq,
+        Instr::Block(Block {
+            seq: abort.postamble,
+        }),
+    );
     restart_seq.extend(postamble);
 }
 
@@ -1532,6 +1554,7 @@ fn instrument_one_function_switch(
         &reference_frame,
     );
     ensure_reference_codecs(module, runtime, &mut helpers.reference_codecs, &reference_frame);
+    let call_index_local = (n_calls > 1).then(|| module.locals.add(ValType::I32));
     let local = local_mut(module, func_id);
 
     let preamble_then = local
@@ -1551,7 +1574,7 @@ fn instrument_one_function_switch(
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
     let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
-    let abort = AbortDispatch::new(local, restart_loop, helpers.frame_select, n_calls);
+    let abort = AbortDispatch::new(local, restart_loop, helpers.frame_select, call_index_local);
     let catch_scalar_restore_dispatch = catch_state_locals.and_then(|catch_state| {
         build_plain_catch_scalar_dispatch(
             local,
@@ -1683,7 +1706,17 @@ fn instrument_one_function_switch(
         let _attr = attr::scope(Attr::RestartLoop);
         push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
     }
-    install_restart_structure(local, unwind_save, abort, ptr_ty, frame_size, postamble);
+    install_restart_structure(
+        local,
+        unwind_save,
+        abort,
+        ptr_ty,
+        frame_size,
+        postamble,
+        runtime
+            .unwind_tag
+            .expect("fork-path instrumentation requires the linked unwind tag"),
+    );
 
     // Per-arm captures intercept both Catch and CatchRef dispatch after the
     // body rebuild, save only transferable state, and forward the original
@@ -3933,55 +3966,6 @@ fn emit_materialized_call_args(
     }
 }
 
-/// Handle the private unwind tag at one statically known call site.
-///
-/// Successful reservation records the static call index and branches to the
-/// common frame postamble. A synchronous allocation failure instead selects
-/// the header-sized abort scratch, records the same index, and restarts the
-/// live activation at the dispatch loop. Since the replay preamble is outside
-/// that loop, no activation-local selector/flag is required.
-fn emit_static_call_unwind_handler(
-    local: &mut LocalFunction,
-    seq_id: InstrSeqId,
-    ptr_ty: ValType,
-    frame_size: u32,
-    call_idx: u32,
-    unwind_save: InstrSeqId,
-    abort: AbortDispatch,
-) {
-    let _attr = attr::scope(Attr::CallUnwindSelect);
-    let s = &mut local.block_mut(seq_id).instrs;
-    push_instr(
-        s,
-        Instr::Const(Const {
-            value: Value::I32(call_idx as i32),
-        }),
-    );
-    if let Some(handler) = abort.handler {
-        push_instr(
-            s,
-            Instr::Br(Br {
-                block: handler.block,
-            }),
-        );
-        return;
-    }
-    push_instr(s, ptr_const(ptr_ty, frame_size as i64));
-    push_instr(
-        s,
-        Instr::Call(Call {
-            func: abort.frame_select,
-        }),
-    );
-    push_instr(s, Instr::BrIf(walrus::ir::BrIf { block: unwind_save }));
-    push_instr(
-        s,
-        Instr::Br(Br {
-            block: abort.restart_loop,
-        }),
-    );
-}
-
 // ----------------------------------------------------------------------
 // Shared frame codecs
 // ----------------------------------------------------------------------
@@ -5260,18 +5244,23 @@ fn emit_replay_routed_call_with_unwind_boundary(
     unwind_save: InstrSeqId,
     abort: AbortDispatch,
 ) {
-    let _attr = attr::scope(Attr::CallBoundary);
-    let result_ty = resume_ty.seq;
-    let result_boundary = local.builder_mut().dangling_instr_seq(result_ty).id();
-    let catch_boundary = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
-    let call_body = local.builder_mut().dangling_instr_seq(result_ty).id();
-
+    // The function-wide catch owns frame selection; a call only records its
+    // static index first when the function has more than one.
+    if let Some(call_index) = abort.call_index_local {
+        let _attr = attr::scope(Attr::CallUnwindSelect);
+        let out = &mut local.block_mut(sequence).instrs;
+        push_instr(
+            out,
+            Instr::Const(Const {
+                value: Value::I32(call_idx as i32),
+            }),
+        );
+        push_instr(out, Instr::LocalSet(LocalSet { local: call_index }));
+    }
+    let _ = (ptr_ty, frame_size, unwind_save);
     emit_replay_routed_call(
         local,
-        call_body,
+        sequence,
         target,
         lexical_replay,
         sig_ty,
@@ -5281,54 +5270,6 @@ fn emit_replay_routed_call_with_unwind_boundary(
         storage,
         memory,
         runtime,
-    );
-    {
-        let out = &mut local.block_mut(catch_boundary).instrs;
-        push_instr(
-            out,
-            Instr::TryTable(TryTable {
-                seq: call_body,
-                catches: vec![TryTableCatch::Catch {
-                    tag: runtime
-                        .unwind_tag
-                        .expect("fork call boundary requires private unwind tag"),
-                    label: catch_boundary,
-                }],
-            }),
-        );
-        // On the normal edge the call's results satisfy the result boundary.
-        // The catch edge branches to the end of this simple block and enters
-        // the static unwind handler below with no fabricated result values.
-        push_instr(
-            out,
-            Instr::Br(Br {
-                block: result_boundary,
-            }),
-        );
-    }
-    {
-        let out = &mut local.block_mut(result_boundary).instrs;
-        push_instr(
-            out,
-            Instr::Block(Block {
-                seq: catch_boundary,
-            }),
-        );
-    }
-    emit_static_call_unwind_handler(
-        local,
-        result_boundary,
-        ptr_ty,
-        frame_size,
-        call_idx,
-        unwind_save,
-        abort,
-    );
-    push_instr(
-        &mut local.block_mut(sequence).instrs,
-        Instr::Block(Block {
-            seq: result_boundary,
-        }),
     );
 }
 
@@ -9304,6 +9245,7 @@ fn instrument_one_function_nested_switch(
         &reference_frame,
     );
     ensure_reference_codecs(module, runtime, &mut helpers.reference_codecs, &reference_frame);
+    let call_index_local = (n_calls > 1).then(|| module.locals.add(ValType::I32));
     let local = local_mut(module, func_id);
     let preamble_then = local
         .builder_mut()
@@ -9318,7 +9260,7 @@ fn instrument_one_function_nested_switch(
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
     let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
-    let abort = AbortDispatch::new(local, restart_loop, helpers.frame_select, n_calls);
+    let abort = AbortDispatch::new(local, restart_loop, helpers.frame_select, call_index_local);
     let catch_scalar_restore_dispatch = catch_state_locals.and_then(|catch_state| {
         build_plain_catch_scalar_dispatch(
             local,
@@ -9522,7 +9464,17 @@ fn instrument_one_function_nested_switch(
         let _attr = attr::scope(Attr::RestartLoop);
         push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
     }
-    install_restart_structure(local, unwind_save, abort, ptr_ty, frame_size, postamble);
+    install_restart_structure(
+        local,
+        unwind_save,
+        abort,
+        ptr_ty,
+        frame_size,
+        postamble,
+        runtime
+            .unwind_tag
+            .expect("fork-path instrumentation requires the linked unwind tag"),
+    );
 
     // Tagged-catch capture emission runs after the nested body rebuild.
     if let Some(catch_state) = catch_state_locals {

@@ -375,10 +375,11 @@ fn nested_if_else_dispatch_omits_frame_header_state_locals() {
     let main = extract_function_text(&printed, "main");
     let locals = declared_scalar_local_count(&main);
     assert_eq!(
-        locals, 0,
+        locals, 1,
         "nested if/else dispatch should replay a pure condition without cond_swap; \
-         no abort-frame or call-selector local is declared, \
-         params are not declared locals, and frame_ptr/saved call_idx come from the frame:\n{main}"
+         the only declared local is the call-index local shared by the two \
+         fork call sites (no abort-frame local), params are not declared \
+         locals, and frame_ptr comes from the frame:\n{main}"
     );
 }
 
@@ -409,11 +410,17 @@ fn pr701_shape_replays_pure_condition_and_recursive_arg() {
     let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
     let walk = extract_function_text(&printed, "walk");
     let locals = declared_scalar_local_count(&walk);
+    // WHY one local: with two fork call sites, the function-wide unwind catch
+    // needs the index of the interrupted call. Measured 2026-10-01 with a
+    // recursion-depth harness on this shape, the local did not change the
+    // surviving depth on V8 (Liftoff and default tiers) or SpiderMonkey
+    // (baseline and optimizing); the PR #701 regression came from growing
+    // the declaration from four to twelve locals.
     assert_eq!(
-        locals, 0,
-        "PR701-shaped pure condition and recursive arg should not allocate \
-         arg-spill, condition/carryover, abort-frame, or active-call selector \
-         locals:\n{walk}"
+        locals, 1,
+        "PR701-shaped pure condition and recursive arg should allocate only \
+         the call-index local, never arg-spill, condition/carryover, or \
+         abort-frame locals:\n{walk}"
     );
     let normalized = walk.lines().map(str::trim).collect::<Vec<_>>().join("\n");
     assert!(
@@ -422,9 +429,9 @@ fn pr701_shape_replays_pure_condition_and_recursive_arg() {
          before selecting NORMAL vs REWIND:\n{walk}"
     );
     assert!(
-        !normalized.contains("local.set 1"),
-        "recursive call landing must use its statically known call index rather \
-         than adding an activation-local selector:\n{walk}"
+        normalized.contains("i32.const 1\nlocal.set 1\nlocal.get 0\ni32.const 1\ni32.sub\ncall $walk"),
+        "the recursive call records its static index in the call-index local \
+         immediately before the call:\n{walk}"
     );
     assert!(
         normalized.contains("local.get 0\ni32.const 1\ni32.sub\ncall $walk"),
@@ -465,11 +472,12 @@ fn reference_recipe_vector_adds_no_ordinary_activation_local() {
     let walk = extract_function_text(&printed, "walk");
     let locals = declared_scalar_local_count(&walk);
     assert_eq!(
-        locals, 0,
+        locals, 1,
         "activation-owned reference recipes must use the reserved frame word \
          and process vector directly; adding a recipe/vector scratch local \
-         would repeat the V8 recursion regression fixed by PR #713. Static \
-         call boundaries must not add an abort-frame/selector local either:\n{walk}"
+         would repeat the V8 recursion regression fixed by PR #713. The only \
+         scalar local is the call-index local of the function-wide unwind \
+         catch:\n{walk}"
     );
 }
 

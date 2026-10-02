@@ -134,21 +134,20 @@ fn protected_unwind_body_seq(module: &Module, id: FunctionId) -> InstrSeqId {
         1,
         "expected exactly one wrapper Block in entry of func {id:?}",
     );
-    // A function with a shared unwind handler nests the body as
-    // `block $postamble (block $handler (result i32) (block $unwind_save ...)
-    // br $postamble) <select> br_if $postamble br $restart)`.
-    let first = blocks[0];
-    if let Some((Instr::Block(handler), _)) = f.block(first).instrs.first() {
-        let handler_instrs = &f.block(handler.seq).instrs;
-        if let (Some((Instr::Block(body), _)), Some((Instr::Br(exit), _))) =
-            (handler_instrs.first(), handler_instrs.last())
-        {
-            if handler_instrs.len() == 2 && exit.block == first {
-                return body.seq;
-            }
-        }
-    }
-    first
+    // The body sits inside the function-wide private-tag catch:
+    // `block $postamble (block $caught (try_table (catch $unwind $caught)
+    // (block $unwind_save ...) br $postamble)) <select> br_if br)`.
+    let postamble = blocks[0];
+    let Some((Instr::Block(caught), _)) = f.block(postamble).instrs.first() else {
+        panic!("expected the private-tag catch block in func {id:?}");
+    };
+    let Some((Instr::TryTable(try_table), _)) = f.block(caught.seq).instrs.first() else {
+        panic!("expected the function-wide try_table in func {id:?}");
+    };
+    let Some((Instr::Block(body), _)) = f.block(try_table.seq).instrs.first() else {
+        panic!("expected the unwind-save block in func {id:?}");
+    };
+    body.seq
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -325,23 +324,32 @@ fn sequences_with_direct_call(
 ) -> Vec<Vec<InstrKind>> {
     let owner = local_func(module, func_by_name(module, owner_name));
     let target = func_by_name(module, target_name);
-    let mut sequences = HashSet::new();
-    walk_all(owner, owner.entry_block(), &mut |sequence, instruction| {
-        if matches!(instruction, Instr::Call(call) if call.func == target) {
-            sequences.insert(sequence);
+    // Each call's operand sequence: the instructions after the preceding
+    // block or call-index `local.set`, through the call itself.
+    let mut out = Vec::new();
+    walk_all(owner, owner.entry_block(), &mut |sequence, _| {
+        let instrs = &owner.block(sequence).instrs;
+        for (index, (instruction, _)) in instrs.iter().enumerate() {
+            if !matches!(instruction, Instr::Call(call) if call.func == target) {
+                continue;
+            }
+            let start = instrs[..index]
+                .iter()
+                .rposition(|(previous, _)| {
+                    matches!(previous, Instr::Block(_) | Instr::LocalSet(_) | Instr::IfElse(_))
+                })
+                .map_or(0, |boundary| boundary + 1);
+            out.push(
+                instrs[start..=index]
+                    .iter()
+                    .map(|(instruction, _)| InstrKind::of(instruction))
+                    .collect(),
+            );
         }
     });
-    sequences
-        .into_iter()
-        .map(|sequence| {
-            owner
-                .block(sequence)
-                .instrs
-                .iter()
-                .map(|(instruction, _)| InstrKind::of(instruction))
-                .collect()
-        })
-        .collect()
+    out.sort_by_key(|kinds: &Vec<InstrKind>| kinds.len());
+    out.dedup();
+    out
 }
 
 fn assert_resume_routing(module: &Module, owner_name: &str) {
@@ -992,7 +1000,7 @@ fn br_table_default_points_to_unwind_save() {
     });
     let (blocks, default) = br_table_info.expect("br_table missing");
     assert_eq!(blocks.len(), 2, "two calls → two br_table targets");
-    assert_eq!(default, unwind_save, "an invalid index leaves for the postamble");
+    assert_eq!(default, unwind_save, "an invalid index leaves the body for the postamble");
 }
 
 #[test]
@@ -1046,14 +1054,14 @@ fn source_call_results_do_not_cross_an_unwinding_state_probe() {
         .id();
 
     // One lexical call serves NORMAL and REWIND; the transport helper routes
-    // replay through the shared resume table itself. With nothing before the
-    // call, the body is just its result-typed private-tag boundary.
+    // replay through the shared resume table itself, and the function-wide
+    // catch owns unwinding. With one call site and nothing before it, the
+    // body is just the call.
     let kinds = seq_kinds(&module, caller, unwind_save);
     assert_eq!(
         kinds,
-        vec![InstrKind::Block, InstrKind::Return],
-        "the lexical call should sit in a per-site result-typed private-tag \
-         boundary, not behind a selector LocalSet: {kinds:?}",
+        vec![InstrKind::Call, InstrKind::Return],
+        "a single call needs no per-site boundary or index LocalSet: {kinds:?}",
     );
     assert!(
         !kinds.contains(&InstrKind::LocalSet),
@@ -1203,7 +1211,7 @@ fn call_with_pure_args_replays_tail_without_spill_locals() {
     let kinds = seq_kinds(&module, caller, unwind_save);
     assert_eq!(
         kinds,
-        vec![InstrKind::Block, InstrKind::Return],
+        vec![InstrKind::Const, InstrKind::Const, InstrKind::Call, InstrKind::Return],
         "chunk 0 pure arg tail must be removed instead of spilled: {kinds:?}",
     );
 }
@@ -1264,7 +1272,13 @@ fn call_with_i64_shift_arg_replays_shift_tail() {
 
     assert_eq!(
         seq_kinds(&module, caller, unwind_save),
-        vec![InstrKind::Block, InstrKind::Return],
+        vec![
+            InstrKind::Const,
+            InstrKind::Const,
+            InstrKind::Binop,
+            InstrKind::Call,
+            InstrKind::Return
+        ],
         "pure i64 shift arg tail must be removed instead of spilled",
     );
 }
@@ -1303,9 +1317,13 @@ fn two_calls_assign_sequential_call_idx() {
         }
     }
 
-    let mut idxs: Vec<i32> = Vec::new();
+    // The function-wide catch passes the call-index local and the static
+    // frame size to the shared selector once; each call site records its
+    // static index in that local first.
     let mut frame_sizes = Vec::new();
     let mut frame_select_calls = 0usize;
+    let mut index_local = None;
+    let mut idxs: Vec<i32> = Vec::new();
     walk_seqs(f, f.entry_block(), &mut |seq| {
         let instrs = &f.block(seq).instrs;
         for index in 2..instrs.len() {
@@ -1314,22 +1332,33 @@ fn two_calls_assign_sequential_call_idx() {
                 Instr::Call(ir::Call { func }) if func == frame_select
             ) {
                 let (
-                    Instr::Const(ir::Const {
-                        value: ir::Value::I32(call_index),
-                    }),
+                    Instr::LocalGet(ir::LocalGet { local }),
                     Instr::Const(ir::Const {
                         value: ir::Value::I32(size),
                     }),
                 ) = (&instrs[index - 2].0, &instrs[index - 1].0)
                 else {
-                    panic!(
-                        "unwind-frame selector must receive static call-index \
-                         and size constants"
-                    );
+                    panic!("unwind-frame selector must receive the call-index local and size");
                 };
                 frame_select_calls += 1;
                 frame_sizes.push(*size);
-                idxs.push(*call_index);
+                index_local = Some(*local);
+            }
+        }
+    });
+    let index_local = index_local.expect("call-index local");
+    walk_seqs(f, f.entry_block(), &mut |seq| {
+        for pair in f.block(seq).instrs.windows(2) {
+            if let (
+                Instr::Const(ir::Const {
+                    value: ir::Value::I32(value),
+                }),
+                Instr::LocalSet(ir::LocalSet { local }),
+            ) = (&pair[0].0, &pair[1].0)
+            {
+                if *local == index_local {
+                    idxs.push(*value);
+                }
             }
         }
     });
@@ -1350,30 +1379,10 @@ fn two_calls_assign_sequential_call_idx() {
                 .count();
         },
     );
-
-    let mut active_selectors = Vec::new();
-    walk_seqs(f, f.entry_block(), &mut |seq| {
-        let instrs = &f.block(seq).instrs;
-        for pair in instrs.windows(2) {
-            if let (
-                Instr::Const(ir::Const {
-                    value: ir::Value::I32(value),
-                }),
-                Instr::LocalSet(_),
-            ) = (&pair[0].0, &pair[1].0)
-            {
-                if matches!(*value, 1 | 2) {
-                    active_selectors.push(*value);
-                }
-            }
-        }
-    });
-    active_selectors.sort();
     idxs.sort();
     assert_eq!(
-        frame_select_calls, 2,
-        "each statically indexed private-tag call boundary should call the \
-         shared unwind-frame selector once",
+        frame_select_calls, 1,
+        "the function-wide catch calls the shared unwind-frame selector once",
     );
     assert_eq!(
         helper_reserve_calls, 1,
@@ -1382,19 +1391,13 @@ fn two_calls_assign_sequential_call_idx() {
     );
     assert_eq!(
         frame_sizes,
-        vec![16, 16],
-        "both call sites should pass this function's exact static frame size",
-    );
-    assert_eq!(
-        active_selectors,
-        Vec::<i32>::new(),
-        "static call boundaries must not install an activation-local selector",
+        vec![16],
+        "the selector receives this function's exact static frame size",
     );
     assert_eq!(
         idxs,
         vec![0, 1],
-        "each call should pass its static zero-based index directly to the \
-         shared frame selector",
+        "each call records its static zero-based index before the call",
     );
 }
 
@@ -1450,7 +1453,7 @@ fn call_indirect_replays_pure_table_index_arg() {
     let kinds = seq_kinds(&module, caller, unwind_save);
     assert_eq!(
         kinds,
-        vec![InstrKind::Block, InstrKind::Return],
+        vec![InstrKind::Const, InstrKind::Call, InstrKind::Return],
         "pure table-index tail must be removed from chunk 0: {kinds:?}",
     );
 }
@@ -4395,36 +4398,22 @@ fn call_index_global_is_not_part_of_the_saved_global_prefix() {
 }
 
 #[test]
-fn shared_unwind_handler_starts_at_three_call_sites() {
-    let three = r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (func $caller (export "caller") (result i32)
-            call $fork
-            drop
-            call $fork
-            drop
-            call $fork)
-          (memory 1))
-    "#;
-    for (wat, shared) in [(FIXTURE_TWO_CALLS, false), (three, true)] {
+fn only_multi_call_functions_record_a_call_index() {
+    let count_local_sets = |wat: &str| {
         let bytes = instrument_wat(wat);
         validate(&bytes);
         let module = Module::from_buffer(&bytes).unwrap();
-        let caller = func_by_name(&module, "caller");
-        let f = local_func(&module, caller);
-        let restart = logical_entry_seq(f);
-        let first = match f.block(restart).instrs.first() {
-            Some((Instr::Block(block), _)) => block.seq,
-            other => panic!("restart loop must start with a block: {other:?}"),
-        };
-        let unwind_save = protected_unwind_body_seq(&module, caller);
-        assert_eq!(
-            first != unwind_save,
-            shared,
-            "a shared handler wraps the body only from three call sites"
-        );
-    }
+        let f = local_func(&module, func_by_name(&module, "caller"));
+        let mut sets = 0usize;
+        walk_all(f, f.entry_block(), &mut |_, instruction| {
+            sets += usize::from(matches!(instruction, Instr::LocalSet(_)));
+        });
+        sets
+    };
+    // A single call site's index is always zero, so the catch passes a
+    // constant and the source function gains no local.
+    assert_eq!(count_local_sets(FIXTURE_DIRECT_CALLER), 0);
+    assert_eq!(count_local_sets(FIXTURE_TWO_CALLS), 2);
 }
 
 #[test]
