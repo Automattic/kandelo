@@ -50,7 +50,13 @@ These return the correct failure (POSIX-honest), not a fake success:
 - **Stack-overflow guard pages don't fault** — Wasm can't revoke a
   mapping and `mprotect` is a no-op, so a stack overflow is a generic
   Wasm trap, not std's clean overflow message.
-- **`panic = "abort"`** is the target default (unwinding is not wired).
+- **`panic = "abort"`** is the target default (unwinding is not wired):
+  a panic prints its message and the process exits by `SIGABRT` (status
+  134).
+- **Backtraces are unsupported**: there is no unwinder to walk the Wasm
+  stack, so `std::backtrace::Backtrace` reports `Unsupported` and
+  `RUST_BACKTRACE` adds nothing to a panic message. The std overlay selects
+  the backtrace crate's `noop` backend for Kandelo.
 - **`std::net`**: external UDP is `ENETUNREACH` on Node; the browser host
   has no raw/server sockets; DNS/`getaddrinfo` is a stub (use literal IPs
   or resolve out-of-band).
@@ -76,8 +82,8 @@ in a private sysroot:
   `libc/musl-overlay` onto the `libc/musl` submodule. A libc version bump
   makes the patch fail loudly — the signal to refresh the delta.
 - `sdk/rust/std-overlay/` — `kandelo` arms in `library/std` (the unix
-  pal and errno) and `library/unwind` (file-copy overlay onto the
-  toolchain's `rust-src`, which is not a submodule).
+  pal and errno), `library/unwind` and `library/backtrace` (file-copy
+  overlay onto the toolchain's `rust-src`, which is not a submodule).
 - `scripts/build-rust-sysroot.sh` — assembles the fork (submodule +
   patch) and the private sysroot (mirror-by-symlink + patched `rust-src`),
   installs the std target spec as
