@@ -12,6 +12,7 @@
  *   const exitCode = await host.spawn(programBytes, ["hello"], { env: [...] });
  *   await host.destroy();
  */
+import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -197,7 +198,10 @@ export interface SpawnOptions {
   /** Finite stdin buffer. If omitted for a non-PTY spawn without onStarted,
    * stdin defaults to an immediate EOF. */
   stdin?: Uint8Array;
-  /** Optional pre-compiled module for the supplied program bytes. */
+  /**
+   * Accepted for compatibility and ignored: the kernel worker compiles every
+   * program through its own content-addressed module cache.
+   */
   programModule?: WebAssembly.Module;
   pty?: boolean;
   /** Initial PTY winsize. Applied before the wasm program starts so the
@@ -490,8 +494,9 @@ export class NodeKernelHost {
       // the main thread -> kernel worker -> process worker chain. Reusing that
       // two-hop clone with SpiderMonkey's shared-memory worker runtime can leave
       // later process workers stuck before exit. The option remains an API hint;
-      // Node's dedicated kernel worker compiles/caches fork and pthread modules
-      // internally where it can pass them across a single worker boundary.
+      // the dedicated kernel worker compiles every program through its own
+      // content-addressed cache and passes modules across a single worker
+      // boundary.
       argv,
       env: mergeEnv(options?.env ?? []),
       cwd: options?.cwd,
@@ -808,6 +813,19 @@ export class NodeKernelHost {
       throw new Error(`kernel worker returned an invalid memory-page count: ${String(result)}`);
     }
     return result;
+  }
+
+  /**
+   * Counters of the kernel worker's content-addressed compiled-module cache:
+   * compilations, reuse, digest cost, and what the retention window holds.
+   * Diagnostics only. Mirrors `BrowserKernel.getWasmModuleCacheStats`.
+   */
+  async getWasmModuleCacheStats(): Promise<WasmModuleCacheStats> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: "get_wasm_module_cache_stats",
+      requestId,
+    }) as WasmModuleCacheStats;
   }
 
   /**

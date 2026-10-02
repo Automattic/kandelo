@@ -385,6 +385,12 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
+/** Read the kernel worker's compiled-module cache counters. */
+export interface GetWasmModuleCacheStatsRequestMessage {
+  type: "get_wasm_module_cache_stats";
+  requestId: number;
+}
+
 /** Read the retained capacity of the kernel-owned large-spawn region. */
 export interface GetSpawnScratchCapacityRequestMessage {
   type: "get_spawn_scratch_capacity";
@@ -511,6 +517,7 @@ export type MainToKernelMessage =
   | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetWasmModuleCacheStatsRequestMessage
   | GetSpawnScratchCapacityRequestMessage
   | MouseInjectMessage
   | InputEventInjectMessage
