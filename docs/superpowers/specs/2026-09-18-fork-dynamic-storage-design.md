@@ -42,6 +42,8 @@ Recorded 2026-09-18, in answer to a question batch.
    `memorySize` plus its shadow stack) rather than a constant. The same commit
    checks whether other tests hard-code sizes or layout constants the same
    way; this one was invisible until something shrank.
+> **AMENDED 2026-09-22 (Task 13 of the storage conversion):** landed as `d7faaf1bb0` before this plan started; `host/test/fork-module-instance.test.ts` asserts by derivation, and Task 13 added the exact four-term formula beside it. This plan needed no prerequisite commit.
+
 6. **All NINE hand-maintained copies of the link contract converge onto the
    SDK.** Not just `build-programs.sh`. The full list is
    `scripts/build-programs.sh`, `scripts/run-browser-posix-tests.sh`,
@@ -221,9 +223,13 @@ Two working precedents, so none of this is invented:
   pointer in the chunk header; write into the tail chunk regardless of which
   activation a record belongs to. Nothing copied, nothing doubled, nothing
   pre-reserved.
+> **AMENDED 2026-09-22 (Task 13 of the storage conversion):** that file does not exist on this branch (deleted by `49d7f6574`); it is readable only as `git show main:host/src/fork-module-state.ts`. And it is half a precedent: it kept a JS-side `this.chunks` array that both its overflow path and its `release()` read instead of the chain. The Rust arena copies none of that -- the chain is the only record of its chunks -- because `ALLOC.reset()` reclaims any Rust-side list, which is what broke `RESUME_SLOT_INDEX`.
+
 * This module's identity registry (`crates/fork-module/src/lib.rs:1003-1153`):
   64 KiB chunks via `channel_mmap`, chained, and `channel_munmap` for chunks
   that empty. It is the only store here that already frees.
+> **AMENDED 2026-09-22 (Task 13 of the storage conversion):** the line numbers on this page are from 2026-09-18 and are not maintained; the identity registry and every store named here have moved since (`HEAP_FLOOR`, cited below, was deleted by Task 9).
+
 
 The release trigger also already exists. `fm_resume_slots` op 1
 (`lib.rs:10944`) IS the dlclose entry point into the module, reached through
@@ -287,6 +293,8 @@ WHY COMPACTION IS SAFE HERE: it moves records, so nothing may hold an absolute
 address into the chain. Releases remove a whole ACTIVATION's records at once
 and the directory entry naming them goes with it, so no stale address
 survives.
+
+> **AMENDED 2026-09-22 (Task 13 of the storage conversion):** the compaction premise above was already false when it was written, and the implementation does NOT compact payload records. `arena_find` hands out payload addresses that callers hold across calls, so records never move; `used` is monotonic and a chunk is returned only when its last live byte leaves. Only the DIRECTORY compacts, and only because nothing stores an address INTO it.
 
 THE DIRECTORY IS ITS OWN CHAIN, WITH ITS OWN ROOT. Activations need random
 lookup by `activation_id` -- `func_catalog_base` runs per funcref reference
@@ -407,6 +415,8 @@ for a program with no fork-instrumented functions -- register nothing, return
 0. NEVER seeding is the loud one. Every binary measured in this lane has at
 least 36 resume ordinals, so the zero case may be unreachable in practice, but
 99 binaries without one is not a proof.
+> **AMENDED 2026-09-22 (Task 13 of the storage conversion):** TWO branches in two functions, not one -- `resume_register_impl`'s `Ok(0)` AND `register_activation_slots`'s committed-ordinals arm; Task 6 removed both. And the empty-catalog case is not "may be unreachable": `libneeded-provider.so` in `fork-from-dlopen-side-module-e2e` seeds an EMPTY resume catalog, and the refusal distinguishes an empty RECORD (registered, holding nothing) from NO record (never registered).
+
 
 Both removals are ABI changes, which decision 12 already establishes as
 acceptable for an unreleased ABI.
@@ -435,6 +445,8 @@ passed. The comment still asserts the retracted reason.
 bump heap's lifetime is BETWEEN RESETS, which is shorter than a capture. An
 earlier draft of this table classified three statics as "per-fork, therefore
 bump heap" and conflated the two. Two of the three were wrong.
+> **AMENDED 2026-09-22 (Task 13 of the storage conversion):** the four line numbers above drifted within days; the four points are `begin_unwind_impl` (conditional on `CAPTURE_ARMED`), `begin_child_replay_impl`, `fm_capture_begin` and `capture_peer_tables_impl`. And it was THREE of the three, not two: the `CapturedExternrefs` remedy below was the third error (see its amendment).
+
 
 `ScratchCell` (65,536 B) -> **its own chain, NOT the bump heap.** It is a
 GUEST-FACING allocator: `__wpk_fork_ref_scratch_reserve(len)` returns the raw
@@ -453,6 +465,8 @@ storage -- but if a reset lands between `begin` and `finish` the backing is
 reclaimed and the handle resolves into reused memory. Its depth-8 limit stays
 an explicit assertion either way, since an overflow must be "a loud refusal
 rather than a silently mis-counted vector".
+> **AMENDED 2026-09-22 (Task 13 of the storage conversion):** this table and the decision notes contradicted each other on `VectorInFlight`. Task 11 left it STATIC (96 bytes) under decision 10 and recorded the question for the maintainer; the depth-8 overflow is already the loud refusal, and a reset between `begin` and `finish` is a nesting the guest cannot produce.
+
 
 `CapturedExternrefs` (16,384 B) -> **the bump heap, with an ordering
 requirement.** It is not guest-reachable: only `record_captured_externref`
@@ -460,6 +474,10 @@ writes it and one `fm_*` host query reads it, and it is explicitly
 "capture-scoped: cleared when a capture begins". Since `fm_capture_begin` is
 itself one of the reset points, the allocation must happen AFTER the reset in
 that entry, not before.
+> **AMENDED 2026-09-22 (Task 13 of the storage conversion):** `fm_capture_begin` never called `reset_captured_externrefs()`; the real hazard was the OPPOSITE order inside `begin_capture_impl` (clear, then `begin_unwind_impl`, which may reset the bump). Task 11 made the reset non-allocating (`mem::forget(mem::take(..))`) and placed it after `begin_unwind_impl` and before the unwind drive, where the guest's interns arrive.
+
+> **SINCE (integration branch, recorded 2026-10-02):** this amendment is history. `fm_capture_begin` was folded into `fm_parent_begin_capture` (2026-09-26) and then into the module's own run loop (lane F step 3c), and `CapturedExternrefs` no longer exists: externref capture was dropped and refuses with `EOPNOTSUPP`.
+
 
 The general rule this yields, which the table above now follows: storage may
 live in the bump heap only when nothing outside the module holds a reference
@@ -471,6 +489,10 @@ guest presents later, both disqualify it.
 `instantiateForkModule` reserves
 `staticBytes + SHADOW_STACK_BYTES + STAGING_SLAB_BYTES`
 (`host/src/fork-module-instance.ts:204-207`), per instance, per thread:
+
+> **AMENDED 2026-09-22 (Task 13 of the storage conversion):** FOUR terms, not three. `staticBytes + SHADOW_STACK_BYTES` is rounded UP to a 64 KiB page BEFORE the slab is added (`stagingOffset` in `host/src/fork-module-instance.ts`), which is why the arithmetic below came out 29,372 bytes short of the 3,735,552 measured on 2026-09-20. Measured endpoint after Task 11: `staticBytes` 88,736 + 1,048,576 -> 18 pages (1,179,648) + a 196,608-byte slab = 1,376,256, down from 3,801,088. The page round-up also means a saving is invisible until it crosses a page: on the 2026-09-20 artifact the first observable saving was 36,164 bytes (53 pages -> 52), which is why the plan batched conversions instead of landing one store per commit.
+
+> **SINCE (integration branch, recorded 2026-10-02):** the four-term formula still holds (`stagingOffset` in `host/src/fork-module-instance.ts`), but the 1,376,256-byte endpoint does not: the slab is ONE page (`STAGING_SLAB_BYTES = 64 * 1024`) since `05e6cdc775`, and `RESUME_ASSIGNMENT` -- the 65,536-byte static the 2026-09-22 record named as the last thing between 18 and 17 pages -- is now an arena record kind (`REC_KIND_RESUME_ASSIGNMENT`). The endpoint was not re-measured for this note.
 
     statics (dylink memorySize)   2,395,460   -> near zero (this work)
     shadow stack                  1,048,576   -> see below
@@ -490,6 +512,10 @@ module is more specific (`lib.rs:443`): `FORK_MODULE_STAGING_BYTES` must hold
 merge, the slab's justification goes with it, and a request larger than the
 slab already falls back to the growing channel mmap. Resizing it is part of
 this work.
+
+> **AMENDED 2026-09-22 (Task 13 of the storage conversion):** no identifier `FORK_MODULE_STAGING_BYTES` ever existed; the constant is `STAGING_SLAB_BYTES` in `host/src/fork-module-instance.ts`. And there was never a fallback: `stage()` refuses a request larger than the slab loudly. Task 7 sized the slab from a measurement of the built artifacts (largest single seed: `php/intl.so`'s KFIG section at 190,437 bytes -> 192 KiB) and made it a per-call scratch, since every module entry copies what it is handed during the call.
+
+> **SINCE (integration branch, recorded 2026-10-02):** the 192 KiB sizing and the "refuses a request larger than the slab" behaviour are superseded by `05e6cdc775`: the slab is sized for the common admission (64 KiB), and a larger admission (php, php-fpm, `intl.so`) goes to a buffer the module maps to the request's size (`fm_admission_buffer`) and releases when the admission returns.
 
 **The shadow stack is genuine and stays for now.** It is the module's own Rust
 call stack and WebAssembly has no guard page, so an overflow corrupts rather
@@ -679,6 +705,8 @@ before it is trusted.
 7. **The release precedent this design cites has never been verified to run.**
    Both deferred verifications were done, and one came back badly.
 
+   **AMENDED 2026-09-22 (Task 13 of the storage conversion):** RETIRED. `identity_chunk_count()` is exported through `fm_stats` field 100 and asserted by `host/test/fork-identity-release.test.ts` (publish 4,100 identities, two chunks, release, zero chunks AND a `SYS_MUNMAP` delta of two). The identity registry is a proven path, and every store on the arena follows it.
+
    `main`'s `ForkModuleStateArena` DOES free: it takes a
    `ContinuationDeallocate` and has `release()`
    (`fork-module-state.ts:3371`). But it releases the WHOLE arena, not per
@@ -715,6 +743,8 @@ before it is trusted.
    The eleven durable stores were subsequently traced the same way and came
    back clean, but a 2-of-3 error rate on the group checked second is the
    reason this risk is listed rather than assumed away.
+
+   **AMENDED 2026-09-22 (Task 13 of the storage conversion):** three of three: the `CapturedExternrefs` remedy was the third (its amendment above). The eleven durable stores were all converted on the trace and each carries a release-path test; the forced-chunk build (`ARENA_CHUNK_BYTES = 4_096`) ran the full suite and found no module defect.
 
 9. **The build-path change alters cached artifact bytes, and the cache is
    shared across 222 worktrees.** `local-binaries/` is per-worktree (a real
