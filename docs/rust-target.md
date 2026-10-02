@@ -136,6 +136,15 @@ Kandelo has no unwinder library, so the std overlay drops that request
 for `target_os = "kandelo"` rather than leaving a library that build
 systems (e.g. Meson's `find_library`) look up and cannot find.
 
+`programs/rust/c-interop/` covers this pattern in both directions (a Rust
+library linked into C and C++ programs; C and C++ libraries linked into
+Rust programs); `host/test/rust-c-interop.test.ts` builds and runs it in
+the Vitest suite. A Rust program that links C++ names `c++` and `c++abi`
+in its `build.rs` (rustc links through `wasm32posix-cc`, a C driver).
+C++ exceptions work inside the C++ code but must not propagate into Rust
+frames: Kandelo's Rust is `panic = "abort"` and does not unwind, so a C++
+API called from Rust catches its exceptions and returns errors.
+
 Design and history: `docs/plans/2026-09-06-rust-std-target-design.md`
 and `docs/plans/2026-09-07-rust-std-target-implementation.md`.
 
