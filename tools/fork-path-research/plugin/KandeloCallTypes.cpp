@@ -17,9 +17,9 @@
 //
 // Side file path: -mllvm -kandelo-calltypes-out=<path>. Format v2 (TSV,
 // demangled names matching the wasm name section):
-//   #kandelo-calltypes	2
+//   #kandelo-calltypes	3
 //   M	module-id
-//   F	fn	nparams	linkage(E|I)	addr-taken(0|1)
+//   F	fn	nparams	linkage(E|I)	addr-taken(0|1)	mangled
 //   T	fn	typeid                       function type id (offset 0 only)
 //   V	fn	classid	offset               vtable slot
 //   C	fn	site	callee               direct call (aliases resolved)
@@ -36,6 +36,13 @@
 //        API (* = not a known function, ? = the API's address escapes)
 //   R	registry	%N	mangled-fn   the enclosing function forwards its
 //        parameter N to a registration API
+//   X	fn	kind	detail   where an address-taken function's address goes:
+//        field <struct>:<index> (stored into a struct field, or a struct
+//        field of a global initializer), arg <callee>:<index>, ret,
+//        global <name> (a non-struct global initializer), other
+//   P	fn	param	kind	detail   the same for a pointer parameter's value
+//   Y	fn	site	kind	detail   where an indirect call's callee was loaded
+//        from: field <struct>:<index>, global <name>, arg <index>, other
 // Sites number every non-intrinsic call in instruction order.
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Demangle/Demangle.h"
@@ -92,10 +99,180 @@ void testedTypes(Value *V, std::map<Value *, std::vector<Metadata *>> &tests,
   ok = false;
 }
 
+// The function a call targets directly, looking through aliases.
+Function *directCallee(CallBase *CB) {
+  if (Function *F = CB->getCalledFunction()) return F;
+  Value *V = CB->getCalledOperand()->stripPointerCasts();
+  if (auto *GA = dyn_cast<GlobalAlias>(V)) return dyn_cast_or_null<Function>(GA->getAliaseeObject());
+  return dyn_cast<Function>(V);
+}
+
+// Opaque pointers have no bitcasts; strip address-space casts only. (LLVM's
+// stripPointerCasts also strips all-zero GEPs, which would erase field 0.)
+static Value *stripCastsOnly(Value *V) {
+  while (auto *C = dyn_cast<AddrSpaceCastOperator>(V)) V = C->getOperand(0);
+  return V;
+}
+
+// Struct field addressed by a pointer: "<struct>:<field>" or "".
+std::string fieldOf(Value *P) {
+  P = stripCastsOnly(P);
+  auto *G = dyn_cast<GEPOperator>(P);
+  if (!G) {
+    if (auto *AI = dyn_cast<AllocaInst>(P); AI && AI->getAllocatedType()->isStructTy())
+      return AI->getAllocatedType()->getStructName().str() + ":0";
+    if (auto *GV = dyn_cast<GlobalVariable>(P); GV && GV->getValueType()->isStructTy())
+      return GV->getValueType()->getStructName().str() + ":0";
+    return "";
+  }
+  Type *T = G->getSourceElementType();
+  // gep T, p, 0, i (, ...): the first struct level after the leading index.
+  if (G->getNumIndices() >= 2 && T->isStructTy()) {
+    if (auto *CI = dyn_cast<ConstantInt>(G->getOperand(2)))
+      return T->getStructName().str() + ":" + std::to_string(CI->getZExtValue());
+  }
+  return "";
+}
+
+// Pre-optimization IR keeps locals in allocas: look through one level of
+// `store v, %local; ... load %local` to the stored value's origin.
+Value *throughLocal(Value *V) {
+  auto *L = dyn_cast<LoadInst>(stripCastsOnly(V));
+  if (!L) return V;
+  auto *AI = dyn_cast<AllocaInst>(stripCastsOnly(L->getPointerOperand()));
+  if (!AI) return V;
+  Value *Stored = nullptr;
+  for (User *U : AI->users()) {
+    if (auto *SI = dyn_cast<StoreInst>(U)) {
+      if (stripCastsOnly(SI->getPointerOperand()) != AI) return V;
+      if (Stored && Stored != SI->getValueOperand()) return V;
+      Stored = SI->getValueOperand();
+    }
+  }
+  return Stored ? Stored : V;
+}
+
+std::string loadOrigin(Value *C) {
+  C = stripCastsOnly(throughLocal(C));
+  auto *L = dyn_cast<LoadInst>(C);
+  if (!L) return isa<Argument>(C) ? "arg\t" + std::to_string(cast<Argument>(C)->getArgNo()) : "other\t";
+  Value *P = stripCastsOnly(throughLocal(L->getPointerOperand()));
+  if (auto *GV = dyn_cast<GlobalVariable>(P)) return "global\t" + GV->getName().str();
+  std::string f = fieldOf(P);
+  if (!f.empty()) return "field\t" + f;
+  return "other\t";
+}
+
+// Where each use of an address-taken function sends its address.
+void addressRecords(Value &Root, const std::string &prefix, raw_ostream &os,
+                    const std::function<std::string(StringRef)> &nm) {
+  std::set<std::string> seen;
+  std::set<Value *> visited;
+  auto emit = [&](const std::string &kind, const std::string &detail) {
+    std::string k = kind + "\t" + detail;
+    if (seen.insert(k).second) os << prefix << k << "\n";
+  };
+  std::function<void(Value *, int)> walk = [&](Value *V, int depth) {
+    if (!visited.insert(V).second) return;
+    for (Use &U : V->uses()) {
+      User *Us = U.getUser();
+      if (auto *CB = dyn_cast<CallBase>(Us)) {
+        if (CB->isCallee(&U)) continue;
+        Function *Callee = directCallee(CB);
+        if (!CB->isArgOperand(&U)) emit("other", "call-operand");
+        else if (Callee) emit("arg", nm(Callee->getName()) + ":" + std::to_string(CB->getArgOperandNo(&U)));
+        else emit("other", "indirect-call-arg");
+      } else if (auto *SI = dyn_cast<StoreInst>(Us)) {
+        if (SI->getValueOperand() != V) { emit("other", "store-address"); continue; }
+        Value *Ptr = stripCastsOnly(SI->getPointerOperand());
+        if (auto *AI = dyn_cast<AllocaInst>(Ptr); AI && !AI->getAllocatedType()->isStructTy() && depth < 6) {
+          // A local variable: follow its loads.
+          for (User *LU : AI->users())
+            if (auto *LI = dyn_cast<LoadInst>(LU)) walk(LI, depth + 1);
+          continue;
+        }
+        std::string f = fieldOf(SI->getPointerOperand());
+        if (!f.empty()) emit("field", f);
+        else if (auto *GV = dyn_cast<GlobalVariable>(stripCastsOnly(SI->getPointerOperand()))) emit("global", GV->getName().str());
+        else emit("other", "store");
+      } else if (isa<ReturnInst>(Us)) {
+        emit("ret", "");
+      } else if (isa<ICmpInst>(Us)) {
+        continue;
+      } else if (auto *CE = dyn_cast<ConstantExpr>(Us); CE && depth < 4 && CE->isCast()) {
+        walk(CE, depth + 1);
+      } else if ((isa<BitCastInst>(Us) || isa<PHINode>(Us) || isa<SelectInst>(Us)) && depth < 6) {
+        walk(Us, depth + 1);
+      } else if (auto *C = dyn_cast<Constant>(Us)) {
+        // Part of a global initializer: find the struct and field.
+        bool done = false;
+        if (auto *CS = dyn_cast<ConstantStruct>(C)) {
+          for (unsigned i = 0; i < CS->getNumOperands(); ++i)
+            if (stripCastsOnly(CS->getOperand(i)) == stripCastsOnly(V)) {
+              StructType *ST = CS->getType();
+              emit("field", (ST->hasName() ? ST->getName().str() : std::string("anon")) + ":" + std::to_string(i));
+              done = true;
+            }
+        }
+        if (!done) {
+          if (isa<ConstantArray>(C) || isa<ConstantVector>(C)) {
+            // An array element: classify by the arrays' users.
+            if (depth < 4) walk(C, depth + 1); else emit("other", "array");
+          } else if (auto *GV = dyn_cast<GlobalVariable>(C)) {
+            emit("global", GV->getName().str());
+          } else {
+            emit("other", "constant");
+          }
+        }
+      } else if (auto *GV = dyn_cast<GlobalVariable>(Us)) {
+        emit("global", GV->getName().str());
+      } else {
+        emit("other", Us->getValueID() < Value::InstructionVal ? "value" : cast<Instruction>(Us)->getOpcodeName());
+      }
+    }
+  };
+  walk(&Root, 0);
+}
+
+// Flow facts gathered before optimization, written by EmitPass.
+std::map<const Module *, std::string> &flowFacts() {
+  static std::map<const Module *, std::string> m;
+  return m;
+}
+
 struct TagPass : PassInfoMixin<TagPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     LLVMContext &Ctx = M.getContext();
     bool changed = false;
+    {
+      // Flow facts need struct-typed field addressing, which the optimizer
+      // canonicalizes away: collect them now. Indirect calls carry their
+      // callee's origin as metadata, which survives inlining.
+      std::string buf;
+      raw_string_ostream fo(buf);
+      auto nm = [](StringRef n) { return demangle(n.str()); };
+      for (Function &Fn : M) {
+        if (Fn.isIntrinsic()) continue;
+        bool taken = false;
+        for (const Use &U : Fn.uses()) {
+          auto *CB = dyn_cast<CallBase>(U.getUser());
+          if (!(CB && CB->isCallee(&U))) { taken = true; break; }
+        }
+        if (taken) addressRecords(Fn, "X\t" + nm(Fn.getName()) + "\t", fo, nm);
+        if (Fn.isDeclaration()) continue;
+        for (Argument &A : Fn.args())
+          if (A.getType()->isPointerTy())
+            addressRecords(A, "P\t" + nm(Fn.getName()) + "\t" + std::to_string(A.getArgNo()) + "\t", fo, nm);
+        for (Instruction &I : instructions(Fn)) {
+          auto *CB = dyn_cast<CallBase>(&I);
+          if (!CB || CB->getCalledFunction() || CB->isInlineAsm() || isa<IntrinsicInst>(CB)) continue;
+          if (directCallee(CB)) continue;
+          CB->setMetadata("kandelo.origin", MDNode::get(Ctx, {MDString::get(Ctx, loadOrigin(CB->getCalledOperand()))}));
+          changed = true;
+        }
+      }
+      flowFacts()[&M] = fo.str();
+    }
     for (Function &F : M) {
       if (F.isDeclaration()) continue;
       std::map<Value *, std::vector<Metadata *>> tests;
@@ -201,15 +378,15 @@ const RegistryArg kRegistries[] = {
     {"_ZSt13set_terminatePFvvE", 0, "terminate"},
     {"_ZSt14set_unexpectedPFvvE", 0, "unexpected"},
     {"_ZSt15set_new_handlerPFvvE", 0, "new_handler"},
+    {"__synccall", 0, "synccall"},
 };
 
-// The function a call targets directly, looking through aliases.
-Function *directCallee(CallBase *CB) {
-  if (Function *F = CB->getCalledFunction()) return F;
-  Value *V = CB->getCalledOperand()->stripPointerCasts();
-  if (auto *GA = dyn_cast<GlobalAlias>(V)) return dyn_cast_or_null<Function>(GA->getAliaseeObject());
-  return dyn_cast<Function>(V);
-}
+// sigaction-style APIs: (callee, act argument, old argument).
+struct SigactionApi { const char *callee; unsigned act; unsigned old; };
+const SigactionApi kSigaction[] = {
+    {"sigaction", 1, 2}, {"__sigaction", 1, 2}, {"__libc_sigaction", 1, 2},
+};
+
 
 // Short description of how an untyped callee value was produced.
 std::string describe(Value *V, int depth = 0) {
@@ -342,6 +519,65 @@ std::set<BasicBlock *> reachable(Function &F, Argument *P, Constant *PV,
   return seen;
 }
 
+// sigaction(sig, act, old): record the handlers stored into *act.
+void sigactionRecords(Value *Act, Function &F, raw_ostream &os, const std::function<std::string(StringRef)> &nm) {
+  Act = Act->stripPointerCasts();
+  if (isa<ConstantPointerNull>(Act)) return;
+  // A forwarder (musl's own sigaction layers) passes its caller's struct.
+  if (auto *A = dyn_cast<Argument>(Act); A && A->getParent() == &F) {
+    StringRef n = F.getName();
+    if (n == "sigaction" || n == "__sigaction" || n == "__libc_sigaction") return;
+    os << "R\tsignal\t*\n";
+    return;
+  }
+  if (auto *GV = dyn_cast<GlobalVariable>(Act)) {
+    if (GV->hasInitializer())
+      if (auto *CS = dyn_cast<ConstantStruct>(GV->getInitializer()))
+        if (CS->getNumOperands() && isa<Function>(CS->getOperand(0)->stripPointerCasts()))
+          os << "R\tsignal\t" << nm(CS->getOperand(0)->stripPointerCasts()->getName()) << "\n";
+    if (!GV->isConstant()) os << "R\tsignal\t*\n";
+    return;
+  }
+  if (!isa<AllocaInst>(Act)) { os << "R\tsignal\t*\n"; return; }
+  // Stores into the alloca at offset 0 (the handler union).
+  bool any = false;
+  std::function<void(Value *, int64_t, int)> walk = [&](Value *P, int64_t off, int depth) {
+    for (User *U : P->users()) {
+      if (auto *SI = dyn_cast<StoreInst>(U)) {
+        if (SI->getPointerOperand() != P) { os << "R\tsignal\t*\n"; continue; }
+        if (off != 0) continue;
+        Value *V = SI->getValueOperand()->stripPointerCasts();
+        if (!V->getType()->isPointerTy() && !V->getType()->isIntegerTy(32)) continue;
+        if (auto *Fn = dyn_cast<Function>(V)) { os << "R\tsignal\t" << nm(Fn->getName()) << "\n"; any = true; }
+        else if (isa<Constant>(V) && !isa<GlobalValue>(V)) continue;
+        else if (auto *A = dyn_cast<Argument>(V); A && A->getParent() == &F &&
+                 (F.getName() == "signal" || F.getName() == "bsd_signal" || F.getName() == "sigset")) continue;
+        else os << "R\tsignal\t*\n";
+      } else if (auto *G = dyn_cast<GEPOperator>(U)) {
+        APInt O(64, 0);
+        if (depth < 4 && G->accumulateConstantOffset(F.getParent()->getDataLayout(), O)) walk(G, off + O.getSExtValue(), depth + 1);
+        else os << "R\tsignal\t*\n";
+      } else if (auto *CB = dyn_cast<CallBase>(U)) {
+        Function *C = directCallee(CB);
+        StringRef cn = C ? C->getName() : "";
+        // sigaction(act/old), memset, lifetime markers and sigemptyset/sigaddset
+        // (which write sa_mask) do not store a handler.
+        if (cn == "sigaction" || cn == "__sigaction" || cn == "__libc_sigaction" || cn == "memset" ||
+            cn.starts_with("llvm.lifetime") || cn.starts_with("llvm.memset") || cn == "sigemptyset" ||
+            cn == "sigfillset" || cn == "sigaddset" || cn == "sigdelset")
+          continue;
+        os << "R\tsignal\t*\n";
+      } else if (isa<LoadInst>(U) || isa<ICmpInst>(U)) {
+        continue;
+      } else {
+        os << "R\tsignal\t*\n";
+      }
+    }
+  };
+  walk(Act, 0, 0);
+  (void)any;
+}
+
 struct EmitPass : PassInfoMixin<EmitPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     if (OutPath.empty()) return PreservedAnalyses::all();
@@ -350,7 +586,7 @@ struct EmitPass : PassInfoMixin<EmitPass> {
     if (EC) report_fatal_error(Twine("kandelo-calltypes: cannot write ") + OutPath + ": " + EC.message());
     const DataLayout &DL = M.getDataLayout();
     auto nm = [](StringRef n) { return demangle(n.str()); };
-    os << "#kandelo-calltypes\t2\n";
+    os << "#kandelo-calltypes\t3\n";
     os << "M\t" << M.getModuleIdentifier() << "\n";
     // Registration APIs whose address escapes (called indirectly or stored)
     // make their registry unknown.
@@ -360,6 +596,8 @@ struct EmitPass : PassInfoMixin<EmitPass> {
       for (const Use &U : F->uses()) {
         auto *CB = dyn_cast<CallBase>(U.getUser());
         if (CB && CB->isCallee(&U)) continue;
+        // `if (&pthread_create)`-style weak-symbol checks do not escape.
+        if (isa<ICmpInst>(U.getUser())) continue;
         os << "R\t" << R.registry << "\t?\n";
         break;
       }
@@ -368,7 +606,7 @@ struct EmitPass : PassInfoMixin<EmitPass> {
       if (F.isDeclaration()) continue;
       std::string fn = nm(F.getName());
       os << "F\t" << fn << "\t" << F.arg_size() << "\t" << (F.hasLocalLinkage() ? "I" : "E") << "\t"
-         << (F.hasAddressTaken() ? 1 : 0) << "\n";
+         << (F.hasAddressTaken() ? 1 : 0) << "\t" << F.getName() << "\n";
       SmallVector<MDNode *, 2> types;
       F.getMetadata(LLVMContext::MD_type, types);
       for (MDNode *T : types) {
@@ -390,11 +628,18 @@ struct EmitPass : PassInfoMixin<EmitPass> {
             Value *A = CB->getArgOperand(R.arg)->stripPointerCasts();
             if (isa<ConstantPointerNull>(A)) continue;
             if (auto *Fn = dyn_cast<Function>(A)) os << "R\t" << R.registry << "\t" << nm(Fn->getName()) << "\n";
+            else if (isa<Constant>(A) && !isa<GlobalValue>(A)) continue; // SIG_IGN, SIG_DFL, ...
+            else if (auto *RC = dyn_cast<CallBase>(A); RC && directCallee(RC) && directCallee(RC)->getName() == callee)
+              continue; // restoring a value this API returned (already registered)
             else if (auto *PA = dyn_cast<Argument>(A); PA && PA->getParent() == &F)
               // A forwarder registers its own parameter: covered by its
               // callers' records if it is itself a registration API.
               os << "R\t" << R.registry << "\t%" << PA->getArgNo() << "\t" << F.getName() << "\n";
             else os << "R\t" << R.registry << "\t*\n";
+          }
+          for (const SigactionApi &SA : kSigaction) {
+            if (callee != SA.callee || SA.act >= CB->arg_size()) continue;
+            sigactionRecords(CB->getArgOperand(SA.act), F, os, nm);
           }
         } else {
           ++nind;
@@ -414,6 +659,10 @@ struct EmitPass : PassInfoMixin<EmitPass> {
               any = true;
             }
           }
+          if (MDNode *O = CB->getMetadata("kandelo.origin"))
+            os << "Y\t" << fn << "\t" << s << "\t" << cast<MDString>(O->getOperand(0))->getString() << "\n";
+          else
+            os << "Y\t" << fn << "\t" << s << "\tother\tno-origin\n";
           if (!any)
             os << "S\t" << fn << "\t" << s << "\t" << sig << "\tuntyped\t"
                << (F.getMetadata("kandelo.hadtests") ? "" : "fn-without-tests ")
@@ -484,6 +733,9 @@ struct EmitPass : PassInfoMixin<EmitPass> {
       }
       os << "D\t" << fn << "\t" << nind << "\t" << site << "\n";
     }
+    // Flow facts collected before optimization (TagPass).
+    os << flowFacts()[&M];
+    flowFacts().erase(&M);
     // Vtables: functions at (address point + K) of a class-typed vtable.
     for (GlobalVariable &G : M.globals()) {
       SmallVector<MDNode *, 4> types;

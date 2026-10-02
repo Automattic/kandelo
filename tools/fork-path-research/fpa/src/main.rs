@@ -64,11 +64,14 @@ struct IrSite {
     vcall: Vec<(u32, i64)>,
     untyped: bool,
     args: Vec<(u32, Arg)>,
+    /// Where the callee value was loaded from (v3 Y record): (kind, detail).
+    origin: Option<(String, String)>,
 }
 
 #[derive(Default, Clone, Debug)]
 struct IrFn {
     module: u32,
+    mangled: String,
     types: Vec<u32>,
     sites: Vec<IrSite>,
     /// param -> (width, [(value | None for `*`, sorted reachable sites)])
@@ -102,6 +105,7 @@ const REG_APIS: &[(&str, &str, u32, &str)] = &[
     ("std::set_terminate(void (*)())", "_ZSt13set_terminatePFvvE", 0, "terminate"),
     ("std::set_unexpected(void (*)())", "_ZSt14set_unexpectedPFvvE", 0, "unexpected"),
     ("std::set_new_handler(void (*)())", "_ZSt15set_new_handlerPFvvE", 0, "new_handler"),
+    ("__synccall", "__synccall", 0, "synccall"),
 ];
 
 /// Registry dispatch sites, bound to the defining source file (module id
@@ -129,6 +133,13 @@ const HUBS: &[(&str, &str, &str, &[&str])] = &[
     ("cxa_handlers.cpp", "std::__unexpected(void (*)())", "_ZTSFvvE", &["unexpected"]),
     ("new.cpp", "operator new(unsigned long)", "_ZTSFvvE", &["new_handler"]),
     ("new.cpp", "operator new(unsigned long, std::align_val_t)", "_ZTSFvvE", &["new_handler"]),
+    // Kandelo signal delivery (inlined into __do_syscall_impl): handlers come
+    // from sigaction/signal registrations through the kernel.
+    ("glue/channel_syscall.c", "*", "_ZTSFviE", &["signal"]),
+    ("glue/channel_syscall.c", "*", "_ZTSFviP9siginfo_tPvE", &["signal"]),
+    // musl __synccall(func, ctx): func runs in every thread's SIGSYNCCALL handler.
+    ("thread/synccall.c", "handler", "_ZTSFvPvE", &["synccall"]),
+    ("thread/synccall.c", "__synccall", "_ZTSFvPvE", &["synccall"]),
 ];
 
 #[derive(Default)]
@@ -139,6 +150,11 @@ struct Side {
     defs: HashMap<String, Vec<IrFn>>,
     /// Per loaded side file: function name -> definitions in that object.
     objects: Vec<HashMap<String, Vec<IrFn>>>,
+    /// Per loaded side file: mangled name -> (name, variant index).
+    by_mangled: Vec<HashMap<String, (String, usize)>>,
+    /// Flow facts: where a function's address goes / where a parameter goes.
+    xdest: HashMap<String, Vec<(String, String)>>,
+    pdest: HashMap<(String, u32), Vec<(String, String)>>,
     loaded: HashMap<String, usize>,
     fn_types: HashMap<String, HashSet<u32>>,
     vslots: HashMap<String, HashSet<(u32, i64)>>,
@@ -159,6 +175,7 @@ impl Side {
             return i;
         }
         self.objects.push(HashMap::new());
+        self.by_mangled.push(HashMap::new());
         let i = self.objects.len() - 1;
         self.loaded.insert(path.to_string(), i);
         self.parse(path, sigs, true);
@@ -182,9 +199,19 @@ impl Side {
             i
         };
         match f[0] {
-            "#kandelo-calltypes" => versions_ok &= f.get(1) == Some(&"2"),
+            "#kandelo-calltypes" => versions_ok &= matches!(f.get(1), Some(&"2") | Some(&"3")),
             "M" => module = side.modules.id(f[1]),
-            "F" => cur = Some((f[1].to_string(), IrFn { module, ..Default::default() })),
+            "F" => cur = Some((f[1].to_string(), IrFn { module, mangled: f.get(5).unwrap_or(&"").to_string(), ..Default::default() })),
+            "Y" => {
+                let i = site(&mut cur, f[2]);
+                cur.as_mut().unwrap().1.sites[i].origin = Some((f[3].to_string(), f.get(4).unwrap_or(&"").to_string()));
+            }
+            "X" => side.xdest.entry(f[1].to_string()).or_default().push((f[2].to_string(), f.get(3).unwrap_or(&"").to_string())),
+            "P" => side
+                .pdest
+                .entry((f[1].to_string(), f[2].parse().unwrap()))
+                .or_default()
+                .push((f[3].to_string(), f.get(4).unwrap_or(&"").to_string())),
             "T" => {
                 let id = side.ids.id(f[2]);
                 side.fn_types.entry(f[1].into()).or_default().insert(id);
@@ -243,7 +270,12 @@ impl Side {
                     fnr.sites.resize(n, IrSite::default());
                 }
                 if per_object {
-                    side.objects.last_mut().unwrap().entry(name).or_default().push(fnr);
+                    let obj = side.objects.last_mut().unwrap();
+                    let v = obj.entry(name.clone()).or_default();
+                    if !fnr.mangled.is_empty() {
+                        side.by_mangled.last_mut().unwrap().insert(fnr.mangled.clone(), (name, v.len()));
+                    }
+                    v.push(fnr);
                 } else {
                     side.defs.entry(name).or_default().push(fnr);
                 }
@@ -517,7 +549,7 @@ struct BindInputs {
 
 /// Bind every defined wasm function to the side-file definitions of the
 /// exact object that supplied its code.
-fn bind<'s>(w: &Wasm, bi: &BindInputs, side: &'s mut Side, sigs: &mut Interner) -> Vec<Vec<(usize, String)>> {
+fn bind<'s>(w: &Wasm, bi: &BindInputs, side: &'s mut Side, sigs: &mut Interner) -> Vec<Vec<(usize, String, Option<usize>)>> {
     let entries = map_code_entries(&bi.map);
     let locals: Vec<usize> = (0..w.names.len()).filter(|&i| !w.import[i]).collect();
     assert_eq!(entries.len(), locals.len(), "map CODE entries vs defined functions");
@@ -603,7 +635,12 @@ fn bind<'s>(w: &Wasm, bi: &BindInputs, side: &'s mut Side, sigs: &mut Interner) 
         names.extend(syms.iter().cloned());
         for sp in sides.clone() {
             let oi = side.object(&sp, sigs);
-            out[f].push((oi, names.iter().find(|n| side.objects[oi].contains_key(*n)).cloned().unwrap_or_default()));
+            // The map's section symbol is the mangled name: exact variant.
+            if let Some((n, vi)) = syms.first().and_then(|m| side.by_mangled[oi].get(m)).cloned() {
+                out[f].push((oi, n, Some(vi)));
+                continue;
+            }
+            out[f].push((oi, names.iter().find(|n| side.objects[oi].contains_key(*n)).cloned().unwrap_or_default(), None));
         }
     }
     let mut hv: Vec<_> = how.into_iter().collect();
@@ -612,7 +649,7 @@ fn bind<'s>(w: &Wasm, bi: &BindInputs, side: &'s mut Side, sigs: &mut Interner) 
     let mut missing: Vec<(String, usize)> = vec![];
     let mut cnt: HashMap<&str, usize> = HashMap::new();
     for (k, (input, _)) in entries.iter().enumerate() {
-        if out[locals[k]].iter().all(|(_, n)| n.is_empty()) {
+        if out[locals[k]].iter().all(|(_, n, _)| n.is_empty()) {
             *cnt.entry(input.as_str()).or_default() += 1;
         }
     }
@@ -671,23 +708,31 @@ struct Graph<'a> {
     fty: Vec<Option<HashSet<u32>>>,
     edges: Vec<Vec<Edge>>,
     irsites: Vec<&'a IrSite>,
-    /// hub index -> registries
-    hub_regs: Vec<Vec<String>>,
-    hub_type: Vec<u32>,
+    /// hub index -> [(callback type id, registries)]
+    hubs: Vec<Vec<(u32, Vec<String>)>>,
+    /// Flow rule (field-sensitive function-pointer matching).
+    flow: bool,
+    flow_cache: std::cell::RefCell<HashMap<String, Option<HashSet<(String, String)>>>>,
     reg_unknown: HashMap<String, Vec<String>>,
     by_sig_table: HashMap<u32, Vec<u32>>,
     extra_registered: Vec<(String, String)>,
     cut_cancel: usize,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Rules {
     /// musl cancellation: pthread_exit from the cancel module only when a
     /// writer of `pthread.cancel` (pthread_cancel, timer_create) is linked.
     cancel: bool,
+    /// Simulated source restructures: direct edges caller>callee removed.
+    cuts: Vec<(String, String)>,
+    /// Field-sensitive function-pointer flow (MLTA-style; assumes no struct
+    /// type punning).
+    flow: bool,
 }
 
 fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: Rules) -> Graph<'a> {
+    let rules_cuts = rules.cuts.clone();
     let n = w.names.len();
     let mut g = Graph {
         w,
@@ -697,8 +742,9 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
         fty: vec![None; n],
         edges: vec![vec![]; n],
         irsites: vec![],
-        hub_regs: vec![],
-        hub_type: vec![],
+        hubs: vec![],
+        flow: rules.flow,
+        flow_cache: Default::default(),
         reg_unknown: side.reg_unknown.clone(),
         by_sig_table: HashMap::new(),
         extra_registered: vec![],
@@ -859,9 +905,12 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
                     }
                 }
                 for v in &chosen {
-                    let hub = HUBS.iter().position(|&(m, hf, _, _)| {
-                        single && *name == hf && side.modules.names[v.module as usize].ends_with(m)
-                    });
+                    let hub_entries: Vec<usize> = (0..HUBS.len())
+                        .filter(|&h| {
+                            let (m, hf, _, _) = HUBS[h];
+                            single && (hf == "*" || *name == hf) && side.modules.names[v.module as usize].ends_with(m)
+                        })
+                        .collect();
                     for (i, s) in v.sites.iter().enumerate() {
                         let Some(sig) = s.sig else { continue };
                         if s.direct.is_some() {
@@ -869,15 +918,19 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
                         }
                         let gi = g.irsites.len();
                         g.irsites.push(s);
-                        let hub_ix = hub.and_then(|h| {
-                            let tid = side.ids.get(HUBS[h].2)?;
-                            if !s.icall.contains(&tid) {
-                                return None;
-                            }
-                            g.hub_regs.push(HUBS[h].3.iter().map(|x| x.to_string()).collect());
-                            g.hub_type.push(tid);
-                            Some(g.hub_regs.len() - 1)
-                        });
+                        let entries: Vec<(u32, Vec<String>)> = hub_entries
+                            .iter()
+                            .filter_map(|&h| {
+                                let tid = side.ids.get(HUBS[h].2)?;
+                                s.icall.contains(&tid).then(|| (tid, HUBS[h].3.iter().map(|x| x.to_string()).collect()))
+                            })
+                            .collect();
+                        let hub_ix = if entries.is_empty() {
+                            None
+                        } else {
+                            g.hubs.push(entries);
+                            Some(g.hubs.len() - 1)
+                        };
                         edges.push(Edge {
                             site: if single { Some(i as u32) } else { None },
                             ir: Some(gi),
@@ -886,6 +939,12 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
                     }
                 }
             }
+        }
+        if !rules_cuts.is_empty() {
+            edges.retain(|e| match e.target {
+                Target::Direct(c) => !rules_cuts.iter().any(|(a, b)| *name == *a && w.names[c as usize] == *b),
+                _ => true,
+            });
         }
         g.edges[f] = edges;
     }
@@ -924,8 +983,7 @@ impl<'a> Graph<'a> {
                     continue;
                 }
                 if let (Mode::Registry, Some(h)) = (mode, hub) {
-                    if self.hub_type[*h] == *id {
-                        let regs = &self.hub_regs[*h];
+                    if let Some((_, regs)) = self.hubs[*h].iter().find(|(t, _)| t == id) {
                         if regs.iter().any(|r| {
                             self.reg_unknown.contains_key(r)
                                 || self.side.registered.get(r).map_or(false, |set| set.contains(tn))
@@ -936,6 +994,9 @@ impl<'a> Graph<'a> {
                         continue;
                     }
                 }
+                if self.flow && !self.flow_ok(s, tn) {
+                    continue;
+                }
                 return Some("icall");
             }
         }
@@ -945,6 +1006,77 @@ impl<'a> Graph<'a> {
             }
         }
         None
+    }
+
+    /// Destinations of a function's address, following parameters into
+    /// callees (bounded); None when it escapes to an unmodelled place.
+    fn flow_dest(&self, fname: &str) -> Option<HashSet<(String, String)>> {
+        if let Some(c) = self.flow_cache.borrow().get(fname) {
+            return c.clone();
+        }
+        let norm = |d: &str| -> String {
+            // Struct names may carry per-module ".N" suffixes: merge them.
+            let (ty, field) = d.rsplit_once(':').unwrap_or((d, ""));
+            let mut t = ty.to_string();
+            while let Some((a, b)) = t.rsplit_once('.') {
+                if !b.is_empty() && b.chars().all(|c| c.is_ascii_digit()) { t = a.to_string(); } else { break; }
+            }
+            format!("{t}:{field}")
+        };
+        let mut out: HashSet<(String, String)> = HashSet::new();
+        let mut work: Vec<((String, String), u32)> = self
+            .side
+            .xdest
+            .get(fname)
+            .map(|v| v.iter().map(|x| (x.clone(), 0)).collect())
+            .unwrap_or_default();
+        let mut escaped = work.is_empty();
+        while let Some(((kind, detail), depth)) = work.pop() {
+            match kind.as_str() {
+                "field" => { out.insert(("field".into(), norm(&detail))); }
+                "global" => { out.insert(("global".into(), detail)); }
+                "arg" => {
+                    out.insert(("arg".into(), detail.clone()));
+                    let (callee, k) = detail.rsplit_once(':').unwrap_or((&detail, "0"));
+                    let k: u32 = k.parse().unwrap_or(0);
+                    match self.side.pdest.get(&(callee.to_string(), k)) {
+                        Some(v) if depth < 6 => work.extend(v.iter().map(|x| (x.clone(), depth + 1))),
+                        Some(_) => escaped = true,
+                        None => {
+                            // A callee without facts (no IR, an import): unknown.
+                            escaped = true;
+                        }
+                    }
+                }
+                _ => escaped = true,
+            }
+            if escaped {
+                break;
+            }
+        }
+        let r = (!escaped).then_some(out);
+        self.flow_cache.borrow_mut().insert(fname.to_string(), r.clone());
+        r
+    }
+
+    fn flow_ok(&self, s: &IrSite, tn: &str) -> bool {
+        let Some((kind, detail)) = &s.origin else { return true };
+        let want = match kind.as_str() {
+            "field" => {
+                let (ty, field) = detail.rsplit_once(':').unwrap_or((detail, ""));
+                let mut t = ty.to_string();
+                while let Some((a, b)) = t.rsplit_once('.') {
+                    if !b.is_empty() && b.chars().all(|c| c.is_ascii_digit()) { t = a.to_string(); } else { break; }
+                }
+                ("field".to_string(), format!("{t}:{field}"))
+            }
+            "global" => ("global".to_string(), detail.clone()),
+            _ => return true, // arg / other: no flow restriction
+        };
+        match self.flow_dest(tn) {
+            None => true,
+            Some(d) => d.contains(&want),
+        }
     }
 
     fn targets(&self, e: &Edge, mode: Mode, out: &mut Vec<(u32, &'static str)>) {
@@ -1349,9 +1481,115 @@ fn census(a: &Analysis, r: &Result1) -> Vec<((u32, usize), usize)> {
     out
 }
 
+// ---------------------------------------------------------------- safety net
+/// Run-time safety net prototype: in every function the instrumenter left
+/// untransformed, follow each call_indirect whose type could dispatch to a
+/// transformed table function with `global.get $_wpk_fork_state; if;
+/// unreachable; end`. A fork unwind that returns into such a function then
+/// traps instead of continuing with a half-unwound stack.
+/// Returns (sites, functions).
+fn guard_pass(inp: &str, out: &str, insert: bool) -> (usize, usize) {
+    let mut m = Module::from_file(inp).unwrap_or_else(|e| panic!("{inp}: {e}"));
+    let state = m
+        .globals
+        .iter()
+        .find(|g| g.name.as_deref() == Some("_wpk_fork_state"))
+        .expect("_wpk_fork_state")
+        .id();
+    struct Reads {
+        state: GlobalId,
+        hit: bool,
+        seqs: Vec<InstrSeqId>,
+    }
+    impl<'i> Visitor<'i> for Reads {
+        fn visit_global_get(&mut self, i: &GlobalGet) {
+            self.hit |= i.global == self.state;
+        }
+        fn visit_global_set(&mut self, i: &GlobalSet) {
+            self.hit |= i.global == self.state;
+        }
+        fn start_instr_seq(&mut self, seq: &'i InstrSeq) {
+            self.seqs.push(seq.id());
+        }
+    }
+    let mut instrumented = HashSet::new();
+    let mut seqs_of: HashMap<FunctionId, Vec<InstrSeqId>> = HashMap::new();
+    for f in m.funcs.iter() {
+        if let FunctionKind::Local(l) = &f.kind {
+            let mut r = Reads { state, hit: false, seqs: vec![] };
+            dfs_in_order(&mut r, l, l.entry_block());
+            if r.hit {
+                instrumented.insert(f.id());
+            }
+            seqs_of.insert(f.id(), r.seqs);
+        }
+    }
+    let mut in_table = HashSet::new();
+    for e in m.elements.iter() {
+        match &e.items {
+            ElementItems::Functions(v) => in_table.extend(v.iter().copied()),
+            ElementItems::Expressions(_, ex) => {
+                for x in ex {
+                    if let ConstExpr::RefFunc(f) = x {
+                        in_table.insert(*f);
+                    }
+                }
+            }
+        }
+    }
+    let types: HashSet<TypeId> = instrumented.iter().filter(|f| in_table.contains(*f)).map(|&f| m.funcs.get(f).ty()).collect();
+    let (mut sites, mut fns) = (0, 0);
+    for (fid, seqs) in seqs_of {
+        if instrumented.contains(&fid) {
+            continue;
+        }
+        let lf = match &mut m.funcs.get_mut(fid).kind {
+            FunctionKind::Local(l) => l,
+            _ => continue,
+        };
+        let mut here = 0;
+        for seq in seqs {
+            let positions: Vec<usize> = lf
+                .block(seq)
+                .instrs
+                .iter()
+                .enumerate()
+                .filter(|(_, (i, _))| matches!(i, Instr::CallIndirect(ci) if types.contains(&ci.ty)))
+                .map(|(k, _)| k)
+                .collect();
+            for &k in positions.iter().rev() {
+                here += 1;
+                if !insert {
+                    continue;
+                }
+                let cons = {
+                    let mut b = lf.builder_mut().dangling_instr_seq(None);
+                    b.unreachable();
+                    b.id()
+                };
+                let alt = lf.builder_mut().dangling_instr_seq(None).id();
+                let block = &mut lf.block_mut(seq).instrs;
+                block.insert(k + 1, (Instr::GlobalGet(GlobalGet { global: state }), InstrLocId::default()));
+                block.insert(k + 2, (Instr::IfElse(IfElse { consequent: cons, alternative: alt }), InstrLocId::default()));
+            }
+        }
+        sites += here;
+        fns += (here > 0) as usize;
+    }
+    m.emit_wasm_file(out).unwrap();
+    (sites, fns)
+}
+
 // ---------------------------------------------------------------- main
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|a| a.as_str()) == Some("guard") {
+        // fpa guard <instrumented.wasm> <out.wasm> [--count-only]
+        let insert = args.get(4).map(|a| a.as_str()) != Some("--count-only");
+        let (sites, fns) = guard_pass(&args[2], &args[3], insert);
+        println!("guard: {sites} sites in {fns} untransformed functions ({})", if insert { "inserted" } else { "counted; module re-encoded unchanged" });
+        return;
+    }
     let mut wasm_path = None;
     let mut side_path = None;
     let mut map_path: Option<String> = None;
@@ -1389,6 +1627,11 @@ fn main() {
             "--exclude-fork-mode" => exclude_mode = Some(v().parse::<u64>().unwrap()),
             "--rule" => match v().as_str() {
                 "cancel" => rules.cancel = true,
+                "flow" => rules.flow = true,
+                r if r.starts_with("cut:") => {
+                    let (a, b) = r[4..].split_once('>').expect("cut:caller>callee");
+                    rules.cuts.push((a.to_string(), b.to_string()));
+                }
                 r => panic!("unknown rule {r}"),
             },
             _ => panic!("unknown argument {a}"),
@@ -1397,7 +1640,11 @@ fn main() {
     }
     let mut sigs = Interner::default();
     let t0 = std::time::Instant::now();
-    let w = load_wasm(wasm_path.as_deref().expect("--wasm"), &mut sigs);
+    let mut w = load_wasm(wasm_path.as_deref().expect("--wasm"), &mut sigs);
+    if std::env::var("FPA_IGNORE_DYNLINK").is_ok() {
+        // Upper bound only: pretend no side module can fork.
+        w.dyn_link = false;
+    }
     let mut side = side_path.map(|p| load_side(&p, &mut sigs)).unwrap_or_default();
     let bound = map_path.map(|m| {
         let bi = BindInputs { map: m, inputs: inputs_path, side_dir: side_dir.expect("--side-dir"), aliases: aliases_path };
@@ -1429,13 +1676,16 @@ fn main() {
         .map(|f| match &bound {
             Some(b) => b[f]
                 .iter()
-                .filter(|(_, n)| !n.is_empty())
-                .flat_map(|(oi, n)| side.objects[*oi][n].iter())
+                .filter(|(_, n, _)| !n.is_empty())
+                .flat_map(|(oi, n, vi)| match vi {
+                    Some(i) => vec![&side.objects[*oi][n][*i]],
+                    None => side.objects[*oi][n].iter().collect(),
+                })
                 .collect(),
             None => side.defs.get(&w.names[f]).map(|v| v.iter().collect()).unwrap_or_default(),
         })
         .collect();
-    let g = build_graph(&w, &side, &cands, rules);
+    let g = build_graph(&w, &side, &cands, rules.clone());
     if rules.cancel {
         println!("rule cancel: {} direct calls to pthread_exit removed (writers linked: {})", g.cut_cancel, ["pthread_cancel", "timer_create"].iter().filter(|n| w.by_name.contains_key(**n)).count());
     }

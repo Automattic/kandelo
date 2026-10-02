@@ -30,7 +30,7 @@ while IFS= read -r o; do
     *) printf 'libc.a\t%s\t%s\n' "$(basename "$o")" "$sha" ;;
   esac
 done < <(find "$OUT/repo/libc/musl/obj/src" "$OUT/repo/libc/musl/obj/crt" -name '*.o'; ls "$OUT"/repo/sysroot/lib/{__main_void,wasm_setjmp_rt,sigsetjmp_helpers}.o 2>/dev/null) >> "$OUT/aliases.tsv"
-PF="-Xclang -fsanitize=cfi-icall,cfi-vcall -Xclang -fsanitize-trap=cfi-icall,cfi-vcall -Xclang -flto-unit -Xclang -load -Xclang $P -fpass-plugin=$P"
+PF="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $P -fpass-plugin=$P"
 for g in channel_syscall compiler_rt cxxrt dlopen; do
   side="$OUT/glue/$g.calltypes"
   wasm32posix-cc -c $PF -mllvm -kandelo-calltypes-out="$side" \

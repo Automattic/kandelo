@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 out_root, limit = os.path.abspath(sys.argv[1]), int(sys.argv[2]) if len(sys.argv) > 2 else 0
 builds = ["qtbase-build", "qtdeclarative-build", "qtshadertools-build", "quickshell-build"]
 PLUGIN = os.environ["KANDELO_CALLTYPES_PLUGIN"]
-EXTRA = ["-Xclang", "-fsanitize=cfi-icall,cfi-vcall", "-Xclang", "-fsanitize-trap=cfi-icall,cfi-vcall",
+EXTRA = ["-Xclang", "-fsanitize=cfi-icall", "-Xclang", "-fsanitize-trap=cfi-icall", "-Xclang", "-fwhole-program-vtables",
          "-Xclang", "-flto-unit",
          "-Xclang", "-load", "-Xclang", PLUGIN, "-fpass-plugin=" + PLUGIN]
 # Only compile units whose object the quickshell link actually used.

@@ -15,7 +15,7 @@ for i, a in enumerate(args):
     if prev not in TAKES and not a.startswith("-") and a.endswith(SRC):
         srcs.append(i)
     prev = a
-plug = ["-Xclang", "-fsanitize=cfi-icall,cfi-vcall", "-Xclang", "-fsanitize-trap=cfi-icall,cfi-vcall",
+plug = ["-Xclang", "-fsanitize=cfi-icall", "-Xclang", "-fsanitize-trap=cfi-icall", "-Xclang", "-fwhole-program-vtables",
         "-Xclang", "-flto-unit", "-Xclang", "-load", "-Xclang", plugin, f"-fpass-plugin={plugin}"]
 tmp = tempfile.mkdtemp(dir=os.path.join(out_dir, "side"), prefix=".split.")
 objs = {}
@@ -33,7 +33,10 @@ for k, i in enumerate(srcs):
         if j in srcs and j != i:
             continue
         cargs.append(a)
-    r = subprocess.run([real, *cargs, "-c", "-o", o, *plug, "-mllvm", f"-kandelo-calltypes-out={side}"])
+    # Research what-if (FPR_GLUE_O2=1): the SDK compiling its link-time libc
+    # glue at -O2 regardless of the link command's optimization flags.
+    extra = ["-O2"] if os.environ.get("FPR_GLUE_O2") == "1" and "/libc/glue/" in os.path.abspath(args[i]) else []
+    r = subprocess.run([real, *cargs, *extra, "-c", "-o", o, *plug, "-mllvm", f"-kandelo-calltypes-out={side}"])
     if r.returncode != 0:
         sys.exit(r.returncode)
     h = hashlib.sha256(open(o, "rb").read()).hexdigest()

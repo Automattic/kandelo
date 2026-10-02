@@ -43,7 +43,7 @@ if [ \$compile = 1 ] && [ \$wasm = 1 ]; then
   # Side files are named by the SHA-256 of the object they describe, so the
   # analysis can bind archive members and loose objects to them exactly.
   tmp=\$(mktemp "$OUT/side/.tmp.XXXXXX")
-  "\$REAL" "\$@" -Xclang -fsanitize=cfi-icall,cfi-vcall -Xclang -fsanitize-trap=cfi-icall,cfi-vcall -Xclang -flto-unit -Xclang -load -Xclang "$PLUGIN" -fpass-plugin="$PLUGIN" -mllvm -kandelo-calltypes-out="\$tmp"
+  "\$REAL" "\$@" -Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang "$PLUGIN" -fpass-plugin="$PLUGIN" -mllvm -kandelo-calltypes-out="\$tmp"
   rc=\$?
   if [ \$rc != 0 ] || [ ! -f "\$out" ]; then rm -f "\$tmp"; exit \$rc; fi
   sha=\$("$SHA256" "\$out" | cut -d' ' -f1)

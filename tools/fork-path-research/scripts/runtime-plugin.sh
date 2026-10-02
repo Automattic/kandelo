@@ -6,7 +6,7 @@ set -uo pipefail
 ROOT=$PWD
 OUT=$ROOT/.context/ir/plugin-runtime
 P=$ROOT/.context/calltypes-plugin/KandeloCallTypes.dylib
-PF="-Xclang -fsanitize=cfi-icall,cfi-vcall -Xclang -fsanitize-trap=cfi-icall,cfi-vcall -Xclang -flto-unit -Xclang -load -Xclang $P -fpass-plugin=$P"
+PF="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $P -fpass-plugin=$P"
 mkdir -p "$OUT/musl" "$OUT/cxx" "$OUT/gen/include/bits" "$OUT/gen/internal"
 cp "$ROOT/sysroot/include/bits/alltypes.h" "$ROOT/sysroot/include/bits/syscall.h" "$OUT/gen/include/bits/"
 echo '#define VERSION "kandelo"' > "$OUT/gen/internal/version.h"
