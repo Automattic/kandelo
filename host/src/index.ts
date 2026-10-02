@@ -88,7 +88,11 @@ export { WasiShim, WasiExit } from "./wasi-shim";
 export { isWasiModule, wasiModuleImportsMemory, wasiModuleDefinesMemory } from "./wasi-detect";
 export { NodeKernelHost } from "./node-kernel-host";
 export type { NodeKernelHostOptions, SpawnOptions } from "./node-kernel-host";
-export type { ClipboardOfferFailure, ClipboardOfferResult } from "./clipboard";
+export type {
+  ClipboardOfferFailure,
+  ClipboardOfferResult,
+  GuestClipboardResult,
+} from "./clipboard";
 export type { HostDiagnostic } from "./host-diagnostic";
 export type {
   MainToKernelMessage,

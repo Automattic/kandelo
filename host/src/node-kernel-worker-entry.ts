@@ -3674,6 +3674,23 @@ async function handleHttpRequest(msg: HttpRequestMessage) {
   }
 }
 
+async function handleClipboardGuestWait(
+  msg: Extract<MainToKernelMessage, { type: "clipboard_guest_wait" }>,
+) {
+  if (!initReady) {
+    respondError(msg.requestId, "clipboard copy-out requires an initialized kernel");
+    return;
+  }
+  try {
+    respond(
+      msg.requestId,
+      await kernelWorker.waitForGuestClipboardText({ timeoutMs: msg.timeoutMs }),
+    );
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleClipboardOffer(
   msg: Extract<MainToKernelMessage, { type: "clipboard_offer" }>,
 ) {
@@ -3893,6 +3910,9 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "clipboard_offer":
       void handleClipboardOffer(msg);
+      break;
+    case "clipboard_guest_wait":
+      void handleClipboardGuestWait(msg);
       break;
     case "read_vfs_file":
       void handleReadVfsFile(msg);

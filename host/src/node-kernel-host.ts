@@ -49,7 +49,11 @@ import {
 import type { MountSpec } from "./vfs/default-mounts";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
-import { encodeClipboardText, type ClipboardOfferResult } from "./clipboard";
+import {
+  encodeClipboardText,
+  type ClipboardOfferResult,
+  type GuestClipboardResult,
+} from "./clipboard";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 import type { InputEvent, InputSource } from "./input/input-source";
 import { batchBySynReport } from "./input/input-batch";
@@ -1051,6 +1055,23 @@ export class NodeKernelHost {
       [bytes.buffer as ArrayBuffer],
     );
     return result as ClipboardOfferResult;
+  }
+
+  /**
+   * Copy-out: resolve with the next selection the guest desktop reports
+   * (through its clipboard agent), or `timeout`. Call it before delivering
+   * the copy chord, so the guest's copy is the change it waits for.
+   */
+  async waitForGuestClipboardText(
+    options: { timeoutMs?: number } = {},
+  ): Promise<GuestClipboardResult> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "clipboard_guest_wait",
+      requestId,
+      timeoutMs: options.timeoutMs,
+    });
+    return result as GuestClipboardResult;
   }
 
   /**

@@ -501,6 +501,16 @@ export interface ClipboardOfferMessage {
   timeoutMs?: number;
 }
 
+/**
+ * Copy-out: answer with the next desktop selection the guest's clipboard
+ * agent reports (a `GuestClipboardResult`). Sent before the copy chord.
+ */
+export interface ClipboardGuestWaitMessage {
+  type: "clipboard_guest_wait";
+  requestId: number;
+  timeoutMs?: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -510,6 +520,7 @@ export type MainToKernelMessage =
   | UnlinkVfsFileMessage
   | ExportRootfsImageMessage
   | ClipboardOfferMessage
+  | ClipboardGuestWaitMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage

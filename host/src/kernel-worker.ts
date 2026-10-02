@@ -280,7 +280,9 @@ import {
   CLIPBOARD_ACK_TIMEOUT_MS,
   clipboardAckFailure,
   clipboardOfferFailure,
+  GUEST_CLIPBOARD_TIMEOUT_MS,
   type ClipboardOfferResult,
+  type GuestClipboardResult,
 } from "./clipboard";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
 import {
@@ -30689,6 +30691,87 @@ export class CentralizedKernelWorker {
         return undefined;
       });
     });
+  }
+
+  /**
+   * Copy-out: resolve with the next desktop selection the guest's clipboard
+   * agent reports, or `timeout`. The generation is sampled when this
+   * request runs, so callers send it before delivering the copy chord; it
+   * is then polled on a timer only until it moves or the time runs out.
+   */
+  waitForGuestClipboardText(
+    options: { timeoutMs?: number } = {},
+  ): Promise<GuestClipboardResult> {
+    const deadline = Date.now() + (options.timeoutMs ?? GUEST_CLIPBOARD_TIMEOUT_MS);
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("clipboard guest baseline", (entry) => {
+        const generation = entry.instance.exports.kernel_clipboard_guest_generation as
+          | (() => number)
+          | undefined;
+        if (
+          typeof generation !== "function"
+          || typeof entry.instance.exports.kernel_clipboard_guest_read !== "function"
+        ) {
+          resolve({ ok: false, reason: "unsupported" });
+          return undefined;
+        }
+        this.#awaitGuestClipboard(generation(), deadline, resolve);
+        return undefined;
+      });
+    });
+  }
+
+  #awaitGuestClipboard(
+    baseline: number,
+    deadline: number,
+    resolve: (result: GuestClipboardResult) => void,
+  ): void {
+    setTimeout(() => {
+      this.#runOrDeferKernelEntry("clipboard guest poll", (entry) => {
+        const generation = entry.instance.exports.kernel_clipboard_guest_generation as
+          () => number;
+        if (generation() === baseline) {
+          if (Date.now() >= deadline) resolve({ ok: false, reason: "timeout" });
+          else this.#awaitGuestClipboard(baseline, deadline, resolve);
+          return undefined;
+        }
+        // Read it in scratch-sized chunks inside this one entry, so the text
+        // cannot change between chunks.
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        let dropped = false;
+        const scratch = this.#requireMainScratchRegion();
+        scratch.withLease((lease) => {
+          for (;;) {
+            const n = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_clipboard_guest_read",
+              [lease.exportPointer(0, scratch.capacity), scratch.capacity, total],
+            );
+            // -ENOENT: the agent released the device after reporting, which
+            // drops the text. Reading it as "" would empty the host clipboard.
+            if (n < 0) { dropped = true; return; }
+            if (!Number.isSafeInteger(n) || n === 0 || n > scratch.capacity) return;
+            chunks.push(lease.copyOut(0, n));
+            total += n;
+          }
+        });
+        if (dropped) {
+          resolve({ ok: false, reason: "no-agent" });
+          return undefined;
+        }
+        const bytes = new Uint8Array(total);
+        let at = 0;
+        for (const c of chunks) { bytes.set(c, at); at += c.byteLength; }
+        try {
+          resolve({ ok: true, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) });
+        } catch {
+          resolve({ ok: false, reason: "invalid-text" });
+        }
+        return undefined;
+      });
+    }, CLIPBOARD_ACK_POLL_MS);
   }
 
   #awaitClipboardAck(

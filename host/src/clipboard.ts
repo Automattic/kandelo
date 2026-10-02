@@ -78,3 +78,21 @@ export function encodeClipboardText(text: string): Uint8Array | null {
   const bytes = new TextEncoder().encode(text.replace(/\r\n/g, "\n"));
   return bytes.byteLength > KANDELO_CLIPBOARD_MAX_TEXT_BYTES ? null : bytes;
 }
+
+/**
+ * Copy-out: the desktop's selection after a copy gesture. `timeout` means
+ * the guest reported no new selection in time (the chord copied nothing,
+ * e.g. Ctrl+C in a terminal with no selection), which leaves the host
+ * clipboard alone.
+ */
+/**
+ * `no-agent`: the agent reported a selection but released the device (it
+ * exited) before the host read it, and release drops the text. That is a
+ * failed copy, never an empty one.
+ */
+export type GuestClipboardResult =
+  | { ok: true; text: string }
+  | { ok: false; reason: "timeout" | "unsupported" | "invalid-text" | "no-agent" };
+
+/** How long a copy gesture waits for the guest to report its selection. */
+export const GUEST_CLIPBOARD_TIMEOUT_MS = 2_000;
