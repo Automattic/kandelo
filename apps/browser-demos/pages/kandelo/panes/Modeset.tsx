@@ -12,6 +12,7 @@ import {
   runDemoIngest,
   type IngestPhase,
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
+import { describeClipboardPasteFailure } from "../../../../../web-libs/kandelo-session/src/clipboard-paste";
 import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
 import { DemoSurfaceDockControls, IngestControl } from "./Framebuffer";
 import { useDockActions } from "./DockActions";
@@ -72,6 +73,15 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
   const [ingestPhase, setIngestPhase] = React.useState<IngestPhase | null>(null);
   const [ingestName, setIngestName] = React.useState<string | null>(null);
   const [ingestError, setIngestError] = React.useState<string | null>(null);
+  // A paste gesture over the machine that never reached the guest (the
+  // `clipboard` runtime feature). Shown until dismissed or replaced.
+  const [pasteError, setPasteError] = React.useState<string | null>(null);
+  React.useEffect(
+    () => host.subscribeClipboardPasteFailures((failure) => {
+      setPasteError(describeClipboardPasteFailure(failure));
+    }),
+    [host],
+  );
   const stageRef = React.useRef<HTMLDivElement>(null);
   const slotRef = React.useRef<HTMLDivElement>(null);
   const handleRef = React.useRef<KmsDisplayHandle | null>(null);
@@ -450,6 +460,24 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
               type="button"
               className="kdemo-toast-dismiss"
               onClick={() => setIngestError(null)}
+              aria-label="Dismiss error"
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {pasteError && !busy && !ingestError && (
+          <div
+            className="kdemo-toast"
+            data-error="true"
+            data-testid="kms-paste-error"
+            role="alert"
+          >
+            {pasteError}
+            <button
+              type="button"
+              className="kdemo-toast-dismiss"
+              onClick={() => setPasteError(null)}
               aria-label="Dismiss error"
             >
               ×

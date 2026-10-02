@@ -190,14 +190,17 @@ export interface DemoRuntimeConfigInput {
  * `kms` select a display surface, `kms-gl-scanout` additionally routes that
  * surface through the vblank pump's WebGL2 scanout presenter, and
  * `evdev-input` makes the host attach a DOM input source before the machine's
- * command runs. A feature with no consumer is a claim the platform does not
- * honour, so it does not belong in this union.
+ * command runs, and `clipboard` makes that source turn the browser's paste
+ * gesture into an offer on `/dev/kandelo/clipboard` (the image runs an agent,
+ * kclipd, that reads it). A feature with no consumer is a claim the platform
+ * does not honour, so it does not belong in this union.
  */
 export type DemoRuntimeFeature =
   | "framebuffer"
   | "kms"
   | "kms-gl-scanout"
-  | "evdev-input";
+  | "evdev-input"
+  | "clipboard";
 
 /**
  * What the image ASKS for. The host clamps each of these to its own policy
@@ -529,6 +532,7 @@ const RUNTIME_FEATURES = new Set<DemoRuntimeFeature>([
   "kms",
   "kms-gl-scanout",
   "evdev-input",
+  "clipboard",
 ]);
 
 function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
@@ -563,6 +567,11 @@ function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
   // that never mounts. Reject the combination from untrusted image metadata.
   if (features.includes("kms-gl-scanout") && !features.includes("kms")) {
     throw new Error(`${field}.features: "kms-gl-scanout" requires "kms"`);
+  }
+  // The paste gesture is part of the DOM input source; without one there is
+  // nothing to carry it.
+  if (features.includes("clipboard") && !features.includes("evdev-input")) {
+    throw new Error(`${field}.features: "clipboard" requires "evdev-input"`);
   }
 
   return {

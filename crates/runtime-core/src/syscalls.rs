@@ -163,6 +163,9 @@ pub enum VirtualDevice {
     /// `device = 1` → ptr (host_handle -11). v1 exposes exactly these
     /// two; `/dev/input/eventN` for N≥2 is not synthesised.
     InputEvent { device: u8 },
+    /// `/dev/kandelo/clipboard` — host clipboard text for the guest's
+    /// clipboard agent (see `crate::clipboard`). host_handle -12.
+    Clipboard,
 }
 
 impl VirtualDevice {
@@ -179,6 +182,7 @@ impl VirtualDevice {
             VirtualDevice::DriRenderD128 => -8,
             VirtualDevice::DriCard0 => -9,
             VirtualDevice::InputEvent { device } => -10 - device as i64,
+            VirtualDevice::Clipboard => -12,
         }
     }
 
@@ -196,6 +200,7 @@ impl VirtualDevice {
             -9 => Some(VirtualDevice::DriCard0),
             -10 => Some(VirtualDevice::InputEvent { device: 0 }),
             -11 => Some(VirtualDevice::InputEvent { device: 1 }),
+            -12 => Some(VirtualDevice::Clipboard),
             _ => None,
         }
     }
@@ -213,6 +218,7 @@ impl VirtualDevice {
             VirtualDevice::DriRenderD128 => 8,
             VirtualDevice::DriCard0 => 9,
             VirtualDevice::InputEvent { device } => 10 + device as u64,
+            VirtualDevice::Clipboard => 12,
         }
     }
 
@@ -222,11 +228,15 @@ impl VirtualDevice {
     /// devnum. libinput's path backend `stat()`s the node, keeps only
     /// `st_rdev`, and calls `udev_device_new_from_devnum(rdev)`, so
     /// `/dev/input/event{N}` must be uniquely stat-identifiable. Linux
-    /// puts evdev on char major 13, minor 64+N. Other virtual nodes
-    /// report 0 until a consumer needs to distinguish them by devnum.
+    /// puts evdev on char major 13, minor 64+N. The clipboard device is a
+    /// Kandelo misc device: Linux's misc major 10, with a minor from the
+    /// range Linux leaves to dynamically registered misc drivers. Other
+    /// virtual nodes report 0 until a consumer needs to distinguish them by
+    /// devnum.
     pub fn rdev(self) -> u64 {
         match self {
             VirtualDevice::InputEvent { device } => makedev(13, 64 + device as u32),
+            VirtualDevice::Clipboard => makedev(10, 250),
             _ => 0,
         }
     }
@@ -262,6 +272,7 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/dri/card0" => Some(VirtualDevice::DriCard0),
         b"/dev/input/event0" => Some(VirtualDevice::InputEvent { device: 0 }),
         b"/dev/input/event1" => Some(VirtualDevice::InputEvent { device: 1 }),
+        b"/dev/kandelo/clipboard" => Some(VirtualDevice::Clipboard),
         _ => None,
     }
 }
@@ -3397,6 +3408,9 @@ pub fn sys_open(
         if dev == VirtualDevice::Mice {
             acquire_mice_or_busy(proc.pid)?;
         }
+        if dev == VirtualDevice::Clipboard {
+            crate::clipboard::acquire_or_busy(proc.pid)?;
+        }
         let status_flags = oflags & !CREATION_FLAGS;
         if dev == VirtualDevice::Dsp {
             // /dev/dsp is playback-only, but the standard OSS open (pcaudiolib,
@@ -4282,6 +4296,16 @@ fn release_ofd_reference_impl(
         maybe_release_mice(proc.pid);
     }
 
+    // /dev/kandelo/clipboard ownership: release once the process has dropped
+    // its last clipboard fd, which also drops any text it had not read.
+    if freed
+        && file_type == FileType::CharDevice
+        && VirtualDevice::from_host_handle(host_handle) == Some(VirtualDevice::Clipboard)
+        && !proc_has_virtual_device_fd(proc, VirtualDevice::Clipboard)
+    {
+        crate::clipboard::release(proc.pid);
+    }
+
     Ok(())
 }
 
@@ -5059,6 +5083,12 @@ pub fn sys_read(
                             }
                             n
                         }
+                        // EAGAIN when there is no record: the host returns
+                        // it to an O_NONBLOCK caller and parks a blocking
+                        // one until the next offer wakes it, as Linux
+                        // character devices block. (Not evdev's Ok(0): a 0
+                        // return would read as end-of-file.)
+                        VirtualDevice::Clipboard => crate::clipboard::read_into(buf)?,
                     };
                     return Ok(n);
                 }
@@ -5425,6 +5455,8 @@ pub fn sys_write(
                         // `/dev/dsp` opens are represented by PcmPlayback,
                         // never by this legacy virtual-character path.
                         VirtualDevice::Dsp => Err(Errno::EBADF),
+                        // The agent's acknowledgement of an offer.
+                        VirtualDevice::Clipboard => crate::clipboard::write_ack(buf),
                         _ => Ok(buf.len()), // Null, Zero, Urandom, Mice: discard
                     };
                 }
@@ -14177,6 +14209,18 @@ fn poll_check_depth(
                     }
                     // Mice doesn't accept writes — never report POLLOUT.
                 } else if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle)
+                        == Some(VirtualDevice::Clipboard)
+                {
+                    // Readable only while a record is waiting, matching
+                    // sys_read's EAGAIN; an acknowledgement never blocks.
+                    if pollfd.events & POLLIN != 0 && crate::clipboard::has_data() {
+                        revents |= POLLIN;
+                    }
+                    if pollfd.events & POLLOUT != 0 {
+                        revents |= POLLOUT;
+                    }
+                } else if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Dsp)
                 {
                     // /dev/dsp is write-only. POLLOUT is always ready —
@@ -14584,6 +14628,9 @@ pub fn sys_openat(
         }
         if dev == VirtualDevice::Mice {
             acquire_mice_or_busy(proc.pid)?;
+        }
+        if dev == VirtualDevice::Clipboard {
+            crate::clipboard::acquire_or_busy(proc.pid)?;
         }
         let status_flags = oflags & !CREATION_FLAGS;
         if dev == VirtualDevice::Dsp {
@@ -41684,6 +41731,94 @@ mod tests {
         // bit3 (frame sync) + left button (bit0) + dy negative (bit5)
         assert_eq!(buf[0], 0x08 | 0x01 | 0x20);
 
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    // -----------------------------------------------------------------
+    // /dev/kandelo/clipboard — the syscall surface over crate::clipboard.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn clipboard_node_is_a_misc_char_device() {
+        let _g = crate::clipboard::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::clipboard::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let st = sys_stat(&mut proc, &mut host, b"/dev/kandelo/clipboard").unwrap();
+        assert_eq!(st.st_mode & wasm_posix_shared::mode::S_IFMT, wasm_posix_shared::mode::S_IFCHR);
+        assert_eq!(st.st_rdev, makedev(10, 250));
+        assert_eq!(st.st_ino, VirtualDevice::Clipboard.ino());
+        assert_eq!(
+            VirtualDevice::from_host_handle(VirtualDevice::Clipboard.host_handle()),
+            Some(VirtualDevice::Clipboard)
+        );
+    }
+
+    #[test]
+    fn clipboard_is_single_owner_and_close_releases_it() {
+        use core::sync::atomic::Ordering;
+        let _g = crate::clipboard::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::clipboard::reset_for_test();
+        let mut agent = Process::new(1);
+        let mut other = Process::new(2);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut agent, &mut host, b"/dev/kandelo/clipboard", O_RDWR, 0).unwrap();
+        assert_eq!(
+            sys_open(&mut other, &mut host, b"/dev/kandelo/clipboard", O_RDWR, 0),
+            Err(Errno::EBUSY)
+        );
+        let dup = sys_dup(&mut agent, fd).unwrap();
+        crate::clipboard::offer(b"private").unwrap();
+        sys_close(&mut agent, &mut host, fd).unwrap();
+        // A surviving descriptor keeps ownership and the unread text.
+        assert_eq!(crate::clipboard::CLIPBOARD_OWNER.load(Ordering::SeqCst), 1);
+        assert!(crate::clipboard::has_data());
+        sys_close(&mut agent, &mut host, dup).unwrap();
+        assert_eq!(crate::clipboard::CLIPBOARD_OWNER.load(Ordering::SeqCst), -1);
+        assert!(!crate::clipboard::has_data());
+        let fd2 = sys_open(&mut other, &mut host, b"/dev/kandelo/clipboard", O_RDWR, 0).unwrap();
+        sys_close(&mut other, &mut host, fd2).unwrap();
+    }
+
+    #[test]
+    fn clipboard_read_poll_and_ack_through_syscalls() {
+        let _g = crate::clipboard::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::clipboard::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/kandelo/clipboard", O_RDWR, 0).unwrap();
+        let nb = sys_open(
+            &mut proc, &mut host, b"/dev/kandelo/clipboard", O_RDWR | O_NONBLOCK, 0,
+        )
+        .unwrap();
+
+        // Nothing offered: both block-style and O_NONBLOCK reads see EAGAIN
+        // (the host parks the blocking one), and poll reports writable only.
+        let mut buf = [0u8; 64];
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf), Err(Errno::EAGAIN));
+        assert_eq!(sys_read(&mut proc, &mut host, nb, &mut buf), Err(Errno::EAGAIN));
+        let mut pfd = [WasmPollFd { fd, events: POLLIN | POLLOUT, revents: 0 }];
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut pfd, 0), Ok(1));
+        assert_eq!(pfd[0].revents, POLLOUT);
+
+        let seq = crate::clipboard::offer(b"hello").unwrap();
+        pfd[0].revents = 0;
+        sys_poll(&mut proc, &mut host, &mut pfd, 0).unwrap();
+        assert_eq!(pfd[0].revents, POLLIN | POLLOUT);
+
+        // One record per read: header then payload, nothing more.
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 16 + 5);
+        assert_eq!(u32::from_le_bytes(buf[8..12].try_into().unwrap()), seq);
+        assert_eq!(&buf[16..21], b"hello");
+
+        let mut ack = [0u8; 8];
+        ack[..4].copy_from_slice(&seq.to_le_bytes());
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &ack), Ok(8));
+        assert_eq!(crate::clipboard::ack_status(seq), 0);
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &ack[..4]), Err(Errno::EINVAL));
+
+        sys_close(&mut proc, &mut host, nb).unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 

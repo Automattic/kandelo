@@ -76,6 +76,12 @@ wasm = "klauncher.wasm"
 name = "notify-send"
 wasm = "notify-send.wasm"
 
+# The host-clipboard agent omarchydesktop starts: it turns offers on
+# /dev/kandelo/clipboard into the desktop's Wayland selection.
+[[outputs]]
+name = "kclipd"
+wasm = "kclipd.wasm"
+
 # The launcher is the machine's single `init.shellCommand`. It owns the
 # start order the desktop needs — compositor first (it takes DRM master and
 # drives KMS), then the clients once its socket exists — so the browser app
