@@ -92,6 +92,40 @@ Builds require `-Z unstable-options -Z json-target-spec
 Design and history: `docs/plans/2026-09-06-rust-std-target-design.md`
 and `docs/plans/2026-09-07-rust-std-target-implementation.md`.
 
+## Packaging a Rust library as a Kandelo package
+
+A Rust library ships as a normal registry package whose build step drives
+the Rust toolchain. The reference is `packages/registry/rustdemo/` (a Rust
+crate with a C ABI), consumed end-to-end by
+`packages/registry/rustdemo-check/`.
+
+The shape, following the in-tree-source convention (like `libffi`):
+
+- `package.toml`: `kind = "library"`, a placeholder `[source]`
+  (`example.invalid`, zero sha → `provider = "repository"`) because the
+  crate is in-tree, and `[outputs]` naming the installed
+  `lib/lib<name>.a`, `include/<name>.h`, `lib/pkgconfig/<name>.pc`.
+- `build.toml`: the `inputs` closure listing the crate, header, and build
+  script so edits invalidate the cache.
+- `build-<name>.sh`: run `scripts/build-rust-sysroot.sh` to assemble the
+  private sysroot, then `cargo build --release -Z build-std=std,panic_abort
+  --target sdk/rust/wasm32-unknown-kandelo-std.json` with
+  `RUSTC=$KANDELO_RUST_DIR/rustc-kandelo` and
+  `RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1`, build the crate as `crate-type =
+  ["staticlib"]`, and install the `.a` + header + `.pc` into
+  `$WASM_POSIX_DEP_OUT_DIR`.
+
+C/C++ packages then `depends_on = ["<name>@<version>"]` and link it with
+the resolver-supplied `-I<prefix>/include` / `-L<prefix>/lib`, exactly
+like any C library (see `rustdemo-check`).
+
+Open follow-ups for real Rust packages: the sysroot is assembled under
+`$HOME/.kandelo` (a toolchain cache outside the resolver work dir), and
+crate dependencies must be vendored for an offline, reproducible build
+(the reference crate has none). Whether to include such packages in
+`packages/sets/local-supported.toml` is a build-time-cost tradeoff — the
+whole Rust toolchain builds — left to maintainers.
+
 ## Status
 
 Full-`std` parity is demonstrated. Remaining hardening: reconcile the

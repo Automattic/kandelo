@@ -1,0 +1,33 @@
+# Per-program manifest for rustdemo-check. See docs/package-management.md.
+#
+# A C program that depends on the rustdemo Rust library package and calls its
+# C API. It exists to prove, end to end through the resolver, that a
+# Rust-built library is a first-class package dependency: the resolver builds
+# rustdemo, supplies its install prefix, and this program links it.
+#
+# In-tree source (no upstream archive): placeholder [source], repository
+# provider. See build.toml's `inputs`.
+
+kind = "program"
+
+name = "rustdemo-check"
+version = "0.1.0"
+kernel_abi = 45
+depends_on = ["rustdemo@0.1.0"]
+arches = ["wasm32"]
+
+[source]
+url = "https://example.invalid/rustdemo-check-0.1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/Automattic/kandelo/blob/main/packages/registry/rustdemo-check/src/main.c"
+
+[build]
+script_path = "packages/registry/rustdemo-check/build-rustdemo-check.sh"
+
+[[outputs]]
+name = "rustdemo-check"
+wasm = "rustdemo-check.wasm"

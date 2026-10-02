@@ -1,0 +1,17 @@
+script_path = "packages/registry/rustdemo/build-rustdemo.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "adc333c8b1d4b3b7fecb171bb69024affa72fbca"
+revision    = 1
+
+# The whole library is in-tree (no upstream tarball): the crate, its C
+# header, and the build script. Editing any of them must invalidate cached
+# archives. The Rust toolchain inputs (the target spec, the libc patch, the
+# std overlay, and the sysroot builder) are shared SDK state, tracked by the
+# SDK, not re-listed per package.
+inputs = [
+  "packages/registry/rustdemo/build-rustdemo.sh",
+  "packages/registry/rustdemo/crate/Cargo.toml",
+  "packages/registry/rustdemo/crate/src/lib.rs",
+  "packages/registry/rustdemo/crate/.cargo/config.toml",
+  "packages/registry/rustdemo/include/rustdemo.h",
+]
