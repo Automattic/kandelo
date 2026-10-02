@@ -1017,7 +1017,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | pcre2 | `packages/registry/pcre2/build-pcre2.sh` | cmake | 10.44, 8-bit code unit width only, static, no JIT (wasm cannot generate code at runtime), no pcre2grep/pcre2test; backs glib's GRegex. Separate from the `pcre2-source` package, which stages the unbuilt tree MariaDB configures itself |
 | expat | `packages/registry/expat/build-expat.sh` | autoconf | dbus config-parser dependency; entropy from kernel getrandom() |
 | dbus | `packages/registry/dbus/build-dbus.sh` | autoconf | 1.14.10 (last autotools series): dbus-daemon/dbus-send/dbus-monitor, session bus only, EXTERNAL auth over SO_PEERCRED, `ac_cv_func_*` overrides for --allow-undefined false positives |
-| harfbuzz | `packages/registry/harfbuzz/build-harfbuzz.sh` | meson bypass | Single-TU amalgam (src/harfbuzz.cc) with the freetype + glib backends; hand-installed headers and .pc; C++, links libc++ |
+| harfbuzz | `packages/registry/harfbuzz/build-harfbuzz.sh` | meson bypass | Single-TU amalgam (src/harfbuzz.cc) with the freetype + glib backends; hand-installed headers and .pc; C++, so harfbuzz.pc carries `-lc++ -lc++abi` from the resolved libcxx (a C consumer's link driver does not add them) |
 | fribidi | `packages/registry/fribidi/build-fribidi.sh` | autoconf | pango's bidi dependency, plain cross-compile |
 | cairo | `packages/registry/cairo/build-cairo.sh` | autoconf | 1.16.0 (last autotools release): image surfaces + ft/fc fonts + png only; the png probe needs `png_REQUIRES` + PKG_CONFIG_PATH; `src/wasm-callback-arity.patch` wraps 2-argument line_to functions cast to the 3-argument `cairo_spline_add_point_func_t` in the fill/stroke/in-fill spline decomposition paths (see the arity section below) |
 | pango | `packages/registry/pango/build-pango.sh` | autoconf | 1.42.4 (last autotools release): pango/pangoft2/pangocairo; deps probed via PKG_CONFIG_PATH over the resolved prefixes; needs glib's gthread-2.0.pc shim + glib-mkenums; `src/wasm-callback-arity.patch` wraps 1-argument free functions cast to `GFunc` in `g_list_foreach` / `g_slist_foreach` (see the arity section below) |
@@ -1082,6 +1082,12 @@ routes every arity-changing cast through a typed thunk:
   arguments than the signal (`g_signal_connect (win, "destroy",
   G_CALLBACK (gtk_main_quit), NULL)`) ride the per-type c-closure
   marshal and still trap — connect with a wrapper of exact arity.
+- GTest: `g_test_add_func` / `g_test_add_data_func{,_full}` store the
+  0- or 1-argument test function (and the `GDestroyNotify`) cast to
+  the 2-argument `GTestFixtureFunc` and call it through that type, so
+  every GTest case trapped before it ran. The patched `gtestutils.c`
+  keeps the typed callbacks on the test case and calls each through
+  its own type, with upstream's teardown/free ordering unchanged.
 
 GTK 3 carries the same idiom in its own code. The port's
 `packages/registry/gtk3/src/wasm-callback-arity.patch` fixes the
