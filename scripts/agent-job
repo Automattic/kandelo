@@ -17,6 +17,7 @@ those choices:
       start a second locked run (vitest, run.sh test, ci-run-test-suite.sh,
       npm ci, setup, local-build) while one is running in the same worktree.
   agent-job wait <id> [--timeout SECONDS]
+  agent-job wait --peer <text> [--timeout SECONDS]
       Block until the job ends (keyed on its supervisor PID), then print the
       result and exit with the job's exit status. The default timeout, 540 s,
       stays under the Bash tool's 10-minute limit; on timeout it prints status
@@ -26,14 +27,26 @@ those choices:
       run_in_background and ends its turn. Never end your turn to wait in a
       headless (claude -p) session or a subagent: they stop when the turn
       ends.
+      Another worktree's job (another Conductor workspace's build) works the
+      same way: find it with `list --all` and wait on its id. That is
+      supported, and is the right tool instead of a `kill -0` or `pgrep`
+      loop on its PID. --peer <text> picks the one running job, in any
+      worktree, whose command contains <text> (for example `local-build` or
+      `prepare-browser`). If none or several match, it lists them on stderr
+      and exits 2 rather than guess.
   agent-job status [<id>]
       What is running: elapsed vs the usual duration, log age, local-build
       node progress, and every process in the job with command line and age.
+      Also the job's worktree and git commit, and how that commit relates to
+      your HEAD.
   agent-job result <id>
       Exit status, duration, the [suite-health] lines if any, and the last
       lines of the log.
-  agent-job list
-      Recent jobs in this worktree.
+  agent-job list [--all]
+      Recent jobs in this worktree. --all lists every worktree's jobs on
+      this machine, with each job's worktree, commit, and how that commit
+      relates to your HEAD (same, ancestor, descendant, diverged), so you
+      can tell whether a peer's build is of the tree you are on.
 
 State lives in ~/.cache/kandelo/agent-jobs (override: KANDELO_AGENT_JOBS_DIR):
 one directory per job and an append-only ledger.jsonl of finished jobs, which
@@ -88,6 +101,112 @@ def git(*args, cwd):
 def worktree_of(cwd):
     top = git("rev-parse", "--show-toplevel", cwd=cwd)
     return top.decode().strip() if top else os.path.realpath(cwd)
+
+
+# How many uncommitted paths a job records; enough to judge whether they
+# matter (a submodule's generated files vs. kernel sources), not a full diff.
+DIRTY_PATHS_KEPT = 20
+
+
+def tree_state(cwd):
+    """(HEAD commit, uncommitted tracked paths) of the checkout at cwd.
+
+    Recorded at `start` so an agent can decide whether another workspace's
+    build is of the tree it is on before it waits on that build or reuses its
+    cache. Untracked files are left out: every worktree has some (.context/,
+    editor state), and counting them would mark every job dirty. Either value
+    is None when git cannot answer.
+    """
+    head = git("rev-parse", "--verify", "-q", "HEAD", cwd=cwd)
+    if not head:
+        return None, None
+    st = git("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+    paths = None if st is None else [l[3:] for l in st.decode(errors="replace").splitlines() if l.strip()]
+    return head.decode().strip(), paths
+
+
+_relations = {}
+
+
+def relation(job_head, my_head, cwd):
+    """How a job's commit relates to the caller's HEAD: (kind, job_only, mine_only).
+
+    kind is same, ancestor (the job built an older commit of your history),
+    descendant (a newer one), diverged, unrelated (no common history), or
+    unknown (no recorded commit, or one this repository does not have). All
+    worktrees of a clone share one object store, so a peer's commit resolves
+    here even when it was never checked out here.
+    """
+    if not job_head or not my_head:
+        return "unknown", None, None
+    if job_head == my_head:
+        return "same", 0, 0
+    if (job_head, my_head) not in _relations:
+        out = ("unknown", None, None)
+        if git("cat-file", "-e", f"{job_head}^{{commit}}", cwd=cwd) is not None:
+            if git("merge-base", job_head, my_head, cwd=cwd) is None:
+                out = ("unrelated", None, None)
+            else:
+                counts = git("rev-list", "--left-right", "--count", f"{job_head}...{my_head}", cwd=cwd)
+                theirs, mine = (int(x) for x in counts.split()) if counts else (None, None)
+                kind = "ancestor" if theirs == 0 else "descendant" if mine == 0 else "diverged"
+                out = (kind, theirs, mine)
+        _relations[(job_head, my_head)] = out
+    return _relations[(job_head, my_head)]
+
+
+def commits(n):
+    return f"{n} commit" + ("" if n == 1 else "s")
+
+
+def relation_short(rel):
+    kind, theirs, mine = rel
+    return {"same": "same", "ancestor": f"{mine} behind", "descendant": f"{theirs} ahead",
+            "diverged": f"diverged +{theirs}/-{mine}"}.get(kind, kind)
+
+
+def commit_label(meta):
+    # `abc1234*` = uncommitted tracked changes when the job started;
+    # `abc1234?` = a job recorded before the dirty flag existed.
+    head = meta.get("head")
+    if not head:
+        return "-"
+    dirty = meta.get("dirty")
+    return head[:9] + ("*" if dirty else "?" if dirty is None else "")
+
+
+def describe_commit(meta, cwd):
+    """One line for `status` and `result`: the job's commit and its relation to yours."""
+    head = meta.get("head")
+    if not head:
+        return "commit: not recorded (the job predates agent-job recording it)"
+    dirty = meta.get("dirty")
+    paths = meta.get("dirty_paths") or []
+    if dirty is None:
+        tree = "uncommitted changes not recorded"
+    elif dirty:
+        more = f", +{len(paths) - 5} more" if len(paths) > 5 else ""
+        tree = f"uncommitted changes in {', '.join(paths[:5])}{more}"
+    else:
+        tree = "clean"
+    my_head, my_paths = tree_state(cwd)
+    kind, theirs, mine = rel = relation(head, my_head, cwd)
+    if kind == "same":
+        vs = "the same commit as your HEAD"
+    elif kind == "ancestor":
+        vs = f"an ancestor of your HEAD ({commits(mine)} behind it)"
+    elif kind == "descendant":
+        vs = f"a descendant of your HEAD ({commits(theirs)} ahead of it)"
+    elif kind == "diverged":
+        vs = f"diverged from your HEAD ({commits(theirs)} only it has, {mine} only yours has)"
+    elif kind == "unrelated":
+        vs = "unrelated to your HEAD (no common history)"
+    elif not my_head:
+        vs = "not comparable (you are not in a git checkout)"
+    else:
+        vs = "not in this repository's history"
+    yours = "; your tree has uncommitted changes" if my_paths else ""
+    return f"commit: {head[:12]} ({tree}), {vs}{yours}"
 
 
 WRAPPERS = re.compile(r"^(\S*dev-shell\.sh|bash|sh|-c|-lc|-euo|pipefail|nohup|env|time|exec)$")
@@ -188,6 +307,7 @@ def state_of(d):
 
 
 def jobs_in(worktree):
+    """(id, dir) of the jobs started in worktree, oldest first; None means every worktree."""
     out = []
     try:
         names = os.listdir(JOBS)
@@ -196,7 +316,7 @@ def jobs_in(worktree):
     for name in names:
         d = os.path.join(JOBS, name)
         meta = read_json(os.path.join(d, "meta.json"))
-        if meta and meta.get("worktree") == worktree:
+        if meta and (worktree is None or meta.get("worktree") == worktree):
             out.append((meta.get("started", 0), name, d))
     return [x[1:] for x in sorted(out)]
 
@@ -222,6 +342,16 @@ def supervise(d):
     # process the build spawned (cargo, clang, node workers), not just bash.
     child = subprocess.Popen(["bash", "-c", meta["cmd"]], cwd=meta["cwd"], stdin=subprocess.DEVNULL,
                              stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+    # `start` writes meta.json a second time, to add supervisor_pid, after
+    # this process exists. Merge child_pid into that write, not into the
+    # copy read above: writing the stale copy could drop supervisor_pid, and
+    # a running job would then read as LOST. Once supervisor_pid is in the
+    # file, `start` never writes again.
+    deadline = now() + 10
+    while not meta.get("supervisor_pid") and now() < deadline:
+        time.sleep(0.02)
+        meta = read_json(os.path.join(d, "meta.json")) or meta
+    meta["supervisor_pid"] = os.getpid()
     meta["child_pid"] = child.pid
     write_json(os.path.join(d, "meta.json"), meta)
 
@@ -249,7 +379,8 @@ def supervise(d):
     write_json(os.path.join(d, "result.json"), result)
     # The ledger is how evals/build-waiting/wait-impact.py judges whether this
     # tool earns its place, and how history() learns usual durations.
-    record = {k: meta.get(k) for k in ("id", "name", "key", "cmd", "cwd", "worktree", "started", "usual_duration")}
+    record = {k: meta.get(k) for k in ("id", "name", "key", "cmd", "cwd", "worktree", "head", "dirty", "started",
+                                       "usual_duration")}
     record.update(result)
     os.makedirs(ROOT, exist_ok=True)
     with open(LEDGER, "a") as f:
@@ -258,8 +389,9 @@ def supervise(d):
 
 def write_json(path, value):
     # Write-then-rename, so a reader (wait, status) never sees half a file
-    # and mistakes a running job for a lost one.
-    tmp = path + ".tmp"
+    # and mistakes a running job for a lost one. The temporary name is per
+    # process: `start` and the supervisor both write meta.json.
+    tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w") as f:
         json.dump(value, f, indent=1)
     os.replace(tmp, path)
@@ -308,8 +440,11 @@ def cmd_start(args):
     d = os.path.join(JOBS, job_id)
     os.makedirs(d)
     key = job_key(cmd)
+    head, dirty_paths = tree_state(cwd)
     meta = dict(id=job_id, name=name, key=key, cmd=cmd, cwd=cwd, worktree=worktree, started=now(),
-                usual_duration=usual_duration(key))
+                usual_duration=usual_duration(key), head=head,
+                dirty=None if dirty_paths is None else bool(dirty_paths),
+                dirty_paths=(dirty_paths or [])[:DIRTY_PATHS_KEPT])
     write_json(os.path.join(d, "meta.json"), meta)
     # Detach the supervisor fully: new session, no inherited stdio, so the
     # Bash tool call that ran `start` returns immediately instead of
@@ -324,11 +459,48 @@ def cmd_start(args):
           f"wait with: {sys.argv[0]} wait {job_id}   (repeat if it exits 124; do not poll)")
 
 
+def peer_job(text):
+    """The one running job, in any worktree, whose command contains text.
+
+    Exits 2 when none or several match, listing them. Picking "the newest"
+    of several would wait on a build the agent did not choose, and a wrong
+    build's result is worse than a question.
+    """
+    rows = []
+    for job_id, d in jobs_in(None):
+        state, meta, _ = state_of(d)
+        if state == "running" and text in meta.get("cmd", ""):
+            rows.append((job_id, d, meta))
+    if len(rows) == 1:
+        return rows[0][:2]
+    if not rows:
+        print(f"agent-job: --peer {text!r}: no running job's command contains it. "
+              f"See `agent-job list --all`.", file=sys.stderr)
+    else:
+        print(f"agent-job: --peer {text!r} matches {len(rows)} running jobs; wait on one by id "
+              f"(`agent-job wait <id>`) or give longer text:", file=sys.stderr)
+        for job_id, _, meta in rows:
+            print(f"  {job_id}  {os.path.basename(meta.get('worktree', ''))}  {meta.get('cmd', '')[:100]}",
+                  file=sys.stderr)
+    sys.exit(2)
+
+
 def cmd_wait(args):
     # The waiting happens inside this one process, checking the PID every
     # 2 s. That costs no tokens: the agent spends one tool call per --timeout
     # window (9 minutes by default), however many checks happen inside it.
-    d = job_dir(args.id)
+    if (args.id is None) == (args.peer is None):
+        print("agent-job wait: give either a job id or --peer <text>", file=sys.stderr)
+        sys.exit(2)
+    if args.peer is not None:
+        args.id, d = peer_job(args.peer)
+        meta = read_json(os.path.join(d, "meta.json")) or {}
+        # Name the chosen job up front, so the agent knows which build it
+        # waited on (and can re-run `wait <id>` by id after an exit 124).
+        print(f"waiting on {args.id} in {meta.get('worktree', '?')}: {meta.get('cmd', '')[:120]}")
+        print(describe_commit(meta, os.getcwd()), flush=True)
+    else:
+        d = job_dir(args.id)
     deadline = now() + args.timeout if args.timeout else None
     while True:
         state, meta, result = state_of(d)
@@ -358,6 +530,7 @@ def print_result(job_id, d):
         f", signal {result['signal']})" if result.get("signal") else ")")
     print(f"{job_id}: {verdict} after {fmt_secs(result['duration'])}")
     print(f"command: {meta['cmd']}")
+    print_where(meta)
     lines = tail_lines(log, 4000)
     health = [l for l in lines[:-LOG_TAIL] if "[suite-health]" in l]
     for l in health[-8:]:
@@ -366,6 +539,13 @@ def print_result(job_id, d):
     for l in lines[-LOG_TAIL:]:
         print(l)
     return code
+
+
+def print_where(meta):
+    cwd = os.getcwd()
+    if meta.get("worktree") and meta["worktree"] != worktree_of(cwd):
+        print(f"worktree: {meta['worktree']} (not yours)")
+    print(describe_commit(meta, cwd))
 
 
 def tail_lines(path, n):
@@ -386,7 +566,19 @@ def processes():
     # liveness claim needs all three: a stale or unrelated process (another
     # worktree's build, an MCP server) once passed for "the run" because
     # only its name or count was checked.
-    out = subprocess.run(["ps", "-axo", "pid=,ppid=,etime=,pcpu=,command="], capture_output=True, text=True).stdout
+    #
+    # Inside scripts/dev-shell.sh, PATH has no `ps`, and a crash here turned
+    # `wait`'s exit 124 ("still running") into exit 1. So fall back to the
+    # system's ps, and without one show no process list (None) instead.
+    for ps in ("ps", "/bin/ps", "/usr/bin/ps"):
+        try:
+            out = subprocess.run([ps, "-axo", "pid=,ppid=,etime=,pcpu=,command="], capture_output=True,
+                                 text=True).stdout
+            break
+        except OSError:
+            continue
+    else:
+        return None
     procs = {}
     for line in out.splitlines():
         parts = line.split(None, 4)
@@ -446,6 +638,7 @@ def print_status(job_id, d):
     usual = meta.get("usual_duration")
     print(f"{job_id}: running {fmt_secs(elapsed)}" + (f" (usually {fmt_secs(usual)})" if usual else ""))
     print(f"command: {meta['cmd']}")
+    print_where(meta)
     try:
         age = now() - os.path.getmtime(log)
         print(f"log: {log} (last write {fmt_secs(age)} ago)")
@@ -461,6 +654,9 @@ def print_status(job_id, d):
         if prog["failed"]:
             print(f"  failed: {', '.join(prog['failed'][:8])}")
     procs = processes()
+    if procs is None:
+        print("processes: unavailable (no ps found)")
+        procs = {}
     tree = descendants(meta.get("child_pid") or meta["supervisor_pid"], procs)
     print(f"processes ({len(tree)}; pid, age, cpu%, command):")
     for depth, pid, p in tree[:25]:
@@ -490,10 +686,20 @@ def cmd_result(args):
 
 
 def cmd_list(args):
-    worktree = worktree_of(os.getcwd())
-    rows = jobs_in(worktree)[-args.limit:]
+    cwd = os.getcwd()
+    worktree = worktree_of(cwd)
+    rows = jobs_in(None if args.all else worktree)[-args.limit:]
     if not rows:
-        print(f"no jobs in {worktree}")
+        print("no jobs" if args.all else f"no jobs in {worktree}")
+        return
+    if args.all:
+        my_head, my_paths = tree_state(cwd)
+        print(f"your HEAD: {my_head[:9] + ('*' if my_paths else '') if my_head else 'none (not a git checkout)'}; "
+              f"commit* = uncommitted changes at start, ? = not recorded; "
+              f"'N behind' = an ancestor of your HEAD, 'N ahead' = a descendant, "
+              f"'diverged +A/-B' = A commits only it has, B only yours has")
+        w = max(len(j) for j, _ in rows)
+        print(f"{'job':{w}s} {'state':20s} {'worktree':18s} {'commit':10s} {'vs your HEAD':18s} command")
     for j, d in rows:
         state, meta, result = state_of(d)
         if state == "finished":
@@ -502,32 +708,45 @@ def cmd_list(args):
             extra = f"running {fmt_secs(now() - meta['started'])}"
         else:
             extra = "LOST"
-        print(f"{j:48s} {extra:28s} {meta.get('cmd', '')[:80]}")
+        if args.all:
+            rel = relation_short(relation(meta.get("head"), my_head, cwd)) if meta.get("head") else "-"
+            wt = os.path.basename(meta.get("worktree") or "?")
+            print(f"{j:{w}s} {extra:20s} {wt[:18]:18s} {commit_label(meta):10s} {rel:18s} {meta.get('cmd', '')[:80]}")
+        else:
+            print(f"{j:48s} {extra:28s} {meta.get('cmd', '')[:80]}")
 
 
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "_supervise":
         supervise(sys.argv[2])
         return
-    ap = argparse.ArgumentParser(prog="agent-job", description=__doc__.split("\n\n")[0])
+    # --help shows the command reference from this file's docstring, so the
+    # help and the docstring cannot drift apart.
+    ref = __doc__[__doc__.index("  agent-job start"):__doc__.index("Why Python")].rstrip()
+    ap = argparse.ArgumentParser(prog="agent-job", description=__doc__.split("\n\n")[0], epilog=ref,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="sub", required=True)
-    p = sub.add_parser("start")
+    p = sub.add_parser("start", help="run a command detached; prints the job id")
     p.add_argument("--name")
     p.add_argument("--allow-concurrent", action="store_true")
     p.add_argument("command", nargs=argparse.REMAINDER)
-    p = sub.add_parser("wait")
-    p.add_argument("id")
+    p = sub.add_parser("wait", help="block until a job ends (any worktree's job)")
+    p.add_argument("id", nargs="?")
+    p.add_argument("--peer", metavar="TEXT", help="wait on the one running job, in any worktree, whose command "
+                   "contains TEXT; exits 2 if none or several match")
     # 540 s keeps one wait inside the Bash tool's 10-minute limit. A wait
     # the tool kills is pushed to the background, and a headless session or
     # subagent that then ends its turn loses the result.
     p.add_argument("--timeout", type=int, default=540, help="seconds (default 540, under the Bash tool limit); "
                    "0 waits until the job ends")
-    p = sub.add_parser("status")
+    p = sub.add_parser("status", help="progress, processes, and commit of running jobs")
     p.add_argument("id", nargs="?")
-    p = sub.add_parser("result")
+    p = sub.add_parser("result", help="exit status and log tail of a finished job")
     p.add_argument("id")
-    p = sub.add_parser("list")
+    p = sub.add_parser("list", help="recent jobs in this worktree (--all: every worktree)")
     p.add_argument("--limit", type=int, default=15)
+    p.add_argument("--all", action="store_true", help="jobs from every worktree on this machine, with worktree, "
+                   "commit, and relation to your HEAD")
     args = ap.parse_args()
     if args.sub == "start" and args.command and args.command[0] == "--":
         args.command = args.command[1:]

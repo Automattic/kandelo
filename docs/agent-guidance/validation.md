@@ -114,6 +114,36 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Locked runs:** `agent-job start` refuses a second locked run (vitest,
   `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup, local-build) in the
   same worktree while one is running. Those runs race each other.
+- **Another workspace's build:** waiting on a build that another worktree
+  (another Conductor workspace) is running is supported, and `agent-job` is
+  the tool for it. Do not hand-roll a `kill -0 <pid>`, `pgrep`, or `sleep`
+  loop on its process. Job records are machine-wide, so every command
+  accepts a peer's job id:
+
+  ```bash
+  scripts/agent-job list --all               # every worktree's jobs: state, worktree, commit, relation to your HEAD
+  scripts/agent-job status <id>              # its progress, worktree, and commit
+  scripts/agent-job wait <id>                # same 540 s / exit-124 contract as for your own jobs
+  scripts/agent-job wait --peer prepare-browser   # the one running job whose command contains the text
+  ```
+
+  - **Check the commit before relying on the build.** `list --all` shows
+    each job's `HEAD`, with `*` when its tree had uncommitted tracked
+    changes at start, and how that commit relates to yours: `same`,
+    `N behind` (it built an ancestor of your `HEAD`), `N ahead` (a
+    descendant), `diverged`, or `unrelated`; `-` means the job was
+    started before commits were recorded. `status` and `wait` spell the
+    same out, and list the uncommitted paths. Untracked files are not
+    counted. Worktrees share the build cache, and its entries are keyed
+    on build inputs. Once a peer's build finishes, your own run reuses
+    whatever it built from the same inputs, so the closer its commit is
+    to yours, the more your run can reuse.
+  - **`--peer <text>` never guesses.** When no running job's command
+    contains `<text>`, or more than one does, it lists the candidates on
+    stderr and exits 2; then wait on one by id. A job that itself exits
+    2 also makes `wait` exit 2, so read the output.
+  - The locked-run check is per worktree: a peer's `local-build` does not
+    stop yours from starting. Choosing to wait on it is the agent's call.
 - **Before a suite**, `npx tsx scripts/check-artifact-closures.ts` reports
   any program package whose artifact closure would fail to resolve with
   "Package artifact closure is incomplete". It takes about 3 s once warm, and

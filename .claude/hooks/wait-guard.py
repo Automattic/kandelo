@@ -148,7 +148,9 @@ def decide(payload):
             "so the loop never exits and its elapsed times describe the waiter. Wait on a PID instead: "
             "start the work with `scripts/agent-job start -- <command>` and run "
             "`scripts/agent-job wait <id>` (blocks up to 9 min; exit 124 means still running, run it again). "
-            "For a process you did not start, `while kill -0 <pid>; do sleep 30; done`.")
+            "For another workspace's build, find it with `scripts/agent-job list --all` and wait on its id, "
+            "or run `scripts/agent-job wait --peer <text of its command>`. Only for a process that no "
+            "agent-job started, `while kill -0 <pid>; do sleep 30; done`.")
     # Only subagents carry agent_id. A main session's prompt cache lasts an
     # hour, so it can wait cheaply. A subagent's lasts 5 minutes, so a long
     # blocking call rewrites its whole context: 938M input-equivalent tokens
@@ -169,7 +171,8 @@ def decide(payload):
             "and the work is no further along. Under 10 minutes, run the work itself in the foreground in one "
             "call. Longer: `scripts/agent-job start -- <command>`, then `scripts/agent-job wait <id>` "
             "(blocks up to 9 min; exit 124 means still running, run it again). To see progress without "
-            "waiting, `scripts/agent-job status <id>`.")
+            "waiting, `scripts/agent-job status <id>`. If another workspace is running the build, "
+            "`scripts/agent-job list --all` finds it, and `wait <id>` works on its job too.")
     return None, None
 
 
