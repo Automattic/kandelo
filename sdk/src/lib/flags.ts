@@ -298,6 +298,55 @@ export function linkFlags(
   ];
 }
 
+export const LINK_UNDEFINED_ENV = 'WASM_POSIX_LINK_UNDEFINED';
+
+/**
+ * Apply the executable undefined-symbol policy to the SDK link flags.
+ *
+ * The default link contract passes --allow-undefined (= --import-undefined +
+ * --unresolved-symbols=ignore-all), so ANY undefined symbol silently becomes
+ * an `env` import. Programs that resolve symbols at runtime (dlopen side
+ * modules) rely on that. For everything else an unsatisfied function import
+ * fails instantiation, so the flag only defers a real error — and it makes
+ * link-test feature probes (Meson's bare `has_function`, Autoconf's
+ * AC_CHECK_FUNCS) report missing functions as present.
+ *
+ * `WASM_POSIX_LINK_UNDEFINED=error` keeps the contract's intentional imports
+ * and rejects everything else:
+ *   - --allow-undefined is replaced by --allow-undefined-file=<glue contract
+ *     list> (today: the `__channel_base` global the syscall glue imports),
+ *   - --export=__abi_version becomes --export-if-defined=__abi_version: the
+ *     marker is exported through the glue's export_name attribute on
+ *     `__wasm_posix_user_abi_version`, so `--export` never matches a symbol
+ *     named `__abi_version` and only passes today because --allow-undefined
+ *     suppresses the miss.
+ * `import` (or unset) keeps the default. Any other value is rejected.
+ */
+export function applyUndefinedSymbolPolicy(
+  flags: string[],
+  env: Record<string, string | undefined>,
+  contractImportsFile: string,
+): string[] {
+  const policy = env[LINK_UNDEFINED_ENV];
+  if (policy === undefined || policy === '' || policy === 'import') return flags;
+  if (policy !== 'error') {
+    throw new Error(
+      `${LINK_UNDEFINED_ENV} must be 'import' or 'error' (got ${JSON.stringify(policy)})`,
+    );
+  }
+  const strict: string[] = [];
+  for (const flag of flags) {
+    if (flag === '-Wl,--allow-undefined') {
+      strict.push(`-Wl,--allow-undefined-file=${contractImportsFile}`);
+    } else if (flag === '-Wl,--export=__abi_version') {
+      strict.push('-Wl,--export-if-defined=__abi_version');
+    } else {
+      strict.push(flag);
+    }
+  }
+  return strict;
+}
+
 /** @deprecated Use compileFlags('wasm32') */
 export const COMPILE_FLAGS: string[] = compileFlags('wasm32');
 /** @deprecated Use linkFlags('wasm32') */
@@ -325,6 +374,10 @@ const IGNORED_EXACT = new Set([
   // ignored here: the SDK deliberately preserves and orders explicit -lc
   // after the syscall glue (it resolves to the sysroot musl libc.a).
   '-lgcc_s',
+  // wasm-ld rejects --start-group/--end-group. They are unnecessary: like ELF
+  // lld, wasm-ld resolves archive members regardless of command-line order.
+  // Meson emits them around static libraries on GNU-style targets.
+  '-Wl,--start-group', '-Wl,--end-group',
   '-rdynamic', '-Wl,-Bsymbolic',
   '-Wl,-z,noexecstack', '-Wl,-z,text', '-Wl,-z,relro',
   '-Wl,-z,now', '-Wl,-z,nocopyreloc',

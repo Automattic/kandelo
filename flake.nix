@@ -127,6 +127,11 @@
             # whenever it is on PATH (QtProcessConfigureArgs.cmake:1136),
             # so it is the generator Qt builds and tests against.
             pkgs.ninja
+            # meson — the build system GNOME/freedesktop packages (glib,
+            # pango >= 1.43, GTK, …) moved to from autotools. The SDK pairs
+            # it with a Kandelo cross file (sdk/meson/) so meson cross-builds
+            # for the wasm target instead of probing the host.
+            pkgs.meson
             pkgs.autoconf
             pkgs.automake
             pkgs.libtool
