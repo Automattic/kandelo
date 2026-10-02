@@ -1349,10 +1349,9 @@ cp sapi/fpm/php-fpm "$BIN_DIR/php-fpm.wasm"
 
 # CLI and FPM both retain libc paths that can reach kernel_fork
 # (system/popen/fork wrappers for CLI, worker forks for FPM), so both
-# must be fork-instrumented. wasm-opt runs first, then fork
-# instrumentation as the tail step because the instrumenter hardcodes
-# mutable-global offsets and any later pass that reorders globals would
-# invalidate them. wasm-fork-instrument auto-discovers fork paths via
+# must be fork-instrumented. wasm-opt runs first so instrumentation covers
+# the smaller, inlined call graph; wasm-fork-instrument then runs its own
+# wasm-opt pass over the code it adds. It auto-discovers fork paths via
 # call-graph analysis; no onlylist file is required.
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -z "$WASM_OPT" ]; then

@@ -985,15 +985,14 @@ run against an ABI 45 kernel at all.
 
 ### ABI 46 fork metadata that survives wasm-opt
 
-Today fork instrumentation is the last step before a binary ships:
-packages run `wasm-opt` first and instrument its output. Running them in
-the opposite order makes binaries smaller, because wasm-opt can then clean
-up the code the instrumenter generates (12–15% of file size on the
-programs measured in `tools/fork-path-research/NOTES.md`).
-wasm-opt is free to delete imports nothing calls and to renumber the rest,
-so this epoch removes the instrumenter metadata's dependence on import
-positions. It does not change the build order. Every fork-instrumented
-artifact built against ABI 45 must be rebuilt.
+Fork instrumentation used to be the last step before a binary shipped.
+From ABI 46 the instrumenter runs `wasm-opt -O2` over its own output,
+which shrinks the code section of every measured program by 3–6% (see
+"Optimization around instrumentation" in
+[fork-instrumentation.md](fork-instrumentation.md)). wasm-opt is free to
+delete imports nothing calls and to renumber the rest, so this epoch
+removes the instrumenter metadata's dependence on import positions. Every
+fork-instrumented artifact built against ABI 45 must be rebuilt.
 
 Structural changes (recorded in the snapshot):
 
@@ -1014,9 +1013,10 @@ Semantic changes (not visible to the snapshot):
   exception codecs, `__wpk_fork_frame_peek`) may be missing when the module
   never calls them. Any of them that is present must still have its exact
   type. Previously the host rejected a module that lacked any of them.
-- **Instrumented modules declare `gc` in `target_features`.** The
-  reference codecs the instrumenter adds use GC instructions such as
-  `ref.test (ref i31)`. wasm-opt enables only the features a module
+- **Instrumented modules declare the features the instrumenter's code
+  uses** (`exception-handling`, `reference-types`, `bulk-memory`, `gc`) in
+  `target_features`. The reference codecs use GC instructions such as
+  `ref.test (ref i31)`, and wasm-opt enables only the features a module
   declares, so without the declaration it rejected every instrumented
   module.
 

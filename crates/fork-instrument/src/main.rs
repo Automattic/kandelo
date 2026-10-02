@@ -4,7 +4,14 @@
 //!
 //! ```text
 //! wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork]
+//!                      [--post-optimize O2|O1|O3|Os|Oz|none]
 //! ```
+//!
+//! After instrumenting, the CLI runs Binaryen's `wasm-opt` over the result
+//! (`$WASM_OPT`, else `wasm-opt` on PATH). Inputs are expected to be
+//! optimized already, so the full pipeline is wasm-opt -> instrument ->
+//! wasm-opt: the first pass shrinks the call graph the instrumenter has to
+//! cover, and this second pass cleans up the code the instrumenter adds.
 //!
 //! Exits non-zero with a human-readable error on any failure (parse,
 //! validation, or instrumentation). Errors include the input file path
@@ -13,6 +20,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::fs;
+use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -47,6 +55,15 @@ struct Cli {
     /// coverage, including downstream fork in another side module.
     #[arg(long, default_value = "kernel.kernel_fork")]
     entry: String,
+
+    /// wasm-opt level to run over an instrumented output, or `none`.
+    ///
+    /// Runs only when instrumentation changed the module; a module outside
+    /// any fork transaction is written back byte-for-byte. Names and DWARF
+    /// are kept (`wasm-opt -g`) when the input carried them. `none` exists
+    /// for inspecting the instrumenter's raw output, not for shipping.
+    #[arg(long, default_value = "O2", value_parser = ["O1", "O2", "O3", "Os", "Oz", "none"])]
+    post_optimize: String,
 
     /// Analyze the module and print the discovered fork-path function
     /// set as JSON to stdout. Skips instrumentation and output emission.
@@ -191,8 +208,56 @@ fn main() -> Result<()> {
 
     fs::write(output_path, &output)
         .with_context(|| format!("writing output: {}", output_path.display()))?;
+    if cli.post_optimize != "none" && output != input {
+        post_optimize(output_path, &cli.post_optimize, has_debug_info(&input)?)?;
+    }
     preserve_input_mode(input_mode, output_path)?;
 
+    Ok(())
+}
+
+/// Whether the module carries a name section or DWARF the caller chose to
+/// keep. wasm-opt drops both unless run with `-g`.
+fn has_debug_info(bytes: &[u8]) -> Result<bool> {
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        if let wasmparser::Payload::CustomSection(section) = payload? {
+            if section.name() == "name" || section.name().starts_with(".debug_") {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Optimize the instrumented module in place.
+///
+/// WHY here and not in each build script: this is the one step every fork
+/// artifact passes through, and only it knows whether instrumentation changed
+/// the module. The instrumenter's metadata is position-independent (ABI 46),
+/// so wasm-opt may remove unused imports and renumber functions, globals and
+/// tables. A missing wasm-opt is an error, not a skipped step: the artifact
+/// would differ from what every other build of the same sources produces.
+fn post_optimize(path: &Path, level: &str, keep_debug_info: bool) -> Result<()> {
+    let wasm_opt = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
+    let mut command = Command::new(&wasm_opt);
+    command.arg(path).arg(format!("-{level}"));
+    if keep_debug_info {
+        command.arg("-g");
+    }
+    command.arg("-o").arg(path);
+    let status = command.status().with_context(|| {
+        format!(
+            "running {} after fork instrumentation (Binaryen is required; \
+             run inside scripts/dev-shell.sh or set WASM_OPT)",
+            Path::new(&wasm_opt).display()
+        )
+    })?;
+    anyhow::ensure!(
+        status.success(),
+        "{} -{level} failed on instrumented output {} ({status})",
+        Path::new(&wasm_opt).display(),
+        path.display()
+    );
     Ok(())
 }
 

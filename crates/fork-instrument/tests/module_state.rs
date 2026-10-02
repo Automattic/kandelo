@@ -786,10 +786,17 @@ fn immutable_imports_keep_their_original_binding_and_preinstantiation_recipe() {
     });
     assert!(!assigns_import);
 
-    // The reference codecs use GC instructions; tools that run after
+    // The generated helpers use these features; tools that run after
     // instrumentation (wasm-opt) enable only declared features.
     let features = custom_section(&bytes, "target_features");
-    assert!(features.windows(4).any(|w| w == [b'+', 2, b'g', b'c']));
+    for feature in ["exception-handling", "reference-types", "bulk-memory", "gc"] {
+        let mut entry = vec![b'+', feature.len() as u8];
+        entry.extend_from_slice(feature.as_bytes());
+        assert!(
+            features.windows(entry.len()).any(|w| w == entry),
+            "target_features lacks +{feature}"
+        );
+    }
 
     let descriptor = custom_section(&bytes, WPK_FORK_IMPORTED_GLOBALS_SECTION);
     assert!(descriptor.len() >= usize::from(WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE));

@@ -415,8 +415,7 @@ wasm32posix-cc "${OBJS[@]}" -o "$SCRIPT_DIR/nginx.wasm" -lcrypt
 # Fork instrumentation (master_process on requires fork children to
 # resume from the fork point rather than re-executing _start).
 # wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
-# no onlylist needed. Must run last — it hardcodes mutable-global offsets
-# and any later pass reordering globals would corrupt the fork buffer.
+# no onlylist needed. The tool also runs wasm-opt over the code it adds.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "  Applying fork instrumentation..."
 "$FORK_INSTRUMENT" "$SCRIPT_DIR/nginx.wasm" -o "$SCRIPT_DIR/nginx.wasm.instr"

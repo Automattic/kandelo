@@ -230,11 +230,10 @@ SIZE_BEFORE=$(wc -c < "$BIN_DIR/vim.wasm" | tr -d ' ')
 echo "==> Pre-instrumentation size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
 # --- Size optimization + fork instrumentation ---
-# wasm-opt -O2 runs first to shrink the binary. wasm-fork-instrument must
-# run LAST because it hardcodes mutable-global offsets at instrument time —
-# any later pass that reorders globals would corrupt the fork buffer.
-# wasm-fork-instrument auto-discovers fork paths via call-graph analysis,
-# so no onlylist file is needed.
+# wasm-opt -O2 runs first so instrumentation covers the smaller, inlined
+# call graph; wasm-fork-instrument then runs its own wasm-opt pass over the
+# code it adds. It auto-discovers fork paths via call-graph analysis, so no
+# onlylist file is needed.
 echo "==> Optimizing vim.wasm with wasm-opt -O2..."
 "$WASM_OPT" -O2 "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
 

@@ -406,11 +406,15 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // fresh child.
     let staging_memory = module_state::ensure_staging_memory(&mut module);
     let gc_codec = module_gc_codec::declare(&mut module, staging_memory)?;
-    // The reference codecs test `i31` and struct/array references, so the
-    // module now uses GC instructions. Declare that the way the toolchain
-    // declares every other feature it used: tools that run later (wasm-opt
-    // enables only the features a module declares) must accept the output.
-    declare_used_target_feature(&mut module, "gc")?;
+    // The generated helpers use exception handling (`try_table`, `exnref`),
+    // reference types (`table.size` on reference tables), bulk memory, and
+    // GC tests on `i31` and struct/array references. Declare them the way
+    // the toolchain declares every feature it used: tools that run later
+    // (wasm-opt enables only the features a module declares) must accept the
+    // output even when the input itself never used them.
+    for feature in INSTRUMENTATION_TARGET_FEATURES {
+        declare_used_target_feature(&mut module, feature)?;
+    }
     let exception_codec = module_exception_codec::inject_with_reference_overrides(
         &mut module,
         staging_memory,
@@ -599,6 +603,11 @@ fn module_state_descriptor(pointer_width: linked_frames::PointerWidth) -> Vec<u8
     );
     data
 }
+
+/// Wasm features the instrumenter's generated code can use, by their
+/// `target_features` names.
+const INSTRUMENTATION_TARGET_FEATURES: [&str; 4] =
+    ["exception-handling", "reference-types", "bulk-memory", "gc"];
 
 /// Record `feature` as used (`+`) in the `target_features` custom section,
 /// creating the section if the input had none.

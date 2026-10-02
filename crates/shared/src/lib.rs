@@ -156,7 +156,8 @@ pub mod process_layout;
 ///     remove or reorder imports. Hosts require only the linked-frame
 ///     imports (`__wpk_fork_frame_reserve/commit/next`) as a set; the other
 ///     fork-runtime imports may be absent when the module never calls them.
-///     Instrumented modules declare `gc` in `target_features`.
+///     The instrumenter declares the Wasm features its code uses in
+///     `target_features` and runs wasm-opt over its own output.
 ///     docs/abi-versioning.md ("ABI 46") lists each.
 pub const ABI_VERSION: u32 = 46;
 

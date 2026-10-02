@@ -75,14 +75,31 @@ baseline 5.39 MB / 6.29 MB; typed+registry 4.85 / 5.75; +cancel rule
 Experiment-instrumenter baseline code is byte-identical to the shipped
 output.
 
-### Instrument before wasm-opt (measured, shipped pipelines)
-Instrumenting the raw link and then running the package's own wasm-opt
-pipeline shrinks the shipped file by 12-15% (quickshell 82.2 -> 71.6 MB).
-bash, ruby and python fork workloads produce identical output; all seven
-corpus programs pass host artifact policy once wasm-opt keeps the fork
-runtime imports. The only failure class seen: wasm-opt removes unused
-`__wpk_fork_*` imports, and the ABI 45 imported-globals/tables records
-stored import positions. ABI 46 removes both dependencies.
+### wasm-opt order (measured 2026-10-02, after #1462, static)
+Pre-#1462 measurement said instrument-then-wasm-opt shrank files 12-15%
+(quickshell 82.2 -> 71.6 MB); #1462 shrank per-function instrumentation and
+that is no longer true. Code-section size vs today's order (wasm-opt ->
+instrument), captured links, `-O2` where the package pipeline was not
+reproduced:
+
+| program | wasm-opt, instrument, wasm-opt | instrument, wasm-opt |
+|---|---|---|
+| foot | -3.3% | -1.8% |
+| bash | -3.7% | -3.5% |
+| git | -3.9% | -4.9% |
+| python | -3.9% | -4.1% |
+| php | -5.8% | -5.9% |
+| waybar | -4.4% | -1.1% |
+| ruby | -3.9% | -4.9% |
+| qtgallery | -4.4% | +12.5% |
+| quickshell | -4.2% | +18.7% |
+
+wasm-opt before instrumenting halves Qt's fork-path set (quickshell
+108,860 -> 51,960 functions); instrumenting the raw link loses that.
+Chosen: wasm-opt -> instrument -> wasm-opt (the CLI's `--post-optimize`).
+All nine outputs of both orders pass ABI 46 host policy with 10-25 unused
+`__wpk_fork_*` imports removed. Scripts: `.context/fpr/postopt46/` (not
+committed): sweep.sh, today-order.sh, hybrid.sh, counts.sh.
 
 ### Dynamic oracle (union of functions on stacks at kernel_fork)
 All observed functions are inside every static closure (soundness check).

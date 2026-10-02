@@ -46,15 +46,15 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib [flags]
 **Missing features**: Check [wasm-limitations.md](wasm-limitations.md) for what cannot be implemented (mprotect, raw server sockets in browser, `PTHREAD_CANCEL_ASYNCHRONOUS`). Most software has graceful fallbacks for these.
 
 **fork() support**: If the program uses `fork()` or fork-like behavior, run
-`wasm-fork-instrument` as the final step of the wasm pipeline (after any
-`wasm-opt -O2`). Fork-like behavior includes `vfork()`, `_Fork()`, shell
+`wasm-fork-instrument` after linking and after any `wasm-opt` pass of your
+own. The tool runs `wasm-opt -O2` over its output itself. Fork-like behavior includes `vfork()`, `_Fork()`, shell
 pipelines, command substitution, `system()`, `popen()`, and helper processes
 implemented through fork.
 ```bash
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm
 ```
 
-The tool auto-discovers the fork-call closure via call-graph analysis (direct + indirect calls). No onlylist file is needed, and no manual tracing of fork paths. It must run last — it hardcodes mutable-global offsets at instrument time, and any later pass that reorders globals will corrupt the fork save buffer.
+The tool auto-discovers the fork-call closure via call-graph analysis (direct + indirect calls). No onlylist file is needed, and no manual tracing of fork paths. Optimize before instrumenting (the SDK's `-O` link already runs `wasm-opt`): wasm-opt's inlining shrinks the call graph the tool has to instrument, and the tool's own post-pass then cleans up the code it added. See "Optimization around instrumentation" in [fork-instrumentation.md](fork-instrumentation.md).
 
 Instrumentation is mandatory for fork-using programs. Do not treat it as an
 optional optimization, and do not use Binaryen Asyncify as a fallback. The host
