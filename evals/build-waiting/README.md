@@ -184,7 +184,7 @@ dominant load error, or skips.
 - **Keep if:** at least 80% of the first 20 warnings are real.
 - **Remove if:** precision is below 80% after one revision.
 
-### 5. Conformance XFAIL reason check: in its own PR
+### 5. Conformance XFAIL reason check
 
 Every expected failure (XFAIL) in the libc, POSIX, and Sortix suites carries
 the reason it fails. The runner checks that the failure output matches that
@@ -334,7 +334,7 @@ sessions with the tools before they can be judged.
 | 2 | Tree-change stamp | Fired 5 times during development, all for edits the run never read | Removed: saves no tokens |
 | 3 | Build progress | Real 154-node build: `status` showed 143/154 done, running nodes with ages, and the process tree | Transcript measure pending |
 | 4 | `[suite-health]` | Probe files: 3 load failures grouped to one cause and warned; zero-test run warned; full suite (482 files) raised no false warning | Precision pending (needs 20 warnings) |
-| 5 | XFAIL reasons | All 47 verified; found 3 real defects | Met; lands in its own PR (branch `brandonpayton/xfail-reasons`) |
+| 5 | XFAIL reasons | All 47 verified; found 3 real defects | Met: caught a real mismatch on the first run |
 | 6 | Program-index lock | Fixes "index target changed" (14 of 44 baseline errors); 3 regression tests | Pending; the other 30 errors are a separate open defect |
 | 7 | `npm ci` skip | Saved about 3 s per run | Failed; removed before landing |
 | 8 | Wait-guard hook | Replay over 118,477 past Bash calls: 20/20 sampled sleep-poll denials and 12/12 pgrep-waiter denials were real. The harness already blocks about 40% of leading sleeps | Not installed; opt-in |
@@ -355,12 +355,11 @@ of every commit that cited it.
   run never read, so its "re-run before citing" advice would only have added
   runs. It is worth reconsidering only if narrowed to changes in source the
   run plausibly read.
-- **XFAIL reason checks and zero-test guards (tool 5): kept, in their own
-  PR.** They cost nothing per run and prevent rework from false greens.
+- **XFAIL reason checks and zero-test guards (tool 5): kept.** They cost
+  nothing per run and prevent rework from false greens.
   - On 2026-09-25, the conformance suites had been failing before any test
     started, unnoticed.
   - Lane F once cited an empty Sortix suite as a pass.
-  - The runners are a POSIX-suite contract, so they get a separate review.
 - **`[suite-health]` skipped-files line: kept.** It costs one line per run.
   Fully skipped files are how the Ruby fork tests went silently untested in
   2026-09.
