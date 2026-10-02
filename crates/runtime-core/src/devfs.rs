@@ -35,6 +35,8 @@ pub enum DevfsEntry {
     InputDir,
     /// /dev/dri
     DriDir,
+    /// /dev/kandelo — Kandelo's own devices (the host clipboard)
+    KandeloDir,
 }
 
 /// Match a resolved path to a devfs directory entry.
@@ -47,6 +49,7 @@ pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
         b"/dev/fd" => Some(DevfsEntry::FdDir),
         b"/dev/input" => Some(DevfsEntry::InputDir),
         b"/dev/dri" => Some(DevfsEntry::DriDir),
+        b"/dev/kandelo" => Some(DevfsEntry::KandeloDir),
         _ => None,
     }
 }
@@ -165,6 +168,16 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
             entries.push((b"mqueue".into(), DT_DIR, devfs_ino(b"/dev/mqueue")));
             entries.push((b"input".into(), DT_DIR, devfs_ino(b"/dev/input")));
             entries.push((b"dri".into(), DT_DIR, devfs_ino(b"/dev/dri")));
+            entries.push((b"kandelo".into(), DT_DIR, devfs_ino(b"/dev/kandelo")));
+        }
+        DevfsEntry::KandeloDir => {
+            // /dev/kandelo/clipboard — host clipboard text for the guest's
+            // clipboard agent (crate::clipboard).
+            entries.push((
+                b"clipboard".into(),
+                DT_CHR,
+                devfs_ino(b"/dev/kandelo/clipboard"),
+            ));
         }
         DevfsEntry::InputDir => {
             // /dev/input/mice — Linux-compatible PS/2 mouse stream.
@@ -369,6 +382,19 @@ mod tests {
             }
         }
         assert!(found, "dri subdir missing from /dev listing");
+    }
+
+    #[test]
+    fn kandelo_dir_lists_the_clipboard_device() {
+        let proc = crate::process::Process::new(1);
+        let root = dir_entries(&proc, &DevfsEntry::Root);
+        assert!(root.iter().any(|(n, t, _)| n.as_slice() == b"kandelo" && *t == DT_DIR));
+        let entries = dir_entries(&proc, &DevfsEntry::KandeloDir);
+        let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
+        assert_eq!(names, [b"clipboard".as_slice()]);
+        assert_eq!(entries[0].1, DT_CHR);
+        let st = match_devfs_stat(b"/dev/kandelo", 0, 0).unwrap();
+        assert_eq!(st.st_mode & 0o170000, S_IFDIR);
     }
 
     #[test]
