@@ -1,7 +1,7 @@
 # Omarchy desktop: paste from the system clipboard
 
 Date: 2026-10-01
-Status: Design for review; implementation not started
+Status: Phase 1 (Layer 1) implemented; Layers 2 and 3 designed, decisions below
 
 ## Why
 
@@ -527,3 +527,40 @@ primary selection, and non-text MIME types.
     shell.
 11. **Touch devices.** iOS and iPadOS have no keyboard chord. A paste
     callout on a focused `<textarea>` might work. Out of scope here?
+
+## Decisions (2026-10-01, maintainer)
+
+Phase 1 (Layer 1) is implemented. The open questions above were answered
+before Layers 2 and 3:
+
+1. **Device name:** `/dev/kandelo/clipboard`.
+2. **ABI:** additive. Regenerate the snapshot, list the new exports as
+   optional host-adapter exports, record the device in
+   `abi-versioning.md`; no `ABI_VERSION` bump.
+3. **Size cap and framing:** 1 MiB. A read returns at most one record,
+   and a per-OFD cursor lets a short buffer stream through it. Measured
+   fact behind this: a guest `read()` larger than 64 KiB is one kernel
+   `sys_read` through `kernel_transfer_scratch_begin`, not a chunked
+   copy, so the channel size does not constrain the record.
+4. **Data control:** add `ext_data_control_v1` to wlcompositor alongside
+   the wlr protocol from Phase 1; kclipd speaks ext. Hyprland v0.56.2
+   advertises both, and wlr was deprecated upstream in July 2025.
+5. **Conditional dispatcher:** named `kandelo:sendshortcutiftag`, in
+   Hyprland's plugin-dispatcher namespace style.
+6. **Failed paste:** discard the held keys and show a toast that names
+   the cause and the number of discarded keystrokes.
+7. **Dedupe:** ship "offer only changed host text" now and document the
+   X, Y, X edge. Latest-wins between host and guest comes with copy-out.
+8. **Line endings:** convert CRLF pairs to LF; leave lone CRs alone.
+9. **Ack:** the host polls `kernel_clipboard_ack` on a timer only while
+   an offer is pending, with a 2 s timeout. Nothing is added to the
+   syscall completion path.
+10. **Agent:** a small C kclipd. Porting wl-clipboard is separate work.
+11. **Touch devices:** out of scope; recorded as a gap.
+
+Also decided: the macOS missing-keyup-under-Cmd quirk is fixed in Phase 1
+(BrowserInputSource releases keys pressed under Meta when Meta goes up);
+the protocol XML stays in `packages/registry/wayland-protocols`, with
+`ext-data-control-v1.xml` batched into the Layer 2 change so the
+consumer rebuild happens once; Phase 1 goes up as its own PR and Layers
+2 and 3 stack on it.
