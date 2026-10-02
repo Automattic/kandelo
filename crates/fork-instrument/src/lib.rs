@@ -43,6 +43,7 @@ pub mod module_gc_codec;
 pub mod module_state;
 pub mod reference_analysis;
 pub mod runtime;
+pub mod sink;
 pub mod size_attribution;
 pub mod static_reference_catalog;
 
@@ -151,14 +152,46 @@ pub struct Options {
     /// every function import and unresolved reference dispatch becomes a
     /// possible cross-instance fork boundary.
     pub entry_import: String,
+    /// Stop the unwind at fork boundaries (sinks) and leave the frames above
+    /// them uninstrumented; see [`sink`]. `--no-sinks` restores the full
+    /// closure (for comparison and diagnosis).
+    pub sinks: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             entry_import: "kernel.kernel_fork".into(),
+            sinks: true,
         }
     }
+}
+
+/// Reduce the fork closure with the sink analysis when the module is in its
+/// supported scope: a main module whose only fork seed is `kernel.kernel_fork`
+/// and that cannot dlopen a side module. Returns the boundary functions.
+fn apply_sink_plan(
+    module: &walrus::Module,
+    opts: &Options,
+    entry_imports: &[walrus::FunctionId],
+    external_dynamic_dispatch: bool,
+    reaching: &mut call_graph::ReachingAnalysis,
+) -> std::collections::HashSet<walrus::FunctionId> {
+    if !opts.sinks
+        || external_dynamic_dispatch
+        || opts.entry_import != "kernel.kernel_fork"
+        || entry_imports.len() != 1
+    {
+        return Default::default();
+    }
+    let Some(plan) = sink::plan(module, entry_imports[0], reaching, sink::SinkPolicy::default()) else {
+        return Default::default();
+    };
+    reaching.activations = plan.activations;
+    reaching.control_reachable = plan.control_reachable;
+    let keep = reaching.control_reachable.clone();
+    reaching.tail_call_landings.retain(|site| keep.contains(&site.caller));
+    plan.boundaries.into_iter().collect()
 }
 
 /// Result of analyzing an input module without rewriting it.
@@ -193,6 +226,8 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
     }
 
     let seeds = fork_boundary_seeds(&module, &entry_imports, side_boundaries);
+    // The discover-only report is the conservative reaching closure; fork
+    // boundaries (sinks) reduce what `instrument` rewrites, not this report.
     let reaching = prepare_fork_path(
         &module,
         &seeds,
@@ -338,7 +373,8 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // Legacy EH normalization can replace instruction sequences. Recompute
     // the semantic closure afterwards so the exact fork-reaching tail-site
     // coordinates used by private-tag transport name the normalized IR.
-    let reaching = prepare_fork_path(&module, &seeds, external_dynamic_dispatch);
+    let mut reaching = prepare_fork_path(&module, &seeds, external_dynamic_dispatch);
+    let boundaries = apply_sink_plan(&module, opts, &entry_imports, external_dynamic_dispatch, &mut reaching);
     let (fork_path, fork_path_targets, tail_call_sites) = (
         reaching.activations,
         reaching.control_reachable,
@@ -412,7 +448,7 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         Some((gc_codec.encode_externref, gc_codec.decode_externref)),
         Some((gc_codec.encode_anyref, gc_codec.decode_anyref)),
     )?;
-    let runtime = runtime::inject_linked_runtime_with_reference_overrides(
+    let mut runtime = runtime::inject_linked_runtime_with_reference_overrides(
         &mut module,
         runtime::ReferenceCodecOverrides {
             funcref: Some((
@@ -432,6 +468,15 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         module_gc_codec::finish_declaration(&mut module, gc_codec, exception_codec, &runtime)?;
     // Phase 4b: structural wrap of each fork-path function's body.
     // No-op when `fork_path` is empty (module doesn't use fork).
+    if !boundaries.is_empty() {
+        let ty = module.types.add(&[], &[]);
+        let (boundary, _) = module.add_import_func(
+            wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_MODULE,
+            wasm_posix_shared::abi::WPK_FORK_BOUNDARY_IMPORT,
+            ty,
+        );
+        runtime.boundary = Some(boundary);
+    }
     instrument::instrument_functions_with_targets_and_tail_sites(
         &mut module,
         &runtime,
@@ -440,6 +485,7 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         &tail_call_sites,
         &plain_catch_plan,
         Some(&resume_entries),
+        &boundaries,
     );
     // Dirty-page instrumentation uses short-lived scalar/reference
     // temporaries. Add them after continuation frame planning so they neither

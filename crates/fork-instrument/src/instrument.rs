@@ -147,6 +147,10 @@ const HOST_PARSED_MARKER_EXPORTS: &[&str] = &[
 pub const RESUME_CATALOG_EXPORT: &str = "__wpk_fork_resume_catalog";
 pub const RESUME_CATALOG_SECTION: &str = "kandelo.wpk_fork.resume_catalog";
 pub const RESUME_START_EXPORT: &str = "wpk_fork_resume_start";
+/// Child entry for a continuation rooted at a fork boundary (a sink).
+pub const RESUME_SINK_EXPORT: &str = wasm_posix_shared::abi::WPK_FORK_RESUME_SINK_EXPORT;
+/// Lists boundary functions: (function ordinal, sink signature index).
+pub const BOUNDARIES_SECTION: &str = wasm_posix_shared::abi::WPK_FORK_BOUNDARIES_SECTION;
 pub const RESUME_THREAD_EXPORT: &str = "wpk_fork_resume_thread";
 const RESUME_CATALOG_MAGIC: [u8; 4] = *b"KFRC";
 const RESUME_CATALOG_VERSION: u16 = 1;
@@ -289,6 +293,7 @@ pub fn instrument_functions(
         &[],
         plain_catch_plan,
         None,
+        &HashSet::new(),
     )
 }
 
@@ -309,6 +314,7 @@ pub fn instrument_functions_with_targets(
         &[],
         plain_catch_plan,
         None,
+        &HashSet::new(),
     )
 }
 
@@ -330,6 +336,7 @@ pub fn instrument_functions_with_targets_and_tail_sites(
     tail_call_sites: &[TailCallSite],
     plain_catch_plan: &PlainCatchPlan,
     resume_entries: Option<&HashSet<FunctionId>>,
+    boundaries: &HashSet<FunctionId>,
 ) -> HashSet<FunctionId> {
     let runtime_funcs: HashSet<FunctionId> = [
         runtime.unwind_begin,
@@ -393,6 +400,7 @@ pub fn instrument_functions_with_targets_and_tail_sites(
 
     let mut instrumented = HashSet::new();
     let mut resume_thunks = Vec::with_capacity(targets.len());
+    let mut sink_roots: Vec<(u32, FunctionId)> = Vec::new();
     for (ordinal, id) in targets.iter().enumerate() {
         let empty_catch_plan: Vec<CatchRegionPlan> = Vec::new();
         let this_catch_plan = catch_plans.get(id).unwrap_or(&empty_catch_plan);
@@ -411,11 +419,16 @@ pub fn instrument_functions_with_targets_and_tail_sites(
             this_plain_catches,
             &reference_analyses[id],
             &mut helpers,
+            boundaries.contains(id),
         );
+        if boundaries.contains(id) {
+            sink_roots.push((thunk.func_ordinal, thunk.function));
+        }
         // WHY: only an activation that replay can enter from outside its
-        // lexical caller needs a thunk; see `resume_entry_points`. The host
-        // rejects a replay event without a registered thunk loudly.
-        if resume_entries.is_none_or(|entries| entries.contains(id)) {
+        // lexical caller needs a thunk; see `resume_entry_points`. A boundary
+        // is the child's root, which the host enters through its thunk. The
+        // host rejects a replay event without a registered thunk loudly.
+        if resume_entries.is_none_or(|entries| entries.contains(id)) || boundaries.contains(id) {
             resume_thunks.push(thunk);
         } else {
             module.funcs.delete(thunk.function);
@@ -424,8 +437,105 @@ pub fn instrument_functions_with_targets_and_tail_sites(
     }
     emit_resume_catalog(module, &resume_thunks);
     emit_fixed_resume_boundaries(module, runtime);
+    emit_sink_resume_entry(module, runtime, &sink_roots);
     instrumented
 }
+
+/// `wpk_fork_resume_sink(sig_index)` and `kandelo.wpk_fork.boundaries`.
+///
+/// A child whose outermost replay event is a boundary function starts here
+/// instead of at `_start` or a pthread entry: the frames above the sink were
+/// never captured. The entry routes through the process resume table like
+/// every replay boundary, one `call_indirect` per distinct thunk signature
+/// (selected by the host from the section), and traps if the sink returns:
+/// the analysis proved the child cannot return through it, so returning
+/// would mean resuming frames that do not exist.
+fn emit_sink_resume_entry(module: &mut Module, runtime: &Runtime, sink_roots: &[(u32, FunctionId)]) {
+    if sink_roots.is_empty() {
+        return;
+    }
+    let resume_peek = runtime.resume_peek.expect("sink resume requires the process resume peek");
+    let resume_table = runtime.resume_table.expect("sink resume requires the process resume table");
+    // Distinct thunk types, in first-seen ordinal order (deterministic).
+    let mut sigs: Vec<TypeId> = Vec::new();
+    let mut entries: Vec<(u32, u32)> = Vec::new();
+    for &(ordinal, thunk) in sink_roots {
+        let ty = module.funcs.get(thunk).ty();
+        let index = match sigs.iter().position(|t| *t == ty) {
+            Some(i) => i,
+            None => {
+                sigs.push(ty);
+                sigs.len() - 1
+            }
+        };
+        entries.push((ordinal, index as u32));
+    }
+    let selector = module.locals.add(ValType::I32);
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[]);
+    builder.name(RESUME_SINK_EXPORT.into());
+    let function = builder.finish(vec![selector], &mut module.funcs);
+    let local = local_mut(module, function);
+    let entry = local.entry_block();
+    // block $case_{n-1} ( ... block $case_0 ( block $dispatch ( br_table ) )
+    // <case 0> ... ) <case n-1>: branching to $case_k runs case k.
+    let mut cases: Vec<InstrSeqId> = Vec::new();
+    for _ in 0..sigs.len() {
+        cases.push(local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id());
+    }
+    let dispatch = local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id();
+    {
+        let out = &mut local.block_mut(dispatch).instrs;
+        push_instr(out, Instr::LocalGet(LocalGet { local: selector }));
+        push_instr(
+            out,
+            Instr::BrTable(BrTable {
+                blocks: cases.clone().into_boxed_slice(),
+                default: *cases.last().unwrap(),
+            }),
+        );
+    }
+    // Nest: case_k contains case_{k-1} ... case_0 contains dispatch.
+    for k in 0..cases.len() {
+        let inner = if k == 0 { dispatch } else { cases[k - 1] };
+        let out = &mut local.block_mut(cases[k]).instrs;
+        out.insert(0, (Instr::Block(Block { seq: inner }), InstrLocId::default()));
+        if k > 0 {
+            emit_sink_case(out, resume_peek, resume_table, sigs[k - 1]);
+        }
+    }
+    let last = *cases.last().unwrap();
+    {
+        let out = &mut local.block_mut(entry).instrs;
+        push_instr(out, Instr::Block(Block { seq: last }));
+    }
+    let out = &mut local.block_mut(entry).instrs;
+    emit_sink_case(out, resume_peek, resume_table, sigs[sigs.len() - 1]);
+    module.exports.add(RESUME_SINK_EXPORT, function);
+
+    let mut data = Vec::with_capacity(8 + entries.len() * 8);
+    data.extend_from_slice(b"KFSB");
+    data.extend_from_slice(&1u16.to_le_bytes());
+    data.extend_from_slice(&0u16.to_le_bytes());
+    data.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (ordinal, sig) in entries {
+        data.extend_from_slice(&ordinal.to_le_bytes());
+        data.extend_from_slice(&sig.to_le_bytes());
+    }
+    module.customs.add(RawCustomSection {
+        name: BOUNDARIES_SECTION.into(),
+        data,
+    });
+}
+
+/// One case: peek the next replay slot, call that thunk, trap afterwards.
+/// `unreachable` makes any result values stack-polymorphic.
+fn emit_sink_case(out: &mut Vec<(Instr, InstrLocId)>, resume_peek: FunctionId, resume_table: TableId, ty: TypeId) {
+    push_instr(out, Instr::Const(Const { value: Value::I32(0) }));
+    push_instr(out, Instr::Call(Call { func: resume_peek }));
+    push_instr(out, Instr::CallIndirect(CallIndirect { ty, table: resume_table }));
+    push_instr(out, Instr::Unreachable(Unreachable {}));
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum UnwindTransportKey {
@@ -1268,6 +1378,7 @@ fn instrument_one_function(
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
     reference_analysis: &FunctionReferenceAnalysis,
     helpers: &mut GeneratedHelpers,
+    boundary: bool,
 ) -> ResumeThunk {
     // Choose scheme based on call-site topology. Post-commit-4
     // (2026-05-14) there are TWO live schemes (guard-dispatch was deleted):
@@ -1317,6 +1428,7 @@ fn instrument_one_function(
                 plain_catches,
                 reference_analysis,
                 helpers,
+                boundary,
             );
         }
         // Every Walrus producer is typed by `typed_instruction_pushes`.
@@ -1351,6 +1463,7 @@ fn instrument_one_function(
                 plain_catches,
                 reference_analysis,
                 helpers,
+                boundary,
             );
         }
         let func = func_name(module, func_id);
@@ -1373,6 +1486,7 @@ fn instrument_one_function(
         plain_catches,
         reference_analysis,
         helpers,
+        boundary,
     )
 }
 
@@ -1392,6 +1506,7 @@ fn instrument_one_function_switch(
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
     reference_analysis: &FunctionReferenceAnalysis,
     helpers: &mut GeneratedHelpers,
+    boundary: bool,
 ) -> ResumeThunk {
     // Pre-existing user locals (args + referenced in body). Validation
     // guarantees that every one is scalar and therefore frame-owned.
@@ -1678,6 +1793,7 @@ fn instrument_one_function_switch(
         frame_size,
         func_ordinal,
         frame_codec.as_ref(),
+        boundary.then_some(restart_loop),
     );
 
     // The preamble is outside the result-typed live-restart loop. Fresh
@@ -4866,6 +4982,7 @@ fn populate_postamble(
     frame_size: u32,
     func_ordinal: u32,
     codec: Option<&FrameCodecCall>,
+    boundary_restart: Option<InstrSeqId>,
 ) {
     if let Some(codec) = codec {
         // The shared save helper writes the header and every local-resident
@@ -4949,6 +5066,28 @@ fn populate_postamble(
     // therefore transports unwind through every Wasm signature truthfully.
     // The throw stays in the source function so the scratch-frame discipline
     // sees it as a function exit.
+    if let Some(restart) = boundary_restart {
+        // Fork boundary (a sink, docs/plans/2026-10-02-fork-sinks.md): the
+        // child can never return through this activation, so the parent's
+        // unwind stops here instead of escaping into uninstrumented callers.
+        // The node just committed is the child's root. The host seals the
+        // capture, forks, and begins parent (or abort) replay; this still-live
+        // activation then consumes its own node through the validated cursor
+        // and restarts at the selected call, exactly like an abort restart.
+        // Not an exit, so the scratch-frame discipline keeps its region.
+        let boundary = runtime
+            .boundary
+            .expect("boundary postamble requires the env.__wpk_fork_boundary import");
+        let frame_next = runtime
+            .frame_next
+            .expect("boundary postamble requires the linked frame cursor");
+        push_instr(out, Instr::Call(Call { func: boundary }));
+        push_instr(out, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(out, Instr::Call(Call { func: frame_next }));
+        push_instr(out, Instr::Drop(walrus::ir::Drop {}));
+        push_instr(out, Instr::Br(Br { block: restart }));
+        return;
+    }
     let unwind_tag = runtime
         .unwind_tag
         .expect("fork-path instrumentation requires the linked unwind tag");
@@ -8907,6 +9046,7 @@ fn instrument_one_function_nested_switch(
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
     reference_analysis: &FunctionReferenceAnalysis,
     helpers: &mut GeneratedHelpers,
+    boundary: bool,
 ) -> ResumeThunk {
     // Pre-existing user locals.
     let all_user_locals = collect_user_locals(module, func_id);
@@ -8944,6 +9084,7 @@ fn instrument_one_function_nested_switch(
             plain_catches,
             reference_analysis,
             helpers,
+            boundary,
         );
     }
 
@@ -9493,6 +9634,7 @@ fn instrument_one_function_nested_switch(
         frame_size,
         func_ordinal,
         frame_codec.as_ref(),
+        boundary.then_some(restart_loop),
     );
 
     // Wrap entry block with [preamble-if-else, live-restart loop].

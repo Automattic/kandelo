@@ -1,37 +1,33 @@
-//! fsa: fork-sink analysis research tool.
+//! Fork sinks: which fork-path activations the child can never return to.
 //!
-//! Question: under a fork mechanism whose unwind stops at the deepest frame
-//! that never returns in the child (a "sink"), which functions still need
-//! fork instrumentation?
+//! See `docs/plans/2026-10-02-fork-sinks.md`. After `fork()`, the child often
+//! ends in a function that never returns to its caller (it calls `_exit` or
+//! `exec*`). Call that function a sink. Under the bounded unwind, the
+//! parent's unwind stops at the deepest sink frame (a *boundary*), which
+//! records itself, forks through `env.__wpk_fork_boundary`, and replays its
+//! own callees in place; the child starts at the sink. Frames above a sink
+//! therefore need no instrumentation.
 //!
-//! The analysis works on one Wasm module (the instrumenter's input) and is
-//! sound under the same assumptions as `fork_instrument::call_graph` plus the
-//! ones listed in `ASSUMPTIONS` below; every refinement that adds an
-//! assumption is a command-line switch and is printed in the report.
+//! This module decides, for one main module, which functions are boundaries
+//! and which functions still need instrumentation. It is a whole-program
+//! abstract interpreter over the original Wasm:
 //!
-//! 1. Whole-program summaries: for every function, may it return, and which
-//!    exception tags may escape it. Least fixpoint over the call graph;
-//!    `call_indirect` targets are every table function of the same
-//!    structural signature unless a refinement below proves fewer.
-//! 2. Child continuation: for every function on the fork path, run an
-//!    abstract interpreter (constants, unmodified parameters, exnref tag
-//!    sets) starting *after* each fork-reaching call with the callee's
-//!    child-side result (kernel_fork returns 0 in the child). The function
-//!    is OPEN if a `return` or an escaping exception is reachable, otherwise
-//!    CLOSED (a sink for every one of its fork-reaching calls).
-//! 3. The instrumented set under sinks: every function with a fork-reaching
-//!    call whose callee is OPEN (or is kernel_fork). Closed functions stop
-//!    the upward walk; open ones propagate to their callers.
+//! - whole-program "may return" and "may throw (which tags)" summaries;
+//! - for every function on the fork path, the child-side continuation of each
+//!   fork-reaching call, started from the normal-mode state at that call with
+//!   the callee's child-side result (`kernel_fork` returns 0 in the child);
+//! - a function is closed when, in the child, no `return` is reachable and no
+//!   exception escapes to a frame that could catch it.
 //!
-//! Refinements of indirect targets (all sound, each states its assumption):
-//!   const-slot  an index that is a known constant names one table slot
-//!               (needs: active segments with constant offsets, no
-//!               table.set/fill/grow/copy/init in the module)
-//!   param       an index that is an unmodified parameter of a function
-//!               that is only ever called directly resolves to the union of
-//!               the constant arguments at its call sites
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::io::Write as _;
+//! Every refinement of indirect targets is sound under a stated, checked
+//! assumption (musl callback registries, parameter function pointers,
+//! constant table slots, the pthread-cancel writer rule, and the C/C++
+//! `_Noreturn`/no-escape contracts of exit-like functions). Anything the
+//! analysis cannot follow stays conservative; a module the analysis does not
+//! support keeps today's full closure.
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use walrus::ir::*;
 use walrus::*;
 
@@ -150,8 +146,8 @@ enum Policy {
     List,
 }
 
-struct Prog {
-    m: Module,
+struct Prog<'a> {
+    m: &'a Module,
     n: usize,
     names: Vec<String>,
     import: Vec<bool>,
@@ -233,9 +229,8 @@ fn table_ix(m: &Module, t: TableId) -> usize {
     m.tables.iter().position(|x| x.id() == t).unwrap()
 }
 
-impl Prog {
-    fn load(path: &str) -> Prog {
-        let m = Module::from_file(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+impl<'a> Prog<'a> {
+    fn new(m: &'a Module) -> Prog<'a> {
         let n = m.funcs.iter().map(|f| f.id().index() + 1).max().unwrap_or(0);
         let mut keys: HashMap<String, u32> = HashMap::new();
         let mut key = |m: &Module, t: TypeId| -> u32 {
@@ -249,7 +244,7 @@ impl Prog {
         for t in m.types.iter() {
             // GC struct/array types have no signature; they never key calls.
             if t.is_function() {
-                tkey.insert(t.id(), key(&m, t.id()));
+                tkey.insert(t.id(), key(m, t.id()));
             }
         }
         let mut p = Prog {
@@ -262,7 +257,7 @@ impl Prog {
             members: HashMap::new(),
             escapes: vec![false; n],
             slots: None,
-            dyn_link: fork_instrument::call_graph::has_dynamic_linker_imports(&m),
+            dyn_link: crate::call_graph::has_dynamic_linker_imports(m),
             callers: vec![vec![]; n],
             icallers: HashMap::new(),
             tag_bit: HashMap::new(),
@@ -557,7 +552,7 @@ struct Inject {
 }
 
 struct Ctx<'a> {
-    p: &'a Prog,
+    p: &'a Prog<'a>,
     summ: &'a [Summ],
     /// Param refinement cache (shared).
     ptarg: &'a mut HashMap<(u32, u32), Option<Vec<u32>>>,
@@ -1676,9 +1671,6 @@ fn param_targets(cx: &mut Ctx, f: u32, q: u32, depth: u32) -> Option<Vec<u32>> {
         let mut sm = HashMap::new();
         let mut cx2 = Ctx { p, summ: &empty, ptarg: cx.ptarg, exn_seen: &mut scratch, frame_esc: &mut fe, allow_spec: false, spec: &mut sm, depth: 0 };
         let r = interpret(&mut cx2, g, &info, Mode::Normal, &HashMap::new(), Some((f, q)));
-        if std::env::var("FSA_DEBUG_PARAM").is_ok() {
-            eprintln!("param_targets {}#{q} caller {}: {:?} unsupported={}", p.names[f as usize], p.names[g as usize], r.rec_vals, r.unsupported);
-        }
         if r.unsupported {
             ok = false;
             break;
@@ -1717,162 +1709,114 @@ fn param_targets(cx: &mut Ctx, f: u32, q: u32, depth: u32) -> Option<Vec<u32>> {
     r
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let get = |k: &str| args.iter().position(|a| a == k).map(|i| args[i + 1].clone());
-    let has = |k: &str| args.iter().any(|a| a == k);
-    let wasm = get("--wasm").expect("--wasm <module>");
-    let mut p = Prog::load(&wasm);
-    p.use_param = has("--param");
-    // Rule 2 by run-time check: an exception or longjmp leaving a sink frame
-    // in the child is a loud failure, so it does not reopen the sink.
-    let exc_mode = get("--exc").unwrap_or_else(|| "static".into());
-    let exc_runtime = exc_mode == "runtime";
-    // equiv: a closed function may still let an exception escape (stopped
-    // by the run-time check) only when no frame that can be above it on a
-    // fork stack has a catch clause for that tag; then the check never
-    // changes behaviour (the exception would reach the stack root anyway).
-    let exc_equiv = exc_mode == "equiv";
-    assert!(exc_runtime || exc_equiv || exc_mode == "static", "--exc static|equiv|runtime");
-    let sig_fns = get("--signal-fns").unwrap_or_else(|| "__deliver_pending_signal,__do_syscall_impl".into());
-    for n in sig_fns.split(',') {
-        let pre = format!("{n}(");
-        for f in 0..p.n as u32 {
-            let nm = &p.names[f as usize];
-            if nm == n || nm.starts_with(&pre) {
-                p.signal_fns.insert(f);
-            }
-        }
+
+// ------------------------------------------------------------------ plan
+
+/// How signal-handler dispatch inside libc's syscall path is modelled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalPolicy {
+    /// Handlers are ordinary indirect calls (every table function of the
+    /// handler signature). Sound with no POSIX gap.
+    Strict,
+    /// A run-time gate aborts a fork from inside a handler whose child would
+    /// return into the interrupted code; handler dispatch stops the closure.
+    Gate,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SinkPolicy {
+    pub signal: SignalPolicy,
+}
+
+impl Default for SinkPolicy {
+    fn default() -> Self {
+        SinkPolicy { signal: SignalPolicy::Strict }
     }
-    p.sig_policy = match get("--signal-policy").as_deref() {
-        None | Some("sig") => Policy::Sig,
-        Some("nothrow") => Policy::NoThrow,
-        Some(s) if s.starts_with("list:") => {
-            let text = std::fs::read_to_string(&s[5..]).unwrap();
-            for l in text.lines() {
-                for f in p.by_name(l.trim()) {
-                    p.sig_list.insert(f);
-                }
+}
+
+/// The reduced fork path and its boundary functions.
+#[derive(Debug, Default)]
+pub struct SinkPlan {
+    /// Activations that still need instrumentation (subset of today's).
+    pub activations: HashSet<FunctionId>,
+    /// Control-reachable functions that still matter (subset of today's).
+    pub control_reachable: HashSet<FunctionId>,
+    /// Closed functions: every fork-reaching call site is a boundary, the
+    /// parent's unwind stops there and the child starts there.
+    pub boundaries: BTreeSet<FunctionId>,
+}
+
+const PROBE: Tags = 1 << 62;
+
+/// Musl callback registries (`libc/musl`, no Kandelo overlay for these files):
+/// each hub's dispatch call reaches only callbacks passed to the registration
+/// API. Applies only when every call to the API is a direct call with a
+/// resolvable constant callback.
+fn apply_registries(p: &mut Prog) {
+    // (hub, dispatch signature, [(api, arg)]). An absent API counts as "never
+    // called" only where its source file contains no other caller of it:
+    // pthread_atfork.c, pthread_once.c, pthread_key_create.c and
+    // pthread_cleanup_push.c. atexit.c is the exception: __cxa_atexit is
+    // inlined into atexit (handled below).
+    let hubs: &[(&str, &str, &[(&str, u32)])] = &[
+        ("__fork_handler", "[]->[]", &[("pthread_atfork", 0), ("pthread_atfork", 1), ("pthread_atfork", 2)]),
+        ("__funcs_on_exit", "[I32]->[]", &[("__cxa_atexit", 0)]),
+        ("__pthread_once_full", "[]->[]", &[("__pthread_once", 1)]),
+        ("__pthread_tsd_run_dtors", "[I32]->[]", &[("__pthread_key_create", 1)]),
+        ("_pthread_cleanup_pop", "[I32]->[]", &[("_pthread_cleanup_push", 1)]),
+        ("__pthread_exit", "[I32]->[]", &[("__pthread_key_create", 1), ("_pthread_cleanup_push", 1)]),
+    ];
+    let absent_empty = ["pthread_atfork", "__pthread_once", "__pthread_key_create", "_pthread_cleanup_push"];
+    let empty_s: [Summ; 0] = [];
+    let mut scratch = HashMap::new();
+    let mut cache: HashMap<(u32, u32), Option<Vec<u32>>> = HashMap::new();
+    let reg = |p: &Prog, api: &str, k: u32, cache: &mut HashMap<(u32, u32), Option<Vec<u32>>>, scratch: &mut HashMap<u32, Tags>| -> Option<Vec<u32>> {
+        let mut out = vec![];
+        let mut fs = p.by_name(api);
+        if let Some(alias) = api.strip_prefix("__") {
+            if alias.starts_with("pthread_") {
+                fs.extend(p.by_name(alias));
             }
-            Policy::List
         }
-        Some(s) => panic!("unknown --signal-policy {s}"),
+        if fs.is_empty() {
+            return if absent_empty.contains(&api) { Some(vec![]) } else { None };
+        }
+        for f in fs {
+            if p.import[f as usize] {
+                return None;
+            }
+            let mut fe = HashSet::new();
+            let mut sm = HashMap::new();
+            let mut cx = Ctx { p, summ: &empty_s, ptarg: cache, exn_seen: scratch, frame_esc: &mut fe, allow_spec: false, spec: &mut sm, depth: 0 };
+            out.extend(param_targets(&mut cx, f, k, 0)?);
+        }
+        Some(out)
     };
-    if let Some(path) = get("--itargets") {
-        // fpa's signature strings: params,..->results with i32/i64/f32/f64/v128/ref.
-        let vt = |t: &ValType| match t {
-            ValType::I32 => "i32",
-            ValType::I64 => "i64",
-            ValType::F32 => "f32",
-            ValType::F64 => "f64",
-            ValType::V128 => "v128",
-            _ => "ref",
-        };
-        let mut fpa_key: HashMap<String, Vec<u32>> = HashMap::new();
-        for t in p.m.types.iter() {
-            let sname = format!(
-                "{}->{}",
-                t.params().iter().map(vt).collect::<Vec<_>>().join(","),
-                t.results().iter().map(vt).collect::<Vec<_>>().join(",")
-            );
-            let k = p.tkey[&t.id()];
-            let e = fpa_key.entry(sname).or_default();
-            if !e.contains(&k) {
-                e.push(k);
+    let mut overrides: Vec<((u32, u32), Vec<u32>)> = vec![];
+    for (hub, sig, apis) in hubs {
+        let Some(key) = keys_lookup(p.m, &p.tkey, sig) else { continue };
+        let mut t: Option<Vec<u32>> = Some(vec![]);
+        for (api, k) in apis.iter() {
+            match (t.as_mut(), reg(p, api, *k, &mut cache, &mut scratch)) {
+                (Some(v), Some(x)) => v.extend(x),
+                _ => t = None,
             }
         }
-        let text = std::fs::read_to_string(&path).unwrap();
-        let mut lines = 0;
-        for l in text.lines() {
-            let mut it = l.split('\t');
-            let f: u32 = it.next().unwrap().parse().unwrap();
-            let sname = it.next().unwrap();
-            let t: Vec<u32> = it.next().unwrap_or("").split(',').filter(|x| !x.is_empty()).map(|x| x.parse().unwrap()).collect();
-            for &k in fpa_key.get(sname).map(|v| v.as_slice()).unwrap_or(&[]) {
-                let t: Vec<u32> = t.iter().copied().filter(|&g| p.skey[g as usize] == k).collect();
-                p.itargets.insert((f, k), t);
+        if let Some(mut v) = t {
+            v.sort();
+            v.dedup();
+            let v: Vec<u32> = v.into_iter().filter(|&g| p.skey[g as usize] == key).collect();
+            for h in p.by_name(hub) {
+                overrides.push(((h, key), v.clone()));
             }
-            lines += 1;
         }
-        eprintln!("itargets: {lines} (function, signature) sets from {path}");
     }
-    if has("--registries") {
-        // musl callback registries (sources checked, no Kandelo overlay):
-        // each hub's dispatch call reaches only callbacks passed to the
-        // registration API. Applies only when every call to the API is a
-        // direct call with a resolvable constant (param_targets proves it).
-        // (hub, dispatch signature, [(api, arg)]). An absent API counts as
-        // "never called" only where its source file contains no other caller
-        // of it (checked against musl): pthread_atfork.c, pthread_once.c,
-        // pthread_key_create.c and pthread_cleanup_push.c. atexit.c is the
-        // exception: __cxa_atexit is inlined into atexit (handled below).
-        let hubs: &[(&str, &str, &[(&str, u32)])] = &[
-            ("__fork_handler", "[]->[]", &[("pthread_atfork", 0), ("pthread_atfork", 1), ("pthread_atfork", 2)]),
-            ("__funcs_on_exit", "[I32]->[]", &[("__cxa_atexit", 0)]),
-            ("__pthread_once_full", "[]->[]", &[("__pthread_once", 1)]),
-            ("__pthread_tsd_run_dtors", "[I32]->[]", &[("__pthread_key_create", 1)]),
-            ("_pthread_cleanup_pop", "[I32]->[]", &[("_pthread_cleanup_push", 1)]),
-            ("__pthread_exit", "[I32]->[]", &[("__pthread_key_create", 1), ("_pthread_cleanup_push", 1)]),
-        ];
-        let absent_empty = ["pthread_atfork", "__pthread_once", "__pthread_key_create", "_pthread_cleanup_push"];
-        let empty_s: [Summ; 0] = [];
-        let mut scratch = HashMap::new();
-        let mut cache: HashMap<(u32, u32), Option<Vec<u32>>> = HashMap::new();
-        let mut reg = |p: &Prog, api: &str, k: u32, cache: &mut HashMap<(u32, u32), Option<Vec<u32>>>, scratch: &mut HashMap<u32, Tags>| -> Option<Vec<u32>> {
-            let mut out = vec![];
-            let mut fs = p.by_name(api);
-            // musl weak aliases (pthread_once -> __pthread_once, ...) keep one name.
-            if let Some(alias) = api.strip_prefix("__") {
-                if alias.starts_with("pthread_") {
-                    fs.extend(p.by_name(alias));
-                }
-            }
-            if fs.is_empty() {
-                // Absent may mean inlined within its own source file, not
-                // "no registrations": unknown unless the file has no caller.
-                return if absent_empty.contains(&api) { Some(vec![]) } else { None };
-            }
-            for f in fs {
-                if p.import[f as usize] {
-                    return None;
-                }
-                let mut fe = HashSet::new();
-                let mut sm = HashMap::new();
-                let mut cx = Ctx { p, summ: &empty_s, ptarg: cache, exn_seen: scratch, frame_esc: &mut fe, allow_spec: false, spec: &mut sm, depth: 0 };
-                out.extend(param_targets(&mut cx, f, k, 0)?);
-            }
-            Some(out)
-        };
-        let mut overrides: Vec<((u32, u32), Vec<u32>)> = vec![];
-        for (hub, sig, apis) in hubs {
-            let Some(key) = keys_lookup(&p.m, &p.tkey, sig) else { continue };
-            let mut t: Option<Vec<u32>> = Some(vec![]);
-            for (api, k) in apis.iter() {
-                match (t.as_mut(), reg(&p, api, *k, &mut cache, &mut scratch)) {
-                    (Some(v), Some(x)) => v.extend(x),
-                    _ => t = None,
-                }
-            }
-            let hubs_f = p.by_name(hub);
-            match t {
-                Some(mut v) => {
-                    v.sort();
-                    v.dedup();
-                    let v: Vec<u32> = v.into_iter().filter(|&g| p.skey[g as usize] == key).collect();
-                    eprintln!("registry {hub}: {} callbacks {:?}", v.len(), v.iter().take(6).map(|&g| p.names[g as usize].as_str()).collect::<Vec<_>>());
-                    for h in hubs_f {
-                        overrides.push(((h, key), v.clone()));
-                    }
-                }
-                None => eprintln!("registry {hub}: NOT applied (a registration is unresolvable)"),
-            }
-        }
-        // __cxa_atexit inlined into atexit (same source file) and otherwise
-        // unreferenced: the only callbacks __funcs_on_exit can see are the
-        // function constants atexit itself stores, i.e. musl's `call`.
-        if p.by_name("__cxa_atexit").is_empty() {
-            if let (Some(key), [a]) = (keys_lookup(&p.m, &p.tkey, "[I32]->[]"), p.by_name("atexit").as_slice()) {
-                let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(*a)).kind else { unreachable!() };
+    // __cxa_atexit inlined into atexit and otherwise unreferenced: the only
+    // callbacks __funcs_on_exit can see are the function constants atexit
+    // itself stores, i.e. musl's `call`.
+    if p.by_name("__cxa_atexit").is_empty() {
+        if let (Some(key), [a]) = (keys_lookup(p.m, &p.tkey, "[I32]->[]"), p.by_name("atexit").as_slice()) {
+            if let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(*a)).kind {
                 let mut v: Vec<u32> = vec![];
                 for (_, seq) in all_seqs(lf) {
                     for (ins, _) in &seq.instrs {
@@ -1890,97 +1834,95 @@ fn main() {
                 }
                 v.sort();
                 v.dedup();
-                eprintln!("registry __funcs_on_exit via inlined __cxa_atexit in atexit: {:?}", v.iter().map(|&g| p.names[g as usize].as_str()).collect::<Vec<_>>());
                 for h in p.by_name("__funcs_on_exit") {
                     overrides.push(((h, key), v.clone()));
                 }
             }
         }
-        // atexit(f) registers musl's static `call` with f as its argument.
-        if let Some(key) = keys_lookup(&p.m, &p.tkey, "[]->[]") {
-            let mut callers = reg(&p, "__cxa_atexit", 0, &mut cache, &mut scratch).unwrap_or_default();
-            if let Some(((_, _), v)) = overrides.iter().find(|((h, _), _)| p.names[*h as usize] == "__funcs_on_exit") {
-                callers.extend(v.iter().copied());
-            }
-            if let Some(mut v) = reg(&p, "atexit", 0, &mut cache, &mut scratch) {
-                v.sort();
-                v.dedup();
-                for c in p.by_name("call") {
-                    if callers.contains(&c) {
-                        eprintln!("registry atexit call: {} callbacks", v.len());
-                        overrides.push(((c, key), v.clone()));
-                    }
+    }
+    // atexit(f) registers musl's static `call` with f as its argument.
+    if let Some(key) = keys_lookup(p.m, &p.tkey, "[]->[]") {
+        let mut callers = reg(p, "__cxa_atexit", 0, &mut cache, &mut scratch).unwrap_or_default();
+        if let Some(((_, _), v)) = overrides.iter().find(|((h, _), _)| p.names[*h as usize] == "__funcs_on_exit") {
+            callers.extend(v.iter().copied());
+        }
+        if let Some(mut v) = reg(p, "atexit", 0, &mut cache, &mut scratch) {
+            v.sort();
+            v.dedup();
+            for c in p.by_name("call") {
+                if callers.contains(&c) {
+                    overrides.push(((c, key), v.clone()));
                 }
             }
         }
-        for (k, v) in overrides {
-            p.itargets.insert(k, v);
-        }
     }
-    if has("--main-direct") {
-        for n in ["main", "__main_argc_argv", "__main_void"] {
-            p.main_fns.extend(p.by_name(n));
-        }
-        for n in ["libc_start_main_stage2", "__libc_start_main"] {
-            p.start_fns.extend(p.by_name(n));
-        }
-        eprintln!("main-direct what-if: {} main functions, {} start functions", p.main_fns.len(), p.start_fns.len());
+    for (k, v) in overrides {
+        p.itargets.insert(k, v);
     }
-    if has("--cancel") {
-        // musl sets pthread_t->cancel only in pthread_cancel and in
-        // timer_create's SIGEV_THREAD worker (libc/musl-overlay checked).
-        // With neither linked the flag stays 0, so the cancellation-point
-        // checks never reach pthread_exit.
-        let writers = ["pthread_cancel", "__pthread_cancel", "timer_create", "__timer_create"];
-        let named = |p: &Prog, w: &str| -> Vec<u32> {
-            let pre = format!("{w}(");
-            (0..p.n as u32).filter(|&f| p.names[f as usize] == w || p.names[f as usize].starts_with(&pre)).collect()
-        };
-        let linked: Vec<&str> = writers.iter().copied().filter(|w| named(&p, w).iter().any(|&f| !p.import[f as usize])).collect();
-        if linked.is_empty() {
-            let checks = ["__syscall_cp_check", "__syscall_cp_cancel_preflight", "__testcancel", "__cancel", "__pthread_testcancel", "pthread_testcancel"];
-            let exits: Vec<u32> = ["pthread_exit", "__pthread_exit"].iter().flat_map(|n| named(&p, n)).collect();
-            for c in checks {
-                for f in named(&p, c) {
-                    for &e in &exits {
-                        p.cut.insert((f, e));
-                    }
-                }
+}
+
+/// musl sets `pthread_t->cancel` only in `pthread_cancel` and in
+/// `timer_create`'s SIGEV_THREAD worker. With neither linked the flag stays 0,
+/// so the cancellation-point checks never reach `pthread_exit`.
+fn apply_cancel_rule(p: &mut Prog) {
+    let named = |p: &Prog, w: &str| -> Vec<u32> {
+        let pre = format!("{w}(");
+        (0..p.n as u32).filter(|&f| p.names[f as usize] == w || p.names[f as usize].starts_with(&pre)).collect()
+    };
+    let writers = ["pthread_cancel", "__pthread_cancel", "timer_create", "__timer_create"];
+    if writers.iter().any(|w| named(p, w).iter().any(|&f| !p.import[f as usize])) {
+        return;
+    }
+    let checks = ["__syscall_cp_check", "__syscall_cp_cancel_preflight", "__testcancel", "__cancel", "__pthread_testcancel", "pthread_testcancel"];
+    let exits: Vec<u32> = ["pthread_exit", "__pthread_exit"].iter().flat_map(|n| named(p, n)).collect();
+    for c in checks {
+        for f in named(p, c) {
+            for &e in &exits {
+                p.cut.insert((f, e));
             }
-            eprintln!("cancel rule: no cancel writer linked; {} cancellation edges cut", p.cut.len());
-        } else {
-            eprintln!("cancel rule: NOT applied, cancel writers linked: {linked:?}");
         }
     }
+}
+
+/// Compute the reduced fork path for a main module whose fork seed is
+/// `seed`. `today` is the conservative closure the instrumenter already
+/// computed; the plan only ever removes from it. Returns `None` when the
+/// module is outside the analysis' supported scope (dynamic linking), so the
+/// caller keeps today's closure.
+pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::ReachingAnalysis, policy: SinkPolicy) -> Option<SinkPlan> {
+    let mut p = Prog::new(module);
+    if p.dyn_link {
+        // A side module may fork below any indirect call; boundaries across
+        // module instances are not part of the first version.
+        return None;
+    }
+    p.use_param = true;
+    p.sig_policy = match policy.signal {
+        SignalPolicy::Strict => Policy::Sig,
+        SignalPolicy::Gate => Policy::NoThrow,
+    };
+    for name in ["__deliver_pending_signal", "__do_syscall_impl"] {
+        let pre = format!("{name}(");
+        for f in 0..p.n as u32 {
+            let nm = &p.names[f as usize];
+            if nm == name || nm.starts_with(&pre) {
+                p.signal_fns.insert(f);
+            }
+        }
+    }
+    apply_registries(&mut p);
+    apply_cancel_rule(&mut p);
+    let p = p;
     let n = p.n;
-    eprintln!(
-        "{}: functions {} (imports {}), table slots {}, dynamic linking {}, signal dispatch fns {:?}",
-        wasm,
-        n,
-        p.import.iter().filter(|x| **x).count(),
-        p.slots.as_ref().map_or("unknown/mutable".into(), |s| s.len().to_string()),
-        p.dyn_link,
-        p.signal_fns.iter().map(|&f| p.names[f as usize].clone()).collect::<Vec<_>>()
-    );
-
-    // Baseline: the shipped instrumenter's closure.
-    let seed = fork_instrument::call_graph::find_import_func(&p.m, "kernel.kernel_fork").expect("module does not import kernel.kernel_fork");
-    let base = fork_instrument::call_graph::analyze_reaching_closure(&p.m, seed);
-    let r_set: HashSet<u32> = base.activations.iter().map(|f| f.index() as u32).collect();
-    let r_ctrl: HashSet<u32> = base.control_reachable.iter().map(|f| f.index() as u32).collect();
     let seed_i = seed.index() as u32;
-    let instrumented_today = r_set.iter().filter(|&&f| !p.import[f as usize]).count();
-
-    // Per-function info.
     let infos: Vec<Option<FnInfo>> = (0..n)
         .map(|i| match &p.m.funcs.get(p.fid(i as u32)).kind {
-            FunctionKind::Local(lf) => Some(fninfo(&p.m, lf)),
+            FunctionKind::Local(lf) => Some(fninfo(p.m, lf)),
             _ => None,
         })
         .collect();
 
-    // ---- 1. whole-program summaries (least fixpoint)
-    let t0 = std::time::Instant::now();
+    // 1. Whole-program summaries (least fixpoint, deterministic order).
     let mut summ = vec![Summ::default(); n];
     for i in 0..n {
         if p.import[i] {
@@ -1991,114 +1933,65 @@ fn main() {
     let mut exn_seen: HashMap<u32, Tags> = HashMap::new();
     let mut frame_esc: HashSet<u32> = HashSet::new();
     let mut spec_memo: HashMap<(u32, Vec<V>), (Option<V>, Tags)> = HashMap::new();
-    let mut queued = vec![false; n];
-    let mut work: VecDeque<u32> = VecDeque::new();
-    for i in 0..n {
-        if !p.import[i] {
-            work.push_back(i as u32);
-            queued[i] = true;
-        }
-    }
-    let mut unsupported_fns = 0usize;
-    let mut evals = 0usize;
     let empty = HashMap::new();
-    while let Some(f) = work.pop_front() {
-        queued[f as usize] = false;
-        evals += 1;
-        let info = infos[f as usize].as_ref().unwrap();
-        let snapshot = summ.clone();
-        let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: false, spec: &mut spec_memo, depth: 0 };
-        let r = interpret(&mut cx, f, info, Mode::Normal, &empty, None);
-        let mut s = Summ { ret: r.ret.is_some(), thr: r.thr };
-        if r.unsupported {
-            s = Summ { ret: true, thr: TAGS_ALL };
-        }
-        if p.noreturn[f as usize] {
-            s.ret = false;
-        }
-        if p.nothrow[f as usize] {
-            // C11 7.22.4.4 / C++ [support.start.term] / POSIX pthread_exit:
-            // an exception or longjmp leaving a handler that exit() or
-            // pthread_exit() runs is undefined behaviour (C++: terminate).
-            s.thr = 0;
-        }
-        let old = summ[f as usize];
-        let new = Summ { ret: old.ret | s.ret, thr: old.thr | s.thr };
-        if new != old {
-            summ[f as usize] = new;
-            for &c in &p.callers[f as usize] {
-                if !queued[c as usize] {
-                    queued[c as usize] = true;
-                    work.push_back(c);
-                }
+    {
+        let mut queued = vec![false; n];
+        let mut work: VecDeque<u32> = VecDeque::new();
+        for i in 0..n {
+            if !p.import[i] {
+                work.push_back(i as u32);
+                queued[i] = true;
             }
-            if p.escapes[f as usize] {
-                if let Some(cs) = p.icallers.get(&p.skey[f as usize]) {
-                    for &c in cs {
-                        if !queued[c as usize] {
-                            queued[c as usize] = true;
-                            work.push_back(c);
+        }
+        let mut evals = 0usize;
+        while let Some(f) = work.pop_front() {
+            queued[f as usize] = false;
+            evals += 1;
+            if evals > 50 * n.max(1) {
+                // Non-convergence would be an analysis defect; stay conservative.
+                return None;
+            }
+            let info = infos[f as usize].as_ref().unwrap();
+            let snapshot = summ.clone();
+            let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: false, spec: &mut spec_memo, depth: 0 };
+            let r = interpret(&mut cx, f, info, Mode::Normal, &empty, None);
+            let mut s = Summ { ret: r.ret.is_some(), thr: r.thr };
+            if r.unsupported {
+                s = Summ { ret: true, thr: TAGS_ALL };
+            }
+            if p.noreturn[f as usize] {
+                s.ret = false;
+            }
+            if p.nothrow[f as usize] {
+                s.thr = 0;
+            }
+            let old = summ[f as usize];
+            let new = Summ { ret: old.ret | s.ret, thr: old.thr | s.thr };
+            if new != old {
+                summ[f as usize] = new;
+                for &c in &p.callers[f as usize] {
+                    if !queued[c as usize] {
+                        queued[c as usize] = true;
+                        work.push_back(c);
+                    }
+                }
+                if p.escapes[f as usize] {
+                    if let Some(cs) = p.icallers.get(&p.skey[f as usize]) {
+                        for &c in cs {
+                            if !queued[c as usize] {
+                                queued[c as usize] = true;
+                                work.push_back(c);
+                            }
                         }
                     }
                 }
             }
         }
-        if evals > 50 * n {
-            panic!("summary fixpoint did not converge");
-        }
-    }
-    for i in 0..n {
-        if !p.import[i] && summ[i] == (Summ { ret: true, thr: TAGS_ALL }) {
-            unsupported_fns += 0;
-        }
-    }
-    let _ = unsupported_fns;
-    let noret = (0..n).filter(|&i| !p.import[i] && !summ[i].ret).count();
-    let throwing = (0..n).filter(|&i| summ[i].thr != 0).count();
-    eprintln!(
-        "summaries: {} evaluations in {:.1}s; {} functions never return, {} may throw",
-        evals,
-        t0.elapsed().as_secs_f32(),
-        noret,
-        throwing
-    );
-
-    if let Some(name) = get("--why-throw") {
-        let mut cur = name.clone();
-        let mut seen: HashSet<String> = HashSet::new();
-        for _ in 0..25 {
-            let Some(f) = p.by_name(&cur).into_iter().find(|&f| !p.import[f as usize]) else { break };
-            seen.insert(cur.clone());
-            let mut snapshot = summ.clone();
-            snapshot[f as usize].thr = 0;
-            let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: true, spec: &mut spec_memo, depth: 0 };
-            let r = interpret(&mut cx, f, infos[f as usize].as_ref().unwrap(), Mode::Normal, &empty, None);
-            println!("WHY-THROW\t{cur}\tthr={:#x}\t{}", r.thr, r.why.iter().filter(|w| w.starts_with("throws")).cloned().collect::<Vec<_>>().join(" | "));
-            let next = r
-                .why
-                .iter()
-                .filter(|w| w.starts_with("throws"))
-                .filter_map(|w| w.split(" via ").nth(1))
-                .find(|x| !seen.contains(*x))
-                .map(|x| x.to_string());
-            match next {
-                Some(nx) if !nx.starts_with("call_indirect") && !nx.starts_with("throw") => cur = nx,
-                Some(nx) => {
-                    println!("WHY-THROW\t(stops at {nx})");
-                    break;
-                }
-                None => break,
-            }
-        }
     }
 
-    // ---- 2. child continuation fixpoint over the fork path
-    // Fork-reaching call sites per function: (seq, index, targets on path).
-    let t1 = std::time::Instant::now();
-    // Resolved call targets per call instruction, from a normal-mode pass
-    // over every body (dead code contributes nothing).
+    // 2. Resolved call targets per call instruction; fork-reaching set.
     let mut all_sites: HashMap<u32, Vec<(InstrSeqId, usize, Vec<u32>)>> = HashMap::new();
-    let mut gate_fns: HashSet<u32> = HashSet::new();
+    let mut gate_fns: BTreeSet<u32> = BTreeSet::new();
     {
         let snapshot = summ.clone();
         for f in 0..n as u32 {
@@ -2107,6 +2000,9 @@ fn main() {
             }
             let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: true, spec: &mut spec_memo, depth: 0 };
             let r = interpret2(&mut cx, f, infos[f as usize].as_ref().unwrap(), Mode::Normal, &empty, None, true);
+            if r.unsupported {
+                return None;
+            }
             let mut v: Vec<(InstrSeqId, usize, Vec<u32>)> = r
                 .sites
                 .into_iter()
@@ -2124,7 +2020,6 @@ fn main() {
             all_sites.insert(f, v);
         }
     }
-    // Fork-reaching closure under the same refinements (R').
     let mut rdeps_all: HashMap<u32, Vec<u32>> = HashMap::new();
     for (&f, v) in &all_sites {
         for (_, _, t) in v {
@@ -2133,16 +2028,8 @@ fn main() {
             }
         }
     }
-    // EXT: a call that may enter a dlopen'd side module, which may fork.
-    let ext_i = u32::MAX - 1;
-    let mut r2: HashSet<u32> = HashSet::new();
-    let mut q: VecDeque<u32> = VecDeque::new();
-    r2.insert(seed_i);
-    q.push_back(seed_i);
-    if p.dyn_link {
-        r2.insert(ext_i);
-        q.push_back(ext_i);
-    }
+    let mut r2: HashSet<u32> = HashSet::from([seed_i]);
+    let mut q: VecDeque<u32> = VecDeque::from([seed_i]);
     while let Some(g) = q.pop_front() {
         if let Some(cs) = rdeps_all.get(&g) {
             for &c in cs {
@@ -2152,83 +2039,6 @@ fn main() {
             }
         }
     }
-    if let Some(names) = get("--throw-path") {
-        // Shortest call path from each named function to a function that
-        // itself executes `throw`, through callees that may throw.
-        let throws_itself: HashSet<u32> = (0..n as u32)
-            .filter(|&f| {
-                let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(f)).kind else { return false };
-                all_seqs(lf).iter().any(|(_, s)| s.instrs.iter().any(|(i, _)| matches!(i, Instr::Throw(_))))
-            })
-            .collect();
-        for name in names.split(',') {
-            for f0 in p.by_name(name) {
-                let mut prev: HashMap<u32, u32> = HashMap::new();
-                let mut q = VecDeque::from([f0]);
-                prev.insert(f0, f0);
-                let mut hit = None;
-                while let Some(g) = q.pop_front() {
-                    if throws_itself.contains(&g) && g != f0 {
-                        hit = Some(g);
-                        break;
-                    }
-                    for (_, _, t) in all_sites.get(&g).map(|v| v.as_slice()).unwrap_or(&[]) {
-                        for &h in t {
-                            if h != seed_i && h != ext_i && !p.import[h as usize] && summ[h as usize].thr != 0 && !prev.contains_key(&h) {
-                                prev.insert(h, g);
-                                q.push_back(h);
-                            }
-                        }
-                    }
-                }
-                let mut path = vec![];
-                if let Some(mut x) = hit {
-                    while x != f0 {
-                        path.push(p.names[x as usize].clone());
-                        x = prev[&x];
-                    }
-                }
-                path.reverse();
-                println!("THROW-PATH\t{name}\t{}", if path.is_empty() { "<none>".into() } else { path.join(" -> ") });
-            }
-        }
-    }
-    if let Some(names) = get("--fork-path") {
-        // Shortest call path from each named function to kernel_fork (or a
-        // side-module boundary) over the refined call graph.
-        for name in names.split(',') {
-            for f0 in p.by_name(name) {
-                let mut prev: HashMap<u32, u32> = HashMap::from([(f0, f0)]);
-                let mut q = VecDeque::from([f0]);
-                let mut hit = None;
-                while let Some(g) = q.pop_front() {
-                    if g == seed_i || g == ext_i {
-                        hit = Some(g);
-                        break;
-                    }
-                    for (_, _, t) in all_sites.get(&g).map(|v| v.as_slice()).unwrap_or(&[]) {
-                        for &h in t {
-                            if r2.contains(&h) && !prev.contains_key(&h) {
-                                prev.insert(h, g);
-                                q.push_back(h);
-                            }
-                        }
-                    }
-                }
-                let mut path = vec![];
-                if let Some(mut x) = hit {
-                    while x != f0 {
-                        path.push(if x == ext_i { "<side module>".to_string() } else { p.names[x as usize].clone() });
-                        x = prev[&x];
-                    }
-                }
-                path.reverse();
-                println!("FORK-PATH\t{name}\t{}", if path.is_empty() { "<none>".into() } else { path.join(" -> ") });
-            }
-        }
-    }
-    let on_path = |g: u32| r2.contains(&g);
-    let refined_today = r2.iter().filter(|&&f| f != ext_i && !p.import[f as usize]).count();
     let mut sites: HashMap<u32, Vec<(InstrSeqId, usize, Vec<u32>)>> = HashMap::new();
     for (&f, v) in &all_sites {
         if !r2.contains(&f) {
@@ -2237,7 +2047,7 @@ fn main() {
         let w: Vec<(InstrSeqId, usize, Vec<u32>)> = v
             .iter()
             .filter_map(|(a, b, t)| {
-                let t: Vec<u32> = t.iter().copied().filter(|&g| on_path(g)).collect();
+                let t: Vec<u32> = t.iter().copied().filter(|g| r2.contains(g)).collect();
                 (!t.is_empty()).then(|| (*a, *b, t))
             })
             .collect();
@@ -2245,19 +2055,31 @@ fn main() {
             sites.insert(f, w);
         }
     }
-    let _ = &r_ctrl;
-    // For each sink whose child continuation may still throw, can any frame
-    // above it catch that tag? (catch tag / catch_ref tag / catch_all /
-    // catch_all_ref all count, so C++ cleanups count too: conservative.)
-    // Catching frames. --catchers coarse: any catch clause counts.
-    // precise (default): a clause counts only if its landing can do
+
+    // 3. libc's vfork wrapper: calls kernel_fork with WASM_POSIX_FORK_MODE_VFORK
+    // (1). POSIX makes returning from the function that called vfork
+    // undefined, so its callers' vfork sites are boundaries by contract; the
+    // sink resume entry traps if one returns.
+    let mut vfork_fns: HashSet<u32> = HashSet::new();
+    for &g in &p.callers[seed_i as usize] {
+        let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(g)).kind else { continue };
+        let info = fninfo(p.m, lf);
+        let empty_s: [Summ; 0] = [];
+        let mut fe = HashSet::new();
+        let mut sm = HashMap::new();
+        let mut sc = HashMap::new();
+        let mut cx = Ctx { p: &p, summ: &empty_s, ptarg: &mut ptarg, exn_seen: &mut sc, frame_esc: &mut fe, allow_spec: false, spec: &mut sm, depth: 0 };
+        let r = interpret(&mut cx, g, &info, Mode::Normal, &HashMap::new(), Some((seed_i, 0)));
+        if !r.unsupported && !r.rec_vals.is_empty() && r.rec_vals.iter().all(|v| *v == V::C(1)) {
+            vfork_fns.insert(g);
+        }
+    }
+
+    // 4. Catching frames: a clause counts only if its landing can do
     // something other than rethrow the caught exception (a cleanup pad) or
-    // call std::terminate (a noexcept pad): i.e. it is a real handler.
-    let precise_catchers = get("--catchers").as_deref() != Some("coarse");
-    const PROBE: Tags = 1 << 62;
-    let mut catches: HashMap<u32, Tags> = HashMap::new();
-    let mut clause_stats = [0usize; 4]; // handler, cleanup, terminate, unknown
-    // The longjmp tag is the one `__wasm_longjmp` throws (LLVM SjLj lowering).
+    // reach std::terminate (a noexcept pad). A POSIX longjmp lands only in
+    // its setjmp frame (an explicit catch of the longjmp tag), so catch_all
+    // clauses never count as longjmp catchers.
     let mut longjmp_bits: Tags = 0;
     for f in p.by_name("__wasm_longjmp") {
         if let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(f)).kind {
@@ -2270,7 +2092,7 @@ fn main() {
             }
         }
     }
-    eprintln!("longjmp tag bits: {longjmp_bits:#x}");
+    let mut catches: HashMap<u32, Tags> = HashMap::new();
     {
         let snapshot = summ.clone();
         let terminate_like = |p: &Prog, f: u32| {
@@ -2314,33 +2136,16 @@ fn main() {
                                         v.push(V::Exn(PROBE));
                                         (1u64 << p.tag_bit[tag], *label, v)
                                     }
-                                    // A POSIX longjmp lands only in the frame that called
-                                    // setjmp (an explicit catch of the longjmp tag); a C++
-                                    // catch(...) does not catch it, so catch_all clauses
-                                    // never count as longjmp catchers.
                                     TryTableCatch::CatchAll { label } => (TAGS_ALL & !PROBE & !longjmp_bits, *label, vec![]),
                                     TryTableCatch::CatchAllRef { label } => (TAGS_ALL & !PROBE & !longjmp_bits, *label, vec![V::Exn(PROBE)]),
                                 };
-                                if !precise_catchers {
-                                    t |= bits;
-                                    continue;
-                                }
                                 let landing = parent.get(&label).copied().filter(|(ps, pi)| {
                                     matches!(lf.block(*ps).instrs[*pi].0, Instr::Block(_)) && vals.len() <= 4
                                 });
                                 let Some((ps, pi)) = landing else {
-                                    clause_stats[3] += 1;
                                     t |= bits;
                                     continue;
                                 };
-                                let mut arr = [V::Top; 4];
-                                arr[..vals.len()].copy_from_slice(&vals);
-                                let mut inj = HashMap::new();
-                                inj.insert((ps, pi), Inject { ret: None, thr: 0, top: Some((vals.len() as u8, arr)) });
-                                let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: true, spec: &mut spec_memo, depth: 0 };
-                                let r = interpret(&mut cx, f, infos[f as usize].as_ref().unwrap(), Mode::Child, &inj, None);
-                                // First call on the landing, skipping SP restores and
-                                // other straight-line scalar work.
                                 let next_call = lf.block(ps).instrs[pi + 1..]
                                     .iter()
                                     .map(|(i, _)| i)
@@ -2349,28 +2154,18 @@ fn main() {
                                         Instr::Call(c) => Some(c.func.index() as u32),
                                         _ => None,
                                     });
-                                let handler = if next_call.is_some_and(|c| terminate_like(&p, c)) {
-                                    false // noexcept pad: std::terminate never returns
-                                } else if r.unsupported {
-                                    true
-                                } else if r.ret.is_some() {
-                                    true
-                                } else if r.thr & PROBE != 0 {
-                                    false // cleanup: rethrows the caught exception
-                                } else {
-                                    // Terminates: a noexcept pad if it goes straight to
-                                    // std::terminate/abort, otherwise a handler that
-                                    // ends the process its own way (e.g. exit(1)).
-                                    !next_call.is_some_and(|c| terminate_like(&p, c))
-                                };
-                                let terminate_pad = next_call.is_some_and(|c| terminate_like(&p, c));
+                                if next_call.is_some_and(|c| terminate_like(&p, c)) {
+                                    continue; // noexcept pad: std::terminate never returns
+                                }
+                                let mut arr = [V::Top; 4];
+                                arr[..vals.len()].copy_from_slice(&vals);
+                                let mut inj = HashMap::new();
+                                inj.insert((ps, pi), Inject { ret: None, thr: 0, top: Some((vals.len() as u8, arr)) });
+                                let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: true, spec: &mut spec_memo, depth: 0 };
+                                let r = interpret(&mut cx, f, infos[f as usize].as_ref().unwrap(), Mode::Child, &inj, None);
+                                let handler = r.unsupported || r.ret.is_some() || r.thr & PROBE == 0;
                                 if handler {
-                                    clause_stats[0] += 1;
                                     t |= bits;
-                                } else if !terminate_pad && r.thr & PROBE != 0 {
-                                    clause_stats[1] += 1;
-                                } else {
-                                    clause_stats[2] += 1;
                                 }
                             }
                         }
@@ -2380,28 +2175,19 @@ fn main() {
                 }
             }
             if t != 0 {
-                catches.insert(f, t);
+                catches.insert(f, t & !PROBE);
             }
         }
     }
-    eprintln!(
-        "catch clauses: {} handlers, {} cleanups, {} terminate pads, {} unknown ({})",
-        clause_stats[0],
-        clause_stats[1],
-        clause_stats[2],
-        clause_stats[3],
-        if precise_catchers { "precise" } else { "coarse" }
-    );
-    // Functions that have a catching frame at or above them on some fork
-    // stack: propagate from every catcher down fork-path call edges.
+    // Functions with a catching frame at or above them on some fork stack.
     let mut below_catcher: HashMap<u32, Tags> = HashMap::new();
     {
         let mut q: VecDeque<u32> = VecDeque::new();
-        for (&f, &t) in &catches {
-            if r2.contains(&f) {
-                below_catcher.insert(f, t);
-                q.push_back(f);
-            }
+        let mut keys: Vec<u32> = catches.keys().copied().filter(|f| r2.contains(f)).collect();
+        keys.sort();
+        for f in keys {
+            below_catcher.insert(f, catches[&f]);
+            q.push_back(f);
         }
         while let Some(g) = q.pop_front() {
             let t = below_catcher[&g];
@@ -2416,22 +2202,6 @@ fn main() {
             }
         }
     }
-    // child[g]: what control returns to g's caller in the child.
-    #[derive(Clone, Copy, PartialEq)]
-    struct Child {
-        ret: Option<V>,
-        thr: Tags,
-    }
-    let dead = Child { ret: None, thr: 0 };
-    let mut child: HashMap<u32, Child> = HashMap::new();
-    child.insert(seed_i, Child { ret: Some(V::C(0)), thr: 0 });
-    if p.dyn_link {
-        // A side module's own fork: its child returns anything and may throw.
-        child.insert(ext_i, Child { ret: Some(V::Top), thr: TAGS_ALL });
-    }
-    // Side-module dispatch (dyn_link): unknown child behaviour.
-    // (seed_i stands for it; it returns 0 in the child like the import.)
-    // Reverse map: callee -> functions with a site targeting it.
     let mut rdeps: HashMap<u32, Vec<u32>> = HashMap::new();
     for (&f, v) in &sites {
         for (_, _, t) in v {
@@ -2445,31 +2215,49 @@ fn main() {
         v.dedup();
     }
     let catcher_above = |g: u32, thr: Tags| -> bool {
-        rdeps.get(&g).map_or(false, |v| v.iter().any(|h| below_catcher.get(h).map_or(false, |t| t & thr != 0)))
+        rdeps.get(&g).is_some_and(|v| v.iter().any(|h| below_catcher.get(h).is_some_and(|t| t & thr != 0)))
     };
-    let mut why: HashMap<u32, Vec<String>> = HashMap::new();
+
+    // 5. Child continuation fixpoint.
+    #[derive(Clone, Copy, PartialEq)]
+    struct Child {
+        ret: Option<V>,
+        thr: Tags,
+    }
+    let dead = Child { ret: None, thr: 0 };
+    let mut child: HashMap<u32, Child> = HashMap::from([(seed_i, Child { ret: Some(V::C(0)), thr: 0 })]);
+    // A closed function's escapes stop at the sink's loud run-time check;
+    // that is behaviour-preserving only when no catcher can be above it.
+    let closed_for_callers = |child: &HashMap<u32, Child>, g: u32| -> bool {
+        child.get(&g).is_none_or(|c| c.ret.is_none() && (c.thr == 0 || !catcher_above(g, c.thr)))
+    };
     let mut work: VecDeque<u32> = VecDeque::new();
     let mut queued: HashSet<u32> = HashSet::new();
-    for root in [seed_i, ext_i] {
-        for &f in rdeps.get(&root).map(|v| v.as_slice()).unwrap_or(&[]) {
-            if queued.insert(f) {
-                work.push_back(f);
-            }
+    for &f in rdeps.get(&seed_i).map(|v| v.as_slice()).unwrap_or(&[]) {
+        if queued.insert(f) {
+            work.push_back(f);
         }
     }
-    let mut cevals = 0usize;
     let snapshot = summ.clone();
+    let mut evals = 0usize;
     while let Some(f) = work.pop_front() {
         queued.remove(&f);
-        cevals += 1;
+        evals += 1;
+        if evals > 50 * n.max(1) {
+            return None;
+        }
         let mut inject = HashMap::new();
+        let mut needed = false;
         for (sid, ix, t) in &sites[&f] {
             let mut j = Inject { ret: None, thr: 0, top: None };
             for g in t {
-                if let Some(c) = child.get(g) {
-                    if c.ret.is_none() && (exc_runtime || (exc_equiv && (c.thr == 0 || !catcher_above(*g, c.thr)))) {
-                        continue; // closed: escapes stop at its run-time check
-                    }
+                if vfork_fns.contains(g) {
+                    // Boundary by the vfork contract; still needs this frame.
+                    needed = true;
+                    continue;
+                }
+                if child.contains_key(g) && !closed_for_callers(&child, *g) {
+                    let c = child[g];
                     if let Some(v) = c.ret {
                         j.ret = Some(j.ret.map_or(v, |r| joinv(r, v)));
                     }
@@ -2480,259 +2268,61 @@ fn main() {
                 inject.insert((*sid, *ix), j);
             }
         }
-        if inject.is_empty() {
-            continue;
-        }
-        let info = infos[f as usize].as_ref().unwrap();
-        let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: true, spec: &mut spec_memo, depth: 0 };
-        let r = interpret(&mut cx, f, info, Mode::Child, &inject, None);
-        let mut c = Child { ret: r.ret, thr: r.thr };
-        if r.unsupported {
-            c = Child { ret: Some(V::Top), thr: TAGS_ALL };
-        }
-        let old = *child.get(&f).unwrap_or(&dead);
+        let c = if inject.is_empty() {
+            if !needed {
+                continue;
+            }
+            dead
+        } else {
+            let info = infos[f as usize].as_ref().unwrap();
+            let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: true, spec: &mut spec_memo, depth: 0 };
+            let r = interpret(&mut cx, f, info, Mode::Child, &inject, None);
+            if r.unsupported { Child { ret: Some(V::Top), thr: TAGS_ALL } } else { Child { ret: r.ret, thr: r.thr } }
+        };
+        let old = child.get(&f).copied();
+        let base = old.unwrap_or(dead);
         let new = Child {
-            ret: match (old.ret, c.ret) {
+            ret: match (base.ret, c.ret) {
                 (None, x) | (x, None) => x,
                 (Some(a), Some(b)) => Some(joinv(a, b)),
             },
-            thr: old.thr | c.thr,
+            thr: base.thr | c.thr,
         };
-        why.insert(f, r.why);
-        if new != old || !child.contains_key(&f) {
+        if old != Some(new) {
             child.insert(f, new);
-            if new != old {
-                for &g in rdeps.get(&f).map(|v| v.as_slice()).unwrap_or(&[]) {
-                    if queued.insert(g) {
-                        work.push_back(g);
-                    }
+            for &g in rdeps.get(&f).map(|v| v.as_slice()).unwrap_or(&[]) {
+                if queued.insert(g) {
+                    work.push_back(g);
                 }
             }
         }
     }
-    eprintln!("child fixpoint: {} evaluations in {:.1}s", cevals, t1.elapsed().as_secs_f32());
 
-    // ---- 3. instrumented set under sinks
-    let open = |g: u32| {
-        child.get(&g).map_or(false, |c| {
-            c.ret.is_some() || (c.thr != 0 && !exc_runtime && !(exc_equiv && !catcher_above(g, c.thr)))
-        })
-    };
-    let mut s_set: Vec<u32> = child.keys().copied().filter(|&f| f != seed_i && f != ext_i).collect();
-    // A gate must catch the private unwind tag to abort: instrument it when
-    // any handler-signature function is on the path.
-    let handler_open = (0..n as u32).any(|g| p.escapes[g as usize] && p.sig_handler_keys.contains(&p.skey[g as usize]) && child.contains_key(&g));
-    let mut gates_added = 0;
-    if handler_open {
-        for &g in &gate_fns {
-            if !child.contains_key(&g) {
-                s_set.push(g);
-                gates_added += 1;
+    // 6. Reduced sets, intersected with today's (sound) closure.
+    let mut keep: HashSet<u32> = child.keys().copied().collect();
+    keep.insert(seed_i);
+    let any_handler_on_path = (0..n as u32).any(|g| p.escapes[g as usize] && p.sig_handler_keys.contains(&p.skey[g as usize]) && child.contains_key(&g));
+    if any_handler_on_path {
+        keep.extend(gate_fns.iter().copied());
+    }
+    let mut out = SinkPlan::default();
+    for &f in &today.activations {
+        if keep.contains(&(f.index() as u32)) {
+            out.activations.insert(f);
+        }
+    }
+    for &f in &today.control_reachable {
+        if keep.contains(&(f.index() as u32)) {
+            out.control_reachable.insert(f);
+        }
+    }
+    for (&f, _) in &child {
+        if f != seed_i && closed_for_callers(&child, f) {
+            let id = p.fid(f);
+            if out.activations.contains(&id) {
+                out.boundaries.insert(id);
             }
         }
     }
-    s_set.sort();
-    s_set.dedup();
-    let closed: Vec<u32> = s_set.iter().copied().filter(|&f| !open(f)).collect();
-    let opens: Vec<u32> = s_set.iter().copied().filter(|&f| open(f)).collect();
-    // Roots: open functions that are entered from outside (export/table) or
-    // have no on-path caller.
-    let roots: Vec<u32> = opens.iter().copied().filter(|&f| p.escapes[f as usize]).collect();
-
-    let label = format!(
-        "signal-policy={:?} param={} cancel-cuts={} itargets={} registries={} exc={} main-direct={} dyn_link={}",
-        p.sig_policy, p.use_param, p.cut.len(), get("--itargets").unwrap_or_else(|| "-".into()), has("--registries"), exc_mode, !p.main_fns.is_empty(), p.dyn_link
-    );
-    println!("module\t{wasm}");
-    println!("rules\t{label}");
-    println!("instrumented_today\t{instrumented_today}");
-    println!("closure_same_rules_no_sinks\t{refined_today}");
-    println!("instrumented_sink\t{}", s_set.len());
-    println!("gates_added\t{gates_added}");
-    println!("closed(sink)\t{}", closed.len());
-    println!("open\t{}", opens.len());
-    println!("open_escaping_roots\t{}", roots.len());
-    let mut sink_rows = vec![];
-    let (mut eq, mut narrow) = (0, 0);
-    for &f in &closed {
-        let Some(c) = child.get(&f) else {
-            sink_rows.push(format!("GATE\t{}\tsignal dispatch gate (instrumented to abort a handler fork)", p.names[f as usize]));
-            continue;
-        };
-        let thr = c.thr;
-        let mut note = String::from("no escape");
-        if thr != 0 {
-            // A catcher strictly above f: any on-path caller that is itself
-            // below (or is) a catcher for these tags.
-            let above = catcher_above(f, thr);
-            if above {
-                narrow += 1;
-                note = format!("escape {thr:#x}; a catcher may be above");
-            } else {
-                eq += 1;
-                note = format!("escape {thr:#x}; no catcher above (equivalent)");
-            }
-        }
-        sink_rows.push(format!("SINK\t{}\t{note}", p.names[f as usize]));
-    }
-    println!("sinks_with_escape_no_catcher\t{eq}\tsinks_with_escape_catcher_above\t{narrow}");
-    for r in sink_rows {
-        println!("{r}");
-    }
-    let show_open = get("--show-open").map(|s| s.parse::<usize>().unwrap()).unwrap_or(40);
-    // Open functions nearest to fork first: BFS distance from seed.
-    let mut dist: HashMap<u32, u32> = HashMap::new();
-    let mut q = VecDeque::new();
-    dist.insert(seed_i, 0);
-    q.push_back(seed_i);
-    while let Some(g) = q.pop_front() {
-        let d = dist[&g];
-        for &f in rdeps.get(&g).map(|v| v.as_slice()).unwrap_or(&[]) {
-            if child.contains_key(&f) && !dist.contains_key(&f) {
-                dist.insert(f, d + 1);
-                if open(f) {
-                    q.push_back(f);
-                }
-            }
-        }
-    }
-    let mut by_d: Vec<(u32, u32)> = opens.iter().map(|&f| (*dist.get(&f).unwrap_or(&999), f)).collect();
-    by_d.sort();
-    for (d, f) in by_d.iter().take(show_open) {
-        let c = child[f];
-        println!(
-            "OPEN\td={}\t{}\tret={:?}\tthr={:#x}\t{}",
-            d,
-            p.names[*f as usize],
-            c.ret,
-            c.thr,
-            why.get(f).map(|w| w.join(" | ")).unwrap_or_default()
-        );
-    }
-    if let Some(out) = get("--out-set") {
-        let mut fh = std::fs::File::create(&out).unwrap();
-        for &f in &s_set {
-            writeln!(fh, "{}", p.names[f as usize]).unwrap();
-        }
-    }
-    if let Some(out) = get("--out-today") {
-        let mut fh = std::fs::File::create(&out).unwrap();
-        let mut v: Vec<u32> = r_set.iter().copied().filter(|&f| !p.import[f as usize]).collect();
-        v.sort();
-        for f in v {
-            writeln!(fh, "{}", p.names[f as usize]).unwrap();
-        }
-    }
-    // ---- oracle
-    if let Some(path) = get("--oracle") {
-        let text = std::fs::read_to_string(&path).unwrap();
-        let mut stacks: Vec<(String, Vec<String>)> = vec![];
-        for l in text.lines() {
-            if let Some(h) = l.strip_prefix("-- ") {
-                stacks.push((h.to_string(), vec![]));
-            } else if !l.is_empty() {
-                if let Some(s) = stacks.last_mut() {
-                    s.1.push(l.to_string());
-                }
-            }
-        }
-        let sset: HashSet<&str> = s_set.iter().map(|&f| p.names[f as usize].as_str()).collect();
-        let mut by_name: HashMap<&str, Vec<u32>> = HashMap::new();
-        for i in 0..n {
-            by_name.entry(p.names[i].as_str()).or_default().push(i as u32);
-        }
-        let mut bad = 0;
-        let mut needed_total: BTreeMap<String, usize> = BTreeMap::new();
-        for (h, frames) in &stacks {
-            let mut needed = vec![];
-            let mut boundary = None;
-            for fr in frames {
-                let ids = by_name.get(fr.as_str()).cloned().unwrap_or_default();
-                if ids.is_empty() {
-                    continue; // host frames / wrappers not in this module
-                }
-                needed.push(fr.clone());
-                // A frame stops the walk only if every same-named function is closed.
-                if ids.iter().all(|&g| child.contains_key(&g) && !open(g)) {
-                    boundary = Some(fr.clone());
-                    break;
-                }
-            }
-            let missing: Vec<&String> = needed.iter().filter(|x| !sset.contains(x.as_str())).collect();
-            if !missing.is_empty() {
-                bad += 1;
-                println!("ORACLE-UNSOUND\t{h}\tmissing {:?}", missing);
-            }
-            for x in &needed {
-                *needed_total.entry(x.clone()).or_default() += 1;
-            }
-            println!(
-                "ORACLE\t{h}\tframes {}\tneeded {}\tboundary {}",
-                frames.len(),
-                needed.len(),
-                boundary.unwrap_or_else(|| "<none: full stack>".into())
-            );
-        }
-        println!("oracle_stacks\t{}\toracle_unsound\t{}\toracle_distinct_needed\t{}", stacks.len(), bad, needed_total.len());
-    }
-    // ---- per-site detail for chosen functions
-    if let Some(list) = get("--explain") {
-        for name in list.split(',') {
-            for f in p.by_name(name) {
-                let Some(v) = sites.get(&f) else {
-                    println!("EXPLAIN\t{name}\tnot on the fork path");
-                    continue;
-                };
-                for (sid, ix, t) in v {
-                    let mut j = Inject { ret: None, thr: 0, top: None };
-                    for g in t {
-                        if let Some(c) = child.get(g) {
-                            if c.ret.is_none() && (exc_runtime || (exc_equiv && (c.thr == 0 || !catcher_above(*g, c.thr)))) {
-                                continue;
-                            }
-                            if let Some(x) = c.ret {
-                                j.ret = Some(j.ret.map_or(x, |r| joinv(r, x)));
-                            }
-                            j.thr |= c.thr;
-                        }
-                    }
-                    let tn: Vec<&str> = t.iter().take(4).map(|&g| if g == ext_i { "<side module>" } else { p.names[g as usize].as_str() }).collect();
-                    if j.ret.is_none() && j.thr == 0 {
-                        println!("EXPLAIN\t{name}\tsite {:?}/{}\tcallee never returns in child\t{:?}", sid, ix, tn);
-                        continue;
-                    }
-                    let mut inj = HashMap::new();
-                    inj.insert((*sid, *ix), j);
-                    let info = infos[f as usize].as_ref().unwrap();
-                    let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: true, spec: &mut spec_memo, depth: 0 };
-                    let r = interpret(&mut cx, f, info, Mode::Child, &inj, None);
-                    let verdict = if r.ret.is_none() && r.thr == 0 && !r.unsupported { "SINK" } else { "OPEN" };
-                    println!(
-                        "EXPLAIN\t{name}\tsite {:?}/{}\tin(ret={:?},thr={:#x})\t{verdict}\tret={:?} thr={:#x}\t{}\tcallees {:?}{}",
-                        sid,
-                        ix,
-                        j.ret,
-                        j.thr,
-                        r.ret,
-                        r.thr,
-                        r.why.join(" | "),
-                        tn,
-                        if t.len() > 4 { format!(" +{}", t.len() - 4) } else { String::new() }
-                    );
-                }
-            }
-        }
-    }
-    // Tag legend.
-    for (t, b) in &p.tag_bit {
-        let tag = p.m.tags.get(*t);
-        let name = match tag.kind {
-            TagKind::Import(i) => {
-                let im = p.m.imports.get(i);
-                format!("{}.{}", im.module, im.name)
-            }
-            TagKind::Local => tag.name.clone().unwrap_or_default(),
-        };
-        println!("TAG\tbit {b}\t{name}");
-    }
+    Some(out)
 }

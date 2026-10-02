@@ -93,6 +93,8 @@ static void libc_start_init(void)
 
 weak_alias(libc_start_init, __libc_start_init);
 
+int __main_argc_argv(int, char **);
+
 typedef int lsm2_fn(int (*)(int,char **), int, char **);
 static lsm2_fn libc_start_main_stage2;
 
@@ -174,6 +176,11 @@ static int libc_start_main_stage2(int (*main)(int,char **), int argc, char **arg
 
 	__libc_start_init();
 
-	/* Call main and exit. */
-	exit(main(argc, argv));
+	/* Call main and exit. A direct call, not through the pointer crt1 used
+	 * to pass: keeping main out of the indirect function table lets fork
+	 * instrumentation see that main is entered only from here (see crt1.c).
+	 * A non-null pointer (a foreign start routine) is still honoured. */
+	if (main)
+		exit(main(argc, argv));
+	exit(__main_argc_argv(argc, argv));
 }

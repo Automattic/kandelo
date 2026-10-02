@@ -149,7 +149,7 @@ pub mod process_layout;
 ///     gains three ops and a query, /dev/input/event1 is an absolute
 ///     pointer, inotify fails with ENOSYS, and a MAP_FIXED mapping inside a
 ///     mapping carves it. docs/abi-versioning.md ("ABI 45") lists each.
-pub const ABI_VERSION: u32 = 45;
+pub const ABI_VERSION: u32 = 46;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -2336,6 +2336,18 @@ pub mod abi {
     pub const WPK_FORK_FRAME_IMPORT_PEEK: &str = "__wpk_fork_frame_peek";
     pub const WPK_FORK_RESUME_IMPORT_PEEK: &str = "__wpk_fork_resume_peek";
     pub const WPK_FORK_RESUME_IMPORT_TABLE: &str = "__wpk_fork_resume_table";
+
+    /// Fork boundaries (sinks; docs/plans/2026-10-02-fork-sinks.md). A module
+    /// that has boundary functions imports `env.__wpk_fork_boundary: () -> ()`:
+    /// the deepest boundary on the stack calls it after committing its own
+    /// frame, instead of rethrowing the unwind tag. The host seals the
+    /// capture, forks, and begins parent replay before it returns. Such a
+    /// module also exports `wpk_fork_resume_sink(sig_index)`, the child entry
+    /// for a continuation rooted at a boundary, and lists its boundary
+    /// functions in `kandelo.wpk_fork.boundaries`.
+    pub const WPK_FORK_BOUNDARY_IMPORT: &str = "__wpk_fork_boundary";
+    pub const WPK_FORK_RESUME_SINK_EXPORT: &str = "wpk_fork_resume_sink";
+    pub const WPK_FORK_BOUNDARIES_SECTION: &str = "kandelo.wpk_fork.boundaries";
 
     pub const WPK_FORK_MODULE_STATE_IMPORT_MODULE: &str = "env";
     pub const WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT: &str =

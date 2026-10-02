@@ -274,6 +274,9 @@ pub struct Runtime {
     /// nonzero slots select an activation resume thunk in `resume_table`.
     pub resume_peek: Option<FunctionId>,
     pub resume_table: Option<TableId>,
+    /// `env.__wpk_fork_boundary`, imported only by modules with fork
+    /// boundaries (see `crate::sink`).
+    pub boundary: Option<FunctionId>,
     pub reference_vector_begin: Option<FunctionId>,
     pub reference_vector_append: Option<FunctionId>,
     pub reference_vector_finish: Option<FunctionId>,
@@ -624,6 +627,7 @@ fn inject_runtime_with_frame_storage(
         frame_peek,
         resume_peek,
         resume_table,
+        boundary: None,
         reference_vector_begin,
         reference_vector_append,
         reference_vector_finish,

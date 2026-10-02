@@ -67,6 +67,9 @@ import {
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+  WPK_FORK_BOUNDARY_IMPORT,
+  WPK_FORK_BOUNDARIES_SECTION,
+  WPK_FORK_RESUME_SINK_EXPORT,
   type ProcessForkMode,
 } from "./generated/abi";
 import {
@@ -3308,6 +3311,9 @@ export async function centralizedWorkerMain(
     );
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
+    let completeCapturedFork: () => void = () => {
+      throw new Error(`pid=${pid}: fork capture completed before the coordinator exists`);
+    };
     let forkMode: ProcessForkMode = initData.isForkChild
       ? (processForkMode(initData.forkMode ?? -1) ?? (() => {
           throw new Error(`pid=${pid}: fork child is missing a valid fork mode`);
@@ -3712,6 +3718,30 @@ export async function centralizedWorkerMain(
         }
       };
 
+      // Seal the captured continuation, issue SYS_FORK or SYS_VFORK, and begin
+      // parent (or errno abort) replay. The `_start` loop calls it when the
+      // private unwind reaches the stack root; `env.__wpk_fork_boundary` calls
+      // it when a fork boundary (sink) stopped the unwind inside the live stack.
+      // The parent is parked inside sendForkSyscall either way.
+      completeCapturedFork = (): void => {
+        processContinuation.sealCapture();
+        const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
+          ? processContinuation.borrowedReplayWorkspaceRequirements()
+          : undefined;
+        const childPid = sendForkSyscall(
+          memory,
+          channelOffset,
+          forkMode,
+          borrowedReplay,
+        );
+        forkResult = childPid;
+        if (childPid < 0) {
+          processContinuation.beginAbortReplay(-childPid);
+        } else {
+          processContinuation.beginParentReplay();
+        }
+      };
+
       kernelImports.kernel_fork = (rawMode: number): number => {
         if (!processInstance) return -38; // ENOSYS
         const mode = processForkMode(rawMode);
@@ -3987,6 +4017,15 @@ export async function centralizedWorkerMain(
         ...processContinuation.continuationImports(0, (errno) => {
           processContinuation.beginCaptureAbort(errno);
         }),
+        [WPK_FORK_BOUNDARY_IMPORT]: (): void => {
+          const phase = processContinuation.phaseName();
+          if (phase !== "capture") {
+            throw new Error(
+              `pid=${pid}: fork boundary reached while process continuation is ${phase}`,
+            );
+          }
+          completeCapturedFork();
+        },
         ...buildForkActivationStateImports(
           0,
           activationRegistry,
@@ -4236,7 +4275,43 @@ export async function centralizedWorkerMain(
         // replays the saved frames back to fork().
         let lexicalEntry: () => void;
         let replayEntry: () => void;
-        if (initData.isForkChild && initData.forkChildThreadFnPtr != null) {
+        const forkBoundaries = readForkBoundaries(module, pid);
+        const replayRoot = initData.isForkChild
+          ? processContinuation.peekReplayRoot()
+          : null;
+        const sinkSignature = replayRoot && replayRoot.activationId === 0
+          ? forkBoundaries.get(replayRoot.functionOrdinal)
+          : undefined;
+        if (sinkSignature !== undefined) {
+          // The continuation is rooted at a fork boundary: the frames above
+          // the sink (including _start or the pthread entry) were never
+          // captured, and the sink cannot return. It stays the root for any
+          // later fork in this child before exec.
+          const resumeSink = instance.exports[WPK_FORK_RESUME_SINK_EXPORT] as
+            ((signature: number) => void) | undefined;
+          if (typeof resumeSink !== "function") {
+            throw new Error(
+              `pid=${pid}: fork child rooted at a boundary is missing ${WPK_FORK_RESUME_SINK_EXPORT}`,
+            );
+          }
+          lexicalEntry = () => {
+            throw new Error(`pid=${pid}: fork child rooted at a boundary entered a lexical path`);
+          };
+          replayEntry = () => {
+            try {
+              resumeSink(sinkSignature);
+            } catch (e) {
+              if (isWasmUnreachableTrap(e) && kernelExitStatus === null) {
+                throw new Error(
+                  `pid=${pid}: fork child returned through its sink frame ` +
+                    `(function ordinal ${replayRoot!.functionOrdinal}); the frames ` +
+                    "above it were never captured",
+                );
+              }
+              throw e;
+            }
+          };
+        } else if (initData.isForkChild && initData.forkChildThreadFnPtr != null) {
           const fnIdx = initData.forkChildThreadFnPtr;
           const childArgPtr = initData.forkChildThreadArgPtr ?? 0;
           const threadArg = ptrWidth === 8 ? BigInt(childArgPtr) : childArgPtr;
@@ -4293,22 +4368,7 @@ export async function centralizedWorkerMain(
             );
           }
           if (phase === "capture") {
-            processContinuation.sealCapture();
-            const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-              ? processContinuation.borrowedReplayWorkspaceRequirements()
-              : undefined;
-            const childPid = sendForkSyscall(
-              memory,
-              channelOffset,
-              forkMode,
-              borrowedReplay,
-            );
-            forkResult = childPid;
-            if (childPid < 0) {
-              processContinuation.beginAbortReplay(-childPid);
-            } else {
-              processContinuation.beginParentReplay();
-            }
+            completeCapturedFork();
             continue;
           }
           if (phase !== "idle") {
@@ -4736,6 +4796,43 @@ function setupChannelBase(
  * Send SYS_FORK through the channel and wait for the result.
  * Returns child pid on success, or -errno on failure.
  */
+/**
+ * Boundary functions of a fork-instrumented module (`kandelo.wpk_fork.boundaries`):
+ * function ordinal -> index of its `wpk_fork_resume_sink` signature case.
+ *
+ * A boundary is a sink (docs/plans/2026-10-02-fork-sinks.md): the child can
+ * never return through it, so the parent's unwind stops there and the frames
+ * above it were never captured. A child whose outermost replay frame belongs
+ * to a boundary must start at `wpk_fork_resume_sink`, not at `_start` or a
+ * pthread entry.
+ */
+function readForkBoundaries(module: WebAssembly.Module, pid: number): Map<number, number> {
+  const sections = WebAssembly.Module.customSections(module, WPK_FORK_BOUNDARIES_SECTION);
+  const boundaries = new Map<number, number>();
+  if (sections.length === 0) return boundaries;
+  if (sections.length !== 1) {
+    throw new Error(`pid=${pid}: expected one ${WPK_FORK_BOUNDARIES_SECTION} section`);
+  }
+  const view = new DataView(sections[0]!);
+  // "KFSB", u16 version 1, u16 reserved 0, u32 count, count x (u32 ordinal, u32 signature)
+  if (
+    view.byteLength < 12 ||
+    view.getUint32(0, false) !== 0x4b46_5342 ||
+    view.getUint16(4, true) !== 1 ||
+    view.getUint16(6, true) !== 0
+  ) {
+    throw new Error(`pid=${pid}: malformed ${WPK_FORK_BOUNDARIES_SECTION} header`);
+  }
+  const count = view.getUint32(8, true);
+  if (view.byteLength !== 12 + count * 8) {
+    throw new Error(`pid=${pid}: malformed ${WPK_FORK_BOUNDARIES_SECTION} length`);
+  }
+  for (let i = 0; i < count; i++) {
+    boundaries.set(view.getUint32(12 + i * 8, true), view.getUint32(16 + i * 8, true));
+  }
+  return boundaries;
+}
+
 function sendForkSyscall(
   memory: WebAssembly.Memory,
   channelOffset: number,
@@ -5575,6 +5672,29 @@ export async function centralizedThreadWorkerMain(
     };
     let forkResult = 0;
     let forkMode: ProcessForkMode = PROCESS_FORK_MODE_FORK;
+    // See the process worker's completeCapturedFork: the pthread entry loop
+    // and env.__wpk_fork_boundary share it.
+    const completeThreadCapturedFork = (): void => {
+      if (!threadProcessContinuation) {
+        throw new Error(`pid=${pid} tid=${tid}: fork capture without a continuation`);
+      }
+      threadProcessContinuation.sealCapture();
+      const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
+        ? threadProcessContinuation.borrowedReplayWorkspaceRequirements()
+        : undefined;
+      const childPid = sendForkSyscall(
+        memory,
+        channelOffset,
+        forkMode,
+        borrowedReplay,
+      );
+      forkResult = childPid;
+      if (childPid < 0) {
+        threadProcessContinuation.beginAbortReplay(-childPid);
+      } else {
+        threadProcessContinuation.beginParentReplay();
+      }
+    };
 
     let kernelThreadExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
@@ -5753,6 +5873,16 @@ export async function centralizedThreadWorkerMain(
             ...threadCoordinator.continuationImports(0, (errno) => {
               threadCoordinator.beginCaptureAbort(errno);
             }),
+            [WPK_FORK_BOUNDARY_IMPORT]: (): void => {
+              const phase = threadCoordinator.phaseName();
+              if (phase !== "capture") {
+                throw new Error(
+                  `pid=${pid} tid=${tid}: fork boundary reached while process ` +
+                    `continuation is ${phase}`,
+                );
+              }
+              completeThreadCapturedFork();
+            },
             ...buildForkActivationStateImports(
               0,
               threadActivationRegistry,
@@ -5979,22 +6109,7 @@ export async function centralizedThreadWorkerMain(
           );
         }
         if (phase === "capture") {
-          threadProcessContinuation.sealCapture();
-          const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-            ? threadProcessContinuation.borrowedReplayWorkspaceRequirements()
-            : undefined;
-          const childPid = sendForkSyscall(
-            memory,
-            channelOffset,
-            forkMode,
-            borrowedReplay,
-          );
-          forkResult = childPid;
-          if (childPid < 0) {
-            threadProcessContinuation.beginAbortReplay(-childPid);
-          } else {
-            threadProcessContinuation.beginParentReplay();
-          }
+          completeThreadCapturedFork();
           continue;
         }
         if (phase !== "idle") {

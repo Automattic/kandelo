@@ -9,6 +9,7 @@ while read -r fx mode want sinks; do
   [ -z "$fx" ] && continue
   wasm-tools parse "$fx.wat" -o "/tmp/fsa-$fx.wasm" || { echo "FAIL $fx: parse"; fail=1; continue; }
   extra=(); [ "$mode" = param ] && { extra=(--param); mode=static; }
+  [ "$mode" = coarse ] && { extra=(--catchers coarse); mode=equiv; }
   out=$("$F" --wasm "/tmp/fsa-$fx.wasm" --exc "$mode" "${extra[@]}" 2>&1)
   got=$(awk -F'\t' '$1=="instrumented_sink"{print $2}' <<<"$out")
   gsinks=$(awk -F'\t' '$1=="SINK"{print $2}' <<<"$out" | sort | paste -sd, -)
@@ -27,5 +28,8 @@ o0_escape static 3 -
 indirect_child static 3 -
 param_child param 2 spawn
 param_child static 3 -
+escape_cleanup_above equiv 2 spawn
+escape_cleanup_above coarse 3 main
+tail_child static 3 -
 CASES
 exit $fail

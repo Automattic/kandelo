@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 /* Mirrors wasm_posix_shared::ABI_VERSION. */
-#define WASM_POSIX_ABI_VERSION 45u
+#define WASM_POSIX_ABI_VERSION 46u
 
 /* Non-forking spawn syscall number. */
 #define WASM_POSIX_SYS_SPAWN 500u

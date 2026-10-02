@@ -48,6 +48,11 @@ struct Cli {
     #[arg(long, default_value = "kernel.kernel_fork")]
     entry: String,
 
+    /// Instrument the full fork closure instead of stopping the unwind at
+    /// fork boundaries (sinks). For comparison and diagnosis.
+    #[arg(long)]
+    no_sinks: bool,
+
     /// Analyze the module and print the discovered fork-path function
     /// set as JSON to stdout. Skips instrumentation and output emission.
     /// Useful for validating call-graph discovery against
@@ -167,6 +172,7 @@ fn main() -> Result<()> {
 
     let opts = Options {
         entry_import: cli.entry,
+        sinks: !cli.no_sinks,
     };
 
     if cli.discover_only {

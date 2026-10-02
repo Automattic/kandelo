@@ -33,7 +33,15 @@ void _start_c(long *p)
 {
 	int argc = p[0];
 	char **argv = (void *)(p+1);
-	__libc_start_main(__main_argc_argv, argc, argv, _init, _fini, 0);
+	/*
+	 * WHY no main pointer: __libc_start_main's stage 2 calls
+	 * __main_argc_argv directly. Passing &main would put main in the
+	 * indirect function table, and fork instrumentation must then assume
+	 * every indirect call of main's Wasm type may reach main. Programs that
+	 * daemonize from main (a fork whose child returns) would keep most of
+	 * the program instrumented. See docs/plans/2026-10-02-fork-sinks.md.
+	 */
+	__libc_start_main(0, argc, argv, _init, _fini, 0);
 }
 
 __attribute__((import_module("kernel"), import_name("kernel_get_argc")))

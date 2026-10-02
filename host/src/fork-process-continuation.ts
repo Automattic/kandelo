@@ -679,6 +679,21 @@ export class ForkProcessContinuationCoordinator {
   }
 
   /**
+   * The outermost frame of the continuation being replayed (the next replay
+   * event), without consuming it. A fork child uses it to choose its entry:
+   * a continuation rooted at a fork boundary starts at the sink, not at
+   * `_start` or a pthread entry.
+   */
+  peekReplayRoot(): ForkReplayEvent | null {
+    if (this.phase !== "child-replay") {
+      throw new Error(
+        `${this.label}: replay root requested while process continuation is ${this.phase}`,
+      );
+    }
+    return this.events.peek();
+  }
+
+  /**
    * Measure child-private workspace after the complete process graph seals.
    *
    * Prefixes remain live through inherited-frame rewind, while reference
