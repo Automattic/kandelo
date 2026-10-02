@@ -390,6 +390,19 @@ export interface SetInputCanvasDimsMessage {
   height: number;
 }
 
+/**
+ * Offer host clipboard text to the guest's clipboard agent through
+ * `/dev/kandelo/clipboard`. Answered with a `ClipboardOfferResult` once the
+ * agent installs it, or with the reason it could not.
+ */
+export interface ClipboardOfferMessage {
+  type: "clipboard_offer";
+  requestId: number;
+  /** UTF-8, line endings already normalized (`encodeClipboardText`). */
+  text: Uint8Array;
+  timeoutMs?: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -409,6 +422,7 @@ export type MainToKernelMessage =
   | TerminateProcessMessage
   | DestroyMessage
   | ExportRootfsImageMessage
+  | ClipboardOfferMessage
   | ReadVfsFileMessage
   | WriteVfsFileMessage
   | GetForkCountRequestMessage
