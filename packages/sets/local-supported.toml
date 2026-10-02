@@ -486,6 +486,10 @@ name = "rootfs"
 class = "platform"
 
 [[packages]]
+name = "rsvg-convert"
+class = "user-software"
+
+[[packages]]
 name = "ruby"
 class = "user-software"
 
