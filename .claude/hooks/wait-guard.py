@@ -22,6 +22,13 @@ every command.
 
 Judged by evals/build-waiting/README.md (tools 8 and 8b). Fails open: any
 error allows the command.
+
+Stays current by telling you, not by updating itself. When the checkout you
+work in carries a higher HOOK_VERSION than this copy, the hook shows you a
+one-line notice, once per session, to re-run the installer. It reads that
+number as text and never runs or copies the checkout's file: a user-level
+hook that ran whatever a repository contains would let any branch change
+what runs on every Bash call.
 """
 import json
 import os
@@ -30,6 +37,13 @@ import shlex
 import sys
 import time
 
+# Bump in every change to a rule or a message. Two things depend on it:
+# installed copies compare it with the checkout's to say they are stale, and
+# every hook-log.jsonl entry records it, so the keep rules can tell which
+# advice an agent was given. 1 = #1455, 2 = #1464 (neither had this line),
+# 3 = the stale-copy notice and this field.
+HOOK_VERSION = 3
+VERSION_LINE = re.compile(r"^HOOK_VERSION = (\d+)$", re.M)
 LOG = os.path.expanduser(os.environ.get("KANDELO_AGENT_JOBS_DIR", "~/.cache/kandelo/agent-jobs"))
 # An escape hatch for the rare legitimate case the rules misjudge. Every
 # use is logged, and the eval counts overrides as evasions, so a rule that
@@ -183,7 +197,7 @@ def log(payload, rule, denied):
         os.makedirs(LOG, exist_ok=True)
         with open(os.path.join(LOG, "hook-log.jsonl"), "a") as f:
             f.write(json.dumps({
-                "at": time.time(), "rule": rule, "denied": denied,
+                "at": time.time(), "version": HOOK_VERSION, "rule": rule, "denied": denied,
                 "session_id": payload.get("session_id"), "agent_id": payload.get("agent_id"),
                 "cwd": payload.get("cwd"), "command": (payload.get("tool_input") or {}).get("command", "")[:500],
             }) + "\n")
@@ -191,8 +205,8 @@ def log(payload, rule, denied):
         pass
 
 
-def in_agent_job_checkout(cwd):
-    """True when cwd is inside a checkout that ships scripts/agent-job.
+def agent_job_checkout(cwd):
+    """The root of the checkout around cwd that ships scripts/agent-job, or None.
 
     The hook may be installed for every project (user settings); its advice
     only makes sense where agent-job exists, including older Kandelo branches
@@ -201,11 +215,38 @@ def in_agent_job_checkout(cwd):
     path = os.path.abspath(cwd or os.getcwd())
     while True:
         if os.path.isfile(os.path.join(path, "scripts", "agent-job")):
-            return True
+            return path
         parent = os.path.dirname(path)
         if parent == path:
-            return False
+            return None
         path = parent
+
+
+def stale_notice(payload, root):
+    """A one-line notice when the checkout has a newer hook than this copy.
+
+    Newer, not different: a worktree on an older branch carries an older hook,
+    and that is no reason to reinstall. Shown once per session (a marker file
+    per session id), because a notice on every Bash call would be noise.
+    """
+    marker = os.path.join(LOG, "hook-notices", str(payload.get("session_id") or "no-session"))
+    if os.path.exists(marker):
+        return None
+    try:
+        with open(os.path.join(root, ".claude", "hooks", "wait-guard.py")) as f:
+            m = VERSION_LINE.search(f.read())
+    except OSError:
+        return None
+    if not m or int(m.group(1)) <= HOOK_VERSION:
+        return None
+    try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()
+    except OSError:
+        pass
+    return (f"Kandelo wait-guard hook is out of date (installed v{HOOK_VERSION}, this checkout has "
+            f"v{m.group(1)}). Update it with: python3 {os.path.join(root, '.claude', 'hooks', 'install-hooks.py')} "
+            f"--user")
 
 
 def main():
@@ -215,18 +256,27 @@ def main():
         return
     if payload.get("tool_name") != "Bash":
         return
-    if not in_agent_job_checkout(payload.get("cwd")):
+    root = agent_job_checkout(payload.get("cwd"))
+    if not root:
         return
+    out = {}
+    # systemMessage goes to the user, not the model: reinstalling edits the
+    # user's own settings, so it is theirs to do. Without a
+    # permissionDecision, the call goes through the normal permission flow.
+    notice = stale_notice(payload, root)
+    if notice:
+        out["systemMessage"] = notice
     rule, reason = decide(payload)
-    if not rule:
-        return
-    log(payload, rule, bool(reason))
+    if rule:
+        log(payload, rule, bool(reason))
     if reason:
-        print(json.dumps({"hookSpecificOutput": {
+        out["hookSpecificOutput"] = {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
-        }}))
+        }
+    if out:
+        print(json.dumps(out))
 
 
 if __name__ == "__main__":

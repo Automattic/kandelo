@@ -383,6 +383,35 @@ It is idempotent and keeps a `.bak`; `--check` reports a stale copy and
 `scripts/agent-job`. To judge the rule, count from the date it was
 installed, which is recorded in `hook-log.jsonl` by its first entry.
 
+**Keeping installed copies current (2026-10-02).** `--user` installs a
+copy, so a hook change merged to main reaches nobody until they re-run the
+installer. That mattered once already: after #1464 changed the advice for
+waiting on another workspace's build, installed copies kept recommending
+`while kill -0 <pid>`.
+
+- **The rule:** every change to a rule or a denial message bumps
+  `HOOK_VERSION` in `wait-guard.py`, and its PR says to re-run
+  `python3 .claude/hooks/install-hooks.py --user`. Comment-only changes
+  do not bump it.
+- **The notice:** when the checkout an agent works in has a higher
+  `HOOK_VERSION` than the installed copy, the hook shows the user a
+  one-line notice to reinstall, once per session. It goes to the user
+  (`systemMessage`), not the model, and does not approve or deny the
+  call. A checkout with a lower version, as on an older branch, is
+  silent.
+- **Not automatic, on purpose:** the copy reads the checkout's version
+  as text and never runs or copies the checkout's file. A user-level hook
+  that updated itself from whatever repository is open would let any
+  branch change what runs on every Bash call.
+- **Versioned log:** every `hook-log.jsonl` entry records `version`, and
+  `wait-impact.py` reports decisions per version (`by_version`). Judge a
+  changed rule or message only on entries from the version that has it.
+  Entries without the field come from versions 1 (#1455) and 2 (#1464,
+  2026-10-02), and are told apart by date.
+- **Limit:** copies installed before version 3 cannot give the notice.
+  Reinstalling version 3 is the last manual check needed.
+- **Tests:** `python3 evals/build-waiting/test_wait_guard.py`.
+
 ### 8b. Subagent long-wait guard (same hook)
 
 The largest baseline cost is subagents blocking on long builds, at 938 M

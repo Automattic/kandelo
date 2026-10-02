@@ -388,6 +388,9 @@ def tool_logs(since, until):
     hook = list(rows(os.path.join(root, "hook-log.jsonl")))
     out["wait_guard"] = dict(collections.Counter(r["rule"] for r in hook))
     out["wait_guard"]["sessions"] = len({r.get("session_id") for r in hook})
+    # Which advice each decision gave: entries before HOOK_VERSION 3 carry no
+    # version (1 and 2 are told apart by date: 2 landed 2026-10-02).
+    out["wait_guard"]["by_version"] = dict(collections.Counter(str(r.get("version", "1-2")) for r in hook))
     base = os.environ.get("KANDELO_SOURCE_CACHE_ROOT") or os.path.expanduser("~/.cache/kandelo/source-only")
     runs = [r for r in rows(os.path.join(base, "timings", "runs.jsonl"))
             if r.get("predicted_seconds") and r.get("actual_seconds") and r.get("built")]

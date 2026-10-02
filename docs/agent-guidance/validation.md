@@ -161,7 +161,12 @@ run used the wrong config and toolchain, and its results are invalid.
     `--project-local` (this checkout only). It edits only its own entry,
     keeps a `.bak` of the settings file, and changes nothing when run again.
   - **Check for a stale copy** with `--check`, which exits 1 when the
-    installed hook is out of date. `--uninstall` removes it.
+    installed hook is out of date. `--uninstall` removes it. The installed
+    hook also tells you itself, once per session, when the checkout you
+    work in has a newer `HOOK_VERSION`.
+  - **Changing the hook:** bump `HOOK_VERSION` in `wait-guard.py` with any
+    change to a rule or message, and say in the PR to re-run the
+    installer.
   - **Scope:** the hook acts only in checkouts that contain
     `scripts/agent-job`.
 
