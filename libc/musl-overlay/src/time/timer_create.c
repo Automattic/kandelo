@@ -8,6 +8,8 @@
 #include "pthread_impl.h"
 #include "atomic.h"
 
+extern hidden const volatile unsigned char __pthread_cancel_writer_linked;
+
 struct start_args {
 	pthread_barrier_t b;
 	struct sigevent *sev;
@@ -146,6 +148,10 @@ int timer_create(
 		if (syscall(SYS_timer_create, clk, &ksev, &timerid) < 0) {
 			timerid = -1;
 			td->cancel = 1;
+			/* Writing `cancel` requires the strong __cancel from
+			 * pthread_cancel.c to act on it; this reference links
+			 * that object (see syscall_cp.c). */
+			(void)__pthread_cancel_writer_linked;
 		}
 		td->timer_id = timerid;
 		pthread_barrier_wait(&args.b);
