@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   buildClangArgs,
+  buildGlueCompileArgs,
   decodeLlvmResponseFile,
+  glueSources,
   linkerArgsFromClangTrace,
   workingDirectoryFromClangTrace,
 } from '../src/bin/cc.ts';
@@ -136,6 +138,38 @@ describe('buildClangArgs', () => {
     const args = build([...userLinkArgs, '-o', 'out.wasm']);
     const forwarded = args.slice(args.indexOf('main.o'), args.indexOf('-Wl,--end-group') + 1);
     expect(forwarded).toEqual(userLinkArgs);
+  });
+
+  it('links precompiled glue objects in place of the glue sources', () => {
+    const objects = ['/tmp/g/channel_syscall.o', '/tmp/g/compiler_rt.o', '/tmp/g/cxxrt.o'];
+    const args = buildClangArgs(['main.o', '-o', 'out.wasm'], toolchain, 'wasm32', {
+      kind: 'executable-link',
+      mainThreadStackSizeBytes: 8 * 1024 * 1024,
+    }, objects);
+    expect(args.join(' ')).not.toContain('channel_syscall.c');
+    const first = args.indexOf(objects[0]);
+    expect(first).toBeGreaterThan(-1);
+    expect(args.slice(first, first + 3)).toEqual(objects);
+    expect(first).toBeLessThan(args.indexOf('/tmp/sysroot/lib/crt1.o'));
+  });
+
+  it('compiles glue as optimized C regardless of the link command', () => {
+    expect(glueSources(toolchain, false)).toEqual([
+      '/tmp/glue/channel_syscall.c',
+      '/tmp/glue/compiler_rt.c',
+      '/tmp/glue/cxxrt.c',
+    ]);
+    expect(glueSources(toolchain, true).at(-1)).toBe('/tmp/glue/dlopen.c');
+    const args = buildGlueCompileArgs(glueSources(toolchain, false), toolchain, 'wasm32', '-DSLOTS=4');
+    expect(args).toContain('-O2');
+    expect(args).toContain('-DSLOTS=4');
+    expect(args).toContain('--target=wasm32-unknown-unknown');
+    expect(args).toContain('--sysroot=/tmp/sysroot');
+    expect(args.slice(args.indexOf('-x'), args.indexOf('-x') + 2)).toEqual(['-x', 'c']);
+    expect(args.slice(-4)).toEqual([
+      '-c', '/tmp/glue/channel_syscall.c', '/tmp/glue/compiler_rt.c', '/tmp/glue/cxxrt.c',
+    ]);
+    expect(args).toContain('-ffile-prefix-map=/tmp/glue=/usr/src/kandelo-sdk/libc/glue');
   });
 
   it('orders explicit libc and user libraries after syscall glue', () => {
