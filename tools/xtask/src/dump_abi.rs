@@ -100,6 +100,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let thread_syscalls_header = render_thread_syscalls_header();
     let spawn_header = render_spawn_contract_header();
     let soundcard_header = render_soundcard_header();
+    let clipboard_header = render_clipboard_header();
     let ts_module = render_ts_module();
 
     let out = out_path.unwrap_or_else(|| repo_root().join("abi/snapshot.json"));
@@ -115,6 +116,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let spawn_header_out =
         repo_root().join("libc/musl-overlay/src/process/wasm32posix/spawn_contract.h");
     let soundcard_header_out = repo_root().join("libc/musl-overlay/include/sys/soundcard.h");
+    let clipboard_header_out =
+        repo_root().join("libc/musl-overlay/include/kandelo/clipboard.h");
     let ts_out = repo_root().join("host/src/generated/abi.ts");
 
     if check {
@@ -146,6 +149,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             &soundcard_header,
             "libc/musl-overlay/include/sys/soundcard.h",
         )?;
+        check_file(
+            &clipboard_header_out,
+            &clipboard_header,
+            "libc/musl-overlay/include/kandelo/clipboard.h",
+        )?;
         check_file(&ts_out, &ts_module, "host/src/generated/abi.ts")?;
         println!("abi snapshot up-to-date: {}", out.display());
         println!("abi header up-to-date:  {}", header_out.display());
@@ -173,6 +181,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "OSS header up-to-date:  {}",
             soundcard_header_out.display()
         );
+        println!(
+            "clipboard header up-to-date: {}",
+            clipboard_header_out.display()
+        );
         println!("abi TS bindings up-to-date: {}", ts_out.display());
         return Ok(());
     }
@@ -193,6 +205,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     println!("wrote {}", spawn_header_out.display());
     write_file(&soundcard_header_out, &soundcard_header)?;
     println!("wrote {}", soundcard_header_out.display());
+    write_file(&clipboard_header_out, &clipboard_header)?;
+    println!("wrote {}", clipboard_header_out.display());
     write_file(&ts_out, &ts_module)?;
     println!("wrote {}", ts_out.display());
     Ok(())
@@ -2827,6 +2841,8 @@ fn render_ts_module() -> String {
 
     render_input_ts_bindings(&mut out);
 
+    render_clipboard_ts_bindings(&mut out);
+
     out.push_str("export const HOST_ADAPTER_MANIFEST_FIELDS = {\n");
     for field in host_adapter_manifest_fields() {
         out.push_str(&format!(
@@ -3846,6 +3862,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     root.insert("channel_scalar_contract".into(), channel_scalar_contract());
 
     root.insert("marshalled_structs".into(), marshalled_structs());
+    root.insert("clipboard_device_abi".into(), clipboard_device_abi());
     root.insert("oss_source_abi".into(), oss_source_abi());
     root.insert("pcm_transport_abi".into(), pcm_transport_abi());
     root.insert("syscalls".into(), syscalls());
@@ -4529,6 +4546,126 @@ fn channel_buffers() -> Value {
     m.insert("data_size".into(), json!(DATA_SIZE));
     m.insert("min_channel_size".into(), json!(MIN_CHANNEL_SIZE));
     Value::Object(m.into_iter().collect())
+}
+
+/// `/dev/kandelo/clipboard`'s guest-visible wire format and the
+/// `kernel_clipboard_*` export results, one list for every rendering.
+fn clipboard_constants() -> Vec<(&'static str, i64)> {
+    use shared::clipboard::*;
+    vec![
+        ("KANDELO_CLIPBOARD_RECORD_VERSION", RECORD_VERSION as i64),
+        ("KANDELO_CLIPBOARD_KIND_OFFER_TEXT", KIND_OFFER_TEXT as i64),
+        ("KANDELO_CLIPBOARD_MAX_TEXT_BYTES", MAX_TEXT_BYTES as i64),
+        ("KANDELO_CLIPBOARD_RECORD_HEADER_SIZE", RECORD_HEADER_SIZE as i64),
+        ("KANDELO_CLIPBOARD_ACK_SIZE", ACK_SIZE as i64),
+        ("KANDELO_CLIPBOARD_ACK_PENDING", ACK_PENDING as i64),
+        ("KANDELO_CLIPBOARD_ACK_SUPERSEDED", ACK_SUPERSEDED as i64),
+        ("KANDELO_CLIPBOARD_ACK_NO_AGENT", ACK_NO_AGENT as i64),
+        ("KANDELO_CLIPBOARD_ACK_UNKNOWN_SEQ", ACK_UNKNOWN_SEQ as i64),
+    ]
+}
+
+fn clipboard_device_abi() -> Value {
+    use shared::clipboard::*;
+    let mut constants: JsonMap = BTreeMap::new();
+    for (name, value) in clipboard_constants() {
+        constants.insert(name.into(), json!(value));
+    }
+    let mut abi: JsonMap = BTreeMap::new();
+    abi.insert("device_path".into(), json!(DEVICE_PATH));
+    abi.insert("constants".into(), Value::Object(constants.into_iter().collect()));
+    abi.insert(
+        "record_header".into(),
+        json!({
+            "size": size_of::<ClipboardRecordHeader>(),
+            "fields": [
+                {"name": "version", "offset": offset_of!(ClipboardRecordHeader, version), "type": "u32"},
+                {"name": "kind", "offset": offset_of!(ClipboardRecordHeader, kind), "type": "u32"},
+                {"name": "seq", "offset": offset_of!(ClipboardRecordHeader, seq), "type": "u32"},
+                {"name": "len", "offset": offset_of!(ClipboardRecordHeader, len), "type": "u32"},
+            ],
+        }),
+    );
+    abi.insert(
+        "ack".into(),
+        json!({
+            "size": size_of::<ClipboardAck>(),
+            "fields": [
+                {"name": "seq", "offset": offset_of!(ClipboardAck, seq), "type": "u32"},
+                {"name": "status", "offset": offset_of!(ClipboardAck, status), "type": "i32"},
+            ],
+        }),
+    );
+    Value::Object(abi.into_iter().collect())
+}
+
+fn render_clipboard_ts_bindings(out: &mut String) {
+    out.push_str(&format!(
+        "export const KANDELO_CLIPBOARD_DEVICE_PATH = {:?} as const;\n",
+        shared::clipboard::DEVICE_PATH
+    ));
+    for (name, value) in clipboard_constants() {
+        out.push_str(&format!("export const {name} = {value} as const;\n"));
+    }
+    out.push('\n');
+}
+
+/// `<kandelo/clipboard.h>`: what a C clipboard agent reads and writes.
+fn render_clipboard_header() -> String {
+    use shared::clipboard::*;
+    let mut out = String::from(
+        "/* GENERATED by `cargo xtask dump-abi`. Do not edit by hand. */\n\
+         /* /dev/kandelo/clipboard: host clipboard text for a guest agent. */\n\
+         /* Source of truth: crates/shared/src/lib.rs, module `clipboard`. */\n\
+         #ifndef KANDELO_CLIPBOARD_H\n\
+         #define KANDELO_CLIPBOARD_H\n\
+         \n\
+         #include <stddef.h>\n\
+         #include <stdint.h>\n\
+         \n",
+    );
+    out.push_str(&format!("#define KANDELO_CLIPBOARD_DEVICE_PATH {:?}\n", DEVICE_PATH));
+    for (name, value) in clipboard_constants() {
+        out.push_str(&format!("#define {name} ({value})\n"));
+    }
+    out.push_str(
+        "\n\
+         /* One record as read from the device: this header, then `len` */\n\
+         /* bytes of UTF-8 text. All fields are little-endian. */\n\
+         struct kandelo_clipboard_record {\n\
+         \tuint32_t version;\n\
+         \tuint32_t kind;\n\
+         \tuint32_t seq;\n\
+         \tuint32_t len;\n\
+         };\n\
+         \n\
+         /* Written back after an offer: status 0 once the selection is */\n\
+         /* installed, else a negative errno. */\n\
+         struct kandelo_clipboard_ack {\n\
+         \tuint32_t seq;\n\
+         \tint32_t status;\n\
+         };\n\
+         \n\
+         #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L\n",
+    );
+    out.push_str(&format!(
+        "_Static_assert(sizeof(struct kandelo_clipboard_record) == {}, \"record ABI size\");\n",
+        size_of::<ClipboardRecordHeader>()
+    ));
+    out.push_str(&format!(
+        "_Static_assert(offsetof(struct kandelo_clipboard_record, len) == {}, \"record.len ABI offset\");\n",
+        offset_of!(ClipboardRecordHeader, len)
+    ));
+    out.push_str(&format!(
+        "_Static_assert(sizeof(struct kandelo_clipboard_ack) == {}, \"ack ABI size\");\n",
+        size_of::<ClipboardAck>()
+    ));
+    out.push_str(&format!(
+        "_Static_assert(offsetof(struct kandelo_clipboard_ack, status) == {}, \"ack.status ABI offset\");\n",
+        offset_of!(ClipboardAck, status)
+    ));
+    out.push_str("#endif\n\n#endif /* KANDELO_CLIPBOARD_H */\n");
+    out
 }
 
 fn oss_source_abi() -> Value {
@@ -7094,10 +7231,16 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
     Ok(report)
 }
 
+/// Sections whose first appearance cannot affect an existing binary. Once
+/// present, any change inside one of them is classified like every other
+/// section: `clipboard_device_abi`, for one, describes a device no program
+/// built before it could open, but changing its record layout later would
+/// break the agents built against it.
 fn additive_top_level_section(section: &str) -> bool {
     matches!(
         section,
-        "host_adapter"
+        "clipboard_device_abi"
+            | "host_adapter"
             | "io_multiplexing"
             | "ioctl_request_families"
             | "syscall_arg_descriptors"
@@ -8385,6 +8528,20 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"syscall_arg_descriptors\""]
+        );
+    }
+
+    #[test]
+    fn adding_the_clipboard_device_section_is_compatible() {
+        let mut new = base_snapshot();
+        new.as_object_mut()
+            .unwrap()
+            .insert("clipboard_device_abi".into(), clipboard_device_abi());
+        let report = classify_compat_change(&base_snapshot(), &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"clipboard_device_abi\""]
         );
     }
 
