@@ -76,6 +76,10 @@ if [ ! -d "$SRC_DIR" ]; then
     mkdir -p "$SRC_DIR"
     tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "$TARBALL"
+    # Backport of upstream pangomm 2.46's attributes.hg include: pango
+    # 1.50 moved pango_parse_markup() from pango-attributes.h to
+    # pango-markup.h, so include the umbrella <pango/pango.h>.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/pango-markup-include.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.
@@ -98,6 +102,11 @@ PC_PATH="$PC_PATH:$CAIROMM_PREFIX/lib/pkgconfig"
 PC_PATH="$PC_PATH:$GLIB_PREFIX/lib/pkgconfig"
 PC_PATH="$PC_PATH:$CAIRO_PREFIX/lib/pkgconfig"
 PC_PATH="$PC_PATH:$LIBSIGCXX_PREFIX/lib/pkgconfig"
+# cairo and pango are meson-built static libraries, so their .pc files
+# list every link dependency as a public Requires (zlib, pixman,
+# libxml2 via fontconfig, ...). pkg-config needs the whole closure,
+# which the resolver composes.
+PC_PATH="$PC_PATH:${WASM_POSIX_DEP_PKG_CONFIG_PATH:?WASM_POSIX_DEP_PKG_CONFIG_PATH not set}"
 
 echo "==> Configuring pangomm for wasm32..."
 (

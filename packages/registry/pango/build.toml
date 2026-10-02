@@ -8,4 +8,5 @@ revision    = 1
 inputs = [
   "packages/registry/pango/build-pango.sh",
   "packages/registry/pango/src/wasm-callback-arity.patch",
+  "sdk/meson/wasm32posix.ini",
 ]

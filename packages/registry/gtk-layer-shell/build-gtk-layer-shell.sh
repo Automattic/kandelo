@@ -31,6 +31,7 @@
 #     WASM_POSIX_DEP_GLIB_DIR                   # resolved glib prefix
 #     WASM_POSIX_DEP_ATK_DIR                    # resolved atk prefix
 #     WASM_POSIX_DEP_PANGO_DIR                  # resolved pango prefix
+#     WASM_POSIX_DEP_HARFBUZZ_DIR               # resolved harfbuzz prefix (pango headers include hb.h)
 #     WASM_POSIX_DEP_CAIRO_DIR                  # resolved cairo prefix
 #     WASM_POSIX_DEP_GDK_PIXBUF_DIR             # resolved gdk-pixbuf prefix
 #     WASM_POSIX_DEP_LIBWAYLAND_DIR             # resolved libwayland prefix
@@ -59,6 +60,7 @@ GTK3_PREFIX="${WASM_POSIX_DEP_GTK3_DIR:?WASM_POSIX_DEP_GTK3_DIR not set (must be
 GLIB_PREFIX="${WASM_POSIX_DEP_GLIB_DIR:?WASM_POSIX_DEP_GLIB_DIR not set}"
 ATK_PREFIX="${WASM_POSIX_DEP_ATK_DIR:?WASM_POSIX_DEP_ATK_DIR not set}"
 PANGO_PREFIX="${WASM_POSIX_DEP_PANGO_DIR:?WASM_POSIX_DEP_PANGO_DIR not set}"
+HARFBUZZ_PREFIX="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not set}"
 CAIRO_PREFIX="${WASM_POSIX_DEP_CAIRO_DIR:?WASM_POSIX_DEP_CAIRO_DIR not set}"
 GDK_PIXBUF_PREFIX="${WASM_POSIX_DEP_GDK_PIXBUF_DIR:?WASM_POSIX_DEP_GDK_PIXBUF_DIR not set}"
 LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set}"
@@ -118,6 +120,8 @@ CFLAGS=(
     "-I$ATK_PREFIX/include/atk-1.0"
     "-I$GDK_PIXBUF_PREFIX/include/gdk-pixbuf-2.0"
     "-I$PANGO_PREFIX/include/pango-1.0"
+    # pango's public headers include <hb.h> (pango >= 1.44).
+    "-I$HARFBUZZ_PREFIX/include/harfbuzz"
     "-I$GLIB_PREFIX/include/glib-2.0"
     "-I$GLIB_PREFIX/include"
     "-I$CAIRO_PREFIX/include/cairo"
