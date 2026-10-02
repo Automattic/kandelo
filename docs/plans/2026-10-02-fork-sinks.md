@@ -424,6 +424,15 @@ Compared with the bounded unwind:
 
 Recommendation: the bounded unwind.
 
+Decision (maintainer, 2026-10-02): bounded unwind, for now. Both designs
+instrument the same functions. Bounded unwind was chosen because it
+disrupts development less: it reuses the frame codecs, the restart loop and
+the replay paths that the fork tests already exercise, and it leaves the
+ordinary (non-fork) path unchanged. Capture without unwinding stays the
+documented alternative. Its advantages are no parent replay and simpler
+fork-time behavior, and it can be revisited once the sink analysis has been
+proven in production.
+
 ## Interactions
 
 ### vfork
@@ -626,3 +635,129 @@ Uncertain:
    above (`equiv`)?
 4. Pursue `main-direct` in Kandelo's crt/libc?
 5. Fold the vfork-without-instrumentation lane into this design?
+
+## Decisions and follow-up findings (2026-10-02)
+
+Maintainer answers:
+
+1. Mechanism: bounded unwind. See the note under "Alternative: capture
+   without unwinding".
+2. Signal gate: not accepted unless needed. Asked: "Can we feasibly build
+   an exact list of installed handlers and avoid the gap?" Findings below.
+3. Exceptions: `equiv`, which does not change exception-handler semantics.
+   Asked whether anything else could help Quickshell. Findings below.
+4. `main-direct`: pursue it in the crt. Prototyped.
+5. vfork: fold it in as a contractual sink if that is not burdensome.
+   Prototyped. A separate vfork lane is in progress on another machine.
+6. Prototype the full approved set. Done, on a local branch only.
+
+### An exact list of installed signal handlers (decision 2)
+
+The question is whether the analysis can know exactly which functions are
+ever installed as signal handlers. If it can, a fork inside a handler is
+judged only against those handlers' real child behavior, and no gate is
+needed.
+
+- **Wasm-only: not sound.** Handler pointers reach `sigaction` through a
+  `struct sigaction` in memory, often built in a caller or through a
+  wrapper. Without type facts the analysis cannot follow them. The sound
+  Wasm-only rule is the current `strict` rule: every address-taken
+  function whose Wasm type matches a handler is a possible handler.
+- **A run-time registry does not avoid the gap.** The kernel does know the
+  installed handlers at run time, but the instrumented set is fixed at
+  build time. The instrumenter must decide before the program runs which
+  functions may be on the stack when fork is called from a handler.
+- **With type facts: exact enough.** The CFI type facts from the
+  build-time plugin narrow handler candidates to functions of the C type
+  `void(int)` or `void(int, siginfo_t *, void *)` that are address-taken.
+  Measured with `--exc equiv --main-direct --registries --param --cancel`,
+  where `nothrow` is the gate and `sig` is the exact-by-type list:
+
+  | Program | Today | Typed, exact list (`sig`) | Typed, gate (`nothrow`) |
+  |---|---:|---:|---:|
+  | git | 5,293 | 25 | 25 |
+  | foot | 2,994 | 4 | 4 |
+  | git-remote-http | 8,659 | 8,273 | 7,135 |
+  | Quickshell | 108,860 (link) | 107,784 | 72,333 |
+
+  Signature-level (no type facts), for comparison:
+
+  | Program | Today | `sig` | `nothrow` |
+  |---|---:|---:|---:|
+  | Quickshell (shipped shape) | 51,942 | 51,676 | 43,097 |
+  | qtgallery | 26,586 | 26,240 | 17,030 |
+  | waybar | 32,946 | 32,742 | 30,177 |
+  | git-remote-http | 8,659 | 8,616 | 8,199 |
+
+  Without type facts, the exact-by-signature list saves about 0.5–4%.
+
+So git and foot need no gate once type facts are present. The Qt and
+Wayland programs still gain much more from the gate than from the exact
+list, because their handlers' children return.
+
+Type facts are not yet sound as linked: foot's `main(int, char *const*)`
+is called through `int(*)(int, char **)`. With `main-direct`, `main` no
+longer goes through the table, which removes that instance. The general
+fix is generalized pointer types in the plugin (every pointer is treated
+as `void *` when matching), as CFI's `-fsanitize-cfi-icall-generalize-pointers`
+does. Using type facts in production needs the plugin in the SDK build.
+That integration has not been done.
+
+### Helping Quickshell without changing exception semantics (decision 3)
+
+These were added and kept, all behavior-preserving:
+
+- **Precise catcher classifier.** A landing pad counts as a catcher only
+  if it can resume normal control flow: a C++ `catch`, or a longjmp target.
+  Cleanup pads (destructors, then rethrow) and terminate pads
+  (`std::terminate`) are not catchers. Only setjmp frames catch longjmp.
+- **Standard facts.** `exit`, `_Exit`, `_exit`, `quick_exit`,
+  `pthread_exit` and `std::terminate` never return. Their
+  child-observable behavior is defined by POSIX or C++, so stating it is
+  not a guess about the program.
+
+Result: Quickshell under `equiv` stays at 43,097 (shipped shape, gate,
+main-direct). Witness paths show why. The open escapes come from
+signature-conflated indirect calls: `std::function`, virtual calls, and
+`__cxa_atexit` destructors, each of which "may reach" a Qt slot that
+catches. In the shipped shape, wasm-opt function merging also gives one
+body many names, which makes the witnesses noisy. Without type facts there
+is no remaining behavior-preserving lever of this kind. The next lever is
+the same as for decision 2: generalized type facts.
+
+### Prototype status
+
+Local commit `90e31e30c`, ABI 46. Nothing is pushed.
+
+- `crates/fork-instrument/src/sink.rs`: the analysis. It uses the `strict`
+  signal rule, `equiv`, the precise catchers, the standard facts, `-O0`
+  frame slots, musl registries, the cancel rule, the vfork contract and
+  tail-call transparency. It does not use type facts. It is off for
+  dlopen-capable modules, and it falls back to today's closure on
+  unsupported instructions or non-convergence. `--no-sinks` disables it.
+- Instrumenter: boundary functions call `env.__wpk_fork_boundary` instead
+  of rethrowing, consume their own node, and restart in place. The new
+  export `wpk_fork_resume_sink(i32)` is the child's entry. The custom
+  section `kandelo.wpk_fork.boundaries` lists (function ordinal,
+  thunk-signature index).
+- Host (shared `worker-main.ts`, so Node and browser alike): the boundary
+  import on process and pthread workers, a shared `completeCapturedFork`,
+  and child entry through the sink when the outermost replay frame is a
+  boundary. A sink that returns in the child is reported as "fork child
+  returned through its sink frame".
+- libc: `crt1.c` passes no `main` pointer. `libc_start_main_stage2` calls
+  `__main_argc_argv` directly.
+- vfork: a caller of the libc vfork wrapper is a boundary by contract.
+
+Validated: `cargo test -p fork-instrument` (355 tests, including 8 new sink
+tests).
+
+Not yet run: the musl rebuild, the ABI-46 rebuild of the kernel and
+programs, host Vitest, the conformance suites, browser tests, and real
+size measurements.
+
+Expected size under the prototype's rules, with no type facts and no gate
+(fsa, links): foot 2,994 → 2,876, git 5,293 → 5,101, bash 1,940 → 1,933.
+The mechanism works, but large reductions need type facts (git 25, foot 4)
+or the gate (foot 2,368, git 4,553, bash 1,220).
+
