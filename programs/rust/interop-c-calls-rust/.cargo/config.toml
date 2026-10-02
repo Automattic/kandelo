@@ -1,0 +1,5 @@
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+RUST_LIBC_UNSTABLE_MUSL_V1_2_3 = "1"
