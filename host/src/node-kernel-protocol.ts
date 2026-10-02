@@ -96,8 +96,6 @@ export interface SpawnMessage {
    */
   programBytes?: ArrayBuffer;
   programPath?: string;
-  /** Optional pre-compiled module for the same bytes. */
-  programModule?: WebAssembly.Module;
   argv: string[];
   env?: string[];
   cwd?: string;
@@ -250,6 +248,12 @@ export interface GetForkCountRequestMessage {
 /** Read the kernel Wasm instance's current 64 KiB linear-memory page count. */
 export interface GetKernelMemoryPagesRequestMessage {
   type: "get_kernel_memory_pages";
+  requestId: number;
+}
+
+/** Read the kernel worker's compiled-module cache counters. */
+export interface GetWasmModuleCacheStatsRequestMessage {
+  type: "get_wasm_module_cache_stats";
   requestId: number;
 }
 
@@ -409,6 +413,7 @@ export type MainToKernelMessage =
   | WriteVfsFileMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetWasmModuleCacheStatsRequestMessage
   | GetSpawnScratchCapacityRequestMessage
   | SignalProcessMessage
   | ResolveExecResponseMessage

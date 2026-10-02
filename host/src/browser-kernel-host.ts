@@ -7,6 +7,7 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
+import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import {
   MemoryFileSystem,
   type LazyDownloadEvent,
@@ -840,6 +841,19 @@ export class BrowserKernel {
       throw new Error(`kernel worker returned an invalid memory-page count: ${String(result)}`);
     }
     return result;
+  }
+
+  /**
+   * Counters of the kernel worker's content-addressed compiled-module cache:
+   * compilations, reuse, digest cost, and what the retention window holds.
+   * Diagnostics only. Mirrors `NodeKernelHost.getWasmModuleCacheStats`.
+   */
+  async getWasmModuleCacheStats(): Promise<WasmModuleCacheStats> {
+    const requestId = this.nextRequestId++;
+    return await this.request(requestId, {
+      type: "get_wasm_module_cache_stats",
+      requestId,
+    }) as WasmModuleCacheStats;
   }
 
   /**

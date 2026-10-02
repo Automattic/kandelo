@@ -139,6 +139,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["script", "argument"],
       envp: ["A=B"],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async (path) => {
         materialized.push(path);
       },
@@ -203,6 +204,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [] as string[],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async () => {},
       prepareInitialTarget: () => nextTarget++,
       prepareInterpreterTarget: () => {
@@ -267,6 +269,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async () => {},
       prepareInitialTarget: () => target,
       prepareInterpreterTarget: () => {
@@ -325,6 +328,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async () => {},
       prepareInitialTarget: () => 51,
       prepareInterpreterTarget: () => {
@@ -392,6 +396,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async () => {},
       prepareInitialTarget: () => 52,
       prepareInterpreterTarget: () => {
@@ -441,6 +446,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async () => {},
       prepareInitialTarget: () => 53,
       prepareInterpreterTarget: () => {
@@ -1013,9 +1019,11 @@ describe("exec host-state transition", () => {
       [pathPtr, path.length, blobPtr, 40, 0, 0],
     );
     worker.handleSyscall(channel);
+    // The final target's module lookup hashes the bytes with WebCrypto, which
+    // settles on a later task than the kernel spawn itself.
     await flushMicrotasksUntil(
-      () => kernelSpawn.mock.calls.length === 1,
-      "spawn child was not created after candidate compilation",
+      () => onSpawn.mock.calls.length === 1,
+      "spawn child was not launched after candidate compilation",
     );
     expect(worker.callbacks.onResolveSpawn).toHaveBeenCalledOnce();
     expect(
