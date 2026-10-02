@@ -21,7 +21,8 @@ keeps every other setting; the previous file is saved next to it as
 user settings at that copy, rather than at a file inside whichever project is
 open: a user-level hook that ran a repository's own file would run whatever
 any repository put there. Re-run --user after pulling a newer hook; --check
-says when the copy is stale. --project-local points this checkout's
+says when the copy is stale, and the installed hook itself shows a notice
+once per session when the checkout has a higher HOOK_VERSION. --project-local points this checkout's
 untracked settings.local.json at the checked-in hook, so it follows the
 branch you are on.
 
