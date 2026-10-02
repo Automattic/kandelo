@@ -1,6 +1,8 @@
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
+import { applyHostPathGuard, findHostPaths, hostPathGuardMode } from '../src/lib/host-path-guard.ts';
 import {
   buildClangArgs,
   decodeLlvmResponseFile,
@@ -378,4 +380,159 @@ describe('buildClangArgs', () => {
 
     expect(args).not.toContain('-Wl,--no-stack-first');
   });
+});
+
+describe('host-path guard', () => {
+  const NIX_INCLUDE = '/nix/store/abc-libpng-apng-1.6.55-dev/include/libpng16';
+  const NIX_LIB = '/nix/store/abc-libpng-apng-1.6.55/lib';
+  const CACHE = '/Users/x/.cache/kandelo/source-only/source-only-v1/compiled';
+
+  // Every detected spelling, each naming a host directory.
+  const hostForms: [string, string[]][] = [
+    ['attached -I', [`-I${NIX_INCLUDE}`]],
+    ['separated -I', ['-I', NIX_INCLUDE]],
+    ['attached -isystem', [`-isystem${NIX_INCLUDE}`]],
+    ['separated -isystem', ['-isystem', NIX_INCLUDE]],
+    ['-iquote', ['-iquote', '/usr/include']],
+    ['-idirafter', [`-idirafter${NIX_INCLUDE}`]],
+    ['attached -L', [`-L${NIX_LIB}`]],
+    ['separated -L', ['-L', '/usr/local/lib']],
+    ['--sysroot', ['--sysroot=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk']],
+    ['-Wl,-L', [`-Wl,-L${NIX_LIB}`]],
+    ['-Wl,-L,dir', [`-Wl,-L,${NIX_LIB}`]],
+    ['-Xlinker -L', ['-Xlinker', `-L${NIX_LIB}`]],
+    ['response file', ['@flags.rsp']],
+    ['MacPorts', ['-I/opt/local/include']],
+    ['Intel Homebrew keg', ['-L/usr/local/Cellar/libpng/1.6.43/lib']],
+    ['Intel Homebrew opt', ['-isystem', '/usr/local/opt/zlib/include']],
+  ];
+  const readResponseFile = (path: string) =>
+    path === 'flags.rsp' ? { contents: `-I"${NIX_INCLUDE}"`, identity: '/rsp/flags.rsp' } : null;
+  const guard = (args: string[], env: NodeJS.ProcessEnv) => {
+    const stderr: string[] = [];
+    const logs: [string, string][] = [];
+    const proceed = applyHostPathGuard({
+      args: ['-c', 'main.c', ...args],
+      env,
+      cwd: '/work/recipe',
+      readResponseFile,
+      tool: 'wasm32posix-cc',
+      arch: 'wasm32',
+      writeStderr: (text) => stderr.push(text),
+      appendLog: (path, text) => logs.push([path, text]),
+    });
+    return { proceed, stderr: stderr.join(''), logs };
+  };
+
+  for (const [name, args] of hostForms) {
+    it(`reports ${name} and continues in report mode`, () => {
+      const result = guard(args, {});
+      expect(result.proceed).toBe(true);
+      expect(result.stderr).toMatch(/^wasm32posix-cc: host-path guard \(report\): /);
+      expect(result.stderr.trim().split('\n')).toHaveLength(1);
+    });
+
+    it(`rejects ${name} in error mode`, () => {
+      const result = guard(args, { KANDELO_HOST_PATH_GUARD: 'error' });
+      expect(result.proceed).toBe(false);
+      expect(result.stderr).toContain('wasm32posix-cc: error: host directory in a wasm32 compile');
+      expect(result.stderr).toContain('docs/sdk-guide.md#host-path-guard');
+    });
+  }
+
+  it('passes repository, cache, sysroot-relative, and relative paths', () => {
+    const args = [
+      '-I/Users/x/src/kandelo/sysroot/include',
+      `-I${CACHE}/libs/libpng-1.6.43-rev2-wasm32-abc/include`,
+      `-L${CACHE}/libs/zlib-1.3.1-rev1-wasm32-def/lib`,
+      '-I=/usr/include',
+      '-Iinclude', '-I../common',
+      '--sysroot=/Users/x/src/kandelo/sysroot',
+      '-Wl,-L/Users/x/src/kandelo/local-binaries/lib',
+    ];
+    for (const mode of ['report', 'error']) {
+      const result = guard(args, { KANDELO_HOST_PATH_GUARD: mode });
+      expect(result).toEqual({ proceed: true, stderr: '', logs: [] });
+    }
+  });
+
+  it('does not mistake a sibling of a host root for the root', () => {
+    expect(findHostPaths({
+      args: ['-I/usr/libexec-not-host', '-I/nix/storefront/include', '-I/opt/homebrewer'],
+      env: {},
+      cwd: '/',
+    })).toEqual([]);
+  });
+
+  it('resolves relative paths against the working directory', () => {
+    expect(findHostPaths({ args: ['-I../include'], env: {}, cwd: '/usr/local' }))
+      .toMatchObject([{ flag: '-I', value: '../include', root: '/usr/include' }]);
+  });
+
+  it('checks compiler search-path environment variables', () => {
+    const result = guard([], { CPATH: `/repo/include:${NIX_INCLUDE}` });
+    expect(result.stderr).toContain(`CPATH=${NIX_INCLUDE}`);
+  });
+
+  it('honors an absolute SDKROOT as a host root', () => {
+    expect(findHostPaths({
+      args: ['-I/Volumes/Xcode/SDKs/MacOSX.sdk/usr/include'],
+      env: { SDKROOT: '/Volumes/Xcode/SDKs/MacOSX.sdk' },
+      cwd: '/',
+    })).toHaveLength(1);
+    expect(findHostPaths({ args: ['-I/repo/include'], env: { SDKROOT: '/' }, cwd: '/' }))
+      .toEqual([]);
+  });
+
+  it('names the environment variable a flag likely came from', () => {
+    const result = guard([`-I${NIX_INCLUDE}`], { CPPFLAGS: `-I${NIX_INCLUDE} -DX` });
+    expect(result.stderr).toContain('likely from CPPFLAGS in the environment');
+  });
+
+  it('reports each flag once per invocation', () => {
+    const result = guard([`-I${NIX_INCLUDE}`, `-I${NIX_INCLUDE}`, `-L${NIX_LIB}`], {});
+    expect(result.stderr.trim().split('\n')).toHaveLength(2);
+  });
+
+  it('writes JSON records to the census log instead of stderr when one is set', () => {
+    const result = guard([`-I${NIX_INCLUDE}`], {
+      KANDELO_HOST_PATH_GUARD_LOG: '/tmp/census.jsonl',
+      WASM_POSIX_DEP_NAME: 'scummvm',
+      CFLAGS: `-O2 -I${NIX_INCLUDE}`,
+    });
+    expect(result.proceed).toBe(true);
+    expect(result.stderr).toBe('');
+    expect(result.logs).toHaveLength(1);
+    expect(result.logs[0][0]).toBe('/tmp/census.jsonl');
+    expect(JSON.parse(result.logs[0][1])).toEqual({
+      tool: 'wasm32posix-cc',
+      arch: 'wasm32',
+      package: 'scummvm',
+      flag: '-I',
+      value: NIX_INCLUDE,
+      root: '/nix/store',
+      envSources: ['CFLAGS'],
+      cwd: '/work/recipe',
+    });
+  });
+
+  it('defaults to report mode and rejects an unknown mode', () => {
+    expect(hostPathGuardMode({})).toBe('report');
+    expect(hostPathGuardMode({ KANDELO_HOST_PATH_GUARD: '' })).toBe('report');
+    expect(hostPathGuardMode({ KANDELO_HOST_PATH_GUARD: 'error' })).toBe('error');
+    expect(() => hostPathGuardMode({ KANDELO_HOST_PATH_GUARD: 'off' })).toThrow(/report.*error/);
+  });
+
+  for (const driver of ['wasm32posix-cc', 'wasm64posix-c++']) {
+    it(`${driver} exits nonzero before compiling in error mode`, () => {
+      const wrapper = join(import.meta.dirname, '..', 'bin', driver);
+      const result = spawnSync(wrapper, ['-c', '-I', NIX_INCLUDE, 'missing.c', '-o', '/dev/null'], {
+        env: { ...process.env, KANDELO_HOST_PATH_GUARD: 'error' },
+        encoding: 'utf8',
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`${driver}: error: host directory in a ${driver.slice(0, 6)} compile`);
+      expect(result.stderr).toContain(`-I${NIX_INCLUDE}`);
+    });
+  }
 });

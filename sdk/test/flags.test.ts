@@ -10,6 +10,7 @@ import {
   mainThreadStackSize,
   needsLinking,
   parseArgs,
+  searchDirectoryArgs,
   THREAD_SLOT_NONE,
   THREAD_SLOT_USE_HOST_DEFAULT,
 } from '../src/lib/flags.ts';
@@ -436,5 +437,87 @@ describe('inferThreadSlotDeclaration', () => {
     const objectOnly = parseArgs(['main.o', '-o', 'main.wasm']);
     expect(inferThreadSlotDeclaration(objectOnly, ['main.o', '-o', 'main.wasm']))
       .toBe(THREAD_SLOT_USE_HOST_DEFAULT);
+  });
+});
+
+describe('searchDirectoryArgs', () => {
+  const NIX = '/nix/store/abc-libpng-apng-1.6.55-dev/include/libpng16';
+
+  it('finds attached and separated compiler directory flags', () => {
+    expect(searchDirectoryArgs([
+      `-I${NIX}`, '-I', '/a',
+      '-isystem/b', '-isystem', '/c',
+      '-iquote/d', '-iquote', '/e',
+      '-idirafter/f', '-idirafter', '/g',
+      '-L/h', '-L', '/i',
+      '--sysroot=/j', '--sysroot', '/k',
+      '-isysroot/l',
+      '--include-directory=/m', '--library-directory', '/n',
+      'main.c',
+    ])).toEqual([
+      { flag: '-I', value: NIX },
+      { flag: '-I', value: '/a' },
+      { flag: '-isystem', value: '/b' },
+      { flag: '-isystem', value: '/c' },
+      { flag: '-iquote', value: '/d' },
+      { flag: '-iquote', value: '/e' },
+      { flag: '-idirafter', value: '/f' },
+      { flag: '-idirafter', value: '/g' },
+      { flag: '-L', value: '/h' },
+      { flag: '-L', value: '/i' },
+      { flag: '--sysroot', value: '/j' },
+      { flag: '--sysroot', value: '/k' },
+      { flag: '-isysroot', value: '/l' },
+      { flag: '--include-directory', value: '/m' },
+      { flag: '--library-directory', value: '/n' },
+    ]);
+  });
+
+  it('does not read a longer flag as a shorter one', () => {
+    expect(searchDirectoryArgs(['-isystem-after', '/x'])).toEqual([
+      { flag: '-isystem-after', value: '/x' },
+    ]);
+  });
+
+  it('finds linker directories passed through -Wl, and -Xlinker', () => {
+    expect(searchDirectoryArgs([
+      '-Wl,-L/nix/store/a/lib',
+      '-Wl,-L,/nix/store/b/lib',
+      '-Wl,--library-path=/c',
+      '-Xlinker', '-L', '-Xlinker', '/d',
+      '-Wl,-rpath,/nix/store/not-a-search-dir',
+    ])).toEqual([
+      { flag: '-Wl,-L', value: '/nix/store/a/lib' },
+      { flag: '-Wl,-L', value: '/nix/store/b/lib' },
+      { flag: '-Wl,--library-path', value: '/c' },
+      { flag: '-Xlinker -L', value: '/d' },
+    ]);
+  });
+
+  it('skips values of unrelated flags', () => {
+    expect(searchDirectoryArgs([
+      '-MF', '-Ideps.d', '-include', '-Iconfig.h', '-D', '-L', '-o', 'a.o', '-c', 'a.c',
+    ])).toEqual([]);
+  });
+
+  it('expands compiler and linker response files', () => {
+    const files: Record<string, string> = {
+      'flags.rsp': `-I ${NIX} @nested.rsp`,
+      'nested.rsp': '"-L/usr/lib/host lib"',
+      'link.rsp': '-L /opt/homebrew/lib',
+    };
+    const read = (path: string) =>
+      files[path] === undefined ? null : responseFile(files[path], `/rsp/${path}`);
+    expect(searchDirectoryArgs(['@flags.rsp', '-Wl,@link.rsp', 'main.c'], read)).toEqual([
+      { flag: '-I', value: NIX },
+      { flag: '-L', value: '/usr/lib/host lib' },
+      { flag: '-Wl,-L', value: '/opt/homebrew/lib' },
+    ]);
+  });
+
+  it('inspects visible arguments when a response file cannot be read', () => {
+    expect(searchDirectoryArgs(['@missing.rsp', '-I/x'], () => null)).toEqual([
+      { flag: '-I', value: '/x' },
+    ]);
   });
 });
