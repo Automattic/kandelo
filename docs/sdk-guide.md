@@ -530,6 +530,17 @@ disables `b_lundef`/`b_asneeded`/`b_pie`. It deliberately does not set
 `sys_root`: Meson would export `PKG_CONFIG_SYSROOT_DIR`, which corrupts the
 absolute-prefix `.pc` files.
 
+Two options keep dependency resolution on the package path:
+
+- `prefer_static = true` — Kandelo has no shared libraries, so every
+  `dependency()` lookup is static and pkg-config runs with `--static`. That
+  pulls each package's `Requires.private`/`Libs.private` (cairo needs pixman,
+  fontconfig needs libxml2), so `PKG_CONFIG_PATH` must cover the full
+  transitive dependency closure, not just the direct dependencies.
+- `wrap_mode = 'nofallback'` — a `dependency()` that misses fails the
+  configure instead of silently downloading and building an upstream
+  subproject (Meson "wrap") in place of the resolver-provided package.
+
 Meson's feature probes are link tests, so the cross file runs the compilers
 with `WASM_POSIX_LINK_UNDEFINED=error` (see below). Under the default link
 contract a missing function links as an `env` import, which would make a bare
