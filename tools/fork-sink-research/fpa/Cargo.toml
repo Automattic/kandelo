@@ -1,0 +1,14 @@
+[package]
+name = "fpa"
+version = "0.1.0"
+edition = "2021"
+description = "Fork-path analysis research tool (see tools/fork-path-research/README.md)"
+
+[dependencies]
+walrus = "0.26.4"
+sha2 = "0.10"
+fork-instrument = { path = "../../../crates/fork-instrument" }
+
+# Not part of the repository workspace: build with
+# `cargo build --release --target <host-triple>` from this directory.
+[workspace]
