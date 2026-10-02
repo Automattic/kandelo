@@ -1077,15 +1077,22 @@ this epoch:
 Additive changes within ABI 46 (no bump; see "Additive changes within an
 ABI epoch" below):
 
-- **`/dev/kandelo/clipboard`, the host clipboard device.** Three new
-  kernel exports — `kernel_clipboard_stage(ptr, len, offset)`,
-  `kernel_clipboard_offer()` and `kernel_clipboard_ack(seq)` — listed as
-  optional host-adapter exports, so a host checks for them and reports
-  "unsupported" against a kernel without them. A new
+- **`/dev/kandelo/clipboard`, the host clipboard device.** Five new
+  kernel exports, listed as optional host-adapter exports, so a host
+  checks for them and reports "unsupported" against a kernel without
+  them: `kernel_clipboard_stage(ptr, len, offset)`,
+  `kernel_clipboard_offer()` and `kernel_clipboard_ack(seq)` carry host
+  text to the agent and its answer back, and
+  `kernel_clipboard_guest_generation()` and
+  `kernel_clipboard_guest_read(out_ptr, out_capacity, offset)` read back the
+  desktop selection the agent reports (copy-out). A new
   `clipboard_device_abi` snapshot section records the guest-visible
-  record header `{u32 version, u32 kind, u32 seq, u32 len}`, the
-  acknowledgement `{u32 seq, i32 status}` and their constants, generated
-  into `<kandelo/clipboard.h>` and `host/src/generated/abi.ts`. The new
+  record header `{u32 version, u32 kind, u32 seq, u32 len}`, its two
+  kinds (`KIND_OFFER_TEXT` = 1, host to agent; `KIND_GUEST_TEXT` = 2,
+  agent to host), the acknowledgement `{u32 seq, i32 status}` and their
+  constants, generated into `<kandelo/clipboard.h>` and
+  `host/src/generated/abi.ts`. A `write()` to the device is either an
+  8-byte acknowledgement or one whole `KIND_GUEST_TEXT` record. The new
   device path changes `open("/dev/kandelo/clipboard")` from `ENOENT` to
   success and adds `/dev/kandelo` to `ls /dev`; no binary built before it
   depended on either, and an agent built against it fails with `ENOENT`
@@ -1094,7 +1101,9 @@ ABI epoch" below):
   bump; `dump-abi` accepts the section's first appearance as additive
   and classifies later changes inside it like any other section. No new
   kernel imports and no new wakeup types: the host learns the agent's
-  answer by polling `kernel_clipboard_ack` on a timer.
+  answer by polling `kernel_clipboard_ack` on a timer, and a copy-out by
+  polling `kernel_clipboard_guest_generation` while a copy gesture is
+  pending.
 
 ## The snapshot
 

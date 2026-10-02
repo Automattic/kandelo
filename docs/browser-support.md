@@ -791,14 +791,16 @@ on the compositor's own process rather than on a foreground terminal.
   Super, and the page keeps those four keys from the browser. Only `V` is
   also bound on `Ctrl`, so `Ctrl+V` pastes on Windows and Linux too. That
   costs a terminal its literal-next key (`^V`); `Ctrl+C` is deliberately
-  not bound, so it still sends SIGINT. In foot, select text with the
-  mouse, then `Cmd+C` (or `Ctrl+Shift+C`), and paste with `Cmd+V` or
-  `Ctrl+V`. Today foot is the only client on this desktop that reads the
+  not bound, so it still sends SIGINT. The chords Linux and Windows users
+  expect are bound too: `Shift+Insert` pastes and `Ctrl+Insert` copies,
+  routed by the same terminal tag. In foot, select text with the mouse,
+  then `Cmd+C`, `Ctrl+Shift+C` or `Ctrl+Insert`, and paste with `Cmd+V`,
+  `Ctrl+V`, `Ctrl+Shift+V` or `Shift+Insert`. Today foot is the only client on this desktop that reads the
   clipboard; klauncher, Waybar, mako and the Qt demos take no pasted
   text.
 - **Paste from your own clipboard.** Text copied anywhere on your
   computer pastes into the desktop with the same chord: `Cmd+V` on macOS,
-  `Ctrl+V` elsewhere. The page lets the browser's own paste happen, hands
+  `Ctrl+V`, `Ctrl+Shift+V` or `Shift+Insert` elsewhere. The page lets the browser's own paste happen, hands
   the text to the machine (through `/dev/kandelo/clipboard` to `kclipd`,
   which makes it the desktop's selection), and only then delivers the
   chord, so the focused window pastes the new text; keys typed meanwhile
@@ -810,8 +812,25 @@ on the compositor's own process rather than on a foreground terminal.
   the keys typed while it was pending are discarded rather than typed
   into the window. Pasting the same host text twice in a row pastes the
   desktop's current selection instead, so a copy made inside the desktop
-  since then is kept; the catch is that copying X on the host, Y in the
-  desktop, then X on the host again pastes Y.
+  since then is kept.
+- **Copy to your own clipboard.** A copy chord over the desktop —
+  `Cmd+C`/`Cmd+X` on macOS; `Ctrl+Shift+C`, `Ctrl+Insert`, `Ctrl+C` or
+  `Ctrl+X` elsewhere — puts what the focused window copies on your
+  computer's clipboard. The page starts the clipboard write on the
+  chord's keydown and waits up to two seconds for the desktop's new
+  selection (reported by `kclipd`); if nothing is copied in that time —
+  `Ctrl+C` in a terminal is SIGINT, not copy — your clipboard keeps what
+  it had. Only copies made with one of these chords reach your clipboard:
+  a copy made from a menu with the mouse stays inside the desktop, and so
+  the earlier catch remains for it (copying X on the host, Y from a menu
+  in the desktop, then X on the host again pastes Y). Chrome may reserve
+  `Ctrl+Shift+C` for its developer tools when they are open; use
+  `Ctrl+Insert` then. The write uses a `ClipboardItem` whose text is a
+  promise, created during the keydown, because the text arrives after the
+  gesture; browsers without `ClipboardItem` fall back to `writeText` once
+  the text arrives, which a browser may refuse outside the gesture (the
+  Internals log says so). Automated tests cover Chromium; other engines
+  are verified by hand.
 
 #### What is not real yet (deferred work)
 
@@ -843,14 +862,14 @@ follow-ups, not as the end state.
 
 Smaller gaps, each a follow-up:
 
-- **Copying out of the desktop does not reach your clipboard.** Pasting
-  in works (above); the reverse direction, and with it a true
-  "latest copy wins" between the two clipboards, is future work in
+- **Clipboard gaps.** Copies made without a copy chord (from a menu)
+  stay inside the desktop. Touch devices cannot copy or paste between the
+  desktop and the host: iOS and iPadOS have no paste chord, and selecting
+  text and using the system copy menu is future work in
   `docs/superpowers/specs/2026-10-01-omarchy-clipboard-paste-design.md`.
   Also missing: the clipboard manager Omarchy opens on `Super+Ctrl+V`,
-  drag-and-drop, the primary (middle-click) selection, text formats other
-  than plain text, and pasting on iOS and iPadOS, which have no paste
-  chord.
+  drag-and-drop, the primary (middle-click) selection, and text formats
+  other than plain text.
 - **No `xdg_popup`**, so tooltips and menus are refused (see the bar,
   above).
 - **Super needs fullscreen keyboard lock.** Omarchy binds everything on
@@ -1712,7 +1731,8 @@ declare these blocks.
   (`memoryPages`, `maxWorkers`) which the host clamps to its own policy.
   `clipboard` says the image runs an agent on `/dev/kandelo/clipboard`
   (kclipd), so the host turns a browser paste over the machine into an
-  offer on it; it rides on the DOM input source, so the parser rejects it
+  offer on it, and a copy chord over the machine into a copy-out from it;
+  it rides on the DOM input source, so the parser rejects it
   without `evdev-input`. `kms-gl-scanout`
   additionally routes the KMS surface through the vblank pump's WebGL2
   scanout presenter, which a Wayland compositor needs: its own GL context

@@ -2379,7 +2379,8 @@ Single-open semantics match real Linux mousedev exclusive-grab. The host inverts
 Text the user pastes over a machine reaches the guest the way a VM guest agent
 (SPICE's `spice-vdagent`) gets it: the host feeds a device, and an agent in the
 guest turns it into the desktop's own clipboard. Three layers, each usable
-without the next:
+without the next. Copy-out, the reverse direction, runs through the same
+device and agent (below).
 
 ```text
  browser `paste` event          BrowserInputSource (clipboard feature)
@@ -2438,6 +2439,60 @@ without the next:
 
 The text exists in kernel memory only between the offer and the agent's read;
 it is never a file, so it cannot reach a persisted mount or a shared snapshot.
+
+### Copy-out (guest → host)
+
+```text
+ copy chord keydown              BrowserInputSource (clipboard feature)
+        │  before the chord's keys are emitted
+        ▼
+ startHostClipboardCopyOut      navigator.clipboard.write(ClipboardItem
+        │                         whose text is a pending promise)
+        ▼
+ waitForGuestClipboardText()    BrowserKernel / NodeKernelHost (same API)
+        │                         sample kernel_clipboard_guest_generation,
+        │                         poll it every 16 ms for up to 2 s
+        ▼
+ foot copies → wlcompositor selection → kclipd (ext_data_control_v1)
+        │  reads the offer through a pipe, whole, ≤ 1 MiB
+        ▼
+ write(KIND_GUEST_TEXT record) ─► /dev/kandelo/clipboard: guest text,
+                                   generation + 1
+        ▼
+ kernel_clipboard_guest_read ×N  → UTF-8 text → resolves the promise
+```
+
+- **kclipd reports every selection it did not set.** Its own selections
+  (host text it installed) are recognised by the source it still holds: the
+  compositor cancels that source before announcing any replacement, so a
+  selection that arrives while kclipd holds one is its own echo. The rest
+  are read as text (`text/plain;charset=utf-8`, then `text/plain`, then
+  `UTF8_STRING`) and written as one `KIND_GUEST_TEXT` record in one
+  `write()`. A selection over 1 MiB, or with no text type, is not reported:
+  never a truncated copy.
+- **The device keeps only the latest report** and a generation counter
+  that changes with each one. Neither is readable by the guest; the host
+  reads them through `kernel_clipboard_guest_generation` and
+  `kernel_clipboard_guest_read`, which copies the text out in scratch-sized
+  chunks within one kernel entry. Release drops the text, so a copy
+  gesture that sees the counter move after the agent has exited reports
+  `no-agent` rather than putting an empty string on the host clipboard.
+- **The host copies out only after a copy gesture**, never on every
+  selection change: a selection made in the desktop is not the user asking
+  for their own clipboard to change. The wait samples the generation before
+  the chord reaches the guest, so the guest's copy cannot land before the
+  host starts watching; a chord that copies nothing (`Ctrl+C` in a
+  terminal is SIGINT) times out after 2 s, and the host clipboard is left
+  as it was.
+- **Why the clipboard write starts at keydown.** Safari and Firefox let a
+  page write the clipboard only inside a user gesture, and the guest's text
+  arrives well after the keydown handler returns. A `ClipboardItem` whose
+  data is a promise is created in the gesture and filled when the text
+  arrives; a rejected promise writes nothing. Without `ClipboardItem` the
+  text is written with `writeText` once it arrives.
+- **Latest copy wins for keyboard copies.** A successful copy-out records
+  the text as the one the guest already holds, so the next host paste of
+  anything else is offered and the same text is not re-offered.
 
 ## Audio output (`/dev/dsp`)
 
