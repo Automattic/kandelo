@@ -1942,3 +1942,61 @@ Worth pairing with the observation that this lane's own test files have grown
 substantially: `host/test` now holds the characterization baselines, the
 artifact gates and the seam tests that several plans depend on for evidence.
 Code that produces evidence deserves the same checking as code that ships.
+
+### The Node conformance runners leak the exported `CC` into `cargo build`
+
+`scripts/run-libc-tests.sh:411` runs `cargo build -p xtask` with the
+wasm cross-compiler still exported as `CC`, so on a cold cargo cache the
+native build of `ring` and `zstd-sys` fails with `unsupported option
+'-matomics' for target 'arm64-apple-macosx'`. The script's own comment says
+the browser runners were converted to `WASM32_CC` and these were not. A warm
+cache hides it, which is why it surfaces only in a fresh worktree. Workaround
+used 2026-09-23: set `CC_aarch64_apple_darwin` and `HOST_CC` to the native
+clang. Fix: finish the `WASM32_CC` conversion for `run-posix-tests.sh`,
+`run-libc-tests.sh` and `run-sortix-tests.sh`.
+
+Related: `scripts/run-posix-tests.sh` has `#!/bin/bash`, so invoking it by
+path runs macOS bash 3.2 and it aborts silently after `===== asctime =====`
+with exit 1; `bash scripts/run-posix-tests.sh` under the dev shell (bash 5.3)
+runs to completion. The shebang should be `#!/usr/bin/env bash`.
+
+(Found on lane F, 2026-09-23. Re-checked against this branch's scripts on
+2026-10-02: all three runners still assign `CC`, and the shebang is still
+`#!/bin/bash`. The cold-cache failure itself was not re-run.)
+
+### `sigaltstack/9-1` passes on Node and is UNRESOLVED in the browser
+
+The one Node/browser divergence in the POSIX conformance suite as of
+2026-09-23 on lane F (`brandonpayton/lane-f-fork-inversion`): Node 174
+pass, browser 163 pass + 10 XPASS = 173, and the missing one is
+`sigaltstack/9-1`. Both runners linked with byte-identical flags, so this
+is a host-runtime difference, not a build difference. Not yet traced. The
+browser runner's `EXPECTED_FAIL` list was also stale by ten entries that
+passed (`sigaltstack/{1,2,3,6,7,8}-1`, `kill/{2-2,3-1}`,
+`sigqueue/{3-1,12-1}`); that staleness was the sole cause of its non-zero
+exit, and it hides the one real divergence in the noise.
+
+Not re-measured on this branch. As of 2026-10-02 the same ten entries are
+still listed in `scripts/run-browser-posix-tests.sh`'s `EXPECTED_FAIL`, so
+the noise half applies here; whether `sigaltstack/9-1` still diverges needs
+a Node and a browser POSIX run of this tree.
+
+### `curl`'s `file://` test fails intermittently, and is banked here
+
+`packages/registry/curl/test/curl.test.ts` fails with `curl: (37) Couldn't
+open file <tmp>/fixture.txt` on a `file://` transfer. On lane F it was green
+in the storage batch's full-suite ratchet (75fd2ce3f), green in a 27-file
+re-run and green alone at load 3, and red in the end-of-change validation's
+full run AND its isolated re-run, on both the current and the previous
+kernel, with `TMPDIR` ruled out. `php-concurrent-sqlite.test.ts` (php exit
+255 instead of 0) showed the same pattern there. So the trigger is state on
+the machine at that time, not the kernel and not load alone. Unexplained.
+
+On this branch `curl.test.ts` is in `host/test/expected-failures.json`
+(since 2026-09-13) and failed that way in both suite-baseline runs of
+2026-09-28 and 2026-10-01; `php-concurrent-sqlite` passed in both. A file
+that sometimes passes cannot stay banked without making the ratchet report
+an "unbanked improvement" on a good day, and cannot be unbanked without
+going red on a bad one: neither is a gate until the trigger is found. A run
+that shows it red should capture `ls -la` of the scratch directory and the
+kernel's stderr before cleanup.
