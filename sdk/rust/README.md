@@ -30,10 +30,8 @@ wasm32posix-cc empty.c target/wasm32-unknown-kandelo/release/lib<name>.a \
 npx tsx examples/run-wasm.ts <name>.wasm
 ```
 
-`std` builds additionally require the forked `rust-src` overlay (libc +
-std) built via a linked private toolchain — see
-`docs/plans/2026-09-07-rust-std-target-implementation.md` (Milestone 1)
-and `scripts/build-rust-sysroot.sh` once it lands.
+`std` builds use the private sysroot with a prebuilt `std` (from
+`scripts/build-rust-sysroot.sh`); see below.
 
 ## Quick start: `wasm32posix-cargo`
 
@@ -44,10 +42,10 @@ wasm32posix-cargo run --release -- [prog args]   # build + (instrument) + run
 wasm32posix-cargo build --release                # just build
 ```
 
-The wrapper assembles the private sysroot on first use, injects the
-target spec + `-Z build-std` flags + `RUSTC` wrapper + the musl-time64
-env var, and fork-instruments any output that uses fork (e.g.
-`std::process`). The manual flow below is what it automates.
+The wrapper assembles the private sysroot (including the prebuilt
+`std`) on first use, selects the target by name, sets the `RUSTC`
+wrapper and the musl-time64 env var, and fork-instruments any output
+that uses fork (e.g. `std::process`). The manual flow below is what it automates.
 
 ## Building a full-`std` program (bin crate)
 
@@ -56,15 +54,14 @@ env var, and fork-instruments any output that uses fork (e.g.
 `linker-flavor = wasm-lld-cc`, and `entry-name = __main_argc_argv`, so
 rustc drives the SDK driver and its `lang_start` entry connects to
 Kandelo's crt1). `cargo build` produces a runnable `.wasm` directly — no
-staticlib or separate link step. Requires the private sysroot (from
-`scripts/build-rust-sysroot.sh`), the `RUSTC` wrapper, and:
+staticlib or separate link step. `scripts/build-rust-sysroot.sh`
+installs the target spec into the private sysroot and compiles `std` for
+it once, so the target is selected by name with no `-Z build-std`:
 
 ```
 RUSTC=$HOME/.kandelo/rust/rustc-kandelo \
 RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 \
-cargo build --release \
-  -Z unstable-options -Z json-target-spec -Z build-std=std,panic_abort \
-  --target sdk/rust/wasm32-unknown-kandelo-std.json
+cargo build --release --target wasm32-unknown-kandelo-std
 
 npx tsx examples/run-wasm.ts \
   target/wasm32-unknown-kandelo-std/release/<name>.wasm [args...]
@@ -72,5 +69,3 @@ npx tsx examples/run-wasm.ts \
 
 `std::env::args`, `std::env::var`, `std::fs`, `std::time`, and `HashMap`
 all work. See `programs/rust/std-hello/`.
-
-A `wasm32posix-cargo` wrapper (Milestone 6) will hide these flags.

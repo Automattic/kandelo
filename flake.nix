@@ -132,6 +132,15 @@
             # it with a Kandelo cross file (sdk/meson/) so meson cross-builds
             # for the wasm target instead of probing the host.
             pkgs.meson
+            # cargo-c (`cargo cbuild`) builds Rust crates as C libraries with
+            # headers and .pc files; librsvg's meson build drives it. Upstream
+            # names output files per target OS, in both its build and install
+            # steps, and rejects an OS it does not list, so the SDK carries a
+            # patch adding `kandelo` to both tables (`lib<name>.a`/`.so`, like
+            # the other ELF-style unix OSes).
+            (pkgs.cargo-c.overrideAttrs (old: {
+              patches = (old.patches or [ ]) ++ [ ./sdk/rust/cargo-c-kandelo.patch ];
+            }))
             pkgs.autoconf
             pkgs.automake
             pkgs.libtool

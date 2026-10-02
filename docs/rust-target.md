@@ -79,15 +79,54 @@ in a private sysroot:
   (file-copy overlay onto the toolchain's `rust-src`, which is not a
   submodule).
 - `scripts/build-rust-sysroot.sh` — assembles the fork (submodule +
-  patch) and the private sysroot (mirror-by-symlink + patched `rust-src`)
-  and a `rustc` wrapper that injects `--sysroot`;
+  patch) and the private sysroot (mirror-by-symlink + patched `rust-src`),
+  installs the std target spec as
+  `lib/rustlib/wasm32-unknown-kandelo-std/target.json`, compiles `std`
+  for that target once into `lib/rustlib/wasm32-unknown-kandelo-std/lib/`,
+  and writes a `rustc` wrapper that injects `--sysroot` and
+  `-Zunstable-options` (rustc resolves a custom target by name from the
+  sysroot only with that flag);
   `scripts/export-rust-overlay.sh` captures std-overlay edits.
 
 First checkout: `git submodule update --init sdk/rust/libc-upstream`.
 
-Builds require `-Z unstable-options -Z json-target-spec
--Z build-std=std,panic_abort` and `RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1`
-(musl v1.2.3 time64); `wasm32posix-cargo` supplies all of these.
+With the prebuilt `std` in the sysroot, the target behaves like an
+installed Rust target: builds need only the `RUSTC` wrapper,
+`RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1` (musl v1.2.3 time64) and
+`--target wasm32-unknown-kandelo-std` — no per-build `-Z build-std` or
+`-Z json-target-spec`. `wasm32posix-cargo` supplies these. The target
+must be selected by name, not by JSON path: rlibs record their target
+identity, and the prebuilt `std` does not load into a build that names
+the target by path (E0461). `scripts/build-rust-sysroot.sh` records a
+digest of its inputs (the script, target spec, libc submodule commit and
+patch, std overlay, and toolchain) and rebuilds only when it changes, so
+`wasm32posix-cargo` runs it before every build. Cargo does not track the
+sysroot's `std`, so after a rebuild `wasm32posix-cargo` also discards the
+crate's `target/wasm32-unknown-kandelo-std/` output; a build that drives
+cargo directly against a changed sysroot needs a clean target directory.
+
+### Rust libraries with a C API (cargo-c)
+
+The dev shell provides `cargo-c` (`cargo cbuild` / `cargo cinstall`),
+which builds a Rust crate as a C library with a header and a `.pc` file;
+Meson builds such as librsvg's drive it. Upstream cargo-c picks output
+file names per target OS and rejects an OS it does not list, so
+`flake.nix` applies `sdk/rust/cargo-c-kandelo.patch`, which adds
+`kandelo` to its build and install tables (`lib<name>.a`/`.so`, as for
+other ELF-style unix OSes). For example:
+
+```
+RUSTC=$HOME/.kandelo/rust/rustc-kandelo RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 \
+  cargo cinstall --release --target wasm32-unknown-kandelo-std \
+    --library-type staticlib --prefix "$PREFIX"
+wasm32posix-cc main.c \
+  $(PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig" pkg-config --static --cflags --libs <name>) \
+  -o main.wasm
+```
+
+The generated `.pc` lists `-lgcc_s -lc` (rustc's native static libs for
+a musl target); the SDK driver drops `-lgcc_s` because WebAssembly has
+no shared libgcc.
 
 Design and history: `docs/plans/2026-09-06-rust-std-target-design.md`
 and `docs/plans/2026-09-07-rust-std-target-implementation.md`.
