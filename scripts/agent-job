@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Run a long Kandelo build or test in the background and wait on it by PID.
 
-Long builds and suites (./run.sh setup, local-build, full vitest, the
-conformance runners) take 10-40 minutes. Agents waiting on them used to poll
-logs with sleep loops, wait on `pgrep -f` patterns that also matched the
-waiting shell, edit files the run was reading, and start a second run that
-raced the first. This tool removes those choices:
+Why it exists: long builds and suites (./run.sh setup, local-build, full
+vitest, the conformance runners) take 10-40 minutes, and waiting on them was
+one of the largest token costs in agent sessions. In Aug-Sep 2026, about 849M
+input-equivalent tokens went to poll turns (`sleep 60; tail log`), each of
+which re-reads the whole conversation. 370 waits used `until ! pgrep -f
+<pattern>`, which matches the waiting shell itself and never returns, and
+second runs started in the same checkout broke the first. This tool removes
+those choices:
 
   agent-job start [--name N] [--allow-concurrent] -- <command...>
       Start <command> (run by bash in the current directory) detached, with
@@ -59,6 +62,8 @@ LEDGER = os.path.join(ROOT, "ledger.jsonl")
 LOCKED = re.compile(r"npx\s+vitest|node_modules/\.bin/vitest|\bvitest\s+run|run\.sh\s+(test|setup|local-build|"
                     r"prepare-browser)\b|ci-run-test-suite\.sh|suite-baseline\.mjs|\bnpm\s+ci\b|"
                     r"xtask\s+(local-build|bootstrap)|scripts/setup\.sh")
+# What an agent reads after a run: enough of the log to see how it ended,
+# without pulling a 100k-line build log into the conversation.
 LOG_TAIL = 30
 
 
@@ -92,7 +97,9 @@ def job_key(cmd):
     The first three words of the command that does the work, without
     wrappers (dev-shell.sh, bash -c, timeout N), env assignments, `cd`, or
     redirections: `./run.sh setup`, `scripts/ci-run-test-suite.sh vitest`,
-    `npx vitest run`.
+    `npx vitest run`. Wrappers are dropped so that the same build started
+    different ways shares one history, instead of each spelling starting
+    from nothing.
     """
     words = []
     for part in re.split(r"&&|\|\||[;|\n]", cmd.replace("'", " ").replace('"', " ")):
@@ -120,6 +127,10 @@ def read_json(path):
 
 
 def alive(pid):
+    # kill(pid, 0) asks "does this exact process exist?". Waiting on a PID,
+    # never on a name pattern, is the point of this tool: `pgrep -f
+    # "<pattern>"` also matches the shell running the wait, so such waits
+    # never ended.
     try:
         os.kill(pid, 0)
         return True
@@ -130,6 +141,9 @@ def alive(pid):
 
 
 def history(key, limit=7):
+    # Durations of past successful runs of the same kind (see job_key). They
+    # let `start` and `status` say "usually takes 18m", which answers "is it
+    # stuck?" without spending turns on process and log probes.
     out = []
     try:
         with open(LEDGER) as f:
@@ -146,6 +160,7 @@ def history(key, limit=7):
 
 
 def usual_duration(key):
+    # One past run is an anecdote; require two before claiming a "usual".
     h = history(key)
     return statistics.median(h) if len(h) >= 2 else None
 
@@ -164,7 +179,10 @@ def state_of(d):
         return "finished", meta, result
     if meta.get("supervisor_pid") and alive(meta["supervisor_pid"]):
         return "running", meta, None
-    return "lost", meta, None  # supervisor died without writing a result
+    # The supervisor died without recording an exit status (machine sleep,
+    # kill -9). Report that plainly: treating it as "still running" would
+    # make an agent wait forever, and treating it as success would be false.
+    return "lost", meta, None
 
 
 def jobs_in(worktree):
@@ -184,16 +202,32 @@ def jobs_in(worktree):
 # ---------------------------------------------------------------- supervisor
 
 def supervise(d):
-    """Detached process: run the command, then record its result."""
+    """Detached process: run the command, then record its result.
+
+    A separate supervisor, not the agent's own shell, owns the run. The
+    agent's Bash call can then return, time out, or be interrupted without
+    killing the build. The exit status is written to result.json, so `wait`,
+    `result`, and the ledger outlive the process that produced it.
+    """
     meta = read_json(os.path.join(d, "meta.json"))
     log = open(os.path.join(d, "output.log"), "ab", buffering=0)
+    # KANDELO_LOCAL_BUILD_EVENTS asks local-build/setup to write progress
+    # events, which `status` reads. That replaces turns spent probing
+    # processes and log sizes to guess how far along a build is.
     env = dict(os.environ, KANDELO_LOCAL_BUILD_EVENTS=os.path.join(d, "events.jsonl"),
                KANDELO_AGENT_JOB=meta["id"])
+    # Its own session/process group, so a stop request can reach every
+    # process the build spawned (cargo, clang, node workers), not just bash.
     child = subprocess.Popen(["bash", "-c", meta["cmd"]], cwd=meta["cwd"], stdin=subprocess.DEVNULL,
                              stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
     meta["child_pid"] = child.pid
     write_json(os.path.join(d, "meta.json"), meta)
 
+    # Forward a stop to the whole build group. A wrapper that dies alone
+    # leaves the build running and holding the checkout, and the next run
+    # then collides with an orphan nobody is waiting on. SIGHUP is ignored
+    # because the agent's terminal or shell going away must not kill a
+    # 40-minute build halfway.
     def forward(sig, _frame):
         try:
             os.killpg(child.pid, signal.SIGTERM)
@@ -211,6 +245,8 @@ def supervise(d):
         duration=round(end - meta["started"], 1),
     )
     write_json(os.path.join(d, "result.json"), result)
+    # The ledger is how evals/build-waiting/wait-impact.py judges whether this
+    # tool earns its place, and how history() learns usual durations.
     record = {k: meta.get(k) for k in ("id", "name", "key", "cmd", "cwd", "worktree", "started", "usual_duration")}
     record.update(result)
     os.makedirs(ROOT, exist_ok=True)
@@ -219,6 +255,8 @@ def supervise(d):
 
 
 def write_json(path, value):
+    # Write-then-rename, so a reader (wait, status) never sees half a file
+    # and mistakes a running job for a lost one.
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(value, f, indent=1)
@@ -233,6 +271,9 @@ def cmd_start(args):
     cmd = " ".join(args.command) if len(args.command) > 1 else args.command[0]
     cwd = os.getcwd()
     worktree = worktree_of(cwd)
+    # Refuse a second locked run instead of letting it start. Two such runs
+    # fail each other (program-index races alone did so 44 times in Aug-Sep
+    # 2026), wasting both runs plus the diagnosis and a re-run.
     if LOCKED.search(cmd) and not args.allow_concurrent:
         for job_id, d in jobs_in(worktree):
             state, meta, _ = state_of(d)
@@ -252,6 +293,9 @@ def cmd_start(args):
     meta = dict(id=job_id, name=name, key=key, cmd=cmd, cwd=cwd, worktree=worktree, started=now(),
                 usual_duration=usual_duration(key))
     write_json(os.path.join(d, "meta.json"), meta)
+    # Detach the supervisor fully: new session, no inherited stdio, so the
+    # Bash tool call that ran `start` returns immediately instead of
+    # blocking on the build's output.
     sup = subprocess.Popen([sys.executable, os.path.abspath(__file__), "_supervise", d],
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                            start_new_session=True, close_fds=True)
@@ -263,6 +307,9 @@ def cmd_start(args):
 
 
 def cmd_wait(args):
+    # The waiting happens inside this one process, checking the PID every
+    # 2 s. That costs no tokens: the agent spends one tool call per --timeout
+    # window (9 minutes by default), however many checks happen inside it.
     d = job_dir(args.id)
     deadline = now() + args.timeout if args.timeout else None
     while True:
@@ -317,6 +364,10 @@ def tail_lines(path, n):
 
 
 def processes():
+    # Every process with its parent, age, CPU and full command line. A
+    # liveness claim needs all three: a stale or unrelated process (another
+    # worktree's build, an MCP server) once passed for "the run" because
+    # only its name or count was checked.
     out = subprocess.run(["ps", "-axo", "pid=,ppid=,etime=,pcpu=,command="], capture_output=True, text=True).stdout
     procs = {}
     for line in out.splitlines():
@@ -341,6 +392,9 @@ def descendants(root, procs):
 
 
 def events_progress(path):
+    # Turns local-build's event stream into "143/154 nodes done, running X
+    # for 4m", the answer agents otherwise assembled from several probe
+    # turns.
     """Summarize local-build scheduler events (written when KANDELO_LOCAL_BUILD_EVENTS is set)."""
     state = {}
     total = None
@@ -445,6 +499,9 @@ def main():
     p.add_argument("command", nargs=argparse.REMAINDER)
     p = sub.add_parser("wait")
     p.add_argument("id")
+    # 540 s keeps one wait inside the Bash tool's 10-minute limit. A wait
+    # the tool kills is pushed to the background, and a headless session or
+    # subagent that then ends its turn loses the result.
     p.add_argument("--timeout", type=int, default=540, help="seconds (default 540, under the Bash tool limit); "
                    "0 waits until the job ends")
     p = sub.add_parser("status")

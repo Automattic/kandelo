@@ -2515,9 +2515,12 @@ cmd_cache_gc() {
 cmd_local_build() {
     # `--plan` previews this exact build without running it: which nodes are
     # cache hits, which will build, and an estimate from recorded timings.
-    # It uses the release xtask binary because the debug build `cargo run`
-    # produces takes 6-15 s to plan, against about 1 s here; see
-    # docs/package-management.md.
+    # Why: whether a build takes seconds (all cached) or 10+ minutes decides
+    # how an agent should run it. A short one is one foreground call; a long
+    # one needs scripts/agent-job. Guessing wrong in a headless session or a
+    # subagent loses the result and forces a full re-run. It uses the release
+    # xtask binary because the debug build `cargo run` produces takes 6-15 s
+    # to plan, against about 1 s here; see docs/package-management.md.
     if [ "${1:-}" = "--plan" ]; then
         shift
         local plan_json=()

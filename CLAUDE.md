@@ -108,8 +108,12 @@ Runs under 10 minutes: one foreground Bash call with output to a log file.
 Longer runs: `scripts/agent-job start`, then repeat `scripts/agent-job wait
 <id>` (it blocks on the job's PID up to 9 minutes per call). Do not poll with
 `sleep` or `pgrep -f`, never end a headless session's or subagent's turn to
-wait, and do not make subagents wait on whole-tree builds. See "Waiting on
-long builds and suites" in `docs/agent-guidance/validation.md`.
+wait, and do not make subagents wait on whole-tree builds. Why: each poll
+turn re-reads the whole conversation; `pgrep -f` matches the waiting shell
+and never returns; a headless session or subagent stops when its turn ends,
+losing the result; and a subagent's 5-minute cache makes long waits rewrite
+its context. See "Waiting on long builds and suites" in
+`docs/agent-guidance/validation.md`.
 
 See `docs/agent-guidance/validation.md` for suite selection and exact command
 guidance.

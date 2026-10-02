@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """A/B test: do the build-waiting tools change how an agent waits?
 
+Why it exists: transcript evidence needs weeks of real use. This gives a
+controlled answer in minutes. It already caught guidance that made headless
+sessions end before reporting a result.
+
 Each task asks a headless `claude -p` session to run a fake long build
 (fixtures/fake-build.sh, 2-3 minutes) and report how it ended. Two arms:
 

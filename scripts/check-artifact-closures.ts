@@ -2,10 +2,12 @@
  * Preflight: does every program package's artifact closure resolve, as one
  * closure, from this checkout's binary tiers?
  *
- * Why: "Package artifact closure is incomplete" used to surface minutes into
- * a test suite (132 times in Aug-Sep 2026 transcripts), usually because a
- * targeted rebuild moved one cache key and left the rest of the tier behind
- * (see `cargo xtask verify-fresh`, which checks only kernel.wasm). This walks
+ * Why it exists: "Package artifact closure is incomplete" used to surface
+ * minutes into a test suite (132 times in Aug-Sep 2026 transcripts),
+ * usually because a targeted rebuild moved one cache key and left the rest
+ * of the tier behind. `cargo xtask verify-fresh` checks only kernel.wasm.
+ * Each such failure wasted the suite run, the waiting turns spent on it,
+ * the diagnosis, and a re-run. This walks
  * every package in packages/registry/program-packages.json through the same
  * resolver the tests use, in one process, and reports which closures are
  * incomplete before any suite starts.
@@ -41,6 +43,8 @@ type PackageEntry = { arches: string[]; members: Member[]; cacheKeys: Record<str
 // every failure, is resolved again from scratch.
 const MEMO_VERSION = 1;
 type Memo = { version: number; entries: Record<string, { key: string; files: string[] }> };
+// Size, mtime and inode together: a rebuilt or re-linked artifact changes at
+// least one of them, even when its path stays the same.
 function fileStamp(path: string): string {
   const st = statSync(path, { bigint: true });
   return `${path}:${st.size}:${st.mtimeNs}:${st.ino}`;
@@ -102,6 +106,9 @@ for (const [name, entry] of Object.entries(index.packages)) {
         ok.push(pkg);
         nextMemo.entries[pkg] = { key, files: (resolved as string[]).map(fileStamp) };
       }
+      // Absent from every tier is not a closure defect: the package simply
+      // is not built here, and a suite that needs it fails loudly on its own.
+      // Failing the preflight for it would block suites that never use it.
       else if (resolved.every((p) => p === null)) notBuilt.push(pkg);
       else incomplete.push({ pkg, error: "some members resolved and others did not" });
     } catch (error) {

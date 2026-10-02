@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Replay .claude/hooks/wait-guard.py over past Bash calls in your transcripts.
 
+Why it exists: a deny hook that misfires costs more than it saves, because
+agents retry, rephrase, or give up. Replaying it over real history measures
+how precise its denials are before anyone installs it.
+
 Shows what the hook would have denied, per rule, with samples to review for
 false positives, before (or without) installing it. Local only.
 

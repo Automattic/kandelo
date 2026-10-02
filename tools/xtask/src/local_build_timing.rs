@@ -4,9 +4,15 @@
 //! WHY this exists: `./run.sh setup` and `./run.sh local-build` run for tens
 //! of minutes. Without a machine-readable progress stream, a waiting agent
 //! or person probes processes and tails logs to guess how far along a build
-//! is, and without recorded durations nobody can say how long a build will
-//! take before starting it. Everything here is advisory: a failure to write
-//! or read these files warns and never changes a build's outcome.
+//! is (the build-waiting eval counted 4,568 such process probes across 107
+//! agent sessions, each one a paid turn), and without recorded durations
+//! nobody can say how long a build will take before starting it, so the
+//! choice between a foreground call and a background job is a guess.
+//! Everything here is advisory: a failure to write or read these files warns
+//! and never changes a build's outcome, because losing a progress line or a
+//! timing sample costs far less than failing a build that otherwise
+//! succeeded. See docs/package-management.md ("Progress, timing history, and
+//! `plan --status`") and evals/build-waiting/README.md.
 
 use crate::local_build::{NodeRunResultV1, PlanNodeV1, SuccessDispositionV1};
 use crate::local_build_executor::SchedulerEventV1;
@@ -17,8 +23,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Environment variable naming the file that receives scheduler events.
+/// An environment variable rather than a flag so `scripts/agent-job` can set
+/// it once for whatever command it starts, and it reaches the engine through
+/// `./run.sh setup`, `./run.sh local-build`, and `xtask bootstrap` without
+/// each layer growing an option. Unset means no event file.
 pub(crate) const EVENTS_ENV: &str = "KANDELO_LOCAL_BUILD_EVENTS";
 /// Cost assumed for a node that must run when no node has any history yet.
+/// Nonzero so a fresh cache never estimates unbuilt work as free; it is a
+/// round placeholder, replaced by recorded medians as soon as any exist.
 pub(crate) const UNKNOWN_NODE_SECONDS: f64 = 60.0;
 /// Only the most recent samples count, so a package whose build got faster
 /// or slower stops being estimated from its old behavior.
@@ -40,15 +52,26 @@ pub(crate) fn timings_dir(cache_base: &Path) -> PathBuf {
     cache_base.join("timings")
 }
 
+/// One [`NodeDurationRecordV1`] per line, appended as nodes finish: the input
+/// for per-node medians. JSON lines, so concurrent runs from several
+/// worktrees can append whole records without coordinating, and a torn or
+/// corrupt line costs one sample instead of the whole history.
 pub(crate) fn node_durations_path(cache_base: &Path) -> PathBuf {
     timings_dir(cache_base).join("node-durations.jsonl")
 }
 
+/// One [`RunRecordV1`] per completed run: predicted vs actual seconds, so the
+/// estimate's accuracy can be measured, and graph seconds, from which the
+/// fixed-overhead term is derived. Same JSON-lines format and reasons as
+/// [`node_durations_path`].
 pub(crate) fn runs_path(cache_base: &Path) -> PathBuf {
     timings_dir(cache_base).join("runs.jsonl")
 }
 
 /// The JSON-lines name of a scheduler event and the node it concerns.
+/// These names are a contract with `scripts/agent-job`, which counts
+/// `succeeded`, `cached`, and `reused` as done; a test pins them so a rename
+/// here cannot silently break its progress count.
 pub(crate) fn scheduler_event_kind(event: &SchedulerEventV1) -> (&'static str, &PlanNodeV1) {
     match event {
         SchedulerEventV1::Ready { node } => ("ready", node),
@@ -81,10 +104,16 @@ pub(crate) fn node_event_line(event: &str, node: &str, at: f64) -> String {
 }
 
 /// Appends one JSON object per line to the file named by
-/// `KANDELO_LOCAL_BUILD_EVENTS`, flushing each line so a reader polling the
-/// file (for example `scripts/agent-job status`) sees progress as it happens.
-/// Inert when the variable is unset; after the first write failure it warns
-/// once and stops writing.
+/// `KANDELO_LOCAL_BUILD_EVENTS`.
+///
+/// WHY: `scripts/agent-job status` turns this file into "N/M nodes done,
+/// running X for 4m" in one call, which is the answer waiting agents
+/// otherwise assembled turn by turn from `ps`, `pgrep`, and log-size probes.
+/// Each line is flushed so a reader polling the file sees progress as it
+/// happens rather than when a buffer fills. Inert when the variable is unset.
+/// A write failure warns once and stops writing instead of failing the
+/// build: the stream is a convenience for observers, and the build's own
+/// output and result stay authoritative.
 pub(crate) struct EventLog {
     sink: Option<(PathBuf, fs::File)>,
 }
@@ -153,6 +182,9 @@ impl EventLog {
     }
 }
 
+/// One line of `node-durations.jsonl`. Failed outcomes are kept, not
+/// dropped at write time, so the file stays a faithful log; the estimator
+/// filters them out when it reads.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct NodeDurationRecordV1 {
     pub(crate) node: String,
@@ -163,8 +195,12 @@ pub(crate) struct NodeDurationRecordV1 {
     pub(crate) at: f64,
 }
 
+/// One line of `runs.jsonl`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct RunRecordV1 {
+    /// What the estimate said before any node ran. Paired with
+    /// `actual_seconds`, it is the only way to measure whether the estimate
+    /// agents choose foreground vs background by is trustworthy.
     pub(crate) predicted_seconds: Option<f64>,
     pub(crate) actual_seconds: f64,
     /// Seconds spent in the scheduler alone; `actual_seconds` minus this is
@@ -180,7 +216,9 @@ pub(crate) struct RunRecordV1 {
 }
 
 /// Appends one record to a timing history file, creating its directory.
-/// Returns the error for the caller to report; callers only warn.
+/// The record goes out as a single append so concurrent runs sharing the
+/// cache base do not interleave inside a line. Returns the error for the
+/// caller to report; callers only warn, because timing history is advisory.
 pub(crate) fn append_jsonl<T: Serialize>(path: &Path, record: &T) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("create {}: {error}", parent.display()))?;
@@ -196,6 +234,10 @@ pub(crate) fn append_jsonl<T: Serialize>(path: &Path, record: &T) -> Result<(), 
 }
 
 /// Records node durations as they finish, warning once on the first failure.
+/// It stops after that failure because an unwritable history directory
+/// would otherwise print the same warning for every node in the build.
+/// Recording per node, not at the end, keeps the samples of a run that is
+/// killed or fails partway.
 pub(crate) struct DurationRecorder {
     path: Option<PathBuf>,
 }
@@ -228,6 +270,8 @@ fn read_jsonl<T: for<'de> Deserialize<'de>>(path: &Path) -> Vec<T> {
         .collect()
 }
 
+/// Median rather than mean, so one outlier sample (a cold download, a run on
+/// a loaded machine) does not drag a node's estimate far from its usual time.
 fn median(values: &mut [f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -246,7 +290,10 @@ fn median(values: &mut [f64]) -> Option<f64> {
 pub(crate) struct TimingHistory {
     /// Median of each node's most recent successful runs, by node label.
     pub(crate) node_medians: BTreeMap<String, f64>,
-    /// Median fixed overhead of recent whole runs, when recorded.
+    /// Median fixed overhead of recent whole runs, when recorded. Kept
+    /// because node times alone would estimate a fully cached run at ~0s,
+    /// while it still spends this long installing dependencies, generating
+    /// indexes, planning, checking the cache, and finalizing.
     pub(crate) overhead_seconds: Option<f64>,
 }
 
@@ -292,6 +339,9 @@ impl TimingHistory {
 
     /// Cost for a node that has no history of its own: the median of the
     /// nodes that do, or [`UNKNOWN_NODE_SECONDS`] when there is no history.
+    /// A typical node on this machine is a better guess than a fixed
+    /// constant, and pricing unknown nodes at zero would make a build of
+    /// never-built packages look instant.
     pub(crate) fn fallback_seconds(&self) -> f64 {
         let mut known = self.node_medians.values().copied().collect::<Vec<_>>();
         median(&mut known).unwrap_or(UNKNOWN_NODE_SECONDS)
@@ -309,6 +359,8 @@ pub(crate) struct BuildEstimateV1 {
     pub(crate) overhead_seconds: f64,
     pub(crate) estimate_seconds: f64,
     /// Will-run nodes priced with the fallback because they have no history.
+    /// Reported so a reader can tell a guess from a measurement: an estimate
+    /// with many unknown nodes says little about how long the build will take.
     pub(crate) unknown_nodes: usize,
 }
 

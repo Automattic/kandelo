@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Install, update, check, or remove Kandelo's opt-in agent hooks.
 
+Why it exists: a hook saves tokens only once it is wired into a settings
+file, and that file also holds plugins, permissions, and other hooks. Doing
+it by hand risks breaking those, or leaves a stale copy behind after the
+hook changes. This script makes installing, updating, and removing it one
+safe, repeatable command.
+
 Deterministic and idempotent: running it twice changes nothing the second
 time. It edits only its own hook entry in a Claude Code settings file and
 keeps every other setting; the previous file is saved next to it as

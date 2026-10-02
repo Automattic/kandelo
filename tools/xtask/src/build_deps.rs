@@ -6022,8 +6022,11 @@ where
 
 /// `before_lock` runs after the caller computed `bytes` and immediately before
 /// this writer asks for the publication lock: the exact window in which a
-/// cooperating writer may publish. Tests use it to interleave a competing
-/// publication deterministically.
+/// cooperating writer may publish. It exists because the "target changed
+/// before publication" race only reproduces by timing in real concurrent
+/// runs; the hook lets tests interleave a competing publication into that
+/// window deterministically, so the lock-before-snapshot order stays pinned
+/// by a test rather than by luck. Production passes a no-op.
 fn write_program_package_index_atomically_with_hooks<F, R, B>(
     output: &Path,
     bytes: &[u8],
@@ -6057,7 +6060,9 @@ where
     // a compare-and-swap, so a snapshot taken outside the lock goes stale the
     // moment another writer renames its own (usually byte-identical) index
     // into place, and this writer then failed with "target changed before
-    // publication" for no real conflict. Holding the lock from snapshot
+    // publication" for no real conflict (14 such failures across 7 agent
+    // sessions in Aug-Sep 2026, from concurrent vitest and build runs over an
+    // unchanged registry). Holding the lock from snapshot
     // through rename and the parent-directory sync makes the CAS atomic with
     // respect to every cooperating writer; the snapshot validation below
     // still catches a non-cooperating writer (an editor, `git checkout`).
@@ -6207,9 +6212,13 @@ fn lock_program_package_index_publication(
             lock_path.display()
         )
     })?;
-    // Try first so a contended wait is visible: a writer blocked here is
-    // waiting for another index publication to finish, not hung, and the
-    // build-waiting eval counts these lines to measure lock waits.
+    // Try first so a contended wait is visible. A bare blocking `lock()`
+    // looks exactly like a hang to whoever is watching the build, and the
+    // contention it hides cannot be measured. Printing one line, only when
+    // the lock is actually held elsewhere, tells the watcher that this writer
+    // is waiting for another index publication to finish, and lets the
+    // build-waiting eval (evals/build-waiting) count lock waits from
+    // transcripts. An uncontended lock prints nothing.
     match lock.try_lock() {
         Ok(()) => {}
         Err(std::fs::TryLockError::WouldBlock) => {
@@ -9378,9 +9387,13 @@ pub(crate) fn source_only_skip_receipt_if_clean(
 }
 
 /// [`source_only_skip_receipt_if_clean`] with control over its one write:
-/// `record_use = false` leaves the generation's last-used stamp alone, for a
-/// read-only dry run (`local-build plan --status`) that must not make an
-/// unused generation look recently used to `cache-gc`.
+/// `record_use = false` leaves the generation's last-used stamp alone.
+///
+/// WHY: `local-build plan --status` must give the same cached/will-run answer
+/// as `run` while writing nothing. `cache-gc` evicts by last-used stamp, so a
+/// dry run that touched stamps would keep every generation it merely looked
+/// at alive as if a build had used it, and asking "how long would a build
+/// take?" would change what the cache keeps.
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn source_only_skip_receipt_if_clean_with_use(
@@ -9436,7 +9449,9 @@ pub(crate) fn source_only_skip_receipt_if_clean_with_use(
             return None;
         }
     }
-    // A skipped node is still a cache hit: record the use for `cache_gc`.
+    // A skipped node is still a cache hit: record the use for `cache_gc`,
+    // which would otherwise evict a generation that every build is reusing.
+    // A dry run passes `record_use = false` (see the doc comment above).
     if record_use {
         crate::cache_gc::touch_generation_last_used(&canonical, &cache_key_sha256);
     }

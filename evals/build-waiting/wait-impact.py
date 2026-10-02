@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """How much do agents spend waiting on Kandelo builds and tests? A local report.
 
+Why it exists: every build-waiting tool must earn its place by saving tokens
+or rework. This is the measurement that decides whether one stays or gets
+removed, as the npm ci skip was.
+
 Reads your own Claude Code transcripts (~/.claude/projects) for Kandelo
 checkouts and measures the behaviours the build-waiting tools are meant to
 change. Run it over a window before the tools existed to get a baseline, and

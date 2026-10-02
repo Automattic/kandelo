@@ -23,11 +23,15 @@
 //!                         `plan --set <file> --status [--json]` is a
 //!                         read-only dry run listing each node as cached or
 //!                         will-run, with an estimated duration from recorded
-//!                         timings. `run` appends scheduler events as JSON
-//!                         lines to `$KANDELO_LOCAL_BUILD_EVENTS` when set,
+//!                         timings, so a caller knows before starting whether
+//!                         the build takes seconds or tens of minutes. `run`
+//!                         appends scheduler events as JSON lines to
+//!                         `$KANDELO_LOCAL_BUILD_EVENTS` when set, so
+//!                         `scripts/agent-job status` can report progress,
 //!                         and records per-node and per-run durations under
-//!                         `<source cache root>/timings/`.
-//!   bootstrap            One-command hermetic build: fork-instrument host
+//!                         `<source cache root>/timings/` to feed that
+//!                         estimate.
+//!   bootstrap             One-command hermetic build: fork-instrument host
 //!                         tool, then the local-build engine over the whole
 //!                         supported set, then the TypeScript host build.
 //!                         Backs `./run.sh setup`.

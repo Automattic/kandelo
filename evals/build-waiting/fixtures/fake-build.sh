@@ -1,5 +1,8 @@
 #!/bin/bash
 # A stand-in for a long Kandelo build, for evals/build-waiting/run.py.
+# Why a fake: the A/B needs a build with a known duration, exit status (3)
+# and error line, so answers can be scored exactly and runs repeated cheaply.
+# A real 40-minute build would make each run slow and its outcome variable.
 # FAKE_BUILD_SECONDS sets the duration; FAKE_BUILD_QUIET=1 prints nothing
 # until the end (a build that looks stuck but is not).
 seconds="${FAKE_BUILD_SECONDS:-150}"

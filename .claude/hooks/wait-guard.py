@@ -31,14 +31,26 @@ import sys
 import time
 
 LOG = os.path.expanduser(os.environ.get("KANDELO_AGENT_JOBS_DIR", "~/.cache/kandelo/agent-jobs"))
+# An escape hatch for the rare legitimate case the rules misjudge. Every
+# use is logged, and the eval counts overrides as evasions, so a rule that
+# keeps getting overridden shows up as a rule to fix.
 OVERRIDE = "agent-job: allow-wait"
+# Short sleeps (letting a server bind, waiting after a kill) are not poll
+# turns. 30 s and up, followed by a look at the output, is the
+# turn-per-check pattern this hook exists to stop.
 POLL_SLEEP_SECONDS = 30
 
+# A loop waiting on `pgrep -f`. The loop's own shell has the pattern on
+# its command line, so pgrep always finds it and the wait never ends.
 PGREP_WAITER = re.compile(r"\b(until|while)\b[^\n]*?\bpgrep\s+(-\w*\s+)*-\w*f")
+# A loop in one command blocks inside a single tool call, so it is not a
+# turn-per-check poll. It is left to the other rules.
 LOOP = re.compile(r"\b(until|while|for)\b.*\bdo\b", re.S)
 PEEK = re.compile(r"tail|cat|grep|rg|wc|ls|ps|pgrep|lsof|du|head|stat|sed|awk")
 WRAPPER = re.compile(r"^(\S*dev-shell\.sh|bash|sh|zsh|-l|-e|-euo|-eu|pipefail|nohup|env|time|exec|command)$")
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Heredoc bodies (commit messages, inline scripts) are text, not commands.
+# Matching inside them denied `git commit` for mentioning `./run.sh setup`.
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\s*(?=\n|$)", re.S)
 SEPARATORS = {";", "&&", "||", "|", "&", "(", ")", ";;", "\n"}
 
@@ -122,6 +134,8 @@ def whole_tree_run(cmd):
 
 
 def decide(payload):
+    # Returns (rule, reason). A reason means deny, and it always says what to
+    # do instead, because a bare denial just gets retried in another form.
     inp = payload.get("tool_input") or {}
     cmd = inp.get("command") or ""
     if not cmd:
@@ -135,6 +149,10 @@ def decide(payload):
             "start the work with `scripts/agent-job start -- <command>` and run "
             "`scripts/agent-job wait <id>` (blocks up to 9 min; exit 124 means still running, run it again). "
             "For a process you did not start, `while kill -0 <pid>; do sleep 30; done`.")
+    # Only subagents carry agent_id. A main session's prompt cache lasts an
+    # hour, so it can wait cheaply. A subagent's lasts 5 minutes, so a long
+    # blocking call rewrites its whole context: 938M input-equivalent tokens
+    # in Aug-Sep 2026, the largest waiting cost measured.
     if payload.get("agent_id") and whole_tree_run(cmd):
         return "subagent-whole-tree", (
             "Subagents must not wait on whole-tree builds or full suites: a subagent's prompt cache expires "
@@ -156,6 +174,8 @@ def decide(payload):
 
 
 def log(payload, rule, denied):
+    # Every decision is kept so denials can be reviewed for false positives;
+    # the keep rule needs at least 90% of denials to be real wait loops.
     try:
         os.makedirs(LOG, exist_ok=True)
         with open(os.path.join(LOG, "hook-log.jsonl"), "a") as f:

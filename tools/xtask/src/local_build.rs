@@ -264,6 +264,11 @@ struct LocalBuildRunArgsV1 {
 }
 
 /// `plan --status`: the same selection inputs as `run`, read without writing.
+/// They mirror `run`'s so the dry run answers for exactly the build the agent
+/// is about to start; a plan over a different cache root, output root, or
+/// product set would report a different cached/will-run split. There is no
+/// `--rebuild` or `--verify-cache`: both turn off `run`'s up-front cache
+/// check, so there is nothing for the dry run to predict.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct LocalBuildPlanStatusArgsV1 {
     set: PathBuf,
@@ -1547,9 +1552,15 @@ impl PlanNodeStatusV1 {
 struct PlanStatusNodeV1 {
     node: String,
     status: PlanNodeStatusV1,
+    /// Per node rather than only a total, so a reader can see which node
+    /// dominates the estimate (usually one toolchain) instead of guessing.
     median_seconds: Option<f64>,
 }
 
+/// The `plan --status --json` document. It is versioned (`schema`) because
+/// scripts consume it to choose between a foreground build and a background
+/// one, and the estimate's parts are reported, not just the total, so a
+/// reader can tell a history-backed estimate from one built on fallbacks.
 #[derive(Debug, Serialize)]
 struct PlanStatusV1 {
     schema: u32,
@@ -1568,13 +1579,20 @@ struct PlanStatusV1 {
 /// serve from cache and which it would run, with an estimated duration.
 ///
 /// WHY: a build that is all cache hits takes seconds and one that rebuilds a
-/// toolchain takes most of an hour; knowing which before starting decides
-/// whether to wait in the foreground, background the build, or ask someone
-/// else to provide it. This is a dry run: it performs the same skip check as
-/// `run` but writes nothing -- no cache directories, no last-used stamps, no
-/// generated indexes -- and takes no cache lock, so a concurrent `cache-gc`
-/// can make the answer momentarily stale but never wrong about the tree it
-/// read.
+/// toolchain takes most of an hour, and nothing else tells an agent which
+/// before it starts. That answer decides how to run the build: a short one
+/// fits in one foreground call, a 10+ minute one belongs under
+/// `scripts/agent-job`. A wrong guess is expensive: a headless session or
+/// subagent that ends its turn on a long foreground call, or that hits the
+/// tool timeout, loses the build's result and has to run it again.
+///
+/// It must be a pure dry run, because it is asked *before* deciding to build
+/// and may be asked repeatedly. It performs the same skip check as `run` but
+/// writes nothing -- no cache directories, no last-used stamps (which would
+/// skew `cache-gc`), no generated indexes -- and takes no cache lock: a held
+/// build lock makes a concurrent `cache-gc` skip its collection. Without the
+/// lock, a concurrent `cache-gc` can make the answer momentarily stale but
+/// never wrong about the tree it read.
 fn run_plan_status(args: LocalBuildPlanStatusArgsV1) -> Result<(), String> {
     let started = std::time::Instant::now();
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
@@ -1585,7 +1603,8 @@ fn run_plan_status(args: LocalBuildPlanStatusArgsV1) -> Result<(), String> {
     let graph = load_and_plan(&repo, &set, &registry)?;
     let selected = select_graph_dependencies(&graph, &args.products)?;
     let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
-    // Not materialized: a missing cache simply makes every node "will run".
+    // Not materialized: materializing would create cache directories, which a
+    // dry run must not do. A missing cache simply makes every node "will run".
     let cache_roots = SourceOnlyCacheRoots {
         base: planned_cache.base.clone(),
         compiled: planned_cache.compiled.clone(),
@@ -1676,6 +1695,12 @@ fn run_plan_status(args: LocalBuildPlanStatusArgsV1) -> Result<(), String> {
         .map_err(|error| format!("write local-build plan status: {error}"))
 }
 
+/// Human-readable `plan --status`. It prints the estimate's formula with each
+/// term filled in, and how many nodes were priced by fallback, because a bare
+/// total cannot be judged: an estimate dominated by one toolchain or by
+/// no-history guesses deserves less trust than one built from recorded
+/// medians. The plan's own time is printed because the skip check hashes the
+/// whole graph and is itself not free.
 fn render_plan_status(status: &PlanStatusV1, plan_seconds: f64) -> String {
     use crate::local_build_timing::human_seconds;
     use std::fmt::Write as _;
@@ -1730,8 +1755,16 @@ fn render_plan_status(status: &PlanStatusV1, plan_seconds: f64) -> String {
 }
 
 /// Record how long a node's child ran, from its Running event to its terminal
-/// event. Nodes the up-front cache check skipped never start a child, so
-/// they are not recorded; neither are blocked nodes, which never ran.
+/// event, into `node-durations.jsonl`.
+///
+/// WHY: these records are the only source of the per-node medians that
+/// `plan --status` and the run's own prediction price will-run nodes with;
+/// without them every estimate is a flat fallback guess. Nodes the up-front
+/// cache check skipped never start a child, so there is no build time to
+/// record, and recording ~0 would teach the estimator that building the node
+/// is free. Blocked nodes never ran, so they are not recorded either. The
+/// cache key, when the child returned a receipt, ties a duration to the
+/// exact inputs it built.
 fn record_node_duration(
     event: &SchedulerEventV1,
     label: &str,
@@ -2080,6 +2113,11 @@ fn carry_forward_published_nodes(
 /// The value stored per skippable node: `Some(receipt)` for a compiled package
 /// (which the projection finalizer needs a receipt for), `None` for a product
 /// (which only validates its mapped package and carries no receipt).
+///
+/// `record_use` is true for `run` and false for `plan --status`: one function
+/// serves both so the dry run's cached/will-run answer cannot drift from the
+/// check a real run makes, while the dry run still leaves `cache-gc`'s
+/// last-used stamps untouched.
 #[cfg(unix)]
 fn compute_skip_receipts(
     registry: &Registry,
@@ -2206,6 +2244,9 @@ fn compute_skip_receipts(
 }
 
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
+    // Started before dependency install and index generation, so the run's
+    // recorded `actual_seconds` includes the fixed overhead a waiting agent
+    // really sits through, not just the scheduler's share.
     let run_started = std::time::Instant::now();
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
     // Sealed package builds run tools from the root node_modules but never
@@ -2223,6 +2264,8 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         load_and_plan(&repo, &set, &registry)
     })?;
     let selected = select_graph_dependencies(&graph, &args.products)?;
+    // The first event carries the node total, so a reader such as
+    // `scripts/agent-job status` can report "N of M done" from the file alone.
     let mut events = EventLog::from_env();
     events.plan(selected.len());
 
@@ -2300,10 +2343,15 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             )
         })
     };
+    // Marks the end of the up-front cache check, which hashes the whole graph
+    // before any scheduler event appears, and says right away how much of the
+    // graph needs no work: a reader learns early whether this is a seconds-
+    // long cached run or a real rebuild.
     events.cached_check(skip_receipts.len());
     // Predicted before any node runs, from the same history `plan --status`
-    // reads, and recorded with the actual duration at the end so the
-    // estimate's accuracy can be measured.
+    // reads, and recorded with the actual duration at the end. Without the
+    // pair in `runs.jsonl`, nobody could tell whether the estimate agents
+    // decide on is accurate or how far off it runs.
     let predicted = {
         let will_run = selected
             .keys()
@@ -2323,6 +2371,9 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let mut running_since = BTreeMap::<PlanNodeV1, std::time::Instant>::new();
     let duration_receipts = Arc::clone(&retained_receipts);
     let duration_skips = Arc::clone(&skip_receipts);
+    // Timed separately from `run_started`: the difference is the run's fixed
+    // overhead, which the estimator adds back because even a fully cached
+    // run spends it.
     let graph_started = std::time::Instant::now();
     let results = execute_graph_with_events(
         &selected,
@@ -2441,6 +2492,10 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             }
         },
         |event| {
+            // The event file and duration history hang off the same callback
+            // that renders the terminal output, so they can never disagree
+            // with what the build log shows. Rendering consumes the event, so
+            // it goes last.
             let label = node_label(crate::local_build_timing::scheduler_event_kind(&event).1);
             events.scheduler_event(&event, &label);
             record_node_duration(
@@ -2645,6 +2700,10 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             })
             .count()
     };
+    // One `runs.jsonl` line per completed run: predicted vs actual measures
+    // the estimate, and actual minus graph time feeds the overhead term. A
+    // failure to record only warns: timing history is advisory and must
+    // never turn a successful build into a failed one.
     let run_record = RunRecordV1 {
         predicted_seconds: Some(predicted.estimate_seconds),
         actual_seconds: run_started.elapsed().as_secs_f64(),
@@ -5451,6 +5510,10 @@ fn parse_local_build_args_with_jobs(
             )?;
             let set = PathBuf::from(take_required_flag(&mut flags, "--set")?);
             if !flags.switches.contains("--status") {
+                // Plain `plan` prints the static graph and ignores cache,
+                // jobs, and product inputs. Rejecting those flags without
+                // `--status` keeps a forgotten `--status` from silently
+                // returning the wrong kind of answer.
                 if let Some(flag) = flags
                     .values
                     .keys()

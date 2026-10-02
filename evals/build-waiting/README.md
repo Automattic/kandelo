@@ -184,7 +184,7 @@ dominant load error, or skips.
 - **Keep if:** at least 80% of the first 20 warnings are real.
 - **Remove if:** precision is below 80% after one revision.
 
-### 5. Conformance XFAIL reason check: MOVED OUT
+### 5. Conformance XFAIL reason check: in its own PR
 
 Every expected failure (XFAIL) in the libc, POSIX, and Sortix suites carries
 the reason it fails. The runner checks that the failure output matches that
@@ -334,7 +334,7 @@ sessions with the tools before they can be judged.
 | 2 | Tree-change stamp | Fired 5 times during development, all for edits the run never read | Removed: saves no tokens |
 | 3 | Build progress | Real 154-node build: `status` showed 143/154 done, running nodes with ages, and the process tree | Transcript measure pending |
 | 4 | `[suite-health]` | Probe files: 3 load failures grouped to one cause and warned; zero-test run warned; full suite (482 files) raised no false warning | Precision pending (needs 20 warnings) |
-| 5 | XFAIL reasons | All 47 verified; found 3 real defects | Moved to `brandonpayton/xfail-reasons`: correctness, not tokens |
+| 5 | XFAIL reasons | All 47 verified; found 3 real defects | Met; lands in its own PR (branch `brandonpayton/xfail-reasons`) |
 | 6 | Program-index lock | Fixes "index target changed" (14 of 44 baseline errors); 3 regression tests | Pending; the other 30 errors are a separate open defect |
 | 7 | `npm ci` skip | Saved about 3 s per run | Failed; removed before landing |
 | 8 | Wait-guard hook | Replay over 118,477 past Bash calls: 20/20 sampled sleep-poll denials and 12/12 pgrep-waiter denials were real. The harness already blocks about 40% of leading sleeps | Not installed; opt-in |
@@ -343,26 +343,30 @@ sessions with the tools before they can be judged.
 | 10 | Timing history | node-durations.jsonl and runs.jsonl recording | Judged through tools 1 and 9 |
 | 11 | Closure preflight | Catches a broken closure (negative test); 2.7 s warm, 12 s cold, 46 s cold at load ~100 | Warm runs meet 10 s; cold runs do not |
 
-## Token-efficiency review (2026-10-01): what was removed
+## Token-efficiency review (2026-10-01)
 
-The maintainer asked that everything left in this change contribute to token
-savings. Two tools did not, so they were taken out:
+The maintainer asked that everything in this change contribute to token
+savings: directly, by cutting turns, or indirectly, by preventing rework. A
+false green that surfaces later costs a re-investigation, plus re-validation
+of every commit that cited it.
 
-- **Tree-change stamp (tool 2): removed.** It makes results more truthful,
-  but it saves no turns, and in practice it would have added runs. All 5
-  stamps raised during development came from edits the run never read.
-  Following its advice ("re-run before citing") would have spent tokens on
-  re-runs that changed nothing.
-- **XFAIL reason checks and zero-test guards (tool 5): moved to their own
-  branch, `brandonpayton/xfail-reasons`.** They turn silent failures into
-  loud ones, which is a correctness gain, but they create investigation
-  work rather than removing any. They still found real defects (see tool
-  5) and belong in their own PR.
-- **The `[suite-health]` "every test skipped in …" line: removed.** It was
-  informational, and no agent workflow used it to skip work.
+- **Tree-change stamp (tool 2): removed.** It aimed at rework, but as built
+  it caused more. All 5 stamps raised during development came from edits the
+  run never read, so its "re-run before citing" advice would only have added
+  runs. It is worth reconsidering only if narrowed to changes in source the
+  run plausibly read.
+- **XFAIL reason checks and zero-test guards (tool 5): kept, in their own
+  PR.** They cost nothing per run and prevent rework from false greens.
+  - On 2026-09-25, the conformance suites had been failing before any test
+    started, unnoticed.
+  - Lane F once cited an empty Sortix suite as a pass.
+  - The runners are a POSIX-suite contract, so they get a separate review.
+- **`[suite-health]` skipped-files line: kept.** It costs one line per run.
+  Fully skipped files are how the Ruby fork tests went silently untested in
+  2026-09.
 
-The measurement scripts stay. They are how a tool that does not save tokens
-gets found and removed.
+The measurement scripts stay. They are how a part that saves nothing gets
+found and removed.
 
 ## What the analyzer cannot see
 
