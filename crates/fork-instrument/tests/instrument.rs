@@ -4442,3 +4442,85 @@ fn shared_restore_helpers_return_at_most_one_value() {
         "the second scalar is loaded through the frame cursor:\n{text}"
     );
 }
+
+#[test]
+fn resume_thunks_exist_only_for_non_lexical_replay_entries() {
+    // `leaf` is reached only by a direct call from an activation, so replay
+    // always re-enters it lexically. `cb` is a table member, `entry` is
+    // exported, and `tail_target` is a tail-call target: replay can reach each
+    // of those through the process resume table.
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $sig (func (result i32)))
+          (table 1 1 funcref)
+          (elem (i32.const 0) $cb)
+          (func $leaf (result i32) call $fork)
+          (func $cb (type $sig) call $leaf)
+          (func $tail_target (result i32) call $fork)
+          (func $tail (result i32) return_call $tail_target)
+          (func $entry (export "entry") (result i32)
+            call $tail
+            drop
+            i32.const 0
+            call_indirect (type $sig))
+          (memory 1))
+        "#,
+    );
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let mut resumed = Vec::new();
+    for function in module.funcs.iter() {
+        if !function
+            .name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("__wpk_fork_resume_"))
+        {
+            continue;
+        }
+        let FunctionKind::Local(local) = &function.kind else {
+            continue;
+        };
+        walk_all(local, local.entry_block(), &mut |_, instruction| {
+            if let Instr::Call(call) = instruction {
+                if let Some(name) = module.funcs.get(call.func).name.clone() {
+                    resumed.push(name);
+                }
+            }
+        });
+    }
+    resumed.sort();
+    assert_eq!(resumed, ["cb", "entry", "tail_target"]);
+
+    // The catalog stays well-formed: one record per thunk, strictly ordered
+    // function ordinals, and slots matching the exported table.
+    let catalog = module
+        .customs
+        .iter()
+        .find(|(_, section)| section.name() == "kandelo.wpk_fork.resume_catalog")
+        .map(|(_, section)| section.data(&Default::default()).into_owned())
+        .expect("resume catalog");
+    let count = u32::from_le_bytes(catalog[8..12].try_into().unwrap()) as usize;
+    assert_eq!(count, 3);
+    let records: Vec<(u32, u32)> = catalog[12..]
+        .chunks_exact(8)
+        .map(|record| {
+            (
+                u32::from_le_bytes(record[0..4].try_into().unwrap()),
+                u32::from_le_bytes(record[4..8].try_into().unwrap()),
+            )
+        })
+        .collect();
+    assert!(records.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    assert_eq!(
+        records.iter().map(|record| record.1).collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    let table = module
+        .tables
+        .iter()
+        .find(|table| table.name.as_deref() == Some("__wpk_fork_resume_catalog"))
+        .expect("resume catalog table");
+    assert_eq!(table.initial, 3);
+}

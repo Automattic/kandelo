@@ -345,6 +345,8 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         reaching.tail_call_landings,
     );
     instrument::validate_activation_state_with_targets(&module, &fork_path, &fork_path_targets)?;
+    // Before any instrumenter catalog lists every function as table content.
+    let resume_entries = instrument::resume_entry_points(&module);
 
     // The five wpk_fork_* exports prove only that some instrumentation runtime
     // was injected. They do not prove which import seeded the transformed call
@@ -437,6 +439,7 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         &fork_path_targets,
         &tail_call_sites,
         &plain_catch_plan,
+        Some(&resume_entries),
     );
     // Dirty-page instrumentation uses short-lived scalar/reference
     // temporaries. Add them after continuation frame planning so they neither

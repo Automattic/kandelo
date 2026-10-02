@@ -288,6 +288,7 @@ pub fn instrument_functions(
         fork_path,
         &[],
         plain_catch_plan,
+        None,
     )
 }
 
@@ -307,6 +308,7 @@ pub fn instrument_functions_with_targets(
         fork_path_targets,
         &[],
         plain_catch_plan,
+        None,
     )
 }
 
@@ -327,6 +329,7 @@ pub fn instrument_functions_with_targets_and_tail_sites(
     fork_path_targets: &HashSet<FunctionId>,
     tail_call_sites: &[TailCallSite],
     plain_catch_plan: &PlainCatchPlan,
+    resume_entries: Option<&HashSet<FunctionId>>,
 ) -> HashSet<FunctionId> {
     let runtime_funcs: HashSet<FunctionId> = [
         runtime.unwind_begin,
@@ -409,7 +412,14 @@ pub fn instrument_functions_with_targets_and_tail_sites(
             &reference_analyses[id],
             &mut helpers,
         );
-        resume_thunks.push(thunk);
+        // WHY: only an activation that replay can enter from outside its
+        // lexical caller needs a thunk; see `resume_entry_points`. The host
+        // rejects a replay event without a registered thunk loudly.
+        if resume_entries.is_none_or(|entries| entries.contains(id)) {
+            resume_thunks.push(thunk);
+        } else {
+            module.funcs.delete(thunk.function);
+        }
         instrumented.insert(*id);
     }
     emit_resume_catalog(module, &resume_thunks);
@@ -5472,6 +5482,69 @@ fn emit_resume_thunk(
     builder.finish(Vec::new(), &mut module.funcs)
 }
 
+/// Functions that replay can enter other than through their own lexical
+/// caller, and so need a resume thunk.
+///
+/// Replay reaches an activation through the process resume table only when
+/// the next journal event is not the callee of the lexical call being
+/// re-executed: after an indirect or reference call (the target came from a
+/// table or a `ref.func`), after a tail call eliminated the caller, at a
+/// cross-module boundary (an export), and at the fixed `_start` and thread
+/// entries (an export and a table member). A function reachable only by
+/// ordinary direct calls is always re-entered lexically; its caller is an
+/// activation that replays the call. Must run before the instrumenter adds
+/// its own catalog tables, which list every function.
+pub fn resume_entry_points(module: &Module) -> HashSet<FunctionId> {
+    use walrus::ConstExpr;
+    let mut entries = HashSet::new();
+    for export in module.exports.iter() {
+        if let ExportItem::Function(function) = export.item {
+            entries.insert(function);
+        }
+    }
+    let const_expr = |expr: &ConstExpr, entries: &mut HashSet<FunctionId>| {
+        if let ConstExpr::RefFunc(function) = expr {
+            entries.insert(*function);
+        }
+    };
+    for element in module.elements.iter() {
+        match &element.items {
+            ElementItems::Functions(functions) => entries.extend(functions.iter().copied()),
+            ElementItems::Expressions(_, exprs) => {
+                for expr in exprs {
+                    const_expr(expr, &mut entries);
+                }
+            }
+        }
+    }
+    for global in module.globals.iter() {
+        if let walrus::GlobalKind::Local(expr) = &global.kind {
+            const_expr(expr, &mut entries);
+        }
+    }
+    for function in module.funcs.iter() {
+        let FunctionKind::Local(local) = &function.kind else {
+            continue;
+        };
+        let mut stack = vec![local.entry_block()];
+        while let Some(seq) = stack.pop() {
+            for (instr, _) in &local.block(seq).instrs {
+                match instr {
+                    Instr::RefFunc(walrus::ir::RefFunc { func }) => {
+                        entries.insert(*func);
+                    }
+                    Instr::ReturnCall(walrus::ir::ReturnCall { func }) => {
+                        entries.insert(*func);
+                    }
+                    _ => {}
+                }
+                stack.extend(nested_seqs(instr));
+            }
+        }
+    }
+    entries
+}
+
 fn emit_resume_catalog(module: &mut Module, thunks: &[ResumeThunk]) {
     let size = thunks.len() as u64;
     let table = module
@@ -5498,7 +5571,7 @@ fn emit_resume_catalog(module: &mut Module, thunks: &[ResumeThunk]) {
     data.extend_from_slice(&RESUME_CATALOG_HEADER_SIZE.to_le_bytes());
     data.extend_from_slice(&(thunks.len() as u32).to_le_bytes());
     for (slot, thunk) in thunks.iter().enumerate() {
-        debug_assert_eq!(thunk.func_ordinal, slot as u32);
+        debug_assert!(slot == 0 || thunks[slot - 1].func_ordinal < thunk.func_ordinal);
         data.extend_from_slice(&thunk.func_ordinal.to_le_bytes());
         data.extend_from_slice(&(slot as u32).to_le_bytes());
     }
