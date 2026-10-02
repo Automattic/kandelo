@@ -49,6 +49,10 @@ describe("instrumented ABORT_UNWINDING", () => {
         rawPath,
         "-o",
         instrumentedPath,
+        // The 9,000 constant locals exist only to force a 72 KiB frame;
+        // wasm-opt would delete them (and takes ~40 s on such a function).
+        "--post-optimize",
+        "none",
       ]);
 
       const bytes = readFileSync(instrumentedPath);
@@ -215,6 +219,10 @@ describe("instrumented ABORT_UNWINDING", () => {
         rawPath,
         "-o",
         instrumentedPath,
+        // The 9,000 constant locals exist only to force a 72 KiB frame;
+        // wasm-opt would delete them (and takes ~40 s on such a function).
+        "--post-optimize",
+        "none",
       ]);
 
       const bytes = readFileSync(instrumentedPath);
