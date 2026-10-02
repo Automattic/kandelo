@@ -2457,7 +2457,7 @@ The same `wlcompositor` binary is also a Hyprland-class tiling WM (PR14); the fl
 - **Layout engine.** `compute_tiling(area, n)` is a pure function: it partitions the output among `n` windows by recursively splitting the remaining region along its longer side (Hyprland's dwindle default — near half to window *i*, remainder carried forward), insetting an outer gap from the screen edge and an inner gap between windows. `retile()` runs it over the mapped windows on the active workspace (in map order = z-order) and pushes each dictated size through the `xdg_toplevel.configure` path; `FLOATING` mode keeps the app_id placement rules and makes `retile()` a no-op. Because the tiler is pure, the Node gate predicts the exact partition and compares it against the emitted `TILE` markers. A surface enters that list only once it carries the `xdg_toplevel` role: a client's cursor surface (`wl_pointer.set_cursor` is accepted and ignored, since the host pointer already draws the sprite) commits a buffer under no role, and would otherwise map, take the keyboard, and claim a tile of its own. Waybar's cursor theme is the case that reaches it.
 - **Workspaces.** Nine 1-based workspaces on the single output. Each surface carries a workspace id (assigned at first map); `surface_visible()` (mapped AND on the active workspace) gates compositing, input hit-testing, and tiling. `switch_workspace()` restores focus to the target's top window (z-order doubles as per-workspace focus memory); `move_focus_to_workspace()` sends the focused window away and re-tiles the remainder.
 - **`kwlctl` IPC.** A control + event socket at `/tmp/kwlctl-0` (the hyprctl analog), polled in the compositor's `wl_event_loop` alongside the wayland + libinput fds. Verbs: `clients` / `workspaces` / `activeworkspace` / `activewindow` / `monitors` / `workspacerules` / `theme` (JSON queries, each also accepted behind hyprctl's `j/` prefix), `dispatch <workspace N|focusworkspaceoncurrentmonitor N|movetoworkspace N|close|exec <path…>|theme <name|next|prev>>`, and `--listen` (a newline-delimited `event>>data` stream in Hyprland's socket2 format). `dispatch exec` uses the non-forking `posix_spawnp` (`SYS_SPAWN`) — a `fork()` from inside an event-loop callback would wedge the server — and accepted control fds are `CLOEXEC` so they don't leak into spawned children. The CLI client is `programs/wlcompositor/kwlctl.c` (`KWLCTL_SOCKET` overrides the path).
-- **Hyprland IPC compatibility.** The same command table and event bus are also served on Hyprland's own socket pair, where an unmodified Waybar looks for them: `/tmp/hypr/wlcompositor/.socket.sock` (request/reply) and `.socket2.sock` (the event stream, which needs no handshake — a client that connects is a listener). `main()` exports `HYPRLAND_INSTANCE_SIGNATURE=wlcompositor` and defaults `XDG_RUNTIME_DIR=/tmp`, so anything the compositor execs finds the directory. The query replies carry the `hyprctl -j` field set Waybar's `hyprland/*` modules read — window `class`/`title`/`workspace`/`floating`/`mapped`, workspace `id`/`name`/`monitor`/`windows`, and a single `virtual-0` monitor — and the events it subscribes to: `workspace`/`workspacev2`, `createworkspace`/`destroyworkspace` (+`v2`), `focusedmon`(`v2`), `activewindow`/`activewindowv2`, `openwindow`/`closewindow`, `movewindow`(`v2`), `windowtitle`(`v2`). Window titles exist only for this: `xdg_toplevel.set_title` is stored on the surface and relayed, never drawn (clients keep their own CSD titlebars).
+- **Hyprland IPC compatibility.** The same command table and event bus are also served on Hyprland's own socket pair, where an unmodified Waybar looks for them: `/tmp/hypr/wlcompositor/.socket.sock` (request/reply) and `.socket2.sock` (the event stream, which needs no handshake — a client that connects is a listener). `main()` exports `HYPRLAND_INSTANCE_SIGNATURE=wlcompositor` and defaults `XDG_RUNTIME_DIR=/tmp`, so anything the compositor execs finds the directory. The query replies carry the `hyprctl -j` field set Waybar's `hyprland/*` modules read — window `class`/`title`/`workspace`/`floating`/`mapped`, workspace `id`/`name`/`monitor`/`windows`, and a single `virtual-0` monitor — and the events it subscribes to: `workspace`/`workspacev2`, `createworkspace`/`destroyworkspace` (+`v2`), `focusedmon`(`v2`), `activewindow`/`activewindowv2`, `openwindow`/`closewindow`, `movewindow`(`v2`), `windowtitle`(`v2`), in Hyprland's order: a new window's workspace is created, the window opens, then it takes focus. Window titles exist only for this: `xdg_toplevel.set_title` is stored on the surface and relayed, never drawn (clients keep their own CSD titlebars).
 - **Keybinds.** A config-driven bind table parsed from `WLC_CONFIG` / `/etc/kandelo/wlcompositor.conf` (a hyprland.conf-shaped subset: `bind = MODS, KEY, DISPATCHER[, ARGS]`); absent config installs generic SUPER-based defaults, not demo-specific ones. Keys are intercepted in the compositor's keyboard path before the focused client: a bind matches on the pressed key's shift-independent base keysym plus an exact modifier mask. Modifiers: `SUPER` (Mod4), `SHIFT`, `CTRL`, `ALT` (Mod1) — the self-contained xkb keymap carries `Super_L`, both Shifts, `Control_L`, `Alt_L`, the four arrow keys, `F1`–`F12`, and the nav cluster (Home/End/PgUp/PgDn/Insert/Delete). `CTRL` exists because a browser reserves the Cmd/Win (`SUPER`) key, so the in-browser demo mirrors every `SUPER` bind onto `CTRL`. Dispatchers: `exec`, `workspace`, `movetoworkspace`, `killactive`, `cyclenext`/`cycleprev` (focus cycling without z-order reordering, so a tiled layout keeps its geometry). The `exec` dispatcher is how new panes are opened Hyprland-style — a per-app launch bind rather than a launcher UI: the `/?demo=hyprland` config binds `Return`→`wlterm`, `K`→`wlclock`, `P`→`wlpaint` (each on both `SUPER` and `CTRL`), and on the keypress the compositor runs `kwlctl_exec` → `posix_spawnp` of the `/usr/local/bin` binary, which connects as a new tiled client. Because bound combos are grabbed before the focused client, a `CTRL`-letter launch bind shadows the terminal's like-named control key in-browser; the clock is deliberately on `K` (not `C`) so `Ctrl+C` SIGINT still reaches `wlterm`. A real Hyprland session drives these on `SUPER` and avoids the clash entirely. `killactive` sends `xdg_toplevel.close` to the focused window; the client is responsible for tearing its surface down (the compositor retiles once the surface is destroyed). `wlterm` closes its window immediately and hangs its shell up with `SIGHUP` — closing the pty master alone does not wake a shell blocked in `read()`, so without the explicit hangup the reap (and the tile) would block forever.
 - **Server-side decoration.** The compositor advertises `zxdg_decoration_manager_v1` and negotiates the mode by layout: `dwindle` → `SERVER_SIDE` (a tiled window has no titlebar), `floating` → `CLIENT_SIDE` (the client keeps its CSD titlebar). A libkwl client honors the negotiated mode (`decoration_configure`): under SSD it sets its titlebar height to 0 and treats all pointer events as content, so the tiled desktop looks like Hyprland.
 - **Client-side resize.** The compositor composites each surface at its **native** buffer size (`blit_surface` does not scale to the tile; the one exception is an explicit `wp_viewport` destination, which scales that surface's committed source rect), so tiling requires the *client* to resize into the size the compositor dictates. `retile()` sends `xdg_toplevel.configure(w,h)`; libkwl records it and, on the `xdg_surface.configure` ack barrier, rebuilds both `wl_shm` buffers at the new size and pushes a `KWL_RESIZE` event (new content w/h). Clients react: `wlclock` recomputes its dial geometry, `wlterm` reflows its VT100 grid (`vt100_resize` + `TIOCSWINSZ` + `SIGWINCH`), `wlpaint` reallocates its canvas (preserving the painting) so the toolbar + drawing area fill the whole tile rather than a fixed 640×420 corner. The initial `get_toplevel` `configure(0,0)` ("you decide") is ignored, so a floating client (`/?demo=wayland`) never resizes and is byte-identical to before.
@@ -2469,11 +2469,39 @@ These are entirely in-kernel (client↔compositor over the wayland + `/tmp/kwlct
 A tiling WM is not yet a desktop: a desktop also has a bar, a launcher, and a
 theme. Those are ordinary Wayland clients, but they need a protocol that lets a
 surface anchor to an output edge and reserve space from the windows — which is
-what `zwlr_layer_shell_v1` is, and what Waybar, mako and every other shell
-component speak. The compositor implements it (protocol XML vendored at
-`packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml`), and
-two clients consume it. This is the **O1** milestone of
+what `zwlr_layer_shell_v1` is, and what Quickshell, Waybar, mako and every
+other shell component speak. The compositor implements it (protocol XML
+vendored at
+`packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml`),
+and the in-tree clients below consume it. This is the **O1** milestone of
 [docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md](plans/2026-07-14-build-hyprland-class-compositor-plan.md).
+The Omarchy machine runs Quickshell in every one of these slots instead
+(see [browser-support.md](browser-support.md#omarchy-desktop-demo)); the
+in-tree clients stay as the dependency-free shell the layer-shell and theme
+smokes gate on.
+
+Three more protocols carry what a Quickshell shell needs from its
+compositor beyond layer-shell, each served the way Hyprland serves it:
+
+- **`hyprland_global_shortcuts_v1`** — a client registers a shortcut by
+  `app_id` and `id`, and a `bind = MODS, KEY, global, app_id:id` config
+  line makes the compositor send `pressed` on the key's press and
+  `released` on its release (to the shortcut the press went to, whatever
+  the modifiers are by then). The key never reaches the focused client. A
+  bind naming a shortcut nobody registered prints `SHORTCUT_UNBOUND`.
+- **`ext_idle_notifier_v1`** (v2) — one timer per notification, restarted
+  by every keyboard or pointer event; `idled` after the timeout, `resumed`
+  on the next input. No idle inhibitor exists here, so both request kinds
+  behave the same.
+- **`ext_session_lock_v1`** — `lock` blanks the output: every frame is
+  opaque black under the lock surface alone, the keyboard and pointer reach
+  nothing else, and keybinds stay off. `locked` is sent from the flip
+  handler, once a blanked frame is on screen. The lock surface is
+  configured to the whole logical output and must commit exactly that size
+  after acking (protocol errors otherwise). `unlock_and_destroy` restores
+  focus; a lock client that dies leaves the session locked
+  (`SESSION_LOCK_CLIENT_GONE`) until another client takes it over, and a
+  second lock request while one is held gets `finished`.
 
 - **Layer shell.** A `wl_surface` given the layer role carries a layer
   (background/bottom/top/overlay), an anchor mask, margins, an exclusive zone
@@ -2497,29 +2525,28 @@ two clients consume it. This is the **O1** milestone of
   and a clock. Its state comes
   from `kwlctl` — a `workspaces` / `activewindow` / `theme` query at startup,
   then the `--listen` event stream — polled alongside the Wayland fd, which is
-  the same feed Waybar's hyprland modules take from hyprctl. The omarchy
-  browser demo runs unmodified **Waybar** in this slot instead (see the
-  Hyprland IPC compatibility bullet above); `kbar` stays as the dependency-free
-  bar and is what the layer-shell and theme smokes gate on.
+  the same feed Quickshell's Hyprland module takes from the Hyprland IPC pair
+  (see the Hyprland IPC compatibility bullet above).
 - **`knotify`** (`programs/knotify.c`) — the notification toast, the
   notify-send slot: one toast per process, a corner-anchored overlay surface
   (margins via `zwlr_layer_surface_v1.set_margin`) that shows
   `knotify <title> <body…>` for a moment and exits — the surface teardown is
   the dismissal. The compositor's `notify = <path>` config key spawns it on
-  every theme switch. The omarchy browser demo points that key at a theme
-  script that restyles Waybar and then execs
+  every theme switch. The omarchy browser demo points that key at
   `notify-send` (`programs/notify-send.c`) — a gdbus client that
   calls `org.freedesktop.Notifications.Notify` over the `dbus-daemon`
-  session bus, where unmodified upstream mako owns the name and renders
-  the toast as its own layer-shell surface.
-- **`klauncher`** (`programs/klauncher.c`) — the launcher, Walker's slot: a
+  session bus, where the Quickshell shell's notification server owns the
+  name and renders the card as its own layer-shell surface.
+- **`klauncher`** (`programs/klauncher.c`) — the Tier-1 launcher: a
   centred overlay-layer surface with exclusive keyboard interactivity, filtering
-  a registry of `/usr/share/kandelo/apps/*.conf` entries (`name` + `exec`) as
+  a registry of `KLAUNCHER_APPS_DIR/*.conf` entries (`name` + `exec`) as
   you type. Enter hands the command to the compositor over `kwlctl dispatch
   exec` and dismisses; the launcher itself never forks. `klauncher --menu`
-  opens the Omarchy menu instead: a root level (Apps, Theme) that descends
+  opens a menu instead: a root level (Apps, Theme) that descends
   into the app list or the installed-theme list (read from `kwlctl theme`,
   switched with `dispatch theme`); ESC in a submenu returns to the root.
+  The Omarchy machine's launcher is the Quickshell shell's, reading
+  `.desktop` entries.
 - **Themes.** A theme is a directory holding one `theme.conf` under
   `/usr/share/kandelo/themes` (`WLC_THEME_DIR` / `KANDELO_THEME_DIR` override
   the root) — the same file-based design Omarchy uses. The compositor reads the

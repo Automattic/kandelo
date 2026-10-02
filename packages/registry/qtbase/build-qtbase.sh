@@ -122,6 +122,7 @@ HARFBUZZ_PREFIX="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not 
 LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?WASM_POSIX_DEP_LIBPNG_DIR not set (must be invoked via cargo xtask build-deps resolve qtbase)}"
 LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set (must be invoked via cargo xtask build-deps resolve qtbase)}"
 LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set (must be invoked via cargo xtask build-deps resolve qtbase)}"
+LIBDBUS_PREFIX="${WASM_POSIX_DEP_LIBDBUS_DIR:?WASM_POSIX_DEP_LIBDBUS_DIR not set (must be invoked via cargo xtask build-deps resolve qtbase)}"
 
 # wasm32posix-c++ resolves libc++ headers through the sysroot. Project a
 # private sysroot with the resolved libcxx overlaid: the worktree SDK seed
@@ -153,6 +154,7 @@ if [ ! -d "$SRC_DIR" ]; then
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-shm-gbm-pool.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/forkfd-generic-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-fd-notifier-on-wasm.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/dbus-manager-on-thread-on-wasm.patch"
 fi
 
 rm -rf "$BUILD_DIR"
@@ -175,6 +177,7 @@ DEP_PREFIXES=(
     "$LIBPNG_PREFIX"
     "$LIBXKBCOMMON_PREFIX"
     "$LIBWAYLAND_PREFIX"
+    "$LIBDBUS_PREFIX"
 )
 
 # pkg-config must see only the resolved dependency prefixes. PKG_CONFIG_PATH
@@ -235,7 +238,9 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
     -DFEATURE_brotli=OFF \
     -DFEATURE_sql=OFF \
     -DFEATURE_testlib=OFF \
-    -DFEATURE_dbus=OFF \
+    `# QtDBus links the registry libdbus: Quickshell's notification server is a D-Bus service. dbus-manager-on-thread-on-wasm.patch keeps it off a thread of its own.` \
+    -DFEATURE_dbus=ON \
+    -DFEATURE_dbus_linked=ON \
     -DFEATURE_process=ON \
     -DFEATURE_processenvironment=ON \
     -DFEATURE_qtwaylandscanner=ON \
@@ -253,7 +258,7 @@ cmake --build "$BUILD_DIR" -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 echo "==> Installing to $INSTALL_DIR..."
 cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
 
-for lib in libQt6Core.a libQt6Gui.a libQt6Widgets.a libQt6Network.a libQt6WaylandClient.a libQt6Concurrent.a libQt6Xml.a libQt6BundledPcre2.a; do
+for lib in libQt6Core.a libQt6Gui.a libQt6Widgets.a libQt6Network.a libQt6DBus.a libQt6WaylandClient.a libQt6Concurrent.a libQt6Xml.a libQt6BundledPcre2.a; do
     if [ ! -f "$INSTALL_DIR/lib/$lib" ]; then
         echo "ERROR: Build failed — library not found at $INSTALL_DIR/lib/$lib" >&2
         exit 1

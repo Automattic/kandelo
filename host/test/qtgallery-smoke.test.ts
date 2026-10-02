@@ -36,7 +36,7 @@ const INCONSOLATA = join(
   "third_party/Inconsolata-Regular.ttf",
 );
 
-const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
+const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const qtgalleryBin = tryResolveBinary("programs/qtgallery.wasm");
 const hasBinaries = !!compositorBin && !!qtgalleryBin;
 
@@ -106,15 +106,12 @@ describe("qtgallery — the theme gallery on the wayland desktop", () => {
       const fontDir = join(workDir, "fonts");
       const cacheDir = join(workDir, "cache");
       const themesDir = join(workDir, "themes");
-      const shellsDir = join(workDir, "shells");
       mkdirSync(fontDir);
       mkdirSync(cacheDir);
       for (const theme of ["bar", "foo"]) {
         mkdirSync(join(themesDir, theme), { recursive: true });
         writeFileSync(join(themesDir, theme, "theme.conf"), THEME_CONF);
       }
-      mkdirSync(shellsDir);
-      writeFileSync(join(shellsDir, "garply.qml"), "// fixture\n");
       copyFileSync(INCONSOLATA, join(fontDir, "Inconsolata-Regular.ttf"));
       const confPath = join(workDir, "fonts.conf");
       writeFileSync(
@@ -183,12 +180,10 @@ describe("qtgallery — the theme gallery on the wayland desktop", () => {
             "XKB_CONFIG_ROOT=/tmp",
             `FONTCONFIG_FILE=${confPath}`,
             `WLC_THEME_DIR=${themesDir}`,
-            `QTGALLERY_SHELL_DIR=${shellsDir}`,
           ],
         });
         await waitFor(out, "GALLERY_PLATFORM=wayland", 30_000, dump);
         await waitFor(out, "GALLERY_THEMES n=2", 10_000, dump);
-        await waitFor(out, "GALLERY_SHELLS n=1", 10_000, dump);
         await waitFor(out, /GALLERY_EXPOSED \d+x\d+/, 30_000, dump);
 
         // The compositor's sample is one-shot, emitted on the first composite

@@ -1038,6 +1038,25 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner server-header "$FRACSCALE_XML" "$WLC_GEN/fractional-scale-v1-server-protocol.h"
     wayland-scanner client-header "$FRACSCALE_XML" "$WLC_GEN/fractional-scale-v1-client-protocol.h"
 
+    # Same for ext_session_lock_v1, ext_idle_notifier_v1 and
+    # hyprland_global_shortcuts_v1: the lock screen, the idle monitor and
+    # the keybinds Quickshell's shell registers. The Hyprland XML comes from
+    # the hyprland-protocols package.
+    LOCK_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/ext-session-lock-v1.xml"
+    wayland-scanner private-code  "$LOCK_XML" "$WLC_GEN/ext-session-lock-v1-protocol.c"
+    wayland-scanner server-header "$LOCK_XML" "$WLC_GEN/ext-session-lock-v1-server-protocol.h"
+    wayland-scanner client-header "$LOCK_XML" "$WLC_GEN/ext-session-lock-v1-client-protocol.h"
+    IDLE_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/ext-idle-notify-v1.xml"
+    wayland-scanner private-code  "$IDLE_XML" "$WLC_GEN/ext-idle-notify-v1-protocol.c"
+    wayland-scanner server-header "$IDLE_XML" "$WLC_GEN/ext-idle-notify-v1-server-protocol.h"
+    wayland-scanner client-header "$IDLE_XML" "$WLC_GEN/ext-idle-notify-v1-client-protocol.h"
+    wlc_resolve hyprland-protocols
+    WLC_HYPR_PROTOCOLS="$(wlc_path hyprland-protocols)"
+    SHORTCUTS_XML="$WLC_HYPR_PROTOCOLS/share/hyprland-protocols/protocols/hyprland-global-shortcuts-v1.xml"
+    wayland-scanner private-code  "$SHORTCUTS_XML" "$WLC_GEN/hyprland-global-shortcuts-v1-protocol.c"
+    wayland-scanner server-header "$SHORTCUTS_XML" "$WLC_GEN/hyprland-global-shortcuts-v1-server-protocol.h"
+    wayland-scanner client-header "$SHORTCUTS_XML" "$WLC_GEN/hyprland-global-shortcuts-v1-client-protocol.h"
+
     # libwayland-egl (step 12a): the wl_egl_window shim that SDL2's upstream
     # Wayland+GLES backend uses as its EGLNativeWindowType (see
     # libc/glue/libwayland-egl.c). Built + shipped by the libwayland
@@ -1069,6 +1088,9 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             "$WLC_GEN/xdg-output-v1-protocol.c" \
             "$WLC_GEN/viewporter-protocol.c" \
             "$WLC_GEN/fractional-scale-v1-protocol.c" \
+            "$WLC_GEN/ext-session-lock-v1-protocol.c" \
+            "$WLC_GEN/ext-idle-notify-v1-protocol.c" \
+            "$WLC_GEN/hyprland-global-shortcuts-v1-protocol.c" \
             "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libwayland-server.a" \
             "$SYSROOT/lib/libwpkdraw.a" \
@@ -1097,6 +1119,9 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         "$WLC_GEN/xdg-output-v1-protocol.c" \
         "$WLC_GEN/viewporter-protocol.c" \
         "$WLC_GEN/fractional-scale-v1-protocol.c" \
+        "$WLC_GEN/ext-session-lock-v1-protocol.c" \
+        "$WLC_GEN/ext-idle-notify-v1-protocol.c" \
+        "$WLC_GEN/hyprland-global-shortcuts-v1-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-client.a" \
         "$SYSROOT/lib/libxkbcommon.a" \
