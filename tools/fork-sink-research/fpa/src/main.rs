@@ -159,6 +159,16 @@ struct Side {
     fn_types: HashMap<String, HashSet<u32>>,
     vslots: HashMap<String, HashSet<(u32, i64)>>,
     registered: HashMap<String, HashSet<String>>,
+    /// Source-level function-pointer conversion facts (plugin v4, see
+    /// KandeloFnCasts.cpp): address-taken function -> its type; functions
+    /// converted to another type; value conversions' source types; record
+    /// fields holding functions; records that are type-punned.
+    ast_qtype: HashMap<String, HashSet<String>>,
+    ast_w: HashMap<String, HashSet<String>>,
+    ast_z: HashMap<String, HashSet<String>>,
+    ast_g: HashMap<String, HashSet<String>>,
+    ast_h: HashMap<String, HashSet<String>>,
+    ast_seen: bool,
     /// (registry, registering function) -> callbacks it registers.
     reg_by_fn: HashMap<(String, String), HashSet<String>>,
     reg_unknown: HashMap<String, Vec<String>>,
@@ -300,12 +310,28 @@ impl Side {
             i
         };
         match f[0] {
-            "#kandelo-calltypes" => versions_ok &= matches!(f.get(1), Some(&"2") | Some(&"3")),
+            "#kandelo-calltypes" => versions_ok &= matches!(f.get(1), Some(&"2") | Some(&"3") | Some(&"4")),
             "M" => module = side.modules.id(f[1]),
             "F" => cur = Some((f[1].to_string(), IrFn { module, mangled: f.get(5).unwrap_or(&"").to_string(), ..Default::default() })),
             "Y" => {
                 let i = site(&mut cur, f[2]);
                 cur.as_mut().unwrap().1.sites[i].origin = Some((f[3].to_string(), f.get(4).unwrap_or(&"").to_string()));
+            }
+            "Q" => {
+                side.ast_seen = true;
+                side.ast_qtype.entry(f[1].to_string()).or_default().insert(f[2].to_string());
+            }
+            "W" => {
+                side.ast_w.entry(f[1].to_string()).or_default().insert(f[2].to_string());
+            }
+            "Z" => {
+                side.ast_z.entry(f[1].to_string()).or_default().insert(f[2].to_string());
+            }
+            "G" => {
+                side.ast_g.entry(f[2].to_string()).or_default().insert(f[1].to_string());
+            }
+            "H" => {
+                side.ast_h.entry(f[1].to_string()).or_default().insert(f.get(2).unwrap_or(&"*").to_string());
             }
             "X" => side.xdest.entry(f[1].to_string()).or_default().push((f[2].to_string(), f.get(3).unwrap_or(&"").to_string())),
             "P" => side
@@ -820,6 +846,8 @@ struct Graph<'a> {
     noir_optimistic: bool,
     drop: Vec<String>,
     main_direct: bool,
+    casts: bool,
+    tainted: HashMap<String, HashSet<String>>,
     flow_cache: std::cell::RefCell<HashMap<String, Option<HashSet<(String, String)>>>>,
     reg_unknown: HashMap<String, Vec<String>>,
     by_sig_table: HashMap<u32, Vec<u32>>,
@@ -858,6 +886,74 @@ struct Rules {
     /// (POSIX requires push/pop pairs in one lexical scope): the hub inside
     /// `_pthread_cleanup_pop` dispatches only to the caller's own handlers.
     cleanup_lexical: bool,
+    /// Exact type matching except for functions the source shows may be
+    /// called through another function type (plugin v4 facts): those match
+    /// by Wasm signature, as today.
+    casts: bool,
+    /// The coarser variant: tainted functions match by Wasm signature.
+    casts_sig: bool,
+}
+
+/// Functions that may be called through a function type other than their
+/// own (see KandeloFnCasts.cpp): converted directly; of a type whose values
+/// are converted; or stored in a record that is type-punned.
+fn tainted_fns(side: &Side, any_sig: bool) -> HashMap<String, HashSet<String>> {
+    if !side.ast_seen {
+        eprintln!("WARNING: --rule casts without plugin v4 facts: nothing is tainted (unsound)");
+    }
+    // Conversion starts per function: direct conversions, and the types its
+    // record is punned to.
+    let mut starts: HashMap<String, HashSet<String>> = side.ast_w.clone();
+    for (r, tos) in &side.ast_h {
+        for f in side.ast_g.get(r).map(|v| v.iter()).into_iter().flatten() {
+            starts.entry(f.clone()).or_default().extend(tos.iter().cloned());
+        }
+    }
+    // A function of type T also reaches whatever a T-typed value is
+    // converted to.
+    let zfrom: HashSet<&String> = side.ast_z.keys().filter(|k| *k != "*").collect();
+    let own = |f: &str| -> Vec<String> {
+        let mut v: Vec<String> = side.ast_qtype.get(f).map(|s| s.iter().cloned().collect()).unwrap_or_default();
+        if let Some(ids) = side.fn_types.get(f) {
+            v.extend(ids.iter().map(|&i| side.ids.names[i as usize].clone()));
+        }
+        v
+    };
+    let mut fns: HashSet<String> = starts.keys().cloned().collect();
+    for f in side.ast_qtype.keys().chain(side.fn_types.keys()) {
+        if own(f).iter().any(|t| zfrom.contains(t)) {
+            fns.insert(f.clone());
+        }
+    }
+    let closure = |seeds: Vec<String>| -> HashSet<String> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut work = seeds;
+        while let Some(t) = work.pop() {
+            if !seen.insert(t.clone()) {
+                continue;
+            }
+            if let Some(nx) = side.ast_z.get(&t) {
+                work.extend(nx.iter().cloned());
+            }
+        }
+        seen
+    };
+    let mut out = HashMap::new();
+    for f in &fns {
+        let mut seeds: Vec<String> = starts.get(f).map(|s| s.iter().cloned().collect()).unwrap_or_default();
+        seeds.extend(own(f));
+        let r = if any_sig { ["<any>".to_string()].into_iter().collect() } else { closure(seeds) };
+        out.insert(f.clone(), r);
+    }
+    eprintln!(
+        "casts: {} tainted functions ({} converted directly, {} value-conversion types, {} punned records){}",
+        out.len(),
+        side.ast_w.len(),
+        side.ast_z.len(),
+        side.ast_h.len(),
+        if any_sig { " [matched by Wasm signature]" } else { " [matched along conversion chains]" }
+    );
+    out
 }
 
 fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: Rules) -> Graph<'a> {
@@ -877,6 +973,8 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
         noir_optimistic: rules.noir_optimistic,
         drop: rules.drop.clone(),
         main_direct: rules.main_direct,
+        casts: rules.casts || rules.casts_sig,
+        tainted: if rules.casts || rules.casts_sig { tainted_fns(side, rules.casts_sig) } else { HashMap::new() },
         flow_cache: Default::default(),
         reg_unknown: side.reg_unknown.iter().filter(|(k, _)| !rules.known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
         by_sig_table: HashMap::new(),
@@ -1164,6 +1262,13 @@ impl<'a> Graph<'a> {
         }
         if ft.is_none() && fv.is_none() {
             return (!self.noir_optimistic).then_some("untyped-target");
+        }
+        if self.casts && hub.is_none() && !s.icall.is_empty() {
+            if let Some(reach) = self.tainted.get(tn) {
+                if reach.contains("<any>") || s.icall.iter().any(|&id| reach.contains(&self.side.ids.names[id as usize])) {
+                    return Some("tainted");
+                }
+            }
         }
         if let Some(ft) = ft {
             for id in &s.icall {
@@ -1826,6 +1931,8 @@ fn main() {
                 "hubfirst" => rules.hub_first = true,
                 "main-direct" => rules.main_direct = true,
                 "cleanup-lexical" => rules.cleanup_lexical = true,
+                "casts" => rules.casts = true,
+                "casts-sig" => rules.casts_sig = true,
                 r if r.starts_with("cutsite:") => rules.cutsite.push(r[8..].to_string()),
                 r if r.starts_with("drop:") => rules.drop.push(r[5..].to_string()),
                 "noir-optimistic" => rules.noir_optimistic = true,
