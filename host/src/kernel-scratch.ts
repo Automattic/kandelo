@@ -127,6 +127,7 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  */
 /** @internal Exported only for the Rust/host semantic-role drift contract. */
 export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
+  "kernel_clipboard_guest_read",
   "kernel_clipboard_stage",
   "kernel_dequeue_signal",
   "kernel_drain_audio",
@@ -221,6 +222,7 @@ export function kernelScratchRequiredPointerArguments(
   name: KernelScratchExportName,
 ): readonly number[] {
   switch (name) {
+    case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
     case "kernel_drain_audio":
     case "kernel_drain_wakeup_events":
@@ -303,6 +305,7 @@ function isKernelScratchExportName(
   value: string,
 ): value is KernelScratchExportName {
   switch (value) {
+    case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
     case "kernel_dequeue_signal":
     case "kernel_drain_audio":

@@ -1,7 +1,9 @@
 /**
  * /dev/kandelo/clipboard end to end on the Node host: NodeKernelHost's
  * offerClipboardText() → kernel_clipboard_stage/_offer → the guest's
- * blocking read → the guest's acknowledgement → the offer's result.
+ * blocking read → the guest's acknowledgement → the offer's result; and
+ * copy-out the other way: the guest's KIND_GUEST_TEXT write →
+ * kernel_clipboard_guest_generation/_read → waitForGuestClipboardText().
  *
  * programs/clipboard-device.c holds the device and prints a *_WAIT marker
  * whenever it is parked waiting for the next offer. Runs for wasm32 and
@@ -99,6 +101,25 @@ describe("/dev/kandelo/clipboard", () => {
           errno: 5,
         });
         expect(out).toContain(`CLIPDEV_GOT_LARGE seq=${seq + 1} len=${large.length}`);
+
+        // Copy-out. The guest's refused records changed nothing.
+        await waitFor(read, "CLIPDEV_COPY_READY", 20_000);
+        expect(out).toContain("PASS guest refusals");
+        expect(await host.waitForGuestClipboardText({ timeoutMs: 100 })).toEqual({
+          ok: false,
+          reason: "timeout",
+        });
+        // Waiting first, as the browser does on a copy chord's keydown.
+        let copied = host.waitForGuestClipboardText({ timeoutMs: 20_000 });
+        host.appendStdinData(agentPid, new Uint8Array([0x0a]));
+        expect(await copied, read()).toEqual({ ok: true, text: "copié in the guest" });
+        await waitFor(read, "CLIPDEV_COPY_LARGE_READY", 20_000);
+        copied = host.waitForGuestClipboardText({ timeoutMs: 20_000 });
+        host.appendStdinData(agentPid, new Uint8Array([0x0a]));
+        expect(await copied, read()).toEqual({ ok: true, text: large });
+        // The agent holds the device until it has been read (release drops
+        // the text); let it close and exit now.
+        host.appendStdinData(agentPid, new Uint8Array([0x0a]));
 
         expect(await exit, read()).toBe(0);
         expect(out).toContain("CLIPDEV_DONE");

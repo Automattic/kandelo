@@ -5455,8 +5455,9 @@ pub fn sys_write(
                         // `/dev/dsp` opens are represented by PcmPlayback,
                         // never by this legacy virtual-character path.
                         VirtualDevice::Dsp => Err(Errno::EBADF),
-                        // The agent's acknowledgement of an offer.
-                        VirtualDevice::Clipboard => crate::clipboard::write_ack(buf),
+                        // The agent's acknowledgement of an offer, or its
+                        // report of the desktop's new selection.
+                        VirtualDevice::Clipboard => crate::clipboard::write_from_agent(buf),
                         _ => Ok(buf.len()), // Null, Zero, Urandom, Mice: discard
                     };
                 }
@@ -41817,6 +41818,14 @@ mod tests {
         assert_eq!(sys_write(&mut proc, &mut host, fd, &ack), Ok(8));
         assert_eq!(crate::clipboard::ack_status(seq), 0);
         assert_eq!(sys_write(&mut proc, &mut host, fd, &ack[..4]), Err(Errno::EINVAL));
+        // The agent's report of the desktop selection is one write too.
+        let mut rec = Vec::new();
+        for w in [1u32, wasm_posix_shared::clipboard::KIND_GUEST_TEXT, 0, 3] {
+            rec.extend_from_slice(&w.to_le_bytes());
+        }
+        rec.extend_from_slice(b"out");
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &rec), Ok(rec.len()));
+        assert_eq!(crate::clipboard::guest_len(), Some(3));
 
         sys_close(&mut proc, &mut host, nb).unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();

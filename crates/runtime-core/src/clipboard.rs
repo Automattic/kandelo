@@ -39,8 +39,8 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use wasm_posix_shared::clipboard::{
-    ACK_NO_AGENT, ACK_PENDING, ACK_SIZE, ACK_SUPERSEDED, ACK_UNKNOWN_SEQ, KIND_OFFER_TEXT,
-    MAX_TEXT_BYTES, RECORD_HEADER_SIZE, RECORD_VERSION,
+    ACK_NO_AGENT, ACK_PENDING, ACK_SIZE, ACK_SUPERSEDED, ACK_UNKNOWN_SEQ, KIND_GUEST_TEXT,
+    KIND_OFFER_TEXT, MAX_TEXT_BYTES, RECORD_HEADER_SIZE, RECORD_VERSION,
 };
 use wasm_posix_shared::Errno;
 
@@ -68,6 +68,10 @@ struct State {
     /// Sequence number of the newest offer, 0 before the first.
     latest_seq: u32,
     latest: OfferOutcome,
+    /// The desktop's latest selection as the agent reported it, for the
+    /// host to copy out, and a counter that changes with every report.
+    guest_text: Option<Vec<u8>>,
+    guest_generation: u32,
 }
 
 struct GlobalClipboard(UnsafeCell<State>);
@@ -81,6 +85,8 @@ static GLOBAL: GlobalClipboard = GlobalClipboard(UnsafeCell::new(State {
     reading: None,
     latest_seq: 0,
     latest: OfferOutcome::Pending,
+    guest_text: None,
+    guest_generation: 0,
 }));
 
 fn state() -> &'static mut State {
@@ -109,6 +115,7 @@ pub fn release(pid: u32) {
         let st = state();
         st.pending = None;
         st.reading = None;
+        st.guest_text = None;
         if st.latest == OfferOutcome::Pending && st.latest_seq != 0 {
             st.latest = OfferOutcome::Dropped(ACK_NO_AGENT);
         }
@@ -219,6 +226,62 @@ pub fn read_into(buf: &mut [u8]) -> Result<usize, Errno> {
     Ok(n)
 }
 
+/// A `write()` from the agent: an acknowledgement (`ACK_SIZE` bytes) or a
+/// whole `KIND_GUEST_TEXT` record (header + text) reporting the desktop's
+/// new selection. One write carries exactly one of them; anything else is
+/// `EINVAL`, and text over the cap is `EMSGSIZE` (never truncated).
+pub fn write_from_agent(buf: &[u8]) -> Result<usize, Errno> {
+    if buf.len() == ACK_SIZE as usize {
+        return write_ack(buf);
+    }
+    if buf.len() < RECORD_HEADER_SIZE as usize {
+        return Err(Errno::EINVAL);
+    }
+    let word = |i: usize| u32::from_le_bytes(buf[i * 4..i * 4 + 4].try_into().unwrap());
+    let (version, kind, len) = (word(0), word(1), word(3) as usize);
+    if version != RECORD_VERSION
+        || kind != KIND_GUEST_TEXT
+        || len != buf.len() - RECORD_HEADER_SIZE as usize
+    {
+        return Err(Errno::EINVAL);
+    }
+    if len > MAX_TEXT_BYTES as usize {
+        return Err(Errno::EMSGSIZE);
+    }
+    let text = &buf[RECORD_HEADER_SIZE as usize..];
+    if core::str::from_utf8(text).is_err() {
+        return Err(Errno::EINVAL);
+    }
+    let st = state();
+    st.guest_text = Some(text.to_vec());
+    st.guest_generation = match st.guest_generation.wrapping_add(1) {
+        0 => 1,
+        n => n,
+    };
+    Ok(buf.len())
+}
+
+/// Changes every time the agent reports a new desktop selection; 0 until
+/// the first report. The host compares it before and after a copy gesture.
+pub fn guest_generation() -> u32 {
+    state().guest_generation
+}
+
+/// Copy the latest reported desktop selection, from byte `offset`, into
+/// `out`. Returns the bytes copied, or `None` when there is none.
+pub fn guest_read(out: &mut [u8], offset: usize) -> Option<usize> {
+    let text = state().guest_text.as_ref()?;
+    let start = offset.min(text.len());
+    let n = out.len().min(text.len() - start);
+    out[..n].copy_from_slice(&text[start..start + n]);
+    Some(n)
+}
+
+/// Bytes in the latest reported desktop selection, or `None`.
+pub fn guest_len() -> Option<usize> {
+    state().guest_text.as_ref().map(Vec::len)
+}
+
 /// Take an acknowledgement `{u32 seq, i32 status}` from the agent. The
 /// status must be 0 or a negative errno. An answer for an offer that is no
 /// longer the newest is accepted and ignored: that offer reads back as
@@ -249,6 +312,8 @@ pub fn reset_for_test() {
     st.reading = None;
     st.latest_seq = 0;
     st.latest = OfferOutcome::Pending;
+    st.guest_text = None;
+    st.guest_generation = 0;
 }
 
 /// The device state is machine-global, so every test that touches it —
@@ -351,6 +416,64 @@ mod tests {
         let big = alloc::vec![b'a'; MAX_TEXT_BYTES as usize];
         stage(&big, 0).unwrap();
         assert_eq!(stage(b"a", MAX_TEXT_BYTES as usize), Err(Errno::EMSGSIZE));
+    }
+
+    fn guest_record(text: &[u8]) -> Vec<u8> {
+        let mut r = Vec::new();
+        for w in [RECORD_VERSION, KIND_GUEST_TEXT, 0, text.len() as u32] {
+            r.extend_from_slice(&w.to_le_bytes());
+        }
+        r.extend_from_slice(text);
+        r
+    }
+
+    #[test]
+    fn agent_reports_the_desktop_selection_for_copy_out() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_test();
+        acquire_or_busy(7).unwrap();
+        assert_eq!(guest_generation(), 0);
+        assert_eq!(guest_len(), None);
+        let rec = guest_record("copied in foot ✓".as_bytes());
+        assert_eq!(write_from_agent(&rec), Ok(rec.len()));
+        assert_eq!(guest_generation(), 1);
+        let mut out = [0u8; 64];
+        let n = guest_read(&mut out, 0).unwrap();
+        assert_eq!(&out[..n], "copied in foot ✓".as_bytes());
+        // Chunked reads from an offset.
+        let n = guest_read(&mut out[..4], 7).unwrap();
+        assert_eq!(&out[..n], b"in f");
+        // A second report replaces the first and moves the generation.
+        write_from_agent(&guest_record(b"second")).unwrap();
+        assert_eq!(guest_generation(), 2);
+        assert_eq!(guest_len(), Some(6));
+        // Acknowledgements still go through the same write.
+        let seq = offer(b"x").unwrap();
+        let mut ack = [0u8; 8];
+        ack[..4].copy_from_slice(&seq.to_le_bytes());
+        assert_eq!(write_from_agent(&ack), Ok(8));
+        assert_eq!(ack_status(seq), 0);
+        // The agent going away drops the text it reported.
+        release(7);
+        assert_eq!(guest_len(), None);
+    }
+
+    #[test]
+    fn malformed_agent_writes_are_refused() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_test();
+        acquire_or_busy(7).unwrap();
+        let mut rec = guest_record(b"abc");
+        assert_eq!(write_from_agent(&rec[..10]), Err(Errno::EINVAL));
+        rec[12] = 9; // len no longer matches the payload
+        assert_eq!(write_from_agent(&rec), Err(Errno::EINVAL));
+        let mut wrong_kind = guest_record(b"abc");
+        wrong_kind[4] = KIND_OFFER_TEXT as u8;
+        assert_eq!(write_from_agent(&wrong_kind), Err(Errno::EINVAL));
+        assert_eq!(write_from_agent(&guest_record(&[0xff, 0xfe])), Err(Errno::EINVAL));
+        let big = alloc::vec![b'a'; MAX_TEXT_BYTES as usize + 1];
+        assert_eq!(write_from_agent(&guest_record(&big)), Err(Errno::EMSGSIZE));
+        assert_eq!(guest_generation(), 0);
     }
 
     #[test]

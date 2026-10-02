@@ -963,6 +963,7 @@
       "KANDELO_CLIPBOARD_ACK_SIZE": 8,
       "KANDELO_CLIPBOARD_ACK_SUPERSEDED": -125,
       "KANDELO_CLIPBOARD_ACK_UNKNOWN_SEQ": -2,
+      "KANDELO_CLIPBOARD_KIND_GUEST_TEXT": 2,
       "KANDELO_CLIPBOARD_KIND_OFFER_TEXT": 1,
       "KANDELO_CLIPBOARD_MAX_TEXT_BYTES": 1048576,
       "KANDELO_CLIPBOARD_RECORD_HEADER_SIZE": 16,
@@ -1101,6 +1102,8 @@
     ],
     "optional_kernel_exports": [
       "kernel_clipboard_ack",
+      "kernel_clipboard_guest_generation",
+      "kernel_clipboard_guest_read",
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
       "kernel_reserve_host_region",
@@ -2016,6 +2019,16 @@
       "kind": "func",
       "name": "kernel_clipboard_ack",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_guest_generation",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_guest_read",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

@@ -14052,6 +14052,41 @@ pub extern "C" fn kernel_clipboard_offer() -> i32 {
     }
 }
 
+/// Changes each time the guest agent reports a new desktop selection
+/// (copy-out); 0 until the first. The host samples it when a copy gesture
+/// starts and polls it until it moves.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clipboard_guest_generation() -> i32 {
+    crate::clipboard::guest_generation() as i32
+}
+
+/// Copy up to `out_capacity` bytes of the latest reported desktop
+/// selection, from byte `offset`, to kernel address `out_ptr` (a scratch
+/// lease the host reads back). Returns the bytes copied — 0 at the end —
+/// or `-ENOENT` when there is no text: the agent has reported nothing, or
+/// it released the device, which drops what it reported.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clipboard_guest_read(
+    out_ptr: *mut u8,
+    out_capacity: u32,
+    offset: u32,
+) -> i32 {
+    if out_ptr.is_null() && out_capacity != 0 {
+        return -(Errno::EFAULT as i32);
+    }
+    let out: &mut [u8] = if out_capacity == 0 {
+        &mut []
+    } else {
+        // SAFETY: the host passes a range inside a kernel scratch
+        // allocation it leased for this call.
+        unsafe { slice::from_raw_parts_mut(out_ptr, out_capacity as usize) }
+    };
+    match crate::clipboard::guest_read(out, offset as usize) {
+        Some(n) => n as i32,
+        None => -(Errno::ENOENT as i32),
+    }
+}
+
 /// The agent's answer to offer `seq`: `ACK_PENDING` (1) until it answers,
 /// then 0 or a negative errno (see `wasm_posix_shared::clipboard`). The
 /// host polls this on a timer only while an offer is pending.

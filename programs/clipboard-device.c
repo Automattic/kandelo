@@ -12,7 +12,10 @@
  *   - a blocking read parks until the host offers, then returns exactly one
  *     record (header + text), never the start of the next;
  *   - a short buffer streams through a 1 MiB record;
- *   - the acknowledgement written back reaches the host (0 and an errno).
+ *   - the acknowledgement written back reaches the host (0 and an errno);
+ *   - copy-out: a KIND_GUEST_TEXT record written in one write() reaches a
+ *     host waiting for the desktop's selection, up to exactly the cap;
+ *     malformed, non-UTF-8 and over-cap records are refused.
  *
  * Prints PASS lines and CLIPDEV_DONE; any failure exits 1 with the reason.
  */
@@ -55,6 +58,30 @@ static void read_exact(int fd, void *buf, size_t len, size_t chunk) {
     }
 }
 
+/* One KIND_GUEST_TEXT record in one write(); returns write()'s result. */
+static ssize_t write_guest(int fd, const char *text, size_t len, uint32_t claimed) {
+    size_t total = sizeof(struct kandelo_clipboard_record) + len;
+    char *buf = malloc(total);
+    CHECK(buf != NULL, "malloc %zu", total);
+    struct kandelo_clipboard_record h = {
+        .version = KANDELO_CLIPBOARD_RECORD_VERSION,
+        .kind = KANDELO_CLIPBOARD_KIND_GUEST_TEXT,
+        .len = claimed,
+    };
+    memcpy(buf, &h, sizeof(h));
+    memcpy(buf + sizeof(h), text, len);
+    ssize_t n = write(fd, buf, total);
+    int saved = errno;
+    free(buf);
+    errno = saved;
+    return n;
+}
+
+static void await_go(void) {
+    char go;
+    CHECK(read(0, &go, 1) == 1, "waiting for the test's go-ahead on stdin");
+}
+
 static void ack(int fd, uint32_t seq, int32_t status) {
     struct kandelo_clipboard_ack a = { .seq = seq, .status = status };
     CHECK(write(fd, &a, sizeof(a)) == (ssize_t)sizeof(a), "ack write");
@@ -95,8 +122,7 @@ int main(int argc, char **argv) {
 
     /* Held: a second process is refused (the test runs it now). */
     say("CLIPDEV_HELD");
-    char go;
-    CHECK(read(0, &go, 1) == 1, "waiting for the test's go-ahead on stdin");
+    await_go();
 
     /* 1. A blocking read parks until the host offers. */
     say("CLIPDEV_WAIT_SMALL");
@@ -136,6 +162,46 @@ int main(int argc, char **argv) {
     struct kandelo_clipboard_ack bad = { .seq = rec.seq, .status = 5 };
     CHECK(write(fd, &bad, sizeof(bad)) < 0 && errno == EINVAL,
           "a positive ack status was accepted");
+
+    /* 3. Copy-out. Refusals first: none of them may reach the host. */
+    static const char copied[] = "copi\xc3\xa9 in the guest";
+    errno = 0;
+    CHECK(write_guest(fd, copied, strlen(copied), strlen(copied) + 1) < 0 &&
+          errno == EINVAL, "a record whose len disagrees with the write");
+    errno = 0;
+    CHECK(write_guest(fd, "\xff\xfe", 2, 2) < 0 && errno == EINVAL,
+          "a non-UTF-8 record");
+    char *over = malloc(KANDELO_CLIPBOARD_MAX_TEXT_BYTES + 1);
+    CHECK(over != NULL, "malloc");
+    memset(over, 'z', KANDELO_CLIPBOARD_MAX_TEXT_BYTES + 1);
+    errno = 0;
+    CHECK(write_guest(fd, over, KANDELO_CLIPBOARD_MAX_TEXT_BYTES + 1,
+                      KANDELO_CLIPBOARD_MAX_TEXT_BYTES + 1) < 0 && errno == EMSGSIZE,
+          "an over-cap record");
+    say("PASS guest refusals");
+
+    /* The host starts waiting, then lets this write. */
+    say("CLIPDEV_COPY_READY");
+    await_go();
+    ssize_t want = (ssize_t)(sizeof(struct kandelo_clipboard_record) + strlen(copied));
+    CHECK(write_guest(fd, copied, strlen(copied), strlen(copied)) == want,
+          "guest record write");
+    say("CLIPDEV_COPIED");
+
+    /* Exactly the cap, in one write. */
+    say("CLIPDEV_COPY_LARGE_READY");
+    await_go();
+    for (uint32_t i = 0; i < KANDELO_CLIPBOARD_MAX_TEXT_BYTES; i++)
+        over[i] = (char)('a' + i % 26);
+    CHECK(write_guest(fd, over, KANDELO_CLIPBOARD_MAX_TEXT_BYTES,
+                      KANDELO_CLIPBOARD_MAX_TEXT_BYTES) ==
+              (ssize_t)(sizeof(struct kandelo_clipboard_record) +
+                        KANDELO_CLIPBOARD_MAX_TEXT_BYTES),
+          "a 1 MiB guest record write");
+    free(over);
+    say("CLIPDEV_COPIED_LARGE");
+    /* Hold the device until the host has read it: release drops the text. */
+    await_go();
     close(nb);
     close(fd);
     say("CLIPDEV_DONE");

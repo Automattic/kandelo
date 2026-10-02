@@ -3146,6 +3146,8 @@ pub mod abi {
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
         "kernel_clipboard_ack",
+        "kernel_clipboard_guest_generation",
+        "kernel_clipboard_guest_read",
         "kernel_clipboard_offer",
         "kernel_clipboard_stage",
         "kernel_reserve_host_region",
@@ -4281,7 +4283,10 @@ pub mod oss {
 /// (the clipboard agent) reads each offer as one record — a
 /// [`ClipboardRecordHeader`] followed by `len` payload bytes — and
 /// acknowledges it by writing a [`ClipboardAck`]. The host reads the
-/// acknowledgement back with `kernel_clipboard_ack`. The generated
+/// acknowledgement back with `kernel_clipboard_ack`. In the other direction
+/// the agent writes the desktop's selection as a `KIND_GUEST_TEXT` record;
+/// the host watches `kernel_clipboard_guest_generation` and reads it with
+/// `kernel_clipboard_guest_read`. The generated
 /// `<kandelo/clipboard.h>` mirrors these values for C agents.
 pub mod clipboard {
     /// Device path; `open()` of it is how an agent claims the device.
@@ -4291,6 +4296,10 @@ pub mod clipboard {
     /// `ClipboardRecordHeader::kind`: the payload is UTF-8 text the host
     /// offers as the new clipboard contents.
     pub const KIND_OFFER_TEXT: u32 = 1;
+    /// `ClipboardRecordHeader::kind` of a record the agent WRITES: the
+    /// desktop's new selection, as UTF-8 text, for the host to copy out.
+    /// `seq` is unused (0).
+    pub const KIND_GUEST_TEXT: u32 = 2;
     /// Largest payload an offer may carry. The host refuses larger text
     /// before offering it and the kernel refuses it again with EMSGSIZE;
     /// clipboard text is never truncated.
