@@ -75,9 +75,9 @@ in a private sysroot:
   (submodule + patch), mirroring how `build-musl.sh` overlays
   `libc/musl-overlay` onto the `libc/musl` submodule. A libc version bump
   makes the patch fail loudly — the signal to refresh the delta.
-- `sdk/rust/std-overlay/` — the `library/std` `kandelo` pal arms
-  (file-copy overlay onto the toolchain's `rust-src`, which is not a
-  submodule).
+- `sdk/rust/std-overlay/` — the `library/std` `kandelo` pal arms and the
+  `library/unwind` `kandelo` arms (file-copy overlay onto the
+  toolchain's `rust-src`, which is not a submodule).
 - `scripts/build-rust-sysroot.sh` — assembles the fork (submodule +
   patch) and the private sysroot (mirror-by-symlink + patched `rust-src`),
   installs the std target spec as
@@ -124,9 +124,11 @@ wasm32posix-cc main.c \
   -o main.wasm
 ```
 
-The generated `.pc` lists `-lgcc_s -lc` (rustc's native static libs for
-a musl target); the SDK driver drops `-lgcc_s` because WebAssembly has
-no shared libgcc.
+The generated `.pc` lists `-lc`, rustc's native static libraries for the
+target. Upstream's `unwind` crate requests `-lgcc_s` on musl targets;
+Kandelo has no unwinder library, so the std overlay drops that request
+for `target_os = "kandelo"` rather than leaving a library that build
+systems (e.g. Meson's `find_library`) look up and cannot find.
 
 Design and history: `docs/plans/2026-09-06-rust-std-target-design.md`
 and `docs/plans/2026-09-07-rust-std-target-implementation.md`.
