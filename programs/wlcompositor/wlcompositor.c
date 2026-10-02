@@ -97,6 +97,7 @@
 #include "viewporter-server-protocol.h"
 #include "fractional-scale-v1-server-protocol.h"
 #include "wlr-data-control-v1-server-protocol.h"
+#include "ext-data-control-v1-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-names.h>
@@ -3118,7 +3119,7 @@ static void fractional_scale_mgr_bind(struct wl_client *c, void *data,
 }
 
 /* ====================================================================== */
-/* The selection: wl_data_device_manager v3 + zwlr_data_control_v1        */
+/* The selection: wl_data_device + zwlr/ext data-control                 */
 /* ====================================================================== */
 
 /* One clipboard per seat, the way every wlroots compositor keeps it: the
@@ -3129,22 +3130,25 @@ static void fractional_scale_mgr_bind(struct wl_client *c, void *data,
  * then talk over that pipe directly (its write end crosses the Wayland
  * socket twice by SCM_RIGHTS).
  *
- * Two protocols set and read the same selection:
+ * Three protocols set and read the same selection:
  *   - wl_data_device: an ordinary client sets it with the serial of the input
  *     event that caused the copy, and is offered it just before it takes
  *     keyboard focus (and again when it changes while focused).
- *   - zwlr_data_control_v1: a clipboard tool with no window (wl-copy, a
- *     clipboard manager, Kandelo's host-clipboard agent) sets it without a
- *     serial and sees every change regardless of focus.
+ *   - ext_data_control_v1 and its deprecated wlroots predecessor
+ *     zwlr_data_control_v1 (the same protocol under another name; wl-copy
+ *     still speaks it): a clipboard tool with no window (a clipboard
+ *     manager, Kandelo's host-clipboard agent kclipd) sets the selection
+ *     without a serial and sees every change regardless of focus. Hyprland
+ *     advertises both.
  *
  * Drag-and-drop and the primary selection are not implemented: start_drag
  * is a no-op, the offer's accept/finish/set_actions are accepted so v3
  * clients work, and neither primary-selection global is advertised. */
 
-enum source_kind { SRC_DATA_DEVICE, SRC_DATA_CONTROL };
+enum source_kind { SRC_DATA_DEVICE, SRC_WLR_CONTROL, SRC_EXT_CONTROL };
 
 struct data_source {
-    struct wl_resource *resource;   /* wl_data_source or zwlr_data_control_source_v1 */
+    struct wl_resource *resource;   /* wl_data_source or a data-control source */
     enum source_kind kind;
     /* Offers name their source by this id, never by pointer: a source can be
      * destroyed while offers for it still exist, and a later source may be
@@ -3166,11 +3170,15 @@ static struct {
      * mid-walk. */
     struct wl_client *dying;
     struct wl_list devices;         /* wl_data_device resources, all clients */
-    struct wl_list control_devices; /* zwlr_data_control_device_v1 resources */
+    /* Data-control device resources of both flavours; user data is
+     * CONTROL_EXT for ext_data_control_device_v1, NULL for zwlr. */
+    struct wl_list control_devices;
 } sel;
 
 static const struct wl_data_offer_interface data_offer_impl;
 static const struct zwlr_data_control_offer_v1_interface control_offer_impl;
+static const struct ext_data_control_offer_v1_interface ext_control_offer_impl;
+#define CONTROL_EXT ((void *)1)
 
 static void data_source_add_mime(struct data_source *src, const char *mime) {
     for (int i = 0; i < src->n_mimes; i++)
@@ -3209,19 +3217,31 @@ static void data_device_send_selection(struct wl_resource *dev) {
 
 static void control_device_send_selection(struct wl_resource *dev) {
     struct wl_client *c = wl_resource_get_client(dev);
+    int ext = wl_resource_get_user_data(dev) == CONTROL_EXT;
     if (!sel.source) {
-        zwlr_data_control_device_v1_send_selection(dev, NULL);
+        if (ext) ext_data_control_device_v1_send_selection(dev, NULL);
+        else zwlr_data_control_device_v1_send_selection(dev, NULL);
         return;
     }
     struct wl_resource *offer = wl_resource_create(
-        c, &zwlr_data_control_offer_v1_interface, 1, 0);
+        c, ext ? &ext_data_control_offer_v1_interface
+               : &zwlr_data_control_offer_v1_interface, 1, 0);
     if (!offer) { wl_client_post_no_memory(c); return; }
-    wl_resource_set_implementation(offer, &control_offer_impl,
-                                   (void *)(uintptr_t)sel.source->id, NULL);
-    zwlr_data_control_device_v1_send_data_offer(dev, offer);
-    for (int i = 0; i < sel.source->n_mimes; i++)
-        zwlr_data_control_offer_v1_send_offer(offer, sel.source->mimes[i]);
-    zwlr_data_control_device_v1_send_selection(dev, offer);
+    wl_resource_set_implementation(
+        offer, ext ? (const void *)&ext_control_offer_impl
+                   : (const void *)&control_offer_impl,
+        (void *)(uintptr_t)sel.source->id, NULL);
+    if (ext) {
+        ext_data_control_device_v1_send_data_offer(dev, offer);
+        for (int i = 0; i < sel.source->n_mimes; i++)
+            ext_data_control_offer_v1_send_offer(offer, sel.source->mimes[i]);
+        ext_data_control_device_v1_send_selection(dev, offer);
+    } else {
+        zwlr_data_control_device_v1_send_data_offer(dev, offer);
+        for (int i = 0; i < sel.source->n_mimes; i++)
+            zwlr_data_control_offer_v1_send_offer(offer, sel.source->mimes[i]);
+        zwlr_data_control_device_v1_send_selection(dev, offer);
+    }
 }
 
 /* Offer the selection to every wl_data_device `client` holds. Called just
@@ -3244,10 +3264,15 @@ static void selection_broadcast(void) {
 }
 
 static void source_send_cancelled(struct data_source *src) {
-    if (src->kind == SRC_DATA_DEVICE)
-        wl_data_source_send_cancelled(src->resource);
-    else
+    switch (src->kind) {
+    case SRC_DATA_DEVICE: wl_data_source_send_cancelled(src->resource); break;
+    case SRC_WLR_CONTROL:
         zwlr_data_control_source_v1_send_cancelled(src->resource);
+        break;
+    case SRC_EXT_CONTROL:
+        ext_data_control_source_v1_send_cancelled(src->resource);
+        break;
+    }
 }
 
 /* Install `src` (NULL clears) as the selection. The source it replaces is
@@ -3261,7 +3286,9 @@ static void selection_set(struct data_source *src, uint32_t serial) {
     if (old) source_send_cancelled(old);
     if (src)
         printf("SELECTION_SET via=%s mimes=%d\n",
-               src->kind == SRC_DATA_DEVICE ? "data-device" : "data-control",
+               src->kind == SRC_DATA_DEVICE   ? "data-device"
+               : src->kind == SRC_EXT_CONTROL ? "ext-data-control"
+                                              : "data-control",
                src->n_mimes);
     else
         printf("SELECTION_CLEARED\n");
@@ -3277,10 +3304,17 @@ static void selection_set(struct data_source *src, uint32_t serial) {
 static void offer_receive(uint64_t source_id, const char *mime, int32_t fd) {
     struct data_source *src = sel.source;
     if (src && src->id == source_id) {
-        if (src->kind == SRC_DATA_DEVICE)
+        switch (src->kind) {
+        case SRC_DATA_DEVICE:
             wl_data_source_send_send(src->resource, mime, fd);
-        else
+            break;
+        case SRC_WLR_CONTROL:
             zwlr_data_control_source_v1_send_send(src->resource, mime, fd);
+            break;
+        case SRC_EXT_CONTROL:
+            ext_data_control_source_v1_send_send(src->resource, mime, fd);
+            break;
+        }
         printf("SELECTION_RECEIVE mime=%s\n", mime);
     } else {
         printf("SELECTION_RECEIVE_STALE mime=%s\n", mime);
@@ -3426,12 +3460,17 @@ static void data_dm_bind(struct wl_client *c, void *data, uint32_t ver,
     wl_resource_set_implementation(r, &data_dm_impl, NULL, NULL);
 }
 
-/* ---- zwlr_data_control_manager_v1 -------------------------------------- */
+/* ---- data-control: zwlr_data_control_manager_v1 + ext_data_control_v1 -- */
+
+/* The two protocols are the same requests and events under different
+ * names, with the same error values, so one set of request handlers serves
+ * both; only the interface tables and the event senders differ. */
 
 static void control_source_offer(struct wl_client *c, struct wl_resource *r,
                                  const char *mime) {
     struct data_source *src = wl_resource_get_user_data(r);
     if (src->used) {
+        /* == EXT_DATA_CONTROL_SOURCE_V1_ERROR_INVALID_OFFER */
         wl_resource_post_error(r, ZWLR_DATA_CONTROL_SOURCE_V1_ERROR_INVALID_OFFER,
                                "offer sent after set_selection");
         return;
@@ -3465,6 +3504,7 @@ static void control_device_set_selection(struct wl_client *c,
                                          struct wl_resource *source) {
     struct data_source *src = source ? wl_resource_get_user_data(source) : NULL;
     if (src && src->used) {
+        /* == EXT_DATA_CONTROL_DEVICE_V1_ERROR_USED_SOURCE */
         wl_resource_post_error(r, ZWLR_DATA_CONTROL_DEVICE_V1_ERROR_USED_SOURCE,
                                "source was already used");
         return;
@@ -3488,22 +3528,53 @@ static const struct zwlr_data_control_device_v1_interface control_device_impl = 
     .set_primary_selection = control_device_set_primary_selection,
 };
 
+static const struct ext_data_control_source_v1_interface ext_control_source_impl = {
+    .offer = control_source_offer,
+    .destroy = control_source_destroy_req,
+};
+static const struct ext_data_control_offer_v1_interface ext_control_offer_impl = {
+    .receive = control_offer_receive,
+    .destroy = control_offer_destroy_req,
+};
+static const struct ext_data_control_device_v1_interface ext_control_device_impl = {
+    .set_selection = control_device_set_selection,
+    .destroy = control_device_destroy_req,
+    .set_primary_selection = control_device_set_primary_selection,
+};
+
 static void control_mgr_create_source(struct wl_client *c,
                                       struct wl_resource *r, uint32_t id) {
     data_source_create(c, &zwlr_data_control_source_v1_interface, 1, id,
-                       &control_source_impl, SRC_DATA_CONTROL);
+                       &control_source_impl, SRC_WLR_CONTROL);
 }
-static void control_mgr_get_device(struct wl_client *c, struct wl_resource *r,
-                                   uint32_t id, struct wl_resource *seat) {
+static void ext_control_mgr_create_source(struct wl_client *c,
+                                          struct wl_resource *r, uint32_t id) {
+    data_source_create(c, &ext_data_control_source_v1_interface, 1, id,
+                       &ext_control_source_impl, SRC_EXT_CONTROL);
+}
+static void control_device_create(struct wl_client *c, struct wl_resource *r,
+                                  uint32_t id, int ext) {
     struct wl_resource *dev = wl_resource_create(
-        c, &zwlr_data_control_device_v1_interface, wl_resource_get_version(r),
-        id);
+        c, ext ? &ext_data_control_device_v1_interface
+               : &zwlr_data_control_device_v1_interface,
+        wl_resource_get_version(r), id);
     if (!dev) { wl_client_post_no_memory(c); return; }
-    wl_resource_set_implementation(dev, &control_device_impl, NULL,
-                                   data_device_resource_destroy);
+    wl_resource_set_implementation(
+        dev, ext ? (const void *)&ext_control_device_impl
+                 : (const void *)&control_device_impl,
+        ext ? CONTROL_EXT : NULL, data_device_resource_destroy);
     wl_list_insert(&sel.control_devices, wl_resource_get_link(dev));
     /* "The first selection event is sent upon binding the device." */
     control_device_send_selection(dev);
+}
+static void control_mgr_get_device(struct wl_client *c, struct wl_resource *r,
+                                   uint32_t id, struct wl_resource *seat) {
+    control_device_create(c, r, id, 0);
+}
+static void ext_control_mgr_get_device(struct wl_client *c,
+                                       struct wl_resource *r, uint32_t id,
+                                       struct wl_resource *seat) {
+    control_device_create(c, r, id, 1);
 }
 static void control_mgr_destroy(struct wl_client *c, struct wl_resource *r) {
     wl_resource_destroy(r);
@@ -3519,6 +3590,18 @@ static void control_mgr_bind(struct wl_client *c, void *data, uint32_t ver,
         c, &zwlr_data_control_manager_v1_interface, (int)ver, id);
     if (!r) { wl_client_post_no_memory(c); return; }
     wl_resource_set_implementation(r, &control_mgr_impl, NULL, NULL);
+}
+static const struct ext_data_control_manager_v1_interface ext_control_mgr_impl = {
+    .create_data_source = ext_control_mgr_create_source,
+    .get_data_device = ext_control_mgr_get_device,
+    .destroy = control_mgr_destroy,
+};
+static void ext_control_mgr_bind(struct wl_client *c, void *data, uint32_t ver,
+                                 uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        c, &ext_data_control_manager_v1_interface, (int)ver, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &ext_control_mgr_impl, NULL, NULL);
 }
 
 /* ====================================================================== */
@@ -5750,6 +5833,8 @@ int main(void) {
          * implemented, and its requests are ignored as the protocol allows. */
         !wl_global_create(g.display, &zwlr_data_control_manager_v1_interface, 2,
                           NULL, control_mgr_bind) ||
+        !wl_global_create(g.display, &ext_data_control_manager_v1_interface, 1,
+                          NULL, ext_control_mgr_bind) ||
         !wl_global_create(g.display, &wl_seat_interface, 5, NULL, seat_bind) ||
         !wl_global_create(g.display, &wl_output_interface, 4, NULL,
                           output_bind)) {

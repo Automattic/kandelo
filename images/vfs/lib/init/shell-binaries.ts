@@ -253,6 +253,13 @@ export const SHELL_LAZY_BINARY_SPECS = [
     vfsPath: "/usr/local/bin/notify-send",
     symlinks: [],
   },
+  {
+    id: "kclipd",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/kclipd.wasm",
+    vfsPath: "/usr/local/bin/kclipd",
+    symlinks: [],
+  },
   // The single-program machines' workloads. Each machine's profile command
   // execs its program, which is the first read of these bytes.
   {

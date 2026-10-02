@@ -1049,6 +1049,11 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner private-code  "$DATACTL_XML" "$WLC_GEN/wlr-data-control-v1-protocol.c"
     wayland-scanner server-header "$DATACTL_XML" "$WLC_GEN/wlr-data-control-v1-server-protocol.h"
     wayland-scanner client-header "$DATACTL_XML" "$WLC_GEN/wlr-data-control-v1-client-protocol.h"
+    # Its standardized successor, ext_data_control_v1, which kclipd speaks.
+    EXTDATACTL_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/ext-data-control-v1.xml"
+    wayland-scanner private-code  "$EXTDATACTL_XML" "$WLC_GEN/ext-data-control-v1-protocol.c"
+    wayland-scanner server-header "$EXTDATACTL_XML" "$WLC_GEN/ext-data-control-v1-server-protocol.h"
+    wayland-scanner client-header "$EXTDATACTL_XML" "$WLC_GEN/ext-data-control-v1-client-protocol.h"
 
     # libwayland-egl (step 12a): the wl_egl_window shim that SDL2's upstream
     # Wayland+GLES backend uses as its EGLNativeWindowType (see
@@ -1082,6 +1087,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             "$WLC_GEN/viewporter-protocol.c" \
             "$WLC_GEN/fractional-scale-v1-protocol.c" \
             "$WLC_GEN/wlr-data-control-v1-protocol.c" \
+            "$WLC_GEN/ext-data-control-v1-protocol.c" \
             "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libwayland-server.a" \
             "$SYSROOT/lib/libwpkdraw.a" \
