@@ -234,6 +234,13 @@ and produce the outputs declared in package metadata. Fork-using packages must
 be instrumented with `scripts/run-wasm-fork-instrument.sh`; legacy Asyncify
 artifacts are stale and must be rebuilt, not supported.
 
+Kandelo is not Linux. Never define `__linux__` in the SDK, its flags, its
+`config.site`, or the sysroot. When an upstream gates a path on `__linux__`,
+first ask whether there is another way (a feature macro or cache variable, a
+feature-keyed upstream fix, a package-local patch). A per-package
+`-D__linux__` is a commented last resort that requires a conversation with the
+maintainer first.
+
 See `docs/agent-guidance/packages-and-builds.md` before changing package
 metadata, build scripts, package patches, binary resolution, indexes, or VFS
 image package artifacts.
