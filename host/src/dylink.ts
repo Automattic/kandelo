@@ -1353,12 +1353,11 @@ function* instantiateSharedLibrarySteps(
   ) {
     throw new Error(`${name}: incomplete linked fork instrumentation imports; rebuild the module`);
   }
-  if (
-    importsFork
-    && requiredForkFunctionImportCount !== requiredForkFunctionImportNames.length
-  ) {
-    throw new Error(`${name}: env.fork requires ABI 43 linked continuation imports`);
-  }
+  // An env.fork import alone does not require the frame imports: a module
+  // whose code never calls fork itself (it may only re-export the import)
+  // has no frames to save, and wasm-opt removes the unused frame imports.
+  // Code that does call fork is instrumented and keeps them. Instrumentation
+  // itself is proven by the exports checked above.
   if (hasCompleteForkInstrumentation && !options.forkActivationOwner) {
     throw new Error(
       `${name}: fork activation cannot be coordinated: ` +

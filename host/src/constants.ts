@@ -1161,12 +1161,20 @@ function validateForkCapabilities(sections: Uint8Array[]): string[] {
   return [];
 }
 
-function validateForkUnwindTransport(facts: WasmForkArtifactFacts): string[] {
+function validateForkUnwindTransport(
+  facts: WasmForkArtifactFacts,
+  hasFrames: boolean,
+): string[] {
   const failures: string[] = [];
   const identity = `${FORK_UNWIND_TAG_IMPORT_MODULE}.${FORK_UNWIND_TAG_IMPORT_NAME}`;
   const tags = facts.tagImports.get(identity);
+  // Every instrumented frame catches the unwind tag, so a module with the
+  // linked-frame imports must import it. Without frames, no code throws or
+  // catches it and wasm-opt removes the import.
   if (!tags) {
-    failures.push(`missing required private fork-unwind tag import ${identity}`);
+    if (hasFrames) {
+      failures.push(`missing required private fork-unwind tag import ${identity}`);
+    }
   } else if (tags.length !== 1) {
     failures.push(`duplicate private fork-unwind tag import ${identity}`);
   } else if (tags[0]!.params.length !== 0 || tags[0]!.results.length !== 0) {
@@ -1846,8 +1854,10 @@ function validateForkActivationImport(facts: WasmForkArtifactFacts): string[] {
   const identity =
     `${WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE}.${WPK_FORK_EXCEPTION_IMPORT_ACTIVATION}`;
   const imports = facts.globalImports.get(identity);
+  // Optional when absent: only the exception codec reads it, and wasm-opt
+  // removes it from modules whose codec code is unused.
   if (!imports) {
-    return [`missing required immutable exception-codec activation import ${identity}`];
+    return [];
   }
   if (imports.length !== 1) {
     return [`duplicate exception-codec activation import ${identity}`];
@@ -1863,8 +1873,9 @@ function validateForkTableImports(facts: WasmForkArtifactFacts): string[] {
   for (const requirement of WPK_FORK_REQUIRED_TABLE_IMPORTS) {
     const identity = `${requirement.module}.${requirement.name}`;
     const imports = facts.tableImports.get(identity);
+    // Optional when absent (wasm-opt removes unused imports); exact when
+    // present.
     if (!imports) {
-      failures.push(`missing required ABI 43 fork-runtime table import ${identity}`);
       continue;
     }
     if (imports.length !== 1) {
@@ -2067,7 +2078,10 @@ function describeForkArtifactContractFailures(
     || facts.tagImports.has(unwindTagIdentity)
     || facts.unwindTransportDescriptors.length > 0;
   if (requiresUnwindTransport) {
-    failures.push(...validateForkUnwindTransport(facts));
+    const hasFrames = WPK_FORK_CORE_FRAME_IMPORT_NAMES.some((name) =>
+      facts.functionImports.has(`${WPK_FORK_FRAME_IMPORT_MODULE}.${name}`)
+    );
+    failures.push(...validateForkUnwindTransport(facts, hasFrames));
   }
   if (requiresFrameImports) {
     // Every instrumented activation uses the linked-frame core (reserve,
@@ -2077,10 +2091,17 @@ function describeForkArtifactContractFailures(
     // unused imports after instrumentation. Wasm code can only call what it
     // imports, so an absent optional import is unused by construction; every
     // present one is still type-checked below.
+    // A module that imports fork but has no instrumented frames of its own
+    // (it only re-exports the import, or wasm-opt removed every fork-path
+    // function) has no core imports at all; that is consistent. One that has
+    // some but not all of them was instrumented incompletely.
     const missingImports = WPK_FORK_CORE_FRAME_IMPORT_NAMES
       .filter((name) => !facts.functionImports.has(`${WPK_FORK_FRAME_IMPORT_MODULE}.${name}`))
       .map((name) => `${WPK_FORK_FRAME_IMPORT_MODULE}.${name}`);
-    if (missingImports.length > 0) {
+    if (
+      missingImports.length > 0
+      && missingImports.length < WPK_FORK_CORE_FRAME_IMPORT_NAMES.length
+    ) {
       failures.push(
         `incomplete fork linked-frame imports; missing ${missingImports.join(", ")}`,
       );

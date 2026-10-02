@@ -1023,13 +1023,11 @@ describe("wasm artifact policy helpers", () => {
     expect(failures).toContain(
       `missing required ${WPK_FORK_LINKED_FRAME_FORMAT_SECTION} descriptor`,
     );
+    // No frame imports at all is consistent (a module with no fork-path
+    // frames of its own); the missing exports above are what fail.
     expect(failures.some((failure) =>
-      failure.startsWith("incomplete fork linked-frame imports; missing ")
-      && failure.includes("env.__wpk_fork_frame_commit")
-      // Only the linked-frame core is all-or-nothing; wasm-opt may remove
-      // the optional runtime imports a module never calls.
-      && !failure.includes("env.__wpk_fork_ref_exn_define")
-    )).toBe(true);
+      failure.startsWith("incomplete fork linked-frame imports")
+    )).toBe(false);
   });
 
   it("accepts optional fork-runtime imports that wasm-opt removed, but not the frame core", () => {
@@ -1048,6 +1046,15 @@ describe("wasm artifact policy helpers", () => {
     });
     expect(describeWasmArtifactPolicyFailures(noCommit, { expectedAbi: ABI_VERSION }))
       .toContain("incomplete fork linked-frame imports; missing env.__wpk_fork_frame_commit");
+
+    // A module whose fork-path frames were all optimized away keeps no
+    // runtime imports at all; its exports and descriptors prove it was
+    // instrumented.
+    const noFrames = completeForkWasm({
+      omitRuntimeImports: WPK_FORK_REQUIRED_IMPORTS.map(({ name }) => name),
+    });
+    expect(describeWasmArtifactPolicyFailures(noFrames, { expectedAbi: ABI_VERSION }))
+      .toEqual([]);
   });
 
   it("accepts the complete ABI 43 contract for wasm32 and wasm64", () => {
@@ -1221,13 +1228,14 @@ describe("wasm artifact policy helpers", () => {
     expect(describeWasmArtifactPolicyFailures(missingTables).join("\n"))
       .toContain(`missing required ${WPK_FORK_IMPORTED_TABLES_SECTION} descriptor`);
 
+    // The activation global and runtime tables are optional when absent:
+    // wasm-opt removes them when no code uses them, and a module cannot use
+    // an import it does not declare. Present ones are checked exactly.
     const missingActivation = completeForkWasm({ includeActivationImport: false });
-    expect(describeWasmArtifactPolicyFailures(missingActivation).join("\n"))
-      .toContain("missing required immutable exception-codec activation import");
+    expect(describeWasmArtifactPolicyFailures(missingActivation)).toEqual([]);
 
     const missingResumeTable = completeForkWasm({ includeResumeTable: false });
-    expect(describeWasmArtifactPolicyFailures(missingResumeTable).join("\n"))
-      .toContain("missing required ABI 43 fork-runtime table import");
+    expect(describeWasmArtifactPolicyFailures(missingResumeTable)).toEqual([]);
   });
 
   it("binds duplicate and table64 import recipes one declaration at a time", () => {

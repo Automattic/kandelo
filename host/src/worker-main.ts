@@ -2385,21 +2385,22 @@ function buildImportObject(
       "incomplete linked fork instrumentation imports; rebuild the program",
     );
   }
-  if (linkedFrameImportCount !== 0) {
+  // Supply whichever runtime imports the module kept. A module whose
+  // fork-path frames wasm-opt removed entirely can still import the
+  // activation-state helpers (module-state records, reference codecs).
+  const forkRuntimeImports = moduleImports.filter((imported) =>
+    imported.module === "env" &&
+    imported.name.startsWith("__wpk_fork_") &&
+    !(imported.name === FORK_UNWIND_TAG_IMPORT_NAME &&
+      (imported.kind as string) === "tag")
+  );
+  if (forkRuntimeImports.length !== 0) {
     if (!forkEnvImports) {
       throw new Error(
         "linked fork instrumentation requested without continuation and activation-state owners",
       );
     }
-    for (const imported of moduleImports) {
-      if (
-        imported.module !== "env" ||
-        !imported.name.startsWith("__wpk_fork_") ||
-        (imported.name === FORK_UNWIND_TAG_IMPORT_NAME &&
-          (imported.kind as string) === "tag")
-      ) {
-        continue;
-      }
+    for (const imported of forkRuntimeImports) {
       const value = forkEnvImports[imported.name];
       if (value === undefined) {
         throw new Error(

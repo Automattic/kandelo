@@ -797,12 +797,18 @@ Why a pass after instrumentation is safe:
   wasm-opt changes. Imported globals and tables are identified by kind,
   module and name (format 2, ABI 46), and owners are bound through named
   catalog exports.
-- A runtime import nothing calls may be removed. Hosts require only the
-  linked-frame core (`__wpk_fork_frame_reserve`, `commit`, `next`) as a set
-  and type-check any other `__wpk_fork_*` import that is present.
-- The instrumenter declares the features its generated code uses
-  (`exception-handling`, `reference-types`, `bulk-memory`, `gc`) in
-  `target_features`, because wasm-opt enables only declared features.
+- A runtime import nothing calls may be removed. Instrumentation is proven
+  by the capability section, control exports and descriptors, not by
+  imports. Hosts and validators treat every fork-runtime import as optional
+  when absent and exact when present, with two rules: the linked-frame core
+  (`__wpk_fork_frame_reserve`, `commit`, `next`) is all-or-nothing, and a
+  module with frames must import the private unwind tag. A module with no
+  fork-path frames of its own imports neither.
+- The instrumenter scans its output and declares every Wasm feature it
+  uses in `target_features` (`src/target_features.rs`), because wasm-opt
+  enables only declared features. The generated code's needs depend on the
+  input (atomic guards for shared memories, GC codecs only for GC
+  references), so the declaration is derived, not listed.
 - The pass keeps a name section and DWARF (`-g`) when the input had them,
   and does not run at all when instrumentation left the module unchanged.
 - A missing or failing `wasm-opt` is an error. `--post-optimize none`

@@ -15219,11 +15219,17 @@ fn wasm_artifact_policy_failures_for(
                     .contains_key(&(requirement.module.to_string(), requirement.name.to_string()))
             })
             .map(|requirement| format!("{}.{}", requirement.module, requirement.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        if !missing_imports.is_empty() {
+            .collect::<Vec<_>>();
+        // All three absent is consistent: a module with no fork-path frames
+        // of its own (it only re-exports fork, or wasm-opt removed every
+        // fork-path function). The capability and control exports still
+        // prove instrumentation.
+        if !missing_imports.is_empty()
+            && missing_imports.len() < wasm_posix_shared::abi::WPK_FORK_CORE_FRAME_IMPORTS.len()
+        {
             failures.push(format!(
-                "has incomplete linked-frame imports; missing {missing_imports}"
+                "has incomplete linked-frame imports; missing {}",
+                missing_imports.join(", ")
             ));
         }
         for requirement in fork_imports {
@@ -29419,6 +29425,20 @@ wasm = "bad.wasm"
                 );
             }
         }
+
+        // No runtime imports at all: an instrumented module with no fork-path
+        // frames of its own after wasm-opt. The exports prove instrumentation.
+        let bytes = wasm_fork_artifact(
+            4,
+            4,
+            4,
+            true,
+            &[],
+            &all_exports,
+            &[linked_frame_descriptor(4)],
+        );
+        let failures = wasm_artifact_policy_failures(&bytes, ForkInstrumentationPolicy::Auto);
+        assert!(failures.is_empty(), "frameless module rejected: {failures:?}");
     }
 
     #[test]

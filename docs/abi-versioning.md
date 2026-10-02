@@ -1006,19 +1006,26 @@ Structural changes (recorded in the snapshot):
 
 Semantic changes (not visible to the snapshot):
 
-- **Only the linked-frame imports are all-or-nothing.** A module that
-  imports any of `__wpk_fork_frame_reserve`, `__wpk_fork_frame_commit` or
-  `__wpk_fork_frame_next` must import all three. The other `__wpk_fork_*`
-  runtime imports (module-state records, table tracking, reference and
-  exception codecs, `__wpk_fork_frame_peek`) may be missing when the module
-  never calls them. Any of them that is present must still have its exact
-  type. Previously the host rejected a module that lacked any of them.
-- **Instrumented modules declare the features the instrumenter's code
-  uses** (`exception-handling`, `reference-types`, `bulk-memory`, `gc`) in
-  `target_features`. The reference codecs use GC instructions such as
-  `ref.test (ref i31)`, and wasm-opt enables only the features a module
-  declares, so without the declaration it rejected every instrumented
-  module.
+- **Fork-runtime imports are optional when absent and exact when
+  present.** Instrumentation is proven by the capability section, the
+  `wpk_fork_*` control exports and the descriptors, which wasm-opt keeps.
+  Imports are not: a module cannot use an import it does not declare, and
+  wasm-opt removes the ones nothing calls. Two rules remain. The
+  linked-frame core (`__wpk_fork_frame_reserve`, `commit`, `next`) is
+  all-or-nothing, and a module with those frame imports must import the
+  private unwind tag, because every instrumented frame catches it. A module
+  with no fork-path frames of its own (it only re-exports `env.fork`, or
+  wasm-opt removed every fork-path function) imports neither. Previously
+  hosts, the shell guards and package publication required every
+  `__wpk_fork_*` import, the resume table and the activation global, and
+  required the frame core whenever fork was imported.
+- **Instrumented modules declare every Wasm feature they use** in
+  `target_features`. The instrumenter scans its output (operators, value
+  and block types, memories, tables, tags) and adds what is missing. Its
+  reference codecs use GC instructions such as `ref.test (ref i31)`,
+  exception codecs return tuples (multivalue), and shared memories get
+  atomic guards; wasm-opt enables only the features a module declares, so
+  without the declaration it rejected every instrumented module.
 
 ## The snapshot
 
