@@ -25,23 +25,21 @@ import { advanceLazyDownloadSummary } from "./lazy-download";
 // All methods match `BrowserKernel`'s existing signatures verbatim.
 
 /**
- * Synchronous VFS subset LiveKernelHost reaches into for inspector + readDir.
- * Matches MemoryFileSystem (host/src/vfs/memory-fs.ts).
+ * Ownership, type and size of one VFS path, as the kernel worker reports it.
+ * Mirrors `host/src/vfs/vfs.ts: VfsPathStat`; duplicated structurally so this
+ * file doesn't depend on host/'s wire types.
  */
-export interface FileSystemLike {
-  /** Throws on missing path. */
-  stat(path: string): { mode: number; size: number; mtimeMs: number; uid: number; gid: number };
-  open(path: string, flags: number, mode: number): number;
-  close(handle: number): number;
-  /** Returns bytes read, 0 on EOF. */
-  read(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
-  /** Read symlink target. Throws if path isn't a symlink. */
-  readlink(path: string): string;
-  /** Open a directory handle for use with readdir/closedir. Throws on missing. */
-  opendir(path: string): number;
-  /** Returns next entry or null at end-of-dir. */
-  readdir(handle: number): { name: string; type: number; ino: number } | null;
-  closedir(handle: number): void;
+export interface KernelVfsPathStat {
+  mode: number;
+  size: number;
+  uid: number;
+  gid: number;
+}
+
+/** One directory entry from the kernel worker, not following a final symlink. */
+export interface KernelVfsDirEntry extends KernelVfsPathStat {
+  name: string;
+  target?: string;
 }
 
 /**
@@ -167,8 +165,16 @@ export interface LazyDownloadSummary extends LazyDownloadEvent {
 }
 
 export interface KernelLike {
-  /** Legacy synchronous VFS surface; worker-owned hosts intentionally omit it. */
-  readonly fs?: FileSystemLike;
+  // WHY there is no synchronous VFS handle here: the kernel worker owns the
+  // filesystem, and the main thread must never hold worker-shared memory —
+  // on WebKit only Worker.terminate() reclaims it. Every read below is an
+  // async round-trip to the worker, the same way writeFileToVfs is.
+  /** Read a regular file. Resolves null when the path does not exist. */
+  readFileFromVfs?(path: string): Promise<Uint8Array | null>;
+  /** List a directory. Resolves null when the path does not exist. */
+  readDirFromVfs?(path: string): Promise<KernelVfsDirEntry[] | null>;
+  /** Describe a path, following symlinks. Resolves null when it is missing. */
+  statVfsPath?(path: string): Promise<KernelVfsPathStat | null>;
   /** /dev/fb0 binding registry. Used by attachFramebuffer. */
   readonly framebuffers?: FramebufferRegistryLike;
   /**
@@ -186,7 +192,7 @@ export interface KernelLike {
   /**
    * Write `bytes` to `path` in the kernel-owned VFS. Its parent must already
    * exist. The kernel worker owns the filesystem, so this is an async
-   * round-trip (unlike the deprecated synchronous {@link fs}).
+   * round-trip.
    */
   writeFileToVfs?(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
   /**
@@ -2157,7 +2163,17 @@ export class LiveKernelHost implements KernelHost {
   // ── KernelHost: VFS ──────────────────────────────────────────────────────
 
   async readFile(path: string): Promise<Uint8Array> {
-    return readFileSync(this.requireFs(), path);
+    if (!this.kernel?.readFileFromVfs) {
+      throw new Error(
+        `LiveKernelHost.readFile(${path}): the attached kernel cannot read ` +
+        `from the VFS (no readFileFromVfs).`,
+      );
+    }
+    const bytes = await this.kernel.readFileFromVfs(path);
+    if (bytes === null) {
+      throw new Error(`ENOENT: no such regular file: ${path}`);
+    }
+    return bytes;
   }
 
   async readFileText(path: string): Promise<string> {
@@ -2191,112 +2207,118 @@ export class LiveKernelHost implements KernelHost {
   }
 
   async readDir(path: string): Promise<VfsDirent[]> {
-    const fs = this.requireFs();
-    const names = loadIdNameMaps(fs);
-    const handle = fs.opendir(path);
-    try {
-      const out: VfsDirent[] = [];
-      while (true) {
-        const entry = fs.readdir(handle);
-        if (!entry) break;
-        if (entry.name === "." || entry.name === "..") continue;
-        const childPath = path.endsWith("/")
-          ? path + entry.name
-          : path + "/" + entry.name;
-        let mode: number;
-        let size: number;
-        let uid: number;
-        let gid: number;
-        let target: string | undefined;
-        try {
-          const st = fs.stat(childPath);
-          mode = st.mode;
-          size = st.size;
-          uid = st.uid;
-          gid = st.gid;
-        } catch {
-          // Disappearing entries (race with another process) shouldn't blow
-          // up the whole listing.
-          continue;
-        }
-        const kind = direntKind(entry.type, mode);
-        if (kind === "l") {
-          try { target = fs.readlink(childPath); } catch { /* ignore */ }
-        }
-        out.push({
-          name: entry.name,
-          kind,
-          mode: formatMode(mode, kind),
-          owner: idToLabel(uid, names.users),
-          group: idToLabel(gid, names.groups),
-          size: kind === "d" ? "—" : humanSize(size),
-          target,
-        });
-      }
-      return out;
-    } finally {
-      fs.closedir(handle);
+    if (!this.kernel?.readDirFromVfs) {
+      throw new Error(
+        `LiveKernelHost.readDir(${path}): the attached kernel cannot list ` +
+        `the VFS (no readDirFromVfs).`,
+      );
     }
+    const [entries, names] = await Promise.all([
+      this.kernel.readDirFromVfs(path),
+      this.loadIdNameMaps(),
+    ]);
+    if (entries === null) {
+      throw new Error(`ENOENT: no such directory: ${path}`);
+    }
+    return entries.map((entry) => {
+      const kind = direntKind(entry.mode);
+      return {
+        name: entry.name,
+        kind,
+        mode: formatMode(entry.mode, kind),
+        owner: idToLabel(entry.uid, names.users),
+        group: idToLabel(entry.gid, names.groups),
+        size: kind === "d" ? "—" : humanSize(entry.size),
+        target: entry.target,
+      };
+    });
   }
 
   async stat(path: string): Promise<VfsDirent | null> {
-    const fs = this.requireFs();
-    const names = loadIdNameMaps(fs);
-    try {
-      const st = fs.stat(path);
-      const kind = direntKind(0, st.mode);
-      return {
-        name: path.split("/").pop() || "/",
-        kind,
-        mode: formatMode(st.mode, kind),
-        owner: idToLabel(st.uid, names.users),
-        group: idToLabel(st.gid, names.groups),
-        size: kind === "d" ? "—" : humanSize(st.size),
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  private requireFs(): FileSystemLike {
-    if (!this.kernel?.fs) {
+    if (!this.kernel?.statVfsPath) {
       throw new Error(
-        "LiveKernelHost: the attached kernel has no synchronous VFS surface.",
+        `LiveKernelHost.stat(${path}): the attached kernel cannot stat ` +
+        `the VFS (no statVfsPath).`,
       );
     }
-    return this.kernel.fs;
+    const [st, names] = await Promise.all([
+      this.kernel.statVfsPath(path),
+      this.loadIdNameMaps(),
+    ]);
+    if (st === null) return null;
+    const kind = direntKind(st.mode);
+    return {
+      name: path.split("/").pop() || "/",
+      kind,
+      mode: formatMode(st.mode, kind),
+      owner: idToLabel(st.uid, names.users),
+      group: idToLabel(st.gid, names.groups),
+      size: kind === "d" ? "—" : humanSize(st.size),
+    };
+  }
+
+  /**
+   * uid/gid → name tables from the guest's own /etc/passwd and /etc/group.
+   * A machine without those files (or a kernel that cannot read) still lists:
+   * ids fall back to root for 0 and the bare number otherwise.
+   */
+  private loadIdNameMaps(): Promise<IdNameMaps> {
+    // The process list is polled; without this each poll would cost two
+    // worker round-trips for files that change about never. A short lifetime
+    // (rather than caching until the kernel is replaced) keeps a `useradd`
+    // in the guest visible within a couple of seconds.
+    const now = Date.now();
+    const cached = this.idNameMapsCache;
+    if (cached && cached.kernel === this.kernel && now - cached.at < 2_000) {
+      return cached.maps;
+    }
+    const maps = this.readIdNameMaps();
+    this.idNameMapsCache = { kernel: this.kernel, at: now, maps };
+    return maps;
+  }
+
+  private idNameMapsCache: {
+    kernel: KernelLike | null | undefined;
+    at: number;
+    maps: Promise<IdNameMaps>;
+  } | null = null;
+
+  private async readIdNameMaps(): Promise<IdNameMaps> {
+    const read = async (path: string): Promise<string | null> => {
+      try {
+        const bytes = await this.kernel?.readFileFromVfs?.(path);
+        return bytes ? decodeBytes(bytes) : null;
+      } catch {
+        return null;
+      }
+    };
+    const [passwd, group] = await Promise.all([
+      read("/etc/passwd"),
+      read("/etc/group"),
+    ]);
+    return {
+      users: parseColonIdMap(passwd, 2, new Map([[0, "root"]])),
+      groups: parseColonIdMap(group, 2, new Map([[0, "root"]])),
+    };
   }
 
   // ── KernelHost: inspector ────────────────────────────────────────────────
 
   async enumProcs(): Promise<ProcessInfo[]> {
-    // Prefer the direct kernel snapshot (kernel_enum_procs). Falls back to
-    // walking /proc only when an older kernel is wrapped — the fallback
-    // sees no procfs entries unless the static rootfs has them, so it's
-    // mostly a no-op. The fast path lands when both this kandelo-session
-    // version and the kernel ship together (ABI ≥ 9).
-    if (this.kernel?.enumProcs) {
-      const snaps = await this.kernel.enumProcs();
-      const users = this.kernel.fs
-        ? loadIdNameMaps(this.kernel.fs).users
-        : new Map<number, string>([[0, "root"]]);
-      return snaps.map((s) => toProcessInfo(s, users));
+    // The process table is kernel state, read through kernel_enum_procs.
+    // There is no /proc-walking fallback: procfs is kernel-virtual, so a
+    // host-side directory walk could only ever describe a static rootfs.
+    if (!this.kernel?.enumProcs) {
+      throw new Error(
+        "LiveKernelHost.enumProcs: the attached kernel cannot enumerate " +
+        "processes (no enumProcs).",
+      );
     }
-    const fs = this.requireFs();
-    const names = loadIdNameMaps(fs);
-    const entries = await this.readDir("/proc").catch(() => [] as VfsDirent[]);
-    const out: ProcessInfo[] = [];
-    for (const e of entries) {
-      const pid = Number(e.name);
-      if (!Number.isInteger(pid) || pid <= 0) continue;
-      try {
-        out.push(parseProcEntry(fs, pid, names.users));
-      } catch {
-        // Process may have exited between readdir and read.
-      }
-    }
-    out.sort((a, b) => a.pid - b.pid);
-    return out;
+    const [snaps, names] = await Promise.all([
+      this.kernel.enumProcs(),
+      this.loadIdNameMaps(),
+    ]);
+    return snaps.map((snap) => toProcessInfo(snap, names.users));
   }
 
   async readMemMap(pid: number): Promise<MemMapEntry[]> {
@@ -2926,51 +2948,9 @@ export class LiveKernelHost implements KernelHost {
   }
 }
 
-// ── VFS read helpers ───────────────────────────────────────────────────────
-
-// posix open flags — copied locally to avoid a dependency on the host's
-// channel.ts constants. O_RDONLY = 0.
-const O_RDONLY = 0;
-
-function readFileSync(fs: FileSystemLike, path: string): Uint8Array {
-  const st = fs.stat(path);
-  const chunks: Uint8Array[] = [];
-  const handle = fs.open(path, O_RDONLY, 0);
-  try {
-    const total = st.size;
-    // For files of unknown / streaming size we read in chunks; procfs files
-    // sometimes report size 0 but have content.
-    if (total > 0) {
-      const buf = new Uint8Array(total);
-      let off = 0;
-      while (off < total) {
-        const n = fs.read(handle, buf.subarray(off), null, total - off);
-        if (n <= 0) break;
-        off += n;
-      }
-      return buf.subarray(0, off);
-    }
-    const tmp = new Uint8Array(8192);
-    let totalRead = 0;
-    while (true) {
-      const n = fs.read(handle, tmp, null, tmp.byteLength);
-      if (n <= 0) break;
-      chunks.push(tmp.slice(0, n));
-      totalRead += n;
-    }
-    const out = new Uint8Array(totalRead);
-    let off = 0;
-    for (const c of chunks) { out.set(c, off); off += c.byteLength; }
-    return out;
-  } finally {
-    try { fs.close(handle); } catch { /* ignore */ }
-  }
-}
-
-// d_type values from MemoryFileSystem.readdir: DT_REG=8, DT_DIR=4, DT_LNK=10.
-function direntKind(dtype: number, mode: number): "d" | "f" | "l" | "b" | "c" | "p" | "s" {
-  if (dtype === 4 || (mode & 0xf000) === 0x4000) return "d";
-  if (dtype === 10 || (mode & 0xf000) === 0xa000) return "l";
+function direntKind(mode: number): "d" | "f" | "l" | "b" | "c" | "p" | "s" {
+  if ((mode & 0xf000) === 0x4000) return "d";
+  if ((mode & 0xf000) === 0xa000) return "l";
   if ((mode & 0xf000) === 0x6000) return "b";
   if ((mode & 0xf000) === 0x2000) return "c";
   if ((mode & 0xf000) === 0x1000) return "p";
@@ -3068,55 +3048,6 @@ function toProcessInfo(s: KernelProcessSnapshot, users: IdNameMap): ProcessInfo 
   };
 }
 
-// ── /proc parsers ──────────────────────────────────────────────────────────
-
-function parseProcEntry(fs: FileSystemLike, pid: number, users: IdNameMap): ProcessInfo {
-  // Linux /proc/[pid]/stat format: pid (comm) state ppid ... — the comm
-  // field is parenthesized and may contain spaces. We scan from the last
-  // ')' to skip the executable name field, then split the rest.
-  const statText = decodeBytes(readFileSync(fs, `/proc/${pid}/stat`));
-  const closeParen = statText.lastIndexOf(")");
-  const rest = closeParen === -1 ? statText : statText.slice(closeParen + 2);
-  const fields = rest.trim().split(/\s+/);
-  const state = (fields[0] ?? "S") as ProcessInfo["state"];
-
-  const status = decodeBytes(readFileSync(fs, `/proc/${pid}/status`)).split("\n");
-  const statusMap: Record<string, string> = {};
-  for (const line of status) {
-    const idx = line.indexOf(":");
-    if (idx === -1) continue;
-    statusMap[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-  }
-  const user = statusMap.Uid?.split(/\s+/)[1] ?? statusMap.Uid?.split(/\s+/)[0] ?? "0";
-  const memory = parseStatusBytes(statusMap.VmSize);
-
-  let cmdline = "";
-  try {
-    const raw = readFileSync(fs, `/proc/${pid}/cmdline`);
-    cmdline = decodeBytes(raw).replace(/\0+$/, "").replace(/\0/g, " ");
-  } catch { /* keep blank */ }
-  if (!cmdline) cmdline = statusMap.Name ? `[${statusMap.Name}]` : "[unknown]";
-
-  return {
-    pid,
-    ppid: Number(statusMap.PPid ?? 0) || 0,
-    user: numericIdStringToLabel(user, users),
-    cmdline,
-    state,
-    memory,
-  };
-}
-
-function parseStatusBytes(raw: string | undefined): string {
-  if (!raw) return "0";
-  const m = /(\d+)\s*kB/.exec(raw);
-  if (!m) return raw;
-  const kb = Number(m[1]);
-  if (kb < 1024) return `${kb}K`;
-  if (kb < 1024 * 1024) return `${(kb / 1024).toFixed(1)}M`;
-  return `${(kb / 1024 / 1024).toFixed(1)}G`;
-}
-
 type IdNameMap = Map<number, string>;
 
 interface IdNameMaps {
@@ -3124,26 +3055,13 @@ interface IdNameMaps {
   groups: IdNameMap;
 }
 
-function loadIdNameMaps(fs: FileSystemLike): IdNameMaps {
-  return {
-    users: loadColonIdMap(fs, "/etc/passwd", 2, new Map([[0, "root"]])),
-    groups: loadColonIdMap(fs, "/etc/group", 2, new Map([[0, "root"]])),
-  };
-}
-
-function loadColonIdMap(
-  fs: FileSystemLike,
-  path: string,
+function parseColonIdMap(
+  text: string | null,
   idField: number,
   fallback: IdNameMap,
 ): IdNameMap {
+  if (text === null) return new Map(fallback);
   const out: IdNameMap = new Map();
-  let text: string;
-  try {
-    text = decodeBytes(readFileSync(fs, path));
-  } catch {
-    return new Map(fallback);
-  }
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
@@ -3159,12 +3077,6 @@ function loadColonIdMap(
     if (!out.has(id)) out.set(id, name);
   }
   return out;
-}
-
-function numericIdStringToLabel(rawId: string, names: IdNameMap): string {
-  const id = Number(rawId);
-  if (!Number.isInteger(id) || id < 0) return rawId;
-  return idToLabel(id, names);
 }
 
 function idToLabel(id: number, names: IdNameMap): string {

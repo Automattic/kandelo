@@ -228,6 +228,20 @@ export interface ReadVfsFileMessage {
   path: string;
 }
 
+/** List one directory through the worker-owned VFS. */
+export interface ReadVfsDirMessage {
+  type: "read_vfs_dir";
+  requestId: number;
+  path: string;
+}
+
+/** Describe one path (following symlinks) through the worker-owned VFS. */
+export interface StatVfsPathMessage {
+  type: "stat_vfs_path";
+  requestId: number;
+  path: string;
+}
+
 /** Create or replace one regular file through the worker-owned VFS. */
 export interface WriteVfsFileMessage {
   type: "write_vfs_file";
@@ -406,6 +420,8 @@ export type MainToKernelMessage =
   | DestroyMessage
   | ExportRootfsImageMessage
   | ReadVfsFileMessage
+  | ReadVfsDirMessage
+  | StatVfsPathMessage
   | WriteVfsFileMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage

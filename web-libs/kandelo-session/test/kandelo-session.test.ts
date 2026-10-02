@@ -2,7 +2,6 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   LiveKernelHost,
   type BootDescriptor,
-  type FileSystemLike,
   type KernelLike,
   type LazyDownloadEvent,
   type MachineStatus,
@@ -226,55 +225,17 @@ describe("BootDescriptor: package-layer validation", () => {
   });
 });
 
-function makeFs(files: Record<string, string>): FileSystemLike {
+/** A kernel's VFS readers over a fixed set of regular files. */
+function makeVfs(
+  files: Record<string, string>,
+): Pick<KernelLike, "readFileFromVfs"> {
   const encoder = new TextEncoder();
-  const entries = new Map(
-    Object.entries(files).map(([path, text]) => [path, encoder.encode(text)]),
-  );
-  const handles = new Map<number, { data: Uint8Array; offset: number }>();
-  let nextHandle = 1;
-
-  const fs: FileSystemLike = {
-    stat(path: string) {
-      const data = entries.get(path);
-      if (!data) throw new Error(`ENOENT: ${path}`);
-      return { mode: 0o100644, size: data.byteLength, mtimeMs: 0, uid: 0, gid: 0 };
-    },
-    open(path: string) {
-      const data = entries.get(path);
-      if (!data) throw new Error(`ENOENT: ${path}`);
-      const handle = nextHandle++;
-      handles.set(handle, { data, offset: 0 });
-      return handle;
-    },
-    read(handle: number, buffer: Uint8Array, offset: number | null, length: number) {
-      const entry = handles.get(handle);
-      if (!entry) throw new Error(`EBADF: ${handle}`);
-      const start = offset ?? 0;
-      const available = entry.data.byteLength - entry.offset;
-      const n = Math.max(0, Math.min(length, available, buffer.byteLength - start));
-      if (n > 0) {
-        buffer.set(entry.data.subarray(entry.offset, entry.offset + n), start);
-        entry.offset += n;
-      }
-      return n;
-    },
-    close(handle: number) {
-      handles.delete(handle);
-      return 0;
-    },
-    readlink(path: string) {
-      throw new Error(`EINVAL: ${path}`);
-    },
-    opendir(path: string) {
-      throw new Error(`ENOTDIR: ${path}`);
-    },
-    readdir() {
-      return null;
-    },
-    closedir() {},
+  return {
+    readFileFromVfs: async (path: string) =>
+      Object.prototype.hasOwnProperty.call(files, path)
+        ? encoder.encode(files[path])
+        : null,
   };
-  return fs;
 }
 
 // ── LiveKernelHost ─────────────────────────────────────────────────────
@@ -376,7 +337,7 @@ describe("LiveKernelHost: lazy download events", () => {
     const offKernel = vi.fn();
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
           kernelCb = cb;
           return offKernel;
@@ -549,7 +510,7 @@ describe("LiveKernelHost: lazy download events", () => {
         error,
       })));
     });
-    host.attachKernel({ fs: makeFs({ "/etc/passwd": "" }) } as any);
+    host.attachKernel({ ...makeVfs({ "/etc/passwd": "" }) } as any);
 
     expect(seen.at(-1)).toMatchObject({
       id: "active",
@@ -567,11 +528,11 @@ describe("LiveKernelHost: lazy download events", () => {
 
   it("notifies summary consumers when a new boot clears completed history", async () => {
     let kernelCb: ((event: LazyDownloadEvent) => void) | null = null;
-    const replacementKernel = { fs: makeFs({ "/etc/passwd": "" }) } as any;
+    const replacementKernel = { ...makeVfs({ "/etc/passwd": "" }) } as any;
     const host = new LiveKernelHost({
       descriptor: DUMMY_DESCRIPTOR,
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
           kernelCb = cb;
           return vi.fn();
@@ -608,7 +569,7 @@ describe("LiveKernelHost: lazy download events", () => {
 
   it("cancels and clears an active ledger when its kernel is detached", () => {
     const host = new LiveKernelHost({
-      kernel: { fs: makeFs({ "/etc/passwd": "" }) } as any,
+      kernel: { ...makeVfs({ "/etc/passwd": "" }) } as any,
     });
     const rawEvents: LazyDownloadEvent[] = [];
     const summaryStates: string[][] = [];
@@ -644,7 +605,7 @@ describe("LiveKernelHost: lazy download events", () => {
     const host = new LiveKernelHost({
       status: "running",
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         destroy,
       } as any,
     });
@@ -678,7 +639,7 @@ describe("LiveKernelHost: lazy download events", () => {
 
 describe("LiveKernelHost: process listing", () => {
   it("resolves process snapshot UIDs through /etc/passwd", async () => {
-    const fs = makeFs({
+    const vfs = makeVfs({
       "/etc/passwd": [
         "root:x:0:0:root:/root:/bin/sh",
         "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
@@ -688,7 +649,7 @@ describe("LiveKernelHost: process listing", () => {
     });
     const host = new LiveKernelHost({
       kernel: {
-        fs,
+        ...vfs,
         enumProcs: async () => [
           { pid: 100, ppid: 0, uid: 0, gid: 0, vsizeBytes: 1024, state: "S", comm: "dinit", cmdline: "/sbin/dinit" },
           { pid: 101, ppid: 100, uid: 33, gid: 33, vsizeBytes: 2048, state: "S", comm: "php-fpm", cmdline: "php-fpm: pool www" },
@@ -699,6 +660,65 @@ describe("LiveKernelHost: process listing", () => {
 
     const procs = await host.enumProcs();
     expect(procs.map((p) => p.user)).toEqual(["root", "www-data", "4242"]);
+  });
+});
+
+describe("LiveKernelHost: VFS reads go through the kernel worker", () => {
+  const passwd = "root:x:0:0::/root:/bin/sh\nwww-data:x:33:33::/var/www:/bin/false\n";
+  const group = "root:x:0:\nwww-data:x:33:\n";
+
+  it("reads a file through readFileFromVfs", async () => {
+    const host = new LiveKernelHost({
+      kernel: makeVfs({ "/etc/motd": "hello" }) as KernelLike,
+    });
+    expect(await host.readFileText("/etc/motd")).toBe("hello");
+  });
+
+  it("reports a missing file as ENOENT instead of returning empty bytes", async () => {
+    const host = new LiveKernelHost({ kernel: makeVfs({}) as KernelLike });
+    await expect(host.readFile("/nope")).rejects.toThrow(/ENOENT.*\/nope/);
+  });
+
+  it("fails loudly when the attached kernel has no VFS readers", async () => {
+    const host = new LiveKernelHost({ kernel: {} as KernelLike });
+    await expect(host.readFile("/etc/motd")).rejects.toThrow(/no readFileFromVfs/);
+    await expect(host.readDir("/")).rejects.toThrow(/no readDirFromVfs/);
+    await expect(host.stat("/")).rejects.toThrow(/no statVfsPath/);
+    await expect(host.enumProcs()).rejects.toThrow(/no enumProcs/);
+  });
+
+  it("lists a directory with owner names, kinds and symlink targets", async () => {
+    const host = new LiveKernelHost({
+      kernel: {
+        ...makeVfs({ "/etc/passwd": passwd, "/etc/group": group }),
+        readDirFromVfs: async (path: string) => path === "/srv" ? [
+          { name: "site", mode: 0o040755, size: 0, uid: 33, gid: 33 },
+          { name: "index.html", mode: 0o100644, size: 2048, uid: 0, gid: 0 },
+          { name: "current", mode: 0o120777, size: 4, uid: 7, gid: 7, target: "site" },
+        ] : null,
+      } as KernelLike,
+    });
+    expect(await host.readDir("/srv")).toEqual([
+      { name: "site", kind: "d", mode: "drwxr-xr-x", owner: "www-data", group: "www-data", size: "—", target: undefined },
+      { name: "index.html", kind: "f", mode: "-rw-r--r--", owner: "root", group: "root", size: "2.0K", target: undefined },
+      { name: "current", kind: "l", mode: "lrwxrwxrwx", owner: "7", group: "7", size: "4", target: "site" },
+    ]);
+    await expect(host.readDir("/missing")).rejects.toThrow(/ENOENT.*\/missing/);
+  });
+
+  it("stats a path, and resolves null for a missing one", async () => {
+    const host = new LiveKernelHost({
+      kernel: {
+        ...makeVfs({ "/etc/passwd": passwd, "/etc/group": group }),
+        statVfsPath: async (path: string) => path === "/srv/site"
+          ? { mode: 0o040755, size: 0, uid: 33, gid: 33 }
+          : null,
+      } as KernelLike,
+    });
+    expect(await host.stat("/srv/site")).toEqual({
+      name: "site", kind: "d", mode: "drwxr-xr-x", owner: "www-data", group: "www-data", size: "—",
+    });
+    expect(await host.stat("/srv/gone")).toBeNull();
   });
 });
 
@@ -817,7 +837,7 @@ describe("LiveKernelHost: shell command queue", () => {
     const writePids: number[] = [];
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawn(
           _programBytes: ArrayBuffer,
           _argv: string[],
@@ -857,7 +877,7 @@ describe("LiveKernelHost: shell command queue", () => {
     const spawn = vi.fn();
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawn,
         spawnFromVfs,
         onPtyOutput() {},
@@ -901,7 +921,7 @@ describe("LiveKernelHost: shell command queue", () => {
   it("reports when a VFS-only shell is used with a kernel that cannot spawn it", async () => {
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawn: vi.fn(),
         onPtyOutput() {},
         ptyResize() {},
@@ -927,7 +947,7 @@ describe("LiveKernelHost: shell command queue", () => {
 
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
           onOutput = callback;
@@ -975,7 +995,7 @@ describe("LiveKernelHost: shell command queue", () => {
 
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
           onOutput = callback;
@@ -1027,7 +1047,7 @@ describe("LiveKernelHost: shell command queue", () => {
 
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => {
           spawnCalls++;
           await spawnGate;
@@ -1085,7 +1105,7 @@ describe("LiveKernelHost: shell command queue", () => {
 
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => {
           const pid = allocatedPids.shift()!;
           livePids.add(pid);
@@ -1152,7 +1172,7 @@ describe("LiveKernelHost: shell command queue", () => {
 
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => {
           const pid = allocatedPids.shift()!;
           const exit = new Promise<number>((resolve) => {

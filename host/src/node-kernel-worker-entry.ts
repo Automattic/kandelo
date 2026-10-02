@@ -44,7 +44,9 @@ import {
   ensureMountParentDirectories,
   HostFileSystem,
   MemoryFileSystem,
+  listPreparedPlatformDirectory,
   readPreparedPlatformFile,
+  statPreparedPlatformPath,
 } from "./vfs";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { MountConfig } from "./vfs/types";
@@ -3707,6 +3709,48 @@ async function handleReadVfsFile(
   }
 }
 
+// Directory listing and stat are answered here for the same reason file reads
+// are: the worker owns the VFS, so the main thread asks instead of reaching in.
+async function handleReadVfsDir(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_dir" }>,
+) {
+  const vfs = vfsExecIO;
+  if (!vfs) { respond(msg.requestId, null); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    // Listing can materialize a deferred tree, so it is serialized with
+    // snapshots exactly as a file read is.
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "list or materialize a rootfs directory",
+    );
+    respond(msg.requestId, await listPreparedPlatformDirectory(vfs, msg.path));
+  } catch (error) {
+    if (isMissingPathError(error)) respond(msg.requestId, null);
+    else respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
+async function handleStatVfsPath(
+  msg: Extract<MainToKernelMessage, { type: "stat_vfs_path" }>,
+) {
+  const vfs = vfsExecIO;
+  if (!vfs) { respond(msg.requestId, null); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "stat or materialize a rootfs path",
+    );
+    respond(msg.requestId, await statPreparedPlatformPath(vfs, msg.path));
+  } catch (error) {
+    if (isMissingPathError(error)) respond(msg.requestId, null);
+    else respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
 function handleWriteVfsFile(
   msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>,
 ) {
@@ -3846,6 +3890,12 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "read_vfs_file":
       void handleReadVfsFile(msg);
+      break;
+    case "read_vfs_dir":
+      void handleReadVfsDir(msg);
+      break;
+    case "stat_vfs_path":
+      void handleStatVfsPath(msg);
       break;
     case "write_vfs_file":
       handleWriteVfsFile(msg);
