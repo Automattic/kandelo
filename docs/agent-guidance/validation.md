@@ -78,6 +78,22 @@ scripts/agent-job status [<id>]  # elapsed vs usual duration, local-build progre
 scripts/agent-job result <id>    # exit status, [suite-health] lines, log tail
 ```
 
+The command after `--` can take either of two forms, and both run exactly
+as written:
+
+```bash
+# Several words: an argv, re-quoted so each word reaches bash unchanged.
+scripts/agent-job start -- scripts/dev-shell.sh bash -c 'cd host && npx vitest run test/foo.test.ts'
+# One quoted word: a shell string, run verbatim by bash -c.
+scripts/agent-job start -- "scripts/dev-shell.sh bash -c 'cd host && npx vitest run test/foo.test.ts'"
+```
+
+Before 2026-10-02, the several-words form joined the words with plain
+spaces and lost their quoting. The inner `bash -c` then received only `cd`,
+and the rest ran outside the dev shell from the repo root. If a vitest job
+log's ` RUN  v… <path>` line names the repo root instead of `.../host`, the
+run used the wrong config and toolchain, and its results are invalid.
+
 - **Waiting:** repeat `agent-job wait <id>` in the foreground until it
   returns the job's status. That is one turn per 9 minutes, never a
   `sleep`/`tail` poll. An interactive main session may instead run
