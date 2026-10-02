@@ -6929,6 +6929,12 @@ fn compute_sha_with_identity_context_for_platform(
     chain.pop();
 
     let build_inputs = build_input_digests_from_repo(target, registry, main_repo_root, policy)?;
+    let build_script_input = match target.kind {
+        ManifestKind::Library | ManifestKind::Program => {
+            build_script_input_digest(target, main_repo_root)?
+        }
+        ManifestKind::Source => None,
+    };
     let global_toolchain_inputs = match target.kind {
         ManifestKind::Library | ManifestKind::Program => match global_toolchain_inputs_override {
             Some(inputs) => inputs.to_vec(),
@@ -7133,6 +7139,13 @@ fn compute_sha_with_identity_context_for_platform(
             h.update(input.digest);
             h.update(b"\n");
         }
+    }
+    if let Some(script) = &build_script_input {
+        h.update(b"build-script:v1\n");
+        h.update(script.label.as_bytes());
+        h.update(b"\n");
+        h.update(script.digest);
+        h.update(b"\n");
     }
     if !global_toolchain_inputs.is_empty() {
         h.update(b"global-toolchain-inputs:\n");
@@ -7731,6 +7744,51 @@ fn build_input_digests(
     registry: &Registry,
 ) -> Result<Vec<BuildInputDigest>, String> {
     build_input_digests_from_repo(target, registry, &repo_root(), ResolvePolicy::Default)
+}
+
+/// The build script the engine will execute for `target`, digested.
+///
+/// WHY THIS IS NOT A `build.toml` INPUT: the script IS the build, so it is the
+/// first member of the build closure, and leaving it to a hand-listed `inputs`
+/// entry let it fall out. On 2026-10-02 seventeen of 91 registry packages did
+/// not list their own script, so editing `build-wget.sh` left wget's key at
+/// `309ce6bf…` and the engine served the artifact the OLD script had built.
+/// This path comes from `DepsManifest::build_script_path`, the same function
+/// `build_into_cache` uses to choose what to run, so the key and the executed
+/// script cannot name different files. A package whose script does not exist
+/// contributes nothing here; `build_into_cache` refuses to build it anyway.
+///
+/// Packages that also list their script in `inputs` hash it twice. That is
+/// harmless, and the explicit entries stay: source-only label validation and
+/// several contract tests read them.
+fn build_script_input_digest(
+    target: &DepsManifest,
+    main_repo_root: &Path,
+) -> Result<Option<BuildInputDigest>, String> {
+    let script = target.build_script_path(main_repo_root);
+    if !script.is_file() {
+        return Ok(None);
+    }
+    // The label must not depend on where a checkout or registry lives, or
+    // byte-identical trees get different keys. An authored `script_path` is
+    // already a portable repo-relative spelling. The fallback script sits in
+    // the package's own directory, which can be under any registry root
+    // (an external `WASM_POSIX_DEPS_REGISTRY` is not below `main_repo_root`),
+    // so it is labelled relative to that directory.
+    let label = match target.build.script_path.as_deref() {
+        Some(authored) => authored.to_owned(),
+        None => format!(
+            "package-dir/{}",
+            script
+                .strip_prefix(&target.dir)
+                .unwrap_or(&script)
+                .to_string_lossy()
+        ),
+    };
+    Ok(Some(BuildInputDigest {
+        label,
+        digest: hash_build_input(&script)?,
+    }))
 }
 
 fn build_input_digests_from_repo(
@@ -23765,6 +23823,66 @@ revision    = 2
         assert_ne!(
             sha_before, sha_after,
             "build.toml revision bump must change cache_key_sha"
+        );
+    }
+
+    /// The executed build script moves the key even when `build.toml` does
+    /// not list it: wget's did not, and editing `build-wget.sh` left its key
+    /// unchanged (see `build_script_input_digest`).
+    #[test]
+    fn cache_key_changes_when_unlisted_build_script_changes() {
+        let root = tempdir("ckcs-unlisted-script");
+        write(&root, "libScript", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let pkg = root.join("libScript");
+        std::fs::write(pkg.join("recipe.txt"), "fixed\n").unwrap();
+        std::fs::write(
+            pkg.join("build.toml"),
+            r#"
+script_path = "libScript/build-libScript.sh"
+inputs = ["libScript/recipe.txt"]
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision    = 1
+"#,
+        )
+        .unwrap();
+        let script = pkg.join("build-libScript.sh");
+        std::fs::write(&script, "#!/bin/sh\necho one\n").unwrap();
+
+        // `root` stands in for the repository root, which is what the engine
+        // resolves `script_path` against (`DepsManifest::build_script_path`).
+        let key = || {
+            let manifest = DepsManifest::load_with_overlay(&pkg).unwrap();
+            assert_eq!(
+                manifest.build_script_path(&root),
+                script,
+                "the fixture must exercise the script the engine would run"
+            );
+            hex(&compute_sha_with_identity_context(
+                &manifest,
+                &reg,
+                TargetArch::Wasm32,
+                TEST_ABI,
+                ResolvePolicy::Default,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+                Some(&[]),
+                &root,
+                None,
+            )
+            .unwrap())
+        };
+
+        let before = key();
+        assert_eq!(before, key(), "the key must be stable for an unchanged tree");
+        std::fs::write(&script, "#!/bin/sh\necho two\n").unwrap();
+        assert_ne!(
+            before,
+            key(),
+            "editing the executed build script must change the cache key even when build.toml does not list it"
         );
     }
 
