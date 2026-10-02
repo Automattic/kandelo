@@ -2280,6 +2280,66 @@ The kernel buffers raw 3-byte packets — there is no userspace queue until the 
 
 Single-open semantics match real Linux mousedev exclusive-grab. The host inverts browser `deltaY` (browser positive-down → PS/2 positive-up) before injecting, so the kernel queue holds canonical PS/2 sign convention. ABI version bumped 6 → 7 to register the new `kernel_inject_mouse_event(i32, i32, u32) -> ()` export.
 
+## Host clipboard (`/dev/kandelo/clipboard`)
+
+Text the user pastes over a machine reaches the guest the way a VM guest agent
+(SPICE's `spice-vdagent`) gets it: the host feeds a device, and an agent in the
+guest turns it into the desktop's own clipboard. Three layers, each usable
+without the next:
+
+```text
+ browser `paste` event          BrowserInputSource (clipboard feature)
+        │  text                   holds the chord + later keys
+        ▼
+ offerClipboardText(text)      BrowserKernel / NodeKernelHost (same API)
+        │                       CRLF → LF, ≤ 1 MiB, never truncated
+        ▼
+ kernel_clipboard_stage ×N     kernel worker: scratch-sized chunks,
+ kernel_clipboard_offer()        one kernel entry, then wake parked readers
+        │
+        ▼
+ /dev/kandelo/clipboard  ──►  kclipd (read one record, block when empty)
+        ▲                          │ ext_data_control_v1 set_selection
+        │ {seq, status}            ▼
+ kernel_clipboard_ack(seq) ◄── write(ack)   wlcompositor selection → foot
+   (host timer, only while pending)
+```
+
+- **The device** (`crates/runtime-core/src/clipboard.rs`) holds at most one
+  unread offer; a newer one replaces it, and a record already being read is
+  finished first. Each offer reads as one record — a 16-byte header and the
+  UTF-8 text — and a `read()` never crosses into the next record. An empty
+  device returns `EAGAIN`, which parks a blocking reader until the next
+  offer's wake, as `/dev/dri/card0` does. One process may hold it open, and
+  last close or exit drops whatever it had not read. The state is machine-wide
+  rather than per open file description, so `fork` carries nothing new. See
+  `docs/posix-status.md` for the exact semantics.
+- **The host API** (`offerClipboardText`, `host/src/clipboard.ts`) is the same
+  on Node and in the browser. It resolves once the agent has acknowledged
+  the offer, or with the reason it could not: no agent, over the cap, invalid
+  text, the agent's own errno, superseded, or a 2 s timeout. The worker polls
+  `kernel_clipboard_ack` every 16 ms while an offer is pending and not
+  otherwise, which keeps the syscall completion path untouched. Only the
+  paste gesture is browser-only: Node has no DOM `paste` event, the same
+  boundary `NodeInputSource` documents.
+- **kclipd** (`programs/kclipd.c`, started by `omarchydesktop`) speaks
+  `ext_data_control_v1` rather than reading the device inside the compositor,
+  so it keeps working when a real Hyprland replaces `wlcompositor`. It serves
+  pastes by writing into the pasting client's pipe without blocking, and logs
+  sequence numbers and lengths, never the text.
+- **The gesture** (`BrowserInputSource`, images that declare the `clipboard`
+  runtime feature): a Cmd/Ctrl+V keydown is not cancelled, so the browser's
+  own paste binding decides whether it was a paste. If `paste` fires in that
+  task, its `text/plain` is offered (unless it is empty or the text the guest
+  already accepted) and the chord, with every key typed meanwhile, is
+  delivered only after the agent's acknowledgement — so "paste, Enter" cannot
+  run the line before the text lands. If no `paste` follows, the chord is
+  ordinary keys. On failure the chord and held keys are dropped (modifier
+  transitions still go through) and the KMS pane shows the cause.
+
+The text exists in kernel memory only between the offer and the agent's read;
+it is never a file, so it cannot reach a persisted mount or a shared snapshot.
+
 ## Audio output (`/dev/dsp`)
 
 Kandelo separates the Unix compatibility API from its physical audio
