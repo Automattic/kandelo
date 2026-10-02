@@ -536,7 +536,11 @@ Two options keep dependency resolution on the package path:
   `dependency()` lookup is static and pkg-config runs with `--static`. That
   pulls each package's `Requires.private`/`Libs.private` (cairo needs pixman,
   fontconfig needs libxml2), so `PKG_CONFIG_PATH` must cover the full
-  transitive dependency closure, not just the direct dependencies.
+  transitive dependency closure, not just the direct dependencies. A
+  package recipe gets that closure from the resolver as
+  `WASM_POSIX_DEP_PKG_CONFIG_PATH` (see `packages/registry/cairo` and
+  `packages/registry/pango`), and declares `meson`/`ninja` as
+  `[[host_tools]]`.
 - `wrap_mode = 'nofallback'` — a `dependency()` that misses fails the
   configure instead of silently downloading and building an upstream
   subproject (Meson "wrap") in place of the resolver-provided package.

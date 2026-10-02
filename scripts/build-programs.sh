@@ -565,6 +565,7 @@ if ls "$REPO_ROOT"/programs/pango_*.c >/dev/null 2>&1; then
     stage_sysroot_file "$LIBXML2_PREFIX/lib/libxml2.a"          "$SYSROOT/lib/libxml2.a"
     stage_sysroot_file "$ZLIB_PREFIX/lib/libz.a"                "$SYSROOT/lib/libz.a"
     stage_sysroot_tree "$PANGO_PREFIX/include/pango-1.0"        "$SYSROOT/include/pango-1.0"
+    stage_sysroot_tree "$HARFBUZZ_PREFIX/include/harfbuzz"      "$SYSROOT/include/harfbuzz"
     stage_sysroot_tree "$CAIRO_PREFIX/include/cairo"            "$SYSROOT/include/cairo"
 fi
 
@@ -776,11 +777,13 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # PR23: pango layout + harfbuzz shaping + cairo image
             # surface render through the whole PR19 font stack. Link
             # order: pangocairo pulls pangoft2/pango/cairo, pango
-            # pulls harfbuzz/fribidi/gobject/glib, cairo pulls
+            # pulls harfbuzz/fribidi/gio/gobject/glib (PangoFontMap is
+            # a GListModel), cairo pulls
             # pixman/fontconfig/freetype/png, harfbuzz (C++) pulls
             # libc++.
             build_program "$src" "$OUT_DIR_32" \
                 "-I$SYSROOT/include/pango-1.0" \
+                "-I$SYSROOT/include/harfbuzz" \
                 "-I$SYSROOT/include/glib-2.0" \
                 "-I$SYSROOT/include/cairo" \
                 "$SYSROOT/lib/libpangocairo-1.0.a" \
@@ -789,6 +792,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libcairo.a" \
                 "$SYSROOT/lib/libharfbuzz.a" \
                 "$SYSROOT/lib/libfribidi.a" \
+                "$SYSROOT/lib/libgio-2.0.a" \
                 "$SYSROOT/lib/libgobject-2.0.a" \
                 "$SYSROOT/lib/libgmodule-2.0.a" \
                 "$SYSROOT/lib/libglib-2.0.a" \
@@ -816,6 +820,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "-I$SYSROOT/include/atk-1.0" \
                 "-I$SYSROOT/include/gdk-pixbuf-2.0" \
                 "-I$SYSROOT/include/pango-1.0" \
+                "-I$SYSROOT/include/harfbuzz" \
                 "-I$SYSROOT/include/glib-2.0" \
                 "-I$SYSROOT/include/cairo" \
                 "$SYSROOT/lib/libgtk-3.a" \

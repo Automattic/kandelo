@@ -16,8 +16,8 @@ kernel_abi = 17
 depends_on = [
   "glib@2.84.4",
   "atk@2.36.0",
-  "pango@1.42.4",
-  "cairo@1.16.0",
+  "pango@1.56.4",
+  "cairo@1.18.6",
   "gdk-pixbuf@2.36.12",
   "libepoxy@1.5.4",
   "fribidi@1.0.16",
