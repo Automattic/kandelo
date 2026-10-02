@@ -130,6 +130,7 @@ use walrus::{
 
 use crate::{
     call_graph::{TailCallKind, TailCallSite},
+    size_attribution::{self as attr, Category as Attr},
     reference_analysis::{
         FunctionReferenceAnalysis, OriginalCallKind, ReferenceNullability,
         analyze_function_references,
@@ -287,6 +288,7 @@ pub fn instrument_functions(
         fork_path,
         &[],
         plain_catch_plan,
+        None,
     )
 }
 
@@ -306,6 +308,7 @@ pub fn instrument_functions_with_targets(
         fork_path_targets,
         &[],
         plain_catch_plan,
+        None,
     )
 }
 
@@ -326,6 +329,7 @@ pub fn instrument_functions_with_targets_and_tail_sites(
     fork_path_targets: &HashSet<FunctionId>,
     tail_call_sites: &[TailCallSite],
     plain_catch_plan: &PlainCatchPlan,
+    resume_entries: Option<&HashSet<FunctionId>>,
 ) -> HashSet<FunctionId> {
     let runtime_funcs: HashSet<FunctionId> = [
         runtime.unwind_begin,
@@ -357,9 +361,20 @@ pub fn instrument_functions_with_targets_and_tail_sites(
         tail_call_sites,
     );
     rewrite_activation_unwind_boundaries(module, &targets, tail_call_sites, &transport_helpers);
-    let unwind_frame_select = emit_unwind_frame_select_helper(module, runtime);
+    let mut helpers = GeneratedHelpers {
+        frame_select: emit_unwind_frame_select_helper(module, runtime),
+        frame_codecs: FrameCodecs::default(),
+        reference_codecs: HashMap::new(),
+    };
     let mut transformed_call_targets = fork_path_targets.clone();
     transformed_call_targets.extend(transport_helpers.values().copied());
+    // Transport helpers route replay through the process resume table
+    // themselves when the runtime provides one, so their call sites replay
+    // lexically like a direct activation call.
+    let mut lexical_replay_targets = materialized_activations.clone();
+    if runtime.resume_peek.is_some() && runtime.resume_table.is_some() {
+        lexical_replay_targets.extend(transport_helpers.values().copied());
+    }
 
     // Analyze every target before rewriting the first body. Stable original
     // program points are the ownership boundary: synthetic dispatch locals
@@ -389,15 +404,22 @@ pub fn instrument_functions_with_targets_and_tail_sites(
             module,
             *id,
             runtime,
-            &materialized_activations,
+            &lexical_replay_targets,
             &transformed_call_targets,
             ordinal as u32,
             this_catch_plan,
             this_plain_catches,
             &reference_analyses[id],
-            unwind_frame_select,
+            &mut helpers,
         );
-        resume_thunks.push(thunk);
+        // WHY: only an activation that replay can enter from outside its
+        // lexical caller needs a thunk; see `resume_entry_points`. The host
+        // rejects a replay event without a registered thunk loudly.
+        if resume_entries.is_none_or(|entries| entries.contains(id)) {
+            resume_thunks.push(thunk);
+        } else {
+            module.funcs.delete(thunk.function);
+        }
         instrumented.insert(*id);
     }
     emit_resume_catalog(module, &resume_thunks);
@@ -565,7 +587,101 @@ fn emit_unwind_transport_helper(
     builder.name(name);
     let helper = builder.finish(arguments.clone(), &mut module.funcs);
 
+    // Replay routing for every call site that reaches this boundary. The
+    // diagnostic ordinal is the helper's own signature, which is the type
+    // those call sites name.
+    let routing = match (runtime.resume_peek, runtime.resume_table) {
+        (Some(peek), Some(table)) => Some((
+            peek,
+            table,
+            module.types.add(&[], &results),
+            module.funcs.get(helper).ty().index() as i32,
+            module.locals.add(ValType::I32),
+        )),
+        _ => None,
+    };
+
     let local = local_mut(module, helper);
+    if let Some((resume_peek, resume_table, resume_ty, diagnostic_type, slot)) = routing {
+        // WHY: a non-zero slot names the next journal activation, which need
+        // not be the lexical target (indirect calls, tail-eliminated callers,
+        // and cross-module boundaries). Routing here rather than at each call
+        // site keeps one copy per boundary instead of a duplicated call arm in
+        // every caller. `resume_peek` is non-consuming; slot zero means the
+        // original operation below runs, exactly as a lexical caller would.
+        let route = local
+            .builder_mut()
+            .dangling_instr_seq(InstrSeqType::Simple(None))
+            .id();
+        let resumed = local
+            .builder_mut()
+            .dangling_instr_seq(InstrSeqType::Simple(None))
+            .id();
+        let lexical = local
+            .builder_mut()
+            .dangling_instr_seq(InstrSeqType::Simple(None))
+            .id();
+        let not_replaying = local
+            .builder_mut()
+            .dangling_instr_seq(InstrSeqType::Simple(None))
+            .id();
+        {
+            let out = &mut local.block_mut(resumed).instrs;
+            push_instr(out, Instr::LocalGet(LocalGet { local: slot }));
+            push_instr(
+                out,
+                Instr::CallIndirect(CallIndirect {
+                    ty: resume_ty,
+                    table: resume_table,
+                }),
+            );
+            push_instr(out, Instr::Return(Return {}));
+        }
+        {
+            let out = &mut local.block_mut(route).instrs;
+            push_instr(
+                out,
+                Instr::Const(Const {
+                    value: Value::I32(diagnostic_type),
+                }),
+            );
+            push_instr(out, Instr::Call(Call { func: resume_peek }));
+            push_instr(out, Instr::LocalTee(LocalTee { local: slot }));
+            push_instr(
+                out,
+                Instr::IfElse(IfElse {
+                    consequent: resumed,
+                    alternative: lexical,
+                }),
+            );
+        }
+        let out = &mut local.block_mut(local.entry_block()).instrs;
+        push_instr(
+            out,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.state_global,
+            }),
+        );
+        push_instr(
+            out,
+            Instr::Const(Const {
+                value: Value::I32(runtime::STATE_REWINDING),
+            }),
+        );
+        push_instr(
+            out,
+            Instr::Binop(Binop {
+                op: BinaryOp::I32GeU,
+            }),
+        );
+        push_instr(
+            out,
+            Instr::IfElse(IfElse {
+                consequent: route,
+                alternative: not_replaying,
+            }),
+        );
+    }
     let throws_unwind = local
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
@@ -665,10 +781,13 @@ fn emit_unwind_frame_select_helper(module: &mut Module, runtime: &Runtime) -> Fu
     let ptr_ty = runtime.buf_type;
     let frame_size = module.locals.add(ptr_ty);
     let call_index = module.locals.add(ValType::I32);
+    // WHY call index first: a shared per-function handler receives the index
+    // on the operand stack from the branching call boundary and then pushes
+    // its constant frame size.
     let mut builder =
-        FunctionBuilder::new(&mut module.types, &[ptr_ty, ValType::I32], &[ValType::I32]);
+        FunctionBuilder::new(&mut module.types, &[ValType::I32, ptr_ty], &[ValType::I32]);
     builder.name("__wpk_fork_select_unwind_frame".into());
-    let helper = builder.finish(vec![frame_size, call_index], &mut module.funcs);
+    let helper = builder.finish(vec![call_index, frame_size], &mut module.funcs);
 
     let local = local_mut(module, helper);
     let reserve_succeeded = local
@@ -730,6 +849,15 @@ fn emit_unwind_frame_select_helper(module: &mut Module, runtime: &Runtime) -> Fu
     }
     {
         let out = &mut local.block_mut(local.entry_block()).instrs;
+        // The postamble's reference dispatch and an abort restart's replay
+        // dispatch both read the selected call index from the global.
+        push_instr(out, Instr::LocalGet(LocalGet { local: call_index }));
+        push_instr(
+            out,
+            Instr::GlobalSet(GlobalSet {
+                global: runtime.call_index_global,
+            }),
+        );
         if let Some(frame_reserve) = runtime.frame_reserve {
             push_instr(
                 out,
@@ -931,17 +1059,37 @@ enum CallTarget {
     Ref,
 }
 
+/// The `[] -> results` signature a replay router calls through, plus the
+/// block type for sequences producing those results. The block type uses the
+/// compact single-value form when it can; a type index would cost an extra
+/// byte at every call boundary once the type section passes 127 entries.
+#[derive(Debug, Clone, Copy)]
+struct ResumeType {
+    ty: TypeId,
+    seq: InstrSeqType,
+}
+
+impl ResumeType {
+    fn new(module: &mut Module, results: &[ValType]) -> Self {
+        ResumeType {
+            ty: module.types.add(&[], results),
+            seq: InstrSeqType::new(&mut module.types, &[], results),
+        }
+    }
+}
+
 /// A top-level call site awaiting dispatch-structure emission.
 struct CallSiteInfo {
     target: CallTarget,
-    /// A direct lexical callee whose activation owns the next replay frame.
+    /// Replay re-executes the original lexical call unchanged.
     ///
-    /// Such calls can enter the original function without an intervening
-    /// resume thunk. The callee's frame-next import still validates the exact
-    /// process event before consuming it.
-    direct_activation: bool,
+    /// True for a direct callee whose activation owns the next replay frame
+    /// (its frame-next import validates the exact process event before
+    /// consuming it) and for a generated unwind transport helper, which
+    /// performs the process resume routing itself.
+    lexical_replay: bool,
     sig_ty: TypeId,
-    resume_ty: Option<TypeId>,
+    resume_ty: Option<ResumeType>,
     loc: InstrLocId,
 }
 
@@ -966,6 +1114,146 @@ struct AbortDispatch {
     /// Cold module helper which reserves/selects the frame and writes the
     /// statically supplied call index, returning one on reservation success.
     frame_select: FunctionId,
+    /// Empty block targeted by the function-wide private-tag catch; its end
+    /// runs frame selection for the call index of the interrupted call.
+    caught: InstrSeqId,
+    /// Body of the function-wide `try_table`.
+    try_body: InstrSeqId,
+    /// Block whose end is the postamble.
+    postamble: InstrSeqId,
+    /// Holds the static index of the fork-reaching call in progress. Absent
+    /// for a function with one call site, whose index is always zero.
+    call_index_local: Option<LocalId>,
+}
+
+impl AbortDispatch {
+    fn new(
+        local: &mut LocalFunction,
+        restart_loop: InstrSeqId,
+        frame_select: FunctionId,
+        call_index_local: Option<LocalId>,
+    ) -> Self {
+        let mut block = || {
+            local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id()
+        };
+        AbortDispatch {
+            restart_loop,
+            frame_select,
+            caught: block(),
+            try_body: block(),
+            postamble: block(),
+            call_index_local,
+        }
+    }
+}
+
+/// Fill the abort-restart loop: the function body inside one function-wide
+/// private-tag catch, the shared frame selection, and the postamble.
+///
+/// ```text
+/// loop $restart (result R)
+///   block $postamble
+///     block $caught
+///       try_table (catch $__wpk_fork_unwind $caught)
+///         block $unwind_save <body> end
+///         br $postamble         ;; invalid replay index (br_table default)
+///       end
+///     end
+///     <call index>; <frame size>; call $select (call_index, frame_size)
+///     br_if $postamble
+///     br $restart
+///   end
+///   <postamble>
+/// end
+/// ```
+///
+/// WHY one catch per function: a private-tag `try_table` plus result and
+/// catch blocks around every fork-reaching call was the largest remaining
+/// per-call cost. Each call now records its static index in one local first.
+fn install_restart_structure(
+    local: &mut LocalFunction,
+    unwind_save: InstrSeqId,
+    abort: AbortDispatch,
+    ptr_ty: ValType,
+    frame_size: u32,
+    postamble: Vec<(Instr, InstrLocId)>,
+    unwind_tag: TagId,
+) {
+    let _attr = attr::scope(Attr::RestartLoop);
+    {
+        let s = &mut local.block_mut(abort.try_body).instrs;
+        push_instr(s, Instr::Block(Block { seq: unwind_save }));
+        push_instr(
+            s,
+            Instr::Br(Br {
+                block: abort.postamble,
+            }),
+        );
+    }
+    {
+        let s = &mut local.block_mut(abort.caught).instrs;
+        push_instr(
+            s,
+            Instr::TryTable(TryTable {
+                seq: abort.try_body,
+                catches: vec![TryTableCatch::Catch {
+                    tag: unwind_tag,
+                    label: abort.caught,
+                }],
+            }),
+        );
+    }
+    {
+        let _attr = attr::scope(Attr::CallUnwindSelect);
+        let s = &mut local.block_mut(abort.postamble).instrs;
+        push_instr(
+            s,
+            Instr::Block(Block {
+                seq: abort.caught,
+            }),
+        );
+        match abort.call_index_local {
+            Some(call_index) => {
+                push_instr(s, Instr::LocalGet(LocalGet { local: call_index }));
+            }
+            None => push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(0),
+                }),
+            ),
+        }
+        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(
+            s,
+            Instr::Call(Call {
+                func: abort.frame_select,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::BrIf(walrus::ir::BrIf {
+                block: abort.postamble,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::Br(Br {
+                block: abort.restart_loop,
+            }),
+        );
+    }
+    let restart_seq = &mut local.block_mut(abort.restart_loop).instrs;
+    push_instr(
+        restart_seq,
+        Instr::Block(Block {
+            seq: abort.postamble,
+        }),
+    );
+    restart_seq.extend(postamble);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -973,13 +1261,13 @@ fn instrument_one_function(
     module: &mut Module,
     func_id: FunctionId,
     runtime: &Runtime,
-    activations: &HashSet<FunctionId>,
+    lexical_replay_targets: &HashSet<FunctionId>,
     fork_path: &HashSet<FunctionId>,
     func_ordinal: u32,
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
     reference_analysis: &FunctionReferenceAnalysis,
-    unwind_frame_select: FunctionId,
+    helpers: &mut GeneratedHelpers,
 ) -> ResumeThunk {
     // Choose scheme based on call-site topology. Post-commit-4
     // (2026-05-14) there are TWO live schemes (guard-dispatch was deleted):
@@ -1022,13 +1310,13 @@ fn instrument_one_function(
                 module,
                 func_id,
                 runtime,
-                activations,
+                lexical_replay_targets,
                 fork_path,
                 func_ordinal,
                 catch_plan,
                 plain_catches,
                 reference_analysis,
-                unwind_frame_select,
+                helpers,
             );
         }
         // Every Walrus producer is typed by `typed_instruction_pushes`.
@@ -1056,13 +1344,13 @@ fn instrument_one_function(
                 module,
                 func_id,
                 runtime,
-                activations,
+                lexical_replay_targets,
                 fork_path,
                 func_ordinal,
                 catch_plan,
                 plain_catches,
                 reference_analysis,
-                unwind_frame_select,
+                helpers,
             );
         }
         let func = func_name(module, func_id);
@@ -1078,13 +1366,13 @@ fn instrument_one_function(
         module,
         func_id,
         runtime,
-        activations,
+        lexical_replay_targets,
         fork_path,
         func_ordinal,
         catch_plan,
         plain_catches,
         reference_analysis,
-        unwind_frame_select,
+        helpers,
     )
 }
 
@@ -1097,13 +1385,13 @@ fn instrument_one_function_switch(
     module: &mut Module,
     func_id: FunctionId,
     runtime: &Runtime,
-    activations: &HashSet<FunctionId>,
+    lexical_replay_targets: &HashSet<FunctionId>,
     fork_path: &HashSet<FunctionId>,
     func_ordinal: u32,
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
     reference_analysis: &FunctionReferenceAnalysis,
-    unwind_frame_select: FunctionId,
+    helpers: &mut GeneratedHelpers,
 ) -> ResumeThunk {
     // Pre-existing user locals (args + referenced in body). Validation
     // guarantees that every one is scalar and therefore frame-owned.
@@ -1128,12 +1416,12 @@ fn instrument_one_function_switch(
     // Partition the body at top-level fork-path call sites.
     let (mut chunks, mut call_sites) = partition_body(&original_body, fork_path, module);
     for site in &mut call_sites {
-        site.direct_activation = matches!(
+        site.lexical_replay = matches!(
             site.target,
-            CallTarget::Direct(target) if activations.contains(&target)
+            CallTarget::Direct(target) if lexical_replay_targets.contains(&target)
         );
         let results = module.types.get(site.sig_ty).results().to_vec();
-        site.resume_ty = Some(module.types.add(&[], &results));
+        site.resume_ty = Some(ResumeType::new(module, &results));
     }
     let n_calls = call_sites.len();
     assert_reference_call_alignment(reference_analysis, &call_sites);
@@ -1211,13 +1499,8 @@ fn instrument_one_function_switch(
             }
         }
     }
-    let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
-    let spill_storage = build_spill_storage(
-        module,
-        runtime.buf_type,
-        &locals_with_offsets,
-        user_scalar_locals.len(),
-    );
+    let (locals_with_offsets, spill_storage) =
+        plan_frame_layout(module, runtime.buf_type, &frame_scalars, user_scalar_locals.len());
     let ordinary_scalar_end = HEADER_SIZE + user_locals_size(&frame_scalars);
     let catch_scalar_frame = plan_plain_catch_scalar_frame(&plain_catch_state, ordinary_scalar_end);
     let scalar_end = catch_scalar_frame.frame_end(ordinary_scalar_end);
@@ -1271,6 +1554,17 @@ fn instrument_one_function_switch(
     // dispatch structure inside `$unwind_save`, then the postamble as
     // a flat list that follows the Block($unwind_save) in the entry
     // block.
+    let frame_codec = frame_codec_call(
+        module,
+        runtime,
+        &mut helpers.frame_codecs,
+        &locals_with_offsets,
+        &spill_storage,
+        catch_state_locals.is_some(),
+        &reference_frame,
+    );
+    ensure_reference_codecs(module, runtime, &mut helpers.reference_codecs, &reference_frame);
+    let call_index_local = (n_calls > 1).then(|| module.locals.add(ValType::I32));
     let local = local_mut(module, func_id);
 
     let preamble_then = local
@@ -1290,10 +1584,7 @@ fn instrument_one_function_switch(
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
     let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
-    let abort = AbortDispatch {
-        restart_loop,
-        frame_select: unwind_frame_select,
-    };
+    let abort = AbortDispatch::new(local, restart_loop, helpers.frame_select, call_index_local);
     let catch_scalar_restore_dispatch = catch_state_locals.and_then(|catch_state| {
         build_plain_catch_scalar_dispatch(
             local,
@@ -1327,6 +1618,8 @@ fn instrument_one_function_switch(
         catch_scalar_restore_dispatch,
         &reference_frame,
         frame_size,
+        frame_codec.as_ref(),
+        &helpers.reference_codecs,
     );
 
     populate_dispatch_structure(
@@ -1364,7 +1657,14 @@ fn instrument_one_function_switch(
         )
     });
     let reference_save_dispatch =
-        build_reference_save_dispatch(local, runtime, memory, ptr_ty, &reference_frame);
+        build_reference_save_dispatch(
+            local,
+            runtime,
+            memory,
+            ptr_ty,
+            &reference_frame,
+            &helpers.reference_codecs,
+        );
     populate_postamble(
         &mut postamble,
         runtime,
@@ -1377,12 +1677,14 @@ fn instrument_one_function_switch(
         reference_save_dispatch,
         frame_size,
         func_ordinal,
+        frame_codec.as_ref(),
     );
 
     // The preamble is outside the result-typed live-restart loop. Fresh
     // parent/child replay consumes its committed frame once; a synchronous
     // reservation failure branches straight back to the selected call inside
     // the loop without restoring over the still-live activation.
+    let entry_guard_attr = attr::scope(Attr::EntryGuard);
     let entry_seq = &mut local.block_mut(entry_id).instrs;
     push_instr(
         entry_seq,
@@ -1409,10 +1711,22 @@ fn instrument_one_function_switch(
             alternative: preamble_else,
         }),
     );
-    push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
-    let restart_seq = &mut local.block_mut(restart_loop).instrs;
-    push_instr(restart_seq, Instr::Block(Block { seq: unwind_save }));
-    restart_seq.extend(postamble);
+    drop(entry_guard_attr);
+    {
+        let _attr = attr::scope(Attr::RestartLoop);
+        push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
+    }
+    install_restart_structure(
+        local,
+        unwind_save,
+        abort,
+        ptr_ty,
+        frame_size,
+        postamble,
+        runtime
+            .unwind_tag
+            .expect("fork-path instrumentation requires the linked unwind tag"),
+    );
 
     // Per-arm captures intercept both Catch and CatchRef dispatch after the
     // body rebuild, save only transferable state, and forward the original
@@ -1437,6 +1751,19 @@ fn instrument_one_function_switch(
     if let SpillStorage::Scratch(frame) = &spill_storage {
         apply_scratch_frame_discipline(module, func_id, frame, ptr_ty);
     }
+
+    attr::record_shape(
+        func_id,
+        attr::FunctionShape {
+            call_sites: n_calls as u32,
+            direct_activation_sites: call_sites.iter().filter(|site| site.lexical_replay).count() as u32,
+            saved_scalars: locals_with_offsets.len() as u32,
+            frame_size,
+            nested: false,
+            scratch: matches!(spill_storage, SpillStorage::Scratch(_)),
+            regions: 1,
+        },
+    );
 
     ResumeThunk {
         func_ordinal,
@@ -2448,7 +2775,7 @@ fn partition_body(
                 let sig_ty = module.funcs.get(c.func).ty();
                 calls.push(CallSiteInfo {
                     target: CallTarget::Direct(c.func),
-                    direct_activation: false,
+                    lexical_replay: false,
                     sig_ty,
                     resume_ty: None,
                     loc: *loc,
@@ -2458,7 +2785,7 @@ fn partition_body(
             Instr::CallIndirect(ci) => {
                 calls.push(CallSiteInfo {
                     target: CallTarget::Indirect { table: ci.table },
-                    direct_activation: false,
+                    lexical_replay: false,
                     sig_ty: ci.ty,
                     resume_ty: None,
                     loc: *loc,
@@ -2468,7 +2795,7 @@ fn partition_body(
             Instr::CallRef(call) => {
                 calls.push(CallSiteInfo {
                     target: CallTarget::Ref,
-                    direct_activation: false,
+                    lexical_replay: false,
                     sig_ty: call.ty,
                     resume_ty: None,
                     loc: *loc,
@@ -2938,6 +3265,122 @@ fn build_dispatch_tree_range(start: usize, end: usize, bucket_size: usize) -> Di
 
 /// On REWIND, br_table to `post_seqs_slice[call_idx - range_start]`.
 /// `range_start == 0` elides the subtraction so a single-leaf
+
+/// Enter `dispatch` only while replaying: `state < REWINDING` branches out of
+/// the dispatch block (whose end is the normal-path fallthrough), and the
+/// replay selection in `if_then` follows inline. `if_else` must be empty.
+///
+/// WHY not `if (state >= REWINDING) ... else end`: the branch form is two
+/// bytes shorter per fork-bearing region and keeps the same single test on
+/// the normal path.
+fn push_replay_dispatch_guard(
+    local: &mut LocalFunction,
+    dispatch: InstrSeqId,
+    if_then: InstrSeqId,
+    if_else: InstrSeqId,
+    runtime: &Runtime,
+) {
+    debug_assert!(local.block(if_else).instrs.is_empty());
+    let selection = std::mem::take(&mut local.block_mut(if_then).instrs);
+    let s = &mut local.block_mut(dispatch).instrs;
+    push_instr(
+        s,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.state_global,
+        }),
+    );
+    push_instr(
+        s,
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_REWINDING),
+        }),
+    );
+    push_instr(
+        s,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32LtU,
+        }),
+    );
+    push_instr(s, Instr::BrIf(walrus::ir::BrIf { block: dispatch }));
+    s.extend(selection);
+}
+
+
+/// Replay dispatch with one landing: `state >= REWINDING` branches straight
+/// to it. The parent dispatch already chose this region from the call index,
+/// so no index load or `br_table` is needed. `push_dispatch` splices this
+/// form directly into the landing block instead of nesting a block.
+fn populate_single_target_dispatch(
+    local: &mut LocalFunction,
+    dispatch: InstrSeqId,
+    runtime: &Runtime,
+    target: InstrSeqId,
+) {
+    let s = &mut local.block_mut(dispatch).instrs;
+    push_instr(
+        s,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.state_global,
+        }),
+    );
+    push_instr(
+        s,
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_REWINDING),
+        }),
+    );
+    push_instr(
+        s,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32GeU,
+        }),
+    );
+    push_instr(s, Instr::BrIf(walrus::ir::BrIf { block: target }));
+}
+
+/// Append a populated dispatch to the first landing block `post`. A
+/// single-target dispatch branches to `post` itself and needs no block of its
+
+/// Push the landing block `post` into `seq`. A first landing block holding
+/// only its single-target replay guard has nothing for replay to skip: both
+/// the guard's branch and the normal fallthrough reach its end. It is
+/// dropped, guard and all, instead of emitting an empty block.
+fn push_landing_block(local: &mut LocalFunction, seq: InstrSeqId, post: InstrSeqId) {
+    let _attr = attr::scope(Attr::DispatchPost);
+    let instrs = &local.block(post).instrs;
+    let guard_only = instrs.len() == 4
+        && matches!(
+            instrs.last(),
+            Some((Instr::BrIf(walrus::ir::BrIf { block }), _)) if *block == post
+        );
+    if guard_only {
+        local.block_mut(post).instrs.clear();
+        return;
+    }
+    push_instr(
+        &mut local.block_mut(seq).instrs,
+        Instr::Block(Block { seq: post }),
+    );
+}
+
+/// own; any other dispatch stays a nested block whose end is the normal path.
+fn push_dispatch(local: &mut LocalFunction, post: InstrSeqId, dispatch: InstrSeqId) {
+    let _attr = attr::scope(Attr::DispatchPost);
+    let single = matches!(
+        local.block(dispatch).instrs.last(),
+        Some((Instr::BrIf(walrus::ir::BrIf { block }), _)) if *block == post
+    );
+    if single {
+        let instrs = std::mem::take(&mut local.block_mut(dispatch).instrs);
+        local.block_mut(post).instrs.extend(instrs);
+    } else {
+        push_instr(
+            &mut local.block_mut(post).instrs,
+            Instr::Block(Block { seq: dispatch }),
+        );
+    }
+}
+
 /// tree emits byte-identical IR to the pre-bucketing code.
 fn populate_dispatch_normal(
     local: &mut LocalFunction,
@@ -2949,6 +3392,11 @@ fn populate_dispatch_normal(
     range_start: usize,
     default_target: InstrSeqId,
 ) {
+    let _attr = attr::scope(Attr::Dispatch);
+    if let [only] = post_seqs_slice {
+        populate_single_target_dispatch(local, dispatch_normal, runtime, *only);
+        return;
+    }
     let if_then = local
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
@@ -2975,6 +3423,7 @@ fn populate_dispatch_normal(
                 }),
             );
         }
+        let _table_attr = attr::scope(Attr::DispatchTable);
         push_instr(
             s,
             Instr::BrTable(BrTable {
@@ -2984,32 +3433,7 @@ fn populate_dispatch_normal(
         );
     }
 
-    let s = &mut local.block_mut(dispatch_normal).instrs;
-    push_instr(
-        s,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.state_global,
-        }),
-    );
-    push_instr(
-        s,
-        Instr::Const(Const {
-            value: Value::I32(runtime::STATE_REWINDING),
-        }),
-    );
-    push_instr(
-        s,
-        Instr::Binop(Binop {
-            op: BinaryOp::I32GeU,
-        }),
-    );
-    push_instr(
-        s,
-        Instr::IfElse(IfElse {
-            consequent: if_then,
-            alternative: if_else,
-        }),
-    );
+    push_replay_dispatch_guard(local, dispatch_normal, if_then, if_else, runtime);
 }
 
 /// On REWIND, br_table to `child_seqs[(call_idx - range_start) /
@@ -3027,6 +3451,7 @@ fn populate_internal_dispatch(
     span_per_child: usize,
     default_target: InstrSeqId,
 ) {
+    let _attr = attr::scope(Attr::Dispatch);
     let if_then = local
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
@@ -3065,6 +3490,7 @@ fn populate_internal_dispatch(
                 op: BinaryOp::I32DivU,
             }),
         );
+        let _table_attr = attr::scope(Attr::DispatchTable);
         push_instr(
             s,
             Instr::BrTable(BrTable {
@@ -3074,32 +3500,7 @@ fn populate_internal_dispatch(
         );
     }
 
-    let s = &mut local.block_mut(node_dispatch).instrs;
-    push_instr(
-        s,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.state_global,
-        }),
-    );
-    push_instr(
-        s,
-        Instr::Const(Const {
-            value: Value::I32(runtime::STATE_REWINDING),
-        }),
-    );
-    push_instr(
-        s,
-        Instr::Binop(Binop {
-            op: BinaryOp::I32GeU,
-        }),
-    );
-    push_instr(
-        s,
-        Instr::IfElse(IfElse {
-            consequent: if_then,
-            alternative: if_else,
-        }),
-    );
+    push_replay_dispatch_guard(local, node_dispatch, if_then, if_else, runtime);
 }
 
 /// Walks a `DispatchTree` built over `n_calls` and emits the bucketed
@@ -3123,6 +3524,7 @@ fn populate_dispatch_structure(
     catch_state_locals: Option<CatchStateLocals>,
     abort: AbortDispatch,
 ) {
+    let _attr = attr::scope(Attr::DispatchPost);
     let n_calls = call_sites.len();
 
     // Zero calls: the dispatch degenerates to the original body
@@ -3274,6 +3676,7 @@ fn emit_internal_dispatch(
     catch_state_locals: Option<CatchStateLocals>,
     abort: AbortDispatch,
 ) {
+    let _attr = attr::scope(Attr::DispatchPost);
     let b = children.len();
     debug_assert!(b >= 2, "internal dispatch node must have >= 2 children");
 
@@ -3400,6 +3803,7 @@ fn emit_leaf_dispatch(
     catch_state_locals: Option<CatchStateLocals>,
     abort: AbortDispatch,
 ) {
+    let _attr = attr::scope(Attr::DispatchPost);
     debug_assert!(
         leaf_end > leaf_start,
         "emit_leaf_dispatch must not be called with an empty leaf",
@@ -3425,14 +3829,9 @@ fn emit_leaf_dispatch(
     // the previous leaf's exit_seq already emitted them as boundary
     // tail (see end of this function), so re-emitting here would run
     // the chunk's side effects twice on NORMAL fall-through.
+    push_dispatch(local, post_seqs[leaf_start], dispatch_normal);
     {
         let s = &mut local.block_mut(post_seqs[leaf_start]).instrs;
-        push_instr(
-            s,
-            Instr::Block(Block {
-                seq: dispatch_normal,
-            }),
-        );
         if leaf_start == 0 {
             for (instr, loc) in &chunks[leaf_start] {
                 s.push((instr.clone(), *loc));
@@ -3448,15 +3847,7 @@ fn emit_leaf_dispatch(
     }
 
     for k in (leaf_start + 1)..leaf_end {
-        {
-            let s = &mut local.block_mut(post_seqs[k]).instrs;
-            push_instr(
-                s,
-                Instr::Block(Block {
-                    seq: post_seqs[k - 1],
-                }),
-            );
-        }
+        push_landing_block(local, post_seqs[k], post_seqs[k - 1]);
         emit_post_call_via_local(
             local,
             post_seqs[k],
@@ -3487,15 +3878,7 @@ fn emit_leaf_dispatch(
     // the boundary chunk drains the previous call's return off the
     // operand stack before exit_seq closes — `$child_K` blocks have
     // sig `()->()` and would otherwise fail wasm validation.
-    {
-        let s = &mut local.block_mut(exit_seq).instrs;
-        push_instr(
-            s,
-            Instr::Block(Block {
-                seq: post_seqs[leaf_end - 1],
-            }),
-        );
-    }
+    push_landing_block(local, exit_seq, post_seqs[leaf_end - 1]);
     emit_post_call_via_local(
         local,
         exit_seq,
@@ -3565,6 +3948,7 @@ fn emit_spill_call_tail(
     arg_materialization: &CallArgMaterialization,
     carryovers: &[TypedSpillLocal],
 ) {
+    let _attr = attr::scope(Attr::ArgSpill);
     emit_spill_args(
         out,
         storage,
@@ -3592,69 +3976,443 @@ fn emit_materialized_call_args(
     }
 }
 
-/// Handle the private unwind tag at one statically known call site.
+// ----------------------------------------------------------------------
+// Shared frame codecs
+// ----------------------------------------------------------------------
+
+/// Module helpers generated once and shared by every transformed function.
+struct GeneratedHelpers {
+    frame_select: FunctionId,
+    frame_codecs: FrameCodecs,
+    /// Reference-recipe save/restore helpers keyed by the reference types of
+    /// one call-landing run.
+    reference_codecs: HashMap<Vec<RefType>, (FunctionId, FunctionId)>,
+}
+
+/// Frame save/restore helpers keyed by frame shape.
 ///
-/// Successful reservation records the static call index and branches to the
-/// common frame postamble. A synchronous allocation failure instead selects
-/// the header-sized abort scratch, records the same index, and restarts the
-/// live activation at the dispatch loop. Since the replay preamble is outside
-/// that loop, no activation-local selector/flag is required.
-fn emit_static_call_unwind_handler(
-    local: &mut LocalFunction,
-    seq_id: InstrSeqId,
+/// WHY: inline frame I/O re-derives the active frame pointer and writes or
+/// reads every scalar with a full `global.get; load; T.store offset` sequence
+/// in each transformed function. Measured on Quickshell, that per-function
+/// code was a fifth of all instrumentation bytes. A frame's header and scalar
+/// layout depend only on its scalar types, so functions with the same shape
+/// share one helper and keep only a call plus one `local.get`/`local.set` per
+/// scalar. The frame bytes are unchanged; only who writes them moves.
+#[derive(Default)]
+struct FrameCodecs {
+    save: HashMap<FrameCodecKey, FunctionId>,
+    restore: HashMap<(Vec<ValType>, bool), FunctionId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FrameCodecKey {
+    scalars: Vec<ValType>,
+    catch_selector: bool,
+    commits: bool,
+}
+
+/// One function's use of the shared frame codecs.
+struct FrameCodecCall {
+    save: FunctionId,
+    restore: FunctionId,
+    /// The save helper also commits the frame: nothing else writes the
+    /// payload after it.
+    commits: bool,
+    /// Local-resident scalars in frame order.
+    locals: Vec<(LocalId, ValType)>,
+    /// How many leading scalars the restore helper returns; the preamble
+    /// loads the rest through the frame cursor.
+    restored_scalars: usize,
+}
+
+/// Engines cap function parameters and results at 1000; leave room for the
+/// ordinal, catch selector, and frame size.
+const FRAME_CODEC_MAX_SCALARS: usize = 900;
+
+/// Values a shared restore helper returns directly.
+///
+/// WHY one: every result of a multi-value call is live on the caller's value
+/// stack at once, and baseline compilers size the caller's native frame for
+/// that peak. Measured 2026-10-02 on the P-10 recursion fixture, returning
+/// four scalars cut V8 Liftoff's surviving recursion depth by a quarter
+/// (10,346 → 7,759) and broke its Chromium test. One result needs only the
+/// return register; the preamble loads the other scalars through
+/// `Runtime::frame_global`, one at a time.
+const RESTORE_HELPER_RESULTS: usize = 1;
+
+/// Order frame scalars so frames with the same scalar types share codecs,
+/// and choose spill storage.
+///
+/// Scalars are grouped widest type first (which also aligns them naturally
+/// after the 16-byte header). Scratch-resident spills must stay contiguous
+/// after the user locals because one `memory.copy` moves them, so in scratch
+/// mode only the user locals are grouped.
+fn plan_frame_layout(
+    module: &mut Module,
     ptr_ty: ValType,
-    frame_size: u32,
-    call_idx: u32,
-    unwind_save: InstrSeqId,
-    abort: AbortDispatch,
+    frame_scalars: &[(LocalId, ValType)],
+    user_count: usize,
+) -> (Vec<(LocalId, ValType, u32)>, SpillStorage) {
+    fn rank(ty: ValType) -> u8 {
+        match ty {
+            ValType::V128 => 0,
+            ValType::I64 => 1,
+            ValType::F64 => 2,
+            ValType::I32 => 3,
+            ValType::F32 => 4,
+            ValType::Ref(_) => unreachable!("frame scalars exclude references"),
+        }
+    }
+    let user_count = user_count.min(frame_scalars.len());
+    let spill_bytes: u32 = frame_scalars[user_count..]
+        .iter()
+        .map(|&(_, ty)| scalar_size(ty))
+        .sum();
+    let scratch = spill_bytes >= SCRATCH_SPILL_THRESHOLD_BYTES
+        && find_stack_pointer(module, ptr_ty).is_some();
+    let mut ordered = frame_scalars.to_vec();
+    if scratch {
+        ordered[..user_count].sort_by_key(|&(_, ty)| rank(ty));
+    } else {
+        ordered.sort_by_key(|&(_, ty)| rank(ty));
+    }
+    let locals_with_offsets = assign_local_offsets(&ordered, LOCALS_START_OFFSET);
+    let storage = if scratch {
+        build_spill_storage(module, ptr_ty, &locals_with_offsets, user_count)
+    } else {
+        SpillStorage::Locals
+    };
+    (locals_with_offsets, storage)
+}
+
+fn frame_codec_call(
+    module: &mut Module,
+    runtime: &Runtime,
+    codecs: &mut FrameCodecs,
+    locals_with_offsets: &[(LocalId, ValType, u32)],
+    storage: &SpillStorage,
+    catch_selector: bool,
+    references: &ReferenceFramePlan,
+) -> Option<FrameCodecCall> {
+    runtime.frame_next?;
+    runtime.frame_commit?;
+    let locals: Vec<(LocalId, ValType)> = locals_with_offsets
+        .iter()
+        .filter(|(local, _, _)| !storage.is_scratch_resident(*local))
+        .map(|&(local, ty, _)| (local, ty))
+        .collect();
+    if locals.len() > FRAME_CODEC_MAX_SCALARS {
+        return None;
+    }
+    // The helpers derive offsets from the types alone; local-resident
+    // scalars must therefore be packed from the end of the header.
+    let mut offset = LOCALS_START_OFFSET;
+    for &(local, ty, actual) in locals_with_offsets {
+        if storage.is_scratch_resident(local) {
+            continue;
+        }
+        assert_eq!(actual, offset, "frame codec scalars must be packed");
+        offset += scalar_size(ty);
+    }
+    let scalars: Vec<ValType> = locals.iter().map(|&(_, ty)| ty).collect();
+    let commits = storage.scratch().is_none()
+        && !catch_selector
+        && references.slots_by_call.iter().all(Vec::is_empty);
+    let key = FrameCodecKey {
+        scalars: scalars.clone(),
+        catch_selector,
+        commits,
+    };
+    let save = match codecs.save.get(&key) {
+        Some(&save) => save,
+        None => {
+            let save = emit_frame_save_helper(module, runtime, &key, codecs.save.len());
+            codecs.save.insert(key, save);
+            save
+        }
+    };
+    let restore_key = (scalars, catch_selector);
+    let restore = match codecs.restore.get(&restore_key) {
+        Some(&restore) => restore,
+        None => {
+            let restore = emit_frame_restore_helper(
+                module,
+                runtime,
+                &restore_key.0,
+                catch_selector,
+                codecs.restore.len(),
+            );
+            codecs.restore.insert(restore_key, restore);
+            restore
+        }
+    };
+    let restored_scalars = RESTORE_HELPER_RESULTS
+        .saturating_sub(usize::from(catch_selector))
+        .min(locals.len());
+    Some(FrameCodecCall {
+        save,
+        restore,
+        commits,
+        locals,
+        restored_scalars,
+    })
+}
+
+/// Create the shared reference-recipe helpers every run of `plan` needs.
+///
+/// WHY: each call-landing run's inline recipe encoding re-derives the frame
+/// pointer per slot and repeats the begin/append/finish import sequence; the
+/// decode side likewise repeats the vector lookup per slot. Runs with the same
+/// reference types share one helper pair, leaving each source function a call
+/// plus one `local.get`/`local.set` per reference. Recipe vectors and frame
+/// bytes are unchanged.
+fn ensure_reference_codecs(
+    module: &mut Module,
+    runtime: &Runtime,
+    helpers: &mut HashMap<Vec<RefType>, (FunctionId, FunctionId)>,
+    plan: &ReferenceFramePlan,
 ) {
-    let reserve_succeeded = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
-    let reserve_failed = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
+    if runtime.reference_codecs.is_none() {
+        return;
+    }
+    for (_, _, slots, _) in reference_plan_runs(plan) {
+        if slots.is_empty() || slots.len() > FRAME_CODEC_MAX_SCALARS {
+            continue;
+        }
+        let key: Vec<RefType> = slots.iter().map(|&slot| plan.slots[slot].ty).collect();
+        if helpers.contains_key(&key) {
+            continue;
+        }
+        let ordinal = helpers.len();
+        let save = emit_reference_save_helper(module, runtime, &key, ordinal);
+        let restore = emit_reference_restore_helper(module, runtime, &key, ordinal);
+        helpers.insert(key, (save, restore));
+    }
+}
 
-    {
-        let s = &mut local.block_mut(seq_id).instrs;
-        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+/// `(references...) -> ()`: encode one landing's live references into a
+/// fresh recipe vector and store its canonical ordinal in frame word 12.
+fn emit_reference_save_helper(
+    module: &mut Module,
+    runtime: &Runtime,
+    types: &[RefType],
+    ordinal: usize,
+) -> FunctionId {
+    let memory = first_memory(module);
+    let ptr_ty = runtime.buf_type;
+    let codecs = runtime.reference_codecs.expect("reference codecs");
+    let vector_begin = runtime.reference_vector_begin.expect("recipe-vector allocation");
+    let vector_append = runtime.reference_vector_append.expect("recipe-vector append");
+    let vector_finish = runtime.reference_vector_finish.expect("recipe-vector finish");
+    let classes: Vec<RefClass> = types.iter().map(|&ty| RefClass::of(module, ty)).collect();
+    let params: Vec<ValType> = types.iter().map(|&ty| ValType::Ref(ty)).collect();
+    let arguments: Vec<LocalId> = params.iter().map(|&ty| module.locals.add(ty)).collect();
+    let mut builder = FunctionBuilder::new(&mut module.types, &params, &[]);
+    builder.name(format!("__wpk_fork_refs_save_{ordinal}"));
+    let helper = builder.finish(arguments.clone(), &mut module.funcs);
+    let local = local_mut(module, helper);
+    let out = &mut local.block_mut(local.entry_block()).instrs;
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    push_instr(
+        out,
+        Instr::Const(Const {
+            value: Value::I32(types.len() as i32),
+        }),
+    );
+    push_instr(out, Instr::Call(Call { func: vector_begin }));
+    push_instr(out, store_i32(memory, REFERENCE_VECTOR_OFFSET));
+    for (&argument, class) in arguments.iter().zip(&classes) {
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(out, load_i32(memory, REFERENCE_VECTOR_OFFSET));
+        push_instr(out, Instr::LocalGet(LocalGet { local: argument }));
         push_instr(
-            s,
-            Instr::Const(Const {
-                value: Value::I32(call_idx as i32),
-            }),
-        );
-        push_instr(
-            s,
+            out,
             Instr::Call(Call {
-                func: abort.frame_select,
+                func: class.encoder(codecs),
             }),
         );
-        push_instr(
-            s,
-            Instr::IfElse(IfElse {
-                consequent: reserve_succeeded,
-                alternative: reserve_failed,
-            }),
-        );
+        push_instr(out, Instr::Call(Call { func: vector_append }));
     }
+    // WHY: the frame must hold a durable canonical ordinal, never the
+    // transaction-local builder handle returned by vector_begin.
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    push_instr(out, load_i32(memory, REFERENCE_VECTOR_OFFSET));
+    push_instr(out, Instr::Call(Call { func: vector_finish }));
+    push_instr(out, store_i32(memory, REFERENCE_VECTOR_OFFSET));
+    helper
+}
 
-    {
-        let s = &mut local.block_mut(reserve_failed).instrs;
+/// `() -> (references...)`: decode one landing's recipe vector from frame
+/// word 12 against the fresh instance.
+fn emit_reference_restore_helper(
+    module: &mut Module,
+    runtime: &Runtime,
+    types: &[RefType],
+    ordinal: usize,
+) -> FunctionId {
+    let memory = first_memory(module);
+    let ptr_ty = runtime.buf_type;
+    let codecs = runtime.reference_codecs.expect("reference codecs");
+    let vector_get = runtime.reference_vector_get.expect("recipe-vector lookup");
+    let classes: Vec<RefClass> = types.iter().map(|&ty| RefClass::of(module, ty)).collect();
+    let results: Vec<ValType> = types.iter().map(|&ty| ValType::Ref(ty)).collect();
+    let mut builder = FunctionBuilder::new(&mut module.types, &[], &results);
+    builder.name(format!("__wpk_fork_refs_restore_{ordinal}"));
+    let helper = builder.finish(Vec::new(), &mut module.funcs);
+    let local = local_mut(module, helper);
+    let out = &mut local.block_mut(local.entry_block()).instrs;
+    for (position, (&ty, class)) in types.iter().zip(&classes).enumerate() {
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(out, load_i32(memory, REFERENCE_VECTOR_OFFSET));
         push_instr(
-            s,
-            Instr::Br(Br {
-                block: abort.restart_loop,
+            out,
+            Instr::Const(Const {
+                value: Value::I32(position as i32),
+            }),
+        );
+        push_instr(out, Instr::Call(Call { func: vector_get }));
+        push_instr(
+            out,
+            Instr::Call(Call {
+                func: class.decoder(codecs),
+            }),
+        );
+        push_decoded_reference_narrowing(out, *class, ty);
+    }
+    helper
+}
+
+/// `(ordinal, [catch_selector], scalars...) -> ()`: write the frame header
+/// and scalars into the reserved payload at `*(buf + 0)`, then commit when
+/// the key says nothing else follows.
+fn emit_frame_save_helper(
+    module: &mut Module,
+    runtime: &Runtime,
+    key: &FrameCodecKey,
+    ordinal: usize,
+) -> FunctionId {
+    let memory = first_memory(module);
+    let ptr_ty = runtime.buf_type;
+    let mut params = vec![ValType::I32];
+    if key.catch_selector {
+        params.push(ValType::I32);
+    }
+    params.extend(key.scalars.iter().copied());
+    let arguments: Vec<LocalId> = params.iter().map(|&ty| module.locals.add(ty)).collect();
+    let frame = module.locals.add(ptr_ty);
+    let mut builder = FunctionBuilder::new(&mut module.types, &params, &[]);
+    builder.name(format!("__wpk_fork_frame_save_{ordinal}"));
+    let helper = builder.finish(arguments.clone(), &mut module.funcs);
+    let local = local_mut(module, helper);
+    let out = &mut local.block_mut(local.entry_block()).instrs;
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    push_instr(out, Instr::LocalSet(LocalSet { local: frame }));
+    let frame_ptr = |out: &mut Vec<(Instr, InstrLocId)>| {
+        push_instr(out, Instr::LocalGet(LocalGet { local: frame }));
+    };
+    frame_ptr(out);
+    push_instr(out, Instr::LocalGet(LocalGet { local: arguments[0] }));
+    push_instr(out, store_i32(memory, FUNC_INDEX_OFFSET));
+    frame_ptr(out);
+    if key.catch_selector {
+        push_instr(out, Instr::LocalGet(LocalGet { local: arguments[1] }));
+    } else {
+        push_instr(
+            out,
+            Instr::Const(Const {
+                value: Value::I32(0),
             }),
         );
     }
-
-    {
-        let s = &mut local.block_mut(reserve_succeeded).instrs;
-        push_instr(s, Instr::Br(Br { block: unwind_save }));
+    push_instr(out, store_i32(memory, CATCH_SELECTOR_OFFSET));
+    // frame[12] starts as the canonical empty reference-vector ordinal; a
+    // call-specific save dispatch replaces it after this helper returns.
+    frame_ptr(out);
+    push_instr(
+        out,
+        Instr::Const(Const {
+            value: Value::I32(0),
+        }),
+    );
+    push_instr(out, store_i32(memory, REFERENCE_VECTOR_OFFSET));
+    let first_scalar = if key.catch_selector { 2 } else { 1 };
+    let mut offset = LOCALS_START_OFFSET;
+    for (&argument, &ty) in arguments[first_scalar..].iter().zip(&key.scalars) {
+        frame_ptr(out);
+        push_instr(out, Instr::LocalGet(LocalGet { local: argument }));
+        push_instr(out, store_scalar(memory, ty, offset as u64));
+        offset += scalar_size(ty);
     }
+    if key.commits {
+        let frame_commit = runtime
+            .frame_commit
+            .expect("frame codec requires linked frame commit");
+        frame_ptr(out);
+        push_instr(out, Instr::Call(Call { func: frame_commit }));
+    }
+    helper
+}
+
+/// `(frame_size) -> ([catch_selector], scalars...)`: consume the next frame,
+/// publish it in `*(buf + 0)`, and return its catch selector and scalars.
+fn emit_frame_restore_helper(
+    module: &mut Module,
+    runtime: &Runtime,
+    scalars: &[ValType],
+    catch_selector: bool,
+    ordinal: usize,
+) -> FunctionId {
+    let memory = first_memory(module);
+    let ptr_ty = runtime.buf_type;
+    let frame_next = runtime
+        .frame_next
+        .expect("frame codec requires linked frame next");
+    let returned = RESTORE_HELPER_RESULTS
+        .saturating_sub(usize::from(catch_selector))
+        .min(scalars.len());
+    let mut results = Vec::with_capacity(RESTORE_HELPER_RESULTS);
+    if catch_selector {
+        results.push(ValType::I32);
+    }
+    results.extend(scalars[..returned].iter().copied());
+    let frame_size = module.locals.add(ptr_ty);
+    let frame = module.locals.add(ptr_ty);
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ptr_ty], &results);
+    builder.name(format!("__wpk_fork_frame_restore_{ordinal}"));
+    let helper = builder.finish(vec![frame_size], &mut module.funcs);
+    let local = local_mut(module, helper);
+    let out = &mut local.block_mut(local.entry_block()).instrs;
+    push_instr(
+        out,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.buf_global,
+        }),
+    );
+    push_instr(out, Instr::LocalGet(LocalGet { local: frame_size }));
+    push_instr(out, Instr::Call(Call { func: frame_next }));
+    push_instr(out, Instr::LocalTee(LocalTee { local: frame }));
+    push_instr(out, store_ptr(memory, ptr_ty, 0));
+    push_instr(out, Instr::LocalGet(LocalGet { local: frame }));
+    set_call_index_from_frame(out, runtime, memory);
+    push_instr(out, Instr::LocalGet(LocalGet { local: frame }));
+    push_instr(
+        out,
+        Instr::GlobalSet(GlobalSet {
+            global: runtime.frame_global,
+        }),
+    );
+    if catch_selector {
+        push_instr(out, Instr::LocalGet(LocalGet { local: frame }));
+        push_instr(out, load_i32(memory, CATCH_SELECTOR_OFFSET));
+    }
+    let mut offset = LOCALS_START_OFFSET;
+    for &ty in &scalars[..returned] {
+        push_instr(out, Instr::LocalGet(LocalGet { local: frame }));
+        push_instr(out, load_scalar(memory, ty, offset as u64));
+        offset += scalar_size(ty);
+    }
+    helper
 }
 
 // ----------------------------------------------------------------------
@@ -3743,7 +4501,9 @@ fn emit_reference_restore_dispatch(
     memory: MemoryId,
     ptr_ty: ValType,
     plan: &ReferenceFramePlan,
+    helpers: &HashMap<Vec<RefType>, (FunctionId, FunctionId)>,
 ) {
+    let _attr = attr::scope(Attr::PreambleRestoreReferences);
     let codecs = runtime
         .reference_codecs
         .expect("linked fork reference plan requires typed host codecs");
@@ -3759,7 +4519,30 @@ fn emit_reference_restore_dispatch(
             .builder_mut()
             .dangling_instr_seq(InstrSeqType::Simple(None))
             .id();
-        {
+        let key: Vec<RefType> = slots.iter().map(|&slot| plan.slots[slot].ty).collect();
+        // A multi-reference restore would return several live results; see
+        // `RESTORE_HELPER_RESULTS`.
+        let shared_restore = if key.len() <= RESTORE_HELPER_RESULTS {
+            helpers.get(&key)
+        } else {
+            None
+        };
+        if let Some(&(_, restore)) = shared_restore {
+            let out = &mut local.block_mut(then_seq).instrs;
+            push_instr(out, Instr::Call(Call { func: restore }));
+            for &slot_idx in slots.iter().rev() {
+                push_instr(
+                    out,
+                    Instr::LocalSet(LocalSet {
+                        local: plan.slots[slot_idx].local,
+                    }),
+                );
+            }
+            for &(local, ty) in &nulls {
+                push_instr(out, Instr::RefNull(RefNull { ty }));
+                push_instr(out, Instr::LocalSet(LocalSet { local }));
+            }
+        } else {
             let out = &mut local.block_mut(then_seq).instrs;
             for (position, slot_idx) in slots.into_iter().enumerate() {
                 let slot = plan.slots[slot_idx];
@@ -3806,10 +4589,12 @@ fn build_reference_save_dispatch(
     memory: MemoryId,
     ptr_ty: ValType,
     plan: &ReferenceFramePlan,
+    helpers: &HashMap<Vec<RefType>, (FunctionId, FunctionId)>,
 ) -> Option<InstrSeqId> {
     if plan.slots_by_call.iter().all(Vec::is_empty) {
         return None;
     }
+    let _attr = attr::scope(Attr::PostambleSaveReferences);
     let codecs = runtime
         .reference_codecs
         .expect("linked fork reference plan requires typed host codecs");
@@ -3838,7 +4623,15 @@ fn build_reference_save_dispatch(
             .builder_mut()
             .dangling_instr_seq(InstrSeqType::Simple(None))
             .id();
-        {
+        let key: Vec<RefType> = slots.iter().map(|&slot| plan.slots[slot].ty).collect();
+        if let Some(&(save, _)) = helpers.get(&key) {
+            let out = &mut local.block_mut(then_seq).instrs;
+            for &slot_idx in &slots {
+                let slot = plan.slots[slot_idx];
+                push_typed_local_get(out, slot.local, ValType::Ref(slot.ty));
+            }
+            push_instr(out, Instr::Call(Call { func: save }));
+        } else {
             let out = &mut local.block_mut(then_seq).instrs;
             push_current_frame_ptr(out, runtime, memory, ptr_ty);
             push_instr(
@@ -3909,11 +4702,97 @@ fn populate_preamble_then(
     catch_scalar_restore_dispatch: Option<InstrSeqId>,
     reference_plan: &ReferenceFramePlan,
     frame_size: u32,
+    codec: Option<&FrameCodecCall>,
+    reference_helpers: &HashMap<Vec<RefType>, (FunctionId, FunctionId)>,
+) {
+    let s = &mut local.block_mut(preamble_then).instrs;
+    if let Some(codec) = codec {
+        // The shared restore helper consumes the frame, publishes it in
+        // *(buf + 0), and returns the catch selector and every local-resident
+        // scalar in frame order.
+        {
+            let _attr = attr::scope(Attr::PreambleFrameNext);
+            push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+            push_instr(
+                s,
+                Instr::Call(Call {
+                    func: codec.restore,
+                }),
+            );
+        }
+        let _attr = attr::scope(Attr::PreambleRestoreScalars);
+        for &(lid, _) in codec.locals[..codec.restored_scalars].iter().rev() {
+            push_instr(s, Instr::LocalSet(LocalSet { local: lid }));
+        }
+        if let Some(catch_state) = catch_state_locals {
+            push_instr(
+                s,
+                Instr::LocalSet(LocalSet {
+                    local: catch_state.catch_selector,
+                }),
+            );
+        }
+        let mut offset = LOCALS_START_OFFSET;
+        for (index, &(lid, ty)) in codec.locals.iter().enumerate() {
+            if index >= codec.restored_scalars {
+                push_instr(
+                    s,
+                    Instr::GlobalGet(GlobalGet {
+                        global: runtime.frame_global,
+                    }),
+                );
+                push_instr(s, load_scalar(memory, ty, offset as u64));
+                push_instr(s, Instr::LocalSet(LocalSet { local: lid }));
+            }
+            offset += scalar_size(ty);
+        }
+    } else {
+        populate_inline_frame_restore(
+            s,
+            runtime,
+            memory,
+            ptr_ty,
+            catch_state_locals,
+            locals_with_offsets,
+            storage,
+            frame_size,
+        );
+    }
+    if let Some(frame) = storage.scratch() {
+        emit_scratch_restore_copy(s, frame, runtime, memory, ptr_ty);
+    }
+    if let Some(dispatch) = catch_scalar_restore_dispatch {
+        let _attr = attr::scope(Attr::PreambleCatch);
+        push_instr(s, Instr::Block(Block { seq: dispatch }));
+    }
+    emit_reference_restore_dispatch(
+        local,
+        preamble_then,
+        runtime,
+        memory,
+        ptr_ty,
+        reference_plan,
+        reference_helpers,
+    );
+}
+
+/// Inline replay preamble frame consumption, used when no shared restore
+/// helper applies (legacy contiguous runtime or an oversized frame).
+#[allow(clippy::too_many_arguments)]
+fn populate_inline_frame_restore(
+    s: &mut Vec<(Instr, InstrLocId)>,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+    catch_state_locals: Option<CatchStateLocals>,
+    locals_with_offsets: &[(LocalId, ValType, u32)],
+    storage: &SpillStorage,
+    frame_size: u32,
 ) {
     // Store the frame selected for replay in *(buf + 0). The linked format
     // asks the host-managed chain for the next committed frame; the legacy
     // format walks its contiguous buffer backward.
-    let s = &mut local.block_mut(preamble_then).instrs;
+    let frame_next_attr = attr::scope(Attr::PreambleFrameNext);
     push_instr(
         s,
         Instr::GlobalGet(GlobalGet {
@@ -3940,8 +4819,12 @@ fn populate_preamble_then(
         );
     }
     push_instr(s, store_ptr(memory, ptr_ty, 0));
+    push_current_frame_ptr(s, runtime, memory, ptr_ty);
+    set_call_index_from_frame(s, runtime, memory);
+    drop(frame_next_attr);
 
     if let Some(catch_state) = catch_state_locals {
+        let _attr = attr::scope(Attr::PreambleCatch);
         // Frame word +8 owns the exact `(region, arm)` selector. Scalar arm
         // payloads are restored separately from their overlaid union.
         push_current_frame_ptr(s, runtime, memory, ptr_ty);
@@ -3957,6 +4840,7 @@ fn populate_preamble_then(
     // Restore scalar user locals (includes local-resident arg-spill locals).
     // Scratch-resident spills are restored below with one bulk copy into the
     // freshly reserved scratch region instead of one load/set pair each.
+    let restore_attr = attr::scope(Attr::PreambleRestoreScalars);
     for &(lid, ty, off) in locals_with_offsets {
         if storage.is_scratch_resident(lid) {
             continue;
@@ -3965,20 +4849,7 @@ fn populate_preamble_then(
         push_instr(s, load_scalar(memory, ty, off as u64));
         push_instr(s, Instr::LocalSet(LocalSet { local: lid }));
     }
-    if let Some(frame) = storage.scratch() {
-        emit_scratch_restore_copy(s, frame, runtime, memory, ptr_ty);
-    }
-    if let Some(dispatch) = catch_scalar_restore_dispatch {
-        push_instr(s, Instr::Block(Block { seq: dispatch }));
-    }
-    emit_reference_restore_dispatch(
-        local,
-        preamble_then,
-        runtime,
-        memory,
-        ptr_ty,
-        reference_plan,
-    );
+    drop(restore_attr);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3994,7 +4865,110 @@ fn populate_postamble(
     reference_save_dispatch: Option<InstrSeqId>,
     frame_size: u32,
     func_ordinal: u32,
+    codec: Option<&FrameCodecCall>,
 ) {
+    if let Some(codec) = codec {
+        // The shared save helper writes the header and every local-resident
+        // scalar, and commits when nothing else follows.
+        let _attr = attr::scope(Attr::PostambleSaveScalars);
+        push_instr(
+            out,
+            Instr::Const(Const {
+                value: Value::I32(func_ordinal as i32),
+            }),
+        );
+        if let Some(catch_state) = catch_state_locals {
+            push_instr(
+                out,
+                Instr::LocalGet(LocalGet {
+                    local: catch_state.catch_selector,
+                }),
+            );
+        }
+        for &(lid, _) in &codec.locals {
+            push_instr(out, Instr::LocalGet(LocalGet { local: lid }));
+        }
+        push_instr(out, Instr::Call(Call { func: codec.save }));
+    } else {
+        populate_inline_frame_save(
+            out,
+            runtime,
+            memory,
+            ptr_ty,
+            catch_state_locals,
+            locals_with_offsets,
+            storage,
+            func_ordinal,
+        );
+    }
+    if let Some(frame) = storage.scratch() {
+        emit_scratch_save_copy(out, frame, runtime, memory, ptr_ty);
+    }
+    if let Some(dispatch) = catch_scalar_save_dispatch {
+        let _attr = attr::scope(Attr::PostambleCatch);
+        push_instr(out, Instr::Block(Block { seq: dispatch }));
+    }
+
+    let _commit_attr = attr::scope(Attr::PostambleCommitThrow);
+    if let Some(dispatch) = reference_save_dispatch {
+        // The call selector was written before entering this common postamble.
+        // Each case encodes only values live for that original call landing.
+        push_instr(out, Instr::Block(Block { seq: dispatch }));
+    }
+
+    if codec.is_some_and(|codec| codec.commits) {
+        debug_assert!(storage.scratch().is_none());
+        debug_assert!(catch_scalar_save_dispatch.is_none());
+        debug_assert!(reference_save_dispatch.is_none());
+    } else if let Some(frame_commit) = runtime.frame_commit {
+        // Publish only after the complete activation-owned payload exists.
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(out, Instr::Call(Call { func: frame_commit }));
+    } else {
+        // Advance current_pos: *(buf + 0) = frame_ptr + frame_size
+        push_instr(
+            out,
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
+        );
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(out, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(
+            out,
+            Instr::Binop(Binop {
+                op: ptr_add(ptr_ty),
+            }),
+        );
+        push_instr(out, store_ptr(memory, ptr_ty, 0));
+    }
+
+    // WHY: a synthesized default is not a value owned by this activation,
+    // and non-nullable reference results do not have a valid default at all.
+    // The process-owned tag is independent of the function's result type and
+    // therefore transports unwind through every Wasm signature truthfully.
+    // The throw stays in the source function so the scratch-frame discipline
+    // sees it as a function exit.
+    let unwind_tag = runtime
+        .unwind_tag
+        .expect("fork-path instrumentation requires the linked unwind tag");
+    push_instr(out, Instr::Throw(Throw { tag: unwind_tag }));
+}
+
+/// Inline postamble header and scalar stores, used when no shared save
+/// helper applies (legacy contiguous runtime or an oversized frame).
+#[allow(clippy::too_many_arguments)]
+fn populate_inline_frame_save(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+    catch_state_locals: Option<CatchStateLocals>,
+    locals_with_offsets: &[(LocalId, ValType, u32)],
+    storage: &SpillStorage,
+    func_ordinal: u32,
+) {
+    let header_attr = attr::scope(Attr::PostambleHeader);
     // frame[0] = func_ordinal
     push_current_frame_ptr(out, runtime, memory, ptr_ty);
     push_instr(
@@ -4037,7 +5011,9 @@ fn populate_postamble(
         }),
     );
     push_instr(out, store_i32(memory, REFERENCE_VECTOR_OFFSET));
+    drop(header_attr);
 
+    let save_attr = attr::scope(Attr::PostambleSaveScalars);
     // Save scalar user + local-resident arg-spill locals. Scratch-resident
     // spills are published with one bulk copy from the live scratch region
     // into the reserved node, keeping the payload bytes identical to the
@@ -4050,50 +5026,7 @@ fn populate_postamble(
         push_instr(out, Instr::LocalGet(LocalGet { local: lid }));
         push_instr(out, store_scalar(memory, ty, off as u64));
     }
-    if let Some(frame) = storage.scratch() {
-        emit_scratch_save_copy(out, frame, runtime, memory, ptr_ty);
-    }
-    if let Some(dispatch) = catch_scalar_save_dispatch {
-        push_instr(out, Instr::Block(Block { seq: dispatch }));
-    }
-
-    if let Some(dispatch) = reference_save_dispatch {
-        // The call selector was written before entering this common postamble.
-        // Each case encodes only values live for that original call landing.
-        push_instr(out, Instr::Block(Block { seq: dispatch }));
-    }
-
-    if let Some(frame_commit) = runtime.frame_commit {
-        // Publish only after the complete activation-owned payload exists.
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-        push_instr(out, Instr::Call(Call { func: frame_commit }));
-    } else {
-        // Advance current_pos: *(buf + 0) = frame_ptr + frame_size
-        push_instr(
-            out,
-            Instr::GlobalGet(GlobalGet {
-                global: runtime.buf_global,
-            }),
-        );
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-        push_instr(out, ptr_const(ptr_ty, frame_size as i64));
-        push_instr(
-            out,
-            Instr::Binop(Binop {
-                op: ptr_add(ptr_ty),
-            }),
-        );
-        push_instr(out, store_ptr(memory, ptr_ty, 0));
-    }
-
-    // WHY: a synthesized default is not a value owned by this activation,
-    // and non-nullable reference results do not have a valid default at all.
-    // The process-owned tag is independent of the function's result type and
-    // therefore transports unwind through every Wasm signature truthfully.
-    let unwind_tag = runtime
-        .unwind_tag
-        .expect("fork-path instrumentation requires the linked unwind tag");
-    push_instr(out, Instr::Throw(Throw { tag: unwind_tag }));
+    drop(save_attr);
 }
 
 /// Post-call sequence for call site K, appended to sequence `seq_id`.
@@ -4139,7 +5072,7 @@ fn emit_resume_selected_call(
     sequence: InstrSeqId,
     target: CallTarget,
     sig_ty: TypeId,
-    resume_ty: TypeId,
+    resume_ty: ResumeType,
     location: InstrLocId,
     arguments: &CallArgMaterialization,
     storage: &SpillStorage,
@@ -4153,7 +5086,7 @@ fn emit_resume_selected_call(
     let resume_table = runtime
         .resume_table
         .expect("replay-routed call requires process resume table");
-    let branch_ty = InstrSeqType::MultiValue(resume_ty);
+    let branch_ty = resume_ty.seq;
     let lexical_sentinel = local.builder_mut().dangling_instr_seq(branch_ty).id();
     let dispatch = local.builder_mut().dangling_instr_seq(branch_ty).id();
 
@@ -4182,7 +5115,7 @@ fn emit_resume_selected_call(
         push_instr(
             out,
             Instr::CallIndirect(CallIndirect {
-                ty: resume_ty,
+                ty: resume_ty.ty,
                 table: resume_table,
             }),
         );
@@ -4220,48 +5153,54 @@ fn emit_replay_routed_call(
     local: &mut LocalFunction,
     sequence: InstrSeqId,
     target: CallTarget,
-    direct_activation: bool,
+    lexical_replay: bool,
     sig_ty: TypeId,
-    resume_ty: TypeId,
+    resume_ty: ResumeType,
     location: InstrLocId,
     arguments: &CallArgMaterialization,
     storage: &SpillStorage,
     memory: MemoryId,
     runtime: &Runtime,
 ) {
-    let branch_ty = InstrSeqType::MultiValue(resume_ty);
+    if lexical_replay {
+        // WHY: a direct activation callee already owns the selected event and
+        // its preamble validates activation/function identity through
+        // frame_next before consuming it; a transport helper performs the
+        // process resume routing itself. Replay therefore re-executes the
+        // same call the normal path does, so one copy serves both states.
+        // A resume thunk in front of every ordinary recursive activation
+        // would instead double native rewind depth.
+        let _attr = attr::scope(Attr::ArgReload);
+        populate_lexical_call(
+            local, sequence, target, sig_ty, location, arguments, storage, memory,
+        );
+        return;
+    }
+    let _attr = attr::scope(Attr::CallReplayRoute);
+    let branch_ty = resume_ty.seq;
     let normal = local.builder_mut().dangling_instr_seq(branch_ty).id();
     let replay = local.builder_mut().dangling_instr_seq(branch_ty).id();
-    populate_lexical_call(
-        local, normal, target, sig_ty, location, arguments, storage, memory,
-    );
-    if direct_activation {
-        // WHY: adding a no-argument resume thunk in front of every ordinary
-        // recursive activation doubles native rewind depth. A materialized
-        // direct callee already owns the selected event; its preamble
-        // validates activation/function identity through frame_next before
-        // consuming it. Tail-transparent, indirect, and reference calls still
-        // require the process router because their lexical target need not be
-        // the next materialized activation.
-        debug_assert!(matches!(target, CallTarget::Direct(_)));
+    {
+        let _attr = attr::scope(Attr::ArgReload);
         populate_lexical_call(
-            local, replay, target, sig_ty, location, arguments, storage, memory,
-        );
-    } else {
-        emit_resume_selected_call(
-            local,
-            replay,
-            target,
-            sig_ty,
-            resume_ty,
-            location,
-            arguments,
-            storage,
-            memory,
-            runtime,
-            sig_ty.index() as i32,
+            local, normal, target, sig_ty, location, arguments, storage, memory,
         );
     }
+    // Tail-transparent callees still require the process router because
+    // their lexical target need not be the next materialized activation.
+    emit_resume_selected_call(
+        local,
+        replay,
+        target,
+        sig_ty,
+        resume_ty,
+        location,
+        arguments,
+        storage,
+        memory,
+        runtime,
+        sig_ty.index() as i32,
+    );
     let out = &mut local.block_mut(sequence).instrs;
     push_instr(
         out,
@@ -4301,9 +5240,9 @@ fn emit_replay_routed_call_with_unwind_boundary(
     local: &mut LocalFunction,
     sequence: InstrSeqId,
     target: CallTarget,
-    direct_activation: bool,
+    lexical_replay: bool,
     sig_ty: TypeId,
-    resume_ty: TypeId,
+    resume_ty: ResumeType,
     location: InstrLocId,
     arguments: &CallArgMaterialization,
     storage: &SpillStorage,
@@ -4315,19 +5254,25 @@ fn emit_replay_routed_call_with_unwind_boundary(
     unwind_save: InstrSeqId,
     abort: AbortDispatch,
 ) {
-    let result_ty = InstrSeqType::MultiValue(resume_ty);
-    let result_boundary = local.builder_mut().dangling_instr_seq(result_ty).id();
-    let catch_boundary = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
-    let call_body = local.builder_mut().dangling_instr_seq(result_ty).id();
-
+    // The function-wide catch owns frame selection; a call only records its
+    // static index first when the function has more than one.
+    if let Some(call_index) = abort.call_index_local {
+        let _attr = attr::scope(Attr::CallUnwindSelect);
+        let out = &mut local.block_mut(sequence).instrs;
+        push_instr(
+            out,
+            Instr::Const(Const {
+                value: Value::I32(call_idx as i32),
+            }),
+        );
+        push_instr(out, Instr::LocalSet(LocalSet { local: call_index }));
+    }
+    let _ = (ptr_ty, frame_size, unwind_save);
     emit_replay_routed_call(
         local,
-        call_body,
+        sequence,
         target,
-        direct_activation,
+        lexical_replay,
         sig_ty,
         resume_ty,
         location,
@@ -4335,61 +5280,6 @@ fn emit_replay_routed_call_with_unwind_boundary(
         storage,
         memory,
         runtime,
-    );
-    {
-        let out = &mut local.block_mut(catch_boundary).instrs;
-        push_instr(
-            out,
-            Instr::TryTable(TryTable {
-                seq: call_body,
-                catches: vec![TryTableCatch::Catch {
-                    tag: runtime
-                        .unwind_tag
-                        .expect("fork call boundary requires private unwind tag"),
-                    label: catch_boundary,
-                }],
-            }),
-        );
-        // On the normal edge the call's results satisfy the result boundary.
-        // The catch edge branches to the end of this simple block and enters
-        // the static unwind handler below with no fabricated result values.
-        push_instr(
-            out,
-            Instr::Br(Br {
-                block: result_boundary,
-            }),
-        );
-    }
-    {
-        let out = &mut local.block_mut(result_boundary).instrs;
-        push_instr(
-            out,
-            Instr::Block(Block {
-                seq: catch_boundary,
-            }),
-        );
-    }
-    emit_static_call_unwind_handler(
-        local,
-        result_boundary,
-        ptr_ty,
-        frame_size,
-        call_idx,
-        unwind_save,
-        abort,
-    );
-    // Both handler arms branch away, but make that fact explicit to the
-    // validator: the result-typed boundary has no fallthrough value on the
-    // caught edge.
-    push_instr(
-        &mut local.block_mut(result_boundary).instrs,
-        Instr::Unreachable(Unreachable {}),
-    );
-    push_instr(
-        &mut local.block_mut(sequence).instrs,
-        Instr::Block(Block {
-            seq: result_boundary,
-        }),
     );
 }
 
@@ -4415,6 +5305,7 @@ fn emit_post_call_via_local(
     // The call pops only its args, leaving the carryovers + result on
     // the stack — matching the original code's expected shape.
     {
+        let _attr = attr::scope(Attr::ArgReload);
         let s = &mut local.block_mut(seq_id).instrs;
         for &(local, ty) in carryovers {
             emit_spill_load(s, storage, memory, local, ty);
@@ -4424,7 +5315,7 @@ fn emit_post_call_via_local(
         local,
         seq_id,
         call.target,
-        call.direct_activation,
+        call.lexical_replay,
         call.sig_ty,
         call.resume_ty
             .expect("call site resume type was not assigned"),
@@ -4482,6 +5373,56 @@ fn emit_resume_thunk(
         .copied()
         .map(|slot| (slot.local, slot))
         .collect();
+    // WHY zero scalar arguments: the resumed function's own preamble restores
+    // every scalar parameter from this same frame (each one is a saved user
+    // local) before any other code reads it, and its `frame_next` performs the
+    // same ordinal/size validation `frame_peek` would. Loading the scalars here
+    // only to have them overwritten costs a peek call and one load per
+    // parameter in every thunk. Reference parameters still need a valid
+    // decoded value to enter a non-nullable signature, so they keep the
+    // frame-reading form; so do float-heavy signatures, whose zero constants
+    // are longer than the loads.
+    let parameter_types: Vec<ValType> = arguments
+        .iter()
+        .map(|&argument| module.locals.get(argument).ty())
+        .collect();
+    let zero_bytes: Option<u32> = parameter_types
+        .iter()
+        .map(|ty| match ty {
+            ValType::I32 | ValType::I64 => Some(2),
+            ValType::F32 => Some(5),
+            ValType::F64 => Some(9),
+            ValType::V128 => Some(18),
+            ValType::Ref(_) => None,
+        })
+        .sum();
+    let load_bytes = 7 + 5 * parameter_types.len() as u32;
+    if zero_bytes.is_some_and(|zero| zero <= load_bytes) {
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &results);
+        builder.name(format!("__wpk_fork_resume_{func_ordinal}"));
+        {
+            let mut body = builder.func_body();
+            let out = body.instrs_mut();
+            for ty in parameter_types {
+                let value = match ty {
+                    ValType::I32 => Value::I32(0),
+                    ValType::I64 => Value::I64(0),
+                    ValType::F32 => Value::F32(0.0),
+                    ValType::F64 => Value::F64(0.0),
+                    ValType::V128 => Value::V128(0),
+                    ValType::Ref(_) => unreachable!("reference parameters use frame recipes"),
+                };
+                push_instr(out, Instr::Const(Const { value }));
+            }
+            push_instr(
+                out,
+                Instr::Call(Call {
+                    func: resumed_function,
+                }),
+            );
+        }
+        return builder.finish(Vec::new(), &mut module.funcs);
+    }
     let frame = module.locals.add(ptr_ty);
     let mut builder = FunctionBuilder::new(&mut module.types, &[], &results);
     builder.name(format!("__wpk_fork_resume_{func_ordinal}"));
@@ -4541,6 +5482,69 @@ fn emit_resume_thunk(
     builder.finish(Vec::new(), &mut module.funcs)
 }
 
+/// Functions that replay can enter other than through their own lexical
+/// caller, and so need a resume thunk.
+///
+/// Replay reaches an activation through the process resume table only when
+/// the next journal event is not the callee of the lexical call being
+/// re-executed: after an indirect or reference call (the target came from a
+/// table or a `ref.func`), after a tail call eliminated the caller, at a
+/// cross-module boundary (an export), and at the fixed `_start` and thread
+/// entries (an export and a table member). A function reachable only by
+/// ordinary direct calls is always re-entered lexically; its caller is an
+/// activation that replays the call. Must run before the instrumenter adds
+/// its own catalog tables, which list every function.
+pub fn resume_entry_points(module: &Module) -> HashSet<FunctionId> {
+    use walrus::ConstExpr;
+    let mut entries = HashSet::new();
+    for export in module.exports.iter() {
+        if let ExportItem::Function(function) = export.item {
+            entries.insert(function);
+        }
+    }
+    let const_expr = |expr: &ConstExpr, entries: &mut HashSet<FunctionId>| {
+        if let ConstExpr::RefFunc(function) = expr {
+            entries.insert(*function);
+        }
+    };
+    for element in module.elements.iter() {
+        match &element.items {
+            ElementItems::Functions(functions) => entries.extend(functions.iter().copied()),
+            ElementItems::Expressions(_, exprs) => {
+                for expr in exprs {
+                    const_expr(expr, &mut entries);
+                }
+            }
+        }
+    }
+    for global in module.globals.iter() {
+        if let walrus::GlobalKind::Local(expr) = &global.kind {
+            const_expr(expr, &mut entries);
+        }
+    }
+    for function in module.funcs.iter() {
+        let FunctionKind::Local(local) = &function.kind else {
+            continue;
+        };
+        let mut stack = vec![local.entry_block()];
+        while let Some(seq) = stack.pop() {
+            for (instr, _) in &local.block(seq).instrs {
+                match instr {
+                    Instr::RefFunc(walrus::ir::RefFunc { func }) => {
+                        entries.insert(*func);
+                    }
+                    Instr::ReturnCall(walrus::ir::ReturnCall { func }) => {
+                        entries.insert(*func);
+                    }
+                    _ => {}
+                }
+                stack.extend(nested_seqs(instr));
+            }
+        }
+    }
+    entries
+}
+
 fn emit_resume_catalog(module: &mut Module, thunks: &[ResumeThunk]) {
     let size = thunks.len() as u64;
     let table = module
@@ -4567,7 +5571,7 @@ fn emit_resume_catalog(module: &mut Module, thunks: &[ResumeThunk]) {
     data.extend_from_slice(&RESUME_CATALOG_HEADER_SIZE.to_le_bytes());
     data.extend_from_slice(&(thunks.len() as u32).to_le_bytes());
     for (slot, thunk) in thunks.iter().enumerate() {
-        debug_assert_eq!(thunk.func_ordinal, slot as u32);
+        debug_assert!(slot == 0 || thunks[slot - 1].func_ordinal < thunk.func_ordinal);
         data.extend_from_slice(&thunk.func_ordinal.to_le_bytes());
         data.extend_from_slice(&(slot as u32).to_le_bytes());
     }
@@ -4614,7 +5618,7 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
         let start_ty = module.funcs.get(start).ty();
         let signature = module.types.get(start_ty);
         if signature.params().is_empty() && signature.results().is_empty() {
-            let resume_ty = module.types.add(&[], &[]);
+            let resume_ty = ResumeType::new(module, &[]);
             let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
             builder.name(RESUME_START_EXPORT.into());
             let wrapper = builder.finish(Vec::new(), &mut module.funcs);
@@ -4642,7 +5646,7 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
     if let Some(function_table) = exported_table(module, "__indirect_function_table") {
         let ptr_ty = runtime.buf_type;
         let thread_ty = module.types.add(&[ptr_ty], &[ptr_ty]);
-        let resume_ty = module.types.add(&[], &[ptr_ty]);
+        let resume_ty = ResumeType::new(module, &[ptr_ty]);
         let table_index = module.locals.add(ValType::I32);
         let argument = module.locals.add(ptr_ty);
         let mut builder =
@@ -4829,6 +5833,7 @@ fn build_spill_storage(
 
 /// `SP -= size; base = SP` — prepended to the function entry.
 fn emit_scratch_reserve(out: &mut Vec<(Instr, InstrLocId)>, frame: &ScratchFrame, ptr_ty: ValType) {
+    let _attr = attr::scope(Attr::Scratch);
     push_instr(
         out,
         Instr::GlobalGet(GlobalGet {
@@ -4853,6 +5858,7 @@ fn emit_scratch_reserve(out: &mut Vec<(Instr, InstrLocId)>, frame: &ScratchFrame
 
 /// `SP = base + size` — before every function exit.
 fn emit_scratch_release(out: &mut Vec<(Instr, InstrLocId)>, frame: &ScratchFrame, ptr_ty: ValType) {
+    let _attr = attr::scope(Attr::Scratch);
     push_instr(out, Instr::LocalGet(LocalGet { local: frame.base }));
     push_instr(out, ptr_const(ptr_ty, frame.size as i64));
     push_instr(
@@ -4873,6 +5879,7 @@ fn emit_scratch_release(out: &mut Vec<(Instr, InstrLocId)>, frame: &ScratchFrame
 /// frames that exited via exception propagation. Idempotent when nothing
 /// leaked (SP already equals base inside the body).
 fn emit_scratch_reseed(out: &mut Vec<(Instr, InstrLocId)>, frame: &ScratchFrame) {
+    let _attr = attr::scope(Attr::Scratch);
     push_instr(out, Instr::LocalGet(LocalGet { local: frame.base }));
     push_instr(
         out,
@@ -4935,6 +5942,7 @@ fn emit_scratch_restore_copy(
     memory: MemoryId,
     ptr_ty: ValType,
 ) {
+    let _attr = attr::scope(Attr::Scratch);
     push_instr(out, Instr::LocalGet(LocalGet { local: frame.base }));
     push_current_frame_ptr(out, runtime, memory, ptr_ty);
     push_instr(out, ptr_const(ptr_ty, frame.node_spill_start as i64));
@@ -4963,6 +5971,7 @@ fn emit_scratch_save_copy(
     memory: MemoryId,
     ptr_ty: ValType,
 ) {
+    let _attr = attr::scope(Attr::Scratch);
     push_current_frame_ptr(out, runtime, memory, ptr_ty);
     push_instr(out, ptr_const(ptr_ty, frame.node_spill_start as i64));
     push_instr(
@@ -4998,6 +6007,7 @@ fn apply_scratch_frame_discipline(
     frame: &ScratchFrame,
     ptr_ty: ValType,
 ) {
+    let _attr = attr::scope(Attr::Scratch);
     let entry = {
         let local = match &module.funcs.get(func_id).kind {
             FunctionKind::Local(local) => local,
@@ -5589,7 +6599,7 @@ fn local_mut(module: &mut Module, func_id: FunctionId) -> &mut LocalFunction {
 }
 
 fn push_instr(out: &mut Vec<(Instr, InstrLocId)>, instr: Instr) {
-    out.push((instr, InstrLocId::default()));
+    out.push((instr, attr::generated_loc()));
 }
 
 fn push_current_frame_ptr(
@@ -5610,11 +6620,27 @@ fn push_current_frame_ptr(
 fn push_current_call_index(
     out: &mut Vec<(Instr, InstrLocId)>,
     runtime: &Runtime,
-    memory: MemoryId,
-    ptr_ty: ValType,
+    _memory: MemoryId,
+    _ptr_ty: ValType,
 ) {
-    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    push_instr(
+        out,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.call_index_global,
+        }),
+    );
+}
+
+/// `global.set $call_index` from the selected frame pointer on the stack,
+/// leaving nothing.
+fn set_call_index_from_frame(out: &mut Vec<(Instr, InstrLocId)>, runtime: &Runtime, memory: MemoryId) {
     push_instr(out, load_i32(memory, CALL_INDEX_OFFSET));
+    push_instr(
+        out,
+        Instr::GlobalSet(GlobalSet {
+            global: runtime.call_index_global,
+        }),
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -6053,6 +7079,10 @@ fn build_plain_catch_scalar_dispatch(
     plan: &PlainCatchScalarFrame,
     io: PlainCatchScalarIo,
 ) -> Option<InstrSeqId> {
+    let _attr = attr::scope(match io {
+        PlainCatchScalarIo::Restore => Attr::PreambleCatch,
+        PlainCatchScalarIo::Save => Attr::PostambleCatch,
+    });
     if plan.arms.is_empty() {
         return None;
     }
@@ -6217,6 +7247,7 @@ fn inject_rewind_throw_stubs(
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[PlainCatchRegionState],
 ) {
+    let _attr = attr::scope(Attr::CatchRewindStub);
     let plain_lookup: HashMap<InstrSeqId, &PlainCatchRegionState> = plain_catches
         .iter()
         .map(|region| (region.body_seq, region))
@@ -6482,6 +7513,7 @@ fn shield_private_unwind_from_user_catches(
     func_id: FunctionId,
     runtime: &Runtime,
 ) {
+    let _attr = attr::scope(Attr::Shield);
     #[derive(Clone, Copy)]
     enum Site {
         TryTable { body: InstrSeqId, depth: u32 },
@@ -6713,6 +7745,7 @@ fn apply_plain_catch_handlers(
     plain_catches: &[PlainCatchRegionState],
     catch_handlers: &[CatchHandlerInfo],
 ) {
+    let _attr = attr::scope(Attr::CatchCapture);
     if plain_catches.is_empty() {
         return;
     }
@@ -7687,9 +8720,10 @@ struct NestedCallSite {
     call_idx: u32,
     seq_id: InstrSeqId,
     target: NestedTarget,
-    direct_activation: bool,
+    /// See `CallSiteInfo::lexical_replay`.
+    lexical_replay: bool,
     sig_ty: TypeId,
-    resume_ty: Option<TypeId>,
+    resume_ty: Option<ResumeType>,
     loc: InstrLocId,
 }
 
@@ -7762,7 +8796,7 @@ fn walk_discover(
                     call_idx: idx,
                     seq_id: seq,
                     target: NestedTarget::Direct(c.func),
-                    direct_activation: false,
+                    lexical_replay: false,
                     sig_ty: module.funcs.get(c.func).ty(),
                     resume_ty: None,
                     loc: *loc,
@@ -7776,7 +8810,7 @@ fn walk_discover(
                     call_idx: idx,
                     seq_id: seq,
                     target: NestedTarget::Indirect { table: ci.table },
-                    direct_activation: false,
+                    lexical_replay: false,
                     sig_ty: ci.ty,
                     resume_ty: None,
                     loc: *loc,
@@ -7790,7 +8824,7 @@ fn walk_discover(
                     call_idx: idx,
                     seq_id: seq,
                     target: NestedTarget::Ref,
-                    direct_activation: false,
+                    lexical_replay: false,
                     sig_ty: call.ty,
                     resume_ty: None,
                     loc: *loc,
@@ -7866,13 +8900,13 @@ fn instrument_one_function_nested_switch(
     module: &mut Module,
     func_id: FunctionId,
     runtime: &Runtime,
-    activations: &HashSet<FunctionId>,
+    lexical_replay_targets: &HashSet<FunctionId>,
     fork_path: &HashSet<FunctionId>,
     func_ordinal: u32,
     catch_plan: &[CatchRegionPlan],
     plain_catches: &[(InstrSeqId, Vec<PlainCatchArm>)],
     reference_analysis: &FunctionReferenceAnalysis,
-    unwind_frame_select: FunctionId,
+    helpers: &mut GeneratedHelpers,
 ) -> ResumeThunk {
     // Pre-existing user locals.
     let all_user_locals = collect_user_locals(module, func_id);
@@ -7886,12 +8920,12 @@ fn instrument_one_function_nested_switch(
     // DFS order) and the per-seq region info.
     let (mut sites, regions) = discover_calls_and_regions(module, func_id, fork_path);
     for site in &mut sites {
-        site.direct_activation = matches!(
+        site.lexical_replay = matches!(
             site.target,
-            NestedTarget::Direct(target) if activations.contains(&target)
+            NestedTarget::Direct(target) if lexical_replay_targets.contains(&target)
         );
         let results = module.types.get(site.sig_ty).results().to_vec();
-        site.resume_ty = Some(module.types.add(&[], &results));
+        site.resume_ty = Some(ResumeType::new(module, &results));
     }
     assert_nested_reference_call_alignment(reference_analysis, &sites);
     let n_calls = sites.len();
@@ -7903,13 +8937,13 @@ fn instrument_one_function_nested_switch(
             module,
             func_id,
             runtime,
-            activations,
+            lexical_replay_targets,
             fork_path,
             func_ordinal,
             catch_plan,
             plain_catches,
             reference_analysis,
-            unwind_frame_select,
+            helpers,
         );
     }
 
@@ -8193,13 +9227,8 @@ fn instrument_one_function_nested_switch(
         }
     }
 
-    let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
-    let spill_storage = build_spill_storage(
-        module,
-        runtime.buf_type,
-        &locals_with_offsets,
-        user_scalar_locals.len(),
-    );
+    let (locals_with_offsets, spill_storage) =
+        plan_frame_layout(module, runtime.buf_type, &frame_scalars, user_scalar_locals.len());
     let ordinary_scalar_end = HEADER_SIZE + user_locals_size(&frame_scalars);
     let catch_scalar_frame = plan_plain_catch_scalar_frame(&plain_catch_state, ordinary_scalar_end);
     let scalar_end = catch_scalar_frame.frame_end(ordinary_scalar_end);
@@ -8279,6 +9308,17 @@ fn instrument_one_function_nested_switch(
     }
 
     // Build preamble + unwind_save wrapper + postamble seqs.
+    let frame_codec = frame_codec_call(
+        module,
+        runtime,
+        &mut helpers.frame_codecs,
+        &locals_with_offsets,
+        &spill_storage,
+        catch_state_locals.is_some(),
+        &reference_frame,
+    );
+    ensure_reference_codecs(module, runtime, &mut helpers.reference_codecs, &reference_frame);
+    let call_index_local = (n_calls > 1).then(|| module.locals.add(ValType::I32));
     let local = local_mut(module, func_id);
     let preamble_then = local
         .builder_mut()
@@ -8293,10 +9333,7 @@ fn instrument_one_function_nested_switch(
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
     let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
-    let abort = AbortDispatch {
-        restart_loop,
-        frame_select: unwind_frame_select,
-    };
+    let abort = AbortDispatch::new(local, restart_loop, helpers.frame_select, call_index_local);
     let catch_scalar_restore_dispatch = catch_state_locals.and_then(|catch_state| {
         build_plain_catch_scalar_dispatch(
             local,
@@ -8321,6 +9358,8 @@ fn instrument_one_function_nested_switch(
         catch_scalar_restore_dispatch,
         &reference_frame,
         frame_size,
+        frame_codec.as_ref(),
+        &helpers.reference_codecs,
     );
 
     // Recursively transform each fork-bearing seq, bottom-up. A seq is
@@ -8433,7 +9472,14 @@ fn instrument_one_function_nested_switch(
         )
     });
     let reference_save_dispatch =
-        build_reference_save_dispatch(local, runtime, memory, ptr_ty, &reference_frame);
+        build_reference_save_dispatch(
+            local,
+            runtime,
+            memory,
+            ptr_ty,
+            &reference_frame,
+            &helpers.reference_codecs,
+        );
     populate_postamble(
         &mut postamble,
         runtime,
@@ -8446,6 +9492,7 @@ fn instrument_one_function_nested_switch(
         reference_save_dispatch,
         frame_size,
         func_ordinal,
+        frame_codec.as_ref(),
     );
 
     // Wrap entry block with [preamble-if-else, live-restart loop].
@@ -8458,6 +9505,7 @@ fn instrument_one_function_nested_switch(
         let s = &mut local.block_mut(unwind_save).instrs;
         s.extend(entry_body);
     }
+    let entry_guard_attr = attr::scope(Attr::EntryGuard);
     let entry_seq = &mut local.block_mut(entry_id).instrs;
     push_instr(
         entry_seq,
@@ -8484,10 +9532,22 @@ fn instrument_one_function_nested_switch(
             alternative: preamble_else,
         }),
     );
-    push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
-    let restart_seq = &mut local.block_mut(restart_loop).instrs;
-    push_instr(restart_seq, Instr::Block(Block { seq: unwind_save }));
-    restart_seq.extend(postamble);
+    drop(entry_guard_attr);
+    {
+        let _attr = attr::scope(Attr::RestartLoop);
+        push_instr(entry_seq, Instr::Loop(Loop { seq: restart_loop }));
+    }
+    install_restart_structure(
+        local,
+        unwind_save,
+        abort,
+        ptr_ty,
+        frame_size,
+        postamble,
+        runtime
+            .unwind_tag
+            .expect("fork-path instrumentation requires the linked unwind tag"),
+    );
 
     // Tagged-catch capture emission runs after the nested body rebuild.
     if let Some(catch_state) = catch_state_locals {
@@ -8510,6 +9570,19 @@ fn instrument_one_function_nested_switch(
     if let SpillStorage::Scratch(frame) = &spill_storage {
         apply_scratch_frame_discipline(module, func_id, frame, ptr_ty);
     }
+
+    attr::record_shape(
+        func_id,
+        attr::FunctionShape {
+            call_sites: n_calls as u32,
+            direct_activation_sites: sites.iter().filter(|site| site.lexical_replay).count() as u32,
+            saved_scalars: locals_with_offsets.len() as u32,
+            frame_size,
+            nested: true,
+            scratch: matches!(spill_storage, SpillStorage::Scratch(_)),
+            regions: region_ids.len() as u32,
+        },
+    );
 
     ResumeThunk {
         func_ordinal,
@@ -8547,6 +9620,7 @@ fn emit_chunk_tail_for_landing(
     memory: MemoryId,
     cond_swap_local: LocalId,
 ) {
+    let _attr = attr::scope(Attr::ArgSpill);
     match &landing.kind {
         LandingKind::DirectCall { call_idx } => {
             // Sub-commit 2.5b: nested switch-dispatch absorbs
@@ -8662,6 +9736,7 @@ fn transform_region_seq(
     // stack before any consuming instruction (e.g., i32.add) runs.
     // Ordered deepest-first to match the original parent-stack layout.
     if !body_param_locals.is_empty() && !chunks.is_empty() {
+        let _attr = attr::scope(Attr::BodyParams);
         let mut prefix: Vec<(Instr, InstrLocId)> = Vec::with_capacity(body_param_locals.len());
         for &(local, ty) in body_param_locals {
             push_typed_local_get(&mut prefix, local, ty);
@@ -8743,12 +9818,10 @@ fn transform_region_seq(
     // every body entry — NORMAL and REWIND — saving the params to
     // local slots that POST_0's prepended LocalGets reload from.
     if !body_param_locals.is_empty() {
+        let _attr = attr::scope(Attr::BodyParams);
         let mut preamble: Vec<(Instr, InstrLocId)> = Vec::with_capacity(body_param_locals.len());
         for (lid, _ty) in body_param_locals.iter().rev() {
-            preamble.push((
-                Instr::LocalSet(LocalSet { local: *lid }),
-                InstrLocId::default(),
-            ));
+            push_instr(&mut preamble, Instr::LocalSet(LocalSet { local: *lid }));
         }
         let s = &mut local.block_mut(seq_id).instrs;
         preamble.extend(std::mem::take(s));
@@ -9104,12 +10177,14 @@ fn populate_region_dispatch(
     post_seqs: &[InstrSeqId],
     unwind_save: InstrSeqId,
 ) {
+    let _attr = attr::scope(Attr::Dispatch);
     // Build br_table: for each call_idx K in region_info.range, target
     // the POST seq corresponding to the landing that covers K.
     let lo = region_info.range_lo;
     let hi = region_info.range_hi;
     let count = (hi - lo + 1) as usize;
     let mut blocks_vec: Vec<InstrSeqId> = vec![unwind_save; count];
+    let single_target = landings.len() == 1;
     for (li, landing) in landings.iter().enumerate() {
         match &landing.kind {
             LandingKind::DirectCall { call_idx } => {
@@ -9132,6 +10207,12 @@ fn populate_region_dispatch(
         }
     }
 
+    if single_target {
+        // Every call index in this region selects the only landing, and a
+        // replay enters the region only for an index in its range.
+        populate_single_target_dispatch(local, dispatch_seq, runtime, post_seqs[0]);
+        return;
+    }
     let if_then = local
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
@@ -9158,6 +10239,7 @@ fn populate_region_dispatch(
                 }),
             );
         }
+        let _table_attr = attr::scope(Attr::DispatchTable);
         push_instr(
             s,
             Instr::BrTable(BrTable {
@@ -9167,32 +10249,7 @@ fn populate_region_dispatch(
         );
     }
 
-    let s = &mut local.block_mut(dispatch_seq).instrs;
-    push_instr(
-        s,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.state_global,
-        }),
-    );
-    push_instr(
-        s,
-        Instr::Const(Const {
-            value: Value::I32(runtime::STATE_REWINDING),
-        }),
-    );
-    push_instr(
-        s,
-        Instr::Binop(Binop {
-            op: BinaryOp::I32GeU,
-        }),
-    );
-    push_instr(
-        s,
-        Instr::IfElse(IfElse {
-            consequent: if_then,
-            alternative: if_else,
-        }),
-    );
+    push_replay_dispatch_guard(local, dispatch_seq, if_then, if_else, runtime);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9218,6 +10275,7 @@ fn populate_region_dispatch_structure(
     abort: AbortDispatch,
     append_return: bool,
 ) {
+    let _attr = attr::scope(Attr::DispatchPost);
     let n_landings = landings.len();
     if n_landings == 0 {
         // Empty region: just put chunks back, append return if entry.
@@ -9234,11 +10292,11 @@ fn populate_region_dispatch_structure(
     }
 
     // POST_0 body: [Block($dispatch_seq), chunk 0, spill 0 / cond_swap].
+    if let Some(d) = dispatch_seq {
+        push_dispatch(local, post_seqs[0], d);
+    }
     {
         let s = &mut local.block_mut(post_seqs[0]).instrs;
-        if let Some(d) = dispatch_seq {
-            push_instr(s, Instr::Block(Block { seq: d }));
-        }
         for (instr, loc) in &chunks[0] {
             s.push((instr.clone(), *loc));
         }
@@ -9256,15 +10314,7 @@ fn populate_region_dispatch_structure(
     // POST_K (K in 1..n_landings):
     //   [Block($POST_{K-1}), <post-K-1 sequence>, chunk K, spill K?]
     for k in 1..n_landings {
-        {
-            let s = &mut local.block_mut(post_seqs[k]).instrs;
-            push_instr(
-                s,
-                Instr::Block(Block {
-                    seq: post_seqs[k - 1],
-                }),
-            );
-        }
+        push_landing_block(local, post_seqs[k], post_seqs[k - 1]);
         emit_post_landing(
             local,
             post_seqs[k],
@@ -9302,15 +10352,7 @@ fn populate_region_dispatch_structure(
 
     // outer_seq body:
     //   [Block($POST_{n-1}), <post-(n-1) sequence>, chunk n, return?]
-    {
-        let s = &mut local.block_mut(outer_seq).instrs;
-        push_instr(
-            s,
-            Instr::Block(Block {
-                seq: post_seqs[n_landings - 1],
-            }),
-        );
-    }
+    push_landing_block(local, outer_seq, post_seqs[n_landings - 1]);
     emit_post_landing(
         local,
         outer_seq,
@@ -9373,6 +10415,7 @@ fn emit_post_landing(
             let empty: Vec<TypedSpillLocal> = Vec::new();
             let carryovers = carryover_spills.get(call_idx).unwrap_or(&empty);
             {
+                let _attr = attr::scope(Attr::ArgReload);
                 let s = &mut local.block_mut(seq_id).instrs;
                 for &(local, ty) in carryovers {
                     emit_spill_load(s, storage, memory, local, ty);
@@ -9387,7 +10430,7 @@ fn emit_post_landing(
                 local,
                 seq_id,
                 target,
-                site.direct_activation,
+                site.lexical_replay,
                 site.sig_ty,
                 site.resume_ty
                     .expect("nested call site resume type was not assigned"),
@@ -9432,6 +10475,7 @@ fn emit_post_landing(
             // SubRegion produces its single i32 result; final stack
             // = [..., carryover, result]. Same end state as the
             // pre-2.6a post-emission with tmp_result juggle.
+            let _attr = attr::scope(Attr::ArgReload);
             let s = &mut local.block_mut(seq_id).instrs;
             if let Some(plan) = &landing.carryover {
                 match plan {
@@ -9472,6 +10516,7 @@ fn emit_post_landing(
                 .clone()
                 .expect("SubRegionIfElse landing must have its enclosing instr stashed");
 
+            let _attr = attr::scope(Attr::NestedCond);
             let s = &mut local.block_mut(seq_id).instrs;
             let cond_source = match &landing.carryover {
                 Some(CarryoverPlan::Spill { spill_locals }) => {
@@ -9513,38 +10558,35 @@ fn emit_post_landing(
                     );
                 }
                 (Some((tlo, thi)), Some(_)) => {
-                    // Both branches have fork calls. Use range
-                    // membership on THEN's range.
+                    // Both branches have fork calls. Use range membership on
+                    // THEN's range: `call_index - lo <= hi - lo` (unsigned).
+                    // The value is selected away on the normal path, where
+                    // the global is stale; reading it touches no memory.
                     push_current_call_index(s, runtime, memory, ptr_ty);
+                    if *tlo != 0 {
+                        push_instr(
+                            s,
+                            Instr::Const(Const {
+                                value: Value::I32(*tlo as i32),
+                            }),
+                        );
+                        push_instr(
+                            s,
+                            Instr::Binop(Binop {
+                                op: BinaryOp::I32Sub,
+                            }),
+                        );
+                    }
                     push_instr(
                         s,
                         Instr::Const(Const {
-                            value: Value::I32(*tlo as i32),
+                            value: Value::I32((*thi - *tlo) as i32),
                         }),
                     );
                     push_instr(
                         s,
                         Instr::Binop(Binop {
-                            op: BinaryOp::I32GeS,
-                        }),
-                    );
-                    push_current_call_index(s, runtime, memory, ptr_ty);
-                    push_instr(
-                        s,
-                        Instr::Const(Const {
-                            value: Value::I32(*thi as i32),
-                        }),
-                    );
-                    push_instr(
-                        s,
-                        Instr::Binop(Binop {
-                            op: BinaryOp::I32LeS,
-                        }),
-                    );
-                    push_instr(
-                        s,
-                        Instr::Binop(Binop {
-                            op: BinaryOp::I32And,
+                            op: BinaryOp::I32LeU,
                         }),
                     );
                 }

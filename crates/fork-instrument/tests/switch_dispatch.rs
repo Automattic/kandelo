@@ -375,10 +375,11 @@ fn nested_if_else_dispatch_omits_frame_header_state_locals() {
     let main = extract_function_text(&printed, "main");
     let locals = declared_scalar_local_count(&main);
     assert_eq!(
-        locals, 0,
+        locals, 1,
         "nested if/else dispatch should replay a pure condition without cond_swap; \
-         no abort-frame or call-selector local is declared, \
-         params are not declared locals, and frame_ptr/saved call_idx come from the frame:\n{main}"
+         the only declared local is the call-index local shared by the two \
+         fork call sites (no abort-frame local), params are not declared \
+         locals, and frame_ptr comes from the frame:\n{main}"
     );
 }
 
@@ -409,11 +410,17 @@ fn pr701_shape_replays_pure_condition_and_recursive_arg() {
     let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
     let walk = extract_function_text(&printed, "walk");
     let locals = declared_scalar_local_count(&walk);
+    // WHY one local: with two fork call sites, the function-wide unwind catch
+    // needs the index of the interrupted call. Measured 2026-10-01 with a
+    // recursion-depth harness on this shape, the local did not change the
+    // surviving depth on V8 (Liftoff and default tiers) or SpiderMonkey
+    // (baseline and optimizing); the PR #701 regression came from growing
+    // the declaration from four to twelve locals.
     assert_eq!(
-        locals, 0,
-        "PR701-shaped pure condition and recursive arg should not allocate \
-         arg-spill, condition/carryover, abort-frame, or active-call selector \
-         locals:\n{walk}"
+        locals, 1,
+        "PR701-shaped pure condition and recursive arg should allocate only \
+         the call-index local, never arg-spill, condition/carryover, or \
+         abort-frame locals:\n{walk}"
     );
     let normalized = walk.lines().map(str::trim).collect::<Vec<_>>().join("\n");
     assert!(
@@ -422,9 +429,9 @@ fn pr701_shape_replays_pure_condition_and_recursive_arg() {
          before selecting NORMAL vs REWIND:\n{walk}"
     );
     assert!(
-        !normalized.contains("local.set 1"),
-        "recursive call landing must use its statically known call index rather \
-         than adding an activation-local selector:\n{walk}"
+        normalized.contains("i32.const 1\nlocal.set 1\nlocal.get 0\ni32.const 1\ni32.sub\ncall $walk"),
+        "the recursive call records its static index in the call-index local \
+         immediately before the call:\n{walk}"
     );
     assert!(
         normalized.contains("local.get 0\ni32.const 1\ni32.sub\ncall $walk"),
@@ -465,11 +472,12 @@ fn reference_recipe_vector_adds_no_ordinary_activation_local() {
     let walk = extract_function_text(&printed, "walk");
     let locals = declared_scalar_local_count(&walk);
     assert_eq!(
-        locals, 0,
+        locals, 1,
         "activation-owned reference recipes must use the reserved frame word \
          and process vector directly; adding a recipe/vector scratch local \
-         would repeat the V8 recursion regression fixed by PR #713. Static \
-         call boundaries must not add an abort-frame/selector local either:\n{walk}"
+         would repeat the V8 recursion regression fixed by PR #713. The only \
+         scalar local is the call-index local of the function-wide unwind \
+         catch:\n{walk}"
     );
 }
 
@@ -1176,12 +1184,12 @@ fn frame_reserve_sizes(bytes: &[u8], export_name: &str) -> Vec<i32> {
                     }),
                     _,
                 )) = index
-                    .checked_sub(2)
+                    .checked_sub(1)
                     .and_then(|previous| instructions.get(previous))
                 else {
                     panic!(
-                        "unwind-frame selector must be preceded by its exact \
-                         static size and call index"
+                        "unwind-frame selector must be immediately preceded \
+                         by its exact static frame size"
                     );
                 };
                 sizes.push(*size);
@@ -1241,10 +1249,11 @@ fn nested_of(instr: &Instr) -> Vec<InstrSeqId> {
     }
 }
 
-/// Returns true if the function contains any `br_table` anywhere in
-/// its body. Under the switch-dispatch transform every fork-path
-/// function with one or more fork-path calls carries exactly one
-/// top-level dispatch br_table.
+/// Returns true if the function contains a switch-dispatch replay
+/// selection: a `br_table` over the call index, or (for a region with one
+/// landing) a single-target `state >= REWINDING; br_if $POST_0` guard.
+/// Guard-dispatch, which re-ran the body under per-call if/else gates, has
+/// neither.
 fn has_top_level_br_table_dispatch(module: &Module, func_name: &str) -> bool {
     let id = find_func(module, func_name);
     let f = local_func(module, id);
@@ -1252,6 +1261,37 @@ fn has_top_level_br_table_dispatch(module: &Module, func_name: &str) -> bool {
     walk_all(f, f.entry_block(), 0, &mut |_, _, instr| {
         if matches!(instr, Instr::BrTable(_)) {
             found = true;
+        }
+    });
+    found || find_single_target_guard(f).is_some()
+}
+
+/// The landing block holding a spliced single-target replay guard
+/// (`global.get state; i32.const 2; i32.ge_u; br_if <that block>`).
+fn find_single_target_guard(f: &LocalFunction) -> Option<InstrSeqId> {
+    let mut found = None;
+    walk_all(f, f.entry_block(), 0, &mut |seq, _, _| {
+        if found.is_some() {
+            return;
+        }
+        let instrs = &f.block(seq).instrs;
+        if instrs.windows(4).any(|w| {
+            matches!(w[0].0, Instr::GlobalGet(_))
+                && matches!(
+                    w[1].0,
+                    Instr::Const(Const {
+                        value: Value::I32(2)
+                    })
+                )
+                && matches!(
+                    w[2].0,
+                    Instr::Binop(Binop {
+                        op: BinaryOp::I32GeU
+                    })
+                )
+                && matches!(&w[3].0, Instr::BrIf(br) if br.block == seq)
+        }) {
+            found = Some(seq);
         }
     });
     found
@@ -1302,15 +1342,12 @@ fn call_appears_inside_dispatch_body(
     // of `(if state==REWIND then br_table end)`. The if-then's parent
     // is the `$dispatch_normal` block. $dispatch_normal's parent block
     // is $POST_0.
-    let dispatch_if_then = match dispatch_normal {
-        Some(s) => s,
-        None => return false, // no dispatch at all
-    };
-
-    let dispatch_normal_seq = find_parent_containing_ifelse(f, f.entry_block(), dispatch_if_then);
-    let post_0_seq = match dispatch_normal_seq {
+    // The br_table now follows a `state < REWINDING; br_if` guard directly
+    // inside $dispatch_normal, whose parent block is $POST_0. A one-landing
+    // dispatch is instead spliced straight into $POST_0 as a guard.
+    let post_0_seq = match dispatch_normal {
         Some(ds) => find_parent_containing_block(f, f.entry_block(), ds),
-        None => return false,
+        None => find_single_target_guard(f),
     };
     let post_0 = match post_0_seq {
         Some(p) => p,
@@ -1335,28 +1372,6 @@ fn call_appears_inside_dispatch_body(
         }
     });
     in_body
-}
-
-/// Find the sequence S such that S contains an `Instr::IfElse` whose
-/// consequent equals `target`.
-fn find_parent_containing_ifelse(
-    f: &LocalFunction,
-    seq: InstrSeqId,
-    target: InstrSeqId,
-) -> Option<InstrSeqId> {
-    for (instr, _) in &f.block(seq).instrs {
-        if let Instr::IfElse(ie) = instr {
-            if ie.consequent == target || ie.alternative == target {
-                return Some(seq);
-            }
-        }
-        for child in nested_of(instr) {
-            if let Some(v) = find_parent_containing_ifelse(f, child, target) {
-                return Some(v);
-            }
-        }
-    }
-    None
 }
 
 /// Find the sequence S such that S contains an `Instr::Block { seq: target }`.

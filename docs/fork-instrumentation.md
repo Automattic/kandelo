@@ -560,6 +560,16 @@ wasm64 before alignment.
 | `+12`  | 4    | reference-vector ordinal   | Process-transaction recipe vector for this landing; zero when none |
 | `+16`  | var  | `saved_scalars[]`          | User/synthetic scalars and scalar catch payload union, aligned |
 
+Scalars are grouped by type, widest first (`v128`, `i64`, `f64`, `i32`,
+`f32`), which also aligns each one naturally after the 16-byte header. In
+scratch-spill mode only the user locals are grouped, because the spill region
+must stay contiguous for its single `memory.copy`. The payload is private to
+the module that wrote it: only the function's own generated code and its
+resume thunk read the scalars, and the host reads only the header. Frames with
+the same scalar types therefore share one generated
+`__wpk_fork_frame_save_N` / `__wpk_fork_frame_restore_N` helper pair; see
+[Generated code size](#generated-code-size).
+
 References are deliberately not copied into the frame and never name a
 module-static stash slot. Existing live reference locals and parameters are
 encoded into a call-specific process recipe vector; the frame owns only the
@@ -601,9 +611,32 @@ thunk would add a second native engine frame for each recursive Wasm
 activation and can exhaust the engine stack well before the continuation
 chain is exhausted. Indirect/reference calls, cross-module or
 tail-transparent boundaries, and targets whose lexical identity is not proven
-still use the process resume catalog. The lexical fast path adds no
-ordinary-activation local and no continuation bytes; its second
+still use the process resume catalog. Every such boundary is a generated
+`__wpk_fork_unwind_transport_*` helper, so the routing lives once in each
+helper rather than in each caller: during replay the helper asks
+`__wpk_fork_resume_peek` for the next event and either calls the resume thunk
+it names or falls through to the original operation. Callers therefore emit
+one lexical call for both normal execution and replay. The lexical fast path
+adds no ordinary-activation local and no continuation bytes; the
 non-consuming event lookup runs only during replay.
+
+Only activations that replay can enter from outside their lexical caller get
+a resume thunk and catalog record: functions exported, referenced by an
+element segment or `ref.func`, or targeted by a direct `return_call`. Every
+other activation is reachable only by direct calls from activations, which
+re-execute the call lexically. The catalog's ordinal-to-slot records are
+therefore sparse but still strictly ordered; a replay event naming a function
+without a thunk fails in the host with "fork replay target ... is not
+registered" rather than mis-resuming.
+
+A resume thunk enters its function with zero for every scalar parameter when
+that is the shorter encoding. The function's preamble restores each scalar
+parameter from the frame before any other code reads it, and its
+`frame_next` performs the same identity and size validation `frame_peek`
+would. Thunks for functions with reference parameters, or whose float
+parameters would make zero constants longer than frame loads, keep the
+frame-reading form, because a non-nullable reference signature needs a
+decoded value on entry.
 
 ## Scratch-frame spill storage
 
@@ -659,6 +692,68 @@ Measured on the CPython stdlib import chain (2026-09-22,
 4258 → 1585; `python.wasm` ~112 KB smaller. Scratch-mode capture/replay
 is covered by `crates/fork-instrument/tests/scratch_spill_node.rs`.
 
+## Generated code size
+
+Nearly every function in a large C++ program can reach `fork()` through
+indirect calls, so per-function instrumentation overhead multiplies across
+most of the module (Quickshell: 51,942 of 65,901 functions). Browsers compile
+all of it, and Firefox caps compiled code at 2 GiB per process. The transform
+therefore keeps each rewritten function small with these encodings; none
+changes the save-buffer layout, frame header, imports, exports, or custom
+sections:
+
+- **One lexical call per call site.** A call whose replay re-executes the
+  same operation is emitted once, not as identical `if`/`else` arms. Direct
+  activation callees validate the next frame themselves; indirect, reference,
+  and imported boundaries go through transport helpers that perform the
+  process resume routing (see [Frame format](#frame-format)).
+- **One unwind catch per function.** Each function's body sits in a single
+  `try_table` that catches the private unwind tag; the handler calls
+  `__wpk_fork_select_unwind_frame(call_index, frame_size)` and branches to
+  the postamble or the abort restart. A function with two or more
+  fork-reaching call sites records each call's static index in one i32 local
+  (`i32.const <index>; local.set`) immediately before the call; a function
+  with one call site passes the constant zero and declares no local. A
+  per-call `try_table` with its result and catch blocks was the largest
+  per-call cost in the module and also the most expensive construct in
+  baseline-compiled code. The one local is not a per-reference, per-recipe,
+  or per-catch local: measured on the PR #701 recursion shape with two fork
+  call sites, it did not change the surviving recursion depth on V8 (Liftoff
+  and optimized) or SpiderMonkey (baseline and optimized).
+- **Shared frame codecs.** The postamble passes its ordinal, catch selector,
+  and local-resident scalars to `__wpk_fork_frame_save_N`, which writes the
+  header and scalars and, when nothing else writes the payload, commits it.
+  The replay preamble calls `__wpk_fork_frame_restore_N`, which consumes the
+  frame with `frame_next`, publishes it in `*(buf + 0)` and in the
+  instance-private `_wpk_fork_frame` cursor, and returns one value (the catch
+  selector or the first scalar); the preamble loads the remaining scalars
+  through the cursor. A helper returning every scalar as multiple results
+  would keep them all live on the caller's value stack, and baseline
+  compilers size the native frame for that peak: on the P-10 recursion
+  fixture it cut V8 Liftoff's surviving depth by a quarter. Reference-recipe runs likewise call
+  `__wpk_fork_refs_save_N` / `__wpk_fork_refs_restore_N`. Helpers are keyed by
+  type shape and shared across functions. Frames whose scalar count exceeds
+  engine parameter limits keep the inline sequences.
+- **Compact replay dispatch.** The frame restore helper and the frame
+  selector record the selected call index in the instance-private global
+  `_wpk_fork_call_index`. It is added after the saveable-globals scan, so it
+  is never snapshotted and is not host-visible. It is read only while
+  `state >= REWINDING` (or in the postamble after selection), so its value
+  outside replay is never consulted. Dispatch is a `br_if` state guard
+  followed by `global.get; br_table`; a region with one landing uses only the
+  guard, and a landing with nothing before it needs no dispatch.
+
+Measured on Quickshell (29.4 MB raw link, 2026-10-02), the code section went
+from 67.1 MB to 38.0 MB and the file without its name section from 80.7 MB to
+51.4 MB. The added code per instrumented function went from a median of 370
+bytes to 158 bytes (p90 1,697 to 672). SpiderMonkey compiled 12 copies of the
+module before running out of memory with lazy tiering, up from 6 (7 with
+eager tier-2, up from 3). For bash, instrumentation overhead in the code
+section fell from 1.68 MB to 0.67 MB. Building the crate with
+`--features size-attribution` and setting `WPK_FORK_SIZE_ATTRIBUTION=<path>`
+writes a per-function TSV that attributes every output byte to the emitter
+that produced it; see `crates/fork-instrument/src/size_attribution.rs`.
+
 ## Dispatch schemes
 
 Every fork-path function uses **one of two dispatch shapes**, chosen by the
@@ -666,7 +761,7 @@ tool per-function based on call-site topology:
 
 | Scheme                       | When picked                                                                                                                                                                                                                                                                                                                       | How replay reaches the resumed call                                                                                                                                                                                            |
 |------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c). Pure scalar call-argument tails can be replayed instead of spilled. | A top-level `br_table`, gated by `state >= REWINDING`, jumps directly to the matching `$POST_K` label for ordinary or abort replay. The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call, followed by spilled or replayed call args. |
+| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c). Pure scalar call-argument tails can be replayed instead of spilled. | A top-level `br_table` over the `_wpk_fork_call_index` replay cursor, gated by `state >= REWINDING`, jumps directly to the matching `$POST_K` label for ordinary or abort replay (a single landing uses a `br_if`, or nothing when no code precedes it). The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call, followed by spilled or replayed call args. |
 | switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies. Sub-commits 2.5/2.6 made this scheme cover: direct-call carryovers at any nesting depth (2.5c), nested-Loop-with-carryover (2.5c side benefit), multi-value-params SubRegion bodies via body-input-param prespill (2.6c). Pure scalar direct-call args and condition-only `IfElse` carryovers can be replayed instead of spilled. | Cascading `POST_K` blocks plus a per-region `br_table` route ordinary or abort replay through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch). For multi-value-params bodies, the body's input params are pre-spilled at body entry and reloaded inside POST_0 to bridge the `Simple(None)` POST_K typing. |
 
 A third path — **guard-dispatch** — existed before commits 3-4 of the
@@ -1007,7 +1102,11 @@ if (then ...) (else ...)     ;; original IfElse, untouched.
 - only THEN has fork-path calls → `i32.const 1`
 - only ELSE → `i32.const 0`
 - both branches → range-membership test on THEN's call_idx range
-  (`call_idx >= then_lo && call_idx <= then_hi`)
+  (`call_idx - then_lo <= then_hi - then_lo`, unsigned), reading the
+  `_wpk_fork_call_index` replay cursor. The normal path selects the value
+  away; reading the global touches no memory, whereas the earlier
+  `*(_wpk_fork_buf + 0) + 4` load dereferenced address zero during ordinary
+  execution.
 
 On NORMAL the rewritten cond evaluates to `orig_cond`, preserving the
 program's semantics. On REWIND it forces entry into whichever branch
@@ -1467,15 +1566,20 @@ to identify which switch-dispatch shape the offending function uses:
 wasm-tools print "$BIN" | awk '/^\s+\(func [^;]*main/{found=1} found{print}' | head -200
 ```
 
-A leading `loop ... block ... block ... if (state >= REWINDING) ... br_table ...`
-shape at the function's entry means switch-dispatch is active. A historical
+A replay preamble `if (state >= REWINDING) ... end` followed by a `loop`
+whose body opens the function's landing blocks means switch-dispatch is
+active. A dispatch with several landings is
+`block (state < REWINDING; br_if 0) (global.get $_wpk_fork_call_index) br_table`;
+a region with one landing instead begins its landing block with
+`state >= REWINDING; br_if <landing>`, and a region whose landing has nothing
+before it needs no dispatch at all. A historical
 `block $unwind_save` followed by per-call `(state == NORMAL || (REWINDING &&
 call_idx == K))` if-elses means an old guard-dispatch binary is being
 inspected, not current PR output.
 
 To distinguish top-level switch-dispatch from nested switch-dispatch,
 look inside the enclosing instructions: nested switch-dispatch emits the
-same `if (state >= REWINDING) ... br_table ...` shape inside any
+same dispatch shapes inside any
 fork-bearing `block` / `loop` / `if` / `try_table`, plus a `select`
 rewriting any fork-bearing IfElse's condition afterwards. Impure IfElse
 conditions also show a `local.set $cond_swap_local` at the end of the
