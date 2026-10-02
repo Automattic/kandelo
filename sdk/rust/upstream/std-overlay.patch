@@ -203,3 +203,15 @@
          ),
          link_name = "__errno_location"
      )]
+--- a/library/backtrace/src/backtrace/mod.rs
++++ b/library/backtrace/src/backtrace/mod.rs
+@@ -176,6 +176,9 @@
+                 unix,
+                 not(target_os = "emscripten"),
+                 not(all(target_os = "ios", target_arch = "arm")),
++                // Kandelo (wasm32) has no unwinder to walk the stack with;
++                // the noop backend reports backtraces as unsupported.
++                not(target_os = "kandelo"),
+             ),
+             all(
+                 target_env = "sgx",
