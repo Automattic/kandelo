@@ -120,7 +120,12 @@ describe("WasmModuleCache", () => {
     expect(patch).toHaveBeenCalledTimes(1);
     expect(compile).toHaveBeenCalledTimes(2);
     // The program's own buffer was hashed at launch and is not hashed again.
-    expect(cache.stats().digests).toBe(2);
+    expect(cache.stats()).toMatchObject({
+      digests: 2,
+      threadCompiles: 1,
+      threadHits: 1,
+      threadJoins: 0,
+    });
   });
 
   it("uses the program module when the thread patch leaves the bytes unchanged", async () => {
@@ -133,6 +138,7 @@ describe("WasmModuleCache", () => {
 
     expect(thread).toBe(programModule);
     expect(compile).toHaveBeenCalledTimes(1);
+    expect(cache.stats()).toMatchObject({ threadCompiles: 0, hits: 1 });
   });
 
   it("bounds retention by bytes, keeps the most recently launched, and skips oversized modules", async () => {
