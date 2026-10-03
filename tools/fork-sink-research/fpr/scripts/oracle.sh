@@ -9,7 +9,7 @@
 set -uo pipefail
 ROOT=$(git rev-parse --show-toplevel)
 TWIN=$1 DEST=$2 LOG=$3; shift 3; [ "$1" = "--" ] && shift
-PATCH="$ROOT/tools/fork-path-research/oracle-fork-stack-log.patch"
+PATCH="$ROOT/tools/fork-sink-research/fpr/oracle-fork-stack-log.patch"
 INSTR="$(dirname "$LOG")/$(basename "$TWIN" .wasm).instr.wasm"
 "$ROOT/tools/bin/wasm-fork-instrument" "$TWIN" -o "$INSTR" || exit 1
 cp -p "$DEST" "$DEST.oracle-backup" || exit 1

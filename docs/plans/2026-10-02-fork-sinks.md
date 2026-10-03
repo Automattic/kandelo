@@ -1009,9 +1009,26 @@ functions.
 
 The maintainer confirmed that Quickshell must keep `dlopen`.
 
+### Default and escape hatch (maintainer, 2026-10-03)
+
+Side modules may fork by default. The default instruments the main module
+for every entry path a side module can actually take, traced rather than
+guessed:
+- call sites that `dlsym` results flow to (slot analysis follows them);
+- call sites of the function-pointer types in the main module's exported
+  API, through which a side module can hand over callbacks.
+
+The load-time check below refuses only what falls outside those traced
+paths. An opt-in instrumenter mode (working name
+`--side-modules=may-fork`) keeps today's conservative instrumentation, so
+any side module may fork along any path. It is for programs that must load
+arbitrary forking libraries. Its cost for Quickshell, including virtual
+calls on main-module classes that plugins can subclass, is still to be
+measured.
+
 ### The contract
 
-The main module is instrumented as if side modules never fork. The host
+The main module is instrumented for the traced entry paths only. The host
 checks that assumption when a side module loads, and refuses the load when
 the assumption would be false.
 
@@ -1082,4 +1099,34 @@ shared by many registrations. The next step is context sensitivity:
 - per-call-site results for functions that return a parameter, detected
   automatically;
 - object sensitivity for static initializers of option-style tables.
+
+### Where git's precision went (2026-10-03)
+
+The cause was found by bisecting slot read-backs by kind and by slot. Fixes,
+all automatic:
+- **Call sites.** Each direct call has its own result slot. The analysis
+  computes, per function, which parameters and which other sources reach
+  its return value, and a call takes exactly those (iterated to a fixpoint
+  for recursion). This replaced the hand list of libc functions that return
+  an argument.
+- **Constants.** A compile-time constant (`offsetof`, `sizeof` arithmetic)
+  carries no object. In pointer ± integer, only the pointer carries one.
+- **ISO C allocation semantics.** `malloc`, `calloc` and `aligned_alloc`
+  return a new object, and `realloc` returns the old one's contents.
+  Allocators compute results from internal metadata the model would
+  otherwise read as unknown memory.
+
+What remained is C's effective-type rule. git reads structs back from
+generic containers (`option.value`, `string_list_item.util`, strmap
+values) and shared callback data. Pairing every struct ever stored with
+every type read back keeps git at 5,091. C forbids reading an object
+through an unrelated struct type, and clang's alias analysis already
+assumes that in every unit compiled with strict aliasing (the C default).
+With the rule applied per unit, git is 25.
+
+Units compiled with `-fno-strict-aliasing` (CPython and the Linux kernel,
+for example) keep the sound pairing: the plugin records each unit's mode
+(`AL`), and fpa applies the rule as `--rule effective-types` only where
+the compiler applies it. Union punning, which C defines, is modelled
+either way.
 

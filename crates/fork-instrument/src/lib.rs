@@ -157,6 +157,12 @@ pub struct Options {
     /// them uninstrumented; see [`sink`]. `--no-sinks` restores the full
     /// closure (for comparison and diagnosis).
     pub sinks: bool,
+    /// Research only: take the instrumented set and boundaries from a plan
+    /// file (lines `A\t<function name>` and `B\t<function name>`) computed
+    /// by an external analysis (tools/fork-sink-research), instead of
+    /// [`sink::plan`]. Both are intersected with the conservative closure, so
+    /// a plan can only remove instrumentation the closure would add.
+    pub sink_plan: Option<std::path::PathBuf>,
 }
 
 impl Default for Options {
@@ -164,6 +170,7 @@ impl Default for Options {
         Self {
             entry_import: "kernel.kernel_fork".into(),
             sinks: true,
+            sink_plan: None,
         }
     }
 }
@@ -178,6 +185,9 @@ fn apply_sink_plan(
     external_dynamic_dispatch: bool,
     reaching: &mut call_graph::ReachingAnalysis,
 ) -> std::collections::HashSet<walrus::FunctionId> {
+    if let (true, Some(path)) = (opts.sinks, &opts.sink_plan) {
+        return apply_external_sink_plan(module, path, reaching);
+    }
     if !opts.sinks
         || external_dynamic_dispatch
         || opts.entry_import != "kernel.kernel_fork"
@@ -193,6 +203,45 @@ fn apply_sink_plan(
     let keep = reaching.control_reachable.clone();
     reaching.tail_call_landings.retain(|site| keep.contains(&site.caller));
     plan.boundaries.into_iter().collect()
+}
+
+fn apply_external_sink_plan(
+    module: &walrus::Module,
+    path: &std::path::Path,
+    reaching: &mut call_graph::ReachingAnalysis,
+) -> std::collections::HashSet<walrus::FunctionId> {
+    use std::collections::{HashMap, HashSet};
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("sink plan {}: {e}", path.display()));
+    let mut by_name: HashMap<&str, Vec<walrus::FunctionId>> = HashMap::new();
+    for f in module.funcs.iter() {
+        if let Some(n) = f.name.as_deref() {
+            by_name.entry(n).or_default().push(f.id());
+        }
+    }
+    let (mut keep, mut bounds): (HashSet<walrus::FunctionId>, HashSet<walrus::FunctionId>) = Default::default();
+    let mut missing = 0usize;
+    for line in text.lines() {
+        let Some((kind, name)) = line.split_once('\t') else { continue };
+        match by_name.get(name) {
+            Some(ids) => {
+                if kind == "A" {
+                    keep.extend(ids.iter().copied());
+                } else if kind == "B" {
+                    bounds.extend(ids.iter().copied());
+                }
+            }
+            None => missing += 1,
+        }
+    }
+    if missing > 0 {
+        eprintln!("wasm-fork-instrument: sink plan names {missing} function(s) absent from this module");
+    }
+    reaching.activations.retain(|f| keep.contains(f));
+    reaching.control_reachable.retain(|f| keep.contains(f));
+    let live = reaching.control_reachable.clone();
+    reaching.tail_call_landings.retain(|site| live.contains(&site.caller));
+    bounds.retain(|f| reaching.activations.contains(f));
+    bounds
 }
 
 /// Result of analyzing an input module without rewriting it.

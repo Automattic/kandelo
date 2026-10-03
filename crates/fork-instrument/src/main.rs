@@ -61,6 +61,11 @@ struct Cli {
     #[arg(long)]
     no_sinks: bool,
 
+    /// Research only: instrument the set and boundaries listed in this plan
+    /// file (see `Options::sink_plan`) instead of the built-in sink analysis.
+    #[arg(long, hide = true)]
+    sink_plan: Option<std::path::PathBuf>,
+
     /// wasm-opt level to run over an instrumented output, or `none`.
     ///
     /// Runs only when instrumentation changed the module; a module outside
@@ -190,6 +195,7 @@ fn main() -> Result<()> {
     let opts = Options {
         entry_import: cli.entry,
         sinks: !cli.no_sinks,
+        sink_plan: cli.sink_plan.clone(),
     };
 
     if cli.discover_only {

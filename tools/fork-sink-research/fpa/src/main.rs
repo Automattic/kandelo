@@ -177,12 +177,17 @@ struct Side {
     pool_types: HashSet<String>,
     /// Per-slot untyped-pointer flow (plugin SE/SO/SF/SD/SL/FT/NR facts).
     slot_edges: Vec<(String, String)>,
-    slot_reads_rec: Vec<(String, String)>,
+    slot_reads_rec: Vec<(String, String, bool)>,
     slot_reads_fn: Vec<(String, String)>,
-    slot_reads_mem: Vec<(String, String)>,
+    slot_reads_mem: Vec<(String, String, bool)>,
     slot_links: Vec<(String, String, String)>,
     rec_fn_types: HashMap<String, HashSet<String>>,
     rec_nested: HashMap<String, HashSet<String>>,
+    /// Set from `--rule effective-types` before graph construction.
+    effective_types: bool,
+    /// Direct call sites: rc:<site> -> (callee, caller); arguments.
+    call_sites: Vec<(String, String, String)>,
+    call_args: HashMap<String, Vec<(u32, String)>>,
     /// (registry, registering function) -> callbacks it registers.
     reg_by_fn: HashMap<(String, String), HashSet<String>>,
     reg_unknown: HashMap<String, Vec<String>>,
@@ -312,6 +317,9 @@ impl Side {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let mut module = side.modules.id("?");
     let mut cur: Option<(String, IrFn)> = None;
+    // AL precedes this file's slot facts when the unit was compiled with
+    // -fno-strict-aliasing.
+    let mut relaxed = text.lines().any(|l| l == "AL\trelaxed");
     let mut versions_ok = true;
     for line in text.lines() {
         let f: Vec<&str> = line.split('\t').collect();
@@ -341,13 +349,16 @@ impl Side {
                 side.pool_types.insert(f[1].to_string());
             }
             "SE" => side.slot_edges.push((f[1].to_string(), f[2].to_string())),
-            "SO" => side.slot_reads_rec.push((f[1].to_string(), f[2].to_string())),
+            "AL" => relaxed = true,
+            "SO" => side.slot_reads_rec.push((f[1].to_string(), f[2].to_string(), relaxed)),
             "SF" => side.slot_reads_fn.push((f[1].to_string(), f[2].to_string())),
-            "SD" => side.slot_reads_mem.push((f[1].to_string(), f[2].to_string())),
+            "SD" => side.slot_reads_mem.push((f[1].to_string(), f[2].to_string(), relaxed)),
             "SL" => side.slot_links.push((f[1].to_string(), f[2].to_string(), f[3].to_string())),
             "FT" => {
                 side.rec_fn_types.entry(f[1].to_string()).or_default().insert(f[2].to_string());
             }
+            "SC" => side.call_sites.push((f[1].to_string(), f[2].to_string(), f[3].to_string())),
+            "SA" => side.call_args.entry(f[1].to_string()).or_default().push((f[2].parse().unwrap_or(0), f[3].to_string())),
             "NR" => {
                 side.rec_nested.entry(f[1].to_string()).or_default().insert(f[2].to_string());
             }
@@ -933,6 +944,9 @@ struct Rules {
     pool: bool,
     /// Include per-slot untyped-pointer flow (plugin `S*` facts) in `casts`.
     slots: bool,
+    /// Apply C's effective-type rule to struct read-backs in units compiled
+    /// with strict aliasing (see `slot_flow`).
+    effective_types: bool,
     /// Calls through an old-action `struct sigaction` global (plugin `O`
     /// facts) dispatch registered signal handlers only.
     sigaction_old: bool,
@@ -941,6 +955,120 @@ struct Rules {
 /// Functions that may be called through a function type other than their
 /// own (see KandeloFnCasts.cpp): converted directly; of a type whose values
 /// are converted; or stored in a record that is type-punned.
+/// The function a local slot (`p:f:k`, `l:f:v`, `r:f`) belongs to.
+fn slot_owner(n: &str) -> Option<&str> {
+    if let Some(r) = n.strip_prefix("r:") {
+        return Some(r);
+    }
+    let rest = n.strip_prefix("p:").or_else(|| n.strip_prefix("l:"))?;
+    rest.rsplit_once(':').map(|(f, _)| f)
+}
+
+/// Edges (site, callee, caller, from) feeding each direct call's result
+/// slot from its own arguments, per the callee's pass-through summary.
+fn pass_through_edges(side: &Side) -> Vec<(String, String, String, String)> {
+    let mut preds: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (a, b) in &side.slot_edges {
+        preds.entry(b.as_str()).or_default().push(a.as_str());
+    }
+    let mut site_of: HashMap<&str, (&str, &str)> = HashMap::new();
+    for (site, callee, caller) in &side.call_sites {
+        site_of.insert(site.as_str(), (callee.as_str(), caller.as_str()));
+    }
+    // A function has a known body when the plugin declared its return slot.
+    let known: HashSet<&str> = side.slot_links.iter().filter(|(_, k, _)| k == "ret").map(|(_, _, f)| f.as_str()).collect();
+    // Summary per function: the parameters that reach its return value, and
+    // the other sources (globals, fields, origins it creates, results of
+    // unknown callees) that do. A call site's result takes its own
+    // arguments for the former and the sources themselves for the latter,
+    // never the shared r:<f> slot, which merges every caller's arguments.
+    let mut summ: HashMap<&str, (HashSet<u32>, HashSet<String>)> = HashMap::new();
+    let args = |site: &str, k: Option<u32>| -> Vec<&str> {
+        side.call_args.get(site).map(|v| v.iter().filter(|(i, _)| k.map_or(true, |k| *i == k)).map(|(_, s)| s.as_str()).collect()).unwrap_or_default()
+    };
+    loop {
+        let mut changed = false;
+        for &f in &known {
+            let mut params: HashSet<u32> = HashSet::new();
+            let mut others: HashSet<String> = HashSet::new();
+            let start = format!("r:{f}");
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut work: Vec<String> = preds.get(start.as_str()).map(|v| v.iter().map(|x| x.to_string()).collect()).unwrap_or_default();
+            while let Some(x) = work.pop() {
+                if !seen.insert(x.clone()) {
+                    continue;
+                }
+                if let Some((callee, caller)) = site_of.get(x.as_str()) {
+                    if *caller != f {
+                        others.insert(x.clone());
+                        continue;
+                    }
+                    if known.contains(callee) {
+                        if let Some((ps, os)) = summ.get(callee) {
+                            for &k in ps {
+                                work.extend(args(&x, Some(k)).into_iter().map(|s| s.to_string()));
+                            }
+                            others.extend(os.iter().cloned());
+                        }
+                    } else {
+                        work.extend(args(&x, None).into_iter().map(|s| s.to_string()));
+                        others.insert(format!("r:{callee}"));
+                    }
+                    continue;
+                }
+                match (x.strip_prefix("p:"), slot_owner(&x)) {
+                    (Some(rest), Some(owner)) if owner == f => {
+                        if let Some(k) = rest.rsplit_once(':').and_then(|(_, k)| k.parse().ok()) {
+                            params.insert(k);
+                        }
+                    }
+                    (None, Some(owner)) if owner == f && x.starts_with("l:") => {
+                        work.extend(preds.get(x.as_str()).into_iter().flatten().map(|s| s.to_string()));
+                    }
+                    _ => {
+                        others.insert(x.clone());
+                    }
+                }
+            }
+            let e = summ.entry(f).or_default();
+            if !params.is_subset(&e.0) || !others.is_subset(&e.1) {
+                e.0.extend(params);
+                e.1.extend(others);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut out = vec![];
+    for (site, callee, caller) in &side.call_sites {
+        let mut push = |from: &str| out.push((site.clone(), callee.clone(), caller.clone(), from.to_string()));
+        if known.contains(callee.as_str()) {
+            if let Some((ps, os)) = summ.get(callee.as_str()) {
+                for &k in ps {
+                    for a in args(site, Some(k)) {
+                        push(a);
+                    }
+                }
+                for o in os {
+                    push(o);
+                }
+            }
+        } else {
+            // No facts for the callee: it may return any argument, or
+            // anything it can reach.
+            for a in args(site, None) {
+                push(a);
+            }
+            push(&format!("r:{callee}"));
+        }
+    }
+    let pt = summ.values().filter(|(p, o)| !p.is_empty() && o.is_empty()).count();
+    eprintln!("slots: {} call sites; {} functions return only their parameters", side.call_sites.len(), pt);
+    out
+}
+
 /// Per-slot propagation of untyped-pointer origins (see KandeloFnCasts.cpp,
 /// "slots"). Returns extra conversion starts per function and extra
 /// type-to-type conversions, given the conversion reach computed so far
@@ -965,6 +1093,13 @@ fn slot_flow(side: &Side, reach: &HashMap<String, HashSet<String>>) -> (HashMap<
     };
     for (a, b) in &side.slot_edges {
         add_edge(a, b, &mut ids, &mut names, &mut succ);
+    }
+    // Call-site results. Summaries: which parameters of each function reach
+    // its return value through its own locals and calls, and whether
+    // anything else (a global, a field, an origin it creates) does.
+    for (site, callee, _caller, from) in pass_through_edges(side) {
+        let _ = callee;
+        add_edge(&from, &site, &mut ids, &mut names, &mut succ);
     }
     // Function f of type T: its parameter k is fed by every indirect call of
     // type T, and of every type its conversions reach.
@@ -1032,7 +1167,26 @@ fn slot_flow(side: &Side, reach: &HashMap<String, HashSet<String>>) -> (HashMap<
     let mut starts: HashMap<String, HashSet<String>> = HashMap::new();
     let mut z: HashMap<String, HashSet<String>> = HashMap::new();
     let slot_dbg = std::env::var("FPA_SLOT_DEBUG").ok();
-    for (slot, s_rec) in &side.slot_reads_rec {
+    // What-if (diagnosis only, unsound): ignore read-backs at these slots.
+    let ignored: HashSet<String> = std::env::var("FPA_SLOT_IGNORE")
+        .map(|v| v.split('|').map(|x| x.to_string()).collect())
+        .unwrap_or_default();
+    let only: Option<Vec<String>> = std::env::var("FPA_SLOT_ONLY").ok().map(|v| v.split('|').map(|x| x.to_string()).collect());
+    let at = |slot: &str| -> Vec<&str> {
+        if ignored.contains(slot) || only.as_ref().is_some_and(|o| !o.iter().any(|p| slot.starts_with(p.as_str()))) {
+            vec![]
+        } else {
+            at(slot)
+        }
+    };
+    let kinds = std::env::var("FPA_SLOT_KINDS").unwrap_or_else(|_| "rec,fn,mem".into());
+    // C's effective-type rule (--rule effective-types): in a unit compiled
+    // with strict aliasing, the compiler itself assumes a struct is never
+    // read through an unrelated struct type, so such read-backs cannot be
+    // relied on by a correct program and are not modelled; in units compiled
+    // with -fno-strict-aliasing they are.
+    let eff = side.effective_types;
+    for (slot, s_rec, _) in side.slot_reads_rec.iter().filter(|_| kinds.contains("rec")).filter(|(_, _, rel)| !eff || *rel) {
         for o in at(slot) {
             if let Some(r) = o.strip_prefix("@rec:") {
                 if r != s_rec {
@@ -1056,7 +1210,7 @@ fn slot_flow(side: &Side, reach: &HashMap<String, HashSet<String>>) -> (HashMap<
             }
         }
     };
-    for (slot, u) in &side.slot_reads_fn {
+    for (slot, u) in side.slot_reads_fn.iter().filter(|_| kinds.contains("fn")) {
         for o in at(slot) {
             show("fn", slot, o, u);
             if let Some(f) = o.strip_prefix("@fn:") {
@@ -1068,7 +1222,7 @@ fn slot_flow(side: &Side, reach: &HashMap<String, HashSet<String>>) -> (HashMap<
             }
         }
     }
-    for (slot, u) in &side.slot_reads_mem {
+    for (slot, u, _) in side.slot_reads_mem.iter().filter(|_| kinds.contains("mem")).filter(|(_, _, rel)| !eff || *rel) {
         for o in at(slot) {
             if let Some(r) = o.strip_prefix("@rec:") {
                 for f in fns_in(r) {
@@ -2182,6 +2336,7 @@ fn main() {
                 "sigaction-old" => rules.sigaction_old = true,
                 "pool" => rules.pool = true,
                 "slots" => rules.slots = true,
+                "effective-types" => rules.effective_types = true,
                 r if r.starts_with("cutsite:") => rules.cutsite.push(r[8..].to_string()),
                 r if r.starts_with("drop:") => rules.drop.push(r[5..].to_string()),
                 "noir-optimistic" => rules.noir_optimistic = true,
@@ -2229,7 +2384,7 @@ fn main() {
     let direct_only = fork_instrument::call_graph::direct_reaching_closure(&w.module, seeds[0]);
     println!("instrumenter closure (activations): {}", reference_set.len());
     println!("direct-call-only closure: {}", direct_only.len());
-    let side = side;
+    let mut side = side;
     let cands: Vec<Vec<&IrFn>> = (0..w.names.len())
         .map(|f| match &bound {
             Some(b) => b[f]
@@ -2243,6 +2398,7 @@ fn main() {
             None => side.defs.get(&w.names[f]).map(|v| v.iter().collect()).unwrap_or_default(),
         })
         .collect();
+    side.effective_types = rules.effective_types;
     let g = build_graph(&w, &side, &cands, rules.clone());
     if rules.cancel {
         println!("rule cancel: {} direct calls to pthread_exit removed (writers linked: {})", g.cut_cancel, ["pthread_cancel", "timer_create"].iter().filter(|n| w.by_name.contains_key(**n)).count());

@@ -348,6 +348,12 @@ private:
 //                      is the slot pt:type:k (rt:type) for indirect calls
 //   FT  record type    record has a function-pointer field of this type
 //   NR  record inner   record embeds record `inner`
+//   SC  site callee caller   call site `rc:<site>` calls callee from caller
+//   SA  site k source  argument k of that call carries `source`
+// A direct call's result is its own slot rc:<site>. The analysis computes
+// which parameters each function returns and feeds rc:<site> from those
+// arguments at this call, so pass-through helpers (realloc wrappers,
+// container_of, memset) do not merge their callers.
 // The analysis propagates origins along SE edges; an origin read back as a
 // different record or function type is a call through another type.
 class SlotVisitor : public RecursiveASTVisitor<SlotVisitor> {
@@ -513,6 +519,25 @@ private:
   std::set<std::string> Seen;
   std::set<const Expr *> VaReads;
   std::set<const RecordDecl *> Described;
+  std::map<const CallExpr *, std::string> Sites;
+  unsigned SiteN = 0;
+
+  // A direct call's own result slot, with its arguments recorded once.
+  std::string callSite(const CallExpr *C, const FunctionDecl *FD) {
+    auto it = Sites.find(C);
+    if (it != Sites.end()) return it->second;
+    const SourceManager &SM = Ctx.getSourceManager();
+    std::string tu = SM.getFileEntryRefForID(SM.getMainFileID()) ? SM.getFileEntryRefForID(SM.getMainFileID())->getName().str() : "?";
+    std::string id = "rc:" + tu + "#" + std::to_string(SiteN++);
+    Sites[C] = id;
+    add("SC\t" + id + "\t" + name(FD) + "\t" + (Cur ? name(Cur) : std::string("?")));
+    for (unsigned i = 0; i < C->getNumArgs(); ++i) {
+      QualType PT = i < FD->getNumParams() ? FD->getParamDecl(i)->getType() : C->getArg(i)->getType();
+      if (!isTracked(PT)) continue;
+      for (const std::string &src : sources(C->getArg(i))) add("SA\t" + id + "\t" + std::to_string(i) + "\t" + src);
+    }
+    return id;
+  }
 
   void add(const std::string &line) {
     if (Seen.insert(line).second) kandeloAstFacts() += line + "\n";
@@ -624,6 +649,9 @@ private:
     if (!E || depth > 16) return {"*"};
     E = E->IgnoreParens();
     if (isNull(E)) return {};
+    // A compile-time constant (offsetof, sizeof arithmetic, enumerators)
+    // carries no object.
+    if (!E->isValueDependent() && E->getType()->isIntegerType() && E->isEvaluatable(Ctx)) return {};
     if (const auto *C = dyn_cast<CastExpr>(E)) {
       const Expr *Sub = C->getSubExpr();
       QualType From = Sub->getType();
@@ -651,25 +679,32 @@ private:
       return {"*"};
     }
     if (const auto *C = dyn_cast<CallExpr>(E)) {
-      // Standard functions that return (a pointer into) one of their
-      // arguments: the result is that argument at this call, not a slot
-      // shared by every caller (memset's return would otherwise merge every
-      // memset destination in the program).
+      // ISO C allocation semantics: malloc/calloc/aligned_alloc return a
+      // new object, holding nothing; realloc returns the old object's
+      // contents. Allocators compute their result from internal metadata,
+      // which the slot model would otherwise read as unknown memory.
       if (const FunctionDecl *FD = C->getDirectCallee(); FD && FD->getIdentifier()) {
-        static const std::map<std::string, unsigned> kReturnsArg = {
-            {"memset", 0}, {"memcpy", 0}, {"memmove", 0}, {"memccpy", 0}, {"strcpy", 0}, {"strncpy", 0},
-            {"strcat", 0}, {"strncat", 0}, {"stpcpy", 0}, {"stpncpy", 0}, {"strchr", 0}, {"strrchr", 0},
-            {"strchrnul", 0}, {"memchr", 0}, {"memrchr", 0}, {"rawmemchr", 0}, {"strstr", 0}, {"strpbrk", 0},
-            {"__builtin_memset", 0}, {"__builtin_memcpy", 0}, {"__builtin_memmove", 0}, {"__builtin_strcpy", 0}};
-        auto it = kReturnsArg.find(FD->getName().str());
-        if (it != kReturnsArg.end() && it->second < C->getNumArgs()) return sources(C->getArg(it->second), depth + 1);
+        llvm::StringRef n = FD->getName();
+        if (n == "malloc" || n == "calloc" || n == "aligned_alloc" || n == "__builtin_malloc" || n == "__builtin_calloc")
+          return {};
+        if ((n == "realloc" || n == "reallocarray") && C->getNumArgs() >= 1) return sources(C->getArg(0), depth + 1);
       }
-      if (const FunctionDecl *FD = C->getDirectCallee()) return {"r:" + name(FD)};
+      if (const FunctionDecl *FD = C->getDirectCallee();
+          FD && (FD->getOverloadedOperator() == OO_New || FD->getOverloadedOperator() == OO_Array_New))
+        return {};
+      if (isa<CXXNewExpr>(E)) return {};
+      if (const FunctionDecl *FD = C->getDirectCallee()) return {callSite(C, FD)};
       if (const FunctionType *FT = calleeType(C)) return {"rt:" + mangleType(QualType(FT, 0))};
       return {"*"};
     }
     if (const auto *B = dyn_cast<BinaryOperator>(E)) {
       if (B->getOpcode() == BO_Comma) return sources(B->getRHS(), depth + 1);
+      // Pointer +/- integer points into the pointer's object; the integer
+      // operand does not carry one.
+      if (B->isAdditiveOp() && B->getLHS()->getType()->isPointerType() && B->getRHS()->getType()->isIntegerType())
+        return sources(B->getLHS(), depth + 1);
+      if (B->isAdditiveOp() && B->getRHS()->getType()->isPointerType() && B->getLHS()->getType()->isIntegerType())
+        return sources(B->getRHS(), depth + 1);
       if (B->isAdditiveOp() || B->isBitwiseOp() || B->getOpcode() == BO_Assign) {
         std::vector<std::string> v = sources(B->getLHS(), depth + 1), w = sources(B->getRHS(), depth + 1);
         v.insert(v.end(), w.begin(), w.end());
@@ -732,18 +767,26 @@ private:
 
 class Consumer : public ASTConsumer {
 public:
+  explicit Consumer(bool Relaxed) : Relaxed(Relaxed) {}
   void HandleTranslationUnit(ASTContext &C) override {
+    // AL: this translation unit was compiled with -fno-strict-aliasing, so
+    // reading a struct through an unrelated struct type is defined here and
+    // the analysis must keep such read-backs (SO/SD) from this unit.
+    if (Relaxed) kandeloAstFacts() += "AL\trelaxed\n";
     Visitor V(C);
     V.TraverseDecl(C.getTranslationUnitDecl());
     SlotVisitor SV(C);
     SV.TraverseDecl(C.getTranslationUnitDecl());
   }
+
+private:
+  bool Relaxed;
 };
 
 class Action : public PluginASTAction {
 protected:
-  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &, llvm::StringRef) override {
-    return std::make_unique<Consumer>();
+  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, llvm::StringRef) override {
+    return std::make_unique<Consumer>(CI.getCodeGenOpts().RelaxedAliasing);
   }
   bool ParseArgs(const CompilerInstance &, const std::vector<std::string> &) override { return true; }
   // Before the main action, so the facts exist when code generation runs the
