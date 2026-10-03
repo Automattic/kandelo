@@ -89,6 +89,7 @@ PROTOCOL_LIST=(
     "xdg-output-v1:xdg-output-unstable-v1"
     "viewporter:viewporter"
     "fractional-scale-v1:fractional-scale-v1"
+    "wlr-data-control-v1:wlr-data-control-unstable-v1"
 )
 echo "==> Generating Wayland protocol glue from $XML_DIR..."
 for entry in "${PROTOCOL_LIST[@]}"; do
@@ -130,6 +131,7 @@ wasm32posix-cc "${CFLAGS[@]}" -I"$GEN" -I"$LIBINPUT/include" $PKG_CFLAGS \
     "$GEN/xdg-output-v1-protocol.c" \
     "$GEN/viewporter-protocol.c" \
     "$GEN/fractional-scale-v1-protocol.c" \
+    "$GEN/wlr-data-control-v1-protocol.c" \
     "$SYSROOT/lib/libwayland-server.a" \
     "$SYSROOT/lib/libwpkdraw.a" \
     "$SYSROOT/lib/libxkbcommon.a" \

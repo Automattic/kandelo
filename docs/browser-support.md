@@ -780,6 +780,22 @@ on the compositor's own process rather than on a foreground terminal.
   the browser, which reserves `SUPER` (see the caveat above). Tiled
   windows receive xdg-shell's `tiled_*` states, so a client that keeps
   its own size when floating — SDL, and so ScummVM — takes the tile's.
+- **Copy and paste inside the desktop.** The compositor keeps a real
+  Wayland clipboard, so text copied in one window pastes in another.
+  Omarchy's universal-clipboard binds are in the image: `Super+C` copies,
+  `Super+V` pastes, `Super+X` cuts and `Super+A` selects all. Each sends
+  the focused window the application's own shortcut — `Ctrl+C`/`Ctrl+V`,
+  or `Ctrl+Shift+C`/`Ctrl+Shift+V` for a window tagged `terminal` (foot,
+  by its app id, through the same window rule Omarchy uses). On macOS
+  these are `Cmd+C`/`Cmd+V`/`Cmd+X`/`Cmd+A`: Cmd reaches the desktop as
+  Super, and the page keeps those four keys from the browser. Only `V` is
+  also bound on `Ctrl`, so `Ctrl+V` pastes on Windows and Linux too. That
+  costs a terminal its literal-next key (`^V`); `Ctrl+C` is deliberately
+  not bound, so it still sends SIGINT. In foot, select text with the
+  mouse, then `Cmd+C` (or `Ctrl+Shift+C`), and paste with `Cmd+V` or
+  `Ctrl+V`. Today foot is the only client on this desktop that reads the
+  clipboard; klauncher, Waybar, mako and the Qt demos take no pasted
+  text.
 
 #### What is not real yet (deferred work)
 
@@ -811,6 +827,14 @@ follow-ups, not as the end state.
 
 Smaller gaps, each a follow-up:
 
+- **The desktop's clipboard is not the browser's.** Text copied on the
+  host does not paste into the desktop, and text copied in the desktop
+  does not reach the host clipboard. Pasting from the host needs a host
+  clipboard device, a guest agent that sets the Wayland selection from
+  it, and a browser paste gesture; the design is
+  `docs/superpowers/specs/2026-10-01-omarchy-clipboard-paste-design.md`.
+  Also missing: the clipboard manager Omarchy opens on `Super+Ctrl+V`,
+  drag-and-drop, and the primary (middle-click) selection.
 - **No `xdg_popup`**, so tooltips and menus are refused (see the bar,
   above).
 - **Super needs fullscreen keyboard lock.** Omarchy binds everything on
