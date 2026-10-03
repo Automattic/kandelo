@@ -194,6 +194,9 @@ struct Prog {
     /// What-if: the crt calls main directly, so main is no indirect target
     /// except from the start routine's own call (a libc/crt change).
     main_fns: HashSet<u32>,
+    /// --cleanup-map: caller -> the cleanup handlers it installs.
+    cleanup_map: HashMap<u32, Vec<u32>>,
+    cleanup_pop: HashSet<u32>,
     start_fns: HashSet<u32>,
 }
 
@@ -280,6 +283,8 @@ impl Prog {
             noreturn: vec![],
             nothrow: vec![],
             main_fns: HashSet::new(),
+            cleanup_map: HashMap::new(),
+            cleanup_pop: HashSet::new(),
             start_fns: HashSet::new(),
             m,
         };
@@ -775,6 +780,15 @@ impl<'a, 'b> Walk<'a, 'b> {
     }
 
     fn call(&mut self, st: &mut St, mut targets: Vec<u32>, external: bool, nparams: usize, nres: usize, tail: bool, why: String) {
+        // pthread_cleanup_pop runs the handler of the caller's own lexical
+        // pthread_cleanup_push (POSIX pairs them in one scope).
+        if targets.len() == 1 && self.cx.p.cleanup_pop.contains(&targets[0]) {
+            if let Some(hs) = self.cx.p.cleanup_map.get(&self.f) {
+                // u32::MAX: the pop itself returns (run == 0 calls nothing).
+                targets = hs.clone();
+                targets.push(u32::MAX);
+            }
+        }
         if !self.cx.p.main_fns.is_empty() && targets.len() > 1 && !self.cx.p.start_fns.contains(&self.f) {
             targets.retain(|t| !self.cx.p.main_fns.contains(t));
         }
@@ -1804,6 +1818,19 @@ fn main() {
             lines += 1;
         }
         eprintln!("itargets: {lines} (function, signature) sets from {path}");
+    }
+    if let Some(path) = get("--cleanup-map") {
+        p.cleanup_pop = p.by_name("_pthread_cleanup_pop").into_iter().collect();
+        let mut n = 0;
+        for l in std::fs::read_to_string(&path).unwrap().lines() {
+            let (f, hs) = l.split_once('\t').unwrap_or((l, ""));
+            let hv: Vec<u32> = hs.split('\u{1}').filter(|x| !x.is_empty()).flat_map(|h| p.by_name(h)).collect();
+            for fi in p.by_name(f) {
+                p.cleanup_map.insert(fi, hv.clone());
+                n += 1;
+            }
+        }
+        eprintln!("cleanup map: {n} callers of _pthread_cleanup_pop");
     }
     if has("--registries") {
         // musl callback registries (sources checked, no Kandelo overlay):

@@ -95,8 +95,15 @@ weak_alias(libc_start_init, __libc_start_init);
 
 int __main_argc_argv(int, char **);
 
-typedef int lsm2_fn(int (*)(int,char **), int, char **);
-static lsm2_fn libc_start_main_stage2;
+/* WHY noinline and a direct call: upstream musl calls stage 2 through a
+ * pointer laundered by an asm statement, a barrier against hoisting
+ * application code or initializers above __init_libc. On Wasm that pointer
+ * puts stage 2 in the indirect function table, and fork instrumentation must
+ * then assume any indirect call of its type may re-enter main (see crt1.c).
+ * noinline keeps stage 2 a separate body and the memory clobber keeps memory
+ * accesses on their side of the call, which is the same barrier. */
+static int libc_start_main_stage2(int (*)(int,char **), int, char **)
+	__attribute__((noinline));
 
 int __libc_start_main(int (*main)(int,char **), int argc, char **argv,
 	void (*init_dummy)(), void(*fini_dummy)(), void(*ldso_dummy)())
@@ -105,9 +112,8 @@ int __libc_start_main(int (*main)(int,char **), int argc, char **argv,
 
 	__init_libc(envp, argv[0]);
 
-	lsm2_fn *stage2 = libc_start_main_stage2;
-	__asm__ ( "" : "+r"(stage2) : : "memory" );
-	return stage2(main, argc, argv);
+	__asm__ ( "" : : : "memory" );
+	return libc_start_main_stage2(main, argc, argv);
 }
 
 /* Kernel imports for fork child detection */

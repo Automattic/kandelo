@@ -169,6 +169,9 @@ struct Side {
     ast_g: HashMap<String, HashSet<String>>,
     ast_h: HashMap<String, HashSet<String>>,
     ast_seen: bool,
+    /// File-local `struct sigaction` globals written only as sigaction()'s
+    /// `old` argument: they hold already-installed handlers only.
+    oldact_globals: HashSet<String>,
     /// (registry, registering function) -> callbacks it registers.
     reg_by_fn: HashMap<(String, String), HashSet<String>>,
     reg_unknown: HashMap<String, Vec<String>>,
@@ -316,6 +319,9 @@ impl Side {
             "Y" => {
                 let i = site(&mut cur, f[2]);
                 cur.as_mut().unwrap().1.sites[i].origin = Some((f[3].to_string(), f.get(4).unwrap_or(&"").to_string()));
+            }
+            "O" => {
+                side.oldact_globals.insert(f[1].to_string());
             }
             "Q" => {
                 side.ast_seen = true;
@@ -892,6 +898,9 @@ struct Rules {
     casts: bool,
     /// The coarser variant: tainted functions match by Wasm signature.
     casts_sig: bool,
+    /// Calls through an old-action `struct sigaction` global (plugin `O`
+    /// facts) dispatch registered signal handlers only.
+    sigaction_old: bool,
 }
 
 /// Functions that may be called through a function type other than their
@@ -1156,6 +1165,14 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
                                 s.icall.contains(&tid).then(|| (tid, HUBS[h].3.iter().map(|x| x.to_string()).collect()))
                             })
                             .collect();
+                        // A call through an old-action global dispatches an
+                        // already-registered signal handler.
+                        let entries = match &s.origin {
+                            Some((k, gname)) if rules.sigaction_old && entries.is_empty() && k == "global" && side.oldact_globals.contains(gname) => {
+                                s.icall.iter().map(|&id| (id, vec!["signal".to_string()])).collect()
+                            }
+                            _ => entries,
+                        };
                         let hub_ix = if entries.is_empty() {
                             None
                         } else {
@@ -1220,7 +1237,7 @@ impl<'a> Graph<'a> {
         }
         if self.main_direct && why != "direct" {
             let n = &self.w.names[t as usize];
-            if n == "main" || n == "__main_argc_argv" || n == "__main_void" {
+            if n == "main" || n == "__main_argc_argv" || n == "__main_void" || n == "libc_start_main_stage2" {
                 return None;
             }
         }
@@ -1933,6 +1950,7 @@ fn main() {
                 "cleanup-lexical" => rules.cleanup_lexical = true,
                 "casts" => rules.casts = true,
                 "casts-sig" => rules.casts_sig = true,
+                "sigaction-old" => rules.sigaction_old = true,
                 r if r.starts_with("cutsite:") => rules.cutsite.push(r[8..].to_string()),
                 r if r.starts_with("drop:") => rules.drop.push(r[5..].to_string()),
                 "noir-optimistic" => rules.noir_optimistic = true,
@@ -2045,6 +2063,25 @@ fn main() {
             }
         }
         eprintln!("exported {lines} (function, signature) target sets ({m}{}) to {path}", if rules.flow { "+flow" } else { "" });
+        if rules.cleanup_lexical {
+            // Per caller of _pthread_cleanup_pop: the handlers its own
+            // pthread_cleanup_push calls install (fsa --cleanup-map).
+            let mut fh = std::io::BufWriter::new(std::fs::File::create(format!("{path}.cleanup")).unwrap());
+            for f in 0..w.names.len() {
+                if w.import[f] || !w.direct[f].iter().any(|&c| w.names[c as usize] == "_pthread_cleanup_pop") {
+                    continue;
+                }
+                if matches!(g.view[f], View::NoIr | View::Mismatch) {
+                    continue;
+                }
+                let hs: Vec<String> = side
+                    .reg_by_fn
+                    .get(&("cleanup".to_string(), w.names[f].clone()))
+                    .map(|v| v.iter().cloned().collect())
+                    .unwrap_or_default();
+                writeln!(fh, "{}\t{}", w.names[f], hs.join("\u{1}")).unwrap();
+            }
+        }
     }
     let mut regs: Vec<_> = g.reg_unknown.iter().map(|(k, v)| format!("{k} ({})", v.first().cloned().unwrap_or_default())).collect();
     regs.sort();

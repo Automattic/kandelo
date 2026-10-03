@@ -522,6 +522,47 @@ std::set<BasicBlock *> reachable(Function &F, Argument *P, Constant *PV,
   return seen;
 }
 
+// A file-local `struct sigaction` global written only by sigaction() as its
+// `old` argument (forkfd's old_sigaction): it can only ever hold a handler
+// that was already installed (or SIG_DFL/SIG_IGN). Calling through it, or
+// passing it back as `act` to restore it, installs nothing new.
+bool oldactOnly(GlobalVariable *GV) {
+  if (!GV->hasLocalLinkage() || GV->isConstant()) return false;
+  bool asOld = false;
+  std::function<bool(Value *, int)> ok = [&](Value *P, int depth) -> bool {
+    for (User *U : P->users()) {
+      if (isa<LoadInst>(U) || isa<ICmpInst>(U)) continue;
+      if (auto *G = dyn_cast<GEPOperator>(U)) {
+        if (depth > 4 || !ok(G, depth + 1)) return false;
+        continue;
+      }
+      if (auto *CB = dyn_cast<CallBase>(U)) {
+        Function *C = directCallee(CB);
+        bool hit = false;
+        for (const SigactionApi &SA : kSigaction) {
+          if (!C || C->getName() != SA.callee) continue;
+          for (unsigned a = 0; a < CB->arg_size(); ++a) {
+            if (CB->getArgOperand(a)->stripPointerCasts() != P) continue;
+            if (a == SA.old) { asOld = true; hit = true; }
+            else if (a == SA.act) hit = true;
+          }
+        }
+        if (hit) continue;
+      }
+      return false;
+    }
+    return true;
+  };
+  return ok(GV, 0) && asOld;
+}
+
+// The handler (offset 0) of a constant `struct sigaction` initializer.
+Value *initHandler(Constant *C) {
+  while (C && (isa<ConstantStruct>(C) || isa<ConstantArray>(C)) && C->getNumOperands())
+    C = cast<Constant>(C->getOperand(0));
+  return C ? C->stripPointerCasts() : nullptr;
+}
+
 // sigaction(sig, act, old): record the handlers stored into *act.
 void sigactionRecords(Value *Act, Function &F, raw_ostream &os, const std::function<std::string(StringRef)> &nm) {
   Act = Act->stripPointerCasts();
@@ -534,6 +575,7 @@ void sigactionRecords(Value *Act, Function &F, raw_ostream &os, const std::funct
     return;
   }
   if (auto *GV = dyn_cast<GlobalVariable>(Act)) {
+    if (oldactOnly(GV)) return; // restoring an already-installed handler
     if (GV->hasInitializer())
       if (auto *CS = dyn_cast<ConstantStruct>(GV->getInitializer()))
         if (CS->getNumOperands() && isa<Function>(CS->getOperand(0)->stripPointerCasts()))
@@ -555,6 +597,17 @@ void sigactionRecords(Value *Act, Function &F, raw_ostream &os, const std::funct
         else if (isa<Constant>(V) && !isa<GlobalValue>(V)) continue;
         else if (auto *A = dyn_cast<Argument>(V); A && A->getParent() == &F &&
                  (F.getName() == "signal" || F.getName() == "bsd_signal" || F.getName() == "sigset")) continue;
+        else if (auto *A = dyn_cast<Argument>(V); A && A->getParent() == &F && F.hasLocalLinkage() && !F.hasAddressTaken()) {
+          // A file-local forwarder (Qt's change_sigpipe(SIG_IGN)): the
+          // handlers are whatever its callers pass.
+          for (User *FU : F.users()) {
+            auto *FC = dyn_cast<CallBase>(FU);
+            if (!FC || FC->getCalledFunction() != &F || A->getArgNo() >= FC->arg_size()) { os << "R\tsignal\t*\n"; continue; }
+            Value *X = FC->getArgOperand(A->getArgNo())->stripPointerCasts();
+            if (auto *XF = dyn_cast<Function>(X)) os << "R\tsignal\t" << nm(XF->getName()) << "\n";
+            else if (!(isa<Constant>(X) && !isa<GlobalValue>(X))) os << "R\tsignal\t*\n";
+          }
+        }
         else os << "R\tsignal\t*\n";
       } else if (auto *G = dyn_cast<GEPOperator>(U)) {
         APInt O(64, 0);
@@ -565,6 +618,15 @@ void sigactionRecords(Value *Act, Function &F, raw_ostream &os, const std::funct
         StringRef cn = C ? C->getName() : "";
         // sigaction(act/old), memset, lifetime markers and sigemptyset/sigaddset
         // (which write sa_mask) do not store a handler.
+        // `struct sigaction sa = { .sa_handler = handler }` may be a memcpy
+        // from a constant initializer (musl's __synccall).
+        if (cn.starts_with("llvm.memcpy") && CB->getArgOperand(0)->stripPointerCasts() == P) {
+          auto *Src = dyn_cast<GlobalVariable>(CB->getArgOperand(1)->stripPointerCasts());
+          Value *H = (off == 0 && Src && Src->isConstant() && Src->hasInitializer()) ? initHandler(Src->getInitializer()) : nullptr;
+          if (auto *HF = dyn_cast_or_null<Function>(H)) os << "R\tsignal\t" << nm(HF->getName()) << "\n";
+          else if (!(H && isa<Constant>(H) && !isa<GlobalValue>(H))) os << "R\tsignal\t*\n";
+          continue;
+        }
         if (cn == "sigaction" || cn == "__sigaction" || cn == "__libc_sigaction" || cn == "memset" ||
             cn.starts_with("llvm.lifetime") || cn.starts_with("llvm.memset") || cn == "sigemptyset" ||
             cn == "sigfillset" || cn == "sigaddset" || cn == "sigdelset")
@@ -601,6 +663,9 @@ struct EmitPass : PassInfoMixin<EmitPass> {
         if (CB && CB->isCallee(&U)) continue;
         // `if (&pthread_create)`-style weak-symbol checks do not escape.
         if (isa<ICmpInst>(U.getUser())) continue;
+        // musl's weak_alias(__pthread_once, pthread_once): an alias is the
+        // same API under another name, not an escape of its address.
+        if (isa<GlobalAlias>(U.getUser())) continue;
         os << "R\t" << R.registry << "\t?\n";
         break;
       }
@@ -739,6 +804,9 @@ struct EmitPass : PassInfoMixin<EmitPass> {
     // Flow facts collected before optimization (TagPass).
     os << flowFacts()[&M];
     flowFacts().erase(&M);
+    // Globals that only ever hold already-installed signal handlers.
+    for (GlobalVariable &G : M.globals())
+      if (oldactOnly(&G)) os << "O\t" << G.getName() << "\n";
     // Function-pointer conversions seen in the AST (KandeloFnCasts.cpp).
     os << kandeloAstFacts();
     kandeloAstFacts().clear();

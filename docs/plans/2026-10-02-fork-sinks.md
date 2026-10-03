@@ -882,3 +882,112 @@ An earlier run reported foot as unsound. That was a modeling error in the
 - Port the typed targets into `crates/fork-instrument`. Fall back to
   signature matching per object whenever facts are missing.
 
+## Type-unsafe function pointers: the middle ground (2026-10-02)
+
+The maintainer asked for a middle ground between exact C/C++ types and
+treating all pointer types as equal. The idea: match exactly, except for
+functions the source shows may be called through a different function
+type.
+
+### What the plugin records
+
+The plugin gains a Clang half (`tools/fork-sink-research/fpr/plugin/
+KandeloFnCasts.cpp`). It runs before code generation, while casts are still
+visible; LLVM's opaque pointers erase them later. It records:
+
+- a function converted to another function type, or to `void *` or an
+  integer;
+- a function-pointer value converted between types (for example libffi's
+  dispatch casting `void (*)(void)` to each concrete signature);
+- struct-pointer punning, where a struct holding function pointers is cast
+  to another type. Example: libwayland's `(void (**)(void)) listener`. The
+  record includes the function types the destination designates;
+- which struct fields hold which functions.
+
+fpa's `casts` rule matches every function exactly, except that a function
+with a recorded conversion chain also matches the call-site types that
+chain reaches.
+
+### Exact types alone are unsound
+
+In foot, exact types give libffi's generated dispatch call (`d_0_5`) no
+targets. Yet at run time libwayland calls foot's `handle_global` exactly
+there: the listener struct is punned to `void (**)(void)` and dispatched
+through libffi. With `casts`, `d_0_5` has 11 targets including
+`handle_global`. Matching by Wasm signature instead (`casts-sig`) would
+make foot 2,356.
+
+### Results
+
+These are fresh source builds of this worktree's packages through the
+research shims (`scripts/cxx/rebuild2.sh`): musl, libc++ (facts-only
+compile), qtbase, and the programs. The analysis uses only plugin facts and
+sound rules:
+
+- `casts`;
+- `cleanup-lexical` (POSIX pairs pthread_cleanup push and pop in one
+  scope);
+- `sigaction-old` (below);
+- the musl registries;
+- `--exc equiv`;
+- the exact signal-handler list from the plugin;
+- sinks with the vfork contract.
+
+No list is asserted and no what-if is used.
+
+| Program | Today | Instrumented | Oracle |
+|---|---:|---:|---|
+| Quickshell | 102,878 | 10 | no stacks recorded |
+| foot | 3,000 | 4 | 1 stack, all frames covered |
+| git | 5,293 | 25 | 8 stacks, all frames covered |
+
+Quickshell's 10: `_Fork`, `fork`, `vfork`, `forkfd_fork_fallback`,
+`vforkfd`, QProcess's `doFork`, `qs::launch::runCommand`,
+`qs::launch::main`, `main` and `libc_start_main_stage2`. Per-program
+summaries are in `tools/fork-sink-research/results/`.
+
+### What it took, beyond `casts`
+
+- **libc: `libc_start_main_stage2` called directly.** Upstream musl calls
+  it through a pointer laundered by an `asm` statement, as a barrier
+  against hoisting. That put stage 2 in the function table, so untyped call
+  sites could "reach" `main` and Quickshell's daemonizing `fork`. Without
+  this change Quickshell stays at 66,603. The overlay now calls it directly
+  as `noinline` with a memory clobber, the same barrier. This is in
+  `libc/musl-overlay/src/env/__libc_start_main.c`, next to the crt change.
+- **Plugin: three registry false alarms fixed.**
+  - musl's `weak_alias` was counted as the registration API's address
+    escaping. That made the once, thread, TSD and signal registries all
+    unknown.
+  - `__synccall` installs a `struct sigaction` copied from a constant
+    initializer.
+  - Qt's `change_sigpipe(SIG_IGN/SIG_DFL)` is a file-local forwarder.
+- **`sigaction-old`.** The plugin marks a file-local `struct sigaction`
+  global that is only ever written as `sigaction()`'s `old` argument
+  (forkfd's `old_sigaction`). A call through it can only run an
+  already-registered handler, so it is analysed as a dispatch of the
+  signal registry. Without this rule Quickshell is 101,206.
+- **Complete libc++ facts.** clang 21 crashes in
+  `WebAssemblyLowerEmscriptenEHSjLj` with the CFI flags on. The research
+  shim now builds the object normally and takes the facts from a run that
+  stops at LLVM IR. `Unwind-wasm.c` still has no facts; it falls back to
+  signature matching, which is conservative.
+
+### Remaining assumptions
+
+- Union punning of function pointers, `memcpy` of function pointers, and a
+  `void *` that returns to a *different* struct type than it left as are
+  not tracked. This is the same blind spot clang's CFI has.
+- Every object must carry facts. Functions without facts fall back to
+  signature matching. A conversion inside an object without facts is
+  invisible, so production must fall back to signature matching for the
+  whole module whenever coverage is incomplete.
+- These are research tools (fpa, fsa) on the pre-`wasm-opt` link. The
+  instrumented binaries have not been built or run.
+- qtgallery was not measured. Its recipe compiles against sysroot C++
+  headers instead of its declared libcxx dependency, and fails in a fresh
+  scratch cache. That is a package-recipe defect, outside this work.
+- waybar stays at about 32,700 in every type mode. Its fork children may
+  throw C++ exceptions that something above catches, and `equiv` keeps
+  them open.
+
