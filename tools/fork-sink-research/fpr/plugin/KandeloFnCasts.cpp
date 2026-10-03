@@ -52,6 +52,7 @@
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/raw_ostream.h"
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -325,11 +326,417 @@ private:
   }
 };
 
+
+// ---------------------------------------------------------------- slots
+//
+// Per-slot tracking of untyped pointers (the precise form of the opaque
+// pool). A slot is a place an untyped value (void *, char *, a pointer-
+// sized integer) can live:
+//   l:<fn>:<var>  local      p:<fn>:<k>  parameter     r:<fn>  return value
+//   g:<var>       global     f:<rec>.<field>  field (unions: f:<union>.*)
+//   pt:<type>:<k> parameter of any function of type   rt:<type>  its return
+//   v:<fn>        the variadic arguments of fn         *  unknown
+// Origins are what an untyped value can carry:
+//   @rec:<R>  a pointer to record R (holding function pointers)
+//   @fn:<f>   function f's address   @ty:<T>  some function of type T
+// Lines:
+//   SE  from to        a value flows from slot/origin `from` into slot `to`
+//   SO  slot record    the slot's value is read back as a pointer to record
+//   SF  slot type      the slot's value is read back as a function of type
+//   SD  slot type      memory the slot points to is read as a function of type
+//   SL  type k fn      function fn has type `type`; its parameter k (or `ret`)
+//                      is the slot pt:type:k (rt:type) for indirect calls
+//   FT  record type    record has a function-pointer field of this type
+//   NR  record inner   record embeds record `inner`
+// The analysis propagates origins along SE edges; an origin read back as a
+// different record or function type is a call through another type.
+class SlotVisitor : public RecursiveASTVisitor<SlotVisitor> {
+public:
+  SlotVisitor(ASTContext &C) : Ctx(C), MC(C.createMangleContext()) {}
+
+  bool TraverseFunctionDecl(FunctionDecl *F) {
+    const FunctionDecl *Saved = Cur;
+    Cur = F;
+    if (F->doesThisDeclarationHaveABody()) declareFunction(F);
+    bool r = RecursiveASTVisitor::TraverseFunctionDecl(F);
+    Cur = Saved;
+    return r;
+  }
+  bool TraverseCXXMethodDecl(CXXMethodDecl *F) {
+    const FunctionDecl *Saved = Cur;
+    Cur = F;
+    if (F->doesThisDeclarationHaveABody()) declareFunction(F);
+    bool r = RecursiveASTVisitor::TraverseCXXMethodDecl(F);
+    Cur = Saved;
+    return r;
+  }
+
+  bool VisitVarDecl(VarDecl *V) {
+    if (isa<ParmVarDecl>(V) || !V->hasInit()) return true;
+    if (isTracked(V->getType())) flow(V->getInit(), varSlot(V));
+    return true;
+  }
+
+  bool VisitBinaryOperator(BinaryOperator *E) {
+    if (E->getOpcode() != BO_Assign) return true;
+    const Expr *L = E->getLHS()->IgnoreParenImpCasts();
+    std::string t = targetSlot(L);
+    if (t.empty()) return true;
+    if (isTracked(L->getType())) flow(E->getRHS(), t);
+    else if (fnPtr(L->getType()) && isUnionField(L)) {
+      // A function stored through a union member: any member may read it.
+      for (const std::string &o : fnOrigins(E->getRHS())) edge(o, t);
+    }
+    return true;
+  }
+
+  bool VisitInitListExpr(InitListExpr *E) {
+    if (!E->isSemanticForm() && E->getSemanticForm()) E = E->getSemanticForm();
+    const RecordType *RT = E->getType()->getAs<RecordType>();
+    if (!RT) return true;
+    const RecordDecl *R = RT->getDecl();
+    unsigned i = 0;
+    for (const FieldDecl *F : R->fields()) {
+      if (i >= E->getNumInits()) break;
+      const Expr *I = E->getInit(i++);
+      std::string t = fieldSlot(R, F);
+      if (isTracked(F->getType())) flow(I, t);
+      else if (R->isUnion() && fnPtr(F->getType()))
+        for (const std::string &o : fnOrigins(I)) edge(o, t);
+      if (R->isUnion()) break; // a union initializes one member
+    }
+    return true;
+  }
+
+  bool VisitCallExpr(CallExpr *E) {
+    const FunctionDecl *FD = E->getDirectCallee();
+    std::string base;
+    unsigned nparams = 0;
+    bool variadic = false;
+    const FunctionProtoType *Proto = nullptr;
+    if (FD) {
+      base = "p:" + name(FD) + ":";
+      nparams = FD->getNumParams();
+      variadic = FD->isVariadic();
+      Proto = FD->getType()->getAs<FunctionProtoType>();
+    } else if (const FunctionType *FT = calleeType(E)) {
+      base = "pt:" + mangleType(QualType(FT, 0)) + ":";
+      Proto = dyn_cast<FunctionProtoType>(FT);
+      nparams = Proto ? Proto->getNumParams() : 0;
+      variadic = Proto ? Proto->isVariadic() : true;
+    } else {
+      return true;
+    }
+    for (unsigned i = 0; i < E->getNumArgs(); ++i) {
+      const Expr *A = E->getArg(i);
+      if (i < nparams) {
+        QualType PT = FD ? FD->getParamDecl(i)->getType() : Proto->getParamType(i);
+        if (isTracked(PT)) flow(A, base + std::to_string(i));
+      } else if (variadic) {
+        flow(A, FD ? "v:" + name(FD) : std::string("*"));
+      }
+    }
+    // memcpy between a record and untyped memory moves the record's
+    // contents through the untyped pointer.
+    if (FD && FD->getIdentifier() && E->getNumArgs() >= 2) {
+      llvm::StringRef n = FD->getName();
+      if (n == "memcpy" || n == "memmove" || n == "__builtin_memcpy" || n == "__builtin_memmove" || n == "bcopy") {
+        const Expr *D = E->getArg(n == "bcopy" ? 1 : 0)->IgnoreParenImpCasts(), *S2 = E->getArg(n == "bcopy" ? 0 : 1)->IgnoreParenImpCasts();
+        const RecordDecl *RD = pointeeRecord(D->getType()), *RS = pointeeRecord(S2->getType());
+        if (RS && holdsFnPointers(RS) && !RD) {
+          describe(RS);
+          flowOrigin("@rec:" + recordName(RS), D);
+        }
+        if (RD && holdsFnPointers(RD) && !RS)
+          for (const std::string &src : sources(S2)) readAsRecord(src, RD);
+        // Untyped to untyped (realloc's copy, buffer shuffles): whatever the
+        // source memory held, the destination memory now holds.
+        if (!RD && !RS)
+          for (const std::string &src : sources(S2))
+            for (const std::string &dst : sources(D)) edge(src, dst);
+      }
+    }
+    return true;
+  }
+
+  bool VisitReturnStmt(ReturnStmt *S) {
+    if (!Cur || !S->getRetValue() || !isTracked(Cur->getReturnType())) return true;
+    flow(S->getRetValue(), "r:" + name(Cur));
+    return true;
+  }
+
+  bool VisitCastExpr(CastExpr *E) {
+    const Expr *Sub = E->getSubExpr();
+    QualType From = Sub->getType(), To = E->getType();
+    if (!isTracked(From)) return true;
+    // Read back as a record holding function pointers.
+    if (const RecordDecl *R = pointeeRecord(To); R && holdsFnPointers(R) && !isNull(Sub)) {
+      for (const std::string &s : sources(Sub)) readAsRecord(s, R);
+      return true;
+    }
+    // Read back as a function pointer.
+    if (const FunctionType *FT = fnPtr(To); FT && !isNull(Sub)) {
+      std::string ty = mangleType(QualType(FT, 0));
+      for (const std::string &s : sources(Sub)) add("SF\t" + s + "\t" + ty);
+      return true;
+    }
+    // Read as `t **`: the memory it points to holds functions of type t.
+    if (To->isPointerType()) {
+      QualType PT = To->getPointeeType().getCanonicalType();
+      if (const FunctionType *FE = fnPtr(PT); FE && !isNull(Sub)) {
+        std::string ty = mangleType(QualType(FE, 0));
+        for (const std::string &s : sources(Sub)) add("SD\t" + s + "\t" + ty);
+      }
+    }
+    return true;
+  }
+
+  bool VisitMemberExpr(MemberExpr *E) {
+    // A union's function-pointer member read: whatever any member stored.
+    const auto *F = dyn_cast<FieldDecl>(E->getMemberDecl());
+    if (!F || !F->getParent()->isUnion()) return true;
+    if (const FunctionType *FT = fnPtr(F->getType()))
+      add("SF\t" + fieldSlot(F->getParent(), F) + "\t" + mangleType(QualType(FT, 0)));
+    return true;
+  }
+
+  bool VisitVAArgExpr(VAArgExpr *E) {
+    // va_arg reads the variadic arguments of the enclosing function.
+    if (Cur && isTracked(E->getType())) VaReads.insert(E);
+    return true;
+  }
+
+private:
+  ASTContext &Ctx;
+  std::unique_ptr<MangleContext> MC;
+  const FunctionDecl *Cur = nullptr;
+  std::set<std::string> Seen;
+  std::set<const Expr *> VaReads;
+  std::set<const RecordDecl *> Described;
+
+  void add(const std::string &line) {
+    if (Seen.insert(line).second) kandeloAstFacts() += line + "\n";
+  }
+  void edge(const std::string &from, const std::string &to) {
+    if (!from.empty() && !to.empty() && from != to) add("SE\t" + from + "\t" + to);
+  }
+  void flow(const Expr *E, const std::string &to) {
+    for (const std::string &s : sources(E)) edge(s, to);
+  }
+  void flowOrigin(const std::string &origin, const Expr *Dst) {
+    // memcpy(untyped dst, &record, n): the record's contents now sit in the
+    // memory dst points to; model it as the record's pointer flowing there.
+    for (const std::string &s : sources(Dst)) edge(origin, s);
+  }
+  void readAsRecord(const std::string &slot, const RecordDecl *R) {
+    describe(R);
+    add("SO\t" + slot + "\t" + recordName(R));
+  }
+  void describe(const RecordDecl *R, int depth = 0) {
+    if (!R || depth > 4 || !(R = R->getDefinition()) || !Described.insert(R).second) return;
+    for (const FieldDecl *F : R->fields()) {
+      QualType T = F->getType().getCanonicalType();
+      while (const auto *A = dyn_cast<ArrayType>(T.getTypePtr())) T = A->getElementType().getCanonicalType();
+      if (const FunctionType *FT = fnPtr(T)) add("FT\t" + recordName(R) + "\t" + mangleType(QualType(FT, 0)));
+      else if (const auto *RT = T->getAs<RecordType>()) {
+        add("NR\t" + recordName(R) + "\t" + recordName(RT->getDecl()));
+        describe(RT->getDecl(), depth + 1);
+      }
+    }
+  }
+
+  void declareFunction(const FunctionDecl *F) {
+    std::string ty = mangleType(F->getType());
+    std::string n = name(F);
+    for (unsigned i = 0; i < F->getNumParams(); ++i)
+      if (isTracked(F->getParamDecl(i)->getType())) add("SL\t" + ty + "\t" + std::to_string(i) + "\t" + n);
+    if (isTracked(F->getReturnType())) add("SL\t" + ty + "\tret\t" + n);
+  }
+
+  // Untyped: void *, char * (any signedness/cv), or a pointer-sized integer
+  // type spelled as one (intptr_t, uintptr_t, size_t, long, ...).
+  bool isTracked(QualType T) const {
+    T = T.getCanonicalType();
+    if (T->isPointerType()) {
+      QualType P = T->getPointeeType().getCanonicalType();
+      return P->isVoidType() || P->isCharType();
+    }
+    if (T->isIntegerType() && !T->isBooleanType() && !T->isEnumeralType())
+      return Ctx.getTypeSize(T) == Ctx.getTypeSize(Ctx.VoidPtrTy) && !T->isSpecificBuiltinType(BuiltinType::Int) &&
+             !T->isSpecificBuiltinType(BuiltinType::UInt);
+    return false;
+  }
+
+  static const FunctionType *fnPtr(QualType T) {
+    T = T.getCanonicalType();
+    if (const auto *P = T->getAs<PointerType>()) return P->getPointeeType()->getAs<FunctionType>();
+    return nullptr;
+  }
+  static bool isUnionField(const Expr *L) {
+    const auto *M = dyn_cast<MemberExpr>(L);
+    const auto *F = M ? dyn_cast<FieldDecl>(M->getMemberDecl()) : nullptr;
+    return F && F->getParent()->isUnion();
+  }
+
+  const FunctionType *calleeType(const CallExpr *E) const {
+    QualType T = E->getCallee()->getType().getCanonicalType();
+    if (const auto *P = T->getAs<PointerType>()) T = P->getPointeeType();
+    return T->getAs<FunctionType>();
+  }
+
+  std::string varSlot(const VarDecl *V) {
+    if (const auto *P = dyn_cast<ParmVarDecl>(V)) {
+      const auto *F = dyn_cast<FunctionDecl>(P->getDeclContext());
+      return F ? "p:" + name(F) + ":" + std::to_string(P->getFunctionScopeIndex()) : "*";
+    }
+    if (V->hasGlobalStorage() && !V->isStaticLocal()) return "g:" + V->getName().str();
+    return "l:" + (Cur ? name(Cur) : std::string("?")) + ":" + V->getName().str();
+  }
+  std::string fieldSlot(const RecordDecl *R, const FieldDecl *F) {
+    if (R->isUnion()) return "f:" + recordName(R) + ".*";
+    std::string fn = F->getName().str();
+    if (fn.empty()) fn = "#" + std::to_string(F->getFieldIndex());
+    return "f:" + recordName(R) + "." + fn;
+  }
+  // Where an assignment's left side stores.
+  std::string targetSlot(const Expr *L) {
+    if (const auto *D = dyn_cast<DeclRefExpr>(L)) {
+      if (const auto *V = dyn_cast<VarDecl>(D->getDecl())) return varSlot(V);
+      return "";
+    }
+    if (const auto *M = dyn_cast<MemberExpr>(L)) {
+      if (const auto *F = dyn_cast<FieldDecl>(M->getMemberDecl())) return fieldSlot(F->getParent(), F);
+      return "";
+    }
+    // *pp = v, a[i] = v: memory we do not name.
+    return "*";
+  }
+
+  // Function origins of a function-pointer-typed expression.
+  std::vector<std::string> fnOrigins(const Expr *E) {
+    if (const FunctionDecl *FD = refFn(E)) return {"@fn:" + name(FD)};
+    if (const FunctionType *FT = fnPtr(E->IgnoreParenImpCasts()->getType())) return {"@ty:" + mangleType(QualType(FT, 0))};
+    return {"*"};
+  }
+
+  // Where an untyped value comes from: slots and origins.
+  std::vector<std::string> sources(const Expr *E, int depth = 0) {
+    if (!E || depth > 16) return {"*"};
+    E = E->IgnoreParens();
+    if (isNull(E)) return {};
+    if (const auto *C = dyn_cast<CastExpr>(E)) {
+      const Expr *Sub = C->getSubExpr();
+      QualType From = Sub->getType();
+      if (const RecordDecl *R = pointeeRecord(From)) {
+        if (!holdsFnPointers(R)) return {};
+        describe(R);
+        return {"@rec:" + recordName(R)};
+      }
+      if (From->isFunctionType() || fnPtr(From)) return fnOrigins(Sub);
+      if (isTracked(From)) return sources(Sub, depth + 1);
+      if (From->isIntegerType() || From->isPointerType()) {
+        // A plain int or a pointer to data without functions carries no
+        // tracked origin unless it was itself derived from one.
+        if (From->isIntegerType() && !isa<IntegerLiteral>(Sub->IgnoreParenCasts())) return sources(Sub, depth + 1);
+        return {};
+      }
+      return {};
+    }
+    if (const auto *D = dyn_cast<DeclRefExpr>(E)) {
+      if (const auto *V = dyn_cast<VarDecl>(D->getDecl())) return {varSlot(V)};
+      return {};
+    }
+    if (const auto *M = dyn_cast<MemberExpr>(E)) {
+      if (const auto *F = dyn_cast<FieldDecl>(M->getMemberDecl())) return {fieldSlot(F->getParent(), F)};
+      return {"*"};
+    }
+    if (const auto *C = dyn_cast<CallExpr>(E)) {
+      // Standard functions that return (a pointer into) one of their
+      // arguments: the result is that argument at this call, not a slot
+      // shared by every caller (memset's return would otherwise merge every
+      // memset destination in the program).
+      if (const FunctionDecl *FD = C->getDirectCallee(); FD && FD->getIdentifier()) {
+        static const std::map<std::string, unsigned> kReturnsArg = {
+            {"memset", 0}, {"memcpy", 0}, {"memmove", 0}, {"memccpy", 0}, {"strcpy", 0}, {"strncpy", 0},
+            {"strcat", 0}, {"strncat", 0}, {"stpcpy", 0}, {"stpncpy", 0}, {"strchr", 0}, {"strrchr", 0},
+            {"strchrnul", 0}, {"memchr", 0}, {"memrchr", 0}, {"rawmemchr", 0}, {"strstr", 0}, {"strpbrk", 0},
+            {"__builtin_memset", 0}, {"__builtin_memcpy", 0}, {"__builtin_memmove", 0}, {"__builtin_strcpy", 0}};
+        auto it = kReturnsArg.find(FD->getName().str());
+        if (it != kReturnsArg.end() && it->second < C->getNumArgs()) return sources(C->getArg(it->second), depth + 1);
+      }
+      if (const FunctionDecl *FD = C->getDirectCallee()) return {"r:" + name(FD)};
+      if (const FunctionType *FT = calleeType(C)) return {"rt:" + mangleType(QualType(FT, 0))};
+      return {"*"};
+    }
+    if (const auto *B = dyn_cast<BinaryOperator>(E)) {
+      if (B->getOpcode() == BO_Comma) return sources(B->getRHS(), depth + 1);
+      if (B->isAdditiveOp() || B->isBitwiseOp() || B->getOpcode() == BO_Assign) {
+        std::vector<std::string> v = sources(B->getLHS(), depth + 1), w = sources(B->getRHS(), depth + 1);
+        v.insert(v.end(), w.begin(), w.end());
+        return v;
+      }
+      return {};
+    }
+    if (const auto *Cond = dyn_cast<AbstractConditionalOperator>(E)) {
+      std::vector<std::string> v = sources(Cond->getTrueExpr(), depth + 1), w = sources(Cond->getFalseExpr(), depth + 1);
+      v.insert(v.end(), w.begin(), w.end());
+      return v;
+    }
+    if (isa<VAArgExpr>(E)) return {Cur ? "v:" + name(Cur) : std::string("*")};
+    if (isa<IntegerLiteral>(E) || isa<CharacterLiteral>(E) || isa<StringLiteral>(E) || isa<SizeOfPackExpr>(E) ||
+        isa<UnaryExprOrTypeTraitExpr>(E))
+      return {};
+    if (const auto *U = dyn_cast<UnaryOperator>(E)) {
+      // &x of untyped storage, or arithmetic on an untyped value.
+      if (U->getOpcode() == UO_AddrOf) return {};
+      if (U->isIncrementDecrementOp() || U->getOpcode() == UO_Minus || U->getOpcode() == UO_Not || U->getOpcode() == UO_Plus)
+        return sources(U->getSubExpr(), depth + 1);
+    }
+    // *pp, a[i], statement expressions, ...: memory we do not name.
+    return {"*"};
+  }
+
+  static const FunctionDecl *refFn(const Expr *E) {
+    E = E->IgnoreParenCasts();
+    if (const auto *U = dyn_cast<UnaryOperator>(E); U && U->getOpcode() == UO_AddrOf) E = U->getSubExpr()->IgnoreParenCasts();
+    if (const auto *D = dyn_cast<DeclRefExpr>(E)) return dyn_cast<FunctionDecl>(D->getDecl());
+    if (const auto *M = dyn_cast<MemberExpr>(E)) return dyn_cast<FunctionDecl>(M->getMemberDecl());
+    return nullptr;
+  }
+  static bool isNull(const Expr *E) {
+    E = E->IgnoreParenCasts();
+    return isa<CXXNullPtrLiteralExpr>(E) || isa<GNUNullExpr>(E) ||
+           (isa<IntegerLiteral>(E) && cast<IntegerLiteral>(E)->getValue() == 0);
+  }
+  std::string mangleType(QualType T) {
+    std::string s;
+    llvm::raw_string_ostream os(s);
+    MC->mangleCanonicalTypeName(T.getCanonicalType(), os);
+    return s;
+  }
+  std::string name(const FunctionDecl *FD) {
+    if (isa<CXXConstructorDecl>(FD) || isa<CXXDestructorDecl>(FD)) return FD->getQualifiedNameAsString();
+    std::string s;
+    if (MC->shouldMangleDeclName(FD)) {
+      llvm::raw_string_ostream os(s);
+      MC->mangleName(GlobalDecl(FD), os);
+      return llvm::demangle(s);
+    }
+    return FD->getName().str();
+  }
+  static std::string recordName(const RecordDecl *R) {
+    std::string n = R->getQualifiedNameAsString();
+    return n.empty() ? "<anon>" : n;
+  }
+};
+
 class Consumer : public ASTConsumer {
 public:
   void HandleTranslationUnit(ASTContext &C) override {
     Visitor V(C);
     V.TraverseDecl(C.getTranslationUnitDecl());
+    SlotVisitor SV(C);
+    SV.TraverseDecl(C.getTranslationUnitDecl());
   }
 };
 

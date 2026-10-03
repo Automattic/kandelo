@@ -1832,6 +1832,16 @@ fn main() {
         }
         eprintln!("cleanup map: {n} callers of _pthread_cleanup_pop");
     }
+    if has("--dlopen-contract") && p.dyn_link {
+        // Load-time side-module contract (docs/plans/2026-10-02-fork-sinks.md,
+        // "Fork sinks in programs that can dlopen"): the host refuses to load
+        // a side module whose fork-open entries could be reached from a call
+        // site the main module did not prepare, so side-module code never
+        // forks beneath an unprepared main frame. The analysis may then
+        // ignore side-module entries.
+        p.dyn_link = false;
+        eprintln!("dlopen contract: side-module entries ignored (enforced at load time)");
+    }
     if has("--registries") {
         // musl callback registries (sources checked, no Kandelo overlay):
         // each hub's dispatch call reaches only callbacks passed to the

@@ -991,3 +991,73 @@ summaries are in `tools/fork-sink-research/results/`.
   throw C++ exceptions that something above catches, and `equiv` keeps
   them open.
 
+## Fork sinks in programs that can dlopen (design, 2026-10-03)
+
+### Why this needs a contract
+
+A program that can `dlopen` may run code the instrumenter never saw. Any
+indirect call might enter a side module, and that side module may fork. If
+its fork child returns, the child resumes through every frame between the
+fork and the program root, including main-module frames above the side
+module.
+
+Today's answer (capability bit 1) instruments every `call_indirect` and its
+callers in such a main module. That is sound, but it undoes everything sinks
+and type facts gain. After the merge, Quickshell links the dlopen runtime
+(Qt's `QLibrary` calls `dlopen`) and goes back to about 102,400 instrumented
+functions.
+
+The maintainer confirmed that Quickshell must keep `dlopen`.
+
+### The contract
+
+The main module is instrumented as if side modules never fork. The host
+checks that assumption when a side module loads, and refuses the load when
+the assumption would be false.
+
+- **Main module metadata**, a new section:
+  - **Prepared call-site types**: the (Wasm signature, CFI type id) pairs
+    for which *every* main `call_indirect` site lies in an instrumented
+    function on an instrumented chain to the root. A side function entered
+    through such a site may fork freely.
+  - **Open exports**: exported main functions through which a fork child can
+    return, for example `fork` itself or a function that daemonizes. Sinks
+    are not open. QProcess's vfork paths, `system()` and `posix_spawn` are
+    not open.
+- **Side module metadata**, from the same instrumenter run with
+  `--entry env.fork`. For every function whose address can reach the main
+  module, meaning an export or a table element, it records:
+  - its CFI type id;
+  - whether it forks directly with a returning child;
+  - which main imports it can reach.
+- **At `dlopen`**, inside the host-owned `__wasm_dlopen_prepare` step
+  shared by Node and browser: a side entry is *open* if it forks with a
+  returning child or reaches an open export. Every open entry's type must
+  be prepared. If not, `dlopen` returns NULL and `dlerror()` says which
+  entry and type. That is a truthful failure; POSIX allows `dlopen` to
+  fail.
+- **Side modules loading other side modules** apply the same check against
+  the loader's prepared types. Side modules keep today's conservative
+  instrumentation of their own code.
+
+### What it changes
+
+A side module whose code can fork with a returning child, reached from a
+main call site the analysis did not prepare, now fails to load. Today it
+loads and works. Ordinary plugins are unaffected: Qt image formats, platform
+themes and QML plugins that start processes through QProcess hit vfork
+sinks, which are not open. No such side module exists in Kandelo's packages
+today; that is a claim to verify before landing.
+
+The alternative, preparing every call-site type, is today's conservative
+instrumentation.
+
+### Not decided
+
+- Whether the refusal should be the default, or opt-in per program until
+  side modules carry type facts.
+- Where the type facts of a side module come from: the same SDK plugin, so
+  every side module needs to be built with it.
+- ABI: two new custom sections and a new load-time check. Since ABI 46 is
+  not released, they can join it.
+

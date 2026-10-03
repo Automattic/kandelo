@@ -175,6 +175,14 @@ struct Side {
     /// The opaque pool (plugin `J`/`U` facts, KandeloFnCasts.cpp).
     pool_records: HashSet<String>,
     pool_types: HashSet<String>,
+    /// Per-slot untyped-pointer flow (plugin SE/SO/SF/SD/SL/FT/NR facts).
+    slot_edges: Vec<(String, String)>,
+    slot_reads_rec: Vec<(String, String)>,
+    slot_reads_fn: Vec<(String, String)>,
+    slot_reads_mem: Vec<(String, String)>,
+    slot_links: Vec<(String, String, String)>,
+    rec_fn_types: HashMap<String, HashSet<String>>,
+    rec_nested: HashMap<String, HashSet<String>>,
     /// (registry, registering function) -> callbacks it registers.
     reg_by_fn: HashMap<(String, String), HashSet<String>>,
     reg_unknown: HashMap<String, Vec<String>>,
@@ -331,6 +339,17 @@ impl Side {
             }
             "U" => {
                 side.pool_types.insert(f[1].to_string());
+            }
+            "SE" => side.slot_edges.push((f[1].to_string(), f[2].to_string())),
+            "SO" => side.slot_reads_rec.push((f[1].to_string(), f[2].to_string())),
+            "SF" => side.slot_reads_fn.push((f[1].to_string(), f[2].to_string())),
+            "SD" => side.slot_reads_mem.push((f[1].to_string(), f[2].to_string())),
+            "SL" => side.slot_links.push((f[1].to_string(), f[2].to_string(), f[3].to_string())),
+            "FT" => {
+                side.rec_fn_types.entry(f[1].to_string()).or_default().insert(f[2].to_string());
+            }
+            "NR" => {
+                side.rec_nested.entry(f[1].to_string()).or_default().insert(f[2].to_string());
             }
             "Q" => {
                 side.ast_seen = true;
@@ -912,6 +931,8 @@ struct Rules {
     casts_sig: bool,
     /// Include the opaque pool (plugin `J`/`U` facts) in `casts`.
     pool: bool,
+    /// Include per-slot untyped-pointer flow (plugin `S*` facts) in `casts`.
+    slots: bool,
     /// Calls through an old-action `struct sigaction` global (plugin `O`
     /// facts) dispatch registered signal handlers only.
     sigaction_old: bool,
@@ -920,16 +941,198 @@ struct Rules {
 /// Functions that may be called through a function type other than their
 /// own (see KandeloFnCasts.cpp): converted directly; of a type whose values
 /// are converted; or stored in a record that is type-punned.
+/// Per-slot propagation of untyped-pointer origins (see KandeloFnCasts.cpp,
+/// "slots"). Returns extra conversion starts per function and extra
+/// type-to-type conversions, given the conversion reach computed so far
+/// (functions reached through casts also receive indirect-call arguments of
+/// the types they reach).
+fn slot_flow(side: &Side, reach: &HashMap<String, HashSet<String>>) -> (HashMap<String, HashSet<String>>, HashMap<String, HashSet<String>>) {
+    let mut ids: HashMap<String, u32> = HashMap::new();
+    let mut names: Vec<String> = vec![];
+    let mut id = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| -> u32 {
+        if let Some(&i) = ids.get(s) {
+            return i;
+        }
+        let i = names.len() as u32;
+        names.push(s.to_string());
+        ids.insert(s.to_string(), i);
+        i
+    };
+    let mut succ: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut add_edge = |a: &str, b: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>, succ: &mut HashMap<u32, Vec<u32>>| {
+        let (x, y) = (id(a, ids, names), id(b, ids, names));
+        succ.entry(x).or_default().push(y);
+    };
+    for (a, b) in &side.slot_edges {
+        add_edge(a, b, &mut ids, &mut names, &mut succ);
+    }
+    // Function f of type T: its parameter k is fed by every indirect call of
+    // type T, and of every type its conversions reach.
+    let mut types_of: HashMap<&str, Vec<String>> = HashMap::new();
+    for (t, _, fname) in &side.slot_links {
+        types_of.entry(fname.as_str()).or_default().push(t.clone());
+    }
+    for (t, k, fname) in &side.slot_links {
+        let mut ts: Vec<String> = vec![t.clone()];
+        if let Some(r) = reach.get(fname) {
+            ts.extend(r.iter().cloned());
+        }
+        for u in ts {
+            if k == "ret" {
+                add_edge(&format!("r:{fname}"), &format!("rt:{u}"), &mut ids, &mut names, &mut succ);
+            } else {
+                add_edge(&format!("pt:{u}:{k}"), &format!("p:{fname}:{k}"), &mut ids, &mut names, &mut succ);
+            }
+        }
+    }
+    // Propagate origin sets.
+    let n = names.len();
+    let mut orig: Vec<HashSet<u32>> = vec![HashSet::new(); n];
+    let mut work: VecDeque<u32> = VecDeque::new();
+    for i in 0..n {
+        if names[i].starts_with('@') {
+            orig[i].insert(i as u32);
+            work.push_back(i as u32);
+        }
+    }
+    while let Some(x) = work.pop_front() {
+        let Some(ss) = succ.get(&x) else { continue };
+        let ox = orig[x as usize].clone();
+        for &y in ss {
+            let before = orig[y as usize].len();
+            orig[y as usize].extend(ox.iter().copied());
+            if orig[y as usize].len() != before {
+                work.push_back(y);
+            }
+        }
+    }
+    let at = |slot: &str| -> Vec<&str> {
+        ids.get(slot).map(|&i| orig[i as usize].iter().map(|&o| names[o as usize].as_str()).collect()).unwrap_or_default()
+    };
+    // Functions stored in a record (and in records it embeds); function
+    // types of a record's fields (and of records it embeds).
+    let closure = |r: &str| -> Vec<String> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut st = vec![r.to_string()];
+        while let Some(x) = st.pop() {
+            if seen.insert(x.clone()) {
+                if let Some(ns) = side.rec_nested.get(&x) {
+                    st.extend(ns.iter().cloned());
+                }
+            }
+        }
+        seen.into_iter().collect()
+    };
+    let fns_in = |r: &str| -> Vec<String> {
+        closure(r).iter().flat_map(|x| side.ast_g.get(x).into_iter().flatten().cloned()).collect()
+    };
+    let types_in = |r: &str| -> Vec<String> {
+        closure(r).iter().flat_map(|x| side.rec_fn_types.get(x).into_iter().flatten().cloned()).collect()
+    };
+    let mut starts: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut z: HashMap<String, HashSet<String>> = HashMap::new();
+    let slot_dbg = std::env::var("FPA_SLOT_DEBUG").ok();
+    for (slot, s_rec) in &side.slot_reads_rec {
+        for o in at(slot) {
+            if let Some(r) = o.strip_prefix("@rec:") {
+                if r != s_rec {
+                    if let Some(d) = &slot_dbg {
+                        if r.contains(d.as_str()) || s_rec.contains(d.as_str()) || d == "rec" {
+                            eprintln!("SLOT-DEBUG\trec\t{slot}\t{r}\t{s_rec}");
+                        }
+                    }
+                    let ts = types_in(s_rec);
+                    for f in fns_in(r) {
+                        starts.entry(f).or_default().extend(ts.iter().cloned());
+                    }
+                }
+            }
+        }
+    }
+    let show = |what: &str, slot: &str, o: &str, t: &str| {
+        if let Some(d) = &slot_dbg {
+            if t.contains(d.as_str()) || o.contains(d.as_str()) {
+                eprintln!("SLOT-DEBUG\t{what}\t{slot}\t{o}\t{t}");
+            }
+        }
+    };
+    for (slot, u) in &side.slot_reads_fn {
+        for o in at(slot) {
+            show("fn", slot, o, u);
+            if let Some(f) = o.strip_prefix("@fn:") {
+                starts.entry(f.to_string()).or_default().insert(u.clone());
+            } else if let Some(t) = o.strip_prefix("@ty:") {
+                if t != u {
+                    z.entry(t.to_string()).or_default().insert(u.clone());
+                }
+            }
+        }
+    }
+    for (slot, u) in &side.slot_reads_mem {
+        for o in at(slot) {
+            if let Some(r) = o.strip_prefix("@rec:") {
+                for f in fns_in(r) {
+                    starts.entry(f).or_default().insert(u.clone());
+                }
+            }
+        }
+    }
+    let star = at("*").len();
+    eprintln!(
+        "slots: {} slots, {} edges, {} origins reach the unknown slot; {} functions gain conversion targets",
+        n,
+        side.slot_edges.len(),
+        star,
+        starts.len()
+    );
+    (starts, z)
+}
+
 fn tainted_fns(side: &Side, any_sig: bool, pool: bool) -> HashMap<String, HashSet<String>> {
+    tainted_fns2(side, any_sig, pool, false)
+}
+
+fn tainted_fns2(side: &Side, any_sig: bool, pool: bool, slots: bool) -> HashMap<String, HashSet<String>> {
+    if !slots {
+        return tainted_fns1(side, any_sig, pool, &HashMap::new(), &HashMap::new());
+    }
+    // Iterate: slot flow depends on what conversions reach, and adds to it.
+    let mut reach = tainted_fns1(side, any_sig, pool, &HashMap::new(), &HashMap::new());
+    for round in 0..4 {
+        let (st, z) = slot_flow(side, &reach);
+        let next = tainted_fns1(side, any_sig, pool, &st, &z);
+        let changed = next != reach;
+        reach = next;
+        if !changed {
+            eprintln!("slots: converged after {} rounds", round + 1);
+            break;
+        }
+    }
+    reach
+}
+
+fn tainted_fns1(
+    side: &Side,
+    any_sig: bool,
+    pool: bool,
+    extra_starts: &HashMap<String, HashSet<String>>,
+    extra_z: &HashMap<String, HashSet<String>>,
+) -> HashMap<String, HashSet<String>> {
     if !side.ast_seen {
         eprintln!("WARNING: --rule casts without plugin v4 facts: nothing is tainted (unsound)");
     }
     // Conversion starts per function: direct conversions, and the types its
     // record is punned to.
     let mut starts: HashMap<String, HashSet<String>> = side.ast_w.clone();
+    for (f, ts) in extra_starts {
+        starts.entry(f.clone()).or_default().extend(ts.iter().cloned());
+    }
     // The opaque pool: functions stored in pooled records enter `*`, and
     // `*` may be read back as any pooled type.
     let mut z = side.ast_z.clone();
+    for (t, us) in extra_z {
+        z.entry(t.clone()).or_default().extend(us.iter().cloned());
+    }
     if pool {
         for r in &side.pool_records {
             for f in side.ast_g.get(r).map(|v| v.iter()).into_iter().flatten() {
@@ -946,7 +1149,7 @@ fn tainted_fns(side: &Side, any_sig: bool, pool: bool) -> HashMap<String, HashSe
     }
     // A function of type T also reaches whatever a T-typed value is
     // converted to.
-    let zfrom: HashSet<&String> = side.ast_z.keys().filter(|k| *k != "*").collect();
+    let zfrom: HashSet<&String> = side_z.keys().filter(|k| *k != "*").collect();
     let own = |f: &str| -> Vec<String> {
         let mut v: Vec<String> = side.ast_qtype.get(f).map(|s| s.iter().cloned().collect()).unwrap_or_default();
         if let Some(ids) = side.fn_types.get(f) {
@@ -1009,7 +1212,7 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
         drop: rules.drop.clone(),
         main_direct: rules.main_direct,
         casts: rules.casts || rules.casts_sig,
-        tainted: if rules.casts || rules.casts_sig { tainted_fns(side, rules.casts_sig, rules.pool) } else { HashMap::new() },
+        tainted: if rules.casts || rules.casts_sig { tainted_fns2(side, rules.casts_sig, rules.pool, rules.slots) } else { HashMap::new() },
         flow_cache: Default::default(),
         reg_unknown: side.reg_unknown.iter().filter(|(k, _)| !rules.known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
         by_sig_table: HashMap::new(),
@@ -1978,6 +2181,7 @@ fn main() {
                 "casts-sig" => rules.casts_sig = true,
                 "sigaction-old" => rules.sigaction_old = true,
                 "pool" => rules.pool = true,
+                "slots" => rules.slots = true,
                 r if r.starts_with("cutsite:") => rules.cutsite.push(r[8..].to_string()),
                 r if r.starts_with("drop:") => rules.drop.push(r[5..].to_string()),
                 "noir-optimistic" => rules.noir_optimistic = true,
