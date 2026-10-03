@@ -1061,3 +1061,25 @@ instrumentation.
 - ABI: two new custom sections and a new load-time check. Since ABI 46 is
   not released, they can join it.
 
+## Per-slot untyped-pointer tracking (2026-10-03)
+
+The opaque pool is replaced by per-slot tracking. Slots are derived
+automatically from each program's source; no list is maintained by hand.
+The only fixed list describes standard libc semantics: the functions that
+return an argument. Fresh source builds, all rules sound, with
+`--rule casts --rule slots`:
+
+| Program | Today | Pool | Slots | Oracle |
+|---|---:|---:|---:|---|
+| foot | 2,994 | 2,344 | 4 | covered |
+| git | 5,293 | 5,091 | 5,091 | covered |
+| Quickshell, dlopen contract | 103,038 | n/a | 10 | no stacks |
+
+git still merges at generic containers (`option.value`,
+`string_list_item.util`, strmap values), at pass-through helpers
+(`xrealloc`, `container_of_or_null_offset`) and at callback parameters
+shared by many registrations. The next step is context sensitivity:
+- per-call-site results for functions that return a parameter, detected
+  automatically;
+- object sensitivity for static initializers of option-style tables.
+
