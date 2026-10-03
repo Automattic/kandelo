@@ -2048,6 +2048,9 @@ fn main() {
         let mut s = Summ { ret: r.ret.is_some(), thr: r.thr };
         if r.unsupported {
             s = Summ { ret: true, thr: TAGS_ALL };
+            if std::env::var("FSA_SHOW_UNSUPPORTED").is_ok() && summ[f as usize].thr != TAGS_ALL {
+                eprintln!("UNSUPPORTED\t{}", p.names[f as usize]);
+            }
         }
         if p.noreturn[f as usize] {
             s.ret = false;

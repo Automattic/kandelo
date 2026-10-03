@@ -172,6 +172,9 @@ struct Side {
     /// File-local `struct sigaction` globals written only as sigaction()'s
     /// `old` argument: they hold already-installed handlers only.
     oldact_globals: HashSet<String>,
+    /// The opaque pool (plugin `J`/`U` facts, KandeloFnCasts.cpp).
+    pool_records: HashSet<String>,
+    pool_types: HashSet<String>,
     /// (registry, registering function) -> callbacks it registers.
     reg_by_fn: HashMap<(String, String), HashSet<String>>,
     reg_unknown: HashMap<String, Vec<String>>,
@@ -322,6 +325,12 @@ impl Side {
             }
             "O" => {
                 side.oldact_globals.insert(f[1].to_string());
+            }
+            "J" => {
+                side.pool_records.insert(f[1].to_string());
+            }
+            "U" => {
+                side.pool_types.insert(f[1].to_string());
             }
             "Q" => {
                 side.ast_seen = true;
@@ -753,7 +762,10 @@ fn bind<'s>(w: &Wasm, bi: &BindInputs, side: &'s mut Side, sigs: &mut Interner) 
             }
             let b = base(input);
             for g in ["channel_syscall", "compiler_rt", "cxxrt", "dlopen"] {
-                if b.starts_with(&format!("{g}-")) {
+                // Link-time glue objects: `channel_syscall-<hash>.o` from older
+                // SDKs, `kandelo-glue-*/channel_syscall.o` since glue is
+                // compiled at a fixed -O2 before the link.
+                if b.starts_with(&format!("{g}-")) || b == format!("{g}.o") {
                     if let Some(v) = aliases.get(&("glue".to_string(), g.to_string())) {
                         *how.entry("glue-alias").or_default() += 1;
                         return v.clone();
@@ -898,6 +910,8 @@ struct Rules {
     casts: bool,
     /// The coarser variant: tainted functions match by Wasm signature.
     casts_sig: bool,
+    /// Include the opaque pool (plugin `J`/`U` facts) in `casts`.
+    pool: bool,
     /// Calls through an old-action `struct sigaction` global (plugin `O`
     /// facts) dispatch registered signal handlers only.
     sigaction_old: bool,
@@ -906,13 +920,25 @@ struct Rules {
 /// Functions that may be called through a function type other than their
 /// own (see KandeloFnCasts.cpp): converted directly; of a type whose values
 /// are converted; or stored in a record that is type-punned.
-fn tainted_fns(side: &Side, any_sig: bool) -> HashMap<String, HashSet<String>> {
+fn tainted_fns(side: &Side, any_sig: bool, pool: bool) -> HashMap<String, HashSet<String>> {
     if !side.ast_seen {
         eprintln!("WARNING: --rule casts without plugin v4 facts: nothing is tainted (unsound)");
     }
     // Conversion starts per function: direct conversions, and the types its
     // record is punned to.
     let mut starts: HashMap<String, HashSet<String>> = side.ast_w.clone();
+    // The opaque pool: functions stored in pooled records enter `*`, and
+    // `*` may be read back as any pooled type.
+    let mut z = side.ast_z.clone();
+    if pool {
+        for r in &side.pool_records {
+            for f in side.ast_g.get(r).map(|v| v.iter()).into_iter().flatten() {
+                starts.entry(f.clone()).or_default().insert("*".to_string());
+            }
+        }
+        z.entry("*".to_string()).or_default().extend(side.pool_types.iter().cloned());
+    }
+    let side_z = &z;
     for (r, tos) in &side.ast_h {
         for f in side.ast_g.get(r).map(|v| v.iter()).into_iter().flatten() {
             starts.entry(f.clone()).or_default().extend(tos.iter().cloned());
@@ -941,7 +967,7 @@ fn tainted_fns(side: &Side, any_sig: bool) -> HashMap<String, HashSet<String>> {
             if !seen.insert(t.clone()) {
                 continue;
             }
-            if let Some(nx) = side.ast_z.get(&t) {
+            if let Some(nx) = side_z.get(&t) {
                 work.extend(nx.iter().cloned());
             }
         }
@@ -983,7 +1009,7 @@ fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: 
         drop: rules.drop.clone(),
         main_direct: rules.main_direct,
         casts: rules.casts || rules.casts_sig,
-        tainted: if rules.casts || rules.casts_sig { tainted_fns(side, rules.casts_sig) } else { HashMap::new() },
+        tainted: if rules.casts || rules.casts_sig { tainted_fns(side, rules.casts_sig, rules.pool) } else { HashMap::new() },
         flow_cache: Default::default(),
         reg_unknown: side.reg_unknown.iter().filter(|(k, _)| !rules.known.contains(k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
         by_sig_table: HashMap::new(),
@@ -1951,6 +1977,7 @@ fn main() {
                 "casts" => rules.casts = true,
                 "casts-sig" => rules.casts_sig = true,
                 "sigaction-old" => rules.sigaction_old = true,
+                "pool" => rules.pool = true,
                 r if r.starts_with("cutsite:") => rules.cutsite.push(r[8..].to_string()),
                 r if r.starts_with("drop:") => rules.drop.push(r[5..].to_string()),
                 "noir-optimistic" => rules.noir_optimistic = true,

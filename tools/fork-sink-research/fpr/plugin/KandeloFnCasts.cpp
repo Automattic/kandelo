@@ -25,6 +25,22 @@
 //                      `to` is the function type the destination designates
 //                      (`void (**)(void)` -> void(void)), each function-pointer
 //                      field type of a destination record, or `*`.
+// The opaque pool. Memory that passes through `void *`, `char *` or an
+// integer loses its type, so the pass models it as one pool:
+//   - a record holding function pointers whose pointer is converted to or
+//     from such a type enters the pool: `J record` (its functions may be
+//     read back as anything in the pool) and `U t` for each of its
+//     function-pointer field types t (anything in the pool may be read back
+//     as t);
+//   - a union holding function pointers is always in the pool (its members
+//     alias by definition);
+//   - a non-matching pointer converted to `t **` reads the pool as t
+//     (`U t`).
+// `J`/`U` are separate from `H`/`Z` so the analysis can measure the pool's
+// cost on its own (fpa `--rule pool`).
+// Fresh allocations (malloc, operator new, ...) hold no functions, and
+// `memset`/`free`-style calls or a `memcpy` between two pointers to the same
+// type do not move functions between types; they do not enter the pool.
 // Types are clang's canonical type mangling (the CFI type id string, e.g.
 // _ZTSFvPvE); names are demangled like the LLVM pass's names.
 #include "clang/AST/ASTConsumer.h"
@@ -98,6 +114,22 @@ public:
       }
       return true;
     }
+    // `(t **) p` from a pointer to anything else reads the pool as t.
+    if (To->isPointerType()) {
+      QualType PT = To->getPointeeType().getCanonicalType();
+      const FunctionType *FE = fnType(PT);
+      if (FE && !PT->isFunctionType() && !SafeArg.count(E) && !isNull(E->getSubExpr()) &&
+          !(From->isPointerType() && Ctx.hasSameType(From->getPointeeType().getCanonicalType(), PT)))
+        add("U\t" + mangleType(QualType(FE, 0)));
+    }
+    // The opaque pool: a record holding function pointers converted to or
+    // from void *, char * or an integer.
+    if (!SafeArg.count(E)) {
+      const RecordDecl *RIn = pointeeRecord(From), *ROut = pointeeRecord(To);
+      if (RIn && holdsFnPointers(RIn) && isOpaque(To)) pool(RIn);
+      if (ROut && holdsFnPointers(ROut) && isOpaque(From) && !isFresh(E->getSubExpr()) && !isNull(E->getSubExpr()))
+        pool(ROut);
+    }
     // Struct punning: a pointer to a record that holds function pointers
     // converted to a pointer to some other non-void, non-char type.
     const RecordDecl *RF = pointeeRecord(From);
@@ -135,6 +167,30 @@ public:
   bool VisitCallExpr(CallExpr *E) {
     if (const Expr *C = E->getCallee())
       if (const auto *D = dyn_cast<DeclRefExpr>(C->IgnoreParenImpCasts())) InCallee.insert(D);
+    // Arguments of calls that never move a function between types.
+    const FunctionDecl *FD = E->getDirectCallee();
+    if (!FD || !FD->getIdentifier()) return true;
+    llvm::StringRef n = FD->getName();
+    static const std::set<std::string> kNoMove = {
+        "free", "memset", "bzero", "explicit_bzero", "memcmp", "munmap", "g_free", "cfree", "__builtin_memset"};
+    auto markArgs = [&] {
+      for (Expr *A : E->arguments())
+        if (auto *IC = dyn_cast<ImplicitCastExpr>(A)) SafeArg.insert(IC);
+    };
+    if (kNoMove.count(n.str())) markArgs();
+    if ((n == "memcpy" || n == "memmove" || n == "__builtin_memcpy" || n == "__builtin_memmove") && E->getNumArgs() >= 2) {
+      QualType D = E->getArg(0)->IgnoreParenImpCasts()->getType(), S2 = E->getArg(1)->IgnoreParenImpCasts()->getType();
+      if (D->isPointerType() && S2->isPointerType() &&
+          Ctx.hasSameUnqualifiedType(D->getPointeeType(), S2->getPointeeType()))
+        markArgs();
+    }
+    return true;
+  }
+
+  bool VisitRecordDecl(RecordDecl *R) {
+    // Union members alias: whatever is stored through one may be read
+    // through another.
+    if (R->isUnion() && R->isCompleteDefinition() && holdsFnPointers(R)) pool(R);
     return true;
   }
 
@@ -173,6 +229,53 @@ private:
   std::unique_ptr<MangleContext> MC;
   std::set<const DeclRefExpr *> InCallee;
   std::set<std::string> Seen;
+  std::set<const Expr *> SafeArg;
+
+  // Enter the opaque pool (see the header).
+  void pool(const RecordDecl *R) {
+    std::set<std::string> ts;
+    fieldFnTypes(R, ts);
+    add("J\t" + recordName(R));
+    for (const std::string &t : ts) add("U\t" + t);
+    // Nested records' functions are R's functions too.
+    if ((R = R->getDefinition()))
+      for (const FieldDecl *F : R->fields()) {
+        QualType T = F->getType().getCanonicalType();
+        while (const auto *A = dyn_cast<ArrayType>(T.getTypePtr())) T = A->getElementType().getCanonicalType();
+        if (const auto *RT = T->getAs<RecordType>(); RT && holdsFnPointers(RT->getDecl()))
+          add("J\t" + recordName(RT->getDecl()));
+      }
+  }
+
+  static bool isOpaque(QualType T) {
+    T = T.getCanonicalType();
+    if (T->isIntegerType()) return true;
+    if (!T->isPointerType()) return false;
+    QualType P = T->getPointeeType().getCanonicalType();
+    return P->isVoidType() || P->isCharType();
+  }
+
+  static bool isNull(const Expr *E) {
+    E = E->IgnoreParenCasts();
+    return isa<CXXNullPtrLiteralExpr>(E) || isa<GNUNullExpr>(E) ||
+           (isa<IntegerLiteral>(E) && cast<IntegerLiteral>(E)->getValue() == 0);
+  }
+
+  // Fresh memory holds no functions.
+  static bool isFresh(const Expr *E) {
+    E = E->IgnoreParenCasts();
+    if (isa<CXXNewExpr>(E)) return true;
+    const auto *C = dyn_cast<CallExpr>(E);
+    const FunctionDecl *FD = C ? C->getDirectCallee() : nullptr;
+    if (!FD) return false;
+    if (FD->getOverloadedOperator() == OO_New || FD->getOverloadedOperator() == OO_Array_New) return true;
+    if (!FD->getIdentifier()) return false;
+    static const std::set<std::string> kAlloc = {
+        "malloc", "calloc", "realloc", "aligned_alloc", "memalign", "valloc", "alloca", "__builtin_alloca",
+        "g_malloc", "g_malloc0", "g_realloc", "g_try_malloc", "g_try_malloc0", "g_slice_alloc", "g_slice_alloc0",
+        "mmap", "operator new"};
+    return kAlloc.count(FD->getName().str());
+  }
 
   // Function types of R's function-pointer fields (arrays, nested records).
   void fieldFnTypes(const RecordDecl *R, std::set<std::string> &out, int depth = 0) {

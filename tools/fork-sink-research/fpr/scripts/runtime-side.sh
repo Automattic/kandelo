@@ -33,7 +33,8 @@ done < <(find "$OUT/repo/libc/musl/obj/src" "$OUT/repo/libc/musl/obj/crt" -name 
 PF="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $P -Xclang -add-plugin -Xclang kandelo-fncasts -fpass-plugin=$P"
 for g in channel_syscall compiler_rt cxxrt dlopen; do
   side="$OUT/glue/$g.calltypes"
-  wasm32posix-cc -c $PF -mllvm -kandelo-calltypes-out="$side" \
+  # -O2: the SDK compiles link-time glue at a fixed -O2 (sdk/src/bin/cc.ts).
+  wasm32posix-cc -O2 -c $PF -mllvm -kandelo-calltypes-out="$side" \
     "$ROOT/libc/glue/$g.c" -o "$OUT/glue/$g.o" >/dev/null 2>&1 || { echo "FAIL glue $g"; continue; }
   printf 'glue\t%s\t%s\n' "$g" "$side" >> "$OUT/aliases.tsv"
 done
