@@ -153,12 +153,17 @@ describe.skipIf(!available)("compiled-module sharing on the Node host", () => {
         const first = await host.getWasmModuleCacheStats();
         expect(await host.spawn(bytes.slice(0), ["test-pthread"]), output()).toBe(0);
         const second = await host.getWasmModuleCacheStats();
-        // The first run compiles the program and, when the thread patch
-        // changes the bytes, its thread variant; the second compiles nothing.
-        expect(delta(first, start).compiles).toBeGreaterThanOrEqual(1);
-        expect(delta(first, start).compiles).toBeLessThanOrEqual(2);
+        // test-pthread has a start section, so its threads run a separately
+        // compiled thread-patched module. The first run compiles the program
+        // and that thread module; the second process reuses both.
+        expect(delta(first, start).compiles).toBe(2);
+        expect(first.threadCompiles - start.threadCompiles).toBe(1);
         expect(delta(second, first).compiles).toBe(0);
-        expect(delta(second, first).reused).toBeGreaterThanOrEqual(1);
+        expect(second.threadCompiles).toBe(first.threadCompiles);
+        expect(
+          second.threadHits + second.threadJoins
+            - first.threadHits - first.threadJoins,
+        ).toBe(1);
       });
     },
     120_000,

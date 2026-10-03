@@ -1597,7 +1597,11 @@ bytes itself, the growth was about 335 MB, 540 MB and 1,070 MB.
 
 `NodeKernelHost.getWasmModuleCacheStats()` and
 `BrowserKernel.getWasmModuleCacheStats()` return the cache's counters
-(compilations, reuse, digest time, retained bytes) for diagnostics.
+(compilations, reuse, digest time, retained bytes, and the thread-module
+compilations and reuse counted separately) for diagnostics.
+`apps/browser-demos/test/wasm-module-cache-threads.spec.ts` uses them to check
+in a real browser that three processes running the same threaded program
+compile one thread module between them.
 
 ## Memory Layout
 

@@ -65,6 +65,16 @@ export interface WasmModuleCacheStats {
   readonly hits: number;
   /** Requests that joined a compilation of the same bytes already running. */
   readonly joins: number;
+  /**
+   * Compilations of a thread-patched program (each one is also in
+   * `compiles`). A program whose patch leaves its bytes unchanged runs its
+   * threads on the program module and never adds here.
+   */
+  readonly threadCompiles: number;
+  /** Thread-module requests satisfied by an already compiled thread module. */
+  readonly threadHits: number;
+  /** Thread-module requests that joined a thread compilation in flight. */
+  readonly threadJoins: number;
   /** SHA-256 digests computed. */
   readonly digests: number;
   /** Summed wall time of those digests. */
@@ -109,6 +119,9 @@ interface MutableStats {
   compiledBytes: number;
   hits: number;
   joins: number;
+  threadCompiles: number;
+  threadHits: number;
+  threadJoins: number;
   digests: number;
   digestMs: number;
   digestedBytes: number;
@@ -161,6 +174,9 @@ export class WasmModuleCache {
     compiledBytes: 0,
     hits: 0,
     joins: 0,
+    threadCompiles: 0,
+    threadHits: 0,
+    threadJoins: 0,
     digests: 0,
     digestMs: 0,
     digestedBytes: 0,
@@ -200,7 +216,10 @@ export class WasmModuleCache {
     const identity = await this.#identify(programBytes);
     return this.#getOrCompile("thread", identity, () => {
       const patched = patchForThread(programBytes);
-      if (patched !== programBytes) return this.#compileBytes(patched);
+      if (patched !== programBytes) {
+        this.#stats.threadCompiles += 1;
+        return this.#compileBytes(patched);
+      }
       return this.#getOrCompile(
         "program",
         identity,
@@ -258,12 +277,14 @@ export class WasmModuleCache {
     const cached = this.#entries.get(key)?.ref.deref();
     if (cached !== undefined) {
       this.#stats.hits += 1;
+      if (variant === "thread") this.#stats.threadHits += 1;
       this.#retain(key, cached, identity.byteLength);
       return Promise.resolve(cached);
     }
     const pending = this.#inflight.get(key);
     if (pending) {
       this.#stats.joins += 1;
+      if (variant === "thread") this.#stats.threadJoins += 1;
       return pending;
     }
     const compilation = (async () => {

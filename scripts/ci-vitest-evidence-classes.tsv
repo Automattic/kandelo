@@ -347,6 +347,8 @@ host/test/wasi-shim.test.ts	prepared-product
 host/test/wasm-binary-parse.test.ts	prepared-product
 host/test/wasm-guest-pointer.test.ts	source-only
 host/test/wasm-memory-write-audit.test.ts	prepared-product
+host/test/wasm-module-cache-host.test.ts	prepared-product
+host/test/wasm-module-cache.test.ts	source-only
 host/test/wasm-module-reflection.test.ts	source-only
 host/test/wasm-trap.test.ts	prepared-product
 host/test/wasm64.test.ts	prepared-product
