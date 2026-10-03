@@ -2695,11 +2695,26 @@ fn main() {
         for (h, frames) in &stacks {
             let mut needed = vec![];
             let mut boundary = None;
+            let mut inner: Option<&str> = None;
             for fr in frames {
-                let ids = by_name.get(fr.as_str()).cloned().unwrap_or_default();
+                let mut ids = by_name.get(fr.as_str()).cloned().unwrap_or_default();
                 if ids.is_empty() {
                     continue; // host frames / wrappers not in this module
                 }
+                // Same-named functions (a libc `main` wrapper and the
+                // program's `main`): keep only those that call the next
+                // frame inward, which is what this stack shows.
+                if let (true, Some(inn)) = (ids.len() > 1, inner) {
+                    let callers: Vec<u32> = ids
+                        .iter()
+                        .copied()
+                        .filter(|g| sites.get(g).is_some_and(|v| v.iter().any(|(_, _, t)| t.iter().any(|&h| p.names.get(h as usize).is_some_and(|n| n == inn)))))
+                        .collect();
+                    if !callers.is_empty() {
+                        ids = callers;
+                    }
+                }
+                inner = Some(fr.as_str());
                 needed.push(fr.clone());
                 // A frame stops the walk only if every same-named function is closed.
                 if ids.iter().all(|&g| child.contains_key(&g) && !open(g)) {

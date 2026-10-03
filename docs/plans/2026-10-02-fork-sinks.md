@@ -1124,9 +1124,48 @@ through an unrelated struct type, and clang's alias analysis already
 assumes that in every unit compiled with strict aliasing (the C default).
 With the rule applied per unit, git is 25.
 
-Units compiled with `-fno-strict-aliasing` (CPython and the Linux kernel,
-for example) keep the sound pairing: the plugin records each unit's mode
+Units compiled with `-fno-strict-aliasing` (the Linux kernel, for example;
+modern CPython's configure finds it does not need the flag) keep the sound
+pairing: the plugin records each unit's mode
 (`AL`), and fpa applies the rule as `--rule effective-types` only where
 the compiler applies it. Union punning, which C defines, is modelled
 either way.
+
+### Corpus results (2026-10-03, fresh source builds)
+
+All rules: `casts slots effective-types cleanup-lexical sigaction-old
+cancel`, `--exc equiv`, exact signal-handler lists from the plugin, sinks
+and the vfork contract. Programs that can dlopen are measured under the
+dlopen contract. Oracle: fork stacks recorded at run time; "covered" means
+every frame that must be instrumented is in the set.
+
+| Program | Today | Instrumented | Oracle |
+|---|---:|---:|---|
+| foot | 2,994 | 4 | 1 stack, covered |
+| git | 5,293 | 25 | 8 stacks, covered |
+| Quickshell, dlopen contract | 103,038 | 10 | none recorded |
+| bash, dlopen contract | 1,940 | 1,922 | 28 stacks, covered |
+| CPython | 9,166 | 9,125 | 9 stacks, covered |
+| Ruby | 9,739 | 9,522 | 17 stacks, covered |
+| git-remote-http (curl) | 8,659 | 8,433 | none recorded |
+
+Without the effective-type rule, git is 5,091 and the others barely move.
+
+The bash oracle at first reported 28 unsound stacks. That was a tooling
+bug: bash has two functions named `main` (libc's two-argument wrapper and
+bash's three-argument `main`), and the oracle matched stack frames by name
+only. It now picks the same-named function that calls the next frame
+inward.
+
+The interpreters stay large because their fork children genuinely return
+into the interpreter.
+
+Known remaining imprecision:
+- **curl's `longjmp`.** curl's SIGALRM handler `siglongjmp`s out of DNS
+  resolution. Because a signal can arrive at any syscall, every fork
+  child "may longjmp" to any `setjmp` frame above it. Wasm's setjmp
+  lowering only lands a `longjmp` in a frame that called `setjmp` on the
+  same buffer. Tracking `jmp_buf` identity through slots would model
+  that; it is not built.
+- **waybar.** Measurement in progress.
 
