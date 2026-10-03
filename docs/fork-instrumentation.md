@@ -20,7 +20,7 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `43` (see
+ABI version: `46` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
 
@@ -753,6 +753,71 @@ section fell from 1.68 MB to 0.67 MB. Building the crate with
 `--features size-attribution` and setting `WPK_FORK_SIZE_ATTRIBUTION=<path>`
 writes a per-function TSV that attributes every output byte to the emitter
 that produced it; see `crates/fork-instrument/src/size_attribution.rs`.
+
+
+## Optimization around instrumentation
+
+A fork-using program goes through Binaryen's `wasm-opt` twice:
+
+1. **Before instrumentation.** The SDK's `-O` link runs `wasm-opt` (clang
+   schedules it after `wasm-ld`), and some recipes run their own pass.
+   Inlining, dead-function removal and identical-function merging shrink
+   the call graph the instrumenter has to cover. Quickshell's raw link has
+   108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
+2. **After instrumentation.** The CLI runs `wasm-opt -O2` over its own
+   output (`--post-optimize`; `$WASM_OPT`, else `wasm-opt` on PATH). This
+   pass simplifies the dispatch and frame code the transform adds, merges
+   or removes generated helpers, and drops runtime imports nothing calls.
+
+Measured on code-section size (static, captured links, 2026-10-02):
+
+| program | wasm-opt → instrument | + wasm-opt after | instrument → wasm-opt |
+|---|---|---|---|
+| foot | 3,465,173 | −3.3% | −1.8% |
+| bash | 1,611,255 | −3.7% | −3.5% |
+| git | 5,368,248 | −3.9% | −4.9% |
+| python | 8,448,545 | −3.9% | −4.1% |
+| php | 16,888,534 | −5.8% | −5.9% |
+| waybar | 22,532,525 | −4.4% | −1.1% |
+| ruby | 12,769,437 | −3.9% | −4.9% |
+| qtgallery | 11,697,323 | −4.4% | +12.5% |
+| quickshell | 36,978,834 | −4.2% | +18.7% |
+
+Instrumenting the raw link instead (last column) gives up step 1: every
+function of the unoptimized graph gets instrumented, and wasm-opt does not
+recover that afterwards. On C programs the difference is small; on Qt
+programs it is large.
+
+Why a pass after instrumentation is safe:
+
+- The transform is expressed in ordinary Wasm semantics plus calls to the
+  `__wpk_fork_*` imports. wasm-opt preserves the module's observable
+  behaviour, including those calls, stores to the save buffer, and exports.
+- The custom sections the host reads do not depend on positions that
+  wasm-opt changes. Imported globals and tables are identified by kind,
+  module and name (format 2, ABI 46), and owners are bound through named
+  catalog exports.
+- A runtime import nothing calls may be removed. Instrumentation is proven
+  by the capability section, control exports and descriptors, not by
+  imports. Hosts and validators treat every fork-runtime import as optional
+  when absent and exact when present, with two rules: the linked-frame core
+  (`__wpk_fork_frame_reserve`, `commit`, `next`) is all-or-nothing, and a
+  module with frames must import the private unwind tag. A module with no
+  fork-path frames of its own imports neither.
+- The instrumenter scans its output and declares every Wasm feature it
+  uses in `target_features` (`src/target_features.rs`), because wasm-opt
+  enables only declared features. The generated code's needs depend on the
+  input (atomic guards for shared memories, GC codecs only for GC
+  references), so the declaration is derived, not listed.
+- The pass keeps a name section and DWARF (`-g`) when the input had them,
+  and does not run at all when instrumentation left the module unchanged.
+- A missing or failing `wasm-opt` is an error. `--post-optimize none`
+  exists to inspect the transform's raw output; shipped artifacts do not use
+  it.
+
+Do not add `--closed-world` or other whole-program GC type passes after
+instrumentation: they may rewrite the GC types the reference codecs
+describe in `kandelo.wpk_fork.gc_codec`.
 
 ## Dispatch schemes
 

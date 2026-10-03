@@ -1,5 +1,6 @@
 #!/usr/bin/env -S node --experimental-strip-types
-import { readFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { TextDecoder } from 'node:util';
 import { resolveLldMajor, resolveToolchain, type Toolchain } from '../lib/toolchain.ts';
@@ -243,6 +244,58 @@ export function workingDirectoryFromClangTrace(
   return tracedDirectories.values().next().value as string;
 }
 
+/** Link-time libc glue sources, in link order. */
+export function glueSources(toolchain: Toolchain, linkDl: boolean): string[] {
+  const sources = ['channel_syscall.c', 'compiler_rt.c', 'cxxrt.c'];
+  if (linkDl) sources.push('dlopen.c');
+  return sources.map((name) => join(toolchain.glueDir, name));
+}
+
+/**
+ * Compile command for one link-time glue source.
+ *
+ * The glue (the syscall channel, compiler-rt builtins, the minimal C++
+ * runtime, the dlopen loader) is platform code linked into every executable.
+ * It used to be compiled as part of the link command, so it inherited that
+ * command's optimization level and language: a meson or configure link with
+ * no -O flag shipped the syscall path at -O0, and a clang++ link compiled the
+ * .c files as C++. Compiling it separately with fixed flags makes every
+ * program carry the same glue code regardless of how its build links.
+ */
+export function buildGlueCompileArgs(
+  sources: string[],
+  toolchain: Toolchain,
+  arch: WasmArch,
+  threadSlotDefine: string | null,
+): string[] {
+  return [
+    ...compileFlags(arch),
+    `--sysroot=${toolchain.sysroot}`,
+    ...sdkSourcePrefixMapFlags(toolchain, arch),
+    ...recipeWorkPrefixMapFlags(),
+    ...(threadSlotDefine ? [threadSlotDefine] : []),
+    '-O2',
+    '-x', 'c',
+    '-c', ...sources,
+  ];
+}
+
+/** The thread-slot declaration an executable link applies to its glue. */
+function executableThreadSlotDefine(userArgs: string[], arch: WasmArch): string | null {
+  const { filtered } = filterArgs(userArgs, arch);
+  const parsed = parseArgs(filtered);
+  const threadSlots = inferThreadSlotDeclaration(parsed, userArgs, {
+    readFile: (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+  });
+  return threadSlots === THREAD_SLOT_USE_HOST_DEFAULT ? null : threadSlotDeclarationDefine(threadSlots);
+}
+
 function buildClangArgsInternal(
   userArgs: string[],
   toolchain: Toolchain,
@@ -250,6 +303,7 @@ function buildClangArgsInternal(
   executableLinker?: LinkerPreparation,
   reportWarnings = true,
   classifyLink = false,
+  glueObjects?: string[],
 ): string[] {
   const { filtered, warnings } = filterArgs(userArgs, arch);
   if (reportWarnings) {
@@ -353,14 +407,7 @@ function buildClangArgsInternal(
       if (threadSlots !== THREAD_SLOT_USE_HOST_DEFAULT) {
         args.push(threadSlotDeclarationDefine(threadSlots));
       }
-      args.push(
-        join(toolchain.glueDir, 'channel_syscall.c'),
-        join(toolchain.glueDir, 'compiler_rt.c'),
-        join(toolchain.glueDir, 'cxxrt.c'),
-      );
-      if (parsed.linkDl) {
-        args.push(join(toolchain.glueDir, 'dlopen.c'));
-      }
+      args.push(...(glueObjects ?? glueSources(toolchain, parsed.linkDl)));
       args.push(
         join(toolchain.sysroot, 'lib', 'crt1.o'),
         ...parsed.forwardedArgs,
@@ -383,8 +430,39 @@ export function buildClangArgs(
   toolchain: Toolchain,
   arch: WasmArch = 'wasm32',
   executableLinker?: LinkerPreparation,
+  glueObjects?: string[],
 ): string[] {
-  return buildClangArgsInternal(userArgs, toolchain, arch, executableLinker, true);
+  return buildClangArgsInternal(userArgs, toolchain, arch, executableLinker, true, false, glueObjects);
+}
+
+/**
+ * Compile the link-time glue for an executable link into a temporary
+ * directory. Returns the objects (in link order) and the directory to remove
+ * after linking, or null when this invocation is not an executable link.
+ */
+export async function compileExecutableGlue(
+  userArgs: string[],
+  toolchain: Toolchain,
+  arch: WasmArch,
+  executableLinker: LinkerPreparation | null,
+): Promise<{ objects: string[]; dir: string } | null> {
+  if (!executableLinker || executableLinker.kind !== 'executable-link') return null;
+  const { filtered } = filterArgs(userArgs, arch);
+  const parsed = parseArgs(filtered);
+  if (parsed.shared) return null;
+  const define = executableThreadSlotDefine(userArgs, arch);
+  const dir = mkdtempSync(join(tmpdir(), 'kandelo-glue-'));
+  const sources = glueSources(toolchain, parsed.linkDl);
+  // One compiler process for every glue source: `-c` with several inputs
+  // writes <basename>.o files into the working directory.
+  const args = buildGlueCompileArgs(sources, toolchain, arch, define);
+  const result = await run(toolchain.cc, args, dir);
+  if (result.exitCode !== 0) {
+    rmSync(dir, { recursive: true, force: true });
+    throw new Error(`compiling SDK glue failed:\n${result.stderr.trim()}`);
+  }
+  const objects = sources.map((source) => join(dir, basename(source).replace(/\.c$/, '.o')));
+  return { objects, dir };
 }
 
 export async function prepareExecutableLinker(
@@ -449,8 +527,10 @@ async function main(): Promise<void> {
   const toolchain = await resolveToolchain(arch);
   const userArgs = process.argv.slice(2);
   const executableLinker = await prepareExecutableLinker(userArgs, toolchain, arch);
-  const args = buildClangArgs(userArgs, toolchain, arch, executableLinker ?? undefined);
+  const glue = await compileExecutableGlue(userArgs, toolchain, arch, executableLinker);
+  const args = buildClangArgs(userArgs, toolchain, arch, executableLinker ?? undefined, glue?.objects);
   const exitCode = await runPassthrough(toolchain.cc, args);
+  if (glue) rmSync(glue.dir, { recursive: true, force: true });
   process.exit(exitCode);
 }
 

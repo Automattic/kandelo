@@ -5804,7 +5804,7 @@
             "size": 4
           },
           {
-            "name": "import_ordinal",
+            "name": "reserved_zero",
             "offset": 20,
             "size": 4
           }
@@ -5812,7 +5812,7 @@
         "record_header_size": 24,
         "section": "kandelo.wpk_fork.imported_globals",
         "shared_flag": 2,
-        "version": 1
+        "version": 2
       },
       "imported_tables": {
         "header_size": 16,
@@ -5860,7 +5860,7 @@
             "size": 4
           },
           {
-            "name": "import_ordinal",
+            "name": "reserved_zero",
             "offset": 20,
             "size": 4
           }
@@ -5868,7 +5868,7 @@
         "record_header_size": 24,
         "section": "kandelo.wpk_fork.imported_tables",
         "table64_flag": 1,
-        "version": 1
+        "version": 2
       },
       "linked_frame_descriptor": {
         "alignment": 8,

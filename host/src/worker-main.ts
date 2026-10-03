@@ -36,6 +36,7 @@ import {
   readWasmFunctionArity,
   readWasmImportDescriptors,
   WASM_PAGE_SIZE,
+  WPK_FORK_CORE_FRAME_IMPORT_NAMES,
 } from "./constants";
 import {
   ABI_SYSCALLS,
@@ -65,7 +66,6 @@ import {
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE,
   WPK_FORK_REQUIRED_EXPORTS,
-  WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
   WPK_FORK_BOUNDARY_IMPORT,
   WPK_FORK_BOUNDARIES_SECTION,
@@ -2374,10 +2374,10 @@ function buildImportObject(
     moduleImports.some(
       (i) => i.module === "env" && i.name === name && i.kind === "function",
     );
-  const linkedFrameImports = WPK_FORK_REQUIRED_IMPORTS.filter(
-    ({ module }) => module === "env",
-  );
-  const linkedFrameImportCount = linkedFrameImports.filter(({ name }) =>
+  // Only the linked-frame core is all-or-nothing: wasm-opt may remove the
+  // other fork runtime imports when the module never calls them.
+  const linkedFrameImports = WPK_FORK_CORE_FRAME_IMPORT_NAMES;
+  const linkedFrameImportCount = linkedFrameImports.filter((name) =>
     importsFunction(name),
   ).length;
   if (
@@ -2388,21 +2388,22 @@ function buildImportObject(
       "incomplete linked fork instrumentation imports; rebuild the program",
     );
   }
-  if (linkedFrameImportCount !== 0) {
+  // Supply whichever runtime imports the module kept. A module whose
+  // fork-path frames wasm-opt removed entirely can still import the
+  // activation-state helpers (module-state records, reference codecs).
+  const forkRuntimeImports = moduleImports.filter((imported) =>
+    imported.module === "env" &&
+    imported.name.startsWith("__wpk_fork_") &&
+    !(imported.name === FORK_UNWIND_TAG_IMPORT_NAME &&
+      (imported.kind as string) === "tag")
+  );
+  if (forkRuntimeImports.length !== 0) {
     if (!forkEnvImports) {
       throw new Error(
         "linked fork instrumentation requested without continuation and activation-state owners",
       );
     }
-    for (const imported of moduleImports) {
-      if (
-        imported.module !== "env" ||
-        !imported.name.startsWith("__wpk_fork_") ||
-        (imported.name === FORK_UNWIND_TAG_IMPORT_NAME &&
-          (imported.kind as string) === "tag")
-      ) {
-        continue;
-      }
+    for (const imported of forkRuntimeImports) {
       const value = forkEnvImports[imported.name];
       if (value === undefined) {
         throw new Error(

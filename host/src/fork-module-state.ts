@@ -1069,6 +1069,61 @@ const IMPORTED_GLOBAL_TYPE_CODES = new Set<number>([
 ]);
 
 /**
+ * Resolve imported-global/table records (format 2) to import-section ordinals
+ * by kind, module and name.
+ *
+ * WHY names, not stored ordinals: tools such as wasm-opt run after fork
+ * instrumentation and may remove unused imports or reorder them, which shifts
+ * every position. Identities survive. Repeated identities are legal (the
+ * instrumenter keeps every declaration), so the k-th record of an identity
+ * pairs with the k-th import of that identity, and the counts must match.
+ */
+class ImportIdentityResolver {
+  readonly #byIdentity = new Map<string, number[]>();
+  readonly #used = new Map<string, number>();
+  readonly #context: string;
+
+  constructor(module: WebAssembly.Module, context: string) {
+    this.#context = context;
+    WebAssembly.Module.imports(module).forEach((declaration, ordinal) => {
+      if (declaration.kind !== "global" && declaration.kind !== "table") return;
+      const key = `${declaration.kind}\u0000${declaration.module}\u0000${declaration.name}`;
+      const list = this.#byIdentity.get(key) ?? [];
+      list.push(ordinal);
+      this.#byIdentity.set(key, list);
+    });
+  }
+
+  next(kind: "global" | "table", moduleName: string, name: string, index: number): number {
+    const key = `${kind}\u0000${moduleName}\u0000${name}`;
+    const ordinals = this.#byIdentity.get(key) ?? [];
+    const used = this.#used.get(key) ?? 0;
+    if (used >= ordinals.length) {
+      const times = used === 0 ? "" : " that many times";
+      throw new Error(
+        `${this.#context} record ${index} names ${kind} import ${moduleName}.${name}, `
+          + `which the module does not import${times}`,
+      );
+    }
+    this.#used.set(key, used + 1);
+    return ordinals[used]!;
+  }
+
+  /** Every repeated identity must be covered as many times as it is imported. */
+  finish(): void {
+    for (const [key, used] of this.#used) {
+      const imported = this.#byIdentity.get(key)!.length;
+      if (used !== imported) {
+        const [kind, moduleName, name] = key.split("\u0000");
+        throw new Error(
+          `${this.#context} records cover ${used} of ${imported} ${kind} imports named ${moduleName}.${name}`,
+        );
+      }
+    }
+  }
+}
+
+/**
  * Read the pre-instantiation ownership recipe for imported globals.
  *
  * Immutable imports must be supplied with their saved parent value before
@@ -1113,9 +1168,7 @@ export function readForkImportedGlobals(
 
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const owners = new Set<number>();
-  const importOrdinals = new Set<number>();
   const globals: ForkImportedGlobalState[] = [];
-  let previousImportOrdinal = -1;
   let offset = WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE;
   for (let index = 0; index < count; index++) {
     if (offset + WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE > bytes.byteLength) {
@@ -1127,7 +1180,7 @@ export function readForkImportedGlobals(
     const flags = view.getUint8(offset + 9);
     const moduleLength = view.getUint32(offset + 12, true);
     const nameLength = view.getUint32(offset + 16, true);
-    const importOrdinal = view.getUint32(offset + 20, true);
+    const reservedZero = view.getUint32(offset + 20, true);
     const expectedSize = WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE
       + moduleLength
       + nameLength;
@@ -1172,20 +1225,14 @@ export function readForkImportedGlobals(
     } catch {
       throw new Error(`imported-global record ${index} contains invalid UTF-8`);
     }
-    if (
-      importOrdinals.has(importOrdinal)
-      || importOrdinal <= previousImportOrdinal
-    ) {
-      throw new Error(
-        `imported-global record ${index} has duplicated or unordered import ordinal`,
-      );
+    if (reservedZero !== 0) {
+      throw new Error(`imported-global record ${index} reserved import word is nonzero`);
     }
-    importOrdinals.add(importOrdinal);
-    previousImportOrdinal = importOrdinal;
     globals.push({
       module: moduleName,
       name: fieldName,
-      importOrdinal,
+      // Resolved below, once the whole descriptor is structurally valid.
+      importOrdinal: -1,
       ownerId,
       typeCode,
       mutable: (flags & WPK_FORK_IMPORTED_GLOBALS_FLAG_MUTABLE) !== 0,
@@ -1196,6 +1243,11 @@ export function readForkImportedGlobals(
   if (offset !== bytes.byteLength) {
     throw new Error("imported-global descriptor has trailing bytes");
   }
+  const resolver = new ImportIdentityResolver(module, "imported-global");
+  globals.forEach((record, index) => {
+    record.importOrdinal = resolver.next("global", record.module, record.name, index);
+  });
+  resolver.finish();
   return globals;
 }
 
@@ -1252,9 +1304,7 @@ export function readForkImportedTables(
 
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const owners = new Set<number>();
-  const importOrdinals = new Set<number>();
   const tables: ForkImportedTableState[] = [];
-  let previousImportOrdinal = -1;
   let offset = WPK_FORK_IMPORTED_TABLES_HEADER_SIZE;
   for (let index = 0; index < count; index++) {
     if (offset + WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE > bytes.byteLength) {
@@ -1266,7 +1316,7 @@ export function readForkImportedTables(
     const flags = view.getUint8(offset + 9);
     const moduleLength = view.getUint32(offset + 12, true);
     const nameLength = view.getUint32(offset + 16, true);
-    const importOrdinal = view.getUint32(offset + 20, true);
+    const reservedZero = view.getUint32(offset + 20, true);
     const expectedSize = WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE
       + moduleLength
       + nameLength;
@@ -1311,20 +1361,14 @@ export function readForkImportedTables(
     } catch {
       throw new Error(`imported-table record ${index} contains invalid UTF-8`);
     }
-    if (
-      importOrdinals.has(importOrdinal)
-      || importOrdinal <= previousImportOrdinal
-    ) {
-      throw new Error(
-        `imported-table record ${index} has duplicated or unordered import ordinal`,
-      );
+    if (reservedZero !== 0) {
+      throw new Error(`imported-table record ${index} reserved import word is nonzero`);
     }
-    importOrdinals.add(importOrdinal);
-    previousImportOrdinal = importOrdinal;
     tables.push({
       module: moduleName,
       name: fieldName,
-      importOrdinal,
+      // Resolved below, once the whole descriptor is structurally valid.
+      importOrdinal: -1,
       ownerId,
       typeCode,
       table64: (flags & WPK_FORK_IMPORTED_TABLES_FLAG_TABLE64) !== 0,
@@ -1334,6 +1378,11 @@ export function readForkImportedTables(
   if (offset !== bytes.byteLength) {
     throw new Error("imported-table descriptor has trailing bytes");
   }
+  const resolver = new ImportIdentityResolver(module, "imported-table");
+  tables.forEach((record, index) => {
+    record.importOrdinal = resolver.next("table", record.module, record.name, index);
+  });
+  resolver.finish();
   return tables;
 }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env -S node --experimental-strip-types
 import { resolveToolchain } from '../lib/toolchain.ts';
-import { buildClangArgs, prepareExecutableLinker } from './cc.ts';
+import { buildClangArgs, compileExecutableGlue, prepareExecutableLinker } from './cc.ts';
+import { rmSync } from 'node:fs';
 import { runPassthrough } from '../lib/exec.ts';
 import { isMain } from '../lib/is-main.ts';
 import { detectArch } from '../lib/arch.ts';
@@ -15,8 +16,10 @@ async function main(): Promise<void> {
     arch,
     toolchain.cxx,
   );
-  const args = buildClangArgs(userArgs, toolchain, arch, executableLinker ?? undefined);
+  const glue = await compileExecutableGlue(userArgs, toolchain, arch, executableLinker);
+  const args = buildClangArgs(userArgs, toolchain, arch, executableLinker ?? undefined, glue?.objects);
   const exitCode = await runPassthrough(toolchain.cxx, args);
+  if (glue) rmSync(glue.dir, { recursive: true, force: true });
   process.exit(exitCode);
 }
 

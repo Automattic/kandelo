@@ -522,13 +522,14 @@ export legacy `asyncify_*` symbols.
 # Compile normally
 wasm32posix-cc program.c -o program.wasm
 
-# (Optional) shrink with wasm-opt -O2 first; must run BEFORE the instrument
-# step since fork-instrument hardcodes mutable-global offsets.
+# (Optional) optimize first. An -O link already ran wasm-opt; optimizing
+# before instrumenting shrinks the call graph the instrumenter must cover.
 wasm-opt -O2 program.wasm -o program.wasm
 
 # Apply fork instrumentation. Auto-discovers fork-path functions via
 # call-graph analysis from the kernel.kernel_fork import — no onlylist
-# file needed. The wrapper builds the tool on demand if tools/bin is absent.
+# file needed — then runs wasm-opt -O2 over the result. The wrapper builds
+# the tool on demand if tools/bin is absent.
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm.instr
 mv program.wasm.instr program.wasm
 ```

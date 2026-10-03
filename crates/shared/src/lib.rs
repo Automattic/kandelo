@@ -149,6 +149,20 @@ pub mod process_layout;
 ///     gains three ops and a query, /dev/input/event1 is an absolute
 ///     pointer, inotify fails with ENOSYS, and a MAP_FIXED mapping inside a
 ///     mapping carves it. docs/abi-versioning.md ("ABI 45") lists each.
+/// 46: fork metadata survives tools that run after instrumentation. The
+///     imported-globals and imported-tables sections move to format 2: the
+///     record word that held the import's position is reserved (zero) and
+///     hosts find the import by kind, module and name, because wasm-opt may
+///     remove or reorder imports. Hosts require only the linked-frame
+///     imports (`__wpk_fork_frame_reserve/commit/next`) as a set; the other
+///     fork-runtime imports may be absent when the module never calls them.
+///     The instrumenter declares the Wasm features its code uses in
+///     `target_features` and runs wasm-opt over its own output.
+///     Fork sinks: the instrumenter may stop the fork unwind at a boundary
+///     function, which calls the new `env.__wpk_fork_boundary` import; the
+///     child then enters through the new `wpk_fork_resume_sink` export, and
+///     the `kandelo.wpk_fork.boundaries` section lists the boundaries.
+///     docs/abi-versioning.md ("ABI 46") lists each.
 pub const ABI_VERSION: u32 = 46;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
@@ -2257,7 +2271,11 @@ pub mod abi {
     /// constant initializers that observe imported globals.
     pub const WPK_FORK_IMPORTED_GLOBALS_SECTION: &str = "kandelo.wpk_fork.imported_globals";
     pub const WPK_FORK_IMPORTED_GLOBALS_MAGIC: [u8; 4] = *b"KFIG";
-    pub const WPK_FORK_IMPORTED_GLOBALS_VERSION: u16 = 1;
+    /// Format 2 (ABI 46): the record word at offset 20 is reserved and must
+    /// be zero. Format 1 stored the import's position there, which wasm-opt
+    /// invalidates by removing or reordering imports; hosts now resolve the
+    /// import by kind, module and name.
+    pub const WPK_FORK_IMPORTED_GLOBALS_VERSION: u16 = 2;
     pub const WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE: u16 = 16;
     pub const WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE: u16 = 24;
     pub const WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE: u8 = 1 << 0;
@@ -2266,7 +2284,8 @@ pub mod abi {
         WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE | WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED;
     pub const WPK_FORK_IMPORTED_TABLES_SECTION: &str = "kandelo.wpk_fork.imported_tables";
     pub const WPK_FORK_IMPORTED_TABLES_MAGIC: [u8; 4] = *b"KFIT";
-    pub const WPK_FORK_IMPORTED_TABLES_VERSION: u16 = 1;
+    /// Format 2 (ABI 46): as for imported globals, offset 20 is reserved.
+    pub const WPK_FORK_IMPORTED_TABLES_VERSION: u16 = 2;
     pub const WPK_FORK_IMPORTED_TABLES_HEADER_SIZE: u16 = 16;
     pub const WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE: u16 = 24;
     pub const WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64: u8 = 1 << 0;
@@ -2333,6 +2352,15 @@ pub mod abi {
     pub const WPK_FORK_FRAME_IMPORT_RESERVE: &str = "__wpk_fork_frame_reserve";
     pub const WPK_FORK_FRAME_IMPORT_COMMIT: &str = "__wpk_fork_frame_commit";
     pub const WPK_FORK_FRAME_IMPORT_NEXT: &str = "__wpk_fork_frame_next";
+    /// The linked-frame imports every instrumented activation calls. They are
+    /// all-or-nothing; the other `WPK_FORK_REQUIRED_IMPORTS` serve optional
+    /// state and may be absent when nothing calls them (ABI 46: wasm-opt runs
+    /// after instrumentation and removes unused imports).
+    pub const WPK_FORK_CORE_FRAME_IMPORTS: [&str; 3] = [
+        WPK_FORK_FRAME_IMPORT_RESERVE,
+        WPK_FORK_FRAME_IMPORT_COMMIT,
+        WPK_FORK_FRAME_IMPORT_NEXT,
+    ];
     pub const WPK_FORK_FRAME_IMPORT_PEEK: &str = "__wpk_fork_frame_peek";
     pub const WPK_FORK_RESUME_IMPORT_PEEK: &str = "__wpk_fork_resume_peek";
     pub const WPK_FORK_RESUME_IMPORT_TABLE: &str = "__wpk_fork_resume_table";

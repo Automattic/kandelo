@@ -78,9 +78,11 @@ const CHANNEL_SYSCALL_SOURCE = readFileSync(
   new URL("../../libc/glue/channel_syscall.c", import.meta.url),
   "utf8",
 );
-const PTHREAD_CANCEL_SOURCE = readFileSync(
+// The cancellation checks every cancellation point links live in
+// syscall_cp.c, apart from pthread_cancel itself (see that file).
+const SYSCALL_CP_SOURCE = readFileSync(
   new URL(
-    "../../libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c",
+    "../../libc/musl-overlay/src/thread/wasm32posix/syscall_cp.c",
     import.meta.url,
   ),
   "utf8",
@@ -557,10 +559,10 @@ describe("blocking retry snapshot contract", () => {
     expect(CHANNEL_SYSCALL_SOURCE).not.toMatch(
       /n == SYS_OPEN\s*\|\|\s*n == SYS_OPENAT/,
     );
-    expect(PTHREAD_CANCEL_SOURCE).toContain(
+    expect(SYSCALL_CP_SOURCE).toContain(
       "hidden int __syscall_cp_cancel_wake_allowed(void)",
     );
-    expect(PTHREAD_CANCEL_SOURCE).toContain(
+    expect(SYSCALL_CP_SOURCE).toContain(
       "self->canceldisable != PTHREAD_CANCEL_DISABLE",
     );
 

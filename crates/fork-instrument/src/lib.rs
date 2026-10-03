@@ -46,6 +46,7 @@ pub mod runtime;
 pub mod sink;
 pub mod size_attribution;
 pub mod static_reference_catalog;
+pub mod target_features;
 
 /// Fresh instances rebuild this fixed catalog from the module's static element
 /// segment, so a funcref recipe needs only a module activation and ordinal.
@@ -565,9 +566,13 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
             &original_locals,
             std::path::Path::new(&path),
         )?;
+        let output = target_features::declare_used_features(output)?;
         return restore_leading_dylink_section(input, output);
     }
-    let output = module.emit_wasm();
+    // Declare the features the emitted code uses, as the toolchain does for
+    // its own output: tools that run later (wasm-opt enables only declared
+    // features) must accept the module. See target_features.rs.
+    let output = target_features::declare_used_features(module.emit_wasm())?;
     restore_leading_dylink_section(input, output)
 }
 
