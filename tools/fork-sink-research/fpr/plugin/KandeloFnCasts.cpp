@@ -350,6 +350,9 @@ private:
 //   NR  record inner   record embeds record `inner`
 //   SC  site callee caller   call site `rc:<site>` calls callee from caller
 //   SA  site k source  argument k of that call carries `source`
+//   JS  fn buffer      fn calls setjmp/sigsetjmp on `buffer` (a slot name,
+//                      or `*` when the buffer cannot be named)
+//   JL  fn buffer      fn calls longjmp/siglongjmp on `buffer`
 // A direct call's result is its own slot rc:<site>. The analysis computes
 // which parameters each function returns and feeds rc:<site> from those
 // arguments at this call, so pass-through helpers (realloc wrappers,
@@ -416,6 +419,14 @@ public:
 
   bool VisitCallExpr(CallExpr *E) {
     const FunctionDecl *FD = E->getDirectCallee();
+    // setjmp/longjmp buffer identity: wasm's setjmp lowering lands a
+    // longjmp only in a frame that called setjmp on the same buffer.
+    if (FD && FD->getIdentifier() && E->getNumArgs() >= 1 && Cur) {
+      llvm::StringRef n = FD->getName();
+      bool sj = n == "setjmp" || n == "_setjmp" || n == "sigsetjmp" || n == "__sigsetjmp";
+      bool lj = n == "longjmp" || n == "_longjmp" || n == "siglongjmp";
+      if (sj || lj) add(std::string(sj ? "JS\t" : "JL\t") + name(Cur) + "\t" + bufferIdentity(E->getArg(0)));
+    }
     std::string base;
     unsigned nparams = 0;
     bool variadic = false;
@@ -623,6 +634,24 @@ private:
     if (fn.empty()) fn = "#" + std::to_string(F->getFieldIndex());
     return "f:" + recordName(R) + "." + fn;
   }
+  // The storage a jmp_buf argument names: a global, a field, a local or a
+  // parameter (whose callers decide; treated as unknown by the analysis).
+  std::string bufferIdentity(const Expr *E) {
+    E = E->IgnoreParenCasts();
+    if (const auto *U = dyn_cast<UnaryOperator>(E); U && (U->getOpcode() == UO_AddrOf || U->getOpcode() == UO_Deref))
+      E = U->getSubExpr()->IgnoreParenCasts();
+    if (const auto *A = dyn_cast<ArraySubscriptExpr>(E)) E = A->getBase()->IgnoreParenCasts();
+    if (const auto *D = dyn_cast<DeclRefExpr>(E)) {
+      if (const auto *V = dyn_cast<VarDecl>(D->getDecl())) {
+        if (isa<ParmVarDecl>(V)) return "*";
+        return varSlot(V);
+      }
+    }
+    if (const auto *M = dyn_cast<MemberExpr>(E))
+      if (const auto *F = dyn_cast<FieldDecl>(M->getMemberDecl())) return fieldSlot(F->getParent(), F);
+    return "*";
+  }
+
   // Where an assignment's left side stores.
   std::string targetSlot(const Expr *L) {
     if (const auto *D = dyn_cast<DeclRefExpr>(L)) {
@@ -786,7 +815,7 @@ private:
 class Action : public PluginASTAction {
 protected:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, llvm::StringRef) override {
-    return std::make_unique<Consumer>(CI.getCodeGenOpts().RelaxedAliasing);
+    return std::make_unique<Consumer>(static_cast<bool>(CI.getCodeGenOpts().RelaxedAliasing));
   }
   bool ParseArgs(const CompilerInstance &, const std::vector<std::string> &) override { return true; }
   // Before the main action, so the facts exist when code generation runs the

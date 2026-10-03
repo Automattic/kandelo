@@ -188,6 +188,8 @@ struct Side {
     /// Direct call sites: rc:<site> -> (callee, caller); arguments.
     call_sites: Vec<(String, String, String)>,
     call_args: HashMap<String, Vec<(u32, String)>>,
+    /// setjmp/longjmp buffer identity lines (JS/JL), passed through to fsa.
+    jmp_facts: Vec<String>,
     /// (registry, registering function) -> callbacks it registers.
     reg_by_fn: HashMap<(String, String), HashSet<String>>,
     reg_unknown: HashMap<String, Vec<String>>,
@@ -357,6 +359,7 @@ impl Side {
             "FT" => {
                 side.rec_fn_types.entry(f[1].to_string()).or_default().insert(f[2].to_string());
             }
+            "JS" | "JL" => side.jmp_facts.push(line.to_string()),
             "SC" => side.call_sites.push((f[1].to_string(), f[2].to_string(), f[3].to_string())),
             "SA" => side.call_args.entry(f[1].to_string()).or_default().push((f[2].parse().unwrap_or(0), f[3].to_string())),
             "NR" => {
@@ -2450,6 +2453,15 @@ fn main() {
             }
         }
         eprintln!("exported {lines} (function, signature) target sets ({m}{}) to {path}", if rules.flow { "+flow" } else { "" });
+        {
+            let mut fh = std::io::BufWriter::new(std::fs::File::create(format!("{path}.jmp")).unwrap());
+            let mut seen = HashSet::new();
+            for l in &side.jmp_facts {
+                if seen.insert(l) {
+                    writeln!(fh, "{l}").unwrap();
+                }
+            }
+        }
         if rules.cleanup_lexical {
             // Per caller of _pthread_cleanup_pop: the handlers its own
             // pthread_cleanup_push calls install (fsa --cleanup-map).

@@ -8,5 +8,5 @@ B=$D/shims/links/$link
 R=(); for r in "$@"; do R+=(--rule "$r"); done
 env FPA_GENERALIZE=${GEN:-} ${DLC:+FPA_IGNORE_DYNLINK=1} $FPA --wasm $B.wasm --map $B.map --inputs $B.inputs --side-dir $D/shims/side --aliases ${ALIASES:-$D/runtime/aliases.tsv} "${R[@]}" --mode registry --census ${CENSUS:-0} --cuts 0 --export-targets $D/$label.itargets registry > $D/$label.fpa.txt 2>&1 || { echo "$label fpa failed"; tail -3 $D/$label.fpa.txt; exit 1; }
 OA=(); [ "$oracle" != - ] && OA=(--oracle $oracle)
-$FSA --wasm $B.wasm --itargets $D/$label.itargets --registries --param --cancel --exc equiv --signal-policy sig ${DLC:+--dlopen-contract} ${CLMAP:+--cleanup-map $D/$label.itargets.cleanup} "${OA[@]}" --show-open 40 --out-set $D/$label.set > $D/$label.fsa.txt 2>&1
+$FSA --wasm $B.wasm --itargets $D/$label.itargets --registries --param --cancel --exc equiv --signal-policy sig ${DLC:+--dlopen-contract} ${CLMAP:+--cleanup-map $D/$label.itargets.cleanup --jmp-map $D/$label.itargets.jmp} "${OA[@]}" --show-open 40 --out-set $D/$label.set > $D/$label.fsa.txt 2>&1
 echo "$label: $(grep -E '^(instrumented_today|instrumented_sink)' $D/$label.fsa.txt | tr '\n' ' ') $(grep -o 'oracle_stacks.*' $D/$label.fsa.txt) | $(grep -E '^casts:' $D/$label.fpa.txt)"

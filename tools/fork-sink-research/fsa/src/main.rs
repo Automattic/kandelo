@@ -169,6 +169,13 @@ struct Prog {
     /// Functions containing call_indirect of a given signature key.
     icallers: HashMap<u32, Vec<u32>>,
     tag_bit: HashMap<TagId, u32>,
+    /// --jmp-map: setjmp/longjmp buffer identity per function (plugin
+    /// JS/JL facts). Each named buffer gets its own pseudo-tag bit for
+    /// longjmp; the real longjmp tag's bit stays for unknown buffers.
+    lj_tag: Option<TagId>,
+    lj_js: HashMap<u32, Vec<String>>,
+    lj_jl: HashMap<u32, Vec<String>>,
+    lj_bufbit: HashMap<String, u32>,
     signal_fns: HashSet<u32>,
     sig_policy: Policy,
     sig_list: HashSet<u32>,
@@ -237,6 +244,32 @@ fn table_ix(m: &Module, t: TableId) -> usize {
 }
 
 impl Prog {
+    /// All per-buffer longjmp bits.
+    fn lj_all_bufs(&self) -> Tags {
+        self.lj_bufbit.values().fold(0, |a, &b| a | (1u64 << b))
+    }
+    /// Longjmp bits a setjmp frame in `f` catches: unknown-buffer longjmps,
+    /// and longjmps on the buffers it calls setjmp on.
+    fn lj_catch_mask(&self, f: u32, generic: Tags) -> Tags {
+        match self.lj_js.get(&f) {
+            Some(bufs) if !bufs.iter().any(|b| b == "*") => {
+                generic | bufs.iter().filter_map(|b| self.lj_bufbit.get(b)).fold(0, |a, &x| a | (1u64 << x))
+            }
+            _ => generic | self.lj_all_bufs(),
+        }
+    }
+    /// Bits a longjmp called from `f` throws.
+    fn lj_throw_bits(&self, f: u32, generic: Tags) -> Tags {
+        match self.lj_jl.get(&f) {
+            Some(bufs) if !bufs.iter().any(|b| b == "*" || !self.lj_bufbit.contains_key(b)) => {
+                bufs.iter().filter_map(|b| self.lj_bufbit.get(b)).fold(0, |a, &x| a | (1u64 << x))
+            }
+            _ => generic,
+        }
+    }
+    fn lj_generic(&self) -> Tags {
+        self.lj_tag.and_then(|t| self.tag_bit.get(&t)).map_or(0, |&b| 1u64 << b)
+    }
     fn load(path: &str) -> Prog {
         let m = Module::from_file(path).unwrap_or_else(|e| panic!("{path}: {e}"));
         let n = m.funcs.iter().map(|f| f.id().index() + 1).max().unwrap_or(0);
@@ -269,6 +302,10 @@ impl Prog {
             callers: vec![vec![]; n],
             icallers: HashMap::new(),
             tag_bit: HashMap::new(),
+            lj_tag: None,
+            lj_js: HashMap::new(),
+            lj_jl: HashMap::new(),
+            lj_bufbit: HashMap::new(),
             signal_fns: HashSet::new(),
             sig_policy: Policy::Sig,
             sig_list: HashSet::new(),
@@ -661,7 +698,10 @@ impl<'a, 'b> Walk<'a, 'b> {
             for c in cs {
                 match c {
                     TryTableCatch::Catch { tag, label } | TryTableCatch::CatchRef { tag, label } => {
-                        let bit = 1u64 << self.cx.p.tag_bit[tag];
+                        let mut bit = 1u64 << self.cx.p.tag_bit[tag];
+                        if Some(*tag) == self.cx.p.lj_tag {
+                            bit = tags & self.cx.p.lj_catch_mask(self.f, bit);
+                        }
                         if tags & bit != 0 {
                             let a = *self.arity.get(label).unwrap_or(&0);
                             let mut v = vec![V::Top; a];
@@ -850,12 +890,21 @@ impl<'a, 'b> Walk<'a, 'b> {
                 self.rec_vals.push(args.get(self.rec_param as usize).copied().unwrap_or(V::Top));
             }
         }
-        let s = if self.mode == Mode::Normal && self.cx.summ.is_empty() {
+        let mut s = if self.mode == Mode::Normal && self.cx.summ.is_empty() {
             // Value-only pass (param refinement): every call returns.
             Summ { ret: true, thr: 0 }
         } else {
             self.effect(&targets, external)
         };
+        // A longjmp on a named buffer throws that buffer's bit.
+        if !self.cx.p.lj_jl.is_empty() && targets.iter().any(|&t| {
+            t != u32::MAX && matches!(self.cx.p.names.get(t as usize).map(|n| n.as_str()), Some("longjmp" | "_longjmp" | "siglongjmp"))
+        }) {
+            let g = self.cx.p.lj_generic();
+            if s.thr & g != 0 {
+                s.thr = (s.thr & !g) | self.cx.p.lj_throw_bits(self.f, g);
+            }
+        }
         if s.thr != 0 {
             let snap = st.clone();
             let why2 = if targets.len() > 1 {
@@ -1819,6 +1868,35 @@ fn main() {
         }
         eprintln!("itargets: {lines} (function, signature) sets from {path}");
     }
+    if let Some(path) = get("--jmp-map") {
+        for f in p.by_name("__wasm_longjmp") {
+            if let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(f)).kind {
+                for (_, seq) in all_seqs(lf) {
+                    for (ins, _) in &seq.instrs {
+                        if let Instr::Throw(t) = ins {
+                            p.lj_tag = Some(t.tag);
+                        }
+                    }
+                }
+            }
+        }
+        let mut next_bit = 40u32;
+        for l in std::fs::read_to_string(&path).unwrap().lines() {
+            let v: Vec<&str> = l.split('\t').collect();
+            if v.len() < 3 {
+                continue;
+            }
+            if v[2] != "*" && !p.lj_bufbit.contains_key(v[2]) && next_bit < 62 {
+                p.lj_bufbit.insert(v[2].to_string(), next_bit);
+                next_bit += 1;
+            }
+            for fi in p.by_name(v[1]) {
+                let m = if v[0] == "JS" { &mut p.lj_js } else { &mut p.lj_jl };
+                m.entry(fi).or_default().push(v[2].to_string());
+            }
+        }
+        eprintln!("jmp map: {} buffers, {} setjmp functions, {} longjmp callers", p.lj_bufbit.len(), p.lj_js.len(), p.lj_jl.len());
+    }
     if let Some(path) = get("--cleanup-map") {
         p.cleanup_pop = p.by_name("_pthread_cleanup_pop").into_iter().collect();
         let mut n = 0;
@@ -2319,6 +2397,9 @@ fn main() {
             }
         }
     }
+    // Per-buffer longjmp bits are longjmps too (catch_all clauses are not
+    // longjmp catchers).
+    longjmp_bits |= p.lj_all_bufs();
     eprintln!("longjmp tag bits: {longjmp_bits:#x}");
     {
         let snapshot = summ.clone();
@@ -2355,13 +2436,21 @@ fn main() {
                                 let (bits, label, vals): (Tags, InstrSeqId, Vec<V>) = match c {
                                     TryTableCatch::Catch { tag, label } => {
                                         let k = p.m.types.params(p.m.tags.get(*tag).ty).len();
-                                        (1u64 << p.tag_bit[tag], *label, vec![V::Top; k])
+                                        let mut b = 1u64 << p.tag_bit[tag];
+                                        if Some(*tag) == p.lj_tag {
+                                            b = p.lj_catch_mask(f, b);
+                                        }
+                                        (b, *label, vec![V::Top; k])
                                     }
                                     TryTableCatch::CatchRef { tag, label } => {
                                         let k = p.m.types.params(p.m.tags.get(*tag).ty).len();
                                         let mut v = vec![V::Top; k];
                                         v.push(V::Exn(PROBE));
-                                        (1u64 << p.tag_bit[tag], *label, v)
+                                        let mut b = 1u64 << p.tag_bit[tag];
+                                        if Some(*tag) == p.lj_tag {
+                                            b = p.lj_catch_mask(f, b);
+                                        }
+                                        (b, *label, v)
                                     }
                                     // A POSIX longjmp lands only in the frame that called
                                     // setjmp (an explicit catch of the longjmp tag); a C++

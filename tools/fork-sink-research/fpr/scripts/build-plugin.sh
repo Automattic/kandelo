@@ -20,5 +20,8 @@ SRC=$(cd "$(dirname "$0")/../plugin" && pwd)
 clang++ -std=c++17 -stdlib=libc++ -fno-rtti -fPIC -shared -O2 \
   -I"$DEV/include" -I"$CDEV/include" "$SRC/KandeloCallTypes.cpp" "$SRC/KandeloFnCasts.cpp" \
   -L"$LIB/lib" -L"$CLIB/lib" -lLLVM -lclang-cpp -Wl,-rpath,"$LIB/lib" -Wl,-rpath,"$CLIB/lib" \
-  -o "$OUT/KandeloCallTypes.dylib.new" && mv -f "$OUT/KandeloCallTypes.dylib.new" "$OUT/KandeloCallTypes.dylib"
+  -o "$OUT/KandeloCallTypes.dylib.new"
+# Separate statements: under `set -e`, a failure on the left of `&&` does not
+# stop the script, and a stale plugin would silently keep being used.
+mv -f "$OUT/KandeloCallTypes.dylib.new" "$OUT/KandeloCallTypes.dylib"
 echo "$OUT/KandeloCallTypes.dylib"
