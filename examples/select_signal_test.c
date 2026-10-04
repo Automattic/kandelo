@@ -938,6 +938,26 @@ static int run_ppoll_masked_cancel_case(void)
     return 0;
 }
 
+/* POSIX ppoll: a negative tv_sec or a tv_nsec outside [0, 1e9) is EINVAL,
+ * not a timeout. */
+static int check_ppoll_invalid_timeout(void)
+{
+    const struct timespec bad_nsec = { .tv_sec = 0, .tv_nsec = 1000000000L };
+    const struct timespec bad_sec = { .tv_sec = -1, .tv_nsec = 0 };
+
+    errno = 0;
+    if (ppoll(NULL, 0, &bad_nsec, NULL) != -1 || errno != EINVAL) {
+        fprintf(stderr, "ppoll tv_nsec=1e9: errno=%d\n", errno);
+        return -1;
+    }
+    errno = 0;
+    if (ppoll(NULL, 0, &bad_sec, NULL) != -1 || errno != EINVAL) {
+        fprintf(stderr, "ppoll tv_sec=-1: errno=%d\n", errno);
+        return -1;
+    }
+    return 0;
+}
+
 static int check_wait4_unknown_option(void)
 {
     const int task16_unknown_wait_option = 0x40000000;
@@ -1537,7 +1557,8 @@ int main(int argc, char **argv)
 
     if ((argc != 1 && !use_browser_gate) ||
         (use_browser_gate && bind_browser_gate_memory() != 0) ||
-        check_wait4_unknown_option() != 0)
+        check_wait4_unknown_option() != 0 ||
+        check_ppoll_invalid_timeout() != 0)
         return 2;
 
     for (enum wait_api api = WAIT_API_PPOLL; api <= WAIT_API_PSELECT; api++) {
