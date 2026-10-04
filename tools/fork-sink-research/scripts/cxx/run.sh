@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run.sh <label> <link> <oracle|-> [fpa rules...]   (env GEN=ids.tsv to generalize)
 set -u
-D=$PWD/.context/fpr2; H=$(rustc -vV | awk '/^host/ {print $2}')
+D=${FPR:-$PWD/.context/fpr2}; H=$(rustc -vV | awk '/^host/ {print $2}')
 FPA=tools/fork-sink-research/fpa/target/$H/release/fpa; FSA=tools/fork-sink-research/fsa/target/$H/release/fsa
 label=$1; link=$2; oracle=$3; shift 3
 B=$D/shims/links/$link

@@ -2,7 +2,7 @@
 # Type facts (plugin v4) for the libc++/libc++abi members a link uses,
 # compiled facts-only (-emit-llvm) with the libcxx recipe's flags.
 set -uo pipefail
-D=$PWD/.context/fpr2; PL=$D/KandeloCallTypes.dylib
+D=${FPR:-$PWD/.context/fpr2}; PL=$D/KandeloCallTypes.dylib
 R=/Users/brandon/conductor/workspaces/kandelo/ljubljana/.context/fpr/runtime/repo/packages/registry/libcxx
 REAL=/nix/store/lyq5q6lw9bbayni7gcchg4vgr1qs8nq4-llvm-21.1.7-tree/bin/clang
 mkdir -p $D/libcxx-side
