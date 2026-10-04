@@ -151,6 +151,14 @@ import type {
 } from "./node-kernel-protocol";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import { createDestroyProgressReporter } from "./destroy-progress-reporter";
+import {
+  createProcessLifecycle,
+  handleThreadExit,
+  isMissingPathError,
+  signalFromExitStatus,
+  type ProcessGenerationOwnership,
+  type VforkWorkspaceOwnership,
+} from "./process-lifecycle";
 import { NodePcmDriver } from "./audio/node-pcm-driver";
 
 if (!parentPort) {
@@ -221,17 +229,6 @@ interface ForkReplayContext {
   forkBufAddr: number;
 }
 
-interface ProcessGenerationOwnership {
-  memory: WebAssembly.Memory;
-  memoryLease: ProcessMemoryLease;
-}
-
-interface VforkWorkspaceOwnership {
-  readonly allocator: ThreadPageAllocator;
-  readonly slotStartPage: number;
-  released: boolean;
-}
-
 interface ProcessInfo extends ProcessGenerationOwnership {
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
@@ -272,10 +269,36 @@ const rootfsSnapshotGate = new RootfsSnapshotGate();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
 const vforkMechanismTraceEnabled = Boolean(process.env.KERNEL_SYSCALL_LOG);
 
-function traceVforkMechanism(event: string, fields: string): void {
-  if (!vforkMechanismTraceEnabled) return;
-  console.log(`[vfork-mechanism] event=${event} ${fields}`);
-}
+/**
+ * The shared lifecycle implementation both host entries call.
+ *
+ * `terminationProvesQuiescence` is `true` here because Node's
+ * `await worker.terminate()` genuinely joins the thread: a worker parked in
+ * `Atomics.wait` on a SharedArrayBuffer does not resume once it resolves.
+ * The browser entry declares `false` for the same field.
+ */
+const lifecycle = createProcessLifecycle<ProcessInfo>({
+  post: (message) => post(message),
+  terminationProvesQuiescence: true,
+  isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
+  vforkLifetimes,
+  vmInterruptTimers,
+  reserveThreadSlotStartPage: (pid, bytes) =>
+    kernelWorker.reserveHostRegion(pid, bytes),
+  forkHostImportsByWorker,
+});
+const {
+  bindForkHostImports,
+  completeVforkGenerationTeardown,
+  dispatchForkHostImport,
+  handleVmInterruptTimer,
+  releaseVforkWorkspace,
+  reportHostDiagnostic,
+  respond,
+  respondError,
+  threadAllocatorForLayout,
+  traceVforkMechanism,
+} = lifecycle;
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
 // handleExec / handleTerminate). The crash safety-net listener checks
@@ -390,29 +413,6 @@ async function terminateTrackedWorker(
   await worker.terminate().catch(() => {});
 }
 
-function bindForkHostImports(
-  worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
-  owner: ForkHostImportOwnerWorker,
-): void {
-  forkHostImportsByWorker.set(worker as object, owner);
-}
-
-function dispatchForkHostImport(
-  worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
-  message: Extract<WorkerToHostMessage, { type: "fork_host_import" }>,
-): void {
-  const owner = forkHostImportsByWorker.get(worker as object);
-  if (!owner || !owner.dispatch(message.wake)) {
-    reportHostDiagnostic({
-      pid: message.wake.pid,
-      source: "fork host-import protocol",
-      message:
-        `[kernel-worker] ignored stale or unbound fork host-import wake `
-        + `pid=${message.wake.pid} sender=${message.wake.senderId}`,
-    }, "warn");
-  }
-}
-
 async function terminateThreadWorkers(
   pid: number,
   requireExecRetirement = false,
@@ -447,20 +447,6 @@ function reportProcessExit(pid: number, status: number): void {
   if (reportedExits.has(pid)) return;
   reportedExits.add(pid);
   post({ type: "exit", pid, status });
-}
-
-function handleVmInterruptTimer(msg: {
-  pid: number;
-  timedOutPtr: number;
-  vmInterruptPtr: number;
-  seconds: number;
-}, pid: number, process: ProcessInfo): void {
-  if (msg.pid !== pid) return;
-  vmInterruptTimers.handleRequest(pid, process, msg);
-}
-
-function signalFromExitStatus(exitStatus: number): number | null {
-  return exitStatus >= 128 ? (exitStatus - 128) & 0x7f : null;
 }
 
 // PTY index per-PID
@@ -667,15 +653,6 @@ function post(msg: KernelToMainMessage) {
   port.postMessage(msg);
 }
 
-function reportHostDiagnostic(
-  diagnostic: HostDiagnostic,
-  level: "error" | "warn" = "error",
-): void {
-  if (level === "warn") console.warn(diagnostic.message);
-  else console.error(diagnostic.message);
-  post({ type: "host_diagnostic", ...diagnostic });
-}
-
 function terminatePoisonedKernelWorker(error: Error): void {
   if (kernelFatalReported) return;
   kernelFatalReported = true;
@@ -730,34 +707,11 @@ function reportWorkerProtocolError(message: string): void {
   });
 }
 
-function respond(requestId: number, result: unknown) {
-  post({ type: "response", requestId, result });
-}
-
 function respondTransferredBytes(requestId: number, result: Uint8Array) {
   port.postMessage(
     { type: "response", requestId, result } satisfies KernelToMainMessage,
     [result.buffer as ArrayBuffer],
   );
-}
-
-function respondError(requestId: number, error: string) {
-  post({ type: "response", requestId, result: null, error });
-}
-
-function threadAllocatorForLayout(
-  layout: ProcessMemoryLayout,
-  ptrWidth: 4 | 8,
-  pid: number,
-): ThreadPageAllocator {
-  return new ThreadPageAllocator({
-    firstSlotStartPage: layout.firstThreadSlotPage,
-    maxPageExclusive: layout.threadArenaEndPage,
-    ptrWidth,
-    reservedSlots: layout.threadSlotCount,
-    reserveSlotStartPage: () =>
-      kernelWorker.reserveHostRegion(pid, PAGES_PER_THREAD * WASM_PAGE_SIZE) / WASM_PAGE_SIZE,
-  });
 }
 
 async function createFreshProcessMemory(
@@ -823,12 +777,6 @@ function resolveExecLocal(path: string): ArrayBuffer | null {
     return bufferToArrayBuffer(bytes);
   }
   return null;
-}
-
-function isMissingPathError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const code = (error as { code?: unknown }).code;
-  return code === -2 || code === "ENOENT";
 }
 
 async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
@@ -1518,43 +1466,6 @@ async function handleFork(
     parentMemory,
     continuation,
   );
-}
-
-function releaseVforkWorkspace(info: ProcessInfo): void {
-  const workspace = info.vforkWorkspace;
-  if (!workspace || workspace.released) return;
-  workspace.released = true;
-  workspace.allocator.free(workspace.slotStartPage);
-}
-
-function completeVforkGenerationTeardown(
-  info: ProcessInfo,
-  exact: boolean,
-  reason: VforkExactCompletionReason,
-  cause?: unknown,
-): void {
-  const phase = vforkLifetimes.phaseForChild(info);
-  if (phase === undefined) return;
-  if (!exact) {
-    vforkLifetimes.requireAddressSpaceContainment(
-      info,
-      cause ?? new Error("vfork child teardown lacked an exact quiescence fence"),
-    );
-    return;
-  }
-  traceVforkMechanism(
-    "exact_teardown",
-    `child_channel=${info.channelOffset} reason=${reason}`,
-  );
-  releaseVforkWorkspace(info);
-  if (phase === "starting") {
-    vforkLifetimes.completeWithoutBorrow(
-      info,
-      reason === "exit" ? "exit" : "signal",
-    );
-  } else {
-    vforkLifetimes.completeAfterExactTeardown(info, reason);
-  }
 }
 
 async function containVforkAddressSpace(
@@ -3221,14 +3132,6 @@ async function handleClone(
     throw new Error(`Process ${pid} changed generation before thread Worker launch`);
   }
 
-}
-
-function handleThreadExit(pid: number, channelOffset: number): boolean {
-  // The semantic thread exit precedes worker-main's terminal fence. The
-  // memory_quiescent message drives Worker termination and slot reclamation.
-  void pid;
-  void channelOffset;
-  return true;
 }
 
 function handleExit(pid: number, exitStatus: number): void {

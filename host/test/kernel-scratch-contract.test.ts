@@ -483,20 +483,16 @@ const ownershipSeeds: OwnershipSeed[] = [
     why: "A pending thread attachment carries process memory.",
   },
   {
+    // Both hosts used to declare their own `ProcessGenerationOwnership`, and
+    // this seed named each copy. The interface now lives once in
+    // `process-lifecycle.ts`, which both entries import, so one seed covers
+    // the Node and browser process generations that previously needed two.
     declaration:
-      "host/src/node-kernel-worker-entry.ts::ProcessGenerationOwnership.memory",
+      "host/src/process-lifecycle.ts::ProcessGenerationOwnership.memory",
     target: "value",
     owner: "process-memory",
     form: "memory",
-    why: "Each Node process generation owns its exact guest process memory.",
-  },
-  {
-    declaration:
-      "host/src/browser-kernel-worker-entry.ts::ProcessGenerationOwnership.memory",
-    target: "value",
-    owner: "process-memory",
-    form: "memory",
-    why: "Each browser process generation owns its exact guest process memory.",
+    why: "Each process generation, on either host, owns its exact guest process memory.",
   },
   {
     declaration:
@@ -994,6 +990,23 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 ];
 
 const auditAllowances: AuditAllowance[] = [
+  {
+    key: "host/src/process-lifecycle.ts::createProcessLifecycle.threadAllocatorForLayout::scratch-allocator-call::host.reserveThreadSlotStartPage(pid, THREAD_SLOT_BYTES)",
+    disposition: "kernel-control",
+    count: 1,
+    // WHY: the shared lifecycle reaches the kernel worker through its host
+    // interface, so the audit sees the interface member rather than the
+    // public method behind it. Both hosts bind it to
+    // CentralizedKernelWorker.reserveHostRegion, which opens its own kernel
+    // entry; this call site never holds a scratch pointer or token.
+    why: "The thread-slot reservation passes a pid and a byte length and receives a guest process-memory address; it reserves guest address space through a public worker method that opens its own kernel entry, not kernel scratch.",
+  },
+  {
+    key: "host/src/process-lifecycle.ts::createProcessLifecycle.threadAllocatorForLayout::scratch-reservation-call::host.reserveThreadSlotStartPage(pid, THREAD_SLOT_BYTES)",
+    disposition: "kernel-control",
+    count: 1,
+    why: "The same thread-slot reservation; it carries no Rust scratch reservation token, so no host-staged kernel bytes outlive it.",
+  },
   ...reviewedScalarKernelExportCalls,
   {
     key: "host/src/host-adapter-manifest.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
