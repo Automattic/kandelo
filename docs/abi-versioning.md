@@ -1043,9 +1043,10 @@ this epoch:
   `__wpk_fork_boundary`, during which the host seals the capture, sends
   `SYS_FORK` and begins parent or abort replay. It then restarts its own
   callees in place. A child whose outermost replay frame is a boundary
-  enters through `wpk_fork_resume_sink` instead of `_start`. If the sink
-  returns, the child traps and the host reports "fork child returned
-  through its sink frame".
+  enters through `wpk_fork_resume_sink` instead of `_start`. That entry
+  returns only if the sink itself returned, which the host reports as
+  "fork child returned through its sink frame". A trap in the child's own
+  code ends the process by its signal, like any other trap.
 - **The crt no longer passes `main` as a pointer, and
   `__libc_start_main` calls its stage 2 directly**, so neither function
   is in the indirect function table. This is not an ABI surface by

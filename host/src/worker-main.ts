@@ -4299,18 +4299,16 @@ export async function centralizedWorkerMain(
             throw new Error(`pid=${pid}: fork child rooted at a boundary entered a lexical path`);
           };
           replayEntry = () => {
-            try {
-              resumeSink(sinkSignature);
-            } catch (e) {
-              if (isWasmUnreachableTrap(e) && kernelExitStatus === null) {
-                throw new Error(
-                  `pid=${pid}: fork child returned through its sink frame ` +
-                    `(function ordinal ${replayRoot!.functionOrdinal}); the frames ` +
-                    "above it were never captured",
-                );
-              }
-              throw e;
-            }
+            // The entry returns only if the sink itself returned: the frames
+            // above it were never captured, so there is nothing to return
+            // to. A trap in the child's own code propagates as an exception
+            // and ends the process by its signal like any other trap.
+            resumeSink(sinkSignature);
+            throw new Error(
+              `pid=${pid}: fork child returned through its sink frame ` +
+                `(function ordinal ${replayRoot!.functionOrdinal}); the frames ` +
+                "above it were never captured",
+            );
           };
         } else if (initData.isForkChild && initData.forkChildThreadFnPtr != null) {
           const fnIdx = initData.forkChildThreadFnPtr;

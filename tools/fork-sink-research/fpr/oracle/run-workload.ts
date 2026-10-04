@@ -9,9 +9,9 @@
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { NodeKernelHost } from "../../../host/src/node-kernel-host";
+import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
 
-const root = resolve(import.meta.dirname, "../../..");
+const root = resolve(import.meta.dirname, "../../../..");
 const bin = (p: string) => resolve(root, "local-binaries/source-only-v1/programs/wasm32", p);
 const load = (p: string): ArrayBuffer => {
   const b = readFileSync(p);

@@ -533,7 +533,11 @@ fn emit_sink_case(out: &mut Vec<(Instr, InstrLocId)>, resume_peek: FunctionId, r
     push_instr(out, Instr::Const(Const { value: Value::I32(0) }));
     push_instr(out, Instr::Call(Call { func: resume_peek }));
     push_instr(out, Instr::CallIndirect(CallIndirect { ty, table: resume_table }));
-    push_instr(out, Instr::Unreachable(Unreachable {}));
+    // Return, not trap: the host treats a normal return from the sink entry
+    // as the invariant violation ("returned through its sink frame"). A trap
+    // here would be indistinguishable from a genuine trap in the child's own
+    // code, which must die by its signal (SIGILL) like any other process.
+    push_instr(out, Instr::Return(Return {}));
 }
 
 
