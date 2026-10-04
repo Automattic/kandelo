@@ -18,6 +18,7 @@ import { chromium } from "@playwright/test";
 import {
   captureProgramFixtureBuildContract,
   programFixtureNeedsRebuild,
+  sdkProgramBuildInputs,
   stampProgramFixture,
   type ProgramFixtureBuildContract,
 } from "./program-fixture-freshness";
@@ -198,13 +199,7 @@ function fixtureBuildContract(
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const inputs = [
-    join(repoRoot, "sdk/bin"),
-    join(repoRoot, "sdk/src"),
-    join(repoRoot, "sdk/package.json"),
-    join(repoRoot, "sdk/package-lock.json"),
-    join(repoRoot, arch === "wasm64" ? "sysroot64" : "sysroot"),
-  ];
+  const inputs = sdkProgramBuildInputs(repoRoot, arch);
   if (forkInstrumented) {
     const configuredTool = process.env.WASM_POSIX_FORK_INSTRUMENT;
     const instrumenter = configuredTool
