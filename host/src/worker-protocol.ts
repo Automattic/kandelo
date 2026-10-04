@@ -101,6 +101,13 @@ export interface CentralizedWorkerInitMessage {
    */
   forkChildThreadFnPtr?: number;
   forkChildThreadArgPtr?: number;
+  /**
+   * The fork caller was a vfork child, which publishes its launch root in its
+   * own borrowed control slot. The copied process anchor still holds the
+   * parked vfork parent's root, so the child adopts `forkBufAddr` instead of
+   * reading that word (as a thread fork does).
+   */
+  forkLaunchRootFromCaller?: boolean;
   /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
   ptrWidth?: 4 | 8;
   /**

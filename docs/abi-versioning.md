@@ -1051,6 +1051,14 @@ this epoch:
   `__libc_start_main` calls its stage 2 directly**, so neither function
   is in the indirect function table. This is not an ABI surface by
   itself. The fork analysis relies on it.
+- **A vfork child may `fork()` and `posix_spawn()`.** Both used to fail
+  with `EAGAIN`. The fork copies the borrowed memory, and the grandchild
+  adopts the vfork child's own continuation root (worker init field
+  `forkLaunchRootFromCaller`). This is a host and kernel behavior change
+  with no layout change. A binary built for an earlier ABI 46 host gets
+  success where it got `EAGAIN`, which no correct program relied on. A
+  nested `vfork()` and `pthread_create()` from a vfork child still fail
+  with `EAGAIN`.
 
 ## The snapshot
 

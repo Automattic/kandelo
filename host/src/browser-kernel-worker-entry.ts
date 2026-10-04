@@ -2447,6 +2447,9 @@ async function handleOrdinaryFork(
       forkReplayGate: forkReplay.gate,
       forkChildThreadFnPtr: forkReplayContext?.fnPtr,
       forkChildThreadArgPtr: forkReplayContext?.argPtr,
+      // A vfork child's capture root lives in its own slot, not the copied
+      // process anchor (which still names the parked parent's root).
+      forkLaunchRootFromCaller: vforkLifetimes.isActiveBorrower(parentInfo),
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
