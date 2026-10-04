@@ -43,6 +43,23 @@ that owns those direct dependencies, including an archive-stage override. A
 build script that relies on ambient host tools, global SDK links, undeclared
 transitive deps, or files outside its contract is not cache-safe.
 
+Build scripts configure, fetch, patch, generate, and compile only under
+`WASM_POSIX_DEP_WORK_DIR`, and install only into `WASM_POSIX_DEP_OUT_DIR`.
+The checkout is reviewed input, not scratch. Two resolves of one recipe in
+one worktree do run at once: two Vitest files that miss the same cache, a
+`local-build` beside a test, or the wasm32 and wasm64 builds of one recipe.
+A build tree at a fixed checkout path such as `$SCRIPT_DIR/<name>-build` is
+shared between them, and one build's `rm -rf` deletes the other's tree
+mid-build. Fixed `/tmp/<name>-<version>.tar.*` download paths collide the
+same way. Derive every write path from `kandelo_package_prepare_build_roots`
+(`$KANDELO_PACKAGE_WORK_DIR`) or `"${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"`,
+stage sources with `kandelo_package_stage_verified_source`, and export
+`WASM_POSIX_INSTALL_LOCAL_MIRROR=0` before `install_local_binary` when the
+resolver owns the roots. Standalone runs may keep package-local defaults.
+The resolver enforces the recipe-directory part of this rule: it records the
+package directory and the build script's directory before the script runs,
+and fails the build, publishing nothing, if anything in them changed.
+
 The persistent SourceOnly build cache lives at
 `$HOME/.cache/kandelo/source-only` and is **shared across every worktree on
 the machine** by default. This is deliberate: the cache is content-addressed,
@@ -56,12 +73,13 @@ it and must agree — the Rust default (`default_source_cache_root` in
 change alters the *bytes* a cache key maps to — e.g. a change to the
 build-stamp or artifact format — so that a worktree on the new format does not
 contend with worktrees on the old one at the same content-addressed key.
-Concurrency itself is already safe (the store stages into a per-pid temp
-directory and publishes with an atomic, non-replacing `rename(2)`), so the
-shared default never risks corruption; the override is about avoiding churn,
-not preventing races. Do not reach for it as a routine default — a
-per-worktree cache discards the cross-worktree reuse the shared cache exists
-to provide.
+Concurrency itself is safe: each build compiles in its own resolver work
+root (see the build-script rule above), and the store stages into a per-pid
+temp directory and publishes with an atomic, non-replacing `rename(2)`. The
+shared default therefore never risks corruption; the override is about
+avoiding churn, not preventing races. Do not reach for it as a routine
+default — a per-worktree cache discards the cross-worktree reuse the shared
+cache exists to provide.
 
 Because the cache is shared, per-checkout maintenance must stay scoped to the
 checkout's own keys. `xtask clean <target>` (behind `./run.sh clean` and

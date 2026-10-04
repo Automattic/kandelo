@@ -74,6 +74,7 @@ mod local_build_timing;
 mod package_archive_limits;
 mod package_matrix;
 mod pkg_manifest;
+mod recipe_tree_guard;
 mod remote_fetch;
 mod root_js_deps;
 mod source_archive_cache;

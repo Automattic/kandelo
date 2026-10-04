@@ -13793,6 +13793,16 @@ fn build_into_cache(
     };
 
     let post_git_result = (|| -> Result<LocalBuildDisposition, String> {
+    // WHY: concurrent resolves of one recipe in one checkout share its
+    // package directory. A recipe that builds there instead of under
+    // WASM_POSIX_DEP_WORK_DIR deletes a sibling build's tree, so any write
+    // to the reviewed recipe tree fails this build. See recipe_tree_guard.
+    let mut guarded_recipe_roots = vec![target.dir.clone()];
+    if let Some(script_dir) = script.parent() {
+        guarded_recipe_roots.push(script_dir.to_path_buf());
+    }
+    let recipe_tree = crate::recipe_tree_guard::RecipeTreeSnapshot::capture(&guarded_recipe_roots)
+        .map_err(|error| format!("{}: record recipe tree before build: {error}", target.spec()))?;
     let status = {
         let mut cmd = Command::new("bash");
         if policy == ResolvePolicy::SourceOnlyV1 {
@@ -13930,6 +13940,24 @@ fn build_into_cache(
         cmd.status()
             .map_err(|e| format!("spawn bash {}: {e}", script.display()))?
     };
+
+    if let Some(changes) = recipe_tree
+        .describe_changes()
+        .map_err(|error| format!("{}: recheck recipe tree after build: {error}", target.spec()))?
+    {
+        return Err(format!(
+            "{}: build script {} ({status}) wrote into its reviewed recipe tree:{changes}\n\
+             Recipes must configure, fetch, patch, and compile only under \
+             $WASM_POSIX_DEP_WORK_DIR and install only into $WASM_POSIX_DEP_OUT_DIR: \
+             another resolve of the same recipe in this checkout may be running and \
+             would share any tree kept here. Derive the path from \
+             kandelo_package_prepare_build_roots (KANDELO_PACKAGE_WORK_DIR) or \
+             \"${{WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}}\"; see docs/package-management.md \
+             \"Recipes build only in their work root\".",
+            target.spec(),
+            script.display(),
+        ));
+    }
 
     if let Err(e) = git_inputs.verify_unchanged() {
         return Err(format!(
@@ -25233,6 +25261,72 @@ libs = ["lib/libWorkFail.a"]
         assert!(rename_default_stage_or_detect_winner(&ours, &canonical).unwrap());
         assert!(canonical.join("ours").exists());
         assert!(!ours.exists());
+    }
+
+    #[test]
+    fn recipe_that_builds_in_its_package_directory_fails_and_publishes_nothing() {
+        let root = tempdir("built-in-tree-reg");
+        let cache = tempdir("built-in-tree-cache");
+        // The shape that let two qtbase resolves delete each other's tree.
+        write_lib(
+            &root,
+            "libInTree",
+            "1.0.0",
+            &[],
+            r#"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_DIR="$SCRIPT_DIR/libInTree-build"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+touch "$BUILD_DIR/libInTree.a"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+cp "$BUILD_DIR/libInTree.a" "$WASM_POSIX_DEP_OUT_DIR/lib/"
+"#,
+            r#"[outputs]
+libs = ["lib/libInTree.a"]
+"#,
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = reg.load("libInTree").unwrap();
+        let published = || -> Vec<_> {
+            fs::read_dir(cache.join("libs"))
+                .map(|entries| {
+                    entries
+                        .map(|entry| entry.unwrap().file_name())
+                        .filter(|name| name.to_string_lossy().starts_with("libInTree"))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let error = ensure_built(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap_err();
+        assert!(error.contains("libInTree@1.0.0"), "got: {error}");
+        assert!(error.contains("wrote into its reviewed recipe tree"), "got: {error}");
+        assert!(error.contains("added    libInTree-build"), "got: {error}");
+        assert!(error.contains("WASM_POSIX_DEP_WORK_DIR"), "got: {error}");
+        assert_eq!(published(), Vec::<std::ffi::OsString>::new(), "in-tree build published");
+
+        // A stale tree left by a standalone run is deleted and recreated
+        // with identical names; the guard still sees the replacement.
+        let error = ensure_built(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap_err();
+        assert!(error.contains("libInTree-build"), "got: {error}");
+        assert_eq!(published(), Vec::<std::ffi::OsString>::new(), "in-tree build published");
     }
 
     #[test]
@@ -37969,14 +38063,18 @@ commit = "1111111111111111111111111111111111111111"
             &[],
             &format!(
                 "mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\nprintf bytes > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"\nprintf changed > {:?}",
-                repo.join("input-race/declared.txt")
+                repo.join("shared-inputs/declared.txt")
             ),
             "[outputs]\nlibs = [\"lib/out.a\"]\n",
         );
-        fs::write(repo.join("input-race/declared.txt"), b"before").unwrap();
+        // The declared input lives outside the recipe directory: a write
+        // inside it is refused earlier by the recipe-tree guard, and this
+        // test pins the cache-key recheck that covers every other input.
+        fs::create_dir_all(repo.join("shared-inputs")).unwrap();
+        fs::write(repo.join("shared-inputs/declared.txt"), b"before").unwrap();
         fs::write(
             repo.join("input-race/build.toml"),
-            "script_path = \"input-race/build-input-race.sh\"\ninputs = [\"input-race/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
+            "script_path = \"input-race/build-input-race.sh\"\ninputs = [\"shared-inputs/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         let registry = Registry { roots: vec![repo.clone()] };

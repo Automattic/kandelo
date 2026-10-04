@@ -1016,7 +1016,7 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_BINARY_CACHE_ROOT`       | Canonical absolute cache root selected by the current resolver invocation. It overrides inherited ambient state and keeps nested resolvers aligned with direct dependency paths.                                                                                                             |
 | `WASM_POSIX_SOURCE_ONLY_CACHE_ROOT`  | SourceOnlyV1 only: canonical cache base that owns the exact `source-only-v1/compiled` binary-cache child and immutable verified archive payloads. It is absent under Default resolution.                                                                                                                                                           |
 | `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` | SourceOnlyV1 non-Rust consumers only: normalized canonical absolute directory containing regular-file materializations and `.kandelo/source-only-program-projection-v1.json`. The TypeScript/shell resolver accepts this one aggregate-owned tier and never searches Default mirrors, the ordinary compiled cache, or an installed package. Each authority member is limited to 512 MiB; Vite also limits its complete pinned snapshot batch to 512 MiB. |
-| `WASM_POSIX_DEP_WORK_DIR`            | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. Direct ad-hoc script invocation may retain a package-local default.                                                                                                |
+| `WASM_POSIX_DEP_WORK_DIR`            | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. Every source tree, build tree, download, and scratch file the recipe writes belongs here; see "Recipes build only in their work root" below. Direct ad-hoc script invocation may retain a package-local default. |
 | `WASM_POSIX_DEP_<UPPER>_DIR`         | For each _direct_ dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`.                                                                                          |
 | `WASM_POSIX_DEP_<KEY>_SRC_DIR`       | SourceOnlyV1 direct source dependencies only: a fresh sealed per-consumer extraction below the same resolver-owned source-input root, disjoint from recipe work and output. `<KEY>` is exactly `K_` followed by the uppercase hexadecimal encoding of the package name's UTF-8 bytes (`foo-bar` → `K_666F6F2D626172`). Default source-kind dependencies retain the legacy uppercased-name spelling. |
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR`    | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name.                                                                                                                                                                                           |
@@ -1083,6 +1083,68 @@ After the script exits 0, the resolver verifies every path in
 `outputs.{libs,headers,pkgconfig,files}` exists under `$WASM_POSIX_DEP_OUT_DIR`.
 A missing output fails the build (and the temp dir is cleaned up,
 so a retry starts clean).
+
+### Recipes build only in their work root
+
+A recipe configures, fetches, patches, generates, and compiles only under
+`WASM_POSIX_DEP_WORK_DIR`, and installs only into `WASM_POSIX_DEP_OUT_DIR`.
+It does not write its package directory, other checkout paths such as
+`sysroot/`, `local-binaries/`, or `apps/`, or a fixed path such as
+`/tmp/<name>-<version>.tar.xz`.
+
+The reason is concurrency within one worktree. Two resolves of the same
+recipe can run at once: two Vitest files that both miss a package's cache, a
+`local-build` beside a test, or the wasm32 and wasm64 builds of one recipe.
+Each gets its own work root, but a tree at a fixed path such as
+`$SCRIPT_DIR/qtbase-build` is shared. When two qtbase resolves ran together,
+the second build's `rm -rf "$BUILD_DIR"` deleted the first one's tree while it
+was linking (`llvm-ranlib: unable to load 'lib/libQt6InputSupport.a'`). Run
+one after the other, both passed.
+
+The usual shape is:
+
+```bash
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32   # standalone default
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/<name>-src"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/<name>-build"
+kandelo_package_stage_verified_source <name> "$SRC_DIR" \
+    "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+    "$KANDELO_PACKAGE_WORK_DIR"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0          # before install_local_binary
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
+```
+
+A standalone run (no resolver variables) keeps its trees beside the script,
+as before. `"${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"` is the equivalent
+one-line form for recipes that do not use the helper.
+
+The SDK compiler driver maps `WASM_POSIX_DEP_WORK_DIR` to
+`/usr/src/kandelo-build/<name>` in `-ffile-prefix-map`, so a work root whose
+name carries the builder's PID does not reach compiled output. A recipe that
+compiles with raw `clang` or `rustc` must add the equivalent map itself.
+
+The resolver enforces the recipe-directory part of this contract. Before the
+build script runs, it records the metadata of every entry below the package
+directory and below the build script's directory (type, size, mode, inode,
+link target, and modification and status-change times, without following
+symlinks). After the script exits, it records them again. Any difference
+fails the build with the recipe's name, the changed paths, and this rule, and
+nothing is published. Deleting and recreating a stale tree, or creating and
+removing a scratch file, is caught through the containing directory's times.
+The guard watches only those directories: writes elsewhere in the checkout
+are not detected and remain review's responsibility.
+
+Two shared locations outside the work root are intentionally written during
+builds and are safe under concurrency. `scripts/run-wasm-fork-instrument.sh`
+rebuilds `tools/bin/wasm-fork-instrument` when its input-hash stamp is stale,
+staging under a per-process name and publishing with `mv`. The VFS image
+builders' source cache (`images/vfs/scripts/source-extract-helper.ts`, under
+`$XDG_CACHE_HOME/kandelo` or `~/.cache/kandelo`) downloads to a per-process
+partial file and extracts to a per-process directory before renaming it into
+place.
 
 ### Toolchain on PATH
 
