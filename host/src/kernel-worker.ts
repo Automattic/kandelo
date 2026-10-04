@@ -25,6 +25,7 @@
  * explanatory only and generated-file drift tests cover the live values.
  */
 
+import { LongTimeouts, MAX_ENGINE_TIMER_DELAY_MS } from "./long-timeout";
 import {
   getWasmPosixKernelRuntimeAccess,
   negErrno,
@@ -3193,6 +3194,8 @@ export class CentralizedKernelWorker {
     {
       timeout: ReturnType<typeof setTimeout>;
       interval?: ReturnType<typeof setInterval>;
+      /** Re-armed one-shot for an interval longer than an engine timer. */
+      longInterval?: ReturnType<typeof setTimeout>;
       signo: number;
     }
   >();
@@ -3762,15 +3765,20 @@ export class CentralizedKernelWorker {
         // Cancel any existing timer for this slot
         const existing = this.posixTimers.get(key);
         if (existing) {
-          clearTimeout(existing.timeout);
+          this.#cancelRegisteredTimeout(existing.timeout);
           if (existing.interval) clearInterval(existing.interval);
+          if (existing.longInterval) {
+            this.#cancelRegisteredTimeout(existing.longInterval);
+          }
           this.posixTimers.delete(key);
         }
 
         if (valueMs > 0 || intervalMs > 0) {
           // valueMs > 0 means armed (0 = disarm, kernel ensures >= 1ms for armed timers)
           const delay = Math.max(0, valueMs);
-          const timeout = setTimeout(() => {
+          // #registerTimeout, not setTimeout: an expiry or interval past an
+          // engine timer's 2^31-1 ms limit must still fire on time.
+          const timeout = this.#registerTimeout(() => {
             const current = this.posixTimers.get(key);
             if (!current || current.timeout !== timeout) return;
             if (!this.processes.has(pid)) {
@@ -3780,7 +3788,26 @@ export class CentralizedKernelWorker {
             this.firePosixTimer(pid, timerId, signo);
 
             // Set up repeating interval if needed
-            if (intervalMs > 0) {
+            if (intervalMs > MAX_ENGINE_TIMER_DELAY_MS) {
+              const rearm = (): void => {
+                const next = this.#registerTimeout(() => {
+                  const intervalEntry = this.posixTimers.get(key);
+                  if (!intervalEntry || intervalEntry.longInterval !== next) {
+                    return;
+                  }
+                  if (!this.processes.has(pid)) {
+                    this.posixTimers.delete(key);
+                    return;
+                  }
+                  this.firePosixTimer(pid, timerId, signo);
+                  rearm();
+                }, intervalMs);
+                const entry = this.posixTimers.get(key);
+                if (entry?.timeout === timeout) entry.longInterval = next;
+                else this.#cancelRegisteredTimeout(next);
+              };
+              rearm();
+            } else if (intervalMs > 0) {
               const iv = setInterval(() => {
                 const intervalEntry = this.posixTimers.get(key);
                 if (!intervalEntry || intervalEntry.interval !== iv) {
@@ -8404,6 +8431,9 @@ export class CentralizedKernelWorker {
       if (timer.interval !== undefined) {
         this.#cancelRegisteredInterval(timer.interval);
       }
+      if (timer.longInterval !== undefined) {
+        this.#cancelRegisteredTimeout(timer.longInterval);
+      }
     }
     if (plan.mismatch !== null) {
       throw new Error(`process ${pid} timer ownership mismatch: ${plan.mismatch}`);
@@ -9570,14 +9600,17 @@ export class CentralizedKernelWorker {
 
     for (const [key, entry] of this.posixTimers) {
       if (key.startsWith(`${pid}:`)) {
-        clearTimeout(entry.timeout);
+        this.#cancelRegisteredTimeout(entry.timeout);
         if (entry.interval) clearInterval(entry.interval);
+        if (entry.longInterval) {
+          this.#cancelRegisteredTimeout(entry.longInterval);
+        }
         this.posixTimers.delete(key);
       }
     }
     for (const [ch, timer] of this.socketTimeoutTimers) {
       if (ch.pid === pid) {
-        clearTimeout(timer);
+        this.#cancelRegisteredTimeout(timer);
         this.socketTimeoutTimers.delete(ch);
       }
     }
@@ -10365,25 +10398,39 @@ export class CentralizedKernelWorker {
     }
   }
 
+  /** Delays past an engine timer's limit; see long-timeout.ts. */
+  readonly #longTimeouts = new LongTimeouts<ReturnType<typeof setTimeout>>({
+    schedule: (operation, delayMs) =>
+      kernelEntryIntrinsicApply(
+        this.#scheduleTimeout,
+        this.#schedulerReceiver,
+        [operation, delayMs],
+      ) as ReturnType<typeof setTimeout>,
+    cancel: (handle) => {
+      kernelEntryIntrinsicApply(
+        this.#cancelTimeout,
+        this.#schedulerReceiver,
+        [handle],
+      );
+    },
+    now: () => Date.now(),
+  });
+
   #registerTimeout(
     operation: () => void,
     delayMs: number,
   ): ReturnType<typeof setTimeout> {
-    return kernelEntryIntrinsicApply(
-      this.#scheduleTimeout,
-      this.#schedulerReceiver,
-      [operation, delayMs],
+    return this.#longTimeouts.register(
+      operation,
+      delayMs,
     ) as ReturnType<typeof setTimeout>;
   }
 
   #cancelRegisteredTimeout(
     timer: Parameters<typeof clearTimeout>[0],
   ): void {
-    kernelEntryIntrinsicApply(
-      this.#cancelTimeout,
-      this.#schedulerReceiver,
-      [timer],
-    );
+    if (timer === undefined) return;
+    this.#longTimeouts.cancel(timer as ReturnType<typeof setTimeout>);
   }
 
   #registerInterval(
