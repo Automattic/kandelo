@@ -179,6 +179,10 @@ TOML
 : > "$STD_BUILD/src/lib.rs"
 (
   cd "$STD_BUILD"
+  # WHY CARGO_TARGET_DIR: the package resolver exports its own
+  # CARGO_TARGET_DIR to every recipe, and cargo would then write std there
+  # instead of under $STD_BUILD, where the copy below reads it.
+  CARGO_TARGET_DIR="$STD_BUILD/target" \
   RUSTC="$WRAP" RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 \
     cargo build --release --quiet \
       -Z build-std=std,panic_abort \

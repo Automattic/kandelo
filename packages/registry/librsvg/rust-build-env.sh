@@ -45,7 +45,12 @@ librsvg_rust_build_env() {
 
     export RUSTC="$LIBRSVG_RUSTC"
     export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1
-    export CARGO_HOME="$work_dir/cargo-home"
+    # WHY a directory of its own: the package resolver already exports
+    # <work-dir>/cargo-home as the recipe's CARGO_HOME. The vendored-crate
+    # config written below would land there and outlive the caller's
+    # subshell, and the repo's own cargo (install_local_binary's xtask)
+    # would then resolve Kandelo's crates against librsvg's vendor tree.
+    export CARGO_HOME="$work_dir/librsvg-cargo-home"
     local cargo_config="$CARGO_HOME/config.toml"
     mkdir -p "$CARGO_HOME"
 
