@@ -1,5 +1,6 @@
 import { defineConfig } from "@playwright/test";
-import { lstatSync } from "node:fs";
+import { lstatSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -92,6 +93,21 @@ for (const key of browserEnvironmentKeys) {
   }
 }
 
+// macOS 27 protects ~/Library/Application Support/Firefox (the real
+// Firefox's app-data directory) behind Full Disk Access. Playwright's
+// bundled Firefox resolves that same directory despite -profile, so from a
+// terminal or agent without Full Disk Access every launch hangs or fails
+// with "Could not find profile folder" (microsoft/playwright#42768, fixed
+// upstream in Firefox 158). A fresh, empty CoreFoundation home keeps that
+// lookup inside a directory the test run owns.
+const firefoxLaunchEnv: Record<string, string> =
+  process.platform === "darwin"
+    ? {
+        ...browserLaunchEnv,
+        CFFIXED_USER_HOME: mkdtempSync(join(tmpdir(), "kandelo-pw-firefox-home-")),
+      }
+    : browserLaunchEnv;
+
 const sharedLaunchArgs =
   protectedBrowserBaseUrl === undefined
     ? []
@@ -182,7 +198,13 @@ export default defineConfig({
     },
     {
       name: "firefox",
-      use: { browserName: "firefox" },
+      use: {
+        browserName: "firefox",
+        launchOptions: {
+          env: firefoxLaunchEnv,
+          args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
+        },
+      },
     },
     {
       name: "webkit",
