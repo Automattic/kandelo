@@ -6,6 +6,10 @@
  * CentralizedKernelWorker on the main thread.
  */
 import {
+  readForkSideModuleContract,
+  type ForkSideModuleContract,
+} from "./fork-side-module-contract";
+import {
   EXEC_RETIRE_SIGNAL_CODE,
   type CentralizedWorkerInitMessage,
   type CentralizedThreadInitMessage,
@@ -1111,6 +1115,7 @@ export function buildDlopenImports(
   hostImportRuntime?: ForkHostImportWorkerRuntime,
   workerIdentity = 1,
   memoryOwnership: "copied" | "borrowed" = "copied",
+  forkSideModuleContract?: ForkSideModuleContract,
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1852,6 +1857,7 @@ export function buildDlopenImports(
       ptrWidth,
       forkActivationOwner,
       forkActivationOwnerUnavailableReason,
+      forkSideModuleContract,
       onTableMutation: (table, firstIndex, length) => {
         onTableMutation?.(table, firstIndex, length);
         tableMutationPending = true;
@@ -3935,6 +3941,7 @@ export async function centralizedWorkerMain(
         processHostImportRuntime,
         pid,
         forkMemoryOwnership,
+        readForkSideModuleContract(module),
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -4493,6 +4500,8 @@ export async function centralizedWorkerMain(
         undefined,
         undefined,
         pid,
+        undefined,
+        readForkSideModuleContract(module),
       );
       const importObject = buildImportObject(
         module,
@@ -5901,6 +5910,8 @@ export async function centralizedThreadWorkerMain(
       },
       threadHostImportRuntime ?? undefined,
       tid,
+      undefined,
+      readForkSideModuleContract(module),
     );
     if (threadActivationRegistry) {
       threadTableReplication = createProcessTableReplicationOwner({

@@ -7,6 +7,10 @@
  */
 
 import {
+  checkSideModuleForkContract,
+  type ForkSideModuleContract,
+} from "./fork-side-module-contract";
+import {
   ABI_VERSION,
   WPK_FORK_CAPABILITIES_SECTION,
   WPK_FORK_CAPABILITIES_VERSION,
@@ -872,6 +876,12 @@ export interface LoadSharedLibraryOptions {
     name: string,
     requester?: string,
   ) => Uint8Array | null;
+  /**
+   * The main program's fork contract with side modules (see
+   * fork-side-module-contract.ts). Checked for every side module this linker
+   * loads, including dependencies, before any of its code can run.
+   */
+  forkSideModuleContract?: ForkSideModuleContract;
 }
 
 interface DylinkLoadContext {
@@ -1204,6 +1214,11 @@ function* instantiateSharedLibrarySteps(
     registerWasmModuleReflection(module, borrowedModuleBytes);
   }
   const moduleImports = wasmModuleImports(module);
+  checkSideModuleForkContract(
+    name,
+    moduleImports,
+    options.forkSideModuleContract,
+  );
   const moduleExports = wasmModuleExports(module);
   const moduleExportKinds = new Map(
     moduleExports.map((moduleExport) => [
