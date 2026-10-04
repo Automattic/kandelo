@@ -1669,6 +1669,11 @@ impl<'a> Graph<'a> {
         if self.casts && hub.is_none() && !s.icall.is_empty() {
             if let Some(reach) = self.tainted.get(tn) {
                 if reach.contains("<any>") || s.icall.iter().any(|&id| reach.contains(&self.side.ids.names[id as usize])) {
+                    // Sizing what-if (unsound): FPA_FLOW_TAINTED also filters
+                    // tainted admits by the flow rule.
+                    if self.flow && std::env::var_os("FPA_FLOW_TAINTED").is_some() && !self.flow_ok(s, tn) {
+                        return None;
+                    }
                     return Some("tainted");
                 }
             }

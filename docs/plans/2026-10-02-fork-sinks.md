@@ -1134,22 +1134,30 @@ either way.
 ### Corpus results (2026-10-03, fresh source builds)
 
 All rules: `casts slots effective-types cleanup-lexical sigaction-old
-cancel`, `--exc equiv`, exact signal-handler lists from the plugin, sinks
-and the vfork contract. Programs that can dlopen are measured under the
-dlopen contract. Oracle: fork stacks recorded at run time; "covered" means
-every frame that must be instrumented is in the set.
+cancel`, `--exc equiv`, exact signal-handler lists from the plugin, sinks,
+the vfork contract, and `jmp_buf` identity (below). Every program is
+measured under the dlopen contract. Oracle: fork stacks recorded at run
+time; "covered" means every frame that must be instrumented is in the set.
 
 | Program | Today | Instrumented | Oracle |
 |---|---:|---:|---|
-| foot | 2,994 | 4 | 1 stack, covered |
-| git | 5,293 | 25 | 8 stacks, covered |
-| Quickshell, dlopen contract | 103,038 | 10 | none recorded |
-| bash, dlopen contract | 1,940 | 1,922 | 28 stacks, covered |
-| CPython | 9,166 | 9,125 | 9 stacks, covered |
-| Ruby | 9,739 | 9,522 | 17 stacks, covered |
-| git-remote-http (curl) | 8,659 | 8,433 | none recorded |
+| foot | 2,990 | 4 | 1 stack, covered |
+| git | 5,285 | 25 | 8 stacks, covered |
+| Quickshell | 103,039 | 10 | none recorded |
+| bash | 1,929 | 1,915 | 28 stacks, covered |
+| CPython | 9,162 | 9,125 | 9 stacks, covered |
+| Ruby | 9,735 | 9,522 | 17 stacks, covered |
+| git-remote-http (curl) | 8,660 | 8,433 | none recorded |
 
-Without the effective-type rule, git is 5,091 and the others barely move.
+Without the effective-type rule, git is 5,085 and the others barely move.
+
+These numbers replace an earlier table. That table applied the
+effective-type rule to every unit, not only strict-aliasing ones: a
+compile error in the plugin's Clang half dropped the per-unit `AL` fact,
+and the plugin build script hid the error. The build now fails loudly,
+and the corpus was rebuilt from scratch. 58 units record relaxed
+aliasing (all of pixman and fontconfig, both in foot's closure); git's
+closure has none. foot, git and Quickshell are unchanged.
 
 The bash oracle at first reported 28 unsound stacks. That was a tooling
 bug: bash has two functions named `main` (libc's two-argument wrapper and
@@ -1160,12 +1168,69 @@ inward.
 The interpreters stay large because their fork children genuinely return
 into the interpreter.
 
-Known remaining imprecision:
-- **curl's `longjmp`.** curl's SIGALRM handler `siglongjmp`s out of DNS
-  resolution. Because a signal can arrive at any syscall, every fork
-  child "may longjmp" to any `setjmp` frame above it. Wasm's setjmp
-  lowering only lands a `longjmp` in a frame that called `setjmp` on the
-  same buffer. Tracking `jmp_buf` identity through slots would model
-  that; it is not built.
-- **waybar.** Measurement in progress.
+### `jmp_buf` identity and curl (2026-10-03)
 
+The plugin records which buffer each `setjmp` and `longjmp` uses (`JS`,
+`JL`: a global, a field, or unknown). Each named buffer gets its own
+pseudo-tag, so a `longjmp` can land only in a frame that called `setjmp`
+on the same buffer, as Wasm's setjmp lowering guarantees.
+
+Two details of the lowering matter. LLVM rewrites every source `longjmp`
+into a call to `__wasm_longjmp`. It also adds one more `__wasm_longjmp`
+call to each `setjmp` function, which rethrows longjmps aimed at other
+buffers. A call in a function with a `JL` fact throws that buffer's bit.
+A rethrow carries every named buffer, plus the unknown-buffer bit when
+some `longjmp` in the module has no buffer fact. Anything else throws the
+unknown-buffer bit. `__wasm_longjmp` is itself on the fork path:
+restoring the signal mask makes a syscall, which can run a handler. So
+the child-side model needs the same attribution as the normal one.
+
+In git-remote-http, curl's only buffer (`curl_jmpenv`) is now the only
+longjmp bit that flows. That does not shrink the set (8,433). Its catcher,
+`Curl_resolv_timeout`, sits above almost every fork path, through:
+- curl's allocator hooks (`Curl_cfree` and friends, global function
+  pointers resolved by type: 374 targets);
+- curl's hash-table destructors and connection-filter callbacks (struct
+  fields, 531 targets for `data_pending`);
+- a DNS-over-HTTPS sub-transfer that runs curl's whole transfer engine;
+- OpenSSL's provider tables (`OSSL_DISPATCH`), which store every function
+  as a generic `void (*)(void)`.
+
+An upper bound shows field-sensitive resolution would not change this.
+Resolving the allocator hooks to libc and filtering every indirect call
+by where function addresses are stored (both unsound shortcuts) still
+leaves 8,319.
+
+The analysis has to keep those frames. POSIX clears pending alarms in a
+fork child, but another process can still send it SIGALRM. curl's
+`alarmfunc` stays installed and would `siglongjmp` into the inherited
+`Curl_resolv_timeout` frame whenever a fork inside the resolve window
+can't be ruled out. Ruling that out means proving that nothing curl or
+OpenSSL dispatches during resolution can fork. That is the boundary for
+curl-based programs.
+
+### Real instrumented binaries (2026-10-03)
+
+Plans from the table above were applied with `wasm-fork-instrument
+--sink-plan` (research hook) to the research link of each program, then
+stamped. "Full closure" is the same link instrumented the way it is today
+(`--no-sinks`), so the sizes compare like for like. The installed
+binaries went through wasm-opt and are not comparable in size.
+
+| Program | Full closure | Plan | Run-time check |
+|---|---:|---:|---|
+| git | 5.84 MB | 3.32 MB | 13-command sequence (init, add, commit, log, gc, alias, ...): identical output to the installed git |
+| foot | 4.39 MB | 2.92 MB | `foot-smoke.test.ts` passes (foot forks dash, typed `exit`); a junk binary fails, so the substitution is real |
+| Quickshell | 70.8 MB | 40.6 MB | under wlcompositor, a config's `Process` forks and execs dash: same output and exit code as installed |
+
+Two of git's 13 commands exit 128 in every variant, the installed one
+included. The harness runs on host-FS passthrough, where git's
+compiled-in `/bin/sh` is the host's own shell, which is not a Wasm module
+(`ENOEXEC`). The fork itself still happens.
+
+Quickshell's `Quickshell.execDetached` and `Process.startDetached` do
+nothing on Kandelo, installed binary included, and report nothing. Qt's
+`startDetached` calls `vfork()` and then, in the child, calls `vfork()`
+again. Kandelo refuses a nested vfork with `EAGAIN`, a documented
+boundary (`docs/posix-status.md`, `vfork()`), so Qt's call fails silently.
+The `startDetached` path of the sink set could not be checked at run time.
