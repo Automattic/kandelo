@@ -55,7 +55,7 @@ describe.each([
     const clone = functionSource(
       entry,
       "async function handleClone(",
-      "function handleThreadExit(",
+      "\nfunction handleExit(",
     );
     expect(clone).toContain(
       "externrefGenerationId: processInfo.externrefGeneration.id",
