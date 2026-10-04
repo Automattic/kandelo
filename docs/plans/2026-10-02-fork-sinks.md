@@ -1248,19 +1248,27 @@ suites build goes through them.
   - The resolver bundle was stale: a merged commit changed
     `host/src/constants.ts` after the bundle was regenerated. It is now
     regenerated, and the test passes.
-  - `qt-gui-smoke` and `qt-qml-smoke` fail when run concurrently on a
-    qtbase cache miss. Both builds use the recipe's fixed in-tree
-    `qtbase-build` directory and delete it under each other. Run one after
-    the other, both pass. This is a recipe defect, not a fork one.
+  - `qt-gui-smoke` and `qt-qml-smoke` failed while rebuilding qtbase
+    (a cache miss, because this branch changes libc and the
+    instrumenter). The build lost its own temporary sysroot mid-build, and
+    the precompiled headers in the recipe's fixed in-tree `qtbase-build`
+    directory pointed into it. Run one after the other, both pass. What
+    deleted the sysroot is not established: the log names only one build
+    directory, so a second concurrent qtbase build is a guess, not a
+    finding.
   - `abi-version.test.ts` fails in its own import-section parser.
-    `at += uleb()` reads `at` before `uleb()` advances it. The test is
-    identical on main.
+    `at += uleb()` reads `at` before `uleb()` advances it. The test and
+    the `__abi_version` export it depends on are identical on main, so it
+    should fail there too; main was not run.
 - Open POSIX Test Suite: 174 passed, 0 failed (179 total).
 - libc-test: 306 passed, 0 failed, 17 expected failures.
 - Sortix os-test `--all`: 5,039 passed, 3 failed, 3 timed out. The
   timeouts (poll, select) pass when re-run alone. The three `nl_types`
-  tests fork and `execlp("gencat")`. This macOS host has its own
-  `/usr/bin/gencat`, which host-FS passthrough exposes to the guest, so exec
-  fails with `ENOEXEC`. That is specific to this host.
+  tests fork, `execlp("gencat")`, then `catopen` the result, which fails
+  with `ENOENT` in the suite's isolated VFS. The same test built with
+  `--no-sinks` fails identically, so sinks are not the cause. Our `gencat`
+  writes a valid catalog when run alone. The root cause is open, and main
+  was not run, so whether another change on this branch is responsible
+  is not known.
 
 Not run: the browser suite, the ABI snapshot check, and benchmarks.
