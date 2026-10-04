@@ -109,6 +109,28 @@ function updateFramed(
 }
 
 /**
+ * The source trees every SDK-built test program depends on.
+ *
+ * WHY libc/glue: the SDK compiles that glue into each program at link time
+ * (sdk/src/bin/cc.ts), so a glue change alters every fixture even though the
+ * SDK, its version string and the sysroot are untouched. Without it a fixed
+ * glue bug survived in stale test binaries.
+ */
+export function sdkProgramBuildInputs(
+  repoRoot: string,
+  arch: "wasm32" | "wasm64",
+): string[] {
+  return [
+    join(repoRoot, "sdk/bin"),
+    join(repoRoot, "sdk/src"),
+    join(repoRoot, "sdk/package.json"),
+    join(repoRoot, "sdk/package-lock.json"),
+    join(repoRoot, "libc/glue"),
+    join(repoRoot, arch === "wasm64" ? "sysroot64" : "sysroot"),
+  ];
+}
+
+/**
  * Capture the exact compiler/sysroot/glue input state shared by a family of
  * fixtures. The returned digest is content-based; touching an old output or
  * preserving an ABI number cannot make it current.
