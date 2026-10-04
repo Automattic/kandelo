@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { platform, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,15 +19,6 @@ test("OPFS reports path configuration from live paths and handles", async ({
   browserName,
   baseURL,
 }, testInfo) => {
-  // Skip Firefox on macOS only: today Playwright cannot launch Firefox on
-  // macOS 26+ (headless fails profile init with "Could not find profile
-  // folder"; headed exits before the control pipe connects). This is a local
-  // launch limitation, not an OPFS gap, so Firefox still runs this on Linux.
-  // Remove once a newer Playwright/Firefox launches on macOS.
-  test.skip(
-    browserName === "firefox" && platform() === "darwin",
-    "Playwright cannot launch Firefox on macOS (profile-init failure); Firefox is covered on Linux",
-  );
   expect(baseURL).toBeTruthy();
 
   // Run under a persistent context. WebKit only backs the Origin Private File

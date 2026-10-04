@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { platform, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { OPFS_CHANNEL_SIZE } from "../../../host/src/vfs/opfs-channel";
 
@@ -18,16 +18,6 @@ test("OPFS readdir returns entry names from the shared channel", async ({
   browserName,
   baseURL,
 }, testInfo) => {
-  // Firefox cannot be launched by Playwright on macOS: headless Firefox
-  // (151-156) fails profile initialization on macOS 26+ ("Could not find
-  // profile folder"), and headed exits before the control pipe connects. The
-  // OPFS backend itself is portable; this is a local macOS launch limitation,
-  // so Firefox coverage runs on Linux instead. Skip before any browser is
-  // spawned so this never surfaces as a launch error.
-  test.skip(
-    browserName === "firefox" && platform() === "darwin",
-    "Playwright cannot launch Firefox on macOS (profile-init failure); Firefox is covered on Linux",
-  );
   expect(baseURL).toBeTruthy();
 
   // The Origin Private File System is only backed on disk when the browser has
