@@ -12945,6 +12945,11 @@ export class CentralizedKernelWorker {
           );
           const sec = Number(pv.getBigInt64(0, true));
           const nsec = Number(pv.getBigInt64(8, true));
+          // POSIX/Linux: a negative tv_sec or a tv_nsec outside
+          // [0, 1e9) is EINVAL, not a (possibly enormous) timeout.
+          if (sec < 0 || nsec < 0 || nsec >= 1_000_000_000) {
+            throw new KernelScratchError("ppoll timeout is not a valid timespec", EINVAL);
+          }
           const timeoutMs = sec * 1000 + Math.floor(nsec / 1_000_000);
           readinessTimeoutMs = timeoutMs;
           adjustedArgs[2] = timeoutMs;
