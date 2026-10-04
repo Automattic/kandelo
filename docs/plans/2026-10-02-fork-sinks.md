@@ -727,7 +727,9 @@ the same as for decision 2: generalized type facts.
 
 ### Prototype status
 
-Local commit `90e31e30c`, ABI 46. Nothing is pushed.
+ABI 46. Landing as the mechanism plus the instrumenter's built-in
+(fact-free) analysis; see "Path to production" at the end of this file for
+what the precise sets still need.
 
 - `crates/fork-instrument/src/sink.rs`: the analysis. It uses the `strict`
   signal rule, `equiv`, the precise catchers, the standard facts, `-O0`
@@ -749,12 +751,9 @@ Local commit `90e31e30c`, ABI 46. Nothing is pushed.
   `__main_argc_argv` directly.
 - vfork: a caller of the libc vfork wrapper is a boundary by contract.
 
-Validated: `cargo test -p fork-instrument` (355 tests, including 8 new sink
-tests).
-
-Not yet run: the musl rebuild, the ABI-46 rebuild of the kernel and
-programs, host Vitest, the conformance suites, browser tests, and real
-size measurements.
+Validated: `cargo test -p fork-instrument`, then the full rebuild with
+sinks on by default, host Vitest, the conformance suites and the browser
+suites (see "Validation run on this branch" below).
 
 Expected size under the prototype's rules, with no type facts and no gate
 (fsa, links): foot 2,994 → 2,876, git 5,293 → 5,101, bash 1,940 → 1,933.
@@ -1325,3 +1324,29 @@ Final run on the fixed tree (2026-10-04), after a full package rebuild:
 
 Not run: benchmarks, and Firefox (cannot launch under Playwright on
 macOS 26/27).
+
+## Path to production (2026-10-04)
+
+This branch lands the bounded-unwind mechanism (ABI 46), the instrumenter's
+built-in analysis, which needs no compiler facts and saves little (about 4%
+of instrumented functions on foot and git), and the research tooling that
+measured what precise facts can reach (foot 4, git 25, Quickshell 10 under
+the dlopen contract). Turning those research results into the default needs:
+
+1. **Compiler facts in the normal build.** Ship the KandeloCallTypes plugin
+   with the SDK and carry its facts inside object files (a custom section
+   the linker keeps through static libraries), not side files keyed by
+   object hash. Add the plugin version to package cache keys.
+2. **The analysis in `wasm-fork-instrument`.** Move the fpa/fsa rules
+   (casts, slots, effective types per unit, cleanup and jmp_buf maps) into
+   `crates/fork-instrument`, replacing the hidden `--sink-plan` hook, with
+   today's conservative closure for code without facts.
+3. **The dlopen contract on both hosts.** Metadata sections, the
+   load-time check in `__wasm_dlopen_prepare`, and the
+   `--side-modules=traced-entries` / `assume-all-entries-fork-returning`
+   modes. The built-in analysis stays off for dlopen-capable modules until
+   then.
+4. **A maintainer decision** on applying C's effective-type rule per
+   strict-aliasing unit (git's 25 depends on it).
+5. **Speed and size claims:** benchmark suites on Node and browser before
+   and after. Nothing here claims a speed change.
