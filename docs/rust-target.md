@@ -33,6 +33,50 @@ Verified on the kernel (see `programs/rust/*`):
 | networking | `std::net` TCP | loopback + Node external TCP |
 | processes | `std::process::Command` | fork+exec (see below) |
 
+## Sharing libraries with C and C++
+
+Rust and C/C++ code link into one program against one musl, so static
+libraries work in both directions. `programs/rust/c-interop/` builds
+all four combinations, and `host/test/rust-c-interop.test.ts` runs them
+on the kernel.
+
+**C or C++ calls Rust.** Build the crate as a static library
+(`crate-type = ["staticlib"]`) that exports `#[no_mangle] extern "C"`
+functions, and link the `.a` into the program with `wasm32posix-cc` or
+`wasm32posix-c++`. `cargo cinstall` (see "Rust libraries with a C API"
+below) also installs a `.pc` file, so build systems can find the library
+through pkg-config. C++ declares the Rust functions `extern "C"`.
+
+A std-using library works even though the C `main`, not Rust's
+`lang_start`, starts the program: the allocator (musl's `malloc`),
+stdio, files, threads, and the environment are shared with the C code.
+`std::env::args()` is empty, because std collects arguments in its own
+entry point, which a C program never runs; pass them in explicitly.
+
+**Rust calls C or C++.** Compile the C/C++ code into a static library
+with the SDK and link it from the crate. A `build.rs` can do it:
+
+```rust
+Command::new("wasm32posix-cc").args(["-O2", "-c", "c/foo.c", "-o", &obj]).status()?;
+Command::new("wasm32posix-ar").args(["rcs", &lib, &obj]).status()?;
+println!("cargo:rustc-link-search=native={out}");
+println!("cargo:rustc-link-lib=static=foo");
+```
+
+For C++, compile with `wasm32posix-c++` (add `-fwasm-exceptions` if the
+code uses exceptions) and also link `c++` and `c++abi`: rustc links
+through `wasm32posix-cc`, a C driver, which does not add the C++
+runtime. C++ exceptions work inside the C++ code but must not propagate
+into Rust frames (Rust here is `panic = "abort"` and does not unwind),
+so a C++ API called from Rust catches its exceptions and returns
+errors.
+
+**What both sides share.** The Rust and C compiler runtimes both define
+the 128-bit arithmetic helpers (`__multi3`, `__udivti3`, ...); they link
+together without conflict. A program is fork-instrumented if any part
+of it uses `fork`, whichever language that part is in (glib does).
+Loading a Rust `cdylib` with `dlopen` is not validated.
+
 ## Fork-using programs need instrumentation
 
 `std::process` (and anything reaching `fork`) uses fork+exec on musl.
@@ -161,14 +205,8 @@ Kandelo has no unwinder library, so the std overlay drops that request
 for `target_os = "kandelo"` rather than leaving a library that build
 systems (e.g. Meson's `find_library`) look up and cannot find.
 
-`programs/rust/c-interop/` covers this pattern in both directions (a Rust
-library linked into C and C++ programs; C and C++ libraries linked into
-Rust programs); `host/test/rust-c-interop.test.ts` builds and runs it in
-the Vitest suite. A Rust program that links C++ names `c++` and `c++abi`
-in its `build.rs` (rustc links through `wasm32posix-cc`, a C driver).
-C++ exceptions work inside the C++ code but must not propagate into Rust
-frames: Kandelo's Rust is `panic = "abort"` and does not unwind, so a C++
-API called from Rust catches its exceptions and returns errors.
+See "Sharing libraries with C and C++" above for the linking rules in
+both directions.
 
 Design and history: `docs/plans/2026-09-06-rust-std-target-design.md`
 and `docs/plans/2026-09-07-rust-std-target-implementation.md`.
