@@ -1018,13 +1018,23 @@ guessed:
 - call sites of the function-pointer types in the main module's exported
   API, through which a side module can hand over callbacks.
 
-The load-time check below refuses only what falls outside those traced
-paths. An opt-in instrumenter mode (working name
-`--side-modules=may-fork`) keeps today's conservative instrumentation, so
-any side module may fork along any path. It is for programs that must load
-arbitrary forking libraries. Its cost for Quickshell, including virtual
-calls on main-module classes that plugins can subclass, is still to be
-measured.
+The default is `--side-modules=traced-entries`. The load-time check below
+refuses only what falls outside those traced paths. The opt-in mode
+`--side-modules=assume-all-entries-fork-returning` keeps today's
+conservative instrumentation: it treats every side-module entry as
+fork-returning, so any side module may fork along any path. It is for
+programs that must load arbitrary forking libraries. Its cost for
+Quickshell, including virtual calls on main-module classes that plugins can
+subclass, is still to be measured.
+
+Vocabulary. An *entry* is a side-module function the main module can call:
+an export reached through `dlsym`, or any function whose address the side
+module hands over (a table element). An entry is *fork-returning* when a
+fork child can return through it into main-module frames: it forks with a
+returning child, or it calls a fork-returning main export. Forking alone is
+not enough. An entry that forks only to `exec` or `_exit` (QProcess's vfork
+path, `system()`, `posix_spawn`) never returns into the main module in the
+child, so the main module needs nothing for it.
 
 ### The contract
 
@@ -1037,10 +1047,10 @@ the assumption would be false.
     for which *every* main `call_indirect` site lies in an instrumented
     function on an instrumented chain to the root. A side function entered
     through such a site may fork freely.
-  - **Open exports**: exported main functions through which a fork child can
-    return, for example `fork` itself or a function that daemonizes. Sinks
-    are not open. QProcess's vfork paths, `system()` and `posix_spawn` are
-    not open.
+  - **Fork-returning exports**: exported main functions through which a
+    fork child can return, for example `fork` itself or a function that
+    daemonizes. Sinks are not fork-returning. QProcess's vfork paths,
+    `system()` and `posix_spawn` are not fork-returning.
 - **Side module metadata**, from the same instrumenter run with
   `--entry env.fork`. For every function whose address can reach the main
   module, meaning an export or a table element, it records:
@@ -1048,9 +1058,10 @@ the assumption would be false.
   - whether it forks directly with a returning child;
   - which main imports it can reach.
 - **At `dlopen`**, inside the host-owned `__wasm_dlopen_prepare` step
-  shared by Node and browser: a side entry is *open* if it forks with a
-  returning child or reaches an open export. Every open entry's type must
-  be prepared. If not, `dlopen` returns NULL and `dlerror()` says which
+  shared by Node and browser: a side entry is fork-returning if it forks
+  with a returning child or reaches a fork-returning export. Every
+  fork-returning entry's type must be prepared. If not, `dlopen` returns
+  NULL and `dlerror()` says which
   entry and type. That is a truthful failure; POSIX allows `dlopen` to
   fail.
 - **Side modules loading other side modules** apply the same check against
@@ -1063,11 +1074,12 @@ A side module whose code can fork with a returning child, reached from a
 main call site the analysis did not prepare, now fails to load. Today it
 loads and works. Ordinary plugins are unaffected: Qt image formats, platform
 themes and QML plugins that start processes through QProcess hit vfork
-sinks, which are not open. No such side module exists in Kandelo's packages
+sinks, which are not fork-returning. No such side module exists in
+Kandelo's packages
 today; that is a claim to verify before landing.
 
 The alternative, preparing every call-site type, is today's conservative
-instrumentation.
+instrumentation: `--side-modules=assume-all-entries-fork-returning`.
 
 ### Not decided
 
