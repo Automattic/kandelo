@@ -176,9 +176,18 @@ NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 # compile-flags string (plus any extra cmake args). Factored so the default
 # static archives and the position-independent variant (below) share ONE cmake
 # recipe and cannot drift apart.
+# The KandeloCallTypes compiler plugin: libc++, libc++abi and libunwind
+# objects carry the `kandelo.calltypes` facts fork instrumentation reads,
+# like every object the SDK compiles (docs/sdk-guide.md, "Compiler facts for
+# fork instrumentation"). This recipe drives clang directly, so ask the SDK
+# for the plugin built for this exact compiler and pass the SDK's flags. The
+# plugin leaves the code unchanged.
+CALLTYPES_PLUGIN="$(node --experimental-strip-types "$REPO_ROOT/sdk/src/lib/calltypes-plugin.ts" "$LLVM_CLANG")"
+CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $CALLTYPES_PLUGIN -Xclang -add-plugin -Xclang kandelo-fncasts -fpass-plugin=$CALLTYPES_PLUGIN"
+
 build_libcxx_variant() {
     local variant_build_dir="$1"; shift
-    local variant_c_flags="$1"; shift
+    local variant_c_flags="$1 $CALLTYPES_FLAGS"; shift
     rm -rf "$variant_build_dir"
     mkdir -p "$variant_build_dir"
     ( cd "$variant_build_dir"

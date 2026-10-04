@@ -217,6 +217,69 @@ The musl objects in the SDK sysroot are compiled with the same Wasm exception
 handling and SjLj lowering flags, so libc calls to `setjmp`/`longjmp` do not
 leave unresolved host imports in linked programs.
 
+### Compiler facts for fork instrumentation
+
+Every C/C++ compile also loads the SDK's KandeloCallTypes compiler plugin
+(`sdk/src/plugin/`):
+
+```
+-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall
+-Xclang -flto-unit -Xclang -fwhole-program-vtables
+-Xclang -load -Xclang <plugin> -Xclang -add-plugin -Xclang kandelo-fncasts
+-fpass-plugin=<plugin>
+```
+
+It records facts that the binary alone cannot show and that fork analysis
+needs to bound which functions a fork can be on the stack of: the C/C++
+function type of every indirect call and every function (clang's CFI type
+ids), vtable slots, direct calls and constant arguments, where each
+function's address flows, function-pointer casts and untyped-pointer flows
+seen in the source, and callbacks registered with standard APIs (`atexit`,
+`pthread_create`, `sigaction`, ...). The format is described at the top of
+`KandeloCallTypes.cpp`.
+
+The facts travel inside each object as a Wasm custom section named
+`kandelo.calltypes`, so they follow the object through static archives and
+caches. wasm-ld concatenates the sections of every linked object in input
+order, so a linked module holds the facts of exactly the code it contains.
+The CFI flags only produce type information: the plugin records clang's
+type tests and deletes them before optimization, so the generated code is
+the code of an ordinary build. One known exception: when an indirect call
+comes before the first use of a string equal to the file's unmapped name
+(typically `__FILE__` or `assert()` in a file compiled by a relative path),
+the string shares the CFI check's copy, which changes the order and names
+of that object's string data and drops the string's DWARF variable.
+
+The facts carry no build paths when the compile maps them away with
+`-ffile-prefix-map` or `-fmacro-prefix-map`: file names are remapped the
+way `__FILE__` is. Anonymous structs and unions are named by the scope and
+declarator that use them (`src::<union u>`), not by their source location.
+Records are matched across objects by name, and one header reaches
+different objects through different paths, so a location in the name would
+split one record into several and break that matching.
+
+The SDK builds the plugin on first use, inside `scripts/dev-shell.sh`,
+against the LLVM/Clang headers `flake.nix` exports (`KANDELO_LLVM_DEV` and
+related variables), and caches it under `sdk/.build/calltypes-plugin/` keyed
+by its sources and the compiler. Outside the dev shell, set
+`WASM_POSIX_CALLTYPES_PLUGIN` to a plugin built for the same compiler. musl
+(`scripts/build-musl.sh`) and the SDK's link-time glue are compiled with the
+plugin too. A compile that requests a CFI sanitizer itself is left without
+the plugin, which would otherwise delete the checks it asked for.
+
+**Links.** clang runs Binaryen's `wasm-opt` after wasm-ld when it finds it
+and an optimization level is set. Binaryen inlines and merges functions,
+which would move call sites to other functions and make per-function facts
+describe the wrong code. So the SDK holds that step back and inspects the
+linked module:
+
+- A module that imports `kernel.kernel_fork` (it can fork) keeps its
+  `kandelo.calltypes` section and is left as wasm-ld wrote it. It must be
+  fork-instrumented next; the instrumenter runs `wasm-opt -O2` itself after
+  instrumenting.
+- Any other module loses the section and then gets exactly the `wasm-opt`
+  command clang scheduled.
+
 ### Linker flags injected automatically
 
 ```
@@ -566,9 +629,9 @@ export legacy `asyncify_*` symbols.
 # Compile normally
 wasm32posix-cc program.c -o program.wasm
 
-# (Optional) optimize first. An -O link already ran wasm-opt; optimizing
-# before instrumenting shrinks the call graph the instrumenter must cover.
-wasm-opt -O2 program.wasm -o program.wasm
+# Do not run wasm-opt here. The SDK leaves a fork-capable link unoptimized
+# on purpose: its kandelo.calltypes facts describe the functions as linked
+# (see "Compiler facts for fork instrumentation").
 
 # Apply fork instrumentation. Auto-discovers fork-path functions via
 # call-graph analysis from the kernel.kernel_fork import — no onlylist
@@ -593,6 +656,7 @@ exported ABI, save-buffer format, and the dispatch-scheme decisions.
 | `WASM_POSIX_LLVM_DIR` | Path to LLVM bin directory |
 | `WASM_POSIX_SYSROOT` | Override sysroot path (default: `<repo>/sysroot`) |
 | `WASM_POSIX_GLUE_DIR` | Override glue directory (default: `<repo>/libc/glue`) |
+| `WASM_POSIX_CALLTYPES_PLUGIN` | Use this prebuilt KandeloCallTypes plugin instead of building one; it must be built for the same compiler |
 | `WASM_POSIX_LINK_UNDEFINED` | Executable undefined-symbol policy. `import` (default) keeps `--allow-undefined`: any undefined symbol becomes an `env` import. `error` rejects undefined symbols except the syscall glue's contract imports (`libc/glue/contract-imports.syms`), making link-test feature probes truthful. Other values are rejected. |
 
 ## Running Programs

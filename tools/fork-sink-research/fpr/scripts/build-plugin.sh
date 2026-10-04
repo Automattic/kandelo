@@ -16,7 +16,9 @@ nix-store() { "$NIX_BIN/nix-store" "$@"; }
 p() { nix eval --raw --inputs-from "$ROOT" "nixpkgs#llvmPackages_21.$1.outPath"; }
 DEV=$(p llvm.dev); LIB=$(p llvm.lib); CDEV=$(p clang-unwrapped.dev); CLIB=$(p clang-unwrapped.lib)
 for x in DEV LIB CDEV CLIB; do nix-store --realise "${!x}" --add-root "$OUT/$x-gcroot" --indirect >/dev/null; done
-SRC=$(cd "$(dirname "$0")/../plugin" && pwd)
+# The sources live in the SDK, which builds the same plugin for every
+# compile (sdk/src/plugin/build.sh); this copy keeps the research output path.
+SRC=$ROOT/sdk/src/plugin
 clang++ -std=c++17 -stdlib=libc++ -fno-rtti -fPIC -shared -O2 \
   -I"$DEV/include" -I"$CDEV/include" "$SRC/KandeloCallTypes.cpp" "$SRC/KandeloFnCasts.cpp" \
   -L"$LIB/lib" -L"$CLIB/lib" -lLLVM -lclang-cpp -Wl,-rpath,"$LIB/lib" -Wl,-rpath,"$CLIB/lib" \

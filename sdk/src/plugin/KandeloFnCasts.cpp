@@ -1,6 +1,8 @@
-// KandeloFnCasts: the Clang (AST) half of the KandeloCallTypes plugin.
+// KandeloFnCasts: the Clang (AST) half of the KandeloCallTypes plugin,
+// loaded by the Kandelo SDK as `-add-plugin kandelo-fncasts` (see
+// KandeloCallTypes.cpp for how the facts reach the object file).
 //
-// Research tool for fork sinks (docs/plans/2026-10-02-fork-sinks.md,
+// Fork sinks (docs/plans/2026-10-02-fork-sinks.md,
 // "Type-unsafe function pointers"). The fork-path analysis matches an
 // indirect call to a target by exact C/C++ function type (CFI type ids).
 // That is only safe for functions whose address never reaches a call
@@ -9,8 +11,8 @@
 // place it can happen. The analysis matches the functions involved by Wasm
 // signature (today's rule) and every other function exactly.
 //
-// Lines, appended to the side file by the LLVM pass (same dylib, same
-// process; this consumer runs before code generation):
+// Lines, appended to the `kandelo.calltypes` section text by the LLVM pass
+// (same dylib, same process; this consumer runs before code generation):
 //   Q	fn	type        fn's address is taken here; type = its function type
 //   W	fn	to          fn's address is converted to function type `to`, or to
 //                      a non-function type (`*`: void *, an integer, ...)
@@ -50,6 +52,7 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/raw_ostream.h"
 #include <map>
@@ -64,7 +67,96 @@ std::string &kandeloAstFacts() {
   return s;
 }
 
+std::string &kandeloModuleId() {
+  static std::string s;
+  return s;
+}
+
+// True until a translation unit proves otherwise: the LLVM half removes
+// cfi-icall's unused check data only when no other sanitizer could own it.
+bool &kandeloOtherSanitizers() {
+  static bool b = true;
+  return b;
+}
+
 namespace {
+
+// Applies -ffile-prefix-map / -fmacro-prefix-map to the file names clang
+// prints for anonymous records ("union (unnamed at <file>:415:5)"). WHY:
+// those names are written into the object as record and slot names, and
+// clang does not remap them by itself, so without this every object holding
+// an anonymous record carries its build directory and stops being
+// reproducible. Clang's debug info uses the same hook for the same reason.
+class PathRemapper : public PrintingCallbacks {
+public:
+  explicit PathRemapper(const LangOptions &LO) : LO(LO) {}
+  std::string remapPath(StringRef Path) const override {
+    llvm::SmallString<256> P(Path);
+    LO.remapPathPrefix(P);
+    return std::string(P);
+  }
+
+private:
+  const LangOptions &LO;
+};
+
+// D's qualified name, with anonymous-record locations remapped.
+std::string qualifiedName(const NamedDecl *D) {
+  const ASTContext &C = D->getASTContext();
+  PathRemapper Remap(C.getLangOpts());
+  PrintingPolicy Policy = C.getPrintingPolicy();
+  Policy.Callbacks = &Remap;
+  std::string s;
+  llvm::raw_string_ostream os(s);
+  D->printQualifiedName(os, Policy);
+  return s;
+}
+
+// The record a declarator of type T declares, looking through pointers and
+// arrays: the R in `struct { ... } x[4]` or `union { ... } *p`.
+const RecordDecl *declaredRecord(QualType T) {
+  for (;;) {
+    T = T.getCanonicalType();
+    if (const auto *A = dyn_cast<ArrayType>(T.getTypePtr())) T = A->getElementType();
+    else if (const auto *P = T->getAs<PointerType>()) T = P->getPointeeType();
+    else break;
+  }
+  const auto *RT = T->getAs<RecordType>();
+  return RT ? RT->getDecl() : nullptr;
+}
+
+// A record's name as a fact: the join key that matches its fields, stores
+// and read-backs across every unit of the program. A tagged or typedef'd
+// record is its qualified name. An anonymous record is named by where it
+// sits, never by its source location: its scope's record name plus the
+// declarator that uses it (`src::<union u>`, `<struct options>`), or the
+// field index for an unnamed member. WHY: clang spells anonymous records as
+// "union (unnamed at <file>:<line>:<col>)", and one header reaches
+// different units through different paths (a library's source tree, its
+// installed include directory). Those spellings would split one record into
+// several, and the effective-type rule would then cut real flows between
+// them as "unrelated types". Records that cannot be told apart this way
+// share one name, which merges their facts: conservative, never unsound.
+std::string recordName(const RecordDecl *R) {
+  if (R->getIdentifier() || R->getTypedefNameForAnonDecl()) {
+    std::string n = qualifiedName(R);
+    return n.empty() ? "<anon>" : n;
+  }
+  const Decl *Scope = Decl::castFromDeclContext(R->getDeclContext());
+  std::string prefix;
+  if (const auto *P = dyn_cast<RecordDecl>(Scope)) prefix = recordName(P) + "::";
+  else if (const auto *N = dyn_cast<NamedDecl>(Scope)) prefix = qualifiedName(N) + "::";
+  std::string kind = R->getKindName().str();
+  for (const Decl *D = R->getNextDeclInContext(); D; D = D->getNextDeclInContext()) {
+    const auto *DD = dyn_cast<DeclaratorDecl>(D);
+    if (!DD || declaredRecord(DD->getType()) != R) break;
+    if (!DD->getName().empty()) return prefix + "<" + kind + " " + DD->getName().str() + ">";
+    if (const auto *F = dyn_cast<FieldDecl>(DD))
+      return prefix + "<" + kind + " #" + std::to_string(F->getFieldIndex()) + ">";
+    break;
+  }
+  return prefix + "<" + kind + ">";
+}
 
 // The function type a value of type T designates or points to, if any.
 const FunctionType *fnType(QualType T) {
@@ -310,7 +402,7 @@ private:
   }
 
   std::string name(const FunctionDecl *FD) {
-    if (isa<CXXConstructorDecl>(FD) || isa<CXXDestructorDecl>(FD)) return FD->getQualifiedNameAsString();
+    if (isa<CXXConstructorDecl>(FD) || isa<CXXDestructorDecl>(FD)) return qualifiedName(FD);
     std::string s;
     if (MC->shouldMangleDeclName(FD)) {
       llvm::raw_string_ostream os(s);
@@ -320,10 +412,6 @@ private:
     return FD->getName().str();
   }
 
-  static std::string recordName(const RecordDecl *R) {
-    std::string n = R->getQualifiedNameAsString();
-    return n.empty() ? "<anon>" : n;
-  }
 };
 
 
@@ -537,8 +625,7 @@ private:
   std::string callSite(const CallExpr *C, const FunctionDecl *FD) {
     auto it = Sites.find(C);
     if (it != Sites.end()) return it->second;
-    const SourceManager &SM = Ctx.getSourceManager();
-    std::string tu = SM.getFileEntryRefForID(SM.getMainFileID()) ? SM.getFileEntryRefForID(SM.getMainFileID())->getName().str() : "?";
+    std::string tu = kandeloModuleId().empty() ? "?" : kandeloModuleId();
     std::string id = "rc:" + tu + "#" + std::to_string(SiteN++);
     Sites[C] = id;
     add("SC\t" + id + "\t" + name(FD) + "\t" + (Cur ? name(Cur) : std::string("?")));
@@ -779,7 +866,7 @@ private:
     return s;
   }
   std::string name(const FunctionDecl *FD) {
-    if (isa<CXXConstructorDecl>(FD) || isa<CXXDestructorDecl>(FD)) return FD->getQualifiedNameAsString();
+    if (isa<CXXConstructorDecl>(FD) || isa<CXXDestructorDecl>(FD)) return qualifiedName(FD);
     std::string s;
     if (MC->shouldMangleDeclName(FD)) {
       llvm::raw_string_ostream os(s);
@@ -788,16 +875,31 @@ private:
     }
     return FD->getName().str();
   }
-  static std::string recordName(const RecordDecl *R) {
-    std::string n = R->getQualifiedNameAsString();
-    return n.empty() ? "<anon>" : n;
-  }
 };
+
+// The main file's name as __FILE__ would spell it: the longest matching
+// -fmacro-prefix-map / -ffile-prefix-map entry applied. WHY: the name is
+// written into the object (M line, call-site ids), and the SDK maps build
+// directories to stable paths so objects do not depend on where they were
+// built.
+std::string remappedMainFile(const CompilerInstance &CI, const SourceManager &SM) {
+  OptionalFileEntryRef FE = SM.getFileEntryRefForID(SM.getMainFileID());
+  if (!FE) return "?";
+  llvm::SmallString<256> Path(FE->getName());
+  CI.getLangOpts().remapPathPrefix(Path);
+  return std::string(Path);
+}
 
 class Consumer : public ASTConsumer {
 public:
-  explicit Consumer(bool Relaxed) : Relaxed(Relaxed) {}
+  Consumer(bool Relaxed, const CompilerInstance &CI) : Relaxed(Relaxed), CI(CI) {}
   void HandleTranslationUnit(ASTContext &C) override {
+    // One process may compile several translation units (`clang -c a.c b.c`
+    // runs cc1 in-process per file): start from nothing, so a unit whose
+    // code generation never ran (-fsyntax-only, an error) leaks nothing.
+    kandeloAstFacts().clear();
+    kandeloModuleId() = remappedMainFile(CI, C.getSourceManager());
+    kandeloOtherSanitizers() = static_cast<bool>(CI.getLangOpts().Sanitize.Mask & ~SanitizerKind::CFIICall);
     // AL: this translation unit was compiled with -fno-strict-aliasing, so
     // reading a struct through an unrelated struct type is defined here and
     // the analysis must keep such read-backs (SO/SD) from this unit.
@@ -810,16 +912,17 @@ public:
 
 private:
   bool Relaxed;
+  const CompilerInstance &CI;
 };
 
 class Action : public PluginASTAction {
 protected:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, llvm::StringRef) override {
-    return std::make_unique<Consumer>(static_cast<bool>(CI.getCodeGenOpts().RelaxedAliasing));
+    return std::make_unique<Consumer>(static_cast<bool>(CI.getCodeGenOpts().RelaxedAliasing), CI);
   }
   bool ParseArgs(const CompilerInstance &, const std::vector<std::string> &) override { return true; }
   // Before the main action, so the facts exist when code generation runs the
-  // LLVM pass that writes the side file.
+  // LLVM pass that writes the section.
   ActionType getActionType() override { return AddBeforeMainAction; }
 };
 

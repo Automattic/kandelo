@@ -1,10 +1,11 @@
 #!/usr/bin/env -S node --experimental-strip-types
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { TextDecoder } from 'node:util';
 import { resolveLldMajor, resolveToolchain, type Toolchain } from '../lib/toolchain.ts';
 import {
+  calltypesPluginFlags,
   compileFlags,
   DEFAULT_MAIN_THREAD_STACK_SIZE,
   filterArgs,
@@ -15,6 +16,7 @@ import {
   MAX_EXECUTABLE_MEMORY_SIZE,
   needsLinking,
   parseArgs,
+  requestsCfi,
   SHARED_LINK_FLAGS,
   THREAD_SLOT_USE_HOST_DEFAULT,
   threadSlotDeclarationDefine,
@@ -22,6 +24,13 @@ import {
   type ResponseFileContents,
 } from '../lib/flags.ts';
 import { run, runPassthrough } from '../lib/exec.ts';
+import {
+  CALLTYPES_SECTION,
+  ensureCalltypesPlugin,
+  importsFunction,
+  withCodeHashSection,
+  withoutCustomSection,
+} from '../lib/calltypes-plugin.ts';
 import { isMain } from '../lib/is-main.ts';
 import { type WasmArch, detectArch, targetTriple } from '../lib/arch.ts';
 
@@ -271,6 +280,9 @@ export function buildGlueCompileArgs(
 ): string[] {
   return [
     ...compileFlags(arch),
+    // The glue is code of every executable, so its facts must be in the
+    // link like any other object's.
+    ...(toolchain.calltypesPlugin ? calltypesPluginFlags(toolchain.calltypesPlugin) : []),
     `--sysroot=${toolchain.sysroot}`,
     ...sdkSourcePrefixMapFlags(toolchain, arch),
     ...recipeWorkPrefixMapFlags(),
@@ -325,6 +337,17 @@ function buildClangArgsInternal(
     executableLinker?.kind === 'no-link'
   ) {
     args.push(...compileFlags(arch));
+  }
+  // The call-type facts plugin, for invocations that can run a compile job.
+  // A link of objects only has none, and clang would warn that the -Xclang
+  // flags went unused.
+  const assemblyOnlyInputs = !hasSourceFiles &&
+    parsed.otherArgs.some((arg) => /\.(s|S|sx|asm)$/.test(arg) && !arg.startsWith('-'));
+  if (
+    toolchain.calltypesPlugin && !requestsCfi(filtered) && !parsed.preprocessOnly && !assemblyOnlyInputs &&
+    (hasSourceFiles || parsed.compileOnly || parsed.assemblyOnly || executableLinker?.kind === 'no-link')
+  ) {
+    args.push(...calltypesPluginFlags(toolchain.calltypesPlugin));
   }
   // Target is always needed (even for link-only, clang needs to know the target)
   if (!args.includes(target)) {
@@ -527,16 +550,160 @@ export async function prepareExecutableLinker(
   };
 }
 
-async function main(): Promise<void> {
+/** The import whose presence makes a module fork-capable (wasm-fork-instrument's default entry). */
+export const FORK_ENTRY_IMPORT = { module: 'kernel', field: 'kernel_fork' } as const;
+
+const KEEP_TARGET_FEATURES = '--keep-section=target_features';
+
+function isWasmOptJob(args: string[]): boolean {
+  return /^wasm-opt(?:-[0-9]+)?$/.test(basename(args[0] ?? '').replace(/\.exe$/i, ''));
+}
+
+/** The jobs of a `clang -###` trace, tokenized. */
+function tracedJobs(trace: string): string[][] {
+  return clangTraceCommands(
+    trace,
+    (args, firstLine) => /^[\t ]+["']/.test(firstLine) && args[0] !== undefined && isAbsolute(args[0]),
+  ).map((line) => tokenizeGnuResponseFile(line));
+}
+
+function withoutOne(args: string[], value: string): string[] {
+  const index = args.indexOf(value);
+  return index === -1 ? args : [...args.slice(0, index), ...args.slice(index + 1)];
+}
+
+/**
+ * The traced wasm-ld argv with the compile jobs' temporary objects (random
+ * names, different in every trace) replaced by their job order, so two
+ * traces of one command compare equal.
+ */
+function comparableLinker(jobs: string[][], linker: string[]): string[] {
+  const temporaries = new Map<string, string>();
+  for (const job of jobs) {
+    if (job[1] !== '-cc1') continue;
+    const index = job.indexOf('-o');
+    if (index !== -1 && job[index + 1] !== undefined) temporaries.set(job[index + 1], `<compile-job-${temporaries.size}>`);
+  }
+  return withoutOne(linker, KEEP_TARGET_FEATURES).map((arg) => temporaries.get(arg) ?? arg);
+}
+
+/**
+ * Does the linked module import the fork entry? Such a link skips clang's
+ * scheduled post-link wasm-opt and keeps its facts.
+ *
+ * WHY: a fork-capable module is instrumented next, and the instrumenter
+ * analyses it with the per-function facts in its `kandelo.calltypes`
+ * section. Binaryen's inlining would move call sites between functions and
+ * make those facts describe the wrong functions, so the module must reach
+ * the instrumenter as wasm-ld wrote it. The instrumenter runs wasm-opt
+ * itself after instrumenting (wasm-fork-instrument --post-optimize). Any
+ * other module needs no facts: it loses the section and gets exactly the
+ * optimization clang would have run.
+ */
+export function isForkCapable(module: Uint8Array): boolean {
+  return importsFunction(module, FORK_ENTRY_IMPORT.module, FORK_ENTRY_IMPORT.field);
+}
+
+/**
+ * Run the compiler driver. Compile-only invocations pass straight through.
+ * A link is run with clang's post-link wasm-opt (if clang schedules one)
+ * held back, then finished per isForkCapable().
+ */
+export async function runCompilerDriver(compiler: string, args: string[], linking: boolean): Promise<number> {
+  if (!linking || args.includes('-###')) return runPassthrough(compiler, args);
+  const trace = await run(compiler, ['-###', ...args]);
+  // A failing trace is a failing command: let the real run report it.
+  if (trace.exitCode !== 0) return runPassthrough(compiler, args);
+  const jobs = tracedJobs(trace.stderr);
+  const wasmOpt = jobs.filter(isWasmOptJob);
+  const linkers = jobs.filter((job) => basename(job[0]).replace(/\.exe$/i, '') === 'wasm-ld');
+  // Anything else would leave facts in a module that must not carry them,
+  // or optimize one that must reach the instrumenter unoptimized.
+  if (linkers.length !== 1 || wasmOpt.length > 1) {
+    throw new Error(
+      `clang -### emitted ${linkers.length} wasm-ld and ${wasmOpt.length} wasm-opt jobs for a link; expected one and at most one`,
+    );
+  }
+  const linker = linkers[0];
+  const outputIndex = linker.indexOf('-o');
+  if (outputIndex === -1 || linker[outputIndex + 1] === undefined) {
+    throw new Error('clang -### emitted a wasm-ld job without an output');
+  }
+  let workingDirectory = process.cwd();
+  try {
+    workingDirectory = workingDirectoryFromClangTrace(trace.stderr);
+  } catch {
+    // A link with no compile jobs: the driver runs in this directory.
+  }
+  const output = resolve(workingDirectory, linker[outputIndex + 1]);
+
+  // `--no-wasm-opt` also drops the target_features section clang keeps for
+  // wasm-opt to read; keep it explicitly so the link itself is unchanged.
+  // Prove that against clang's own trace rather than assume it.
+  const linkArgs = wasmOpt.length === 1 ? [...args, '--no-wasm-opt', `-Wl,${KEEP_TARGET_FEATURES}`] : args;
+  if (wasmOpt.length === 1) {
+    const heldBack = await run(compiler, ['-###', ...linkArgs]);
+    const heldBackJobs = heldBack.exitCode === 0 ? tracedJobs(heldBack.stderr) : [];
+    const heldBackLinker = heldBackJobs.filter((job) => basename(job[0]).replace(/\.exe$/i, '') === 'wasm-ld');
+    if (
+      heldBackJobs.some(isWasmOptJob) || heldBackLinker.length !== 1 ||
+      JSON.stringify(comparableLinker(heldBackJobs, heldBackLinker[0])) !==
+        JSON.stringify(comparableLinker(jobs, linker))
+    ) {
+      throw new Error('clang changed the wasm-ld command when its post-link wasm-opt was held back');
+    }
+  }
+  const exitCode = await runPassthrough(compiler, linkArgs);
+  if (exitCode !== 0) return exitCode;
+
+  let module: Uint8Array | null = null;
+  try {
+    module = readFileSync(output);
+  } catch {
+    // No readable output (e.g. -o /dev/null on some hosts): nothing to inspect.
+  }
+  const isWasm = module !== null && module.length >= 8 && module[0] === 0 && module[1] === 0x61;
+  if (isWasm && isForkCapable(module!)) {
+    writeFileSync(output, withCodeHashSection(module!));
+    return 0;
+  }
+  if (isWasm) {
+    const stripped = withoutCustomSection(module!, CALLTYPES_SECTION);
+    if (stripped !== module) writeFileSync(output, stripped);
+  }
+  if (wasmOpt.length === 1) return runPassthrough(wasmOpt[0][0], wasmOpt[0].slice(1));
+  return 0;
+}
+
+/** Does this invocation compile anything (and so need the facts plugin)? */
+export function mayCompile(userArgs: string[], arch: WasmArch): boolean {
+  const parsed = parseArgs(filterArgs(userArgs, arch).filtered);
+  return parsed.sourceFiles.length > 0 || parsed.compileOnly || parsed.assemblyOnly || needsLinking(parsed);
+}
+
+/** Shared entry of wasm{32,64}posix-cc and -c++. */
+export async function compilerMain(selectCompiler: (toolchain: Toolchain) => string): Promise<never> {
   const arch = detectArch();
   const toolchain = await resolveToolchain(arch);
+  const compiler = selectCompiler(toolchain);
   const userArgs = process.argv.slice(2);
-  const executableLinker = await prepareExecutableLinker(userArgs, toolchain, arch);
+  if (mayCompile(userArgs, arch)) toolchain.calltypesPlugin = await ensureCalltypesPlugin(toolchain.cc);
+  const executableLinker = await prepareExecutableLinker(userArgs, toolchain, arch, compiler);
   const glue = await compileExecutableGlue(userArgs, toolchain, arch, executableLinker);
   const args = buildClangArgs(userArgs, toolchain, arch, executableLinker ?? undefined, glue?.objects);
-  const exitCode = await runPassthrough(toolchain.cc, args);
-  if (glue) rmSync(glue.dir, { recursive: true, force: true });
+  const { filtered } = filterArgs(userArgs, arch);
+  const linking = needsLinking(parseArgs(filtered)) && executableLinker?.kind !== 'no-link';
+  let exitCode: number;
+  try {
+    exitCode = await runCompilerDriver(compiler, args, linking);
+  } finally {
+    if (glue) rmSync(glue.dir, { recursive: true, force: true });
+  }
   process.exit(exitCode);
+}
+
+async function main(): Promise<void> {
+  await compilerMain((toolchain) => toolchain.cc);
 }
 
 if (isMain(import.meta.url)) main();

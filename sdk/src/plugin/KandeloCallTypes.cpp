@@ -1,26 +1,41 @@
-// KandeloCallTypes: an out-of-tree LLVM pass plugin (clang -fpass-plugin).
+// KandeloCallTypes: an out-of-tree LLVM pass plugin (clang -fpass-plugin),
+// built and loaded by the Kandelo SDK for every C/C++ compile
+// (sdk/src/lib/calltypes-plugin.ts, docs/sdk-guide.md "Compiler facts").
 //
-// Research tool for fork-path precision (docs/plans/*-fork-path-precision.md).
-// It gives the fork-path analysis source-level facts about calls without
-// changing the code that ships.
+// It gives wasm-fork-instrument source-level facts about calls without
+// changing the code that ships (docs/plans/2026-10-02-fork-sinks.md).
 //
 // 1. Pipeline start (before any optimization): clang has emitted CFI type
-//    tests (-Xclang -fsanitize=cfi-icall,cfi-vcall). For every indirect call
-//    guarded by a test, attach the test's type id to the call as metadata
-//    (!kandelo.icall / !kandelo.vcall), then delete the test so the optimizer
-//    sees the same IR as an ordinary build. Metadata on calls survives
-//    inlining and cloning.
-// 2. Optimizer last (just before code generation): write a side file
-//    describing every remaining call, every function's type ids, every
-//    vtable slot, constant and pass-through call arguments, and which call
-//    sites stay reachable when one integer parameter has a known value.
+//    tests (-Xclang -fsanitize=cfi-icall plus -fwhole-program-vtables). For
+//    every indirect call guarded by a test, attach the test's type id to the
+//    call as metadata (!kandelo.icall / !kandelo.vcall), then delete the test
+//    so the optimizer sees the same IR as an ordinary build. Metadata on
+//    calls survives inlining and cloning.
+// 2. Optimizer last (just before code generation): describe every remaining
+//    call, every function's type ids, every vtable slot, constant and
+//    pass-through call arguments, and which call sites stay reachable when
+//    one integer parameter has a known value. The AST half
+//    (KandeloFnCasts.cpp, same dylib and process) appends its lines.
 //
-// Side file path: -mllvm -kandelo-calltypes-out=<path>. Format v2 (TSV,
-// demangled names matching the wasm name section):
-//   #kandelo-calltypes	3
-//   M	module-id
+// Output: the text below becomes the contents of a Wasm custom section named
+// `kandelo.calltypes` in the object file (through the WebAssembly backend's
+// `wasm.custom_sections` named metadata). WHY a section and not a side file:
+// the facts must travel with the object through static archives, copies and
+// caches, and wasm-ld concatenates same-named custom sections of every
+// linked object in input order, so a linked module carries the facts of
+// exactly the code it contains. Every translation unit emits one, even if it
+// holds only the header and M line, so a missing unit is distinguishable
+// from an empty one. `-mllvm -kandelo-calltypes-out=<path>` also writes the
+// same text to a file (debugging only).
+//
+// Format (TSV, demangled names matching the wasm name section):
+//   #kandelo-calltypes	5
+//   M	module-id        the main source file, remapped by -ffile-prefix-map /
+//        -fmacro-prefix-map like __FILE__ so objects stay path-independent
 //   F	fn	nparams	linkage(E|I)	addr-taken(0|1)	mangled
-//   T	fn	typeid                       function type id (offset 0 only)
+//   T	fn	typeid                       function type id (offset 0 only);
+//        an internal-linkage type id is `L:<module-id>:<n>`, n numbering the
+//        module's distinct ids in first-use order
 //   V	fn	classid	offset               vtable slot
 //   C	fn	site	callee               direct call (aliases resolved)
 //   S	fn	site	wasm-sig	icall	typeid
@@ -43,6 +58,8 @@
 //   P	fn	param	kind	detail   the same for a pointer parameter's value
 //   Y	fn	site	kind	detail   where an indirect call's callee was loaded
 //        from: field <struct>:<index>, global <name>, arg <index>, other
+//   O	global                         holds only already-installed handlers
+// followed by the AST half's lines (see KandeloFnCasts.cpp).
 // Sites number every non-intrinsic call in instruction order.
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Demangle/Demangle.h"
@@ -59,27 +76,47 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include <functional>
 #include <map>
 #include <set>
 
 using namespace llvm;
 
-// Source-level facts from KandeloFnCasts.cpp (same dylib).
+// Source-level facts from KandeloFnCasts.cpp (same dylib, same process).
 std::string &kandeloAstFacts();
+// The main file name remapped by the prefix maps (empty: no AST half ran).
+std::string &kandeloModuleId();
+// A sanitizer other than the plugin's cfi-icall is enabled (AST half).
+bool &kandeloOtherSanitizers();
 
 static cl::opt<std::string> OutPath("kandelo-calltypes-out", cl::init(""),
-                                    cl::desc("Write the Kandelo call-type side file here"));
+                                    cl::desc("Also write the Kandelo call-type facts to this file (debugging)"));
+
+static const char kSectionName[] = "kandelo.calltypes";
 
 namespace {
+
+// The unit's identity in the facts: the remapped main file when the AST half
+// ran (path-independent objects), else LLVM's module identifier.
+std::string moduleId(const Module &M) {
+  return kandeloModuleId().empty() ? M.getModuleIdentifier() : kandeloModuleId();
+}
+
+// Numbers for distinct (internal-linkage) type ids, assigned in first-use
+// order while EmitPass writes one module. WHY not the node's address: the
+// facts are object-file bytes now, and an address differs on every run.
+std::map<const Metadata *, unsigned> &localTypeIds() {
+  static std::map<const Metadata *, unsigned> m;
+  return m;
+}
 
 std::string typeIdString(Metadata *MD, const Module &M) {
   if (auto *S = dyn_cast<MDString>(MD)) return S->getString().str();
   // Distinct (internal-linkage) type ids are unique per module.
-  std::string s;
-  raw_string_ostream os(s);
-  os << "L:" << M.getModuleIdentifier() << ":" << (const void *)MD;
-  return s;
+  auto &ids = localTypeIds();
+  auto it = ids.try_emplace(MD, ids.size()).first;
+  return "L:" + moduleId(M) + ":" + std::to_string(it->second);
 }
 
 // Values tested by llvm.type.test, through phi/select.
@@ -327,13 +364,54 @@ struct TagPass : PassInfoMixin<TagPass> {
       }
       F.setMetadata("kandelo.hadtests", MDNode::get(Ctx, {}));
       // Delete the tests: the optimizer must see an ordinary build.
+      std::vector<BranchInst *> checks;
       for (CallInst *T : dead) {
+        for (User *U : T->users())
+          if (auto *BI = dyn_cast<BranchInst>(U); BI && BI->isConditional() && isTrapBlock(BI->getSuccessor(1)))
+            checks.push_back(BI);
         T->replaceAllUsesWith(ConstantInt::getTrue(Ctx));
         T->eraseFromParent();
       }
+      // A cfi-icall check is `br %test, %cont, %trap` with %cont split off
+      // the call's block. Without optimization nothing folds it, so restore
+      // the block clang emits without the check (code at -O0 would
+      // otherwise keep the dead trap).
+      for (BranchInst *BI : checks) {
+        BasicBlock *Cont = BI->getSuccessor(0), *Trap = BI->getSuccessor(1);
+        Trap->removePredecessor(BI->getParent());
+        BranchInst::Create(Cont, BI->getIterator());
+        BI->eraseFromParent();
+        if (pred_empty(Trap)) DeleteDeadBlock(Trap);
+        MergeBlockIntoPredecessor(Cont);
+      }
       changed = true;
     }
+    // The checks' static data (source locations, type descriptors) is
+    // emitted even in trap mode, where nothing references it; the optimizer
+    // drops it, -O0 would ship it. Only when cfi-icall is the sole sanitizer:
+    // another sanitizer's unused data is part of the ordinary build.
+    if (!kandeloOtherSanitizers()) {
+      for (GlobalVariable &G : make_early_inc_range(M.globals())) {
+        if (!G.hasPrivateLinkage() || !G.isConstant()) continue;
+        G.removeDeadConstantUsers(); // the check's unused source-location struct
+        if (!G.use_empty()) continue;
+        auto *ST = dyn_cast<StructType>(G.getValueType());
+        bool descriptor = !G.hasName() && ST && ST->getNumElements() == 3 && ST->getElementType(0)->isIntegerTy(16) &&
+                          ST->getElementType(1)->isIntegerTy(16) && ST->getElementType(2)->isArrayTy();
+        if (G.getName().starts_with(".src") || descriptor) {
+          G.eraseFromParent();
+          changed = true;
+        }
+      }
+    }
     return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  }
+
+  // clang's trap-mode check failure block: a trap intrinsic, then unreachable.
+  static bool isTrapBlock(BasicBlock *B) {
+    auto *II = dyn_cast<IntrinsicInst>(&B->front());
+    return II && (II->getIntrinsicID() == Intrinsic::ubsantrap || II->getIntrinsicID() == Intrinsic::trap) &&
+           isa<UnreachableInst>(II->getNextNode());
   }
 };
 
@@ -645,14 +723,13 @@ void sigactionRecords(Value *Act, Function &F, raw_ostream &os, const std::funct
 
 struct EmitPass : PassInfoMixin<EmitPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
-    if (OutPath.empty()) return PreservedAnalyses::all();
-    std::error_code EC;
-    raw_fd_ostream os(OutPath, EC, sys::fs::OF_Text);
-    if (EC) report_fatal_error(Twine("kandelo-calltypes: cannot write ") + OutPath + ": " + EC.message());
+    std::string text;
+    raw_string_ostream os(text);
+    localTypeIds().clear();
     const DataLayout &DL = M.getDataLayout();
     auto nm = [](StringRef n) { return demangle(n.str()); };
-    os << "#kandelo-calltypes\t4\n";
-    os << "M\t" << M.getModuleIdentifier() << "\n";
+    os << "#kandelo-calltypes\t5\n";
+    os << "M\t" << moduleId(M) << "\n";
     // Registration APIs whose address escapes (called indirectly or stored)
     // make their registry unknown.
     for (const RegistryArg &R : kRegistries) {
@@ -837,12 +914,27 @@ struct EmitPass : PassInfoMixin<EmitPass> {
         uint64_t ap = A->getZExtValue();
         std::string cls = typeIdString(T->getOperand(1), M);
         // Member-function-pointer ids (".virtual") never match a virtual
-        // call's class id; skip them to keep the side file small.
+        // call's class id; skip them to keep the section small.
         if (StringRef(cls).ends_with(".virtual")) continue;
         for (auto &[off, F] : slots)
           if (F && off >= ap) os << "V\t" << nm(F->getName()) << "\t" << cls << "\t" << (off - ap) << "\n";
       }
     }
+    os.flush();
+    localTypeIds().clear();
+    kandeloModuleId().clear();
+    kandeloOtherSanitizers() = true;
+    // The object's `kandelo.calltypes` custom section (see the header).
+    LLVMContext &Ctx = M.getContext();
+    M.getOrInsertNamedMetadata("wasm.custom_sections")
+        ->addOperand(MDNode::get(Ctx, {MDString::get(Ctx, kSectionName), MDString::get(Ctx, text)}));
+    if (!OutPath.empty()) {
+      std::error_code EC;
+      raw_fd_ostream file(OutPath, EC, sys::fs::OF_Text);
+      if (EC) report_fatal_error(Twine("kandelo-calltypes: cannot write ") + OutPath + ": " + EC.message());
+      file << text;
+    }
+    // Only named metadata was added; no analysis is invalidated.
     return PreservedAnalyses::all();
   }
 };
@@ -850,7 +942,7 @@ struct EmitPass : PassInfoMixin<EmitPass> {
 } // namespace
 
 extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
-  return {LLVM_PLUGIN_API_VERSION, "KandeloCallTypes", "0.2", [](PassBuilder &PB) {
+  return {LLVM_PLUGIN_API_VERSION, "KandeloCallTypes", "0.3", [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel) { MPM.addPass(TagPass()); });
             PB.registerOptimizerLastEPCallback(
