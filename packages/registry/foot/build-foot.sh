@@ -160,7 +160,6 @@ done
 # libxml2, and this libxml2 converts encodings through GNU libiconv.
 echo "==> Linking foot.wasm..."
 wasm32posix-cc "${OBJS[@]}" \
-    -Wl,-z,stack-size=1048576 \
     "$FCFT_PREFIX/lib/libfcft.a" \
     "$FONTCONFIG_PREFIX/lib/libfontconfig.a" \
     "$FREETYPE_PREFIX/lib/libfreetype.a" \
