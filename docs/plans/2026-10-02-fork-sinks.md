@@ -1252,35 +1252,52 @@ again. Kandelo refuses a nested vfork with `EAGAIN`, a documented
 boundary (`docs/posix-status.md`, `vfork()`), so Qt's call fails silently.
 The `startDetached` path of the sink set could not be checked at run time.
 
-### Validation run on this branch (2026-10-03)
+### Validation run on this branch (2026-10-03 and 2026-10-04)
 
 Sinks are the instrumenter default, so every fork-using test program the
-suites build goes through them.
+suites build goes through them. "Main" below means a detached worktree
+at main (3ca75abca), provisioned with its own sysroots, kernel and test
+programs.
 - Full Vitest (`ci-run-test-suite.sh vitest`): 4,970 passed, 4 failed.
   - The resolver bundle was stale: a merged commit changed
-    `host/src/constants.ts` after the bundle was regenerated. It is now
-    regenerated, and the test passes.
-  - `qt-gui-smoke` and `qt-qml-smoke` failed while rebuilding qtbase
-    (a cache miss, because this branch changes libc and the
-    instrumenter). The build lost its own temporary sysroot mid-build, and
-    the precompiled headers in the recipe's fixed in-tree `qtbase-build`
-    directory pointed into it. Run one after the other, both pass. What
-    deleted the sysroot is not established: the log names only one build
-    directory, so a second concurrent qtbase build is a guess, not a
-    finding.
-  - `abi-version.test.ts` fails in its own import-section parser.
-    `at += uleb()` reads `at` before `uleb()` advances it. The test and
-    the `__abi_version` export it depends on are identical on main, so it
-    should fail there too; main was not run.
+    `host/src/constants.ts` after the bundle was regenerated. Regenerated;
+    the test passes.
+  - `abi-version.test.ts`: its import-section parser advanced with
+    `at += uleb()`, which reads `at` before `uleb()` moves past the length
+    byte. On main the misaligned walk happens to stop on a byte that looks
+    like a memory import (1,024 pages for a 129-page import), so the test
+    passes with a wrong value. This branch's build shifts the bytes and the
+    walk finds nothing. Fixed; it passes.
+  - `qt-gui-smoke` and `qt-qml-smoke` failed while two qtbase builds ran
+    at once (a cache miss, because this branch changes libc and the
+    instrumenter). The log shows two configure-and-build runs starting
+    before the first failure. The recipe deletes and reconfigures a fixed
+    build tree inside the checkout (`packages/registry/qtbase/qtbase-build`),
+    so concurrent resolves of the same package share it, contrary to the
+    resolver's private work root. Run one after the other, both pass.
+    About 40 recipes use the same pattern; the fix is pending a decision.
 - Open POSIX Test Suite: 174 passed, 0 failed (179 total).
 - libc-test: 306 passed, 0 failed, 17 expected failures.
 - Sortix os-test `--all`: 5,039 passed, 3 failed, 3 timed out. The
   timeouts (poll, select) pass when re-run alone. The three `nl_types`
-  tests fork, `execlp("gencat")`, then `catopen` the result, which fails
-  with `ENOENT` in the suite's isolated VFS. The same test built with
-  `--no-sinks` fails identically, so sinks are not the cause. Our `gencat`
-  writes a valid catalog when run alone. The root cause is open, and main
-  was not run, so whether another change on this branch is responsible
-  is not known.
+  failures also fail on main. The rootfs `gencat` is a posix-utils-lite
+  fake that copies its source text into the "catalog", so musl's
+  `catopen` rejects it. Open PR #1427 replaces it with a real `gencat`.
+- Browser (Chromium, CI's grep-invert set): 202 passed, 3 failed.
+  - Omarchy desktop: passes alone (load).
+  - Node.js demo: expected zero lazy Coreutils fetches from an
+    environment switch whose only setter #1316 removed. It now expects
+    the one fetch every image makes, and passes.
+  - ppoll/pselect signal matrix: times out on main too. The hang moves
+    between cases from run to run (an accepted SIGALRM that never wakes a
+    `pause()`, or a timed `ppoll` that never returns): a lost wakeup in
+    the browser host. Under investigation.
+- Browser cross-browser contract specs on Chromium and WebKit: 56
+  passed. Firefox cannot launch under Playwright on macOS 26/27.
+- Browser vfork lifecycle spec, Chromium and WebKit: 18 passed. WebKit
+  had failed every fork-instrumented program at load, a regression from
+  f6b1dc2c3 (engine `Module.imports()` on modules WebKit cannot
+  reflect), now fixed.
 
-Not run: the browser suite, the ABI snapshot check, and benchmarks.
+Not run: the ABI snapshot check, benchmarks, and the full browser suite
+after the fixes.
