@@ -24,14 +24,6 @@ const MAX_LOG_LINES = 160;
 // `kandelo-bash-5.2$ `. Match both forms with one shared pattern instead of
 // pinning to a specific bash version.
 const KANDELO_PROMPT = /kandelo(?:-bash-[0-9.]+)?\$ ?/;
-const sourceRootfsExpectation =
-  process.env.KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL;
-if (sourceRootfsExpectation !== undefined && sourceRootfsExpectation !== "1") {
-  throw new Error(
-    "KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL must be 1 when set",
-  );
-}
-const expectSourceRootfsShell = sourceRootfsExpectation === "1";
 
 test.beforeEach(({ page }) => {
   const diagnostics: BrowserDiagnostics = {
@@ -405,8 +397,11 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   // WHY: bash is the image's only shell, including /bin/sh (#1403), and ships
   // eagerly, so login never fetches a shell runtime and dash is not in the
   // image at all. The `id` utility still resolves through the image's lazy
-  // Coreutils identity. The suite runner sets this expectation only after
-  // validating the exact source-only composition.
+  // Coreutils identity (images/rootfs/PACKAGES.toml installs package outputs
+  // lazily by default), so exactly one Coreutils fetch is expected. An
+  // environment switch once selected zero for Homebrew-bottle images, which
+  // shipped Coreutils eagerly; #1316 removed those images and the switch's
+  // only setter.
   expect(
     standaloneShellRuntimeFetches.filter(({ name }) => name === "bash"),
   ).toEqual([]);
@@ -415,7 +410,7 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   ).toEqual([]);
   expect(
     standaloneShellRuntimeFetches.filter(({ name }) => name === "coreutils"),
-  ).toHaveLength(expectSourceRootfsShell ? 1 : 0);
+  ).toHaveLength(1);
 });
 
 test("Kandelo nginx demo serves its web preview", async ({ page }) => {
