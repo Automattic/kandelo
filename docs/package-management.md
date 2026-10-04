@@ -1447,9 +1447,11 @@ previous version of the cache entry or the full new one — never a partial
 write.
 
 If two builds of the same cache key race, the first `rename` wins.
-The second notices the canonical path exists and discards its own
-staging directory. Identical inputs yield identical outputs, so keeping
-either copy is correct.
+The second discards its own staging directory and keeps the winner,
+whether it sees the canonical path before renaming or its own `rename`
+is refused because the winner landed in between (`ENOTEMPTY` or
+`EEXIST`). Identical inputs yield identical outputs, so keeping either
+copy is correct.
 
 This race rule covers creation of a previously absent cache key. Maintenance
 that deliberately removes an existing key—force-source rebuild or stale-cache

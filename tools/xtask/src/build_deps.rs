@@ -10721,13 +10721,11 @@ fn ensure_built_uncached(
             // Race against a peer process that finished its own extract
             // first: keep theirs, drop ours. Identical inputs produce
             // identical outputs.
-            if canonical.exists() {
+            if canonical.exists() || !rename_default_stage_or_detect_winner(&tmp, &canonical)? {
                 let _ = std::fs::remove_dir_all(&tmp);
                 validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex)?;
                 return Ok(ResolvedNode::compiled(canonical, transitive));
             }
-            std::fs::rename(&tmp, &canonical)
-                .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), canonical.display()))?;
             Ok(ResolvedNode::compiled(canonical, transitive))
         }
         (ManifestKind::Source, true) => {
@@ -14156,7 +14154,7 @@ fn build_into_cache(
         // not satisfy `Path::exists`, so the ordinary rename below retains
         // Default's established repair behavior. SourceOnlyV1 never takes
         // this branch and remains fail-closed/no-follow.
-        if canonical.exists() {
+        if canonical.exists() || !rename_default_stage_or_detect_winner(&tmp, canonical)? {
             stage.cleanup()?;
             validate_cache_entry(target, canonical, arch, abi_version, cache_key_sha).map_err(
                 |error| {
@@ -14168,8 +14166,6 @@ fn build_into_cache(
             )?;
             return Ok(LocalBuildDisposition::Published);
         }
-        std::fs::rename(&tmp, canonical)
-            .map_err(|error| format!("rename {} -> {}: {error}", tmp.display(), canonical.display()))?;
         stage.mark_published();
         return Ok(LocalBuildDisposition::Published);
     }
@@ -16422,6 +16418,33 @@ pub(crate) fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Res
         ManifestKind::Source => {}
     }
     Ok(())
+}
+
+/// Publish a Default-policy stage at `canonical` with one `rename(2)`.
+///
+/// Returns `Ok(false)` when a peer resolve of the same key published first.
+/// Callers check `canonical.exists()` before calling, but a peer can publish
+/// between that check and the rename; `rename(2)` then refuses to replace the
+/// peer's non-empty directory with `ENOTEMPTY` or `EEXIST`. That is the
+/// concurrent-winner case the existence check already accepts, not a build
+/// failure, and the caller validates the winner the same way.
+fn rename_default_stage_or_detect_winner(stage: &Path, canonical: &Path) -> Result<bool, String> {
+    match std::fs::rename(stage, canonical) {
+        Ok(()) => Ok(true),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::AlreadyExists
+            ) && canonical.is_dir() =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(format!(
+            "rename {} -> {}: {error}",
+            stage.display(),
+            canonical.display()
+        )),
+    }
 }
 
 fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String> {
@@ -25188,6 +25211,28 @@ libs = ["lib/libWorkFail.a"]
             failed_after, failed_before,
             "failed source build mutated its registry checkout"
         );
+    }
+
+    #[test]
+    fn default_publication_rename_accepts_a_peer_that_won_after_the_existence_check() {
+        let root = tempdir("default-publication-race");
+        let canonical = root.join("pkg-1.0.0-rev1-wasm32-key");
+        let ours = root.join(".pkg.build-stage-1-0");
+        fs::create_dir_all(&ours).unwrap();
+        fs::write(ours.join("ours"), "ours").unwrap();
+
+        // The peer published between our `canonical.exists()` check and
+        // the rename: rename(2) refuses to replace its non-empty directory.
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(canonical.join("peer"), "peer").unwrap();
+        assert!(!rename_default_stage_or_detect_winner(&ours, &canonical).unwrap());
+        assert!(canonical.join("peer").exists());
+        assert!(ours.join("ours").exists(), "the caller cleans up its own stage");
+
+        fs::remove_dir_all(&canonical).unwrap();
+        assert!(rename_default_stage_or_detect_winner(&ours, &canonical).unwrap());
+        assert!(canonical.join("ours").exists());
+        assert!(!ours.exists());
     }
 
     #[test]
