@@ -1,4 +1,5 @@
 import { WASM_PAGE_SIZE } from "./constants";
+import { wasmModuleImports } from "./wasm-module-reflection";
 import {
   ContinuationAllocationError,
   type ContinuationAllocate,
@@ -1085,7 +1086,11 @@ class ImportIdentityResolver {
 
   constructor(module: WebAssembly.Module, context: string) {
     this.#context = context;
-    WebAssembly.Module.imports(module).forEach((declaration, ordinal) => {
+    // WHY the registered reflection: WebKit compiles fork artifacts whose
+    // imports include an anyref table and exception references, but its
+    // WebAssembly.Module.imports() throws on them. wasmModuleImports answers
+    // from the admitted bytes (see wasm-module-reflection.ts).
+    wasmModuleImports(module).forEach((declaration, ordinal) => {
       if (declaration.kind !== "global" && declaration.kind !== "table") return;
       const key = `${declaration.kind}\u0000${declaration.module}\u0000${declaration.name}`;
       const list = this.#byIdentity.get(key) ?? [];
