@@ -38,7 +38,13 @@ INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/qtshadertools-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.qt.io/archive/qt/6.10/${QTSHADERTOOLS_VERSION}/submodules/qtshadertools-everywhere-src-${QTSHADERTOOLS_VERSION}.tar.xz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
-BUILD_DIR="$SCRIPT_DIR/qtshadertools-build"
+# WHY the resolver's work root: this script deletes and reconfigures its
+# build tree, so a tree inside the checkout is shared by every concurrent
+# resolve of qtshadertools in this worktree (two Vitest files can both miss the cache).
+# One build's `rm -rf` then pulls the tree out from under the other, whose
+# precompiled headers point into a private sysroot that is gone. Outside a
+# resolver run the in-tree directory keeps standalone builds working.
+BUILD_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}/qtshadertools-build"
 
 for tool in wasm32posix-c++ wasm32posix-cc cmake ninja qmake; do
     if ! command -v "$tool" &>/dev/null; then
