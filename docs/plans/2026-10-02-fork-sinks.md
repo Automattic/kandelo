@@ -1299,5 +1299,24 @@ programs.
   f6b1dc2c3 (engine `Module.imports()` on modules WebKit cannot
   reflect), now fixed.
 
-Not run: the ABI snapshot check, benchmarks, and the full browser suite
-after the fixes.
+Later fixes on this branch: the browser ppoll/pselect hang was a libc
+glue bug (a restarted ppoll's remaining time sent with an unwritten
+padding word), hidden on Node because Node fires over-long timers after
+1 ms. Guest timeouts longer than an engine timer now re-arm in chunks on
+both hosts, an invalid ppoll timespec returns EINVAL, and test fixtures
+rebuild when the glue changes.
+
+Final run on the fixed tree (2026-10-04), after a full package rebuild:
+- Vitest: 4,979 passed, 1 failed (`qt-gui-smoke`, the concurrent qtbase
+  build race above).
+- Open POSIX: 174 passed, 0 failed. libc-test: 306 passed, 0 failed.
+- Sortix `--all`: 5,042 passed, 3 failed (`nl_types`, the fake
+  `gencat`; same on main).
+- Browser assets check passes. Chromium (CI set): 211 passed, 6
+  skipped. Cross-browser contract specs on Chromium and WebKit: 56
+  passed. vfork lifecycle and select-signal specs on Chromium and
+  WebKit: 20 passed.
+- ABI snapshot check passes.
+
+Not run: benchmarks, and Firefox (cannot launch under Playwright on
+macOS 26/27).
