@@ -64,7 +64,7 @@ function execHandlerSource(src: string): string {
 
 function cloneHandlerSource(src: string): string {
   const start = src.indexOf("async function handleClone(");
-  const end = src.indexOf("\nfunction handleThreadExit(", start);
+  const end = src.indexOf("\nfunction handleExit(", start);
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   return src.slice(start, end);
