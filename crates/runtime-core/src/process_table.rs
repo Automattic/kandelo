@@ -1102,7 +1102,13 @@ impl ProcessTable {
             if !parent.is_live_explicit_tid(caller_tid) {
                 return Err(Errno::ESRCH);
             }
-            if parent.vfork_child {
+            // WHY only vfork: a vfork child borrows its parked parent's
+            // address space, and a second borrower of the same memory would
+            // need the host to stack lifetimes it does not support. An
+            // ordinary fork copies the memory into a new process, as Linux
+            // does when a vfork child forks (Qt's startDetached does exactly
+            // this), so it needs no borrowing.
+            if parent.vfork_child && mode == wasm_posix_shared::fork_contract::Mode::Vfork {
                 return Err(Errno::EAGAIN);
             }
             (
@@ -1179,9 +1185,8 @@ impl ProcessTable {
             if !parent.is_live_explicit_tid(caller_tid) {
                 return Err(Errno::ESRCH);
             }
-            if parent.vfork_child {
-                return Err(Errno::EAGAIN);
-            }
+            // A vfork child may spawn: spawn builds the child from a path and
+            // copied arguments and never touches the caller's memory.
             // Compute the SIG_IGN-disposition bitmask for signals 1..=64.
             let mut ignored_signals: u64 = 0;
             for sig in 1u32..=64 {
@@ -2089,7 +2094,7 @@ mod wait_tests {
     }
 
     #[test]
-    fn vfork_child_rejects_nested_process_owners() {
+    fn vfork_child_may_fork_and_spawn_but_not_vfork() {
         use crate::process::test_host::NoopHost;
         use crate::spawn::SpawnAttrs;
         use wasm_posix_shared::fork_contract::Mode;
@@ -2106,13 +2111,20 @@ mod wait_tests {
             .unwrap();
         assert!(table.get(child_pid).unwrap().vfork_child);
 
+        // A second borrower of the parked parent's memory stays refused.
         assert_eq!(
-            table.fork_process_for_caller(child_pid, child_pid),
+            table.fork_process_for_caller_with_mode(child_pid, child_pid, Mode::Vfork),
             Err(Errno::EAGAIN),
         );
+        // An ordinary fork copies; the grandchild owns its own memory.
+        let grandchild_pid = table.fork_process_for_caller(child_pid, child_pid).unwrap();
+        let grandchild = table.get(grandchild_pid).unwrap();
+        assert!(!grandchild.vfork_child);
+        assert_eq!(grandchild.ppid, child_pid);
+
         let mut host = NoopHost;
-        assert_eq!(
-            table.spawn_child_for_caller(
+        assert!(table
+            .spawn_child_for_caller(
                 child_pid,
                 child_pid,
                 &[b"/bin/child".as_slice()],
@@ -2120,9 +2132,8 @@ mod wait_tests {
                 &[],
                 &SpawnAttrs::empty(),
                 &mut host,
-            ),
-            Err(Errno::EAGAIN),
-        );
+            )
+            .is_ok());
     }
 
     #[test]

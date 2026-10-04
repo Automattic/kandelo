@@ -1106,9 +1106,16 @@ instance, loader, and continuation controller. Only the calling parent thread
 stays parked in the asynchronous fork import; sibling pthreads continue to
 run.
 
-The kernel marks the vfork child's independent Process record. Nested fork,
-vfork, spawn, and pthread clone fail with `EAGAIN`; failed exec preserves the
-marker and returns to the child. Successful exec commit, `_exit()`, and exact
+The kernel marks the vfork child's independent Process record. A nested
+vfork and pthread clone fail with `EAGAIN`: a second borrower of the parked
+parent's memory would need stacked lifetimes the host does not provide.
+Ordinary fork and spawn are allowed. A vfork child's fork copies the borrowed
+memory like any fork. The child captures its continuation with its own
+mappings and publishes the root in its borrowed control slot, below its own
+channel, because the process anchor still belongs to the parked parent. It
+takes no archive lock, since the parent's reader already pins the snapshot.
+The grandchild adopts that root as a thread fork does. Failed exec preserves
+the marker and returns to the child. Successful exec commit, `_exit()`, and exact
 signal/trap teardown quiesce the borrowing Worker, release its alias and
 workspace, and resume the exact parked caller once. An ambiguous forced Worker
 termination cannot prove that shared-memory access stopped, so the host
