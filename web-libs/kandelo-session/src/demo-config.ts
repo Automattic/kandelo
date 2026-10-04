@@ -101,6 +101,60 @@ export interface DemoIngestConfig {
 }
 
 /**
+ * A dock button that replaces the machine's foreground program.
+ *
+ * A display machine's command is a long-lived program that owns the
+ * machine's terminal and its display device, so offering "run this instead"
+ * means ending that program first. The host does it as a person at the
+ * terminal would — Ctrl+C, then this command once the shell prompt is back
+ * (`runDemoDockAction` in demo-dock-action.ts) — so an action behaves exactly
+ * like typing its command after quitting the program by hand.
+ *
+ * `restart` is an author-provided shell command from the VFS image, never
+ * user input: same vocabulary and same trust as `ingest.onLoad.restart`.
+ *
+ * An action declares exactly one of `restart` (the button runs it) or
+ * `menu` (the button opens a list, and the chosen entry's `restart` runs the
+ * same way). A menu is for a family of commands too long for buttons, such
+ * as one per downloadable game.
+ */
+export type DemoDockActionConfig = DemoDockCommandConfig | DemoDockMenuActionConfig;
+
+/** A command the dock runs: an action's own, or a menu entry's. */
+export interface DemoDockCommandConfig {
+  id: string;
+  label: string;
+  description?: string;
+  restart: string;
+}
+
+export interface DemoDockMenuActionConfig {
+  id: string;
+  label: string;
+  description?: string;
+  menu: DemoDockMenuEntryConfig[];
+}
+
+/**
+ * One menu entry. `detail` is a short qualifier shown beside the label (a
+ * download size); `group` collects entries under a heading, in first-seen
+ * order. An entry the image knows about but cannot run declares
+ * `unavailable` — the reason, shown on the disabled entry — instead of
+ * `restart`, so the gap stays visible rather than silently missing.
+ */
+export type DemoDockMenuEntryConfig = {
+  id: string;
+  label: string;
+  detail?: string;
+  group?: string;
+} & ({ restart: string } | { unavailable: string });
+
+/** A dock has room for a few buttons; anything longer belongs in a menu. */
+const MAX_DOCK_ACTIONS = 4;
+/** A menu that needs scrolling past this is no longer a choice. */
+const MAX_DOCK_MENU_ENTRIES = 40;
+
+/**
  * Declared runtime shape of a machine.
  *
  * There is deliberately no `network` flag. One was carried here as
@@ -275,6 +329,7 @@ export interface KandeloDemoProfileConfig {
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
+  dockActions?: DemoDockActionConfig[];
   runtime?: DemoRuntimeConfigInput;
   init?: DemoInitConfig;
   web?: DemoWebConfigInput;
@@ -367,6 +422,7 @@ const PROFILE_ONLY_KEYS = [
   "assets",
   "guide",
   "ingest",
+  "dockActions",
   "runtime",
   "init",
   "web",
@@ -447,6 +503,16 @@ export function resolveDemoIngest(
   return profile?.ingest === undefined
     ? null
     : normalizeIngest(profile.ingest, `profiles.${profileId}.ingest`);
+}
+
+export function resolveDemoDockActions(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoDockActionConfig[] {
+  const profile = profileConfig(config, profileId);
+  return profile?.dockActions === undefined
+    ? []
+    : normalizeDockActions(profile.dockActions, `profiles.${profileId}.dockActions`);
 }
 
 /** Upper bound on any image-declared cap, so a bad image can't ask the browser
@@ -986,6 +1052,79 @@ function validateProfileFields(
   if (value.ingest !== undefined) {
     normalizeIngest(value.ingest, `${field}.ingest`);
   }
+  if (value.dockActions !== undefined) {
+    normalizeDockActions(value.dockActions, `${field}.dockActions`);
+  }
+}
+
+function normalizeDockActions(value: unknown, field: string): DemoDockActionConfig[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${field} must be an array`);
+  }
+  if (value.length > MAX_DOCK_ACTIONS) {
+    throw new Error(`${field} may declare at most ${MAX_DOCK_ACTIONS} actions`);
+  }
+  const seen = new Set<string>();
+  return value.map((action, index) => {
+    const at = `${field}[${index}]`;
+    if (!isRecord(action)) {
+      throw new Error(`${at} must be an object`);
+    }
+    const id = requiredString(action.id, `${at}.id`);
+    if (seen.has(id)) {
+      throw new Error(`${field} has duplicate dock action id: ${id}`);
+    }
+    seen.add(id);
+    const common = {
+      id,
+      label: requiredString(action.label, `${at}.label`),
+      ...(typeof action.description === "string" ? { description: action.description } : {}),
+    };
+    if ((action.restart === undefined) === (action.menu === undefined)) {
+      throw new Error(`${at} must declare exactly one of restart or menu`);
+    }
+    if (action.menu === undefined) {
+      return { ...common, restart: requiredString(action.restart, `${at}.restart`) };
+    }
+    return { ...common, menu: normalizeDockMenu(action.menu, `${at}.menu`) };
+  });
+}
+
+function normalizeDockMenu(value: unknown, field: string): DemoDockMenuEntryConfig[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${field} must be a non-empty array`);
+  }
+  if (value.length > MAX_DOCK_MENU_ENTRIES) {
+    throw new Error(`${field} may declare at most ${MAX_DOCK_MENU_ENTRIES} entries`);
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    const at = `${field}[${index}]`;
+    if (!isRecord(entry)) {
+      throw new Error(`${at} must be an object`);
+    }
+    const id = requiredString(entry.id, `${at}.id`);
+    if (seen.has(id)) {
+      throw new Error(`${field} has duplicate menu entry id: ${id}`);
+    }
+    seen.add(id);
+    const common = {
+      id,
+      label: requiredString(entry.label, `${at}.label`),
+      ...(entry.detail !== undefined
+        ? { detail: requiredString(entry.detail, `${at}.detail`) }
+        : {}),
+      ...(entry.group !== undefined
+        ? { group: requiredString(entry.group, `${at}.group`) }
+        : {}),
+    };
+    if ((entry.restart === undefined) === (entry.unavailable === undefined)) {
+      throw new Error(`${at} must declare exactly one of restart or unavailable`);
+    }
+    return entry.restart !== undefined
+      ? { ...common, restart: requiredString(entry.restart, `${at}.restart`) }
+      : { ...common, unavailable: requiredString(entry.unavailable, `${at}.unavailable`) };
+  });
 }
 
 function normalizePresentationConfig(config: unknown): DemoPresentation {

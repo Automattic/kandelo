@@ -186,6 +186,7 @@ function buildInstrumentedDylinkWat(
   wat: string,
   name: string,
   neededDynlibs: string[] = [],
+  memorySize = 0,
 ): Uint8Array {
   const dir = join(tmpdir(), "wasm-dylink-instrumented-test");
   mkdirSync(dir, { recursive: true });
@@ -203,7 +204,7 @@ function buildInstrumentedDylinkWat(
       `${name}-raw`,
       undefined,
       0,
-      0,
+      memorySize,
       [],
       [],
       null,
@@ -1666,6 +1667,97 @@ describe("side-module fork contract", () => {
 
     expect(options.table.length).toBe(baselineLength);
     expect(options.got.get("main_callback")?.value).toBe(1);
+  });
+
+  it("resolves GOT.func again when a live-process replica has no saved state", () => {
+    // A pthread replica shares the live process: it has no fork snapshot and
+    // reproduces the publisher's cell by re-running the loader's resolution.
+    const callbackModule = new WebAssembly.Module(buildDylinkWat(`
+      (module
+        (func (export "callback") (result i32) i32.const 73))
+    `, "resolved-got-callback"));
+    const callback = new WebAssembly.Instance(callbackModule).exports.callback as Function;
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "GOT.func" "main_callback" (global (mut i32))))
+    `, "side-replica-resolved-got-function");
+    const testOwner = createTestForkActivationOwner(63);
+    const options = createSideForkLoadOptions();
+    options.table.grow(1);
+    options.table.set(1, callback);
+    options.globalSymbols.set("main_callback", callback);
+    options.forkActivationOwner = {
+      prepare(request) {
+        return {
+          ...testOwner.owner.prepare(request),
+          replayImportState: "resolved",
+          savedMutableGlobalImport: () => {
+            throw new Error("a live-process replica has no saved import state");
+          },
+        };
+      },
+    };
+
+    loadSharedLibrarySync(
+      "libreplica-resolved-got-function.so",
+      wasmBytes,
+      options,
+      { memoryBase: 0, tableBase: options.table.length, activationId: 63 },
+    );
+
+    expect(options.got.get("main_callback")?.value).toBe(1);
+  });
+
+  it("forgets, never unmaps, adopted memory when a replay fails", () => {
+    // The adopted region is the process's live mapping (or a fork child's
+    // copy of it). Unmapping it on a failed rebuild let the next mmap hand
+    // the same addresses out zero-filled under the library still using them.
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "GOT.func" "main_callback" (global (mut i32))))
+    `, "side-failed-replay-adopted-memory", [], 16);
+    const testOwner = createTestForkActivationOwner(64);
+    const options = createSideForkLoadOptions();
+    options.globalSymbols.set("main_callback", () => 0);
+    options.forkActivationOwner = {
+      prepare(request) {
+        return {
+          ...testOwner.owner.prepare(request),
+          savedMutableGlobalImport: () => undefined,
+        };
+      },
+    };
+    const allocation = {
+      address: 0x3000,
+      size: 16,
+      mappingAddress: 0x3000,
+      mappingSize: 16,
+    };
+    const forgotten: unknown[] = [];
+    const unmapped: unknown[] = [];
+    options.adoptMemoryAllocation = () => {};
+    options.forgetMemoryAllocation = (forgottenAllocation) => {
+      forgotten.push(forgottenAllocation);
+    };
+    options.deallocateMemory = (address, size) => {
+      unmapped.push({ address, size });
+    };
+
+    expect(() => loadSharedLibrarySync(
+      "libfailed-replay-adopted-memory.so",
+      wasmBytes,
+      options,
+      {
+        memoryBase: allocation.address,
+        tableBase: options.table.length,
+        activationId: 64,
+        allocations: [allocation],
+      },
+    )).toThrow(/has no saved GOT\.func\.main_callback/);
+    expect(forgotten).toEqual([allocation]);
+    expect(unmapped).toEqual([]);
   });
 
   it("reconstructs a pre-export table gap from a saved self GOT.func index", () => {

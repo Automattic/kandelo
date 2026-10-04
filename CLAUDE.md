@@ -106,7 +106,9 @@ tests where possible and manually verify user-visible browser demo fixes with
 
 Runs under 10 minutes: one foreground Bash call with output to a log file.
 Longer runs: `scripts/agent-job start`, then repeat `scripts/agent-job wait
-<id>` (it blocks on the job's PID up to 9 minutes per call). Do not poll with
+<id>` (it blocks on the job's PID up to 9 minutes per call). To wait on
+another workspace's build, find it with `scripts/agent-job list --all` and
+wait on its id (or `wait --peer <text>`), not on its PID. Do not poll with
 `sleep` or `pgrep -f`, never end a headless session's or subagent's turn to
 wait, and do not make subagents wait on whole-tree builds. Why: each poll
 turn re-reads the whole conversation; `pgrep -f` matches the waiting shell

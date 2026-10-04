@@ -158,6 +158,105 @@ toward the "recorded exit status is wrong" harm signal (1 session so far).
   `./run.sh setup`, `./run.sh local-build`, `ci-run-test-suite.sh`, and
   dev-shell vitest runs.
 
+### 1b. Waiting on another workspace's build: `list --all`, commits, `wait --peer`
+
+Several Conductor workspaces on one machine often build the same tree, and
+they share the build cache. An agent that needs a build another workspace is
+already running does better to wait for it than to start a second one. The
+job records were always machine-wide, and `agent-job wait <id>` always
+worked on any job, but `agent-job list` showed only the caller's worktree,
+so a peer's build could not be found. On 2026-10-02 an agent waited on a
+peer's `./run.sh prepare-browser` by polling `kill -0 <pid>` instead.
+
+What was added (2026-10-02):
+
+- `agent-job list --all` lists jobs from every worktree, with a worktree
+  column.
+- `start` records the job's git `HEAD` and its uncommitted changes to
+  tracked files. `list --all`, `status`, and `wait` show both, and how
+  that commit relates to the caller's `HEAD`: same commit, ancestor,
+  descendant, diverged, or unrelated. The build cache is keyed on inputs,
+  so the closer the commit, the more of a peer's build the caller's own
+  run can reuse.
+- `agent-job wait --peer <text>` waits on the one running job whose
+  command contains `<text>`. When no job matches, or more than one does,
+  it exits 2 and lists the candidates. It never picks one.
+- The wait-guard hook (tool 8) used to deny a `pgrep -f` waiter with the
+  advice "for a process you did not start, `while kill -0 <pid>`". A
+  peer's build is such a process, so the hook was pointing agents at
+  exactly the hand-rolled wait this section counts. Its denials now name
+  `list --all` and `wait --peer` first, and keep `kill -0` only for
+  processes that no agent-job started. An installed copy goes stale with
+  this change: `python3 .claude/hooks/install-hooks.py --user --check`
+  reports it, and running the same command without `--check` updates it.
+- `CLAUDE.md` gained one sentence pointing at `list --all` and
+  `wait --peer`, so agents that never open `validation.md` see it.
+
+- **Measure,** per session, with `wait-impact.py`. A *peer wait* means
+  waiting on a process the session did not start.
+  - `peer_job_waits`: `agent-job wait` on a job whose recorded worktree
+    is not the session's, plus every `wait --peer`. The worktree comes
+    from the job's `meta.json` on this machine; `unresolved_job_waits`
+    counts waits whose job directory is gone;
+  - `peer_selector_waits`: `wait --peer` alone;
+  - `list_all_calls`: `agent-job list --all`;
+  - hand-rolled waits, from `pid_waiters` (`until`/`while … kill -0`),
+    `pgrep_waiters`, and `sleep` polls. Whether such a wait targets a peer
+    takes reading: the PID usually comes from a `ps` listing or a pid file,
+    not from a launch the analyzer can match. Review them with
+    `--examples`. `pid_waiters` and the three counts above skip heredoc
+    bodies, which quote commands without running them.
+  - **Baseline, Aug 1 to Oct 2, 2026 (121 sessions):** 241 `kill -0`
+    waiters (147 in main sessions, 94 in subagents) and 384 `pgrep -f`
+    waiters. Most wait on the session's own runs. Several in the
+    `--examples` sample find their PID with `pgrep -f "run.sh
+    prepare-browser"` or a shared `/tmp/*.pid` file, which can be another
+    workspace's run. The 2026-10-02 `kill -0` wait on a peer's
+    `prepare-browser` is the one confirmed case. `agent-job` peer waits:
+    none before this change, other than this change's own smoke test.
+- **Keep `list --all` and the commit fields if:** over the first 10
+  sessions that wait on a peer's build, by either method, at least 8 do it
+  with `agent-job`, and hand-rolled peer waits happen in at most 2.
+- **Keep `--peer` if:** at least one of those 10 sessions uses it, and it
+  succeeds more often than it exits 2 for ambiguity. If no session uses
+  it, remove it: `list --all` plus `wait <id>` covers the same need.
+- **Harm signals:**
+  - a commit relation that `git merge-base` contradicts;
+  - an agent that reused a peer build of an unrelated or diverged commit
+    and then hit a stale-artifact or closure error;
+  - `--peer` exiting 2 in two sessions where the agent then fell back to
+    a hand-rolled wait.
+
+  Any of these means revise; a second failure means remove.
+
+**A recording defect fixed along the way (2026-10-02).** The new tests,
+which start many jobs at once, crashed `start` once. `start` and the
+supervisor both rewrite `meta.json`, through the same temporary file, and
+whichever writes second drops the other's field: `start`'s copy lacks
+`child_pid`, and the supervisor's copy was read before `start` added
+`supervisor_pid`. Without `supervisor_pid`, a running job reads as LOST
+and `wait` returns at once with exit 125. Reproduced on the old script by
+injecting a 0.5 s delay into `start`:
+
+- 37 of 40 jobs started at once lost `child_pid`;
+- in a second run, 8 of 10 lost `supervisor_pid`, and 5 of 6 running
+  `sleep 15` jobs were listed as LOST while still running.
+
+Each writer now uses its own temporary file, and the supervisor waits for
+`start`'s write before adding `child_pid`. With the same injected delay,
+0 of 40 jobs lost a field, and 6 of 6 running jobs were listed as
+running. None of the 66 jobs in the real ledger at the time had lost a
+field, so the race needs a slow `start`.
+
+**A second defect found by the same tests (2026-10-02): no `ps` inside
+the dev shell.** Under `scripts/dev-shell.sh`, PATH has no `ps`.
+`agent-job status` on a running job crashed, and so did a `wait` that
+timed out: it exited 1 instead of 124, so "still running" read as a
+failure. `status` now falls back to `/bin/ps`, and without any `ps` it
+says the process list is unavailable. A regression test runs `wait` with
+no `ps` on PATH. It fails on the old code (exit 1) and passes now
+(exit 124).
+
 ### 2. Tree-change stamp (part of `agent-job result`): REMOVED
 
 When the tracked working tree changes between a job's start and its end, the
@@ -284,6 +383,35 @@ It is idempotent and keeps a `.bak`; `--check` reports a stale copy and
 `scripts/agent-job`. To judge the rule, count from the date it was
 installed, which is recorded in `hook-log.jsonl` by its first entry.
 
+**Keeping installed copies current (2026-10-02).** `--user` installs a
+copy, so a hook change merged to main reaches nobody until they re-run the
+installer. That mattered once already: after #1464 changed the advice for
+waiting on another workspace's build, installed copies kept recommending
+`while kill -0 <pid>`.
+
+- **The rule:** every change to a rule or a denial message bumps
+  `HOOK_VERSION` in `wait-guard.py`, and its PR says to re-run
+  `python3 .claude/hooks/install-hooks.py --user`. Comment-only changes
+  do not bump it.
+- **The notice:** when the checkout an agent works in has a higher
+  `HOOK_VERSION` than the installed copy, the hook shows the user a
+  one-line notice to reinstall, once per session. It goes to the user
+  (`systemMessage`), not the model, and does not approve or deny the
+  call. A checkout with a lower version, as on an older branch, is
+  silent.
+- **Not automatic, on purpose:** the copy reads the checkout's version
+  as text and never runs or copies the checkout's file. A user-level hook
+  that updated itself from whatever repository is open would let any
+  branch change what runs on every Bash call.
+- **Versioned log:** every `hook-log.jsonl` entry records `version`, and
+  `wait-impact.py` reports decisions per version (`by_version`). Judge a
+  changed rule or message only on entries from the version that has it.
+  Entries without the field come from versions 1 (#1455) and 2 (#1464,
+  2026-10-02), and are told apart by date.
+- **Limit:** copies installed before version 3 cannot give the notice.
+  Reinstalling version 3 is the last manual check needed.
+- **Tests:** `python3 evals/build-waiting/test_wait_guard.py`.
+
 ### 8b. Subagent long-wait guard (same hook)
 
 The largest baseline cost is subagents blocking on long builds, at 938 M
@@ -347,6 +475,7 @@ sessions with the tools before they can be judged.
 | # | Tool | Evidence so far | Against its rule |
 |---|---|---|---|
 | 1 | `agent-job` | A/B 9/9 correct vs 3/9 without; +23% raw cost per run | Correctness met; raw-cost clause not met; transcripts pending |
+| 1b | Peer waits (`list --all`, commits, `--peer`) | 8 tests (two worktrees, old records, `--peer` exits 2 on none and on several, `wait` without `ps`) | Pending: 10 sessions that wait on a peer |
 | 2 | Tree-change stamp | Fired 5 times during development, all for edits the run never read | Removed: saves no tokens |
 | 3 | Build progress | Real 154-node build: `status` showed 143/154 done, running nodes with ages, and the process tree | Transcript measure pending |
 | 4 | `[suite-health]` | Probe files: 3 load failures grouped to one cause and warned; zero-test run warned; full suite (482 files) raised no false warning | Precision pending (needs 20 warnings) |

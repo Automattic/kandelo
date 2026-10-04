@@ -1,4 +1,8 @@
-import type { DemoGuideConfig, DemoIngestConfig } from "./demo-config";
+import type {
+  DemoDockActionConfig,
+  DemoGuideConfig,
+  DemoIngestConfig,
+} from "./demo-config";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
@@ -834,6 +838,14 @@ export interface KernelHost {
   /** Resolve after a command has been written, without waiting for a prompt. */
   dispatchShellCommand(command: string): Promise<void>;
   runShellCommand(command: string): Promise<void>;
+  /**
+   * Type the terminal's interrupt character (Ctrl+C) into the machine's
+   * shell PTY and resolve once the shell prints its next prompt, i.e. once
+   * the foreground job has actually exited. Rejects if no prompt appears
+   * within `timeoutMs`: the job ignored SIGINT, and the caller must not
+   * pretend it stopped.
+   */
+  interruptShellForeground(opts?: { timeoutMs?: number }): Promise<void>;
 
   // VFS / procfs
   readFile(path: string): Promise<Uint8Array>;
@@ -917,6 +929,9 @@ export interface KernelHost {
   /** File-ingest capability declared by the current VFS image, if any. */
   getDemoIngest(): DemoIngestConfig | null;
   subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void;
+  /** Dock buttons declared by the current VFS image; empty when none. */
+  getDemoDockActions(): DemoDockActionConfig[];
+  subscribeDemoDockActions(cb: (state: DemoDockActionConfig[]) => void): () => void;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -1176,6 +1191,7 @@ export class LiveKernelHost implements KernelHost {
   private galleryListeners = new ListenerSet<void>();
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
   private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
+  private demoDockActionListeners = new ListenerSet<DemoDockActionConfig[]>();
   private audioStateListeners = new ListenerSet<MachineAudioState>();
   private audioActivityListeners = new ListenerSet<boolean>();
 
@@ -1186,6 +1202,7 @@ export class LiveKernelHost implements KernelHost {
   private webPreview: WebPreviewState | null = null;
   private demoGuide: DemoGuideConfig | null = null;
   private demoIngest: DemoIngestConfig | null = null;
+  private demoDockActions: DemoDockActionConfig[] = [];
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
   private offLazyDownloads: (() => void) | null = null;
@@ -1343,6 +1360,7 @@ export class LiveKernelHost implements KernelHost {
     this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
     this.setDemoIngest(null);
+    this.setDemoDockActions([]);
   }
 
   /** Configure the program attachPty spawns by default. */
@@ -1393,6 +1411,12 @@ export class LiveKernelHost implements KernelHost {
   setDemoIngest(ingest: DemoIngestConfig | null): void {
     this.demoIngest = ingest ? structuredClone(ingest) : null;
     this.demoIngestListeners.emit(this.getDemoIngest());
+  }
+
+  /** Update the dock buttons exposed by the current image. */
+  setDemoDockActions(actions: DemoDockActionConfig[]): void {
+    this.demoDockActions = structuredClone(actions);
+    this.demoDockActionListeners.emit(this.getDemoDockActions());
   }
 
   private async startShellCommand(
@@ -1452,6 +1476,36 @@ export class LiveKernelHost implements KernelHost {
   async runShellCommand(command: string): Promise<void> {
     const { completion } = await this.startShellCommand(command);
     await completion;
+  }
+
+  /**
+   * Deliberately NOT queued behind `ptyCommandQueues`: the command it ends is
+   * usually the one still holding that queue (a machine's long-lived
+   * foreground program was dispatched and never returned to a prompt).
+   * Commands dispatched afterwards wait on that same prompt through the
+   * queue, so they reach the shell, not the dying program.
+   */
+  async interruptShellForeground(opts: { timeoutMs?: number } = {}): Promise<void> {
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    const pty = await this.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+    const terminalProgram = this.shell ?? this.terminalSessions?.initial;
+    const prompt = terminalProgram ? shellPrompt(terminalProgram) : null;
+    // Listen before writing, or a fast exit prints its prompt unobserved.
+    const back = waitForPtyReadiness(pty, {
+      includeHistory: false,
+      timeoutMs,
+      prompt,
+    });
+    pty.write("\x03");
+    try {
+      await back;
+    } catch {
+      throw new Error(
+        `the foreground program did not exit within ${timeoutMs}ms of Ctrl+C`,
+      );
+    } finally {
+      pty.close();
+    }
   }
 
   /** Update the status and fan out to subscribers. */
@@ -1678,6 +1732,7 @@ export class LiveKernelHost implements KernelHost {
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
     this.setDemoIngest(null);
+    this.setDemoDockActions([]);
     const kernel = this.kernel;
     this.invalidatePtySessions(kernel);
     this.kernel = undefined;
@@ -2889,6 +2944,14 @@ export class LiveKernelHost implements KernelHost {
 
   subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void {
     return this.demoIngestListeners.add(cb);
+  }
+
+  getDemoDockActions(): DemoDockActionConfig[] {
+    return structuredClone(this.demoDockActions);
+  }
+
+  subscribeDemoDockActions(cb: (state: DemoDockActionConfig[]) => void): () => void {
+    return this.demoDockActionListeners.add(cb);
   }
 
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {

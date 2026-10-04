@@ -73,6 +73,11 @@ MARKERS = {
     "closure_preflights": re.compile(r"^artifact closures: \d+ ok", re.M),
 }
 NOTIFY = re.compile(r"<task-id>([^<]+)</task-id>.*?<status>([^<]+)</status>", re.S)
+# Waiting on another worktree's job (tool 1b in README.md). A wait counts as a
+# peer wait when the job's recorded worktree is not the session's: subagents
+# waiting on their parent's job are then not miscounted.
+AGENT_JOB_WAIT = re.compile(r"\bagent-job\s+wait\s+(?:--peer\s+[^<\s]|(?:--timeout\s+\d+\s+)?([A-Za-z0-9._-]+-\d{4}-\d{6}-[0-9a-f]{4}))")
+LIST_ALL = re.compile(r"\bagent-job\s+list\b[^;&|\n]*--all\b")
 # A command that uses the build-waiting tools (see README.md).
 TOOLS = re.compile(r"scripts/agent-job\b|\bagent-job\s+(start|wait|status|result|list)\b")
 # Prompt cache lifetime for subagents; a longer idle gap means the next turn rewrites its context.
@@ -87,6 +92,15 @@ def cost_of(u):
     # Input-equivalent tokens: cache read 0.1x, cache write 2x, output 5x (same as evals/agent-skills).
     return (u.get("input_tokens") or 0) + 2 * (u.get("cache_creation_input_tokens") or 0) \
         + 0.1 * (u.get("cache_read_input_tokens") or 0) + 5 * (u.get("output_tokens") or 0)
+
+
+HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\s*\1\b", re.S)
+
+
+def strip_heredocs(cmd):
+    # A heredoc body is a script or doc being written, which may quote wait
+    # commands (an edit to agent-job's help, say) without running them.
+    return HEREDOC.sub("<<heredoc", cmd)
 
 
 def strip_cd(cmd):
@@ -129,8 +143,19 @@ def text_of(content):
     return "\n".join(out)
 
 
+def job_worktree(job_id):
+    """The worktree a job ran in, from its meta.json on this machine, or None."""
+    root = os.path.expanduser(os.environ.get("KANDELO_AGENT_JOBS_DIR", "~/.cache/kandelo/agent-jobs"))
+    try:
+        with open(os.path.join(root, "jobs", job_id, "meta.json")) as f:
+            return json.load(f).get("worktree")
+    except (OSError, ValueError):
+        return None
+
+
 def new_stream():
     return dict(cost=0.0, wait_cost=0.0, wait_turns=0, sleep_turns=0, pgrep_waiters=0, pid_waiters=0,
+                peer_job_waits=0, peer_selector_waits=0, unresolved_job_waits=0, list_all_calls=0,
                 process_probes=0, monitor_calls=0, long_jobs=0, job_seconds=[], polls_per_job=[],
                 mutations_mid_validation=0, concurrent_validation=0, foreground_waits=0,
                 foreground_wait_seconds=0.0, collisions=collections.Counter(), collision_streams=set(), markers=collections.Counter(), dead_suite=0, empty_filter=0, closure=0,
@@ -299,8 +324,24 @@ def scan_file(path, since, until, n_examples):
                 if PGREP_WAITER.search(cmd):
                     S["pgrep_waiters"] += 1
                     add_example("pgrep -f waiter", strip_cd(cmd))
-                if PID_WAITER.search(cmd):
+                run = strip_heredocs(cmd)
+                if PID_WAITER.search(run):
                     S["pid_waiters"] += 1
+                    add_example("kill -0 waiter", strip_cd(cmd))
+                if LIST_ALL.search(run):
+                    S["list_all_calls"] += 1
+                for w in AGENT_JOB_WAIT.finditer(run):
+                    if not w.group(1):
+                        S["peer_selector_waits"] += 1
+                        S["peer_job_waits"] += 1
+                        add_example("peer wait", strip_cd(cmd))
+                        continue
+                    wt = job_worktree(w.group(1))
+                    if wt is None:
+                        S["unresolved_job_waits"] += 1
+                    elif not (cwd == wt or cwd.startswith(wt + "/")):
+                        S["peer_job_waits"] += 1
+                        add_example("peer wait", strip_cd(cmd))
                 if PROCESS_PROBE.search(strip_cd(cmd)):
                     S["process_probes"] += 1
             mutating = name in ("Edit", "Write", "NotebookEdit") or (
@@ -347,6 +388,9 @@ def tool_logs(since, until):
     hook = list(rows(os.path.join(root, "hook-log.jsonl")))
     out["wait_guard"] = dict(collections.Counter(r["rule"] for r in hook))
     out["wait_guard"]["sessions"] = len({r.get("session_id") for r in hook})
+    # Which advice each decision gave: entries before HOOK_VERSION 3 carry no
+    # version (1 and 2 are told apart by date: 2 landed 2026-10-02).
+    out["wait_guard"]["by_version"] = dict(collections.Counter(str(r.get("version", "1-2")) for r in hook))
     base = os.environ.get("KANDELO_SOURCE_CACHE_ROOT") or os.path.expanduser("~/.cache/kandelo/source-only")
     runs = [r for r in rows(os.path.join(base, "timings", "runs.jsonl"))
             if r.get("predicted_seconds") and r.get("actual_seconds") and r.get("built")]
@@ -414,6 +458,10 @@ def main():
             sleep_poll_calls=T["sleep_turns"],
             pgrep_waiters=T["pgrep_waiters"],
             pid_waiters=T["pid_waiters"],
+            peer_job_waits=T["peer_job_waits"],
+            peer_selector_waits=T["peer_selector_waits"],
+            unresolved_job_waits=T["unresolved_job_waits"],
+            list_all_calls=T["list_all_calls"],
             process_probe_calls=T["process_probes"],
             monitor_calls=T["monitor_calls"],
             long_background_jobs=T["long_jobs"],

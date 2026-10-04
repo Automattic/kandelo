@@ -171,3 +171,4 @@ programs/sdl2/third_party/inconsolata_ttf.h
 # Rust guest fixture build outputs (wasm is already ignored globally).
 programs/rust/*/target/
 programs/rust/*/Cargo.lock
+programs/rust/*/*/Cargo.lock

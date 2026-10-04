@@ -20,6 +20,7 @@ import {
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
+import { tryResolveBinary } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
@@ -31,8 +32,9 @@ const buildDir = join(tmpdir(), "kandelo-fork-from-side-module");
 const hasPrerequisites =
   existsSync(join(sysroot, "lib", "libc.a"))
   && (
-    existsSync(join(repoRoot, "binaries", "kernel.wasm"))
-    || existsSync(join(repoRoot, "local-binaries", "kernel.wasm"))
+    // The resolver runCentralizedProgram boots from; legacy-path checks
+    // skipped this suite in source-only checkouts.
+    tryResolveBinary("kernel.wasm") !== null
   );
 
 if (process.env.KANDELO_REQUIRE_SIDE_MODULE_FORK_E2E === "1" && !hasPrerequisites) {

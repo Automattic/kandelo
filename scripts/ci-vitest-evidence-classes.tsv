@@ -445,6 +445,7 @@ tests/package-system/source-rootfs-shell-bridge.test.ts	prepared-product
 tests/package-system/validate-wasm-artifacts.test.ts	prepared-product
 tests/package-system/vite-binary-resolution.test.ts	prepared-product
 tests/package-system/wasm-artifact-guards.test.ts	prepared-product
+web-libs/kandelo-session/test/demo-dock-action.test.ts	source-only
 web-libs/kandelo-session/test/demo-ingest.test.ts	source-only
 web-libs/kandelo-session/test/deployment-scope.test.ts	source-only
 web-libs/kandelo-session/test/kandelo-session.test.ts	source-only

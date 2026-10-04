@@ -29,6 +29,7 @@ import {
   type IngestPhase,
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { useFittedCanvasStyle } from "./canvasFit";
+import { useDockActions } from "./DockActions";
 import {
   createTouchKeySender,
   KEY_ENTER,
@@ -54,6 +55,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   const host = useKernelHost();
   const status = useStatus();
   const ingest = useDemoIngest();
+  const dockActions = useDockActions("fb");
   const presentation = usePresentation();
   const coarsePointer = useCoarsePointer();
   const stageRef = React.useRef<HTMLDivElement>(null);
@@ -313,6 +315,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       status={captureLabel}
       active={focused || mouseCaptured}
     >
+      {dockActions.controls}
       {ingest && status === "running" && (
         <IngestControl
           accept={ingest.accept}
@@ -324,7 +327,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
         />
       )}
     </DemoSurfaceDockControls>
-  ), [boundPid, busy, captureLabel, focused, ingest, ingestFile, ingestName, mouseCaptured, status]);
+  ), [boundPid, busy, captureLabel, dockActions.controls, focused, ingest, ingestFile, ingestName, mouseCaptured, status]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -397,6 +400,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           Drop {ingest?.accept.join(" / ")} to load
         </div>
       )}
+      {dockActions.toasts}
       {busy && (
         <div className="kdemo-toast" data-testid="fb-ingest-busy">
           {ingestName ? `loading ${ingestName}…` : "loading…"}

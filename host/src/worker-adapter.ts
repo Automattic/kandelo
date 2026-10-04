@@ -100,7 +100,7 @@ export class MockWorkerAdapter implements WorkerAdapter {
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NODE_WORKER_INIT_BY_MESSAGE } from "./node-worker-initialization";
@@ -197,10 +197,12 @@ export class NodeWorkerAdapter implements WorkerAdapter {
    * Try to find a compiled .js version of the entry file.
    * Checks: ../dist/<basename>.js (tsup output), then sibling .js.
    *
-   * WHY the fingerprint check: in a source checkout, host/dist is whatever
-   * the last `npm run build` produced. Using it because it exists ran
-   * process workers on stale host code (an old ABI's artifact policy) while
-   * the kernel worker, which already checks, ran current code.
+   * A compiled entry is used only if it embeds the current host source
+   * fingerprint — the same rule the kernel worker follows in
+   * node-kernel-host.ts. Without it, a source checkout silently ran a stale
+   * dist/worker-entry.js for every process and thread Worker after any
+   * host/src edit, so tests and debugging exercised old code. A stale bundle
+   * falls through to the source-bundling path below.
    */
   private resolveCompiledEntry(): URL | null {
     if (this._compiledEntry !== undefined) {
@@ -211,9 +213,9 @@ export class NodeWorkerAdapter implements WorkerAdapter {
       return null;
     }
     const href = this.entryUrl.href;
+    const sourcePath = fileURLToPath(this.entryUrl);
 
     // Check tsup dist output: src/worker-entry.ts → dist/worker-entry.js
-    const sourcePath = fileURLToPath(this.entryUrl);
     const distUrl = new URL(href.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js"));
     if (
       distUrl.href !== href &&

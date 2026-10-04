@@ -11,8 +11,9 @@ import type {
  * Whether `item` is the machine the descriptor describes.
  *
  * A VFS image can declare several machines — `browser-main-shell` alone backs
- * shell, node, doom, quake, modeset, sdl2, wayland, omarchy, scummvm and espeak — so sharing an image URL
- * does NOT make a row current. Identity is the machine, not the bytes.
+ * shell, node, doom, quake, modeset, sdl2, wayland, omarchy and scummvm — so
+ * sharing an image URL does NOT make a row current. Identity is the machine,
+ * not the bytes.
  *
  * Two signals carry it. Once the image has been read, the descriptor's own id
  * is the booted machine's profile id (`descriptorForMachine`), which settles

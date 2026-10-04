@@ -1375,14 +1375,18 @@ jobs:
             label: vitest (1/2)
             group: 1/2
             kernel_only: false
-            submodules: ""
+            # rust-c-interop.test.ts builds the Rust sysroot, whose libc
+            # fork is this submodule plus sdk/rust/libc-kandelo.patch.
+            submodules: sdk/rust/libc-upstream
             needs_toolchain: true
             needs_workspace: true
           - suite: vitest
             label: vitest (2/2)
             group: 2/2
             kernel_only: false
-            submodules: ""
+            # rust-c-interop.test.ts builds the Rust sysroot, whose libc
+            # fork is this submodule plus sdk/rust/libc-kandelo.patch.
+            submodules: sdk/rust/libc-upstream
             needs_toolchain: true
             needs_workspace: true
           - suite: vitest

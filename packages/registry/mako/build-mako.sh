@@ -161,10 +161,10 @@ for xml in "${PROTOCOLS[@]}"; do
 done
 
 # Link order: dependents before dependencies — pangocairo pulls
-# pangoft2/pango/cairo, pango pulls harfbuzz/fribidi/gobject/glib,
-# cairo pulls pixman/fontconfig/freetype/png, harfbuzz (C++) pulls
-# libc++, libffi last so gobject closures and wl_closure_invoke
-# resolve. libgbm/libdrm come from the base sysroot.
+# pangoft2/pango/cairo, pango pulls harfbuzz/fribidi/gio/gobject/glib
+# (PangoFontMap is a GListModel), cairo pulls pixman/fontconfig/
+# freetype/png, harfbuzz (C++) pulls libc++, libffi last so gobject
+# closures and wl_closure_invoke resolve. libgbm/libdrm come from the base sysroot.
 MAKO_LIBS=(
     "$PANGO_PREFIX/lib/libpangocairo-1.0.a"
     "$PANGO_PREFIX/lib/libpangoft2-1.0.a"
@@ -172,6 +172,7 @@ MAKO_LIBS=(
     "$CAIRO_PREFIX/lib/libcairo.a"
     "$HARFBUZZ_PREFIX/lib/libharfbuzz.a"
     "$FRIBIDI_PREFIX/lib/libfribidi.a"
+    "$GLIB_PREFIX/lib/libgio-2.0.a"
     "$GLIB_PREFIX/lib/libgobject-2.0.a"
     "$GLIB_PREFIX/lib/libgmodule-2.0.a"
     "$GLIB_PREFIX/lib/libglib-2.0.a"

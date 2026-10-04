@@ -61,7 +61,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // That false-positive risk is accepted: this checker only gates the tracked
 // files in this repository.
 const KNOWN_PROFILE_KEYS = [
-  "presentation", "assets", "guide", "ingest",
+  "presentation", "assets", "guide", "ingest", "dockActions",
   "identity", "runtime", "init", "web", "display",
 ];
 

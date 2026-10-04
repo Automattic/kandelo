@@ -128,15 +128,18 @@ describe('buildClangArgs', () => {
   });
 
   it('preserves user linker input order across argument categories', () => {
+    // --whole-archive is order-sensitive and accepted by wasm-ld, so it is a
+    // real test of ordering. (--start-group/--end-group are dropped: wasm-ld
+    // rejects them and resolves archives order-independently.)
     const userLinkArgs = [
       'main.o',
-      '-Wl,--start-group',
+      '-Wl,--whole-archive',
       '-lfoo',
       'libbar.a',
-      '-Wl,--end-group',
+      '-Wl,--no-whole-archive',
     ];
     const args = build([...userLinkArgs, '-o', 'out.wasm']);
-    const forwarded = args.slice(args.indexOf('main.o'), args.indexOf('-Wl,--end-group') + 1);
+    const forwarded = args.slice(args.indexOf('main.o'), args.indexOf('-Wl,--no-whole-archive') + 1);
     expect(forwarded).toEqual(userLinkArgs);
   });
 

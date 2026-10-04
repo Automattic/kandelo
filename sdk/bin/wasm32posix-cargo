@@ -2,19 +2,18 @@
 set -euo pipefail
 
 # wasm32posix-cargo — Build Rust programs for wasm32-unknown-kandelo with
-# one command. Wraps `cargo` with the target spec, the `-Z build-std`
-# flags, the private-sysroot `rustc` wrapper, and the musl-time64 env var,
-# then fork-instruments any output that uses fork (std::process, etc.).
+# one command. Wraps `cargo` with the target, the private-sysroot `rustc`
+# wrapper (which carries the prebuilt Kandelo std), and the musl-time64 env
+# var, then fork-instruments any output that uses fork (std::process, etc.).
 #
 # Usage (inside scripts/dev-shell.sh), from a Rust package directory:
 #   wasm32posix-cargo build [--release] [cargo args...]
 #   wasm32posix-cargo run   [--release] [-- prog args...]   # build + run
 #
-# The first invocation assembles the private sysroot on demand via
-# scripts/build-rust-sysroot.sh (idempotent).
+# Each invocation brings the private sysroot up to date via
+# scripts/build-rust-sysroot.sh, which rebuilds only when its inputs change.
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-SPEC="$REPO_ROOT/sdk/rust/wasm32-unknown-kandelo-std.json"
 TRIPLE="wasm32-unknown-kandelo-std"
 OUT_DIR="${KANDELO_RUST_DIR:-$HOME/.kandelo/rust}"
 RUSTC_WRAP="$OUT_DIR/rustc-kandelo"
@@ -23,10 +22,9 @@ RUNNER="$REPO_ROOT/examples/run-wasm.ts"
 
 command -v cargo >/dev/null || { echo "cargo not on PATH; run inside scripts/dev-shell.sh" >&2; exit 1; }
 
-if [ ! -x "$RUSTC_WRAP" ] || [ ! -d "$OUT_DIR/sysroot/lib/rustlib/src/rust/library" ]; then
-  echo "==> Assembling Rust sysroot (first run)…" >&2
-  bash "$REPO_ROOT/scripts/build-rust-sysroot.sh" >&2
-fi
+# Rebuilds only when the sysroot's inputs (std overlay, libc fork,
+# target spec, toolchain) changed since the last build.
+bash "$REPO_ROOT/scripts/build-rust-sysroot.sh" >&2
 
 SUBCMD="${1:-}"
 [ -n "$SUBCMD" ] || { echo "usage: wasm32posix-cargo <build|run> [args...]" >&2; exit 2; }
@@ -49,12 +47,24 @@ done
 export RUSTC="$RUSTC_WRAP"
 export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1
 
+# The target resolves by name from the private sysroot, which also holds the
+# prebuilt std, so no -Z build-std is needed.
 BUILD_FLAGS=(
-  -Z unstable-options
-  -Z json-target-spec
-  -Z build-std=std,panic_abort
-  --target "$SPEC"
+  --target "$TRIPLE"
 )
+
+# cargo does not track the sysroot's std: after the sysroot is rebuilt,
+# crates already in the target directory still link the old std. Drop
+# this target's build output when the sysroot digest changed. (Host
+# artifacts — build scripts, proc-macros — do not use it.)
+SYSROOT_DIGEST="$(cat "$OUT_DIR/.inputs-sha256")"
+TARGET_OUT="${CARGO_TARGET_DIR:-target}/$TRIPLE"
+if [ -d "$TARGET_OUT" ] && [ "$(cat "$TARGET_OUT/.kandelo-sysroot" 2>/dev/null)" != "$SYSROOT_DIGEST" ]; then
+  echo "==> Rust sysroot changed; discarding $TARGET_OUT" >&2
+  rm -rf "$TARGET_OUT"
+fi
+mkdir -p "$TARGET_OUT"
+echo "$SYSROOT_DIGEST" > "$TARGET_OUT/.kandelo-sysroot"
 
 # Fork-instrument every fork-using output wasm (the kernel refuses an
 # uninstrumented artifact at guest-initiated exec). Non-fork programs are
@@ -71,7 +81,7 @@ host_xtask() {
 }
 
 instrument_outputs() {
-  local dir="target/$TRIPLE/$PROFILE_DIR"
+  local dir="$TARGET_OUT/$PROFILE_DIR"
   [ -d "$dir" ] || return 0
   local xtask
   xtask="$(host_xtask || true)"
@@ -105,7 +115,7 @@ case "$SUBCMD" in
     cargo build "${BUILD_FLAGS[@]}" "${CARGO_ARGS[@]}"
     mapfile -t WASMS < <(instrument_outputs)
     if [ "${#WASMS[@]}" -eq 0 ]; then
-      echo "no output .wasm found in target/$TRIPLE/$PROFILE_DIR" >&2; exit 1
+      echo "no output .wasm found in $TARGET_OUT/$PROFILE_DIR" >&2; exit 1
     elif [ "${#WASMS[@]}" -gt 1 ]; then
       echo "multiple outputs; run one explicitly:" >&2
       printf '  npx tsx %s %s\n' "$RUNNER" "${WASMS[@]}" >&2; exit 1

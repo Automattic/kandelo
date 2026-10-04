@@ -369,9 +369,8 @@ Located in `apps/browser-demos/pages/`:
 | network | bash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package as a lazy file in the image, fetched when the profile first runs it; its shader presets are baked into the image. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
-| espeak | espeak-ng | dinit | Speech synthesis through upstream pcaudiolib's OSS backend, so playback rides the same `/dev/dsp` path as the doom demo. The binary and the voice data both come from the `espeak-ng` package closure — the binary as a lazy file fetched on first run, the data as the `espeak-ng-data.zip` runtime file, unpacked into `/usr/share/espeak-ng-data` while the image is composed, because libespeak-ng's `PATH_ESPEAK_DATA` is fixed at build time. |
 | modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
-| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. No game ships; the profile takes a zipped game as an upload. |
+| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + mako + Waybar + klauncher + qtgallery + Quickshell | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor, mako and Waybar; windows, including the Qt clients, are opened from the launcher and keybinds. |
 
@@ -669,9 +668,9 @@ eight-window launch storm that guards the kernel's SCM_RIGHTS fd delivery).
 
 ### Omarchy desktop demo
 
-The Omarchy desktop machine (`?vfs=<shell image>&profile=omarchy`) is the
-tiling desktop above plus the shell that makes it a desktop: a status bar,
-a launcher, notifications, and themes. Omarchy is not a program but a set of
+The Omarchy-style desktop machine (`?vfs=<shell image>&profile=omarchy`) is
+the tiling desktop above plus the shell that makes it a desktop: a status
+bar, a launcher, notifications, and themes. Omarchy is not a program but a set of
 files layered over Hyprland, so this machine is the same `wlcompositor`
 binary with its own `/usr/share/kandelo/omarchy/wlcompositor.conf`, an app
 registry under `/usr/share/kandelo/apps`, and six themes under
@@ -951,12 +950,26 @@ AudioWorklet intentionally exposes transport cursors, not rendered samples.
 ### ScummVM demo
 
 The ScummVM machine (`?vfs=<shell image>&profile=scummvm`) runs unmodified
-upstream ScummVM's SCUMM engine fullscreen on `/dev/dri/card0`: SDL2's
+upstream ScummVM fullscreen on `/dev/dri/card0`: SDL2's
 KMSDRM backend takes DRM master and renders GLES2 straight to the display,
-and audio goes through OSS on `/dev/dsp`. The engine
+and audio goes through OSS on `/dev/dsp`. The program
 (`/usr/bin/scummvm`) and the GUI data the package declares as runtime files
 (themes, icons and fonts under `/usr/share/scummvm`) are lazy files in the
-shell image, fetched on first use. The machine's command is
+shell image, fetched on first use.
+
+Each engine is a separate plugin, `/usr/lib/scummvm/lib<engine>.so`, and
+also a lazy file: the SCUMM engine (with its `scumm-7-8` sub-engine) plus
+the engine of every freeware game below (Sky, Drascula, DreamWeb, Queen,
+God of Thunder, Griffon, Lure, ADL, Parallaction, CGE, CGE2, SLUDGE and
+WAGE). ScummVM's own plugin support loads them with `dlopen` in its
+"uncached" mode, opening only the one engine a game needs, by engine id
+(`sky` → `libsky.so`). Game detection stays in the program, so the launcher
+recognizes every game without loading an engine. A machine therefore
+downloads the program plus the one engine of the game it plays. SDL2's
+`SDL_LoadObject` is the real loader (the `sdl2` package builds with
+`--enable-loadso`), and the program links with `--export-all` so a plugin
+resolves every function it imports against it; the package build fails if
+any plugin import has no export to bind to. The machine's command is
 `/usr/local/bin/scummvm`, a small wrapper in the image that:
 
 - names SDL's backends in the environment. Kandelo has no libudev, so
@@ -975,7 +988,39 @@ shell image, fetched on first use. The machine's command is
   display at twice the reference density the launcher is drawn at about
   twice the size. Game graphics always scale to the display.
 
-No game ships with the machine: no Kandelo package carries a commercial
+The display's dock offers the freeware games the ScummVM project
+distributes: **Play a freeware game** opens a menu of them with each
+download's size. The rights holders made these
+games freeware (Beneath a Steel Sky's licence, the `readme.txt` inside its
+archive and kept beside the data, allows free redistribution as long as
+that readme and the copyright notices stay intact). Two catalog games are
+listed but disabled, with the reason: Broken Sword 2.5 needs Theora video
+and Lua, which the build leaves out, and its 859 MB archive does not fit
+the machine's filesystem; Helga Deep in Trouble needs the Wintermute
+engine's JPEG support.
+
+The catalog is image content. `packages/registry/shell/scummvm-freeware-games.json`
+lists each game's archive URL on `downloads.scummvm.org`, its size, and the
+SHA-256 the ScummVM project publishes beside it; the image builder writes it
+to `/usr/local/share/scummvm-play/games.tsv`, and fails if the ScummVM
+profile's dock menu does not list exactly its games. Each button and menu
+entry is a `dockActions` command: it ends the running ScummVM with Ctrl+C,
+then runs `/usr/local/bin/scummvm-play <game>` in the machine's shell. That
+script downloads the archive with the machine's own `curl` — in the browser
+that goes through the CORS proxy described below, because the site grants
+no CORS — reporting a percentage against the catalog size (the guest
+receives downloads as chunked responses, so `curl` never learns the total),
+checks the SHA-256, unzips into `/usr/share/scummvm-games/<game>`, and
+deletes the archive. ScummVM's own `--add --recursive` then finds the game
+and records it as a launcher target, and the script starts that target; a
+collection (the WAGE games) opens the launcher instead. A failed download
+or a digest mismatch stops there with a message in the machine's terminal;
+nothing is started from unverified data. `scummvm-play --list` prints the
+catalog in the terminal. A game stays unpacked for the rest of the session,
+so choosing it again starts it without downloading; nothing persists across
+a reboot.
+
+No other game ships with the machine: no Kandelo package carries a commercial
 SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
 512 MiB, the platform's ingest ceiling) and writes it to
 `/usr/share/scummvm-games/upload.zip` while ScummVM keeps running. The
@@ -1000,8 +1045,11 @@ the connector's physical size in `wl_output.geometry`, and SDL's Wayland
 backend derives the DPI from it.
 
 Gated in the browser by `apps/browser-demos/test/kandelo-scummvm.spec.ts`
-(the GUI data reaches the guest, the config is writable, and an upload is
-extracted where the launcher browses). The Wayland path is gated by
+(the GUI data reaches the guest, the config is writable, an upload is
+extracted where the launcher browses, and the freeware menu lists the
+catalog with its unrunnable games disabled; tagged `@slow`, since they
+download through the proxy, the Steel Sky action and a menu entry each
+replace the running ScummVM with their game on its engine plugin). The Wayland path is gated by
 `apps/browser-demos/test/kandelo-omarchy.spec.ts`: ScummVM launched from
 the launcher is tiled, drawn by the GPU path, and commits a buffer of its
 tile's size. Pointer input and the launcher's size on a HiDPI display are
@@ -1431,8 +1479,8 @@ alone is therefore enough to boot a first-party machine or a stranger's image,
 and both travel one code path.
 
 An image may declare several profiles — the shell image carries `shell`,
-`node`, `doom`, `quake`, `modeset`, `sdl2`, `wayland`, and `espeak` — so one
-channel selects one:
+`node`, `doom`, `quake`, `modeset`, `sdl2`, `scummvm`, `wayland`, and
+`omarchy` — so one channel selects one:
 
 1. `&profile=<id>` on the page URL.
 2. else the image's own `defaultProfile`.
@@ -1673,6 +1721,61 @@ uses the kernel signal path and bounded process/device waits before dispatching
 the image-owned command. Write, signal, timeout, and command-dispatch failures
 remain visible. An absent `ingest` block means the image exposes no upload
 capability; the loader does not infer one from a package or profile name.
+
+A profile may also declare up to four dock buttons that replace the machine's
+foreground program. The browser UI shows them on the display surface's dock,
+before the ingest control:
+
+```json
+{
+  "dockActions": [
+    {
+      "id": "demo",
+      "label": "Run the demo",
+      "description": "Shown as the button's tooltip",
+      "restart": "/usr/local/bin/run-demo"
+    },
+    {
+      "id": "freeware",
+      "label": "Play a freeware game",
+      "menu": [
+        {
+          "id": "lure",
+          "label": "Lure of the Temptress",
+          "detail": "6 MB",
+          "restart": "/usr/local/bin/scummvm-play lure"
+        },
+        {
+          "id": "helga-deep-in-trouble",
+          "label": "Helga Deep in Trouble",
+          "unavailable": "needs the Wintermute engine's JPEG support"
+        }
+      ]
+    }
+  ]
+}
+```
+
+An action declares exactly one of `restart` (the button runs it) or `menu`
+(the button opens a list of up to 40 entries, and the chosen entry's
+`restart` runs the same way). An entry's optional `detail` is shown beside
+its label and `group` collects entries under a heading. An entry the image
+knows about but cannot run declares `unavailable`, the reason, instead of
+`restart`; the menu shows it disabled with that reason, so the gap stays
+visible rather than silently missing.
+
+A display machine's command (its `init.shellCommand`) is a long-lived program
+that owns the machine's terminal and a single-owner display device, so running
+something else means ending that program first. A click does what a person at
+the terminal would: the host types the interrupt character (Ctrl+C) into the
+machine's shell PTY, which the kernel's line discipline delivers as `SIGINT`
+to the foreground process group, and waits for the shell's prompt to come
+back (`KernelHost.interruptShellForeground`). The prompt is the evidence the
+program exited and released its devices; if it does not appear within ten
+seconds the action fails visibly and the command is not sent. Only then is
+`restart` written to the shell, exactly as if typed. Like `ingest.onLoad`,
+`restart` is the image author's command, never user input. `id`s must be
+unique within the profile, and entry `id`s within their menu.
 
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported

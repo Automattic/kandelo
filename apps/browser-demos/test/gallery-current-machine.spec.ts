@@ -36,7 +36,7 @@ test("exactly one machine is marked current, across machines sharing an image @s
   const firstCurrent = await page.locator(CURRENT_ROW).textContent();
 
   // Launch a different machine that lives in the same image as the first.
-  // browser-main-shell backs shell, node, doom, quake, modeset, sdl2, wayland, hyprland, omarchy, espeak.
+  // browser-main-shell backs shell, node, doom, quake, modeset, sdl2, wayland, omarchy, scummvm.
   const sibling = page
     .locator('tr.kgal-row:not([data-current="true"])')
     .filter({ hasText: /Node\.js/i })

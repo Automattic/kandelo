@@ -176,30 +176,6 @@
         "hostPointer": true
       }
     },
-    "espeak": {
-      "identity": {
-        "title": "OSS - Espeak-NG",
-        "summary": "The kernel speaks: espeak-ng synthesises text directly through libpcaudio's OSS backend.",
-        "accent": "#f48fb1",
-        "glyph": "T",
-        "packages": [
-          "bash@local",
-          "coreutils@local"
-        ]
-      },
-      "init": {
-        "shellCommand": "/usr/bin/espeak-ng \"Welcome to Kandelo, the WebAssembly POSIX kernel\""
-      },
-      "presentation": {
-        "bootPrimary": "syslog",
-        "runningPrimary": [
-          "terminal",
-          "syslog"
-        ],
-        "terminalAccess": "primary",
-        "internalsAccess": "drawer"
-      }
-    },
     "wayland": {
       "identity": {
         "title": "Wayland desktop",
@@ -239,8 +215,8 @@
     },
     "omarchy": {
       "identity": {
-        "title": "Omarchy desktop",
-        "summary": "The tiling desktop with its shell: unmodified upstream Waybar on a wlr-layer-shell surface, mako notifications over a D-Bus session bus, a launcher on CTRL+Space, and six colour themes. The launcher also runs two Qt clients: Theme Gallery, whose cards restyle the whole desktop, and Quickshell, a QML shell. It starts bare; open clients from the launcher or with CTRL+Return (terminal) and CTRL+K (clock).",
+        "title": "Omarchy-style desktop",
+        "summary": "Omarchy's desktop shell on Kandelo's own Hyprland-compatible compositor, not Hyprland itself: unmodified upstream Waybar on a wlr-layer-shell surface, mako notifications over a D-Bus session bus, a launcher on CTRL+Space, and six colour themes. The launcher also runs two Qt clients: Theme Gallery, whose cards restyle the whole desktop, and Quickshell, a QML shell. It starts bare; open clients from the launcher or with CTRL+Return (terminal) and CTRL+K (clock).",
         "accent": "#7aa2f7",
         "glyph": "O",
         "packages": [

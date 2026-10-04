@@ -171,6 +171,11 @@ for prefix in "$GLIB_PREFIX" "$ATK_PREFIX" "$PANGO_PREFIX" "$CAIRO_PREFIX" \
               "$LIBXKBCOMMON_PREFIX"; do
     PC_PATH="$PC_PATH:$prefix/lib/pkgconfig"
 done
+# cairo and pango are meson-built static libraries, so their .pc files
+# list every link dependency as a public Requires (zlib, pixman,
+# libxml2 via fontconfig, ...). pkg-config needs the whole closure,
+# which the resolver composes.
+PC_PATH="$PC_PATH:${WASM_POSIX_DEP_PKG_CONFIG_PATH:?WASM_POSIX_DEP_PKG_CONFIG_PATH not set}"
 
 echo "==> Configuring gtk+ for wasm32..."
 (
