@@ -34,6 +34,7 @@ use wasmparser::{Parser, Payload};
 
 pub mod call_graph;
 pub mod contract_inventory;
+pub mod facts;
 pub mod instrument;
 pub mod legacy_eh;
 pub mod legacy_dlopen;
@@ -163,7 +164,45 @@ pub struct Options {
     /// [`sink::plan`]. Both are intersected with the conservative closure, so
     /// a plan can only remove instrumentation the closure would add.
     pub sink_plan: Option<std::path::PathBuf>,
+    /// Use the compiler facts in the module's [`facts::SECTION`] for the
+    /// sink analysis when present. `false` (`--no-facts`) ignores them, for
+    /// diagnosis; the section is removed from the output either way.
+    pub facts: bool,
+    /// With facts: apply C's effective-type rule in units compiled with
+    /// strict aliasing. `false` (`--no-effective-types`) applies it nowhere.
+    pub effective_types: bool,
+    /// For a program that can dlopen (with facts): which side-module entries
+    /// the instrumented main program is prepared for. See [`SideModules`].
+    pub side_modules: SideModules,
 }
+
+/// `--side-modules`: what the instrumented main program assumes about the
+/// side modules it may load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SideModules {
+    /// Analyze as if no side-module code returns through a fork child into
+    /// main-program frames, and record that contract in
+    /// `kandelo.wpk_fork.dlopen_contract` so the host refuses side modules
+    /// that could break it (host/src/fork-side-module-contract.ts).
+    #[default]
+    TracedEntries,
+    /// Instrument for every side-module entry: any side module may fork along
+    /// any path, and the host loads any library.
+    AssumeAllEntriesForkReturning,
+}
+
+impl SideModules {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TracedEntries => "traced-entries",
+            Self::AssumeAllEntriesForkReturning => "assume-all-entries-fork-returning",
+        }
+    }
+}
+
+/// Custom section recording the dlopen contract (format in
+/// host/src/fork-side-module-contract.ts).
+pub const DLOPEN_CONTRACT_SECTION: &str = "kandelo.wpk_fork.dlopen_contract";
 
 impl Default for Options {
     fn default() -> Self {
@@ -171,38 +210,250 @@ impl Default for Options {
             entry_import: "kernel.kernel_fork".into(),
             sinks: true,
             sink_plan: None,
+            facts: true,
+            effective_types: true,
+            side_modules: SideModules::default(),
         }
     }
 }
 
+/// Which analysis chose the instrumented set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanSource {
+    /// The conservative fork closure (no sink analysis applied).
+    Closure,
+    /// The built-in sink analysis, without compiler facts.
+    Builtin,
+    /// The sink analysis with compiler facts.
+    Facts,
+    /// A `--sink-plan` file (research).
+    External,
+}
+
+impl PlanSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlanSource::Closure => "closure",
+            PlanSource::Builtin => "builtin",
+            PlanSource::Facts => "facts",
+            PlanSource::External => "plan",
+        }
+    }
+}
+
+/// The sink decision for one module.
+struct SinkDecision {
+    boundaries: std::collections::HashSet<walrus::FunctionId>,
+    source: PlanSource,
+    facts_report: Option<facts::FactsReport>,
+    /// Why facts present in the module were not used.
+    facts_error: Option<String>,
+    /// `kandelo.wpk_fork.dlopen_contract` text for a program that can dlopen.
+    dlopen_contract: Option<String>,
+}
+
 /// Reduce the fork closure with the sink analysis when the module is in its
-/// supported scope: a main module whose only fork seed is `kernel.kernel_fork`
-/// and that cannot dlopen a side module. Returns the boundary functions.
+/// supported scope: a main module whose only fork seed is
+/// `kernel.kernel_fork`. With compiler facts ([`facts`]) the analysis also
+/// covers modules that can dlopen; without them it does not. Facts the
+/// analysis cannot use fall back to the analysis without facts, never to
+/// anything less sound. Returns the boundary functions.
 fn apply_sink_plan(
     module: &walrus::Module,
     opts: &Options,
     entry_imports: &[walrus::FunctionId],
+    side_boundaries: bool,
     external_dynamic_dispatch: bool,
+    facts_section: Option<(&facts::TakenFacts, &[u8])>,
     reaching: &mut call_graph::ReachingAnalysis,
-) -> std::collections::HashSet<walrus::FunctionId> {
+) -> SinkDecision {
+    let mut decision = SinkDecision {
+        boundaries: Default::default(),
+        source: PlanSource::Closure,
+        facts_report: None,
+        facts_error: None,
+        dlopen_contract: None,
+    };
     if let (true, Some(path)) = (opts.sinks, &opts.sink_plan) {
-        return apply_external_sink_plan(module, path, reaching);
+        decision.boundaries = apply_external_sink_plan(module, path, reaching);
+        decision.source = PlanSource::External;
+        return decision;
     }
     if !opts.sinks
-        || external_dynamic_dispatch
+        || side_boundaries
         || opts.entry_import != "kernel.kernel_fork"
         || entry_imports.len() != 1
     {
-        return Default::default();
+        return decision;
+    }
+    if let (true, Some((taken, input))) = (opts.facts, facts_section) {
+        let run = |mode: SideModules| {
+            // A defect in the facts analysis must not fail the build or
+            // weaken soundness: treat a panic like unreadable facts.
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                facts_sink_plan(module, entry_imports[0], reaching, &taken.section, opts, mode)
+            }))
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("internal error in the facts analysis")))
+        };
+        let mut mode = opts.side_modules;
+        let planned = facts::verify_code_hash(taken, input).and_then(|()| {
+            let first = run(mode)?;
+            if !(external_dynamic_dispatch
+                && mode == SideModules::TracedEntries
+                && fork_returning_address_taken(module, &first.0))
+            {
+                return Ok(first);
+            }
+            // WHY: a fork-returning function in the function table can reach
+            // a side module as a pointer the analysis never saw, so the
+            // traced-entries contract would have the host refuse every side
+            // module. A program that can dlopen must keep loading them; plan
+            // for every side-module entry instead.
+            eprintln!(
+                "wasm-fork-instrument: a fork-returning function is address-taken; \
+                 planning for --side-modules={} so dlopen keeps working",
+                SideModules::AssumeAllEntriesForkReturning.as_str()
+            );
+            mode = SideModules::AssumeAllEntriesForkReturning;
+            run(mode)
+        });
+        match planned {
+            Ok((plan, report)) => {
+                if external_dynamic_dispatch {
+                    decision.dlopen_contract = Some(dlopen_contract_text(module, &plan, mode));
+                }
+                decision.boundaries = apply_plan_sets(
+                    module,
+                    &plan.activations,
+                    &plan.control_reachable,
+                    plan.boundaries.into_iter().collect(),
+                    reaching,
+                );
+                decision.source = PlanSource::Facts;
+                decision.facts_report = Some(report);
+                return decision;
+            }
+            Err(e) => {
+                // WHY: facts are an optimization input. Facts this version
+                // cannot read must not block the build or weaken soundness;
+                // the analysis without facts is the sound baseline.
+                eprintln!(
+                    "wasm-fork-instrument: compiler facts not used ({e:#}); \
+                     using the sink analysis without facts"
+                );
+                decision.facts_error = Some(format!("{e:#}"));
+            }
+        }
+    }
+    if external_dynamic_dispatch {
+        return decision;
     }
     let Some(plan) = sink::plan(module, entry_imports[0], reaching, sink::SinkPolicy::default()) else {
-        return Default::default();
+        return decision;
     };
     reaching.activations = plan.activations;
     reaching.control_reachable = plan.control_reachable;
     let keep = reaching.control_reachable.clone();
     reaching.tail_call_landings.retain(|site| keep.contains(&site.caller));
-    plan.boundaries.into_iter().collect()
+    decision.boundaries = plan.boundaries.into_iter().collect();
+    decision.source = PlanSource::Builtin;
+    decision
+}
+
+/// The sink analysis with compiler facts. Errors when the facts cannot be
+/// read or the module is outside what the analysis models.
+fn facts_sink_plan(
+    module: &walrus::Module,
+    seed: walrus::FunctionId,
+    reaching: &call_graph::ReachingAnalysis,
+    section: &[u8],
+    opts: &Options,
+    side_modules: SideModules,
+) -> Result<(sink::SinkPlan, facts::FactsReport)> {
+    // The facts rules model wasm32 pointers (registry and handler
+    // signatures, slot addresses).
+    ensure!(
+        !module.memories.iter().any(|memory| memory.memory64),
+        "the facts analysis models wasm32 only"
+    );
+    let (mut call_facts, report) = facts::call_facts(
+        module,
+        section,
+        facts::FactsOptions { effective_types: opts.effective_types },
+    )?;
+    call_facts.assume_dlopen_contract = side_modules == SideModules::TracedEntries;
+    let plan = sink::plan_with_facts(module, seed, reaching, sink::SinkPolicy::default(), Some(&call_facts))
+        .context("the sink analysis could not model this module")?;
+    Ok((plan, report))
+}
+
+/// Is any fork-returning function in the static function table, where a
+/// side module could reach it through a pointer?
+fn fork_returning_address_taken(module: &walrus::Module, plan: &sink::SinkPlan) -> bool {
+    let mut in_table: std::collections::BTreeSet<walrus::FunctionId> = Default::default();
+    for elem in module.elements.iter() {
+        match &elem.items {
+            walrus::ElementItems::Functions(fns) => in_table.extend(fns.iter().copied()),
+            walrus::ElementItems::Expressions(_, exprs) => {
+                for expr in exprs {
+                    if let walrus::ConstExpr::RefFunc(f) = expr {
+                        in_table.insert(*f);
+                    }
+                }
+            }
+        }
+    }
+    plan.fork_returning.iter().any(|f| in_table.contains(f))
+}
+
+/// The dlopen contract for a program that can dlopen: its mode, whether any
+/// fork-returning function is in its static function table, and the exported
+/// fork-returning functions a side module could import.
+fn dlopen_contract_text(module: &walrus::Module, plan: &sink::SinkPlan, mode: SideModules) -> String {
+    use std::collections::BTreeSet;
+    let address_taken = fork_returning_address_taken(module, plan);
+    let mut exported: BTreeSet<String> = BTreeSet::new();
+    for export in module.exports.iter() {
+        if let walrus::ExportItem::Function(f) = export.item {
+            if plan.fork_returning.contains(&f) {
+                exported.insert(export.name.clone());
+            }
+        }
+    }
+    let mut text = format!(
+        "v1\nmode\t{}\naddress-taken\t{}\n",
+        mode.as_str(),
+        if address_taken { 1 } else { 0 }
+    );
+    for name in exported {
+        text.push_str("fork-returning\t");
+        text.push_str(&name);
+        text.push('\n');
+    }
+    text
+}
+
+/// Restrict the closure's activations to `keep_activations` and its
+/// control-reachable set to `keep_control` (imports stay in both) and
+/// return the boundaries that remain activations.
+fn apply_plan_sets(
+    module: &walrus::Module,
+    keep_activations: &std::collections::HashSet<walrus::FunctionId>,
+    keep_control: &std::collections::HashSet<walrus::FunctionId>,
+    mut bounds: std::collections::HashSet<walrus::FunctionId>,
+    reaching: &mut call_graph::ReachingAnalysis,
+) -> std::collections::HashSet<walrus::FunctionId> {
+    // Imports stay: the fork entry import (kernel_fork) and, in a module that
+    // can dlopen, the dynamic-linker imports are members of the sets, and
+    // dropping them would stop their callers treating the call as
+    // fork-reaching. A plan names local functions only.
+    let is_import = |f: &walrus::FunctionId| matches!(module.funcs.get(*f).kind, walrus::FunctionKind::Import(_));
+    reaching.activations.retain(|f| keep_activations.contains(f) || is_import(f));
+    reaching.control_reachable.retain(|f| keep_control.contains(f) || is_import(f));
+    let live = reaching.control_reachable.clone();
+    reaching.tail_call_landings.retain(|site| live.contains(&site.caller));
+    bounds.retain(|f| reaching.activations.contains(f));
+    bounds
 }
 
 fn apply_external_sink_plan(
@@ -236,16 +487,7 @@ fn apply_external_sink_plan(
     if missing > 0 {
         eprintln!("wasm-fork-instrument: sink plan names {missing} function(s) absent from this module");
     }
-    // Imports stay: the fork entry import (kernel_fork) is itself a member
-    // of the sets, and dropping it would stop its callers treating the call
-    // as fork-reaching. A plan names local functions only.
-    let is_import = |f: &walrus::FunctionId| matches!(module.funcs.get(*f).kind, walrus::FunctionKind::Import(_));
-    reaching.activations.retain(|f| keep.contains(f) || is_import(f));
-    reaching.control_reachable.retain(|f| keep.contains(f) || is_import(f));
-    let live = reaching.control_reachable.clone();
-    reaching.tail_call_landings.retain(|site| live.contains(&site.caller));
-    bounds.retain(|f| reaching.activations.contains(f));
-    bounds
+    apply_plan_sets(module, &keep, &keep, bounds, reaching)
 }
 
 /// Result of analyzing an input module without rewriting it.
@@ -398,37 +640,22 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
         .filter(|function| matches!(function.kind, walrus::FunctionKind::Local(_)))
         .map(|function| function.id())
         .collect();
-    reject_preinstrumented_artifact(&module)?;
-    legacy_dlopen::lower(&mut module)?;
-
-    // Discover the fork-path closure *before* we mutate the module so
-    // the runtime's own injected functions are not mistaken for
-    // fork-path callers. (They can't reach the seed anyway, but the
-    // earlier-is-simpler ordering keeps the invariant trivially.)
-    let side_boundaries = uses_side_module_boundaries(&module, opts);
-    if side_boundaries {
-        ensure_side_module_abi_version(&mut module, input)?;
-    }
-    let entry_imports = call_graph::find_import_funcs(&module, &opts.entry_import);
-    let seeds = fork_boundary_seeds(&module, &entry_imports, side_boundaries);
-    let has_dynamic_linker_imports = call_graph::has_dynamic_linker_imports(&module);
-    let external_dynamic_dispatch = side_boundaries || has_dynamic_linker_imports;
-    reject_reserved_unwind_import(&module)?;
-    if entry_imports.is_empty() && !external_dynamic_dispatch {
+    let Some(planned) = plan_fork(&mut module, input, opts)? else {
         // WHY: this is a standalone executable with no route into fork or a
-        // process-wide dynamic activation. Keeping the exact linker bytes
-        // avoids imposing ABI 43's GC/exnref replay types on non-forking
-        // software and preserves the advertised no-op transform boundary.
-        return Ok(input.to_vec());
+        // process-wide dynamic activation. Keeping the linker bytes avoids
+        // imposing ABI 43's GC/exnref replay types on non-forking software
+        // and preserves the advertised no-op transform boundary. Only the
+        // compiler facts, a build input, are removed.
+        return Ok(facts::strip_section(input)?.unwrap_or_else(|| input.to_vec()));
+    };
+    let ForkPlan { side_boundaries, entry_imports, reaching, decision } = planned;
+    if let Some(text) = &decision.dlopen_contract {
+        module.customs.add(RawCustomSection {
+            name: DLOPEN_CONTRACT_SECTION.into(),
+            data: text.as_bytes().to_vec(),
+        });
     }
-    let initial_fork_path =
-        prepare_fork_path(&module, &seeds, external_dynamic_dispatch).activations;
-    legacy_eh::normalize_fork_path(&mut module, &initial_fork_path)?;
-    // Legacy EH normalization can replace instruction sequences. Recompute
-    // the semantic closure afterwards so the exact fork-reaching tail-site
-    // coordinates used by private-tag transport name the normalized IR.
-    let mut reaching = prepare_fork_path(&module, &seeds, external_dynamic_dispatch);
-    let boundaries = apply_sink_plan(&module, opts, &entry_imports, external_dynamic_dispatch, &mut reaching);
+    let boundaries = decision.boundaries;
     let (fork_path, fork_path_targets, tail_call_sites) = (
         reaching.activations,
         reaching.control_reachable,
@@ -627,6 +854,105 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // features) must accept the module. See target_features.rs.
     let output = target_features::declare_used_features(module.emit_wasm())?;
     restore_leading_dylink_section(input, output)
+}
+
+/// The fork path of a module, decided before any rewriting.
+struct ForkPlan {
+    side_boundaries: bool,
+    entry_imports: Vec<walrus::FunctionId>,
+    reaching: call_graph::ReachingAnalysis,
+    decision: SinkDecision,
+}
+
+/// Validate `module`, remove its compiler facts, lower legacy dlopen and EH,
+/// and decide the instrumented set. `None`: the module takes no part in a
+/// fork transaction.
+fn plan_fork(module: &mut walrus::Module, input: &[u8], opts: &Options) -> Result<Option<ForkPlan>> {
+    // The facts are a build input: never shipped, whatever the analysis uses.
+    let facts_section = facts::take_section(module);
+    reject_preinstrumented_artifact(module)?;
+    legacy_dlopen::lower(module)?;
+
+    // Discover the fork-path closure *before* we mutate the module so
+    // the runtime's own injected functions are not mistaken for
+    // fork-path callers. (They can't reach the seed anyway, but the
+    // earlier-is-simpler ordering keeps the invariant trivially.)
+    let side_boundaries = uses_side_module_boundaries(module, opts);
+    if side_boundaries {
+        ensure_side_module_abi_version(module, input)?;
+    }
+    let entry_imports = call_graph::find_import_funcs(module, &opts.entry_import);
+    let seeds = fork_boundary_seeds(module, &entry_imports, side_boundaries);
+    let has_dynamic_linker_imports = call_graph::has_dynamic_linker_imports(module);
+    let external_dynamic_dispatch = side_boundaries || has_dynamic_linker_imports;
+    reject_reserved_unwind_import(module)?;
+    if entry_imports.is_empty() && !external_dynamic_dispatch {
+        return Ok(None);
+    }
+    let initial_fork_path =
+        prepare_fork_path(module, &seeds, external_dynamic_dispatch).activations;
+    legacy_eh::normalize_fork_path(module, &initial_fork_path)?;
+    // Legacy EH normalization can replace instruction sequences. Recompute
+    // the semantic closure afterwards so the exact fork-reaching tail-site
+    // coordinates used by private-tag transport name the normalized IR.
+    let mut reaching = prepare_fork_path(module, &seeds, external_dynamic_dispatch);
+    let decision = apply_sink_plan(
+        module,
+        opts,
+        &entry_imports,
+        side_boundaries,
+        external_dynamic_dispatch,
+        facts_section.as_ref().map(|taken| (taken, input)),
+        &mut reaching,
+    );
+    Ok(Some(ForkPlan { side_boundaries, entry_imports, reaching, decision }))
+}
+
+/// What [`instrument`] would instrument, without rewriting the module.
+#[derive(Debug, Clone)]
+pub struct SinkReport {
+    pub source: PlanSource,
+    /// Local functions that would be instrumented, by name (sorted).
+    pub instrumented: Vec<String>,
+    /// Boundary functions, by name (sorted).
+    pub boundaries: Vec<String>,
+    /// Coverage of the compiler facts, when the facts analysis ran.
+    pub facts: Option<facts::FactsReport>,
+    /// Why compiler facts in the module were not used.
+    pub facts_error: Option<String>,
+}
+
+/// Decide the instrumented set as [`instrument`] does and report it. A
+/// module outside any fork transaction reports an empty set.
+pub fn sink_report(input: &[u8], opts: &Options) -> Result<SinkReport> {
+    let mut module = walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
+    let Some(planned) = plan_fork(&mut module, input, opts)? else {
+        return Ok(SinkReport {
+            source: PlanSource::Closure,
+            instrumented: vec![],
+            boundaries: vec![],
+            facts: None,
+            facts_error: None,
+        });
+    };
+    let name = |f: &walrus::FunctionId| call_graph::func_display_name(&module, *f);
+    let mut instrumented: Vec<String> = planned
+        .reaching
+        .activations
+        .iter()
+        .filter(|f| matches!(module.funcs.get(**f).kind, walrus::FunctionKind::Local(_)))
+        .map(name)
+        .collect();
+    instrumented.sort();
+    let mut boundaries: Vec<String> = planned.decision.boundaries.iter().map(name).collect();
+    boundaries.sort();
+    Ok(SinkReport {
+        source: planned.decision.source,
+        instrumented,
+        boundaries,
+        facts: planned.decision.facts_report,
+        facts_error: planned.decision.facts_error,
+    })
 }
 
 fn inject_function_catalog(module: &mut walrus::Module) -> TableId {

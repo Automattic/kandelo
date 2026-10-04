@@ -26,7 +26,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use fork_instrument::{
-    Options, analyze,
+    Options, analyze, sink_report,
     contract_inventory::{
         artifact_identity, fork_capability_section_hex, fork_contract_inventory,
         linked_frame_descriptor_section_hex, reserved_env_imports,
@@ -65,6 +65,33 @@ struct Cli {
     /// file (see `Options::sink_plan`) instead of the built-in sink analysis.
     #[arg(long, hide = true)]
     sink_plan: Option<std::path::PathBuf>,
+
+    /// Ignore the compiler facts (`kandelo.calltypes` section) and use the
+    /// sink analysis without them. For diagnosis. The section is removed
+    /// from the output either way.
+    #[arg(long)]
+    no_facts: bool,
+
+    /// With compiler facts: do not apply C's effective-type rule anywhere.
+    /// By default it applies in each unit compiled with strict aliasing (the
+    /// C default) and nowhere else.
+    #[arg(long)]
+    no_effective_types: bool,
+
+    /// For a program that can dlopen: `traced-entries` (default) instruments
+    /// the main program as if no side module returns through a fork child
+    /// into its frames and records that contract so the host refuses side
+    /// modules that could; `assume-all-entries-fork-returning` instruments for
+    /// every side-module entry and loads any library.
+    #[arg(long, default_value = "traced-entries", value_parser = ["traced-entries", "assume-all-entries-fork-returning"])]
+    side_modules: String,
+
+    /// Diagnosis: print which analysis decided the instrumented set
+    /// (`source\t<closure|builtin|facts|plan>`), then the set and its
+    /// boundaries as `A\t<name>` and `B\t<name>` rows (a valid
+    /// `--sink-plan` file). Emits no output file.
+    #[arg(long, hide = true, conflicts_with = "output")]
+    sink_report: bool,
 
     /// wasm-opt level to run over an instrumented output, or `none`.
     ///
@@ -196,7 +223,36 @@ fn main() -> Result<()> {
         entry_import: cli.entry,
         sinks: !cli.no_sinks,
         sink_plan: cli.sink_plan.clone(),
+        facts: !cli.no_facts,
+        effective_types: !cli.no_effective_types,
+        side_modules: if cli.side_modules == "assume-all-entries-fork-returning" {
+            fork_instrument::SideModules::AssumeAllEntriesForkReturning
+        } else {
+            fork_instrument::SideModules::TracedEntries
+        },
     };
+
+    if cli.sink_report {
+        let report = sink_report(&input, &opts)
+            .with_context(|| format!("analyzing {}", cli.input.display()))?;
+        println!("source\t{}", report.source.as_str());
+        if let Some(f) = &report.facts {
+            println!(
+                "facts\tchunks {} definitions {} defined {} bound {} union {} signature-mismatch {}",
+                f.chunks, f.definitions, f.defined, f.bound, f.bound_to_union, f.signature_mismatch
+            );
+        }
+        if let Some(e) = &report.facts_error {
+            println!("facts-error\t{e}");
+        }
+        for name in &report.instrumented {
+            println!("A\t{name}");
+        }
+        for name in &report.boundaries {
+            println!("B\t{name}");
+        }
+        return Ok(());
+    }
 
     if cli.discover_only {
         let analysis =
@@ -220,7 +276,11 @@ fn main() -> Result<()> {
 
     fs::write(output_path, &output)
         .with_context(|| format!("writing output: {}", output_path.display()))?;
-    if cli.post_optimize != "none" && output != input {
+    // A module outside any fork transaction comes back as the input without
+    // its compiler facts; it was not transformed, so it is not optimized.
+    let untransformed = output == input
+        || fork_instrument::facts::strip_section(&input)?.is_some_and(|stripped| stripped == output);
+    if cli.post_optimize != "none" && !untransformed {
         post_optimize(output_path, &cli.post_optimize, has_debug_info(&input)?)?;
     }
     preserve_input_mode(input_mode, output_path)?;

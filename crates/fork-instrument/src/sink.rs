@@ -191,6 +191,24 @@ struct Prog<'a> {
     /// except from the start routine's own call (a libc/crt change).
     main_fns: HashSet<u32>,
     start_fns: HashSet<u32>,
+    /// Compiler facts (`crate::facts`): setjmp/longjmp buffer identity per
+    /// function (plugin JS/JL facts). Each named buffer gets its own
+    /// pseudo-tag bit for longjmp; the real longjmp tag's bit stays for
+    /// unknown buffers.
+    lj_tag: Option<TagId>,
+    lj_js: HashMap<u32, Vec<String>>,
+    lj_jl: HashMap<u32, Vec<String>>,
+    lj_bufbit: HashMap<String, u32>,
+    /// Bits a setjmp function's own `__wasm_longjmp` call can rethrow: LLVM's
+    /// SjLj lowering catches every longjmp in a setjmp function and rethrows
+    /// the ones aimed at other buffers. Those are longjmps raised below it,
+    /// so: every named buffer, plus the unknown-buffer bit when some longjmp
+    /// origin in the module has no buffer fact.
+    lj_rethrow: Tags,
+    /// Compiler facts: caller of `_pthread_cleanup_pop` -> the cleanup
+    /// handlers its own lexical `pthread_cleanup_push` installs.
+    cleanup_map: HashMap<u32, Vec<u32>>,
+    cleanup_pop: HashSet<u32>,
 }
 
 /// Every instruction sequence of a body, in a deterministic pre-order.
@@ -230,6 +248,57 @@ fn table_ix(m: &Module, t: TableId) -> usize {
 }
 
 impl<'a> Prog<'a> {
+    /// All per-buffer longjmp bits.
+    fn lj_all_bufs(&self) -> Tags {
+        self.lj_bufbit.values().fold(0, |a, &b| a | (1u64 << b))
+    }
+    /// Longjmp bits a setjmp frame in `f` catches: unknown-buffer longjmps,
+    /// and longjmps on the buffers it calls setjmp on.
+    fn lj_catch_mask(&self, f: u32, generic: Tags) -> Tags {
+        match self.lj_js.get(&f) {
+            Some(bufs) if !bufs.iter().any(|b| b == "*") => {
+                generic | bufs.iter().filter_map(|b| self.lj_bufbit.get(b)).fold(0, |a, &x| a | (1u64 << x))
+            }
+            _ => generic | self.lj_all_bufs(),
+        }
+    }
+    /// Bits a longjmp called from `f` throws. The lowering turns source
+    /// `longjmp` calls into `__wasm_longjmp` calls, and adds one more in each
+    /// setjmp function to rethrow foreign longjmps; the plugin records every
+    /// source longjmp (JL, `*` when the buffer is unknown), so a call in a
+    /// function with neither JL nor JS facts is of unknown origin.
+    fn lj_throw_bits(&self, f: u32, generic: Tags) -> Tags {
+        let src = match self.lj_jl.get(&f) {
+            Some(bufs) if !bufs.iter().any(|b| b == "*" || !self.lj_bufbit.contains_key(b)) => {
+                bufs.iter().filter_map(|b| self.lj_bufbit.get(b)).fold(0, |a, &x| a | (1u64 << x))
+            }
+            Some(_) => generic,
+            None if self.lj_js.contains_key(&f) => 0,
+            None => return generic,
+        };
+        src | if self.lj_js.contains_key(&f) { self.lj_rethrow } else { 0 }
+    }
+    fn is_longjmp_name(n: &str) -> bool {
+        matches!(n, "longjmp" | "_longjmp" | "siglongjmp" | "__wasm_longjmp")
+    }
+    /// With buffer facts, a call from `f` whose every target is a longjmp
+    /// entry throws this call's buffer bits in place of the unknown-buffer
+    /// bit.
+    fn lj_remap(&self, f: u32, targets: &[u32], thr: Tags) -> Tags {
+        let g = self.lj_generic();
+        if (self.lj_jl.is_empty() && self.lj_js.is_empty())
+            || thr & g == 0
+            || targets.is_empty()
+            || !targets.iter().all(|&t| t != u32::MAX && self.names.get(t as usize).is_some_and(|n| Prog::is_longjmp_name(n)))
+        {
+            return thr;
+        }
+        (thr & !g) | self.lj_throw_bits(f, g)
+    }
+    fn lj_generic(&self) -> Tags {
+        self.lj_tag.and_then(|t| self.tag_bit.get(&t)).map_or(0, |&b| 1u64 << b)
+    }
+
     fn new(m: &'a Module) -> Prog<'a> {
         let n = m.funcs.iter().map(|f| f.id().index() + 1).max().unwrap_or(0);
         let mut keys: HashMap<String, u32> = HashMap::new();
@@ -276,6 +345,13 @@ impl<'a> Prog<'a> {
             nothrow: vec![],
             main_fns: HashSet::new(),
             start_fns: HashSet::new(),
+            lj_tag: None,
+            lj_js: HashMap::new(),
+            lj_jl: HashMap::new(),
+            lj_bufbit: HashMap::new(),
+            lj_rethrow: 0,
+            cleanup_map: HashMap::new(),
+            cleanup_pop: HashSet::new(),
             m,
         };
         p.fids = vec![p.m.funcs.iter().next().unwrap().id(); n];
@@ -651,7 +727,10 @@ impl<'a, 'b> Walk<'a, 'b> {
             for c in cs {
                 match c {
                     TryTableCatch::Catch { tag, label } | TryTableCatch::CatchRef { tag, label } => {
-                        let bit = 1u64 << self.cx.p.tag_bit[tag];
+                        let mut bit = 1u64 << self.cx.p.tag_bit[tag];
+                        if Some(*tag) == self.cx.p.lj_tag {
+                            bit = tags & self.cx.p.lj_catch_mask(self.f, bit);
+                        }
                         if tags & bit != 0 {
                             let a = *self.arity.get(label).unwrap_or(&0);
                             let mut v = vec![V::Top; a];
@@ -770,6 +849,15 @@ impl<'a, 'b> Walk<'a, 'b> {
     }
 
     fn call(&mut self, st: &mut St, mut targets: Vec<u32>, external: bool, nparams: usize, nres: usize, tail: bool, why: String) {
+        // pthread_cleanup_pop runs the handler of the caller's own lexical
+        // pthread_cleanup_push (POSIX pairs them in one scope).
+        if targets.len() == 1 && self.cx.p.cleanup_pop.contains(&targets[0]) {
+            if let Some(hs) = self.cx.p.cleanup_map.get(&self.f) {
+                // u32::MAX: the pop itself returns (run == 0 calls nothing).
+                targets = hs.clone();
+                targets.push(u32::MAX);
+            }
+        }
         if !self.cx.p.main_fns.is_empty() && targets.len() > 1 && !self.cx.p.start_fns.contains(&self.f) {
             targets.retain(|t| !self.cx.p.main_fns.contains(t));
         }
@@ -813,9 +901,10 @@ impl<'a, 'b> Walk<'a, 'b> {
                         x
                     }
                 };
-                if r.1 != 0 {
+                let thr = self.cx.p.lj_remap(self.f, &targets, r.1);
+                if thr != 0 {
                     let snap = st.clone();
-                    self.throw(&snap, r.1, &why);
+                    self.throw(&snap, thr, &why);
                 }
                 if r.0.is_none() {
                     st.live = false;
@@ -831,12 +920,14 @@ impl<'a, 'b> Walk<'a, 'b> {
                 self.rec_vals.push(args.get(self.rec_param as usize).copied().unwrap_or(V::Top));
             }
         }
-        let s = if self.mode == Mode::Normal && self.cx.summ.is_empty() {
+        let mut s = if self.mode == Mode::Normal && self.cx.summ.is_empty() {
             // Value-only pass (param refinement): every call returns.
             Summ { ret: true, thr: 0 }
         } else {
             self.effect(&targets, external)
         };
+        // A longjmp on a named buffer throws that buffer's bit.
+        s.thr = self.cx.p.lj_remap(self.f, &targets, s.thr);
         if s.thr != 0 {
             let snap = st.clone();
             let why2 = if targets.len() > 1 {
@@ -1744,6 +1835,10 @@ pub struct SinkPlan {
     /// Closed functions: every fork-reaching call site is a boundary, the
     /// parent's unwind stops there and the child starts there.
     pub boundaries: BTreeSet<FunctionId>,
+    /// Functions whose fork child can return to their caller (open, not
+    /// closed for callers). The dlopen contract lists the ones a side
+    /// module could call.
+    pub fork_returning: BTreeSet<FunctionId>,
 }
 
 const PROBE: Tags = 1 << 62;
@@ -1861,6 +1956,100 @@ fn apply_registries(p: &mut Prog) {
     }
 }
 
+/// Load facts-derived indirect targets, cleanup pairs and `jmp_buf`
+/// identity into `p`. Registry overrides applied afterwards replace the
+/// facts' targets at registry hubs.
+fn apply_call_facts(p: &mut Prog, facts: &CallFacts) {
+    // The facts name signatures as `i32,i32->i32` with every reference type
+    // written `ref`; one such string can stand for several Wasm types.
+    let vt = |t: &ValType| match t {
+        ValType::I32 => "i32",
+        ValType::I64 => "i64",
+        ValType::F32 => "f32",
+        ValType::F64 => "f64",
+        ValType::V128 => "v128",
+        _ => "ref",
+    };
+    let mut keys_of: HashMap<String, Vec<u32>> = HashMap::new();
+    for t in p.m.types.iter().filter(|t| t.is_function()) {
+        let sname = format!(
+            "{}->{}",
+            t.params().iter().map(vt).collect::<Vec<_>>().join(","),
+            t.results().iter().map(vt).collect::<Vec<_>>().join(",")
+        );
+        let k = p.tkey[&t.id()];
+        let e = keys_of.entry(sname).or_default();
+        if !e.contains(&k) {
+            e.push(k);
+        }
+    }
+    for (f, sname, targets) in &facts.itargets {
+        for &k in keys_of.get(sname).map(|v| v.as_slice()).unwrap_or(&[]) {
+            let t: Vec<u32> = targets.iter().copied().filter(|&g| (g as usize) < p.n && p.skey[g as usize] == k).collect();
+            p.itargets.insert((*f, k), t);
+        }
+    }
+
+    // setjmp/longjmp buffer identity.
+    for f in p.by_name("__wasm_longjmp") {
+        if let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(f)).kind {
+            for (_, seq) in all_seqs(lf) {
+                for (ins, _) in &seq.instrs {
+                    if let Instr::Throw(t) = ins {
+                        p.lj_tag = Some(t.tag);
+                    }
+                }
+            }
+        }
+    }
+    let mut next_bit = 40u32;
+    for l in &facts.jmp {
+        let v: Vec<&str> = l.split('\t').collect();
+        if v.len() < 3 {
+            continue;
+        }
+        if v[2] != "*" && !p.lj_bufbit.contains_key(v[2]) && next_bit < 62 {
+            p.lj_bufbit.insert(v[2].to_string(), next_bit);
+            next_bit += 1;
+        }
+        for fi in p.by_name(v[1]) {
+            let m = if v[0] == "JS" { &mut p.lj_js } else { &mut p.lj_jl };
+            m.entry(fi).or_default().push(v[2].to_string());
+        }
+    }
+    // An origin without a buffer fact: a direct caller of a longjmp entry
+    // point that is neither a fact-bearing longjmp caller nor a setjmp
+    // function (its call is the rethrow), or an entry point that can be
+    // reached other than by a direct call.
+    let generic = p.lj_generic();
+    let entries: Vec<u32> = (0..p.n as u32).filter(|&g| Prog::is_longjmp_name(&p.names[g as usize])).collect();
+    let mut unknown = false;
+    for &e in &entries {
+        if p.escapes[e as usize] {
+            unknown = true;
+        }
+        for &c in &p.callers[e as usize] {
+            if entries.contains(&c) {
+                continue; // longjmp -> __wasm_longjmp wrappers
+            }
+            let known = p.lj_jl.get(&c).is_some_and(|b| !b.iter().any(|x| x == "*" || !p.lj_bufbit.contains_key(x)));
+            if !known && (p.lj_jl.contains_key(&c) || !p.lj_js.contains_key(&c)) {
+                unknown = true;
+            }
+        }
+    }
+    p.lj_rethrow = p.lj_all_bufs() | if unknown { generic } else { 0 };
+
+    // pthread_cleanup_push/pop pairs.
+    p.cleanup_pop = p.by_name("_pthread_cleanup_pop").into_iter().collect();
+    for (f, hs) in &facts.cleanup {
+        let hv: Vec<u32> = hs.iter().flat_map(|h| p.by_name(h)).collect();
+        for fi in p.by_name(f) {
+            p.cleanup_map.insert(fi, hv.clone());
+        }
+    }
+}
+
 /// musl sets `pthread_t->cancel` only in `pthread_cancel` and in
 /// `timer_create`'s SIGEV_THREAD worker. With neither linked the flag stays 0,
 /// so the cancellation-point checks never reach `pthread_exit`.
@@ -1884,17 +2073,67 @@ fn apply_cancel_rule(p: &mut Prog) {
     }
 }
 
+/// Indirect-call facts derived from compiler facts (see [`crate::facts`]).
+#[derive(Debug, Default, Clone)]
+pub struct CallFacts {
+    /// Per (function index, Wasm signature of a `call_indirect` in it): the
+    /// functions those sites can call. The signature is written
+    /// `params->results` with `i32`/`i64`/`f32`/`f64`/`v128`, and `ref` for
+    /// every reference type.
+    pub itargets: Vec<(u32, String, Vec<u32>)>,
+    /// Per caller of `_pthread_cleanup_pop` (by name): the handlers its own
+    /// lexical `pthread_cleanup_push` installs.
+    pub cleanup: Vec<(String, Vec<String>)>,
+    /// setjmp/longjmp buffer identity, the plugin's `JS`/`JL` lines verbatim
+    /// (`JS\t<function>\t<buffer>`; buffer `*` is unknown).
+    pub jmp: Vec<String>,
+    /// Research only: assume the load-time dlopen contract
+    /// (`docs/plans/2026-10-02-fork-sinks.md`, "Fork sinks in programs that
+    /// can dlopen") and ignore side-module entries. Unsound until the host
+    /// enforces that contract; the instrumenter never sets it.
+    pub assume_dlopen_contract: bool,
+}
+
 /// Compute the reduced fork path for a main module whose fork seed is
 /// `seed`. `today` is the conservative closure the instrumenter already
 /// computed; the plan only ever removes from it. Returns `None` when the
 /// module is outside the analysis' supported scope (dynamic linking), so the
 /// caller keeps today's closure.
 pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::ReachingAnalysis, policy: SinkPolicy) -> Option<SinkPlan> {
+    plan_with_facts(module, seed, today, policy, None)
+}
+
+/// [`plan`] with indirect targets, cleanup pairs and `jmp_buf` identity taken
+/// from compiler facts. With facts, a module that can dlopen is analysed too:
+/// any indirect call may enter a side module whose fork child returns
+/// anything and may throw anything (no load-time contract yet), and no
+/// function whose fork path can pass through a side module becomes a
+/// boundary (a boundary replays its callees in place; that replay never
+/// spans module instances).
+pub fn plan_with_facts(
+    module: &Module,
+    seed: FunctionId,
+    today: &crate::call_graph::ReachingAnalysis,
+    policy: SinkPolicy,
+    facts: Option<&CallFacts>,
+) -> Option<SinkPlan> {
     let mut p = Prog::new(module);
-    if p.dyn_link {
+    if p.dyn_link && facts.is_none() {
         // A side module may fork below any indirect call; boundaries across
         // module instances are not part of the first version.
         return None;
+    }
+    // Tag bits: one per tag, PROBE at 62, and per-buffer longjmp bits at
+    // 40..61 when buffer facts are used. More tags would alias them.
+    let ntags = p.m.tags.iter().count();
+    if ntags > 62 || (ntags > 40 && facts.is_some_and(|f| !f.jmp.is_empty())) {
+        return None;
+    }
+    if let Some(facts) = facts {
+        apply_call_facts(&mut p, facts);
+        if facts.assume_dlopen_contract {
+            p.dyn_link = false;
+        }
     }
     p.use_param = true;
     p.sig_policy = match policy.signal {
@@ -2028,8 +2267,14 @@ pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::Reachi
             }
         }
     }
+    // EXT: a call that may enter a dlopen'd side module, which may fork.
+    let ext_i = u32::MAX - 1;
     let mut r2: HashSet<u32> = HashSet::from([seed_i]);
     let mut q: VecDeque<u32> = VecDeque::from([seed_i]);
+    if p.dyn_link {
+        r2.insert(ext_i);
+        q.push_back(ext_i);
+    }
     while let Some(g) = q.pop_front() {
         if let Some(cs) = rdeps_all.get(&g) {
             for &c in cs {
@@ -2092,6 +2337,9 @@ pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::Reachi
             }
         }
     }
+    // Per-buffer longjmp bits are longjmps too (catch_all clauses are not
+    // longjmp catchers).
+    longjmp_bits |= p.lj_all_bufs();
     let mut catches: HashMap<u32, Tags> = HashMap::new();
     {
         let snapshot = summ.clone();
@@ -2128,13 +2376,21 @@ pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::Reachi
                                 let (bits, label, vals): (Tags, InstrSeqId, Vec<V>) = match c {
                                     TryTableCatch::Catch { tag, label } => {
                                         let k = p.m.types.params(p.m.tags.get(*tag).ty).len();
-                                        (1u64 << p.tag_bit[tag], *label, vec![V::Top; k])
+                                        let mut b = 1u64 << p.tag_bit[tag];
+                                        if Some(*tag) == p.lj_tag {
+                                            b = p.lj_catch_mask(f, b);
+                                        }
+                                        (b, *label, vec![V::Top; k])
                                     }
                                     TryTableCatch::CatchRef { tag, label } => {
                                         let k = p.m.types.params(p.m.tags.get(*tag).ty).len();
                                         let mut v = vec![V::Top; k];
                                         v.push(V::Exn(PROBE));
-                                        (1u64 << p.tag_bit[tag], *label, v)
+                                        let mut b = 1u64 << p.tag_bit[tag];
+                                        if Some(*tag) == p.lj_tag {
+                                            b = p.lj_catch_mask(f, b);
+                                        }
+                                        (b, *label, v)
                                     }
                                     TryTableCatch::CatchAll { label } => (TAGS_ALL & !PROBE & !longjmp_bits, *label, vec![]),
                                     TryTableCatch::CatchAllRef { label } => (TAGS_ALL & !PROBE & !longjmp_bits, *label, vec![V::Exn(PROBE)]),
@@ -2226,6 +2482,21 @@ pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::Reachi
     }
     let dead = Child { ret: None, thr: 0 };
     let mut child: HashMap<u32, Child> = HashMap::from([(seed_i, Child { ret: Some(V::C(0)), thr: 0 })]);
+    // Functions whose fork path can pass through a side module: never
+    // boundaries (see `plan_with_facts`).
+    let mut via_side: HashSet<u32> = HashSet::new();
+    if p.dyn_link {
+        // A side module's own fork: its child returns anything and may throw.
+        child.insert(ext_i, Child { ret: Some(V::Top), thr: TAGS_ALL });
+        let mut q: VecDeque<u32> = VecDeque::from([ext_i]);
+        while let Some(g) = q.pop_front() {
+            for &f in rdeps.get(&g).map(|v| v.as_slice()).unwrap_or(&[]) {
+                if via_side.insert(f) {
+                    q.push_back(f);
+                }
+            }
+        }
+    }
     // A closed function's escapes stop at the sink's loud run-time check;
     // that is behaviour-preserving only when no catcher can be above it.
     let closed_for_callers = |child: &HashMap<u32, Child>, g: u32| -> bool {
@@ -2233,9 +2504,11 @@ pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::Reachi
     };
     let mut work: VecDeque<u32> = VecDeque::new();
     let mut queued: HashSet<u32> = HashSet::new();
-    for &f in rdeps.get(&seed_i).map(|v| v.as_slice()).unwrap_or(&[]) {
-        if queued.insert(f) {
-            work.push_back(f);
+    for root in [seed_i, ext_i] {
+        for &f in rdeps.get(&root).map(|v| v.as_slice()).unwrap_or(&[]) {
+            if queued.insert(f) {
+                work.push_back(f);
+            }
         }
     }
     let snapshot = summ.clone();
@@ -2264,6 +2537,11 @@ pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::Reachi
                     j.thr |= c.thr;
                 }
             }
+            // A longjmp call's child-side throw is the same longjmp as its
+            // normal-mode one (`__wasm_longjmp` itself sits on the fork path
+            // when restoring the signal mask can dispatch a handler): give it
+            // the buffer bits of this call, as the normal-mode effect does.
+            j.thr = p.lj_remap(f, t, j.thr);
             if j.ret.is_some() || j.thr != 0 {
                 inject.insert((*sid, *ix), j);
             }
@@ -2279,6 +2557,8 @@ pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::Reachi
             let r = interpret(&mut cx, f, info, Mode::Child, &inject, None);
             if r.unsupported { Child { ret: Some(V::Top), thr: TAGS_ALL } } else { Child { ret: r.ret, thr: r.thr } }
         };
+        // Not a boundary: the unwind continues into the callers.
+        let c = if via_side.contains(&f) { Child { ret: Some(V::Top), ..c } } else { c };
         let old = child.get(&f).copied();
         let base = old.unwrap_or(dead);
         let new = Child {
@@ -2299,7 +2579,7 @@ pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::Reachi
     }
 
     // 6. Reduced sets, intersected with today's (sound) closure.
-    let mut keep: HashSet<u32> = child.keys().copied().collect();
+    let mut keep: HashSet<u32> = child.keys().copied().filter(|&f| f != ext_i).collect();
     keep.insert(seed_i);
     let any_handler_on_path = (0..n as u32).any(|g| p.escapes[g as usize] && p.sig_handler_keys.contains(&p.skey[g as usize]) && child.contains_key(&g));
     if any_handler_on_path {
@@ -2317,11 +2597,16 @@ pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::Reachi
         }
     }
     for (&f, _) in &child {
-        if f != seed_i && closed_for_callers(&child, f) {
-            let id = p.fid(f);
+        if f == seed_i || f == ext_i {
+            continue;
+        }
+        let id = p.fid(f);
+        if closed_for_callers(&child, f) {
             if out.activations.contains(&id) {
                 out.boundaries.insert(id);
             }
+        } else {
+            out.fork_returning.insert(id);
         }
     }
     Some(out)

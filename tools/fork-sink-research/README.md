@@ -66,3 +66,12 @@ The experiment instrumenter used by `sizes.py` is a copy of
 `crates/fork-instrument` and `crates/shared` in `.context/sink/instr-exp/`,
 with an exact-name `WPK_FORK_ALLOWLIST` filter added to
 `prepare_fork_path`. Rebuild it the same way if `.context` is gone.
+
+## Production
+
+The production analysis now lives in `crates/fork-instrument` (`src/facts/`
+for the `fpa` rules, `src/sink.rs` for the `fsa` rules), reading the facts
+from the module's `kandelo.calltypes` section; see
+`docs/fork-instrumentation.md`. `crates/fork-instrument/examples/facts_equivalence.rs`
+checks it against the results of these tools. This directory is the
+research snapshot.

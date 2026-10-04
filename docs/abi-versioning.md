@@ -1047,6 +1047,20 @@ this epoch:
   returns only if the sink itself returned, which the host reports as
   "fork child returned through its sink frame". A trap in the child's own
   code ends the process by its signal, like any other trap.
+- **New custom section `kandelo.wpk_fork.dlopen_contract`** on a
+  dlopen-capable main module analysed with compiler facts. Its text form
+  is `v1`, a `mode` line (`traced-entries` or
+  `assume-all-entries-fork-returning`), an `address-taken` line (`0` or
+  `1`) and one `fork-returning <export>` line per exported function whose
+  fork child can return to its caller. Under `traced-entries`, hosts
+  refuse at `dlopen` a side module that imports a listed export (as an
+  `env` function or a `GOT.func` slot), and every side module when
+  `address-taken` is `1` (today's instrumenter never emits that
+  combination; it switches such a module to
+  `assume-all-entries-fork-returning`). A module without the section loads side modules
+  as before; the instrumenter then never assumed anything about them.
+  `kandelo.calltypes` and `kandelo.calltypes.code-sha256` are build inputs
+  to the instrumenter, which removes them; they are not part of the ABI.
 - **The crt no longer passes `main` as a pointer, and
   `__libc_start_main` calls its stage 2 directly**, so neither function
   is in the indirect function table. This is not an ABI surface by

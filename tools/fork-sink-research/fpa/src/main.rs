@@ -334,7 +334,7 @@ impl Side {
             i
         };
         match f[0] {
-            "#kandelo-calltypes" => versions_ok &= matches!(f.get(1), Some(&"2") | Some(&"3") | Some(&"4")),
+            "#kandelo-calltypes" => versions_ok &= matches!(f.get(1), Some(&"2") | Some(&"3") | Some(&"4") | Some(&"5")),
             "M" => module = side.modules.id(f[1]),
             "F" => cur = Some((f[1].to_string(), IrFn { module, mangled: f.get(5).unwrap_or(&"").to_string(), ..Default::default() })),
             "Y" => {

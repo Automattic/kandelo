@@ -1461,6 +1461,138 @@ libc output. The broader "instrument every address-taken function" rule from
 the original C3 plan was not needed for this PR and was not added; K-01, K-02,
 K-04, and K-07 cover the current behavior.
 
+## Fork sinks and compiler facts
+
+The closure above is the conservative fork path. By default the instrumenter
+then reduces it with a sink analysis (`crates/fork-instrument/src/sink.rs`):
+a function whose fork child can never return to its caller (it calls `_exit`
+or `exec*`) is a boundary; the parent's unwind stops there and the callers
+above it stay uninstrumented. `--no-sinks` keeps the full closure. The
+design and its measurements are in
+[`plans/2026-10-02-fork-sinks.md`](plans/2026-10-02-fork-sinks.md).
+
+The analysis resolves each `call_indirect` in one of two ways.
+
+- **With compiler facts.** The SDK's KandeloCallTypes clang plugin writes,
+  per object, a text description of the object's functions and call sites
+  (CFI type ids, virtual-call slots, function-pointer conversions, untyped
+  pointer flow per slot, `pthread_cleanup_push` pairs, `jmp_buf` identity,
+  each unit's aliasing mode) into a custom section named `kandelo.calltypes`.
+  wasm-ld concatenates those sections in input order, so the linked module
+  carries one section made of per-object chunks. The link also records
+  `kandelo.calltypes.code-sha256`, the SHA-256 of the code section payload
+  (from the function count to the section end). The instrumenter uses the
+  facts only when that hash matches the code it receives; a tool that
+  rewrites code after linking (a `wasm-opt` run in a package build, for
+  example) keeps unknown custom sections but changes the code, and the facts
+  would then describe the wrong functions. A mismatch or a missing hash
+  prints one line and falls back to the analysis without facts.
+- **Without facts**, call sites match by Wasm signature (plus the musl
+  registry, parameter and constant-slot refinements).
+
+Facts are bound to functions without a linker map. Objects keep their order
+on both sides, so each module function is matched, in index order, to a
+same-named definition in the current or a later chunk; inside one chunk
+functions match by name, because clang does not emit a file's functions in
+the order the plugin lists them. Names that are unique on both sides anchor
+the alignment. The name section holds demangled names only, so one name can
+stand for several definitions: a C++ constructor's or destructor's complete-
+and base-object variants in one object, or same-named file-local functions
+(including linkonce copies) in several objects between two anchors. Such a
+function is bound to all of them and the analysis uses the union of their
+facts (call sites of every variant whose indirect-call signatures match the
+body, every variant's type ids, no registry-hub rule), never a guess by
+order. A pair whose Wasm parameters cannot be the wasm32 lowering of the IR
+parameters (equal count, or extra `i32` for a variadic tail or a 128-bit
+result pointer and `i64` pairs for 128-bit values) is not bound.
+Definitions the link removed are skipped. Functions with no binding
+(linker-synthesized code, objects built without the plugin) are analysed
+without facts: their own indirect calls and their use as targets match by
+Wasm signature.
+
+Known gap: a function-pointer conversion made inside an object without facts
+is invisible to the type rules. If such an object takes the address of a
+function defined in an object with facts and calls it through another C
+type from a site that has facts, that edge is missed. The research results
+were measured with this same per-function fallback; falling back for the
+whole module whenever any object lacks facts would close the gap at the cost
+of the precision. Which objects lack facts is reported by `--sink-report`
+(`bound` against `defined`).
+
+The rules applied with facts: exact CFI type matching except for functions
+the source converts, puns or passes through untyped pointers to another
+function type; C's effective-type rule in units compiled with strict
+aliasing; the musl and libc++ callback registries; `pthread_cleanup_pop`
+running only its own scope's handlers; calls through a `sigaction()`
+old-action global dispatching only registered handlers; and per-buffer
+`longjmp` targets.
+
+Which analysis runs:
+
+| Module | Analysis |
+|---|---|
+| wasm32 main module, `kernel.kernel_fork` entry, facts with a matching hash | with facts |
+| main module that cannot dlopen, facts absent, unreadable, unhashed or stale, or wasm64 | without facts |
+| main module that can dlopen, no usable facts | none (full closure) |
+| side module (`dylink.0` or `--entry env.fork`) | none (full closure) |
+
+A module that can dlopen is analysed with facts too. What it may assume
+about side modules is chosen with `--side-modules`:
+
+- `traced-entries` (the default). The analysis treats a side module as
+  entering the main program only through its imports (an `env` function or
+  a `GOT.func` slot). A function whose fork child can return to a caller is
+  *fork-returning*; it stays instrumented in the callers' frames. The
+  instrumenter records the main module's side of that assumption in a
+  `kandelo.wpk_fork.dlopen_contract` custom section: the exported
+  fork-returning functions, and whether any fork-returning function is in
+  the indirect-call table (`address-taken`). At `dlopen` both hosts read the
+  section (`host/src/fork-side-module-contract.ts`) and refuse, with a
+  `dlerror()` message naming the import, a side module that imports a
+  fork-returning function, or any side module at all when a fork-returning
+  function's address is taken (a side module could then reach it through a
+  function pointer the analysis never saw). The refusal is the real
+  boundary: the main program was compiled to fork correctly only from the
+  calls it could see. Refusing every side module would take `dlopen` away
+  from a program that has it, so when the analysis finds an address-taken
+  fork-returning function the instrumenter prints one line and plans that
+  module for `assume-all-entries-fork-returning` instead.
+- `assume-all-entries-fork-returning`. Any indirect call may enter a side
+  module whose fork child returns anything, so every function whose fork
+  path can pass through a side module stays instrumented and is never a
+  boundary. The contract section says so and the hosts impose no
+  restriction. Use it for a program that must load arbitrary plugins.
+
+Facts that cannot be read, or an
+internal error in the facts analysis, fall back to the analysis without
+facts with a one-line message, never to anything less conservative. The
+`kandelo.calltypes` and `kandelo.calltypes.code-sha256` sections are removed
+from every output, including a module the instrumenter otherwise returns
+unchanged.
+
+Flags:
+
+- `--no-facts` ignores the facts (diagnosis).
+- `--no-effective-types` applies C's effective-type rule nowhere.
+- `--side-modules=traced-entries|assume-all-entries-fork-returning` (above).
+- `--sink-report` (hidden) prints which analysis decided (`source\t<closure|builtin|facts|plan>`),
+  the facts' coverage, and the instrumented set and boundaries as
+  `A\t<name>`/`B\t<name>` rows, which `--sink-plan` (hidden, research) reads
+  back.
+
+Checked against the research tools (`tools/fork-sink-research`) on their
+research links, with the per-object facts concatenated in link order into
+the section (`crates/fork-instrument/examples/facts_equivalence.rs`): for
+foot, git and bash every function's binding is, or (for 141, 51 and 1
+functions bound to a union) contains, the research tools' map-based binding,
+the exported indirect-call targets, cleanup and `jmp_buf` facts are
+byte-identical to theirs, and the instrumented sets and boundaries equal the
+research results (4, 25 and 1,912 distinct names). Those research results
+assume the dlopen contract (`--side-modules=traced-entries`), which only
+bash needs (it can dlopen); with `assume-all-entries-fork-returning` bash
+keeps 1,927 of 1,929 functions. Instrumented binaries
+built through the SDK with embedded facts have not been run yet.
+
 ## Guarantees and non-guarantees
 
 ### Guaranteed
