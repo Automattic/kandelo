@@ -52,6 +52,21 @@ Before and after host work, ask: "What does this look like on the other host?"
 | Worker adapter | `host/src/worker-adapter.ts` | `host/src/worker-adapter-browser.ts` |
 | Process-worker runtime | shared `host/src/worker-main.ts` | shared `host/src/worker-main.ts` |
 | Kernel worker | shared `host/src/kernel-worker.ts` | shared `host/src/kernel-worker.ts` |
+| Kernel-worker lifecycle helpers | shared `host/src/process-lifecycle.ts` | shared `host/src/process-lifecycle.ts` |
+| Protocol types both entries declare | shared `host/src/kernel-protocol-shared.ts` | shared `host/src/kernel-protocol-shared.ts` |
+
+Logic and message types that are the same on both hosts live once, in
+`process-lifecycle.ts` and `kernel-protocol-shared.ts`. The lifecycle module is
+parameterised by an explicit `ProcessLifecycleHost` record, so each genuine
+platform difference is named there — most importantly
+`terminationProvesQuiescence`, which is `true` on Node (an awaited
+`worker.terminate()` joins the thread) and `false` in the browser (where
+`Worker.terminate()` reports nothing). Nothing reads that field yet: the code
+that should branch on it (thread-slot reclaim, exec-rollback lease release,
+the browser's memory-retirement bookkeeping) is still duplicated in the two
+entries. Move a function into the shared module
+only when it is equivalent on both hosts; declare a real difference in the
+host record rather than forking the function again.
 
 Worker protocols are contracts. Spawn, fork, exec, clone, exit, terminate,
 thread exit, crash, syscall trace, PTY, framebuffer, audio, network, VFS, and
