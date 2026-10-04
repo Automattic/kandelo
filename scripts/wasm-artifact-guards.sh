@@ -25,6 +25,32 @@ wasm_require_no_legacy_asyncify() {
     fi
 }
 
+# Remove the compiler facts fork instrumentation reads (`kandelo.calltypes`
+# and `kandelo.calltypes.code-sha256`, docs/sdk-guide.md) from an artifact
+# about to be installed. WHY: they are build inputs, not part of an
+# artifact. wasm-fork-instrument removes them, but a module can reach
+# installation without it: a recipe's own wasm-opt deletes an unused
+# kernel_fork import and keeps the unknown section, or a recipe links with
+# clang or wasm-ld directly instead of the SDK driver. The facts are often
+# larger than the code. The code is left byte-for-byte unchanged.
+wasm_drop_compiler_facts() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 0
+    grep -a -q 'kandelo\.calltypes' "$path" 2>/dev/null || return 0
+    if ! command -v llvm-objcopy >/dev/null 2>&1; then
+        echo "ERROR: $path carries kandelo.calltypes compiler facts and llvm-objcopy is not on PATH to remove them." >&2
+        echo "       Run inside scripts/dev-shell.sh." >&2
+        return 1
+    fi
+    local stripped="$path.facts-dropped.$$"
+    if ! llvm-objcopy --remove-section=kandelo.calltypes \
+        --remove-section=kandelo.calltypes.code-sha256 "$path" "$stripped"; then
+        rm -f "$stripped"
+        return 1
+    fi
+    mv -f "$stripped" "$path"
+}
+
 # Reject unresolved imports in the namespaces Kandelo reserves for itself
 # unless the host deliberately implements that exact API. The SDK linker
 # permits undefined symbols so packages can retain real host/kernel imports.
