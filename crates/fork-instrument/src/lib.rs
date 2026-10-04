@@ -236,8 +236,12 @@ fn apply_external_sink_plan(
     if missing > 0 {
         eprintln!("wasm-fork-instrument: sink plan names {missing} function(s) absent from this module");
     }
-    reaching.activations.retain(|f| keep.contains(f));
-    reaching.control_reachable.retain(|f| keep.contains(f));
+    // Imports stay: the fork entry import (kernel_fork) is itself a member
+    // of the sets, and dropping it would stop its callers treating the call
+    // as fork-reaching. A plan names local functions only.
+    let is_import = |f: &walrus::FunctionId| matches!(module.funcs.get(*f).kind, walrus::FunctionKind::Import(_));
+    reaching.activations.retain(|f| keep.contains(f) || is_import(f));
+    reaching.control_reachable.retain(|f| keep.contains(f) || is_import(f));
     let live = reaching.control_reachable.clone();
     reaching.tail_call_landings.retain(|site| live.contains(&site.caller));
     bounds.retain(|f| reaching.activations.contains(f));
