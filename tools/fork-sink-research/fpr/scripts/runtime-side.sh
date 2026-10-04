@@ -18,6 +18,8 @@ P=$(grep -o '\-fpass-plugin="[^"]*"' "$SHIMS/llvm/clang" | head -1 | cut -d'"' -
 rm -rf "$OUT/repo" && mkdir -p "$OUT/repo" "$OUT/glue"
 cp -c -R "$ROOT/libc" "$OUT/repo/libc" 2>/dev/null || cp -R "$ROOT/libc" "$OUT/repo/libc"
 cp -R "$ROOT/scripts" "$OUT/repo/scripts"
+# The graphics-stub step of build-musl.sh reads ABI_VERSION from here.
+mkdir -p "$OUT/repo/crates/shared/src" && cp "$ROOT/crates/shared/src/lib.rs" "$OUT/repo/crates/shared/src/"
 rm -rf "$OUT/repo/libc/musl/obj"
 LLVM_BIN="$SHIMS/llvm" bash "$OUT/repo/scripts/build-musl.sh" > "$OUT/build-musl.log" 2>&1
 echo "build-musl exit=$? (log $OUT/build-musl.log)"

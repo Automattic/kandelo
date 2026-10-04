@@ -48,6 +48,8 @@ enum V {
     Exn(Tags),
     /// Address `entry __stack_pointer + k` (frame-slot base).
     Sp(i64),
+    /// The 4-byte value loaded from constant address k.
+    L(i64),
 }
 
 fn joinv(a: V, b: V) -> V {
@@ -176,6 +178,12 @@ struct Prog {
     lj_js: HashMap<u32, Vec<String>>,
     lj_jl: HashMap<u32, Vec<String>>,
     lj_bufbit: HashMap<String, u32>,
+    /// Bits a setjmp function's own `__wasm_longjmp` call can rethrow: LLVM's
+    /// SjLj lowering catches every longjmp in a setjmp function and rethrows
+    /// the ones aimed at other buffers. Those are longjmps raised below it,
+    /// so: every named buffer, plus the unknown-buffer bit when some longjmp
+    /// origin in the module has no buffer fact.
+    lj_rethrow: Tags,
     signal_fns: HashSet<u32>,
     sig_policy: Policy,
     sig_list: HashSet<u32>,
@@ -205,6 +213,9 @@ struct Prog {
     cleanup_map: HashMap<u32, Vec<u32>>,
     cleanup_pop: HashSet<u32>,
     start_fns: HashSet<u32>,
+    /// Constant-address function-pointer cells: address -> every function
+    /// the cell can hold. (FSA_WHATIF_CELLS: a what-if, not checked.)
+    cells: HashMap<i64, Vec<u32>>,
 }
 
 /// Every instruction sequence of a body, in a deterministic pre-order.
@@ -258,14 +269,37 @@ impl Prog {
             _ => generic | self.lj_all_bufs(),
         }
     }
-    /// Bits a longjmp called from `f` throws.
+    /// Bits a longjmp called from `f` throws. The lowering turns source
+    /// `longjmp` calls into `__wasm_longjmp` calls, and adds one more in each
+    /// setjmp function to rethrow foreign longjmps; the plugin records every
+    /// source longjmp (JL, `*` when the buffer is unknown), so a call in a
+    /// function with neither JL nor JS facts is of unknown origin.
     fn lj_throw_bits(&self, f: u32, generic: Tags) -> Tags {
-        match self.lj_jl.get(&f) {
+        let src = match self.lj_jl.get(&f) {
             Some(bufs) if !bufs.iter().any(|b| b == "*" || !self.lj_bufbit.contains_key(b)) => {
                 bufs.iter().filter_map(|b| self.lj_bufbit.get(b)).fold(0, |a, &x| a | (1u64 << x))
             }
-            _ => generic,
+            Some(_) => generic,
+            None if self.lj_js.contains_key(&f) => 0,
+            None => return generic,
+        };
+        src | if self.lj_js.contains_key(&f) { self.lj_rethrow } else { 0 }
+    }
+    fn is_longjmp_name(n: &str) -> bool {
+        matches!(n, "longjmp" | "_longjmp" | "siglongjmp" | "__wasm_longjmp")
+    }
+    /// With a jmp map, a call from `f` whose every target is a longjmp entry
+    /// throws this call's buffer bits in place of the unknown-buffer bit.
+    fn lj_remap(&self, f: u32, targets: &[u32], thr: Tags) -> Tags {
+        let g = self.lj_generic();
+        if (self.lj_jl.is_empty() && self.lj_js.is_empty())
+            || thr & g == 0
+            || targets.is_empty()
+            || !targets.iter().all(|&t| t != u32::MAX && self.names.get(t as usize).is_some_and(|n| Prog::is_longjmp_name(n)))
+        {
+            return thr;
         }
+        (thr & !g) | self.lj_throw_bits(f, g)
     }
     fn lj_generic(&self) -> Tags {
         self.lj_tag.and_then(|t| self.tag_bit.get(&t)).map_or(0, |&b| 1u64 << b)
@@ -306,6 +340,7 @@ impl Prog {
             lj_js: HashMap::new(),
             lj_jl: HashMap::new(),
             lj_bufbit: HashMap::new(),
+            lj_rethrow: 0,
             signal_fns: HashSet::new(),
             sig_policy: Policy::Sig,
             sig_list: HashSet::new(),
@@ -323,6 +358,7 @@ impl Prog {
             cleanup_map: HashMap::new(),
             cleanup_pop: HashSet::new(),
             start_fns: HashSet::new(),
+            cells: HashMap::new(),
             m,
         };
         p.fids = vec![p.m.funcs.iter().next().unwrap().id(); n];
@@ -806,6 +842,11 @@ impl<'a, 'b> Walk<'a, 'b> {
                 };
             }
         }
+        if let V::L(a) = idx {
+            if let Some(v) = p.cells.get(&a) {
+                return (v.iter().copied().filter(|&f| p.skey[f as usize] == key).collect(), false);
+            }
+        }
         if let (V::P(q), true) = (idx, p.use_param) {
             if let Some(v) = param_targets(self.cx, self.f, q, 0) {
                 let v: Vec<u32> = v.into_iter().filter(|&f| p.skey[f as usize] == key).collect();
@@ -872,9 +913,10 @@ impl<'a, 'b> Walk<'a, 'b> {
                         x
                     }
                 };
-                if r.1 != 0 {
+                let thr = self.cx.p.lj_remap(self.f, &targets, r.1);
+                if thr != 0 {
                     let snap = st.clone();
-                    self.throw(&snap, r.1, &why);
+                    self.throw(&snap, thr, &why);
                 }
                 if r.0.is_none() {
                     st.live = false;
@@ -897,14 +939,7 @@ impl<'a, 'b> Walk<'a, 'b> {
             self.effect(&targets, external)
         };
         // A longjmp on a named buffer throws that buffer's bit.
-        if !self.cx.p.lj_jl.is_empty() && targets.iter().any(|&t| {
-            t != u32::MAX && matches!(self.cx.p.names.get(t as usize).map(|n| n.as_str()), Some("longjmp" | "_longjmp" | "siglongjmp"))
-        }) {
-            let g = self.cx.p.lj_generic();
-            if s.thr & g != 0 {
-                s.thr = (s.thr & !g) | self.cx.p.lj_throw_bits(self.f, g);
-            }
-        }
+        s.thr = self.cx.p.lj_remap(self.f, &targets, s.thr);
         if s.thr != 0 {
             let snap = st.clone();
             let why2 = if targets.len() > 1 {
@@ -1437,6 +1472,7 @@ impl<'a, 'b> Walk<'a, 'b> {
                         let key = k + l.arg.offset as i64;
                         st.mem.iter().find(|e| e.0 == key && e.1 == w).map_or(V::Top, |e| e.2)
                     }
+                    V::C(k) if w == 4 && p.cells.contains_key(&(k + l.arg.offset as i64)) => V::L(k + l.arg.offset as i64),
                     _ => V::Top,
                 };
                 push!(v);
@@ -1795,6 +1831,26 @@ fn main() {
     let has = |k: &str| args.iter().any(|a| a == k);
     let wasm = get("--wasm").expect("--wasm <module>");
     let mut p = Prog::load(&wasm);
+    // What-if (unsound, sizing only): FSA_WHATIF_CELLS=<sym>=<fn>|<fn>,...
+    // treats the data symbol's cell (its GOT.data.internal address) as
+    // holding only the listed functions.
+    if let Ok(spec) = std::env::var("FSA_WHATIF_CELLS") {
+        for item in spec.split(',').filter(|x| !x.is_empty()) {
+            let (sym, fns) = item.split_once('=').unwrap();
+            let gname = format!("GOT.data.internal.{sym}");
+            let Some(g) = p.m.globals.iter().find(|g| g.name.as_deref() == Some(gname.as_str())).map(|g| g.id()) else {
+                eprintln!("what-if cells: no {gname}");
+                continue;
+            };
+            let Some(&a) = p.gconst.get(&g) else {
+                eprintln!("what-if cells: {gname} is not constant");
+                continue;
+            };
+            let t: Vec<u32> = fns.split('|').flat_map(|n| p.by_name(n)).collect();
+            eprintln!("what-if cells: {sym} @{a:#x} -> {} functions", t.len());
+            p.cells.insert(a, t);
+        }
+    }
     p.use_param = has("--param");
     // Rule 2 by run-time check: an exception or longjmp leaving a sink frame
     // in the child is a loud failure, so it does not reopen the sink.
@@ -1895,7 +1951,37 @@ fn main() {
                 m.entry(fi).or_default().push(v[2].to_string());
             }
         }
-        eprintln!("jmp map: {} buffers, {} setjmp functions, {} longjmp callers", p.lj_bufbit.len(), p.lj_js.len(), p.lj_jl.len());
+        // An origin without a buffer fact: a direct caller of a longjmp
+        // entry point that is neither a fact-bearing longjmp caller nor a
+        // setjmp function (its call is the rethrow), or an entry point that
+        // can be reached other than by a direct call.
+        let generic = p.lj_generic();
+        let entries: Vec<u32> = (0..p.n as u32).filter(|&g| Prog::is_longjmp_name(&p.names[g as usize])).collect();
+        let mut unknown: Vec<String> = vec![];
+        for &e in &entries {
+            if p.escapes[e as usize] {
+                unknown.push(format!("{} (address-taken)", p.names[e as usize]));
+            }
+            for &c in &p.callers[e as usize] {
+                if entries.contains(&c) {
+                    continue; // longjmp -> __wasm_longjmp wrappers
+                }
+                let known = p.lj_jl.get(&c).is_some_and(|b| !b.iter().any(|x| x == "*" || !p.lj_bufbit.contains_key(x)));
+                if !known && (p.lj_jl.contains_key(&c) || !p.lj_js.contains_key(&c)) {
+                    unknown.push(p.names[c as usize].clone());
+                }
+            }
+        }
+        unknown.sort();
+        unknown.dedup();
+        p.lj_rethrow = p.lj_all_bufs() | if unknown.is_empty() { 0 } else { generic };
+        eprintln!(
+            "jmp map: {} buffers, {} setjmp functions, {} longjmp callers; unknown-buffer origins {:?}",
+            p.lj_bufbit.len(),
+            p.lj_js.len(),
+            p.lj_jl.len(),
+            unknown
+        );
     }
     if let Some(path) = get("--cleanup-map") {
         p.cleanup_pop = p.by_name("_pthread_cleanup_pop").into_iter().collect();
@@ -2532,6 +2618,42 @@ fn main() {
     );
     // Functions that have a catching frame at or above them on some fork
     // stack: propagate from every catcher down fork-path call edges.
+    if std::env::var_os("FSA_SHOW_CATCHERS").is_some() {
+        let mut v: Vec<(&str, Tags, bool)> = catches.iter().map(|(&f, &t)| (p.names[f as usize].as_str(), t, r2.contains(&f))).collect();
+        v.sort();
+        for (n, t, on) in v {
+            eprintln!("CATCHER\t{n}\t{t:#x}\ton-path-region={on}");
+        }
+    }
+    // FSA_PATH=<from>,<to>: a shortest on-path call chain (debugging).
+    if let Some(spec) = std::env::var("FSA_PATH").ok() {
+        let (a, b) = spec.split_once(',').unwrap();
+        let (src, dst) = (p.by_name(a), p.by_name(b));
+        let mut prev: HashMap<u32, (u32, String)> = HashMap::new();
+        let mut q: VecDeque<u32> = src.iter().copied().collect();
+        let mut seen: HashSet<u32> = src.iter().copied().collect();
+        while let Some(g) = q.pop_front() {
+            if dst.contains(&g) {
+                let mut chain = vec![p.names[g as usize].clone()];
+                let mut c = g;
+                while let Some((pr, how)) = prev.get(&c) {
+                    chain.push(format!("{} [{how}]", p.names[*pr as usize]));
+                    c = *pr;
+                }
+                chain.reverse();
+                eprintln!("PATH\t{}", chain.join(" -> "));
+                break;
+            }
+            for (sid, ix, ts) in sites.get(&g).map(|v| v.as_slice()).unwrap_or(&[]) {
+                for &h in ts {
+                    if seen.insert(h) {
+                        prev.insert(h, (g, format!("{sid:?}/{ix} of {}", ts.len())));
+                        q.push_back(h);
+                    }
+                }
+            }
+        }
+    }
     let mut below_catcher: HashMap<u32, Tags> = HashMap::new();
     {
         let mut q: VecDeque<u32> = VecDeque::new();
@@ -2614,6 +2736,11 @@ fn main() {
                     j.thr |= c.thr;
                 }
             }
+            // A longjmp call's child-side throw is the same longjmp as its
+            // normal-mode one (`__wasm_longjmp` itself sits on the fork path
+            // when restoring the signal mask can dispatch a handler): give it
+            // the buffer bits of this call, as the normal-mode effect does.
+            j.thr = p.lj_remap(f, t, j.thr);
             if j.ret.is_some() || j.thr != 0 {
                 inject.insert((*sid, *ix), j);
             }
