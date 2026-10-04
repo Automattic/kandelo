@@ -27,14 +27,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/cairomm-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/cairomm-src"
 
 CAIROMM_VERSION="${WASM_POSIX_DEP_VERSION:-1.12.2}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/cairomm-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.cairographics.org/releases/cairomm-${CAIROMM_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-45c47fd4d0aa77464a75cdca011143fea3ef795c4753f6e860057da5fb8bd599}"
 
-BUILD_DIR="$SCRIPT_DIR/cairomm-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/cairomm-build"
 
 if ! command -v wasm32posix-c++ &>/dev/null; then
     echo "ERROR: wasm32posix-c++ not found. Enter scripts/dev-shell.sh." >&2
@@ -52,28 +59,18 @@ LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?WASM_POSIX_DEP_LIBPNG_DIR not set}"
 # private sysroot with the resolved libcxx overlaid: the worktree SDK seed
 # is an input tree for every package build and must hold no symlink
 # (mariadb pattern — see scripts/package-build-roots.sh).
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot cairomm "$SDK_SYSROOT" libcxx
 )"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading cairomm $CAIROMM_VERSION..."
-    TARBALL="/tmp/cairomm-${CAIROMM_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified cairomm $CAIROMM_VERSION source..."
+    kandelo_package_stage_verified_source cairomm "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.

@@ -76,8 +76,14 @@ set(CMAKE_CXX_FLAGS_INIT "${WASM32_FLAGS_STR}")
 # Path to the kandelo glue objs that the SDK normally injects. We hand
 # them to CMake via CMAKE_EXE_LINKER_FLAGS_INIT so cmake's link rule
 # picks them up for `add_executable` targets (espeak-ng-bin).
-get_filename_component(_TOOLCHAIN_DIR2 "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-set(_GLUE_OBJ_DIR "${_TOOLCHAIN_DIR2}/glue-objs")
+# build-espeak-ng.sh compiles them under its work root and exports
+# ESPEAK_GLUE_OBJ_DIR; the directory beside this file is the fallback.
+if(DEFINED ENV{ESPEAK_GLUE_OBJ_DIR})
+  set(_GLUE_OBJ_DIR "$ENV{ESPEAK_GLUE_OBJ_DIR}")
+else()
+  get_filename_component(_TOOLCHAIN_DIR2 "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
+  set(_GLUE_OBJ_DIR "${_TOOLCHAIN_DIR2}/glue-objs")
+endif()
 
 set(WASM32_LINK_FLAGS
   "-nostdlib"

@@ -9,12 +9,20 @@ SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-fffdb1a3d143c177a4398a2229a40d6a8
 # its texmf-dist macros from drifting across upstream rollovers.
 export TEXLIVE_VERSION
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/texlive-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/texlive-host-build"
-CROSS_BUILD_DIR="$SCRIPT_DIR/texlive-cross-build"
-BIN_DIR="$SCRIPT_DIR/bin"
-
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/texlive-src"
+HOST_BUILD_DIR="$WORK_DIR/texlive-host-build"
+CROSS_BUILD_DIR="$WORK_DIR/texlive-cross-build"
+BIN_DIR="$WORK_DIR/bin"
+
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
@@ -58,14 +66,22 @@ echo "==> libpng at $LIBPNG_PREFIX"
 # Download TeX Live source
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading TeX Live $TEXLIVE_VERSION source..."
-    TARBALL="texlive-${TEXLIVE_VERSION}0308-source.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" \
-        -o "/tmp/${TARBALL}"
+    # A unique file under the work root, not a fixed shared temp name that
+    # concurrent builds would race on.
+    TARBALL="$(mktemp "$WORK_DIR/texlive-source.XXXXXX")"
+    if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" \
+            -o "$TARBALL"; then
+        rm -f "$TARBALL"
+        exit 1
+    fi
     echo "==> Verifying TeX Live source sha256..."
-    echo "$SOURCE_SHA256  /tmp/${TARBALL}" | shasum -a 256 -c -
+    if ! echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -; then
+        rm -f "$TARBALL"
+        exit 1
+    fi
     mkdir -p "$SRC_DIR"
-    tar xf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
 fi
 
 # TeX Live always runs luajit's sub-configure even when all Lua engines are
@@ -275,9 +291,11 @@ echo "==> pdftex.wasm: $(du -h "$BIN_DIR/pdftex.wasm" | cut -f1)"
 # ships inside the texlive package's tar.zst archive — same pattern
 # as vim's runtime/ tree. archive_stage packs everything in the
 # resolver scratch dir, so writing the JSON there is enough.
+# TEXLIVE_WORK_DIR points the bundle script at this build's host pdftex and
+# keeps its install-tl, distribution, and format trees under the same root.
 BUNDLE_FILE="$BIN_DIR/texlive-bundle.json"
 echo "==> Building TeX Live distribution bundle..."
-TEXLIVE_BUNDLE_OUT="$BUNDLE_FILE" \
+TEXLIVE_BUNDLE_OUT="$BUNDLE_FILE" TEXLIVE_WORK_DIR="$WORK_DIR" \
     bash "$REPO_ROOT/images/vfs/scripts/build-texlive-bundle.sh"
 echo "==> texlive-bundle.json: $(du -h "$BUNDLE_FILE" | cut -f1)"
 
@@ -286,6 +304,12 @@ echo "==> Done."
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binaries over the fetched release. Two outputs: pdftex.wasm (the
 # engine) + texlive-bundle.json (its runtime distribution).
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary texlive "$BIN_DIR/pdftex.wasm"
 install_local_binary texlive "$BIN_DIR/texlive-bundle.json"

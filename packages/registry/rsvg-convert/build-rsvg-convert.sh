@@ -64,6 +64,12 @@ OUT_BIN="$TARGET_DIR/wasm32-unknown-kandelo-std/release/rsvg-convert.wasm"
 ls -lh "$OUT_BIN"
 
 cd "$REPO_ROOT"
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary rsvg-convert "$OUT_BIN" rsvg-convert.wasm

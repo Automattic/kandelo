@@ -4,15 +4,30 @@ set -euo pipefail
 # Build bzip2 1.0.8 for wasm32-posix-kernel.
 #
 # Plain Makefile build with CC/AR/RANLIB overrides.
-# Output: packages/registry/bzip2/bin/bzip2.wasm
+# Output: bin/bzip2.wasm under the resolver work root (beside this
+# script when run standalone).
 # Also installs libbz2.a + bzlib.h to sysroot.
 
 BZIP2_VERSION="${BZIP2_VERSION:-1.0.8}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/bzip2-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/bzip2-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -30,12 +45,14 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # --- Download bzip2 source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading bzip2 $BZIP2_VERSION..."
-    TARBALL="bzip2-${BZIP2_VERSION}.tar.gz"
-    URL="https://sourceware.org/pub/bzip2/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    URL="https://sourceware.org/pub/bzip2/bzip2-${BZIP2_VERSION}.tar.gz"
+    # WHY: a unique archive under the work root; a fixed /tmp name let two
+    # concurrent builds overwrite or delete each other's download.
+    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/bzip2-source.XXXXXX")"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -81,4 +98,4 @@ echo "Binary: $BIN_DIR/bzip2.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary bzip2 "$SCRIPT_DIR/bin/bzip2.wasm"
+install_local_binary bzip2 "$BIN_DIR/bzip2.wasm"

@@ -3,6 +3,7 @@ inputs = [
     "packages/registry/libcxx/build-libcxx.sh",
     "flake.nix",
     "flake.lock",
+    "sdk/activate.sh",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"

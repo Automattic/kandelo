@@ -27,14 +27,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/quickshell-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/quickshell-src"
 
 QUICKSHELL_VERSION="${WASM_POSIX_DEP_VERSION:-0.3.1}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/quickshell-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/quickshell-mirror/quickshell/archive/refs/tags/v${QUICKSHELL_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-218f6327293928bcb1f9b25728b336c4ab125f67fe1babd7d47313f890a16c99}"
 
-BUILD_DIR="$SCRIPT_DIR/quickshell-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/quickshell-build"
 
 for tool in wasm32posix-c++ wasm32posix-cc cmake ninja qmake wayland-scanner; do
     if ! command -v "$tool" &>/dev/null; then
@@ -66,28 +73,18 @@ LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not 
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:?WASM_POSIX_DEP_LIBCXX_DIR not set}"
 
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot quickshell "$SDK_SYSROOT" libcxx
 )"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading quickshell $QUICKSHELL_VERSION..."
-    TARBALL="/tmp/quickshell-${QUICKSHELL_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified quickshell $QUICKSHELL_VERSION source..."
+    kandelo_package_stage_verified_source quickshell "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/no-wl-proxy-interpose-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/on-thread-logger-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/one-generation-reload-on-wasm.patch"
@@ -191,6 +188,13 @@ fi
 if [ -z "$QS_BIN" ] || [ ! -f "$QS_BIN" ]; then
     echo "ERROR: Build failed — quickshell executable not found under $BUILD_DIR" >&2
     exit 1
+fi
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 fi
 
 cd "$REPO_ROOT"

@@ -8,4 +8,5 @@ revision = 1
 inputs = [
   "packages/registry/libxkbregistry/build-libxkbregistry.sh",
   "packages/registry/libxkbcommon/src/config.h",
+  "scripts/package-build-roots.sh",
 ]
