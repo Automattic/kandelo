@@ -14156,7 +14156,7 @@ fn build_into_cache(
         // not satisfy `Path::exists`, so the ordinary rename below retains
         // Default's established repair behavior. SourceOnlyV1 never takes
         // this branch and remains fail-closed/no-follow.
-        if canonical.exists() {
+        let adopt_winner = |stage: &mut OwnedPackageBuildStage| -> Result<LocalBuildDisposition, String> {
             stage.cleanup()?;
             validate_cache_entry(target, canonical, arch, abi_version, cache_key_sha).map_err(
                 |error| {
@@ -14166,10 +14166,34 @@ fn build_into_cache(
                     )
                 },
             )?;
-            return Ok(LocalBuildDisposition::Published);
+            Ok(LocalBuildDisposition::Published)
+        };
+        if canonical.exists() {
+            return adopt_winner(&mut stage);
         }
-        std::fs::rename(&tmp, canonical)
-            .map_err(|error| format!("rename {} -> {}: {error}", tmp.display(), canonical.display()))?;
+        match std::fs::rename(&tmp, canonical) {
+            Ok(()) => {}
+            // WHY: a peer resolver of the same key can publish between the
+            // check above and this rename. Renaming a directory onto a
+            // non-empty one then fails (ENOTEMPTY on macOS, ENOTEMPTY or
+            // EEXIST on Linux). That is the documented concurrent-winner
+            // case, not a build failure: keep the winner, as above.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::AlreadyExists
+                ) && canonical.exists() =>
+            {
+                return adopt_winner(&mut stage);
+            }
+            Err(error) => {
+                return Err(format!(
+                    "rename {} -> {}: {error}",
+                    tmp.display(),
+                    canonical.display()
+                ));
+            }
+        }
         stage.mark_published();
         return Ok(LocalBuildDisposition::Published);
     }
