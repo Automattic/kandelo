@@ -1148,6 +1148,7 @@ time; "covered" means every frame that must be instrumented is in the set.
 | CPython | 9,162 | 9,125 | 9 stacks, covered |
 | Ruby | 9,735 | 9,522 | 17 stacks, covered |
 | git-remote-http (curl) | 8,660 | 8,433 | none recorded |
+| waybar | 32,941 | 32,705 | none recorded |
 
 Without the effective-type rule, git is 5,085 and the others barely move.
 
@@ -1167,6 +1168,10 @@ inward.
 
 The interpreters stay large because their fork children genuinely return
 into the interpreter.
+
+waybar stays large for a different reason: GTK and its C++ code raise
+exceptions across the fork path, and a catcher may be above almost every
+frame (see "What keeps Qt programs large").
 
 ### `jmp_buf` identity and curl (2026-10-03)
 
@@ -1234,3 +1239,28 @@ nothing on Kandelo, installed binary included, and report nothing. Qt's
 again. Kandelo refuses a nested vfork with `EAGAIN`, a documented
 boundary (`docs/posix-status.md`, `vfork()`), so Qt's call fails silently.
 The `startDetached` path of the sink set could not be checked at run time.
+
+### Validation run on this branch (2026-10-03)
+
+Sinks are the instrumenter default, so every fork-using test program the
+suites build goes through them.
+- Full Vitest (`ci-run-test-suite.sh vitest`): 4,970 passed, 4 failed.
+  - The resolver bundle was stale: a merged commit changed
+    `host/src/constants.ts` after the bundle was regenerated. It is now
+    regenerated, and the test passes.
+  - `qt-gui-smoke` and `qt-qml-smoke` fail when run concurrently on a
+    qtbase cache miss. Both builds use the recipe's fixed in-tree
+    `qtbase-build` directory and delete it under each other. Run one after
+    the other, both pass. This is a recipe defect, not a fork one.
+  - `abi-version.test.ts` fails in its own import-section parser.
+    `at += uleb()` reads `at` before `uleb()` advances it. The test is
+    identical on main.
+- Open POSIX Test Suite: 174 passed, 0 failed (179 total).
+- libc-test: 306 passed, 0 failed, 17 expected failures.
+- Sortix os-test `--all`: 5,039 passed, 3 failed, 3 timed out. The
+  timeouts (poll, select) pass when re-run alone. The three `nl_types`
+  tests fork and `execlp("gencat")`. This macOS host has its own
+  `/usr/bin/gencat`, which host-FS passthrough exposes to the guest, so exec
+  fails with `ENOEXEC`. That is specific to this host.
+
+Not run: the browser suite, the ABI snapshot check, and benchmarks.
