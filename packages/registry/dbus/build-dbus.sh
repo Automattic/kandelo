@@ -52,8 +52,9 @@ rm -rf "$SRC_DIR"
 kandelo_package_stage_verified_source dbus "$SRC_DIR" \
     "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
 
-# Fresh build dir each run — autoconf bakes --prefix into Makefiles.
-BUILD_DIR="$SCRIPT_DIR/dbus-build"
+# Fresh build dir each run — autoconf bakes --prefix into Makefiles. It
+# lives under the work root so a concurrent resolve cannot delete it.
+BUILD_DIR="$WORK_DIR/dbus-build"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
@@ -114,16 +115,25 @@ done
 
 # install_local_binary applies fork instrumentation (policy auto) and
 # also stages each output into WASM_POSIX_DEP_OUT_DIR for the resolver.
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-mkdir -p "$SCRIPT_DIR/bin"
+# The .wasm staging names live under the work root: install_local_binary
+# instruments them in place.
+BIN_DIR="$WORK_DIR/bin"
+mkdir -p "$BIN_DIR"
 for out in dbus-daemon dbus-send dbus-monitor; do
     case "$out" in
         dbus-daemon) src="$BUILD_DIR/bus/$out" ;;
         *)           src="$BUILD_DIR/tools/$out" ;;
     esac
-    cp "$src" "$SCRIPT_DIR/bin/$out.wasm"
-    install_local_binary dbus "$SCRIPT_DIR/bin/$out.wasm"
+    cp "$src" "$BIN_DIR/$out.wasm"
+    install_local_binary dbus "$BIN_DIR/$out.wasm"
 done
 
 echo "==> dbus $DBUS_VERSION built successfully!"
-ls -lh "$SCRIPT_DIR/bin/"*.wasm
+ls -lh "$BIN_DIR/"*.wasm

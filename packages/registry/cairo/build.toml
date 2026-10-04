@@ -3,9 +3,10 @@ repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "b87f313b3"
 revision    = 1
 
-# The fetched `cairo-src/` tree is gitignored; the resolver hashes these
-# tracked inputs on a clean checkout.
+# The source and build trees live under the resolver work root; the
+# resolver hashes these tracked inputs on a clean checkout.
 inputs = [
   "packages/registry/cairo/build-cairo.sh",
+  "scripts/package-build-roots.sh",
   "sdk/meson/wasm32posix.ini",
 ]

@@ -22,14 +22,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/waybar-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/waybar-src"
 
 WAYBAR_VERSION="${WASM_POSIX_DEP_VERSION:-0.14.0}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/waybar-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/Alexays/Waybar/archive/refs/tags/${WAYBAR_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-7f3859779bb3a5028a7215b2000c2e476c03453a52289164ba60a4bf1bb3772f}"
 
-BUILD_DIR="$SCRIPT_DIR/waybar-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/waybar-build"
 
 for tool in wasm32posix-c++ wasm32posix-cc wayland-scanner; do
     if ! command -v "$tool" &>/dev/null; then
@@ -73,28 +80,18 @@ PCRE2_PREFIX="${WASM_POSIX_DEP_PCRE2_DIR:?WASM_POSIX_DEP_PCRE2_DIR not set}"
 # private sysroot with the resolved libcxx overlaid: the worktree SDK seed
 # is an input tree for every package build and must hold no symlink
 # (mariadb pattern — see scripts/package-build-roots.sh).
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot waybar "$SDK_SYSROOT" libcxx
 )"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading Waybar $WAYBAR_VERSION..."
-    TARBALL="/tmp/waybar-${WAYBAR_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified waybar $WAYBAR_VERSION source..."
+    kandelo_package_stage_verified_source waybar "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
 fi
 
 rm -rf "$BUILD_DIR"
@@ -335,6 +332,13 @@ echo "==> Instrumenting fork paths..."
 bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
     "$BUILD_DIR/waybar.wasm" -o "$BUILD_DIR/waybar.wasm.instr"
 mv "$BUILD_DIR/waybar.wasm.instr" "$BUILD_DIR/waybar.wasm"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 cp "$BUILD_DIR/waybar.wasm" "$INSTALL_DIR/waybar.wasm"

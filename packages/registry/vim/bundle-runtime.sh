@@ -25,12 +25,20 @@ set -euo pipefail
 #      Perl/shell tools are for desktop integration and :hardcopy
 #      printing — neither applies in wasm-on-browser.
 #
-# Output: packages/registry/vim/runtime/ (directory tree)
+# Output: runtime/ (directory tree) under the resolver work root, beside
+# build-vim.sh's vim-src (beside this script when run standalone).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/vim-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: derive the same work root build-vim.sh used (it inherits
+# WASM_POSIX_DEP_WORK_DIR), so a concurrent build cannot delete or replace
+# this build's runtime/ while build-vim.sh copies it into the output.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/vim-src"
 RUNTIME_SRC="$SRC_DIR/runtime"
-RUNTIME_OUT="$SCRIPT_DIR/runtime"
+RUNTIME_OUT="$KANDELO_PACKAGE_WORK_DIR/runtime"
 
 if [ ! -d "$RUNTIME_SRC" ]; then
     echo "ERROR: Vim source not found. Run build-vim.sh first." >&2

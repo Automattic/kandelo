@@ -2,9 +2,10 @@
  * Build a pre-built VFS image containing Perl 5.40.3 stdlib for the
  * browser demo.
  *
- * Produces: apps/browser-demos/public/perl.vfs
+ * Produces: apps/browser-demos/public/perl.vfs.zst, or the path given as
+ * the first argument (a resolver build passes one under its work root).
  *
- * Usage: npx tsx images/vfs/scripts/build-perl-vfs-image.ts
+ * Usage: npx tsx images/vfs/scripts/build-perl-vfs-image.ts [output]
  */
 import { readFileSync, readdirSync, lstatSync, statSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -210,7 +211,7 @@ export async function buildPerlVfsImage(
 async function main(): Promise<void> {
   await buildPerlVfsImage({
     sourceDirectory: ensureSourceExtract("perl", REPO_ROOT, LEGACY_SRC),
-    outputPath: OUT_FILE,
+    outputPath: process.argv[2] ? resolve(process.argv[2]) : OUT_FILE,
   });
 }
 

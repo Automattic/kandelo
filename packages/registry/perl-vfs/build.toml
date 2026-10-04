@@ -6,6 +6,8 @@ inputs = [
   "images/vfs/scripts/build-perl-vfs-image.ts",
   "images/vfs/scripts/source-extract-helper.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
+  "scripts/install-local-binary.sh",
+  "scripts/wasm-artifact-guards.sh",
   "host/src/constants.ts",
   "host/src/file-offset.ts",
   "host/src/generated/abi.ts",

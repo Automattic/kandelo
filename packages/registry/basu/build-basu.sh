@@ -13,14 +13,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/basu-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/basu-src"
 
 BASU_VERSION="${WASM_POSIX_DEP_VERSION:-0.2.1}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/basu-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://git.sr.ht/~emersion/basu/archive/v${BASU_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-43b327073d1ac7bc6cbc0d3dfff729348fc970dfff0551ad40e366332e990204}"
 
-BUILD_DIR="$SCRIPT_DIR/basu-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/basu-build"
 
 for tool in wasm32posix-cc gperf python3 awk; do
     if ! command -v "$tool" &>/dev/null; then
@@ -29,18 +36,12 @@ for tool in wasm32posix-cc gperf python3 awk; do
     fi
 done
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading basu $BASU_VERSION..."
-    TARBALL="/tmp/basu-${BASU_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified basu $BASU_VERSION source..."
+    kandelo_package_stage_verified_source basu "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
 fi
 
 rm -rf "$BUILD_DIR"

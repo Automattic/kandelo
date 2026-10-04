@@ -4,7 +4,8 @@ set -euo pipefail
 # Build less for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: packages/registry/less/bin/less.wasm
+# Output: bin/less.wasm under the resolver work root (beside this script
+# when run standalone).
 #
 # less requires termcap functions (tgetent, tgetstr, etc.) which musl
 # doesn't provide. Previously this built a stub libtermcap.a whose
@@ -21,9 +22,23 @@ set -euo pipefail
 LESS_VERSION="${LESS_VERSION:-668}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/less-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/less-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -63,11 +78,15 @@ fi
 # --- Download less source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading less $LESS_VERSION..."
-    TARBALL="less-${LESS_VERSION}.tar.gz"
+    TARBALL_NAME="less-${LESS_VERSION}.tar.gz"
     DOWNLOAD_URLS=(
-        "https://www.greenwoodsoftware.com/less/${TARBALL}"
-        "https://ftp.gnu.org/gnu/less/${TARBALL}"
+        "https://www.greenwoodsoftware.com/less/${TARBALL_NAME}"
+        "https://ftp.gnu.org/gnu/less/${TARBALL_NAME}"
     )
+    # WHY: a unique archive under the work root; a fixed /tmp name let two
+    # concurrent builds overwrite or delete each other's download.
+    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/less-source.XXXXXX")"
+    DOWNLOADED=0
     for URL in "${DOWNLOAD_URLS[@]}"; do
         if curl \
             --connect-timeout 20 \
@@ -76,19 +95,20 @@ if [ ! -d "$SRC_DIR" ]; then
             --retry-max-time 120 \
             --retry-all-errors \
             -fsSL "$URL" \
-            -o "/tmp/$TARBALL"
+            -o "$TARBALL"
         then
+            DOWNLOADED=1
             break
         fi
-        rm -f "/tmp/$TARBALL"
     done
-    if [ ! -f "/tmp/$TARBALL" ]; then
-        echo "ERROR: failed to download $TARBALL from all configured mirrors" >&2
+    if [ "$DOWNLOADED" != 1 ]; then
+        rm -f "$TARBALL"
+        echo "ERROR: failed to download $TARBALL_NAME from all configured mirrors" >&2
         exit 1
     fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -153,4 +173,4 @@ echo "Binary: $BIN_DIR/less.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-[ -f "$SCRIPT_DIR/bin/less.wasm" ] && install_local_binary less "$SCRIPT_DIR/bin/less.wasm" || true
+install_local_binary less "$BIN_DIR/less.wasm"

@@ -1,4 +1,10 @@
 script_path = "packages/registry/libepoxy/build-libepoxy.sh"
+inputs = [
+  "packages/registry/libepoxy/build-libepoxy.sh",
+  "scripts/package-build-roots.sh",
+  "packages/registry/libepoxy/src/EGL/eglplatform.h",
+  "packages/registry/libepoxy/src/KHR/khrplatform.h",
+]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "cf81d0f7c"
 revision    = 1
