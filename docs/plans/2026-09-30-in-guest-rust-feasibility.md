@@ -1,85 +1,125 @@
-# Compiling Rust inside Kandelo — feasibility (updated with evidence)
+# Rust tooling inside Kandelo — feasibility
 
-Status: feasibility assessment, not an implementation. This updates the
-earlier verbal analysis with what the completed Rust **cross-compilation**
-work now proves. Bottom line: the blocker is no longer the operating system —
-Kandelo now demonstrably provides the POSIX surface a self-hosted compiler
-needs — it is the toolchain's own C++ components (LLVM + lld) and wasm32
-memory scale.
+Status: feasibility assessment, not an implementation. Updated
+2026-10-04 after the Rust target gained a prebuilt std, cargo-c support
+and its first packages (#1466). Bottom line: the operating system is no
+longer the blocker. The cost is the toolchain's own C++ components
+(LLVM and lld), wasm32 memory scale, and a few compiler-specific
+mechanisms (proc-macros). Crates do not need to live in a VFS image.
 
-## What "in-guest Rust" means
+## What "Rust tooling inside Kandelo" means
 
-A `rustc` that runs as a Kandelo guest (a wasm program on the kernel) and
-produces Kandelo-runnable wasm. A real Rust compiler is three parts:
+`cargo` and `rustc` running as Kandelo guests (wasm programs on the
+kernel) and producing Kandelo-runnable wasm. That is four pieces:
 
-- **rustc frontend/middle-end** — Rust, uses `std`.
-- **codegen backend** — LLVM (C++) by default. Alternatives: Cranelift (Rust)
-  and GCC (C).
-- **linker** — `rust-lld` (LLVM's lld, C++), or an external linker.
+- **cargo** — the build driver and package manager. Rust, plus curl,
+  OpenSSL and libgit2 as C dependencies.
+- **rustc's front and middle end** — Rust, uses `std`.
+- **the code generator** — LLVM (C++). Cranelift (Rust) emits native
+  machine code only, not wasm, so it cannot produce Kandelo guests; there
+  is no mature pure-Rust wasm backend.
+- **the linker** — `rust-lld` or `wasm-ld` (LLVM's lld, C++).
 
-## What our cross-compilation work now proves (the OS side is ready)
+## What the cross-compilation work proves (the OS side is ready)
 
-Earlier this was hypothetical; it is now demonstrated on the kernel
-(`programs/rust/*`, PRs #1378/#1443/#1444):
+Demonstrated on the kernel, with Vitest coverage in
+`host/test/rust-std.test.ts`, `host/test/rust-c-interop.test.ts` and
+`packages/registry/librsvg/test/`:
 
-- Full `std`: `std::fs`, `std::env`/args, `std::time`, `HashMap`.
-- `std::thread` + `Mutex` (pthread→clone, futex), `std::net`, and
-  `std::process` (fork+exec, instrumented).
-- C↔Rust static linking and a Rust library as a package dependency.
+- Full `std`: files, environment and arguments, time, `HashMap`,
+  threads with `Mutex`, TCP networking, and `std::process` (fork+exec,
+  instrumented). Error paths return errors; backtraces report
+  unsupported; panics abort.
+- Rust and C/C++ static linking in both directions, including C++
+  exceptions inside C++ code.
+- A real dependency-bearing Rust package (librsvg, 366 crates) built
+  through the package resolver: `libc` pinned to Kandelo's fork, crates
+  vendored from the lockfile, gtk-rs `-sys` crates resolving C libraries
+  through pkg-config.
 
-A self-hosted `rustc` is a large multithreaded `std` program that reads/writes
-files, spawns a linker, and uses lots of memory and threads — exactly that
-surface. So **rustc's frontend (the Rust half) has no OS blocker on Kandelo
-anymore**; cross-compiling rustc-the-Rust-program to `wasm32-unknown-kandelo`
-is now in-scope in principle.
+A self-hosted `rustc` is a large multithreaded `std` program that reads
+and writes files, spawns a linker, and uses a lot of memory: exactly
+that surface. rustc's Rust half has no OS blocker on Kandelo.
 
-## The real blockers
+## The four pieces, by difficulty
 
-1. **LLVM + lld to wasm (dominant cost).** To emit *wasm* output you need a
-   wasm codegen backend, which today means **LLVM's wasm backend running
-   in-guest**. LLVM and lld are millions of lines of C++. Kandelo runs C++
-   (libcxx, CPython, PHP, dinit…), so it is *possible*, but porting/compiling
-   LLVM to `wasm32-unknown-kandelo` is the overwhelming majority of the work.
-   This is upstream-toolchain scale, not a Kandelo gap.
-   - *Cranelift does not help:* it emits native ISAs (x86/arm/riscv), not
-     wasm, so it cannot produce Kandelo guests. There is no mature pure-Rust
-     wasm codegen backend, so LLVM cannot be dodged for a wasm-output
-     compiler.
+1. **cargo: reachable with today's patterns.** Cross-compiling cargo is
+   a librsvg-sized job: a few hundred crates, the `libc` pin, and likely
+   the same two crate patches (`system-deps`, `parking_lot_core`). Its C
+   dependencies (curl, OpenSSL, git) are already Kandelo packages. On its
+   own it can fetch crates, resolve versions, and run `cargo tree` or
+   `cargo vendor`, but it cannot build without rustc.
 
-2. **Memory scale.** wasm32 is 32-bit (4 GB ceiling; our max-memory cap is
-   1 GB). rustc+LLVM compilations of nontrivial crates exceed that. Small
-   inputs are fine; real ones need a higher cap or the `wasm64posix` path
-   (which the SDK already contemplates and the Rust target could follow).
+2. **rustc and LLVM: the dominant cost.** Natively, `librustc_driver`
+   (which includes LLVM) is about 204 MB and `rust-lld` about 131 MB
+   (macOS arm64, nightly 2026-04-27). Porting LLVM and lld to run in the
+   guest is the bulk of the work; Kandelo runs large C++ programs
+   (libcxx, Qt, CPython), so it is possible, but it is upstream-toolchain
+   scale. The same port would give Kandelo an in-guest `clang`.
 
-3. **Sysroot + linker in-guest.** Ship the target `std`/`core` rlibs (or
-   `rust-src` for `build-std`) as files in the VFS; drive a wasm `lld` (or the
-   SDK) via `fork+exec` — both validated-shaped by the std work, but another
-   large artifact to assemble.
+3. **Build scripts and proc-macros.** In the guest, Kandelo is both the
+   build machine and the target. Build scripts become guest programs that
+   cargo runs, which fork+exec supports. Proc-macros (compiler plugins)
+   are shared libraries rustc loads with `dlopen`. Kandelo has `dlopen`
+   for wasm side modules, but rustc loading a proc-macro through it is
+   untested. Proc-macros also report errors by panicking inside a
+   `catch_unwind`; with `panic = "abort"` that panic would kill the
+   compiler, so at least the compiler process likely needs unwinding.
 
-## Realistic path (large; roughly ordered)
+4. **Linking and C code.** rustc needs an in-guest linker (`wasm-ld`
+   from the LLVM port). Crates whose build scripts compile C (common,
+   through the `cc` crate) need an in-guest C compiler, which the LLVM
+   port also supplies.
 
-1. Cross-compile the **rustc frontend + a minimal backend** to
-   `wasm32-unknown-kandelo` (hardest sub-part is the backend).
-2. Port/compile **LLVM + lld** to the target (the mega-task; likely
-   `wasm64posix` for memory). Precedent exists at browser-demo scale
-   (clang/LLVM-in-wasm), not production.
-3. Assemble an in-VFS **sysroot** and wire the in-guest link step.
-4. Prove a trivial program compiled *inside* Kandelo runs on Kandelo.
+**Memory.** Compiling real crates needs more than wasm32's 4 GB address
+space, and Kandelo's default process ceiling is 1 GiB
+(`host/src/runtime-memory-profile.ts`). A `wasm64` Rust target is the
+prerequisite. On WebKit a declared memory ceiling is charged against a
+shared reservation pool of about 6 GiB whether or not it is used, so a
+large compiler ceiling is expensive in Safari specifically.
 
-## Cheaper partials (if the goal is "run Rust in-guest", not "compile to wasm")
+## Avoiding large VFS images
 
-- **miri** (rustc's MIR interpreter, pure Rust, no LLVM) could *interpret*
-  Rust in-guest with no C++ backend — but it interprets, it does not produce
-  wasm, and it still means building most of the rustc frontend for the target.
-- A `wasm64posix` Rust target would raise the memory ceiling that constrains
-  any in-guest compilation.
+None of this requires crates or the toolchain in the eager image:
 
-## Honest conclusion
+- **Crates on demand.** cargo's sparse registry protocol fetches one
+  small index file per crate and one archive per crate version over
+  HTTPS, only for what a project uses, and caches them in the guest's
+  `CARGO_HOME`. In Node the guest has real sockets; in the browser the
+  requests would go through the same CORS proxy git cloning uses (not
+  yet checked whether crates.io sends CORS headers itself). For scale,
+  librsvg's full crate set is 327 MB unpacked, which is why a
+  crates-in-the-image approach is the wrong shape.
+- **Toolchain as lazy files.** rustc, cargo and the linker would be
+  lazy files (fetched on first exec, as PHP and nginx already are), and
+  the prebuilt std (22 rlibs, 79 MB as built today, before stripping)
+  a lazy archive group fetched on first use. The image carries stubs.
+- **No Rust source in the image.** With the prebuilt std, a project
+  does not need `rust-src` to build std itself.
+- **Offline projects.** A project's vendored crates can ship as one lazy
+  archive: one fetch, for that project only.
 
-In-guest Rust is now **feasible in principle** precisely because the platform
-provides the POSIX surface Rust needs — the std work removed the OS question.
-What remains is a large research/porting effort dominated by **LLVM/lld → wasm
-and memory scale**, not by Kandelo. It is not implementable in a single
-session, and this document is the scoping, not a start. The highest-leverage
-enabling step that is tractable today is the **`wasm64posix` Rust target**
-(memory headroom), which also benefits ordinary large Rust guests.
+The real download cost is the toolchain binaries (hundreds of MB with
+LLVM), paid once on first use, not crates.
+
+## Suggested order
+
+1. A `wasm64` Rust target (memory headroom; also useful for large Rust
+   guests generally).
+2. Port cargo, and prove on-demand crate fetching in Node and the
+   browser.
+3. Treat rustc plus LLVM as its own project, with a checkpoint that
+   needs no code generator: rustc's front end runs in the guest and
+   type-checks a crate (`rustc --emit=metadata`).
+4. Proc-macro loading (`dlopen` plus unwinding), then an in-guest link,
+   then a trivial program compiled inside Kandelo that runs on Kandelo.
+
+The LLVM port is the decision point: it is large, and it also delivers
+an in-guest C/C++ compiler, so it is worth deciding for both reasons
+together.
+
+## Cheaper partial
+
+**miri** (rustc's interpreter, pure Rust, no LLVM) could run Rust code
+in the guest without a code generator. It interprets rather than
+producing wasm, is slow, and still requires most of rustc's front end.
