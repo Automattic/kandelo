@@ -1309,6 +1309,11 @@ rebuild when the glue changes.
 Final run on the fixed tree (2026-10-04), after a full package rebuild:
 - Vitest: 4,979 passed, 1 failed (`qt-gui-smoke`, the concurrent qtbase
   build race above).
+  Fixed afterwards: the three Qt recipes now build in the resolver's work
+  root, and the Default-policy publish keeps a concurrent winner when its
+  rename hits a non-empty canonical directory. Both Qt smoke tests pass
+  run together on a cold qtbase cache. The other ~37 recipes with in-tree
+  build trees are separate work.
 - Open POSIX: 174 passed, 0 failed. libc-test: 306 passed, 0 failed.
 - Sortix `--all`: 5,042 passed, 3 failed (`nl_types`, the fake
   `gencat`; same on main).
