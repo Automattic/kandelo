@@ -95,8 +95,8 @@ Stale generations are reclaimed only by cache garbage collection, never by a
 per-checkout command: `./run.sh cache-gc` (a dry run unless `--apply`) and
 the automatic collection a successful local build runs at most once a day.
 It removes a generation only when no live checkout root names its key and it
-has gone unused past the age limit, and it skips while any build holds the
-cache lock. Do not hand-delete cache entries or add another sweeper: every
+has gone unused past the age limit (or, with `--below-abi N`, was built for an
+ABI below `N`), and it skips while any build holds the cache lock. Do not hand-delete cache entries or add another sweeper: every
 build that uses the cache must hold `cache_gc::CacheUseLock` for as long as it
 can read a generation, or collection can remove an entry underneath it. Run
 destructive collection against the shared cache only when the user asks;

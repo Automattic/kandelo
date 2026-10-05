@@ -992,7 +992,7 @@ function fixtureCanonicalRoot(
 ): string {
   const root = join(
     binaryProgramCacheRoot(),
-    `${packageName}-1.0.0-rev1-${arch}-${cacheKey}`,
+    `${packageName}-1.0.0-rev1-${arch}-abi1-${cacheKey}`,
   );
   mkdirSync(root, { recursive: true });
   cleanupDirs.add(root);
@@ -2879,7 +2879,7 @@ exit 2
     const generation = join(
       sourceCache,
       "programs",
-      `${fixture.name}-1.0.0-rev1-wasm32-${cacheKey}`,
+      `${fixture.name}-1.0.0-rev1-wasm32-abi1-${cacheKey}`,
     );
     const originalTargets: string[] = [];
     for (const member of fixture.members) {

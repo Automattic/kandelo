@@ -2498,7 +2498,7 @@ cmd_rebuild() {
     info "Rebuild complete"
 }
 
-# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE]` —
+# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--below-abi N]` —
 # garbage-collect the SourceOnly build cache this checkout uses
 # (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). A dry run
 # unless --apply; the policy and its safety rules live in `xtask cache-gc`
