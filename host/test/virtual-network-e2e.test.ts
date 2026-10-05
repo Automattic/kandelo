@@ -38,6 +38,40 @@ function waitMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Resolves once a guest on `io`'s machine listens on TCP `port` or binds UDP
+ * `port`. Call it before starting the server, then start the client after it
+ * resolves (or after the server exits, so a server that fails early still
+ * reports its own diagnostics).
+ *
+ * WHY: a client started a fixed delay after the server races the server's
+ * startup, which takes longer than any fixed delay on a loaded machine. A
+ * datagram sent before the bind is dropped, as POSIX allows for UDP, and a
+ * connect before listen() is refused, so the test fails for a reason that is
+ * not the behavior under test. The bind is the readiness signal the platform
+ * actually has.
+ */
+function whenServerBound(io: PlatformIO, kind: "tcp" | "udp", port: number): Promise<void> {
+  const backend = io.network!;
+  return new Promise((resolve) => {
+    if (kind === "tcp") {
+      const listenTcp = backend.listenTcp!.bind(backend);
+      backend.listenTcp = (listenerId, addr, boundPort, target) => {
+        const status = listenTcp(listenerId, addr, boundPort, target);
+        if (status === 0 && boundPort === port) resolve();
+        return status;
+      };
+    } else {
+      const bindUdp = backend.bindUdp!.bind(backend);
+      backend.bindUdp = (endpointId, addr, boundPort, target) => {
+        const status = bindUdp(endpointId, addr, boundPort, target);
+        if (status === 0 && boundPort === port) resolve();
+        return status;
+      };
+    }
+  });
+}
+
 async function unusedTcpPort(): Promise<number> {
   const server = net.createServer();
   await new Promise<void>((resolve, reject) => {
@@ -188,13 +222,15 @@ describe.skipIf(!udpServerPath || !udpClientPath)("virtual network guest socket 
     };
     const port = 24123;
 
+    const serverBound = whenServerBound(serverIO, "udp", port);
+
     const serverRun = runCentralizedProgram({
       programPath: resolveBinary("programs/virtual-udp-echo-server.wasm"),
       argv: ["virtual-udp-echo-server", String(port)],
       io: serverIO,
       timeout: 10_000,
     });
-    await waitMs(100);
+    await Promise.race([serverBound, serverRun]);
     const clientRun = runCentralizedProgram({
       programPath: resolveBinary("programs/virtual-udp-echo-client.wasm"),
       argv: ["virtual-udp-echo-client", "10.88.0.2", String(port), "ping"],
@@ -225,6 +261,8 @@ describe.skipIf(!tcpServerPath || !tcpClientPath)("virtual network TCP guest soc
     const port = 24124;
     const postFinBytes = 128 * 1024 + 123;
 
+    const serverBound = whenServerBound(serverIO, "tcp", port);
+
     const serverRun = runCentralizedProgram({
       programPath: resolveBinary("programs/virtual-tcp-echo-server.wasm"),
       argv: [
@@ -236,7 +274,7 @@ describe.skipIf(!tcpServerPath || !tcpClientPath)("virtual network TCP guest soc
       io: serverIO,
       timeout: 10_000,
     });
-    await waitMs(100);
+    await Promise.race([serverBound, serverRun]);
     const clientRun = runCentralizedProgram({
       programPath: resolveBinary("programs/virtual-tcp-echo-client.wasm"),
       argv: [
@@ -380,14 +418,20 @@ describe.skipIf(!ncPath)("virtual network nc integration", () => {
     const clientIO = machineIO(network, "client", [10, 88, 0, 3]);
     const port = 24125;
 
+    const serverBound = whenServerBound(serverIO, "tcp", port);
+
     const serverRun = runCentralizedProgram({
       programPath: resolveBinary("programs/nc.wasm"),
-      argv: ["nc", "-n", "-l", "-p", String(port), "-w", "3"],
+      // No -w: in listen mode GNU netcat's -w only bounds the wait for the
+      // client, and the client's own launch can take longer than any short
+      // bound on a loaded machine. The guest timeout below bounds a client
+      // that never arrives.
+      argv: ["nc", "-n", "-l", "-p", String(port)],
       io: serverIO,
       stdin: "",
       timeout: 10_000,
     });
-    await waitMs(100);
+    await Promise.race([serverBound, serverRun]);
     const clientRun = runCentralizedProgram({
       programPath: resolveBinary("programs/nc.wasm"),
       argv: ["nc", "-n", "-c", "10.88.0.2", String(port)],
@@ -415,14 +459,20 @@ describe.skipIf(!ncPath)("virtual network nc integration", () => {
     const clientIO = machineIO(network, "client", [10, 88, 0, 3]);
     const port = 24126;
 
+    const serverBound = whenServerBound(serverIO, "udp", port);
+
     const serverRun = runCentralizedProgram({
       programPath: resolveBinary("programs/nc.wasm"),
-      argv: ["nc", "-n", "-c", "-u", "-l", "-p", String(port), "-w", "3"],
+      // No -w: in listen mode GNU netcat's -w only bounds the wait for the
+      // client, and the client's own launch can take longer than any short
+      // bound on a loaded machine. The guest timeout below bounds a client
+      // that never arrives.
+      argv: ["nc", "-n", "-c", "-u", "-l", "-p", String(port)],
       io: serverIO,
       stdin: "",
       timeout: 10_000,
     });
-    await waitMs(100);
+    await Promise.race([serverBound, serverRun]);
     const clientRun = runCentralizedProgram({
       programPath: resolveBinary("programs/nc.wasm"),
       argv: ["nc", "-n", "-u", "-c", "10.88.0.2", String(port)],
