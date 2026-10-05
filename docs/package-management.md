@@ -926,7 +926,7 @@ Inspect:
 
 ```bash
 cargo xtask build-deps sha     zlib   # → e33c5e9a4383afdd…
-cargo xtask build-deps path    zlib   # → ~/.cache/kandelo/libs/zlib-1.3.1-rev1-wasm32-e33c5e9a4383afdd…
+cargo xtask build-deps path    zlib   # → ~/.cache/kandelo/libs/zlib-1.3.1-rev1-wasm32-abi46-e33c5e9a4383afdd…
 cargo xtask build-deps parse   zlib   # → normalized dump of package.toml
 cargo xtask build-deps resolve zlib   # → build-if-needed, then print the path
 ```
@@ -939,13 +939,16 @@ in turn, it checks:
 1. **`<repo>/local-libs/<name>/build/`** — hand-patched, in-progress.
    Returned as-is; the build script never runs. Per-worktree,
    gitignored. Mirrors `local-binaries/`.
-2. **`<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<cache-key-sha>/`** —
+2. **`<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-abi<ABI>-<cache-key-sha>/`** —
    canonical cache. The suffix is the complete 64-character SHA-256 so two
    identities that share an archive filename's eight-character label cannot
-   alias locally. Packages with immutable Git inputs also require a matching
+   alias locally. The key already commits to the kernel ABI; the `abi<ABI>`
+   segment names it so cache tools (and people) can tell which ABI an entry
+   serves without opening it. Packages with immutable Git inputs also require a matching
    adjacent provenance marker; users invalidate an entry by deleting it or
-   bumping `revision`. Old short-key cache entries are left unused and rebuilt
-   under the full-key path rather than migrated or trusted in place.
+   bumping `revision`. Old short-key cache entries, and entries named before
+   the `abi<ABI>` segment existed, are left unused and rebuilt under the
+   current path rather than migrated or trusted in place.
 
    The marker is a resolver-owned sibling named
    `.<canonical-cache-basename>.kandelo-provenance.toml`. It binds the schema,
@@ -1533,7 +1536,7 @@ them once their pid is gone and they are a day old.
 ## Cache garbage collection
 
 The SourceOnly cache is content-addressed: a generation directory
-`compiled/{libs,programs}/<name>-<version>-rev<N>-<arch>-<cache key>/` is
+`compiled/{libs,programs}/<name>-<version>-rev<N>-<arch>-abi<ABI>-<cache key>/` is
 never modified once published, and any change to a package's inputs
 produces a new generation under a new key instead of replacing the old
 one. Because the cache is shared by every checkout on the machine (see
@@ -1548,6 +1551,7 @@ show is unused:
 | Entry | Removed when |
 | ----- | ------------ |
 | Generation directory (plus its receipt, provenance, and last-used sidecars) | No live checkout root names its cache key **and** it has not been used for `--max-age-days` (default 14). |
+| Generation, under `--below-abi N` | Built for a kernel ABI below `N`, no live checkout root names its key, and not used within the last day. Applies at any age. A generation named without an ABI predates the `abi<ABI>` name segment and counts as ABI 46 or older, so it is collected only when `N` is above 46. |
 | Generation, under `--max-size SIZE` | After the age pass, still over the budget: least recently used first, never a root-protected one, never one used within the last day. `SIZE` is bytes or `K`/`M`/`G`/`T` (binary multiples). |
 | `.work-<pid>-*`, `.build-stage-<pid>-*`, `.git-inputs-<pid>-*`, `.source-only-dispose-<pid>-*`, `.kandelo-receipt-tmp-<pid>` | The owning pid is not running and the entry is at least a day old. |
 | Receipt/provenance/last-used sidecar whose generation directory is gone | At least a day old. |
@@ -1563,6 +1567,23 @@ build that reuses hundreds of generations does not write hundreds of files
 each run. A generation without a stamp — every generation written before
 this mechanism existed — is dated by the newest of its directory and
 receipt mtimes.
+
+**ABI.** A program built for one kernel ABI cannot run on a kernel of
+another (the host compares the module's `__abi_version` export with the
+kernel's), so after an ABI bump every older generation is dead weight for
+any checkout that has moved past it. Every library and program cache key
+commits to one ABI, and the generation's name carries it
+(`...-abi<ABI>-<key>`), so `--below-abi N` selects generations by name
+without opening them. Generations named before the segment existed were
+written by older code, so they were built for ABI 46 (the ABI current when
+names gained the segment) or older: `--below-abi 47` and above collect them
+like any old-ABI generation, and a lower floor leaves them to the age rule,
+which removes them once they go unused because no current build reads
+them. Live roots and the one-day
+recent-use floor still protect an old-ABI generation: a checkout that has
+not rebuilt since the bump is still using it. Source generations serve
+every ABI, carry none in their names, and are never collected by this
+rule.
 
 **Live roots.** When a local build publishes its projection, it records the
 cache keys that projection depends on (programs, the kernel, and the
@@ -1591,7 +1612,8 @@ orphaned sidecars exists for them.
 **Dry run by default.** Without `--apply`, `cache-gc` takes no lock and
 changes nothing; it prints each entry it would remove, why, its size, and
 totals, including how many generations are protected by a root versus kept
-only because they are recent.
+only because they are recent, and, under `--below-abi`, how many old-ABI
+generations were kept and how many were named without an ABI.
 
 **Automatic collection.** After a successful local build the engine runs
 the same collection with `--apply`, a 30-day age limit, and no size budget,

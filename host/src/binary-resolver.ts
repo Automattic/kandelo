@@ -3122,8 +3122,9 @@ function mutableGenerationIdentityFailure(
     }
     const expectedParent = realpathSync(expectedParentPath);
     const generationName = basename(sharedRoot);
+    // `xtask`'s `canonical_path`: `<name>-<version>-rev<N>-<arch>-abi<N>-<key>`.
     const hasCanonicalName = generationName.startsWith(`${packageName}-`)
-      && new RegExp(`-rev[0-9]+-${arch}-${cacheKey}$`).test(generationName);
+      && new RegExp(`-rev[0-9]+-${arch}-abi[0-9]+-${cacheKey}$`).test(generationName);
     return dirname(sharedRoot) === expectedParent && hasCanonicalName
       ? null
       : "fetched mirror targets are not one canonical program-cache generation";

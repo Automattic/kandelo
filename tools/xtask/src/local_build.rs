@@ -1259,9 +1259,23 @@ fn clean_package_node_outputs(
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        if let Some(cache_key_sha) = file_name.strip_prefix(prefix.as_str()) {
-            matches.push((entry.path(), cache_key_sha.to_string()));
-        }
+        let Some(rest) = file_name.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        // Libraries and programs name their ABI before the key
+        // (`abi<N>-<key>`, see `canonical_path`); generations named before
+        // that segment existed have the key alone.
+        let cache_key_sha = match rest.split_once('-') {
+            Some((abi, key))
+                if abi.len() > 3
+                    && abi.starts_with("abi")
+                    && abi[3..].bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                key
+            }
+            _ => rest,
+        };
+        matches.push((entry.path(), cache_key_sha.to_string()));
     }
     matches.sort();
     for (canonical, cache_key_sha) in matches {
@@ -6302,10 +6316,15 @@ mod tests {
         version: &str,
         revision: u32,
         arch: &str,
+        abi: Option<u32>,
         cache_key_sha: &str,
         mirror_relative: &str,
     ) -> PathBuf {
-        let basename = format!("{name}-{version}-rev{revision}-{arch}-{cache_key_sha}");
+        // `canonical_path` names the ABI after the arch; generations named
+        // before it did have no ABI segment.
+        let abi_segment = abi.map(|abi| format!("abi{abi}-")).unwrap_or_default();
+        let basename =
+            format!("{name}-{version}-rev{revision}-{arch}-{abi_segment}{cache_key_sha}");
         let canonical = compiled_cache_root.join("programs").join(&basename);
         fs::create_dir_all(&canonical).unwrap();
         fs::write(canonical.join("marker"), b"fixture generation").unwrap();
@@ -6358,6 +6377,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             alpha_cache_key,
             "programs/wasm32/alpha.wasm",
         );
@@ -6368,6 +6388,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             beta_cache_key,
             "programs/wasm32/beta.wasm",
         );
@@ -6460,6 +6481,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             other_key,
             "programs/wasm32/alpha.wasm",
         );
@@ -6470,6 +6492,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             current_key,
             "programs/wasm32/alpha.wasm",
         );
@@ -6501,6 +6524,68 @@ mod tests {
         assert!(
             !removed.contains(&other_canonical) && !removed.contains(&other_receipt_sidecar),
             "the removed list must not report the surviving generation; got {removed:?}"
+        );
+    }
+
+    #[test]
+    fn clean_package_node_outputs_reads_the_key_after_the_abi_segment() {
+        // Library and program generations carry `abi<N>-` between the arch
+        // and the key. If clean took `abi<N>-<key>` for the key it would
+        // never match the current key and would leave the generation behind.
+        let root = tempfile::TempDir::new().unwrap();
+        let root = root.path();
+        package(root, "alpha", &[], &[]);
+        let reg = registry(root);
+
+        let cache = tempfile::TempDir::new().unwrap();
+        let compiled_cache_root = cache.path().join("compiled");
+        let output = tempfile::TempDir::new().unwrap();
+        let output_root = output.path();
+
+        let current_key = "cachekey-current-000000000000000000000000000000000000000";
+        let other_key = "cachekey-other-checkout-0000000000000000000000000000000";
+        let other_output = tempfile::TempDir::new().unwrap();
+        let other_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            other_output.path(),
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            Some(45),
+            other_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let current_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            Some(46),
+            current_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let current_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&current_canonical, current_key)
+                .unwrap();
+
+        let removed = clean_package_node_outputs(
+            &reg,
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "wasm32",
+            current_key,
+        )
+        .unwrap();
+
+        assert!(!current_canonical.exists(), "current generation must be removed");
+        assert!(!current_receipt_sidecar.exists(), "current receipt must be removed");
+        assert!(
+            other_canonical.is_dir(),
+            "another cache key's generation must survive; removed {removed:?}"
         );
     }
 

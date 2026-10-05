@@ -21,6 +21,12 @@
 //!   exclusive and non-blocking, and skips when a build holds it. Entries are
 //!   renamed into a trash directory under the cache root while the lock is
 //!   held, then deleted after it is released.
+//! * **ABI.** `--below-abi N` also collects unprotected generations built
+//!   for a kernel ABI below `N`, which no current kernel can run. A library
+//!   or program generation's name carries its ABI (`...-abi<N>-<key>`; see
+//!   `canonical_path`). Generations named before that segment existed were
+//!   built for [`UNNAMED_GENERATION_MAX_ABI`] or older, so a floor above it
+//!   collects them too; a lower floor leaves them to the age rule.
 //!
 //! See `docs/package-management.md` ("Cache garbage collection") for the
 //! policy and its limits.
@@ -58,8 +64,18 @@ pub(crate) const AUTO_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60)
 /// Crash debris and orphaned sidecars younger than this are left alone: a
 /// build on older code (which takes no GC lock) may be creating them now.
 pub(crate) const DEBRIS_MIN_AGE: Duration = DAY;
-/// `--max-size` never evicts a generation used more recently than this.
+/// `--max-size` and `--below-abi` never evict a generation used more
+/// recently than this: a build on code older than this module takes no GC
+/// lock and registers no root, so recent use is its only protection.
 pub(crate) const BUDGET_MIN_AGE: Duration = DAY;
+/// The kernel ABI that was current when generation names gained their
+/// `abi<N>` segment. A library or program generation named without one was
+/// written by older code, so it was built for this ABI or an earlier one, and
+/// `--below-abi` above this value can collect it like a named old-ABI
+/// generation. This is a fixed number, not `ABI_VERSION`: it records when
+/// the old names stopped being written, and later ABI bumps do not change
+/// that.
+const UNNAMED_GENERATION_MAX_ABI: u32 = 46;
 /// The automatic collection runs at most once per this interval per cache.
 pub(crate) const AUTO_GC_INTERVAL: Duration = DAY;
 /// Set to `0`/`false`/`no`/`off` to disable the automatic post-build GC.
@@ -329,6 +345,9 @@ fn live_root_keys(root: &LiveRootV1) -> Option<BTreeSet<String>> {
 pub(crate) struct GcPolicy {
     pub(crate) max_age: Duration,
     pub(crate) max_size: Option<u64>,
+    /// `--below-abi`: also collect unprotected generations built for a
+    /// kernel ABI below this.
+    pub(crate) below_abi: Option<u32>,
     pub(crate) debris_min_age: Duration,
     pub(crate) budget_min_age: Duration,
 }
@@ -338,6 +357,7 @@ impl GcPolicy {
         Self {
             max_age,
             max_size,
+            below_abi: None,
             debris_min_age: DEBRIS_MIN_AGE,
             budget_min_age: BUDGET_MIN_AGE,
         }
@@ -389,6 +409,14 @@ pub(crate) struct GcPlan {
     pub(crate) generations_protected_past_age: usize,
     /// Unreferenced but used within `max_age`.
     pub(crate) generations_recent: usize,
+    /// Built for an ABI below `--below-abi` but kept: referenced by a live
+    /// root, or used within the last day.
+    pub(crate) generations_below_abi_kept: usize,
+    /// Library/program generations named without an ABI that `--below-abi`
+    /// could not settle: their ABI is at most `UNNAMED_GENERATION_MAX_ABI`,
+    /// which is not below the requested floor. Only the age and size rules
+    /// apply to them.
+    pub(crate) generations_abi_unknown: usize,
     pub(crate) live_roots: usize,
     pub(crate) unrecognized_entries: usize,
     /// Bytes still over `--max-size` after every eligible eviction.
@@ -397,6 +425,7 @@ pub(crate) struct GcPlan {
 
 struct ScannedGeneration {
     path: PathBuf,
+    kind: &'static str,
     basename: String,
     key: String,
     last_use: SystemTime,
@@ -421,6 +450,19 @@ fn generation_key(name: &str) -> Option<&str> {
     }
     let (head, key) = name.split_at(name.len() - 64);
     (head.ends_with('-') && is_lower_hex_64(key)).then_some(key)
+}
+
+/// The ABI segment of a generation directory name (`<...>-abi<N>-<64 hex>`),
+/// which `canonical_path` writes for libraries and programs. `None` for
+/// source generations, which serve every ABI, and for generations named
+/// before the segment existed.
+fn generation_named_abi(name: &str) -> Option<u32> {
+    let head = name.get(..name.len().checked_sub(65)?)?;
+    let digits = head.rsplit_once('-')?.1.strip_prefix("abi")?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// For a hidden `.<generation>.<rest>` entry, the generation basename, its
@@ -626,6 +668,7 @@ pub(crate) fn plan(
                     );
                     generations.push(ScannedGeneration {
                         path,
+                        kind,
                         basename: name,
                         key,
                         last_use,
@@ -710,6 +753,44 @@ pub(crate) fn plan(
             );
         } else {
             plan.generations_recent += 1;
+        }
+    }
+    if let Some(floor) = policy.below_abi {
+        for (index, generation) in generations.iter().enumerate() {
+            // Source generations serve every ABI (their keys omit it).
+            if generation.kind == "sources" || evicted.contains(&index) {
+                continue;
+            }
+            let (abi, named) = match generation_named_abi(&generation.basename) {
+                Some(abi) => (abi, true),
+                // Named before names carried an ABI: built for at most
+                // `UNNAMED_GENERATION_MAX_ABI`, which settles any floor
+                // above it.
+                None if UNNAMED_GENERATION_MAX_ABI < floor => (UNNAMED_GENERATION_MAX_ABI, false),
+                None => {
+                    plan.generations_abi_unknown += 1;
+                    continue;
+                }
+            };
+            if abi >= floor {
+                continue;
+            }
+            let unused_for = age(now, generation.last_use);
+            if protected.contains(&generation.key) || unused_for < policy.budget_min_age {
+                plan.generations_below_abi_kept += 1;
+                continue;
+            }
+            plan.generations_recent -= 1;
+            evicted.insert(index);
+            let built_for = if named {
+                format!("built for ABI {abi}")
+            } else {
+                format!("named before generations carried an ABI, so built for ABI {abi} or older")
+            };
+            reasons.insert(
+                index,
+                format!("{built_for}, below --below-abi {floor}; no live checkout references it"),
+            );
         }
     }
     if let Some(budget) = policy.max_size {
@@ -1148,12 +1229,13 @@ pub(crate) fn parse_size(value: &str) -> Result<u64, String> {
     Ok((number * multiplier as f64) as u64)
 }
 
-const USAGE: &str = "usage: xtask cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--source-cache-root PATH]";
+const USAGE: &str = "usage: xtask cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--below-abi N] [--source-cache-root PATH]";
 
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     let mut apply = false;
     let mut max_age_days = days(DEFAULT_MAX_AGE);
     let mut max_size = None;
+    let mut below_abi = None;
     let mut root = None;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
@@ -1181,6 +1263,17 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                     })?;
             }
             "--max-size" => max_size = Some(parse_size(&value("--max-size")?)?),
+            "--below-abi" => {
+                below_abi = Some(
+                    value("--below-abi")?
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|abi| *abi >= 1)
+                        .ok_or_else(|| {
+                            "--below-abi must be a whole ABI version >= 1".to_string()
+                        })?,
+                );
+            }
             "--source-cache-root" => {
                 let path = PathBuf::from(value("--source-cache-root")?);
                 if !path.is_absolute() {
@@ -1205,7 +1298,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     } else {
         base
     };
-    let policy = GcPolicy::manual(Duration::from_secs(max_age_days * DAY.as_secs()), max_size);
+    let mut policy = GcPolicy::manual(Duration::from_secs(max_age_days * DAY.as_secs()), max_size);
+    policy.below_abi = below_abi;
     let outcome = collect(&base, &policy, apply, SystemTime::now())?;
     let report = match outcome {
         GcOutcome::Skipped => {
@@ -1251,8 +1345,12 @@ fn print_report(base: &Path, policy: &GcPolicy, report: &GcReport) {
         base.display()
     );
     println!(
-        "  policy: collect generations no live checkout references and unused for >= {} days{}",
+        "  policy: collect generations no live checkout references and unused for >= {} days{}{}",
         days(policy.max_age),
+        match policy.below_abi {
+            Some(floor) => format!(", or built for an ABI below {floor}"),
+            None => String::new(),
+        },
         match policy.max_size {
             Some(budget) => format!(", then least-recently-used down to {}", human_bytes(budget)),
             None => String::new(),
@@ -1266,6 +1364,12 @@ fn print_report(base: &Path, policy: &GcPolicy, report: &GcReport) {
         plan.generations_protected_past_age,
         plan.generations_recent
     );
+    if let Some(floor) = policy.below_abi {
+        println!(
+            "  below ABI {floor}: {} kept (protected by a live root or used within the last day), {} named without an ABI (so ABI {UNNAMED_GENERATION_MAX_ABI} or older) left to the age rule",
+            plan.generations_below_abi_kept, plan.generations_abi_unknown
+        );
+    }
     let mut by_category = BTreeMap::<Category, (usize, u64)>::new();
     for candidate in &plan.candidates {
         let slot = by_category.entry(candidate.category).or_default();

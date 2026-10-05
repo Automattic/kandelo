@@ -2993,7 +2993,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
             &mut BTreeMap::new(),
             &mut Vec::new(),
         )?;
-        let canonical = canonical_path(&roots.compiled, target, arch, &cache_key);
+        let canonical = canonical_path(&roots.compiled, target, arch, abi_version, &cache_key);
         let before = capture_source_only_package_authority(
             target,
             registry,
@@ -8838,13 +8838,19 @@ fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<()
 /// full cache identity disambiguates — but a visible arch segment makes the
 /// cache layout self-explanatory at a glance.
 ///
-/// For source-kind manifests, the layout omits the arch segment per
-/// design decision 6: source artifacts are arch-agnostic, so a single
-/// cache entry serves both wasm32 and wasm64 consumers.
+/// Libs and programs also carry an `abi<N>` segment naming the kernel ABI
+/// their key was computed for. The key already commits to it; the segment
+/// is what lets `cache-gc --below-abi` and a reader of the cache tell which
+/// ABI a generation serves without opening it.
+///
+/// For source-kind manifests, the layout omits the arch and ABI segments
+/// per design decision 6: source artifacts are arch- and ABI-agnostic, so
+/// a single cache entry serves every consumer.
 pub fn canonical_path(
     cache_root: &Path,
     m: &DepsManifest,
     arch: TargetArch,
+    abi_version: u32,
     sha: &[u8; 32],
 ) -> PathBuf {
     let kind_subdir = match m.kind {
@@ -8855,11 +8861,12 @@ pub fn canonical_path(
     let basename = match m.kind {
         ManifestKind::Source => format!("{}-{}-rev{}-{}", m.name, m.version, m.revision, hex(sha)),
         ManifestKind::Library | ManifestKind::Program => format!(
-            "{}-{}-rev{}-{}-{}",
+            "{}-{}-rev{}-{}-abi{}-{}",
             m.name,
             m.version,
             m.revision,
             arch.as_str(),
+            abi_version,
             hex(sha)
         ),
     };
@@ -9046,7 +9053,8 @@ fn capture_source_only_package_authority(
         &mut Vec::new(),
     )?;
     let cache_key_sha256 = hex(&cache_key);
-    let expected_canonical = canonical_path(&roots.compiled, &manifest, arch, &cache_key);
+    let expected_canonical =
+        canonical_path(&roots.compiled, &manifest, arch, abi_version, &cache_key);
     if canonical != expected_canonical {
         return Err(format!(
             "{}: resolved source-only cache path {} does not equal expected canonical {}",
@@ -9420,7 +9428,7 @@ pub(crate) fn source_only_skip_receipt_if_clean_with_use(
     )
     .ok()?;
     let cache_key_sha256 = hex(&sha);
-    let canonical = canonical_path(&roots.compiled, target, arch, &sha);
+    let canonical = canonical_path(&roots.compiled, target, arch, abi_version, &sha);
     // Cheap identity check only: the entry exists and its provenance marker
     // matches. Deliberately NOT the full `validate_cache_entry` (which reads and
     // parses every declared wasm) — this pre-pass runs serially over the whole
@@ -10242,7 +10250,7 @@ fn try_fetch_without_deps(
         memo,
         &mut chain,
     )?;
-    let canonical = canonical_path(opts.cache_root, target, arch, &sha);
+    let canonical = canonical_path(opts.cache_root, target, arch, abi_version, &sha);
     let cache_key_sha_hex = hex(&sha);
     if canonical.is_dir() {
         match validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex) {
@@ -10561,7 +10569,7 @@ fn ensure_built_uncached(
         memo,
         &mut chain,
     )?;
-    let canonical = canonical_path(opts.cache_root, target, arch, &sha);
+    let canonical = canonical_path(opts.cache_root, target, arch, abi_version, &sha);
     let cache_key_sha_hex = hex(&sha);
     let source_only_cache_parent = (opts.policy == ResolvePolicy::SourceOnlyV1)
         .then(|| SourceOnlyCacheParentGuard::prepare(opts.cache_root, &canonical))
@@ -17269,11 +17277,12 @@ fn cmd_path(
 ) -> Result<(), String> {
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
+    let abi_version = current_abi_version();
     let sha = compute_sha_for_policy(
         m,
         registry,
         arch,
-        current_abi_version(),
+        abi_version,
         policy,
         &mut memo,
         &mut chain,
@@ -17282,7 +17291,7 @@ fn cmd_path(
         ResolvePolicy::SourceOnlyV1 => source_only_cache_roots()?.compiled,
         ResolvePolicy::Default => default_cache_root(),
     };
-    let path = canonical_path(&cache_root, m, arch, &sha);
+    let path = canonical_path(&cache_root, m, arch, abi_version, &sha);
     println!("{}", path.display());
     Ok(())
 }
@@ -23467,7 +23476,8 @@ commit = "2222222222222222222222222222222222222222"
         )
         .unwrap();
         let cache_root = root.join("cache");
-        let old_canonical = canonical_path(&cache_root, &manifest, TEST_ARCH, &sha_before);
+        let old_canonical =
+            canonical_path(&cache_root, &manifest, TEST_ARCH, TEST_ABI, &sha_before);
         std::fs::create_dir_all(&old_canonical).unwrap();
         std::fs::write(old_canonical.join("stale"), "old git identity\n").unwrap();
 
@@ -23490,8 +23500,13 @@ commit = "2222222222222222222222222222222222222222"
         )
         .unwrap();
         assert_ne!(sha_before, sha_changed_commit);
-        let changed_canonical =
-            canonical_path(&cache_root, &manifest, TEST_ARCH, &sha_changed_commit);
+        let changed_canonical = canonical_path(
+            &cache_root,
+            &manifest,
+            TEST_ARCH,
+            TEST_ABI,
+            &sha_changed_commit,
+        );
         assert_ne!(old_canonical, changed_canonical);
         assert!(
             !changed_canonical.exists(),
@@ -25415,7 +25430,7 @@ revision = 1
             &mut Vec::new(),
         )
         .unwrap();
-        let first_path = canonical_path(&cache, &first_manifest, TEST_ARCH, &first_sha);
+        let first_path = canonical_path(&cache, &first_manifest, TEST_ARCH, TEST_ABI, &first_sha);
         fs::create_dir_all(first_path.join("lib")).unwrap();
         fs::write(first_path.join("lib/libMemoGit.a"), b"first").unwrap();
         let resolved_first = ensure_built(
@@ -25451,7 +25466,8 @@ commit = "1111111111111111111111111111111111111111"
         )
         .unwrap();
         assert_ne!(first_sha, second_sha);
-        let second_path = canonical_path(&cache, &second_manifest, TEST_ARCH, &second_sha);
+        let second_path =
+            canonical_path(&cache, &second_manifest, TEST_ARCH, TEST_ABI, &second_sha);
         fs::create_dir_all(second_path.join("lib")).unwrap();
         fs::write(second_path.join("lib/libMemoGit.a"), b"second").unwrap();
         write_cache_provenance(
@@ -26040,7 +26056,7 @@ libs = ["lib/libC.a"]
             &mut Vec::new(),
         )
         .unwrap();
-        let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
+        let canonical = canonical_path(&cache, &m, TEST_ARCH, TEST_ABI, &sha);
         assert!(
             !canonical.exists(),
             "canonical cache dir must not exist on failure"
@@ -26197,7 +26213,7 @@ libs = ["lib/libD.a"]
             &mut Vec::new(),
         )
         .unwrap();
-        assert!(!canonical_path(&cache, &m, TEST_ARCH, &sha).exists());
+        assert!(!canonical_path(&cache, &m, TEST_ARCH, TEST_ABI, &sha).exists());
     }
 
     /// Regression: build-script stdout must NOT leak to xtask's stdout.
@@ -26552,13 +26568,17 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         )
         .unwrap();
         let cache = PathBuf::from("/tmp/testcache");
-        let path = canonical_path(&cache, &m, TEST_ARCH, &sha);
+        let path = canonical_path(&cache, &m, TEST_ARCH, TEST_ABI, &sha);
 
         let parent = path.parent().unwrap();
         assert_eq!(parent, cache.join("libs"));
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        // The path includes the arch segment between revN and the full cache key.
-        assert!(name.starts_with("zlib-1.3.1-rev1-wasm32-"), "got {name}");
+        // The path includes the arch and ABI segments between revN and the
+        // full cache key.
+        assert!(
+            name.starts_with(&format!("zlib-1.3.1-rev1-wasm32-abi{TEST_ABI}-")),
+            "got {name}"
+        );
         let key = name.rsplit('-').next().unwrap();
         assert_eq!(key.len(), 64);
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
@@ -26571,7 +26591,7 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         let m = parse_source_manifest(&dir);
         let sha = [0u8; 32];
         let cache = PathBuf::from("/cache");
-        let path = canonical_path(&cache, &m, TargetArch::Wasm32, &sha);
+        let path = canonical_path(&cache, &m, TargetArch::Wasm32, TEST_ABI, &sha);
         assert_eq!(
             path,
             PathBuf::from(format!(
@@ -26592,8 +26612,8 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         first[31] = 1;
         second[31] = 2;
 
-        let first_path = canonical_path(Path::new("/cache"), &m, TEST_ARCH, &first);
-        let second_path = canonical_path(Path::new("/cache"), &m, TEST_ARCH, &second);
+        let first_path = canonical_path(Path::new("/cache"), &m, TEST_ARCH, TEST_ABI, &first);
+        let second_path = canonical_path(Path::new("/cache"), &m, TEST_ARCH, TEST_ABI, &second);
 
         assert_ne!(first_path, second_path);
         assert!(first_path.to_string_lossy().ends_with(&hex(&first)));
@@ -26946,7 +26966,7 @@ wasm = "vim.wasm"
         )
         .unwrap();
         let sha = [0u8; 32];
-        let p = canonical_path(Path::new("/cache"), &m, TargetArch::Wasm32, &sha);
+        let p = canonical_path(Path::new("/cache"), &m, TargetArch::Wasm32, TEST_ABI, &sha);
         let s = p.to_string_lossy();
         assert!(s.contains("/programs/"), "got: {s}");
         assert!(s.contains("vim-9.1.0900-rev1-wasm32-"), "got: {s}");
@@ -30644,7 +30664,7 @@ version_constraint = ">=99.99"
             &mut Vec::new(),
         )
         .unwrap();
-        let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
+        let canonical = canonical_path(&cache, &m, TEST_ARCH, TEST_ABI, &sha);
         std::fs::create_dir_all(canonical.join("lib")).unwrap();
         std::fs::write(canonical.join("lib/libfake.a"), b"").unwrap();
 
@@ -32941,7 +32961,14 @@ revision = 1
             &mut Vec::new(),
         )
         .unwrap();
-        std::fs::remove_dir_all(canonical_path(&cache, &dep, TEST_ARCH, &dep_sha)).unwrap();
+        std::fs::remove_dir_all(canonical_path(
+            &cache,
+            &dep,
+            TEST_ARCH,
+            current_abi_version(),
+            &dep_sha,
+        ))
+        .unwrap();
         build_memo().lock().unwrap().clear();
 
         ensure_built(
@@ -33341,7 +33368,7 @@ printf 'CLEAN-ENV\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             &mut Vec::new(),
         )
         .unwrap();
-        let canonical = canonical_path(&cache, &target, TEST_ARCH, &cache_key);
+        let canonical = canonical_path(&cache, &target, TEST_ARCH, TEST_ABI, &cache_key);
         assert_eq!(fs::read(canonical.join("lib/out.a")).unwrap(), b"CLEAN-ENV\n");
     }
 
@@ -38129,12 +38156,8 @@ commit = "1111111111111111111111111111111111111111"
             )
             .unwrap()
         };
-        let old_canonical = canonical_path(
-            &roots.compiled,
-            &manifest,
-            TEST_ARCH,
-            &old_sha,
-        );
+        let old_canonical =
+            canonical_path(&roots.compiled, &manifest, TEST_ARCH, TEST_ABI, &old_sha);
         let error = run_local_rebuild_fixture(
             &manifest, &registry, &roots, &repo, &output, false,
         )
