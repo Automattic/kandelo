@@ -43,6 +43,22 @@ static void sleep_ms(long milliseconds)
 }
 
 /*
+ * Exit 100 ms after the parent says it is about to block in accept(), so the
+ * SIGCHLD this exit raises interrupts that accept().
+ */
+static int exit_after_go(int go_pipe_read)
+{
+    char byte;
+    ssize_t n;
+    while ((n = read(go_pipe_read, &byte, 1)) < 0 && errno == EINTR)
+        ;
+    if (n != 1)
+        return 23;
+    sleep_ms(100);
+    return 0;
+}
+
+/*
  * Connect only after the parent's SIGCHLD handler has run. A fixed delay here
  * raced the exiting child: a Wasm child can start hundreds of milliseconds
  * late under load, and when the connection won, accept() correctly returned
@@ -117,6 +133,9 @@ static int run_case(uint16_t port, int restart)
     if (pipe(handled) != 0)
         return 14;
     handled_pipe_write = handled[1];
+    int go[2];
+    if (pipe(go) != 0)
+        return 15;
 
     pid_t exiting_child = fork();
     if (exiting_child < 0)
@@ -125,8 +144,8 @@ static int run_case(uint16_t port, int restart)
         close(listener);
         close(handled[0]);
         close(handled[1]);
-        sleep_ms(100);
-        _exit(0);
+        close(go[1]);
+        _exit(exit_after_go(go[0]));
     }
 
     pid_t connector = fork();
@@ -135,9 +154,24 @@ static int run_case(uint16_t port, int restart)
     if (connector == 0) {
         close(listener);
         close(handled[1]);
+        close(go[0]);
+        close(go[1]);
         _exit(connect_after_handler(port, handled[0]));
     }
     close(handled[0]);
+    close(go[0]);
+
+    /*
+     * WHY: release the exiting child only now. Its 100 ms delay then covers
+     * just the step from here into accept(), instead of also covering the
+     * connector's fork above, which on a loaded host can take longer. When
+     * SIGCHLD arrived before accept() blocked, the handler ran first and
+     * accept() correctly returned the connection, failing the test.
+     */
+    char go_byte = 1;
+    if (write(go[1], &go_byte, 1) != 1)
+        return 16;
+    close(go[1]);
 
     errno = 0;
     int accepted = accept(listener, NULL, NULL);
