@@ -3410,28 +3410,33 @@ export async function centralizedWorkerMain(
       );
       let processInstance: WebAssembly.Instance | null = null;
 
+      // WHY: a vfork child replays from its parked parent's module-state
+      // arena and must never free it. Once running, it may fork (an ordinary
+      // fork copies memory; see crates/runtime-core process_table.rs), and
+      // that capture needs arenas of its own, mapped through its own channel.
+      // It may release exactly those.
+      const borrowedOwnArenaMappings = new Set<number>();
       const newModuleStateArena = (): ForkModuleStateArena =>
         new ForkModuleStateArena(
           memory,
           ptrWidth,
           (size) => {
-            if (borrowedForkChild) {
-              throw new Error(
-                `pid=${pid}: borrowed child cannot allocate module state`,
-              );
-            }
-            return continuationMmap(
+            const address = continuationMmap(
               memory,
               channelOffset,
               size,
               `pid=${pid}: module state`,
             );
+            if (borrowedForkChild) borrowedOwnArenaMappings.add(address);
+            return address;
           },
           (addr, size) => {
             if (borrowedForkChild) {
-              throw new Error(
-                `pid=${pid}: borrowed child cannot release parent module state`,
-              );
+              if (!borrowedOwnArenaMappings.delete(addr)) {
+                throw new Error(
+                  `pid=${pid}: borrowed child cannot release parent module state`,
+                );
+              }
             }
             continuationMunmap(
               memory,
@@ -3475,11 +3480,16 @@ export async function centralizedWorkerMain(
             value,
           ),
       );
+      // WHY: the borrowed workspace's one scratch page is sized for replaying
+      // the parent's capture. After that replay a vfork child that forks
+      // captures its own references, so its scratch comes from its own
+      // mappings like any process's.
+      let borrowedReplayAttached = false;
       const activationRegistry = new ForkActivationRegistry(
         memory,
         externrefRecipes,
         `pid=${pid}: fork activations`,
-        (size) => borrowedWorkspace
+        (size) => borrowedWorkspace && !borrowedReplayAttached
           ? borrowedWorkspace.allocateScratch(size)
           : continuationMmap(
               memory,
@@ -3488,7 +3498,7 @@ export async function centralizedWorkerMain(
               `pid=${pid}: reference scratch`,
             ),
         (addr, size) => {
-          if (borrowedWorkspace) {
+          if (borrowedWorkspace?.ownsScratch(addr)) {
             borrowedWorkspace.deallocateScratch(addr, size);
             return;
           }
@@ -3630,7 +3640,8 @@ export async function centralizedWorkerMain(
       if (initData.isForkChild) {
         if (
           !borrowedForkChild &&
-          initData.forkChildThreadFnPtr !== undefined &&
+          (initData.forkChildThreadFnPtr !== undefined
+            || initData.forkLaunchRootFromCaller === true) &&
           initData.forkBufAddr !== undefined
         ) {
           // A pthread continuation is rooted in the caller's channel page,
@@ -3678,7 +3689,32 @@ export async function centralizedWorkerMain(
         activationId: 0,
         continuation: forkContinuation,
         ...(borrowedForkChild
-          ? {}
+          ? {
+              publishProcessLaunchRoot: (address: number) => {
+                // WHY: the process anchor word belongs to the parked vfork
+                // parent. A vfork child that forks publishes its own root at
+                // the same offset below its own channel instead. That word
+                // starts its borrowed replay prefix, which is dead once replay
+                // has finished, and a capture can only begin after that. The
+                // kernel host reads the anchor there (channel - FORK_BUF_SIZE)
+                // and hands it to the grandchild.
+                if (
+                  !borrowedReplayAttached
+                  || processContinuation.phaseName() === "child-replay"
+                ) {
+                  throw new Error(
+                    `pid=${pid}: borrowed child published a launch root before its replay finished`,
+                  );
+                }
+                writeForkContinuationAnchor(
+                  memory,
+                  channelOffset - FORK_BUF_SIZE,
+                  ptrWidth,
+                  address,
+                );
+                forkBufAddr = address;
+              },
+            }
           : {
               publishProcessLaunchRoot: (address: number) => {
                 // WHY: this copied control-page word is the fresh child's
@@ -3706,6 +3742,12 @@ export async function centralizedWorkerMain(
         if (!processDlopenSupport || !processTableReplication) {
           throw new Error(`pid=${pid}: fork archive owner is not initialized`);
         }
+        // WHY: the parked vfork parent holds the archive reader until its
+        // syscall returns, so the snapshot this child replayed cannot change
+        // while it captures. Taking a reader here would write the parent's
+        // lock words, and would leak a reader into the parent if this child
+        // died mid-capture.
+        if (borrowedForkChild) return;
         for (;;) {
           processTableReplication.reconcileNow();
           processDlopenSupport.acquireArchiveReader();
@@ -3769,7 +3811,11 @@ export async function centralizedWorkerMain(
             `pid=${pid}: fork import reached while process continuation is ${phase}`,
           );
         }
-        if (borrowedForkChild) return -STARTUP_EAGAIN;
+        // A second borrower of the parked parent's memory is refused; an
+        // ordinary fork copies it (the kernel enforces the same split).
+        if (borrowedForkChild && mode === PROCESS_FORK_MODE_VFORK) {
+          return -STARTUP_EAGAIN;
+        }
         forkMode = mode;
 
         // The arena and every activation prefix are allocated before any user
@@ -4192,6 +4238,7 @@ export async function centralizedWorkerMain(
             decodedChildReferences ?? undefined,
           );
           borrowedWorkspace.assertAttachComplete();
+          borrowedReplayAttached = true;
         } else {
           processContinuation.attachChild(
             childArena,
