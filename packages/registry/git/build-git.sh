@@ -24,14 +24,21 @@ set -euo pipefail
 # request, and re-issues it with fetch() through the configured CORS proxy —
 # so no HTTPS->HTTP gitconfig rewrite is used or needed.
 #
-# Output: packages/registry/git/bin/git.wasm
-#         packages/registry/git/bin/git-remote-http.wasm
+# Output: bin/git.wasm and bin/git-remote-http.wasm under the resolver work
+#         root (beside this script when run standalone).
 
 GIT_VERSION="${GIT_VERSION:-2.47.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/git-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/git-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 # Explicit env wins; else the in-tree sysroot. Matches build-libcurl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
@@ -48,6 +55,13 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 export WASM_POSIX_GLUE_DIR="$REPO_ROOT/libc/glue"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Resolve zlib, openssl, and libcurl via the dep cache ---
 # openssl is a transitive dep: our cached libcurl.a references
@@ -106,12 +120,14 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 # --- Download Git source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading git $GIT_VERSION..."
-    TARBALL="git-${GIT_VERSION}.tar.xz"
-    URL="https://www.kernel.org/pub/software/scm/git/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    URL="https://www.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz"
+    # WHY: a unique archive under the work root; a fixed /tmp name let two
+    # concurrent builds overwrite or delete each other's download.
+    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/git-source.XXXXXX")"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 

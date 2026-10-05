@@ -20,14 +20,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/mako-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/mako-src"
 
 MAKO_VERSION="${WASM_POSIX_DEP_VERSION:-1.10.0}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/mako-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/emersion/mako/archive/refs/tags/v${MAKO_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-3ca44f6bb85c941a4f637a9787931c22ee9a7fe6b8039e6985baf863719b0f95}"
 
-BUILD_DIR="$SCRIPT_DIR/mako-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/mako-build"
 
 for tool in wasm32posix-cc wayland-scanner; do
     if ! command -v "$tool" &>/dev/null; then
@@ -57,26 +64,18 @@ PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PR
 # with the resolved libcxx overlaid: the worktree SDK seed is an input tree
 # for every package build and must hold no symlink (mariadb pattern — see
 # scripts/package-build-roots.sh).
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot mako "$SDK_SYSROOT" libcxx
 )"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Fetch + verify + patch source ---
+# --- Stage verified source + patch ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading mako $MAKO_VERSION..."
-    TARBALL="/tmp/mako-${MAKO_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified mako $MAKO_VERSION source..."
+    kandelo_package_stage_verified_source mako "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
     echo "==> Applying patches..."
     for p in "$SCRIPT_DIR"/patches/*.patch; do
         patch -p1 -d "$SRC_DIR" < "$p"
@@ -208,6 +207,12 @@ for out in mako makoctl; do
     mv "$BUILD_DIR/$out.wasm.instr" "$BUILD_DIR/$out.wasm"
 done
 
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 for out in mako makoctl; do
     cp "$BUILD_DIR/$out.wasm" "$INSTALL_DIR/$out.wasm"

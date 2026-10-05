@@ -126,12 +126,18 @@ if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ]; then
     LIBYAML_SHA256="c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4"
     LIBYAML_SRC="$WORK_DIR/libyaml-src"
     if [ ! -d "$LIBYAML_SRC" ]; then
-        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
-            -o "/tmp/yaml-${LIBYAML_VERSION}.tar.gz"
-        echo "$LIBYAML_SHA256  /tmp/yaml-${LIBYAML_VERSION}.tar.gz" | shasum -a 256 -c -
+        # WHY a unique file under the work root: a fixed shared temp name let one
+        # concurrent build delete the tarball while another extracted it.
+        LIBYAML_TARBALL="$(mktemp "$WORK_DIR/yaml-source.XXXXXX")"
+        if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
+                -o "$LIBYAML_TARBALL" ||
+           ! echo "$LIBYAML_SHA256  $LIBYAML_TARBALL" | shasum -a 256 -c -; then
+            rm -f "$LIBYAML_TARBALL"
+            exit 1
+        fi
         mkdir -p "$LIBYAML_SRC"
-        tar xzf "/tmp/yaml-${LIBYAML_VERSION}.tar.gz" -C "$LIBYAML_SRC" --strip-components=1
-        rm "/tmp/yaml-${LIBYAML_VERSION}.tar.gz"
+        tar xzf "$LIBYAML_TARBALL" -C "$LIBYAML_SRC" --strip-components=1
+        rm -f "$LIBYAML_TARBALL"
     fi
     cd "$LIBYAML_SRC"
     if [ ! -f Makefile ]; then
@@ -162,15 +168,23 @@ done
 # --- Download Ruby source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Ruby $RUBY_VERSION..."
-    TARBALL="ruby-${RUBY_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/${TARBALL}"
+    # A unique file under the work root, not a fixed shared temp name that
+    # concurrent builds would share.
+    TARBALL="$(mktemp "$WORK_DIR/ruby-source.XXXXXX")"
+    if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"; then
+        rm -f "$TARBALL"
+        exit 1
+    fi
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  /tmp/${TARBALL}" | shasum -a 256 -c -
+        if ! echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -; then
+            rm -f "$TARBALL"
+            exit 1
+        fi
     fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
     printf '%s\n' "$EXPECTED_SOURCE_MARKER" > "$SOURCE_MARKER"
     echo "==> Source extracted to $SRC_DIR"
 fi

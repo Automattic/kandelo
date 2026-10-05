@@ -11,4 +11,8 @@ inputs = [
   "packages/registry/foot/build-foot.sh",
   "packages/registry/foot/patches/0001-shm-gbm-prime-fd-pools.patch",
   "packages/registry/foot/patches/0002-serial-font-loading.patch",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/wasm-artifact-guards.sh",
 ]

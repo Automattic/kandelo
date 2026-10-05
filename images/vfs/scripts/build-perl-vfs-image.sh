@@ -8,6 +8,9 @@ if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
     "$SCRIPT_DIR/staged-product-inputs.ts" browser-perl "$@"
 fi
 echo "==> Building Perl VFS image..."
-npx tsx "$SCRIPT_DIR/build-perl-vfs-image.ts"
+# An optional argument is the output path (the resolver wrapper passes one
+# under its work root); otherwise the browser demo's public/ copy.
+VFS="${1:-apps/browser-demos/public/perl.vfs.zst}"
+npx tsx "$SCRIPT_DIR/build-perl-vfs-image.ts" "$VFS"
 echo "==> Done."
-ls -lh apps/browser-demos/public/perl.vfs.zst
+ls -lh "$VFS"

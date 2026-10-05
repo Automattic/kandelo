@@ -11,13 +11,23 @@ set -euo pipefail
 # wasm-fork-instrument auto-discovers fork paths via call-graph
 # analysis — no onlylist is needed.
 #
-# Output: packages/registry/vim/bin/vim.wasm
+# Output: bin/vim.wasm and runtime/ under the resolver work root (beside
+# this script when run standalone).
 
 VIM_VERSION="${VIM_VERSION:-9.1.0900}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/vim-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script. bundle-runtime.sh derives
+# the same roots, so its runtime/ lands beside vim-src.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/vim-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
+RUNTIME_DIR="$KANDELO_PACKAGE_WORK_DIR/runtime"
 # Explicit env wins; else the in-tree sysroot. Keeps neighbour-worktree
 # invocations viable (WASM_POSIX_SYSROOT=<other>/sysroot). Same shape as
 # build-curl.sh:49.
@@ -28,6 +38,13 @@ SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 # quietly produce binaries missing the __abi_version marker. Matches
 # packages/registry/dash/build-dash.sh and packages/registry/git/build-git.sh.
 export WASM_POSIX_GLUE_DIR="$REPO_ROOT/libc/glue"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -73,12 +90,14 @@ echo "==> ncurses at $NCURSES_PREFIX"
 # --- Download Vim source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading vim $VIM_VERSION..."
-    TARBALL="v${VIM_VERSION}.tar.gz"
-    URL="https://github.com/vim/vim/archive/refs/tags/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/vim-$TARBALL"
+    URL="https://github.com/vim/vim/archive/refs/tags/v${VIM_VERSION}.tar.gz"
+    # WHY: a unique archive under the work root; a fixed /tmp name let two
+    # concurrent builds overwrite or delete each other's download.
+    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/vim-source.XXXXXX")"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/vim-$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/vim-$TARBALL"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -264,9 +283,9 @@ install_local_binary vim "$BIN_DIR/vim.wasm"
 # the cache canonical path (and from there, the archive). Outside
 # the resolver, $WASM_POSIX_DEP_OUT_DIR is unset and this is a
 # no-op — direct invocations of build-vim.sh just leave runtime/
-# at its source-tree location.
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -d "$SCRIPT_DIR/runtime" ]; then
+# beside this script.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -d "$RUNTIME_DIR" ]; then
     rm -rf "$WASM_POSIX_DEP_OUT_DIR/runtime"
-    cp -R "$SCRIPT_DIR/runtime" "$WASM_POSIX_DEP_OUT_DIR/runtime"
+    cp -R "$RUNTIME_DIR" "$WASM_POSIX_DEP_OUT_DIR/runtime"
     echo "  staged runtime tree into resolver scratch"
 fi

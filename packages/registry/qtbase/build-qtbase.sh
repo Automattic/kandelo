@@ -86,20 +86,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/qtbase-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/qtbase-src"
 
 QTBASE_VERSION="${WASM_POSIX_DEP_VERSION:-6.10.2}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/qtbase-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.qt.io/archive/qt/6.10/${QTBASE_VERSION}/submodules/qtbase-everywhere-src-${QTBASE_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-aeb78d29291a2b5fd53cb55950f8f5065b4978c25fb1d77f627d695ab9adf21e}"
 
-# WHY the resolver's work root: this script deletes and reconfigures its
-# build tree, so a tree inside the checkout is shared by every concurrent
-# resolve of qtbase in this worktree (two Vitest files can both miss the cache).
-# One build's `rm -rf` then pulls the tree out from under the other, whose
-# precompiled headers point into a private sysroot that is gone. Outside a
-# resolver run the in-tree directory keeps standalone builds working.
-BUILD_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}/qtbase-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/qtbase-build"
 
 for tool in wasm32posix-c++ wasm32posix-cc cmake ninja qmake strings; do
     if ! command -v "$tool" &>/dev/null; then
@@ -133,28 +134,18 @@ LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DI
 # private sysroot with the resolved libcxx overlaid: the worktree SDK seed
 # is an input tree for every package build and must hold no symlink
 # (mariadb pattern — see scripts/package-build-roots.sh).
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot qtbase "$SDK_SYSROOT" libcxx
 )"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading qtbase $QTBASE_VERSION..."
-    TARBALL="/tmp/qtbase-${QTBASE_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified qtbase $QTBASE_VERSION source..."
+    kandelo_package_stage_verified_source qtbase "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qmutex-honour-qt-linuxbase.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-shm-gbm-pool.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/forkfd-generic-on-wasm.patch"
@@ -272,6 +263,28 @@ if strings "$INSTALL_DIR/lib/libQt6Core.a" | grep -q "build-stage"; then
     echo "ERROR: libQt6Core.a embeds the resolver staging path" >&2
     strings "$INSTALL_DIR/lib/libQt6Core.a" | grep "build-stage" | head -3 >&2
     exit 1
+fi
+
+# So does the resolver work root. The SDK driver maps it to
+# /usr/src/kandelo-build/qtbase in compiled objects, but Qt also writes the
+# source tree into installed text: QT_SOURCE_TREE in
+# QtBuildInternalsExtra.cmake and the bundled libjpeg/pcre2 include dirs in
+# mkspecs/modules/*.pri. Map those to the same name. Nothing reads the
+# source through them: the work root is deleted when the build ends. Only
+# text metadata is rewritten; a hit in any other file fails below.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    while IFS= read -r -d '' metadata; do
+        if grep -qF "$KANDELO_PACKAGE_WORK_DIR" "$metadata"; then
+            KANDELO_FROM="$KANDELO_PACKAGE_WORK_DIR" \
+            KANDELO_TO="/usr/src/kandelo-build/qtbase" \
+                perl -pi -e 's/\Q$ENV{KANDELO_FROM}\E/$ENV{KANDELO_TO}/g' "$metadata"
+        fi
+    done < <(find "$INSTALL_DIR" -type f \
+        \( -name '*.cmake' -o -name '*.pri' -o -name '*.prl' -o -name '*.pc' \) -print0)
+    if grep -rlF "$KANDELO_PACKAGE_WORK_DIR" "$INSTALL_DIR" >&2; then
+        echo "ERROR: installed qtbase files above embed the resolver work root" >&2
+        exit 1
+    fi
 fi
 
 echo "==> qtbase $QTBASE_VERSION built for wasm32"

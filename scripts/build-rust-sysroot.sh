@@ -194,16 +194,16 @@ panic = "abort"
 [workspace]
 TOML
 : > "$STD_BUILD/src/lib.rs"
+# --target-dir pins the output below STD_BUILD: a resolver build exports
+# CARGO_TARGET_DIR into its private work root, and the copy below reads
+# from STD_BUILD.
 (
   cd "$STD_BUILD"
-  # WHY CARGO_TARGET_DIR: the package resolver exports its own
-  # CARGO_TARGET_DIR to every recipe, and cargo would then write std there
-  # instead of under $STD_BUILD, where the copy below reads it.
-  CARGO_TARGET_DIR="$STD_BUILD/target" \
   RUSTC="$WRAP" RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 \
     cargo build --release --quiet \
       -Z build-std=std,panic_abort \
-      --target "$TARGET"
+      --target "$TARGET" \
+      --target-dir "$STD_BUILD/target"
 )
 cp "$STD_BUILD/target/$TARGET/release/deps/"*.rlib "$TARGET_DIR/lib/"
 rm -f "$TARGET_DIR/lib/"libkandelo_std_build-*.rlib

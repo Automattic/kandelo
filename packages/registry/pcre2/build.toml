@@ -7,4 +7,5 @@ revision    = 1
 # these tracked inputs on a clean checkout.
 inputs = [
   "packages/registry/pcre2/build-pcre2.sh",
+  "scripts/package-build-roots.sh",
 ]

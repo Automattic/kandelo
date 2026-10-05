@@ -1288,7 +1288,10 @@ pipes, sockets, PTYs, terminal devices, and listener queues.
    rewritten once, and a separately prepared interpreter becomes the sole
    final target; script set-ID state is never applied.
 4. The host validates the exact bytes' ABI marker and fork-artifact policy,
-   compiles those same bytes, validates the 4 MiB combined argv/environment
+   obtains the module for those same bytes from the kernel worker's
+   content-addressed cache (see
+   [Compiled module sharing](#compiled-module-sharing)), validates the 4 MiB
+   combined argv/environment
    representation and generated vector caps, and completes replacement
    `WebAssembly.Memory` allocation/layout preflight before the irreversible
    transition. Each metadata string must also fit the current 64 KiB transfer.
@@ -1357,8 +1360,9 @@ caller now take.
    caller memory, validates argv + envp against the same 4 MiB `ARG_MAX`
    contract as `execve`, and performs a side-effect-free candidate lookup and
    compilation. Shared trusted code immediately snapshots the resolver bytes
-   and compiles the candidate module from that exact isolated snapshot; a
-   separately callback-supplied module is ignored. That preflight prevents
+   and obtains the candidate module for that exact isolated snapshot from the
+   content-addressed module cache; a separately callback-supplied module is
+   ignored. That preflight prevents
    failed PATH probes from creating a child, but it is never executable
    authority. The host then copies the blob to bounded kernel-owned scratch.
    Each argv/environment entry also has the separate 64 KiB
@@ -1420,9 +1424,11 @@ caller now take.
    forward order. Failure on any action rolls back via `remove_process`.
 5. In the resulting child CWD, descriptor, and credential state, the host asks
    Rust to prepare an exact executable target. The host reads those retained
-   bytes and reuses only the module compiled from the isolated preflight
-   snapshot, and only when every byte is identical; otherwise it recompiles
-   the final bytes. The opaque child-bound token is
+   bytes, runs the same ABI and artifact checks on them, and asks the module
+   cache for their module: the preflight module is reused only when the final
+   bytes have the same SHA-256 digest and length, and otherwise the final
+   bytes are compiled. The preflight module stays reachable until that lookup
+   completes. The opaque child-bound token is
    committed with `kernel_spawn_exec_commit`, which evaluates set-ID and
    trusted-mount/nosuid policy and closes remaining `FD_CLOEXEC` descriptors.
    Any prepare, read, policy, compile, or commit failure cancels the exact
@@ -1522,6 +1528,87 @@ lifecycle gap is separate from reaping direct host-owned launches.
 6. Thread starts executing the given function pointer with the given argument
 
 Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
+
+### Compiled module sharing
+
+Every program a process runs is a `WebAssembly.Module` compiled by the
+dedicated kernel worker and posted to the process worker (and, for threads,
+to each thread worker). V8 and JavaScriptCore keep one copy of a module's
+machine code however many workers it is posted to, while each separate
+compilation of the same bytes makes another copy (measurements below;
+SpiderMonkey was not measured). Compiled code is the dominant browser
+cost for large guests — SpiderMonkey caps all JIT and Wasm code at 2 GiB per
+content process — so the kernel worker compiles a given program once while a
+compiled copy is still alive.
+
+`WasmModuleCache` (`host/src/wasm-module-cache.ts`) is that compiler. One
+instance belongs to each `CentralizedKernelWorker` (`kernelWorker.wasmModules`)
+on both hosts:
+
+| Launch | Module source |
+|---|---|
+| Host `spawn`/`spawnFromVfs` (top-level) | `programModule(bytes)`; a `CompileError` answers the request with `ENOEXEC` |
+| `posix_spawn` preflight and final target | `programModule(bytes)` |
+| `execve`/`execveat` | `programModule(bytes)` |
+| `fork`/`vfork` | the parent's module; a fork never compiles |
+| `clone` | `threadModule(programBytes, patchWasmForThread)` |
+
+**Identity is the exact bytes.** The key is the SHA-256 digest and byte
+length of the bytes being launched, plus the variant (`program` or `thread`),
+never a path. Exec and spawn read the target's current bytes from the kernel
+for every launch, so a file rewritten in place hashes differently at its next
+exec and can never run a module compiled from older contents. The thread
+variant is keyed on the *program's* digest; `patchWasmForThread` is a pure
+function of those bytes. When the patch leaves the bytes unchanged (a module
+without a start section), the thread module is the program module itself.
+
+**Admission is never skipped.** The cache replaces only the compile step.
+The ABI marker and artifact-policy checks still run on every launch's bytes
+before the lookup, exec permission and set-ID policy are still decided by the
+kernel's prepared target, and the process worker still re-runs the artifact
+policy and fork-instrumentation validation on the module it is given. A
+compile failure is reported to every caller waiting on it and is never
+cached.
+
+**Lifetime.** The cache's own index holds each module through a `WeakRef`.
+Strong references belong to the users: each process record's
+`programModule`, the per-process thread module, and launch continuations in
+flight (a spawn's preflight module stays reachable until its final target is
+looked up). A module is therefore shareable exactly while some live process
+or pending launch holds it and becomes collectable with its last user. Two
+launches of the same bytes that overlap share one in-flight compilation.
+
+On top of that a bounded retention window keeps recently launched modules
+strongly referenced: at most 16 MiB of Wasm bytes in total, each for 30
+seconds after its most recent launch, least recently launched evicted first.
+Modules larger than the bound (Quickshell at 75 MB, Waybar at 51 MB,
+qtgallery at 23 MB) are never retained past their last user. The window exists
+because weak references alone lose short-lived programs to the garbage
+collector between runs: a shell running coreutils `ls` 20 times compiled
+coreutils 10–13 times with weak references only, and once with the window
+(Node 24, measured). The bound keeps the retained code small next to the
+2 GiB SpiderMonkey arena; the timer never keeps a Node kernel worker alive.
+
+**Cost.** Each spawn or exec hashes its target bytes with WebCrypto SHA-256
+in the kernel worker (twice for `posix_spawn`: the preflight snapshot and
+the final target). A thread lookup reuses the digest recorded for the
+process's own bytes buffer. Hashing 78 MB took 33–42 ms on Node 24, and
+34 ms in Chromium and 53 ms in WebKit inside a dedicated worker. That is less
+than the JavaScript byte-by-byte comparison it replaced on the spawn path
+(67–294 ms, 68 ms and 59 ms for the same bytes).
+
+An 11 MB synthetic module posted to 8 workers that each instantiated it
+and ran every function grew the process by about 140 MB on Node 24, 365 MB
+in Chromium and 820–906 MB in WebKit; when each worker compiled the same
+bytes itself, the growth was about 335 MB, 540 MB and 1,070 MB.
+
+`NodeKernelHost.getWasmModuleCacheStats()` and
+`BrowserKernel.getWasmModuleCacheStats()` return the cache's counters
+(compilations, reuse, digest time, retained bytes, and the thread-module
+compilations and reuse counted separately) for diagnostics.
+`apps/browser-demos/test/wasm-module-cache-threads.spec.ts` uses them to check
+in a real browser that three processes running the same threaded program
+compile one thread module between them.
 
 ## Memory Layout
 

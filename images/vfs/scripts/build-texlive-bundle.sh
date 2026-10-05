@@ -27,8 +27,13 @@ TEXLIVE_INSTALL_SHA256="311df9f1477fd90c520159d1feddc2d6270f010d8349d1f6bdb9461a
 TEXLIVE_REPOSITORY="https://ftp.tu-chemnitz.de/pub/tug/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final"
 
 TEXLIVE_DIR="$REPO_ROOT/packages/registry/texlive"
-HOST_PDFTEX="$TEXLIVE_DIR/texlive-host-build/texk/web2c/pdftex"
-INSTALL_DIR="$TEXLIVE_DIR/texlive-dist"
+# build-texlive.sh passes its work root, so a resolver build reads its own
+# host pdftex and keeps install-tl, the profile, the distribution, and the
+# format under that root. A direct run keeps the recipe-directory layout.
+TEXLIVE_WORK_DIR="${TEXLIVE_WORK_DIR:-$TEXLIVE_DIR}"
+HOST_PDFTEX="$TEXLIVE_WORK_DIR/texlive-host-build/texk/web2c/pdftex"
+INSTALL_DIR="$TEXLIVE_WORK_DIR/texlive-dist"
+PROFILE="$TEXLIVE_WORK_DIR/texlive.profile"
 
 # Bundle output destination. Default: served-from-public/ for direct
 # `bash build-texlive-bundle.sh` invocations during local dev.
@@ -47,20 +52,29 @@ if [ ! -d "$INSTALL_DIR/texmf-dist" ]; then
     echo "==> Installing minimal TeX Live distribution..."
 
     # Download install-tl from the pinned historical archive (see header).
-    INSTALLER_DIR="$TEXLIVE_DIR/install-tl"
+    INSTALLER_DIR="$TEXLIVE_WORK_DIR/install-tl"
     if [ ! -d "$INSTALLER_DIR" ]; then
-        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-            -fsSL "$TEXLIVE_INSTALL_URL" \
-            -o "/tmp/install-tl.tar.gz"
+        # A unique file, not a fixed shared temp name that concurrent
+        # builds would race on.
+        INSTALLER_TARBALL="$(mktemp "$TEXLIVE_WORK_DIR/install-tl-source.XXXXXX")"
+        if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
+                -fsSL "$TEXLIVE_INSTALL_URL" \
+                -o "$INSTALLER_TARBALL"; then
+            rm -f "$INSTALLER_TARBALL"
+            exit 1
+        fi
         echo "==> Verifying install-tl sha256..."
-        echo "$TEXLIVE_INSTALL_SHA256  /tmp/install-tl.tar.gz" | shasum -a 256 -c -
+        if ! echo "$TEXLIVE_INSTALL_SHA256  $INSTALLER_TARBALL" | shasum -a 256 -c -; then
+            rm -f "$INSTALLER_TARBALL"
+            exit 1
+        fi
         mkdir -p "$INSTALLER_DIR"
-        tar xzf "/tmp/install-tl.tar.gz" -C "$INSTALLER_DIR" --strip-components=1
-        rm "/tmp/install-tl.tar.gz"
+        tar xzf "$INSTALLER_TARBALL" -C "$INSTALLER_DIR" --strip-components=1
+        rm -f "$INSTALLER_TARBALL"
     fi
 
     # Create installation profile
-    cat > "$TEXLIVE_DIR/texlive.profile" << EOF
+    cat > "$PROFILE" << EOF
 selected_scheme scheme-custom
 TEXDIR $INSTALL_DIR
 TEXMFLOCAL $INSTALL_DIR/texmf-local
@@ -104,7 +118,7 @@ EOF
 
     cd "$INSTALLER_DIR"
     perl install-tl \
-        --profile="$TEXLIVE_DIR/texlive.profile" \
+        --profile="$PROFILE" \
         --no-interaction \
         --force-platform="$TL_PLATFORM" \
         --repository="$TEXLIVE_REPOSITORY"
@@ -112,7 +126,7 @@ EOF
 fi
 
 # ─── Step 2: Generate latex.fmt ────────────────────────────────
-FMT_DIR="$TEXLIVE_DIR/texlive-fmt"
+FMT_DIR="$TEXLIVE_WORK_DIR/texlive-fmt"
 if [ ! -f "$FMT_DIR/latex.fmt" ]; then
     echo "==> Generating latex.fmt..."
     mkdir -p "$FMT_DIR"

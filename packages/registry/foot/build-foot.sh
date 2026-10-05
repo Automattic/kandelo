@@ -21,14 +21,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/foot-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/foot-src"
 
 FOOT_VERSION="${WASM_POSIX_DEP_VERSION:-1.17.2}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/foot-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://codeberg.org/dnkl/foot/releases/download/${FOOT_VERSION}/foot-${FOOT_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-de901e5fba00aded452df989a968906309f14221ed606c78c1caff3026c7f541}"
 
-BUILD_DIR="$SCRIPT_DIR/foot-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/foot-build"
 
 for tool in wasm32posix-cc python3 wayland-scanner; do
     if ! command -v "$tool" &>/dev/null; then
@@ -52,18 +59,12 @@ PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PR
 
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
-# --- Fetch + verify + patch source ---
+# --- Stage verified + patched source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading foot $FOOT_VERSION..."
-    TARBALL="/tmp/foot-${FOOT_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified foot $FOOT_VERSION source..."
+    kandelo_package_stage_verified_source foot "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
     echo "==> Applying patches..."
     for p in "$SCRIPT_DIR"/patches/*.patch; do
         patch -p1 -d "$SRC_DIR" < "$p"
@@ -177,6 +178,12 @@ mv "$BUILD_DIR/foot.wasm.instr" "$BUILD_DIR/foot.wasm"
 
 cp "$BUILD_DIR/foot.wasm" "$INSTALL_DIR/foot.wasm"
 
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary foot "$BUILD_DIR/foot.wasm"
 

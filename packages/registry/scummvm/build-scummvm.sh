@@ -31,7 +31,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-scummvm.XXXXXX")"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+# Per-run scratch (tarball, install DESTDIR, sdl2-config shim): inside the
+# resolver work root when there is one, else a unique TMPDIR directory.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    WORK_DIR="$(mktemp -d "$KANDELO_PACKAGE_WORK_DIR/kandelo-scummvm.XXXXXX")"
+else
+    WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-scummvm.XXXXXX")"
+fi
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # shellcheck source=/dev/null
@@ -92,8 +105,6 @@ test -f "$LIBCXX_PREFIX/lib/libc++.a"
 # build-mariadb.sh). A direct invocation has no resolver work dir and
 # indexes the artifacts into the worktree sysroot instead.
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
-    # shellcheck source=/dev/null
-    source "$REPO_ROOT/scripts/package-build-roots.sh"
     SYSROOT="$(
         kandelo_package_prepare_private_sysroot scummvm "$SYSROOT" libcxx
     )"
@@ -106,11 +117,14 @@ ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
 rm -rf "$SYSROOT/include/c++/v1"
 ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
 
-# The source tree persists across runs (sdl2-src pattern): the 225 MB
-# tarball downloads once and `make` stays incremental. `rm -rf
-# scummvm-src` forces a fresh download + re-patch.
-SRC_DIR="$SCRIPT_DIR/scummvm-src"
+# A standalone run keeps the source tree beside this script across runs
+# (sdl2-src pattern): the 225 MB tarball downloads once and `make` stays
+# incremental. `rm -rf scummvm-src` forces a fresh download + re-patch.
+# A resolver build extracts and builds it in its own work root.
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/scummvm-src"
 DEST_DIR="$WORK_DIR/dest"
+# Under the resolver the SDK's later work-root map takes precedence for
+# these paths; a standalone run (no work root) relies on this map.
 REPRO_FLAGS="-ffile-prefix-map=$SRC_DIR=/usr/src/scummvm -fdebug-prefix-map=$SRC_DIR=/usr/src/scummvm -fmacro-prefix-map=$SRC_DIR=/usr/src/scummvm"
 mkdir -p "$DEST_DIR"
 

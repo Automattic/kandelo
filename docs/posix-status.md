@@ -247,7 +247,7 @@ to a different directory than the original OFD.
 | `sync()` / `syncfs()` | Stub | Returns 0 (no-op). Filesystem sync managed by host. |
 | `sync_file_range()` | Stub | Returns 0 (no-op). |
 | `chroot()` | Stub | Returns EPERM. No filesystem namespace isolation. |
-| `mount()` / `umount2()` | Stub | Returns EPERM. Future: VFS mount/unmount support. |
+| `mount()` / `umount2()` | Stub | Returns ENOSYS: syscalls 266 and 267 reach the kernel's unimplemented-syscall stub arm. The distinction from EPERM matters: EPERM tells a caller it lacks permission and may retry with privilege, while ENOSYS tells it the call does not exist. Mounts are configured by the host at boot (the Node and browser hosts' default mounts plus `extraMounts`); there is no guest-initiated runtime mount path, and no shipped guest calls `mount()`. |
 | `pivot_root()` | Stub | Returns EPERM. |
 | `mkfifo()` / `mkfifoat()` / `mknod()` / `mknodat()` | Partial | S_IFREG and S_IFIFO are supported. A FIFO has a VFS marker for namespace and metadata plus a kernel pipe for I/O, with mode/umask/ownership, hard links, rename, unlink, forked descriptors, and blocking rendezvous preserved. Device nodes (S_IFCHR, S_IFBLK) return EPERM. The kernel-resident FIFO classification is not yet reconstructed when only a VFS snapshot is restored into a fresh kernel. |
 | `quotactl()` | Stub | Returns ENOSYS. |
