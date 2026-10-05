@@ -890,8 +890,8 @@ type.
 
 ### What the plugin records
 
-The plugin gains a Clang half (`tools/fork-sink-research/fpr/plugin/
-KandeloFnCasts.cpp`). It runs before code generation, while casts are still
+The plugin gains a Clang half (`KandeloFnCasts.cpp`, now in
+`sdk/src/plugin/`). It runs before code generation, while casts are still
 visible; LLVM's opaque pointers erase them later. It records:
 
 - a function converted to another function type, or to `void *` or an
@@ -1333,20 +1333,52 @@ of instrumented functions on foot and git), and the research tooling that
 measured what precise facts can reach (foot 4, git 25, Quickshell 10 under
 the dlopen contract). Turning those research results into the default needs:
 
-1. **Compiler facts in the normal build.** Ship the KandeloCallTypes plugin
-   with the SDK and carry its facts inside object files (a custom section
-   the linker keeps through static libraries), not side files keyed by
-   object hash. Add the plugin version to package cache keys.
-2. **The analysis in `wasm-fork-instrument`.** Move the fpa/fsa rules
-   (casts, slots, effective types per unit, cleanup and jmp_buf maps) into
-   `crates/fork-instrument`, replacing the hidden `--sink-plan` hook, with
-   today's conservative closure for code without facts.
-3. **The dlopen contract on both hosts.** Metadata sections, the
-   load-time check in `__wasm_dlopen_prepare`, and the
-   `--side-modules=traced-entries` / `assume-all-entries-fork-returning`
-   modes. The built-in analysis stays off for dlopen-capable modules until
-   then.
-4. **A maintainer decision** on applying C's effective-type rule per
-   strict-aliasing unit (git's 25 depends on it).
+1. **Compiler facts in the normal build.** Done (2026-10-04): the plugin
+   lives in `sdk/src/plugin/`, the SDK builds and caches it per toolchain
+   (`sdk/src/lib/calltypes-plugin.ts`) and loads it in every C/C++ compile,
+   including musl (`scripts/build-musl.sh`) and libc++
+   (`packages/registry/libcxx/build-libcxx.sh`). Facts travel in each
+   object's `kandelo.calltypes` section. A fork-capable link (one that
+   imports `kernel.kernel_fork`) skips clang's post-link wasm-opt so the
+   facts still describe the code, and records the code's SHA-256 in
+   `kandelo.calltypes.code-sha256`; other links drop the facts and run
+   wasm-opt as before. The plugin's sources are under `sdk/src`, which is
+   already a global package cache-key input. Object code is identical with
+   and without the plugin. Packages that run wasm-opt between the link and
+   instrumentation (cpython, php, vim, nginx, tcl, spidermonkey, the sqlite
+   testfixture) fail the hash check and use the analysis without facts:
+   sound, not precise. git no longer does that for `git.wasm`.
+2. **The analysis in `wasm-fork-instrument`.** Done (2026-10-04): the fpa
+   rules (casts, slots, effective types per unit, registries, cleanup and
+   jmp_buf maps) are in `crates/fork-instrument/src/facts/`, the fsa
+   additions (cleanup pairs, per-buffer longjmp bits, side-module entries
+   without a contract) in `src/sink.rs`. The instrumenter reads the facts
+   from the module's `kandelo.calltypes` section, binds them to functions by
+   object order and name (no map), checks `kandelo.calltypes.code-sha256`
+   against the code, and falls back to the analysis without facts when the
+   facts are missing, unreadable or stale. Functions without facts keep
+   signature matching. Flags: `--no-facts`, `--no-effective-types`;
+   `--sink-plan` stays hidden for research. On the research links of foot,
+   git and bash (facts concatenated in link order by
+   `examples/facts_equivalence.rs`) the binding equals fpa's for every
+   function and the sets and boundaries equal the table above when the
+   dlopen contract is assumed (research only; bash is the one that can
+   dlopen, and without the contract keeps 1,927 of 1,929). See
+   `docs/fork-instrumentation.md`, "Fork sinks and compiler facts".
+3. **The dlopen contract on both hosts.** Done (2026-10-04): the
+   instrumenter writes `kandelo.wpk_fork.dlopen_contract` for a
+   dlopen-capable module analysed with facts, and both hosts check it when
+   the dynamic linker loads a side module
+   (`host/src/fork-side-module-contract.ts`, called from
+   `host/src/dylink.ts`). `--side-modules=traced-entries` (default)
+   assumes side modules enter only through imports and refuses those that
+   import a fork-returning export; `assume-all-entries-fork-returning`
+   plans for any entry and loads anything. A module with an address-taken
+   fork-returning function is planned for every entry automatically,
+   because refusing every side module would remove `dlopen`.
+4. **Effective types.** Applied by default, per strict-aliasing unit;
+   `--no-effective-types` turns it off for diagnosis. It only removes
+   targets, so it never adds instrumented functions (Quickshell is 10 with
+   or without it).
 5. **Speed and size claims:** benchmark suites on Node and browser before
    and after. Nothing here claims a speed change.
