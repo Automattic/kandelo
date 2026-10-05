@@ -16,6 +16,16 @@
 #   --enable-pthreads     AUTODETECT_LIBS includes $THREADS_LIST, so
 #                         --disable-autodetect silently disables threads.
 #   --disable-openssl     linking OpenSSL requires --enable-nonfree.
+#   --strip=llvm-strip --strip-debug
+#                         FFmpeg links ffplay_g and ships `$(STRIP) -o
+#                         ffplay ffplay_g`. Configure's default `strip`
+#                         drops the name section, and fork instrumentation
+#                         binds the compiler's call-type facts to functions
+#                         by name; without it ffplay is instrumented without
+#                         facts, which keeps far more functions instrumented.
+#                         --strip-debug removes only DWARF.
+#                         (wasm32posix-strip is a no-op that writes no -o
+#                         output.)
 #   --host-cc=cc          configure builds a few helper tools for the build
 #                         machine and defaults their compiler to gcc; the
 #                         dev shell provides the host compiler as cc.
@@ -59,6 +69,7 @@ ffmpeg_configure_flags() {
         --enable-cross-compile --arch=wasm --target-os=none
         --cc=wasm32posix-cc --cxx=wasm32posix-c++ --ar=wasm32posix-ar
         --nm=wasm32posix-nm --ranlib=wasm32posix-ranlib --host-cc=cc
+        "--strip=llvm-strip --strip-debug"
         --pkg-config=wasm32posix-pkg-config --pkg-config-flags=--static
         "--extra-cflags=-msimd128 -O3 -I$ZLIB_PREFIX/include -I$LIBXML2_PREFIX/include"
         "--extra-ldflags=-L$ZLIB_PREFIX/lib -L$LIBWAYLAND_PREFIX/lib -L$LIBXKBCOMMON_PREFIX/lib -L$LIBFFI_PREFIX/lib"

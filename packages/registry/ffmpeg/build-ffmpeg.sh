@@ -83,6 +83,21 @@ done
 ls -l "$OUT_STAGE"
 
 cd "$REPO_ROOT"
+# ffplay is fork-instrumented. Its instrumented set must come from the
+# compiler's call-type facts: the instrumenter falls back to the analysis
+# without facts, with only a warning, when it cannot use them (for example
+# when a strip removed the name section they bind through), and the result
+# still runs but is much larger. Fail the build instead of shipping that.
+echo "==> Checking that ffplay's fork instrumentation uses compiler facts"
+ffplay_plan="$("$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --sink-report "$OUT_STAGE/ffplay.wasm")"
+ffplay_plan_source="$(printf '%s\n' "$ffplay_plan" | awk -F'\t' '$1 == "source" {print $2}')"
+if [ "$ffplay_plan_source" != "facts" ]; then
+    printf '%s\n' "$ffplay_plan" | grep -v '^[AB]	' >&2 || true
+    echo "ERROR: ffplay's fork plan came from '$ffplay_plan_source', not compiler facts" >&2
+    exit 1
+fi
+printf '%s\n' "$ffplay_plan" | grep '^facts	' || true
+
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 for p in ffmpeg ffprobe ffplay; do

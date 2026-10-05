@@ -126,6 +126,16 @@ Acceptance (`packages/registry/ffmpeg/test/run-acceptance.sh`, 2026-10-01, on #1
 - **Proof:** `ffmpeg-tier1.test.ts` "names no build-machine path in its configuration" (RED on the earlier build, GREEN after).
 - **Status:** closed
 
+### G8. ffplay's strip removed the names fork facts bind through
+
+- **Found at:** reviewing #1471 (fork sinks, ABI 46) for its effect on this package.
+- **Symptom:** none yet visible: ffplay would build and run, but fork instrumentation would ignore the compiler's call-type facts and keep far more functions instrumented than the facts allow.
+- **Traced layer:** this package's build. FFmpeg links `ffplay_g` and ships `$(STRIP) -o ffplay ffplay_g`; configure's default `strip` (the dev shell's `llvm-strip`) removes the `name` section. The instrumenter binds `kandelo.calltypes` facts to functions by name, and when it cannot it falls back to the analysis without facts with only a warning, by design (facts are an optimization input). `strip --strip-debug` keeps `name`, `producers` and `kandelo.calltypes`.
+- **Disposition:** package build fix. Whether a silent fallback should fail other builds too is a question for the fork-instrumentation work, not for this package.
+- **Fix:** `--strip=llvm-strip --strip-debug` in `configure-flags.sh`, and `build-ffmpeg.sh` fails unless `wasm-fork-instrument --sink-report` reports `source facts` for ffplay.
+- **Proof:** the check reports `source builtin` for an ffplay built before facts existed (RED). GREEN needs the ABI 47 rebuild.
+- **Status:** open until the rebuild confirms it
+
 ## Results
 
 ### SIMD benchmark (Node host)
@@ -146,7 +156,9 @@ Each run includes Kandelo start-up, measured separately as 0.415 s median
 
 This matches upstream: FFmpeg n9.0's hand-written wasm SIMD covers HEVC IDCT
 and SAO only, and compiler auto-vectorization gives H.264 decode nothing
-measurable here. ### SIMD benchmark (browser)
+measurable here.
+
+### SIMD benchmark (browser)
 
 Bounded to FFmpeg single-threaded decode of these inputs inside a Kandelo
 machine in headless Chromium; not a claim about Kandelo generally. Both builds
