@@ -7,12 +7,12 @@
 //! WHY: executables link with `--allow-undefined-file` against the generated
 //! allowance, so a fresh SDK link cannot leave any other `env` import. This
 //! survey checks the artifacts themselves, which also catches programs linked
-//! outside the SDK's link paths and stale artifacts from before ABI 46. The
+//! outside the SDK's link paths and stale artifacts from before ABI 47. The
 //! allowed set is read from the declarations, not from a copy of them:
 //! `HOST_ENV_IMPORTS`, plus the fork runtime's imports that instrumentation
 //! adds after linking (`WPK_FORK_REQUIRED_IMPORTS`,
-//! `WPK_FORK_REQUIRED_TABLE_IMPORTS`, `WPK_FORK_GLOBAL_IMPORTS`, and the
-//! unwind tag).
+//! `WPK_FORK_REQUIRED_TABLE_IMPORTS`, `WPK_FORK_GLOBAL_IMPORTS`, the
+//! unwind tag, and the boundary call a fork sink makes).
 //!
 //! Side modules (a `dylink.0` custom section) are skipped: they link with
 //! `--allow-undefined` and resolve their undefined symbols against the main
@@ -46,6 +46,9 @@ fn allowed_env_imports() -> BTreeSet<&'static str> {
     if abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE == "env" {
         allowed.insert(abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME);
     }
+    // `env.__wpk_fork_boundary`: imported only by a module with boundary
+    // functions, so it is not among the required imports.
+    allowed.insert(abi::WPK_FORK_BOUNDARY_IMPORT);
     allowed
 }
 
@@ -238,6 +241,7 @@ mod tests {
             assert!(allowed.contains(import.name), "{}", import.name);
         }
         assert!(allowed.contains(abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME));
+        assert!(allowed.contains(abi::WPK_FORK_BOUNDARY_IMPORT));
         for import in abi::WPK_FORK_GLOBAL_IMPORTS {
             assert!(allowed.contains(import.name), "{}", import.name);
         }

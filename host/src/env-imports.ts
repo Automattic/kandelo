@@ -2,7 +2,7 @@
  * The `env` imports a user program may carry, and the check that refuses any
  * other.
  *
- * WHY: before ABI 46 the SDK linked with `--allow-undefined` and the host
+ * WHY: before ABI 47 the SDK linked with `--allow-undefined` and the host
  * filled every unknown `env` function import with a stub that threw
  * "Unimplemented import" when called, and faked several C++ runtime
  * functions in JavaScript. A program that needed a function Kandelo lacks
@@ -12,12 +12,13 @@
  *
  * The allowed set is read from the generated ABI, never listed here:
  * `HOST_ENV_IMPORTS` (what the host supplies to every program) plus the
- * imports fork instrumentation adds after linking, which the host's fork
- * runtime supplies. Imports from other modules (`kernel`) are validated
+ * imports fork instrumentation adds after linking, including a fork sink's
+ * boundary call, which the host's fork runtime supplies. Imports from other modules (`kernel`) are validated
  * where the kernel import object is built.
  */
 import {
   HOST_ENV_IMPORTS,
+  WPK_FORK_BOUNDARY_IMPORT,
   WPK_FORK_GLOBAL_IMPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_REQUIRED_TABLE_IMPORTS,
@@ -43,6 +44,9 @@ function declaredEnvImports(): ReadonlyMap<string, ImportKind> {
   if (WPK_FORK_UNWIND_TAG_IMPORT_MODULE === "env") {
     declared.set(WPK_FORK_UNWIND_TAG_IMPORT_NAME, "tag");
   }
+  // `env.__wpk_fork_boundary`: imported only by a module with boundary
+  // functions (fork sinks), so it is not among the required imports.
+  declared.set(WPK_FORK_BOUNDARY_IMPORT, "function");
   return declared;
 }
 

@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   HOST_ENV_IMPORTS,
+  WPK_FORK_BOUNDARY_IMPORT,
   WPK_FORK_GLOBAL_IMPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
 } from "../src/generated/abi";
@@ -22,7 +23,7 @@ function moduleFromWat(wat: string): WebAssembly.Module {
 }
 
 // The C/C++ library functions the host used to fake in JavaScript before
-// ABI 46. They come from libc, libc++abi, or libc++ now.
+// ABI 47. They come from libc, libc++abi, or libc++ now.
 const REMOVED_STAND_INS = [
   "_Znwm", "_Znam", "_ZdlPv", "_ZdlPvm", "_ZdaPv", "_ZdaPvm",
   "_ZnwmRKSt9nothrow_t", "_ZnamRKSt9nothrow_t",
@@ -64,6 +65,13 @@ describe("host env imports", () => {
       .map((g) => `(import "env" "${g.name}" (global ${g.value}))`)
       .join(" ");
     const m = moduleFromWat(`(module (import "env" "${name}" (func)) ${globals})`);
+    expect(() => assertDeclaredEnvImports(m)).not.toThrow();
+  });
+
+  // A program whose fork unwind stops at a boundary function (a fork sink)
+  // also imports the boundary call, which the host's fork runtime supplies.
+  it("accepts the boundary import a fork sink adds", () => {
+    const m = moduleFromWat(`(module (import "env" "${WPK_FORK_BOUNDARY_IMPORT}" (func)))`);
     expect(() => assertDeclaredEnvImports(m)).not.toThrow();
   });
 
