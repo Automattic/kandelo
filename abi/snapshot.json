@@ -941,6 +941,61 @@
       "number": 3
     }
   ],
+  "clipboard_device_abi": {
+    "ack": {
+      "fields": [
+        {
+          "name": "seq",
+          "offset": 0,
+          "type": "u32"
+        },
+        {
+          "name": "status",
+          "offset": 4,
+          "type": "i32"
+        }
+      ],
+      "size": 8
+    },
+    "constants": {
+      "KANDELO_CLIPBOARD_ACK_NO_AGENT": -6,
+      "KANDELO_CLIPBOARD_ACK_PENDING": 1,
+      "KANDELO_CLIPBOARD_ACK_SIZE": 8,
+      "KANDELO_CLIPBOARD_ACK_SUPERSEDED": -125,
+      "KANDELO_CLIPBOARD_ACK_UNKNOWN_SEQ": -2,
+      "KANDELO_CLIPBOARD_KIND_GUEST_TEXT": 2,
+      "KANDELO_CLIPBOARD_KIND_OFFER_TEXT": 1,
+      "KANDELO_CLIPBOARD_MAX_TEXT_BYTES": 1048576,
+      "KANDELO_CLIPBOARD_RECORD_HEADER_SIZE": 16,
+      "KANDELO_CLIPBOARD_RECORD_VERSION": 1
+    },
+    "device_path": "/dev/kandelo/clipboard",
+    "record_header": {
+      "fields": [
+        {
+          "name": "version",
+          "offset": 0,
+          "type": "u32"
+        },
+        {
+          "name": "kind",
+          "offset": 4,
+          "type": "u32"
+        },
+        {
+          "name": "seq",
+          "offset": 8,
+          "type": "u32"
+        },
+        {
+          "name": "len",
+          "offset": 12,
+          "type": "u32"
+        }
+      ],
+      "size": 16
+    }
+  },
   "custom_sections": [
     "kandelo.wpk_fork.capabilities",
     "kandelo.wpk_fork.exception_codec",
@@ -1046,6 +1101,11 @@
       }
     ],
     "optional_kernel_exports": [
+      "kernel_clipboard_ack",
+      "kernel_clipboard_guest_generation",
+      "kernel_clipboard_guest_read",
+      "kernel_clipboard_offer",
+      "kernel_clipboard_stage",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
@@ -1954,6 +2014,31 @@
       "kind": "func",
       "name": "kernel_clear_fork_exec",
       "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_ack",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_guest_generation",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_guest_read",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_offer",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_stage",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

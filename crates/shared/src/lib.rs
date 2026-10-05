@@ -3145,6 +3145,11 @@ pub mod abi {
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
+        "kernel_clipboard_ack",
+        "kernel_clipboard_guest_generation",
+        "kernel_clipboard_guest_read",
+        "kernel_clipboard_offer",
+        "kernel_clipboard_stage",
         "kernel_reserve_host_region",
         "kernel_reserve_host_region_at",
         "kernel_set_max_addr",
@@ -4268,6 +4273,73 @@ pub mod oss {
         pub ptr: i32,
     }
 
+}
+
+/// `/dev/kandelo/clipboard`: host clipboard text offered to a guest agent.
+///
+/// The host stages UTF-8 text with `kernel_clipboard_stage` (in chunks, as
+/// an offer can exceed one kernel scratch lease) and offers it with
+/// `kernel_clipboard_offer`. The single process that holds the device open
+/// (the clipboard agent) reads each offer as one record — a
+/// [`ClipboardRecordHeader`] followed by `len` payload bytes — and
+/// acknowledges it by writing a [`ClipboardAck`]. The host reads the
+/// acknowledgement back with `kernel_clipboard_ack`. In the other direction
+/// the agent writes the desktop's selection as a `KIND_GUEST_TEXT` record;
+/// the host watches `kernel_clipboard_guest_generation` and reads it with
+/// `kernel_clipboard_guest_read`. The generated
+/// `<kandelo/clipboard.h>` mirrors these values for C agents.
+pub mod clipboard {
+    /// Device path; `open()` of it is how an agent claims the device.
+    pub const DEVICE_PATH: &str = "/dev/kandelo/clipboard";
+    /// `ClipboardRecordHeader::version` for the layout below.
+    pub const RECORD_VERSION: u32 = 1;
+    /// `ClipboardRecordHeader::kind`: the payload is UTF-8 text the host
+    /// offers as the new clipboard contents.
+    pub const KIND_OFFER_TEXT: u32 = 1;
+    /// `ClipboardRecordHeader::kind` of a record the agent WRITES: the
+    /// desktop's new selection, as UTF-8 text, for the host to copy out.
+    /// `seq` is unused (0).
+    pub const KIND_GUEST_TEXT: u32 = 2;
+    /// Largest payload an offer may carry. The host refuses larger text
+    /// before offering it and the kernel refuses it again with EMSGSIZE;
+    /// clipboard text is never truncated.
+    pub const MAX_TEXT_BYTES: u32 = 1024 * 1024;
+    /// `kernel_clipboard_ack` result while the agent has not answered yet.
+    /// Settled results are 0 (the agent installed the selection) or a
+    /// negative errno: the agent's own, or one of the three below.
+    pub const ACK_PENDING: i32 = 1;
+    /// -ECANCELED (musl's 125): a newer offer replaced this one.
+    pub const ACK_SUPERSEDED: i32 = -125;
+    /// -ENXIO: the agent closed the device before answering.
+    pub const ACK_NO_AGENT: i32 = -6;
+    /// -ENOENT: no offer with this sequence number was ever made.
+    pub const ACK_UNKNOWN_SEQ: i32 = -2;
+
+    /// One record as read from the device, little-endian.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ClipboardRecordHeader {
+        pub version: u32,
+        pub kind: u32,
+        /// Offer sequence number, never 0; echoed in the acknowledgement.
+        pub seq: u32,
+        /// Payload bytes that follow the header.
+        pub len: u32,
+    }
+
+    /// What the agent writes back after handling an offer.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ClipboardAck {
+        pub seq: u32,
+        /// 0 once the selection is installed, else a negative errno.
+        pub status: i32,
+    }
+
+    pub const RECORD_HEADER_SIZE: u32 = core::mem::size_of::<ClipboardRecordHeader>() as u32;
+    pub const ACK_SIZE: u32 = core::mem::size_of::<ClipboardAck>() as u32;
+    const _: () = assert!(RECORD_HEADER_SIZE == 16);
+    const _: () = assert!(ACK_SIZE == 8);
 }
 
 /// Implementation-neutral PCM host transport contract.

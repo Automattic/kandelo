@@ -272,7 +272,18 @@ import {
   WAKEUP_EVENT_RECORD_BYTES,
   WAKEUP_EVENT_TYPES,
   type SyscallArgDesc,
+  KANDELO_CLIPBOARD_ACK_PENDING,
+  KANDELO_CLIPBOARD_MAX_TEXT_BYTES,
 } from "./generated/abi";
+import {
+  CLIPBOARD_ACK_POLL_MS,
+  CLIPBOARD_ACK_TIMEOUT_MS,
+  clipboardAckFailure,
+  clipboardOfferFailure,
+  GUEST_CLIPBOARD_TIMEOUT_MS,
+  type ClipboardOfferResult,
+  type GuestClipboardResult,
+} from "./clipboard";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
 import {
   ABI_CONTRACT_SECTION,
@@ -30611,6 +30622,181 @@ export class CentralizedKernelWorker {
         this.scheduleWakeBlockedRetries(entry);
       },
     );
+  }
+
+  /**
+   * Offer host clipboard text to the guest's clipboard agent through
+   * `/dev/kandelo/clipboard`, and resolve with the agent's answer.
+   *
+   * The text is staged into the kernel in main-scratch-sized chunks and
+   * committed as one offer inside a single kernel entry, then parked
+   * readers are woken. The answer is polled on a timer, and only while
+   * this offer is pending: nothing is added to the syscall path. `text` is
+   * UTF-8; callers normalize line endings first (see `encodeClipboardText`).
+   */
+  offerClipboardText(
+    text: Uint8Array,
+    options: { timeoutMs?: number } = {},
+  ): Promise<ClipboardOfferResult> {
+    if (text.byteLength > KANDELO_CLIPBOARD_MAX_TEXT_BYTES) {
+      return Promise.resolve({ ok: false, reason: "too-large" });
+    }
+    const timeoutMs = options.timeoutMs ?? CLIPBOARD_ACK_TIMEOUT_MS;
+    // The entry may run later; never read the caller's buffer after return.
+    const bytes = text.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("clipboard offer and wake", (entry) => {
+        const exports = entry.instance.exports;
+        const offer = exports.kernel_clipboard_offer as
+          | (() => number)
+          | undefined;
+        if (
+          typeof exports.kernel_clipboard_stage !== "function"
+          || typeof offer !== "function"
+          || typeof exports.kernel_clipboard_ack !== "function"
+        ) {
+          resolve({ ok: false, reason: "unsupported" });
+          return undefined;
+        }
+        const scratch = this.#requireMainScratchRegion();
+        let staged = 0;
+        scratch.withLease((lease) => {
+          let offset = 0;
+          // At least one call, so an empty text still restarts staging.
+          do {
+            const length = Math.min(bytes.byteLength - offset, scratch.capacity);
+            if (length > 0) lease.copyFrom(bytes, 0, offset, length);
+            staged = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_clipboard_stage",
+              [lease.exportPointer(0, length), length, offset],
+            );
+            if (staged !== 0) return;
+            offset += length;
+          } while (offset < bytes.byteLength);
+        });
+        if (staged !== 0) {
+          resolve(clipboardOfferFailure(staged));
+          return undefined;
+        }
+        const seq = offer();
+        if (!Number.isSafeInteger(seq) || seq <= 0) {
+          resolve(clipboardOfferFailure(seq));
+          return undefined;
+        }
+        // Wake the agent parked in read() or poll() on the device.
+        this.scheduleWakeBlockedRetries(entry);
+        this.#awaitClipboardAck(seq, Date.now() + timeoutMs, resolve);
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * Copy-out: resolve with the next desktop selection the guest's clipboard
+   * agent reports, or `timeout`. The generation is sampled when this
+   * request runs, so callers send it before delivering the copy chord; it
+   * is then polled on a timer only until it moves or the time runs out.
+   */
+  waitForGuestClipboardText(
+    options: { timeoutMs?: number } = {},
+  ): Promise<GuestClipboardResult> {
+    const deadline = Date.now() + (options.timeoutMs ?? GUEST_CLIPBOARD_TIMEOUT_MS);
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("clipboard guest baseline", (entry) => {
+        const generation = entry.instance.exports.kernel_clipboard_guest_generation as
+          | (() => number)
+          | undefined;
+        if (
+          typeof generation !== "function"
+          || typeof entry.instance.exports.kernel_clipboard_guest_read !== "function"
+        ) {
+          resolve({ ok: false, reason: "unsupported" });
+          return undefined;
+        }
+        this.#awaitGuestClipboard(generation(), deadline, resolve);
+        return undefined;
+      });
+    });
+  }
+
+  #awaitGuestClipboard(
+    baseline: number,
+    deadline: number,
+    resolve: (result: GuestClipboardResult) => void,
+  ): void {
+    setTimeout(() => {
+      this.#runOrDeferKernelEntry("clipboard guest poll", (entry) => {
+        const generation = entry.instance.exports.kernel_clipboard_guest_generation as
+          () => number;
+        if (generation() === baseline) {
+          if (Date.now() >= deadline) resolve({ ok: false, reason: "timeout" });
+          else this.#awaitGuestClipboard(baseline, deadline, resolve);
+          return undefined;
+        }
+        // Read it in scratch-sized chunks inside this one entry, so the text
+        // cannot change between chunks.
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        let dropped = false;
+        const scratch = this.#requireMainScratchRegion();
+        scratch.withLease((lease) => {
+          for (;;) {
+            const n = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_clipboard_guest_read",
+              [lease.exportPointer(0, scratch.capacity), scratch.capacity, total],
+            );
+            // -ENOENT: the agent released the device after reporting, which
+            // drops the text. Reading it as "" would empty the host clipboard.
+            if (n < 0) { dropped = true; return; }
+            if (!Number.isSafeInteger(n) || n === 0 || n > scratch.capacity) return;
+            chunks.push(lease.copyOut(0, n));
+            total += n;
+          }
+        });
+        if (dropped) {
+          resolve({ ok: false, reason: "no-agent" });
+          return undefined;
+        }
+        const bytes = new Uint8Array(total);
+        let at = 0;
+        for (const c of chunks) { bytes.set(c, at); at += c.byteLength; }
+        try {
+          resolve({ ok: true, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) });
+        } catch {
+          resolve({ ok: false, reason: "invalid-text" });
+        }
+        return undefined;
+      });
+    }, CLIPBOARD_ACK_POLL_MS);
+  }
+
+  #awaitClipboardAck(
+    seq: number,
+    deadline: number,
+    resolve: (result: ClipboardOfferResult) => void,
+  ): void {
+    setTimeout(() => {
+      this.#runOrDeferKernelEntry("clipboard ack poll", (entry) => {
+        const ack = entry.instance.exports.kernel_clipboard_ack as
+          | ((seq: number) => number)
+          | undefined;
+        const status = typeof ack === "function" ? ack(seq) : KANDELO_CLIPBOARD_ACK_PENDING;
+        if (status === 0) {
+          resolve({ ok: true, seq });
+        } else if (status !== KANDELO_CLIPBOARD_ACK_PENDING) {
+          resolve(clipboardAckFailure(status));
+        } else if (Date.now() >= deadline) {
+          resolve({ ok: false, reason: "timeout" });
+        } else {
+          this.#awaitClipboardAck(seq, deadline, resolve);
+        }
+        return undefined;
+      });
+    }, CLIPBOARD_ACK_POLL_MS);
   }
 
   /**

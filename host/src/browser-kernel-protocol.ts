@@ -488,6 +488,29 @@ export interface KmsSetDisplaySizeMessage {
   physicalMm?: { width: number; height: number };
 }
 
+/**
+ * Offer host clipboard text to the guest's clipboard agent through
+ * `/dev/kandelo/clipboard`. Answered with a `ClipboardOfferResult` once the
+ * agent installs it, or with the reason it could not.
+ */
+export interface ClipboardOfferMessage {
+  type: "clipboard_offer";
+  requestId: number;
+  /** UTF-8, line endings already normalized (`encodeClipboardText`). */
+  text: Uint8Array;
+  timeoutMs?: number;
+}
+
+/**
+ * Copy-out: answer with the next desktop selection the guest's clipboard
+ * agent reports (a `GuestClipboardResult`). Sent before the copy chord.
+ */
+export interface ClipboardGuestWaitMessage {
+  type: "clipboard_guest_wait";
+  requestId: number;
+  timeoutMs?: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -496,6 +519,8 @@ export type MainToKernelMessage =
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
   | ExportRootfsImageMessage
+  | ClipboardOfferMessage
+  | ClipboardGuestWaitMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage

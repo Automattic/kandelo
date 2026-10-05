@@ -68,6 +68,7 @@ import wlclockWasmUrl from "@binaries/programs/wasm32/wayland-demo/wlclock.wasm?
 import wlpaintWasmUrl from "@binaries/programs/wasm32/wayland-demo/wlpaint.wasm?url";
 import klauncherWasmUrl from "@binaries/programs/wasm32/wayland-demo/klauncher.wasm?url";
 import notifySendWasmUrl from "@binaries/programs/wasm32/wayland-demo/notify-send.wasm?url";
+import kclipdWasmUrl from "@binaries/programs/wasm32/wayland-demo/kclipd.wasm?url";
 import sdl2WasmUrl from "@binaries/programs/wasm32/sdl2.wasm?url";
 import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 import modesetWasmUrl from "@binaries/programs/wasm32/modeset.wasm?url";
@@ -142,6 +143,7 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/wayland-demo/wlpaint.wasm": wlpaintWasmUrl,
   "programs/wayland-demo/klauncher.wasm": klauncherWasmUrl,
   "programs/wayland-demo/notify-send.wasm": notifySendWasmUrl,
+  "programs/wayland-demo/kclipd.wasm": kclipdWasmUrl,
   "programs/sdl2.wasm": sdl2WasmUrl,
   "programs/fbdoom.wasm": fbdoomWasmUrl,
   "programs/modeset.wasm": modesetWasmUrl,

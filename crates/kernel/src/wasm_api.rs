@@ -1717,6 +1717,9 @@ fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessR
     // successor open starts clean. No host-side unbind — the device is
     // host→kernel only.
     crate::syscalls::maybe_release_mice(pid);
+    // /dev/kandelo/clipboard: drop ownership and any text the agent had not
+    // read, so it does not outlive its reader.
+    crate::clipboard::release(pid);
 }
 
 fn remove_process_and_cleanup(pid: u32) -> i32 {
@@ -14007,6 +14010,89 @@ pub extern "C" fn kernel_vblank() -> u32 {
         };
     crate::dri::drain_pending_flips(seq, tv_sec, tv_usec);
     seq
+}
+
+// ---------------------------------------------------------------------------
+// /dev/kandelo/clipboard — host clipboard text for the guest's agent
+// ---------------------------------------------------------------------------
+
+/// Copy `len` bytes of host clipboard text from kernel address `text_ptr` (a
+/// scratch lease the host filled) into the staging buffer at byte `offset`.
+/// An offer can be larger than one scratch lease, so the host stages it in
+/// chunks inside one kernel entry and then calls `kernel_clipboard_offer`.
+/// Offset 0 starts over. Returns 0, `-EINVAL` for an out-of-order chunk,
+/// or `-EMSGSIZE` past the cap.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clipboard_stage(text_ptr: *const u8, len: u32, offset: u32) -> i32 {
+    if text_ptr.is_null() && len != 0 {
+        return -(Errno::EFAULT as i32);
+    }
+    let chunk = if len == 0 {
+        &[][..]
+    } else {
+        // SAFETY: the host passes a range inside a kernel scratch
+        // allocation it leased and filled for this call.
+        unsafe { slice::from_raw_parts(text_ptr, len as usize) }
+    };
+    match crate::clipboard::stage(chunk, offset as usize) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Offer the staged text as the new host clipboard contents. Returns the
+/// offer's sequence number (> 0), or a negative errno: `-ENXIO` when no
+/// agent holds the device, `-EMSGSIZE` over the cap, `-EINVAL` for text
+/// that is not UTF-8. The host wakes parked readers afterwards.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clipboard_offer() -> i32 {
+    match crate::clipboard::offer_staged() {
+        Ok(seq) => seq as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Changes each time the guest agent reports a new desktop selection
+/// (copy-out); 0 until the first. The host samples it when a copy gesture
+/// starts and polls it until it moves.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clipboard_guest_generation() -> i32 {
+    crate::clipboard::guest_generation() as i32
+}
+
+/// Copy up to `out_capacity` bytes of the latest reported desktop
+/// selection, from byte `offset`, to kernel address `out_ptr` (a scratch
+/// lease the host reads back). Returns the bytes copied — 0 at the end —
+/// or `-ENOENT` when there is no text: the agent has reported nothing, or
+/// it released the device, which drops what it reported.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clipboard_guest_read(
+    out_ptr: *mut u8,
+    out_capacity: u32,
+    offset: u32,
+) -> i32 {
+    if out_ptr.is_null() && out_capacity != 0 {
+        return -(Errno::EFAULT as i32);
+    }
+    let out: &mut [u8] = if out_capacity == 0 {
+        &mut []
+    } else {
+        // SAFETY: the host passes a range inside a kernel scratch
+        // allocation it leased for this call.
+        unsafe { slice::from_raw_parts_mut(out_ptr, out_capacity as usize) }
+    };
+    match crate::clipboard::guest_read(out, offset as usize) {
+        Some(n) => n as i32,
+        None => -(Errno::ENOENT as i32),
+    }
+}
+
+/// The agent's answer to offer `seq`: `ACK_PENDING` (1) until it answers,
+/// then 0 or a negative errno (see `wasm_posix_shared::clipboard`). The
+/// host polls this on a timer only while an offer is pending.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clipboard_ack(seq: u32) -> i32 {
+    crate::clipboard::ack_status(seq)
 }
 
 /// Fan one translated DOM input event out to every open OFD bound to

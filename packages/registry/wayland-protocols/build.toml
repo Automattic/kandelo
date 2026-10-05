@@ -15,6 +15,8 @@ inputs = [
   "packages/registry/wayland-protocols/xml/linux-dmabuf-v1.xml",
   "packages/registry/wayland-protocols/xml/xdg-decoration-unstable-v1.xml",
   "packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml",
+  "packages/registry/wayland-protocols/xml/wlr-data-control-unstable-v1.xml",
+  "packages/registry/wayland-protocols/xml/ext-data-control-v1.xml",
   "packages/registry/wayland-protocols/xml/presentation-time.xml",
   "packages/registry/wayland-protocols/xml/xdg-output-unstable-v1.xml",
   "packages/registry/wayland-protocols/xml/primary-selection-unstable-v1.xml",

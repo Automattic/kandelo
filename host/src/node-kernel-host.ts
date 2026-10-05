@@ -49,6 +49,11 @@ import {
 import type { MountSpec } from "./vfs/default-mounts";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
+import {
+  encodeClipboardText,
+  type ClipboardOfferResult,
+  type GuestClipboardResult,
+} from "./clipboard";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 import type { InputEvent, InputSource } from "./input/input-source";
 import { batchBySynReport } from "./input/input-batch";
@@ -1022,6 +1027,51 @@ export class NodeKernelHost {
       },
       [owned.buffer],
     );
+  }
+
+  /**
+   * Offer `text` as the host clipboard to the guest's clipboard agent
+   * (`/dev/kandelo/clipboard`, read by kclipd on the Omarchy desktop).
+   * Resolves once the agent has installed it as the desktop's selection, or
+   * with the reason it could not — no agent running, over the 1 MiB cap,
+   * an agent error, or no answer within the timeout. CRLF line endings
+   * become LF; the text is never truncated.
+   */
+  async offerClipboardText(
+    text: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<ClipboardOfferResult> {
+    const bytes = encodeClipboardText(text);
+    if (bytes === null) return { ok: false, reason: "too-large" };
+    const requestId = this._nextRequestId++;
+    const result = await this.request(
+      requestId,
+      {
+        type: "clipboard_offer",
+        requestId,
+        text: bytes,
+        timeoutMs: options.timeoutMs,
+      },
+      [bytes.buffer as ArrayBuffer],
+    );
+    return result as ClipboardOfferResult;
+  }
+
+  /**
+   * Copy-out: resolve with the next selection the guest desktop reports
+   * (through its clipboard agent), or `timeout`. Call it before delivering
+   * the copy chord, so the guest's copy is the change it waits for.
+   */
+  async waitForGuestClipboardText(
+    options: { timeoutMs?: number } = {},
+  ): Promise<GuestClipboardResult> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "clipboard_guest_wait",
+      requestId,
+      timeoutMs: options.timeoutMs,
+    });
+    return result as GuestClipboardResult;
   }
 
   /**

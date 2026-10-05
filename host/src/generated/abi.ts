@@ -724,6 +724,11 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
 ] as const;
 
 export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
+  "kernel_clipboard_ack",
+  "kernel_clipboard_guest_generation",
+  "kernel_clipboard_guest_read",
+  "kernel_clipboard_offer",
+  "kernel_clipboard_stage",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
   "kernel_set_max_addr",
@@ -964,6 +969,18 @@ export const INPUT_CODES = {
   ABS_X: 0,
   ABS_Y: 1,
 } as const;
+
+export const KANDELO_CLIPBOARD_DEVICE_PATH = "/dev/kandelo/clipboard" as const;
+export const KANDELO_CLIPBOARD_RECORD_VERSION = 1 as const;
+export const KANDELO_CLIPBOARD_KIND_OFFER_TEXT = 1 as const;
+export const KANDELO_CLIPBOARD_KIND_GUEST_TEXT = 2 as const;
+export const KANDELO_CLIPBOARD_MAX_TEXT_BYTES = 1048576 as const;
+export const KANDELO_CLIPBOARD_RECORD_HEADER_SIZE = 16 as const;
+export const KANDELO_CLIPBOARD_ACK_SIZE = 8 as const;
+export const KANDELO_CLIPBOARD_ACK_PENDING = 1 as const;
+export const KANDELO_CLIPBOARD_ACK_SUPERSEDED = -125 as const;
+export const KANDELO_CLIPBOARD_ACK_NO_AGENT = -6 as const;
+export const KANDELO_CLIPBOARD_ACK_UNKNOWN_SEQ = -2 as const;
 
 export const HOST_ADAPTER_MANIFEST_FIELDS = {
   magic: { offset: 0, size: 4 },

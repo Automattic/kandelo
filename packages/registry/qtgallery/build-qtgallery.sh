@@ -72,6 +72,7 @@ RAW="$WORK_DIR/qtgallery.raw.wasm"
 wasm32posix-c++ \
     -O2 -std=c++17 -fwasm-exceptions \
     -D__linux__=1 -DQT_LINUXBASE \
+    -nostdinc++ -isystem "$LIBCXX/include/c++/v1" \
     -I"$QTBASE/include" \
     -I"$QTBASE/include/QtCore" \
     -I"$QTBASE/include/QtGui" \

@@ -76,6 +76,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <math.h>
+#include <regex.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -95,6 +96,8 @@
 #include "xdg-output-v1-server-protocol.h"
 #include "viewporter-server-protocol.h"
 #include "fractional-scale-v1-server-protocol.h"
+#include "wlr-data-control-v1-server-protocol.h"
+#include "ext-data-control-v1-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-names.h>
@@ -152,6 +155,13 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
  * (install_default_binds); WLC_CONFIG overrides for tests. */
 #define WLC_CONFIG_PATH "/etc/kandelo/wlcompositor.conf"
 #define MAX_BINDS 128
+/* `windowrule = tag +NAME, class:REGEX` rules, and the tag names they use.
+ * Tags are a bitmask on each surface, so MAX_TAGS fits in a uint32_t. */
+#define MAX_WINDOW_RULES 32
+#define MAX_TAGS 32
+/* Kandelo-only dispatchers carry Hyprland's plugin-dispatcher namespace, so a
+ * reader of the config sees at once that stock Hyprland lacks them. */
+#define DISP_SENDSHORTCUT_IF_TAG "kandelo:sendshortcutiftag"
 
 /* Themes are just files, the way Omarchy does it: one directory per theme
  * holding a palette the compositor and every shell client read. WLC_THEME_DIR
@@ -169,6 +179,14 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 enum bind_action {
     ACT_EXEC, ACT_WORKSPACE, ACT_MOVE_TO_WS, ACT_KILL,
     ACT_CYCLE_NEXT, ACT_CYCLE_PREV, ACT_THEME, ACT_SWAP,
+    ACT_SEND_SHORTCUT, ACT_SEND_SHORTCUT_IF_TAG,
+};
+
+/* A chord a `sendshortcut` dispatcher delivers: MOD_* bits and the
+ * base-level keysym of the key. */
+struct shortcut {
+    uint32_t mods;
+    xkb_keysym_t sym;
 };
 
 /* One `bind = MODS, KEY, DISPATCHER, ARGS` rule. sym is the BASE-level keysym
@@ -177,8 +195,12 @@ struct keybind {
     uint32_t mods;         /* MOD_* bitmask; matched exactly */
     xkb_keysym_t sym;
     int action;
-    int arg;               /* workspace number for workspace/movetoworkspace */
+    int arg;               /* workspace number for workspace/movetoworkspace;
+                            * tag index for kandelo:sendshortcutiftag */
     char param[256];       /* command line for exec */
+    /* sendshortcut: shortcut[0]. kandelo:sendshortcutiftag: shortcut[0] when the
+     * focused window carries tag `arg`, else shortcut[1]. */
+    struct shortcut shortcut[2];
 };
 
 /* ---- surface state ----------------------------------------------------- */
@@ -225,6 +247,7 @@ struct surface {
                                          * the commit that applies it */
     int layer_announced;                /* LAYER marker printed while mapped */
     char app_id[32];
+    uint32_t tags;                      /* bit i = tag_names[i], from windowrules */
     char title[96];                     /* xdg_toplevel.set_title, for the bar */
     int32_t x, y;                       /* top-left on the output */
     int32_t w, h;                       /* committed buffer dims */
@@ -494,6 +517,7 @@ static int theme_switch(const char *arg);
 static void kwlctl_emit(const char *fmt, ...);
 static void kwlctl_exec(char *args);
 static void workspaces_sync(void);
+static void selection_send_to_client(struct wl_client *client);
 
 /* A surface participates in compositing, input, and tiling only when it is
  * mapped AND on the active workspace. A layer surface is a shell component,
@@ -1760,10 +1784,13 @@ static void toplevel_set_title(struct wl_client *c, struct wl_resource *r,
     kwlctl_emit("windowtitle>>%p", (void *)s);
     kwlctl_emit("windowtitlev2>>%p,%s", (void *)s, s->title);
 }
+static void apply_window_rules(struct surface *s);
 static void toplevel_set_app_id(struct wl_client *c, struct wl_resource *r,
                                 const char *app_id) {
     struct surface *s = wl_resource_get_user_data(r);
-    if (s && app_id) snprintf(s->app_id, sizeof(s->app_id), "%s", app_id);
+    if (!s || !app_id) return;
+    snprintf(s->app_id, sizeof(s->app_id), "%s", app_id);
+    apply_window_rules(s);
 }
 static void toplevel_show_window_menu(struct wl_client *c, struct wl_resource *r,
                                       struct wl_resource *seat, uint32_t serial,
@@ -2327,6 +2354,9 @@ static void kbd_set_focus(struct surface *s) {
         kwlctl_emit("activewindowv2>>");
     }
     if (!s) return;
+    /* wl_data_device: "the selection is sent to a client immediately before
+     * receiving keyboard focus", so a paste on its first key sees it. */
+    selection_send_to_client(s->client);
     struct wl_array keys;
     wl_array_init(&keys);
     for_each_seat_res(res, &g.keyboards, s->client) {
@@ -3089,14 +3119,250 @@ static void fractional_scale_mgr_bind(struct wl_client *c, void *data,
 }
 
 /* ====================================================================== */
-/* wl_data_device_manager: inert v3 stub                                  */
+/* The selection: wl_data_device + zwlr/ext data-control                 */
 /* ====================================================================== */
 
-/* foot (and later GTK) refuse to start without a clipboard manager. This
- * stub satisfies the bind and accepts selections without transferring
- * them — real clipboard data paths are the O2 tier's work (plan §4 PR24). */
+/* One clipboard per seat, the way every wlroots compositor keeps it: the
+ * selection is a pointer to the source some client offered, plus the MIME
+ * types it named. The compositor never holds clipboard bytes. A paste is
+ * wl_data_offer.receive(mime, fd) from the receiving client, which we hand
+ * on to the source client as wl_data_source.send(mime, fd); the two clients
+ * then talk over that pipe directly (its write end crosses the Wayland
+ * socket twice by SCM_RIGHTS).
+ *
+ * Three protocols set and read the same selection:
+ *   - wl_data_device: an ordinary client sets it with the serial of the input
+ *     event that caused the copy, and is offered it just before it takes
+ *     keyboard focus (and again when it changes while focused).
+ *   - ext_data_control_v1 and its deprecated wlroots predecessor
+ *     zwlr_data_control_v1 (the same protocol under another name; wl-copy
+ *     still speaks it): a clipboard tool with no window (a clipboard
+ *     manager, Kandelo's host-clipboard agent kclipd) sets the selection
+ *     without a serial and sees every change regardless of focus. Hyprland
+ *     advertises both.
+ *
+ * Drag-and-drop and the primary selection are not implemented: start_drag
+ * is a no-op, the offer's accept/finish/set_actions are accepted so v3
+ * clients work, and neither primary-selection global is advertised. */
+
+enum source_kind { SRC_DATA_DEVICE, SRC_WLR_CONTROL, SRC_EXT_CONTROL };
+
+struct data_source {
+    struct wl_resource *resource;   /* wl_data_source or a data-control source */
+    enum source_kind kind;
+    /* Offers name their source by this id, never by pointer: a source can be
+     * destroyed while offers for it still exist, and a later source may be
+     * allocated at the same address. */
+    uint64_t id;
+    char **mimes;
+    int n_mimes;
+    int used;                       /* passed to a set_selection already */
+};
+
+static struct {
+    struct data_source *source;     /* the selection; NULL when empty */
+    uint32_t serial;                /* serial the current selection was set with */
+    uint64_t next_id;
+    /* The client libwayland is tearing down, from its destroy signal until a
+     * new client takes its address. Its resources are destroyed while
+     * libwayland walks its object map, so a selection offer created for it
+     * then (focus can fall to its own next surface) would grow that map
+     * mid-walk. */
+    struct wl_client *dying;
+    struct wl_list devices;         /* wl_data_device resources, all clients */
+    /* Data-control device resources of both flavours; user data is
+     * CONTROL_EXT for ext_data_control_device_v1, NULL for zwlr. */
+    struct wl_list control_devices;
+} sel;
+
+static const struct wl_data_offer_interface data_offer_impl;
+static const struct zwlr_data_control_offer_v1_interface control_offer_impl;
+static const struct ext_data_control_offer_v1_interface ext_control_offer_impl;
+#define CONTROL_EXT ((void *)1)
+
+static void data_source_add_mime(struct data_source *src, const char *mime) {
+    for (int i = 0; i < src->n_mimes; i++)
+        if (!strcmp(src->mimes[i], mime)) return;
+    char **grown = realloc(src->mimes, (size_t)(src->n_mimes + 1) * sizeof(*grown));
+    char *copy = strdup(mime);
+    if (!grown || !copy) {
+        free(copy);
+        if (grown) src->mimes = grown;
+        wl_resource_post_no_memory(src->resource);
+        return;
+    }
+    src->mimes = grown;
+    src->mimes[src->n_mimes++] = copy;
+}
+
+/* Offer the current selection on one wl_data_device: data_offer, one offer
+ * event per MIME type, then selection. An empty selection is selection(NULL),
+ * which tells the client its old offer is gone. */
+static void data_device_send_selection(struct wl_resource *dev) {
+    struct wl_client *c = wl_resource_get_client(dev);
+    if (!sel.source) {
+        wl_data_device_send_selection(dev, NULL);
+        return;
+    }
+    struct wl_resource *offer = wl_resource_create(
+        c, &wl_data_offer_interface, wl_resource_get_version(dev), 0);
+    if (!offer) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(offer, &data_offer_impl,
+                                   (void *)(uintptr_t)sel.source->id, NULL);
+    wl_data_device_send_data_offer(dev, offer);
+    for (int i = 0; i < sel.source->n_mimes; i++)
+        wl_data_offer_send_offer(offer, sel.source->mimes[i]);
+    wl_data_device_send_selection(dev, offer);
+}
+
+static void control_device_send_selection(struct wl_resource *dev) {
+    struct wl_client *c = wl_resource_get_client(dev);
+    int ext = wl_resource_get_user_data(dev) == CONTROL_EXT;
+    if (!sel.source) {
+        if (ext) ext_data_control_device_v1_send_selection(dev, NULL);
+        else zwlr_data_control_device_v1_send_selection(dev, NULL);
+        return;
+    }
+    struct wl_resource *offer = wl_resource_create(
+        c, ext ? &ext_data_control_offer_v1_interface
+               : &zwlr_data_control_offer_v1_interface, 1, 0);
+    if (!offer) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(
+        offer, ext ? (const void *)&ext_control_offer_impl
+                   : (const void *)&control_offer_impl,
+        (void *)(uintptr_t)sel.source->id, NULL);
+    if (ext) {
+        ext_data_control_device_v1_send_data_offer(dev, offer);
+        for (int i = 0; i < sel.source->n_mimes; i++)
+            ext_data_control_offer_v1_send_offer(offer, sel.source->mimes[i]);
+        ext_data_control_device_v1_send_selection(dev, offer);
+    } else {
+        zwlr_data_control_device_v1_send_data_offer(dev, offer);
+        for (int i = 0; i < sel.source->n_mimes; i++)
+            zwlr_data_control_offer_v1_send_offer(offer, sel.source->mimes[i]);
+        zwlr_data_control_device_v1_send_selection(dev, offer);
+    }
+}
+
+/* Offer the selection to every wl_data_device `client` holds. Called just
+ * before that client receives keyboard focus, as the protocol requires: a
+ * client that pastes on its first key press must already have the offer. */
+static void selection_send_to_client(struct wl_client *client) {
+    if (client == sel.dying) return;
+    for_each_seat_res(dev, &sel.devices, client)
+        data_device_send_selection(dev);
+}
+
+/* The selection changed: the focused client and every data-control device
+ * learn about it. Unfocused ordinary clients hear on their next focus. */
+static void selection_broadcast(void) {
+    if (g.kbd_focus) selection_send_to_client(g.kbd_focus->client);
+    struct wl_resource *dev;
+    wl_resource_for_each(dev, &sel.control_devices)
+        if (wl_resource_get_client(dev) != sel.dying)
+            control_device_send_selection(dev);
+}
+
+static void source_send_cancelled(struct data_source *src) {
+    switch (src->kind) {
+    case SRC_DATA_DEVICE: wl_data_source_send_cancelled(src->resource); break;
+    case SRC_WLR_CONTROL:
+        zwlr_data_control_source_v1_send_cancelled(src->resource);
+        break;
+    case SRC_EXT_CONTROL:
+        ext_data_control_source_v1_send_cancelled(src->resource);
+        break;
+    }
+}
+
+/* Install `src` (NULL clears) as the selection. The source it replaces is
+ * told it is cancelled; its client then destroys it. */
+static void selection_set(struct data_source *src, uint32_t serial) {
+    if (src) src->used = 1;
+    if (sel.source == src) return;
+    struct data_source *old = sel.source;
+    sel.source = src;
+    sel.serial = serial;
+    if (old) source_send_cancelled(old);
+    if (src)
+        printf("SELECTION_SET via=%s mimes=%d\n",
+               src->kind == SRC_DATA_DEVICE   ? "data-device"
+               : src->kind == SRC_EXT_CONTROL ? "ext-data-control"
+                                              : "data-control",
+               src->n_mimes);
+    else
+        printf("SELECTION_CLEARED\n");
+    fflush(stdout);
+    selection_broadcast();
+}
+
+/* A paste: forward the receiver's fd to the source's client and drop ours.
+ * libwayland dups the fd into the outgoing event, so closing here leaves the
+ * source client's copy and the receiver's read end as the only holders. An
+ * offer whose source is no longer the selection gets the fd closed at once,
+ * and the reader sees EOF: there is nothing left to paste. */
+static void offer_receive(uint64_t source_id, const char *mime, int32_t fd) {
+    struct data_source *src = sel.source;
+    if (src && src->id == source_id) {
+        switch (src->kind) {
+        case SRC_DATA_DEVICE:
+            wl_data_source_send_send(src->resource, mime, fd);
+            break;
+        case SRC_WLR_CONTROL:
+            zwlr_data_control_source_v1_send_send(src->resource, mime, fd);
+            break;
+        case SRC_EXT_CONTROL:
+            ext_data_control_source_v1_send_send(src->resource, mime, fd);
+            break;
+        }
+        printf("SELECTION_RECEIVE mime=%s\n", mime);
+    } else {
+        printf("SELECTION_RECEIVE_STALE mime=%s\n", mime);
+    }
+    fflush(stdout);
+    close(fd);
+}
+
+static void data_source_resource_destroy(struct wl_resource *r) {
+    struct data_source *src = wl_resource_get_user_data(r);
+    if (!src) return;
+    if (sel.source == src) {
+        sel.source = NULL;
+        printf("SELECTION_CLEARED\n");
+        fflush(stdout);
+        selection_broadcast();
+    }
+    for (int i = 0; i < src->n_mimes; i++) free(src->mimes[i]);
+    free(src->mimes);
+    free(src);
+}
+
+static struct data_source *data_source_create(struct wl_client *c,
+                                              const struct wl_interface *iface,
+                                              int version, uint32_t id,
+                                              const void *impl,
+                                              enum source_kind kind) {
+    struct data_source *src = calloc(1, sizeof(*src));
+    if (!src) { wl_client_post_no_memory(c); return NULL; }
+    src->resource = wl_resource_create(c, iface, version, id);
+    if (!src->resource) {
+        free(src);
+        wl_client_post_no_memory(c);
+        return NULL;
+    }
+    src->kind = kind;
+    src->id = ++sel.next_id;
+    wl_resource_set_implementation(src->resource, impl, src,
+                                   data_source_resource_destroy);
+    return src;
+}
+
+/* ---- wl_data_source / wl_data_offer / wl_data_device ------------------- */
+
 static void data_source_offer(struct wl_client *c, struct wl_resource *r,
-                              const char *mime) {}
+                              const char *mime) {
+    data_source_add_mime(wl_resource_get_user_data(r), mime);
+}
 static void data_source_destroy_req(struct wl_client *c,
                                     struct wl_resource *r) {
     wl_resource_destroy(r);
@@ -3109,14 +3375,49 @@ static const struct wl_data_source_interface data_source_impl = {
     .set_actions = data_source_set_actions,
 };
 
+static void data_offer_accept(struct wl_client *c, struct wl_resource *r,
+                              uint32_t serial, const char *mime) {}
+static void data_offer_receive(struct wl_client *c, struct wl_resource *r,
+                               const char *mime, int32_t fd) {
+    offer_receive((uint64_t)(uintptr_t)wl_resource_get_user_data(r), mime, fd);
+}
+static void data_offer_destroy_req(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void data_offer_finish(struct wl_client *c, struct wl_resource *r) {}
+static void data_offer_set_actions(struct wl_client *c, struct wl_resource *r,
+                                   uint32_t actions, uint32_t preferred) {}
+static const struct wl_data_offer_interface data_offer_impl = {
+    .accept = data_offer_accept,
+    .receive = data_offer_receive,
+    .destroy = data_offer_destroy_req,
+    .finish = data_offer_finish,
+    .set_actions = data_offer_set_actions,
+};
+
 static void data_device_start_drag(struct wl_client *c, struct wl_resource *r,
                                    struct wl_resource *source,
                                    struct wl_resource *origin,
                                    struct wl_resource *icon, uint32_t serial) {}
+
+/* Serials are compared modulo 2^32, the way wlroots does: a request quoting a
+ * serial older than the current selection's lost a race with a newer copy
+ * (two keystrokes in flight, say) and is dropped, not applied out of order. */
+static int serial_is_older(uint32_t a, uint32_t b) {
+    return a != b && (uint32_t)(b - a) < UINT32_MAX / 2;
+}
+
 static void data_device_set_selection(struct wl_client *c,
                                       struct wl_resource *r,
                                       struct wl_resource *source,
-                                      uint32_t serial) {}
+                                      uint32_t serial) {
+    if (sel.source && serial_is_older(serial, sel.serial)) {
+        printf("SELECTION_STALE serial=%u current=%u\n", serial, sel.serial);
+        fflush(stdout);
+        return;
+    }
+    selection_set(source ? wl_resource_get_user_data(source) : NULL, serial);
+}
 static void data_device_release(struct wl_client *c, struct wl_resource *r) {
     wl_resource_destroy(r);
 }
@@ -3125,20 +3426,27 @@ static const struct wl_data_device_interface data_device_impl = {
     .set_selection = data_device_set_selection,
     .release = data_device_release,
 };
+static void data_device_resource_destroy(struct wl_resource *r) {
+    wl_list_remove(wl_resource_get_link(r));
+}
 
 static void data_dm_create_source(struct wl_client *c, struct wl_resource *r,
                                   uint32_t id) {
-    struct wl_resource *src = wl_resource_create(
-        c, &wl_data_source_interface, wl_resource_get_version(r), id);
-    if (!src) { wl_client_post_no_memory(c); return; }
-    wl_resource_set_implementation(src, &data_source_impl, NULL, NULL);
+    data_source_create(c, &wl_data_source_interface, wl_resource_get_version(r),
+                       id, &data_source_impl, SRC_DATA_DEVICE);
 }
 static void data_dm_get_device(struct wl_client *c, struct wl_resource *r,
                                uint32_t id, struct wl_resource *seat) {
     struct wl_resource *dev = wl_resource_create(
         c, &wl_data_device_interface, wl_resource_get_version(r), id);
     if (!dev) { wl_client_post_no_memory(c); return; }
-    wl_resource_set_implementation(dev, &data_device_impl, NULL, NULL);
+    wl_resource_set_implementation(dev, &data_device_impl, NULL,
+                                   data_device_resource_destroy);
+    wl_list_insert(&sel.devices, wl_resource_get_link(dev));
+    /* A client that already holds focus (foot creates its data device after
+     * its keyboard) must still see the selection before it can paste. */
+    if (g.kbd_focus && g.kbd_focus->client == c)
+        data_device_send_selection(dev);
 }
 static const struct wl_data_device_manager_interface data_dm_impl = {
     .create_data_source = data_dm_create_source,
@@ -3150,6 +3458,150 @@ static void data_dm_bind(struct wl_client *c, void *data, uint32_t ver,
         wl_resource_create(c, &wl_data_device_manager_interface, (int)ver, id);
     if (!r) { wl_client_post_no_memory(c); return; }
     wl_resource_set_implementation(r, &data_dm_impl, NULL, NULL);
+}
+
+/* ---- data-control: zwlr_data_control_manager_v1 + ext_data_control_v1 -- */
+
+/* The two protocols are the same requests and events under different
+ * names, with the same error values, so one set of request handlers serves
+ * both; only the interface tables and the event senders differ. */
+
+static void control_source_offer(struct wl_client *c, struct wl_resource *r,
+                                 const char *mime) {
+    struct data_source *src = wl_resource_get_user_data(r);
+    if (src->used) {
+        /* == EXT_DATA_CONTROL_SOURCE_V1_ERROR_INVALID_OFFER */
+        wl_resource_post_error(r, ZWLR_DATA_CONTROL_SOURCE_V1_ERROR_INVALID_OFFER,
+                               "offer sent after set_selection");
+        return;
+    }
+    data_source_add_mime(src, mime);
+}
+static void control_source_destroy_req(struct wl_client *c,
+                                       struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct zwlr_data_control_source_v1_interface control_source_impl = {
+    .offer = control_source_offer,
+    .destroy = control_source_destroy_req,
+};
+
+static void control_offer_receive(struct wl_client *c, struct wl_resource *r,
+                                  const char *mime, int32_t fd) {
+    offer_receive((uint64_t)(uintptr_t)wl_resource_get_user_data(r), mime, fd);
+}
+static void control_offer_destroy_req(struct wl_client *c,
+                                      struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct zwlr_data_control_offer_v1_interface control_offer_impl = {
+    .receive = control_offer_receive,
+    .destroy = control_offer_destroy_req,
+};
+
+static void control_device_set_selection(struct wl_client *c,
+                                         struct wl_resource *r,
+                                         struct wl_resource *source) {
+    struct data_source *src = source ? wl_resource_get_user_data(source) : NULL;
+    if (src && src->used) {
+        /* == EXT_DATA_CONTROL_DEVICE_V1_ERROR_USED_SOURCE */
+        wl_resource_post_error(r, ZWLR_DATA_CONTROL_DEVICE_V1_ERROR_USED_SOURCE,
+                               "source was already used");
+        return;
+    }
+    /* No input event caused this, so there is no client serial to check; a
+     * fresh one orders it after every selection set so far. */
+    selection_set(src, wl_display_next_serial(g.display));
+}
+/* Primary selection is not implemented, and the protocol says to ignore the
+ * request when it is not. */
+static void control_device_set_primary_selection(struct wl_client *c,
+                                                 struct wl_resource *r,
+                                                 struct wl_resource *source) {}
+static void control_device_destroy_req(struct wl_client *c,
+                                       struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct zwlr_data_control_device_v1_interface control_device_impl = {
+    .set_selection = control_device_set_selection,
+    .destroy = control_device_destroy_req,
+    .set_primary_selection = control_device_set_primary_selection,
+};
+
+static const struct ext_data_control_source_v1_interface ext_control_source_impl = {
+    .offer = control_source_offer,
+    .destroy = control_source_destroy_req,
+};
+static const struct ext_data_control_offer_v1_interface ext_control_offer_impl = {
+    .receive = control_offer_receive,
+    .destroy = control_offer_destroy_req,
+};
+static const struct ext_data_control_device_v1_interface ext_control_device_impl = {
+    .set_selection = control_device_set_selection,
+    .destroy = control_device_destroy_req,
+    .set_primary_selection = control_device_set_primary_selection,
+};
+
+static void control_mgr_create_source(struct wl_client *c,
+                                      struct wl_resource *r, uint32_t id) {
+    data_source_create(c, &zwlr_data_control_source_v1_interface, 1, id,
+                       &control_source_impl, SRC_WLR_CONTROL);
+}
+static void ext_control_mgr_create_source(struct wl_client *c,
+                                          struct wl_resource *r, uint32_t id) {
+    data_source_create(c, &ext_data_control_source_v1_interface, 1, id,
+                       &ext_control_source_impl, SRC_EXT_CONTROL);
+}
+static void control_device_create(struct wl_client *c, struct wl_resource *r,
+                                  uint32_t id, int ext) {
+    struct wl_resource *dev = wl_resource_create(
+        c, ext ? &ext_data_control_device_v1_interface
+               : &zwlr_data_control_device_v1_interface,
+        wl_resource_get_version(r), id);
+    if (!dev) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(
+        dev, ext ? (const void *)&ext_control_device_impl
+                 : (const void *)&control_device_impl,
+        ext ? CONTROL_EXT : NULL, data_device_resource_destroy);
+    wl_list_insert(&sel.control_devices, wl_resource_get_link(dev));
+    /* "The first selection event is sent upon binding the device." */
+    control_device_send_selection(dev);
+}
+static void control_mgr_get_device(struct wl_client *c, struct wl_resource *r,
+                                   uint32_t id, struct wl_resource *seat) {
+    control_device_create(c, r, id, 0);
+}
+static void ext_control_mgr_get_device(struct wl_client *c,
+                                       struct wl_resource *r, uint32_t id,
+                                       struct wl_resource *seat) {
+    control_device_create(c, r, id, 1);
+}
+static void control_mgr_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct zwlr_data_control_manager_v1_interface control_mgr_impl = {
+    .create_data_source = control_mgr_create_source,
+    .get_data_device = control_mgr_get_device,
+    .destroy = control_mgr_destroy,
+};
+static void control_mgr_bind(struct wl_client *c, void *data, uint32_t ver,
+                             uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        c, &zwlr_data_control_manager_v1_interface, (int)ver, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &control_mgr_impl, NULL, NULL);
+}
+static const struct ext_data_control_manager_v1_interface ext_control_mgr_impl = {
+    .create_data_source = ext_control_mgr_create_source,
+    .get_data_device = ext_control_mgr_get_device,
+    .destroy = control_mgr_destroy,
+};
+static void ext_control_mgr_bind(struct wl_client *c, void *data, uint32_t ver,
+                                 uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        c, &ext_data_control_manager_v1_interface, (int)ver, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &ext_control_mgr_impl, NULL, NULL);
 }
 
 /* ====================================================================== */
@@ -3760,6 +4212,100 @@ static void swap_window(char dir) {
     retile();
 }
 
+/* ---- window tags + sendshortcut ---------------------------------------- */
+
+/* Tag names in first-use order; a surface's tag bit i means tag_names[i]. */
+static char tag_names[MAX_TAGS][32];
+static int n_tags;
+/* `windowrule = tag +NAME, class:REGEX`: the regex must match the whole
+ * app_id (Hyprland matches the class in full), so it is compiled anchored. */
+static struct { regex_t re; int tag; } window_rules[MAX_WINDOW_RULES];
+static int n_window_rules;
+
+static int tag_index(const char *name) {
+    for (int i = 0; i < n_tags; i++)
+        if (!strcmp(tag_names[i], name)) return i;
+    if (n_tags >= MAX_TAGS || strlen(name) >= sizeof(tag_names[0])) return -1;
+    snprintf(tag_names[n_tags], sizeof(tag_names[0]), "%s", name);
+    return n_tags++;
+}
+
+/* Re-derive a window's tags from its app_id; called whenever it changes. */
+static void apply_window_rules(struct surface *s) {
+    s->tags = 0;
+    for (int i = 0; i < n_window_rules; i++)
+        if (regexec(&window_rules[i].re, s->app_id, 0, NULL, 0) == 0)
+            s->tags |= 1u << window_rules[i].tag;
+}
+
+static int focused_has_tag(int tag) {
+    return g.kbd_focus && tag >= 0 && (g.kbd_focus->tags & (1u << tag));
+}
+
+/* MOD_* bits as an xkb depressed-modifier mask for this keymap. */
+static uint32_t xkb_mods_for(uint32_t mods) {
+    static const struct { uint32_t bit; const char *name; } names[] = {
+        { MOD_SUPER, XKB_MOD_NAME_LOGO }, { MOD_SHIFT, XKB_MOD_NAME_SHIFT },
+        { MOD_CTRL, XKB_MOD_NAME_CTRL },  { MOD_ALT, XKB_MOD_NAME_ALT },
+    };
+    struct xkb_keymap *km = xkb_state_get_keymap(g.xkb_state);
+    uint32_t mask = 0;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (!(mods & names[i].bit)) continue;
+        xkb_mod_index_t idx = xkb_keymap_mod_get_index(km, names[i].name);
+        if (idx != XKB_MOD_INVALID) mask |= 1u << idx;
+    }
+    return mask;
+}
+
+/* The evdev keycode whose base-level keysym is `sym`, or 0. */
+static uint32_t keycode_for_keysym(xkb_keysym_t sym) {
+    struct xkb_keymap *km = xkb_state_get_keymap(g.xkb_state);
+    for (xkb_keycode_t kc = xkb_keymap_min_keycode(km);
+         kc <= xkb_keymap_max_keycode(km); kc++) {
+        const xkb_keysym_t *syms;
+        if (kc >= 8 &&
+            xkb_keymap_key_get_syms_by_level(km, kc, 0, 0, &syms) > 0 &&
+            syms[0] == sym)
+            return kc - 8;
+    }
+    return 0;
+}
+
+/* Hyprland's sendshortcut: deliver a chord to the focused surface as
+ * wl_keyboard events. The modifiers are sent EXPLICITLY, not merged with the
+ * ones physically held: SUPER+V must reach foot as Ctrl+Shift+V, and if the
+ * still-held SUPER leaked into the chord foot would see Super+Ctrl+Shift+V
+ * and match nothing (the problem Omarchy's clipboard.lua describes). The
+ * real modifier state is restored afterwards, so the next physical key is
+ * interpreted correctly. Locked modifiers (Caps/Num Lock) are kept. */
+static void send_shortcut(const struct shortcut *sc) {
+    struct surface *s = g.kbd_focus;
+    if (!s) return;
+    uint32_t key = keycode_for_keysym(sc->sym);
+    if (!key) {
+        fprintf(stderr, "wlcompositor: sendshortcut: no key for keysym 0x%x\n",
+                sc->sym);
+        return;
+    }
+    uint32_t dep, lat, lock, grp;
+    current_mods(&dep, &lat, &lock, &grp);
+    uint32_t chord = xkb_mods_for(sc->mods);
+    uint32_t t = now_ms();
+    uint32_t s_mods = wl_display_next_serial(g.display);
+    uint32_t s_down = wl_display_next_serial(g.display);
+    uint32_t s_up = wl_display_next_serial(g.display);
+    uint32_t s_restore = wl_display_next_serial(g.display);
+    for_each_seat_res(res, &g.keyboards, s->client) {
+        wl_keyboard_send_modifiers(res, s_mods, chord, 0, lock, grp);
+        wl_keyboard_send_key(res, s_down, t, key, WL_KEYBOARD_KEY_STATE_PRESSED);
+        wl_keyboard_send_key(res, s_up, t, key, WL_KEYBOARD_KEY_STATE_RELEASED);
+        wl_keyboard_send_modifiers(res, s_restore, dep, lat, lock, grp);
+    }
+    printf("SENDSHORTCUT app_id=%s mods=0x%x key=%u\n", s->app_id, sc->mods, key);
+    fflush(stdout);
+}
+
 static void run_dispatch(const struct keybind *b) {
     switch (b->action) {
     case ACT_EXEC: {
@@ -3778,6 +4324,10 @@ static void run_dispatch(const struct keybind *b) {
     case ACT_CYCLE_PREV:   focus_cycle(-1); break;
     case ACT_THEME:        theme_switch(b->param); break;
     case ACT_SWAP:         swap_window(b->param[0]); break;
+    case ACT_SEND_SHORTCUT: send_shortcut(&b->shortcut[0]); break;
+    case ACT_SEND_SHORTCUT_IF_TAG:
+        send_shortcut(&b->shortcut[focused_has_tag(b->arg) ? 0 : 1]);
+        break;
     }
 }
 
@@ -3798,11 +4348,12 @@ static int try_keybind(uint32_t key, uint32_t state) {
 
 /* ---- config parsing ----------------------------------------------------- */
 
-static void add_bind(uint32_t mods, xkb_keysym_t sym, int action, int arg,
-                     const char *param) {
+/* Returns the new bind, or NULL when it was refused. */
+static struct keybind *add_bind(uint32_t mods, xkb_keysym_t sym, int action,
+                                int arg, const char *param) {
     if (g.n_binds >= MAX_BINDS) {
         fprintf(stderr, "wlcompositor: more than %d binds; ignoring the rest\n", MAX_BINDS);
-        return;
+        return NULL;
     }
     struct keybind *b = &g.binds[g.n_binds++];
     b->mods = mods;
@@ -3815,9 +4366,11 @@ static void add_bind(uint32_t mods, xkb_keysym_t sym, int action, int arg,
         fprintf(stderr, "wlcompositor: bind command too long (%zu bytes, max %zu): %s\n",
                 strlen(param), sizeof(b->param) - 1, param);
         g.n_binds--;
-        return;
+        return NULL;
     }
     snprintf(b->param, sizeof(b->param), "%s", param ? param : "");
+    memset(b->shortcut, 0, sizeof(b->shortcut));
+    return b;
 }
 
 /* Generic defaults when no config file is present (NOT demo-specific): the
@@ -3982,12 +4535,56 @@ static int parse_mods(char *s, uint32_t *out) {
     return 0;
 }
 
-/* Parse one `bind = MODS, KEY, DISPATCHER[, ARGS]` line into the table. */
+/* Split `s` at commas into at most `max` trimmed fields; the last field
+ * keeps any further commas. Returns the field count. */
+static int split_fields(char *s, char **out, int max) {
+    int n = 0;
+    while (n < max) {
+        char *comma = n < max - 1 ? strchr(s, ',') : NULL;
+        if (comma) *comma = '\0';
+        out[n++] = trim(s);
+        if (!comma) break;
+        s = comma + 1;
+    }
+    return n;
+}
+
+/* A MODS field and a KEY field as a shortcut. Returns -1 when either is
+ * not a modifier list or a key name. */
+static int parse_shortcut(char *mods, const char *key, struct shortcut *out) {
+    if (parse_mods(mods, &out->mods) < 0) return -1;
+    out->sym = xkb_keysym_to_lower(
+        xkb_keysym_from_name(key, XKB_KEYSYM_CASE_INSENSITIVE));
+    return out->sym == XKB_KEY_NoSymbol ? -1 : 0;
+}
+
+/* The sendshortcut dispatchers' arguments, for a bind or `kwlctl dispatch`:
+ *   sendshortcut      MODS, KEY[, WINDOW]
+ *   kandelo:sendshortcutiftag TAG, TAGGED_MODS, TAGGED_KEY, MODS, KEY
+ * Hyprland's WINDOW target is not supported; it must be empty (the focused
+ * surface, which is what Omarchy uses). kandelo:sendshortcutiftag has no Hyprland
+ * equivalent: it stands in for the Lua function in Omarchy's clipboard.lua
+ * that picks a chord by whether the focused window is tagged `terminal`.
+ * Returns -1 and writes nothing usable on a malformed argument list. */
+static int parse_shortcut_args(int action, char *args, struct keybind *b) {
+    char *f[5];
+    if (action == ACT_SEND_SHORTCUT) {
+        int n = split_fields(args, f, 3);
+        if (n < 2 || (n == 3 && f[2][0] != '\0')) return -1;
+        return parse_shortcut(f[0], f[1], &b->shortcut[0]);
+    }
+    if (split_fields(args, f, 5) != 5 || f[0][0] == '\0') return -1;
+    b->arg = tag_index(f[0]);
+    if (b->arg < 0) return -1;
+    if (parse_shortcut(f[1], f[2], &b->shortcut[0]) < 0) return -1;
+    return parse_shortcut(f[3], f[4], &b->shortcut[1]);
+}
+
+/* Parse one `bind = MODS, KEY, DISPATCHER[, ARGS]` line into the table. ARGS
+ * is the rest of the line, commas included, as in Hyprland. */
 static void parse_bind_line(char *rhs) {
-    char *fields[4] = {0};
-    int nf = 0;
-    for (char *tok = strtok(rhs, ","); tok && nf < 4; tok = strtok(NULL, ","))
-        fields[nf++] = trim(tok);
+    char *fields[4];
+    int nf = split_fields(rhs, fields, 4);
     if (nf < 3) return;
 
     uint32_t mods;
@@ -4000,7 +4597,8 @@ static void parse_bind_line(char *rhs) {
     if (sym == XKB_KEY_NoSymbol) return;
 
     const char *disp = fields[2];
-    const char *arg = nf > 3 ? fields[3] : "";
+    static char no_arg[1];
+    char *arg = nf > 3 ? fields[3] : no_arg;
     if (!strcmp(disp, "exec"))            add_bind(mods, sym, ACT_EXEC, 0, arg);
     else if (!strcmp(disp, "workspace"))  add_bind(mods, sym, ACT_WORKSPACE, atoi(arg), NULL);
     else if (!strcmp(disp, "movetoworkspace")) add_bind(mods, sym, ACT_MOVE_TO_WS, atoi(arg), NULL);
@@ -4009,6 +4607,47 @@ static void parse_bind_line(char *rhs) {
     else if (!strcmp(disp, "cycleprev"))  add_bind(mods, sym, ACT_CYCLE_PREV, 0, NULL);
     else if (!strcmp(disp, "theme"))      add_bind(mods, sym, ACT_THEME, 0, arg);
     else if (!strcmp(disp, "swapwindow")) add_bind(mods, sym, ACT_SWAP, 0, arg);
+    else if (!strcmp(disp, "sendshortcut") ||
+             !strcmp(disp, DISP_SENDSHORTCUT_IF_TAG)) {
+        int action = strcmp(disp, "sendshortcut") ? ACT_SEND_SHORTCUT_IF_TAG
+                                                  : ACT_SEND_SHORTCUT;
+        struct keybind parsed = {0};
+        if (parse_shortcut_args(action, arg, &parsed) < 0) {
+            fprintf(stderr, "wlcompositor: malformed %s bind; ignoring it\n", disp);
+            return;
+        }
+        struct keybind *b = add_bind(mods, sym, action, parsed.arg, NULL);
+        if (b) memcpy(b->shortcut, parsed.shortcut, sizeof(parsed.shortcut));
+    }
+}
+
+/* Parse `windowrule = tag +NAME, class:REGEX` (the windowrulev2 spelling is
+ * the same). Tags are the only rule, and the class (app_id) the only
+ * matcher; anything else is refused loudly rather than half-applied. */
+static void parse_windowrule_line(char *rhs) {
+    char *f[2];
+    char *line_copy = strdup(rhs);
+    int ok = split_fields(rhs, f, 2) == 2 && !strncmp(f[0], "tag +", 5) &&
+             !strncmp(f[1], "class:", 6) && n_window_rules < MAX_WINDOW_RULES;
+    int tag = ok ? tag_index(trim(f[0] + 5)) : -1;
+    if (tag >= 0) {
+        const char *re = f[1] + 6;
+        size_t len = strlen(re) + 5;
+        char *anchored = malloc(len);
+        if (anchored) {
+            snprintf(anchored, len, "^(%s)$", re);
+            ok = regcomp(&window_rules[n_window_rules].re, anchored,
+                         REG_EXTENDED | REG_NOSUB) == 0;
+            free(anchored);
+        } else {
+            ok = 0;
+        }
+        if (ok) window_rules[n_window_rules++].tag = tag;
+    }
+    if (tag < 0 || !ok)
+        fprintf(stderr, "wlcompositor: unsupported windowrule; ignoring: %s\n",
+                line_copy ? line_copy : "");
+    free(line_copy);
 }
 
 /* Load keybinds: parse WLC_CONFIG / WLC_CONFIG_PATH if present, else install
@@ -4029,6 +4668,8 @@ static void load_config(void) {
             char *eq = strchr(s, '=');
             if (!eq) continue;
             if (strncmp(s, "bind", 4) == 0) parse_bind_line(trim(eq + 1));
+            else if (strncmp(s, "windowrule", 10) == 0)
+                parse_windowrule_line(trim(eq + 1));
             else if (strncmp(s, "theme", 5) == 0) theme_load(trim(eq + 1));
             else if (strncmp(s, "notify", 6) == 0)
                 snprintf(th.notify, sizeof(th.notify), "%s", trim(eq + 1));
@@ -4037,6 +4678,7 @@ static void load_config(void) {
         src = path;
     }
     printf("BINDS_LOADED n=%d source=%s\n", g.n_binds, src);
+    if (n_window_rules) printf("WINDOWRULES_LOADED n=%d\n", n_window_rules);
     printf("THEME %s\n", th.name);
     fflush(stdout);
     tile_gap_inner = th.gaps_in;
@@ -4240,6 +4882,7 @@ static const struct libinput_interface li_interface = {
 
 static void client_destroyed(struct wl_listener *listener, void *data) {
     free(listener);
+    sel.dying = data;
     if (--g.client_count <= 0 && g.had_client) {
         printf("COMPOSITOR_LAST_CLIENT_GONE\n");
         fflush(stdout);
@@ -4248,6 +4891,7 @@ static void client_destroyed(struct wl_listener *listener, void *data) {
 }
 static void client_created(struct wl_listener *listener, void *data) {
     struct wl_client *client = data;
+    if (sel.dying == client) sel.dying = NULL;   /* address reused */
     g.client_count++;
     g.had_client = 1;
     printf("CLIENT_CONNECTED count=%d\n", g.client_count);
@@ -4762,6 +5406,16 @@ static int kwlctl_window_json(char *buf, size_t cap, struct surface *s) {
     char klass[64], title[192];
     json_escape(klass, sizeof(klass), s->app_id);
     json_escape(title, sizeof(title), s->title);
+    /* Tag names are config words; escape them anyway, they are JSON strings. */
+    char tags[MAX_TAGS * 72] = "";
+    size_t tn = 0;
+    for (int i = 0; i < n_tags; i++) {
+        if (!(s->tags & (1u << i))) continue;
+        char esc[72];
+        json_escape(esc, sizeof(esc), tag_names[i]);
+        tn += (size_t)snprintf(tags + tn, sizeof(tags) - tn, "%s\"%s\"",
+                               tn ? "," : "", esc);
+    }
     return snprintf(buf, cap,
         "{\"address\":\"%p\",\"class\":\"%s\",\"title\":\"%s\","
         "\"initialClass\":\"%s\",\"initialTitle\":\"%s\","
@@ -4769,11 +5423,11 @@ static int kwlctl_window_json(char *buf, size_t cap, struct surface *s) {
         "\"at\":[%d,%d],\"size\":[%d,%d],\"focused\":%s,"
         "\"mapped\":true,\"hidden\":false,\"floating\":%s,\"monitor\":0,"
         "\"pid\":-1,\"xwayland\":false,\"fullscreen\":false,"
-        "\"grouped\":[],\"swallowing\":\"0x0\"}",
+        "\"grouped\":[],\"swallowing\":\"0x0\",\"tags\":[%s]}",
         (void *)s, klass, title, klass, title,
         s->workspace, s->workspace, s->x, s->y, s->w, s->h,
         g.kbd_focus == s ? "true" : "false",
-        g.layout == LAYOUT_FLOATING ? "true" : "false");
+        g.layout == LAYOUT_FLOATING ? "true" : "false", tags);
 }
 
 static int kwlctl_clients_json(char *buf, size_t cap) {
@@ -4960,6 +5614,21 @@ static int kwlctl_handle(struct kwlctl_conn *c, char *line) {
                 xdg_toplevel_send_close(g.kbd_focus->xdg_toplevel);
         } else if (strncmp(op, "exec ", 5) == 0)
             kwlctl_exec(op + 5);
+        else if (strncmp(op, "sendshortcut ", 13) == 0 ||
+                 strncmp(op, DISP_SENDSHORTCUT_IF_TAG " ",
+                         sizeof(DISP_SENDSHORTCUT_IF_TAG)) == 0) {
+            int iftag = strncmp(op, "sendshortcut ", 13) != 0;
+            struct keybind b = {0};
+            if (parse_shortcut_args(iftag ? ACT_SEND_SHORTCUT_IF_TAG
+                                          : ACT_SEND_SHORTCUT,
+                                    op + (iftag ? sizeof(DISP_SENDSHORTCUT_IF_TAG)
+                                                : 13), &b) < 0) {
+                kwlctl_send(c->fd, "err malformed shortcut\n", 23);
+                return 0;
+            }
+            b.action = iftag ? ACT_SEND_SHORTCUT_IF_TAG : ACT_SEND_SHORTCUT;
+            run_dispatch(&b);
+        }
         else if (strncmp(op, "theme ", 6) == 0) {
             if (theme_switch(op + 6) != 0) {
                 kwlctl_send(c->fd, "err no such theme\n", 18);
@@ -5091,6 +5760,8 @@ int main(void) {
     wl_list_init(&g.keyboards);
     wl_list_init(&g.pointers);
     wl_list_init(&g.outputs);
+    wl_list_init(&sel.devices);
+    wl_list_init(&sel.control_devices);
     g.loop = wl_display_get_event_loop(g.display);
 
     /* Layout policy. Absent/unknown WLC_LAYOUT keeps the floating desktop so
@@ -5158,6 +5829,12 @@ int main(void) {
                           1, NULL, fractional_scale_mgr_bind) ||
         !wl_global_create(g.display, &wl_data_device_manager_interface, 3,
                           NULL, data_dm_bind) ||
+        /* v2, as wlroots advertises it. The primary selection v2 adds is not
+         * implemented, and its requests are ignored as the protocol allows. */
+        !wl_global_create(g.display, &zwlr_data_control_manager_v1_interface, 2,
+                          NULL, control_mgr_bind) ||
+        !wl_global_create(g.display, &ext_data_control_manager_v1_interface, 1,
+                          NULL, ext_control_mgr_bind) ||
         !wl_global_create(g.display, &wl_seat_interface, 5, NULL, seat_bind) ||
         !wl_global_create(g.display, &wl_output_interface, 4, NULL,
                           output_bind)) {

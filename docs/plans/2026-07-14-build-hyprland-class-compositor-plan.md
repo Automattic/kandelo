@@ -336,6 +336,14 @@ trampolines. wasm32 cannot generate code at runtime.
   emits the `v2` event family — see the Hyprland IPC compatibility
   bullet in `docs/architecture.md`. Window titles are stored for this
   reason alone.
+- **The clipboard, as built.** PR24 shipped `wl_data_device_manager` as
+  an inert stub so foot would start. The selection itself landed later
+  (2026-10): `wl_data_device` selection with offers sent ahead of
+  keyboard focus, `zwlr_data_control_manager_v1` for windowless clipboard
+  tools, and Omarchy's universal-clipboard binds through `sendshortcut`
+  and window tags. Drag-and-drop and the primary selection are still
+  absent. See the clipboard bullet in `docs/architecture.md` and
+  `docs/superpowers/specs/2026-10-01-omarchy-clipboard-paste-design.md`.
 
 Tier 2 risks, ranked: (1) ffi_closure correctness (PR20 — mitigated by
 the test-matrix-first rule); (2) GTK3 port sheer size (PR24 —
