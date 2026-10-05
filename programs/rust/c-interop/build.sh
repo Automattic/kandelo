@@ -34,6 +34,19 @@ export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1
 # The fixtures have no crates.io dependencies.
 export CARGO_NET_OFFLINE=true
 
+# libc++ comes from the resolved libcxx package; the shared worktree sysroot
+# does not carry it. rustcpp/build.rs reads the same variable the resolver
+# gives package builds.
+HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+if [ -z "${WASM_POSIX_DEP_LIBCXX_DIR:-}" ]; then
+    (cd "$REPO_ROOT" && cargo run -q -p xtask --target "$HOST_TARGET" -- \
+        build-deps resolve libcxx >/dev/null)
+    WASM_POSIX_DEP_LIBCXX_DIR="$(cd "$REPO_ROOT" && cargo run -q -p xtask \
+        --target "$HOST_TARGET" -- build-deps path libcxx)"
+fi
+export WASM_POSIX_DEP_LIBCXX_DIR
+LIBCXX="$WASM_POSIX_DEP_LIBCXX_DIR"
+
 # cargo does not track the sysroot's std, so a target directory from an
 # earlier sysroot would keep linking the old one; always start clean.
 rm -rf "$OUT/target"
@@ -53,6 +66,7 @@ wasm32posix-cc -O2 -I"$HERE" "$HERE/main.c" \
     -o "$OUT/c-calls-rust.wasm"
 # -fwasm-exceptions: main.cpp throws and catches a C++ exception.
 wasm32posix-c++ -O2 -fwasm-exceptions -I"$HERE" "$HERE/main.cpp" \
+    -nostdinc++ -isystem "$LIBCXX/include/c++/v1" -L"$LIBCXX/lib" \
     -L"$PREFIX/lib" -lkandelo_interop -lc++ -lc++abi \
     -o "$OUT/cpp-calls-rust.wasm"
 
@@ -72,7 +86,6 @@ cp "$OUT/target/$TARGET/release/rust-calls-cpp.wasm" "$OUT/"
 # Fork instrumentation leaves a module that does not use fork unchanged;
 # the ABI contract stamp is what the package build engine adds to every
 # program it installs.
-HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
 for wasm in c-calls-rust cpp-calls-rust rust-calls-c rust-calls-cpp; do
     bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
         "$OUT/$wasm.wasm" -o "$OUT/$wasm.next.wasm"
