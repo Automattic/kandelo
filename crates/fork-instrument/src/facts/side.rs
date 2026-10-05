@@ -1,5 +1,5 @@
 //! Parsing the compiler facts the KandeloCallTypes plugin writes per object
-//! (format 4; see `tools/fork-sink-research/fpr/plugin/KandeloCallTypes.cpp`
+//! (format 4; see `sdk/src/plugin/KandeloCallTypes.cpp`
 //! and `KandeloFnCasts.cpp` for every line kind).
 //!
 //! Each object contributes one chunk that starts with `#kandelo-calltypes\t5`.

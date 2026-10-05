@@ -61,11 +61,6 @@ struct Cli {
     #[arg(long)]
     no_sinks: bool,
 
-    /// Research only: instrument the set and boundaries listed in this plan
-    /// file (see `Options::sink_plan`) instead of the built-in sink analysis.
-    #[arg(long, hide = true)]
-    sink_plan: Option<std::path::PathBuf>,
-
     /// Ignore the compiler facts (`kandelo.calltypes` section) and use the
     /// sink analysis without them. For diagnosis. The section is removed
     /// from the output either way.
@@ -87,9 +82,9 @@ struct Cli {
     side_modules: String,
 
     /// Diagnosis: print which analysis decided the instrumented set
-    /// (`source\t<closure|builtin|facts|plan>`), then the set and its
-    /// boundaries as `A\t<name>` and `B\t<name>` rows (a valid
-    /// `--sink-plan` file). Emits no output file.
+    /// (`source\t<closure|builtin|facts>`), then the set and its
+    /// boundaries as `A\t<name>` and `B\t<name>` rows. Emits no output
+    /// file.
     #[arg(long, hide = true, conflicts_with = "output")]
     sink_report: bool,
 
@@ -222,7 +217,6 @@ fn main() -> Result<()> {
     let opts = Options {
         entry_import: cli.entry,
         sinks: !cli.no_sinks,
-        sink_plan: cli.sink_plan.clone(),
         facts: !cli.no_facts,
         effective_types: !cli.no_effective_types,
         side_modules: if cli.side_modules == "assume-all-entries-fork-returning" {
