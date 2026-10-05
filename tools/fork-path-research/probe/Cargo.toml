@@ -1,7 +1,0 @@
-[package]
-name = "fork-probe"
-version = "0.1.0"
-edition = "2021"
-[dependencies]
-walrus = "0.26.4"
-[workspace]

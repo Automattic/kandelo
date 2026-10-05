@@ -1,7 +1,7 @@
 //! Indirect-call targets from compiler facts (the research tool `fpa`'s
 //! `registry` mode with the rules `cancel cleanup-lexical sigaction-old
 //! casts slots effective-types`, moved here from
-//! `tools/fork-sink-research/fpa`).
+//! `tools/fork-sink-research/fpa`, which is in git history at a3f0eb448).
 //!
 //! For every defined function and every Wasm signature of a `call_indirect`
 //! in it, the union of the functions its call sites can call:

@@ -1575,14 +1575,16 @@ Flags:
 - `--no-facts` ignores the facts (diagnosis).
 - `--no-effective-types` applies C's effective-type rule nowhere.
 - `--side-modules=traced-entries|assume-all-entries-fork-returning` (above).
-- `--sink-report` (hidden) prints which analysis decided (`source\t<closure|builtin|facts|plan>`),
+- `--sink-report` (hidden) prints which analysis decided (`source\t<closure|builtin|facts>`),
   the facts' coverage, and the instrumented set and boundaries as
-  `A\t<name>`/`B\t<name>` rows, which `--sink-plan` (hidden, research) reads
-  back.
+  `A\t<name>`/`B\t<name>` rows.
 
-Checked against the research tools (`tools/fork-sink-research`) on their
-research links, with the per-object facts concatenated in link order into
-the section (`crates/fork-instrument/examples/facts_equivalence.rs`): for
+When the analysis moved into this crate (#1471) it was checked against the
+research tools it replaced, on their research links, with the per-object
+facts concatenated in link order into the section. The tools and that
+comparison harness were removed afterwards; they remain in git history at
+a3f0eb448 (`tools/fork-sink-research`,
+`crates/fork-instrument/examples/facts_equivalence.rs`). For
 foot, git and bash every function's binding is, or (for 141, 51 and 1
 functions bound to a union) contains, the research tools' map-based binding,
 the exported indirect-call targets, cleanup and `jmp_buf` facts are
