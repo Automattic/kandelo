@@ -1345,9 +1345,12 @@ the dlopen contract). Turning those research results into the default needs:
    wasm-opt as before. The plugin's sources are under `sdk/src`, which is
    already a global package cache-key input. Object code is identical with
    and without the plugin. Packages that run wasm-opt between the link and
-   instrumentation (cpython, php, vim, nginx, tcl, spidermonkey, the sqlite
-   testfixture) fail the hash check and use the analysis without facts:
-   sound, not precise. git no longer does that for `git.wasm`.
+   instrumentation (bash, cpython, php, ruby, spidermonkey, vim and
+   git-remote-http in the 2026-10-04 rebuild) fail the hash check and use
+   the analysis without facts: sound, not precise. git no longer does that
+   for `git.wasm`. Facts never ship: wasm-fork-instrument removes them, and
+   `install_local_binary` drops them from any artifact that did not reach
+   the instrumenter.
 2. **The analysis in `wasm-fork-instrument`.** Done (2026-10-04): the fpa
    rules (casts, slots, effective types per unit, registries, cleanup and
    jmp_buf maps) are in `crates/fork-instrument/src/facts/`, the fsa
@@ -1382,3 +1385,49 @@ the dlopen contract). Turning those research results into the default needs:
    or without it).
 5. **Speed and size claims:** benchmark suites on Node and browser before
    and after. Nothing here claims a speed change.
+
+## Production build results (2026-10-04)
+
+A full rebuild of every package with the facts pipeline on, merged with
+main as of #1472, measured through the normal SDK and instrumenter path
+(no `--sink-plan`):
+
+| Program | Today's instrumentation of the same link | This branch |
+|---|---:|---:|
+| foot | 4.39 MB | 2.92 MB |
+| git | 5.84 MB | 3.32 MB |
+| Quickshell | 70.8 MB | 40.56 MB |
+
+These equal the research plan builds byte for byte in size, so the
+production analysis reaches the research sets (foot 4, git 25,
+Quickshell 10 instrumented functions).
+
+**Where facts are not used.** The instrumenter fell back to the analysis
+without facts, which stays sound, for the programs whose recipes run
+wasm-opt between the link and instrumentation: bash, cpython, php, ruby,
+spidermonkey, vim and git-remote-http (git-remote-http on purpose; see
+"`jmp_buf` identity and curl"). For the interpreters the facts would save
+little, because their fork children return into the interpreter. redis,
+rsvg-convert and scummvm used facts and were planned for
+`assume-all-entries-fork-returning` automatically, because one of their
+fork-returning functions is address-taken.
+
+**Defects found by the rebuild, fixed on this branch:**
+
+- The plugin named anonymous structs and unions by clang's spelling,
+  `union (unnamed at <file>:<line>:<col>)`, which put build paths into
+  objects (libzip's reproducibility check caught it) and could split one
+  record into several names across units, letting the effective-type rule
+  cut a real flow. Anonymous records are now named by scope and declarator;
+  the facts format is 5.
+- Programs that never reached the instrumenter shipped their facts:
+  mariadbd carried 17 MB of facts (30 MB instead of 13 MB), and mysqltest,
+  espeak-ng and lsof carried them too. `install_local_binary` now drops the
+  facts sections from every artifact it installs.
+- librsvg's Rust build wrote its vendored-crate config into the resolver's
+  `CARGO_HOME`, breaking rsvg-convert's install (on main too).
+- Two Vitest files rebuilt the shared Rust sysroot at once and deleted
+  each other's files; `build-rust-sysroot.sh` now takes a lock (on main
+  too).
+- qtgallery compiled against the SDK sysroot, which has no libc++ headers,
+  so it failed with a cold cache (on main too).

@@ -280,6 +280,13 @@ linked module:
 - Any other module loses the section and then gets exactly the `wasm-opt`
   command clang scheduled.
 
+Facts never ship. `install_local_binary` removes `kandelo.calltypes` and
+`kandelo.calltypes.code-sha256` from every artifact it installs, because a
+module can reach installation without passing through the instrumenter: a
+recipe's own `wasm-opt` can delete an unused `kernel.kernel_fork` import
+while keeping the section, and a recipe that links with clang or `wasm-ld`
+directly bypasses the SDK driver.
+
 ### Linker flags injected automatically
 
 ```
