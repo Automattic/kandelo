@@ -79,6 +79,7 @@ import {
   type ExecLaunchCallback,
   type PreparedExecKernel,
 } from "./exec-target";
+import { WasmModuleCache } from "./wasm-module-cache";
 import {
   buildRawHttpRequest,
   parseRawHttpResponse,
@@ -3035,6 +3036,12 @@ export class CentralizedKernelWorker {
   }>();
   /** Secure-exec state for a newly-created spawn child with no old image. */
   private committedExecSecureExec = new Map<number, boolean>();
+  /**
+   * The one compiler for program and thread modules on this host. Spawn and
+   * exec use it here; the host entry uses it for top-level launches and
+   * thread modules, and fork children inherit their parent's module.
+   */
+  readonly wasmModules = new WasmModuleCache();
   /** Capacity travels with the allocator-owned pointer. */
   #scratchRegion: KernelScratchRegion | null = null;
   #pcmTransportDescriptor: PcmTransportDescriptor | null = null;
@@ -22534,6 +22541,7 @@ export class CentralizedKernelWorker {
         const candidate = await compileSpawnCandidateSnapshot(
           selected.programBytes,
           this.getKernelAbiVersion(),
+          (bytes) => this.wasmModules.programModule(bytes),
         );
         return {
           programBytes: candidate.targetBytes,
@@ -23510,10 +23518,8 @@ export class CentralizedKernelWorker {
             expectedSize,
             markTargetConsumed,
           ),
-        preflightCandidate: {
-          targetBytes: candidate.programBytes,
-          targetModule: candidate.programModule,
-        },
+        compileModule: (bytes) => this.wasmModules.programModule(bytes),
+        preflightModule: candidate.programModule,
       }, async (request) => ({
         // onSpawn owns no replacement image before commit. If a future host
         // adds staged resources, they must remain bounded to this hook.
@@ -23584,6 +23590,7 @@ export class CentralizedKernelWorker {
             expectedSize,
             markTargetConsumed,
           ),
+        compileModule: (bytes) => this.wasmModules.programModule(bytes),
       }, callback);
     } catch (error) {
       if (error instanceof PreparedExecTargetError) return -error.errno;

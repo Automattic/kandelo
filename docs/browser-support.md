@@ -832,13 +832,20 @@ Smaller gaps, each a follow-up:
 #### Quickshell QML limits
 
 One host cost bounds Quickshell in the browser: compiled wasm code.
-`quickshell.wasm` is ~93 MB and Chromium compiles it to hundreds of MB of
-machine code — and it compiles that copy **per Web Worker**, because a
-worker is a separate V8 isolate and isolates do not share a module's
-compiled code even when the same `WebAssembly.Module` is posted to each.
-Every guest pthread is one worker, so each thread Quickshell starts costs
-another compiled copy on top of the running desktop
-(compositor, Waybar, qtgallery, foot, mako, dbus-daemon).
+`quickshell.wasm` is ~78 MB and Chromium compiles it to hundreds of MB of
+machine code, on top of the running desktop (compositor, Waybar,
+qtgallery, foot, mako, dbus-daemon). An earlier version of this section
+said every Web Worker compiles its own copy because isolates do not share
+a posted module's code. Measurement does not support that: one
+`WebAssembly.Module` posted to several workers shares its machine code in
+V8 and JavaScriptCore, and only a separate compilation of the same bytes
+makes another copy (see
+[architecture.md](architecture.md#compiled-module-sharing)). The kernel
+worker compiles each distinct program once while a copy is alive and posts
+that module to every process and thread worker that runs it. A guest
+pthread runs the thread-patched variant of the program's bytes, which is a
+second module: compiled once per program, then shared by every thread of
+every process running those bytes.
 
 Two facts about this cost were established by measurement, correcting two
 earlier half-explanations:
@@ -911,8 +918,9 @@ worker on the page. Compiled wasm code is several times the module's size:
 the 93 MB `quickshell.wasm` alone costs ~620 MB of that region. With the
 full desktop running — compositor, Waybar, qtgallery, foot, mako, dbus-daemon,
 klauncher — the region already holds ~1.2 GB of live code. Quickshell's
-launch compile fits (~1.9 GB), but any `pthread_create` compiles the
-thread-patched module as a second full copy, which cannot fit; the compile
+launch compile fits (~1.9 GB), but its first `pthread_create` compiles the
+thread-patched module as a second full copy (once per program; later
+threads reuse it), which cannot fit; the compile
 throws SpiderMonkey's `InternalError: out of memory`, Qt logs
 `QThread::start: Thread creation error`, and the panel never maps. The
 thread cuts above shrink how many second copies a Qt client makes but do

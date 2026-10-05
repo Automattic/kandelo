@@ -7,6 +7,7 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import type { HostDiagnostic } from "@host/host-diagnostic";
+import type { WasmModuleCacheStats } from "@host/wasm-module-cache";
 import type { BrowserCorsProxyConfig } from "@host/networking/browser-cors-proxy";
 import pcmAudioWorkletUrl from "@host/audio/pcm-audio-worklet.js?url";
 import {
@@ -90,6 +91,8 @@ declare global {
         env?: string[];
         ptyInput?: PtyInput;
         corsProxy?: BrowserCorsProxyConfig;
+        /** Read the kernel worker's module cache counters before teardown. */
+        wasmModuleCacheStats?: boolean;
       },
     ) => Promise<{
       exitCode: number;
@@ -97,6 +100,7 @@ declare global {
       stderr: string;
       combined: string;
       hostDiagnostics: HostDiagnostic[];
+      wasmModuleCacheStats?: WasmModuleCacheStats;
     }>;
     __testCount: number;
     /**
@@ -377,6 +381,7 @@ async function init() {
       env?: string[];
       ptyInput?: PtyInput;
       corsProxy?: BrowserCorsProxyConfig;
+      wasmModuleCacheStats?: boolean;
     },
   ) => {
     let stdout = "";
@@ -487,6 +492,16 @@ async function init() {
         ),
       ]);
 
+      if (options?.wasmModuleCacheStats) {
+        return {
+          exitCode,
+          stdout,
+          stderr,
+          combined,
+          hostDiagnostics,
+          wasmModuleCacheStats: await kernel.getWasmModuleCacheStats(),
+        };
+      }
       return { exitCode, stdout, stderr, combined, hostDiagnostics };
     } finally {
       // Clean up to free memory for the next test
