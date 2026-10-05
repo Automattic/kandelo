@@ -27,6 +27,40 @@ export function compileFlags(arch: WasmArch): string[] {
   ];
 }
 
+/**
+ * Load the KandeloCallTypes plugin (sdk/src/lib/calltypes-plugin.ts) into a
+ * compile, so each object carries a `kandelo.calltypes` section.
+ *
+ * WHY these cc1 flags: the plugin reads indirect-call type ids from clang's
+ * CFI type tests (cfi-icall, trap mode so no runtime is referenced) and
+ * vtable type metadata (-flto-unit, -fwhole-program-vtables). They go
+ * through -Xclang because the driver would demand -flto for them; the
+ * plugin's first pass deletes every test it recorded, so the optimizer and
+ * code generator see the ordinary build and the code does not change. The
+ * same dylib is a Clang AST plugin (kandelo-fncasts) and an LLVM pass plugin.
+ */
+export function calltypesPluginFlags(plugin: string): string[] {
+  return [
+    '-Xclang', '-fsanitize=cfi-icall',
+    '-Xclang', '-fsanitize-trap=cfi-icall',
+    '-Xclang', '-flto-unit',
+    '-Xclang', '-fwhole-program-vtables',
+    '-Xclang', '-load', '-Xclang', plugin,
+    '-Xclang', '-add-plugin', '-Xclang', 'kandelo-fncasts',
+    `-fpass-plugin=${plugin}`,
+  ];
+}
+
+/**
+ * Does this invocation's own sanitizer request include CFI? The plugin
+ * deletes CFI type tests after recording them, which would silently remove
+ * a check the caller asked for, so such compiles go without facts.
+ */
+export function requestsCfi(args: string[]): boolean {
+  return args.some((arg) =>
+    arg.startsWith('-fsanitize=') && arg.slice('-fsanitize='.length).split(',').some((kind) => kind.startsWith('cfi')));
+}
+
 export const DEFAULT_MAIN_THREAD_STACK_SIZE = 8 * 1024 * 1024;
 export const MAX_EXECUTABLE_MEMORY_SIZE = 1024 * 1024 * 1024;
 

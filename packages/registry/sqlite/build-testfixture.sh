@@ -343,8 +343,7 @@ fi
 # --- Fork instrumentation ---
 # TCL's exec command uses fork(). Many SQLite tests use exec.
 # wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
-# no onlylist needed. Must run last — it hardcodes mutable-global offsets
-# and any later pass reordering globals would corrupt the fork buffer.
+# no onlylist needed. The tool also runs wasm-opt over the code it adds.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "==> Applying fork instrumentation..."
 "$FORK_INSTRUMENT" testfixture -o testfixture.instr

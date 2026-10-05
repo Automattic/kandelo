@@ -1,0 +1,36 @@
+module	/Users/brandon/conductor/workspaces/kandelo/lusaka/.context/fpr2/shims/links/git-11621-1790988786.wasm
+rules	signal-policy=Sig param=true cancel-cuts=2 itargets=/Users/brandon/conductor/workspaces/kandelo/lusaka/.context/fpr2/H-git.itargets registries=true exc=equiv main-direct=false dyn_link=false
+instrumented_today	5293
+instrumented_sink	25
+closed(sink)	4
+SINK	handle_builtin	no escape
+SINK	start_command	no escape
+SINK	start_async	no escape
+SINK	bidirectional_transfer_loop	no escape
+OPEN	d=1	_Fork	ret=Some(C(0))	thr=0x0	reaches return
+OPEN	d=2	fork	ret=Some(C(0))	thr=0x0	falls off the end
+OPEN	d=3	daemonize	ret=Some(C(0))	thr=0x0	reaches return
+OPEN	d=4	cmd_gc	ret=Some(C(0))	thr=0x0	falls off the end
+OPEN	d=4	maintenance_run	ret=Some(Top)	thr=0x0	reaches return
+OPEN	d=5	run_builtin	ret=Some(Top)	thr=0x0	reaches return
+OPEN	d=5	cmd_bisect	ret=Some(Top)	thr=0x0	reaches return
+OPEN	d=5	cmd_bundle	ret=Some(Top)	thr=0x0	falls off the end
+OPEN	d=5	cmd_commit_graph	ret=Some(Top)	thr=0x0	falls off the end
+OPEN	d=5	cmd_config	ret=Some(Top)	thr=0x0	reaches return
+OPEN	d=5	cmd_maintenance	ret=Some(Top)	thr=0x0	falls off the end
+OPEN	d=5	cmd_hook	ret=Some(Top)	thr=0x0	falls off the end
+OPEN	d=5	cmd_multi_pack_index	ret=Some(Top)	thr=0x0	falls off the end
+OPEN	d=5	cmd_notes	ret=Some(Top)	thr=0x0	reaches return
+OPEN	d=5	cmd_reflog	ret=Some(Top)	thr=0x0	falls off the end
+OPEN	d=5	cmd_refs	ret=Some(Top)	thr=0x0	falls off the end
+OPEN	d=5	cmd_remote	ret=Some(Top)	thr=0x0	reaches return
+OPEN	d=5	cmd_sparse_checkout	ret=Some(Top)	thr=0x0	falls off the end
+OPEN	d=5	cmd_stash	ret=Some(Top)	thr=0x0	reaches return
+OPEN	d=5	cmd_submodule__helper	ret=Some(Top)	thr=0x0	falls off the end
+OPEN	d=5	cmd_worktree	ret=Some(Top)	thr=0x0	falls off the end
+oracle_stacks	8	oracle_unsound	0	oracle_distinct_needed	3
+binding: inputs by method [("internal", 1), ("link-time-sha", 698)]; side files loaded 700
+functions without IR: 3; top inputs:
+casts: 262 tainted functions (15 converted directly, 7 value-conversion types, 5 punned records) [matched along conversion chains]
+table functions without type facts: 0 (e.g. [])
+unknown registries: ["cmp (non-constant callback)", "signal (non-constant callback)"]

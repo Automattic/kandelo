@@ -25,6 +25,32 @@ wasm_require_no_legacy_asyncify() {
     fi
 }
 
+# Remove the compiler facts fork instrumentation reads (`kandelo.calltypes`
+# and `kandelo.calltypes.code-sha256`, docs/sdk-guide.md) from an artifact
+# about to be installed. WHY: they are build inputs, not part of an
+# artifact. wasm-fork-instrument removes them, but a module can reach
+# installation without it: a recipe's own wasm-opt deletes an unused
+# kernel_fork import and keeps the unknown section, or a recipe links with
+# clang or wasm-ld directly instead of the SDK driver. The facts are often
+# larger than the code. The code is left byte-for-byte unchanged.
+wasm_drop_compiler_facts() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 0
+    grep -a -q 'kandelo\.calltypes' "$path" 2>/dev/null || return 0
+    if ! command -v llvm-objcopy >/dev/null 2>&1; then
+        echo "ERROR: $path carries kandelo.calltypes compiler facts and llvm-objcopy is not on PATH to remove them." >&2
+        echo "       Run inside scripts/dev-shell.sh." >&2
+        return 1
+    fi
+    local stripped="$path.facts-dropped.$$"
+    if ! llvm-objcopy --remove-section=kandelo.calltypes \
+        --remove-section=kandelo.calltypes.code-sha256 "$path" "$stripped"; then
+        rm -f "$stripped"
+        return 1
+    fi
+    mv -f "$stripped" "$path"
+}
+
 # Reject unresolved imports in the namespaces Kandelo reserves for itself
 # unless the host deliberately implements that exact API. The SDK linker
 # permits undefined symbols so packages can retain real host/kernel imports.
@@ -1459,7 +1485,14 @@ wasm_has_complete_fork_instrumentation() {
         linked_descriptor fork_capability abort_begin abort_end rewind_begin rewind_end state \
         unwind_begin unwind_end memory_count memory64_count signature_mismatch legacy_dlopen native_start extra <<< "$inventory"
     [ -z "$extra" ] || return 2
-    [ "$frame_reserve$frame_commit$frame_next" = 111 ] || return 1
+    # The linked-frame core is all-or-nothing. All three absent is complete
+    # too: a module with no fork-path frames of its own (wasm-opt removes
+    # the unused imports after instrumentation); the capability section and
+    # control exports below prove the module was instrumented.
+    case "$frame_reserve$frame_commit$frame_next" in
+        111|000) ;;
+        *) return 1 ;;
+    esac
     [ "$linked_descriptor" = 1 ] || return 1
     [ "$fork_capability" = 1 ] || return 1
     wasm_has_activation_state_safe_capability "$path" || return $?
@@ -1589,12 +1622,15 @@ wasm_has_missing_fork_instrumentation() {
         [ "$memory64_count" = 0 ] || return 0
     fi
 
-    # No-seed instrumentation exports an inert runtime and descriptor without
-    # importing frame hooks. A real fork seed or any hook makes the complete
-    # three-import transaction mandatory.
-    if [ "$imports_fork" = 1 ] || [ "$frame_imports" != 000 ]; then
-        [ "$frame_imports" = 111 ] || return 0
-    fi
+    # The three frame hooks are one transaction: all or none. None is also
+    # what an instrumented module with no fork-path frames of its own looks
+    # like after wasm-opt removes the unused hooks, even if it imports fork
+    # (to re-export it); the exports and capability above prove it was
+    # instrumented.
+    case "$frame_imports" in
+        111|000) ;;
+        *) return 0 ;;
+    esac
     return 1
 }
 
@@ -1663,7 +1699,8 @@ wasm_require_fork_instrumentation_if_needed() {
     [ "$unwind_begin" -le 1 ] || duplicates+=(wpk_fork_unwind_begin)
     [ "$unwind_end" -le 1 ] || duplicates+=(wpk_fork_unwind_end)
 
-    if [ "$imports_fork" = 1 ] || [ "$frame_imports" != 000 ]; then
+    # All three frame hooks or none (see wasm_has_missing_fork_instrumentation).
+    if [ "$frame_imports" != 000 ]; then
         [ "$frame_reserve" -ge 1 ] || missing+=(env.__wpk_fork_frame_reserve)
         [ "$frame_commit" -ge 1 ] || missing+=(env.__wpk_fork_frame_commit)
         [ "$frame_next" -ge 1 ] || missing+=(env.__wpk_fork_frame_next)

@@ -510,6 +510,7 @@ install_local_binary() {
             return 2
             ;;
     esac
+    wasm_drop_compiler_facts "$src" || return 1
 
     if [ "$install_local_mirror" = "1" ]; then
         local source_parent

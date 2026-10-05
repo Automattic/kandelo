@@ -1749,6 +1749,18 @@ fn render_ts_module() -> String {
             "WPK_FORK_RESUME_IMPORT_TABLE",
             shared::abi::WPK_FORK_RESUME_IMPORT_TABLE,
         ),
+        (
+            "WPK_FORK_BOUNDARY_IMPORT",
+            shared::abi::WPK_FORK_BOUNDARY_IMPORT,
+        ),
+        (
+            "WPK_FORK_RESUME_SINK_EXPORT",
+            shared::abi::WPK_FORK_RESUME_SINK_EXPORT,
+        ),
+        (
+            "WPK_FORK_BOUNDARIES_SECTION",
+            shared::abi::WPK_FORK_BOUNDARIES_SECTION,
+        ),
     ] {
         out.push_str(&format!("export const {name} = {value:?} as const;\n"));
     }
@@ -6535,7 +6547,7 @@ fn program_artifact() -> Value {
             {"name": "reserved", "offset": 10, "size": 2},
             {"name": "module_name_length", "offset": 12, "size": 4},
             {"name": "field_name_length", "offset": 16, "size": 4},
-            {"name": "import_ordinal", "offset": 20, "size": 4}
+            {"name": "reserved_zero", "offset": 20, "size": 4}
         ]),
     );
     imported_globals.insert("section".into(), json!(WPK_FORK_IMPORTED_GLOBALS_SECTION));
@@ -6565,7 +6577,7 @@ fn program_artifact() -> Value {
             {"name": "reserved", "offset": 10, "size": 2},
             {"name": "module_name_length", "offset": 12, "size": 4},
             {"name": "field_name_length", "offset": 16, "size": 4},
-            {"name": "import_ordinal", "offset": 20, "size": 4}
+            {"name": "reserved_zero", "offset": 20, "size": 4}
         ]),
     );
     imported_tables.insert("section".into(), json!(WPK_FORK_IMPORTED_TABLES_SECTION));

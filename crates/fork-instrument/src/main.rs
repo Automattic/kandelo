@@ -4,7 +4,14 @@
 //!
 //! ```text
 //! wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork]
+//!                      [--post-optimize O2|O1|O3|Os|Oz|none]
 //! ```
+//!
+//! After instrumenting, the CLI runs Binaryen's `wasm-opt` over the result
+//! (`$WASM_OPT`, else `wasm-opt` on PATH). Inputs are expected to be
+//! optimized already, so the full pipeline is wasm-opt -> instrument ->
+//! wasm-opt: the first pass shrinks the call graph the instrumenter has to
+//! cover, and this second pass cleans up the code the instrumenter adds.
 //!
 //! Exits non-zero with a human-readable error on any failure (parse,
 //! validation, or instrumentation). Errors include the input file path
@@ -13,12 +20,13 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::fs;
+use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use fork_instrument::{
-    Options, analyze,
+    Options, analyze, sink_report,
     contract_inventory::{
         artifact_identity, fork_capability_section_hex, fork_contract_inventory,
         linked_frame_descriptor_section_hex, reserved_env_imports,
@@ -47,6 +55,52 @@ struct Cli {
     /// coverage, including downstream fork in another side module.
     #[arg(long, default_value = "kernel.kernel_fork")]
     entry: String,
+
+    /// Instrument the full fork closure instead of stopping the unwind at
+    /// fork boundaries (sinks). For comparison and diagnosis.
+    #[arg(long)]
+    no_sinks: bool,
+
+    /// Research only: instrument the set and boundaries listed in this plan
+    /// file (see `Options::sink_plan`) instead of the built-in sink analysis.
+    #[arg(long, hide = true)]
+    sink_plan: Option<std::path::PathBuf>,
+
+    /// Ignore the compiler facts (`kandelo.calltypes` section) and use the
+    /// sink analysis without them. For diagnosis. The section is removed
+    /// from the output either way.
+    #[arg(long)]
+    no_facts: bool,
+
+    /// With compiler facts: do not apply C's effective-type rule anywhere.
+    /// By default it applies in each unit compiled with strict aliasing (the
+    /// C default) and nowhere else.
+    #[arg(long)]
+    no_effective_types: bool,
+
+    /// For a program that can dlopen: `traced-entries` (default) instruments
+    /// the main program as if no side module returns through a fork child
+    /// into its frames and records that contract so the host refuses side
+    /// modules that could; `assume-all-entries-fork-returning` instruments for
+    /// every side-module entry and loads any library.
+    #[arg(long, default_value = "traced-entries", value_parser = ["traced-entries", "assume-all-entries-fork-returning"])]
+    side_modules: String,
+
+    /// Diagnosis: print which analysis decided the instrumented set
+    /// (`source\t<closure|builtin|facts|plan>`), then the set and its
+    /// boundaries as `A\t<name>` and `B\t<name>` rows (a valid
+    /// `--sink-plan` file). Emits no output file.
+    #[arg(long, hide = true, conflicts_with = "output")]
+    sink_report: bool,
+
+    /// wasm-opt level to run over an instrumented output, or `none`.
+    ///
+    /// Runs only when instrumentation changed the module; a module outside
+    /// any fork transaction is written back byte-for-byte. Names and DWARF
+    /// are kept (`wasm-opt -g`) when the input carried them. `none` exists
+    /// for inspecting the instrumenter's raw output, not for shipping.
+    #[arg(long, default_value = "O2", value_parser = ["O1", "O2", "O3", "Os", "Oz", "none"])]
+    post_optimize: String,
 
     /// Analyze the module and print the discovered fork-path function
     /// set as JSON to stdout. Skips instrumentation and output emission.
@@ -167,7 +221,38 @@ fn main() -> Result<()> {
 
     let opts = Options {
         entry_import: cli.entry,
+        sinks: !cli.no_sinks,
+        sink_plan: cli.sink_plan.clone(),
+        facts: !cli.no_facts,
+        effective_types: !cli.no_effective_types,
+        side_modules: if cli.side_modules == "assume-all-entries-fork-returning" {
+            fork_instrument::SideModules::AssumeAllEntriesForkReturning
+        } else {
+            fork_instrument::SideModules::TracedEntries
+        },
     };
+
+    if cli.sink_report {
+        let report = sink_report(&input, &opts)
+            .with_context(|| format!("analyzing {}", cli.input.display()))?;
+        println!("source\t{}", report.source.as_str());
+        if let Some(f) = &report.facts {
+            println!(
+                "facts\tchunks {} definitions {} defined {} bound {} union {} signature-mismatch {}",
+                f.chunks, f.definitions, f.defined, f.bound, f.bound_to_union, f.signature_mismatch
+            );
+        }
+        if let Some(e) = &report.facts_error {
+            println!("facts-error\t{e}");
+        }
+        for name in &report.instrumented {
+            println!("A\t{name}");
+        }
+        for name in &report.boundaries {
+            println!("B\t{name}");
+        }
+        return Ok(());
+    }
 
     if cli.discover_only {
         let analysis =
@@ -191,8 +276,60 @@ fn main() -> Result<()> {
 
     fs::write(output_path, &output)
         .with_context(|| format!("writing output: {}", output_path.display()))?;
+    // A module outside any fork transaction comes back as the input without
+    // its compiler facts; it was not transformed, so it is not optimized.
+    let untransformed = output == input
+        || fork_instrument::facts::strip_section(&input)?.is_some_and(|stripped| stripped == output);
+    if cli.post_optimize != "none" && !untransformed {
+        post_optimize(output_path, &cli.post_optimize, has_debug_info(&input)?)?;
+    }
     preserve_input_mode(input_mode, output_path)?;
 
+    Ok(())
+}
+
+/// Whether the module carries a name section or DWARF the caller chose to
+/// keep. wasm-opt drops both unless run with `-g`.
+fn has_debug_info(bytes: &[u8]) -> Result<bool> {
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        if let wasmparser::Payload::CustomSection(section) = payload? {
+            if section.name() == "name" || section.name().starts_with(".debug_") {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Optimize the instrumented module in place.
+///
+/// WHY here and not in each build script: this is the one step every fork
+/// artifact passes through, and only it knows whether instrumentation changed
+/// the module. The instrumenter's metadata is position-independent (ABI 46),
+/// so wasm-opt may remove unused imports and renumber functions, globals and
+/// tables. A missing wasm-opt is an error, not a skipped step: the artifact
+/// would differ from what every other build of the same sources produces.
+fn post_optimize(path: &Path, level: &str, keep_debug_info: bool) -> Result<()> {
+    let wasm_opt = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
+    let mut command = Command::new(&wasm_opt);
+    command.arg(path).arg(format!("-{level}"));
+    if keep_debug_info {
+        command.arg("-g");
+    }
+    command.arg("-o").arg(path);
+    let status = command.status().with_context(|| {
+        format!(
+            "running {} after fork instrumentation (Binaryen is required; \
+             run inside scripts/dev-shell.sh or set WASM_OPT)",
+            Path::new(&wasm_opt).display()
+        )
+    })?;
+    anyhow::ensure!(
+        status.success(),
+        "{} -{level} failed on instrumented output {} ({status})",
+        Path::new(&wasm_opt).display(),
+        path.display()
+    );
     Ok(())
 }
 

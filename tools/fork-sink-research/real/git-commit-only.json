@@ -1,0 +1,4 @@
+[["init","-q","/tmp/r"],
+ ["-C","/tmp/r","config","user.email","a@b.c"],
+ ["-C","/tmp/r","config","user.name","A"],
+ ["-C","/tmp/r","commit","-q","--allow-empty","-m","one"]]

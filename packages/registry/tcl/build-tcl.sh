@@ -170,8 +170,7 @@ fi
 # --- Fork instrumentation ---
 # TCL's exec command uses fork(). Apply fork instrumentation to tclsh.
 # wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
-# no onlylist needed. Must run last — it hardcodes mutable-global offsets
-# and any later pass reordering globals would corrupt the fork buffer.
+# no onlylist needed. The tool also runs wasm-opt over the code it adds.
 TCLSH="$INSTALL_DIR/bin/tclsh8.6"
 if [ -f "$TCLSH" ]; then
     FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"

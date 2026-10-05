@@ -798,6 +798,13 @@ These PHP needs are well-handled by the current kernel:
   name. ABI 43 publication and launch guards reject a remaining monolithic
   import or native start section in a completed instrumented artifact; source
   start sections remain supported through the explicit module bootstrap.
+  A fork-instrumented main program built with the default
+  `--side-modules=traced-entries` makes `dlopen` fail, with a `dlerror()`
+  naming the import, for a side module that could reach a function the
+  fork analysis assumed only the main program calls (see "Fork sinks and
+  compiler facts" in [fork-instrumentation.md](fork-instrumentation.md)).
+  Rebuild such a program with `assume-all-entries-fork-returning` to load
+  arbitrary side modules.
   Loader-owned VFS/mapping completions leave caught signals pending, and libc
   performs an ordinary signal-delivery checkpoint after each staged import
   returns and after `dlclose`. RTLD_NEXT lookup is not currently supported.

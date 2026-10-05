@@ -20,7 +20,7 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `43` (see
+ABI version: `46` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
 
@@ -769,6 +769,71 @@ section fell from 1.68 MB to 0.67 MB. Building the crate with
 writes a per-function TSV that attributes every output byte to the emitter
 that produced it; see `crates/fork-instrument/src/size_attribution.rs`.
 
+
+## Optimization around instrumentation
+
+A fork-using program goes through Binaryen's `wasm-opt` twice:
+
+1. **Before instrumentation.** The SDK's `-O` link runs `wasm-opt` (clang
+   schedules it after `wasm-ld`), and some recipes run their own pass.
+   Inlining, dead-function removal and identical-function merging shrink
+   the call graph the instrumenter has to cover. Quickshell's raw link has
+   108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
+2. **After instrumentation.** The CLI runs `wasm-opt -O2` over its own
+   output (`--post-optimize`; `$WASM_OPT`, else `wasm-opt` on PATH). This
+   pass simplifies the dispatch and frame code the transform adds, merges
+   or removes generated helpers, and drops runtime imports nothing calls.
+
+Measured on code-section size (static, captured links, 2026-10-02):
+
+| program | wasm-opt → instrument | + wasm-opt after | instrument → wasm-opt |
+|---|---|---|---|
+| foot | 3,465,173 | −3.3% | −1.8% |
+| bash | 1,611,255 | −3.7% | −3.5% |
+| git | 5,368,248 | −3.9% | −4.9% |
+| python | 8,448,545 | −3.9% | −4.1% |
+| php | 16,888,534 | −5.8% | −5.9% |
+| waybar | 22,532,525 | −4.4% | −1.1% |
+| ruby | 12,769,437 | −3.9% | −4.9% |
+| qtgallery | 11,697,323 | −4.4% | +12.5% |
+| quickshell | 36,978,834 | −4.2% | +18.7% |
+
+Instrumenting the raw link instead (last column) gives up step 1: every
+function of the unoptimized graph gets instrumented, and wasm-opt does not
+recover that afterwards. On C programs the difference is small; on Qt
+programs it is large.
+
+Why a pass after instrumentation is safe:
+
+- The transform is expressed in ordinary Wasm semantics plus calls to the
+  `__wpk_fork_*` imports. wasm-opt preserves the module's observable
+  behaviour, including those calls, stores to the save buffer, and exports.
+- The custom sections the host reads do not depend on positions that
+  wasm-opt changes. Imported globals and tables are identified by kind,
+  module and name (format 2, ABI 46), and owners are bound through named
+  catalog exports.
+- A runtime import nothing calls may be removed. Instrumentation is proven
+  by the capability section, control exports and descriptors, not by
+  imports. Hosts and validators treat every fork-runtime import as optional
+  when absent and exact when present, with two rules: the linked-frame core
+  (`__wpk_fork_frame_reserve`, `commit`, `next`) is all-or-nothing, and a
+  module with frames must import the private unwind tag. A module with no
+  fork-path frames of its own imports neither.
+- The instrumenter scans its output and declares every Wasm feature it
+  uses in `target_features` (`src/target_features.rs`), because wasm-opt
+  enables only declared features. The generated code's needs depend on the
+  input (atomic guards for shared memories, GC codecs only for GC
+  references), so the declaration is derived, not listed.
+- The pass keeps a name section and DWARF (`-g`) when the input had them,
+  and does not run at all when instrumentation left the module unchanged.
+- A missing or failing `wasm-opt` is an error. `--post-optimize none`
+  exists to inspect the transform's raw output; shipped artifacts do not use
+  it.
+
+Do not add `--closed-world` or other whole-program GC type passes after
+instrumentation: they may rewrite the GC types the reference codecs
+describe in `kandelo.wpk_fork.gc_codec`.
+
 ## Dispatch schemes
 
 Every fork-path function uses **one of two dispatch shapes**, chosen by the
@@ -1395,6 +1460,138 @@ cleanup handlers, `atexit` handlers, and qsort-style comparators in the current
 libc output. The broader "instrument every address-taken function" rule from
 the original C3 plan was not needed for this PR and was not added; K-01, K-02,
 K-04, and K-07 cover the current behavior.
+
+## Fork sinks and compiler facts
+
+The closure above is the conservative fork path. By default the instrumenter
+then reduces it with a sink analysis (`crates/fork-instrument/src/sink.rs`):
+a function whose fork child can never return to its caller (it calls `_exit`
+or `exec*`) is a boundary; the parent's unwind stops there and the callers
+above it stay uninstrumented. `--no-sinks` keeps the full closure. The
+design and its measurements are in
+[`plans/2026-10-02-fork-sinks.md`](plans/2026-10-02-fork-sinks.md).
+
+The analysis resolves each `call_indirect` in one of two ways.
+
+- **With compiler facts.** The SDK's KandeloCallTypes clang plugin writes,
+  per object, a text description of the object's functions and call sites
+  (CFI type ids, virtual-call slots, function-pointer conversions, untyped
+  pointer flow per slot, `pthread_cleanup_push` pairs, `jmp_buf` identity,
+  each unit's aliasing mode) into a custom section named `kandelo.calltypes`.
+  wasm-ld concatenates those sections in input order, so the linked module
+  carries one section made of per-object chunks. The link also records
+  `kandelo.calltypes.code-sha256`, the SHA-256 of the code section payload
+  (from the function count to the section end). The instrumenter uses the
+  facts only when that hash matches the code it receives; a tool that
+  rewrites code after linking (a `wasm-opt` run in a package build, for
+  example) keeps unknown custom sections but changes the code, and the facts
+  would then describe the wrong functions. A mismatch or a missing hash
+  prints one line and falls back to the analysis without facts.
+- **Without facts**, call sites match by Wasm signature (plus the musl
+  registry, parameter and constant-slot refinements).
+
+Facts are bound to functions without a linker map. Objects keep their order
+on both sides, so each module function is matched, in index order, to a
+same-named definition in the current or a later chunk; inside one chunk
+functions match by name, because clang does not emit a file's functions in
+the order the plugin lists them. Names that are unique on both sides anchor
+the alignment. The name section holds demangled names only, so one name can
+stand for several definitions: a C++ constructor's or destructor's complete-
+and base-object variants in one object, or same-named file-local functions
+(including linkonce copies) in several objects between two anchors. Such a
+function is bound to all of them and the analysis uses the union of their
+facts (call sites of every variant whose indirect-call signatures match the
+body, every variant's type ids, no registry-hub rule), never a guess by
+order. A pair whose Wasm parameters cannot be the wasm32 lowering of the IR
+parameters (equal count, or extra `i32` for a variadic tail or a 128-bit
+result pointer and `i64` pairs for 128-bit values) is not bound.
+Definitions the link removed are skipped. Functions with no binding
+(linker-synthesized code, objects built without the plugin) are analysed
+without facts: their own indirect calls and their use as targets match by
+Wasm signature.
+
+Known gap: a function-pointer conversion made inside an object without facts
+is invisible to the type rules. If such an object takes the address of a
+function defined in an object with facts and calls it through another C
+type from a site that has facts, that edge is missed. The research results
+were measured with this same per-function fallback; falling back for the
+whole module whenever any object lacks facts would close the gap at the cost
+of the precision. Which objects lack facts is reported by `--sink-report`
+(`bound` against `defined`).
+
+The rules applied with facts: exact CFI type matching except for functions
+the source converts, puns or passes through untyped pointers to another
+function type; C's effective-type rule in units compiled with strict
+aliasing; the musl and libc++ callback registries; `pthread_cleanup_pop`
+running only its own scope's handlers; calls through a `sigaction()`
+old-action global dispatching only registered handlers; and per-buffer
+`longjmp` targets.
+
+Which analysis runs:
+
+| Module | Analysis |
+|---|---|
+| wasm32 main module, `kernel.kernel_fork` entry, facts with a matching hash | with facts |
+| main module that cannot dlopen, facts absent, unreadable, unhashed or stale, or wasm64 | without facts |
+| main module that can dlopen, no usable facts | none (full closure) |
+| side module (`dylink.0` or `--entry env.fork`) | none (full closure) |
+
+A module that can dlopen is analysed with facts too. What it may assume
+about side modules is chosen with `--side-modules`:
+
+- `traced-entries` (the default). The analysis treats a side module as
+  entering the main program only through its imports (an `env` function or
+  a `GOT.func` slot). A function whose fork child can return to a caller is
+  *fork-returning*; it stays instrumented in the callers' frames. The
+  instrumenter records the main module's side of that assumption in a
+  `kandelo.wpk_fork.dlopen_contract` custom section: the exported
+  fork-returning functions, and whether any fork-returning function is in
+  the indirect-call table (`address-taken`). At `dlopen` both hosts read the
+  section (`host/src/fork-side-module-contract.ts`) and refuse, with a
+  `dlerror()` message naming the import, a side module that imports a
+  fork-returning function, or any side module at all when a fork-returning
+  function's address is taken (a side module could then reach it through a
+  function pointer the analysis never saw). The refusal is the real
+  boundary: the main program was compiled to fork correctly only from the
+  calls it could see. Refusing every side module would take `dlopen` away
+  from a program that has it, so when the analysis finds an address-taken
+  fork-returning function the instrumenter prints one line and plans that
+  module for `assume-all-entries-fork-returning` instead.
+- `assume-all-entries-fork-returning`. Any indirect call may enter a side
+  module whose fork child returns anything, so every function whose fork
+  path can pass through a side module stays instrumented and is never a
+  boundary. The contract section says so and the hosts impose no
+  restriction. Use it for a program that must load arbitrary plugins.
+
+Facts that cannot be read, or an
+internal error in the facts analysis, fall back to the analysis without
+facts with a one-line message, never to anything less conservative. The
+`kandelo.calltypes` and `kandelo.calltypes.code-sha256` sections are removed
+from every output, including a module the instrumenter otherwise returns
+unchanged.
+
+Flags:
+
+- `--no-facts` ignores the facts (diagnosis).
+- `--no-effective-types` applies C's effective-type rule nowhere.
+- `--side-modules=traced-entries|assume-all-entries-fork-returning` (above).
+- `--sink-report` (hidden) prints which analysis decided (`source\t<closure|builtin|facts|plan>`),
+  the facts' coverage, and the instrumented set and boundaries as
+  `A\t<name>`/`B\t<name>` rows, which `--sink-plan` (hidden, research) reads
+  back.
+
+Checked against the research tools (`tools/fork-sink-research`) on their
+research links, with the per-object facts concatenated in link order into
+the section (`crates/fork-instrument/examples/facts_equivalence.rs`): for
+foot, git and bash every function's binding is, or (for 141, 51 and 1
+functions bound to a union) contains, the research tools' map-based binding,
+the exported indirect-call targets, cleanup and `jmp_buf` facts are
+byte-identical to theirs, and the instrumented sets and boundaries equal the
+research results (4, 25 and 1,912 distinct names). Those research results
+assume the dlopen contract (`--side-modules=traced-entries`), which only
+bash needs (it can dlopen); with `assume-all-entries-fork-returning` bash
+keeps 1,927 of 1,929 functions. Instrumented binaries
+built through the SDK with embedded facts have not been run yet.
 
 ## Guarantees and non-guarantees
 

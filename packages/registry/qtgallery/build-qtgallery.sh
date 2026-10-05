@@ -53,7 +53,12 @@ ZLIB="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 LIBCXX="${WASM_POSIX_DEP_LIBCXX_DIR:?WASM_POSIX_DEP_LIBCXX_DIR not set}"
 
 source "$REPO_ROOT/sdk/activate.sh"
-export WASM_POSIX_SYSROOT="$REPO_ROOT/sysroot"
+# WHY a private sysroot: the SDK sysroot carries libc only. libc++'s headers
+# live in the resolved libcxx package, so project them over the SDK seed for
+# this build (the pattern every C++ recipe uses), or <type_traits> and the
+# rest of the C++ library are not found.
+WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot qtgallery "$REPO_ROOT/sysroot" libcxx)"
+export WASM_POSIX_SYSROOT
 
 for tool in wasm32posix-c++ wasm-objdump; do
     command -v "$tool" >/dev/null || {

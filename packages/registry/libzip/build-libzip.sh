@@ -317,8 +317,8 @@ fi
     -o "$SMOKE_WASM"
 
 # llvm-nm does not report final WebAssembly imports as undefined symbols.
-# Inspect the actual import section and admit only the fixed Kandelo startup
-# surface. A parser/count mismatch also fails rather than silently blessing a
+# Inspect the actual import section and admit only the imports libc itself
+# declares. A parser/count mismatch also fails rather than silently blessing a
 # newer wasm-objdump format that this audit did not understand.
 import_dump="$(wasm-objdump -x "$SMOKE_WASM")"
 declared_import_count="$(
@@ -340,8 +340,22 @@ if [ -z "$declared_import_count" ] ||
     exit 1
 fi
 
+# WHY these names: every import below is declared by libc's own objects
+# (the syscall glue, the dlopen glue and process startup), not by this
+# package. The smoke links with --no-gc-sections, so each libc object it
+# pulls in keeps all of its functions and their imports whether or not the
+# smoke calls them. Clang's post-link wasm-opt used to delete the unreachable
+# ones; the SDK now skips that wasm-opt on a link that imports
+# kernel.kernel_fork (its compiler facts must describe the code the fork
+# instrumenter sees), so the audit sees libc's full declared surface. Any
+# import outside this list is one this package's members asked for.
 ALLOWED_WASM_IMPORTS=(
     env.__channel_base
+    env.__wasm_dlerror
+    env.__wasm_dlopen_main
+    env.__wasm_dlopen_next
+    env.__wasm_dlopen_prepare
+    env.__wasm_dlsym
     env.memory
     kernel.kernel_apply_fork_fd_actions
     kernel.kernel_argv_read
@@ -350,6 +364,7 @@ ALLOWED_WASM_IMPORTS=(
     kernel.kernel_environ_get
     kernel.kernel_execve
     kernel.kernel_exit
+    kernel.kernel_fork
     kernel.kernel_get_argc
     kernel.kernel_get_fork_exec_argc
     kernel.kernel_get_fork_exec_argv

@@ -240,16 +240,33 @@ audit_wasm_imports() {
     local import_dump declared_import_count wasm_imports parsed_import_count
     local wasm_import required_import allowed candidate
     local unexpected_imports=()
+    # WHY these names: every import below is declared by libc's own objects
+    # (the syscall glue, the dlopen glue and process startup), not by this
+    # package. The smoke links with --no-gc-sections, so each libc object it
+    # pulls in keeps all of its functions and their imports whether or not the
+    # smoke calls them. Clang's post-link wasm-opt used to delete the unreachable
+    # ones; the SDK now skips that wasm-opt on a link that imports
+    # kernel.kernel_fork (its compiler facts must describe the code the fork
+    # instrumenter sees), so the audit sees libc's full declared surface. Any
+    # import outside this list is one this package's members asked for.
     local allowed_imports=(
         env.__channel_base
+        env.__wasm_dlclose
+        env.__wasm_dlerror
+        env.__wasm_dlopen_main
+        env.__wasm_dlopen_next
+        env.__wasm_dlopen_prepare
+        env.__wasm_dlsym
         env.memory
         kernel.kernel_apply_fork_fd_actions
         kernel.kernel_argv_read
         kernel.kernel_clear_fork_exec
+        kernel.kernel_clone
         kernel.kernel_environ_count
         kernel.kernel_environ_get
         kernel.kernel_execve
         kernel.kernel_exit
+        kernel.kernel_fork
         kernel.kernel_get_argc
         kernel.kernel_get_fork_exec_argc
         kernel.kernel_get_fork_exec_argv

@@ -400,6 +400,15 @@
             # prefix and refuse a host/target version mismatch, so it also
             # fixes the version a Qt recipe may declare.
             export QT_HOST_PATH=${qtHostTree}
+            # The SDK builds its KandeloCallTypes compiler plugin
+            # (sdk/src/plugin/build.sh) against the exact LLVM/Clang that
+            # loads it. The headers are separate `dev` outputs that no tool
+            # above references; naming them here makes `nix develop` realize
+            # them, so the build never resolves them ad hoc.
+            export KANDELO_LLVM_DEV=${llvmPkg.llvm.dev}
+            export KANDELO_LLVM_LIB=${llvmPkg.llvm.lib}
+            export KANDELO_CLANG_DEV=${llvmPkg.clang-unwrapped.dev}
+            export KANDELO_CLANG_LIB=${llvmPkg.clang-unwrapped.lib}
             export WASM_POSIX_LLVM_LIBCXX_SOURCE=${llvmPkg.libcxx.src}
             export WASM_POSIX_LLVM_LIBUNWIND_SOURCE=${llvmPkg.libunwind.src}
             ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''

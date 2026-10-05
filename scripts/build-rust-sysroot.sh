@@ -43,6 +43,23 @@ MYSYS="$OUT_DIR/sysroot"
 WRAP="$OUT_DIR/rustc-kandelo"
 FORK_LIBC="$OUT_DIR/libc-kandelo"                       # assembled = upstream + patch (not committed)
 
+# One build per output directory at a time. WHY: callers run this
+# concurrently (rust-std and rust-c-interop are separate Vitest files, and
+# every checkout shares the default $HOME/.kandelo/rust), and a rebuild
+# deletes and recreates the directories a peer is writing. A waiter re-reads
+# the stamp after the lock and skips the build its peer just finished. An
+# flock dies with its holder, so a killed build cannot wedge the next one.
+if [ "${KANDELO_RUST_SYSROOT_LOCK:-}" != "$OUT_DIR" ]; then
+  mkdir -p "$OUT_DIR"
+  KANDELO_RUST_SYSROOT_LOCK="$OUT_DIR" exec python3 -c '
+import fcntl, os, sys
+lock = open(sys.argv[1], "w")
+fcntl.flock(lock, fcntl.LOCK_EX)
+os.set_inheritable(lock.fileno(), True)
+os.execvp(sys.argv[2], sys.argv[2:])
+' "$OUT_DIR/.lock" bash "$0" "$@"
+fi
+
 command -v rustc >/dev/null || { echo "rustc not on PATH; run inside scripts/dev-shell.sh" >&2; exit 1; }
 [ -f "$LIBC_UPSTREAM/Cargo.toml" ] || {
   echo "sdk/rust/libc-upstream not initialized; run: git submodule update --init $LIBC_UPSTREAM" >&2; exit 1; }

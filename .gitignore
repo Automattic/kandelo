@@ -172,3 +172,6 @@ programs/sdl2/third_party/inconsolata_ttf.h
 programs/rust/*/target/
 programs/rust/*/Cargo.lock
 programs/rust/*/*/Cargo.lock
+
+# The SDK's compiler plugin, built on first use (sdk/src/lib/calltypes-plugin.ts).
+/sdk/.build/

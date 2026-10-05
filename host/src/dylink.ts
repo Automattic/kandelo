@@ -7,6 +7,10 @@
  */
 
 import {
+  checkSideModuleForkContract,
+  type ForkSideModuleContract,
+} from "./fork-side-module-contract";
+import {
   ABI_VERSION,
   WPK_FORK_CAPABILITIES_SECTION,
   WPK_FORK_CAPABILITIES_VERSION,
@@ -15,13 +19,13 @@ import {
   WPK_FORK_CAP_KNOWN_MASK,
   WPK_FORK_CAP_SIDE_ENTRY,
   WPK_FORK_REQUIRED_EXPORTS,
-  WPK_FORK_REQUIRED_IMPORTS,
 } from "./generated/abi";
 import {
   describeWasmForkArtifactContractFailures,
   extractAbiVersion,
   readWasmFunctionImports,
   type WasmFunctionImportType,
+  WPK_FORK_CORE_FRAME_IMPORT_NAMES,
 } from "./constants";
 import {
   FORK_UNWIND_TAG_IMPORT_MODULE,
@@ -872,6 +876,12 @@ export interface LoadSharedLibraryOptions {
     name: string,
     requester?: string,
   ) => Uint8Array | null;
+  /**
+   * The main program's fork contract with side modules (see
+   * fork-side-module-contract.ts). Checked for every side module this linker
+   * loads, including dependencies, before any of its code can run.
+   */
+  forkSideModuleContract?: ForkSideModuleContract;
 }
 
 interface DylinkLoadContext {
@@ -1204,6 +1214,11 @@ function* instantiateSharedLibrarySteps(
     registerWasmModuleReflection(module, borrowedModuleBytes);
   }
   const moduleImports = wasmModuleImports(module);
+  checkSideModuleForkContract(
+    name,
+    moduleImports,
+    options.forkSideModuleContract,
+  );
   const moduleExports = wasmModuleExports(module);
   const moduleExportKinds = new Map(
     moduleExports.map((moduleExport) => [
@@ -1228,9 +1243,9 @@ function* instantiateSharedLibrarySteps(
   const importsFork = moduleImports.some((imp) =>
     imp.module === "env" && imp.name === "fork" && imp.kind === "function"
   );
-  const requiredForkFunctionImportNames = WPK_FORK_REQUIRED_IMPORTS
-    .filter(({ module }) => module === "env")
-    .map(({ name }) => name);
+  // Only the linked-frame core is all-or-nothing: wasm-opt may remove the
+  // other fork runtime imports when the module never calls them.
+  const requiredForkFunctionImportNames = WPK_FORK_CORE_FRAME_IMPORT_NAMES;
   const requiredForkFunctionImportCount =
     requiredForkFunctionImportNames.filter((importName) =>
       moduleImports.some((imp) =>
@@ -1368,12 +1383,11 @@ function* instantiateSharedLibrarySteps(
   ) {
     throw new Error(`${name}: incomplete linked fork instrumentation imports; rebuild the module`);
   }
-  if (
-    importsFork
-    && requiredForkFunctionImportCount !== requiredForkFunctionImportNames.length
-  ) {
-    throw new Error(`${name}: env.fork requires ABI 43 linked continuation imports`);
-  }
+  // An env.fork import alone does not require the frame imports: a module
+  // whose code never calls fork itself (it may only re-export the import)
+  // has no frames to save, and wasm-opt removes the unused frame imports.
+  // Code that does call fork is instrumented and keeps them. Instrumentation
+  // itself is proven by the exports checked above.
   if (hasCompleteForkInstrumentation && !options.forkActivationOwner) {
     throw new Error(
       `${name}: fork activation cannot be coordinated: ` +
