@@ -1488,7 +1488,11 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     createdMemoryRegistered = true;
 
     kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
-    const secureExec = kernelWorker.processSecureExec(pid);
+    // Same contention as registerProcess above: the gate can still hold
+    // work another launch queued (its host stdin pipe install, for one), and
+    // the query rejects rather than defers. Retry on a later host turn.
+    const secureExec = await retryKernelEntryResult(() =>
+      kernelWorker.processSecureExec(pid));
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
