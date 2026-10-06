@@ -17,6 +17,8 @@ export function bridgeRemoteSegmentChannels(
   }
   const maxPayload = remoteUdpPayloadLimit(maxMessageSize);
   const maxControlBytes = Math.min(MAX_SEGMENT_CONTROL_BYTES, maxMessageSize === 0 ? Infinity : maxMessageSize);
+  if (maxControlBytes < 128) throw new Error("the peer SCTP ceiling cannot carry segment control");
+  if (udp.readyState !== "open" || control.readyState !== "open") throw new Error("remote segment channels must be open before attaching a worker bridge");
   const { port1, port2 } = new MessageChannel();
   const bridge = new SegmentPortBridge({ port: port1, maxPayload, maxControlBytes });
   const pendingControl: { frame: Uint8Array; release: () => void }[] = [];

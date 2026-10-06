@@ -30,6 +30,10 @@ const fixturesDir = join(__dirname, "fixtures");
 
 const C_TEST_FIXTURES = [
   {
+    src: join(fixturesDir, "udp-state-observation.c"),
+    out: join(fixturesDir, "udp-state-observation.wasm"),
+  },
+  {
     src: join(fixturesDir, "process-memory-reclamation-churn.c"),
     out: join(fixturesDir, "process-memory-reclamation-churn.wasm"),
   },

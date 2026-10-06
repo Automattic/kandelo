@@ -636,6 +636,8 @@ pub struct SocketInfo {
     pub bind_port: u16,
     /// Peer IPv4 address (for connected AF_INET sockets).
     pub peer_addr: [u8; 4],
+    /// Selected source for an IPv4 UDP association with a wildcard binding.
+    pub udp_source_addr: Option<[u8; 4]>,
     /// Peer IPv6 address (for connected AF_INET6 sockets).
     pub peer_addr6: [u8; 16],
     /// Peer port (for connected AF_INET sockets).
@@ -703,6 +705,7 @@ impl SocketInfo {
             bind_addr6: [0; 16],
             bind_port: 0,
             peer_addr: [0; 4],
+            udp_source_addr: None,
             peer_addr6: [0; 16],
             peer_port: 0,
             listen_backlog: Vec::new(),
@@ -785,6 +788,7 @@ impl Clone for SocketInfo {
             bind_addr6: self.bind_addr6,
             bind_port: self.bind_port,
             peer_addr: self.peer_addr,
+            udp_source_addr: self.udp_source_addr,
             peer_addr6: self.peer_addr6,
             peer_port: self.peer_port,
             listen_backlog: Vec::new(), // consume-once: don't double-accept

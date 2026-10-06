@@ -157,6 +157,8 @@ unsafe extern "C" {
         addr_d: u32,
         port: u32,
     ) -> i32;
+    // Nonnegative packed IPv4 address (network byte order), or negative errno.
+    fn host_udp_source_address(a: u32, b: u32, c: u32, d: u32) -> i64;
     fn host_udp_unbind(handle: i32) -> i32;
     fn host_udp_send(
         src_a: u32,
@@ -838,6 +840,19 @@ impl HostIO for WasmHostIO {
 
     fn accept_select(&mut self, accept_wake_idx: u32, pid: u32) -> bool {
         unsafe { host_accept_select(accept_wake_idx, pid) != 0 }
+    }
+
+    fn host_udp_source_address(&mut self, dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
+        let result = unsafe {
+            host_udp_source_address(dst[0] as u32, dst[1] as u32, dst[2] as u32, dst[3] as u32)
+        };
+        if result < 0 {
+            Err(Errno::from_u32((-result) as u32).unwrap_or(Errno::ENETUNREACH))
+        } else if result == 0 || result > u32::MAX as i64 {
+            Err(Errno::EADDRNOTAVAIL)
+        } else {
+            Ok((result as u32).to_be_bytes())
+        }
     }
 
     fn host_udp_bind(&mut self, handle: i32, addr: &[u8; 4], port: u16) -> Result<(), Errno> {

@@ -8,7 +8,8 @@ import { decodeRemoteUdp, encodeRemoteUdp, IPV4_UDP_MAX_PAYLOAD, REMOTE_UDP_HEAD
 
 /** The native MessagePort methods shared by DOM and node:worker_threads. */
 export interface SegmentPort {
-  postMessage(value: unknown, transfer?: ArrayBuffer[]): void;
+  postMessage(value: unknown): void;
+  postMessage(value: unknown, transfer: ArrayBuffer[]): void;
   addEventListener(type: string, listener: (event: any) => void): void;
   removeEventListener(type: string, listener: (event: any) => void): void;
   start(): void;
@@ -69,6 +70,9 @@ export class SegmentPortBridge {
     } catch (error) { this.close(`segment port frame failed: ${String(error)}`); }
   };
   private readonly handleMessageError = () => this.close("segment port deserialization failed");
+  // Node emits close when the opposite worker or native port disappears.
+  // Browser RTC lifecycle also closes explicitly through the proxy protocol.
+  private readonly handlePortClose = () => this.close("the native segment port closed", false);
 
   constructor(readonly descriptor: RemoteSegmentPeer) {
     if (!Number.isInteger(descriptor.maxPayload) || descriptor.maxPayload < 0 || descriptor.maxPayload > IPV4_UDP_MAX_PAYLOAD
@@ -76,6 +80,7 @@ export class SegmentPortBridge {
       || descriptor.maxControlBytes > MAX_SEGMENT_CONTROL_BYTES) throw new Error("invalid segment port limits");
     descriptor.port.addEventListener("message", this.handleMessage);
     descriptor.port.addEventListener("messageerror", this.handleMessageError);
+    descriptor.port.addEventListener("close", this.handlePortClose);
     descriptor.port.start();
   }
 
@@ -100,9 +105,10 @@ export class SegmentPortBridge {
     this.frameListeners.add(listener); return () => { this.frameListeners.delete(listener); };
   }
   onClose(listener: (reason: string) => void): () => void {
-    if (this.closed) queueMicrotask(() => listener(this.closeReason));
+    let subscribed = true;
+    if (this.closed) queueMicrotask(() => { if (subscribed) listener(this.closeReason); });
     else this.closeListeners.add(listener);
-    return () => { this.closeListeners.delete(listener); };
+    return () => { subscribed = false; this.closeListeners.delete(listener); };
   }
   close(reason = "the local segment port closed", notify = true): void {
     if (this.closed) return;
@@ -112,6 +118,7 @@ export class SegmentPortBridge {
     }
     this.descriptor.port.removeEventListener("message", this.handleMessage);
     this.descriptor.port.removeEventListener("messageerror", this.handleMessageError);
+    this.descriptor.port.removeEventListener("close", this.handlePortClose);
     this.descriptor.port.close(); this.pending.clear(); this.pendingBytes = 0;
     for (const listener of [...this.closeListeners]) listener(reason);
     this.closeListeners.clear(); this.frameListeners.clear();

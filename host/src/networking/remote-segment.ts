@@ -24,6 +24,7 @@ export interface RemoteSegmentBinding {
   port: number;
 }
 export type RemoteSegmentControl =
+  | { version: 1; type: "hello" }
   | { version: 1; type: "directory"; self: number; members: RemoteSegmentMember[]; bindings: RemoteSegmentBinding[] }
   | { version: 1; type: "bind"; id: string; addr: number[]; port: number }
   | { version: 1; type: "unbind"; id: string };
@@ -60,11 +61,14 @@ const ownedBindAddress = (addr: unknown, owner: number): addr is number[] =>
 
 function parseControl(value: unknown): RemoteSegmentControl {
   if (new TextEncoder().encode(JSON.stringify(value)).length > MAX_SEGMENT_CONTROL_BYTES) throw new Error("remote segment control exceeds its limit");
-  if (!value || typeof value !== "object" || (value as any).version !== 1) {
+  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 1) {
     throw new Error("invalid remote segment control version");
   }
   const message = value as RemoteSegmentControl;
-  if (message.type === "bind") {
+  if (message.type === "hello") {
+    // Sent after the joiner installs its byte bridge; resend a directory
+    // that may have arrived before its RTC message listener was attached.
+  } else if (message.type === "bind") {
     if (!validEndpoint(message.id) || !validPort(message.port)) throw new Error("invalid remote UDP binding");
   } else if (message.type === "unbind") {
     if (!validEndpoint(message.id)) throw new Error("invalid remote UDP endpoint");
@@ -114,6 +118,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
   });
 
   constructor(readonly role: "host" | "joiner", private readonly fallback?: NetworkIO) {
+    if (role !== "host" && role !== "joiner") throw new Error("invalid remote segment role");
     void this.ready.catch(() => {});
     if (role === "host") {
       this.localId = 1;
@@ -125,11 +130,20 @@ export class RemoteVirtualNetwork implements NetworkIO {
 
   get localAddress(): Uint8Array | undefined { return this.local?.localAddress; }
 
+  udpSourceAddress(destination: Uint8Array): Uint8Array | number {
+    if (this.localAddress && inSegment(destination)) return this.localAddress.slice();
+    return this.fallback?.udpSourceAddress?.(destination) ?? ENETUNREACH;
+  }
+
   attachPeer(transport: RemoteSegmentTransport): number {
     if (this.closed || !validLimit(transport.maxPayload)) throw new Error("invalid or closed remote segment transport");
     if (this.role === "joiner") {
       if (this.peers.size) throw new Error("a joiner has one link to its forwarding host");
       this.installPeer(1, transport);
+      if (!transport.sendControl({ version: 1, type: "hello" })) {
+        this.dropPeer(1, "the remote segment hello could not be admitted");
+        throw new Error("the remote segment hello could not be admitted");
+      }
       return 1;
     }
     if (this.members.size >= MAX_MEMBERS) throw new Error("the remote segment is full");
@@ -139,6 +153,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
     this.attachMember(id);
     this.installPeer(id, transport);
     this.publishDirectory();
+    if (!this.peers.has(id)) throw new Error("the remote peer could not accept its segment directory");
     return id;
   }
 
@@ -175,6 +190,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
       this.installDirectory(message);
       return;
     }
+    if (message.type === "hello") { this.publishDirectory(); return; }
     if (message.type === "directory") throw new Error("a joiner cannot assign segment addresses");
     const key = endpointKey(peer, message.id);
     if (message.type === "unbind") {
@@ -208,13 +224,13 @@ export class RemoteVirtualNetwork implements NetworkIO {
         const backend = this.attachMember(member.id);
         if (member.id === this.localId) this.local = backend;
       }
-      this.members.set(member.id, { ...member });
+      this.members.set(member.id, { id: member.id, maxPayload: member.maxPayload });
     }
     for (const [key, binding] of this.bindings) if (binding.owner !== this.localId) this.bindings.delete(key);
     for (const binding of message.bindings) {
       if (binding.owner === this.localId) continue;
       this.mirrorBinding(binding);
-      this.bindings.set(endpointKey(binding.owner, binding.id), { ...binding, addr: [...binding.addr] });
+      this.bindings.set(endpointKey(binding.owner, binding.id), { owner: binding.owner, id: binding.id, port: binding.port, addr: [...binding.addr] });
     }
     this.resolveReady();
   }
@@ -249,7 +265,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
     for (const [self, transport] of [...this.peers]) {
       if (!transport.sendControl({ version: 1, type: "directory", self,
         members: [...this.members.values()].map((member) => ({ ...member })),
-        bindings: [...this.bindings.values()].map((binding) => ({ ...binding, addr: [...binding.addr] })),
+        bindings: [...this.bindings.values()].map((binding) => ({ owner: binding.owner, id: binding.id, port: binding.port, addr: [...binding.addr] })),
       })) this.dropPeer(self, "the reliable segment control bridge is full");
     }
   }

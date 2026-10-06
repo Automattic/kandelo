@@ -22,3 +22,9 @@ export type {
   HttpResponse,
   SendHttpRequestOptions,
 } from "./in-kernel-http";
+
+export { RemoteVirtualNetwork } from "./remote-segment";
+export type { RemoteSegmentTransport, RemoteSegmentSnapshot } from "./remote-segment";
+export { RemoteSegmentPortTransport } from "./remote-segment-port";
+export type { RemoteSegmentInit, RemoteSegmentPeer, SegmentPort } from "./remote-segment-port";
+export { bridgeRemoteSegmentChannels } from "./remote-segment-browser";

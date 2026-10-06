@@ -2225,6 +2225,36 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
 
 WebRTC or proxy-based external transports should attach as additional `NetworkIO` backends behind the same POSIX socket layer rather than adding host-specific socket APIs visible to guest programs.
 
+`RemoteVirtualNetwork` extends the local backend with a worker-owned IPv4 UDP
+star segment. `RemoteSegmentRuntime` initializes it before the kernel starts,
+so a joiner owns its assigned address before guest processes can run. Both
+`NodeKernelHost` and `BrowserKernel` accept `remoteNetwork` configuration and
+transfer native MessagePorts to their dedicated kernel workers. Attachments and
+snapshots cross the worker protocol; address ownership, forwarding, UDP bindings,
+and error decisions stay in the worker. Paired Node MessagePorts exercise the
+same segment. Node has no built-in WebRTC implementation; the RTC adapter is a
+browser transport boundary.
+
+The browser adapter carries raw unreliable UDP frames and reliable directory
+messages through bounded port bridges. Each direction admits at most 128 frames
+and one MiB of pending bytes. UDP payloads are bounded by 65,507 bytes and the
+negotiated SCTP ceiling minus a 16-byte header. Excess payloads return EMSGSIZE;
+full worker-side admission returns EAGAIN. RTC send-buffer pressure may drop
+admitted UDP frames. Control congestion closes the connection rather than
+silently losing address or binding state. Host forwarding checks ingress source
+ownership and the destination link's payload ceiling. Membership is capped at
+16 machines and 32 UDP bindings per machine. Remote TCP, broadcast, multicast,
+and external raw UDP delivery are outside this segment's current contract.
+
+ABI 48 adds host-selected UDP source addresses and correct next-datagram
+FIONREAD observations, and preserves host EHOSTUNREACH/ENOBUFS errors.
+The kernel no longer assumes one demo's IPv4 subnet:
+non-loopback binds delegate address ownership to HostIO, and wildcard UDP connect
+records the host's real source address for getsockname. AF_UNSPEC disconnect
+restores the wildcard observation. Hosts without a routed interface return
+ENETUNREACH. Programs and images from earlier ABI epochs must be rebuilt; there
+is no stale-artifact compatibility shim.
+
 ## Framebuffer (`/dev/fb0`)
 
 The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, mplayer-fbdev, etc.) runs without source-level changes.

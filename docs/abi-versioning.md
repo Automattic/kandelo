@@ -16,6 +16,23 @@ this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## ABI 48: host-owned UDP source selection
+
+The remote UDP segment exposed kernel assumptions that a routed IPv4 address
+must belong to one hard-coded demo subnet. ABI 48 adds the
+`env.host_udp_source_address(a, b, c, d) -> i64` import. Its four arguments are
+the destination octets; the result is a nonzero packed source IPv4 address in
+network byte order, or negative errno. The host derives it from the worker's
+actual NetworkIO interface. UDP bind validation also delegates non-loopback
+address ownership to HostIO. Connected wildcard sockets retain that selected
+source for getsockname and clear it on AF_UNSPEC disconnect. FIONREAD now
+observes the next queued datagram instead of returning zero for datagram
+sockets. Host EHOSTUNREACH and ENOBUFS also retain their real errno instead
+of being converted to EIO. These socket-semantic changes and the required host
+import need a new ABI epoch, including regenerated constants/snapshot and rebuilt programs,
+packages, and VFS images. Versions 46 and 47 already exist on main, so this
+branch uses 48 rather than reusing an allocated version.
+
 ## ABI staging rollout status
 
 The checked-in ABI staging foundation is local and inert. It defines strict,

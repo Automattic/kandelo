@@ -10336,20 +10336,6 @@ fn bind_device_allows_ipv6(sock: &crate::socket::SocketInfo, addr: [u8; 16]) -> 
     }
 }
 
-fn is_supported_udp_bind_addr(addr: [u8; 4]) -> bool {
-    addr == [0, 0, 0, 0]
-        || is_loopback_addr(addr)
-        || is_virtual_network_addr(addr)
-        || addr == [255, 255, 255, 255]
-}
-
-fn is_supported_udp_route_addr(addr: [u8; 4]) -> bool {
-    addr == [0, 0, 0, 0]
-        || is_loopback_addr(addr)
-        || is_virtual_network_addr(addr)
-        || is_ipv4_multicast_addr(addr)
-}
-
 fn is_virtual_network_addr(addr: [u8; 4]) -> bool {
     addr[0] == 10 && addr[1] == 88
 }
@@ -10576,9 +10562,6 @@ fn udp_bind_socket(
     addr: [u8; 4],
     port: u16,
 ) -> Result<(), Errno> {
-    if !is_supported_udp_bind_addr(addr) {
-        return Err(Errno::EADDRNOTAVAIL);
-    }
     if !bind_device_allows_ipv4(proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?, addr, true) {
         return Err(Errno::EADDRNOTAVAIL);
     }
@@ -11528,7 +11511,17 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
 
     match sock.domain {
-        SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.bind_addr, sock.bind_port)),
+        SocketDomain::Inet => {
+            let address = if sock.sock_type == crate::socket::SocketType::Dgram
+                && sock.state == crate::socket::SocketState::Connected
+                && sock.bind_addr == [0; 4]
+            {
+                sock.udp_source_addr.ok_or(Errno::EADDRNOTAVAIL)?
+            } else {
+                sock.bind_addr
+            };
+            Ok(write_sockaddr_in(buf, address, sock.bind_port))
+        }
         SocketDomain::Inet6 => Ok(write_sockaddr_in6(buf, sock.bind_addr6, sock.bind_port)),
         SocketDomain::Unix => {
             use wasm_posix_shared::socket::AF_UNIX;
@@ -12895,6 +12888,7 @@ pub fn sys_connect(
                 if family == 0 {
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.peer_addr = [0, 0, 0, 0];
+                    sock.udp_source_addr = None;
                     sock.peer_port = 0;
                     sock.connect_error = 0;
                     sock.state = if sock.bind_port == 0 {
@@ -12919,17 +12913,38 @@ pub fn sys_connect(
                         return Err(Errno::EACCES);
                     }
                 }
-                if !is_supported_udp_route_addr(ip) {
-                    return Err(Errno::ENETUNREACH);
-                }
                 if !bind_device_allows_ipv4(sock, ip, false) {
                     return Err(Errno::ENETUNREACH);
                 }
 
+                // Keep the wildcard binding's receive ownership intact while
+                // recording the actual source selected for this association.
+                // The host owns its interface; the kernel must not assume a
+                // demo subnet or invent a routable local address.
+                let routed_source = if is_loopback_addr(ip) {
+                    udp_route_local_addr(ip)
+                } else if is_ipv4_multicast_addr(ip) {
+                    use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_IF};
+                    let selected = sock.get_option(IPPROTO_IP, IP_MULTICAST_IF)
+                        .unwrap_or(0).to_le_bytes();
+                    if is_loopback_addr(selected) {
+                        selected
+                    } else if is_loopback_addr(sock.bind_addr) {
+                        sock.bind_addr
+                    } else if sock.bind_device.as_deref() == Some(b"lo") {
+                        [127, 0, 0, 1]
+                    } else {
+                        host.host_udp_source_address(&ip)?
+                    }
+                } else {
+                    host.host_udp_source_address(&ip)?
+                };
+                let source = if sock.bind_addr != [0; 4] { sock.bind_addr } else { routed_source };
                 udp_ensure_bound(proc, host, sock_idx, udp_route_local_addr(ip))?;
                 {
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.state = SocketState::Connected;
+                    sock.udp_source_addr = Some(source);
                     sock.peer_addr = ip;
                     sock.peer_port = port;
                     sock.connect_error = 0;
@@ -14799,7 +14814,11 @@ pub fn sys_ioctl(
                 if ofd.host_handle < 0 {
                     let sock_idx = (-(ofd.host_handle + 1)) as usize;
                     if let Some(sock) = proc.sockets.get(sock_idx) {
-                        if let Some(recv_idx) = sock.recv_buf_idx {
+                        if sock.sock_type == crate::socket::SocketType::Dgram {
+                            // A datagram is indivisible: report the next packet,
+                            // not the total queue or the stream pipe's bytes.
+                            sock.dgram_queue.first().map(|packet| packet.data.len() as i32).unwrap_or(0)
+                        } else if let Some(recv_idx) = sock.recv_buf_idx {
                             unsafe { crate::pipe::global_pipe_table().get(recv_idx) }
                                 .map(|p| p.available() as i32)
                                 .unwrap_or(0)
@@ -18083,6 +18102,7 @@ mod tests {
         net_connect_status_result: Result<(), Errno>,
         net_send_result: Result<usize, Errno>,
         net_connect_calls: Vec<(i32, Vec<u8>, u16)>,
+        udp_source_result: Result<[u8; 4], Errno>,
         net_listen_calls: Vec<(i32, u16, [u8; 4])>,
         /// Which process may take the next connection off a shared accept
         /// queue. `None` is the unreplicated host, which has no opinion.
@@ -18170,6 +18190,7 @@ mod tests {
                 net_connect_status_result: Err(Errno::ECONNREFUSED),
                 net_send_result: Err(Errno::ENOTCONN),
                 net_connect_calls: Vec::new(),
+                udp_source_result: Err(Errno::ENETUNREACH),
                 net_listen_calls: Vec::new(),
                 accept_winner: None,
                 accept_select_calls: Vec::new(),
@@ -18253,6 +18274,10 @@ mod tests {
     }
 
     impl HostIO for MockHostIO {
+        fn host_udp_source_address(&mut self, _dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
+            self.udp_source_result
+        }
+
         fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno> {
             let handle = self.next_handle;
             self.next_handle += 1;
@@ -28216,6 +28241,7 @@ mod tests {
 
         sys_setsockopt_bindtodevice(&mut proc, fd, b"\0").unwrap();
         assert!(sys_getsockopt_bindtodevice(&proc, fd).unwrap().is_empty());
+        host.udp_source_result = Ok([10, 88, 0, 1]);
         sys_connect(&mut proc, &mut host, fd, &external).unwrap();
 
         let unix = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
@@ -30150,6 +30176,103 @@ mod tests {
         sys_ioctl(&mut proc, &mut host, read_fd, 0x541B, &mut buf).unwrap();
         let avail = i32::from_le_bytes(buf);
         assert_eq!(avail, 5);
+    }
+
+    #[test]
+    fn test_udp_fionread_preserves_next_packet_and_empty_datagrams() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9051);
+        let mut host = MockHostIO::new();
+        let (sender, receiver) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        for payload in [&b"first"[..], &b"second-long"[..], &b""[..], &b"xy"[..]] {
+            sys_send(&mut proc, &mut host, sender, payload, 0).unwrap();
+        }
+        let mut count = [0u8; 4];
+        let mut data = [0u8; 3];
+        for (index, expected) in [5, 11, 0, 2, 0].into_iter().enumerate() {
+            // Repeated observations must neither consume nor sum packets.
+            for _ in 0..2 {
+                sys_ioctl(&mut proc, &mut host, receiver, 0x541B, &mut count).unwrap();
+                assert_eq!(i32::from_le_bytes(count), expected);
+            }
+            if index < 4 {
+                assert_eq!(sys_recv(&mut proc, &mut host, receiver, &mut data, MSG_DONTWAIT).unwrap(), (expected as usize).min(data.len()));
+            }
+        }
+        sys_close(&mut proc, &mut host, sender).unwrap();
+        sys_close(&mut proc, &mut host, receiver).unwrap();
+    }
+
+    #[test]
+    fn test_udp_reconnect_checks_routes_even_after_loopback_auto_bind() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9054);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut destination = [0u8; 16];
+        destination[0] = AF_INET as u8;
+        destination[2..4].copy_from_slice(&9000u16.to_be_bytes());
+        destination[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        sys_connect(&mut proc, &mut host, fd, &destination).unwrap();
+        let mut before = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut before).unwrap();
+        destination[4..8].copy_from_slice(&[8, 8, 8, 8]);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &destination), Err(Errno::ENETUNREACH));
+        let mut after = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut after).unwrap();
+        assert_eq!(before, after);
+        sys_getpeername(&proc, fd, &mut after).unwrap();
+        assert_eq!(&after[4..8], &[127, 0, 0, 1]);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_udp_connected_multicast_uses_the_existing_loopback_interface() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9053);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        sys_setsockopt(&mut proc, fd, IPPROTO_IP, IP_MULTICAST_IF,
+            u32::from_le_bytes([127, 0, 0, 1])).unwrap();
+        let mut destination = [0u8; 16];
+        destination[0] = AF_INET as u8;
+        destination[2..4].copy_from_slice(&9000u16.to_be_bytes());
+        destination[4..8].copy_from_slice(&[239, 1, 2, 3]);
+        sys_connect(&mut proc, &mut host, fd, &destination).unwrap();
+        let mut name = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(&name[4..8], &[127, 0, 0, 1]);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_udp_connect_source_is_host_owned_and_disconnect_restores_binding() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9052);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut wildcard = [0u8; 16];
+        wildcard[0] = AF_INET as u8;
+        sys_bind(&mut proc, &mut host, fd, &wildcard).unwrap();
+        let mut destination = wildcard;
+        destination[2..4].copy_from_slice(&9000u16.to_be_bytes());
+        destination[4..8].copy_from_slice(&[192, 0, 2, 20]);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &destination), Err(Errno::ENETUNREACH));
+        host.udp_source_result = Ok([192, 0, 2, 10]);
+        sys_connect(&mut proc, &mut host, fd, &destination).unwrap();
+        let mut name = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(&name[4..8], &[192, 0, 2, 10]);
+        let port = name[2..4].to_vec();
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        let socket = proc.sockets.get((-(ofd.host_handle + 1)) as usize).unwrap();
+        assert_eq!(socket.bind_addr, [0; 4]);
+        assert_eq!(socket.clone().udp_source_addr, Some([192, 0, 2, 10]));
+        sys_connect(&mut proc, &mut host, fd, &[0u8; 16]).unwrap();
+        sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(&name[4..8], &[0; 4]);
+        assert_eq!(name[2..4], port);
+        sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]

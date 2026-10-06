@@ -1,3 +1,4 @@
+import { RemoteSegmentRuntime } from "./networking/remote-segment-runtime";
 /**
  * Node.js kernel worker entry point — general-purpose, message-based.
  *
@@ -1315,6 +1316,8 @@ function cleanupSessionDir(): void {
   rootfsMemfs = null;
 }
 
+const remoteSegmentRuntime = new RemoteSegmentRuntime();
+
 async function handleInit(msg: InitMessage) {
   initReady = false;
   injectedExecWorkerConstructionFailure = false;
@@ -1367,6 +1370,9 @@ async function handleInit(msg: InitMessage) {
   replicationIO = io instanceof VirtualPlatformIO ? io : null;
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
+  }
+  if (msg.remoteNetwork) {
+    io.network = await remoteSegmentRuntime.initialize(msg.remoteNetwork, io.network);
   }
   if (msg.restoreCheckpoint) {
     if (!io.advanceMonotonicFloor) {
@@ -4342,6 +4348,7 @@ async function performDestroy() {
   }
   await pcmDriver?.close();
   pcmDriver = null;
+  remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
   if (gracefulDetachComplete) {
     try {
@@ -4661,9 +4668,27 @@ function handleWriteVfsFile(
 
 port.on("message", (msg: MainToKernelMessage) => {
   switch (msg.type) {
+    case "remote_network_attach":
+      try {
+        if (!initReady) throw new Error("the kernel is not initialized");
+        respond(msg.requestId, remoteSegmentRuntime.attachPeer(msg.peer));
+      } catch (error) {
+        msg.peer.port.close();
+        respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+      }
+      break;
+    case "remote_network_snapshot":
+      try {
+        if (!initReady) throw new Error("the kernel is not initialized");
+        respond(msg.requestId, remoteSegmentRuntime.snapshot());
+      } catch (error) {
+        respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+      }
+      break;
     case "init":
       void handleInit(msg).catch((error) => {
         cleanupSessionDir();
+        remoteSegmentRuntime.close();
         initReady = false;
         post({
           type: "init_error",

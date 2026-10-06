@@ -775,6 +775,8 @@ export interface KernelCallbacks {
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
   onWaitpid?: (targetPid: number, options: number) => void;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
+  /** Packed IPv4 source in network byte order, or a negative errno. */
+  onUdpSourceAddress?: (destination: [number, number, number, number]) => number;
   onUdpBind?: (handle: number, addr: [number, number, number, number], port: number) => number;
   onUdpUnbind?: (handle: number) => number;
   onStdout?: (data: Uint8Array) => void;
@@ -2078,6 +2080,9 @@ export class WasmPosixKernel {
         },
         host_udp_bind: (handle: number, addrA: number, addrB: number, addrC: number, addrD: number, port: number): number => {
           return this.#hostUdpBind(handle, addrA, addrB, addrC, addrD, port);
+        },
+        host_udp_source_address: (a: number, b: number, c: number, d: number): bigint => {
+          return BigInt(this.callbacks.onUdpSourceAddress?.([a, b, c, d]) ?? -101);
         },
         host_udp_unbind: (handle: number): number => {
           return this.#hostUdpUnbind(handle);
@@ -4733,7 +4738,7 @@ export class WasmPosixKernel {
   }
 
   #hostUdpBind(handle: number, addrA: number, addrB: number, addrC: number, addrD: number, port: number): number {
-    if (!this.callbacks.onUdpBind) return 0;
+    if (!this.callbacks.onUdpBind) return (addrA | addrB | addrC | addrD) === 0 ? 0 : -99;
     return this.callbacks.onUdpBind(handle, [addrA, addrB, addrC, addrD], port);
   }
 

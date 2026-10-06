@@ -252,6 +252,8 @@ export class LocalVirtualNetwork {
     backend.resetAllConnections();
   }
 
+  hasAddress(addr: Uint8Array): boolean { return this.addressOwners.has(ipKey(addr)); }
+
   resolve(hostname: string): Uint8Array | null {
     const direct = parseNumericIpv4Hostname(hostname);
     if (direct) return direct;
@@ -418,6 +420,10 @@ export class VirtualNetworkBackend implements NetworkIO {
     private readonly machineId: string,
     readonly localAddress: Uint8Array,
   ) {}
+
+  udpSourceAddress(destination: Uint8Array): Uint8Array | number {
+    return this.network.hasAddress(destination) ? copyAddr(this.localAddress) : 101;
+  }
 
   connect(handle: number, addr: Uint8Array, port: number): void {
     if (this.connections.has(handle)) {

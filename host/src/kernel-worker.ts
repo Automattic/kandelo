@@ -456,6 +456,7 @@ const EACCES = 13;
 const EBADF = 9;
 const EBUSY = 16;
 const EADDRNOTAVAIL = 99;
+const ENETUNREACH = 101;
 const EEXIST = 17;
 const EFAULT = 14;
 const EIO = 5;
@@ -3547,9 +3548,21 @@ export class CentralizedKernelWorker {
         );
         return 0;
       },
+      onUdpSourceAddress: (destination: [number, number, number, number]): number => {
+        const selected = this.io.network?.udpSourceAddress?.(new Uint8Array(destination));
+        if (typeof selected === "number") return -selected;
+        const address = selected;
+        if (address?.length !== 4 || address.every((octet) => octet === 0)) return -ENETUNREACH;
+        return ((address[0] << 24) | (address[1] << 16) | (address[2] << 8) | address[3]) >>> 0;
+      },
       onUdpBind: (handle: number, addr: [number, number, number, number], port: number): number => {
         const pid = this.currentHandlePid;
-        if (pid === 0 || !this.io.network?.bindUdp) return 0;
+        if (pid === 0) return -EINVAL;
+        if (!this.io.network?.bindUdp) {
+          // An absent external adapter still permits the kernel's wildcard
+          // loopback sockets; it cannot authenticate a nonlocal address.
+          return addr.every((octet) => octet === 0) ? 0 : -EADDRNOTAVAIL;
+        }
         const key = `${pid}:${handle}`;
         const result = this.io.network.bindUdp(
           key,
