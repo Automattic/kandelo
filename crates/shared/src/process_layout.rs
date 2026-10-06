@@ -21,12 +21,12 @@ pub const fn select(pointer_width: u32, wasm32: u32, wasm64: u32) -> Option<u32>
 
 /// Caller-native musl `struct iovec`.
 ///
-/// This is deliberately distinct from the kernel-scratch [`KernelIovecWire`]
+/// This is deliberately distinct from the fixed u32-pointer iovec the kernel
+/// once read out of its own scratch
 /// record. A single wasm32 kernel can serve wasm32 and wasm64 callers, so the
 /// host must decode the caller-native table before constructing the fixed
 /// kernel wire.
 ///
-/// [`KernelIovecWire`]: crate::KernelIovecWire
 pub mod iovec {
     pub const WASM32_SIZE: u32 = 8;
     pub const WASM32_BASE_OFFSET: u32 = 0;
@@ -66,10 +66,9 @@ pub mod msghdr {
 ///
 /// The wasm64 header has a four-byte pad after `cmsg_len`, and successive
 /// records are aligned to eight bytes. Kernel scratch instead uses the fixed
-/// [`KernelCmsghdrWire`] layout, so host translation must use these generated
+/// wasm32 `cmsghdr` layout, so any translation must use these generated
 /// values in both directions.
 ///
-/// [`KernelCmsghdrWire`]: crate::KernelCmsghdrWire
 pub mod cmsghdr {
     pub const WASM32_SIZE: u32 = 12;
     pub const WASM32_ALIGN: u32 = 4;

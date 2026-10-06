@@ -1073,6 +1073,8 @@ describe("exec host-state transition", () => {
         exports: {
           kernel_spawn_process: () => 100,
           kernel_remove_process: vi.fn(),
+          // Registration hands the kernel the child's data model.
+          kernel_set_process_pointer_width: () => 0,
           kernel_get_fd_accept_wake_idx: (_pid: number, fd: number) =>
             fd === 4 ? 41 : -1,
           kernel_find_listener_fd_by_accept_wake:
