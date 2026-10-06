@@ -39,7 +39,13 @@ case "$OUTPUT_FILE/" in
 esac
 
 TMP_DIR="$(mktemp -d "$OUTPUT_FILE.tmp.XXXXXX")"
-trap 'rm -rf -- "$TMP_DIR"' EXIT
+cleanup() {
+    # The mirror carries source directory modes until normalization, so a run
+    # that fails in between can hold read-only directories rm cannot empty.
+    find "$TMP_DIR" -type d ! -perm -700 -exec chmod u+rwx {} + 2>/dev/null || true
+    rm -rf -- "$TMP_DIR"
+}
+trap cleanup EXIT
 MIRROR_DIR="$TMP_DIR/staging"
 ENTRY_LIST="$TMP_DIR/entries.txt"
 TMP_OUTPUT="$TMP_DIR/archive.zip"

@@ -8,6 +8,7 @@ import {
   lutimesSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   rmSync,
@@ -485,6 +486,36 @@ describe("declared shell lazy-archive inputs", () => {
     );
     expect(existsSync(output)).toBe(false);
   });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "removes its private mirror when copying from a read-only directory fails",
+    () => {
+      const sourceRoot = tempDir();
+      const outputRoot = tempDir();
+      const readOnly = join(sourceRoot, "read-only");
+      mkdirSync(readOnly);
+      writeFileSync(join(readOnly, "readable"), "readable\n");
+      writeFileSync(join(readOnly, "unreadable"), "unreadable\n");
+      chmodSync(join(readOnly, "unreadable"), 0o000);
+      chmodSync(readOnly, 0o555);
+
+      const helper = join(
+        repoRoot,
+        "images/vfs/scripts/create-deterministic-zip.sh",
+      );
+      try {
+        const result = spawnSync(
+          "bash",
+          [helper, sourceRoot, join(outputRoot, "invalid.zip")],
+          { cwd: repoRoot, encoding: "utf8" },
+        );
+        expect(result.status).not.toBe(0);
+        expect(readdirSync(outputRoot)).toEqual([]);
+      } finally {
+        chmodSync(readOnly, 0o755);
+      }
+    },
+  );
 
   it("rejects names that cannot be represented by the ZIP entry list", () => {
     const sourceRoot = tempDir();
