@@ -7158,6 +7158,47 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   /**
+   * Read standalone lazy-file transport hints without allocating a VFS SAB.
+   * These are not inode authority: normal worker restoration still validates
+   * each entry against the image's filesystem identity before using it.
+   */
+  static readImageLazyFileSources(
+    image: Uint8Array,
+  ): Array<{ url: string; size: number }> {
+    const parsed = parseImageHeader(image);
+    const sections = sectionOffsetAfterArchives(
+      parsed.image, parsed.view, parsed.flags, parsed.sabLen,
+    );
+    if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_LAZY)) {
+      if (sections.lazyLen !== 0) {
+        throw new Error("VFS image has lazy metadata without its format flag");
+      }
+      return [];
+    }
+    if (sections.lazyLen === 0) return [];
+    const offset = VFS_IMAGE_HEADER_SIZE + parsed.sabLen + 4;
+    const entries = requireLazyTreeArray(
+      decodeJsonSection(
+        parsed.image.subarray(offset, offset + sections.lazyLen),
+        "VFS image lazy metadata",
+      ),
+      "VFS image lazy entries", 0, MAX_LAZY_TREE_ENTRIES,
+    );
+    return entries.map((entry) => {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        throw new Error("VFS image lazy file source must be an object");
+      }
+      const source = entry as Record<string, unknown>;
+      return {
+        url: requireLazyTreeString(source.url, "lazy file URL", 8192),
+        size: requireLazyTreeInteger(
+          source.size, "lazy file size", 0, Number.MAX_SAFE_INTEGER,
+        ),
+      };
+    });
+  }
+
+  /**
    * Validate an image's optional kernel ABI declaration. Images without a
    * `kernelAbi` declaration are accepted so legacy/data-only images keep
    * loading; callers that require an explicit declaration should check

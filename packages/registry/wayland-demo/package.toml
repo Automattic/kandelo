@@ -48,7 +48,7 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 # wpkdraw embeds its font by generating a C byte array from the vendored TTF.
 [[host_tools]]
 name = "python3"
-version_constraint = ">=3.8"
+version_constraint = ">=3.11"
 probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

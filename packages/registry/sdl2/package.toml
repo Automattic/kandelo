@@ -38,7 +38,7 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 
 [[host_tools]]
 name = "patch"
-version_constraint = ">=2.0"
+version_constraint = ">=2.7"
 probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

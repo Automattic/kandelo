@@ -15,8 +15,10 @@ mkdir -p "$repo/.context"
 cd "$repo"
 
 start=$(date +%s)
-scripts/dev-shell.sh bash -lc '
+scripts/dev-shell.sh bash -c '
   set -euo pipefail
+  # Login startup files can prepend host tools after Nix constructs its PATH.
+  export PATH="$KANDELO_DEV_SHELL_TOOL_PATH"
   host_target=$(rustc -vV | sed -n "s/^host: //p")
   cargo run -q -p xtask --target "$host_target" -- build-deps resolve "$1" \
     --arch "$2" --binaries-dir "$(pwd)/binaries"

@@ -12,7 +12,7 @@ depends_on = ["freetype@2.13.3", "libxml2@2.13.8"]
 # fcobjshash.h is generated at build time — the release tarball ships
 # only the .gperf input.
 name = "gperf"
-version_constraint = ">=3.0"
+version_constraint = ">=3.1"
 probe = { args = ["--version"], version_regex = "GNU gperf (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "provided by flake.nix (pkgs.gperf); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.gperf); or apt install gperf" }
 

@@ -1916,6 +1916,23 @@ both mapping sources. Without a rootfs image, the worker falls back to raw
 `NodePlatformIO` (every host path reachable) — kept for legacy callers that
 have not migrated.
 
+The CLI runner's `KANDELO_RUNNER_VFS=isolated` mode snapshots the canonical
+rootfs and binds every standalone lazy-file URL to its locally resolved
+package artifact. It reads transport hints without constructing a VFS
+`SharedArrayBuffer` on the main thread. The worker still restores the image
+and validates its inode identities normally; byte bindings supply transport,
+not executable authority. The closed transport verifies size and SHA-256 and
+rejects unbound URLs instead of fetching from the network. Missing artifacts
+or an image/artifact size mismatch fail before boot with a provisioning
+diagnostic. This keeps libc, POSIX, and Sortix runs on the same VFS-backed
+shell and utility paths as the canonical image, including lazy `/bin/sh`.
+The libc harness sets `KANDELO_RUNNER_BUILTINS=explicit`: its helper files
+are staged in owned scratch, and its system tools come from the rootfs.
+Unrelated optional convenience packages are not probed before each case.
+Unexpected test timeouts fail the libc harness command, just as unexpected
+exits and build failures do. Expected and classified flaky timeouts retain
+their separate result categories.
+
 ### Browser host
 
 `BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top. Browser networking then replaces `/etc/ssl/certs/ca-certificates.crt` with its generated per-session MITM root; the image-owned OpenSSL configuration and compiled-in `/etc/ssl/cert.pem` trust path remain unchanged.

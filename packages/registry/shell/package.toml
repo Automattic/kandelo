@@ -71,6 +71,6 @@ wasm = "shell.vfs.zst"
 
 [[host_tools]]
 name = "node"
-version_constraint = ">=20.0"
+version_constraint = ">=22.0"
 probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

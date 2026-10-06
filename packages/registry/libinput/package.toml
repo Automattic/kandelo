@@ -57,7 +57,7 @@ files = ["share/libinput-quirks.zip"]
 # Packs the device-quirks data into its declared zip.
 [[host_tools]]
 name = "python3"
-version_constraint = ">=3.8"
+version_constraint = ">=3.11"
 probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

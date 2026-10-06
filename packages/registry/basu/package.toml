@@ -16,13 +16,13 @@ depends_on = []
 # The errno lookup tables ship as .gperf inputs, not outputs.
 name = "gperf"
 version_constraint = ">=3.1"
-probe = { args = ["--version"], version_regex = "GNU gperf (\\d+\\.\\d+)" }
+probe = { args = ["--version"], version_regex = "GNU gperf (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "provided by flake.nix (pkgs.gperf); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.gperf); or apt install gperf" }
 
 [[host_tools]]
 # generate-gperfs.py turns the errno list into the .gperf input.
 name = "python3"
-version_constraint = ">=3.8"
+version_constraint = ">=3.11"
 probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "provided by flake.nix (pkgs.python3); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.python3); or apt install python3" }
 

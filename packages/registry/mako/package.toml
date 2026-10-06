@@ -40,7 +40,7 @@ depends_on = [
 # against (xdg-shell, cursor-shape, xdg-activation, tablet-v2 from the
 # vendored wayland-protocols set; wlr-layer-shell from mako's tree).
 name = "wayland-scanner"
-version_constraint = ">=1.20"
+version_constraint = ">=1.24"
 probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); or apt install wayland-utils" }
 
