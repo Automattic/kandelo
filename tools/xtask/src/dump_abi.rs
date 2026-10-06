@@ -3003,6 +3003,10 @@ fn render_ts_module() -> String {
         shared::process_memory::THREAD_SLOT_DECL_EXPORT
     ));
     out.push_str(&format!(
+        "export const PROCESS_MEMORY_THREAD_SLOT_PREALLOCATE_EXPORT = {:?} as const;\n",
+        shared::process_memory::THREAD_SLOT_PREALLOCATE_EXPORT
+    ));
+    out.push_str(&format!(
         "export const PROCESS_MEMORY_LEGACY_MMAP_BASE = {} as const;\n",
         shared::process_memory::LEGACY_MMAP_BASE
     ));
@@ -4789,6 +4793,10 @@ fn process_memory_layout() -> Value {
     declarations.insert(
         "thread_slot_export".into(),
         json!(pm::THREAD_SLOT_DECL_EXPORT),
+    );
+    declarations.insert(
+        "thread_slot_preallocate_export".into(),
+        json!(pm::THREAD_SLOT_PREALLOCATE_EXPORT),
     );
     declarations.insert(
         "use_host_default".into(),
