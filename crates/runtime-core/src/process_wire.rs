@@ -734,7 +734,8 @@ pub fn write_stat(bytes: &mut [u8], stat: &WasmStat) -> Result<(), Errno> {
     write_u64(bytes, MTIME_SEC_OFFSET as usize, stat.st_mtime_sec)?;
     write_u32(bytes, MTIME_NSEC_OFFSET as usize, stat.st_mtime_nsec)?;
     write_u64(bytes, CTIME_SEC_OFFSET as usize, stat.st_ctime_sec)?;
-    write_u32(bytes, CTIME_NSEC_OFFSET as usize, stat.st_ctime_nsec)
+    write_u32(bytes, CTIME_NSEC_OFFSET as usize, stat.st_ctime_nsec)?;
+    write_u64(bytes, RDEV_OFFSET as usize, stat.st_rdev)
 }
 
 pub fn read_sched_param(bytes: &[u8]) -> Result<NativeSchedParam, Errno> {
@@ -1274,6 +1275,7 @@ mod tests {
             st_ctime_sec: 0x3132_3334_3536_3738,
             st_ctime_nsec: 0x4142_4344,
             _pad: 0,
+            st_rdev: 0x5152_5354_5556_5758,
         }
     }
 
@@ -1299,11 +1301,15 @@ mod tests {
             read_u32(bytes, process_layout::stat::CTIME_NSEC_OFFSET as usize).unwrap(),
             stat.st_ctime_nsec
         );
+        assert_eq!(
+            read_u64(bytes, process_layout::stat::RDEV_OFFSET as usize).unwrap(),
+            stat.st_rdev
+        );
         assert!(
-            bytes[process_layout::stat::RDEV_OFFSET as usize..]
+            bytes[process_layout::stat::BLKSIZE_OFFSET as usize..]
                 .iter()
                 .all(|byte| *byte == 0),
-            "unsupported rdev/blksize/blocks and their padding must be initialized"
+            "unsupported blksize/blocks and their padding must be initialized"
         );
 
         let mut short = alloc::vec![0; size - 1];

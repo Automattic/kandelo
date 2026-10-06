@@ -20,6 +20,7 @@ import type {
 } from "./vfs/closed-lazy-assets";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
+import type { InputEvent } from "./input/input-source";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -53,7 +54,7 @@ export interface InitMessage {
    */
   execProgramBytes?: Record<string, ArrayBuffer>;
   /**
-   * Bytes of `host/wasm/rootfs.vfs`, read on the main thread and forwarded
+   * Bytes of `host/wasm/rootfs.vfs.zst`, read on the main thread and forwarded
    * to the worker. When present, the worker materialises the default mount
    * spec (rootfs at `/`, scratch dirs at `/tmp` etc.) and constructs a
    * `VirtualPlatformIO`. Absent → worker falls back to `NodePlatformIO`
@@ -95,8 +96,6 @@ export interface SpawnMessage {
    */
   programBytes?: ArrayBuffer;
   programPath?: string;
-  /** Optional pre-compiled module for the same bytes. */
-  programModule?: WebAssembly.Module;
   argv: string[];
   env?: string[];
   cwd?: string;
@@ -252,6 +251,12 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
+/** Read the kernel worker's compiled-module cache counters. */
+export interface GetWasmModuleCacheStatsRequestMessage {
+  type: "get_wasm_module_cache_stats";
+  requestId: number;
+}
+
 /** Read the retained capacity of the kernel-owned large-spawn region. */
 export interface GetSpawnScratchCapacityRequestMessage {
   type: "get_spawn_scratch_capacity";
@@ -324,7 +329,7 @@ export interface KmsAttachCanvasMessage {
   crtcId: number;
   canvas: OffscreenCanvas;
   stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" };
+  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" };
 }
 
 /** Register a stats SAB for a CRTC without binding a scanout canvas. */
@@ -332,6 +337,80 @@ export interface KmsAttachStatsMessage {
   type: "kms_attach_stats";
   crtcId: number;
   stats: SharedArrayBuffer;
+}
+
+/** Report the display size (device pixels) of a CRTC's canvas element.
+ *  Mirrors the Browser-side message. Feeds the virtual connector's
+ *  PREFERRED mode and (with an OffscreenCanvas polyfill) the
+ *  `webgl2-scanout` presenter's drawing-buffer size. */
+export interface KmsSetDisplaySizeMessage {
+  type: "kms_set_display_size";
+  crtcId: number;
+  width: number;
+  height: number;
+  /** The display's physical size in millimetres, when the embedder knows
+   *  it; the kernel reports it on the DRM connector (mm_width/mm_height). */
+  physicalMm?: { width: number; height: number };
+}
+
+/**
+ * Main-thread → kernel-worker evdev injection. Mirrors the Browser-side
+ * `InputEventInjectMessage`. Under Node there is no DOM, so production
+ * traffic on this channel comes from tests / headless drivers; the
+ * Node-side `NodeInputSource` is a null-source. Routes to
+ * `CentralizedKernelWorker.injectInputEvent`.
+ */
+export interface InputEventInjectMessage {
+  type: "input_event_inject";
+  device: 0 | 1;
+  ev_type: number;
+  code: number;
+  value: number;
+}
+
+/**
+ * Main-thread → kernel-worker batched evdev injection. Mirrors the
+ * Browser-side `InputEventBatchInjectMessage`: one `SYN_REPORT` frame per
+ * message, so the worker runs a single kernel entry and wake scan for the
+ * whole frame. Routes to `CentralizedKernelWorker.injectInputEventBatch`.
+ */
+export interface InputEventBatchInjectMessage {
+  type: "input_event_batch_inject";
+  records: InputEvent[];
+}
+
+/**
+ * Main-thread → kernel-worker canvas-dims update. Mirrors the
+ * Browser-side `SetInputCanvasDimsMessage`. Sets `ABS_X.maximum` /
+ * `ABS_Y.maximum` reported by EVIOCGABS on `/dev/input/event1`.
+ */
+export interface SetInputCanvasDimsMessage {
+  type: "set_input_canvas_dims";
+  width: number;
+  height: number;
+}
+
+/**
+ * Offer host clipboard text to the guest's clipboard agent through
+ * `/dev/kandelo/clipboard`. Answered with a `ClipboardOfferResult` once the
+ * agent installs it, or with the reason it could not.
+ */
+export interface ClipboardOfferMessage {
+  type: "clipboard_offer";
+  requestId: number;
+  /** UTF-8, line endings already normalized (`encodeClipboardText`). */
+  text: Uint8Array;
+  timeoutMs?: number;
+}
+
+/**
+ * Copy-out: answer with the next desktop selection the guest's clipboard
+ * agent reports (a `GuestClipboardResult`). Sent before the copy chord.
+ */
+export interface ClipboardGuestWaitMessage {
+  type: "clipboard_guest_wait";
+  requestId: number;
+  timeoutMs?: number;
 }
 
 export type MainToKernelMessage =
@@ -353,10 +432,13 @@ export type MainToKernelMessage =
   | TerminateProcessMessage
   | DestroyMessage
   | ExportRootfsImageMessage
+  | ClipboardOfferMessage
+  | ClipboardGuestWaitMessage
   | ReadVfsFileMessage
   | WriteVfsFileMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetWasmModuleCacheStatsRequestMessage
   | GetSpawnScratchCapacityRequestMessage
   | SignalProcessMessage
   | ResolveExecResponseMessage
@@ -366,7 +448,11 @@ export type MainToKernelMessage =
   | DrainSyscallTraceMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
-  | KmsAttachStatsMessage;
+  | KmsAttachStatsMessage
+  | KmsSetDisplaySizeMessage
+  | InputEventInjectMessage
+  | InputEventBatchInjectMessage
+  | SetInputCanvasDimsMessage;
 
 // ── Kernel Worker → Main Thread ──
 
@@ -429,6 +515,28 @@ export interface LazyDownloadMessage {
   event: LazyDownloadEvent;
 }
 
+/** Which teardown step `performDestroy` is in. */
+export type DestroyPhase = "draining" | "terminating";
+
+/**
+ * Cumulative teardown progress. Counts processes, not bytes.
+ *
+ * `total` is a lower bound while `totalProvisional` is true: the drain phase
+ * knows only the processes it woke, and the terminate phase adds stragglers it
+ * discovers afterwards. `completed` never resets between phases.
+ */
+export interface DestroyProgressEvent {
+  phase: DestroyPhase;
+  completed: number;
+  total: number;
+  totalProvisional: boolean;
+}
+
+export interface DestroyProgressMessage {
+  type: "destroy_progress";
+  event: DestroyProgressEvent;
+}
+
 /**
  * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
  * browser-side ProcEventMessage. Exit events come via the existing
@@ -451,4 +559,5 @@ export type KernelToMainMessage =
   | PtyOutputMessage
   | ResolveExecRequestMessage
   | ProcEventMessage
-  | LazyDownloadMessage;
+  | LazyDownloadMessage
+  | DestroyProgressMessage;

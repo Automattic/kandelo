@@ -1256,6 +1256,99 @@ __int128 __multi3(__int128 a, __int128 b) {
     return result.i;
 }
 
+/* ===== 128-bit integer division and modulo =====
+ *
+ * Clang lowers every __int128 `/` and `%` to these builtins. The toolchain
+ * ships no compiler-rt builtins archive for wasm, so without them a program
+ * that divides 128-bit integers links (the SDK allows undefined symbols) and
+ * then traps on the missing host import. Restoring shift-subtract division
+ * on the 64-bit-half helpers above keeps this file free of calls back into
+ * compiler-rt. Division by zero traps, as wasm's own integer division does.
+ */
+static uint128_t_ u128_divmod(uint128_t_ a, uint128_t_ b, uint128_t_ *rem) {
+    uint128_t_ q = {0, 0};
+    if (u128_is_zero(b)) __builtin_trap();
+    if (a.hi == 0 && b.hi == 0) {
+        q.lo = a.lo / b.lo;
+        if (rem) { rem->lo = a.lo % b.lo; rem->hi = 0; }
+        return q;
+    }
+    if (!u128_ge(a, b)) {
+        if (rem) *rem = a;
+        return q;
+    }
+    int shift = u128_clz(b) - u128_clz(a);
+    b = u128_shl(b, shift);
+    for (int i = 0; i <= shift; i++) {
+        q = u128_shl(q, 1);
+        if (u128_ge(a, b)) {
+            a = u128_sub(a, b);
+            q.lo |= 1;
+        }
+        b = u128_shr(b, 1);
+    }
+    if (rem) *rem = a;
+    return q;
+}
+
+static uint128_t_ u128_from_bits(__int128 v) {
+    i128_bits b;
+    b.i = v;
+    uint128_t_ r = {b.parts.lo, b.parts.hi};
+    return r;
+}
+
+static __int128 u128_to_bits(uint128_t_ v) {
+    i128_bits b;
+    b.parts.lo = v.lo;
+    b.parts.hi = v.hi;
+    return b.i;
+}
+
+/* Two's-complement magnitude; correct for INT128_MIN as well. */
+static uint128_t_ u128_abs_signed(__int128 v) {
+    uint128_t_ u = u128_from_bits(v);
+    if ((int64_t)u.hi >= 0) return u;
+    return u128_add(u128_not(u), u128_from64(1));
+}
+
+static uint128_t_ u128_negate(uint128_t_ v) {
+    return u128_add(u128_not(v), u128_from64(1));
+}
+
+unsigned __int128 __udivmodti4(unsigned __int128 a, unsigned __int128 b,
+                               unsigned __int128 *rem) {
+    uint128_t_ r;
+    uint128_t_ q = u128_divmod(u128_from_bits((__int128)a),
+                               u128_from_bits((__int128)b), &r);
+    if (rem) *rem = (unsigned __int128)u128_to_bits(r);
+    return (unsigned __int128)u128_to_bits(q);
+}
+
+unsigned __int128 __udivti3(unsigned __int128 a, unsigned __int128 b) {
+    return (unsigned __int128)u128_to_bits(
+        u128_divmod(u128_from_bits((__int128)a), u128_from_bits((__int128)b), 0));
+}
+
+unsigned __int128 __umodti3(unsigned __int128 a, unsigned __int128 b) {
+    uint128_t_ r;
+    u128_divmod(u128_from_bits((__int128)a), u128_from_bits((__int128)b), &r);
+    return (unsigned __int128)u128_to_bits(r);
+}
+
+/* C truncates toward zero: the quotient is negative when the signs differ
+ * and the remainder takes the dividend's sign. */
+__int128 __divti3(__int128 a, __int128 b) {
+    uint128_t_ q = u128_divmod(u128_abs_signed(a), u128_abs_signed(b), 0);
+    return u128_to_bits(((a < 0) != (b < 0)) ? u128_negate(q) : q);
+}
+
+__int128 __modti3(__int128 a, __int128 b) {
+    uint128_t_ r;
+    u128_divmod(u128_abs_signed(a), u128_abs_signed(b), &r);
+    return u128_to_bits(a < 0 ? u128_negate(r) : r);
+}
+
 #ifdef __cplusplus
 }
 #endif

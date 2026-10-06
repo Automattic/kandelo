@@ -3,19 +3,32 @@
 // vblank pump. Stats slot layout is set by tickVblank in kernel-worker.ts.
 
 import * as React from "react";
-import { useKernelHost, useStatus } from "../kernel-host/react";
-import type { KmsDisplayHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import { useDemoIngest, useKernelHost, usePresentation, useStatus } from "../kernel-host/react";
+import {
+  KMS_PRIMARY_CRTC,
+  type KmsDisplayHandle,
+} from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import {
+  runDemoIngest,
+  type IngestPhase,
+} from "../../../../../web-libs/kandelo-session/src/demo-ingest";
+import { describeClipboardPasteFailure } from "../../../../../web-libs/kandelo-session/src/clipboard-paste";
 import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
-import { DemoSurfaceDockControls } from "./Framebuffer";
+import { DemoSurfaceDockControls, IngestControl } from "./Framebuffer";
+import { useDockActions } from "./DockActions";
 import { useFittedCanvasStyle } from "./canvasFit";
 
 // modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
 // auto-attach resizes the OffscreenCanvas drawing buffer to match the
-// FB before `getContext("webgl2")`, but the placeholder HTMLCanvas in
-// the main thread keeps whatever `width`/`height` we set BEFORE
-// `transferControlToOffscreen()`. We need correct attribute dims here
-// so the pointer scaling math (`canvas.width / rect.width`) matches
-// the framebuffer the wasm program actually paints into.
+// FB before `getContext("webgl2")`. The placeholder HTMLCanvas in the
+// main thread keeps whatever `width`/`height` we set BEFORE
+// `transferControlToOffscreen()` only until the worker commits a
+// differently-sized bitmap — Chrome then reflects the committed size
+// back into the placeholder attributes (observed: the webgl2-scanout
+// presenter's display-sized buffer shows up in `canvas.width`). The
+// pointer math therefore maps through the kernel-reported scanout
+// dims (stats slots 2/3, `fbDims` below), with these constants as the
+// pre-first-frame fallback.
 const MODESET_FB_W = 1920;
 const MODESET_FB_H = 1080;
 
@@ -35,6 +48,11 @@ interface KmsStats {
   height: number;
   commitCount: number;
   lastFrameUs: number;
+  /** Vblank-pump presenter id from stats slot 7: 1 = legacy 2d blit,
+   *  2 = WebGL2 scanout presenter, 3 = program-owned WebGL2 (the app —
+   *  e.g. a GPU compositor — renders the canvas itself; pump stood
+   *  down), 0 = pump not painting this canvas. */
+  renderer: number;
 }
 
 const ZERO_STATS: KmsStats = {
@@ -42,43 +60,81 @@ const ZERO_STATS: KmsStats = {
   height: 0,
   commitCount: 0,
   lastFrameUs: 0,
+  renderer: 0,
 };
 
-export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChange }) => {
+const RENDERER_LABELS: Record<number, string> = { 1: "2d", 2: "webgl2", 3: "webgl2-gl" };
+
+export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
+  const presentation = usePresentation();
+  const ingest = useDemoIngest();
+  const [ingestPhase, setIngestPhase] = React.useState<IngestPhase | null>(null);
+  const [ingestName, setIngestName] = React.useState<string | null>(null);
+  const [ingestError, setIngestError] = React.useState<string | null>(null);
+  // A paste gesture over the machine that never reached the guest (the
+  // `clipboard` runtime feature). Shown until dismissed or replaced.
+  const [pasteError, setPasteError] = React.useState<string | null>(null);
+  React.useEffect(
+    () => host.subscribeClipboardPasteFailures((failure) => {
+      setPasteError(describeClipboardPasteFailure(failure));
+    }),
+    [host],
+  );
   const stageRef = React.useRef<HTMLDivElement>(null);
-  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const slotRef = React.useRef<HTMLDivElement>(null);
   const handleRef = React.useRef<KmsDisplayHandle | null>(null);
+  // The same handle as state, for effects that must start once it exists
+  // (the stats drain); input callbacks read handleRef.
+  const [handle, setHandle] = React.useState<KmsDisplayHandle | null>(null);
+  const [canvas, setCanvas] = React.useState<HTMLCanvasElement | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [stats, setStats] = React.useState<KmsStats>(ZERO_STATS);
+  // The flip counter tells a dock action when its replacement is drawing.
+  const dockActions = useDockActions("kms", status === "running" ? stats.commitCount : null);
 
-  // Attach the canvas as soon as we have one and the kernel is up.
+  // Mount the host's display canvas for this CRTC rather than rendering one:
+  // a program's WebGL context is bound to that canvas for good, so a
+  // remounted pane must show the same element (see
+  // KernelHost.kmsDisplayCanvas). The slot is React-childless, so React
+  // never reconciles the canvas; on unmount the canvas leaves with the old
+  // slot, and the next mount's appendChild moves it here.
+  //
+  // The size is the wasm program's framebuffer, set before
+  // `transferControlToOffscreen()`: the placeholder HTMLCanvas keeps it as
+  // its `.width`/`.height` after transfer, and the OffscreenCanvas inherits
+  // it too. The drawing buffer must be 1920×1080 so
+  // `glViewport(0, 0, 1920, 1080)` covers the full surface. (The pointer
+  // scaler does NOT read `canvas.width` — it maps through the live scanout
+  // dims in stats slots 2/3, `fbDims` below.)
+  React.useLayoutEffect(() => {
+    if (status !== "booting" && status !== "running") return;
+    const slot = slotRef.current;
+    if (!slot) return;
+    const display = host.kmsDisplayCanvas(crtcId, { width: MODESET_FB_W, height: MODESET_FB_H });
+    display.classList.add("kmodeset-canvas");
+    if (display.parentNode !== slot) slot.replaceChildren(display);
+    setCanvas(display);
+  }, [host, status, crtcId]);
+
+  // Attach the canvas as soon as we have one and the kernel is up. The pane
+  // mounts during boot (MachineView) — hidden, but laid out — so attaching
+  // then lets the display report its size before the machine's command
+  // starts a mode-picking client.
   React.useEffect(() => {
-    if (status !== "running") return;
-    const canvas = canvasRef.current;
+    if (status !== "booting" && status !== "running") return;
     if (!canvas) return;
     if (handleRef.current) return;
 
-    // Match the wasm program's framebuffer dims BEFORE
-    // `transferControlToOffscreen()`. The placeholder HTMLCanvas keeps
-    // these as its `.width`/`.height` attribute values after transfer;
-    // the OffscreenCanvas inherits them too. Both matter:
-    //   - The pointer scaler reads `canvas.width / rect.width` to map
-    //     CSS deltas to framebuffer pixels. Default 300/150 would mean
-    //     the cursor crawls at ~1/6 speed and Pavel's splats clump.
-    //   - The OffscreenCanvas drawing buffer must be 1920×1080 so
-    //     `glViewport(0, 0, 1920, 1080)` covers the full surface.
-    if (canvas.width !== MODESET_FB_W) canvas.width = MODESET_FB_W;
-    if (canvas.height !== MODESET_FB_H) canvas.height = MODESET_FB_H;
-
     try {
-      const handle = host.attachKmsDisplay(canvas, crtcId);
-      if (!handle) {
+      const attached = host.attachKmsDisplay(canvas, crtcId);
+      if (!attached) {
         setError("Kernel does not expose kmsAttachCanvas (older ABI?)");
         return;
       }
-      handleRef.current = handle;
+      handleRef.current = attached;
+      setHandle(attached);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -87,22 +143,24 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     return () => {
       handleRef.current?.close();
       handleRef.current = null;
+      setHandle(null);
     };
-  }, [host, status, crtcId]);
+  }, [host, status, crtcId, canvas]);
 
-  // Forward mouse motion + buttons into the kernel's `/dev/input/mice`.
-  // The wasm side has no absolute-cursor input — it integrates int8
-  // deltas from PS/2 packets — so we mirror the wasm cursor estimate
-  // here (centered at the FB midpoint, matching modeset.c's initial
-  // `cursor_x/y = CANVAS_W/H / 2`) and snap it to the OS pointer on
-  // mouseenter with a synthetic teleport delta. Browser Y grows down,
-  // PS/2 dy is positive-up, so flip once in `sendDelta`. Large jumps
-  // get chunked into legal i8 packets — without that, a fast drag
-  // wraps `(int8_t)pkt[1]` and `drain_mouse()` interprets it as the
-  // opposite direction.
+  // Forward pointer motion + buttons into the kernel's `/dev/input/mice`.
+  // Pointer events cover mouse, touch, and pen with one listener set; a
+  // touch acts as a left-button mouse. The wasm side has no
+  // absolute-cursor input — it integrates int8 deltas from PS/2 packets
+  // — so we mirror the wasm cursor estimate here (centered at the FB
+  // midpoint, matching modeset.c's initial `cursor_x/y = CANVAS_W/H / 2`)
+  // and snap it to the OS pointer on pointerenter (or a touch press)
+  // with a synthetic teleport delta. Browser Y grows down, PS/2 dy is
+  // positive-up, so flip once in `sendDelta`. Large jumps get chunked
+  // into legal i8 packets — without that, a fast drag wraps
+  // `(int8_t)pkt[1]` and `drain_mouse()` interprets it as the opposite
+  // direction.
   React.useEffect(() => {
     if (status !== "running") return;
-    const canvas = canvasRef.current;
     if (!canvas) return;
 
     let prevCanvasX: number | null = null;
@@ -110,6 +168,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     let wasmCursorX = MODESET_FB_W / 2;
     let wasmCursorY = MODESET_FB_H / 2;
     let buttons = 0;
+    let activeTouchId: number | null = null;
     const buttonBit = (button: number) =>
       button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 4 : 0;
     const sink: MouseEventSink = {
@@ -117,11 +176,39 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
         handleRef.current?.sendMouseEvent(dx, dy, bts);
       },
     };
+    // The framebuffer dimensions the pointer math must map into. Do NOT
+    // read `canvas.width` here: after `transferControlToOffscreen()` the
+    // placeholder's width/height reflect whatever bitmap the worker last
+    // committed — under the webgl2-scanout presenter that's the DISPLAY
+    // size, not the framebuffer. The kernel publishes the real scanout
+    // dims in stats slots 2/3; fall back to the modeset constants until
+    // the first frame lands.
+    const fbDims = () => {
+      const s = handleRef.current?.stats;
+      const w = (s && Atomics.load(s, 2)) || MODESET_FB_W;
+      const h = (s && Atomics.load(s, 3)) || MODESET_FB_H;
+      return { w, h };
+    };
     const toCanvasCoords = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
+      // The framebuffer keeps its aspect ratio inside the element with
+      // letterbox bars — via CSS `object-fit: contain` when the bitmap
+      // is fb-sized (2d / GL-owned modes), or via the webgl2-scanout
+      // presenter's GL viewport when the bitmap tracks the display
+      // size. Both letterbox the framebuffer into the element with the
+      // same contain math, so one mapping covers every mode: map
+      // through the fitted content box, clamping bar-area pointers to
+      // the nearest framebuffer edge.
+      const { w: fbW, h: fbH } = fbDims();
+      const scale = Math.min(rect.width / fbW, rect.height / fbH);
+      const offX = rect.left + (rect.width - fbW * scale) / 2;
+      const offY = rect.top + (rect.height - fbH * scale) / 2;
+      const clamp = (v: number, max: number) =>
+        Math.min(Math.max(v, 0), max);
       return {
-        x: rect.width > 0 ? ((clientX - rect.left) * canvas.width) / rect.width : 0,
-        y: rect.height > 0 ? ((clientY - rect.top) * canvas.height) / rect.height : 0,
+        x: clamp((clientX - offX) / scale, fbW),
+        y: clamp((clientY - offY) / scale, fbH),
       };
     };
     const sendDelta = (dx: number, dy: number) => {
@@ -139,56 +226,105 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
       prevCanvasX = canvasX;
       prevCanvasY = canvasY;
     };
-    const onMouseEnter = (e: MouseEvent) => {
+    // Absolute-position pointer feed for evdev consumers (SDL2's
+    // KMSDRM backend reads `/dev/input/event1`, which the PS/2
+    // `sendMouseEvent` path above does NOT reach). `toCanvasCoords`
+    // already maps the OS pointer into framebuffer pixels (0..canvas
+    // .width), exactly the range SDL expects after we set the kernel's
+    // ABS_X/Y.maximum to the framebuffer size. modeset.c ignores
+    // event1 (it reads PS/2 /dev/input/mice), so feeding both is safe.
+    const sendAbs = (canvasX: number, canvasY: number) => {
+      handleRef.current?.sendPointerAbs(canvasX, canvasY, buttons);
+    };
+    const onPointerEnter = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
       const c = toCanvasCoords(e.clientX, e.clientY);
       handlePointerAt(c.x, c.y);
+      sendAbs(c.x, c.y);
     };
-    const onMouseLeave = () => {
+    const onPointerLeave = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
       prevCanvasX = null;
       prevCanvasY = null;
     };
-    const onMouseMove = (e: MouseEvent) => {
+    const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerType === "touch" && e.pointerId !== activeTouchId) return;
       const c = toCanvasCoords(e.clientX, e.clientY);
       handlePointerAt(c.x, c.y);
+      sendAbs(c.x, c.y);
     };
-    const onMouseDown = (e: MouseEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === "touch") {
+        // Track a single finger; a second finger would teleport the
+        // cursor back and forth between touch points.
+        if (activeTouchId !== null) return;
+        activeTouchId = e.pointerId;
+      }
       const bit = buttonBit(e.button);
       if (bit === 0) return;
       e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      if (e.pointerType === "touch") {
+        // A finger moves and presses in one event; move the cursor to
+        // the touch point first so the click lands under the finger,
+        // not at the cursor's previous position.
+        const c = toCanvasCoords(e.clientX, e.clientY);
+        handlePointerAt(c.x, c.y);
+      }
       buttons |= bit;
+      const c = toCanvasCoords(e.clientX, e.clientY);
       handleRef.current?.sendMouseEvent(0, 0, buttons);
+      sendAbs(c.x, c.y);
     };
-    const onMouseUp = (e: MouseEvent) => {
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === "touch") {
+        if (e.pointerId !== activeTouchId) return;
+        activeTouchId = null;
+        prevCanvasX = null;
+        prevCanvasY = null;
+      }
       const bit = buttonBit(e.button);
       if (bit === 0) return;
       e.preventDefault();
       buttons &= ~bit;
+      const c = toCanvasCoords(e.clientX, e.clientY);
       handleRef.current?.sendMouseEvent(0, 0, buttons);
+      sendAbs(c.x, c.y);
+    };
+    const onPointerCancel = (e: PointerEvent) => {
+      if (e.pointerType === "touch" && e.pointerId !== activeTouchId) return;
+      activeTouchId = null;
+      prevCanvasX = null;
+      prevCanvasY = null;
+      if (buttons === 0) return;
+      buttons = 0;
+      handleRef.current?.sendMouseEvent(0, 0, 0);
     };
     const onContextMenu = (e: Event) => e.preventDefault();
-    canvas.addEventListener("mouseenter", onMouseEnter);
-    canvas.addEventListener("mouseleave", onMouseLeave);
-    canvas.addEventListener("mousemove", onMouseMove);
-    canvas.addEventListener("mousedown", onMouseDown);
+    canvas.addEventListener("pointerenter", onPointerEnter);
+    canvas.addEventListener("pointerleave", onPointerLeave);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerdown", onPointerDown);
+    // Pointer capture routes up/cancel to the canvas even when the
+    // pointer is released outside it, so button state clears without a
+    // document-level mouseup listener.
+    canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointercancel", onPointerCancel);
     canvas.addEventListener("contextmenu", onContextMenu);
-    // mouseup on the document so a release outside the canvas still
-    // clears button state — matches fbDOOM's pointer-lock controls.
-    const doc = canvas.ownerDocument;
-    doc.addEventListener("mouseup", onMouseUp);
     return () => {
-      canvas.removeEventListener("mouseenter", onMouseEnter);
-      canvas.removeEventListener("mouseleave", onMouseLeave);
-      canvas.removeEventListener("mousemove", onMouseMove);
-      canvas.removeEventListener("mousedown", onMouseDown);
+      canvas.removeEventListener("pointerenter", onPointerEnter);
+      canvas.removeEventListener("pointerleave", onPointerLeave);
+      canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointerdown", onPointerDown);
+      canvas.removeEventListener("pointerup", onPointerUp);
+      canvas.removeEventListener("pointercancel", onPointerCancel);
       canvas.removeEventListener("contextmenu", onContextMenu);
-      doc.removeEventListener("mouseup", onMouseUp);
     };
-  }, [status]);
+  }, [status, canvas]);
 
   // Drain the stats SAB at 4 Hz. The numbers are advisory; rAF would
   // re-render every blit, which is overkill for a status panel.
   React.useEffect(() => {
-    const handle = handleRef.current;
     if (!handle) return;
     const tick = () => {
       const s = handle.stats;
@@ -197,26 +333,83 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
         height: Atomics.load(s, 3),
         commitCount: Atomics.load(s, 5),
         lastFrameUs: Atomics.load(s, 6),
+        renderer: s.length > 7 ? Atomics.load(s, 7) : 0,
       });
     };
     tick();
     const id = window.setInterval(tick, 250);
     return () => window.clearInterval(id);
-  }, [status, error]);
+  }, [handle]);
 
-  const showCanvas = status === "running" && !error;
+  // Laid out whenever it is attached (booting too): its ResizeObserver is how
+  // the display reports its size before the machine's command picks a video
+  // mode. While booting the pane's slot is hidden, so nothing shows early.
+  const showCanvas = (status === "booting" || status === "running") && !error;
   const hasFrame = stats.width > 0 && stats.height > 0;
-  const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, MODESET_FB_W / MODESET_FB_H);
+  // Fit to the live scanout aspect, not the 16:9 constant: a program that
+  // takes the connector's mode renders at the pane's aspect, and fitting
+  // that into a fixed 16:9 box would letterbox and stretch it. The
+  // constants remain the pre-first-frame fallback.
+  const canvasStyle = useFittedCanvasStyle(
+    stageRef,
+    canvas,
+    hasFrame ? stats.width / stats.height : MODESET_FB_W / MODESET_FB_H,
+  );
+  // React does not render the canvas, so it cannot style it either.
+  React.useLayoutEffect(() => {
+    if (!canvas) return;
+    canvas.style.width = typeof canvasStyle.width === "string" ? canvasStyle.width : "";
+    canvas.style.height = typeof canvasStyle.height === "string" ? canvasStyle.height : "";
+    // The guest owns the pointer: motion is forwarded into the kernel's
+    // pointer device, and a guest that draws its own cursor would stack a
+    // second arrow under the browser's, the two drifting apart whenever
+    // the guest's cursor and the OS pointer disagree. A guest that draws
+    // no cursor declares `hostPointer` so the browser keeps drawing one.
+    canvas.style.cursor = presentation.hostPointer ? "default" : "none";
+  }, [canvas, canvasStyle, presentation.hostPointer]);
   const statusLabel = hasFrame
-    ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs`
+    ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs` +
+      (RENDERER_LABELS[stats.renderer] ? ` · ${RENDERER_LABELS[stats.renderer]}` : "")
     : "waiting for PAGE_FLIP";
+
+  const busy = ingestPhase !== null;
+  const ingestFile = React.useCallback(async (file: File) => {
+    if (!ingest || ingestPhase !== null) return;
+    setIngestError(null);
+    setIngestName(file.name);
+    try {
+      // No targetPid: an upload here adds files the running program reads on
+      // its next directory scan. The KMS program holds DRM master for the
+      // whole session, so stopping and relaunching it would cost the user
+      // their place for no gain.
+      await runDemoIngest(host, ingest, file, { onPhase: setIngestPhase });
+    } catch (err) {
+      setIngestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIngestPhase(null);
+      setIngestName(null);
+    }
+  }, [host, ingest, ingestPhase]);
+
   const dockControls = React.useMemo(() => (
     <DemoSurfaceDockControls
       title={`MODESET · /DEV/DRI/CARD0 · CRTC ${crtcId}`}
       status={statusLabel}
       active={hasFrame}
-    />
-  ), [crtcId, hasFrame, statusLabel]);
+    >
+      {dockActions.controls}
+      {ingest && status === "running" && (
+        <IngestControl
+          accept={ingest.accept}
+          label={ingest.label ?? "Load file"}
+          busy={busy}
+          busyLabel={ingestName ? `loading ${ingestName}…` : "loading…"}
+          testIdPrefix="kms"
+          onFile={ingestFile}
+        />
+      )}
+    </DemoSurfaceDockControls>
+  ), [busy, crtcId, dockActions.controls, hasFrame, ingest, ingestFile, ingestName, status, statusLabel]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -227,13 +420,12 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
   return (
     <div className="kmodeset-surface">
       <div className="kmodeset-stage" ref={stageRef}>
-        <canvas
-          ref={canvasRef}
-          className="kmodeset-canvas"
-          style={{
-            ...canvasStyle,
-            display: showCanvas ? "block" : "none",
-          }}
+        {/* Holds the host's display canvas (mounted above); `contents`
+            keeps the canvas a direct flex item of the stage. */}
+        <div
+          ref={slotRef}
+          className="kmodeset-canvas-slot"
+          style={{ display: showCanvas ? "contents" : "none" }}
         />
         {showCanvas && !hasFrame && (
           <div className="kmodeset-waiting" role="status" aria-live="polite">
@@ -248,6 +440,48 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
             {error
               ? <>attachKmsDisplay failed: {error}</>
               : <>Waiting for the kernel to reach 'running'.</>}
+          </div>
+        )}
+        {dockActions.toasts}
+        {busy && (
+          <div className="kdemo-toast" data-testid="kms-ingest-busy">
+            {ingestName ? `loading ${ingestName}…` : "loading…"}
+          </div>
+        )}
+        {ingestError && !busy && (
+          <div
+            className="kdemo-toast"
+            data-error="true"
+            data-testid="kms-ingest-error"
+            role="alert"
+          >
+            {ingestError}
+            <button
+              type="button"
+              className="kdemo-toast-dismiss"
+              onClick={() => setIngestError(null)}
+              aria-label="Dismiss error"
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {pasteError && !busy && !ingestError && (
+          <div
+            className="kdemo-toast"
+            data-error="true"
+            data-testid="kms-paste-error"
+            role="alert"
+          >
+            {pasteError}
+            <button
+              type="button"
+              className="kdemo-toast-dismiss"
+              onClick={() => setPasteError(null)}
+              aria-label="Dismiss error"
+            >
+              ×
+            </button>
           </div>
         )}
       </div>

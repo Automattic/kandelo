@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import { buildProgramsFixture, requireBuiltFixtures } from "./support/program-fixtures";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 import {
   detectPtrWidth,
   extractHeapBase,
@@ -28,14 +28,12 @@ const memoryFsModulePath = resolve(
   __dirname,
   "../../../host/src/vfs/memory-fs.ts",
 );
-const lifecycleProgramPath = resolveBinary("programs/vfork-lifecycle.wasm");
-const threadProgramPath = resolveBinary("programs/vfork-from-thread.wasm");
-const fatalProgramPath = resolveBinary("programs/vfork-fatal-lifecycle.wasm");
-const externalSignalProgramPath = resolveBinary(
-  "programs/vfork-external-signal.wasm",
-);
-const stateProgramPath = resolveBinary("programs/vfork-posix-state.wasm");
-const execChildPath = resolveBinary("programs/exec-child.wasm");
+const lifecycleProgramPath = buildProgramsFixture("programs/wasm32/vfork-lifecycle.wasm");
+const threadProgramPath = buildProgramsFixture("programs/wasm32/vfork-from-thread.wasm");
+const fatalProgramPath = buildProgramsFixture("programs/wasm32/vfork-fatal-lifecycle.wasm");
+const externalSignalProgramPath = buildProgramsFixture("programs/wasm32/vfork-external-signal.wasm");
+const stateProgramPath = buildProgramsFixture("programs/wasm32/vfork-posix-state.wasm");
+const execChildPath = buildProgramsFixture("programs/wasm32/exec-child.wasm");
 const ordinaryForkProgramPath = resolve(
   __dirname,
   "../../../host/test/fixtures/fork-memory-clone.wasm",
@@ -287,6 +285,15 @@ function expectPrivatePreparationEvidence(preparation: MechanismTrace): void {
     .not.toBe(preparation.fields.get("externref_child"));
 }
 
+test.beforeAll(() => requireBuiltFixtures([
+  lifecycleProgramPath,
+  threadProgramPath,
+  fatalProgramPath,
+  externalSignalProgramPath,
+  stateProgramPath,
+  execChildPath,
+]));
+
 test("observes real browser mode 1 quiescence and mode 0 copy dispatch", async ({
   page,
   baseURL,
@@ -476,12 +483,15 @@ test("vfork keeps its browser parent parked through exit and exec", async ({
     "PARENT_RESUME_TWO",
     "CHILD_FAILED_EXEC",
     "PARENT_AFTER_FAILED_EXEC_EXIT",
-    "CHILD_NESTED_FORK_EAGAIN",
+    "GRANDCHILD_OF_VFORK_CHILD",
+    "CHILD_REAPED_GRANDCHILD",
     "CHILD_NESTED_VFORK_EAGAIN",
     "CHILD_PTHREAD_EAGAIN",
-    "PARENT_AFTER_REJECTED_OWNERSHIP",
+    "PARENT_AFTER_NESTED_OWNERSHIP",
     "PARENT_AFTER_EXEC_COMMIT",
     "PARENT_REAPED_EXEC_CHILD",
+    "argv[1]=from-detached",
+    "PARENT_SAW_DETACHED_GRANDCHILD_EXIT",
     "PASS: VFORK_LIFECYCLE",
   ]);
   expect(result.processEvents).toContain("exec");
@@ -515,10 +525,9 @@ test("vfork repeats on the browser main thread without a second full Memory", as
     "PARENT_RESUME_TWO",
     "CHILD_FAILED_EXEC",
     "PARENT_AFTER_FAILED_EXEC_EXIT",
-    "CHILD_NESTED_FORK_EAGAIN",
     "CHILD_NESTED_VFORK_EAGAIN",
     "CHILD_PTHREAD_EAGAIN",
-    "PARENT_AFTER_REJECTED_OWNERSHIP",
+    "PARENT_AFTER_NESTED_OWNERSHIP",
     "PARENT_SKIPPED_EXEC_UNDER_NO_COPY_CEILING",
     "PASS: VFORK_LIFECYCLE",
   ]);

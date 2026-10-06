@@ -5,14 +5,29 @@ set -euo pipefail
 #
 # Plain Makefile build with CC override.
 # unzip has its own inflate (no zlib needed).
-# Output: packages/registry/unzip/bin/unzip.wasm
+# Output: bin/unzip.wasm under the resolver work root (beside this
+# script when run standalone).
 
 UNZIP_VERSION="${UNZIP_VERSION:-60}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/unzip-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/unzip-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -27,16 +42,18 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download unzip source ---
+# --- Stage the pinned unzip source ---
+# Under the resolver the verified, unpacked source arrives in
+# WASM_POSIX_DEP_SOURCE_DIR (from the resolver's source-archive cache, so a
+# rebuild does not depend on the upstream mirror being up); a direct run
+# downloads the archive and checks its sha256.
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-http://downloads.sourceforge.net/infozip/unzip${UNZIP_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-036d96991646d0449ed0aa952e4fbe21b476ce994abc276e49d30e686708bd37}"
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading unzip $UNZIP_VERSION..."
-    TARBALL="unzip${UNZIP_VERSION}.tar.gz"
-    URL="https://downloads.sourceforge.net/infozip/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL -L "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging pinned unzip $UNZIP_VERSION source..."
+    kandelo_package_stage_verified_source unzip "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
 fi
 
 cd "$SRC_DIR"
@@ -70,4 +87,4 @@ echo "Binary: $BIN_DIR/unzip.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary unzip "$SCRIPT_DIR/bin/unzip.wasm"
+install_local_binary unzip "$BIN_DIR/unzip.wasm"

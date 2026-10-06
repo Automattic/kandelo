@@ -1,0 +1,90 @@
+# system-deps 7.0.8: evaluate cfg-keyed dependencies of a custom Rust
+# target from the CARGO_CFG_* values Cargo gives build scripts, instead
+# of panicking when the target name is not a target-lexicon triple.
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -957,6 +957,15 @@
+                 Predicate::Target(tp) => Some(tp.matches(target)),
+                 _ => None,
+             })
++        } else if let Some(target) = CargoCfgTarget::from_env(&self.env) {
++            // A custom target (a target spec installed in the sysroot or
++            // given as JSON) is not a builtin, and its name need not parse
++            // as a target-lexicon triple. Cargo hands build scripts the
++            // target's cfg values directly; evaluate against those.
++            cfg.eval(|pred| match pred {
++                Predicate::Target(tp) => Some(tp.matches(&target)),
++                _ => None,
++            })
+         } else {
+             // Attempt to parse the triple, the target is not an official builtin
+             let triple: cfg_expr::target_lexicon::Triple = target.parse().unwrap_or_else(|e| panic!("TARGET {} is not a builtin target, and it could not be parsed as a valid triplet: {}", target, e));
+@@ -969,8 +978,68 @@
+ 
+         res.ok_or_else(|| Error::UnsupportedCfg(cfg.original().to_string()))
+     }
++}
++
++/// The build target's cfg values, from the `CARGO_CFG_*` variables Cargo
++/// sets for build scripts.
++struct CargoCfgTarget {
++    os: String,
++    arch: String,
++    env: String,
++    abi: String,
++    vendor: String,
++    families: Vec<String>,
++    endian: String,
++    pointer_width: String,
++    has_atomic: Vec<String>,
++    panic: String,
+ }
+ 
++impl CargoCfgTarget {
++    fn from_env(env: &EnvVariables) -> Option<Self> {
++        let get = |name: &str| env.get(name).unwrap_or_default();
++        let list = |name: &str| {
++            get(name)
++                .split(',')
++                .filter(|s| !s.is_empty())
++                .map(str::to_owned)
++                .collect()
++        };
++        Some(Self {
++            os: env.get("CARGO_CFG_TARGET_OS")?,
++            arch: get("CARGO_CFG_TARGET_ARCH"),
++            env: get("CARGO_CFG_TARGET_ENV"),
++            abi: get("CARGO_CFG_TARGET_ABI"),
++            vendor: get("CARGO_CFG_TARGET_VENDOR"),
++            families: list("CARGO_CFG_TARGET_FAMILY"),
++            endian: get("CARGO_CFG_TARGET_ENDIAN"),
++            pointer_width: get("CARGO_CFG_TARGET_POINTER_WIDTH"),
++            has_atomic: list("CARGO_CFG_TARGET_HAS_ATOMIC"),
++            panic: get("CARGO_CFG_PANIC"),
++        })
++    }
++}
++
++impl cfg_expr::expr::TargetMatcher for CargoCfgTarget {
++    fn matches(&self, tp: &cfg_expr::TargetPredicate) -> bool {
++        use cfg_expr::{targets::Endian, TargetPredicate as T};
++
++        match tp {
++            T::Os(v) => v.as_str() == self.os,
++            T::Arch(v) => v.as_str() == self.arch,
++            T::Env(v) => v.as_str() == self.env,
++            T::Abi(v) => v.as_str() == self.abi,
++            T::Vendor(v) => v.as_str() == self.vendor,
++            T::Family(v) => self.families.iter().any(|f| f == v.as_str()),
++            T::Endian(Endian::little) => self.endian == "little",
++            T::Endian(Endian::big) => self.endian == "big",
++            T::PointerWidth(w) => w.to_string() == self.pointer_width,
++            T::HasAtomic(a) => self.has_atomic.iter().any(|h| *h == a.to_string()),
++            T::Panic(v) => v.as_str() == self.panic,
++        }
++    }
++}
++
+ #[derive(Debug, PartialEq, Eq)]
+ /// From where the library settings have been retrieved
+ pub enum Source {

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#
+# Build utf8proc (libutf8proc.a) for wasm32-posix-kernel.
+#
+# Honors the dep-resolver build-script contract (see
+# docs/package-management.md). utf8proc is one freestanding TU (its
+# Unicode tables are a second TU #included by the first), so we compile
+# it directly rather than driving upstream's Makefile — nothing to
+# configure, no host probes to defeat.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/utf8proc-src"
+
+UTF8PROC_VERSION="${WASM_POSIX_DEP_VERSION:-2.9.0}"
+INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/utf8proc-install}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/JuliaStrings/utf8proc/releases/download/v${UTF8PROC_VERSION}/utf8proc-${UTF8PROC_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-bd215d04313b5bc42c1abedbcb0a6574667e31acee1085543a232204e36384c4}"
+
+if ! command -v wasm32posix-cc &>/dev/null; then
+    echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
+    exit 1
+fi
+
+# --- Stage verified source ---
+if [ ! -d "$SRC_DIR" ]; then
+    echo "==> Staging verified utf8proc $UTF8PROC_VERSION source..."
+    kandelo_package_stage_verified_source utf8proc "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
+fi
+
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/utf8proc-build"
+rm -rf "$BUILD_DIR"
+# The resolver-created output directory is itself publication authority, so
+# a recipe must populate that inode rather than delete and recreate it.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: utf8proc resolver output directory must start empty" >&2
+        exit 1
+    fi
+else
+    rm -rf "$INSTALL_DIR"
+fi
+mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib/pkgconfig" "$INSTALL_DIR/include"
+
+echo "==> Compiling utf8proc for wasm32..."
+wasm32posix-cc -c -O2 -fPIC -DUTF8PROC_STATIC \
+    "$SRC_DIR/utf8proc.c" -o "$BUILD_DIR/utf8proc.o"
+wasm32posix-ar rcs "$INSTALL_DIR/lib/libutf8proc.a" "$BUILD_DIR/utf8proc.o"
+
+cp "$SRC_DIR/utf8proc.h" "$INSTALL_DIR/include/utf8proc.h"
+
+# Upstream's Makefile installs the .pc as libutf8proc.pc; fcft's
+# dependency lookup uses that name.
+cat > "$INSTALL_DIR/lib/pkgconfig/libutf8proc.pc" <<EOF
+prefix=$INSTALL_DIR
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: libutf8proc
+Description: UTF-8 processing library
+Version: $UTF8PROC_VERSION
+Libs: -L\${libdir} -lutf8proc
+Cflags: -I\${includedir} -DUTF8PROC_STATIC
+EOF
+
+echo "==> utf8proc build complete!"
+ls -lh "$INSTALL_DIR/lib/libutf8proc.a"

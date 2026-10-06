@@ -72,6 +72,39 @@ its own exit path so it returns to an idle JS event loop, which `terminate()`
    `DESTROY_KILL_DRAIN_TIMEOUT_MS`) while the woken workers exit and their
    `{exit}` handlers reclaim them, then terminate any stragglers.
 
+## Single-process variant: `terminate_process` (machine switch)
+
+The same leak has a second entry point. Whole-machine `destroy()` is not the
+only path that terminates a blocked worker: the `terminate_process` RPC
+(`BrowserKernel.terminateProcess`) force-kills one process, and a kandelo-session
+machine switch uses it to tear down the previous terminal session's process
+before booting the next image. An idle shell is parked in an in-wasm
+`Atomics.wait` on its syscall channel (a blocked PTY `read`), so
+`handleTerminateProcess` calling `terminateTrackedWorker` directly leaked one
+`WebCore: Worker` thread (+ its committed working set) per switch on JSC —
+non-decaying — until Safari/iOS threw "Out of memory". `destroy()`'s
+`performDestroy` never covered it: by the time it runs, `terminate_process` has
+already removed the process (`processes.size == 0`), so its Phase-1
+`killAllBlockedForTeardown` wakes nothing.
+
+Fix: `killBlockedProcessForTeardown(pid)` — a per-pid counterpart of
+`killAllBlockedForTeardown` that wakes only the target process's `CH_PENDING`
+channels, so sibling processes (e.g. several servers torn down independently)
+keep running. `handleTerminateProcess` calls it and drains (bounded) for the
+cooperative `{exit}`; if the process exits, `finishProcessExit` terminates the
+now-idle worker and the force path is skipped. A guest wedged in a
+non-syscalling wasm loop never observes the wake and falls through to the
+force-terminate (still leaks that one worker on JSC — the truthful cost of an
+unresponsive guest). Delivering SIGKILL through the ordinary signal path
+(`signalProcess`) is **not** sufficient: it wakes only *registered* blockers
+(signal-waits, futex, `wait4`, pipe readers), never a channel merely parked at
+`CH_PENDING` on a blocked `read`/`accept` — the wake must scan `CH_STATUS`.
+
+The Node host's `handleTerminate` does **not** need this: on V8
+`Worker.terminate()` reaps an `Atomics.wait`-parked worker, so a direct
+terminate frees the thread. The wake is browser-only by the same platform
+boundary as the rest of this workaround.
+
 ## Participating code sites
 
 All tagged `[JSC-TERMINATE-ATOMICS-WAIT-LEAK]`:
@@ -79,11 +112,13 @@ All tagged `[JSC-TERMINATE-ATOMICS-WAIT-LEAK]`:
 - `libc/glue/channel_syscall.c` — the `signum == 9` branch in
   `__deliver_pending_signal` calling `kernel_exit`.
 - `host/src/kernel-worker.ts` — the `SIGKILL` constant, `killAllBlockedForTeardown()`,
-  and `wakeChannelForTeardownExit()`.
-- `host/src/browser-kernel-worker-entry.ts` — `DESTROY_KILL_DRAIN_*` constants and
-  the wake/drain phases in `handleDestroy`.
+  `killBlockedProcessForTeardown()` (per-pid), and `wakeChannelForTeardownExit()`.
+- `host/src/browser-kernel-worker-entry.ts` — `DESTROY_KILL_DRAIN_*` constants,
+  the wake/drain phases in `handleDestroy`, and the per-pid wake/drain preamble
+  in `handleTerminateProcess`.
 - `host/src/node-kernel-worker-entry.ts` — `DESTROY_KILL_DRAIN_*` constants and
-  the wake/drain preamble in `handleDestroy`.
+  the wake/drain preamble in `handleDestroy` (and the parity note in
+  `handleTerminate` explaining why the per-pid wake is browser-only).
 
 Note the musl glue change means every program binary must be **relinked** to pick
 up the new `kernel_exit`-on-SIGKILL behavior; CI rebuilds them from source.
@@ -109,9 +144,11 @@ the target Safari/Bun versions using the repro above and
 `apps/browser-demos/public/terminate-atomics-test.html`):
 
 1. Delete the wake/drain phases from both `handleDestroy` (revert to a plain
-   terminate loop) and the `DESTROY_KILL_DRAIN_*` constants.
-2. Delete `killAllBlockedForTeardown()` and `wakeChannelForTeardownExit()` from
-   `kernel-worker.ts` (and the `SIGKILL` constant if unused elsewhere).
+   terminate loop), the per-pid wake/drain preamble in the browser
+   `handleTerminateProcess`, and the `DESTROY_KILL_DRAIN_*` constants.
+2. Delete `killAllBlockedForTeardown()`, `killBlockedProcessForTeardown()`, and
+   `wakeChannelForTeardownExit()` from `kernel-worker.ts` (and the `SIGKILL`
+   constant if unused elsewhere).
 3. Delete the `signum == 9` branch in `__deliver_pending_signal`, then rebuild
    musl (`scripts/build-musl.sh`) and relink programs / rebuild VFS images.
 4. Re-run validation on **both** engines: the WordPress boot/destroy loop on

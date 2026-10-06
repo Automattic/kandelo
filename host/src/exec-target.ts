@@ -188,12 +188,25 @@ export interface PreparedExecLaunchOptions {
     expectedSize: number,
     markTargetConsumed: () => void,
   ) => number;
-  /** Side-effect-free candidate that may be reused only on exact byte identity. */
-  readonly preflightCandidate?: Readonly<{
-    targetBytes: ArrayBuffer;
-    targetModule: WebAssembly.Module;
-  }>;
+  /**
+   * Compile, or reuse the module already compiled for, exactly these bytes.
+   * The kernel worker's content-addressed cache keys on a digest of the
+   * bytes, so a spawn's preflight module is reused only when the final
+   * target is byte-identical to the candidate.
+   */
+  readonly compileModule: CompileWasmModule;
+  /**
+   * A spawn's preflight module. Never executed or compared here: it only
+   * stays reachable through these options until the final target compiles,
+   * so the weakly held cache entry for byte-identical bytes cannot be
+   * collected in between.
+   */
+  readonly preflightModule?: WebAssembly.Module;
 }
+
+export type CompileWasmModule = (
+  bytes: ArrayBuffer,
+) => Promise<WebAssembly.Module>;
 
 function parseShebang(bytes: Uint8Array): {
   interpreter: string;
@@ -231,27 +244,17 @@ function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer as ArrayBuffer;
 }
 
-function exactlyMatchesPreflightCandidate(
-  bytes: Uint8Array,
-  candidate: ArrayBuffer,
-): boolean {
-  if (bytes.byteLength !== candidate.byteLength) return false;
-  const candidateBytes = new Uint8Array(candidate);
-  for (let index = 0; index < bytes.byteLength; index += 1) {
-    if (bytes[index] !== candidateBytes[index]) return false;
-  }
-  return true;
-}
-
 /**
  * Snapshot and compile one side-effect-free spawn candidate before the child
  * exists. The resolver's separately supplied module is intentionally absent:
- * only a module compiled here from this isolated byte snapshot may be reused
- * when the authoritative final target has exact byte identity.
+ * only a module compiled here from this isolated byte snapshot may be reused,
+ * and the content-addressed `compileModule` reuses it for the authoritative
+ * final target only when that target has the same bytes.
  */
 export async function compileSpawnCandidateSnapshot(
   programBytes: ArrayBuffer,
   expectedAbi: number,
+  compileModule: CompileWasmModule,
 ): Promise<Readonly<{
   targetBytes: ArrayBuffer;
   targetModule: WebAssembly.Module;
@@ -296,7 +299,7 @@ export async function compileSpawnCandidateSnapshot(
 
   let targetModule: WebAssembly.Module;
   try {
-    targetModule = await WebAssembly.compile(targetBytes);
+    targetModule = await compileModule(targetBytes);
   } catch (cause) {
     if (cause instanceof WebAssembly.CompileError) {
       throw new PreparedExecTargetError(
@@ -391,25 +394,19 @@ export async function launchPreparedExecTarget(
       );
     }
 
-    let targetModule = options.preflightCandidate
-      && exactlyMatchesPreflightCandidate(
-        bytes,
-        options.preflightCandidate.targetBytes,
-      )
-      ? options.preflightCandidate.targetModule
-      : undefined;
-    if (targetModule === undefined) {
-      try {
-        targetModule = await WebAssembly.compile(targetBytes);
-      } catch (cause) {
-        if (cause instanceof WebAssembly.CompileError) {
-          throw new PreparedExecTargetError(
-            "prepared exec target failed WebAssembly compilation",
-            ENOEXEC,
-          );
-        }
-        throw cause;
+    // Every admission check above ran on these exact bytes; the cache only
+    // replaces the compile step, never the checks.
+    let targetModule: WebAssembly.Module;
+    try {
+      targetModule = await options.compileModule(targetBytes);
+    } catch (cause) {
+      if (cause instanceof WebAssembly.CompileError) {
+        throw new PreparedExecTargetError(
+          "prepared exec target failed WebAssembly compilation",
+          ENOEXEC,
+        );
       }
+      throw cause;
     }
 
     const request: PreparedExecLaunchRequest = {

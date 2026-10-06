@@ -255,7 +255,11 @@ _wasm_posix_copy_file_no_follow() {
             return 1
         fi
         old_state="$(_wasm_posix_regular_file_state "$dest")" || return 1
-        if ! mv "$dest" "$backup"; then
+        # Every mv here uses -n. Without -f or -n, mv asks before replacing a
+        # read-only file whenever stdin is a terminal, and a build must never
+        # prompt. -f would instead replace an entry that won a pathname race,
+        # so -n refuses, and the state checks after each mv catch the refusal.
+        if ! mv -n "$dest" "$backup"; then
             return 1
         fi
         old_moved=1
@@ -266,10 +270,10 @@ _wasm_posix_copy_file_no_follow() {
             if [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
                 # Preserve the entry that won the pathname race by returning
                 # it to the live name. Never delete an unrecognized backup.
-                mv "$backup" "$dest" || {
+                if ! mv -n "$backup" "$dest" || [ -e "$backup" ] || [ -L "$backup" ]; then
                     echo "install-local-binary: could not restore changed quarantine; preserved it at $backup" >&2
                     return 1
-                }
+                fi
             fi
             return 1
         fi
@@ -286,7 +290,7 @@ _wasm_posix_copy_file_no_follow() {
                 echo "install-local-binary: refusing to restore changed quarantine: $backup" >&2
                 return 1
             fi
-            if ! mv "$backup" "$dest" || \
+            if ! mv -n "$backup" "$dest" || \
                [ "$(_wasm_posix_regular_file_state "$dest" || true)" != "$old_state" ]; then
                 echo "install-local-binary: failed to restore the previous destination: $dest" >&2
                 return 1
@@ -498,7 +502,30 @@ install_local_binary() {
                     rm -f "$instrumented"
                     return 1
                 fi
-                mv "$instrumented" "$src"
+                # Instrumentation rewrites code, not the recipe's choice of
+                # permissions. mktemp creates the output 0600, and the
+                # uninstrumented path publishes the source mode via `cp -p`,
+                # so copy the source mode across: whether the instrumenter
+                # ran must not decide the mode of the published artifact.
+                local source_mode
+                if ! source_mode="$(stat -c '%a' "$src" 2>/dev/null)"; then
+                    source_mode="$(stat -f '%Lp' "$src")" || {
+                        rm -f "$instrumented"
+                        return 1
+                    }
+                fi
+                if ! chmod "$source_mode" "$instrumented"; then
+                    rm -f "$instrumented"
+                    return 1
+                fi
+                # A build must never prompt. Recipes often copy binaries out
+                # of a `make install` stage, where they are read-only, and
+                # without -f `mv` asks before replacing a read-only file
+                # whenever stdin is a terminal (as in workspace setup).
+                if ! mv -f "$instrumented" "$src"; then
+                    rm -f "$instrumented"
+                    return 1
+                fi
             fi
             wasm_require_fork_instrumentation_if_needed "$src" || return 1
             ;;
@@ -510,6 +537,7 @@ install_local_binary() {
             return 2
             ;;
     esac
+    wasm_drop_compiler_facts "$src" || return 1
 
     if [ "$install_local_mirror" = "1" ]; then
         local source_parent

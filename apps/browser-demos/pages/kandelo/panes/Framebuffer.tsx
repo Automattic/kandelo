@@ -15,7 +15,7 @@
 // or press Ctrl+Shift+Esc to move focus back to the UI.
 
 import * as React from "react";
-import { useDemoIngest, useKernelHost, useStatus } from "../kernel-host/react";
+import { useDemoIngest, useKernelHost, usePresentation, useStatus } from "../kernel-host/react";
 import {
   attachLinuxMediumRawKeyboard,
   attachPointerLockMouse,
@@ -29,6 +29,16 @@ import {
   type IngestPhase,
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { useFittedCanvasStyle } from "./canvasFit";
+import { useDockActions } from "./DockActions";
+import {
+  createTouchKeySender,
+  KEY_ENTER,
+  KEY_SPACE,
+  TOUCH_TAP_SLOP_PX,
+  TouchControls,
+  useCoarsePointer,
+  type TouchKeySender,
+} from "./TouchControls";
 
 const FRAMEBUFFER_REBIND_TIMEOUT_MS = 10_000;
 
@@ -45,10 +55,21 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   const host = useKernelHost();
   const status = useStatus();
   const ingest = useDemoIngest();
+  const dockActions = useDockActions("fb");
+  const presentation = usePresentation();
+  const coarsePointer = useCoarsePointer();
   const stageRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const handleRef = React.useRef<FramebufferHandle | null>(null);
   const mouseRef = React.useRef<PointerLockMouseHandle | null>(null);
+  const touchSenderRef = React.useRef<TouchKeySender | null>(null);
+  if (touchSenderRef.current === null) {
+    touchSenderRef.current = createTouchKeySender({
+      sendInput: (bytes) => handleRef.current?.sendInput(bytes),
+    });
+  }
+  const touchSender = touchSenderRef.current;
+  const touchTapRef = React.useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [boundPid, setBoundPid] = React.useState<number | null>(null);
   const [focused, setFocused] = React.useState(false);
@@ -255,6 +276,32 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
 
   const showCanvas = status === "running" && !error;
   const showHint = showCanvas && boundPid === null;
+  const showTouchControls =
+    presentation.touchControls === true && coarsePointer && showCanvas && boundPid !== null;
+
+  // A tap on the framebuffer itself sends Enter and Space: the DOOM menu reads
+  // Enter (select) and ignores Space, the game reads Space (use) and ignores
+  // Enter, so one gesture covers both without overlay buttons.
+  const onCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType !== "touch" || !showTouchControls) return;
+    touchTapRef.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+  };
+  const onCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const start = touchTapRef.current;
+    if (!start || e.pointerId !== start.pointerId) return;
+    touchTapRef.current = null;
+    if (!showTouchControls) return;
+    const moved =
+      Math.abs(e.clientX - start.x) > TOUCH_TAP_SLOP_PX ||
+      Math.abs(e.clientY - start.y) > TOUCH_TAP_SLOP_PX;
+    if (!moved) {
+      touchSender.tap(KEY_ENTER);
+      touchSender.tap(KEY_SPACE);
+    }
+  };
+  const onCanvasPointerCancel = () => {
+    touchTapRef.current = null;
+  };
   const captureLabel = mouseCaptured
     ? "mouse locked · Esc to release"
     : focused
@@ -268,17 +315,19 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       status={captureLabel}
       active={focused || mouseCaptured}
     >
+      {dockActions.controls}
       {ingest && status === "running" && (
         <IngestControl
           accept={ingest.accept}
           label={ingest.label ?? "Load file"}
           busy={busy}
           busyLabel={ingestName ? `loading ${ingestName}…` : "loading…"}
+          testIdPrefix="fb"
           onFile={ingestFile}
         />
       )}
     </DemoSurfaceDockControls>
-  ), [boundPid, busy, captureLabel, focused, ingest, ingestFile, ingestName, mouseCaptured, status]);
+  ), [boundPid, busy, captureLabel, dockActions.controls, focused, ingest, ingestFile, ingestName, mouseCaptured, status]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -317,6 +366,9 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
         className="kframebuffer-canvas"
         tabIndex={0}
         onClick={onCanvasClick}
+        onPointerDown={onCanvasPointerDown}
+        onPointerUp={onCanvasPointerUp}
+        onPointerCancel={onCanvasPointerCancel}
         style={{
           ...canvasStyle,
           display: showCanvas ? "block" : "none",
@@ -327,6 +379,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           outlineOffset: "-2px",
         }}
       />
+      {showTouchControls && <TouchControls sender={touchSender} />}
       {showHint && !focused && (
         <div style={{
           position: "absolute",
@@ -347,14 +400,15 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           Drop {ingest?.accept.join(" / ")} to load
         </div>
       )}
+      {dockActions.toasts}
       {busy && (
-        <div className="kframebuffer-toast" data-testid="fb-ingest-busy">
+        <div className="kdemo-toast" data-testid="fb-ingest-busy">
           {ingestName ? `loading ${ingestName}…` : "loading…"}
         </div>
       )}
       {ingestError && !busy && (
         <div
-          className="kframebuffer-toast"
+          className="kdemo-toast"
           data-error="true"
           data-testid="fb-ingest-error"
           role="alert"
@@ -362,7 +416,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           {ingestError}
           <button
             type="button"
-            className="kframebuffer-toast-dismiss"
+            className="kdemo-toast-dismiss"
             onClick={() => setIngestError(null)}
             aria-label="Dismiss error"
           >
@@ -407,13 +461,15 @@ export const DemoSurfaceDockControls: React.FC<{
  * The primary ingest path: a real <input type="file">, so it works on every
  * platform including touch, where drag-and-drop does not exist.
  */
-const IngestControl: React.FC<{
+export const IngestControl: React.FC<{
   accept: string[];
   label: string;
   busy: boolean;
   busyLabel: string;
+  /** Surface that owns this control, so two panes get distinct test ids. */
+  testIdPrefix: string;
   onFile: (file: File) => void;
-}> = ({ accept, label, busy, busyLabel, onFile }) => {
+}> = ({ accept, label, busy, busyLabel, testIdPrefix, onFile }) => {
   const inputRef = React.useRef<HTMLInputElement>(null);
   return (
     <>
@@ -421,7 +477,7 @@ const IngestControl: React.FC<{
         ref={inputRef}
         type="file"
         accept={accept.join(",")}
-        data-testid="fb-ingest-input"
+        data-testid={`${testIdPrefix}-ingest-input`}
         style={{ display: "none" }}
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -433,7 +489,7 @@ const IngestControl: React.FC<{
       <button
         type="button"
         className="kdemo-surface-action"
-        data-testid="fb-ingest-button"
+        data-testid={`${testIdPrefix}-ingest-button`}
         disabled={busy}
         onClick={() => inputRef.current?.click()}
       >

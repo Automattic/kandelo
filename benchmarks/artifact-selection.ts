@@ -39,6 +39,10 @@ export const BENCHMARK_STATIC_ARTIFACTS: BenchmarkStaticArtifactSelection[] = [
     suites: ["syscall-io"],
   },
   {
+    path: "benchmarks/wasm/stdin-throughput.wasm",
+    suites: ["stdin-throughput"],
+  },
+  {
     path: "benchmarks/wasm/hello.wasm",
     suites: ["process-lifecycle", "spawn-scratch"],
   },
@@ -63,6 +67,7 @@ export const BENCHMARK_STATIC_ARTIFACTS: BenchmarkStaticArtifactSelection[] = [
 
 export const RUNNABLE_BENCHMARK_SUITES = [
   "syscall-io",
+  "stdin-throughput",
   "process-lifecycle",
   "spawn-scratch",
   "wordpress",
@@ -143,16 +148,16 @@ export function selectNodeBenchmarkRuntimeArtifacts(
     try {
       const resolved = resolveRootfs();
       rootfs = {
-        logicalPath: "rootfs.vfs",
+        logicalPath: "rootfs.vfs.zst",
         selectedPath: resolved.selectedPath,
         resolverRequest: resolved.resolverRequest,
         resolverSelectedPath: resolved.selectedPath,
       };
     } catch (error) {
       rootfs = {
-        logicalPath: "rootfs.vfs",
+        logicalPath: "rootfs.vfs.zst",
         selectedPath: null,
-        resolverRequest: "rootfs.vfs -> programs/rootfs.vfs",
+        resolverRequest: "rootfs.vfs.zst -> programs/rootfs.vfs.zst",
         error: errorMessage(error),
       };
     }

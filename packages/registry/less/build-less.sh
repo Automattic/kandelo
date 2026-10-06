@@ -4,19 +4,41 @@ set -euo pipefail
 # Build less for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: packages/registry/less/bin/less.wasm
+# Output: bin/less.wasm under the resolver work root (beside this script
+# when run standalone).
 #
 # less requires termcap functions (tgetent, tgetstr, etc.) which musl
-# doesn't provide. We build a minimal stub library (termcap-stub.c) that
-# returns "not found" — less then falls back to hardcoded ANSI sequences.
-# We also provide a minimal termcap.h header.
+# doesn't provide. Previously this built a stub libtermcap.a whose
+# tgetent() always returned "not found" — that made every terminal look
+# like a dumb teletype, so less could never do real full-screen paging
+# (it always printed "WARNING: terminal is not fully functional").
+#
+# Instead, we link against ncurses's real termcap implementation
+# (libtinfow.a, aka libtinfo.a), which vim already links and which has
+# xterm-256color/xterm/vt100/dumb terminal entries compiled in via
+# MKfallback.sh — no runtime /usr/share/terminfo needed. See
+# packages/registry/vim/build-vim.sh for the same resolve pattern.
 
 LESS_VERSION="${LESS_VERSION:-668}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/less-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/less-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -31,26 +53,40 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Build termcap stub library ---
-TERMCAP_DIR="$SCRIPT_DIR/libtermcap"
-if [ ! -f "$TERMCAP_DIR/libtermcap.a" ]; then
-    echo "==> Building termcap stub library..."
-    mkdir -p "$TERMCAP_DIR/include"
-    cp "$SCRIPT_DIR/termcap.h" "$TERMCAP_DIR/include/termcap.h"
-    wasm32posix-cc -I"$TERMCAP_DIR/include" -c "$SCRIPT_DIR/termcap-stub.c" -o "$TERMCAP_DIR/termcap-stub.o"
-    wasm32posix-ar rcs "$TERMCAP_DIR/libtermcap.a" "$TERMCAP_DIR/termcap-stub.o"
-    rm "$TERMCAP_DIR/termcap-stub.o"
-    echo "==> termcap stub library built"
+# --- Resolve ncurses via the dep cache ---
+# An env-var short-circuit lets a caller (e.g. another resolver run,
+# or a wrapper script) pass the prefix in directly and skip the cargo
+# invocation. Otherwise we ask the resolver to build-or-hit the cache.
+# Matches packages/registry/vim/build-vim.sh:57-71.
+NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
+if [ -z "$NCURSES_PREFIX" ]; then
+    echo "==> Resolving ncurses via cargo xtask build-deps..."
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    NCURSES_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses)"
+fi
+if [ ! -f "$NCURSES_PREFIX/lib/libtinfow.a" ]; then
+    echo "ERROR: ncurses resolve returned '$NCURSES_PREFIX' but libtinfow.a missing" >&2
+    exit 1
+fi
+echo "==> ncurses at $NCURSES_PREFIX"
+
+NCURSES_CPPFLAGS="-I$NCURSES_PREFIX/include"
+if [ -d "$NCURSES_PREFIX/include/ncursesw" ]; then
+    NCURSES_CPPFLAGS="$NCURSES_CPPFLAGS -I$NCURSES_PREFIX/include/ncursesw"
 fi
 
 # --- Download less source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading less $LESS_VERSION..."
-    TARBALL="less-${LESS_VERSION}.tar.gz"
+    TARBALL_NAME="less-${LESS_VERSION}.tar.gz"
     DOWNLOAD_URLS=(
-        "https://www.greenwoodsoftware.com/less/${TARBALL}"
-        "https://ftp.gnu.org/gnu/less/${TARBALL}"
+        "https://www.greenwoodsoftware.com/less/${TARBALL_NAME}"
+        "https://ftp.gnu.org/gnu/less/${TARBALL_NAME}"
     )
+    # WHY: a unique archive under the work root; a fixed /tmp name let two
+    # concurrent builds overwrite or delete each other's download.
+    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/less-source.XXXXXX")"
+    DOWNLOADED=0
     for URL in "${DOWNLOAD_URLS[@]}"; do
         if curl \
             --connect-timeout 20 \
@@ -59,19 +95,20 @@ if [ ! -d "$SRC_DIR" ]; then
             --retry-max-time 120 \
             --retry-all-errors \
             -fsSL "$URL" \
-            -o "/tmp/$TARBALL"
+            -o "$TARBALL"
         then
+            DOWNLOADED=1
             break
         fi
-        rm -f "/tmp/$TARBALL"
     done
-    if [ ! -f "/tmp/$TARBALL" ]; then
-        echo "ERROR: failed to download $TARBALL from all configured mirrors" >&2
+    if [ "$DOWNLOADED" != 1 ]; then
+        rm -f "$TARBALL"
+        echo "ERROR: failed to download $TARBALL_NAME from all configured mirrors" >&2
         exit 1
     fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -96,23 +133,15 @@ if [ ! -f Makefile ]; then
     export ac_cv_sizeof_int=4
     export ac_cv_sizeof_size_t=4
 
-    # Tell configure our termcap.h exists and -ltermcap works.
-    # Disable all other terminal library checks.
-    export ac_cv_header_termcap_h=yes
-    export ac_cv_lib_ncurses_initscr=no
-    export ac_cv_lib_ncursesw_initscr=no
-    export ac_cv_lib_tinfo_tgetent=no
-    export ac_cv_lib_tinfow_tgetent=no
-    export ac_cv_lib_xcurses_initscr=no
-    export ac_cv_lib_curses_initscr=no
-    export ac_cv_lib_curses_tgetent=no
-    export ac_cv_lib_termlib_tgetent=no
-    export ac_cv_lib_termcap_tgetent=yes
-
-    # Include path for termcap.h, library path for libtermcap.a
-    export CFLAGS="-I${TERMCAP_DIR}/include"
-    export LDFLAGS="-L${TERMCAP_DIR}"
-    export LIBS="-ltermcap"
+    # Point configure at ncurses's real termcap implementation. Unlike
+    # the old stub, we let configure's AC_CHECK_LIB tests actually
+    # link against the ncurses libraries (a real cross-link, not an
+    # executed probe) so it picks a genuine TERMLIBS. -ltinfow in
+    # LDFLAGS guarantees tgetent/tgetstr/tgetnum/tgetflag/tputs/tgoto
+    # resolve at the final link no matter which curses lib configure
+    # settles on.
+    export CPPFLAGS="$NCURSES_CPPFLAGS"
+    export LDFLAGS="-L$NCURSES_PREFIX/lib -ltinfow"
 
     wasm32posix-configure \
         --with-regex=posix \
@@ -144,4 +173,4 @@ echo "Binary: $BIN_DIR/less.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-[ -f "$SCRIPT_DIR/bin/less.wasm" ] && install_local_binary less "$SCRIPT_DIR/bin/less.wasm" || true
+install_local_binary less "$BIN_DIR/less.wasm"

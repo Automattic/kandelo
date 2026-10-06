@@ -35,6 +35,13 @@ provider = "prepared-runtime"
 component = "kernel-wasm"
 role = "build"
 
+[[software.archive]]
+id = "adminer"
+url = "https://github.com/vrana/adminer/releases/download/v4.8.1/adminer-4.8.1-en.php"
+sha256 = "4ec36be619bb571e2b5a5d4051bfe06f3fcadb3004969b993f2535f6ce28116b"
+role = "runtime"
+materialization = "embedded"
+
 [[mounts]]
 path = "/"
 source = "built-image"

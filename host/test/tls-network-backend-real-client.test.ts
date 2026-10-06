@@ -1,4 +1,5 @@
 import { Duplex } from "node:stream";
+import { gzipSync } from "node:zlib";
 import {
   connect as tlsConnect,
   createServer as createTlsServer,
@@ -252,6 +253,166 @@ it("refuses resumption and gives OpenSSL a complete fresh handshake", async () =
   );
   expect(response).toContain("hello after resumption refusal");
   expect(clientHelloSessionIdLength).toBeGreaterThan(0);
+});
+
+it("serves multiple keep-alive requests over one MITM connection (git smart-HTTP shape)", async () => {
+  // git-remote-http / libcurl reuse one HTTPS connection for ref discovery
+  // (GET /info/refs) followed by the upload-pack POST. The MITM backend must
+  // keep the connection open between responses instead of closing after the
+  // first, or the second request is never answered and the clone stalls.
+  const bodies = ["first-refs-advertisement", "second-pack-response"];
+  let call = 0;
+  const fetchMock = vi.fn().mockImplementation(() =>
+    Promise.resolve(new Response(bodies[Math.min(call++, bodies.length - 1)])),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  const backend = new TlsNetworkBackend();
+  await backend.init();
+  const handle = 7;
+  backend.connect(handle, backend.getaddrinfo("example.test"), 443);
+  const transport = createTransport(backend, handle, () => {});
+  const client = tlsConnect({
+    socket: transport,
+    servername: "example.test",
+    rejectUnauthorized: false,
+    minVersion: "TLSv1.2",
+    maxVersion: "TLSv1.2",
+  });
+
+  const combined = await new Promise<string>((resolve, reject) => {
+    let buf = "";
+    let sentSecond = false;
+    client.setEncoding("utf8");
+    client.on("secureConnect", () => {
+      client.write(
+        "GET /info/refs?service=git-upload-pack HTTP/1.1\r\n" +
+          "Host: example.test\r\n" +
+          "Connection: keep-alive\r\n\r\n",
+      );
+    });
+    client.on("data", (chunk) => {
+      buf += chunk;
+      if (!sentSecond && buf.includes(bodies[0])) {
+        sentSecond = true;
+        client.write(
+          "POST /git-upload-pack HTTP/1.1\r\n" +
+            "Host: example.test\r\n" +
+            "Content-Type: application/x-git-upload-pack-request\r\n" +
+            "Content-Length: 4\r\n" +
+            "Connection: keep-alive\r\n\r\nwant",
+        );
+      }
+      if (buf.includes(bodies[1])) {
+        client.end();
+        resolve(buf);
+      }
+    });
+    client.on("error", reject);
+  });
+
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(combined).toContain(bodies[0]);
+  expect(combined).toContain(bodies[1]);
+  expect(fetchMock.mock.calls[0][0] as string).toContain("/info/refs");
+  expect(fetchMock.mock.calls[1][0] as string).toContain("/git-upload-pack");
+});
+
+it("decodes a gzip Content-Encoding POST body so it traverses the CORS proxy", async () => {
+  // git gzip-compresses the git-upload-pack fetch command and sets
+  // Content-Encoding: gzip. That header is not in the proxy allow-list, so a
+  // faithful pass-through is refused (previously surfaced to git as HTTP 502).
+  // The MITM decodes the body to identity and drops Content-Encoding so only
+  // allow-listed fields remain.
+  const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
+  vi.stubGlobal("fetch", fetchMock);
+  const backend = new TlsNetworkBackend({
+    corsProxy: {
+      url: "https://proxy.example/?",
+      allowedRequestHeaderNames: ["accept", "content-type", "git-protocol"],
+      allowAnonymousGetHeaderOmission: true,
+    },
+  });
+  await backend.init();
+  const handle = 11;
+  backend.connect(handle, backend.getaddrinfo("example.test"), 443);
+  const transport = createTransport(backend, handle, () => {});
+  const client = tlsConnect({
+    socket: transport,
+    servername: "example.test",
+    rejectUnauthorized: false,
+    minVersion: "TLSv1.2",
+    maxVersion: "TLSv1.2",
+  });
+
+  const gz = gzipSync(Buffer.from("0011command=fetch0000"));
+  await new Promise<void>((resolve, reject) => {
+    client.on("secureConnect", () => {
+      const head = Buffer.from(
+        "POST /git-upload-pack HTTP/1.1\r\n" +
+          "Host: example.test\r\n" +
+          "Content-Type: application/x-git-upload-pack-request\r\n" +
+          "git-protocol: version=2\r\n" +
+          "Content-Encoding: gzip\r\n" +
+          `Content-Length: ${gz.length}\r\n` +
+          "Connection: close\r\n\r\n",
+      );
+      client.write(Buffer.concat([head, gz]));
+    });
+    client.on("data", () => {});
+    client.on("end", () => resolve());
+    client.on("error", reject);
+  });
+
+  // No BrowserCorsProxyRequestError — the request reached fetch.
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const [fetchUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(fetchUrl).toBe("https://proxy.example/?https://example.test/git-upload-pack");
+  expect(new TextDecoder().decode(init.body as Uint8Array)).toBe("0011command=fetch0000");
+  expect((init.headers as Headers).has("content-encoding")).toBe(false);
+  expect((init.headers as Headers).get("git-protocol")).toBe("version=2");
+});
+
+it("reassembles a chunked request body before issuing the fetch", async () => {
+  // git streams a large upload-pack negotiation as Transfer-Encoding: chunked.
+  // The MITM must dechunk it into a plain body rather than forwarding the raw
+  // chunk framing, which the origin would reject.
+  const fetchMock = vi.fn().mockResolvedValue(new Response("pack data"));
+  vi.stubGlobal("fetch", fetchMock);
+  const backend = new TlsNetworkBackend();
+  await backend.init();
+  const handle = 9;
+  backend.connect(handle, backend.getaddrinfo("example.test"), 443);
+  const transport = createTransport(backend, handle, () => {});
+  const client = tlsConnect({
+    socket: transport,
+    servername: "example.test",
+    rejectUnauthorized: false,
+    minVersion: "TLSv1.2",
+    maxVersion: "TLSv1.2",
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    client.setEncoding("utf8");
+    client.on("secureConnect", () => {
+      // Two chunks ("want" + "-more") then the terminating zero-chunk.
+      client.write(
+        "POST /git-upload-pack HTTP/1.1\r\n" +
+          "Host: example.test\r\n" +
+          "Content-Type: application/x-git-upload-pack-request\r\n" +
+          "Transfer-Encoding: chunked\r\n" +
+          "Connection: close\r\n\r\n" +
+          "4\r\nwant\r\n5\r\n-more\r\n0\r\n\r\n",
+      );
+    });
+    client.on("data", () => {});
+    client.on("end", () => resolve());
+    client.on("error", reject);
+  });
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const sentBody = (fetchMock.mock.calls[0][1] as RequestInit).body as Uint8Array;
+  expect(new TextDecoder().decode(sentBody)).toBe("want-more");
 });
 
 it("preserves repeated decrypted request fields through the real TLS client path", async () => {

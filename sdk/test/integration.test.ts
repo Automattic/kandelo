@@ -452,6 +452,52 @@ describe('integration: compile C program', () => {
     }
   }, 30_000);
 
+  it('links working dlopen into C++ programs that request -ldl', async () => {
+    // wasm32posix-c++ hands the SDK's C glue to clang++, which compiles a .c
+    // input as C++. dlopen.c once lacked C linkage there, so its dlopen was
+    // mangled and a C++ program silently bound to musl's weak stub, which
+    // only reports "Dynamic loading not supported". The functional glue is
+    // recognizable by its host imports.
+    const toolchain = await resolveToolchain();
+    mkdirSync(TMP_DIR, { recursive: true });
+
+    const srcFile = join(TMP_DIR, 'dlopen-cxx.cpp');
+    const outFile = join(TMP_DIR, 'dlopen-cxx.wasm');
+    writeFileSync(srcFile, `
+      #include <dlfcn.h>
+      int main(int argc, char **argv) {
+        return dlopen(argc > 1 ? argv[1] : nullptr, RTLD_NOW) ? 0 : 1;
+      }
+    `);
+
+    try {
+      const userArgs = [srcFile, '-o', outFile, '-ldl'];
+      const executableLinker = await prepareExecutableLinker(
+        userArgs,
+        toolchain,
+        'wasm32',
+        toolchain.cxx,
+      );
+      const args = buildClangArgs(userArgs, toolchain, 'wasm32', executableLinker ?? undefined);
+      const result = await run(toolchain.cxx, args);
+      if (result.exitCode !== 0) {
+        console.error('clang++ stderr:', result.stderr);
+      }
+      expect(result.exitCode).toBe(0);
+
+      const module = new WebAssembly.Module(readFileSync(outFile));
+      const envImports = WebAssembly.Module.imports(module)
+        .filter((entry) => entry.module === 'env')
+        .map((entry) => entry.name);
+      expect(envImports).toContain('__wasm_dlopen_main');
+      expect(envImports).toContain('__wasm_dlopen_prepare');
+      expect(envImports.some((name) => name.startsWith('_Z'))).toBe(false);
+    } finally {
+      try { unlinkSync(srcFile); } catch {}
+      try { unlinkSync(outFile); } catch {}
+    }
+  }, 30_000);
+
   it('compiles in compile-only mode', async () => {
     const toolchain = await resolveToolchain();
     mkdirSync(TMP_DIR, { recursive: true });

@@ -516,6 +516,28 @@ WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
     wasm_require_approved_reserved_env_imports \
     "$work/approved-reserved-import.wasm"
 
+# The approval comes from the generated allowance
+# (libc/glue/kandelo-host-imports.txt, from HOST_ENV_IMPORTS), not from a list
+# in the guard: with an allowance that omits the name, the same import is
+# refused, on both inspection paths.
+grep -v '^__wasm_posix_vm_interrupt_after$' \
+    "$REPO_ROOT/libc/glue/kandelo-host-imports.txt" >"$work/no-vm-interrupt-imports.txt"
+for tool in "$missing_structural_tool" ""; do
+    if KANDELO_HOST_IMPORTS_FILE="$work/no-vm-interrupt-imports.txt" \
+        WASM_POSIX_FORK_INSTRUMENT="$tool" \
+        wasm_require_approved_reserved_env_imports \
+        "$work/approved-reserved-import.wasm" 2>/dev/null; then
+        echo "ERROR: reserved import approved without an entry in the host-import allowance (tool='$tool')" >&2
+        exit 1
+    fi
+done
+if KANDELO_HOST_IMPORTS_FILE="$work/does-not-exist.txt" \
+    wasm_require_approved_reserved_env_imports \
+    "$work/approved-reserved-import.wasm" 2>/dev/null; then
+    echo "ERROR: reserved import approved with a missing host-import allowance" >&2
+    exit 1
+fi
+
 cat >"$work/nonreserved-import.wat" <<'WAT'
 (module
   (import "env" "package_owned_callback" (func))
@@ -524,6 +546,51 @@ WAT
 wat2wasm "$work/nonreserved-import.wat" -o "$work/nonreserved-import.wasm"
 WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
     wasm_require_approved_reserved_env_imports "$work/nonreserved-import.wasm"
+
+# Entry points of the sysroot platform libraries. The host implements none of
+# them, so an import is always a link that missed sysroot/lib/lib{drm,gbm,EGL,
+# GLESv2}.a — the shape that shipped an sdl2.wasm dying on env.drmAuthMagic.
+cat >"$work/platform-library-import.wat" <<'WAT'
+(module
+  (import "env" "drmAuthMagic" (func (param i32 i32) (result i32)))
+  (import "env" "gbm_surface_create" (func (result i32)))
+  (import "env" "eglGetPlatformDisplay" (func (result i32)))
+  (import "env" "glPixelStorei" (func (param i32 i32)))
+  (func (export "_start")))
+WAT
+wat2wasm "$work/platform-library-import.wat" \
+    -o "$work/platform-library-import.wasm"
+platform_import_error="$work/platform-library-import.error"
+if WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+    wasm_require_approved_reserved_env_imports \
+    "$work/platform-library-import.wasm" 2>"$platform_import_error"; then
+    echo "ERROR: unresolved sysroot platform-library import was accepted" >&2
+    exit 1
+fi
+for identity in env.drmAuthMagic env.gbm_surface_create \
+    env.eglGetPlatformDisplay env.glPixelStorei; do
+    grep -Fqx "       $identity" "$platform_import_error" || {
+        echo "ERROR: platform-library rejection did not name $identity" >&2
+        cat "$platform_import_error" >&2
+        exit 1
+    }
+done
+
+# The platform-library families match on an uppercase tail (or `gbm_`), so
+# ordinary lowercase package symbols that merely share a prefix stay legal.
+cat >"$work/platform-lookalike-import.wat" <<'WAT'
+(module
+  (import "env" "glob" (func (result i32)))
+  (import "env" "drmgetenv" (func (result i32)))
+  (import "env" "eglue" (func (result i32)))
+  (import "env" "gbmfoo" (func (result i32)))
+  (func (export "_start")))
+WAT
+wat2wasm "$work/platform-lookalike-import.wat" \
+    -o "$work/platform-lookalike-import.wasm"
+WASM_POSIX_FORK_INSTRUMENT="$missing_structural_tool" \
+    wasm_require_approved_reserved_env_imports \
+    "$work/platform-lookalike-import.wasm"
 
 # Modern ABI 43 modules use the wasmparser-backed structural decoder. An
 # unusable WABT fallback proves this check does not reinterpret a decoder

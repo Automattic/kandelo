@@ -18,6 +18,7 @@ import { chromium } from "@playwright/test";
 import {
   captureProgramFixtureBuildContract,
   programFixtureNeedsRebuild,
+  sdkProgramBuildInputs,
   stampProgramFixture,
   type ProgramFixtureBuildContract,
 } from "./program-fixture-freshness";
@@ -85,6 +86,7 @@ const TEST_PROGRAMS = [
   "select_signal_test.c",
   "dsp_signal_test.c",
   "lseek_invalid_test.c",
+  "int128_division_test.c",
   "environment_lifecycle_test.c",
   "chown_sentinel_test.c",
   "fstatat_empty_path_test.c",
@@ -94,6 +96,7 @@ const TEST_PROGRAMS = [
   "getdents_boundary_test.c",
   "terminal_attributes_api_test.c",
   "rlimit_fsize_test.c",
+  "rlimit_as_test.c",
   "kernel_scratch_browser_test.c",
   "socket_timeout_options_test.c",
   "unix_listener_exec_test.c",
@@ -127,7 +130,7 @@ const TEST_PROGRAMS = [
 ];
 
 /** Memory64 counterparts needed to prove pointer-width-neutral syscall input. */
-const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c"];
+const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c", "int128_division_test.c"];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "environment_lifecycle_test.c",
@@ -197,13 +200,7 @@ function fixtureBuildContract(
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const inputs = [
-    join(repoRoot, "sdk/bin"),
-    join(repoRoot, "sdk/src"),
-    join(repoRoot, "sdk/package.json"),
-    join(repoRoot, "sdk/package-lock.json"),
-    join(repoRoot, arch === "wasm64" ? "sysroot64" : "sysroot"),
-  ];
+  const inputs = sdkProgramBuildInputs(repoRoot, arch);
   if (forkInstrumented) {
     const configuredTool = process.env.WASM_POSIX_FORK_INSTRUMENT;
     const instrumenter = configuredTool
@@ -346,6 +343,43 @@ export async function setup() {
       cwd: repoRoot,
       stdio: "pipe",
     });
+  }
+
+  // WHY: the package build engine stamps every wasm it installs with this
+  // checkout's kandelo.abi.contract digest. These fixtures are compiled here
+  // instead, so without this step the host reports a fixture built seconds ago
+  // as a "legacy binary [that] predates the ABI-contract-digest rollout"
+  // (host/src/constants.ts) and writes that to stderr — which breaks the tests
+  // asserting the host stays quiet on an ordinary guest exit. The stamp is
+  // additive and lives outside the freshness fingerprint above, so restamping
+  // an already-current fixture is a no-op rather than a rebuild trigger.
+  const abiContractStampTargets = [
+    ...C_TEST_FIXTURES.map(({ out }) => out),
+    ...RESOLVED_PROGRAM_FIXTURES.map(({ out }) => out),
+    ...TEST_PROGRAMS.map((cFile) =>
+      join(examplesDir, cFile).replace(/\.c$/, ".wasm")
+    ),
+    ...WASM64_TEST_PROGRAMS.map((cFile) =>
+      join(examplesDir, cFile).replace(/\.c$/, ".wasm64.wasm")
+    ),
+  ].filter((out) => existsSync(out));
+  if (abiContractStampTargets.length > 0) {
+    console.log("[global-setup] Stamping ABI contract digest on fixtures...");
+    execFileSync(
+      "cargo",
+      [
+        "run",
+        "-p",
+        "xtask",
+        "--target",
+        hostTarget,
+        "--quiet",
+        "--",
+        "stamp-abi-contract",
+        ...abiContractStampTargets,
+      ],
+      { cwd: repoRoot, stdio: "pipe" },
+    );
   }
 
   // packages/registry/wordpress/test/wordpress-site-editor.test.ts calls

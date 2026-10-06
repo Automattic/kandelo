@@ -120,16 +120,20 @@ export function ensureExtract(opts: ExtractOptions): string {
   const archivePath = join(downloadDir, archiveName);
 
   if (!existsSync(archivePath) || sha256OfFile(archivePath) !== sha256) {
+    // The partial name is per process: two package builds can miss this
+    // shared cache at once, and a shared name lets one curl truncate the
+    // file the other is verifying.
+    const partial = `${archivePath}.partial-${process.pid}`;
     console.log(`==> Downloading ${url}`);
-    execSync(`curl -fsSL -o "${archivePath}.partial" "${url}"`, { stdio: "inherit" });
-    const got = sha256OfFile(`${archivePath}.partial`);
+    execSync(`curl -fsSL -o "${partial}" "${url}"`, { stdio: "inherit" });
+    const got = sha256OfFile(partial);
     if (got !== sha256) {
-      rmSync(`${archivePath}.partial`, { force: true });
+      rmSync(partial, { force: true });
       throw new Error(
         `sha256 mismatch for ${archiveName}: expected ${sha256}, got ${got}`,
       );
     }
-    renameSync(`${archivePath}.partial`, archivePath);
+    renameSync(partial, archivePath);
   }
 
   // Extract atomically: into a tmp dir, then rename. A reader (parallel
@@ -193,4 +197,53 @@ export function ensureSourceExtract(
     cacheKey: packageName,
     legacyPath: legacyLocalPath,
   });
+}
+
+export interface FetchFileOptions {
+  url: string;
+  sha256: string;
+  /** Cache key segment; the full sha256 is folded in for uniqueness. */
+  cacheKey: string;
+  /** If set and present, return it as-is instead of downloading. */
+  legacyPath?: string;
+}
+
+/**
+ * Download + verify a single upstream file (no extraction) and return its
+ * on-disk path. This is the counterpart to `ensureExtract` for sources that
+ * ship as one bare file rather than an archive — e.g. Adminer's single-file
+ * PHP release. Same content-addressed cache and hard sha256 gate.
+ */
+export function ensureFile(opts: FetchFileOptions): string {
+  const { url, sha256, cacheKey, legacyPath } = opts;
+
+  if (legacyPath && existsSync(legacyPath)) {
+    return legacyPath;
+  }
+
+  const cacheRoot = process.env.XDG_CACHE_HOME
+    ? join(process.env.XDG_CACHE_HOME, "kandelo")
+    : join(homedir(), ".cache", "kandelo");
+  const destDir = join(cacheRoot, "vfs-build-sources", `${cacheKey}-${sha256.slice(0, 8)}`);
+  const fileName = url.split("/").pop()!;
+  const destPath = join(destDir, fileName);
+
+  if (existsSync(destPath) && sha256OfFile(destPath) === sha256) {
+    return destPath;
+  }
+
+  mkdirSync(destDir, { recursive: true });
+  // Per-process partial name; see ensureExtract.
+  const partial = `${destPath}.partial-${process.pid}`;
+  console.log(`==> Downloading ${url}`);
+  execSync(`curl -fsSL -o "${partial}" "${url}"`, { stdio: "inherit" });
+  const got = sha256OfFile(partial);
+  if (got !== sha256) {
+    rmSync(partial, { force: true });
+    throw new Error(
+      `sha256 mismatch for ${fileName}: expected ${sha256}, got ${got}`,
+    );
+  }
+  renameSync(partial, destPath);
+  return destPath;
 }

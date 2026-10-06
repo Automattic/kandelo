@@ -1,24 +1,176 @@
 {
   "schema": 1,
   "dependencies": [
-    { "name": "rootfs", "version": "0.1.0", "role": "base-image" },
-    { "name": "bash", "version": "5.2.37", "role": "eager-program" },
-    { "name": "fbdoom", "version": "0.1.0", "role": "eager-program" },
-    { "name": "modeset", "version": "0.1.0", "role": "eager-program" },
-    { "name": "less", "version": "668", "role": "lazy-file" },
-    { "name": "tar", "version": "1.35", "role": "lazy-file" },
-    { "name": "curl", "version": "8.11.1", "role": "lazy-file" },
-    { "name": "netcat", "version": "0.7.1", "role": "lazy-file" },
-    { "name": "wget", "version": "1.25.0", "role": "lazy-file" },
-    { "name": "git", "version": "2.47.1", "role": "lazy-file" },
-    { "name": "gzip", "version": "1.13", "role": "lazy-file" },
-    { "name": "bzip2", "version": "1.0.8", "role": "lazy-file" },
-    { "name": "xz", "version": "5.6.2", "role": "lazy-file" },
-    { "name": "zstd", "version": "1.5.6", "role": "lazy-file" },
-    { "name": "zip", "version": "3.0", "role": "lazy-file" },
-    { "name": "unzip", "version": "6.0", "role": "lazy-file" },
-    { "name": "lsof", "version": "0.1.0", "role": "lazy-file" },
-    { "name": "nano", "version": "8.0", "role": "lazy-file" },
+    {
+      "name": "rootfs",
+      "version": "0.1.0",
+      "role": "base-image"
+    },
+    {
+      "name": "bash",
+      "version": "5.2.37",
+      "role": "eager-program"
+    },
+    {
+      "name": "fbdoom",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "modeset",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "sdl2-demo",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "wayland-demo",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "espeak-ng",
+      "version": "1.52.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "ncurses",
+      "version": "6.5",
+      "role": "eager-file"
+    },
+    {
+      "name": "less",
+      "version": "668",
+      "role": "lazy-file"
+    },
+    {
+      "name": "tar",
+      "version": "1.35",
+      "role": "lazy-file"
+    },
+    {
+      "name": "curl",
+      "version": "8.11.1",
+      "role": "lazy-file"
+    },
+    {
+      "name": "netcat",
+      "version": "0.7.1",
+      "role": "lazy-file"
+    },
+    {
+      "name": "wget",
+      "version": "1.25.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "git",
+      "version": "2.47.1",
+      "role": "lazy-file"
+    },
+    {
+      "name": "gzip",
+      "version": "1.13",
+      "role": "lazy-file"
+    },
+    {
+      "name": "bzip2",
+      "version": "1.0.8",
+      "role": "lazy-file"
+    },
+    {
+      "name": "xz",
+      "version": "5.6.2",
+      "role": "lazy-file"
+    },
+    {
+      "name": "zstd",
+      "version": "1.5.6",
+      "role": "lazy-file"
+    },
+    {
+      "name": "zip",
+      "version": "3.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "unzip",
+      "version": "6.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "lhasa",
+      "version": "0.4.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "tyrquake",
+      "version": "0.71.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "lsof",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "nano",
+      "version": "8.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "sqlite-cli",
+      "version": "3.49.1",
+      "role": "lazy-file"
+    },
+    {
+      "name": "foot",
+      "version": "1.17.2",
+      "role": "lazy-file"
+    },
+    {
+      "name": "waybar",
+      "version": "0.14.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "mako",
+      "version": "1.10.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "dbus",
+      "version": "1.14.10",
+      "role": "lazy-file"
+    },
+    {
+      "name": "qtgallery",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "quickshell",
+      "version": "0.3.1",
+      "role": "lazy-file"
+    },
+    {
+      "name": "scummvm",
+      "version": "2026.3.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "elinks",
+      "version": "0.20.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "ffmpeg",
+      "version": "9.0",
+      "role": "lazy-file"
+    },
     {
       "name": "vim-browser-bundle",
       "version": "9.1.0900",
@@ -27,6 +179,41 @@
     {
       "name": "nethack-browser-bundle",
       "version": "3.6.7",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "ruby-browser-bundle",
+      "version": "4.0.5",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "python-browser-bundle",
+      "version": "3.13.3",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "node-browser-bundle",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "perl-browser-bundle",
+      "version": "5.40.3",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "mandoc-browser-bundle",
+      "version": "1.14.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "coreutils-docs",
+      "version": "9.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "lsof-docs",
+      "version": "0.1.0",
       "role": "lazy-archive"
     },
     {

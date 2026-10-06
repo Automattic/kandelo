@@ -1,0 +1,9 @@
+script_path = "packages/registry/perl-browser-bundle/build-perl-browser-bundle.sh"
+inputs = [
+  "packages/registry/perl-browser-bundle/build-perl-browser-bundle.sh",
+  "images/vfs/scripts/build-perl-zip.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
+commit      = "67debdd09b913d839ed40018efb96f059f639853"
+revision    = 1

@@ -1,0 +1,169 @@
+# Per-program manifest for ScummVM. See docs/package-management.md.
+#
+# Ports ScummVM (SCUMM engine with its scumm-7-8 sub-engine — Monkey
+# Island 1-3, Day of the Tentacle, Full Throttle, The Dig; the
+# HE/Humongous sub-engine stays off — plus the engine of every freeware
+# game the ScummVM demo can fetch) to the
+# Kandelo SDL2 stack: Wayland video under wlcompositor (KMSDRM stays
+# compiled into libSDL2.a as the console path) with the GLES2 OpenGL
+# graphics manager presenting through wayland-egl, OSS audio through
+# SDL2's dsp backend and its audio thread, and seat input from the
+# compositor. Game data is not part of the package; ScummVM boots to
+# its launcher and games mount separately.
+
+kind = "program"
+name = "scummvm"
+version = "2026.3.0"
+kernel_abi = 44
+depends_on = [
+  "sdl2@2.32.10",
+  "libdrm@2.4.120",
+  "libwayland@1.24.0",
+  "libffi@0.1.0",
+  "libxkbcommon@1.7.0",
+  "zlib@1.3.1",
+  "libpng@1.6.43",
+  "freetype@2.13.3",
+  "libcxx@21.1.7",
+]
+arches = ["wasm32"]
+
+[source]
+url = "https://downloads.scummvm.org/frs/scummvm/2026.3.0/scummvm-2026.3.0.tar.xz"
+sha256 = "b863a81e1598df8bc4aa0c33e3d9b1c8bbede1879d94d91568a4f200057677e7"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://github.com/scummvm/scummvm/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/scummvm/build-scummvm.sh"
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "curl"
+version_constraint = ">=7.71.0"
+probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "tar"
+version_constraint = ">=1.30"
+probe = { args = ["--version"], version_regex = "tar.*?(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.0"
+probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wasm-objdump"
+version_constraint = ">=1.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "shasum"
+version_constraint = ">=6.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[outputs]]
+name = "scummvm"
+wasm = "scummvm.wasm"
+
+# The GUI data ScummVM reads from /usr/share/scummvm at startup. Without it
+# the launcher falls back to its compiled-in skin: no theme, no game icons,
+# and the built-in bitmap font. `make install` also produces translation,
+# CJK-font, ImGui-font, Macintosh-font, shader, help and achievement data;
+# this manifest declares only the launcher's own closure, because every
+# declared runtime file becomes mandatory in the resolved package closure
+# and the rest adds ~103 MB that the SCUMM engine does not read.
+[[runtime_files]]
+artifact = "share/scummvm/scummremastered.zip"
+guest_path = "/usr/share/scummvm/scummremastered.zip"
+
+[[runtime_files]]
+artifact = "share/scummvm/scummmodern.zip"
+guest_path = "/usr/share/scummvm/scummmodern.zip"
+
+[[runtime_files]]
+artifact = "share/scummvm/scummclassic.zip"
+guest_path = "/usr/share/scummvm/scummclassic.zip"
+
+[[runtime_files]]
+artifact = "share/scummvm/gui-icons.dat"
+guest_path = "/usr/share/scummvm/gui-icons.dat"
+
+[[runtime_files]]
+artifact = "share/scummvm/fonts.dat"
+guest_path = "/usr/share/scummvm/fonts.dat"
+
+# Engine plugins. Each engine is a side module the program dlopen()s from
+# /usr/lib/scummvm (ScummVM's PLUGIN_DIRECTORY for --prefix=/usr) only when
+# a game needs it, so each is its own lazy file: a machine downloads the
+# program plus the one engine of the game it plays.
+
+[[runtime_files]]
+artifact = "lib/scummvm/libscumm.so"
+guest_path = "/usr/lib/scummvm/libscumm.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libsky.so"
+guest_path = "/usr/lib/scummvm/libsky.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libdrascula.so"
+guest_path = "/usr/lib/scummvm/libdrascula.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libdreamweb.so"
+guest_path = "/usr/lib/scummvm/libdreamweb.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libqueen.so"
+guest_path = "/usr/lib/scummvm/libqueen.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libgot.so"
+guest_path = "/usr/lib/scummvm/libgot.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libgriffon.so"
+guest_path = "/usr/lib/scummvm/libgriffon.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/liblure.so"
+guest_path = "/usr/lib/scummvm/liblure.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libadl.so"
+guest_path = "/usr/lib/scummvm/libadl.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libparallaction.so"
+guest_path = "/usr/lib/scummvm/libparallaction.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libcge.so"
+guest_path = "/usr/lib/scummvm/libcge.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libcge2.so"
+guest_path = "/usr/lib/scummvm/libcge2.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libsludge.so"
+guest_path = "/usr/lib/scummvm/libsludge.so"
+
+[[runtime_files]]
+artifact = "lib/scummvm/libwage.so"
+guest_path = "/usr/lib/scummvm/libwage.so"

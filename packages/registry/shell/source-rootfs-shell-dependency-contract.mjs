@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 const validRoles = new Set([
   "base-image",
   "eager-program",
+  "eager-file",
   "lazy-file",
   "lazy-archive",
 ]);
@@ -155,7 +156,8 @@ export function validateSourceRootfsShellPackageManifest(contract, path) {
 
 export function resolverOwnedSourceRootfsShellDependencies(contract) {
   return contract.dependencies.filter(
-    ({ role }) => role === "lazy-file" || role === "lazy-archive",
+    ({ role }) =>
+      role === "lazy-file" || role === "lazy-archive" || role === "eager-file",
   );
 }
 

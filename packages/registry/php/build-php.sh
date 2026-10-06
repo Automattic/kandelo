@@ -906,7 +906,14 @@ if [ ! -f Makefile ]; then
     # musl exposes Linux unshare() as an ENOSYS stub. PHP must not advertise
     # pcntl_unshare() when this target cannot provide namespace isolation, so
     # override the cross probe with the target's real capability.
+    #
+    # Zend always compiles Fibers, and with no Fiber assembly for Wasm
+    # (--disable-fiber-asm) it builds them on <ucontext.h>. Kandelo does not
+    # support ucontext and libc defines none of it, so PHP opts in to the
+    # SDK's abort-on-call stand-ins: PHP code that never starts a Fiber runs
+    # normally, and starting one aborts with a diagnostic naming ucontext.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
+    LIBS="-lkandelo-ucontext-unsupported" \
     CPPFLAGS="$DEP_CPPFLAGS" \
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
@@ -1143,13 +1150,11 @@ if [ -f main/php_config.h ]; then
 fi
 
 # `make` per-file rules embed `INCLUDES` from configure but ignore
-# `CPPFLAGS` (which only contains `-D_GNU_SOURCE`); `INCLUDES` for
-# our libxml2 ends up as `-I.../include/libxml` because PHP's
-# `ext/libxml/config.m4` adds the `/libxml` suffix. The real PHP
-# sources `#include <libxml/parser.h>`, which needs the parent
-# `-I.../include`. Pass it via `EXTRA_CFLAGS`, which the per-file
-# rules append last.
-EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include"
+# `CPPFLAGS` (which only contains `-D_GNU_SOURCE`), so pass libxml2's own
+# pkg-config Cflags via `EXTRA_CFLAGS`, which the per-file rules append
+# last. With libxml2's upstream layout that is `-I…/include/libxml2`,
+# the directory PHP's `#include <libxml/parser.h>` resolves against.
+EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include/libxml2"
 
 echo "==> Building PHP CLI..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" cli
@@ -1349,10 +1354,9 @@ cp sapi/fpm/php-fpm "$BIN_DIR/php-fpm.wasm"
 
 # CLI and FPM both retain libc paths that can reach kernel_fork
 # (system/popen/fork wrappers for CLI, worker forks for FPM), so both
-# must be fork-instrumented. wasm-opt runs first, then fork
-# instrumentation as the tail step because the instrumenter hardcodes
-# mutable-global offsets and any later pass that reorders globals would
-# invalidate them. wasm-fork-instrument auto-discovers fork paths via
+# must be fork-instrumented. wasm-opt runs first so instrumentation covers
+# the smaller, inlined call graph; wasm-fork-instrument then runs its own
+# wasm-opt pass over the code it adds. It auto-discovers fork paths via
 # call-graph analysis; no onlylist file is required.
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -z "$WASM_OPT" ]; then

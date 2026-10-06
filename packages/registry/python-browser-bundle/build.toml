@@ -1,0 +1,9 @@
+script_path = "packages/registry/python-browser-bundle/build-python-browser-bundle.sh"
+inputs = [
+  "packages/registry/python-browser-bundle/build-python-browser-bundle.sh",
+  "images/vfs/scripts/build-python-zip.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
+commit      = "bab3cc2f7779bca1d35c1303f89b25082e0220d4"
+revision    = 1

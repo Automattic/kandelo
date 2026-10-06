@@ -1,0 +1,22 @@
+kind = "program"
+name = "mandoc"
+version = "1.14.6"
+kernel_abi = 7
+depends_on = ["zlib@1.3.1"]
+
+[source]
+url = "https://mandoc.bsd.lv/snapshots/mandoc-1.14.6.tar.gz"
+sha256 = "8bf0d570f01e70a6e124884088870cbed7537f36328d512909eb10cd53179d9c"
+provider = "archive"
+
+[license]
+spdx = "ISC"
+url = "https://mandoc.bsd.lv/"
+
+[build]
+script_path = "packages/registry/mandoc/build-mandoc.sh"
+
+[[outputs]]
+name = "mandoc"
+wasm = "mandoc.wasm"
+fork_instrumentation = "auto"

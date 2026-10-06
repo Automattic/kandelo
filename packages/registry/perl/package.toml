@@ -19,3 +19,9 @@ script_path = "packages/registry/perl/build-perl.sh"
 [[outputs]]
 name = "perl"
 wasm = "perl.wasm"
+
+# The complete built standard library (assembled by `make install.perl`), so
+# browser bundles and VFS images ship a real stdlib instead of scanning source.
+[[runtime_files]]
+artifact = "perl-runtime.zip"
+guest_path = "/usr/share/perl/perl-runtime.zip"

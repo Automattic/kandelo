@@ -1,0 +1,72 @@
+Give bottom-half callbacks the prototype they are called with
+
+ELinks queues deferred work as "bottom halves". The event loop calls every
+queued function as select_handler_T, that is `void (*)(void *)`:
+
+    typedef void (*select_handler_T)(void *);
+    #define register_bottom_half(fn, data) \
+            register_bottom_half_do((select_handler_T) (fn), (void *) (data))
+
+Two callers register a function that takes no argument and rely on that
+cast to hide the difference:
+
+    check_queue(void)       src/network/connection.c
+    update_status(void)     src/js/quickjs/unibar.c
+
+Calling a function through a pointer to an incompatible function type is
+undefined behavior (C11 6.3.2.3p8). Native calling conventions happen to
+tolerate an extra argument, but a WebAssembly indirect call checks the
+callee's signature and traps: every page load queues check_queue, so
+ELinks died with "null function or function signature mismatch" before
+rendering anything. The same code fails under control-flow-integrity
+checking (clang -fsanitize=cfi-icall) on native targets.
+
+Fix both registrations so the queued function really has the handler
+prototype. check_queue is static and only ever called as a bottom half,
+so it simply gains the unused parameter; update_status has direct callers,
+so it gets a small adapter.
+
+This is a portability fix, not a Kandelo adaptation: nothing here is
+specific to one platform.
+
+--- a/src/js/quickjs/unibar.c
++++ b/src/js/quickjs/unibar.c
+@@ -57,6 +57,15 @@
+ #undef unibar_fetch
+ }
+ 
++/* update_status() takes no argument, but a bottom half is called with one
++ * pointer argument, so register a function of the matching type. */
++static void
++update_status_bottom_half(void *data_)
++{
++	ELOG
++	update_status();
++}
++
+ static JSValue
+ js_unibar_set_property_visible(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+ {
+@@ -87,7 +96,7 @@
+ 	default:
+ 		break;
+ 	}
+-	register_bottom_half(update_status, NULL);
++	register_bottom_half(update_status_bottom_half, NULL);
+ 
+ 	return JS_UNDEFINED;
+ }
+--- a/src/network/connection.c
++++ b/src/network/connection.c
+@@ -881,8 +881,10 @@
+ 	return 1;
+ }
+ 
++/* Registered as a bottom half, so it must have select_handler_T's
++ * prototype: the event loop calls it with one pointer argument. */
+ static void
+-check_queue(void)
++check_queue(void *data_)
+ {
+ 	ELOG
+ 	struct connection *conn;

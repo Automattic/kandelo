@@ -54,6 +54,11 @@ echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
 mkdir -p "$SRC_DIR" "$BUILD_DIR" "$INSTALL_DIR"
 tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
 
+# sdl2.pc names -lwayland-{client,egl,cursor}, -lxkbcommon and -lffi for
+# libSDL2.a's Wayland video backend; those archives live in the libwayland,
+# libxkbcommon and libffi packages, so give the link their search paths.
+SDL2_DEP_LDFLAGS="-L${WASM_POSIX_DEP_LIBWAYLAND_DIR:?resolver did not provide the direct libwayland dependency}/lib -L${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?resolver did not provide the direct libxkbcommon dependency}/lib -L${WASM_POSIX_DEP_LIBFFI_DIR:?resolver did not provide the direct libffi dependency}/lib"
+
 echo "==> Configuring upstream playwave with only built-in WAVE support..."
 (
     cd "$BUILD_DIR"
@@ -77,7 +82,8 @@ echo "==> Configuring upstream playwave with only built-in WAVE support..."
         --disable-music-wavpack \
         CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" \
         NM="$NM" STRIP="$STRIP" \
-        CFLAGS="-O2 -DSDL_MAIN_HANDLED $REPRO_FLAGS"
+        CFLAGS="-O2 -DSDL_MAIN_HANDLED $REPRO_FLAGS" \
+        LDFLAGS="$SDL2_DEP_LDFLAGS"
 
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" build/playwave
 )

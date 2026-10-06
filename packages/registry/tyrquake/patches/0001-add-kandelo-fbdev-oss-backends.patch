@@ -1,0 +1,810 @@
+diff --git a/Makefile b/Makefile
+index 5709a79..12f36f1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -959,6 +959,10 @@ ifeq ($(VID_TARGET),null)
+ SW_OBJS += vid_null.o
+ GL_OBJS += vid_null.o
+ endif
++ifeq ($(VID_TARGET),fbdev)
++SW_OBJS += vid_fbdev.o
++GL_OBJS += vid_null.o
++endif
+ 
+ # ----------------
+ # 2. Input driver
+@@ -982,6 +986,9 @@ endif
+ ifeq ($(IN_TARGET),null)
+ CL_OBJS += in_null.o
+ endif
++ifeq ($(IN_TARGET),fbdev)
++CL_OBJS += in_fbdev.o
++endif
+ 
+ # ----------------
+ # 3. CD driver
+@@ -1015,6 +1022,9 @@ endif
+ ifeq ($(SND_TARGET),oss)
+ CL_OBJS += snd_oss.o
+ endif
++ifeq ($(SND_TARGET),kandelo)
++CL_OBJS += snd_kandelo.o
++endif
+ ifeq ($(SND_TARGET),sndio)
+ CL_OBJS += snd_sndio.o
+ CL_LIBS += sndio
+diff --git a/common/in_fbdev.c b/common/in_fbdev.c
+new file mode 100644
+index 0000000..8d3dfeb
+--- /dev/null
++++ b/common/in_fbdev.c
+@@ -0,0 +1,257 @@
++/*
++Copyright (C) 1996-1997 Id Software, Inc.
++
++This program is free software; you can redistribute it and/or
++modify it under the terms of the GNU General Public License
++as published by the Free Software Foundation; either version 2
++of the License, or (at your option) any later version.
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
++
++See the GNU General Public License for more details.
++
++You should have received a copy of the GNU General Public License
++along with this program; if not, write to the Free Software
++Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++*/
++// in_fbdev.c -- Kandelo framebuffer-pane input.
++//
++// The host framebuffer pane delivers keyboard input to the fb-bound process's
++// stdin as one-byte Linux MEDIUMRAW codes (bit 7 = release) and mouse motion
++// as PS/2 packets on /dev/input/mice. We translate keycodes to TyrQuake
++// keysyms and accumulate mouse deltas for IN_Move. This backend also owns
++// Sys_SendKeyEvents for the fbdev video target (each video backend supplies
++// its own).
++
++#include <fcntl.h>
++#include <termios.h>
++#include <unistd.h>
++
++#include "client.h"
++#include "common.h"
++#include "console.h"
++#include "input.h"
++#include "keys.h"
++#include "quakedef.h"
++#include "sys.h"
++#include "vid.h"
++
++cvar_t _windowed_mouse = { "_windowed_mouse", "0", CVAR_CONFIG };
++static cvar_t m_filter = { "m_filter", "0" };
++
++static qboolean mouse_available = false;
++static int mouse_x, mouse_y;
++static int old_mouse_x, old_mouse_y;
++
++static int mice_fd = -1;
++static int mouse_buttons = 0;
++
++static struct termios saved_term;
++static qboolean have_saved_term = false;
++
++/*
++ * Linux input-event keycode (input-event-codes.h) -> TyrQuake keysym.
++ * The framebuffer pane sends the one-byte MEDIUMRAW form, so only codes
++ * 0..127 arrive; index the table directly. Zero means "no mapping".
++ */
++static const int linux_to_quake[128] = {
++    [1] = K_ESCAPE,
++    [2] = '1', [3] = '2', [4] = '3', [5] = '4', [6] = '5',
++    [7] = '6', [8] = '7', [9] = '8', [10] = '9', [11] = '0',
++    [12] = '-', [13] = '=', [14] = K_BACKSPACE, [15] = K_TAB,
++    [16] = 'q', [17] = 'w', [18] = 'e', [19] = 'r', [20] = 't',
++    [21] = 'y', [22] = 'u', [23] = 'i', [24] = 'o', [25] = 'p',
++    [26] = '[', [27] = ']', [28] = K_ENTER, [29] = K_LCTRL,
++    [30] = 'a', [31] = 's', [32] = 'd', [33] = 'f', [34] = 'g',
++    [35] = 'h', [36] = 'j', [37] = 'k', [38] = 'l', [39] = ';',
++    [40] = '\'', [41] = '`', [42] = K_LSHIFT, [43] = '\\',
++    [44] = 'z', [45] = 'x', [46] = 'c', [47] = 'v', [48] = 'b',
++    [49] = 'n', [50] = 'm', [51] = ',', [52] = '.', [53] = '/',
++    [54] = K_RSHIFT, [55] = K_KP_MULTIPLY, [56] = K_LALT, [57] = ' ',
++    [58] = K_CAPSLOCK,
++    [59] = K_F1, [60] = K_F2, [61] = K_F3, [62] = K_F4, [63] = K_F5,
++    [64] = K_F6, [65] = K_F7, [66] = K_F8, [67] = K_F9, [68] = K_F10,
++    [69] = K_NUMLOCK, [70] = K_SCROLLOCK,
++    [71] = K_KP7, [72] = K_KP8, [73] = K_KP9, [74] = K_KP_MINUS,
++    [75] = K_KP4, [76] = K_KP5, [77] = K_KP6, [78] = K_KP_PLUS,
++    [79] = K_KP1, [80] = K_KP2, [81] = K_KP3, [82] = K_KP0,
++    [83] = K_KP_PERIOD, [87] = K_F11, [88] = K_F12,
++    [96] = K_KP_ENTER, [97] = K_RCTRL, [98] = K_KP_DIVIDE,
++    [100] = K_RALT, [102] = K_HOME, [103] = K_UPARROW, [104] = K_PGUP,
++    [105] = K_LEFTARROW, [106] = K_RIGHTARROW, [107] = K_END,
++    [108] = K_DOWNARROW, [109] = K_PGDN, [110] = K_INS, [111] = K_DEL,
++};
++
++static void
++IN_PollMice(void)
++{
++    unsigned char pkt[3];
++
++    if (mice_fd < 0)
++	return;
++
++    while (read(mice_fd, pkt, 3) == 3) {
++	int nb = pkt[0] & 0x07;
++	mouse_x += (signed char)pkt[1];
++	/* PS/2 dy is positive-up; TyrQuake's mouse look expects positive-down
++	 * (mouse down -> look down), matching the X11 backend, so negate. */
++	mouse_y -= (signed char)pkt[2];
++	if ((nb ^ mouse_buttons) & 0x01)
++	    Key_Event(K_MOUSE1, (nb & 0x01) ? true : false);
++	if ((nb ^ mouse_buttons) & 0x02)
++	    Key_Event(K_MOUSE2, (nb & 0x02) ? true : false);
++	if ((nb ^ mouse_buttons) & 0x04)
++	    Key_Event(K_MOUSE3, (nb & 0x04) ? true : false);
++	mouse_buttons = nb;
++    }
++}
++
++/*
++ * Pump keyboard bytes from stdin (MEDIUMRAW) and drain the mouse queue.
++ * Called by the engine each frame.
++ */
++void
++Sys_SendKeyEvents(void)
++{
++    unsigned char b;
++
++    IN_PollMice();
++
++    while (read(STDIN_FILENO, &b, 1) == 1) {
++	int down = (b & 0x80) ? 0 : 1;
++	int code = b & 0x7f;
++	int qk = linux_to_quake[code];
++	if (qk)
++	    Key_Event((knum_t)qk, down ? true : false);
++    }
++}
++
++void
++IN_Init(void)
++{
++    int flags;
++
++    mouse_available = COM_CheckParm("-nomouse") ? false : true;
++
++    /*
++     * The framebuffer pane delivers one-byte Linux keycodes on stdin. Many
++     * keycodes fall in the ASCII control range (e.g. Enter = 28 = 0x1C = ^\),
++     * so the tty line discipline must NOT interpret them: with ISIG on, keycode
++     * 0x1C is VQUIT and would send SIGQUIT (killing the engine on Enter), 0x03
++     * would be VINTR, etc. Put stdin in raw mode so every keycode byte is
++     * delivered verbatim, and restore the previous settings on shutdown.
++     */
++    if (tcgetattr(STDIN_FILENO, &saved_term) == 0) {
++	struct termios raw = saved_term;
++	raw.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
++	raw.c_iflag &= ~(IXON | ICRNL | INLCR | IGNCR | ISTRIP | BRKINT | INPCK);
++	raw.c_cc[VMIN] = 0;
++	raw.c_cc[VTIME] = 0;
++	tcsetattr(STDIN_FILENO, TCSANOW, &raw);
++	have_saved_term = true;
++    }
++
++    /* Keyboard arrives on stdin; never block the game loop waiting for it. */
++    flags = fcntl(STDIN_FILENO, F_GETFL, 0);
++    if (flags != -1)
++	fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
++
++    if (mouse_available) {
++	mice_fd = open("/dev/input/mice", O_RDONLY | O_NONBLOCK);
++	if (mice_fd < 0) {
++	    Con_Printf("Mouse: /dev/input/mice unavailable; mouse disabled.\n");
++	    mouse_available = false;
++	}
++    }
++}
++
++void
++IN_Shutdown(void)
++{
++    if (mice_fd >= 0) {
++	close(mice_fd);
++	mice_fd = -1;
++    }
++    mouse_available = false;
++    if (have_saved_term) {
++	tcsetattr(STDIN_FILENO, TCSANOW, &saved_term);
++	have_saved_term = false;
++    }
++}
++
++void
++IN_Commands(void)
++{
++    IN_PollMice();
++}
++
++static void
++IN_MouseMove(usercmd_t *cmd)
++{
++    if (!mouse_available)
++	return;
++
++    if (m_filter.value) {
++	mouse_x = (mouse_x + old_mouse_x) * 0.5;
++	mouse_y = (mouse_y + old_mouse_y) * 0.5;
++    }
++    old_mouse_x = mouse_x;
++    old_mouse_y = mouse_y;
++
++    mouse_x *= sensitivity.value;
++    mouse_y *= sensitivity.value;
++
++    if ((in_strafe.state & 1) || (lookstrafe.value && ((in_mlook.state & 1) ^ (int)m_freelook.value)))
++	cmd->sidemove += m_side.value * mouse_x;
++    else
++	cl.viewangles[YAW] -= m_yaw.value * mouse_x;
++
++    if ((in_mlook.state & 1) ^ (int)m_freelook.value)
++	if (mouse_x || mouse_y)
++	    V_StopPitchDrift();
++
++    if (((in_mlook.state & 1) ^ (int)m_freelook.value) && !(in_strafe.state & 1)) {
++	cl.viewangles[PITCH] += m_pitch.value * mouse_y;
++	if (cl.viewangles[PITCH] > cl_maxpitch.value)
++	    cl.viewangles[PITCH] = cl_maxpitch.value;
++	if (cl.viewangles[PITCH] < cl_minpitch.value)
++	    cl.viewangles[PITCH] = cl_minpitch.value;
++    } else {
++	if ((in_strafe.state & 1) && noclip_anglehack)
++	    cmd->upmove -= m_forward.value * mouse_y;
++	else
++	    cmd->forwardmove -= m_forward.value * mouse_y;
++    }
++    mouse_x = mouse_y = 0;
++}
++
++void
++IN_Move(usercmd_t *cmd)
++{
++    IN_MouseMove(cmd);
++}
++
++void
++IN_Accumulate(void)
++{
++}
++
++void
++IN_ModeChanged(void)
++{
++}
++
++void
++IN_AddCommands(void)
++{
++}
++
++void
++IN_RegisterVariables(void)
++{
++    Cvar_RegisterVariable(&m_filter);
++    Cvar_RegisterVariable(&_windowed_mouse);
++}
+diff --git a/common/snd_kandelo.c b/common/snd_kandelo.c
+new file mode 100644
+index 0000000..05d20fa
+--- /dev/null
++++ b/common/snd_kandelo.c
+@@ -0,0 +1,202 @@
++/*
++Copyright (C) 1996-1997 Id Software, Inc.
++
++This program is free software; you can redistribute it and/or
++modify it under the terms of the GNU General Public License
++as published by the Free Software Foundation; either version 2
++of the License, or (at your option) any later version.
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
++
++See the GNU General Public License for more details.
++
++You should have received a copy of the GNU General Public License
++along with this program; if not, write to the Free Software
++Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++*/
++// snd_kandelo.c -- write-based OSS sound for Kandelo's /dev/dsp.
++//
++// Kandelo's /dev/dsp is a host-drained PCM ring: it accepts write()s and
++// reports queued bytes via SNDCTL_DSP_GETODELAY, but it does NOT advertise
++// DSP_CAP_MMAP/DSP_CAP_TRIGGER, so TyrQuake's mmap-DMA snd_oss.c cannot run
++// here. This backend keeps the engine's ring-buffer mixer model but pushes
++// newly-painted audio to the device with write() each SNDDMA_Submit, and
++// derives the play cursor from GETODELAY.
++//
++// Units follow snd_dma.c: paintedtime/soundtime are in sample PAIRS (frames);
++// shm->samples and SNDDMA_GetDMAPos are in mono samples.
++
++#include <fcntl.h>
++#include <unistd.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/soundcard.h>
++
++#include "common.h"
++#include "console.h"
++#include "quakedef.h"
++#include "sound.h"
++#include "sys.h"
++
++#define SND_RATE 48000
++#define SND_BITS 16
++#define SND_CHANNELS 2
++
++static int audio_fd = -1;
++static int snd_inited = 0;
++static dma_t the_shm;
++static int written_frames = 0;	/* frames handed to /dev/dsp so far */
++
++qboolean
++SNDDMA_Init(void)
++{
++    int tmp, rc, speed, channels, buffer_bytes;
++
++    snd_inited = 0;
++    written_frames = 0;
++
++    audio_fd = open("/dev/dsp", O_WRONLY | O_NONBLOCK);
++    if (audio_fd < 0) {
++	Con_Printf("Could not open /dev/dsp\n");
++	return false;
++    }
++
++    tmp = AFMT_S16_LE;
++    rc = ioctl(audio_fd, SNDCTL_DSP_SETFMT, &tmp);
++    if (rc < 0 || tmp != AFMT_S16_LE) {
++	Con_Printf("Could not set /dev/dsp format to S16_LE\n");
++	close(audio_fd);
++	audio_fd = -1;
++	return false;
++    }
++
++    channels = SND_CHANNELS;
++    rc = ioctl(audio_fd, SNDCTL_DSP_CHANNELS, &channels);
++    if (rc < 0 || (channels != 1 && channels != 2))
++	channels = SND_CHANNELS;
++
++    speed = SND_RATE;
++    rc = ioctl(audio_fd, SNDCTL_DSP_SPEED, &speed);
++    if (rc < 0 || speed <= 0)
++	speed = SND_RATE;
++
++    shm = &the_shm;
++    memset(shm, 0, sizeof(*shm));
++    shm->samplebits = SND_BITS;
++    shm->channels = channels;
++    shm->speed = speed;
++    shm->samplepos = 0;
++    shm->submission_chunk = 1;
++    /* ~0.5s ring, power of two, counted in mono samples (as snd_sdl does). */
++    shm->samples = 1 << Q_log2(shm->speed * shm->channels / 2);
++
++    buffer_bytes = shm->samples * (shm->samplebits / 8);
++    shm->buffer = Hunk_AllocName(buffer_bytes, "shm->buffer");
++    memset(shm->buffer, 0, buffer_bytes);
++
++    snd_blocked = 0;
++    snd_inited = 1;
++
++    return true;
++}
++
++int
++SNDDMA_GetDMAPos(void)
++{
++    int odelay = 0;
++    int bps;
++    long written_mono, queued_mono, played_mono;
++
++    if (!snd_inited)
++	return 0;
++
++    bps = shm->samplebits / 8;
++    written_mono = (long)written_frames * shm->channels;
++    queued_mono = 0;
++    if (ioctl(audio_fd, SNDCTL_DSP_GETODELAY, &odelay) == 0 && odelay > 0)
++	queued_mono = odelay / bps;
++
++    played_mono = written_mono - queued_mono;
++    if (played_mono < 0)
++	played_mono = 0;
++
++    shm->samplepos = (int)(played_mono % shm->samples);
++    return shm->samplepos;
++}
++
++void
++SNDDMA_Submit(void)
++{
++    int bps, channels, max_frames, target;
++
++    if (!snd_inited || snd_blocked > 0)
++	return;
++
++    bps = shm->samplebits / 8;
++    channels = shm->channels;
++    max_frames = shm->samples / channels;	/* ring size in frames */
++    target = paintedtime;
++
++    /* Never trail the mixer by more than the ring; drop stale audio if we do. */
++    if (target - written_frames > max_frames)
++	written_frames = target - max_frames;
++
++    while (written_frames < target) {
++	int frame_pos = written_frames % max_frames;
++	int mono_pos = frame_pos * channels;
++	int frames_to_wrap = max_frames - frame_pos;
++	int frames_avail = target - written_frames;
++	int chunk_frames = frames_avail < frames_to_wrap ? frames_avail
++							 : frames_to_wrap;
++	int chunk_bytes = chunk_frames * channels * bps;
++	ssize_t w = write(audio_fd, shm->buffer + mono_pos * bps, chunk_bytes);
++	int wrote_frames;
++
++	if (w <= 0)
++	    break;			/* EAGAIN / device full; retry next frame */
++	wrote_frames = (int)(w / (channels * bps));
++	if (wrote_frames <= 0)
++	    break;
++	written_frames += wrote_frames;
++	if (wrote_frames < chunk_frames)
++	    break;			/* short write: device buffer is full */
++    }
++}
++
++void
++SNDDMA_Shutdown(void)
++{
++    if (snd_inited) {
++	if (audio_fd >= 0) {
++	    close(audio_fd);
++	    audio_fd = -1;
++	}
++	snd_inited = 0;
++    }
++}
++
++int
++SNDDMA_LockBuffer(void)
++{
++    return 0;
++}
++
++void
++SNDDMA_UnlockBuffer(void)
++{
++}
++
++void
++S_BlockSound(void)
++{
++    snd_blocked++;
++}
++
++void
++S_UnblockSound(void)
++{
++    if (snd_blocked > 0)
++	snd_blocked--;
++}
+diff --git a/common/vid_fbdev.c b/common/vid_fbdev.c
+new file mode 100644
+index 0000000..0b0d35a
+--- /dev/null
++++ b/common/vid_fbdev.c
+@@ -0,0 +1,298 @@
++/*
++Copyright (C) 1996-1997 Id Software, Inc.
++
++This program is free software; you can redistribute it and/or
++modify it under the terms of the GNU General Public License
++as published by the Free Software Foundation; either version 2
++of the License, or (at your option) any later version.
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
++
++See the GNU General Public License for more details.
++
++You should have received a copy of the GNU General Public License
++along with this program; if not, write to the Free Software
++Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++
++*/
++// vid_fbdev.c -- Linux framebuffer (/dev/fb0) video driver for Kandelo.
++//
++// Kandelo's /dev/fb0 presents a single fixed mode: BGRA32 packed pixels at a
++// geometry the kernel reports (640x400). We render Quake's 8-bit paletted
++// software output into a private buffer and, each VID_Update, expand it to
++// BGRA32 through a palette lookup table straight into the mmap'd framebuffer.
++// The host canvas renderer consumes those pixels on its rAF loop.
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <sys/mman.h>
++#include <sys/ioctl.h>
++#include <linux/fb.h>
++
++#include "common.h"
++#include "d_iface.h"
++#include "d_local.h"
++#include "quakedef.h"
++#include "sys.h"
++#include "vid.h"
++
++#ifdef NQ_HACK
++#include "host.h"
++#endif
++
++viddef_t vid;			// global video state
++
++unsigned short d_8to16table[256];
++unsigned d_8to24table[256];
++
++/* Fallback geometry if the fbdev ioctls are unavailable. Matches Kandelo's
++ * fixed /dev/fb0 mode. */
++#define FBDEV_DEFAULT_WIDTH 640
++#define FBDEV_DEFAULT_HEIGHT 400
++
++static int fb_fd = -1;
++static uint32_t *fb_mem = NULL;
++static size_t fb_map_len = 0;
++static int fb_width = FBDEV_DEFAULT_WIDTH;
++static int fb_height = FBDEV_DEFAULT_HEIGHT;
++static int fb_stride_px = FBDEV_DEFAULT_WIDTH;	/* uint32 pixels per row */
++
++static byte *fbdev_buffer = NULL;
++static short *fbdev_zbuffer = NULL;
++static byte *fbdev_surfcache = NULL;
++
++void
++VID_GetDesktopRect(vrect_t *rect)
++{
++    rect->x = 0;
++    rect->y = 0;
++    rect->width = fb_width;
++    rect->height = fb_height;
++}
++
++void
++VID_ShiftPalette(const byte *palette)
++{
++    VID_SetPalette(palette);
++}
++
++void
++VID_SetPalette(const byte *palette)
++{
++    int i;
++
++    for (i = 0; i < 256; i++) {
++	unsigned r = palette[0];
++	unsigned g = palette[1];
++	unsigned b = palette[2];
++	palette += 3;
++	/* BGRA32: byte0=B, byte1=G, byte2=R, byte3=A. As a little-endian
++	 * uint32 that is 0xAARRGGBB. */
++	d_8to24table[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
++    }
++}
++
++void
++VID_InitColormap(const byte *palette)
++{
++    vid.colormap = host_colormap;
++    vid.fullbright = 256 - LittleLong(*((int *)vid.colormap + 2048));
++}
++
++void
++VID_Init(const byte *palette)
++{
++    struct fb_var_screeninfo vinfo;
++    struct fb_fix_screeninfo finfo;
++    int width, height, stride_px, buf_pixels, surfcachesize;
++
++    fb_fd = open("/dev/fb0", O_RDWR);
++    if (fb_fd < 0)
++	Sys_Error("VID: couldn't open /dev/fb0");
++
++    width = FBDEV_DEFAULT_WIDTH;
++    height = FBDEV_DEFAULT_HEIGHT;
++    stride_px = width;
++    fb_map_len = (size_t)width * height * 4;
++
++    if (ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo) == 0) {
++	width = (int)vinfo.xres;
++	height = (int)vinfo.yres;
++	stride_px = width;
++	fb_map_len = (size_t)width * height * 4;
++    }
++    if (ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo) == 0) {
++	if (finfo.line_length)
++	    stride_px = (int)(finfo.line_length / 4);
++	if (finfo.smem_len)
++	    fb_map_len = (size_t)finfo.smem_len;
++    }
++
++    fb_width = width;
++    fb_height = height;
++    fb_stride_px = stride_px;
++
++    fb_mem = mmap(NULL, fb_map_len, PROT_READ | PROT_WRITE, MAP_SHARED,
++		  fb_fd, 0);
++    if (fb_mem == MAP_FAILED) {
++	fb_mem = NULL;
++	Sys_Error("VID: couldn't mmap /dev/fb0");
++    }
++
++    vid.width = vid.conwidth = width;
++    vid.height = vid.conheight = height;
++    vid.rowbytes = vid.conrowbytes = width;
++    vid.aspect = 1.0;
++    vid.numpages = 1;
++    vid.recalc_refdef = 1;
++    vid.stretchblit = false;
++    vid.output.scale = 1;
++    vid.output.width = width;
++    vid.output.height = height;
++
++    VID_InitColormap(palette);
++
++    /* Private 8-bit render target + z-buffer + surface cache + warp buffer. */
++    buf_pixels = width * height;
++    fbdev_buffer = malloc(buf_pixels);
++    fbdev_zbuffer = malloc(buf_pixels * sizeof(*fbdev_zbuffer));
++    surfcachesize = D_SurfaceCacheForRes(width, height);
++    fbdev_surfcache = malloc(surfcachesize);
++    r_warpbuffer = malloc(buf_pixels);
++    if (!fbdev_buffer || !fbdev_zbuffer || !fbdev_surfcache || !r_warpbuffer)
++	Sys_Error("VID: not enough memory for %dx%d framebuffer", width, height);
++
++    vid.buffer = vid.conbuffer = vid.direct = fbdev_buffer;
++    d_pzbuffer = fbdev_zbuffer;
++    D_InitCaches(fbdev_surfcache, surfcachesize);
++
++    VID_SetPalette(palette);
++}
++
++void
++VID_Shutdown(void)
++{
++    if (fb_mem) {
++	munmap(fb_mem, fb_map_len);
++	fb_mem = NULL;
++    }
++    if (fb_fd >= 0) {
++	close(fb_fd);
++	fb_fd = -1;
++    }
++}
++
++void
++VID_Update(vrect_t *rects)
++{
++    int x, y;
++    const byte *src = fbdev_buffer;
++
++    (void)rects;			/* full-frame blit each update */
++    if (!fb_mem || !src)
++	return;
++
++    for (y = 0; y < fb_height; y++) {
++	uint32_t *dst = fb_mem + (size_t)y * fb_stride_px;
++	const byte *s = src + (size_t)y * vid.rowbytes;
++	for (x = 0; x < fb_width; x++)
++	    dst[x] = d_8to24table[s[x]];
++    }
++}
++
++/*
++================
++D_BeginDirectRect -- draw a small bitmap (e.g. the disc) straight to screen
++================
++*/
++void
++D_BeginDirectRect(int x, int y, const byte *pbitmap, int width, int height)
++{
++    int i, j, ox;
++
++    if (!fb_mem)
++	return;
++    ox = (x < 0) ? fb_width + x : x;
++    for (j = 0; j < height && (y + j) < fb_height; j++) {
++	uint32_t *dst = fb_mem + (size_t)(y + j) * fb_stride_px + ox;
++	const byte *s = pbitmap + (size_t)j * width;
++	for (i = 0; i < width && (ox + i) < fb_width; i++)
++	    dst[i] = d_8to24table[s[i]];
++    }
++}
++
++/*
++================
++D_EndDirectRect -- restore the region from the render buffer
++================
++*/
++void
++D_EndDirectRect(int x, int y, int width, int height)
++{
++    int i, j, ox;
++
++    if (!fb_mem || !fbdev_buffer)
++	return;
++    ox = (x < 0) ? fb_width + x : x;
++    for (j = 0; j < height && (y + j) < fb_height; j++) {
++	uint32_t *dst = fb_mem + (size_t)(y + j) * fb_stride_px + ox;
++	const byte *s = fbdev_buffer + (size_t)(y + j) * vid.rowbytes + ox;
++	for (i = 0; i < width && (ox + i) < fb_width; i++)
++	    dst[i] = d_8to24table[s[i]];
++    }
++}
++
++qboolean
++VID_CheckAdequateMem(int width, int height)
++{
++    return true;
++}
++
++void
++VID_ProcessEvents(void)
++{
++}
++
++void
++VID_LockBuffer(void)
++{
++}
++
++void
++VID_UnlockBuffer(void)
++{
++}
++
++void
++VID_AddCommands(void)
++{
++}
++
++void
++VID_RegisterVariables(void)
++{
++}
++
++qboolean
++VID_SetMode(const qvidmode_t *mode, const byte *palette)
++{
++    /* Single fixed mode; the framebuffer geometry cannot change. */
++    VID_SetPalette(palette);
++    return true;
++}
++
++void
++VID_SetDefaultMode(void)
++{
++}
++
++qboolean
++window_visible(void)
++{
++    return true;
++}

@@ -1,23 +1,20 @@
 import { expect, test, type Page } from "@playwright/test";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
 }
 
+async function ensureGuideOpen(page: Page) {
+  // The demo guide no longer auto-opens; open it from the dock on first use.
+  if (await page.locator("aside.kdemo").count()) return;
+  await page.getByRole("button", { name: "Demo guide" }).click({ timeout: 120_000 });
+  await page.waitForSelector("aside.kdemo", { timeout: 30_000 });
+}
+
 async function waitForReady(page: Page, timeout = 180_000) {
+  // "Ready" renders inside the demo guide panel, which no longer auto-opens.
+  await ensureGuideOpen(page);
   await expect
     .poll(() => page.evaluate(() => document.body.innerText), { timeout })
     .toContain("Ready");
@@ -29,9 +26,20 @@ async function waitForPrompt(page: Page, timeout = 120_000) {
     .toContain("kandelo$");
 }
 
+async function dismissDockPopover(page: Page) {
+  // Opening the demo guide raises a full-screen dismiss layer that swallows
+  // pointer events (a real user's next click merely closes the popover).
+  // Close it so the click below reaches the terminal surface.
+  const layer = page.locator(".kdock-popover-dismiss-layer");
+  if (await layer.count()) {
+    await layer.first().click({ force: true }).catch(() => {});
+  }
+}
+
 async function runTerminalLine(page: Page, command: string) {
   // WHY: this smoke intentionally tests raw WebKit input plus a persistent
   // parent-shell prompt; callers split success tokens so echo cannot match.
+  await dismissDockPopover(page);
   await page.locator(".kshell-host").first().click();
   const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
   if (await terminalInput.count()) {
@@ -49,7 +57,7 @@ test("Kandelo shell demo boots and accepts terminal input in WebKit", async ({
   test.skip(browserName !== "webkit", "WebKit-only Safari compatibility smoke");
   test.setTimeout(240_000);
 
-  await gotoOrSkip(page, "/?demo=shell");
+  await gotoMachineOrSkip(page, "shell");
   await waitForReady(page);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForPrompt(page);
@@ -80,7 +88,7 @@ test("Kandelo WebKit tears down Node before launching another demo", async ({
   });
   page.on("pageerror", (err) => runtimeErrors.push(`pageerror: ${err.message}`));
 
-  await gotoOrSkip(page, "/?demo=node");
+  await gotoMachineOrSkip(page, "node");
   await waitForReady(page, 240_000);
   await page.getByRole("button", { name: "Runtime check" }).click();
   await expect
@@ -139,7 +147,7 @@ test("Kandelo WordPress SQLite renders in WebKit without COEP redirect failures"
     }
   });
 
-  await gotoOrSkip(page, "/?demo=wordpress-sqlite");
+  await gotoMachineOrSkip(page, "wordpress-sqlite");
   await page.waitForSelector('iframe[title="WordPress SQLite"]', { timeout: 240_000 });
   const frame = page.frameLocator('iframe[title="WordPress SQLite"]');
   await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, {

@@ -144,11 +144,13 @@ function validPayload(op: number, v: DataView): boolean {
       return exact(v, 4);
 
     case O.OP_BLEND_FUNC:
+    case O.OP_BLEND_EQUATION_SEPARATE:
     case O.OP_PIXEL_STOREI:
     case O.OP_BIND_BUFFER:
     case O.OP_BIND_TEXTURE:
     case O.OP_CREATE_SHADER:
     case O.OP_ATTACH_SHADER:
+    case O.OP_DETACH_SHADER:
     case O.OP_UNIFORM1I:
     case O.OP_UNIFORM1F:
     case O.OP_BIND_FRAMEBUFFER:
@@ -167,10 +169,12 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_DRAW_ELEMENTS:
     case O.OP_RENDERBUFFER_STORAGE:
     case O.OP_FRAMEBUFFER_RENDERBUFFER:
+    case O.OP_BLEND_FUNC_SEPARATE:
       return exact(v, 16);
 
     case O.OP_UNIFORM4F:
     case O.OP_FRAMEBUFFER_TEXTURE_2D:
+    case O.OP_VERTEX_ATTRIB_4FV:
       return exact(v, 20);
 
     case O.OP_VERTEX_ATTRIB_POINTER:
@@ -183,6 +187,7 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_GEN_VERTEX_ARRAYS:
     case O.OP_DELETE_VERTEX_ARRAYS:
     case O.OP_GEN_FRAMEBUFFERS:
+    case O.OP_DELETE_FRAMEBUFFERS:
     case O.OP_GEN_RENDERBUFFERS:
       return u32ArrayPayload(v);
 
@@ -259,6 +264,19 @@ function dispatch(
       const s = v.getUint32(p, true), d = v.getUint32(p + 4, true);
       gl.blendFunc(s, d);
       b.shadow.blendFunc = { srcRGB: s, dstRGB: d, srcA: s, dstA: d };
+      return;
+    }
+    case O.OP_BLEND_FUNC_SEPARATE: {
+      const srcRGB = v.getUint32(p, true), dstRGB = v.getUint32(p + 4, true);
+      const srcA = v.getUint32(p + 8, true), dstA = v.getUint32(p + 12, true);
+      gl.blendFuncSeparate(srcRGB, dstRGB, srcA, dstA);
+      b.shadow.blendFunc = { srcRGB, dstRGB, srcA, dstA };
+      return;
+    }
+    case O.OP_BLEND_EQUATION_SEPARATE: {
+      const rgb = v.getUint32(p, true), alpha = v.getUint32(p + 4, true);
+      gl.blendEquationSeparate(rgb, alpha);
+      b.shadow.blendEquation = { rgb, alpha };
       return;
     }
     case O.OP_DEPTH_FUNC:
@@ -502,6 +520,12 @@ function dispatch(
       b.programs.delete(name);
       return;
     }
+    case O.OP_DETACH_SHADER: {
+      const prog = b.programs.get(v.getUint32(p, true));
+      const sh = b.shaders.get(v.getUint32(p + 4, true));
+      if (prog && sh) gl.detachShader(prog, sh);
+      return;
+    }
 
     // ----- uniforms -------------------------------------------------------
     // Locations are kernel-routed indices issued by `runGlQuery` for
@@ -602,6 +626,16 @@ function dispatch(
         v.getUint32(p + 12, true),
       );
       return;
+    // Payload: u32 index, f32 x, f32 y, f32 z, f32 w
+    case O.OP_VERTEX_ATTRIB_4FV:
+      gl.vertexAttrib4f(
+        v.getUint32(p, true),
+        v.getFloat32(p + 4, true),
+        v.getFloat32(p + 8, true),
+        v.getFloat32(p + 12, true),
+        v.getFloat32(p + 16, true),
+      );
+      return;
 
     // ----- VAOs -----------------------------------------------------------
     case O.OP_GEN_VERTEX_ARRAYS: {
@@ -625,7 +659,8 @@ function dispatch(
     }
     case O.OP_BIND_VERTEX_ARRAY: {
       const vao = b.vaos.get(v.getUint32(p, true)) ?? null;
-      gl.bindVertexArray(vao);
+      // Vertex array 0 is this binding's own default (see GlShadowState).
+      gl.bindVertexArray(vao ?? b.shadow.defaultVao);
       b.shadow.vao = vao;
       return;
     }
@@ -642,7 +677,16 @@ function dispatch(
     }
     case O.OP_BIND_FRAMEBUFFER: {
       const target = v.getUint32(p, true);
-      const fbo = b.fbos.get(v.getUint32(p + 4, true)) ?? null;
+      const name = v.getUint32(p + 4, true);
+      let fbo = b.fbos.get(name) ?? null;
+      // GPU-tier producer redirect: "bind default framebuffer 0" (the
+      // client's window) becomes "render into the target bo's FBO" so a
+      // routed client's output lands in the bo the compositor samples.
+      // Only name 0 is remapped — a real FBO name the client generated
+      // (offscreen ping-pong, etc.) is honored as-is.
+      if (fbo === null && name === 0 && b.renderTargetFbo) {
+        fbo = b.renderTargetFbo;
+      }
       gl.bindFramebuffer(target, fbo);
       if (target !== GL_READ_FRAMEBUFFER) b.shadow.fbo = fbo;
       return;
@@ -656,6 +700,16 @@ function dispatch(
       const tex = b.textures.get(v.getUint32(p + 12, true)) ?? null;
       const level = v.getInt32(p + 16, true);
       gl.framebufferTexture2D(target, attachment, textarget, tex, level);
+      return;
+    }
+    case O.OP_DELETE_FRAMEBUFFERS: {
+      const n = v.getUint32(p, true);
+      for (let i = 0; i < n; i++) {
+        const name = v.getUint32(p + 4 + i * 4, true);
+        const obj = b.fbos.get(name);
+        if (obj) gl.deleteFramebuffer(obj);
+        b.fbos.delete(name);
+      }
       return;
     }
     case O.OP_GEN_RENDERBUFFERS: {

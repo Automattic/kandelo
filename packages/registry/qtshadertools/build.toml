@@ -1,0 +1,12 @@
+script_path = "packages/registry/qtshadertools/build-qtshadertools.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "9072b5384"
+revision    = 1
+
+# The fetched `qtshadertools-src/` tree is gitignored; the resolver
+# hashes these tracked inputs on a clean checkout. script_path is not
+# implicit — only what this list names reaches the cache key.
+inputs = [
+  "packages/registry/qtshadertools/build-qtshadertools.sh",
+  "scripts/package-build-roots.sh",
+]

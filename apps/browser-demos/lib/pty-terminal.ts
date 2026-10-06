@@ -8,12 +8,21 @@
 import { Terminal, type ITerminalOptions } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { BrowserKernel, BrowserKernelBootOptions } from "@host/browser-kernel-host";
+import type { TerminalLinkContext } from "../../../web-libs/kandelo-session/src/terminal-links";
+import { registerTerminalLinks } from "./terminal-links";
 
 const encoder = new TextEncoder();
 
 export interface PtyTerminalOptions extends ITerminalOptions {
   /** Whether to auto-fit the terminal to its container on resize (default: true) */
   autoFit?: boolean;
+  /**
+   * Supplies the terminal link policy's view of the world, re-read on every
+   * hover. Defaults to "this page, no machine web bridge": same-origin URLs
+   * open with a referrer, everything else opens without one, and loopback URLs
+   * the machine prints stay unlinked because nothing forwards its ports.
+   */
+  linkContext?: () => TerminalLinkContext;
 }
 
 export class PtyTerminal {
@@ -23,11 +32,12 @@ export class PtyTerminal {
   private kernel: BrowserKernel;
   private disposables: Array<{ dispose(): void }> = [];
   private resizeObserver: ResizeObserver | null = null;
+  private linksDisposable: { dispose(): void } | null = null;
 
   constructor(container: HTMLElement, kernel: BrowserKernel, options?: PtyTerminalOptions) {
     this.kernel = kernel;
 
-    const { autoFit, ...termOptions } = options ?? {};
+    const { autoFit, linkContext, ...termOptions } = options ?? {};
 
     this.terminal = new Terminal({
       cursorBlink: true,
@@ -45,6 +55,10 @@ export class PtyTerminal {
     this.terminal.loadAddon(this.fitAddon);
     this.terminal.open(container);
     this.fitAddon.fit();
+    this.linksDisposable = registerTerminalLinks(
+      this.terminal,
+      linkContext ?? (() => ({ pageUrl: window.location.href, machine: null })),
+    );
 
     // Auto-fit on container resize
     if (autoFit !== false) {
@@ -208,6 +222,10 @@ export class PtyTerminal {
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
       this.resizeObserver = null;
+    }
+    if (this.linksDisposable) {
+      this.linksDisposable.dispose();
+      this.linksDisposable = null;
     }
     this.terminal.dispose();
   }

@@ -5,9 +5,14 @@ import { symlink } from "../../../host/src/vfs/image-helpers";
 import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
+  shellLazySpecDependency,
+  shellLazySpecMode,
 } from "../lib/init/shell-binaries";
 import {
+  displacePosixUtilsLiteManApplet,
+  populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
+  registerShellProfileScripts,
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
@@ -24,14 +29,19 @@ export function populateSourceRootfsShellOverlay(
 ): void {
   populateShellRuntimeLayout(fs);
 
+  // WHY: every ncurses/termcap-linked guest program resolves $TERM against
+  // /usr/share/terminfo on every run, so the shared database must be present
+  // from boot rather than fetched lazily like the archives below.
+  populateTerminfoDatabase(fs, resolveArtifact);
+
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (fs.getLazyEntry(spec.vfsPath) === null) {
-      const source = resolveArtifact(spec.resolverPath, spec.id);
+      const source = resolveArtifact(spec.resolverPath, shellLazySpecDependency(spec));
       fs.registerLazyFile(
         spec.vfsPath,
         shellLazyPlaceholderUrl(spec),
         statSync(source).size,
-        0o755,
+        shellLazySpecMode(spec),
       );
     }
     for (const alias of spec.symlinks) {
@@ -44,6 +54,10 @@ export function populateSourceRootfsShellOverlay(
   );
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
     if (!archiveUrls.has(spec.archiveUrl)) {
+      // posix-utils-lite's raw `man` applet may already occupy /usr/bin/man
+      // on the imported rootfs; clear it first so mandoc's formatting `man`
+      // wins the path instead of colliding (EEXIST) with the archive symlink.
+      if (spec.id === "man") displacePosixUtilsLiteManApplet(fs);
       registerDeclaredShellLazyArchive(fs, spec, resolveArtifact);
     }
   }
@@ -53,7 +67,21 @@ export function populateSourceRootfsShellOverlay(
     ["/usr/bin/vim", "/usr/bin/vi"],
     ["/usr/bin/vim", "/bin/vi"],
     ["/usr/bin/nethack", "/bin/nethack"],
+    ["/usr/bin/ruby", "/bin/ruby"],
+    ["/usr/bin/python3", "/bin/python3"],
+    ["/usr/bin/python3", "/bin/python"],
+    ["/usr/bin/node", "/bin/node"],
+    ["/usr/bin/npm", "/bin/npm"],
+    ["/usr/bin/npx", "/bin/npx"],
+    ["/usr/bin/perl", "/bin/perl"],
+    ["/usr/bin/man", "/bin/man"],
   ] as const) {
     symlink(fs, target, alias);
   }
+
+  // Every /etc/profile.d script this image ships, from the one list both
+  // shell-family builders call. Listing individual registrations here is what
+  // let the maker account's identity script ship in the layered base image
+  // but not in this one.
+  registerShellProfileScripts(fs);
 }

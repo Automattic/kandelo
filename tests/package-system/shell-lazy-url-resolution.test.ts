@@ -47,7 +47,7 @@ function sourceShellFs(): MemoryFileSystem {
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
     fs.registerLazyArchiveFromEntries(
       spec.archiveUrl,
-      [archiveEntry(spec.requiredExecutable)],
+      [archiveEntry(spec.requiredMember)],
       spec.mountPrefix,
     );
   }

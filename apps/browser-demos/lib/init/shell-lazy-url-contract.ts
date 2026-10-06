@@ -17,7 +17,11 @@ export function assertShellLazyUrlsResolved(fs: MemoryFileSystem): void {
   );
   const unresolvedArchives = fs.exportLazyArchiveEntries().filter((entry) =>
     entry.url === "vim.zip" || entry.url === "nethack.zip" ||
-    entry.url === "kandelo-sdk.zip"
+    entry.url === "ruby.zip" || entry.url === "python.zip" ||
+    entry.url === "node.zip" ||
+    entry.url === "perl.zip" ||
+    entry.url === "man.zip" || entry.url === "coreutils-docs.zip" ||
+    entry.url === "lsof-docs.zip" || entry.url === "kandelo-sdk.zip"
   );
   if (unresolvedFiles.length === 0 && unresolvedArchives.length === 0) return;
   const details = [

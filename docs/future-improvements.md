@@ -103,11 +103,57 @@ beyond EOF.
 **Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs-worker.ts`,
 `host/src/vfs/vfs.ts`, `crates/kernel/src/descriptor_backing.rs`
 
+### Re-evaluate the Linux-specificity of the VT keyboard input path
+
+The framebuffer keyboard path is Linux-shaped end to end so that
+Linux-VT software such as fbDOOM runs unmodified. The host encodes key
+events as single-byte Linux console MEDIUMRAW (`byte = keycode`, bit 7
+set on release) in `host/src/framebuffer/browser-controls.ts`, the
+kernel carries those bytes opaquely, and the guest decodes them. The
+kernel also answers three Linux-VT keyboard ioctls
+(`KDGKBTYPE`/`KDGKBMODE`/`KDSKBMODE`) on the process's terminal fd as
+compatibility stubs: they report a Linux VT keyboard with sensible
+defaults and treat mode changes as a no-op, without translating the
+byte stream.
+
+This is deliberate Linux-observable compatibility at a non-POSIX
+boundary — VT keyboard input has no POSIX equivalent — but it has not
+been evaluated as a long-term contract. Revisit whether the MEDIUMRAW
+encoding and the VT-ioctl stubs are the model we want, whether they
+should sit behind an explicitly documented input-device boundary, and
+what the correct behavior is for non-VT consumers. Any change must keep
+existing Linux-VT guests working and preserve Node/browser parity.
+
+**Files:** `crates/runtime-core/src/syscalls.rs` (VT keyboard ioctls),
+`host/src/framebuffer/browser-controls.ts`
+(`encodeLinuxMediumRawKeyCode`), `crates/shared/src/ioctl_contract.rs`,
+`docs/posix-status.md`
+
 ## Browser
+
+### Investigate the WebKit fbDOOM WAD-drop failure
+`apps/browser-demos/test/kandelo-doom-ingest.spec.ts` "dropping a WAD on the
+framebuffer loads it" failed in WebKit in three of three local runs on
+2026-09-28, each at a different step: the 90 s wait for the restarted
+fbDOOM to render, and a locator that never became visible. The drop itself
+works — the screenshot shows the shell running
+`/usr/local/bin/fbdoom -iwad /user.wad`, and the new fbDOOM initializing
+through `HU_Init` before it stops making visible progress. Chromium passes
+the same test, and WebKit passes the Load WAD button path, which uses the
+same restart command.
+
+That demo's keyboard input goes through the PTY (`ptyWrite`), not the host
+stdin pipe that ABI 47 changed, and no old-code baseline was available
+locally to compare against, so the failure is recorded here rather than
+attributed. The investigation should: run the test on main in WebKit to
+establish whether it predates ABI 47; compare what the drop path does
+differently from the button path (synthetic `DataTransfer` drop, focus,
+pane switching to the terminal); and capture the kernel's view of the
+restarted fbDOOM (blocked syscall, fb0 ownership) when it stalls.
 
 ### Replace the constrained public CORS proxy with an owned relay
 
-The current public proxy has a narrow five-name request-header profile. A
+The current public proxy has a narrow six-name request-header profile. A
 Kandelo-owned authenticated relay should add explicit origin policy, private
 network controls, rate limiting, abuse prevention, response limits, and
 operational ownership. Once that capability exists, remove anonymous GET
@@ -116,6 +162,50 @@ current browser boundary as complete POSIX socket or HTTP fidelity.
 
 **Files:** `host/src/networking/`, `apps/browser-demos/public/service-worker.js`,
 deployment infrastructure and browser acceptance
+
+### Technical debt: drop the `X-Cors-Proxy-Range` workaround and its preflights
+
+WP Cloud, which hosts the default proxy's PHP, strips the `Range` header
+before the request reaches PHP, so the profile's
+`rangeRequestHeaderAlias` makes every proxy dispatch repeat `Range` as
+`X-Cors-Proxy-Range`, which that proxy forwards upstream as `Range`. This
+workaround has two costs, accepted to make ranged reads work at all:
+
+- **Preflights.** The alias is not CORS-safelisted, so a ranged request
+  needs an `OPTIONS` preflight. In Chromium every ranged request pays one,
+  because of the next item; WebKit reuses a preflight for 5 seconds. The time
+  cost has not been measured.
+- **No HTTP cache.** Aliased requests use the Fetch cache mode `no-store`,
+  because the HTTP cache can rewrite `Range` without the alias and splice a
+  short body. Ranged reads through the proxy are therefore never cached.
+
+When `Range` reaches the proxy unchanged (re-measure a plain
+`Range: bytes=0-15` through `wordpress-playground-cors-proxy.net` for a
+`206`), remove `rangeRequestHeaderAlias` and the `no-store` mode from the
+profile, `BrowserCorsProxy.fetch()`/`project()`, the service worker, and the
+development relay, together with their tests and the related text in
+`docs/browser-support.md`. Simple `bytes=N-M` ranges then need no preflight
+at all.
+
+**Files:** `host/src/networking/browser-cors-proxy.ts`,
+`apps/browser-demos/lib/browser-cors-proxy.ts`,
+`apps/browser-demos/public/service-worker.js`,
+`apps/browser-demos/vite/dev-cors-proxy.ts`, upstream proxy deployment
+
+### Relay `If-Range` instead of emulating it
+
+The proxy cannot carry `If-Range`, so the browser host emulates it: a `206`
+without the matching validator is discarded for a second, whole-entity
+request. That costs a full extra request whenever the resource changed, and
+always for a date-form `If-Range`, because the proxy does not expose the
+response `Date` that proves `Last-Modified` is strong. If the proxy allowed
+and forwarded `If-Range` (its front end strips it, so it would need an alias
+like `Range`), the profile could list it and the emulation would step aside
+on its own. Exposing `Date` would make date-form `If-Range` confirmable in
+the meantime.
+
+**Files:** `host/src/networking/browser-cors-proxy.ts`,
+`apps/browser-demos/public/service-worker.js`, upstream proxy deployment
 
 ### Reject credentialed Fetch modes at the constrained proxy boundary
 
@@ -128,6 +218,41 @@ test that proves rejection happens before dispatch.
 
 **Files:** `apps/browser-demos/public/service-worker.js`,
 `apps/browser-demos/test/browser-cors-proxy.spec.ts`
+
+### Forward `Content-Encoding` request bodies verbatim through the proxy
+
+git compresses the smart-HTTP `git-upload-pack` fetch request and sets
+`Content-Encoding: gzip`. The browser TLS-MITM currently decodes such bodies to
+identity and drops the header so the request fits the proxy's six-name
+allow-list — a faithful *equivalent* of what the guest sent, but not a
+faithful *representation* of it. The more complete behavior is to forward
+`Content-Encoding` and the compressed body unchanged. That requires
+`content-encoding` in the CORS proxy request-header allow-list (the same
+treatment the relay and upstream proxy already give `git-protocol`) and the
+upstream proxy echoing it in `Access-Control-Allow-Headers` so the browser
+preflight passes. Until then the decode path in `tls-network-backend.ts` is the
+compatibility shim.
+
+**Files:** `host/src/networking/tls-network-backend.ts`,
+`host/src/networking/browser-cors-proxy.ts`,
+`apps/browser-demos/public/service-worker.js`,
+`apps/browser-demos/vite/dev-cors-proxy.ts`, upstream CORS proxy deployment
+
+### Provide a real CA bundle at the shared `SSL_CERT_FILE` path on Node
+
+Both hosts export `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`, but the
+rootfs ships only `/etc/ssl/cert.pem`. The browser worker creates
+`ca-certificates.crt` at runtime holding the per-session MITM CA; the Node host
+creates nothing, so `SSL_CERT_FILE`-honoring clients (curl, openssl) find no CA
+file on Node and external HTTPS from those clients cannot verify. git's remote
+helper happens to fall back to libcurl's compiled-in real-root bundle, so the
+gap is masked today and the Node git test only exercises plain HTTP. The Node
+host should populate `ca-certificates.crt` with real roots (or the image should
+ship it), so the same VFS image verifies real certificates on Node and MITM
+certificates in the browser.
+
+**Files:** `host/src/node-kernel-host.ts`,
+`host/src/node-kernel-worker-entry.ts`, `images/rootfs/etc/ssl/`
 
 ### PTY terminal integration with xterm.js
 The kernel has full PTY support (PR #181), and browser UI surfaces should use xterm.js-backed PTYs rather than plain `<div>` output with `appendStdinData`. Connecting PTY pairs to xterm.js gives proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
@@ -196,6 +321,70 @@ Any follow-up should:
   or retry logic rather than kernel pointer width;
 - if the approach still looks useful, expose it as a separate `kernel32.wasm`
   build option.
+
+### Copy between kernel and process memories with a multi-memory bridge module
+Every byte that moves between a process and the kernel crosses two separate
+`WebAssembly.Memory` objects. Wasm code can address only the memories it was
+instantiated with, so today the kernel worker's JavaScript makes that hop, and
+a pipe read travels pipe buffer → kernel scratch → the reader's syscall
+channel area. Host-supplied stdin adds host → kernel scratch → pipe buffer in
+front of that (ABI 47 made host stdin a kernel pipe so a forked child shares
+fd 0 with its parent; see `docs/abi-versioning.md`).
+
+A small reusable Wasm module could remove the JavaScript hop and the scratch
+copies. It would import two memories (the kernel's and one process's, or a
+pipe arena and a process's) and export only fixed-shape copies built on
+cross-memory `memory.copy`. The host instantiates one per registered process
+and places its exports in a table the kernel owns, and the kernel calls
+through `call_indirect`, so no JavaScript sits on the copy path. A pipe read
+then becomes one copy from the pipe buffer into the reader's destination, for
+every pipe and socket, not only stdin. Importing existing memories reserves
+no new memory, so this adds no declared ceiling for JavaScriptCore to charge.
+
+The split must stay mechanism versus policy: the host supplies the bridge the
+way it supplies the memory, and the kernel alone decides pid, addresses,
+lengths, and ordering. Any follow-up should:
+
+- verify multi-memory support in every shipped engine, JavaScriptCore first
+  (V8 and SpiderMonkey ship it); without it the gain is not available on
+  Safari/iOS;
+- keep exactly one copy interface: if an engine lacks multi-memory, a
+  JavaScript fallback (`Uint8Array.set`) implements the same interface and
+  bounds, selected once at startup, never a second transfer implementation;
+- rebuild a process's bridge when `exec` replaces its memory and create a new
+  one for each `fork` child;
+- keep bytes in kernel-owned buffers. Considered and rejected, 2026-09-28:
+  leaving pipe bytes in the writer's memory (POSIX lets a writer reuse its
+  buffer as soon as `write()` returns; a pipe outlives and is shared across
+  writers), a shared pipe arena imported by every process (any process could
+  read every pipe, and C cannot address a second memory), and a host-backed
+  stdin stream that keeps all bytes in host memory (a second read path and
+  more host surface to save one copy through a 64 KiB window);
+- measure with the `stdin-throughput` and `syscall-io` suites on Node and
+  browser, before and after.
+
+### Close the Node gap in host stdin throughput
+The `stdin-throughput` suite (24 MiB of host-supplied stdin read by one
+process) measured the ABI 47 kernel-pipe path against the per-pid host
+buffer it replaced on 2026-09-28, alternating runs at load average 6–10:
+
+| Host | Per-pid host buffer (before) | Kernel pipe (ABI 47) |
+|---|---|---|
+| Node | 818, 796, 793 MiB/s | 691, 705, 679 MiB/s |
+| Chromium | 727, 774 MiB/s | 800, 828 MiB/s |
+
+Node is about 13–16% slower; Chromium is no worse (its runs take 30–33 ms and
+the guest clock has 1 ms granularity there). The likely cause, not yet
+profiled: the pipe holds 64 KiB, so 24 MiB takes about 384 refills, and if the
+reader drains the pipe before the host refills it, each refill costs a
+parked-worker wake. A second candidate is visible in the code: every refill
+defers `notifyPipeReadable`, whose last step is a broad
+`scheduleWakeBlockedRetries`, so 24 MiB schedules about 384 broad wakes of
+every blocked retry. The follow-up should profile Node first; if wakes
+dominate, refill within the kernel entry that drained the pipe so the reader
+never observes it empty, and wake only this pipe's readers and pollers. A larger host-stdin pipe would also cut refills,
+at a kernel-memory cost per spawned process. Copies are the less likely cause;
+the bridge module above addresses them.
 
 ## Kernel — regressions
 

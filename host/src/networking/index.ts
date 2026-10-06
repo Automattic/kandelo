@@ -8,6 +8,20 @@ export {
 } from "./browser-cors-proxy";
 export type { BrowserCorsProxyConfig, HttpHeaderOccurrence } from "./browser-cors-proxy";
 export {
+  byteRangeHeaderValue,
+  fetchByteRange,
+  isStrongEntityTag,
+} from "./byte-range-fetch";
+export type {
+  ByteRange,
+  ByteRangeFetch,
+  ByteRangeFetchOptions,
+  ByteRangeFetchResult,
+  FailedByteRange,
+  PartialByteRange,
+  WholeEntityInsteadOfRange,
+} from "./byte-range-fetch";
+export {
   LocalVirtualNetwork,
   VirtualNetworkBackend,
   VIRTUAL_NETWORK_ERRNO,

@@ -5,6 +5,8 @@
 # `asyncify_*` is a stale fork-continuation artifact, regardless of ABI
 # metadata.
 
+_WASM_ARTIFACT_GUARDS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 wasm_is_binary() {
     local path="${1:-}"
     [ -f "$path" ] || return 1
@@ -25,12 +27,56 @@ wasm_require_no_legacy_asyncify() {
     fi
 }
 
-# Reject unresolved imports in Kandelo's reserved libc/host namespace unless
-# the host deliberately implements that exact API. The SDK linker permits
-# undefined symbols so packages can retain real host/kernel imports. Without
-# this boundary, an up-to-date glue object linked against a stale sysroot can
-# turn a private libc helper into an env import; the generic host stub then
-# lets the program instantiate and traps only when the helper is called.
+# Remove the compiler facts fork instrumentation reads (`kandelo.calltypes`
+# and `kandelo.calltypes.code-sha256`, docs/sdk-guide.md) from an artifact
+# about to be installed. WHY: they are build inputs, not part of an
+# artifact. wasm-fork-instrument removes them, but a module can reach
+# installation without it: a recipe's own wasm-opt deletes an unused
+# kernel_fork import and keeps the unknown section, or a recipe links with
+# clang or wasm-ld directly instead of the SDK driver. The facts are often
+# larger than the code. The code is left byte-for-byte unchanged.
+wasm_drop_compiler_facts() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 0
+    grep -a -q 'kandelo\.calltypes' "$path" 2>/dev/null || return 0
+    if ! command -v llvm-objcopy >/dev/null 2>&1; then
+        echo "ERROR: $path carries kandelo.calltypes compiler facts and llvm-objcopy is not on PATH to remove them." >&2
+        echo "       Run inside scripts/dev-shell.sh." >&2
+        return 1
+    fi
+    local stripped="$path.facts-dropped.$$"
+    if ! llvm-objcopy --remove-section=kandelo.calltypes \
+        --remove-section=kandelo.calltypes.code-sha256 "$path" "$stripped"; then
+        rm -f "$stripped"
+        return 1
+    fi
+    mv -f "$stripped" "$path"
+}
+
+# Reject unresolved imports in the namespaces Kandelo reserves for itself
+# unless the host deliberately implements that exact API. The approved names
+# are the generated host-import allowance (libc/glue/kandelo-host-imports.txt,
+# from HOST_ENV_IMPORTS in crates/shared/src/lib.rs) — the same list the SDK
+# links against — so the guard and the linker cannot disagree. Executables
+# linked by the SDK already fail on any other undefined symbol; this guard
+# still covers artifacts linked some other way, and side modules, which link
+# with --allow-undefined and resolve against the main program at dlopen time.
+# KANDELO_HOST_IMPORTS_FILE overrides the allowance path (tests use it).
+#
+# Two reserved families, matching `is_reserved_env_import_name` in
+# crates/fork-instrument/src/contract_inventory.rs:
+#
+#   * `__wasm_posix_*` — private libc/glue helpers.
+#   * `drmFoo` / `gbm_foo` / `eglFoo` / `glFoo` — entry points of the sysroot
+#     platform libraries scripts/build-{dri,gles}-stubs.sh install. The host
+#     implements none of them by name (guests reach the real implementation
+#     through /dev/dri ioctls), so seeing one as an import always means the
+#     link did not pick the archive up. That is exactly how kandelo.dev came
+#     to ship an sdl2.wasm that died on `env.drmAuthMagic`.
+#
+# A missing entry point is therefore a loud build failure, not a runtime trap:
+# add the symbol to the relevant sysroot library, or link the library the
+# program is already calling into.
 _wasm_reserved_env_import_inventory() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 2
@@ -40,9 +86,21 @@ _wasm_reserved_env_import_inventory() {
     "$inventory_tool" --reserved-env-imports "$path" 2>/dev/null || return 2
 }
 
+_wasm_host_imports_file() {
+    printf '%s\n' "${KANDELO_HOST_IMPORTS_FILE:-$_WASM_ARTIFACT_GUARDS_DIR/../libc/glue/kandelo-host-imports.txt}"
+}
+
 wasm_require_approved_reserved_env_imports() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 0
+
+    local allowance
+    allowance="$(_wasm_host_imports_file)"
+    if [ ! -f "$allowance" ]; then
+        echo "ERROR: host-import allowance not found: $allowance" >&2
+        echo "       Regenerate it with scripts/check-abi-version.sh --update." >&2
+        return 1
+    fi
 
     local inventory inventory_status=0 rejected
     inventory="$(_wasm_reserved_env_import_inventory "$path")" || inventory_status=$?
@@ -50,12 +108,16 @@ wasm_require_approved_reserved_env_imports() {
         if [ -z "$inventory" ]; then
             rejected=""
         elif ! rejected="$(
-            awk -F '\t' '
+            awk -F '\t' -v allowance="$allowance" '
+                BEGIN {
+                    while ((getline name < allowance) > 0)
+                        if (name != "") approved["env." name] = 1
+                }
                 NF != 2 || ($1 != "func" && $1 != "table" &&
                             $1 != "memory" && $1 != "global" && $1 != "tag") {
                     exit 2
                 }
-                $1 == "func" && $2 == "env.__wasm_posix_vm_interrupt_after" { next }
+                $2 in approved { next }
                 { print $2 }
             ' <<<"$inventory"
         )"; then
@@ -68,13 +130,16 @@ wasm_require_approved_reserved_env_imports() {
             return 1
         fi
         if ! rejected="$(
-            _wasm_stream_awk '
-            / <- env\.__wasm_posix_/ {
+            _WASM_HOST_IMPORTS_ALLOWANCE="$allowance" _wasm_stream_awk '
+            BEGIN {
+                allowance = ENVIRON["_WASM_HOST_IMPORTS_ALLOWANCE"]
+                while ((getline name < allowance) > 0)
+                    if (name != "") approved["env." name] = 1
+            }
+            / <- env\.(__wasm_posix_|gbm_|drm[A-Z]|egl[A-Z]|gl[A-Z])/ {
                 identity = $0
                 sub(/^.* <- /, "", identity)
-                # This timer callback is an intentional host API used by PHP.
-                if (identity == "env.__wasm_posix_vm_interrupt_after" &&
-                    $0 ~ /^ - func\[/) next
+                if (identity in approved) next
                 print identity
             }
             ' wasm-objdump -x "$path"
@@ -91,7 +156,9 @@ wasm_require_approved_reserved_env_imports() {
         while IFS= read -r identity; do
             [ -n "$identity" ] && echo "       $identity" >&2
         done <<<"$rejected"
-        echo "       Rebuild the sysroot or explicitly add a host-owned API to the guard." >&2
+        echo "       Rebuild the sysroot (scripts/dev-shell.sh ./run.sh setup), link the" >&2
+        echo "       sysroot library the program calls into, implement the missing entry" >&2
+        echo "       point, or declare a host-owned API in HOST_ENV_IMPORTS." >&2
         return 1
     fi
 }
@@ -1441,7 +1508,14 @@ wasm_has_complete_fork_instrumentation() {
         linked_descriptor fork_capability abort_begin abort_end rewind_begin rewind_end state \
         unwind_begin unwind_end memory_count memory64_count signature_mismatch legacy_dlopen native_start extra <<< "$inventory"
     [ -z "$extra" ] || return 2
-    [ "$frame_reserve$frame_commit$frame_next" = 111 ] || return 1
+    # The linked-frame core is all-or-nothing. All three absent is complete
+    # too: a module with no fork-path frames of its own (wasm-opt removes
+    # the unused imports after instrumentation); the capability section and
+    # control exports below prove the module was instrumented.
+    case "$frame_reserve$frame_commit$frame_next" in
+        111|000) ;;
+        *) return 1 ;;
+    esac
     [ "$linked_descriptor" = 1 ] || return 1
     [ "$fork_capability" = 1 ] || return 1
     wasm_has_activation_state_safe_capability "$path" || return $?
@@ -1571,12 +1645,15 @@ wasm_has_missing_fork_instrumentation() {
         [ "$memory64_count" = 0 ] || return 0
     fi
 
-    # No-seed instrumentation exports an inert runtime and descriptor without
-    # importing frame hooks. A real fork seed or any hook makes the complete
-    # three-import transaction mandatory.
-    if [ "$imports_fork" = 1 ] || [ "$frame_imports" != 000 ]; then
-        [ "$frame_imports" = 111 ] || return 0
-    fi
+    # The three frame hooks are one transaction: all or none. None is also
+    # what an instrumented module with no fork-path frames of its own looks
+    # like after wasm-opt removes the unused hooks, even if it imports fork
+    # (to re-export it); the exports and capability above prove it was
+    # instrumented.
+    case "$frame_imports" in
+        111|000) ;;
+        *) return 0 ;;
+    esac
     return 1
 }
 
@@ -1645,7 +1722,8 @@ wasm_require_fork_instrumentation_if_needed() {
     [ "$unwind_begin" -le 1 ] || duplicates+=(wpk_fork_unwind_begin)
     [ "$unwind_end" -le 1 ] || duplicates+=(wpk_fork_unwind_end)
 
-    if [ "$imports_fork" = 1 ] || [ "$frame_imports" != 000 ]; then
+    # All three frame hooks or none (see wasm_has_missing_fork_instrumentation).
+    if [ "$frame_imports" != 000 ]; then
         [ "$frame_reserve" -ge 1 ] || missing+=(env.__wpk_fork_frame_reserve)
         [ "$frame_commit" -ge 1 ] || missing+=(env.__wpk_fork_frame_commit)
         [ "$frame_next" -ge 1 ] || missing+=(env.__wpk_fork_frame_next)

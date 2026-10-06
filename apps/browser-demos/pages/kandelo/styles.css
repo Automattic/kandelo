@@ -393,6 +393,7 @@
   color: var(--kdock-muted);
   cursor: pointer;
   padding: 0;
+  text-decoration: none;
   transition: background 0.12s, color 0.12s;
 }
 
@@ -668,6 +669,11 @@
   height: 18px;
 }
 
+.kdock-github-link svg {
+  fill: currentColor;
+  stroke: none;
+}
+
 .kdock-collapse-btn svg {
   transition: transform 0.18s ease;
 }
@@ -705,11 +711,17 @@
   flex: 1;
   display: flex;
   align-items: stretch;
-  justify-content: center;
   gap: 4px;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+.kdock::before,
+.kdock::after {
+  content: "";
+  flex: 0 0 0;
+  margin: auto;
 }
 
 .kdock::-webkit-scrollbar {
@@ -912,6 +924,73 @@
   opacity: 0.7;
 }
 
+/* An image-declared dock menu. The list is portaled to <body> and fixed
+   above its button (DockActions.tsx sets right/bottom), so neither the
+   dock's clipping nor the stage's canvas can cover it. */
+.kdemo-dock-menu {
+  flex: 0 0 auto;
+}
+
+.kdemo-dock-menu-list {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, 80vw);
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--kdock-border);
+  border-radius: 8px;
+  background: var(--kdock-bg-raised);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+}
+
+.kdemo-dock-menu-group {
+  padding: 6px 8px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.kdemo-dock-menu-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--kdock-active-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kdemo-dock-menu-item:hover:not(:disabled),
+.kdemo-dock-menu-item:focus-visible {
+  background: color-mix(in oklch, var(--kdock-active-bg) 30%, transparent);
+}
+
+.kdemo-dock-menu-item:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.kdemo-dock-menu-detail {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.kdemo-dock-menu-reason {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
 /* Drag-and-drop affordance + ingest status, overlaid on the fb stage. */
 .kframebuffer-surface[data-drag-active="true"] {
   outline: 2px dashed var(--k-accent);
@@ -933,7 +1012,7 @@
 
 /* Anchored to the top of the stage: the surface dock overlays the bottom, so a
    bottom-anchored toast is hidden behind it. */
-.kframebuffer-toast {
+.kdemo-toast {
   position: absolute;
   left: 50%;
   top: 12px;
@@ -953,12 +1032,12 @@
   line-height: 1.35;
 }
 
-.kframebuffer-toast[data-error="true"] {
+.kdemo-toast[data-error="true"] {
   border-color: color-mix(in oklch, red 55%, var(--kdock-border));
   background: color-mix(in oklch, red 18%, var(--kdock-bg-sunk));
 }
 
-.kframebuffer-toast-dismiss {
+.kdemo-toast-dismiss {
   flex: 0 0 auto;
   border: 0;
   background: none;
@@ -1054,6 +1133,7 @@
   padding: 14px;
   background: var(--k-surface);
   color: var(--k-text);
+  overflow-y: auto;
 }
 
 .ktheme-section {
@@ -1627,30 +1707,13 @@
   overflow: hidden;
 }
 
-.kdock-pane .kgallery,
-.kdock-pane .kcfg {
+.kdock-pane .kgallery {
   flex: 1;
   background: var(--k-surface);
 }
 
 .kdock-pane .kgallery {
   padding-top: 18px;
-}
-
-.kdock-pane .kcfg {
-  padding: 18px 24px 0;
-}
-
-.kdock-pane .kcfg-title,
-.kdock-pane .kcfg-sub {
-  display: none;
-}
-
-.kdock-pane .kcfg-foot {
-  margin-left: -24px;
-  margin-right: -24px;
-  padding-left: 24px;
-  padding-right: 24px;
 }
 
 .kdock-pane .kpane {
@@ -2176,6 +2239,7 @@
   min-height: 0;
   min-width: 0;
   display: flex;
+  position: relative;
 }
 .kmachine-primary-slot {
   flex: 1;
@@ -2185,6 +2249,18 @@
 }
 .kmachine-primary-slot.is-hidden {
   display: none;
+}
+/* Hidden but still laid out over the visible slot, so the surface keeps its
+   real size: a KMS pane mounted during boot reports that size to the kernel
+   before the machine's command picks a video mode. Scoped to that pane
+   (MachineView's measureWhileHidden); other hidden surfaces leave layout and
+   paint entirely. */
+.kmachine-primary-slot.is-hidden.is-measured {
+  display: flex;
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 .kmachine-primary-slot > * {
   flex: 1;
@@ -2458,7 +2534,7 @@
   resize: vertical;
   border: 1px solid var(--k-border);
   border-radius: 7px;
-  background: #15100c;
+  background: var(--k-shell-bg);
   color: var(--k-shell-text);
   padding: 9px;
   font-family: var(--k-font-mono);
@@ -2653,6 +2729,76 @@
   image-rendering: pixelated;
   background: var(--k-fb-bg);
   flex: 0 0 auto;
+  touch-action: none;
+  user-select: none;
+}
+
+.ktouch-controls {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: var(--k-font-mono);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ktouch-btn {
+  pointer-events: auto;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklch, var(--k-fb-text) 32%, transparent);
+  background: color-mix(in oklch, var(--k-fb-text) 10%, transparent);
+  color: color-mix(in oklch, var(--k-fb-text) 82%, transparent);
+  font-size: 14px;
+}
+
+.ktouch-btn:active {
+  border-color: color-mix(in oklch, var(--k-accent) 70%, transparent);
+  background: color-mix(in oklch, var(--k-accent) 30%, transparent);
+}
+
+.ktouch-menu {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 64px;
+  height: 34px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.ktouch-dpad {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: grid;
+  grid-template-areas:
+    ". up ."
+    "left down right";
+  grid-template-columns: repeat(3, 48px);
+  grid-template-rows: repeat(2, 48px);
+  gap: 4px;
+}
+
+.ktouch-up { grid-area: up; }
+.ktouch-left { grid-area: left; }
+.ktouch-right { grid-area: right; }
+.ktouch-down { grid-area: down; }
+
+.ktouch-fire {
+  position: absolute;
+  right: 16px;
+  bottom: 20px;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  font-size: 11px;
+  letter-spacing: 0.08em;
 }
 
 .kmodeset-stage {
@@ -2671,6 +2817,8 @@
   image-rendering: pixelated;
   background: var(--k-fb-bg);
   flex: 0 0 auto;
+  touch-action: none;
+  user-select: none;
 }
 
 .kmodeset-waiting {
@@ -3362,6 +3510,41 @@
 .kgal-table tbody tr:last-child td {
   border-bottom: 0;
 }
+
+/* Small screens: scroll the whole launch pane as one page — title, subtitle,
+   filter, and list together — instead of pinning half the pane to a header.
+   The table keeps its own horizontal scroll so narrow viewports never scroll
+   the pane sideways. */
+@media (max-width: 760px), (max-height: 520px) {
+  .kdock-pane {
+    overflow-y: auto;
+  }
+  .kdock-pane-body {
+    flex: none;
+    display: block;
+    overflow: visible;
+  }
+  .kdock-pane-header {
+    padding: 14px 16px 10px;
+  }
+  .kdock-pane-title-row h2 {
+    font-size: 20px;
+  }
+  .kgallery {
+    overflow: visible;
+  }
+  .kgal-table-shell {
+    flex: none;
+    overflow: visible;
+    overflow-x: auto;
+  }
+  .kgal-table {
+    min-width: 520px;
+  }
+  .kgal-table th {
+    position: static;
+  }
+}
 .kgal-row {
   cursor: pointer;
   outline: none;
@@ -3667,9 +3850,6 @@
   color: var(--k-text-faint);
 }
 .kshare-url {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   padding: 10px 12px;
   background: var(--k-surface-sunk);
   border: 1px solid var(--k-border);
@@ -3678,7 +3858,13 @@
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--k-text);
-  word-break: break-all;
+  /* The full URL can be arbitrarily long (a #k1= script fragment runs to
+     kilobytes), so keep the field a single line and truncate with an ellipsis
+     rather than growing in height. The complete URL is still copied via the
+     Copy button / data-share-url, so truncation is purely visual. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   user-select: all;
 }
 .kshare-tier {
@@ -3872,279 +4058,28 @@
   margin-top: 1px;
 }
 
-/* ── System Config ──────────────────────────────────────────────────────── */
-
-.kcfg {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--k-bg);
-  padding: 24px 32px 0;
-  gap: 18px;
-  overflow: hidden;
-}
-.kcfg-hdr { flex-shrink: 0; }
-.kcfg-title {
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+.kshare-script textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 84px;
+  font-family: var(--k-font-mono);
+  font-size: 12px;
   color: var(--k-text);
-  margin: 0;
+  background: color-mix(in oklch, var(--k-text) 5%, transparent);
+  border: 1px solid color-mix(in oklch, var(--k-text) 16%, transparent);
+  border-radius: 6px;
+  padding: 8px;
+  box-sizing: border-box;
 }
-.kcfg-sub {
-  color: var(--k-text-muted);
-  font-size: 14px;
+.kshare-script-meta {
   margin-top: 4px;
-}
-.kcfg-tabs {
-  display: flex;
-  gap: 2px;
-  background: var(--k-surface);
-  padding: 3px;
-  border-radius: var(--k-radius);
-  border: 1px solid var(--k-border);
-  flex-shrink: 0;
-  width: fit-content;
-}
-.kcfg-tab {
-  padding: 6px 14px;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  border-radius: var(--k-radius-sm);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11px;
   color: var(--k-text-muted);
-  transition: background 0.12s, color 0.12s;
-  white-space: nowrap;
 }
-.kcfg-tab:hover {
-  color: var(--k-text);
-  background: color-mix(in oklch, var(--k-text) 6%, transparent);
-}
-.kcfg-tab[aria-current="true"] {
-  color: var(--k-text);
-  background: var(--k-surface-alt);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-.kcfg-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding-bottom: 80px;
-}
-.kcfg-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  gap: 18px;
-  max-width: 1100px;
-}
-.kcfg-card {
-  background: var(--k-surface);
-  border: 1px solid var(--k-border);
-  border-radius: var(--k-radius);
-  overflow: hidden;
-  box-shadow: var(--k-shadow);
-}
-.kcfg-card-hd {
-  padding: 12px 16px;
-  background: var(--k-surface-alt);
-  border-bottom: 1px solid var(--k-border);
+.kshare-script-err {
+  margin-top: 4px;
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--k-text);
-}
-.kcfg-card-body {
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.kcfg-row {
-  display: grid;
-  grid-template-columns: 140px 1fr;
-  gap: 10px;
-  align-items: center;
-}
-.kcfg-row label {
-  font-size: 12px;
-  color: var(--k-text-muted);
-  font-weight: 500;
-}
-.kcfg-help {
-  font-size: 11px;
-  color: var(--k-text-faint);
-  margin-top: 3px;
-  line-height: 1.4;
-}
-.kcfg-input {
-  font: inherit;
-  font-family: var(--k-font-mono);
-  font-size: 12px;
-  width: 100%;
-  padding: 6px 10px;
-  border: 1px solid var(--k-border);
-  background: var(--k-surface-sunk);
-  border-radius: var(--k-radius-sm);
-  color: var(--k-text);
-  outline: none;
-  transition: border-color 0.12s, background 0.12s;
-}
-.kcfg-input:focus {
-  border-color: var(--k-accent);
-  background: var(--k-surface);
-}
-.kcfg-num {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.kcfg-num input { width: 120px; }
-.kcfg-num-suf {
-  font-family: var(--k-font-mono);
-  font-size: 11px;
-  color: var(--k-text-faint);
-}
-.kcfg-mounts {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.kcfg-mount {
-  display: grid;
-  grid-template-columns: 130px 130px 1fr auto;
-  gap: 6px;
-  align-items: center;
-}
-.kcfg-mount input,
-.kcfg-mount select {
-  font: inherit;
-  font-family: var(--k-font-mono);
-  font-size: 11.5px;
-  padding: 5px 8px;
-  border: 1px solid var(--k-border);
-  background: var(--k-surface-sunk);
-  border-radius: var(--k-radius-sm);
-  color: var(--k-text);
-  outline: none;
-  width: 100%;
-  min-width: 0;
-}
-.kcfg-mount-del {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--k-text-faint);
-  cursor: pointer;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--k-radius-sm);
-}
-.kcfg-mount-del:hover {
-  background: color-mix(in oklch, var(--k-err) 14%, transparent);
   color: var(--k-err);
-}
-.kcfg-add {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: var(--k-radius-sm);
-  border: 1px dashed var(--k-border);
-  background: transparent;
-  color: var(--k-text-muted);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 600;
-  cursor: pointer;
-  align-self: flex-start;
-  transition: all 0.12s;
-}
-.kcfg-add:hover {
-  background: var(--k-surface-alt);
-  color: var(--k-text);
-  border-color: var(--k-border-strong);
-}
-.kcfg-toggles {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.kcfg-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 0;
-  border-bottom: 1px solid color-mix(in oklch, var(--k-border) 60%, transparent);
-  gap: 12px;
-}
-.kcfg-toggle:last-child { border-bottom: 0; }
-.kcfg-toggle-lbl {
-  font-size: 12.5px;
-  color: var(--k-text);
-  font-weight: 500;
-}
-.kcfg-toggle-sub {
-  font-size: 11px;
-  color: var(--k-text-muted);
-  margin-top: 2px;
-}
-.kcfg-foot {
-  position: sticky;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 32px;
-  background: color-mix(in oklch, var(--k-bg) 90%, transparent);
-  border-top: 1px solid var(--k-border);
-  margin: 0 -32px;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-.kcfg-foot-info {
-  font-family: var(--k-font-mono);
-  font-size: 11px;
-  color: var(--k-text-muted);
-}
-.kcfg-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 14px;
-  border-radius: var(--k-radius-sm);
-  border: 1px solid var(--k-border);
-  background: var(--k-surface);
-  color: var(--k-text);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.12s;
-}
-.kcfg-btn:hover:not(:disabled) {
-  background: var(--k-surface-alt);
-  border-color: var(--k-border-strong);
-}
-.kcfg-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.kcfg-btn-primary {
-  background: var(--k-accent);
-  color: #fff;
-  border-color: var(--k-accent);
-  margin-left: auto;
-}
-.kcfg-btn-primary:hover:not(:disabled) {
-  background: var(--k-accent-fire);
-  border-color: var(--k-accent-fire);
 }
 
 /* ── Empty state ────────────────────────────────────────────────────────── */
@@ -4297,7 +4232,6 @@
 .kdemo-run,
 .kgal-row-btn-primary,
 .kshare-btn-primary,
-.kcfg-btn-primary,
 .kempty-btn {
   border-color: var(--kdock-active-ring);
   background: var(--kdock-active-fill);
@@ -4316,8 +4250,6 @@
 .kgal-row-btn-primary:focus-visible,
 .kshare-btn-primary:hover:not(:disabled),
 .kshare-btn-primary:focus-visible,
-.kcfg-btn-primary:hover:not(:disabled),
-.kcfg-btn-primary:focus-visible,
 .kempty-btn:hover:not(:disabled),
 .kempty-btn:focus-visible {
   border-color: var(--kdock-active-ring);
@@ -4344,7 +4276,6 @@
 .kdemo-run,
 .kgal-row-btn-primary,
 .kshare-btn-primary,
-.kcfg-btn-primary,
 .kempty-btn {
   text-shadow: var(--kdock-active-text-shadow);
 }
@@ -4468,21 +4399,14 @@
 
   .knew,
   .kdock-pane .kgallery,
-  .kdock-pane .kcfg,
   .kshare-embedded .kshare-body {
     padding-left: 16px;
     padding-right: 16px;
   }
 
-  .kdock-pane .kcfg-foot,
   .kshare-embedded .kshare-actions {
     padding-left: 16px;
     padding-right: 16px;
-  }
-
-  .kdock-pane .kcfg-foot {
-    margin-left: -16px;
-    margin-right: -16px;
   }
 
   .knew-url-row {
@@ -4579,4 +4503,104 @@
 }
 @keyframes kweb-spin {
   to { transform: rotate(360deg); }
+}
+
+/* The modal wrapper exists only to carry `inert` during a machine switch; it
+   must not participate in layout. `.kapp` is a flex container and `.kmain`
+   relies on being its direct flex child (`flex: 1`) to fill the space above
+   the dock. A plain block wrapper made `.kmain` size to content instead,
+   shrinking the terminal and preview panes. `display: contents` removes the
+   wrapper's own box so its children stay direct flex children of `.kapp`,
+   while the element — and therefore `inert` — still applies to the subtree. */
+[data-machine-content] {
+  display: contents;
+}
+
+/* Machine switch progress: one centred, full-page overlay covering teardown
+   and image load. Centred rather than pinned to a pane — a switch is a
+   whole-page event.
+   z-index must clear the dock layer, which stays mounted (and can stay open,
+   e.g. the gallery pane) for the whole switch: .kdock-shell 1000,
+   .kdock-popover 1010, .kdownload-toasts 1100. 1200 is above all of those.
+   Covering the dock is correct here — the overlay is modal by design, and
+   the machine the dock was controlling is gone. */
+.kmprogress-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  background: color-mix(in oklch, var(--k-bg) 72%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.kmprogress-card {
+  width: min(420px, calc(100vw - 48px));
+  padding: 18px 20px;
+  border-radius: 12px;
+  background: var(--k-surface);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 28%);
+  font-family: var(--k-font-mono);
+  font-size: 12px;
+}
+
+.kmprogress-headline {
+  color: var(--k-text);
+  margin-bottom: 10px;
+}
+
+.kmprogress-bar {
+  position: relative;
+  overflow: hidden;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--k-text) 9%, transparent);
+}
+
+.kmprogress-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--k-accent);
+  transition: width 0.16s ease;
+}
+
+.kmprogress-error .kmprogress-bar > span { background: var(--k-err); }
+.kmprogress-complete .kmprogress-bar > span { background: var(--k-ok); }
+
+.kmprogress-bar.indeterminate > span {
+  animation: kdownload-slide 1.1s ease-in-out infinite;
+}
+
+.kmprogress-detail {
+  margin-top: 8px;
+  color: color-mix(in oklch, var(--k-text) 62%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+.kmprogress-error .kmprogress-detail { color: var(--k-err); }
+
+/* A dock action's progress: the command's own status line, and a bar when
+   the command reports a percentage. */
+.kdemo-progress {
+  flex-direction: column;
+  align-items: stretch;
+  min-width: min(90%, 360px);
+}
+
+.kdemo-progress-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kdemo-progress-label {
+  font-weight: 600;
+}
+
+.kdemo-progress-bar {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--k-accent, currentColor);
 }

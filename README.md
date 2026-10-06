@@ -24,10 +24,12 @@ Real, unmodified software compiled to WebAssembly:
 | Vim | 9.1 | Full editor with ncurses terminal UI |
 | NetHack | 3.6.7 | Classic roguelike with curses UI |
 | fbDOOM | (maximevince) | id Software's DOOM via the kernel's `/dev/fb0` Linux fbdev surface |
+| espeak-ng | 1.52 | Speech synthesis; plays through upstream pcaudiolib's OSS backend on `/dev/dsp` |
 | Perl | 5.40 | Interpreter with core modules |
 | Ruby | 3.3 | Interpreter with core stdlib |
 | SpiderMonkey | 140 ESR | JavaScript engine backing the Node.js-compatible runtime with Intl, SharedArrayBuffer, worker_threads, and npm package installs. |
 | GNU nano | 8.3 | Terminal text editor |
+| ELinks | 0.20 | Text-mode web browser: tables, tabs, HTTPS, and page JavaScript via QuickJS-NG. Carries two small portability patches (see `packages/registry/elinks/patches/`) |
 | dash | 0.5.12 | POSIX shell with pipes, redirects, job control |
 | GNU coreutils | 9.6 | 50+ utilities (ls, cat, sort, wc, etc.) |
 | GNU grep | 3.11 | Regular expression search |
@@ -116,9 +118,9 @@ autotools/cmake/binaryen/wabt stack the build scripts need. With
 Determinate Systems Nix has them on by default):
 
 ```bash
-scripts/dev-shell.sh bash            # interactive pure shell
+scripts/dev-shell.sh bash              # interactive pure shell
 # or
-scripts/dev-shell.sh bash build.sh   # one-shot
+scripts/dev-shell.sh ./run.sh setup    # one-shot hermetic build
 ```
 
 The `shellHook` exports `LLVM_BIN` / `LLVM_PREFIX` / `LLVM_VERSION` so the
@@ -128,6 +130,26 @@ The first shell entry downloads the toolchain (~10–15 min); subsequent entries
 are near-instant.
 
 ## Quick Start
+
+### Which command do I run?
+
+`./run.sh setup` is the front door — run it first and most of the time
+that is all you need:
+
+| Command | What it does |
+|---|---|
+| `./run.sh setup` | One command to get a working repo: provisions the musl sysroot/SDK and builds the fork-instrument tool, every package, the rootfs image, and the TypeScript host. Run this first, and again after pulling upstream changes. |
+| `./run.sh build <target>` | Build one thing: the kernel, the host, the rootfs, a package (e.g. `php`), or a VFS product (e.g. `shell-vfs`). |
+| `./run.sh rebuild <target>` | Force a rebuild of one target, bypassing the cache. |
+| `./run.sh clean <target>` | Remove a target's build outputs, plus any products that embed it. |
+| `./run.sh browser` | Build (fast, cached after `setup`) and serve the browser demos. |
+| `./run.sh local-build [--json]` | The packages-only primitive underneath `setup` and `browser`: builds just the package/VFS-product graph, optionally emitting machine-readable JSON. Reach for it directly for a focused package rebuild, scripted/CI output, or VFS-product iteration. |
+
+`./run.sh list` shows the full set of build targets, examples, and
+test suites. Under the hood, these subcommands delegate to a typed
+`cargo xtask` engine (`bootstrap`, `verify-fresh`, `clean`, and more);
+see [docs/agent-guidance/packages-and-builds.md](docs/agent-guidance/packages-and-builds.md)
+if you need to work at that layer directly.
 
 ### Install published packages
 
@@ -139,29 +161,37 @@ npm install wasm-posix-host wasm-posix-sdk
 ```
 
 `wasm-posix-host` ships the compiled host runtime JS, worker entry
-points, `kernel.wasm`, and `rootfs.vfs`. `wasm-posix-sdk` ships the
+points, `kernel.wasm`, and `rootfs.vfs.zst`. `wasm-posix-sdk` ships the
 compiler wrappers, musl sysroot, and host glue files used when linking
 your own C/C++ programs. You still need LLVM 21+ on `PATH` (or
 `WASM_POSIX_LLVM_DIR`) because the SDK wraps clang rather than
 bundling a native compiler.
 
 From a source checkout, `npm run pack:packages` builds npm tarballs
-after `bash scripts/build-musl.sh` and `bash build.sh` have produced
-the sysroot, kernel, and rootfs artifacts.
+after `./run.sh setup` has produced the sysroot, kernel, and rootfs
+artifacts.
 
-### 1. Build the kernel
+### 1. Set up the repository
 
 ```bash
 git submodule update --init libc/musl
 
-# Build musl sysroot (first time only)
-bash scripts/build-musl.sh
-
-# Build kernel Wasm + TypeScript host
-bash build.sh
+# Hermetic build: musl sysroot(s) and SDK, fork-instrument tool,
+# local-build engine (all packages), rootfs image, then the
+# TypeScript host
+./run.sh setup
 ```
 
-This builds the kernel from source. Library dependencies (zlib, openssl,
+`./run.sh setup` is the single entry point for a working repo: it
+provisions the musl sysroot (building it from scratch on a fresh
+checkout, or just re-syncing overlay headers if it already exists),
+builds the fork-instrument host tool, resolves and builds every
+package in the local-build graph, produces the rootfs VFS image, and
+builds the TypeScript host. See [Which command do I
+run?](#which-command-do-i-run) above for the rest of the command
+surface.
+
+Library dependencies (zlib, openssl,
 sqlite, libcxx, etc.) and ported programs (vim, git, php, etc.) are resolved
 on demand by `cargo xtask build-deps resolve <name>`, which prefers
 the per-user cache, then falls back to the published binary release at
@@ -170,11 +200,8 @@ then to a source build via the per-library `build-<name>.sh`. See
 [docs/package-management.md](docs/package-management.md) for the
 full schema, resolution order, and release-archive contract.
 
-If you prefer to skip cargo-driven dep resolution and pull every
-pre-built artifact at once, run `bash scripts/fetch-binaries.sh` after
-`bash build.sh`. It walks every `packages/registry/<pkg>/package.toml`
-with a `[binary.<arch>]` block and resolves the archives into the
-content-addressed cache plus `binaries/programs/<arch>/` symlinks.
+`./run.sh setup` already resolves every registry package this way, so a
+fresh checkout needs no separate fetch step.
 
 To source-build the current seven browser VFS products and their declared
 dependency graph, use the local DAG builder from the repository root:
@@ -246,9 +273,21 @@ unchanged nodes.
 
 Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
 
-Production output is bound to the absolute prefix selected at build time. Once
-the SourceOnly projection above exists, produce its authenticated VFS group and
-build separate distributions for `/a/` and `/candidate-b/`:
+To build the deployable static site, run:
+
+```bash
+./run.sh build-browser                      # site root, e.g. https://kandelo.dev/
+./run.sh build-browser --base /kandelo/ --out build/kandelo   # under a prefix
+```
+
+It runs the local build, produces the authenticated VFS asset group, runs the
+production Vite build, and checks the result. Upload the contents of the
+output directory (default `apps/browser-demos/dist/`) so it is served at
+exactly the chosen base.
+
+Production output is bound to the absolute prefix selected at build time. The
+equivalent manual steps, here building separate distributions for `/a/` and
+`/candidate-b/`, are:
 
 ```bash
 scripts/dev-shell.sh bash -lc '
@@ -290,8 +329,11 @@ already active, reload the page; clearing site data may be needed if the browser
 keeps an older service worker around.
 
 The application owns one complete proxy profile. The current profile relays
-only `Accept`, `Content-Type`, `git-protocol`, `wp_blog`, and `wp_install`, by
-case-insensitive field name, at every configured proxy dispatch. Unsupported
+only `Accept`, `Content-Type`, `git-protocol`, `Range`, `wp_blog`, and
+`wp_install`, by case-insensitive field name, at every configured proxy
+dispatch, and also sends `Range` as `X-Cors-Proxy-Range` (a workaround the
+default proxy needs because WP Cloud, which hosts it, strips `Range` before
+the request reaches its PHP). Unsupported
 fields may be omitted with a diagnostic only for anonymous bodyless GETs;
 lossy credentialed, body-bearing, or non-GET requests fail before dispatch.
 This is a browser transport boundary, not full HTTP-header fidelity. Direct
@@ -318,9 +360,11 @@ bash packages/registry/perl/build-perl.sh           # Perl 5.40
 bash packages/registry/ruby/build-ruby.sh           # Ruby 3.3
 bash packages/registry/spidermonkey/build-spidermonkey.sh # SpiderMonkey JS + Node.js compat
 bash packages/registry/nano/build-nano.sh           # GNU nano 8.3
+cargo xtask build-deps resolve elinks               # ELinks 0.20 + QuickJS-NG (builds its library deps first)
 bash packages/registry/curl/build-curl.sh           # curl
 bash packages/registry/netcat/build-netcat.sh        # GNU Netcat 0.7.1
 bash packages/registry/make/build-make.sh           # GNU make
+bash packages/registry/espeak-ng/build-espeak-ng.sh # espeak-ng 1.52
 ```
 
 See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own software.
@@ -350,7 +394,6 @@ scripts/run-sortix-tests.sh --all
 crates/
   shared/            Shared types (Errno, syscall numbers, flags, channel layout)
   kernel/            Kernel implementation (syscalls, fd table, signals, pipes, sockets, PTY)
-  userspace/         User-space stub library
 host/
   src/               TypeScript host runtime shared by Node.js and browser hosts
     node-kernel-host.ts / node-kernel-worker-entry.ts

@@ -26,14 +26,38 @@ export interface VfsBinarySpec {
   resolverPath: string;
   vfsPath: string;
   symlinks: readonly string[];
+  /** Permission bits for the lazy file; programs default to 0755. A
+   *  package's runtime data file (not a program) declares 0644. */
+  mode?: number;
+  /** The package that provides the file, when it is not `id` — a package
+   *  whose runtime data files each need their own spec. */
+  dependency?: string;
 }
 
 export const SHELL_LAZY_URL_PREFIX = "kandelo-lazy:";
+
+/** The package whose output provides `spec`'s file. */
+export function shellLazySpecDependency(spec: VfsBinarySpec): string {
+  return spec.dependency ?? spec.id;
+}
+
+/** The lazy file's permission bits. */
+export function shellLazySpecMode(spec: VfsBinarySpec): number {
+  return spec.mode ?? 0o755;
+}
 
 export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
   return `${SHELL_LAZY_URL_PREFIX}${spec.resolverPath}`;
 }
 
+/**
+ * Every program the shell image adds, as a lazy file: the image records its
+ * path, size and mode, and the bytes are fetched on first read. Lazy is the
+ * default because every visitor downloads the eager image before anything
+ * boots, while most machines run only a few of these programs. The composer
+ * rejects any other Wasm program it would write eagerly (see
+ * EAGER_SHELL_PROGRAMS in build-source-rootfs-shell-image.ts).
+ */
 export const SHELL_LAZY_BINARY_SPECS = [
   {
     id: "coreutils",
@@ -68,6 +92,9 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   { id: "wget", resolverPath: "programs/wget.wasm", vfsPath: "/usr/bin/wget", symlinks: ["/bin/wget"] },
   { id: "git", resolverPath: "programs/git/git.wasm", vfsPath: "/usr/bin/git", symlinks: ["/bin/git"] },
+  { id: "ffmpeg", resolverPath: "programs/ffmpeg/ffmpeg.wasm", vfsPath: "/usr/bin/ffmpeg", symlinks: ["/bin/ffmpeg"] },
+  { id: "ffprobe", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffprobe.wasm", vfsPath: "/usr/bin/ffprobe", symlinks: ["/bin/ffprobe"] },
+  { id: "ffplay", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffplay.wasm", vfsPath: "/usr/bin/ffplay", symlinks: ["/bin/ffplay"] },
   {
     id: "git-remote-http",
     resolverPath: "programs/git/git-remote-http.wasm",
@@ -110,15 +137,151 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
   { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: ["/bin/nano"] },
+  // The Omarchy desktop's shell programs (omarchydesktop starts them). They
+  // are large -- Waybar statically links the GTK stack -- so they stay lazy:
+  // no other machine sharing this image pays to fetch them.
+  { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/local/bin/foot", symlinks: [] },
+  { id: "waybar", resolverPath: "programs/waybar.wasm", vfsPath: "/usr/local/bin/waybar", symlinks: [] },
+  // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
+  // (the package's declared runtime_files). /usr/local/bin/scummvm is the
+  // image's launch wrapper, which execs this engine.
+  { id: "scummvm", resolverPath: "programs/scummvm/scummvm.wasm", vfsPath: "/usr/bin/scummvm", symlinks: [] },
+  {
+    id: "scummvm-theme-remastered",
+    dependency: "scummvm",
+    resolverPath: "programs/scummvm/share/scummvm/scummremastered.zip",
+    vfsPath: "/usr/share/scummvm/scummremastered.zip",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "scummvm-theme-modern",
+    dependency: "scummvm",
+    resolverPath: "programs/scummvm/share/scummvm/scummmodern.zip",
+    vfsPath: "/usr/share/scummvm/scummmodern.zip",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "scummvm-theme-classic",
+    dependency: "scummvm",
+    resolverPath: "programs/scummvm/share/scummvm/scummclassic.zip",
+    vfsPath: "/usr/share/scummvm/scummclassic.zip",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "scummvm-gui-icons",
+    dependency: "scummvm",
+    resolverPath: "programs/scummvm/share/scummvm/gui-icons.dat",
+    vfsPath: "/usr/share/scummvm/gui-icons.dat",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "scummvm-fonts",
+    dependency: "scummvm",
+    resolverPath: "programs/scummvm/share/scummvm/fonts.dat",
+    vfsPath: "/usr/share/scummvm/fonts.dat",
+    symlinks: [],
+    mode: 0o644,
+  },
+  // ScummVM's engine plugins (the package's lib/scummvm runtime files).
+  // ScummVM dlopen()s only the engine a game needs, so each is its own lazy
+  // file: a machine downloads the engines of the games it plays.
+  ...[
+    "scumm", "sky", "drascula", "dreamweb", "queen", "got", "griffon",
+    "lure", "adl", "parallaction", "cge", "cge2", "sludge", "wage",
+  ].map((engine) => ({
+    id: `scummvm-engine-${engine}`,
+    dependency: "scummvm",
+    resolverPath: `programs/scummvm/lib/scummvm/lib${engine}.so`,
+    vfsPath: `/usr/lib/scummvm/lib${engine}.so`,
+    symlinks: [] as string[],
+    mode: 0o644,
+  })),
+  // The Qt clients the launcher offers. quickshell.wasm alone is ~93 MB.
+  { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/local/bin/qtgallery", symlinks: [] },
+  { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/local/bin/quickshell", symlinks: [] },
+  { id: "mako", resolverPath: "programs/mako/mako.wasm", vfsPath: "/usr/local/bin/mako", symlinks: [] },
+  {
+    id: "dbus",
+    resolverPath: "programs/dbus/dbus-daemon.wasm",
+    vfsPath: "/usr/local/bin/dbus-daemon",
+    symlinks: [],
+  },
+  // The Wayland desktops' in-tree programs. The desktops' launchers exec them
+  // by name from PATH; a lazy file is an ordinary executable there, so only a
+  // machine that starts a desktop fetches them. notify-send statically links
+  // glib and gio (~5.8 MB), which alone would outweigh much of the eager image.
+  {
+    id: "wlcompositor",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/wlcompositor.wasm",
+    vfsPath: "/usr/local/bin/wlcompositor",
+    symlinks: [],
+  },
+  {
+    id: "wlterm",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/wlterm.wasm",
+    vfsPath: "/usr/local/bin/wlterm",
+    symlinks: [],
+  },
+  {
+    id: "wlclock",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/wlclock.wasm",
+    vfsPath: "/usr/local/bin/wlclock",
+    symlinks: [],
+  },
+  {
+    id: "wlpaint",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/wlpaint.wasm",
+    vfsPath: "/usr/local/bin/wlpaint",
+    symlinks: [],
+  },
+  {
+    id: "klauncher",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/klauncher.wasm",
+    vfsPath: "/usr/local/bin/klauncher",
+    symlinks: [],
+  },
+  {
+    id: "notify-send",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/notify-send.wasm",
+    vfsPath: "/usr/local/bin/notify-send",
+    symlinks: [],
+  },
+  {
+    id: "kclipd",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/kclipd.wasm",
+    vfsPath: "/usr/local/bin/kclipd",
+    symlinks: [],
+  },
+  // The single-program machines' workloads. Each machine's profile command
+  // execs its program, which is the first read of these bytes.
+  {
+    id: "sdl2",
+    dependency: "sdl2-demo",
+    resolverPath: "programs/sdl2.wasm",
+    vfsPath: "/usr/local/bin/sdl2",
+    symlinks: [],
+  },
+  { id: "fbdoom", resolverPath: "programs/fbdoom.wasm", vfsPath: "/usr/local/bin/fbdoom", symlinks: [] },
+  { id: "modeset", resolverPath: "programs/modeset.wasm", vfsPath: "/usr/local/bin/modeset", symlinks: [] },
+  {
+    id: "espeak-ng",
+    resolverPath: "programs/espeak-ng/espeak-ng.wasm",
+    vfsPath: "/usr/bin/espeak-ng",
+    symlinks: [],
+  },
+  { id: "sqlite-cli", resolverPath: "programs/sqlite3.wasm", vfsPath: "/usr/bin/sqlite3", symlinks: ["/bin/sqlite3"] },
+  { id: "lhasa", resolverPath: "programs/lha.wasm", vfsPath: "/usr/bin/lha", symlinks: ["/bin/lha"] },
+  { id: "tyrquake", resolverPath: "programs/quake.wasm", vfsPath: "/usr/bin/quake", symlinks: ["/bin/quake"] },
+  { id: "elinks", resolverPath: "programs/elinks.wasm", vfsPath: "/usr/bin/elinks", symlinks: ["/bin/elinks"] },
 ] as const satisfies readonly VfsBinarySpec[];
-
-export const NODE_BINARY_SPEC = {
-  id: "node",
-  resolverPath: "programs/node.wasm",
-  vfsPath: "/usr/bin/node",
-  symlinks: [
-    "/bin/node",
-    "/usr/local/bin/node",
-    "/usr/bin/spidermonkey-node",
-  ],
-} as const satisfies VfsBinarySpec;

@@ -1292,13 +1292,6 @@ name = "wasm-posix-shared"
 version = "0.1.0"
 
 [[package]]
-name = "wasm-posix-userspace"
-version = "0.1.0"
-dependencies = [
- "wasm-posix-shared",
-]
-
-[[package]]
 name = "wasmparser"
 version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

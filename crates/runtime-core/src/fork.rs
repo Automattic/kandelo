@@ -41,9 +41,11 @@ const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // This header version is also shared by the cfg(test) exec-state fixture.
 // v15 preserves complete credentials plus the kernel-owned secure-exec marker.
+// v16 carries each socket's SO_PEERCRED peer credentials and the process's
+// epoll instances (their registrations), which the child inherits.
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
-const FORK_VERSION: u32 = 15;
+const FORK_VERSION: u32 = 16;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -53,6 +55,8 @@ const MAX_ARGV: u32 = 65536;
 const MAX_PATH_LEN: usize = 1048576; // 1 MiB
 const MAX_STRING_LEN: usize = 1048576; // 1 MiB
 const MAX_SOCKET_SLOTS: usize = 65536;
+const MAX_EPOLL_SLOTS: usize = 65536;
+const MAX_EPOLL_INTERESTS: usize = 65536;
 const MAX_SOCKET_OPTIONS: usize = 4096;
 const MAX_SOCKET_STRING_LEN: usize = 256;
 const MAX_IPV4_MULTICAST_MEMBERSHIPS: usize = 4096;
@@ -430,6 +434,60 @@ fn read_ipv4_source_list(r: &mut Reader<'_>) -> Result<Vec<[u8; 4]>, Errno> {
 
 /// Write socket fields that are durable across fork but were added after the
 /// original v4 socket block. Consume-once queues remain intentionally absent.
+fn write_epoll_instances(
+    w: &mut Writer<'_>,
+    epolls: &[Option<crate::process::EpollInstance>],
+) -> Result<(), Errno> {
+    write_bounded_len(w, epolls.len(), MAX_EPOLL_SLOTS)?;
+    for slot in epolls {
+        match slot {
+            None => w.write_u32(0)?,
+            Some(ep) => {
+                w.write_u32(1)?;
+                write_bounded_len(w, ep.interests.len(), MAX_EPOLL_INTERESTS)?;
+                for i in &ep.interests {
+                    w.write_i32(i.fd)?;
+                    w.write_u32(i.events)?;
+                    w.write_u64(i.data)?;
+                    w.write_u64(i.ofd_id.0)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_epoll_instances(
+    r: &mut Reader<'_>,
+) -> Result<Vec<Option<crate::process::EpollInstance>>, Errno> {
+    let slots = read_bounded_count(r, MAX_EPOLL_SLOTS)?;
+    let mut epolls = Vec::with_capacity(slots.min(r.remaining() / 4));
+    for _ in 0..slots {
+        match r.read_u32()? {
+            0 => epolls.push(None),
+            1 => {
+                let count = read_bounded_count(r, MAX_EPOLL_INTERESTS)?;
+                // Each registration is 24 encoded bytes.
+                if r.remaining() < count.checked_mul(24).ok_or(Errno::EINVAL)? {
+                    return Err(Errno::EINVAL);
+                }
+                let mut interests = Vec::with_capacity(count);
+                for _ in 0..count {
+                    interests.push(crate::process::EpollInterest {
+                        fd: r.read_i32()?,
+                        events: r.read_u32()?,
+                        data: r.read_u64()?,
+                        ofd_id: crate::lock::OfdId(r.read_u64()?),
+                    });
+                }
+                epolls.push(Some(crate::process::EpollInstance { interests }));
+            }
+            _ => return Err(Errno::EINVAL),
+        }
+    }
+    Ok(epolls)
+}
+
 fn write_durable_socket_state(
     w: &mut Writer<'_>,
     sock: &crate::socket::SocketInfo,
@@ -463,6 +521,18 @@ fn write_durable_socket_state(
         w.write_u32(u32::from(membership.any_source))?;
         write_ipv4_source_list(w, &membership.blocked_sources)?;
         write_ipv4_source_list(w, &membership.included_sources)?;
+    }
+
+    // SO_PEERCRED belongs to the socket, not the process holding it: an
+    // inherited connection still reports the peer it was made with.
+    match sock.peer_cred {
+        Some(cred) => {
+            w.write_u32(1)?;
+            w.write_u32(cred.pid)?;
+            w.write_u32(cred.uid)?;
+            w.write_u32(cred.gid)?;
+        }
+        None => w.write_u32(0)?,
     }
     Ok(())
 }
@@ -519,6 +589,16 @@ fn read_durable_socket_state(
         });
     }
     sock.ipv4_multicast_memberships = memberships;
+
+    sock.peer_cred = match r.read_u32()? {
+        0 => None,
+        1 => Some(crate::socket::PeerCred {
+            pid: r.read_u32()?,
+            uid: r.read_u32()?,
+            gid: r.read_u32()?,
+        }),
+        _ => return Err(Errno::EINVAL),
+    };
     Ok(())
 }
 
@@ -639,6 +719,12 @@ const DRI_TAG_RENDER_NODE: u8 = 1;
 const DRI_TAG_CARD: u8 = 2;
 const DRI_TAG_PRIME_BO: u8 = 3;
 
+const INPUT_TAG_NONE: u8 = 0;
+const INPUT_TAG_SOME: u8 = 1;
+
+const PCM_DIR_PLAYBACK: u8 = 0;
+const PCM_DIR_CAPTURE: u8 = 1;
+
 fn write_dri_fd_state(w: &mut Writer<'_>, dri: &crate::ofd::DriFdState) -> Result<(), Errno> {
     w.write_u32(dri.handles.len() as u32)?;
     for (handle, bo_id) in &dri.handles {
@@ -704,6 +790,33 @@ fn write_dri_state(
             w.write_u64(p.cookie)
         }
     }
+}
+
+/// Serialise the evdev sidecar across a fork/exec. The ring contents and
+/// dropped latch are captured as a point-in-time snapshot so a standalone
+/// deserialize (no live parent to relink from) still reconstructs a usable
+/// ring. For a same-machine fork the child's ring is immediately re-shared
+/// with the parent's live handle by
+/// [`crate::ofd::OfdTable::link_shared_states_from`] — the snapshot is
+/// then discarded, exactly as the serialized file offset is. Linux backs
+/// a forked `struct file` with one shared `struct evdev_client`, so
+/// parent and child observe a single ring.
+fn write_input_state(
+    w: &mut Writer<'_>,
+    state: Option<&crate::ofd::InputFdState>,
+) -> Result<(), Errno> {
+    let Some(input) = state else {
+        return w.write_u8(INPUT_TAG_NONE);
+    };
+    let ring = input.ring.borrow();
+    w.write_u8(INPUT_TAG_SOME)?;
+    w.write_u8(input.device)?;
+    w.write_u8(ring.dropped as u8)?;
+    w.write_u32(ring.event_ring.len() as u32)?;
+    for &b in ring.event_ring.iter() {
+        w.write_u8(b)?;
+    }
+    Ok(())
 }
 
 /// Read a `DriFdState` from the wire and incref every referenced bo
@@ -786,6 +899,43 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
         pending_flips,
         event_ring: VecDeque::new(),
     })
+}
+
+fn read_input_state(
+    r: &mut Reader<'_>,
+) -> Result<Option<alloc::boxed::Box<crate::ofd::InputFdState>>, Errno> {
+    use alloc::collections::VecDeque;
+    let tag = r.read_u8()?;
+    match tag {
+        INPUT_TAG_NONE => Ok(None),
+        INPUT_TAG_SOME => {
+            let device = r.read_u8()?;
+            let dropped = r.read_u8()? != 0;
+            let ring_len = r.read_u32()? as usize;
+            // The ring is always whole 24-byte records and bounded at
+            // INPUT_RING_MAX_BYTES — reject anything else as a
+            // corrupted/forged fork stream.
+            if ring_len > crate::ofd::INPUT_RING_MAX_BYTES
+                || ring_len % core::mem::size_of::<
+                    wasm_posix_shared::input::WpkInputEvent,
+                >() != 0
+            {
+                return Err(Errno::EINVAL);
+            }
+            let mut event_ring = VecDeque::with_capacity(ring_len);
+            for _ in 0..ring_len {
+                event_ring.push_back(r.read_u8()?);
+            }
+            Ok(Some(alloc::boxed::Box::new(crate::ofd::InputFdState {
+                device,
+                ring: crate::ofd::SharedInputRing::from_ring(crate::ofd::InputRing {
+                    event_ring,
+                    dropped,
+                }),
+            })))
+        }
+        _ => Err(Errno::EINVAL),
+    }
 }
 
 fn read_dri_state(
@@ -928,6 +1078,11 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         // DRI sidecar — `preserve_master = false` because the master
         // lease must drop on fork (only one process may hold it).
         write_dri_state(&mut w, ofd.dri_state.as_deref(), false)?;
+        // evdev sidecar — child inherits the per-OFD ring.
+        write_input_state(&mut w, ofd.input_state.as_deref())?;
+        // ALSA sidecars — child inherits the PCM state machine snapshot
+        // and the controlC0 card binding. The SAB registry is global by
+        // `pcm_id` so no per-fork copy is needed.
     }
 
     // ── Environment ──
@@ -1143,6 +1298,17 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         }
     }
 
+    // ── Epoll instances ──
+    // An epoll fd is inherited like any other fd, so its registrations must
+    // be too: without them the child's epoll fd names an instance that no
+    // longer exists and every epoll_ctl/epoll_wait on it fails EBADF. Slot
+    // indices are preserved (the epoll OFD's host_handle encodes the slot).
+    // Registrations name their open file description by ofd_id, which the
+    // fd table above carries unchanged. (Linux shares one instance between
+    // parent and child; here each gets a copy of the registrations as they
+    // stood at fork.)
+    write_epoll_instances(&mut w, &proc.epolls)?;
+
     // ── Patch total_size ──
     let total = u32::try_from(w.pos).map_err(|_| Errno::EOVERFLOW)?;
     w.patch_u32(total_size_offset, total);
@@ -1263,6 +1429,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             ofd_entries.push(None);
         }
         let dri_state = read_dri_state(&mut r)?;
+        let input_state = read_input_state(&mut r)?;
         let mut ofd = OpenFileDesc {
             ofd_id,
             file_id,
@@ -1277,6 +1444,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state,
+            input_state,
         };
         ofd.reset_directory_iterator_for_reopen();
         ofd_entries[index] = Some(ofd);
@@ -1356,6 +1524,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         session_id,
         line_buffer: Vec::new(),
         cooked_buffer: Vec::new(),
+        eof_pending: false,
     };
 
     // ── Program break ──
@@ -1579,6 +1748,8 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         }
     }
 
+    let epolls = read_epoll_instances(&mut r)?;
+
     if r.remaining() != 0 {
         return Err(Errno::EINVAL);
     }
@@ -1627,7 +1798,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.fork_fd_actions = fork_fd_actions;
     child.next_ephemeral_port = 49152;
     child.clear_threads(); // POSIX: child has one task, the process leader.
-    child.epolls.clear();
+    child.epolls = epolls;
     child.posix_timers.clear();
     child.alt_stack_sp = 0;
     child.alt_stack_flags = 2; // SS_DISABLE
@@ -1758,6 +1929,11 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         // the same process identity and any inherited card0 OFD
         // legitimately retains its KMS lease across the image swap.
         write_dri_state(&mut w, ofd.dri_state.as_deref(), true)?;
+        // evdev sidecar — exec keeps the per-OFD ring (the OFD
+        // survives the image swap; CLOEXEC is handled by the fd table,
+        // not the OFD).
+        write_input_state(&mut w, ofd.input_state.as_deref())?;
+        // ALSA sidecars — same survival semantics as evdev across exec.
     }
 
     // ── Environment ──
@@ -1938,6 +2114,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ofd_entries.push(None);
         }
         let dri_state = read_dri_state(&mut r)?;
+        let input_state = read_input_state(&mut r)?;
         let mut ofd = OpenFileDesc {
             ofd_id,
             file_id,
@@ -1952,6 +2129,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state,
+            input_state,
         };
         ofd.reset_directory_iterator_for_reopen();
         ofd_entries[index] = Some(ofd);
@@ -2031,6 +2209,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         session_id,
         line_buffer: Vec::new(),
         cooked_buffer: Vec::new(),
+        eof_pending: false,
     };
 
     // ── Program break ──
@@ -2158,7 +2337,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_roundtrips_complete_credentials_in_wire_order() {
+    fn fork_format_roundtrips_complete_credentials_in_wire_order() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 1000,
@@ -2175,7 +2354,7 @@ mod tests {
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
         let child = deserialize_fork_state(&buf[..written], 42).unwrap();
 
-        assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), 15);
+        assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), FORK_VERSION);
         let credential_words: Vec<u32> = buf[16..52]
             .chunks_exact(4)
             .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
@@ -2196,7 +2375,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_roundtrips_zero_and_ngroups_max_groups() {
+    fn fork_format_roundtrips_zero_and_ngroups_max_groups() {
         for groups in [vec![], (0..32).map(|index| 20_000 + index).collect()] {
             let mut proc = Process::new(1);
             proc.install_credentials(Credentials {
@@ -2214,7 +2393,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_rejects_wrong_version_malformed_groups_and_trailing_bytes() {
+    fn fork_format_rejects_wrong_version_malformed_groups_and_trailing_bytes() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 1000,
@@ -2229,7 +2408,7 @@ mod tests {
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
 
-        for version in [14u32, 16] {
+        for version in [FORK_VERSION - 1, FORK_VERSION + 1] {
             let mut malformed = buf[..written].to_vec();
             malformed[4..8].copy_from_slice(&version.to_le_bytes());
             assert!(deserialize_fork_state(&malformed, 42).is_err());
@@ -2252,7 +2431,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_rejects_truncation_at_every_new_credential_field() {
+    fn fork_format_rejects_truncation_at_every_new_credential_field() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 1000,
@@ -2284,7 +2463,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_version_15_roundtrips_complete_credentials_and_secure_exec() {
+    fn exec_format_roundtrips_complete_credentials_and_secure_exec() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 101,
@@ -2306,7 +2485,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_version_15_rejects_wrong_version_truncation_and_trailing_bytes() {
+    fn exec_format_rejects_wrong_version_truncation_and_trailing_bytes() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 101,
@@ -2321,7 +2500,7 @@ mod tests {
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
 
-        for version in [14u32, 16] {
+        for version in [FORK_VERSION - 1, FORK_VERSION + 1] {
             let mut malformed = buf[..written].to_vec();
             malformed[4..8].copy_from_slice(&version.to_le_bytes());
             assert!(matches!(
@@ -2831,6 +3010,7 @@ mod tests {
                 included_sources: vec![[10, 88, 0, 3], [10, 88, 0, 4]],
             },
         ];
+        socket.peer_cred = Some(crate::socket::PeerCred { pid: 7, uid: 1000, gid: 100 });
         let socket_idx = install_socket_for_fork(&mut proc, socket);
 
         let mut buf = vec![0u8; 64 * 1024];
@@ -2839,6 +3019,12 @@ mod tests {
         let inherited = child.sockets.get(socket_idx).unwrap();
 
         assert_eq!(inherited.state, SocketState::Connected);
+        // SO_PEERCRED belongs to the connection: the child still reports the
+        // peer the parent connected to, not itself.
+        assert_eq!(
+            inherited.peer_cred,
+            Some(crate::socket::PeerCred { pid: 7, uid: 1000, gid: 100 }),
+        );
         assert_eq!(inherited.bind_addr6, bind_addr6);
         assert_eq!(inherited.peer_addr6, peer_addr6);
         assert_eq!(inherited.bind_port, 41000);
@@ -3496,4 +3682,5 @@ mod tests {
             "exec keeps the same process identity; KMS master should survive"
         );
     }
+
 }

@@ -1,0 +1,10 @@
+script_path = "packages/registry/lsof-docs/build-lsof-docs.sh"
+inputs = [
+  "packages/registry/lsof-docs/build-lsof-docs.sh",
+  "packages/registry/lsof-docs/lsof.8",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

@@ -10,9 +10,14 @@ import * as React from "react";
 import type {
   KernelHost, MachineStatus, DmesgLine, Snapshot, WebPreviewState, DemoPresentation,
   SurfaceAvailability, GalleryItem, GalleryTab, LazyDownloadEvent, LazyDownloadSummary,
+  MachineProgress,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { activeLazyDownloadSummaries } from "../../../../../web-libs/kandelo-session/src/lazy-download";
-import type { DemoGuideConfig, DemoIngestConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import type {
+  DemoDockActionConfig,
+  DemoGuideConfig,
+  DemoIngestConfig,
+} from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
 const LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS = 2400;
@@ -55,6 +60,24 @@ export function useDmesg(): DmesgLine[] {
     });
   }, [host]);
   return lines;
+}
+
+/**
+ * Boot-time VFS image progress for the boot screen.
+ *
+ * Seeds from the getter because the boot may already be under way by the time
+ * this component mounts — an eager image starts loading at module load.
+ */
+export function useMachineProgress(): MachineProgress | null {
+  const host = useKernelHost();
+  const [progress, setProgress] = React.useState<MachineProgress | null>(() =>
+    host.getMachineProgress()
+  );
+  React.useEffect(() => {
+    setProgress(host.getMachineProgress());
+    return host.subscribeMachineProgress(setProgress);
+  }, [host]);
+  return progress;
 }
 
 export function useLazyDownloads(): LazyDownloadEvent[] {
@@ -182,6 +205,16 @@ export function useDemoIngest(): DemoIngestConfig | null {
   React.useEffect(() => {
     setState(host.getDemoIngest());
     return host.subscribeDemoIngest(setState);
+  }, [host]);
+  return state;
+}
+
+export function useDemoDockActions(): DemoDockActionConfig[] {
+  const host = useKernelHost();
+  const [state, setState] = React.useState<DemoDockActionConfig[]>(() => host.getDemoDockActions());
+  React.useEffect(() => {
+    setState(host.getDemoDockActions());
+    return host.subscribeDemoDockActions(setState);
   }, [host]);
   return state;
 }

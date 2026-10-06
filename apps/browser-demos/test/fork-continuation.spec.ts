@@ -1,9 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
+import { buildProgramsFixture, requireBuiltFixtures } from "./support/program-fixtures";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 import {
   RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX,
 } from "../../../host/test/fixtures/gc-reference-state-fresh-worker-bytes";
@@ -123,6 +123,11 @@ async function runBrowserFixture(
   );
 }
 
+const p10Path = buildProgramsFixture("programs/wasm32/p_10_deep_linked_continuation.wasm");
+const p11Path = buildProgramsFixture("programs/wasm32/p_11_fork_continuation_enomem.wasm");
+
+test.beforeAll(() => requireBuiltFixtures([p10Path, p11Path]));
+
 test("Chromium grows and replays a continuation beyond ABI 41's fixed reserve", async ({
   page,
   baseURL,
@@ -135,7 +140,7 @@ test("Chromium grows and replays a continuation beyond ABI 41's fixed reserve", 
   const result = await runBrowserFixture(
     page,
     baseURL!,
-    resolveBinary("programs/p_10_deep_linked_continuation.wasm"),
+    p10Path,
     "p_10_deep_linked_continuation",
   );
 
@@ -160,7 +165,7 @@ test("Chromium preserves the parent across root and later continuation ENOMEM", 
   const result = await runBrowserFixture(
     page,
     baseURL!,
-    resolveBinary("programs/p_11_fork_continuation_enomem.wasm"),
+    p11Path,
     "p_11_fork_continuation_enomem",
     // Keep the exhaustion loop bounded while leaving enough initial pages for
     // the program and BrowserKernel-owned channel/control memory.

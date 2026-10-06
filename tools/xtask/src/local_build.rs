@@ -9,9 +9,13 @@ use crate::build_deps::{
     ProgramPackageIndex, Registry, ResolvedDependencyGraph, ResolvedDependencyNode,
     SourceOnlyCacheRoots, canonical_package_target_arch,
     materialize_planned_source_only_cache_roots, plan_canonical_source_only_cache_roots,
-    resolve_local_build_package_node_with_cache_policy,
-    resolved_dependency_graph_from_manifests, source_only_skip_receipt_if_clean,
+    read_source_only_cache_receipt, resolve_local_build_package_node_with_cache_policy,
+    resolved_dependency_graph_from_manifests, source_only_cache_receipt_path,
+    source_only_skip_receipt_if_clean, source_only_skip_receipt_if_clean_with_use,
     source_only_program_package_index_for_nodes, with_source_only_program_projection_lock,
+};
+use crate::local_build_timing::{
+    DurationRecorder, EventLog, NodeDurationRecordV1, RunRecordV1, TimingHistory,
 };
 use crate::local_build_executor::{
     NodeCompletionV1, SchedulerEventV1, ValidatedChildResultV1, execute_graph_with_events,
@@ -24,9 +28,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 const LOCAL_SUPPORTED_SCHEMA: u32 = 1;
 const LOCAL_SUPPORTED_POLICY: &str = "source-only-v1";
@@ -242,6 +247,7 @@ pub(crate) enum LifecycleTokenV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum LocalBuildCommandV1 {
     Plan { set: PathBuf },
+    PlanStatus(LocalBuildPlanStatusArgsV1),
     Run(LocalBuildRunArgsV1),
     RunNode(LocalBuildRunNodeArgsV1),
 }
@@ -255,6 +261,22 @@ struct LocalBuildRunArgsV1 {
     jobs: usize,
     rebuild: bool,
     verify_cache: bool,
+}
+
+/// `plan --status`: the same selection inputs as `run`, read without writing.
+/// They mirror `run`'s so the dry run answers for exactly the build the agent
+/// is about to start; a plan over a different cache root, output root, or
+/// product set would report a different cached/will-run split. There is no
+/// `--rebuild` or `--verify-cache`: both turn off `run`'s up-front cache
+/// check, so there is nothing for the dry run to predict.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LocalBuildPlanStatusArgsV1 {
+    set: PathBuf,
+    source_cache_root: PathBuf,
+    output_root: PathBuf,
+    products: Vec<String>,
+    jobs: usize,
+    json: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -351,9 +373,1162 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     )?;
     match command {
         LocalBuildCommandV1::Plan { set } => run_plan(set),
+        LocalBuildCommandV1::PlanStatus(args) => run_plan_status(args),
         LocalBuildCommandV1::Run(args) => run_aggregate(args),
         LocalBuildCommandV1::RunNode(args) => run_node(args),
     }
+}
+
+pub(crate) struct BootstrapStep {
+    pub name: &'static str,
+}
+
+/// The ordered host-plus-engine build closure for `xtask bootstrap` /
+/// `./run.sh setup`. Pure and testable: `fork-instrument-tool` must precede
+/// `engine` (the `msmtpd` package node consumes the built
+/// `wasm-fork-instrument` CLI); `sysroot`/`sysroot64`/`sdk` must precede
+/// `engine` (every package build script in the local-supported set reads the
+/// ambient `sysroot`/`sysroot64` musl toolchain and the `wasm{32,64}posix-cc`
+/// wrappers directly — this is not a graph edge the engine's own dependency
+/// resolution models, so nothing rebuilds it as a side effect of building a
+/// package node; `sdk` itself only checks that `sysroot`'s toolchain wrappers
+/// resolve, so it must run after `sysroot`); `rootfs` must follow `engine`
+/// (`build-rootfs.sh` assembles the canonical `host/wasm/rootfs.vfs.zst` image
+/// from packages the engine step just built) and precede `host-dist` (the
+/// TypeScript host build should see a fresh rootfs image, even though it
+/// does not currently read it at build time); `host-dist` must follow
+/// `engine` (the TypeScript host build consumes the program package index
+/// the engine regenerates).
+pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
+    vec![
+        BootstrapStep {
+            name: "fork-instrument-tool",
+        },
+        BootstrapStep { name: "sysroot" },
+        BootstrapStep {
+            name: "sysroot64",
+        },
+        BootstrapStep { name: "sdk" },
+        BootstrapStep { name: "engine" },
+        BootstrapStep { name: "rootfs" },
+        BootstrapStep {
+            name: "host-dist",
+        },
+    ]
+}
+
+/// Default `--source-cache-root` for `bootstrap`, matching
+/// `scripts/run-local-build.sh` so the engine step here and the
+/// `./run.sh local-build` front door share one persistent cache location.
+///
+/// The SourceOnly build cache is shared across every worktree on the
+/// machine by default (it is content-addressed, so identical inputs are
+/// built once and reused everywhere — this is what keeps a fresh worktree
+/// fast). Setting `KANDELO_SOURCE_CACHE_ROOT` to an absolute path gives a
+/// worktree its own isolated cache instead; leaving it unset shares the
+/// machine-wide default. See `docs/agent-guidance/packages-and-builds.md`.
+pub(crate) fn default_source_cache_root() -> Result<PathBuf, String> {
+    resolve_source_cache_root(
+        std::env::var_os("KANDELO_SOURCE_CACHE_ROOT"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// Pure resolver behind [`default_source_cache_root`]: an explicit
+/// `KANDELO_SOURCE_CACHE_ROOT` override (must be absolute) wins; otherwise
+/// fall back to `$HOME/.cache/kandelo/source-only`. Split out so the
+/// override precedence is unit-testable without mutating process env.
+fn resolve_source_cache_root(
+    override_root: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    if let Some(override_root) = override_root {
+        let override_root = PathBuf::from(override_root);
+        if !override_root.is_absolute() {
+            return Err(format!(
+                "KANDELO_SOURCE_CACHE_ROOT must be an absolute path, got {}",
+                override_root.display()
+            ));
+        }
+        return Ok(override_root);
+    }
+    let home =
+        home.ok_or_else(|| "bootstrap: HOME is not set; cannot locate source cache root".to_string())?;
+    let home = PathBuf::from(home);
+    if !home.is_absolute() {
+        return Err(format!(
+            "bootstrap: HOME must be an absolute path, got {}",
+            home.display()
+        ));
+    }
+    Ok(home.join(".cache/kandelo/source-only"))
+}
+
+/// Run `bash <repo>/<rel> <args...>` with inherited stdio, so bootstrap steps
+/// stream their normal output exactly as they would run standalone. Returns
+/// `Err` on a non-zero exit or a failure to launch the script.
+fn run_repo_script(repo: &Path, rel: &str, args: &[&str]) -> Result<(), String> {
+    run_repo_script_with_env(repo, rel, args, &[])
+}
+
+/// Same as `run_repo_script`, plus extra environment variables set on the
+/// child process. Used by the `rootfs`/`host-dist` bootstrap steps to pass
+/// `KANDELO_BOOTSTRAP_FORCE_REBUILD` through to their scripts' own
+/// input-hash skip check (see `scripts/build-step-input-hash.sh`), without
+/// changing the call shape every other `run_repo_script` caller uses.
+fn run_repo_script_with_env(
+    repo: &Path,
+    rel: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> Result<(), String> {
+    let script = repo.join(rel);
+    let mut command = Command::new("bash");
+    command.arg(&script).args(args).current_dir(repo);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let status = command
+        .status()
+        .map_err(|error| format!("spawn {}: {error}", script.display()))?;
+    if !status.success() {
+        return Err(format!(
+            "{} exited with {}",
+            script.display(),
+            match status.code() {
+                Some(code) => code.to_string(),
+                None => "no exit code (terminated by signal)".to_string(),
+            }
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Selection {
+    /// The whole-tree build closure: `bootstrap_step_plan()` in order.
+    All,
+    /// A single registry package or declared VFS product, built through the
+    /// local-build engine's `--products`-style selection (which already
+    /// resolves the transitive dependency closure and content-addressed
+    /// cache policy for whatever it is given).
+    Package(String),
+    /// A host-side step that is not a local-build engine graph node (the
+    /// fork-instrument CLI, the TypeScript host build, the rootfs image, and
+    /// the ambient musl sysroot/SDK). Named after the step in
+    /// `bootstrap_step_plan`/`run_bootstrap_step` it maps to.
+    HostStep(&'static str),
+}
+
+/// Map a single `xtask bootstrap <target>` positional to what it selects.
+/// Pure and total: every target string resolves to a `Selection`, deferring
+/// "does this actually exist" to the engine/host-step runner, which already
+/// has the real registry and product catalog available to validate against.
+///
+/// `host`, `fork-instrument`, `rootfs`, `sysroot`, `sysroot64`, and `sdk` are
+/// the non-graph host steps `./run.sh`'s `need_host`/`need_fork_instrument`/
+/// `need_rootfs`/`need_sysroot`/`need_sysroot64`/`need_sdk` used to build by
+/// hand; everything else (`kernel`, `zlib`, `php`, `mariadb-vfs`, ...) is a
+/// package or product name the engine's own graph already understands.
+pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
+    match target {
+        "host" => Selection::HostStep("host-dist"),
+        "fork-instrument" => Selection::HostStep("fork-instrument-tool"),
+        "rootfs" => Selection::HostStep("rootfs"),
+        "sysroot" => Selection::HostStep("sysroot"),
+        "sysroot64" => Selection::HostStep("sysroot64"),
+        "sdk" => Selection::HostStep("sdk"),
+        other => Selection::Package(other.to_string()),
+    }
+}
+
+/// Whether a bare `xtask bootstrap <target>` package selection needs the
+/// wasm64 musl sysroot provisioned before the engine builds it, mirroring
+/// the historical "64" suffix convention `select_graph_dependencies` already
+/// uses to map a target like `mariadb64` onto the wasm64 node of the
+/// `mariadb` package: a target name ending in "64" is a wasm64 build: every
+/// other target defaults to wasm32 and needs only the (already-required,
+/// via the `sdk` step) wasm32 sysroot. `sysroot64` itself is handled by its
+/// own `Selection::HostStep` arm, not this package-prerequisite path.
+pub(crate) fn package_target_needs_sysroot64(target: &str) -> bool {
+    target.ends_with("64")
+}
+
+/// Parse the leading positional target argument of `xtask bootstrap`. An
+/// omitted target and the explicit literal `all` both select the whole-tree
+/// build closure; any other positional is resolved by
+/// `bootstrap_target_to_selection`. Pure and testable, split out of
+/// `run_bootstrap` so the argument-shape decision can be verified without
+/// running the bootstrap steps.
+pub(crate) fn bootstrap_selection_from_args(
+    args: &[String],
+) -> Result<(Selection, Vec<String>), String> {
+    let (target, rest) = match args.split_first() {
+        Some((first, rest)) if !first.starts_with("--") => (Some(first.clone()), rest.to_vec()),
+        _ => (None, args.to_vec()),
+    };
+    match target.as_deref() {
+        None | Some("all") => Ok((Selection::All, rest)),
+        Some(target) => Ok((bootstrap_target_to_selection(target), rest)),
+    }
+}
+
+/// The set of `[[products]]` ids `local-supported.toml` declares active for
+/// the local-build engine. Used to check that a `./run.sh build <target>`
+/// name naming a VFS composite (`shell-vfs`, `wp-vfs`, ...) actually has a
+/// declared product `xtask bootstrap <id>` can select — see
+/// `bootstrap_target_to_selection`'s `Selection::Package` arm, which accepts
+/// both declared product ids and bare package names through the same
+/// `select_graph_dependencies` filter.
+///
+/// Only used by `run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries`
+/// below; `#[cfg(test)]` keeps the non-test binary free of a dead-code
+/// warning (matching how `parse_supported_set`, its sole other caller's
+/// dependency, is also test-only today).
+#[cfg(test)]
+fn declared_product_ids(set: &LocalSupportedSetV1) -> BTreeSet<String> {
+    set.products
+        .iter()
+        .map(|product| product.id.clone())
+        .collect()
+}
+
+/// Absolute path to the worktree-local SDK's compiler wrapper. Its presence
+/// (as a working symlink to a real file) is the same signal
+/// `has_sdk`/`command -v wasm32posix-cc` checked in `run.sh`, checked
+/// directly instead of through PATH so this does not depend on the caller
+/// having sourced `sdk/activate.sh`.
+fn sdk_cc_path(repo: &Path) -> PathBuf {
+    repo.join("sdk/bin/wasm32posix-cc")
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Ensure the musl sysroot for `arch` exists, mirroring the old
+/// `need_sysroot`/`need_sysroot64`: build it from scratch when the sysroot's
+/// `libc.a` is missing, otherwise just re-sync overlay headers (cheap: a few
+/// `cp`s) so newly added `libc/musl-overlay/include/` files reach an
+/// existing sysroot without forcing a full musl rebuild.
+fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<(), String> {
+    let sysroot_path = repo.join(sysroot_dir);
+    let libc_a = sysroot_path.join("lib/libc.a");
+    if libc_a.is_file() {
+        let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
+        run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])?;
+        if arch == "wasm32posix" {
+            // The resync above copies headers only. `sysroot/lib/{libdrm,
+            // libgbm,libEGL,libGLESv2}.a` are sysroot *artifacts*, installed
+            // by these two scripts and only ever from inside build-musl.sh —
+            // which this branch deliberately skips. A worktree therefore kept
+            // whatever graphics archives it was first provisioned with, no
+            // matter how far libc/glue or the libdrm package moved on; every
+            // entry point a stale archive lacks then fails the link of each
+            // program that uses it (before ABI 47 it became an `env.*` import
+            // that trapped at call time). Both scripts skip on a matching
+            // input digest, so this is a no-op once the sysroot is current.
+            run_repo_script(repo, "scripts/build-dri-stubs.sh", &[])?;
+            run_repo_script(repo, "scripts/build-gles-stubs.sh", &[])?;
+        }
+    } else if arch == "wasm32posix" {
+        run_repo_script(repo, "scripts/build-musl.sh", &[])?;
+    } else {
+        run_repo_script(repo, "scripts/build-musl.sh", &["--arch", arch])?;
+    }
+    verify_sysroot_abi_headers(repo, &sysroot_path, arch)
+}
+
+/// Fail loud if a sysroot is missing — or holds stale copies of — the generated
+/// Kandelo ABI headers (`include/bits/kandelo_*.h`).
+///
+/// `dump-abi` regenerates these headers into `libc/musl-overlay/include/bits/`
+/// as the authoritative ABI surface, and `build-musl.sh` /
+/// `install-overlay-headers.sh` copy them into the sysroot. If a package build
+/// ever runs against a sysroot that lacks them (e.g. a half-installed or stale
+/// sysroot after an ABI change — `install-overlay-headers.sh` deletes the
+/// `kandelo_*.h` set before re-copying it), the SDK cc cannot even compile the
+/// autoconf conftests: `<limits.h>` pulls in `bits/kandelo_limits.h` and the
+/// channel-syscall glue pulls in `bits/kandelo_channel_scalars.h`. Every
+/// configure link/compile probe then fails for that reason and is recorded as
+/// "function absent", so e.g. gnulib's freading/fseterr modules fall back to a
+/// FILE-struct path that has no musl branch and emit a baffling
+/// `#error "Please port gnulib ... to your platform!"` far from the real cause.
+///
+/// Surface the incomplete sysroot as the truthful failure it is, before any
+/// package consumes it. This mirrors the sysroot to its overlay: the two must
+/// carry byte-identical `kandelo_*.h`, so this catches both a missing header
+/// and a stale one left behind by a skipped re-sync.
+fn verify_sysroot_abi_headers(repo: &Path, sysroot_path: &Path, arch: &str) -> Result<(), String> {
+    let overlay_bits = repo.join("libc/musl-overlay/include/bits");
+    let sysroot_bits = sysroot_path.join("include/bits");
+    let entries = match fs::read_dir(&overlay_bits) {
+        Ok(entries) => entries,
+        // No authoritative overlay bits dir means there is nothing to mirror;
+        // a missing overlay is a source-tree problem, not a sysroot one.
+        Err(_) => return Ok(()),
+    };
+    let mut missing = Vec::new();
+    let mut stale = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "verify sysroot ABI headers: reading {}: {error}",
+                overlay_bits.display()
+            )
+        })?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !(name_str.starts_with("kandelo_") && name_str.ends_with(".h")) {
+            continue;
+        }
+        let overlay_file = overlay_bits.join(&name);
+        let overlay_bytes = fs::read(&overlay_file).map_err(|error| {
+            format!(
+                "verify sysroot ABI headers: reading {}: {error}",
+                overlay_file.display()
+            )
+        })?;
+        match fs::read(sysroot_bits.join(&name)) {
+            Err(_) => missing.push(name_str.into_owned()),
+            Ok(bytes) if bytes != overlay_bytes => stale.push(name_str.into_owned()),
+            Ok(_) => {}
+        }
+    }
+    if missing.is_empty() && stale.is_empty() {
+        return Ok(());
+    }
+    missing.sort();
+    stale.sort();
+    let mut detail = String::new();
+    if !missing.is_empty() {
+        detail.push_str(&format!("\n  missing: {}", missing.join(", ")));
+    }
+    if !stale.is_empty() {
+        detail.push_str(&format!("\n  stale (differ from overlay): {}", stale.join(", ")));
+    }
+    let arch_flag = if arch == "wasm32posix" {
+        String::new()
+    } else {
+        format!(" --arch {arch}")
+    };
+    Err(format!(
+        "sysroot {sysroot} is missing or has stale generated Kandelo ABI headers under include/bits/.{detail}\n\
+         The SDK cc cannot compile autoconf conftests against this sysroot (e.g. <limits.h> includes bits/kandelo_limits.h, and the channel-syscall glue includes bits/kandelo_channel_scalars.h), so package configure probes silently misreport libc functions as absent and builds fail with confusing downstream errors (e.g. gnulib \"Please port ... to your platform!\").\n\
+         Rebuild the sysroot with `scripts/build-musl.sh{arch_flag}` under scripts/dev-shell.sh; a stale sysroot must be rebuilt through the normal path, not consumed as-is.",
+        sysroot = sysroot_path.display(),
+    ))
+}
+
+/// Run one named bootstrap step. Shared by the whole-tree `Selection::All`
+/// loop and single-target selection, so a target built alone (e.g.
+/// `bootstrap kernel`) and the same step run as part of `bootstrap all` do
+/// exactly the same thing.
+fn run_bootstrap_step(
+    repo: &Path,
+    name: &str,
+    jobs: usize,
+    rebuild: bool,
+    verify_cache: bool,
+    products: Vec<String>,
+) -> Result<(), String> {
+    match name {
+        "fork-instrument-tool" => {
+            run_repo_script(repo, "scripts/build-fork-instrument-tool.sh", &[])
+        }
+        "engine" => run_aggregate(LocalBuildRunArgsV1 {
+            set: repo.join("packages/sets/local-supported.toml"),
+            source_cache_root: default_source_cache_root()?,
+            output_root: repo.join("local-binaries/source-only-v1"),
+            products,
+            jobs,
+            rebuild,
+            verify_cache,
+        }),
+        // `--rebuild` (`bootstrap --rebuild` / `./run.sh rebuild`) must force
+        // these two scripts' own input-hash skip check, so a forced rebuild
+        // is never masked by a matching stamp from a previous run.
+        "rootfs" => run_repo_script_with_env(
+            repo,
+            "scripts/build-rootfs.sh",
+            &[],
+            &[(
+                "KANDELO_BOOTSTRAP_FORCE_REBUILD",
+                if rebuild { "1" } else { "0" },
+            )],
+        ),
+        "host-dist" => run_repo_script_with_env(
+            repo,
+            "scripts/build-host.sh",
+            &[],
+            &[(
+                "KANDELO_BOOTSTRAP_FORCE_REBUILD",
+                if rebuild { "1" } else { "0" },
+            )],
+        ),
+        "sysroot" => bootstrap_sysroot_step(repo, "sysroot", "wasm32posix"),
+        "sysroot64" => bootstrap_sysroot_step(repo, "sysroot64", "wasm64posix"),
+        "sdk" => {
+            bootstrap_sysroot_step(repo, "sysroot", "wasm32posix")?;
+            if is_executable_file(&sdk_cc_path(repo)) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "bootstrap sdk: SDK tools not found. Expected {} to be a working symlink.",
+                    sdk_cc_path(repo).display()
+                ))
+            }
+        }
+        other => Err(format!("bootstrap: unknown step {other:?}")),
+    }
+}
+
+/// `xtask bootstrap [<target>] [--jobs <n>] [--rebuild] [--verify-cache]` —
+/// the single engine-plus-host build closure behind `./run.sh setup` and
+/// `./run.sh build <target>`. An omitted target (or the explicit literal
+/// `all`) builds the whole tree via `bootstrap_step_plan()`; any other
+/// target selects one package/product (routed through the engine's own
+/// dependency-closure and cache-key selection) or one non-graph host step
+/// (see `bootstrap_target_to_selection`).
+pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
+    let (selection, rest) = bootstrap_selection_from_args(&args)?;
+    let repo = crate::repo_root();
+    let mut flags = parse_named_flags(&rest, &["--jobs"], &[], &["--rebuild", "--verify-cache"])?;
+    let jobs = select_job_count(
+        flags.values.remove("--jobs").as_deref(),
+        std::env::var("WASM_POSIX_LOCAL_BUILD_JOBS").ok().as_deref(),
+        std::thread::available_parallelism().ok(),
+    )?;
+    let rebuild = flags.switches.contains("--rebuild");
+    let verify_cache = flags.switches.contains("--verify-cache");
+    match selection {
+        Selection::All => {
+            for step in bootstrap_step_plan() {
+                let products = if step.name == "engine" {
+                    vec!["all".to_string()]
+                } else {
+                    Vec::new()
+                };
+                run_bootstrap_step(&repo, step.name, jobs, rebuild, verify_cache, products)?;
+            }
+            Ok(())
+        }
+        Selection::HostStep(name) => {
+            // The old `need_host` built the kernel before the TypeScript host
+            // (`host/dist` embeds/tests against it); preserve that edge for a
+            // standalone `bootstrap host` the same way `bootstrap_step_plan`
+            // preserves it for the whole-tree path by ordering "engine"
+            // before "host-dist".
+            if name == "host-dist" {
+                run_bootstrap_step(
+                    &repo,
+                    "engine",
+                    jobs,
+                    rebuild,
+                    verify_cache,
+                    vec!["kernel".to_string()],
+                )?;
+            }
+            run_bootstrap_step(&repo, name, jobs, rebuild, verify_cache, Vec::new())
+        }
+        Selection::Package(name) => {
+            // Preserve the exact universal prerequisite set every `run.sh`
+            // `build_<pkg>` relied on (`need_kernel` + `need_sdk`, which
+            // itself ensures `need_sysroot`), except for the kernel itself,
+            // which is a pure `cargo build` with no kernel/SDK/musl
+            // dependency of its own. `sdk`'s own step ensures `sysroot`
+            // first (see its `run_bootstrap_step` arm), so this only needs
+            // to ensure `kernel` and `sdk` directly — the `sysroot` resync
+            // underneath `sdk` is cheap when it already exists.
+            if name != "kernel" {
+                run_bootstrap_step(
+                    &repo,
+                    "engine",
+                    jobs,
+                    rebuild,
+                    verify_cache,
+                    vec!["kernel".to_string()],
+                )?;
+                run_bootstrap_step(&repo, "sdk", jobs, rebuild, verify_cache, Vec::new())?;
+                // `need_sysroot64` on memory64 paths: the wasm64 build of a
+                // package (`./run.sh build mariadb64`, `sysroot64` itself
+                // handled by its own `Selection::HostStep` arm) additionally
+                // needs the wasm64 musl sysroot the wasm32 `sdk` step above
+                // does not provision. Only pay for this when the target
+                // actually names a wasm64 build — not on every package.
+                if package_target_needs_sysroot64(&name) {
+                    run_bootstrap_step(&repo, "sysroot64", jobs, rebuild, verify_cache, Vec::new())?;
+                }
+            }
+            // msmtpd is the one package that consumes the built
+            // wasm-fork-instrument CLI (see `bootstrap_step_plan`'s doc
+            // comment); every other package does not need it.
+            if name == "msmtpd" {
+                run_bootstrap_step(
+                    &repo,
+                    "fork-instrument-tool",
+                    jobs,
+                    rebuild,
+                    verify_cache,
+                    Vec::new(),
+                )?;
+            }
+            run_bootstrap_step(&repo, "engine", jobs, rebuild, verify_cache, vec![name])
+        }
+    }
+}
+
+/// `xtask verify-fresh` — a pre-test freshness check, not a divergence guard.
+/// Stage 2 converged Node and browser binary resolution onto the one
+/// hermetic tier `local-binaries/source-only-v1/` (see `binaryCandidateTiers`
+/// in `host/src/binary-resolver.ts`), so there is exactly one kernel copy to
+/// go stale, not two copies that could diverge from each other. This closes
+/// the documented hazard that Vitest/conformance can silently exercise a
+/// kernel built before the last source change
+/// (`docs/plans/2026-08-25-rust-first-runtime-design.md`): `./run.sh test`
+/// calls this before its suites run so a stale kernel fails loud instead of
+/// passing tests against yesterday's ABI.
+pub(crate) fn run_verify_fresh(args: Vec<String>) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "verify-fresh: unexpected argument(s): {}",
+            args.join(" ")
+        ));
+    }
+    verify_fresh_report(&crate::repo_root())
+}
+
+/// Compare the ABI version the local-build engine's one kernel artifact
+/// declares against the ABI version the source tree currently builds. `Ok`
+/// covers both "current" and "no local kernel build yet" (nothing can be
+/// stale before `./run.sh setup`/`bootstrap` has produced this tier; the
+/// resolver's own "binary not found" error already reports that plainly).
+///
+/// Scope: this checks only `kernel.wasm`, the one artifact in
+/// `local-binaries/source-only-v1/` that carries an `__abi_version` export
+/// (`crates/kernel/src/wasm_api.rs`'s `__abi_version() -> u32`). That is the
+/// literal filename the local-build engine writes and the resolver's
+/// `source-only-v1` tier requests (`candidatesFor` in `binary-resolver.ts`
+/// resolves the raw `kernel.wasm` relPath, unadjusted) — `kandelo-kernel.wasm`
+/// was the old `build.sh`-era name in the ambient `local-binaries/` tier,
+/// which Stage 1 stopped producing. The other artifacts the tier's
+/// default-policy priority now covers — everything under `programs/` — are
+/// content-addressed generations the local-build engine keys by cache key
+/// derived from their own inputs (ABI included, where an artifact's build
+/// depends on it). A stale input there is a cache-key mismatch that already
+/// forces a rebuild through the normal engine path, not a silent-staleness
+/// hazard this freshness check needs to duplicate.
+pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
+    let kernel_path = repo
+        .join("local-binaries")
+        .join("source-only-v1")
+        .join("kernel.wasm");
+    let bytes = match fs::read(&kernel_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!("read {}: {error}", kernel_path.display()));
+        }
+    };
+    let expected = wasm_posix_shared::ABI_VERSION;
+    let declared = wasm_declared_abi_version(&bytes).map_err(|detail| {
+        format!("{}: {detail}", kernel_path.display())
+    })?
+    .ok_or_else(|| {
+        format!(
+            "{}: kernel.wasm has no __abi_version export",
+            kernel_path.display()
+        )
+    })?;
+    if declared != expected {
+        return Err(format!(
+            "{} is stale: kernel.wasm declares ABI {declared}, but the \
+             source tree now builds ABI {expected}. Rebuild with `./run.sh setup` \
+             (or `cargo xtask bootstrap`).",
+            kernel_path.display()
+        ));
+    }
+    // Same-ABI staleness backstop (B1). The ABI-version check above only
+    // catches cross-ABI staleness; an internal kernel change that keeps
+    // `ABI_VERSION` still moves the SourceOnlyV1 cache key the build engine
+    // stamps onto `kernel.wasm`. So the staged kernel must carry the exact key
+    // its current source resolves to -- a stale mirror's stamp no longer
+    // matches (or is absent) and fails loud here instead of letting a test
+    // suite run against yesterday's kernel.
+    //
+    // Read the stamp before recomputing the expected key: an unstamped
+    // artifact is unverifiable regardless of the source tree, so report that
+    // directly without the (comparatively expensive) SourceOnlyV1 resolve.
+    let stamp = crate::build_stamp::read_build_key(&bytes)
+        .map_err(|error| format!("{}: {error}", kernel_path.display()))?;
+    let Some(stamp) = stamp else {
+        return Err(format!(
+            "{} carries no build key stamp; rebuild with `./run.sh setup` \
+             so freshness can be verified.",
+            kernel_path.display()
+        ));
+    };
+    let expected_key = expected_source_only_cache_key(repo, "kernel")?;
+    if stamp != expected_key {
+        return Err(format!(
+            "{} is stale: it was built for key {}, but the current source \
+             tree resolves to key {}. Rebuild with `./run.sh setup` (or \
+             `cargo xtask bootstrap`).",
+            kernel_path.display(),
+            crate::util::hex(&stamp),
+            crate::util::hex(&expected_key),
+        ));
+    }
+    // B3: the ABI-version check and the build-key backstop above both prove
+    // the staged kernel.wasm matches the current source tree. Neither one
+    // proves the committed abi/snapshot.json (a separate tracked artifact,
+    // consumed by CI's structural-compat gate) still matches those same
+    // sources -- so run that check too, gated to keep the local no-op path
+    // fast.
+    snapshot_drift_check(repo, false)?;
+    Ok(())
+}
+
+/// Fail loud if the committed `abi/snapshot.json` has drifted from its
+/// sources. Invokes `check-abi-version.sh check` (regenerate-in-memory-and-
+/// compare) -- it never runs `update`, so the tracked file is never
+/// overwritten by this call. `force` bypasses the mtime gate below; real
+/// callers (`verify_fresh_report`) pass `false` so an unrelated `verify-
+/// fresh` run does not pay for a kernel rebuild + dump-abi pass.
+///
+/// CI runs `check-abi-version.sh check` unconditionally through its own
+/// workflow regardless of this gate: a fresh checkout has meaningless
+/// relative mtimes, so CI cannot rely on the same shortcut. This gate only
+/// spares the LOCAL no-op path when nothing ABI-relevant changed.
+pub(crate) fn snapshot_drift_check(repo: &Path, force: bool) -> Result<(), String> {
+    if !force && !abi_sources_changed_since_snapshot(repo)? {
+        return Ok(());
+    }
+    run_check_abi_version_check(repo, "scripts/check-abi-version.sh")
+}
+
+/// Run `bash <repo>/<script_rel> check` and map a non-zero exit to a loud,
+/// actionable error. Split out from `snapshot_drift_check` so tests can
+/// substitute a stub script to exercise the exit-code-to-error mapping
+/// without ever invoking the real `check-abi-version.sh`, which builds the
+/// kernel and requires a real git checkout.
+fn run_check_abi_version_check(repo: &Path, script_rel: &str) -> Result<(), String> {
+    let script = repo.join(script_rel);
+    let status = Command::new("bash")
+        .arg(&script)
+        .arg("check")
+        .current_dir(repo)
+        .status()
+        .map_err(|error| format!("run {}: {error}", script.display()))?;
+    if !status.success() {
+        return Err(
+            "the ABI-snapshot freshness check did not pass (either abi/snapshot.json \
+             drifted from its sources, or the check could not run -- see the check \
+             output above). If it drifted, run \
+             `bash scripts/check-abi-version.sh update` and commit the result."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Cheap gate for `snapshot_drift_check`: has any ABI-defining source
+/// changed more recently than the committed snapshot? Compares
+/// `abi/snapshot.json`'s mtime against the newest mtime found under
+/// `crates/shared` and `crates/kernel`. This is a gate, not the safety
+/// check itself -- a false "changed" only costs one extra
+/// `check-abi-version.sh` run -- so ambiguity resolves to `true`: a
+/// missing snapshot, or an error walking a source directory that does
+/// exist, both return `true` (run the check) rather than silently
+/// skipping it.
+fn abi_sources_changed_since_snapshot(repo: &Path) -> Result<bool, String> {
+    let snapshot = repo.join("abi/snapshot.json");
+    let snapshot_mtime = match fs::metadata(&snapshot).and_then(|meta| meta.modified()) {
+        Ok(mtime) => mtime,
+        Err(_) => return Ok(true),
+    };
+    for dir in ["crates/shared", "crates/kernel"] {
+        match newest_mtime_under(&repo.join(dir)) {
+            Ok(mtime) if mtime > snapshot_mtime => return Ok(true),
+            Ok(_) => {}
+            // A read error inside a directory that DOES exist (permission
+            // denied, a symlink that can't be stat'd, etc) is ambiguity
+            // unrelated to ABI drift, not proof of "nothing changed." Open
+            // the gate and let the authoritative `check-abi-version.sh`
+            // run rather than propagating the error and failing the whole
+            // pre-test gate on something that has nothing to do with the
+            // ABI snapshot.
+            Err(_) => return Ok(true),
+        }
+    }
+    Ok(false)
+}
+
+/// Newest file mtime found anywhere under `dir`, walked recursively. A
+/// `dir` that does not exist at all contributes no files, so it returns
+/// `SystemTime::UNIX_EPOCH` rather than an error: the real repo always has
+/// `crates/shared` and `crates/kernel`, so this only matters for synthetic
+/// test fixtures that do not materialize the whole tree. An error reading
+/// an entry inside a directory that DOES exist is real ambiguity and is
+/// propagated, which `abi_sources_changed_since_snapshot` maps to the
+/// conservative "run the check" outcome.
+fn newest_mtime_under(dir: &Path) -> Result<SystemTime, String> {
+    if !dir.exists() {
+        return Ok(SystemTime::UNIX_EPOCH);
+    }
+    let mut newest = SystemTime::UNIX_EPOCH;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = fs::read_dir(&current)
+            .map_err(|error| format!("read_dir {}: {error}", current.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("read_dir entry under {}: {error}", current.display())
+            })?;
+            let file_type = entry.file_type().map_err(|error| {
+                format!("file_type {}: {error}", entry.path().display())
+            })?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map_err(|error| format!("mtime {}: {error}", entry.path().display()))?;
+            if modified > newest {
+                newest = modified;
+            }
+        }
+    }
+    Ok(newest)
+}
+
+/// Recompute the SourceOnlyV1 cache key `package` currently resolves to -- the
+/// same key `build_into_cache` stamps onto the package's published wasm output.
+/// `verify_fresh_report` compares this against the staged kernel's stamp, so a
+/// stale mirror (older stamp, or none) fails loud. Reuses the build engine's
+/// own key function (`build_deps::source_only_cache_key_sha`) rather than
+/// recomputing, so the expected key can never drift from what a real build
+/// stamps.
+pub(crate) fn expected_source_only_cache_key(
+    repo: &Path,
+    package: &str,
+) -> Result<[u8; 32], String> {
+    let registry = fixed_registry(repo);
+    let manifest = registry.load(package)?;
+    let sha = crate::build_deps::source_only_cache_key_sha(
+        &manifest,
+        &registry,
+        TargetArch::Wasm32,
+        wasm_posix_shared::ABI_VERSION,
+    )?;
+    crate::util::hex_to_32(&sha)
+}
+
+/// Walk REVERSE edges over `graph.dependencies` (which maps a node to the
+/// set of nodes *it* depends on) to find every node that depends on `node`,
+/// directly or transitively — i.e. everything cleaning `node` invalidates.
+/// The returned set always includes `node` itself.
+///
+/// This replaces the hand-written "also invalidated shell.vfs.zst" warnings
+/// `run.sh`'s old `clean_target` hardcoded per package: the dependency graph
+/// already knows which products embed a given package (e.g. `nethack` is
+/// pulled in by `nethack-browser-bundle`, which `shell` depends on, which the
+/// `browser-main-shell` product maps to), so the cascade is derived instead
+/// of maintained by hand.
+///
+/// `O(removed * graph size)` — fine at this repo's scale (dozens of packages,
+/// a handful of products), and simple enough to trust over a fancier
+/// reverse-adjacency index that would need to be kept in sync with
+/// `dependencies` by construction.
+pub(crate) fn clean_removal_set(
+    graph: &PlannedGraphV1,
+    node: &PlanNodeV1,
+) -> BTreeSet<PlanNodeV1> {
+    let mut removal = BTreeSet::new();
+    removal.insert(node.clone());
+    let mut frontier = vec![node.clone()];
+    while let Some(current) = frontier.pop() {
+        for (candidate, deps) in &graph.dependencies {
+            if deps.contains(&current) && removal.insert(candidate.clone()) {
+                frontier.push(candidate.clone());
+            }
+        }
+    }
+    removal
+}
+
+/// Resolve a bare `xtask clean <target>` positional to the graph node it
+/// names: a declared VFS product id, or a package name (tried against every
+/// architecture the graph actually planned for it). Unlike
+/// `bootstrap_target_to_selection`, there is no host-step carve-out here —
+/// `clean` only ever operates on graph nodes with resolver-owned outputs;
+/// non-graph host/toolchain state (`sysroot`, `sdk`, cargo's own
+/// `target/`, ...) is still `run.sh`'s responsibility.
+fn resolve_clean_target(graph: &PlannedGraphV1, target: &str) -> Result<PlanNodeV1, String> {
+    let product = PlanNodeV1::product(target);
+    if graph.dependencies.contains_key(&product) {
+        return Ok(product);
+    }
+    let wasm32 = PlanNodeV1::package(target, "wasm32");
+    if graph.dependencies.contains_key(&wasm32) {
+        return Ok(wasm32);
+    }
+    // `./run.sh clean mariadb64` names the wasm64 build of the `mariadb`
+    // package; the package graph has no node literally named "mariadb64".
+    // Strip the historical "64" suffix convention `select_graph_dependencies`
+    // already uses for the same target strings in `bootstrap`/`build`.
+    if let Some(base) = target.strip_suffix("64") {
+        let wasm64 = PlanNodeV1::package(base, "wasm64");
+        if graph.dependencies.contains_key(&wasm64) {
+            return Ok(wasm64);
+        }
+    }
+    let wasm64 = PlanNodeV1::package(target, "wasm64");
+    if graph.dependencies.contains_key(&wasm64) {
+        return Ok(wasm64);
+    }
+    Err(format!(
+        "clean: {target:?} is not a package or product in packages/sets/local-supported.toml \
+         (the local-build graph); it is not something `xtask clean` can resolve"
+    ))
+}
+
+/// Remove every on-disk trace of one compiled `SourceOnlyV1` package-node
+/// generation: its canonical content-addressed cache directory, the hidden
+/// receipt sidecar next to it, and (read straight from that receipt, before
+/// deleting it) the files it mirrored into `output_root`. Matches by name/
+/// version/revision/arch prefix rather than the current content hash, so a
+/// clean sweeps every generation ever cached for this node — not just the one
+/// matching today's source tree — the same way `rm -rf` would.
+/// Invalidate one package node for THIS checkout: remove the compiled cache
+/// generation stored under `current_cache_key` (the key this checkout's
+/// inputs resolve to) plus its receipt sidecar, and every mirrored output any
+/// generation of the package projected into `output_root`.
+///
+/// The compiled cache is shared by every worktree on the machine
+/// (`default_source_cache_root`), and each generation is content-addressed by
+/// its full cache key. A generation under any other key belongs to a
+/// different set of inputs — typically another checkout's — and cleaning
+/// this checkout gives no authority over it: deleting it would force that
+/// checkout to rebuild the package and its whole reverse-dependency cascade
+/// for no reason. Those generations are left in place. The mirrors under
+/// `output_root` are checkout-local, so all of them are removed.
+fn clean_package_node_outputs(
+    registry: &Registry,
+    compiled_cache_root: &Path,
+    output_root: &Path,
+    name: &str,
+    target_arch: &str,
+    current_cache_key: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let manifest = registry.load(name)?;
+    let kind_subdir = match manifest.kind {
+        ManifestKind::Source => "sources",
+        ManifestKind::Library => "libs",
+        ManifestKind::Program => "programs",
+    };
+    let prefix = match manifest.kind {
+        ManifestKind::Source => format!("{}-{}-rev{}-", manifest.name, manifest.version, manifest.revision),
+        ManifestKind::Library | ManifestKind::Program => format!(
+            "{}-{}-rev{}-{}-",
+            manifest.name, manifest.version, manifest.revision, target_arch
+        ),
+    };
+    let dir = compiled_cache_root.join(kind_subdir);
+    let mut removed = Vec::new();
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(removed),
+        Err(error) => return Err(format!("read {}: {error}", dir.display())),
+    };
+    let mut matches = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read {}: {error}", dir.display()))?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        let Some(rest) = file_name.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        // Libraries and programs name their ABI before the key
+        // (`abi<N>-<key>`, see `canonical_path`); generations named before
+        // that segment existed have the key alone.
+        let cache_key_sha = match rest.split_once('-') {
+            Some((abi, key))
+                if abi.len() > 3
+                    && abi.starts_with("abi")
+                    && abi[3..].bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                key
+            }
+            _ => rest,
+        };
+        matches.push((entry.path(), cache_key_sha.to_string()));
+    }
+    matches.sort();
+    for (canonical, cache_key_sha) in matches {
+        if let Ok(Some(receipt)) = read_source_only_cache_receipt(&canonical, &cache_key_sha) {
+            for member in &receipt.materialized_members {
+                let mirrored = output_root.join(&member.mirror_path);
+                match fs::remove_file(&mirrored) {
+                    Ok(()) => removed.push(mirrored),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!("remove {}: {error}", mirrored.display()));
+                    }
+                }
+            }
+        }
+        if cache_key_sha != current_cache_key {
+            continue;
+        }
+        if let Ok(receipt_path) = source_only_cache_receipt_path(&canonical, &cache_key_sha) {
+            match fs::remove_file(&receipt_path) {
+                Ok(()) => removed.push(receipt_path),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!("remove {}: {error}", receipt_path.display()));
+                }
+            }
+        }
+        fs::remove_dir_all(&canonical)
+            .map_err(|error| format!("remove {}: {error}", canonical.display()))?;
+        removed.push(canonical);
+    }
+    Ok(removed)
+}
+
+/// Remove the one on-disk artifact a VFS product node owns that its mapped
+/// package node's cache/mirror does not already cover: the legacy
+/// `apps/browser-demos/public/<output>` copy. A product's actual build/cache
+/// decision is entirely the mapped package's (see `PlanNodeV1::Product`
+/// handling in `run_node`), so invalidating the product's cascade entry in
+/// `clean_removal_set` is really about invalidating that mapped package —
+/// which `clean_package_node_outputs` already does when the package node
+/// also appears in the removal set (it always does; every product's mapped
+/// package is a direct dependency edge).
+fn clean_product_node_outputs(
+    repo: &Path,
+    graph: &PlannedGraphV1,
+    id: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let entry = graph
+        .plan
+        .products
+        .iter()
+        .find(|product| product.id == id)
+        .ok_or_else(|| format!("clean: product {id:?} is missing from the resolved plan"))?;
+    let manifest_path = repo.join(&entry.manifest);
+    let bytes = fs::read(&manifest_path)
+        .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
+    let manifest = parse_product_manifest_bytes(repo, &manifest_path, &bytes)?;
+    let public_asset = repo.join("apps/browser-demos/public").join(&manifest.output);
+    let mut removed = Vec::new();
+    match fs::remove_file(&public_asset) {
+        Ok(()) => removed.push(public_asset),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("remove {}: {error}", public_asset.display())),
+    }
+    Ok(removed)
+}
+
+/// `xtask clean <target>` — resolve `<target>` to a package or product node
+/// in the local-build graph, derive the full cascade of nodes it invalidates
+/// via `clean_removal_set`, remove every node's on-disk cache/mirror/product
+/// artifacts, and print the derived cascade so a caller sees exactly what
+/// else was invalidated (instead of a static hand-written warning).
+///
+/// Removing the compiled cache entry (and its receipt sidecar) for every
+/// node in the cascade is what makes a subsequent `./run.sh build <target>`
+/// (unforced, ordinary cache-consulting build) do a genuine rebuild rather
+/// than reporting `cached`: `source_only_skip_receipt_if_clean` treats an
+/// absent cache entry as an unconditional cache miss.
+pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
+    let target = match args.as_slice() {
+        [target] if !target.starts_with("--") => target.clone(),
+        _ => return Err("usage: xtask clean <target>".to_string()),
+    };
+
+    let repo = crate::repo_root();
+    let set = repo.join("packages/sets/local-supported.toml");
+    let registry = fixed_registry(&repo);
+    let graph = load_and_plan(&repo, &set, &registry)?;
+    let node = resolve_clean_target(&graph, &target)?;
+    let removal = clean_removal_set(&graph, &node);
+
+    let planned_cache =
+        plan_canonical_source_only_cache_roots(&default_source_cache_root()?, None)?;
+    #[cfg(unix)]
+    let _cache_use =
+        crate::cache_gc::CacheUseLock::acquire_shared_if_present(&planned_cache.base, "clean")?;
+    let compiled_cache_root = planned_cache.compiled;
+    let output_root = repo.join("local-binaries/source-only-v1");
+
+    let mut removed_paths = Vec::new();
+    for cleaned in &removal {
+        match cleaned {
+            PlanNodeV1::Package { name, target_arch } => {
+                let arch = parse_node_target_arch(target_arch).ok_or_else(|| {
+                    format!("clean: {name} has unsupported target arch {target_arch:?}")
+                })?;
+                let current_cache_key = crate::build_deps::source_only_cache_key_sha(
+                    &registry.load(name)?,
+                    &registry,
+                    arch,
+                    wasm_posix_shared::ABI_VERSION,
+                )?;
+                removed_paths.extend(clean_package_node_outputs(
+                    &registry,
+                    &compiled_cache_root,
+                    &output_root,
+                    name,
+                    target_arch,
+                    &current_cache_key,
+                )?);
+            }
+            PlanNodeV1::Product { id } => {
+                removed_paths.extend(clean_product_node_outputs(&repo, &graph, id)?);
+            }
+        }
+    }
+
+    println!("Cleaned {}", node_label(&node));
+    for path in &removed_paths {
+        println!("  removed {}", path.display());
+    }
+    let cascade: Vec<&PlanNodeV1> = removal.iter().filter(|other| *other != &node).collect();
+    if !cascade.is_empty() {
+        println!(
+            "Also invalidated ({} depends on / embeds {}):",
+            if cascade.len() == 1 { "this" } else { "these" },
+            node_label(&node)
+        );
+        for other in cascade {
+            println!("  {}", node_label(other));
+        }
+    }
+    Ok(())
+}
+
+/// Extract the ABI version a wasm module declares via its `__abi_version`
+/// export. Mirrors the "constant" extraction shape in
+/// `wasm_extract_abi_version`/`_wasm_extract_constant_i32_body` in
+/// `scripts/wasm-artifact-guards.sh`: the exported function's body must be
+/// exactly `i32.const <N> end` or `i32.const <N> return end`. Returns `Ok(None)`
+/// only when the module genuinely has no such export; every inspection or
+/// shape failure is an `Err` so this stays fail-closed like its shell
+/// counterpart.
+fn wasm_declared_abi_version(bytes: &[u8]) -> Result<Option<u32>, String> {
+    use wasmparser::{ExternalKind, Imports, Operator, Parser, Payload, TypeRef};
+
+    let mut imported_funcs: u32 = 0;
+    let mut export_func_index: Option<u32> = None;
+    let mut code_bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+
+    for payload in Parser::new(0).parse_all(bytes) {
+        let payload = payload.map_err(|error| format!("parse wasm: {error}"))?;
+        match payload {
+            Payload::ImportSection(reader) => {
+                // Three import-group encodings in wasmparser 0.247, matching
+                // `kernel_exports` in dump_abi.rs. Only `Single` appears in
+                // stock LLVM output; the `Compact*` variants come from the
+                // compact-imports proposal and are handled for completeness.
+                for group in reader {
+                    let group = group.map_err(|error| format!("import section: {error}"))?;
+                    match group {
+                        Imports::Single(_, import) => {
+                            if matches!(import.ty, TypeRef::Func(_)) {
+                                imported_funcs += 1;
+                            }
+                        }
+                        Imports::Compact1 { items, .. } => {
+                            for item in items {
+                                let item = item.map_err(|error| format!("import section: {error}"))?;
+                                if matches!(item.ty, TypeRef::Func(_)) {
+                                    imported_funcs += 1;
+                                }
+                            }
+                        }
+                        Imports::Compact2 { ty, names, .. } => {
+                            for name in names {
+                                let _ = name.map_err(|error| format!("import section: {error}"))?;
+                                if matches!(ty, TypeRef::Func(_)) {
+                                    imported_funcs += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Payload::ExportSection(reader) => {
+                for export in reader {
+                    let export = export.map_err(|error| format!("export section: {error}"))?;
+                    if export.name == "__abi_version" && export.kind == ExternalKind::Func {
+                        export_func_index = Some(export.index);
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                code_bodies.push(body);
+            }
+            _ => {}
+        }
+    }
+
+    let Some(export_func_index) = export_func_index else {
+        return Ok(None);
+    };
+    let local_index = export_func_index.checked_sub(imported_funcs).ok_or_else(|| {
+        "__abi_version export index is inside the imported function range".to_string()
+    })?;
+    let body = code_bodies.get(local_index as usize).ok_or_else(|| {
+        "__abi_version export has no matching function body".to_string()
+    })?;
+    let mut operators = body
+        .get_operators_reader()
+        .map_err(|error| format!("read __abi_version function body: {error}"))?;
+    let malformed = || {
+        "__abi_version function body is not a plain `i32.const <N> [return] end` constant"
+            .to_string()
+    };
+
+    let first = operators
+        .read()
+        .map_err(|error| format!("read __abi_version function body: {error}"))?;
+    let Operator::I32Const { value } = first else {
+        return Err(malformed());
+    };
+    let second = operators
+        .read()
+        .map_err(|error| format!("read __abi_version function body: {error}"))?;
+    let terminated = match second {
+        Operator::End => true,
+        Operator::Return => {
+            let third = operators
+                .read()
+                .map_err(|error| format!("read __abi_version function body: {error}"))?;
+            matches!(third, Operator::End)
+        }
+        _ => false,
+    };
+    if !terminated {
+        return Err(malformed());
+    }
+    u32::try_from(value)
+        .map(Some)
+        .map_err(|_| format!("__abi_version constant {value} is not a valid u32"))
 }
 
 fn run_plan(set: PathBuf) -> Result<(), String> {
@@ -364,6 +1539,291 @@ fn run_plan(set: PathBuf) -> Result<(), String> {
     let bytes = canonical_plan_bytes(&graph.plan)?;
     std::io::Write::write_all(&mut std::io::stdout().lock(), &bytes)
         .map_err(|error| format!("write local-build plan: {error}"))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum PlanNodeStatusV1 {
+    Cached,
+    WillRun,
+    /// `Source`-kind packages are never skipped up front: their child checks
+    /// the fetched source itself, so the dry run cannot say whether it will
+    /// find work.
+    WillRunSourceCheck,
+}
+
+impl PlanNodeStatusV1 {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cached => "cached",
+            Self::WillRun => "will run",
+            Self::WillRunSourceCheck => "will run (source check)",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PlanStatusNodeV1 {
+    node: String,
+    status: PlanNodeStatusV1,
+    /// Per node rather than only a total, so a reader can see which node
+    /// dominates the estimate (usually one toolchain) instead of guessing.
+    median_seconds: Option<f64>,
+}
+
+/// The `plan --status --json` document. It is versioned (`schema`) because
+/// scripts consume it to choose between a foreground build and a background
+/// one, and the estimate's parts are reported, not just the total, so a
+/// reader can tell a history-backed estimate from one built on fallbacks.
+#[derive(Debug, Serialize)]
+struct PlanStatusV1 {
+    schema: u32,
+    jobs: usize,
+    source_cache_root: PathBuf,
+    nodes: Vec<PlanStatusNodeV1>,
+    cached: usize,
+    will_run: usize,
+    source_checks: usize,
+    #[serde(flatten)]
+    estimate: crate::local_build_timing::BuildEstimateV1,
+    fallback_seconds: f64,
+}
+
+/// `plan --status`: report which nodes a `run` with the same selection would
+/// serve from cache and which it would run, with an estimated duration.
+///
+/// WHY: a build that is all cache hits takes seconds and one that rebuilds a
+/// toolchain takes most of an hour, and nothing else tells an agent which
+/// before it starts. That answer decides how to run the build: a short one
+/// fits in one foreground call, a 10+ minute one belongs under
+/// `scripts/agent-job`. A wrong guess is expensive: a headless session or
+/// subagent that ends its turn on a long foreground call, or that hits the
+/// tool timeout, loses the build's result and has to run it again.
+///
+/// It must be a pure dry run, because it is asked *before* deciding to build
+/// and may be asked repeatedly. It performs the same skip check as `run` but
+/// writes nothing -- no cache directories, no last-used stamps (which would
+/// skew `cache-gc`), no generated indexes -- and takes no cache lock: a held
+/// build lock makes a concurrent `cache-gc` skip its collection. Without the
+/// lock, a concurrent `cache-gc` can make the answer momentarily stale but
+/// never wrong about the tree it read.
+fn run_plan_status(args: LocalBuildPlanStatusArgsV1) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
+    let set = resolve_repo_file(&repo, &args.set, "supported set")?;
+    let set = fs::canonicalize(&set)
+        .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;
+    let registry = fixed_registry(&repo);
+    let graph = load_and_plan(&repo, &set, &registry)?;
+    let selected = select_graph_dependencies(&graph, &args.products)?;
+    let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
+    // Not materialized: materializing would create cache directories, which a
+    // dry run must not do. A missing cache simply makes every node "will run".
+    let cache_roots = SourceOnlyCacheRoots {
+        base: planned_cache.base.clone(),
+        compiled: planned_cache.compiled.clone(),
+    };
+    let output_root = canonicalize_with_missing_tail(&args.output_root)?;
+    let skip = compute_skip_receipts(
+        &registry,
+        &graph,
+        &selected,
+        &cache_roots,
+        &output_root,
+        false,
+    );
+    let history = TimingHistory::load(&cache_roots.base);
+
+    let mut will_run = BTreeSet::new();
+    let mut nodes = Vec::new();
+    // Dependency order, so the listing reads the way the build proceeds. The
+    // plan's levels hold only buildable nodes; selected `Source`-kind
+    // packages still run a child, so list them after the levels.
+    let mut ordered = graph
+        .plan
+        .levels
+        .iter()
+        .flatten()
+        .filter(|node| selected.contains_key(*node))
+        .collect::<Vec<_>>();
+    let leveled = ordered.iter().copied().collect::<BTreeSet<_>>();
+    ordered.extend(selected.keys().filter(|node| !leveled.contains(node)));
+    for node in ordered {
+        let status = if skip.contains_key(node) {
+            PlanNodeStatusV1::Cached
+        } else {
+            will_run.insert(node.clone());
+            match node {
+                PlanNodeV1::Package { name, .. }
+                    if registry
+                        .load(name)
+                        .is_ok_and(|manifest| manifest.kind == ManifestKind::Source) =>
+                {
+                    PlanNodeStatusV1::WillRunSourceCheck
+                }
+                _ => PlanNodeStatusV1::WillRun,
+            }
+        };
+        let label = node_label(node);
+        nodes.push(PlanStatusNodeV1 {
+            median_seconds: history.node_medians.get(&label).copied(),
+            node: label,
+            status,
+        });
+    }
+    let estimate = crate::local_build_timing::estimate(
+        &selected,
+        &will_run,
+        &history,
+        args.jobs,
+        node_label,
+    );
+    let status = PlanStatusV1 {
+        schema: 1,
+        jobs: args.jobs,
+        source_cache_root: cache_roots.base.clone(),
+        cached: nodes
+            .iter()
+            .filter(|node| node.status == PlanNodeStatusV1::Cached)
+            .count(),
+        will_run: will_run.len(),
+        source_checks: nodes
+            .iter()
+            .filter(|node| node.status == PlanNodeStatusV1::WillRunSourceCheck)
+            .count(),
+        nodes,
+        estimate,
+        fallback_seconds: history.fallback_seconds(),
+    };
+    let mut stdout = std::io::stdout().lock();
+    let text = if args.json {
+        let mut bytes = serde_json::to_vec_pretty(&status)
+            .map_err(|error| format!("serialize local-build plan status: {error}"))?;
+        bytes.push(b'\n');
+        bytes
+    } else {
+        render_plan_status(&status, started.elapsed().as_secs_f64()).into_bytes()
+    };
+    stdout
+        .write_all(&text)
+        .map_err(|error| format!("write local-build plan status: {error}"))
+}
+
+/// Human-readable `plan --status`. It prints the estimate's formula with each
+/// term filled in, and how many nodes were priced by fallback, because a bare
+/// total cannot be judged: an estimate dominated by one toolchain or by
+/// no-history guesses deserves less trust than one built from recorded
+/// medians. The plan's own time is printed because the skip check hashes the
+/// whole graph and is itself not free.
+fn render_plan_status(status: &PlanStatusV1, plan_seconds: f64) -> String {
+    use crate::local_build_timing::human_seconds;
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for node in &status.nodes {
+        let duration = match (node.status, node.median_seconds) {
+            (PlanNodeStatusV1::Cached, _) => String::new(),
+            (_, Some(seconds)) => format!("~{}", human_seconds(seconds)),
+            (_, None) => "no history".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "{:<24} {:>11}  {}",
+            node.status.label(),
+            duration,
+            node.node
+        );
+    }
+    let estimate = &status.estimate;
+    let _ = writeln!(
+        out,
+        "\n{} nodes: {} cached, {} will run ({} source checks)",
+        status.nodes.len(),
+        status.cached,
+        status.will_run,
+        status.source_checks,
+    );
+    if estimate.unknown_nodes > 0 {
+        let _ = writeln!(
+            out,
+            "{} will-run nodes have no recorded duration; each is counted as {}",
+            estimate.unknown_nodes,
+            human_seconds(status.fallback_seconds),
+        );
+    }
+    let _ = writeln!(
+        out,
+        "estimate: ~{} = max(critical path {}, work / {} jobs {}) + recorded overhead {}",
+        human_seconds(estimate.estimate_seconds),
+        human_seconds(estimate.critical_path_seconds),
+        status.jobs,
+        human_seconds(estimate.parallel_seconds),
+        human_seconds(estimate.overhead_seconds),
+    );
+    let _ = writeln!(
+        out,
+        "timing history: {} (plan took {:.1}s)",
+        crate::local_build_timing::timings_dir(&status.source_cache_root).display(),
+        plan_seconds,
+    );
+    out
+}
+
+/// Record how long a node's child ran, from its Running event to its terminal
+/// event, into `node-durations.jsonl`.
+///
+/// WHY: these records are the only source of the per-node medians that
+/// `plan --status` and the run's own prediction price will-run nodes with;
+/// without them every estimate is a flat fallback guess. Nodes the up-front
+/// cache check skipped never start a child, so there is no build time to
+/// record, and recording ~0 would teach the estimator that building the node
+/// is free. Blocked nodes never ran, so they are not recorded either. The
+/// cache key, when the child returned a receipt, ties a duration to the
+/// exact inputs it built.
+fn record_node_duration(
+    event: &SchedulerEventV1,
+    label: &str,
+    running_since: &mut BTreeMap<PlanNodeV1, std::time::Instant>,
+    skipped: &BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>>,
+    receipts: &Mutex<BTreeMap<PlanNodeV1, PackageNodeReceiptV1>>,
+    recorder: &mut DurationRecorder,
+) {
+    let (node, outcome) = match event {
+        SchedulerEventV1::Ready { .. } => return,
+        SchedulerEventV1::Running { node } => {
+            if !skipped.contains_key(node) {
+                running_since.insert(node.clone(), std::time::Instant::now());
+            }
+            return;
+        }
+        SchedulerEventV1::Terminal { result } => match result {
+            NodeRunResultV1::Succeeded { node, disposition } => (
+                node,
+                match disposition {
+                    SuccessDispositionV1::Published => "published",
+                    SuccessDispositionV1::RebuiltEquivalent => "reused",
+                    // The child itself found the cache entry current.
+                    SuccessDispositionV1::Cached => "cached",
+                },
+            ),
+            NodeRunResultV1::Failed { node, .. } => (node, "failed"),
+            NodeRunResultV1::Blocked { .. } => return,
+        },
+    };
+    let Some(started) = running_since.remove(node) else {
+        return;
+    };
+    let cache_key = receipts.lock().ok().and_then(|receipts| {
+        receipts
+            .get(node)
+            .map(|receipt| receipt.cache_key_sha256.clone())
+    });
+    recorder.record(&NodeDurationRecordV1 {
+        node: label.to_string(),
+        cache_key,
+        seconds: started.elapsed().as_secs_f64(),
+        outcome: outcome.to_string(),
+        at: crate::local_build_timing::unix_now(),
+    });
 }
 
 fn fixed_registry(repo: &Path) -> Registry {
@@ -422,12 +1882,19 @@ fn generate_program_package_index(repo: &Path) -> Result<(), String> {
 }
 
 /// Whether the on-disk source-only program projection authority already records
-/// the given graph authority. When every node is unchanged and this holds, a
-/// no-op can leave the published projection in place instead of re-deriving and
-/// re-publishing an identical one.
+/// the given graph authority AND exactly this run's member-materializing package
+/// nodes, each with the cache key and cache receipt this run holds for it. When every node
+/// is unchanged and this holds, a no-op can leave the published projection in
+/// place instead of re-deriving and re-publishing an identical one.
+///
+/// The graph authority alone is not enough: it hashes the whole planned graph,
+/// so a narrower run (`bootstrap kernel`, `./run.sh build <pkg>`) publishes a
+/// projection that records the same authority but owns only its own closure. A
+/// later full run must replace that projection, not keep it.
 fn source_only_program_projection_is_current(
     output_root: &Path,
     expected_graph_authority_sha256: &str,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
 ) -> bool {
     let path = output_root
         .join(".kandelo")
@@ -438,11 +1905,51 @@ fn source_only_program_projection_is_current(
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return false;
     };
-    value
-        .get("graphAuthoritySha256")
-        .and_then(|recorded| recorded.as_str())
-        .map(|recorded| recorded == expected_graph_authority_sha256)
-        .unwrap_or(false)
+    if value.get("graphAuthoritySha256").and_then(|recorded| recorded.as_str())
+        != Some(expected_graph_authority_sha256)
+    {
+        return false;
+    }
+    let Some(recorded_nodes) = value.get("nodes").and_then(|nodes| nodes.as_array()) else {
+        return false;
+    };
+    let field = |entry: &serde_json::Value, pointer: &str| {
+        entry.pointer(pointer).and_then(|v| v.as_str()).map(str::to_owned)
+    };
+    let mut recorded = BTreeSet::new();
+    for entry in recorded_nodes {
+        if field(entry, "/node/kind").as_deref() != Some("package") {
+            return false;
+        }
+        let (Some(name), Some(arch), Some(key), Some(receipt)) = (
+            field(entry, "/node/name"),
+            field(entry, "/node/targetArch"),
+            field(entry, "/cacheKeySha256"),
+            field(entry, "/cacheReceiptSha256"),
+        ) else {
+            return false;
+        };
+        if !recorded.insert((name, arch, key, receipt)) {
+            return false;
+        }
+    }
+    // The projection records the nodes that materialize members (programs and
+    // the root-mirrored kernel); libraries carry receipts but mirror nothing.
+    // Misclassifying here only fails safe: the finalizer re-derives and runs.
+    let expected = receipts
+        .iter()
+        .filter(|(_, receipt)| !receipt.materialized_members.is_empty())
+        .filter_map(|(node, receipt)| match node {
+            PlanNodeV1::Package { name, target_arch } => Some((
+                name.clone(),
+                target_arch.clone(),
+                receipt.cache_key_sha256.clone(),
+                receipt.cache_receipt_sha256.clone(),
+            )),
+            PlanNodeV1::Product { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    recorded == expected
 }
 
 /// Identify compiled package nodes whose content-addressed cache entry, receipt
@@ -460,9 +1967,171 @@ fn parse_node_target_arch(target_arch: &str) -> Option<TargetArch> {
     }
 }
 
+/// What the projection finalizer publishes: this run's selection plus any
+/// packages carried forward from the previously published projection.
+struct ProjectionPublication {
+    carried: BTreeSet<PlanNodeV1>,
+    selected: BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    expected_receipt_nodes: BTreeSet<PlanNodeV1>,
+    receipts: BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+}
+
+/// The package nodes the published projection at `output_root` records, or an
+/// empty set when there is no readable projection.
+fn recorded_projection_package_nodes(output_root: &Path) -> BTreeSet<PlanNodeV1> {
+    let path = output_root
+        .join(".kandelo")
+        .join("source-only-program-projection-v1.json");
+    let Ok(bytes) = fs::read(&path) else {
+        return BTreeSet::new();
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return BTreeSet::new();
+    };
+    value
+        .get("nodes")
+        .and_then(|nodes| nodes.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.pointer("/node/kind").and_then(|v| v.as_str()) == Some("package"))
+        .filter_map(|entry| {
+            let name = entry.pointer("/node/name")?.as_str()?;
+            let arch = entry.pointer("/node/targetArch")?.as_str()?;
+            Some(PlanNodeV1::package(name, arch))
+        })
+        .collect()
+}
+
+/// Extend a narrow run's publication with the packages the published projection
+/// already records, so `./run.sh build <pkg>` (or any other partial selection)
+/// adds to the projection instead of replacing it with its own closure.
+///
+/// A recorded package is carried forward only when every compiled package in
+/// its dependency closure that this run did not select still has a clean
+/// receipt under the current cache keys, with hash-verified projected members.
+/// Anything else is dropped, so the projection never names a mirror that is
+/// not current. A complete selection carries nothing.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn carry_forward_published_nodes(
+    registry: &Registry,
+    graph: &PlannedGraphV1,
+    product_filters: &[String],
+    selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    expected_receipt_nodes: &BTreeSet<PlanNodeV1>,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+    cache_roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+) -> Result<ProjectionPublication, String> {
+    let mut publication = ProjectionPublication {
+        carried: BTreeSet::new(),
+        selected: selected.clone(),
+        expected_receipt_nodes: expected_receipt_nodes.clone(),
+        receipts: receipts.clone(),
+    };
+    if selected.len() == graph.dependencies.len() {
+        return Ok(publication);
+    }
+    let mut memo = BTreeMap::new();
+    let mut clean = BTreeMap::<PlanNodeV1, Option<PackageNodeReceiptV1>>::new();
+    let mut dropped = Vec::new();
+    for node in recorded_projection_package_nodes(output_root) {
+        if publication.selected.contains_key(&node) {
+            continue;
+        }
+        if !graph.dependencies.contains_key(&node) {
+            dropped.push(node);
+            continue;
+        }
+        let closure = close_graph_selection(graph, vec![node.clone()])?;
+        let mut additions = BTreeMap::new();
+        let mut current = true;
+        for member in closure.keys() {
+            let PlanNodeV1::Package { name, target_arch } = member else {
+                continue;
+            };
+            if publication.selected.contains_key(member) {
+                continue;
+            }
+            let manifest = registry.load(name)?;
+            if manifest.kind == ManifestKind::Source {
+                continue;
+            }
+            let receipt = clean
+                .entry(member.clone())
+                .or_insert_with(|| {
+                    parse_node_target_arch(target_arch).and_then(|arch| {
+                        source_only_skip_receipt_if_clean(
+                            &manifest,
+                            registry,
+                            arch,
+                            wasm_posix_shared::ABI_VERSION,
+                            cache_roots,
+                            output_root,
+                            &mut memo,
+                        )
+                    })
+                })
+                .clone();
+            let Some(receipt) = receipt else {
+                current = false;
+                break;
+            };
+            additions.insert(member.clone(), receipt);
+        }
+        if !current {
+            dropped.push(node);
+            continue;
+        }
+        for (member, receipt) in additions {
+            publication.expected_receipt_nodes.insert(member.clone());
+            publication.receipts.insert(member, receipt);
+        }
+        publication.selected.extend(closure);
+        publication.carried.insert(node);
+    }
+    for node in &dropped {
+        eprintln!(
+            "local-build: dropping {} from the published projection: its output is no longer current",
+            node_label(node)
+        );
+    }
+    if !publication.carried.is_empty() {
+        // Re-derive through the same selection the finalizer re-plans with.
+        publication.selected =
+            select_graph_dependencies_with(graph, product_filters, &publication.carried)?;
+    }
+    Ok(publication)
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::too_many_arguments)]
+fn carry_forward_published_nodes(
+    _registry: &Registry,
+    _graph: &PlannedGraphV1,
+    _product_filters: &[String],
+    selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    expected_receipt_nodes: &BTreeSet<PlanNodeV1>,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+    _cache_roots: &SourceOnlyCacheRoots,
+    _output_root: &Path,
+) -> Result<ProjectionPublication, String> {
+    Ok(ProjectionPublication {
+        carried: BTreeSet::new(),
+        selected: selected.clone(),
+        expected_receipt_nodes: expected_receipt_nodes.clone(),
+        receipts: receipts.clone(),
+    })
+}
+
 /// The value stored per skippable node: `Some(receipt)` for a compiled package
 /// (which the projection finalizer needs a receipt for), `None` for a product
 /// (which only validates its mapped package and carries no receipt).
+///
+/// `record_use` is true for `run` and false for `plan --status`: one function
+/// serves both so the dry run's cached/will-run answer cannot drift from the
+/// check a real run makes, while the dry run still leaves `cache-gc`'s
+/// last-used stamps untouched.
 #[cfg(unix)]
 fn compute_skip_receipts(
     registry: &Registry,
@@ -470,70 +2139,110 @@ fn compute_skip_receipts(
     selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     cache_roots: &SourceOnlyCacheRoots,
     output_root: &Path,
+    record_use: bool,
 ) -> BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>> {
-    let mut memo = BTreeMap::new();
-    let mut skip = BTreeMap::new();
-    for node in selected.keys() {
-        match node {
-            PlanNodeV1::Package { name, target_arch } => {
-                let Some(arch) = parse_node_target_arch(target_arch) else {
-                    continue;
-                };
-                let Ok(manifest) = registry.load(name) else {
-                    continue;
-                };
-                if manifest.kind == ManifestKind::Source
-                    || !manifest.target_arches.contains(&arch)
-                {
-                    continue;
-                }
-                if let Some(receipt) = source_only_skip_receipt_if_clean(
-                    &manifest,
-                    registry,
-                    arch,
-                    wasm_posix_shared::ABI_VERSION,
-                    cache_roots,
-                    output_root,
-                    &mut memo,
-                ) {
-                    skip.insert(node.clone(), Some(receipt));
-                }
+    // Each check hashes the node's projected members, so spread the nodes over
+    // worker threads. Every worker keeps its own cache-key memo; recomputing a
+    // shared dependency's key per worker is far cheaper than serial hashing.
+    let nodes = selected.keys().collect::<Vec<_>>();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .min(nodes.len().max(1));
+    std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut memo = BTreeMap::new();
+                    let mut skip = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(node) = nodes.get(index) else {
+                            break;
+                        };
+                        if let Some(entry) = skip_entry_for_node(
+                            registry,
+                            graph,
+                            node,
+                            cache_roots,
+                            output_root,
+                            &mut memo,
+                            record_use,
+                        ) {
+                            skip.push(((*node).clone(), entry));
+                        }
+                    }
+                    skip
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
+}
+
+/// The skip entry for one node: `Some(Some(receipt))` for an unchanged compiled
+/// package, `Some(None)` for a product whose mapped package is unchanged, and
+/// `None` when the node must run its child.
+#[cfg(unix)]
+fn skip_entry_for_node(
+    registry: &Registry,
+    graph: &PlannedGraphV1,
+    node: &PlanNodeV1,
+    cache_roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    record_use: bool,
+) -> Option<Option<PackageNodeReceiptV1>> {
+    match node {
+        PlanNodeV1::Package { name, target_arch } => {
+            let arch = parse_node_target_arch(target_arch)?;
+            let manifest = registry.load(name).ok()?;
+            if manifest.kind == ManifestKind::Source || !manifest.target_arches.contains(&arch) {
+                return None;
             }
-            PlanNodeV1::Product { id } => {
-                // A product's child only resolves and validates its mapped
-                // package (it builds no image), so an unchanged mapped package
-                // makes the product a no-op. Products carry no receipt.
-                let Some(retained) = graph.product_execution.get(id) else {
-                    continue;
-                };
-                let Some(arch) = parse_node_target_arch(&retained.binding.target_arch) else {
-                    continue;
-                };
-                let Ok(manifest) = registry.load(&retained.binding.mapped_package) else {
-                    continue;
-                };
-                if manifest.kind != ManifestKind::Program
-                    || !manifest.target_arches.contains(&arch)
-                {
-                    continue;
-                }
-                if source_only_skip_receipt_if_clean(
-                    &manifest,
-                    registry,
-                    arch,
-                    wasm_posix_shared::ABI_VERSION,
-                    cache_roots,
-                    output_root,
-                    &mut memo,
-                )
-                .is_some()
-                {
-                    skip.insert(node.clone(), None);
-                }
+            source_only_skip_receipt_if_clean_with_use(
+                &manifest,
+                registry,
+                arch,
+                wasm_posix_shared::ABI_VERSION,
+                cache_roots,
+                output_root,
+                memo,
+                record_use,
+            )
+            .map(Some)
+        }
+        PlanNodeV1::Product { id } => {
+            // A product's child only resolves and validates its mapped
+            // package (it builds no image), so an unchanged mapped package
+            // makes the product a no-op. Products carry no receipt.
+            let retained = graph.product_execution.get(id)?;
+            let arch = parse_node_target_arch(&retained.binding.target_arch)?;
+            let manifest = registry.load(&retained.binding.mapped_package).ok()?;
+            if manifest.kind != ManifestKind::Program || !manifest.target_arches.contains(&arch) {
+                return None;
             }
+            source_only_skip_receipt_if_clean_with_use(
+                &manifest,
+                registry,
+                arch,
+                wasm_posix_shared::ABI_VERSION,
+                cache_roots,
+                output_root,
+                memo,
+                record_use,
+            )
+            .map(|_| None)
         }
     }
-    skip
 }
 
 #[cfg(not(unix))]
@@ -543,25 +2252,47 @@ fn compute_skip_receipts(
     _selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     _cache_roots: &SourceOnlyCacheRoots,
     _output_root: &Path,
+    _record_use: bool,
 ) -> BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>> {
     BTreeMap::new()
 }
 
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
+    // Started before dependency install and index generation, so the run's
+    // recorded `actual_seconds` includes the fixed overhead a waiting agent
+    // really sits through, not just the scheduler's share.
+    let run_started = std::time::Instant::now();
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
-    generate_vfs_product_catalog(&repo)?;
-    generate_program_package_index(&repo)?;
+    // Sealed package builds run tools from the root node_modules but never
+    // install them; provision the locked tree here, before any node runs.
+    crate::root_js_deps::ensure_root_js_dependencies(&repo)?;
+    report_phase("Generating the VFS product catalog and program index", || {
+        generate_vfs_product_catalog(&repo)?;
+        generate_program_package_index(&repo)
+    })?;
     let set = resolve_repo_file(&repo, &args.set, "supported set")?;
     let set = fs::canonicalize(&set)
         .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;
     let registry = fixed_registry(&repo);
-    let graph = load_and_plan(&repo, &set, &registry)?;
+    let graph = report_phase("Planning the build graph", || {
+        load_and_plan(&repo, &set, &registry)
+    })?;
     let selected = select_graph_dependencies(&graph, &args.products)?;
+    // The first event carries the node total, so a reader such as
+    // `scripts/agent-job status` can report "N of M done" from the file alone.
+    let mut events = EventLog::from_env();
+    events.plan(selected.len());
 
     let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
     let output_intended = canonicalize_with_missing_tail(&args.output_root)?;
     validate_run_roots(&repo, &set, &planned_cache.base, &output_intended)?;
     let cache_roots = materialize_planned_source_only_cache_roots(&planned_cache)?;
+    // Held for the whole run, children included: `cache-gc` cannot remove a
+    // generation while any build holds this, so an entry admitted here cannot
+    // vanish before the run is done with it.
+    #[cfg(unix)]
+    let cache_use =
+        crate::cache_gc::CacheUseLock::acquire_shared(&cache_roots.base, "local-build")?;
     fs::create_dir_all(&output_intended).map_err(|error| {
         format!(
             "create local-build output root {}: {error}",
@@ -615,9 +2346,49 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let skip_receipts = if args.rebuild || args.verify_cache {
         BTreeMap::new()
     } else {
-        compute_skip_receipts(&registry, &graph, &selected, &cache_roots, &output_root)
+        report_phase("Checking cached packages", || {
+            compute_skip_receipts(
+                &registry,
+                &graph,
+                &selected,
+                &cache_roots,
+                &output_root,
+                true,
+            )
+        })
+    };
+    // Marks the end of the up-front cache check, which hashes the whole graph
+    // before any scheduler event appears, and says right away how much of the
+    // graph needs no work: a reader learns early whether this is a seconds-
+    // long cached run or a real rebuild.
+    events.cached_check(skip_receipts.len());
+    // Predicted before any node runs, from the same history `plan --status`
+    // reads, and recorded with the actual duration at the end. Without the
+    // pair in `runs.jsonl`, nobody could tell whether the estimate agents
+    // decide on is accurate or how far off it runs.
+    let predicted = {
+        let will_run = selected
+            .keys()
+            .filter(|node| !skip_receipts.contains_key(*node))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        crate::local_build_timing::estimate(
+            &selected,
+            &will_run,
+            &TimingHistory::load(&cache_roots.base),
+            args.jobs,
+            node_label,
+        )
     };
     let skip_receipts = Arc::new(skip_receipts);
+    let mut durations = DurationRecorder::new(&cache_roots.base);
+    let mut running_since = BTreeMap::<PlanNodeV1, std::time::Instant>::new();
+    let duration_receipts = Arc::clone(&retained_receipts);
+    let duration_skips = Arc::clone(&skip_receipts);
+    // Timed separately from `run_started`: the difference is the run's fixed
+    // overhead, which the estimator adds back because even a fully cached
+    // run spends it.
+    let graph_started = std::time::Instant::now();
     let results = execute_graph_with_events(
         &selected,
         args.jobs,
@@ -734,8 +2505,25 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
                 Ok(())
             }
         },
-        |event| render_scheduler_event(event, color, &mut aggregate_failed),
+        |event| {
+            // The event file and duration history hang off the same callback
+            // that renders the terminal output, so they can never disagree
+            // with what the build log shows. Rendering consumes the event, so
+            // it goes last.
+            let label = node_label(crate::local_build_timing::scheduler_event_kind(&event).1);
+            events.scheduler_event(&event, &label);
+            record_node_duration(
+                &event,
+                &label,
+                &mut running_since,
+                &duration_skips,
+                &duration_receipts,
+                &mut durations,
+            );
+            render_scheduler_event(event, color, &mut aggregate_failed)
+        },
     )?;
+    let graph_seconds = graph_started.elapsed().as_secs_f64();
 
     let retained_receipts = retained_receipts
         .lock()
@@ -747,35 +2535,118 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // authority, the finalizer would reproduce precisely what is already on
     // disk. Leave it in place instead of re-deriving and re-publishing it.
     // `--rebuild`/`--verify-cache` disable the skip, so this is unreachable then.
-    let projection_up_to_date = package_projection_is_eligible(&selected, &results)
-        && expected_receipt_nodes
-            .iter()
-            .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
-        && selected
-            .keys()
-            .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
-            .all(|node| skip_receipts.contains_key(node))
-        && source_only_program_projection_is_current(&output_root, &graph.authority_sha256);
-    let projection_finalization_error = if projection_up_to_date {
-        None
-    } else if package_projection_is_eligible(&selected, &results) {
-        finalize_source_only_program_projection(
-            &repo,
-            &set,
-            &registry,
-            &args.products,
-            &selected,
-            &graph.authority_sha256,
-            &cache_roots,
-            &output_root,
-            &expected_receipt_nodes,
-            &retained_receipts,
-            args.verify_cache,
-        )
-        .err()
+    let eligible = package_projection_is_eligible(&selected, &results);
+    let publication_started = if eligible {
+        eprintln!("==> Finalizing {}...", output_root.display());
+        Some(std::time::Instant::now())
     } else {
         None
     };
+    let publication = if eligible {
+        carry_forward_published_nodes(
+            &registry,
+            &graph,
+            &args.products,
+            &selected,
+            &expected_receipt_nodes,
+            &retained_receipts,
+            &cache_roots,
+            &output_root,
+        )
+        .map(Some)
+    } else {
+        Ok(None)
+    };
+    // The compiled generations the published projection depends on --
+    // programs and the libraries under them -- recorded as this checkout's
+    // live root once publication succeeds.
+    let mut published_generations = None;
+    let projection_finalization_error = match publication {
+        Err(error) => Some(error),
+        Ok(None) => {
+            // The aggregate build did not fully succeed, so the whole-graph
+            // authority is not committed. Publish a consistent authority for
+            // the packages whose dependency closure DID succeed, so the live
+            // projection never carries a mirror file the authority does not
+            // describe (partial-build consistency), and a demo whose closure
+            // built stays reachable even when an unrelated package fails.
+            let succeeded_package_nodes = results
+                .iter()
+                .filter_map(|result| match result {
+                    NodeRunResultV1::Succeeded { node, .. }
+                        if matches!(node, PlanNodeV1::Package { .. }) =>
+                    {
+                        Some(node.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            finalize_partial_source_only_program_projection(
+                &repo,
+                &registry,
+                &graph,
+                &graph.authority_sha256,
+                &cache_roots,
+                &output_root,
+                &succeeded_package_nodes,
+                &retained_receipts,
+                args.verify_cache,
+            )
+            .err()
+        }
+        Ok(Some(publication)) => {
+            published_generations = Some(
+                publication
+                    .receipts
+                    .iter()
+                    .filter_map(|(node, receipt)| match node {
+                        PlanNodeV1::Package { name, target_arch } => {
+                            Some(crate::cache_gc::LiveRootGenerationV1 {
+                                name: name.clone(),
+                                target_arch: target_arch.clone(),
+                                cache_key_sha256: receipt.cache_key_sha256.clone(),
+                            })
+                        }
+                        PlanNodeV1::Product { .. } => None,
+                    })
+                    .collect::<BTreeSet<_>>(),
+            );
+            let projection_up_to_date = expected_receipt_nodes
+                .iter()
+                .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
+                && selected
+                    .keys()
+                    .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
+                    .all(|node| skip_receipts.contains_key(node))
+                && source_only_program_projection_is_current(
+                    &output_root,
+                    &graph.authority_sha256,
+                    &publication.receipts,
+                );
+            if projection_up_to_date {
+                None
+            } else {
+                finalize_source_only_program_projection(
+                    &repo,
+                    &set,
+                    &registry,
+                    &args.products,
+                    &publication.carried,
+                    &publication.selected,
+                    &graph.authority_sha256,
+                    &cache_roots,
+                    &output_root,
+                    &publication.expected_receipt_nodes,
+                    &publication.receipts,
+                    args.verify_cache,
+                )
+                .err()
+            }
+        }
+    };
+    if let Some(started) = publication_started {
+        report_phase_elapsed("Finalizing", started);
+    }
     if let Some(error) = &projection_finalization_error {
         if !aggregate_failed {
             eprintln!("{}", render_projection_failure_banner(color));
@@ -809,6 +2680,63 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     } else {
         AggregateOutcomeV1::Failed
     };
+    #[cfg(unix)]
+    {
+        if projection_finalization_error.is_none() {
+            if let Some(generations) = published_generations {
+                // Written while still holding the cache, so no collection
+                // can run between this run's last use and the record.
+                if let Err(error) = crate::cache_gc::record_live_root(
+                    &cache_roots.base,
+                    &repo,
+                    &output_root,
+                    generations,
+                ) {
+                    eprintln!("local-build warning: record cache root: {error}");
+                }
+            }
+        }
+        // The collection needs the exclusive lock, which this process's own
+        // shared hold would block.
+        drop(cache_use);
+        if outcome == AggregateOutcomeV1::Succeeded {
+            crate::cache_gc::auto_collect_after_build(&cache_roots.base);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = published_generations;
+    let count = |wanted: &[SuccessDispositionV1]| {
+        results
+            .iter()
+            .filter(|result| {
+                matches!(result, NodeRunResultV1::Succeeded { disposition, .. }
+                    if wanted.contains(disposition))
+            })
+            .count()
+    };
+    // One `runs.jsonl` line per completed run: predicted vs actual measures
+    // the estimate, and actual minus graph time feeds the overhead term. A
+    // failure to record only warns: timing history is advisory and must
+    // never turn a successful build into a failed one.
+    let run_record = RunRecordV1 {
+        predicted_seconds: Some(predicted.estimate_seconds),
+        actual_seconds: run_started.elapsed().as_secs_f64(),
+        graph_seconds: Some(graph_seconds),
+        nodes: results.len(),
+        built: count(&[
+            SuccessDispositionV1::Published,
+            SuccessDispositionV1::RebuiltEquivalent,
+        ]),
+        cached: count(&[SuccessDispositionV1::Cached]),
+        jobs: args.jobs,
+        at: crate::local_build_timing::unix_now(),
+    };
+    if let Err(error) = crate::local_build_timing::append_jsonl(
+        &crate::local_build_timing::runs_path(&cache_roots.base),
+        &run_record,
+    ) {
+        eprintln!("local-build warning: record run duration: {error}");
+    }
     let result = LocalBuildRunResultV1 {
         schema: 1,
         policy: LOCAL_SUPPORTED_POLICY.to_string(),
@@ -1079,13 +3007,14 @@ fn refreshed_source_only_program_projection(
     set: &Path,
     registry: &Registry,
     product_filters: &[String],
+    carried: &BTreeSet<PlanNodeV1>,
     expected_selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     expected_graph_authority_sha256: &str,
     receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
 ) -> Result<Vec<u8>, String> {
     let graph = load_and_plan(repo, set, registry)?;
     require_expected_graph_authority(&graph, expected_graph_authority_sha256)?;
-    let selected = select_graph_dependencies(&graph, product_filters)?;
+    let selected = select_graph_dependencies_with(&graph, product_filters, carried)?;
     if &selected != expected_selected {
         return Err(
             "selected local-build closure changed during program-authority finalization"
@@ -1128,6 +3057,7 @@ fn finalize_source_only_program_projection(
     set: &Path,
     registry: &Registry,
     product_filters: &[String],
+    carried: &BTreeSet<PlanNodeV1>,
     selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     graph_authority_sha256: &str,
     cache_roots: &SourceOnlyCacheRoots,
@@ -1148,6 +3078,7 @@ fn finalize_source_only_program_projection(
         set,
         registry,
         product_filters,
+        carried,
         selected,
         graph_authority_sha256,
         receipts,
@@ -1194,6 +3125,7 @@ fn finalize_source_only_program_projection(
                 set,
                 registry,
                 product_filters,
+                carried,
                 selected,
                 graph_authority_sha256,
                 receipts,
@@ -1210,6 +3142,153 @@ fn finalize_source_only_program_projection(
             // whole-graph re-derivation (`--verify-cache` restores it).
             authority.replace_projection_authority(&candidate)
         }
+    })
+}
+
+/// The maximal set of packages safe to publish from a partial build: a
+/// package qualifies only if it AND every package in its dependency closure
+/// is in `succeeded_with_receipts` (built or cached this run and holding a
+/// retained receipt). A package whose closure is incomplete is excluded, so
+/// the published authority never references a member whose dependency did not
+/// materialize.
+fn publishable_succeeded_package_closure(
+    graph: &PlannedGraphV1,
+    succeeded_with_receipts: &BTreeSet<PlanNodeV1>,
+) -> Result<BTreeSet<PlanNodeV1>, String> {
+    let mut publishable = BTreeSet::new();
+    for node in succeeded_with_receipts {
+        if !matches!(node, PlanNodeV1::Package { .. }) {
+            continue;
+        }
+        let closure = close_graph_selection(graph, vec![node.clone()])?;
+        let closure_ok = closure.keys().all(|member| {
+            !matches!(member, PlanNodeV1::Package { .. })
+                || succeeded_with_receipts.contains(member)
+        });
+        if closure_ok {
+            publishable.insert(node.clone());
+        }
+    }
+    Ok(publishable)
+}
+
+/// Commit a projection authority for the packages whose entire dependency
+/// closure succeeded this run, even when the aggregate build failed on
+/// unrelated packages.
+///
+/// WHY: package build nodes materialize their mirror files into the live
+/// projection incrementally, but the whole-graph authority in
+/// [`finalize_source_only_program_projection`] only commits when *every*
+/// selected package succeeds. A partial build therefore left fresh mirror
+/// files (e.g. a rebuilt `kernel.wasm`) described by a stale authority, and
+/// the read-time member-digest guard failed loud ("member size N, expected
+/// M"). This publishes an authority that matches exactly what is on disk for
+/// the succeeded closure, so a partial build leaves a *consistent*
+/// projection instead of a torn one — and a demo whose closure built (e.g.
+/// SDL2) is reachable even when an unrelated package (gzip/dinit/sdl3)
+/// fails. Packages whose closure did not fully succeed are simply omitted;
+/// a reader resolving one fails loud as genuinely missing, which is honest.
+///
+/// This is an interim consistency fix. The content-addressed generation
+/// model on the resolver "lane R" branches supersedes it (it retracts the
+/// authority an incomplete build invalidated); when that lands this can go.
+#[allow(clippy::too_many_arguments)]
+fn finalize_partial_source_only_program_projection(
+    repo: &Path,
+    registry: &Registry,
+    graph: &PlannedGraphV1,
+    graph_authority_sha256: &str,
+    cache_roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+    succeeded_package_nodes: &BTreeSet<PlanNodeV1>,
+    receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+    verify_cache: bool,
+) -> Result<(), String> {
+    // A package is publishable only if it AND every package in its
+    // dependency closure succeeded this run and retained a receipt — so the
+    // authority never references a member whose closure is incomplete.
+    let succeeded_with_receipts = succeeded_package_nodes
+        .iter()
+        .filter(|node| receipts.contains_key(node))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let publishable = publishable_succeeded_package_closure(graph, &succeeded_with_receipts)?;
+    if publishable.is_empty() {
+        // Nothing whose closure fully succeeded — leave the last committed
+        // authority in place rather than publish an empty one.
+        return Ok(());
+    }
+
+    let selected_nodes = publishable
+        .iter()
+        .map(|node| {
+            let PlanNodeV1::Package { name, target_arch } = node else {
+                return Err("internal: publishable set contains a non-package node".to_string());
+            };
+            let arch = parse_node_target_arch(target_arch)
+                .ok_or_else(|| format!("publishable package {name:?} has unsupported arch"))?;
+            Ok(ResolvedDependencyNode {
+                package_name: name.clone(),
+                target_arch: arch,
+            })
+        })
+        .collect::<Result<BTreeSet<_>, String>>()?;
+
+    let projection = source_only_program_package_index_for_nodes(
+        &repo.join("packages/registry"),
+        registry,
+        &selected_nodes,
+        wasm_posix_shared::ABI_VERSION,
+    )?;
+    let root_mirror_nodes = publishable
+        .iter()
+        .filter_map(|node| match node {
+            PlanNodeV1::Package { name, .. } => Some(
+                registry
+                    .load(name)
+                    .map(|manifest| manifest.uses_root_binary_mirror().then_some(node.clone())),
+            ),
+            PlanNodeV1::Product { .. } => None,
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<_>>();
+    let subset_receipts = receipts
+        .iter()
+        .filter(|(node, _)| publishable.contains(node))
+        .map(|(node, receipt)| (node.clone(), receipt.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let authority = source_only_program_projection_candidate(
+        projection,
+        graph_authority_sha256,
+        &subset_receipts,
+        &root_mirror_nodes,
+    )?;
+    let bytes = source_only_program_projection_bytes(&authority)?;
+
+    with_source_only_program_projection_lock(output_root, |authority| {
+        for node in &publishable {
+            let PlanNodeV1::Package { name, target_arch } = node else {
+                continue;
+            };
+            let arch = parse_node_target_arch(target_arch)
+                .ok_or_else(|| format!("publishable package {name:?} has unsupported arch"))?;
+            let manifest = registry.load(name)?;
+            let receipt = subset_receipts
+                .get(node)
+                .ok_or_else(|| format!("publishable package {name:?} omitted its receipt"))?;
+            authority.validate_package_receipt(
+                &manifest,
+                registry,
+                cache_roots,
+                arch,
+                wasm_posix_shared::ABI_VERSION,
+                verify_cache,
+                receipt,
+            )?;
+        }
+        authority.replace_projection_authority(&bytes)
     })
 }
 
@@ -1353,6 +3432,24 @@ fn write_node_result_no_replace(path: &Path, result: &NodeExecutionResultV1) -> 
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Announce a long-running engine phase on stderr and, when it takes a second
+/// or more, how long it took, so a run never sits silent for minutes between
+/// the scheduler's per-node lines.
+fn report_phase<T>(label: &str, phase: impl FnOnce() -> T) -> T {
+    eprintln!("==> {label}...");
+    let started = std::time::Instant::now();
+    let result = phase();
+    report_phase_elapsed(label, started);
+    result
+}
+
+fn report_phase_elapsed(label: &str, started: std::time::Instant) {
+    let elapsed = started.elapsed();
+    if elapsed.as_secs() >= 1 {
+        eprintln!("    {label} took {:.1}s", elapsed.as_secs_f64());
+    }
+}
+
 fn run_child_process(
     repo: &Path,
     set: &Path,
@@ -1408,23 +3505,56 @@ fn run_child_process(
     if verify_cache {
         command.arg("--verify-cache");
     }
-    let output = command
-        .output()
+    // Stream the child's output as it is produced rather than after it exits:
+    // a package build can run for minutes, and holding its log until the end
+    // makes the whole run look stalled. Both streams go to our stderr, because
+    // our stdout is the machine-readable result channel.
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("spawn local-build child {}: {error}", node_label(node)))?;
-    forward_child_output(node, &output.stdout);
-    forward_child_output(node, &output.stderr);
+    let label = node_label(node);
+    let forwarders = [
+        child.stdout.take().map(|stream| forward_child_output(label.clone(), stream)),
+        child.stderr.take().map(|stream| forward_child_output(label.clone(), stream)),
+    ];
+    let status = child
+        .wait()
+        .map_err(|error| format!("wait for local-build child {label}: {error}"))?;
+    for forwarder in forwarders.into_iter().flatten() {
+        // A forwarder only fails if writing our own stderr fails; the child's
+        // result below is still authoritative.
+        let _ = forwarder.join();
+    }
     let bytes = read_stable_regular_file(result_json, 64 * 1024, "local-build child result")?;
-    let exit_code = output.status.code();
+    let exit_code = status.code();
     validate_child_result(node, receipt_required, exit_code, &bytes)
 }
 
-fn forward_child_output(node: &PlanNodeV1, bytes: &[u8]) {
-    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-        eprint!("[{}] {}", node_label(node), String::from_utf8_lossy(line));
-        if !line.ends_with(b"\n") {
-            eprintln!();
+/// Copy one child output stream to stderr line by line, prefixing each line
+/// with the node label. Each line is written under the stderr lock so lines
+/// from concurrently running nodes interleave whole, never mid-line.
+fn forward_child_output(
+    label: String,
+    stream: impl Read + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stream);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match std::io::BufRead::read_until(&mut reader, b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let text = String::from_utf8_lossy(&line);
+                    let text = text.strip_suffix('\n').unwrap_or(&text);
+                    let mut stderr = std::io::stderr().lock();
+                    let _ = writeln!(stderr, "[{label}] {text}");
+                }
+            }
         }
-    }
+    })
 }
 
 fn render_scheduler_event(event: SchedulerEventV1, color: bool, aggregate_failed: &mut bool) {
@@ -2909,6 +5039,17 @@ fn select_graph_dependencies(
     graph: &PlannedGraphV1,
     product_filters: &[String],
 ) -> Result<BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>, String> {
+    select_graph_dependencies_with(graph, product_filters, &BTreeSet::new())
+}
+
+/// Select the closure of `product_filters` plus the explicit `extra_seeds`
+/// (package nodes a narrow run carries forward from the published projection).
+/// A complete selection (no filters, or `all`) already contains every node.
+fn select_graph_dependencies_with(
+    graph: &PlannedGraphV1,
+    product_filters: &[String],
+    extra_seeds: &BTreeSet<PlanNodeV1>,
+) -> Result<BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>, String> {
     let mut unique = BTreeSet::new();
     for product in product_filters {
         if !unique.insert(product.as_str()) {
@@ -2937,19 +5078,61 @@ fn select_graph_dependencies(
         .filter(|entry| entry.disposition == "dormant-product")
         .map(|entry| entry.name.as_str())
         .collect::<BTreeSet<_>>();
+    // Package nodes, keyed by (name, target_arch), so a bare `xtask bootstrap
+    // <target>` positional (run.sh's former `build_<pkg>` targets: `kernel`,
+    // `zlib`, `mariadb64`, ...) can select a single registry package the same
+    // way a declared product id already can, without requiring every
+    // package to also be declared as a VFS product.
+    let package_names = graph
+        .dependencies
+        .keys()
+        .filter_map(|node| match node {
+            PlanNodeV1::Package { name, target_arch } => {
+                Some((name.as_str(), target_arch.as_str()))
+            }
+            PlanNodeV1::Product { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
 
-    let mut selected = BTreeSet::new();
     let mut pending = Vec::new();
-    for product in product_filters {
-        if !active_products.contains(product.as_str()) {
-            return if dormant_products.contains(product.as_str()) {
-                Err(format!("product {product:?} is dormant"))
-            } else {
-                Err(format!("unknown product {product:?}"))
-            };
+    for filter in product_filters {
+        if active_products.contains(filter.as_str()) {
+            pending.push(PlanNodeV1::product(filter));
+            continue;
         }
-        pending.push(PlanNodeV1::product(product));
+        if dormant_products.contains(filter.as_str()) {
+            return Err(format!("product {filter:?} is dormant"));
+        }
+        if package_names.contains(&(filter.as_str(), "wasm32")) {
+            pending.push(PlanNodeV1::package(filter, "wasm32"));
+            continue;
+        }
+        // `./run.sh build mariadb64` names the wasm64 build of the `mariadb`
+        // package; the package graph itself has no node literally named
+        // "mariadb64". Strip the historical "64" suffix convention and look
+        // for the wasm64 variant of the base package name.
+        if let Some(base) = filter.strip_suffix("64") {
+            if package_names.contains(&(base, "wasm64")) {
+                pending.push(PlanNodeV1::package(base, "wasm64"));
+                continue;
+            }
+        }
+        if package_names.contains(&(filter.as_str(), "wasm64")) {
+            pending.push(PlanNodeV1::package(filter, "wasm64"));
+            continue;
+        }
+        return Err(format!("unknown product or package {filter:?}"));
     }
+    pending.extend(extra_seeds.iter().cloned());
+    close_graph_selection(graph, pending)
+}
+
+/// The dependency closure of `seeds`, as the selected subgraph.
+fn close_graph_selection(
+    graph: &PlannedGraphV1,
+    mut pending: Vec<PlanNodeV1>,
+) -> Result<BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>, String> {
+    let mut selected = BTreeSet::new();
     while let Some(node) = pending.pop() {
         if !selected.insert(node.clone()) {
             continue;
@@ -3179,9 +5362,9 @@ fn source_only_program_projection_candidate(
         let PlanNodeV1::Package { name, target_arch } = root_node else {
             return Err("source-only root-mirror set contains a product node".to_string());
         };
-        if !matches!(name.as_str(), "kernel" | "userspace") {
+        if !matches!(name.as_str(), "kernel") {
             return Err(format!(
-                "source-only root-mirror package must be only kernel or userspace, got {name:?}/{target_arch}"
+                "source-only root-mirror package must be only kernel, got {name:?}/{target_arch}"
             ));
         }
         if projection.packages.contains_key(name) || ordinary_program_nodes.contains(root_node) {
@@ -3333,10 +5516,56 @@ fn parse_local_build_args_with_jobs(
         .ok_or_else(|| "usage: xtask local-build <plan|run|run-node> ...".to_string())?;
     match command.as_str() {
         "plan" => {
-            let mut flags = parse_named_flags(rest, &["--set"], &[], &[])?;
-            Ok(LocalBuildCommandV1::Plan {
-                set: PathBuf::from(take_required_flag(&mut flags, "--set")?),
-            })
+            let mut flags = parse_named_flags(
+                rest,
+                &["--set", "--source-cache-root", "--output-root", "--jobs"],
+                &["--product"],
+                &["--status", "--json"],
+            )?;
+            let set = PathBuf::from(take_required_flag(&mut flags, "--set")?);
+            if !flags.switches.contains("--status") {
+                // Plain `plan` prints the static graph and ignores cache,
+                // jobs, and product inputs. Rejecting those flags without
+                // `--status` keeps a forgotten `--status` from silently
+                // returning the wrong kind of answer.
+                if let Some(flag) = flags
+                    .values
+                    .keys()
+                    .chain(flags.repeated.keys())
+                    .chain(flags.switches.iter())
+                    .next()
+                {
+                    return Err(format!("local-build plan flag {flag} requires --status"));
+                }
+                return Ok(LocalBuildCommandV1::Plan { set });
+            }
+            // Defaults match `./run.sh local-build` and `./run.sh setup`, so a
+            // bare `plan --status` describes the build those would run.
+            let source_cache_root = match flags.values.remove("--source-cache-root") {
+                Some(value) => absolute_authored_path(value, "--source-cache-root")?,
+                None => default_source_cache_root()?,
+            };
+            let output_root = match flags.values.remove("--output-root") {
+                Some(value) => absolute_authored_path(value, "--output-root")?,
+                None => crate::repo_root().join("local-binaries/source-only-v1"),
+            };
+            let products = flags.repeated.remove("--product").unwrap_or_default();
+            for product in &products {
+                if product != "all" {
+                    validate_name(product, "product filter")?;
+                }
+            }
+            let explicit_jobs = flags.values.remove("--jobs");
+            let jobs =
+                select_job_count(explicit_jobs.as_deref(), environment_jobs, available_jobs)?;
+            Ok(LocalBuildCommandV1::PlanStatus(LocalBuildPlanStatusArgsV1 {
+                set,
+                source_cache_root,
+                output_root,
+                products,
+                jobs,
+                json: flags.switches.contains("--json"),
+            }))
         }
         "run" => {
             let mut flags = parse_named_flags(
@@ -3629,31 +5858,153 @@ mod tests {
     }
 
     #[test]
-    fn source_only_program_projection_is_current_matches_recorded_graph_authority() {
+    fn verify_sysroot_abi_headers_gates_missing_and_stale_headers() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let sysroot = temp.path().join("sysroot");
+        let overlay_bits = repo.join("libc/musl-overlay/include/bits");
+        let sysroot_bits = sysroot.join("include/bits");
+
+        write(&overlay_bits.join("kandelo_limits.h"), "#define KANDELO_LIMIT 1\n");
+        write(
+            &overlay_bits.join("kandelo_channel_scalars.h"),
+            "#define KANDELO_CHANNEL 2\n",
+        );
+        // A non-kandelo bits header must be ignored by the mirror check.
+        write(&overlay_bits.join("alltypes.h"), "typedef int wasm_marker;\n");
+
+        // Complete, byte-identical sysroot -> Ok.
+        write(&sysroot_bits.join("kandelo_limits.h"), "#define KANDELO_LIMIT 1\n");
+        write(
+            &sysroot_bits.join("kandelo_channel_scalars.h"),
+            "#define KANDELO_CHANNEL 2\n",
+        );
+        verify_sysroot_abi_headers(&repo, &sysroot, "wasm32posix")
+            .expect("complete, current sysroot headers must pass");
+
+        // Stale copy (content drifted from the overlay) -> loud failure.
+        write(
+            &sysroot_bits.join("kandelo_channel_scalars.h"),
+            "#define KANDELO_CHANNEL 999\n",
+        );
+        let stale = verify_sysroot_abi_headers(&repo, &sysroot, "wasm32posix")
+            .expect_err("a stale ABI header must fail loud");
+        assert!(stale.contains("kandelo_channel_scalars.h"), "{stale}");
+        assert!(stale.contains("stale"), "{stale}");
+
+        // Missing header -> loud failure naming it, with rebuild guidance and
+        // the wasm64 arch flag threaded through.
+        fs::remove_file(sysroot_bits.join("kandelo_channel_scalars.h")).unwrap();
+        let missing = verify_sysroot_abi_headers(&repo, &sysroot, "wasm64posix")
+            .expect_err("a missing ABI header must fail loud");
+        assert!(missing.contains("kandelo_channel_scalars.h"), "{missing}");
+        assert!(missing.contains("missing"), "{missing}");
+        assert!(missing.contains("build-musl.sh --arch wasm64posix"), "{missing}");
+    }
+
+    #[test]
+    fn source_cache_root_defaults_to_home_when_no_override() {
+        let resolved =
+            resolve_source_cache_root(None, Some(std::ffi::OsString::from("/home/dev"))).unwrap();
+        assert_eq!(resolved, PathBuf::from("/home/dev/.cache/kandelo/source-only"));
+    }
+
+    #[test]
+    fn source_cache_root_override_wins_over_home() {
+        let resolved = resolve_source_cache_root(
+            Some(std::ffi::OsString::from("/tmp/wt-cache")),
+            Some(std::ffi::OsString::from("/home/dev")),
+        )
+        .unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/wt-cache"));
+    }
+
+    #[test]
+    fn source_cache_root_override_must_be_absolute() {
+        let err = resolve_source_cache_root(
+            Some(std::ffi::OsString::from("relative/cache")),
+            Some(std::ffi::OsString::from("/home/dev")),
+        )
+        .unwrap_err();
+        assert!(err.contains("KANDELO_SOURCE_CACHE_ROOT"), "{err}");
+        assert!(err.contains("absolute"), "{err}");
+    }
+
+    #[test]
+    fn source_cache_root_errors_when_no_override_and_no_home() {
+        let err = resolve_source_cache_root(None, None).unwrap_err();
+        assert!(err.contains("HOME is not set"), "{err}");
+    }
+
+    #[test]
+    fn source_only_program_projection_is_current_requires_the_exact_node_set() {
         let temp = tempfile::TempDir::new().unwrap();
         let output = temp.path();
         let authority = "a".repeat(64);
+        let member = MaterializedProgramMemberV1 {
+            source_artifact: "a.wasm".to_string(),
+            mirror_path: "a.wasm".to_string(),
+            mode: 0o644,
+            size: 1,
+            sha256: "0".repeat(64),
+        };
+        let receipt = |key: char, members: Vec<MaterializedProgramMemberV1>| PackageNodeReceiptV1 {
+            manifest_sha256: "1".repeat(64),
+            cache_key_sha256: key.to_string().repeat(64),
+            cache_receipt_sha256: "c".repeat(64),
+            materialized_members: members,
+        };
+        // A library carries a receipt but mirrors nothing, so the projection
+        // never records it and it must not make the projection look stale.
+        let receipts = BTreeMap::from([
+            (PlanNodeV1::package("kernel", "wasm32"), receipt('d', vec![member.clone()])),
+            (PlanNodeV1::package("shell", "wasm32"), receipt('e', vec![member.clone()])),
+            (PlanNodeV1::package("zlib", "wasm32"), receipt('9', Vec::new())),
+        ]);
+        let node = |name: &str, key: char| {
+            format!(
+                r#"{{"node":{{"kind":"package","name":"{name}","targetArch":"wasm32"}},"cacheKeySha256":"{}","cacheReceiptSha256":"{}","members":[]}}"#,
+                key.to_string().repeat(64),
+                "c".repeat(64),
+            )
+        };
+        let projection = |authority: &str, nodes: &[String]| {
+            format!(
+                r#"{{"graphAuthoritySha256":"{authority}","nodes":[{}]}}"#,
+                nodes.join(",")
+            )
+        };
 
         assert!(
-            !source_only_program_projection_is_current(output, &authority),
+            !source_only_program_projection_is_current(output, &authority, &receipts),
             "an absent projection authority is never current"
         );
 
         let path = output
             .join(".kandelo")
             .join("source-only-program-projection-v1.json");
-        write(
-            &path,
-            &format!(r#"{{"graphAuthoritySha256":"{authority}","nodes":[]}}"#),
+        write(&path, &projection(&authority, &[node("kernel", 'd'), node("shell", 'e')]));
+        assert!(
+            source_only_program_projection_is_current(output, &authority, &receipts),
+            "a projection recording this graph authority and exactly these receipts is current"
+        );
+        assert!(
+            !source_only_program_projection_is_current(output, &"b".repeat(64), &receipts),
+            "a projection recording a different graph authority is stale"
         );
 
+        // A narrower run (`bootstrap kernel`) records the same graph authority
+        // but only its own closure; a full run must replace it.
+        write(&path, &projection(&authority, &[node("kernel", 'd')]));
         assert!(
-            source_only_program_projection_is_current(output, &authority),
-            "a projection recording the same graph authority is current"
+            !source_only_program_projection_is_current(output, &authority, &receipts),
+            "a same-authority projection of a narrower selection is stale"
         );
+
+        write(&path, &projection(&authority, &[node("kernel", 'd'), node("shell", 'f')]));
         assert!(
-            !source_only_program_projection_is_current(output, &"b".repeat(64)),
-            "a projection recording a different graph authority is stale"
+            !source_only_program_projection_is_current(output, &authority, &receipts),
+            "a projection recording another cache key for a node is stale"
         );
     }
 
@@ -3816,194 +6167,631 @@ mod tests {
     }
 
     #[test]
-    fn checked_in_authority_has_exact_stable_projection() {
+    fn clean_cascades_to_products_embedding_the_package() {
+        // Real checked-in graph: nethack <- nethack-browser-bundle <- shell
+        // <- the browser-main-shell product (packages/registry/shell/
+        // package.toml depends on nethack-browser-bundle; local-supported
+        // .toml's browser-main-shell product maps to the shell package).
+        // `clean_removal_set` must discover this by walking dependency
+        // edges backwards from `nethack` — not by consulting any hand-kept
+        // list of "packages that live inside the shell VFS image".
         let repo = crate::repo_root();
         let set = repo.join("packages/sets/local-supported.toml");
         let registry = Registry::from_env(&repo);
-        let first = load_and_plan(&repo, &set, &registry).unwrap();
-        let second = load_and_plan(&repo, &set, &registry).unwrap();
-        assert_eq!(
-            canonical_plan_bytes(&first).unwrap(),
-            canonical_plan_bytes(&second).unwrap()
+        let graph = load_and_plan(&repo, &set, &registry).unwrap();
+
+        let nethack = PlanNodeV1::package("nethack", "wasm32");
+        let removal = clean_removal_set(&graph, &nethack);
+
+        assert!(
+            removal.contains(&nethack),
+            "the removal set always includes the cleaned node itself"
         );
-        assert_eq!(first.schema, 1);
-        assert_eq!(first.policy, "source-only-v1");
-        assert_eq!(first.packages.len(), 75);
-        assert_eq!(first.products.len(), 7);
-        assert_eq!(
-            first
-                .packages
+        assert!(
+            removal.contains(&PlanNodeV1::package("nethack-browser-bundle", "wasm32")),
+            "cleaning nethack invalidates the bundle package that directly depends on it"
+        );
+        assert!(
+            removal.contains(&PlanNodeV1::package("shell", "wasm32")),
+            "cleaning nethack invalidates the shell package that embeds the bundle"
+        );
+        assert!(
+            removal
                 .iter()
-                .map(|package| package.name.as_str())
-                .collect::<Vec<_>>(),
-            "bash bc bzip2 coreutils cpython curl dash diffutils dinit fbdoom file \
-             findutils gawk git grep gzip icu kandelo-sdk kernel lamp less libcurl libcxx \
-             libiconv libpng libxml2 libzip login lsof m4 make mariadb mariadb-test modeset \
-             msmtpd nano ncurses netcat nethack nethack-browser-bundle nginx nginx-php-vfs \
-             nginx-vfs node node-vfs openssl perl php posix-utils-lite redis rootfs ruby \
-             sdl-dsp-test sdl2 sdl2-mixer-playwave sdl3 sed shell spidermonkey \
-             spidermonkey-node sqlite sudo sudo-lite tar tcl unzip userspace vim \
-             vim-browser-bundle wget wordpress xz zip zlib zstd"
-                .split_whitespace()
-                .collect::<Vec<_>>(),
+                .any(|node| matches!(node, PlanNodeV1::Product { id } if id.contains("shell"))),
+            "cleaning nethack invalidates the shell product that embeds it; got {removal:?}",
         );
+
+        // A leaf nothing else depends on (directly or via a product) removes
+        // only itself. Read the leaf out of the graph's real node set instead
+        // of naming one: a named package stops being a leaf as soon as an image
+        // embeds it. Iterating the actual package nodes (rather than
+        // reconstructing them from names under a hardcoded arch) keeps the
+        // candidate honest for any planned target, so the leaf we assert on is
+        // one the graph truly contains.
+        let leaf = graph
+            .dependencies
+            .keys()
+            .filter(|node| matches!(node, PlanNodeV1::Package { .. }))
+            .find(|node| !graph.dependencies.values().any(|deps| deps.contains(node)))
+            .cloned()
+            .expect("the checked-in graph has a package nothing else depends on");
         assert_eq!(
-            first
-                .packages
-                .iter()
-                .fold(BTreeMap::<&str, usize>::new(), |mut counts, package| {
-                    *counts.entry(package.class.as_str()).or_default() += 1;
-                    counts
-                },),
-            BTreeMap::from([
-                ("browser-product", 8),
-                ("platform", 19),
-                ("test-support", 3),
-                ("user-software", 45),
-            ]),
+            clean_removal_set(&graph, &leaf),
+            BTreeSet::from([leaf.clone()])
         );
-        for (class, expected) in [
-            (
-                "browser-product",
-                "lamp nethack-browser-bundle nginx-php-vfs nginx-vfs node-vfs shell \
-                 vim-browser-bundle wordpress",
-            ),
-            ("test-support", "kandelo-sdk mariadb-test sdl-dsp-test"),
-            (
-                "platform",
-                "icu kernel libcurl libcxx libiconv libpng libxml2 libzip login ncurses \
-                 openssl rootfs sdl2 sdl3 sqlite sudo sudo-lite userspace zlib",
-            ),
-        ] {
-            assert_eq!(
-                first
-                    .packages
+    }
+
+    #[test]
+    fn partial_publish_excludes_a_package_whose_dependency_did_not_succeed() {
+        // Interim partial-build consistency (fix B): a package may be
+        // published from a failed aggregate build only when its ENTIRE
+        // dependency closure also succeeded and retained a receipt. Derive
+        // the fixture from the real checked-in graph so it stays honest for
+        // whatever the plan actually contains.
+        let repo = crate::repo_root();
+        let set = repo.join("packages/sets/local-supported.toml");
+        let registry = Registry::from_env(&repo);
+        let graph = load_and_plan(&repo, &set, &registry).unwrap();
+
+        // A package with at least one package dependency, and one such dep.
+        let (pkg, dep) = graph
+            .dependencies
+            .iter()
+            .filter_map(|(node, deps)| {
+                if !matches!(node, PlanNodeV1::Package { .. }) {
+                    return None;
+                }
+                let dep = deps
                     .iter()
-                    .filter(|package| package.class == class)
-                    .map(|package| package.name.as_str())
-                    .collect::<Vec<_>>(),
-                expected.split_whitespace().collect::<Vec<_>>(),
+                    .find(|d| matches!(d, PlanNodeV1::Package { .. }))?;
+                Some((node.clone(), dep.clone()))
+            })
+            .next()
+            .expect("the checked-in graph has a package with a package dependency");
+
+        let closure = close_graph_selection(&graph, vec![pkg.clone()])
+            .unwrap()
+            .into_keys()
+            .filter(|node| matches!(node, PlanNodeV1::Package { .. }))
+            .collect::<BTreeSet<_>>();
+
+        // Whole closure succeeded → the package is publishable.
+        let all_ok = publishable_succeeded_package_closure(&graph, &closure).unwrap();
+        assert!(
+            all_ok.contains(&pkg),
+            "a package whose entire closure succeeded must be publishable"
+        );
+
+        // Drop one dependency → the package (and that dep) are excluded, so
+        // the authority never names a member whose dependency is absent.
+        let mut missing_dep = closure.clone();
+        missing_dep.remove(&dep);
+        let partial = publishable_succeeded_package_closure(&graph, &missing_dep).unwrap();
+        assert!(
+            !partial.contains(&pkg),
+            "a package whose dependency did not succeed must NOT be published"
+        );
+        assert!(
+            !partial.contains(&dep),
+            "the dependency that did not succeed is itself absent"
+        );
+
+        // A leaf package (closure is only itself) publishes on its own.
+        if let Some(leaf) = graph
+            .dependencies
+            .keys()
+            .filter(|node| matches!(node, PlanNodeV1::Package { .. }))
+            .find(|node| {
+                close_graph_selection(&graph, vec![(*node).clone()])
+                    .unwrap()
+                    .keys()
+                    .filter(|m| matches!(m, PlanNodeV1::Package { .. }))
+                    .count()
+                    == 1
+            })
+            .cloned()
+        {
+            let solo = BTreeSet::from([leaf.clone()]);
+            assert!(
+                publishable_succeeded_package_closure(&graph, &solo)
+                    .unwrap()
+                    .contains(&leaf),
+                "a leaf package with no package dependencies publishes on its own"
             );
         }
-        assert_eq!(
-            first
-                .packages
-                .iter()
-                .filter(|package| package.architectures == ["wasm32", "wasm64"])
-                .map(|package| package.name.as_str())
-                .collect::<Vec<_>>(),
-            ["libcxx", "mariadb", "openssl", "sqlite", "zlib"],
+    }
+
+    /// Fabricate one compiled `SourceOnlyV1` generation exactly the way the
+    /// real engine leaves one on disk: a canonical cache directory under
+    /// `<compiled_cache_root>/programs/`, its hidden receipt sidecar (via
+    /// the real `write_source_only_cache_receipt`, so the sidecar's name and
+    /// shape match what `clean_package_node_outputs` actually reads), and
+    /// the one file the receipt's `materialized_members` mirrors into
+    /// `output_root`. Returns the canonical generation directory path.
+    fn fabricate_compiled_generation(
+        compiled_cache_root: &Path,
+        output_root: &Path,
+        name: &str,
+        version: &str,
+        revision: u32,
+        arch: &str,
+        abi: Option<u32>,
+        cache_key_sha: &str,
+        mirror_relative: &str,
+    ) -> PathBuf {
+        // `canonical_path` names the ABI after the arch; generations named
+        // before it did have no ABI segment.
+        let abi_segment = abi.map(|abi| format!("abi{abi}-")).unwrap_or_default();
+        let basename =
+            format!("{name}-{version}-rev{revision}-{arch}-{abi_segment}{cache_key_sha}");
+        let canonical = compiled_cache_root.join("programs").join(&basename);
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(canonical.join("marker"), b"fixture generation").unwrap();
+
+        let mirror = output_root.join(mirror_relative);
+        write(&mirror, "fixture mirrored output");
+
+        let receipt = PackageNodeReceiptV1 {
+            manifest_sha256: "0".repeat(64),
+            cache_key_sha256: cache_key_sha.to_string(),
+            cache_receipt_sha256: "1".repeat(64),
+            materialized_members: vec![MaterializedProgramMemberV1 {
+                source_artifact: format!("{name}.wasm"),
+                mirror_path: mirror_relative.to_string(),
+                mode: 0o755,
+                size: fs::metadata(&mirror).unwrap().len(),
+                sha256: "2".repeat(64),
+            }],
+        };
+        crate::build_deps::write_source_only_cache_receipt(&canonical, &receipt).unwrap();
+        canonical
+    }
+
+    #[test]
+    fn clean_package_node_outputs_removes_only_the_targeted_generation() {
+        // This is the destructive path `xtask clean` actually runs: it must
+        // remove exactly the targeted package's compiled cache directory,
+        // its receipt sidecar, and its mirrored output — and must NOT touch
+        // an unrelated sibling package's cache/receipt/mirror, however
+        // similar the on-disk layout looks. A live run proved this once by
+        // hand (see the Stage 5 report); this pins it as a fast, repeatable
+        // tmpdir test instead of relying on that again.
+        let root = tempfile::TempDir::new().unwrap();
+        let root = root.path();
+        package(root, "alpha", &[], &[]);
+        package(root, "beta", &[], &[]);
+        let reg = registry(root);
+
+        let cache = tempfile::TempDir::new().unwrap();
+        let compiled_cache_root = cache.path().join("compiled");
+        let output = tempfile::TempDir::new().unwrap();
+        let output_root = output.path();
+
+        let alpha_cache_key = "cachekey-alpha-0000000000000000000000000000000000000000";
+        let beta_cache_key = "cachekey-beta-00000000000000000000000000000000000000000";
+        let alpha_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            None,
+            alpha_cache_key,
+            "programs/wasm32/alpha.wasm",
         );
-        assert_eq!(
-            first
-                .products
-                .iter()
-                .map(|product| {
-                    (
-                        product.id.as_str(),
-                        product.package.as_str(),
-                        product.manifest.as_str(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            [
-                (
-                    "browser-lamp",
-                    "lamp",
-                    "images/vfs/products/browser-lamp.toml",
-                ),
-                (
-                    "browser-main-shell",
-                    "shell",
-                    "images/vfs/products/browser-main-shell.toml",
-                ),
-                (
-                    "browser-nginx",
-                    "nginx-vfs",
-                    "images/vfs/products/browser-nginx.toml",
-                ),
-                (
-                    "browser-nginx-php",
-                    "nginx-php-vfs",
-                    "images/vfs/products/browser-nginx-php.toml",
-                ),
-                (
-                    "browser-node",
-                    "node-vfs",
-                    "images/vfs/products/browser-node.toml",
-                ),
-                (
-                    "browser-wordpress",
-                    "wordpress",
-                    "images/vfs/products/browser-wordpress.toml",
-                ),
-                (
-                    "platform-rootfs",
-                    "rootfs",
-                    "images/vfs/products/platform-rootfs.toml",
-                ),
-            ],
+        let beta_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "beta",
+            "1.0.0",
+            1,
+            "wasm32",
+            None,
+            beta_cache_key,
+            "programs/wasm32/beta.wasm",
         );
-        let browser_main_shell = PlanNodeV1::product("browser-main-shell");
-        let dinit = PlanNodeV1::package("dinit", "wasm32");
+        let alpha_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&alpha_canonical, alpha_cache_key)
+                .unwrap();
+        let beta_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&beta_canonical, beta_cache_key)
+                .unwrap();
+        let alpha_mirror = output_root.join("programs/wasm32/alpha.wasm");
+        let beta_mirror = output_root.join("programs/wasm32/beta.wasm");
+
+        // Sanity: the fixture actually created everything the assertions
+        // below check the disappearance/survival of.
+        assert!(alpha_canonical.is_dir());
+        assert!(beta_canonical.is_dir());
+        assert!(alpha_receipt_sidecar.is_file());
+        assert!(beta_receipt_sidecar.is_file());
+        assert!(alpha_mirror.is_file());
+        assert!(beta_mirror.is_file());
+
+        let removed = clean_package_node_outputs(
+            &reg,
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "wasm32",
+            alpha_cache_key,
+        )
+        .unwrap();
         assert!(
-            first.dependencies[&browser_main_shell].contains(&dinit),
-            "browser-main-shell must select the dinit Wasm imported by its live setup",
+            removed.contains(&alpha_canonical)
+                && removed.contains(&alpha_receipt_sidecar)
+                && removed.contains(&alpha_mirror),
+            "expected the targeted generation dir, receipt sidecar, and mirror in the removed list; got {removed:?}"
         );
-        assert!(first.authority.direct_edges.contains(&GraphDirectEdgeV1 {
-            dependency: dinit,
-            dependent: browser_main_shell,
-        }));
-        assert_eq!(
-            first
-                .exclusions
-                .iter()
-                .filter(|entry| entry.disposition == "excluded-root")
-                .map(|entry| entry.name.as_str())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from([
-                "erlang",
-                "erlang-vfs",
-                "mariadb-vfs",
-                "perl-vfs",
-                "python-vfs",
-                "redis-vfs",
-                "texlive",
-            ]),
+
+        assert!(
+            !alpha_canonical.exists(),
+            "targeted generation directory must be removed"
         );
-        assert_eq!(
-            first
-                .exclusions
-                .iter()
-                .filter(|entry| entry.disposition == "dependency-only")
-                .map(|entry| entry.name.as_str())
-                .collect::<Vec<_>>(),
-            ["pcre2-source", "wordpress-sqlite-integration-source"],
+        assert!(
+            !alpha_receipt_sidecar.exists(),
+            "targeted receipt sidecar must be removed"
         );
-        assert_eq!(
-            first
-                .exclusions
-                .iter()
-                .filter(|entry| entry.disposition == "registry-non-root")
-                .map(|entry| entry.name.as_str())
-                .collect::<Vec<_>>(),
-            ["sqlite-cli"],
+        assert!(
+            !alpha_mirror.exists(),
+            "targeted mirrored output must be removed"
         );
-        assert_eq!(
-            first
-                .exclusions
-                .iter()
-                .filter(|entry| entry.disposition == "dormant-product")
-                .map(|entry| entry.name.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "browser-erlang",
-                "browser-mariadb-wasm32",
-                "browser-mariadb-wasm64",
-                "browser-perl",
-                "browser-python",
-                "browser-redis",
-            ],
+
+        assert!(
+            beta_canonical.is_dir(),
+            "decoy sibling's generation directory must survive"
+        );
+        assert!(
+            beta_receipt_sidecar.is_file(),
+            "decoy sibling's receipt sidecar must survive"
+        );
+        assert!(
+            beta_mirror.is_file(),
+            "decoy sibling's mirrored output must survive"
+        );
+    }
+
+    #[test]
+    fn clean_package_node_outputs_keeps_generations_under_other_cache_keys() {
+        // The compiled cache is shared by every worktree on the machine. A
+        // generation of the same package under a different cache key was
+        // built from different inputs (another checkout's), so cleaning this
+        // checkout must leave it alone; otherwise one worktree's `clean`
+        // silently forces every other worktree to rebuild the package and
+        // its whole reverse-dependency cascade.
+        let root = tempfile::TempDir::new().unwrap();
+        let root = root.path();
+        package(root, "alpha", &[], &[]);
+        let reg = registry(root);
+
+        let cache = tempfile::TempDir::new().unwrap();
+        let compiled_cache_root = cache.path().join("compiled");
+        let output = tempfile::TempDir::new().unwrap();
+        let output_root = output.path();
+
+        let current_key = "cachekey-current-000000000000000000000000000000000000000";
+        let other_key = "cachekey-other-checkout-0000000000000000000000000000000";
+        let other_output = tempfile::TempDir::new().unwrap();
+        let other_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            other_output.path(),
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            None,
+            other_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let current_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            None,
+            current_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let other_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&other_canonical, other_key)
+                .unwrap();
+        let current_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&current_canonical, current_key)
+                .unwrap();
+        let mirror = output_root.join("programs/wasm32/alpha.wasm");
+
+        let removed = clean_package_node_outputs(
+            &reg,
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "wasm32",
+            current_key,
+        )
+        .unwrap();
+
+        assert!(!current_canonical.exists(), "current generation must be removed");
+        assert!(!current_receipt_sidecar.exists(), "current receipt must be removed");
+        assert!(!mirror.exists(), "this checkout's mirrored output must be removed");
+        assert!(
+            other_canonical.is_dir() && other_receipt_sidecar.is_file(),
+            "another cache key's generation and receipt must survive; removed {removed:?}"
+        );
+        assert!(
+            !removed.contains(&other_canonical) && !removed.contains(&other_receipt_sidecar),
+            "the removed list must not report the surviving generation; got {removed:?}"
+        );
+    }
+
+    #[test]
+    fn clean_package_node_outputs_reads_the_key_after_the_abi_segment() {
+        // Library and program generations carry `abi<N>-` between the arch
+        // and the key. If clean took `abi<N>-<key>` for the key it would
+        // never match the current key and would leave the generation behind.
+        let root = tempfile::TempDir::new().unwrap();
+        let root = root.path();
+        package(root, "alpha", &[], &[]);
+        let reg = registry(root);
+
+        let cache = tempfile::TempDir::new().unwrap();
+        let compiled_cache_root = cache.path().join("compiled");
+        let output = tempfile::TempDir::new().unwrap();
+        let output_root = output.path();
+
+        let current_key = "cachekey-current-000000000000000000000000000000000000000";
+        let other_key = "cachekey-other-checkout-0000000000000000000000000000000";
+        let other_output = tempfile::TempDir::new().unwrap();
+        let other_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            other_output.path(),
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            Some(45),
+            other_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let current_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            Some(46),
+            current_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let current_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&current_canonical, current_key)
+                .unwrap();
+
+        let removed = clean_package_node_outputs(
+            &reg,
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "wasm32",
+            current_key,
+        )
+        .unwrap();
+
+        assert!(!current_canonical.exists(), "current generation must be removed");
+        assert!(!current_receipt_sidecar.exists(), "current receipt must be removed");
+        assert!(
+            other_canonical.is_dir(),
+            "another cache key's generation must survive; removed {removed:?}"
+        );
+    }
+
+    /// Extract the body (inclusive of the enclosing braces) of a top-level
+    /// bash function named `function` from `source`, by counting brace
+    /// depth from the function's opening `{`. Good enough for the small,
+    /// brace-free-besides-`${...}` bodies this file's folded `build_*_vfs`
+    /// functions have today; not a general bash parser.
+    fn extract_bash_function_body(source: &str, function: &str) -> String {
+        let header = format!("{function}() {{");
+        let start = source
+            .find(&header)
+            .unwrap_or_else(|| panic!("run.sh: no {header:?} function definition found"));
+        let mut depth = 0i32;
+        let mut end = None;
+        for (offset, ch) in source[start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(start + offset + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end
+            .unwrap_or_else(|| panic!("run.sh: unterminated body for function {function:?}"));
+        source[start..end].to_string()
+    }
+
+    /// Whether `body` contains a real `bootstrap_target <id>` call — not
+    /// just `id` as a substring of a longer, differently-named id (so a
+    /// `browser-nginx-php` body doesn't falsely satisfy an expectation of
+    /// `browser-nginx`).
+    fn body_calls_bootstrap_target(body: &str, id: &str) -> bool {
+        let needle = format!("bootstrap_target {id}");
+        let mut search_from = 0;
+        while let Some(relative) = body[search_from..].find(&needle) {
+            let match_end = search_from + relative + needle.len();
+            let boundary_ok = body[match_end..]
+                .chars()
+                .next()
+                .map(|next| !(next.is_alphanumeric() || next == '-' || next == '_'))
+                .unwrap_or(true);
+            if boundary_ok {
+                return true;
+            }
+            search_from = search_from + relative + 1;
+        }
+        false
+    }
+
+    /// Assert that `run.sh`'s `<function>` body actually dispatches to
+    /// `bootstrap_target <expected_id>`. This is the run.sh-side half of the
+    /// Stage 4 anti-drift guard: `run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries`
+    /// below only checks that `expected_id` is a declared product/package in
+    /// `local-supported.toml` — it says nothing about what `run.sh` actually
+    /// does. Without this, routing `build_wp_vfs` to the wrong product
+    /// (e.g. `browser-lamp` instead of `browser-wordpress`), or reverting a
+    /// folded function back to its old inline bash body, would both still
+    /// pass that check.
+    fn assert_run_sh_folded_dispatch(run_sh_source: &str, function: &str, expected_id: &str) {
+        let body = extract_bash_function_body(run_sh_source, function);
+        assert!(
+            body_calls_bootstrap_target(&body, expected_id),
+            "run.sh's {function}() does not call `bootstrap_target {expected_id}`; \
+             body was:\n{body}",
+        );
+    }
+
+    /// Stage 4 gap enumeration: every `build_*_vfs` function `run.sh` defines
+    /// must be accounted for as either (a) folded into a declared
+    /// `[[products]]` id (or, for `mariadb-test`, a declared bare package —
+    /// see its comment below) that `xtask bootstrap <id>` can already select,
+    /// or (b) left as a bash builder because its underlying package/product
+    /// is a documented, pre-existing exclusion/dormant entry that predates
+    /// this fold and is out of scope to reactivate here. If a future edit
+    /// declares a new product, removes an exclusion, or adds a new
+    /// `build_*_vfs` function without updating this table, this test fails
+    /// and forces the gap to be re-evaluated instead of silently drifting.
+    #[test]
+    fn run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries() {
+        let repo = crate::repo_root();
+        let set = parse_supported_set(&repo.join("packages/sets/local-supported.toml")).unwrap();
+        let product_ids = declared_product_ids(&set);
+        let package_names = set
+            .packages
+            .iter()
+            .map(|package| package.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let dormant_products = set
+            .dormant_products
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let excluded = set
+            .exclusions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<BTreeSet<_>>();
+
+        enum Expectation {
+            /// Folded: `run.sh`'s `build_<fn>` delegates to
+            /// `bootstrap_target <id>`, where `<id>` is a declared product id
+            /// (`[[products]]`) or bare package name already selectable by
+            /// `select_graph_dependencies`.
+            FoldedProduct(&'static str),
+            FoldedPackage(&'static str),
+            /// Left as bash: `<excluded_name>` is the registry package or
+            /// product id a pre-existing `[[exclusions]]`/`[[dormant_products]]`
+            /// entry in `local-supported.toml` already keeps out of the
+            /// engine's active graph, for a reason unrelated to whether the
+            /// engine *could* model the composite (it already can — every
+            /// one of these has a manifest and/or resolver-ready build
+            /// script). Reactivating any of these is a product decision, not
+            /// an engine-capability gap, and is out of Stage 4's scope.
+            DormantOrExcluded(&'static str),
+        }
+
+        // run.sh function name -> what it should resolve to today.
+        let table: &[(&str, Expectation)] = &[
+            ("build_shell_vfs", Expectation::FoldedProduct("browser-main-shell")),
+            ("build_wp_vfs", Expectation::FoldedProduct("browser-wordpress")),
+            ("build_lamp_vfs", Expectation::FoldedProduct("browser-lamp")),
+            ("build_nginx_vfs", Expectation::FoldedProduct("browser-nginx")),
+            (
+                "build_nginx_php_vfs",
+                Expectation::FoldedProduct("browser-nginx-php"),
+            ),
+    // mariadb-test has no `[[products]]` entry (matching the
+            // sibling test-support manifests test-php.toml/test-sqlite.toml,
+            // which are also manifest-only with no active product) but its
+            // package is already declared and bootstraps the identical
+            // build-mariadb-test.sh the bash builder called directly.
+            ("build_mariadb_test_vfs", Expectation::FoldedPackage("mariadb-test")),
+            // NOTE: keep this table's folded (fn, id) pairs and the
+            // `run_sh_folded_dispatch_matches_this_table` loop below in sync
+            // — the second loop reads run.sh itself and asserts that each
+            // folded function's body literally calls
+            // `bootstrap_target <id>` with the SAME id listed here, so a
+            // routing typo/regression (wrong product, or a revert to inline
+            // bash) fails even though local-supported.toml is untouched.
+            ("build_mariadb_vfs", Expectation::DormantOrExcluded("mariadb-vfs")),
+            ("build_mariadb64_vfs", Expectation::DormantOrExcluded("mariadb-vfs")),
+            ("build_erlang_vfs", Expectation::DormantOrExcluded("erlang-vfs")),
+            ("build_python_vfs", Expectation::DormantOrExcluded("python-vfs")),
+            ("build_perl_vfs", Expectation::DormantOrExcluded("perl-vfs")),
+            ("build_redis_vfs", Expectation::DormantOrExcluded("redis-vfs")),
+            // texlive-vfs has no `[[products]]`/`[[packages]]` entry AND no
+            // manifest under images/vfs/products at all (unlike the other
+            // dormant composites, which at least have a written manifest);
+            // its source package "texlive" is the excluded root.
+            ("build_texlive_vfs", Expectation::DormantOrExcluded("texlive")),
+        ];
+
+        let run_sh_source = fs::read_to_string(repo.join("run.sh")).unwrap();
+
+        for (function, expectation) in table {
+            match expectation {
+                Expectation::FoldedProduct(id) => {
+                    assert!(
+                        product_ids.contains(*id),
+                        "{function} expects declared product {id:?}; \
+                         declared_product_ids() = {product_ids:?}",
+                    );
+                    // toml-side declaration alone doesn't prove run.sh
+                    // actually routes here — a wrong id, or a revert to the
+                    // old inline bash body, would leave the assertion above
+                    // passing. Read run.sh itself to close that gap.
+                    assert_run_sh_folded_dispatch(&run_sh_source, function, id);
+                }
+                Expectation::FoldedPackage(name) => {
+                    assert!(
+                        package_names.contains(name),
+                        "{function} expects declared package {name:?}; \
+                         packages = {package_names:?}",
+                    );
+                    assert_run_sh_folded_dispatch(&run_sh_source, function, name);
+                }
+                Expectation::DormantOrExcluded(name) => assert!(
+                    dormant_products.contains(name) || excluded.contains(name),
+                    "{function} names {name:?}, expected to find it in \
+                     dormant_products {dormant_products:?} or exclusions \
+                     {excluded:?} — if it was removed from both, this \
+                     composite is now foldable and this table (and \
+                     run.sh's build_target routing) must be updated",
+                ),
+            }
+        }
+
+        // images/vfs/products/*.toml manifests exist for every dormant
+        // composite except texlive (confirming Stage 4 left it bash for a
+        // different, more fundamental reason: no manifest, no product/package
+        // declaration, and its bash builder has a host-tool-availability
+        // skip that isn't itself expressible as a manifest dependency).
+        for id in ["browser-mariadb-wasm32", "browser-mariadb-wasm64", "browser-erlang", "browser-python", "browser-perl", "browser-redis"] {
+            let manifest = repo.join("images/vfs/products").join(format!("{id}.toml"));
+            assert!(manifest.is_file(), "expected dormant product manifest at {}", manifest.display());
+        }
+        assert!(
+            !repo.join("images/vfs/products/texlive-vfs.toml").exists()
+                && !repo.join("images/vfs/products/browser-texlive.toml").exists(),
+            "texlive-vfs has no manifest today; if one is added, re-evaluate folding it",
         );
     }
 
@@ -4318,6 +7106,171 @@ materialization = "lazy"
     }
 
     #[test]
+    fn local_rebuild_graph_selection_adds_extra_seeds_and_carries_only_current_nodes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "base-a", &[], &[]);
+        package(root, "base-b", &[], &[]);
+        let first = product(root, "first", &[]);
+        let second = product(root, "second", &["first"]);
+        let set = authority(
+            root,
+            &[("base-a", "platform"), ("base-b", "platform")],
+            &[
+                ("first", "base-a", first.as_path()),
+                ("second", "base-b", second.as_path()),
+            ],
+            &[],
+            &[],
+        );
+        let registry = registry(root);
+        let graph = load_and_plan(root, &set, &registry).unwrap();
+        let base_b = PlanNodeV1::package("base-b", "wasm32");
+        let filters = ["first".to_string()];
+
+        assert_eq!(
+            select_graph_dependencies_with(&graph, &filters, &BTreeSet::from([base_b.clone()]))
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                PlanNodeV1::package("base-a", "wasm32"),
+                base_b.clone(),
+                PlanNodeV1::product("first"),
+            ]),
+        );
+
+        // The published projection records base-b plus a package the graph no
+        // longer has. Neither has a clean cache receipt, so a narrow run must
+        // drop both rather than publish mirrors it cannot vouch for.
+        let output = temp.path().join("output");
+        write(
+            &output.join(".kandelo/source-only-program-projection-v1.json"),
+            r#"{"nodes":[
+                {"node":{"kind":"package","name":"base-b","targetArch":"wasm32"}},
+                {"node":{"kind":"package","name":"retired","targetArch":"wasm32"}}
+            ]}"#,
+        );
+        assert_eq!(
+            recorded_projection_package_nodes(&output),
+            BTreeSet::from([base_b, PlanNodeV1::package("retired", "wasm32")]),
+        );
+        let cache_roots = SourceOnlyCacheRoots {
+            base: temp.path().join("cache"),
+            compiled: temp.path().join("cache/compiled"),
+        };
+        let narrow = select_graph_dependencies(&graph, &filters).unwrap();
+        let publication = carry_forward_published_nodes(
+            &registry,
+            &graph,
+            &filters,
+            &narrow,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &cache_roots,
+            &output,
+        )
+        .unwrap();
+        assert!(publication.carried.is_empty());
+        assert_eq!(publication.selected, narrow);
+
+        // A complete selection publishes exactly itself.
+        let complete = select_graph_dependencies(&graph, &[]).unwrap();
+        let publication = carry_forward_published_nodes(
+            &registry,
+            &graph,
+            &[],
+            &complete,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &cache_roots,
+            &output,
+        )
+        .unwrap();
+        assert!(publication.carried.is_empty());
+        assert_eq!(publication.selected, complete);
+    }
+
+    #[test]
+    fn local_rebuild_graph_filters_select_bare_package_names_and_wasm64_suffix() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "base-a", &[], &[]);
+        package(root, "mariadb", &["wasm32", "wasm64"], &[]);
+        package(root, "wasm64-only", &["wasm64"], &[]);
+        product(root, "unused", &[]);
+        let set = authority(
+            root,
+            &[
+                ("base-a", "platform"),
+                ("mariadb", "user-software"),
+                ("wasm64-only", "platform"),
+            ],
+            &[],
+            &[],
+            &[],
+        );
+        let graph = load_and_plan(root, &set, &registry(root)).unwrap();
+
+        // `xtask bootstrap kernel`/`./run.sh build zlib`-style bare package
+        // selection: a target that names a registry package directly (not a
+        // declared VFS product) selects that package's wasm32 node.
+        assert_eq!(
+            select_graph_dependencies(&graph, &["base-a".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("base-a", "wasm32")]),
+        );
+
+        // `./run.sh build mariadb64`-style targets: the historical "64"
+        // suffix convention selects the wasm64 node of the base package.
+        assert_eq!(
+            select_graph_dependencies(&graph, &["mariadb64".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("mariadb", "wasm64")]),
+        );
+        assert_eq!(
+            select_graph_dependencies(&graph, &["mariadb".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("mariadb", "wasm32")]),
+        );
+
+        let error = select_graph_dependencies(&graph, &["not-a-thing".to_string()]).unwrap_err();
+        assert!(error.contains("unknown"), "{error}");
+
+        // A package that exists ONLY at wasm64 (no wasm32 counterpart, and
+        // its name has no "64" suffix to strip) must still resolve by its
+        // plain name via the final wasm64-literal fallback, not just via the
+        // "64" suffix convention covered above.
+        assert_eq!(
+            select_graph_dependencies(&graph, &["wasm64-only".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("wasm64-only", "wasm64")]),
+        );
+    }
+
+    #[test]
+    fn package_target_needs_sysroot64_matches_the_64_suffix_convention() {
+        assert!(package_target_needs_sysroot64("mariadb64"));
+        assert!(package_target_needs_sysroot64("sqlite64"));
+        assert!(!package_target_needs_sysroot64("mariadb"));
+        assert!(!package_target_needs_sysroot64("zlib"));
+        assert!(!package_target_needs_sysroot64("kernel"));
+    }
+
+    #[test]
     fn local_rebuild_graph_authority_binds_exact_inputs_and_private_edges() {
         use sha2::{Digest, Sha256};
 
@@ -4414,6 +7367,444 @@ materialization = "lazy"
                 "{value:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn bootstrap_step_order_builds_toolchain_before_engine_and_host_after() {
+        let steps = bootstrap_step_plan();
+        let names: Vec<&str> = steps.iter().map(|s| s.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "fork-instrument-tool",
+                "sysroot",
+                "sysroot64",
+                "sdk",
+                "engine",
+                "rootfs",
+                "host-dist",
+            ],
+            "fork-instrument must precede the engine (msmtpd needs it); sysroot/ \
+             sysroot64/sdk must precede the engine (every package build script reads \
+             the ambient musl sysroot and wasm{{32,64}}posix-cc directly, which the \
+             engine's own dependency graph does not model as an edge) and sdk must \
+             follow sysroot (sdk only checks sysroot's toolchain wrappers resolve); \
+             rootfs must follow the engine (build-rootfs.sh consumes the packages the \
+             engine just built) and precede host-dist (host build should see a fresh \
+             rootfs image); host-dist must follow the engine (needs the regenerated \
+             program index)"
+        );
+    }
+
+    #[test]
+    fn bootstrap_selection_from_args_accepts_omitted_all_and_single_targets() {
+        let (selection, rest) = bootstrap_selection_from_args(&[]).unwrap();
+        assert_eq!(selection, Selection::All);
+        assert!(rest.is_empty());
+
+        let (selection, rest) =
+            bootstrap_selection_from_args(&["all".to_string()]).unwrap();
+        assert_eq!(selection, Selection::All);
+        assert!(rest.is_empty());
+
+        let (selection, rest) = bootstrap_selection_from_args(&[
+            "all".to_string(),
+            "--jobs".to_string(),
+            "2".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(selection, Selection::All);
+        assert_eq!(rest, vec!["--jobs".to_string(), "2".to_string()]);
+
+        let (selection, rest) = bootstrap_selection_from_args(&[
+            "kernel".to_string(),
+            "--rebuild".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(selection, Selection::Package("kernel".to_string()));
+        assert_eq!(rest, vec!["--rebuild".to_string()]);
+    }
+
+    #[test]
+    fn bootstrap_single_target_maps_to_engine_or_host_step() {
+        assert_eq!(
+            bootstrap_target_to_selection("kernel"),
+            Selection::Package("kernel".to_string())
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("zlib"),
+            Selection::Package("zlib".to_string())
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("host"),
+            Selection::HostStep("host-dist")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("fork-instrument"),
+            Selection::HostStep("fork-instrument-tool")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("rootfs"),
+            Selection::HostStep("rootfs")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("sysroot"),
+            Selection::HostStep("sysroot")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("sysroot64"),
+            Selection::HostStep("sysroot64")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("sdk"),
+            Selection::HostStep("sdk")
+        );
+    }
+
+    fn uleb128(mut value: u32, out: &mut Vec<u8>) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    fn sleb128_i32(mut value: i64, out: &mut Vec<u8>) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            let sign_bit = byte & 0x40 != 0;
+            if (value == 0 && !sign_bit) || (value == -1 && sign_bit) {
+                out.push(byte);
+                break;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    fn wasm_section(id: u8, payload: &[u8], out: &mut Vec<u8>) {
+        out.push(id);
+        uleb128(payload.len() as u32, out);
+        out.extend_from_slice(payload);
+    }
+
+    /// Build the smallest wasm module `wasm_declared_abi_version` accepts: one
+    /// `() -> i32` function, exported as `__abi_version`, whose body is
+    /// exactly `i32.const <abi> end` — the plain constant shape
+    /// `_wasm_extract_constant_i32_body` in `scripts/wasm-artifact-guards.sh`
+    /// also recognizes.
+    fn kernel_wasm_with_abi(abi: u32) -> Vec<u8> {
+        let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+
+        // Type section: one type, () -> i32.
+        wasm_section(1, &[0x01, 0x60, 0x00, 0x01, 0x7f], &mut module);
+        // Function section: one function using type 0.
+        wasm_section(3, &[0x01, 0x00], &mut module);
+        // Export section: "__abi_version" -> func 0.
+        let name = b"__abi_version";
+        let mut exports = Vec::new();
+        exports.push(0x01);
+        uleb128(name.len() as u32, &mut exports);
+        exports.extend_from_slice(name);
+        exports.push(0x00); // func kind
+        exports.push(0x00); // func index
+        wasm_section(7, &exports, &mut module);
+        // Code section: one body, `i32.const <abi> end`.
+        let mut body = vec![0x00]; // no locals
+        body.push(0x41); // i32.const
+        sleb128_i32(abi as i64, &mut body);
+        body.push(0x0b); // end
+        let mut code = Vec::new();
+        code.push(0x01);
+        uleb128(body.len() as u32, &mut code);
+        code.extend_from_slice(&body);
+        wasm_section(10, &code, &mut module);
+
+        module
+    }
+
+    fn temp_repo_with_kernel(kernel_abi: u32) -> tempfile::TempDir {
+        let temp = tempfile::TempDir::new().unwrap();
+        let kernel_path = temp
+            .path()
+            .join("local-binaries/source-only-v1/kernel.wasm");
+        fs::create_dir_all(kernel_path.parent().unwrap()).unwrap();
+        fs::write(&kernel_path, kernel_wasm_with_abi(kernel_abi)).unwrap();
+        temp
+    }
+
+    #[test]
+    fn verify_fresh_flags_a_stale_abi_kernel() {
+        let repo = temp_repo_with_kernel(wasm_posix_shared::ABI_VERSION - 1);
+        let err = verify_fresh_report(repo.path()).unwrap_err();
+        assert!(
+            err.contains("kernel.wasm") && err.contains("ABI"),
+            "must name the stale kernel and why: {err}"
+        );
+    }
+
+    /// A current-ABI kernel that carries no build-key stamp is no longer
+    /// accepted as fresh: passing the ABI check is necessary but not
+    /// sufficient, since a same-ABI internal change moves the build key. The
+    /// synthetic fixture here has no stamp, so it must be flagged. (A kernel
+    /// carrying the *correct* stamp verifying fresh through the real build
+    /// engine is proven by `verify_fresh_passes_for_a_real_materialized_kernel_stamp`
+    /// in `build_deps`, which needs that module's materialize fixtures.)
+    #[test]
+    fn verify_fresh_flags_a_current_abi_kernel_with_no_build_key_stamp() {
+        let repo = temp_repo_with_kernel(wasm_posix_shared::ABI_VERSION);
+        let err = verify_fresh_report(repo.path()).unwrap_err();
+        assert!(
+            err.contains("no build key stamp"),
+            "an unstamped current-ABI kernel must fail the build-key check: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_fresh_ok_when_no_local_kernel_build_exists_yet() {
+        let temp = tempfile::TempDir::new().unwrap();
+        assert!(
+            verify_fresh_report(temp.path()).is_ok(),
+            "an unbuilt tree has no stale kernel to flag"
+        );
+    }
+
+    /// Build a wasm module exporting `__abi_version` (func 0) whose body is
+    /// exactly the given bytes (locals-count prefix included), instead of the
+    /// recognized `i32.const <N> [return] end` constant shape.
+    fn wasm_module_with_abi_version_body(body: &[u8]) -> Vec<u8> {
+        let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        wasm_section(1, &[0x01, 0x60, 0x00, 0x01, 0x7f], &mut module);
+        wasm_section(3, &[0x01, 0x00], &mut module);
+        let name = b"__abi_version";
+        let mut exports = Vec::new();
+        exports.push(0x01);
+        uleb128(name.len() as u32, &mut exports);
+        exports.extend_from_slice(name);
+        exports.push(0x00); // func kind
+        exports.push(0x00); // func index
+        wasm_section(7, &exports, &mut module);
+        let mut code = Vec::new();
+        code.push(0x01);
+        uleb128(body.len() as u32, &mut code);
+        code.extend_from_slice(body);
+        wasm_section(10, &code, &mut module);
+        module
+    }
+
+    fn write_kernel_wasm(temp: &tempfile::TempDir, bytes: &[u8]) {
+        let kernel_path = temp
+            .path()
+            .join("local-binaries/source-only-v1/kernel.wasm");
+        fs::create_dir_all(kernel_path.parent().unwrap()).unwrap();
+        fs::write(&kernel_path, bytes).unwrap();
+    }
+
+    #[test]
+    fn verify_fresh_reports_a_malformed_abi_version_export_body() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // `nop end` (no locals): not the recognized `i32.const <N> [return]
+        // end` constant shape `wasm_declared_abi_version` requires.
+        write_kernel_wasm(
+            &temp,
+            &wasm_module_with_abi_version_body(&[0x00, 0x01, 0x0b]),
+        );
+
+        let err = verify_fresh_report(temp.path()).unwrap_err();
+        assert!(
+            err.contains("i32.const"),
+            "must report the unrecognized constant shape: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_fresh_reports_a_kernel_with_no_abi_version_export() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // The bare 8-byte wasm header: a valid, empty module with no export
+        // section at all, so `wasm_declared_abi_version` finds no
+        // `__abi_version` export and returns `Ok(None)`.
+        write_kernel_wasm(&temp, &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+        let err = verify_fresh_report(temp.path()).unwrap_err();
+        assert!(
+            err.contains("kernel.wasm has no __abi_version export"),
+            "must name the missing export: {err}"
+        );
+    }
+
+    // -- snapshot_drift_check / abi_sources_changed_since_snapshot (B3) --
+    //
+    // `check-abi-version.sh check` itself is deliberately NOT exercised
+    // here: it requires a real git checkout (`git rev-parse
+    // --show-toplevel`) and builds the kernel wasm via `cargo build -p
+    // kandelo`, so it cannot run against these synthetic temp repos
+    // without failing for the wrong reason (no git root / unbuildable
+    // kernel, not snapshot drift). These tests instead cover the two
+    // pieces that ARE unit-testable in isolation:
+    //   - the mtime gate (`abi_sources_changed_since_snapshot` /
+    //     `newest_mtime_under`), including that `snapshot_drift_check`
+    //     honors a false gate without shelling out at all; and
+    //   - the exit-code-to-error mapping (`run_check_abi_version_check`),
+    //     exercised against a stub script instead of the real one.
+    // A genuinely-drifted `abi/snapshot.json` actually failing
+    // `verify-fresh` end to end is validated in Task 9, against the real
+    // repo.
+
+    fn set_mtime(path: &Path, when: std::time::SystemTime) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(when).unwrap();
+    }
+
+    #[test]
+    fn snapshot_drift_check_skips_the_script_when_the_gate_is_false() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let hour_ago = now - std::time::Duration::from_secs(3600);
+
+        let shared_src = repo.path().join("crates/shared/src/lib.rs");
+        fs::create_dir_all(shared_src.parent().unwrap()).unwrap();
+        fs::write(&shared_src, "// shared").unwrap();
+        set_mtime(&shared_src, hour_ago);
+
+        let kernel_src = repo.path().join("crates/kernel/src/lib.rs");
+        fs::create_dir_all(kernel_src.parent().unwrap()).unwrap();
+        fs::write(&kernel_src, "// kernel").unwrap();
+        set_mtime(&kernel_src, hour_ago);
+
+        // Newer than both sources, but deliberately not valid JSON: if the
+        // gate were open this would reach `check-abi-version.sh` (which
+        // does not exist under this synthetic repo) and fail to launch.
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "not-json").unwrap();
+        set_mtime(&snapshot, now);
+
+        snapshot_drift_check(repo.path(), /* force= */ false)
+            .expect("gate must skip the check when no ABI source is newer than the snapshot");
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_is_true_when_the_snapshot_is_missing() {
+        let repo = tempfile::TempDir::new().unwrap();
+        assert!(
+            abi_sources_changed_since_snapshot(repo.path()).unwrap(),
+            "a missing snapshot must resolve to the conservative 'run the check' outcome"
+        );
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_is_false_when_source_dirs_are_absent() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+        // No crates/shared or crates/kernel under this repo at all.
+        assert!(
+            !abi_sources_changed_since_snapshot(repo.path()).unwrap(),
+            "an absent source directory contributes no files, not ambiguity"
+        );
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_is_true_when_a_source_is_newer_than_the_snapshot() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let hour_ago = now - std::time::Duration::from_secs(3600);
+
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+        set_mtime(&snapshot, hour_ago);
+
+        let shared_src = repo.path().join("crates/shared/src/lib.rs");
+        fs::create_dir_all(shared_src.parent().unwrap()).unwrap();
+        fs::write(&shared_src, "// shared, edited after the snapshot").unwrap();
+        set_mtime(&shared_src, now);
+
+        assert!(
+            abi_sources_changed_since_snapshot(repo.path()).unwrap(),
+            "a source newer than the snapshot must open the gate"
+        );
+    }
+
+    /// A directory-walk error inside an EXISTING source directory (as
+    /// opposed to the directory itself being absent, covered above) is
+    /// ambiguity unrelated to ABI drift, not proof of "nothing changed."
+    /// The gate must resolve this to `true` (run the authoritative check)
+    /// rather than propagating the error and failing the whole pre-test
+    /// gate on something that has nothing to do with the ABI snapshot.
+    /// Constructed with a permission-restricted subdirectory rather than a
+    /// stubbed seam: `newest_mtime_under` walks the real filesystem with no
+    /// injection point, and an unreadable directory is a robust, portable
+    /// way to make `fs::read_dir` fail on Unix without relying on a
+    /// dangling-symlink `metadata()` call, which does NOT error (`DirEntry
+    /// ::metadata` on Unix is `lstat`-equivalent and succeeds even for a
+    /// dangling symlink).
+    #[test]
+    #[cfg(unix)]
+    fn abi_sources_changed_since_snapshot_is_true_when_an_existing_source_dir_has_an_unreadable_entry()
+     {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+
+        // `crates/shared` DOES exist here (unlike the "absent dir" test
+        // above), but a subdirectory inside it cannot be listed.
+        let restricted = repo.path().join("crates/shared/restricted");
+        fs::create_dir_all(&restricted).unwrap();
+        let original_permissions = fs::metadata(&restricted).unwrap().permissions();
+        fs::set_permissions(&restricted, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = abi_sources_changed_since_snapshot(repo.path());
+
+        // Restore permissions unconditionally (before asserting) so a
+        // failing assertion never leaves an unreadable directory behind
+        // for the `TempDir` to fail to clean up.
+        fs::set_permissions(&restricted, original_permissions).unwrap();
+
+        assert!(
+            result.unwrap(),
+            "an unreadable entry inside an EXISTING source dir must open the \
+             gate, not fail closed or silently report no change"
+        );
+    }
+
+    #[test]
+    fn run_check_abi_version_check_maps_a_nonzero_exit_to_a_loud_error() {
+        let repo = tempfile::TempDir::new().unwrap();
+        fs::write(repo.path().join("fake-check.sh"), "#!/bin/bash\nexit 1\n").unwrap();
+
+        let err = run_check_abi_version_check(repo.path(), "fake-check.sh").unwrap_err();
+        assert!(
+            err.contains("snapshot") && err.contains("check-abi-version.sh update"),
+            "error must name the snapshot and the update command: {err}"
+        );
+        // The script's own failure can be a provisioning problem (e.g. "sysroot
+        // not found") rather than actual snapshot drift, since the real script
+        // builds the kernel before comparing. The mapped error must not assert
+        // drift as fact -- it must allow for "the check could not run" too.
+        assert!(
+            err.contains("could not run"),
+            "error must not assert drift as the only explanation for a non-zero exit: {err}"
+        );
+    }
+
+    #[test]
+    fn run_check_abi_version_check_is_ok_when_the_script_exits_zero() {
+        let repo = tempfile::TempDir::new().unwrap();
+        fs::write(repo.path().join("fake-check.sh"), "#!/bin/bash\nexit 0\n").unwrap();
+
+        run_check_abi_version_check(repo.path(), "fake-check.sh")
+            .expect("a zero exit must not be reported as drift");
     }
 
     #[test]
@@ -4858,7 +8249,7 @@ materialization = "lazy"
             &BTreeSet::from([rogue_node]),
         )
         .unwrap_err();
-        assert!(error.contains("only kernel or userspace"), "{error}");
+        assert!(error.contains("only kernel"), "{error}");
 
         let mut kernel_in_v2 = authority.projection.clone();
         let kernel_package = kernel_in_v2.packages.remove("app").unwrap();
@@ -5297,34 +8688,59 @@ materialization = "lazy"
     }
 
     #[test]
-    fn local_source_provider_checked_in_authority_is_exact_and_explicit() {
-        let repo = crate::repo_root();
-        let set = parse_supported_set(&repo.join("packages/sets/local-supported.toml")).unwrap();
-        let registry = Registry {
-            roots: vec![repo.join("packages/registry")],
-        };
-        let manifests = registry.walk_all().unwrap().into_iter().collect();
-        validate_registry_partition(&set, &manifests, &repo).unwrap();
-
-        let mut providers = BTreeMap::<&str, usize>::new();
-        for name in set
-            .packages
-            .iter()
-            .map(|package| package.name.as_str())
-            .chain(set.dependency_only.iter().map(String::as_str))
-        {
-            let source = &manifests[name].source;
-            assert!(source.provider_was_explicit, "{name} must be explicit");
-            *providers.entry(source.provider.as_str()).or_default() += 1;
-        }
-        assert_eq!(set.packages.len(), 75);
+    fn plan_status_flags_parse_only_with_status() {
+        let args = |values: &[&str]| values.iter().map(|value| value.to_string()).collect::<Vec<_>>();
+        let jobs = std::num::NonZeroUsize::new(3);
         assert_eq!(
-            set.dependency_only,
-            ["pcre2-source", "wordpress-sqlite-integration-source"],
+            parse_local_build_args_with_jobs(&args(&["plan", "--set", "s.toml"]), None, jobs)
+                .unwrap(),
+            LocalBuildCommandV1::Plan {
+                set: PathBuf::from("s.toml")
+            }
         );
+        for extra in [&["--json"][..], &["--jobs", "2"], &["--product", "shell"]] {
+            let mut values = vec!["plan", "--set", "s.toml"];
+            values.extend_from_slice(extra);
+            let error =
+                parse_local_build_args_with_jobs(&args(&values), None, jobs).unwrap_err();
+            assert!(error.contains("requires --status"), "got: {error}");
+        }
+        let parsed = parse_local_build_args_with_jobs(
+            &args(&[
+                "plan",
+                "--set",
+                "s.toml",
+                "--status",
+                "--json",
+                "--source-cache-root",
+                "/cache",
+                "--output-root",
+                "/out",
+                "--product",
+                "shell",
+            ]),
+            Some("5"),
+            jobs,
+        )
+        .unwrap();
         assert_eq!(
-            providers,
-            BTreeMap::from([("archive", 58), ("dev-shell", 1), ("repository", 18)]),
+            parsed,
+            LocalBuildCommandV1::PlanStatus(LocalBuildPlanStatusArgsV1 {
+                set: PathBuf::from("s.toml"),
+                source_cache_root: PathBuf::from("/cache"),
+                output_root: PathBuf::from("/out"),
+                products: vec!["shell".to_string()],
+                jobs: 5,
+                json: true,
+            })
+        );
+        assert!(
+            parse_local_build_args_with_jobs(
+                &args(&["plan", "--set", "s.toml", "--status", "--source-cache-root", "rel"]),
+                None,
+                jobs,
+            )
+            .is_err()
         );
     }
 

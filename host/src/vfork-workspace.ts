@@ -153,6 +153,13 @@ export class BorrowedVforkWorkspace {
     this.scratchCursor = reservation.previousCursor;
   };
 
+  /** Whether `address` lies in this workspace's scratch range. */
+  ownsScratch(address: number): boolean {
+    return (
+      address >= this.layout.scratchAddress && address < this.scratchEnd
+    );
+  }
+
   /** Prove that capture's exact prefix measure and scratch lifetime matched. */
   assertAttachComplete(): void {
     const prefixBytes = this.prefixCursor - this.layout.prefixAddress;

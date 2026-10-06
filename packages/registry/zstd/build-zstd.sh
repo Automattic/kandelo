@@ -5,14 +5,29 @@ set -euo pipefail
 #
 # Plain Makefile build with CC/AR/RANLIB overrides.
 # HAVE_THREAD=0 is critical (no pthreads support).
-# Output: packages/registry/zstd/bin/zstd.wasm
+# Output: bin/zstd.wasm under the resolver work root (beside this
+# script when run standalone).
 
 ZSTD_VERSION="${ZSTD_VERSION:-1.5.7}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/zstd-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/zstd-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -30,12 +45,14 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # --- Download zstd source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading zstd $ZSTD_VERSION..."
-    TARBALL="zstd-${ZSTD_VERSION}.tar.gz"
-    URL="https://github.com/facebook/zstd/releases/download/v${ZSTD_VERSION}/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    URL="https://github.com/facebook/zstd/releases/download/v${ZSTD_VERSION}/zstd-${ZSTD_VERSION}.tar.gz"
+    # WHY: a unique archive under the work root; a fixed /tmp name let two
+    # concurrent builds overwrite or delete each other's download.
+    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/zstd-source.XXXXXX")"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -74,4 +91,4 @@ echo "Binary: $BIN_DIR/zstd.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary zstd "$SCRIPT_DIR/bin/zstd.wasm"
+install_local_binary zstd "$BIN_DIR/zstd.wasm"

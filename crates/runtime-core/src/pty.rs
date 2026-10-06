@@ -177,13 +177,20 @@ impl PtyPair {
         }
     }
 
-    /// Check if slave side has data available for reading.
+    /// Check if slave side has data available for reading. In canonical
+    /// mode a pending VEOF-EOF counts as readable, so a blocked reader wakes
+    /// and the read returns Ok(0) rather than sleeping through the EOF.
     pub fn slave_has_data(&self) -> bool {
         if self.terminal.is_canonical() {
-            self.terminal.has_cooked_data()
+            self.terminal.has_cooked_data() || self.terminal.eof_pending()
         } else {
             !self.input_buf.is_empty()
         }
+    }
+
+    /// Consume a one-shot canonical EOF (VEOF on an empty slave line).
+    pub fn slave_take_eof(&mut self) -> bool {
+        self.terminal.take_eof()
     }
 
     /// Write from the slave side. Does output processing (OPOST) and puts
@@ -371,6 +378,64 @@ mod tests {
         assert!(pty.master_has_data());
         let n = pty.master_read(&mut buf);
         assert_eq!(&buf[..n], b"hi\r\n"); // echo with ONLCR: \n → \r\n
+
+        reset_table();
+    }
+
+    #[test]
+    fn test_pty_veof_empty_line_delivers_eof() {
+        let _pty_table = test_table_lock();
+        reset_table();
+
+        let idx = alloc_pty(0, 0).unwrap();
+        let pty = get_pty(idx).unwrap();
+
+        // ^D on an empty line: the slave must become readable (so a blocked
+        // reader wakes), slave_read yields 0 bytes, and a one-shot EOF is
+        // pending — the read syscall turns that into Ok(0).
+        pty.process_master_input(0x04);
+        assert!(
+            pty.slave_has_data(),
+            "empty-line VEOF must make the slave readable so a blocked read wakes"
+        );
+        let mut buf = [0u8; 8];
+        assert_eq!(pty.slave_read(&mut buf), 0);
+        assert!(pty.slave_take_eof(), "empty-line VEOF must deliver EOF");
+        assert!(!pty.slave_take_eof(), "EOF is one-shot");
+        assert!(!pty.slave_has_data());
+
+        // A normal line still works afterward (regression guard).
+        for &b in b"ok\n" {
+            pty.process_master_input(b);
+        }
+        let n = pty.slave_read(&mut buf);
+        assert_eq!(&buf[..n], b"ok\n");
+
+        reset_table();
+    }
+
+    #[test]
+    fn test_pty_line_then_veof_delivers_line_then_eof() {
+        let _pty_table = test_table_lock();
+        reset_table();
+
+        let idx = alloc_pty(0, 0).unwrap();
+        let pty = get_pty(idx).unwrap();
+
+        // "ok\n" followed immediately by ^D: the completed line is delivered
+        // first, then the next read observes EOF.
+        for &b in b"ok\n" {
+            pty.process_master_input(b);
+        }
+        pty.process_master_input(0x04);
+
+        let mut buf = [0u8; 8];
+        let n = pty.slave_read(&mut buf);
+        assert_eq!(&buf[..n], b"ok\n");
+        // Now empty, but EOF still pending.
+        assert!(pty.slave_has_data());
+        assert_eq!(pty.slave_read(&mut buf), 0);
+        assert!(pty.slave_take_eof());
 
         reset_table();
     }

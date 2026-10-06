@@ -7,7 +7,7 @@
  * Persistent native paths are rooted in random, test-owned directories so
  * append ownership remains explicit across the complete guest lifetime.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,9 +20,10 @@ import {
   statSync,
 } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { FetchNetworkBackend } from "../../../../host/src/networking/fetch-backend";
+import { TlsNetworkBackend } from "../../../../host/src/networking/tls-network-backend";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
 import { createSessionOwnedHostFileSystem } from "../../../../host/src/vfs/host-fs";
@@ -308,3 +309,229 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
     },
   );
 });
+
+/**
+ * Git HTTPS clone over the browser TLS-MITM path (smart protocol).
+ *
+ * This is the deterministic, no-external-network counterpart to the manual
+ * browser demo verification. It exercises the whole browser clone path end to
+ * end against a local git-http-backend server:
+ *   - `TlsNetworkBackend` terminates the guest's real TLS at :443 and re-issues
+ *     each request via fetch() (keep-alive reuse across info/refs + upload-pack)
+ *   - git gzip-compresses the upload-pack fetch command; the backend de-gzips it
+ *   - git-remote-http verifies the per-session MITM cert via GIT_SSL_CAINFO,
+ *     mirroring the env the browser worker injects (withBrowserMitmCaEnv)
+ * A stubbed global fetch routes the alias host to the local smart-HTTP server.
+ */
+function resolveGitHttpBackend(): string | null {
+  try {
+    const execPath = execSync("git --exec-path").toString().trim();
+    const candidate = join(execPath, "git-http-backend");
+    return existsSync(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+const gitHttpBackend = resolveGitHttpBackend();
+
+/** Minimal CGI wrapper around git-http-backend serving the git smart protocol. */
+function createSmartHttpServer(projectRoot: string, backendPath: string): Server {
+  return createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GIT_HTTP_EXPORT_ALL: "1",
+      GIT_PROJECT_ROOT: projectRoot,
+      PATH_INFO: url.pathname,
+      QUERY_STRING: url.search.replace(/^\?/, ""),
+      REQUEST_METHOD: req.method ?? "GET",
+      CONTENT_TYPE: (req.headers["content-type"] as string) ?? "",
+    };
+    const contentLength = req.headers["content-length"];
+    if (typeof contentLength === "string") env.CONTENT_LENGTH = contentLength;
+    const gitProtocol = req.headers["git-protocol"];
+    if (typeof gitProtocol === "string") env.GIT_PROTOCOL = gitProtocol;
+
+    const cgi = spawn(backendPath, [], { env });
+    req.pipe(cgi.stdin);
+    const chunks: Buffer[] = [];
+    cgi.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    cgi.stdout.on("end", () => {
+      const out = Buffer.concat(chunks);
+      let separator = out.indexOf("\r\n\r\n");
+      let separatorLen = 4;
+      if (separator < 0) {
+        separator = out.indexOf("\n\n");
+        separatorLen = 2;
+      }
+      const headerText = separator < 0 ? "" : out.subarray(0, separator).toString("utf8");
+      const body = separator < 0 ? out : out.subarray(separator + separatorLen);
+      let status = 200;
+      for (const line of headerText.split(/\r?\n/)) {
+        const colon = line.indexOf(":");
+        if (colon < 0) continue;
+        const key = line.slice(0, colon).trim();
+        const value = line.slice(colon + 1).trim();
+        if (key.toLowerCase() === "status") status = parseInt(value, 10) || 200;
+        else res.setHeader(key, value);
+      }
+      res.writeHead(status);
+      res.end(body);
+    });
+    cgi.on("error", (error) => {
+      res.writeHead(500);
+      res.end(String(error));
+    });
+  });
+}
+
+describe.skipIf(!hasGit || !hasGitRemoteHttp || !gitHttpBackend)(
+  "Git HTTPS clone (smart protocol via TLS MITM)",
+  () => {
+    let httpServer: Server;
+    let httpPort: number;
+    let tmpBase: string;
+    let guestRoot: string;
+    const alias = "gitserver.test";
+
+    beforeAll(async () => {
+      tmpBase = mkdtempSync(join(tmpdir(), "kandelo-git-https-"));
+      guestRoot = join(tmpBase, "guest");
+      mkdirSync(guestRoot);
+      const workDir = `${tmpBase}/work`;
+      const reposDir = `${tmpBase}/repos`;
+      mkdirSync(reposDir);
+      const bareRepoDir = `${reposDir}/repo.git`;
+
+      const gitOpts = {
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Test",
+          GIT_COMMITTER_NAME: "Test",
+          GIT_AUTHOR_EMAIL: "test@test.com",
+          GIT_COMMITTER_EMAIL: "test@test.com",
+        },
+      };
+      execSync(`git init "${workDir}"`, gitOpts);
+      execSync(`echo "hello over https" > "${workDir}/test.txt"`, gitOpts);
+      execSync(`git -C "${workDir}" add test.txt`, gitOpts);
+      execSync(`git -C "${workDir}" commit -m "initial commit"`, gitOpts);
+      execSync(`git clone --bare "${workDir}" "${bareRepoDir}"`, gitOpts);
+      execSync(`git -C "${bareRepoDir}" update-server-info`, gitOpts);
+
+      httpServer = createSmartHttpServer(reposDir, gitHttpBackend!);
+      await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+      httpPort = (httpServer.address() as { port: number }).port;
+    });
+
+    afterAll(() => {
+      httpServer?.close();
+      vi.unstubAllGlobals();
+      try {
+        rmSync(tmpBase, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    });
+
+    it(
+      "clones over HTTPS: TLS-MITM keep-alive + gzip request body + MITM CA trust",
+      { timeout: 90_000 },
+      async () => {
+        const backend = new TlsNetworkBackend();
+        await backend.init();
+
+        // Route the MITM's outbound fetch() for the alias host to the local
+        // smart-HTTP server; everything else falls through to real fetch.
+        const realFetch = globalThis.fetch;
+        vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+          const raw = typeof input === "string"
+            ? input
+            : input instanceof URL
+            ? input.href
+            : input.url;
+          const parsed = new URL(raw);
+          if (parsed.hostname === alias) {
+            return realFetch(
+              `http://127.0.0.1:${httpPort}${parsed.pathname}${parsed.search}`,
+              init,
+            );
+          }
+          return realFetch(input, init);
+        });
+
+        const io = createOwnedGuestIo(guestRoot);
+        io.network = backend;
+
+        // Install the per-session MITM CA where GIT_SSL_CAINFO points, mirroring
+        // what the browser kernel worker does at runtime.
+        const caDir = join(guestRoot, "etc/ssl/certs");
+        mkdirSync(caDir, { recursive: true });
+        writeFileSync(join(caDir, "ca-certificates.crt"), backend.getCACertPEM());
+
+        const cloneDir = `/clone-${Date.now()}`;
+        const cloneHostDir = join(guestRoot, cloneDir.slice(1));
+
+        const gitExecPath = "/exec";
+        const hostGitExecPath = join(guestRoot, "exec");
+        mkdirSync(hostGitExecPath, { recursive: true });
+        // git-remote-http serves both http and https; git execs it as
+        // git-remote-https for an https URL (the real image symlinks it).
+        const remoteHttpBytes = readFileSync(gitRemoteHttpBinary!);
+        for (const name of ["git-remote-http", "git-remote-https"]) {
+          writeFileSync(join(hostGitExecPath, name), remoteHttpBytes, {
+            mode: 0o755,
+          });
+        }
+        writeFileSync(join(hostGitExecPath, "git"), readFileSync(gitBinary!), {
+          mode: 0o755,
+        });
+        const execPrograms = new Map<string, string>([
+          [`${gitExecPath}/git-remote-http`, gitRemoteHttpBinary!],
+          [`${gitExecPath}/git-remote-https`, gitRemoteHttpBinary!],
+          [`${gitExecPath}/git`, gitBinary!],
+          ["/usr/libexec/git-core/git-remote-https", gitRemoteHttpBinary!],
+          ["/usr/libexec/git-core/git-remote-http", gitRemoteHttpBinary!],
+          ["/usr/bin/git-remote-https", gitRemoteHttpBinary!],
+          ["/usr/bin/git-remote-http", gitRemoteHttpBinary!],
+          ["/usr/bin/git", gitBinary!],
+        ]);
+
+        const cloneEnv = [
+          ...gitEnv,
+          `GIT_EXEC_PATH=${gitExecPath}`,
+          "GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt",
+        ];
+
+        const result = await runCentralizedProgram({
+          programPath: gitBinary!,
+          argv: ["git", "clone", `https://${alias}/repo.git`, cloneDir],
+          env: cloneEnv,
+          io,
+          execPrograms,
+          timeout: 90_000,
+        });
+
+        const output = result.stdout + result.stderr;
+        if (result.exitCode !== 0) {
+          console.error("HTTPS clone failed, exit:", result.exitCode);
+          console.error("stdout:", result.stdout);
+          console.error("stderr:", result.stderr);
+        }
+        expect(output).not.toContain("SSL certificate problem");
+        expect(result.exitCode).toBe(0);
+        expect(output).toContain("Cloning into");
+        expect(existsSync(join(cloneHostDir, ".git"))).toBe(true);
+        const testFile = readFileSync(join(cloneHostDir, "test.txt"), "utf-8");
+        expect(testFile.trim()).toBe("hello over https");
+
+        try {
+          rmSync(cloneHostDir, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      },
+    );
+  },
+);

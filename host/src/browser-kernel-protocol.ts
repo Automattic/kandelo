@@ -13,6 +13,7 @@ import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { InputEvent } from "./input/input-source";
 import {
   type BrowserCorsProxyConfig,
   validateBrowserCorsProxyConfig,
@@ -83,6 +84,12 @@ export interface InitMessage {
   config: {
     maxWorkers: number;
     maxMemoryPages: number;
+    /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */
+    kernelMaxPages: number;
+    /** Upper bound on the image-backed rootfs reservation, in bytes. */
+    imageMemfsMaxBytes: number;
+    /** Identifier of the runtime memory profile these budgets came from. */
+    memoryProfileId: string;
     /**
      * Sampled live-allocation admission budget. Unmediated memory.grow can
      * cross it until the next allocation observes current byte lengths.
@@ -301,6 +308,47 @@ export interface MouseInjectMessage {
 }
 
 /**
+ * Main-thread → kernel-worker evdev injection. The main thread's
+ * `BrowserInputSource` translates DOM events to evdev records and
+ * forwards them here; the worker calls
+ * `CentralizedKernelWorker.injectInputEvent` which routes the record
+ * through the kernel's fan-out (`kernel_input_event` → `push_event`)
+ * to `/dev/input/event{0,1}` and wakes any blocked reader.
+ */
+export interface InputEventInjectMessage {
+  type: "input_event_inject";
+  device: 0 | 1;
+  ev_type: number;
+  code: number;
+  value: number;
+}
+
+/**
+ * Main-thread → kernel-worker batched evdev injection. One `SYN_REPORT`
+ * frame's worth of records crosses in a single message so the worker runs
+ * one kernel entry and one pending-reader wake scan for the whole frame
+ * instead of one per record. `attachInputSource` produces these via
+ * `batchBySynReport`; `injectInputEvent` remains for single-record paths.
+ */
+export interface InputEventBatchInjectMessage {
+  type: "input_event_batch_inject";
+  records: InputEvent[];
+}
+
+/**
+ * Main-thread → kernel-worker canvas-dims update. Tells the kernel
+ * the current host canvas dimensions so EVIOCGABS on
+ * `/dev/input/event1` reports the right `ABS_X.maximum` /
+ * `ABS_Y.maximum`. Sent at boot once the canvas exists; resend on
+ * canvas resize.
+ */
+export interface SetInputCanvasDimsMessage {
+  type: "set_input_canvas_dims";
+  width: number;
+  height: number;
+}
+
+/**
  * Main-thread → kernel-worker audio drain request. The main thread's
  * AudioContext scheduler ticks every ~50 ms, asks the kernel ring for
  * up to `maxBytes` of PCM samples, and feeds them to a chained
@@ -334,6 +382,12 @@ export interface GetForkCountRequestMessage {
 /** Read the kernel Wasm instance's current 64 KiB linear-memory page count. */
 export interface GetKernelMemoryPagesRequestMessage {
   type: "get_kernel_memory_pages";
+  requestId: number;
+}
+
+/** Read the kernel worker's compiled-module cache counters. */
+export interface GetWasmModuleCacheStatsRequestMessage {
+  type: "get_wasm_module_cache_stats";
   requestId: number;
 }
 
@@ -396,7 +450,7 @@ export interface KmsAttachCanvasMessage {
   crtcId: number;
   canvas: OffscreenCanvas;
   stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" };
+  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" };
 }
 
 /** Register a stats SAB for a CRTC without binding a scanout canvas. The
@@ -420,6 +474,43 @@ export interface FbReleaseGenerationAckMessage {
   requestId: number;
 }
 
+/** Report the display size (device pixels) of a CRTC's canvas element.
+ *  Consumed by the vblank pump's `webgl2-scanout` presenter, which sizes
+ *  the drawing buffer to match and GPU-scales the scanout texture into
+ *  it. Typically fed from a main-thread ResizeObserver. */
+export interface KmsSetDisplaySizeMessage {
+  type: "kms_set_display_size";
+  crtcId: number;
+  width: number;
+  height: number;
+  /** The display's physical size in millimetres, when the embedder knows
+   *  it; the kernel reports it on the DRM connector (mm_width/mm_height). */
+  physicalMm?: { width: number; height: number };
+}
+
+/**
+ * Offer host clipboard text to the guest's clipboard agent through
+ * `/dev/kandelo/clipboard`. Answered with a `ClipboardOfferResult` once the
+ * agent installs it, or with the reason it could not.
+ */
+export interface ClipboardOfferMessage {
+  type: "clipboard_offer";
+  requestId: number;
+  /** UTF-8, line endings already normalized (`encodeClipboardText`). */
+  text: Uint8Array;
+  timeoutMs?: number;
+}
+
+/**
+ * Copy-out: answer with the next desktop selection the guest's clipboard
+ * agent reports (a `GuestClipboardResult`). Sent before the copy chord.
+ */
+export interface ClipboardGuestWaitMessage {
+  type: "clipboard_guest_wait";
+  requestId: number;
+  timeoutMs?: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -428,6 +519,8 @@ export type MainToKernelMessage =
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
   | ExportRootfsImageMessage
+  | ClipboardOfferMessage
+  | ClipboardGuestWaitMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage
@@ -449,8 +542,12 @@ export type MainToKernelMessage =
   | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetWasmModuleCacheStatsRequestMessage
   | GetSpawnScratchCapacityRequestMessage
   | MouseInjectMessage
+  | InputEventInjectMessage
+  | InputEventBatchInjectMessage
+  | SetInputCanvasDimsMessage
   | AudioDrainMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
@@ -459,7 +556,8 @@ export type MainToKernelMessage =
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
-  | FbReleaseGenerationAckMessage;
+  | FbReleaseGenerationAckMessage
+  | KmsSetDisplaySizeMessage;
 
 // ── Kernel Worker → Main Thread ──
 
@@ -629,6 +727,28 @@ export interface LazyDownloadMessage {
   event: LazyDownloadEvent;
 }
 
+/** Which teardown step `performDestroy` is in. */
+export type DestroyPhase = "draining" | "terminating";
+
+/**
+ * Cumulative teardown progress. Counts processes, not bytes.
+ *
+ * `total` is a lower bound while `totalProvisional` is true: the drain phase
+ * knows only the processes it woke, and the terminate phase adds stragglers it
+ * discovers afterwards. `completed` never resets between phases.
+ */
+export interface DestroyProgressEvent {
+  phase: DestroyPhase;
+  completed: number;
+  total: number;
+  totalProvisional: boolean;
+}
+
+export interface DestroyProgressMessage {
+  type: "destroy_progress";
+  event: DestroyProgressEvent;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
@@ -648,4 +768,5 @@ export type KernelToMainMessage =
   | FbForgetGenerationMessage
   | ProcEventMessage
   | HttpBridgePendingMessage
-  | LazyDownloadMessage;
+  | LazyDownloadMessage
+  | DestroyProgressMessage;

@@ -1,0 +1,21 @@
+script_path = "packages/registry/rsvg-convert/build-rsvg-convert.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
+
+# The Rust setup is shared with the librsvg package; the sysroot sources
+# are not in the global toolchain fingerprint, so they are listed here.
+inputs = [
+  "packages/registry/rsvg-convert/build-rsvg-convert.sh",
+  "packages/registry/librsvg/rust-build-env.sh",
+  "packages/registry/librsvg/patches",
+  "scripts/build-rust-sysroot.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/rust/wasm32-unknown-kandelo-std.json",
+  "sdk/rust/libc-kandelo.patch",
+  "sdk/rust/libc-upstream",
+  "sdk/rust/std-overlay",
+]

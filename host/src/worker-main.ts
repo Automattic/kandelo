@@ -6,6 +6,10 @@
  * CentralizedKernelWorker on the main thread.
  */
 import {
+  readForkSideModuleContract,
+  type ForkSideModuleContract,
+} from "./fork-side-module-contract";
+import {
   EXEC_RETIRE_SIGNAL_CODE,
   type CentralizedWorkerInitMessage,
   type CentralizedThreadInitMessage,
@@ -36,6 +40,7 @@ import {
   readWasmFunctionArity,
   readWasmImportDescriptors,
   WASM_PAGE_SIZE,
+  WPK_FORK_CORE_FRAME_IMPORT_NAMES,
 } from "./constants";
 import {
   ABI_SYSCALLS,
@@ -65,10 +70,13 @@ import {
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE,
   WPK_FORK_REQUIRED_EXPORTS,
-  WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+  WPK_FORK_BOUNDARY_IMPORT,
+  WPK_FORK_BOUNDARIES_SECTION,
+  WPK_FORK_RESUME_SINK_EXPORT,
   type ProcessForkMode,
 } from "./generated/abi";
+import { assertDeclaredEnvImports } from "./env-imports";
 import {
   FORK_SAVE_BUFFER_SIZE,
   FORK_SAVE_CONTROL_PREFIX_SIZE,
@@ -842,6 +850,9 @@ function createProcessDylinkActivationOwner(
       return {
         activationId,
         env,
+        // Only a fork child has a capture-time snapshot. Every other Worker
+        // shares the live process and rebuilds GOT cells deterministically.
+        replayImportState: options.isForkChild ? "saved" : "resolved",
         savedMutableGlobalImport(moduleName, importName) {
           if (!options.isForkChild) return undefined;
           if (!childImportedStatePlanner) {
@@ -1105,6 +1116,7 @@ export function buildDlopenImports(
   hostImportRuntime?: ForkHostImportWorkerRuntime,
   workerIdentity = 1,
   memoryOwnership: "copied" | "borrowed" = "copied",
+  forkSideModuleContract?: ForkSideModuleContract,
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1846,6 +1858,7 @@ export function buildDlopenImports(
       ptrWidth,
       forkActivationOwner,
       forkActivationOwnerUnavailableReason,
+      forkSideModuleContract,
       onTableMutation: (table, firstIndex, length) => {
         onTableMutation?.(table, firstIndex, length);
         tableMutationPending = true;
@@ -2341,7 +2354,6 @@ function buildImportObject(
   kernelImports: Record<string, WebAssembly.ExportValue>,
   channelOffset: number,
   dlopenImports?: Record<string, WebAssembly.ExportValue>,
-  getInstance?: () => WebAssembly.Instance | undefined,
   ptrWidth: 4 | 8 = 4,
   longjmpTag?: WebAssembly.Tag,
   cppExceptionTag?: WebAssembly.Tag,
@@ -2354,6 +2366,10 @@ function buildImportObject(
   forkEnvImports?: Record<string, WebAssembly.ImportValue>,
 ): WebAssembly.Imports {
   assertSupportedKernelFunctionImports(module, kernelImports);
+  // Refuse, before instantiation, a program that imports from env anything
+  // the host does not provide (src/env-imports.ts). Library functions come
+  // from libc, libc++abi, or libc++; the host never fakes them.
+  assertDeclaredEnvImports(module);
 
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
   /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
@@ -2371,10 +2387,10 @@ function buildImportObject(
     moduleImports.some(
       (i) => i.module === "env" && i.name === name && i.kind === "function",
     );
-  const linkedFrameImports = WPK_FORK_REQUIRED_IMPORTS.filter(
-    ({ module }) => module === "env",
-  );
-  const linkedFrameImportCount = linkedFrameImports.filter(({ name }) =>
+  // Only the linked-frame core is all-or-nothing: wasm-opt may remove the
+  // other fork runtime imports when the module never calls them.
+  const linkedFrameImports = WPK_FORK_CORE_FRAME_IMPORT_NAMES;
+  const linkedFrameImportCount = linkedFrameImports.filter((name) =>
     importsFunction(name),
   ).length;
   if (
@@ -2385,21 +2401,22 @@ function buildImportObject(
       "incomplete linked fork instrumentation imports; rebuild the program",
     );
   }
-  if (linkedFrameImportCount !== 0) {
+  // Supply whichever runtime imports the module kept. A module whose
+  // fork-path frames wasm-opt removed entirely can still import the
+  // activation-state helpers (module-state records, reference codecs).
+  const forkRuntimeImports = moduleImports.filter((imported) =>
+    imported.module === "env" &&
+    imported.name.startsWith("__wpk_fork_") &&
+    !(imported.name === FORK_UNWIND_TAG_IMPORT_NAME &&
+      (imported.kind as string) === "tag")
+  );
+  if (forkRuntimeImports.length !== 0) {
     if (!forkEnvImports) {
       throw new Error(
         "linked fork instrumentation requested without continuation and activation-state owners",
       );
     }
-    for (const imported of moduleImports) {
-      if (
-        imported.module !== "env" ||
-        !imported.name.startsWith("__wpk_fork_") ||
-        (imported.name === FORK_UNWIND_TAG_IMPORT_NAME &&
-          (imported.kind as string) === "tag")
-      ) {
-        continue;
-      }
+    for (const imported of forkRuntimeImports) {
       const value = forkEnvImports[imported.name];
       if (value === undefined) {
         throw new Error(
@@ -2509,230 +2526,6 @@ function buildImportObject(
     ): void => {
       postVmInterruptTimer(n(timedOutPtr), n(vmInterruptPtr), n(seconds));
     };
-  }
-
-  // C++ operator new/delete fallbacks — delegate to the wasm instance's malloc/free.
-  // Normally resolved by MariaDB's my_new.cc (USE_MYSYS_NEW), but kept as safety net.
-  if (getInstance) {
-    const cppMalloc = (size: number | bigint): number | bigint => {
-      const inst = getInstance();
-      const malloc = inst?.exports.malloc as
-        ((n: number | bigint) => number | bigint) | undefined;
-      if (!malloc) return ptrWidth === 8 ? 0n : 0;
-      return malloc(size || (ptrWidth === 8 ? 1n : 1));
-    };
-    const cppFree = (ptr: number | bigint): void => {
-      const inst = getInstance();
-      const free = inst?.exports.free as
-        ((p: number | bigint) => void) | undefined;
-      if (free) free(ptr);
-    };
-    envImports._Znwm = cppMalloc; // operator new(size_t)
-    envImports._Znam = cppMalloc; // operator new[](size_t)
-    envImports._ZdlPv = cppFree; // operator delete(void*)
-    envImports._ZdlPvm = cppFree; // operator delete(void*, size_t)
-    envImports._ZdaPv = cppFree; // operator delete[](void*)
-    envImports._ZdaPvm = cppFree; // operator delete[](void*, size_t)
-    envImports._ZnwmRKSt9nothrow_t = cppMalloc; // operator new(size_t, nothrow)
-    envImports._ZnamRKSt9nothrow_t = cppMalloc; // operator new[](size_t, nothrow)
-  }
-
-  // C++ runtime stubs — libc++/libc++abi functions that may be imported when
-  // the wasm binary links against empty stub archives.
-  // __cxa_guard_acquire/release: thread-safe static initialization.
-  // Wasm is single-threaded per instance so no real locking needed.
-  envImports.__cxa_guard_acquire = (guardPtr: number | bigint): number => {
-    const view = new Uint8Array(memory.buffer);
-    if (view[n(guardPtr)]) return 0; // already initialized
-    return 1; // needs initialization
-  };
-  envImports.__cxa_guard_release = (guardPtr: number | bigint): void => {
-    const view = new Uint8Array(memory.buffer);
-    view[n(guardPtr)] = 1; // mark initialized
-  };
-  envImports.__cxa_guard_abort = (_guardPtr: number | bigint): void => {
-    /* no-op */
-  };
-  envImports.__cxa_pure_virtual = (): void => {
-    throw new Error("pure virtual method called");
-  };
-  envImports.__cxa_atexit = (): number => 0; // no-op, return success
-  envImports.__cxa_thread_atexit = (): number => 0; // no-op, return success
-
-  // libc++ verbose abort — called on internal library errors
-  envImports._ZNSt3__122__libcpp_verbose_abortEPKcz = (
-    _fmt: number | bigint,
-    _args: number | bigint,
-  ): void => {
-    throw new Error("libc++ verbose abort");
-  };
-
-  // libc++ sort — MariaDB doesn't actually call this at runtime
-  // (linked from empty stub libc++.a). Signature: sort<less<ull>, ull*>(first, last, comp)
-  envImports["_ZNSt3__16__sortIRNS_6__lessIyyEEPyEEvT0_S5_T_"] = (
-    _first: number | bigint,
-    _last: number | bigint,
-    _comp: number | bigint,
-  ): void => {
-    throw new Error("libc++ sort called unexpectedly");
-  };
-  const dcTiClassCache = new Map<number, number>(); // typeinfo addr → metaclass (0=leaf, 1=SI, 2=VMI)
-  // __dynamic_cast: Itanium C++ ABI dynamic_cast implementation.
-  // Reads RTTI from the object's vtable and walks the type hierarchy to
-  // check if dst_type is reachable from the object's runtime type.
-  // Args: (src_ptr, src_typeinfo*, dst_typeinfo*, src2dst_hint)
-  envImports.__dynamic_cast = (
-    srcPtr_: number | bigint,
-    _srcType: number | bigint,
-    dstType_: number | bigint,
-    _src2dst: number | bigint,
-  ): number | bigint => {
-    const srcPtr = n(srcPtr_);
-    const dstType = n(dstType_);
-    if (srcPtr === 0) return retPtr(0);
-    const view = new DataView(memory.buffer);
-    const memSize = memory.buffer.byteLength;
-    const PS = ptrWidth; // pointer size in bytes
-    const readPtr = (addr: number): number =>
-      PS === 8
-        ? Number(view.getBigUint64(addr, true))
-        : view.getUint32(addr, true);
-    const readSPtr = (addr: number): number =>
-      PS === 8
-        ? Number(view.getBigInt64(addr, true))
-        : view.getInt32(addr, true);
-
-    // Read vtable pointer from object (Itanium ABI: first word is vtable ptr)
-    const vtablePtr = readPtr(srcPtr);
-    if (vtablePtr === 0 || vtablePtr >= memSize) return retPtr(0);
-
-    // Itanium ABI vtable layout:
-    //   vtable[-PS*2] = offset_to_top (ptrdiff_t)
-    //   vtable[-PS]   = RTTI pointer (typeinfo*)
-    //   vtable[0]     = first virtual function
-    if (vtablePtr < 2 * PS) return retPtr(0);
-    const rttiPtr = readPtr(vtablePtr - PS);
-    if (rttiPtr === 0 || rttiPtr >= memSize) return retPtr(0);
-    const offsetToTop = readSPtr(vtablePtr - 2 * PS);
-
-    // Direct match: runtime type IS the destination type
-    if (rttiPtr === dstType) return retPtr(srcPtr + offsetToTop);
-
-    // Walk the type hierarchy from the runtime type, checking if dstType
-    // is a base class. typeinfo layout (pointer-sized fields):
-    //   [0]      vtable ptr (for the typeinfo meta-class)
-    //   [PS]     name ptr (mangled type name)
-    //   -- __si_class_type_info adds:
-    //   [2*PS]   base typeinfo ptr
-    //   -- __vmi_class_type_info adds:
-    //   [2*PS]   flags (uint32)
-    //   [2*PS+4] base_count (uint32)
-    //   [2*PS+8 + i*(PS+4)] base_info[i].base_type (ptr)
-    //   [2*PS+8 + i*(PS+4) + PS] base_info[i].offset_flags (long)
-    const TI_FIELD2 = 2 * PS; // offset of first field after (vtablePtr, namePtr)
-    const BASE_INFO_STRIDE = PS + PS; // base_type(ptr) + offset_flags(long/ptr)
-
-    const tiClassCache = dcTiClassCache;
-
-    const isTypeAncestor = (
-      ti: number,
-      target: number,
-      visited: Set<number>,
-    ): boolean => {
-      if (ti === target) return true;
-      if (ti === 0 || ti >= memSize || visited.has(ti)) return false;
-      visited.add(ti);
-
-      if (ti + TI_FIELD2 + PS > memSize) return false;
-
-      const cached = tiClassCache.get(ti);
-      if (cached === 0) return false; // leaf
-      if (cached === 1) {
-        // SI: field at TI_FIELD2 is base typeinfo ptr
-        const basePtr = readPtr(ti + TI_FIELD2);
-        return isTypeAncestor(basePtr, target, visited);
-      }
-      if (cached === 2) {
-        // VMI: flags(u32) + base_count(u32) then base_info array
-        const baseCount = view.getUint32(ti + TI_FIELD2 + 4, true);
-        for (let i = 0; i < baseCount; i++) {
-          const baseType = readPtr(ti + TI_FIELD2 + 8 + i * BASE_INFO_STRIDE);
-          if (baseType > 0 && isTypeAncestor(baseType, target, visited))
-            return true;
-        }
-        return false;
-      }
-
-      // Not cached — classify by trying SI first, then VMI
-      const field2 = readPtr(ti + TI_FIELD2);
-
-      // Try SI: field2 is a pointer to another typeinfo
-      if (field2 > 0x100 && field2 + PS <= memSize) {
-        const possibleTiName = readPtr(field2 + PS);
-        if (possibleTiName > 0 && possibleTiName < memSize) {
-          tiClassCache.set(ti, 1);
-          if (isTypeAncestor(field2, target, visited)) return true;
-          tiClassCache.delete(ti);
-        }
-      }
-
-      // Try VMI: field at TI_FIELD2 is flags (u32, 0-3), [TI_FIELD2+4] is base_count
-      const flags32 = view.getUint32(ti + TI_FIELD2, true);
-      if (flags32 <= 3 && ti + TI_FIELD2 + 8 <= memSize) {
-        const baseCount = view.getUint32(ti + TI_FIELD2 + 4, true);
-        if (
-          baseCount > 0 &&
-          baseCount < 100 &&
-          ti + TI_FIELD2 + 8 + baseCount * BASE_INFO_STRIDE <= memSize
-        ) {
-          tiClassCache.set(ti, 2);
-          for (let i = 0; i < baseCount; i++) {
-            const baseType = readPtr(ti + TI_FIELD2 + 8 + i * BASE_INFO_STRIDE);
-            if (baseType > 0 && isTypeAncestor(baseType, target, visited))
-              return true;
-          }
-          return false;
-        }
-      }
-
-      tiClassCache.set(ti, 0);
-      return false;
-    };
-
-    if (isTypeAncestor(rttiPtr, dstType, new Set())) {
-      return retPtr(srcPtr + offsetToTop);
-    }
-    return retPtr(0);
-  };
-
-  // libc++ sort specialization — sort uint64 array in-place
-  envImports["_ZNSt3__16__sortIRNS_6__lessIyyEEPyEEvT0_S5_T_"] = (
-    begin_: number | bigint,
-    end_: number | bigint,
-  ): void => {
-    const begin = n(begin_),
-      end = n(end_);
-    const view = new DataView(memory.buffer);
-    const count = (end - begin) / 8;
-    const arr: bigint[] = [];
-    for (let i = 0; i < count; i++)
-      arr.push(view.getBigUint64(begin + i * 8, true));
-    arr.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    for (let i = 0; i < count; i++)
-      view.setBigUint64(begin + i * 8, arr[i], true);
-  };
-
-  // Environment integrations fail at the point of use when the host does not
-  // implement them. Kernel imports were validated above and are never faked.
-  for (const imp of wasmModuleImports(module)) {
-    if (imp.kind !== "function") continue;
-    if (imp.module === "env") {
-      if (!Object.hasOwn(envImports, imp.name)) {
-        envImports[imp.name] = (..._args: unknown[]) => {
-          throw new Error(`Unimplemented import: env.${imp.name}`);
-        };
-      }
-    }
   }
 
   const importObject: WebAssembly.Imports = { env: envImports };
@@ -3191,6 +2984,7 @@ export async function centralizedWorkerMain(
     const ptrWidth = initData.ptrWidth ?? 4;
     const artifactFailures = describeWasmArtifactPolicyFailures(programBytes, {
       expectedAbi: initData.kernelAbiVersion,
+      expectedAbiContractDigest: initData.kernelAbiContractDigest,
     });
     if (artifactFailures.length > 0) {
       throw new Error(
@@ -3307,6 +3101,9 @@ export async function centralizedWorkerMain(
     );
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
+    let completeCapturedFork: () => void = () => {
+      throw new Error(`pid=${pid}: fork capture completed before the coordinator exists`);
+    };
     let forkMode: ProcessForkMode = initData.isForkChild
       ? (processForkMode(initData.forkMode ?? -1) ?? (() => {
           throw new Error(`pid=${pid}: fork child is missing a valid fork mode`);
@@ -3406,28 +3203,33 @@ export async function centralizedWorkerMain(
       );
       let processInstance: WebAssembly.Instance | null = null;
 
+      // WHY: a vfork child replays from its parked parent's module-state
+      // arena and must never free it. Once running, it may fork (an ordinary
+      // fork copies memory; see crates/runtime-core process_table.rs), and
+      // that capture needs arenas of its own, mapped through its own channel.
+      // It may release exactly those.
+      const borrowedOwnArenaMappings = new Set<number>();
       const newModuleStateArena = (): ForkModuleStateArena =>
         new ForkModuleStateArena(
           memory,
           ptrWidth,
           (size) => {
-            if (borrowedForkChild) {
-              throw new Error(
-                `pid=${pid}: borrowed child cannot allocate module state`,
-              );
-            }
-            return continuationMmap(
+            const address = continuationMmap(
               memory,
               channelOffset,
               size,
               `pid=${pid}: module state`,
             );
+            if (borrowedForkChild) borrowedOwnArenaMappings.add(address);
+            return address;
           },
           (addr, size) => {
             if (borrowedForkChild) {
-              throw new Error(
-                `pid=${pid}: borrowed child cannot release parent module state`,
-              );
+              if (!borrowedOwnArenaMappings.delete(addr)) {
+                throw new Error(
+                  `pid=${pid}: borrowed child cannot release parent module state`,
+                );
+              }
             }
             continuationMunmap(
               memory,
@@ -3471,11 +3273,16 @@ export async function centralizedWorkerMain(
             value,
           ),
       );
+      // WHY: the borrowed workspace's one scratch page is sized for replaying
+      // the parent's capture. After that replay a vfork child that forks
+      // captures its own references, so its scratch comes from its own
+      // mappings like any process's.
+      let borrowedReplayAttached = false;
       const activationRegistry = new ForkActivationRegistry(
         memory,
         externrefRecipes,
         `pid=${pid}: fork activations`,
-        (size) => borrowedWorkspace
+        (size) => borrowedWorkspace && !borrowedReplayAttached
           ? borrowedWorkspace.allocateScratch(size)
           : continuationMmap(
               memory,
@@ -3484,7 +3291,7 @@ export async function centralizedWorkerMain(
               `pid=${pid}: reference scratch`,
             ),
         (addr, size) => {
-          if (borrowedWorkspace) {
+          if (borrowedWorkspace?.ownsScratch(addr)) {
             borrowedWorkspace.deallocateScratch(addr, size);
             return;
           }
@@ -3626,7 +3433,8 @@ export async function centralizedWorkerMain(
       if (initData.isForkChild) {
         if (
           !borrowedForkChild &&
-          initData.forkChildThreadFnPtr !== undefined &&
+          (initData.forkChildThreadFnPtr !== undefined
+            || initData.forkLaunchRootFromCaller === true) &&
           initData.forkBufAddr !== undefined
         ) {
           // A pthread continuation is rooted in the caller's channel page,
@@ -3674,7 +3482,32 @@ export async function centralizedWorkerMain(
         activationId: 0,
         continuation: forkContinuation,
         ...(borrowedForkChild
-          ? {}
+          ? {
+              publishProcessLaunchRoot: (address: number) => {
+                // WHY: the process anchor word belongs to the parked vfork
+                // parent. A vfork child that forks publishes its own root at
+                // the same offset below its own channel instead. That word
+                // starts its borrowed replay prefix, which is dead once replay
+                // has finished, and a capture can only begin after that. The
+                // kernel host reads the anchor there (channel - FORK_BUF_SIZE)
+                // and hands it to the grandchild.
+                if (
+                  !borrowedReplayAttached
+                  || processContinuation.phaseName() === "child-replay"
+                ) {
+                  throw new Error(
+                    `pid=${pid}: borrowed child published a launch root before its replay finished`,
+                  );
+                }
+                writeForkContinuationAnchor(
+                  memory,
+                  channelOffset - FORK_BUF_SIZE,
+                  ptrWidth,
+                  address,
+                );
+                forkBufAddr = address;
+              },
+            }
           : {
               publishProcessLaunchRoot: (address: number) => {
                 // WHY: this copied control-page word is the fresh child's
@@ -3702,12 +3535,42 @@ export async function centralizedWorkerMain(
         if (!processDlopenSupport || !processTableReplication) {
           throw new Error(`pid=${pid}: fork archive owner is not initialized`);
         }
+        // WHY: the parked vfork parent holds the archive reader until its
+        // syscall returns, so the snapshot this child replayed cannot change
+        // while it captures. Taking a reader here would write the parent's
+        // lock words, and would leak a reader into the parent if this child
+        // died mid-capture.
+        if (borrowedForkChild) return;
         for (;;) {
           processTableReplication.reconcileNow();
           processDlopenSupport.acquireArchiveReader();
           processForkArchiveReaderHeld = true;
           if (processTableReplication.isCurrentUnderLock()) return;
           releaseProcessForkArchiveReader();
+        }
+      };
+
+      // Seal the captured continuation, issue SYS_FORK or SYS_VFORK, and begin
+      // parent (or errno abort) replay. The `_start` loop calls it when the
+      // private unwind reaches the stack root; `env.__wpk_fork_boundary` calls
+      // it when a fork boundary (sink) stopped the unwind inside the live stack.
+      // The parent is parked inside sendForkSyscall either way.
+      completeCapturedFork = (): void => {
+        processContinuation.sealCapture();
+        const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
+          ? processContinuation.borrowedReplayWorkspaceRequirements()
+          : undefined;
+        const childPid = sendForkSyscall(
+          memory,
+          channelOffset,
+          forkMode,
+          borrowedReplay,
+        );
+        forkResult = childPid;
+        if (childPid < 0) {
+          processContinuation.beginAbortReplay(-childPid);
+        } else {
+          processContinuation.beginParentReplay();
         }
       };
 
@@ -3765,7 +3628,11 @@ export async function centralizedWorkerMain(
             `pid=${pid}: fork import reached while process continuation is ${phase}`,
           );
         }
-        if (borrowedForkChild) return -STARTUP_EAGAIN;
+        // A second borrower of the parked parent's memory is refused; an
+        // ordinary fork copies it (the kernel enforces the same split).
+        if (borrowedForkChild && mode === PROCESS_FORK_MODE_VFORK) {
+          return -STARTUP_EAGAIN;
+        }
         forkMode = mode;
 
         // The arena and every activation prefix are allocated before any user
@@ -3854,6 +3721,7 @@ export async function centralizedWorkerMain(
         processHostImportRuntime,
         pid,
         forkMemoryOwnership,
+        readForkSideModuleContract(module),
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -3986,6 +3854,15 @@ export async function centralizedWorkerMain(
         ...processContinuation.continuationImports(0, (errno) => {
           processContinuation.beginCaptureAbort(errno);
         }),
+        [WPK_FORK_BOUNDARY_IMPORT]: (): void => {
+          const phase = processContinuation.phaseName();
+          if (phase !== "capture") {
+            throw new Error(
+              `pid=${pid}: fork boundary reached while process continuation is ${phase}`,
+            );
+          }
+          completeCapturedFork();
+        },
         ...buildForkActivationStateImports(
           0,
           activationRegistry,
@@ -4014,7 +3891,6 @@ export async function centralizedWorkerMain(
         kernelImports,
         channelOffset,
         dlopenSupport.imports,
-        () => processInstance ?? undefined,
         ptrWidth,
         processLongjmpTag,
         processCppExceptionTag,
@@ -4188,6 +4064,7 @@ export async function centralizedWorkerMain(
             decodedChildReferences ?? undefined,
           );
           borrowedWorkspace.assertAttachComplete();
+          borrowedReplayAttached = true;
         } else {
           processContinuation.attachChild(
             childArena,
@@ -4235,7 +4112,41 @@ export async function centralizedWorkerMain(
         // replays the saved frames back to fork().
         let lexicalEntry: () => void;
         let replayEntry: () => void;
-        if (initData.isForkChild && initData.forkChildThreadFnPtr != null) {
+        const forkBoundaries = readForkBoundaries(module, pid);
+        const replayRoot = initData.isForkChild
+          ? processContinuation.peekReplayRoot()
+          : null;
+        const sinkSignature = replayRoot && replayRoot.activationId === 0
+          ? forkBoundaries.get(replayRoot.functionOrdinal)
+          : undefined;
+        if (sinkSignature !== undefined) {
+          // The continuation is rooted at a fork boundary: the frames above
+          // the sink (including _start or the pthread entry) were never
+          // captured, and the sink cannot return. It stays the root for any
+          // later fork in this child before exec.
+          const resumeSink = instance.exports[WPK_FORK_RESUME_SINK_EXPORT] as
+            ((signature: number) => void) | undefined;
+          if (typeof resumeSink !== "function") {
+            throw new Error(
+              `pid=${pid}: fork child rooted at a boundary is missing ${WPK_FORK_RESUME_SINK_EXPORT}`,
+            );
+          }
+          lexicalEntry = () => {
+            throw new Error(`pid=${pid}: fork child rooted at a boundary entered a lexical path`);
+          };
+          replayEntry = () => {
+            // The entry returns only if the sink itself returned: the frames
+            // above it were never captured, so there is nothing to return
+            // to. A trap in the child's own code propagates as an exception
+            // and ends the process by its signal like any other trap.
+            resumeSink(sinkSignature);
+            throw new Error(
+              `pid=${pid}: fork child returned through its sink frame ` +
+                `(function ordinal ${replayRoot!.functionOrdinal}); the frames ` +
+                "above it were never captured",
+            );
+          };
+        } else if (initData.isForkChild && initData.forkChildThreadFnPtr != null) {
           const fnIdx = initData.forkChildThreadFnPtr;
           const childArgPtr = initData.forkChildThreadArgPtr ?? 0;
           const threadArg = ptrWidth === 8 ? BigInt(childArgPtr) : childArgPtr;
@@ -4292,22 +4203,7 @@ export async function centralizedWorkerMain(
             );
           }
           if (phase === "capture") {
-            processContinuation.sealCapture();
-            const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-              ? processContinuation.borrowedReplayWorkspaceRequirements()
-              : undefined;
-            const childPid = sendForkSyscall(
-              memory,
-              channelOffset,
-              forkMode,
-              borrowedReplay,
-            );
-            forkResult = childPid;
-            if (childPid < 0) {
-              processContinuation.beginAbortReplay(-childPid);
-            } else {
-              processContinuation.beginParentReplay();
-            }
+            completeCapturedFork();
             continue;
           }
           if (phase !== "idle") {
@@ -4383,6 +4279,8 @@ export async function centralizedWorkerMain(
         undefined,
         undefined,
         pid,
+        undefined,
+        readForkSideModuleContract(module),
       );
       const importObject = buildImportObject(
         module,
@@ -4390,7 +4288,6 @@ export async function centralizedWorkerMain(
         kernelImports,
         channelOffset,
         dlopenSupport.imports,
-        () => processInstance ?? undefined,
         ptrWidth,
         processLongjmpTag,
         processCppExceptionTag,
@@ -4735,6 +4632,43 @@ function setupChannelBase(
  * Send SYS_FORK through the channel and wait for the result.
  * Returns child pid on success, or -errno on failure.
  */
+/**
+ * Boundary functions of a fork-instrumented module (`kandelo.wpk_fork.boundaries`):
+ * function ordinal -> index of its `wpk_fork_resume_sink` signature case.
+ *
+ * A boundary is a sink (docs/plans/2026-10-02-fork-sinks.md): the child can
+ * never return through it, so the parent's unwind stops there and the frames
+ * above it were never captured. A child whose outermost replay frame belongs
+ * to a boundary must start at `wpk_fork_resume_sink`, not at `_start` or a
+ * pthread entry.
+ */
+function readForkBoundaries(module: WebAssembly.Module, pid: number): Map<number, number> {
+  const sections = WebAssembly.Module.customSections(module, WPK_FORK_BOUNDARIES_SECTION);
+  const boundaries = new Map<number, number>();
+  if (sections.length === 0) return boundaries;
+  if (sections.length !== 1) {
+    throw new Error(`pid=${pid}: expected one ${WPK_FORK_BOUNDARIES_SECTION} section`);
+  }
+  const view = new DataView(sections[0]!);
+  // "KFSB", u16 version 1, u16 reserved 0, u32 count, count x (u32 ordinal, u32 signature)
+  if (
+    view.byteLength < 12 ||
+    view.getUint32(0, false) !== 0x4b46_5342 ||
+    view.getUint16(4, true) !== 1 ||
+    view.getUint16(6, true) !== 0
+  ) {
+    throw new Error(`pid=${pid}: malformed ${WPK_FORK_BOUNDARIES_SECTION} header`);
+  }
+  const count = view.getUint32(8, true);
+  if (view.byteLength !== 12 + count * 8) {
+    throw new Error(`pid=${pid}: malformed ${WPK_FORK_BOUNDARIES_SECTION} length`);
+  }
+  for (let i = 0; i < count; i++) {
+    boundaries.set(view.getUint32(12 + i * 8, true), view.getUint32(16 + i * 8, true));
+  }
+  return boundaries;
+}
+
 function sendForkSyscall(
   memory: WebAssembly.Memory,
   channelOffset: number,
@@ -5574,6 +5508,29 @@ export async function centralizedThreadWorkerMain(
     };
     let forkResult = 0;
     let forkMode: ProcessForkMode = PROCESS_FORK_MODE_FORK;
+    // See the process worker's completeCapturedFork: the pthread entry loop
+    // and env.__wpk_fork_boundary share it.
+    const completeThreadCapturedFork = (): void => {
+      if (!threadProcessContinuation) {
+        throw new Error(`pid=${pid} tid=${tid}: fork capture without a continuation`);
+      }
+      threadProcessContinuation.sealCapture();
+      const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
+        ? threadProcessContinuation.borrowedReplayWorkspaceRequirements()
+        : undefined;
+      const childPid = sendForkSyscall(
+        memory,
+        channelOffset,
+        forkMode,
+        borrowedReplay,
+      );
+      forkResult = childPid;
+      if (childPid < 0) {
+        threadProcessContinuation.beginAbortReplay(-childPid);
+      } else {
+        threadProcessContinuation.beginParentReplay();
+      }
+    };
 
     let kernelThreadExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
@@ -5731,6 +5688,8 @@ export async function centralizedThreadWorkerMain(
       },
       threadHostImportRuntime ?? undefined,
       tid,
+      undefined,
+      readForkSideModuleContract(module),
     );
     if (threadActivationRegistry) {
       threadTableReplication = createProcessTableReplicationOwner({
@@ -5752,6 +5711,16 @@ export async function centralizedThreadWorkerMain(
             ...threadCoordinator.continuationImports(0, (errno) => {
               threadCoordinator.beginCaptureAbort(errno);
             }),
+            [WPK_FORK_BOUNDARY_IMPORT]: (): void => {
+              const phase = threadCoordinator.phaseName();
+              if (phase !== "capture") {
+                throw new Error(
+                  `pid=${pid} tid=${tid}: fork boundary reached while process ` +
+                    `continuation is ${phase}`,
+                );
+              }
+              completeThreadCapturedFork();
+            },
             ...buildForkActivationStateImports(
               0,
               threadActivationRegistry,
@@ -5780,7 +5749,6 @@ export async function centralizedThreadWorkerMain(
       kernelImports,
       channelOffset,
       threadDlopenSupport.imports,
-      () => threadInstance,
       ptrWidth,
       threadLongjmpTag,
       threadCppExceptionTag,
@@ -5884,11 +5852,19 @@ export async function centralizedThreadWorkerMain(
       wasmInitTls(ptrWidth === 8 ? BigInt(tlsBlock) : tlsBlock);
     }
 
-    // Set __stack_pointer
-    const stackPointer = instance.exports.__stack_pointer as
-      WebAssembly.Global | undefined;
+    // Set __stack_pointer, rounded down to the 16-byte alignment the wasm
+    // C ABI requires of it. musl's pthread_create only aligns the new
+    // thread's stack to sizeof(uintptr_t) — 4 here — and then subtracts
+    // `struct start_args`, so the value it hands to clone is routinely 4
+    // mod 8. Clang lays out a callee's frame from an SP it assumes is
+    // 16-aligned, so on such a thread every 64-bit vararg is written and
+    // read four bytes apart: printf("%lld", 1000) prints garbage, and
+    // GDBus EXTERNAL auth claims uid 0 for every process. Rounding down
+    // stays inside the thread's own stack region.
+    const stackPointer = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
     if (stackPointer) {
-      stackPointer.value = ptrWidth === 8 ? BigInt(stackPtr) : stackPtr;
+      const alignedStackPtr = stackPtr - (stackPtr % 16);
+      stackPointer.value = ptrWidth === 8 ? BigInt(alignedStackPtr) : alignedStackPtr;
     }
 
     // Initialize musl thread pointer if available
@@ -5970,22 +5946,7 @@ export async function centralizedThreadWorkerMain(
           );
         }
         if (phase === "capture") {
-          threadProcessContinuation.sealCapture();
-          const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-            ? threadProcessContinuation.borrowedReplayWorkspaceRequirements()
-            : undefined;
-          const childPid = sendForkSyscall(
-            memory,
-            channelOffset,
-            forkMode,
-            borrowedReplay,
-          );
-          forkResult = childPid;
-          if (childPid < 0) {
-            threadProcessContinuation.beginAbortReplay(-childPid);
-          } else {
-            threadProcessContinuation.beginParentReplay();
-          }
+          completeThreadCapturedFork();
           continue;
         }
         if (phase !== "idle") {

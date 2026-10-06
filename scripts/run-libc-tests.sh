@@ -27,20 +27,78 @@ PROGRAM_INDEX_CHECKER=""
 MATH_EXPECTED_FAIL=(acosh asinh erfc j0 jn jnf lgamma lgammaf lgammaf_r sinh tgamma y0 y0f ynf)
 MATH_RELAXED_EXPECTED_FAIL=(tgamma j0 y0 y0f)  # Tests with inline checks that bypass checkulp
 
-# Tests blocked by fundamental Wasm limitations (no cancellation-point asm).
+# Tests blocked by fundamental Wasm limitations.
 FUNCTIONAL_EXPECTED_FAIL=(
-    pthread_cancel              # no cancel-point asm (__syscall_cp_asm) for Wasm
+    # Asynchronous cancellation, not cancellation points. Deferred
+    # cancellation is implemented and pthread_cancel-points passes. This
+    # test's FIRST subcase is the async one: start_async() sets
+    # PTHREAD_CANCEL_ASYNCHRONOUS, posts a semaphore, then parks in
+    # `for (;;);` (src/functional/pthread_cancel.c). Wasm cannot preempt a
+    # running thread, so that target never reaches a cancellation point,
+    # never exits, and main's pthread_join() never returns — the per-test
+    # 30 s timeout kills the run with no output at all.
+    #
+    # Verified 2026-09-25 by splitting the test: a variant with only the two
+    # cleanup-handler subcases (which block in sleep(3), a real cancellation
+    # point) passes in under a second, and a variant with only the async
+    # subcase hangs exactly like the whole test. libc-test reports one result
+    # per test, so there is no partial PASS. See docs/wasm-limitations.md §2.
+    pthread_cancel
 )
 REGRESSION_EXPECTED_FAIL=(
-    malloc-brk-fail             # OOM behavior differs in Wasm linear memory
-    malloc-oom                  # OOM behavior differs in Wasm linear memory
-    pthread_create-oom          # not a kernel gap — see docs/compromising-xfails.md "Not compromising"
-    setenv-oom                  # OOM behavior differs in Wasm linear memory
+    # The test unmaps a fixed 64 KiB hole and expects malloc(10000) to fit.
+    # That is 16 pages on the 4 KiB-page systems it was written for, but one
+    # page here, where the page size is WebAssembly's 64 KiB page. With brk
+    # unavailable, musl's allocator needs three pages for a first small
+    # allocation: measured 2026-09-26, holes of 1-2 pages fail and 3 or more
+    # succeed, and a direct mmap reuses the hole correctly throughout. At the
+    # test's intended 16-page geometry it passes. malloc-oom, setenv-oom, and
+    # pthread_create-oom are not
+    # listed: they pass once t_memfill() is compiled correctly (see
+    # -fno-builtin-malloc below).
+    malloc-brk-fail
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
 )
 REGRESSION_FLAKY=(
     pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
 )
+
+# How each XFAIL above is expected to fail, checked by xfail_check (see
+# scripts/xfail-reasons.sh). Why: an XFAIL entry used to turn ANY failure of
+# its test green, so a test that started failing for a new reason (a broken
+# helper, a runner that never started the guest) stayed hidden behind its old
+# rationale, and the run was cited as clean until someone re-investigated.
+# Kinds this runner observes: timeout (the per-test watchdog fired), exit
+# (non-zero exit; the output starts with "exit <code>"). An XFAIL that fails
+# any other way is an XFAIL-MISMATCH.
+xfail_expected_reason() {
+    case "$1" in
+        # 1-2 ULP soft-float rounding, or libc-test's own "known to be
+        # broken near zeros" note for the Bessel functions.
+        math/*|math-relaxed/*) echo "exit:ulperr|known to be broken near zeros" ;;
+        functional/pthread_cancel) echo "timeout" ;;
+        regression/malloc-brk-fail) echo "exit:malloc\(10000\) failed" ;;
+        # Observed 2026-09-30: a Wasm trap in a thread worker ("null function
+        # or function signature mismatch"), not a dlopen error. That this
+        # trap IS the missing dynamic-TLS support is not yet verified; if
+        # the failure changes, re-check the rationale above.
+        regression/tls_get_new-dtv) echo "exit:null function or function signature mismatch" ;;
+        *) echo "" ;;
+    esac
+}
+
+# shellcheck source=scripts/xfail-reasons.sh
+source "$REPO_ROOT/scripts/xfail-reasons.sh"
+
+# A mismatched XFAIL counts as a FAIL: the test is failing for a reason
+# nobody has accepted, and the run must not read as clean.
+record_xfail_mismatch() {
+    local id="$1" output="$2"
+    echo "XFAIL-MISMATCH ${id} (${XFAIL_MISMATCH})"
+    printf '%s\n' "$output" | tail -10 | head -5 | sed 's/^/  /'
+    RESULTS+=("FAIL  ${id}")
+    FAIL=$((FAIL + 1))
+}
 
 # ── Helper: check if a test is in an expected-failure list ──
 
@@ -80,6 +138,14 @@ CFLAGS_BASE=(
     --sysroot="$SYSROOT"
     -nostdlib
     -O2
+    # WHY: libc-test's common t_memfill() drains "libc reserves" with
+    # `while (malloc(1));`. With malloc treated as a builtin, clang elides the
+    # unused allocation, sees a side-effect-free infinite loop (undefined
+    # behavior), and compiles t_memfill() to return -1 unconditionally. Every
+    # test that calls it (malloc-oom, setenv-oom, pthread_create-oom) then
+    # failed in setup with "memfill failed" before testing anything. Keep
+    # malloc a real call so those tests exercise the allocator they target.
+    -fno-builtin-malloc
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
@@ -108,7 +174,8 @@ LINK_FLAGS=(
     -Wl,--import-memory
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
+    -Wl,-z,stack-size=8388608
+    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
     -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--export=__wasm_init_tls
@@ -125,13 +192,19 @@ LINK_FLAGS=(
 # transitively call kernel.kernel_fork.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
+# Stamp each compiled test program with this checkout's ABI-contract digest.
+source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+
 instrument_wasm() {
     local wasm="$1"
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm" && abi_contract_stamp "$wasm"
 }
 
-# Timeout per test (seconds)
-TEST_TIMEOUT=30
+# The per-test budget in seconds. It is forwarded to examples/run-example.ts
+# as TIMEOUT (its own guest watchdog, 30 s by default, which exits 124 like
+# timeout(1)), so raising TEST_TIMEOUT really lets a slow guest run longer;
+# the outer kill gets a few seconds of grace behind it.
+TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 
 # ── Test discovery ──────────────────────────────────────────
 
@@ -309,7 +382,8 @@ run_test() {
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM= \
         KANDELO_RUNNER_VFS=isolated \
-        timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref \
+        TIMEOUT="$((TEST_TIMEOUT * 1000))" \
+        timeout "$((TEST_TIMEOUT + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null 2>&1)
     rc=$?
@@ -334,6 +408,8 @@ run_test() {
             echo "FLAKE-TIME ${category}/${test_name} (timeout ${TEST_TIMEOUT}s)"
             RESULTS+=("FLAKE-TIME ${category}/${test_name}")
             FLAKE_TIME=$((FLAKE_TIME + 1))
+        elif $is_xfail && ! xfail_check "$(xfail_expected_reason "${category}/${test_name}")" timeout "$output"; then
+            record_xfail_mismatch "${category}/${test_name}" "$output"
         elif $is_xfail; then
             echo "XFAIL ${category}/${test_name} (expected — timeout)"
             RESULTS+=("XFAIL ${category}/${test_name}")
@@ -349,6 +425,9 @@ run_test() {
             echo "$output" | tail -10 | head -5 | sed 's/^/  /'
             RESULTS+=("FLAKE-FAIL ${category}/${test_name}")
             FLAKE_FAIL=$((FLAKE_FAIL + 1))
+        elif $is_xfail && ! xfail_check "$(xfail_expected_reason "${category}/${test_name}")" exit \
+                "exit $rc"$'\n'"$output"; then
+            record_xfail_mismatch "${category}/${test_name}" "$output"
         elif $is_xfail; then
             echo "XFAIL ${category}/${test_name} (expected)"
             RESULTS+=("XFAIL ${category}/${test_name}")
@@ -416,6 +495,7 @@ if [ ! -f "$PROGRAM_INDEX_CHECKER" ]; then
     echo "Error: prepared xtask was not found at $PROGRAM_INDEX_CHECKER" >&2
     exit 1
 fi
+abi_contract_stamp_prepare || exit 1
 
 if ! build_example_program echo; then
     err=$(head -5 /tmp/libc-test-build-err.txt 2>/dev/null || echo "(no error output)")
@@ -469,6 +549,14 @@ for category in "${CATEGORIES[@]}"; do
         run_test "$category" "$test_name"
     done
 done
+
+# A run that selected nothing proves nothing, and used to exit 0. Why fail
+# it: a vacuous pass gets cited as validation (an empty Sortix suite was, on
+# 2026-09-16), and every claim built on it must later be re-checked.
+if [ "$TOTAL" -eq 0 ]; then
+    echo "Error: no libc-test tests were discovered or selected (categories: ${CATEGORIES[*]}); is tests/libc/libc-test checked out?" >&2
+    exit 1
+fi
 
 # ── Summary ─────────────────────────────────────────────────
 

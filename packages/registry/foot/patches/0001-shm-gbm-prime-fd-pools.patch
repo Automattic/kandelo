@@ -1,0 +1,325 @@
+--- a/shm.c
++++ b/shm.c
+@@ -12,6 +12,7 @@
+ #include <fcntl.h>
+ 
+ #include <pixman.h>
++#include <gbm.h>
+ 
+ #include <fcft/stride.h>
+ #include <tllist.h>
+@@ -68,9 +69,38 @@
+     void *real_mmapped;    /* Address returned from mmap */
+     size_t mmap_size;      /* Size of mmap (>= size) */
+ 
++    struct gbm_bo *bo;     /* dumb-bo backing; the pool fd is its prime-fd */
++    void *map_data;
++
+     size_t ref_count;
+ };
+ 
++/*
++ * On wasm-posix-kernel a memfd MAP_SHARED mapping is written back only
++ * on msync/munmap, so a memfd pool's bytes never reach the compositor
++ * while a buffer is live. The only cross-process pixel path is the DRI
++ * bo registry: every pool is backed by a renderD128 dumb-bo whose
++ * prime-fd is what wl_shm receives — the same contract every in-tree
++ * client uses (wlcompositor.c "wl_shm pool / buffer").
++ */
++static struct gbm_device *gbm_dev = NULL;
++
++static struct gbm_device *
++shm_gbm_device(void)
++{
++    if (gbm_dev == NULL) {
++        int fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
++        if (fd < 0) {
++            LOG_ERRNO("failed to open /dev/dri/renderD128");
++            return NULL;
++        }
++        gbm_dev = gbm_create_device(fd);
++        if (gbm_dev == NULL)
++            LOG_ERR("failed to create GBM device");
++    }
++    return gbm_dev;
++}
++
+ struct buffer_chain;
+ struct buffer_private {
+     struct buffer public;
+@@ -136,15 +166,20 @@
+     if (pool->ref_count > 0)
+         return;
+ 
+-    if (pool->real_mmapped != MAP_FAILED)
++    if (pool->bo != NULL && pool->real_mmapped != MAP_FAILED)
++        gbm_bo_unmap(pool->bo, pool->map_data);
++    else if (pool->real_mmapped != MAP_FAILED)
+         munmap(pool->real_mmapped, pool->mmap_size);
+     if (pool->wl_pool != NULL)
+         wl_shm_pool_destroy(pool->wl_pool);
++    if (pool->bo != NULL)
++        gbm_bo_destroy(pool->bo);
+     if (pool->fd >= 0)
+         close(pool->fd);
+ 
+     pool->real_mmapped = MAP_FAILED;
+     pool->wl_pool = NULL;
++    pool->bo = NULL;
+     pool->fd = -1;
+     free(pool);
+ }
+@@ -333,144 +368,70 @@
+     if (total_size == 0)
+         return;
+ 
+-    int pool_fd = -1;
+-
+-    void *real_mmapped = MAP_FAILED;
+-    struct wl_shm_pool *wl_pool = NULL;
+-    struct buffer_pool *pool = NULL;
+-
+-    /* Backing memory for SHM */
+-#if defined(MEMFD_CREATE)
+-    /*
+-     * Older kernels reject MFD_NOEXEC_SEAL with EINVAL. Try first
+-     * *with* it, and if that fails, try again *without* it.
+-     */
+-    errno = 0;
+-    pool_fd = memfd_create(
+-        "foot-wayland-shm-buffer-pool",
+-        MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL);
+-
+-    if (pool_fd < 0 && errno == EINVAL) {
+-        pool_fd = memfd_create(
+-            "foot-wayland-shm-buffer-pool", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+-    }
+-
+-#elif defined(__FreeBSD__)
+-    // memfd_create on FreeBSD 13 is SHM_ANON without sealing support
+-    pool_fd = shm_open(SHM_ANON, O_RDWR | O_CLOEXEC, 0600);
+-#else
+-    char name[] = "/tmp/foot-wayland-shm-buffer-pool-XXXXXX";
+-    pool_fd = mkostemp(name, O_CLOEXEC);
+-    unlink(name);
+-#endif
+-    if (pool_fd == -1) {
+-        LOG_ERRNO("failed to create SHM backing memory file");
+-        goto err;
+-    }
+-
+-#if __SIZEOF_POINTER__ == 8
+-    off_t offset = chain->scrollable && max_pool_size > 0
+-        ? (max_pool_size / 4) & ~(page_size() - 1)
+-        : 0;
+-    off_t memfd_size = chain->scrollable && max_pool_size > 0
+-        ? max_pool_size
+-        : total_size;
+-#else
+-    off_t offset = 0;
+-    off_t memfd_size = total_size;
+-#endif
+-
+-    xassert(chain->scrollable || (offset == 0 && memfd_size == total_size));
+-
+-    LOG_DBG("memfd-size: %lu, initial offset: %lu", memfd_size, offset);
+-
+-    if (ftruncate(pool_fd, memfd_size) == -1) {
+-        LOG_ERRNO("failed to set size of SHM backing memory file");
+-        goto err;
+-    }
+-
+-    if (!can_punch_hole_initialized) {
+-        can_punch_hole_initialized = true;
+-#if __SIZEOF_POINTER__ == 8 && defined(FALLOC_FL_PUNCH_HOLE)
+-        can_punch_hole = fallocate(
+-            pool_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, 0, 1) == 0;
+-
+-        if (!can_punch_hole) {
+-            LOG_WARN(
+-                "fallocate(FALLOC_FL_PUNCH_HOLE) not "
+-                "supported (%s): expect lower performance", strerror(errno));
+-        }
+-#else
+-        /* This is mostly to make sure we skip the warning issued
+-         * above */
+-        can_punch_hole = false;
+-#endif
+-    }
+-
+-    if (chain->scrollable && !can_punch_hole) {
+-        offset = 0;
+-        memfd_size = total_size;
+-        chain->scrollable = false;
+-
+-        if (ftruncate(pool_fd, memfd_size) < 0) {
+-            LOG_ERRNO("failed to set size of SHM backing memory file");
+-            goto err;
+-        }
+-    }
+-
+-    real_mmapped = mmap(
+-        NULL, memfd_size, PROT_READ | PROT_WRITE,
+-        MAP_SHARED | MAP_UNINITIALIZED, pool_fd, 0);
++    /* One bo per pool, one buffer per pool, offset 0; SHM scrolling
++     * stays off (it needs punch-hole + offset games on a memfd). */
++    struct gbm_device *gbm = shm_gbm_device();
++    if (gbm == NULL)
++        abort();
+ 
+-    if (real_mmapped == MAP_FAILED) {
+-        LOG_ERRNO("failed to mmap SHM backing memory file");
+-        goto err;
+-    }
++    chain->scrollable = false;
+ 
+-#if defined(MEMFD_CREATE)
+-    /* Seal file - we no longer allow any kind of resizing */
+-    /* TODO: wayland mmaps(PROT_WRITE), for some unknown reason, hence we cannot use F_SEAL_FUTURE_WRITE */
+-    if (fcntl(pool_fd, F_ADD_SEALS,
+-              F_SEAL_GROW | F_SEAL_SHRINK | /*F_SEAL_FUTURE_WRITE |*/ F_SEAL_SEAL) < 0)
+-    {
+-        LOG_ERRNO("failed to seal SHM backing memory file");
+-        /* This is not a fatal error */
+-    }
+-#endif
+-
+-    wl_pool = wl_shm_create_pool(chain->shm, pool_fd, memfd_size);
+-    if (wl_pool == NULL) {
+-        LOG_ERR("failed to create SHM pool");
+-        goto err;
+-    }
+-
+-    pool = xmalloc(sizeof(*pool));
+-    if (pool == NULL) {
+-        LOG_ERRNO("failed to allocate buffer pool");
+-        goto err;
+-    }
+-
+-    *pool = (struct buffer_pool){
+-        .fd = pool_fd,
+-        .wl_pool = wl_pool,
+-        .real_mmapped = real_mmapped,
+-        .mmap_size = memfd_size,
+-        .ref_count = 0,
+-    };
+-
+     for (size_t i = 0; i < count; i++) {
+         if (sizes[i] == 0) {
+             bufs[i] = NULL;
+             continue;
++        }
++
++        struct gbm_bo *bo = gbm_bo_create(
++            gbm, widths[i], heights[i],
++            with_alpha ? GBM_FORMAT_ARGB8888 : GBM_FORMAT_XRGB8888,
++            GBM_BO_USE_LINEAR | GBM_BO_USE_SCANOUT);
++        if (bo == NULL) {
++            LOG_ERR("failed to create GBM bo");
++            abort();
++        }
++
++        uint32_t bo_stride = 0;
++        void *map_data = NULL;
++        void *mapped = gbm_bo_map(
++            bo, 0, 0, widths[i], heights[i], 0, &bo_stride, &map_data);
++        if (mapped == NULL) {
++            LOG_ERR("failed to map GBM bo");
++            abort();
++        }
++
++        int prime_fd = gbm_bo_get_fd(bo);
++        if (prime_fd < 0) {
++            LOG_ERR("failed to export GBM bo prime-fd");
++            abort();
++        }
++
++        struct wl_shm_pool *wl_pool = wl_shm_create_pool(
++            chain->shm, prime_fd, (int32_t)(bo_stride * heights[i]));
++        if (wl_pool == NULL) {
++            LOG_ERR("failed to create SHM pool");
++            abort();
+         }
++        close(prime_fd);   /* wl_shm dup'd it into the pool */
+ 
++        struct buffer_pool *pool = xmalloc(sizeof(*pool));
++        *pool = (struct buffer_pool){
++            .fd = -1,
++            .wl_pool = wl_pool,
++            .real_mmapped = mapped,
++            .mmap_size = bo_stride * heights[i],
++            .bo = bo,
++            .map_data = map_data,
++            .ref_count = 0,
++        };
++
+         /* Push to list of available buffers, but marked as 'busy' */
+         struct buffer_private *buf = xmalloc(sizeof(*buf));
+         *buf = (struct buffer_private){
+             .public = {
+                 .width = widths[i],
+                 .height = heights[i],
+-                .stride = stride[i],
++                .stride = (int)bo_stride,
+                 .pix_instances = chain->pix_instances,
+                 .age = 1234,  /* Force a full repaint */
+             },
+@@ -480,13 +441,13 @@
+             .with_alpha = with_alpha,
+             .pool = pool,
+             .offset = 0,
+-            .size = sizes[i],
+-            .scrollable = chain->scrollable,
++            .size = bo_stride * heights[i],
++            .scrollable = false,
+         };
+ 
+-        if (!instantiate_offset(buf, offset)) {
++        if (!instantiate_offset(buf, 0)) {
+             free(buf);
+-            goto err;
++            abort();
+         }
+ 
+         if (immediate_purge)
+@@ -501,40 +462,8 @@
+             pixman_region32_init(&buf->public.dirty[j]);
+ 
+         pool->ref_count++;
+-        offset += buf->size;
+         bufs[i] = &buf->public;
+-    }
+-
+-#if defined(MEASURE_SHM_ALLOCS) && MEASURE_SHM_ALLOCS
+-    {
+-        size_t currently_alloced = 0;
+-        tll_foreach(buffers, it)
+-            currently_alloced += it->item.size;
+-        if (currently_alloced > max_alloced)
+-            max_alloced = currently_alloced;
+     }
+-#endif
+-
+-    if (!(bufs[0] && shm_can_scroll(bufs[0]))) {
+-        /* We only need to keep the pool FD open if we're going to SHM
+-         * scroll it */
+-        close(pool_fd);
+-        pool->fd = -1;
+-    }
+-
+-    return;
+-
+-err:
+-    pool_unref(pool);
+-    if (wl_pool != NULL)
+-        wl_shm_pool_destroy(wl_pool);
+-    if (real_mmapped != MAP_FAILED)
+-        munmap(real_mmapped, memfd_size);
+-    if (pool_fd != -1)
+-        close(pool_fd);
+-
+-    /* We don't handle this */
+-    abort();
+ }
+ 
+ void

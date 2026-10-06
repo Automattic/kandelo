@@ -17,6 +17,14 @@ source_roles = ["system-tables"]
 role = "runtime"
 materialization = "embedded"
 
+# bash is /bin/sh in every Kandelo image (see installBashAsPosixShell).
+[[software.package]]
+name = "bash"
+outputs = ["bash"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
 [[software.package]]
 name = "dash"
 outputs = ["dash"]

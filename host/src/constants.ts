@@ -1,4 +1,5 @@
 import {
+  ABI_VERSION,
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
@@ -32,6 +33,9 @@ import {
   WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
   WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
   WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
+  WPK_FORK_FRAME_IMPORT_COMMIT,
+  WPK_FORK_FRAME_IMPORT_NEXT,
+  WPK_FORK_FRAME_IMPORT_RESERVE,
   WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
   WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
@@ -72,6 +76,21 @@ import {
   WPK_FORK_UNWIND_TRANSPORT_VERSION as FORK_UNWIND_TRANSPORT_VERSION,
 } from "./generated/abi";
 
+/**
+ * The linked-frame imports every instrumented activation uses. A module that
+ * imports any of them must import all of them. The remaining fork-runtime
+ * imports serve optional state and may be absent when a module never uses
+ * them (for example after wasm-opt removes unused imports).
+ */
+export const WPK_FORK_CORE_FRAME_IMPORT_NAMES: readonly string[] = [
+  WPK_FORK_FRAME_IMPORT_RESERVE,
+  WPK_FORK_FRAME_IMPORT_COMMIT,
+  WPK_FORK_FRAME_IMPORT_NEXT,
+];
+const WPK_FORK_FRAME_IMPORT_MODULE = WPK_FORK_REQUIRED_IMPORTS.find(
+  ({ name }) => name === WPK_FORK_FRAME_IMPORT_RESERVE,
+)!.module;
+
 const FORK_STATIC_ROOT_CATALOG_MAGIC =
   Uint8Array.from(WPK_FORK_STATIC_ROOT_CATALOG_MAGIC);
 
@@ -82,6 +101,14 @@ export { CH_DATA_SIZE, CH_HEADER_SIZE, CH_TOTAL_SIZE } from "./generated/abi";
 
 /** Default max pages for WebAssembly.Memory */
 export const DEFAULT_MAX_PAGES = PROCESS_MEMORY_DEFAULT_MAX_PAGES;
+
+/**
+ * Default ceiling for the kernel's own wasm address space (1 GiB).
+ *
+ * The kernel Wasm starts at 24 pages and grows on demand; this is a host
+ * budget, overridable per host via `KernelConfig.kernelMaxPages`.
+ */
+export const DEFAULT_KERNEL_MAX_PAGES = 16384;
 
 /** Default process-worker admission input shared by Node and browser hosts. */
 export const DEFAULT_MAX_WORKERS = 4;
@@ -1134,12 +1161,20 @@ function validateForkCapabilities(sections: Uint8Array[]): string[] {
   return [];
 }
 
-function validateForkUnwindTransport(facts: WasmForkArtifactFacts): string[] {
+function validateForkUnwindTransport(
+  facts: WasmForkArtifactFacts,
+  hasFrames: boolean,
+): string[] {
   const failures: string[] = [];
   const identity = `${FORK_UNWIND_TAG_IMPORT_MODULE}.${FORK_UNWIND_TAG_IMPORT_NAME}`;
   const tags = facts.tagImports.get(identity);
+  // Every instrumented frame catches the unwind tag, so a module with the
+  // linked-frame imports must import it. Without frames, no code throws or
+  // catches it and wasm-opt removes the import.
   if (!tags) {
-    failures.push(`missing required private fork-unwind tag import ${identity}`);
+    if (hasFrames) {
+      failures.push(`missing required private fork-unwind tag import ${identity}`);
+    }
   } else if (tags.length !== 1) {
     failures.push(`duplicate private fork-unwind tag import ${identity}`);
   } else if (tags[0]!.params.length !== 0 || tags[0]!.results.length !== 0) {
@@ -1315,7 +1350,6 @@ interface ForkImportedGlobalRecord {
   ownerId: number;
   typeCode: number;
   flags: number;
-  importOrdinal: number;
   module: string;
   name: string;
 }
@@ -1369,10 +1403,8 @@ function validateForkImportedGlobalsDescriptor(
   }
 
   const owners = new Set<number>();
-  const importOrdinals = new Set<number>();
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const records: ForkImportedGlobalRecord[] = [];
-  let previousImportOrdinal = -1;
   let offset = WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE;
   for (let index = 0; index < count; index++) {
     if (offset + WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE > bytes.byteLength) {
@@ -1387,7 +1419,7 @@ function validateForkImportedGlobalsDescriptor(
     const flags = view.getUint8(offset + 9);
     const moduleLength = view.getUint32(offset + 12, true);
     const nameLength = view.getUint32(offset + 16, true);
-    const importOrdinal = view.getUint32(offset + 20, true);
+    const reservedZero = view.getUint32(offset + 20, true);
     const expectedSize = WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE
       + moduleLength
       + nameLength;
@@ -1423,16 +1455,14 @@ function validateForkImportedGlobalsDescriptor(
         `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} reserved fields are nonzero`,
       );
     }
-    if (
-      importOrdinals.has(importOrdinal)
-      || importOrdinal <= previousImportOrdinal
-    ) {
+    // Format 2 reserves this word (zero): the import is identified by its
+    // kind, module and name, which survive tools that drop or reorder imports
+    // after instrumentation.
+    if (reservedZero !== 0) {
       failures.push(
-        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} has duplicated or unordered import ordinal`,
+        `${WPK_FORK_IMPORTED_GLOBALS_SECTION} record ${index} reserved import word is nonzero`,
       );
     }
-    importOrdinals.add(importOrdinal);
-    previousImportOrdinal = importOrdinal;
     const namesOffset = offset + WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE;
     try {
       const module = decoder.decode(
@@ -1448,7 +1478,6 @@ function validateForkImportedGlobalsDescriptor(
         ownerId,
         typeCode,
         flags,
-        importOrdinal,
         module,
         name,
       });
@@ -1488,7 +1517,6 @@ function validateForkImportedGlobalsDescriptor(
     if (
       imported.module !== record.module
       || imported.name !== record.name
-      || imported.importOrdinal !== record.importOrdinal
       || imported.recipeTypeCode !== record.typeCode
       || imported.mutable !==
         ((record.flags & WPK_FORK_IMPORTED_GLOBALS_FLAG_MUTABLE) !== 0)
@@ -1549,7 +1577,6 @@ interface ForkImportedTableRecord {
   ownerId: number;
   typeCode: number;
   flags: number;
-  importOrdinal: number;
   module: string;
   name: string;
 }
@@ -1605,10 +1632,8 @@ function validateForkImportedTablesDescriptor(
   }
 
   const owners = new Set<number>();
-  const importOrdinals = new Set<number>();
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const records: ForkImportedTableRecord[] = [];
-  let previousImportOrdinal = -1;
   let offset = WPK_FORK_IMPORTED_TABLES_HEADER_SIZE;
   for (let index = 0; index < count; index++) {
     if (offset + WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE > bytes.byteLength) {
@@ -1623,7 +1648,7 @@ function validateForkImportedTablesDescriptor(
     const flags = view.getUint8(offset + 9);
     const moduleLength = view.getUint32(offset + 12, true);
     const nameLength = view.getUint32(offset + 16, true);
-    const importOrdinal = view.getUint32(offset + 20, true);
+    const reservedZero = view.getUint32(offset + 20, true);
     const expectedSize = WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE
       + moduleLength
       + nameLength;
@@ -1659,16 +1684,14 @@ function validateForkImportedTablesDescriptor(
         `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} reserved fields are nonzero`,
       );
     }
-    if (
-      importOrdinals.has(importOrdinal)
-      || importOrdinal <= previousImportOrdinal
-    ) {
+    // Format 2 reserves this word (zero): the import is identified by its
+    // kind, module and name, which survive tools that drop or reorder imports
+    // after instrumentation.
+    if (reservedZero !== 0) {
       failures.push(
-        `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} has duplicated or unordered import ordinal`,
+        `${WPK_FORK_IMPORTED_TABLES_SECTION} record ${index} reserved import word is nonzero`,
       );
     }
-    importOrdinals.add(importOrdinal);
-    previousImportOrdinal = importOrdinal;
     const namesOffset = offset + WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE;
     try {
       const module = decoder.decode(
@@ -1684,7 +1707,6 @@ function validateForkImportedTablesDescriptor(
         ownerId,
         typeCode,
         flags,
-        importOrdinal,
         module,
         name,
       });
@@ -1724,7 +1746,6 @@ function validateForkImportedTablesDescriptor(
     if (
       imported.module !== record.module
       || imported.name !== record.name
-      || imported.importOrdinal !== record.importOrdinal
       || imported.recipeTypeCode !== record.typeCode
       || imported.table64 !==
         ((record.flags & WPK_FORK_IMPORTED_TABLES_FLAG_TABLE64) !== 0)
@@ -1833,8 +1854,10 @@ function validateForkActivationImport(facts: WasmForkArtifactFacts): string[] {
   const identity =
     `${WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE}.${WPK_FORK_EXCEPTION_IMPORT_ACTIVATION}`;
   const imports = facts.globalImports.get(identity);
+  // Optional when absent: only the exception codec reads it, and wasm-opt
+  // removes it from modules whose codec code is unused.
   if (!imports) {
-    return [`missing required immutable exception-codec activation import ${identity}`];
+    return [];
   }
   if (imports.length !== 1) {
     return [`duplicate exception-codec activation import ${identity}`];
@@ -1850,8 +1873,9 @@ function validateForkTableImports(facts: WasmForkArtifactFacts): string[] {
   for (const requirement of WPK_FORK_REQUIRED_TABLE_IMPORTS) {
     const identity = `${requirement.module}.${requirement.name}`;
     const imports = facts.tableImports.get(identity);
+    // Optional when absent (wasm-opt removes unused imports); exact when
+    // present.
     if (!imports) {
-      failures.push(`missing required ABI 43 fork-runtime table import ${identity}`);
       continue;
     }
     if (imports.length !== 1) {
@@ -2054,15 +2078,32 @@ function describeForkArtifactContractFailures(
     || facts.tagImports.has(unwindTagIdentity)
     || facts.unwindTransportDescriptors.length > 0;
   if (requiresUnwindTransport) {
-    failures.push(...validateForkUnwindTransport(facts));
+    const hasFrames = WPK_FORK_CORE_FRAME_IMPORT_NAMES.some((name) =>
+      facts.functionImports.has(`${WPK_FORK_FRAME_IMPORT_MODULE}.${name}`)
+    );
+    failures.push(...validateForkUnwindTransport(facts, hasFrames));
   }
   if (requiresFrameImports) {
-    const missingImports = WPK_FORK_REQUIRED_IMPORTS
-      .filter(({ module, name }) => !facts.functionImports.has(`${module}.${name}`))
-      .map(({ module, name }) => `${module}.${name}`);
-    if (missingImports.length > 0) {
+    // Every instrumented activation uses the linked-frame core (reserve,
+    // commit, next), so it is all-or-nothing. The other runtime imports serve
+    // optional state (table mutation, GC and exception codecs): a module that
+    // has no such state never calls them, and tools such as wasm-opt remove
+    // unused imports after instrumentation. Wasm code can only call what it
+    // imports, so an absent optional import is unused by construction; every
+    // present one is still type-checked below.
+    // A module that imports fork but has no instrumented frames of its own
+    // (it only re-exports the import, or wasm-opt removed every fork-path
+    // function) has no core imports at all; that is consistent. One that has
+    // some but not all of them was instrumented incompletely.
+    const missingImports = WPK_FORK_CORE_FRAME_IMPORT_NAMES
+      .filter((name) => !facts.functionImports.has(`${WPK_FORK_FRAME_IMPORT_MODULE}.${name}`))
+      .map((name) => `${WPK_FORK_FRAME_IMPORT_MODULE}.${name}`);
+    if (
+      missingImports.length > 0
+      && missingImports.length < WPK_FORK_CORE_FRAME_IMPORT_NAMES.length
+    ) {
       failures.push(
-        `incomplete ABI 43 fork-runtime imports; missing ${missingImports.join(", ")}`,
+        `incomplete fork linked-frame imports; missing ${missingImports.join(", ")}`,
       );
     }
     for (const requirement of WPK_FORK_REQUIRED_IMPORTS) {
@@ -2371,6 +2412,58 @@ export function readWasmCustomSectionNames(programBytes: ArrayBuffer): string[] 
   return names;
 }
 
+/**
+ * Custom-section name carrying the 32-byte ABI-contract digest
+ * (`hash(abi/snapshot.json + ABI_VERSION)`) a wasm artifact was built against.
+ * Stamped by the local-build engine (`tools/xtask/src/build_stamp.rs`,
+ * `ABI_CONTRACT_SECTION`) onto every program — kernel, userspace, and every
+ * guest. The host reads the kernel's own stamp at init and compares each
+ * guest's stamp against it at exec, so a structural ABI change can't let a
+ * stale guest run against a mismatched kernel even when the ABI version
+ * numbers coincide.
+ */
+export const ABI_CONTRACT_SECTION = "kandelo.abi.contract";
+
+/**
+ * Return the payload bytes (after the section name) of the first custom
+ * section named `name`, or `null` if the module carries no such section.
+ * Mirrors {@link readWasmCustomSectionNames}' walker but exposes the payload.
+ */
+export function readWasmCustomSectionPayload(
+  programBytes: ArrayBuffer,
+  name: string,
+): Uint8Array | null {
+  const src = new Uint8Array(programBytes);
+  if (!hasWasmMagic(src)) return null;
+
+  let offset = 8;
+  while (offset < src.length) {
+    const sectionId = src[offset];
+    const [sectionSize, sizeBytes] = readULEB128(src, offset + 1);
+    const contentOffset = offset + 1 + sizeBytes;
+    const sectionEnd = contentOffset + sectionSize;
+
+    if (sectionId === 0) {
+      const [sectionName, afterName] = readName(src, contentOffset);
+      if (sectionName === name) {
+        return src.subarray(afterName, sectionEnd);
+      }
+    }
+
+    offset = sectionEnd;
+  }
+  return null;
+}
+
+/** Constant-shape 32-byte compare of two ABI-contract digests. */
+function abiContractDigestsEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 export function wasmContainsLegacyAsyncify(programBytes: ArrayBuffer): boolean {
   return containsAscii(new Uint8Array(programBytes), "asyncify_");
 }
@@ -2400,10 +2493,17 @@ export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {
     customSections.some((name) => name.startsWith("reloc."));
 }
 
+/**
+ * Warn once per worker process when a guest lacks the ABI-contract stamp,
+ * not once per program load (mirrors `abiMissingWarned` in worker-main.ts).
+ */
+let abiContractMissingWarned = false;
+
 export function describeWasmArtifactPolicyFailures(
   programBytes: ArrayBuffer,
   options: {
     expectedAbi?: number | null;
+    expectedAbiContractDigest?: Uint8Array | null;
     requiredExports?: readonly string[];
     forbiddenExports?: readonly string[];
     requireForkInstrumentation?: boolean;
@@ -2420,6 +2520,35 @@ export function describeWasmArtifactPolicyFailures(
     declaredAbi = extractAbiVersion(programBytes);
     if (declaredAbi !== null && declaredAbi !== options.expectedAbi) {
       failures.push(`ABI ${declaredAbi}, expected ${options.expectedAbi}`);
+    }
+  }
+
+  // ABI-contract digest gate (Stage 3): the ABI version NUMBER can coincide
+  // across a structural ABI change that regenerated abi/snapshot.json. The
+  // 32-byte contract digest binds hash(abi/snapshot.json + ABI_VERSION), so a
+  // guest built against a different snapshot is caught even when the numbers
+  // match. Warn-then-enforce during rollout: an UNSTAMPED (legacy) guest warns
+  // once and passes; a STAMPED-but-mismatched guest fails hard.
+  if (
+    options.expectedAbiContractDigest !== undefined &&
+    options.expectedAbiContractDigest !== null
+  ) {
+    const guestDigest = readWasmCustomSectionPayload(programBytes, ABI_CONTRACT_SECTION);
+    if (guestDigest === null) {
+      if (!abiContractMissingWarned) {
+        abiContractMissingWarned = true;
+        console.warn(
+          "[worker] user program lacks a kandelo.abi.contract stamp — " +
+            "legacy binary predates the ABI-contract-digest rollout. Rebuild " +
+            "it through the local-build engine to pick up the check. " +
+            "See docs/abi-versioning.md.",
+        );
+      }
+    } else if (!abiContractDigestsEqual(guestDigest, options.expectedAbiContractDigest)) {
+      failures.push(
+        "ABI contract digest mismatch — guest built against a different ABI " +
+          "snapshot than the running kernel; rebuild the guest",
+      );
     }
   }
 
@@ -2489,7 +2618,11 @@ export function describeWasmArtifactPolicyFailures(
     );
   }
   if (options.forbidForkInstrumentation && hasForkArtifactSurface) {
-    failures.push("contains ABI 43 wasm-fork-instrument metadata, imports, or exports");
+    // The current epoch's metadata, named from the generated constant so the
+    // message cannot go stale when ABI_VERSION moves.
+    failures.push(
+      `contains ABI ${ABI_VERSION} wasm-fork-instrument metadata, imports, or exports`,
+    );
   }
 
   const requireForkInstrumentation =

@@ -43,6 +43,93 @@ that owns those direct dependencies, including an archive-stage override. A
 build script that relies on ambient host tools, global SDK links, undeclared
 transitive deps, or files outside its contract is not cache-safe.
 
+Build scripts configure, fetch, patch, generate, and compile only under
+`WASM_POSIX_DEP_WORK_DIR`, and install only into `WASM_POSIX_DEP_OUT_DIR`.
+The checkout is reviewed input, not scratch. Two resolves of one recipe in
+one worktree do run at once: two Vitest files that miss the same cache, a
+`local-build` beside a test, or the wasm32 and wasm64 builds of one recipe.
+A build tree at a fixed checkout path such as `$SCRIPT_DIR/<name>-build` is
+shared between them, and one build's `rm -rf` deletes the other's tree
+mid-build. Fixed `/tmp/<name>-<version>.tar.*` download paths collide the
+same way. Derive every write path from `kandelo_package_prepare_build_roots`
+(`$KANDELO_PACKAGE_WORK_DIR`) or `"${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"`,
+stage sources with `kandelo_package_stage_verified_source`, and export
+`WASM_POSIX_INSTALL_LOCAL_MIRROR=0` before `install_local_binary` when the
+resolver owns the roots. Standalone runs may keep package-local defaults.
+The resolver enforces the recipe-directory part of this rule: it records the
+package directory and the build script's directory before the script runs,
+and fails the build, publishing nothing, if anything in them changed.
+
+The persistent SourceOnly build cache lives at
+`$HOME/.cache/kandelo/source-only` and is **shared across every worktree on
+the machine** by default. This is deliberate: the cache is content-addressed,
+so identical inputs are built once and reused everywhere, which is what keeps a
+fresh `git worktree` fast instead of a from-scratch rebuild. Set
+`KANDELO_SOURCE_CACHE_ROOT` to an absolute path to give a worktree its own
+isolated cache instead; leave it unset to share. Both build front doors honor
+it and must agree — the Rust default (`default_source_cache_root` in
+`tools/xtask/src/local_build.rs`) and the shell runner
+(`scripts/run-local-build.sh`). Reach for isolation only when an in-progress
+change alters the *bytes* a cache key maps to — e.g. a change to the
+build-stamp or artifact format — so that a worktree on the new format does not
+contend with worktrees on the old one at the same content-addressed key.
+Concurrency itself is safe: each build compiles in its own resolver work
+root (see the build-script rule above), and the store stages into a per-pid
+temp directory and publishes with an atomic, non-replacing `rename(2)`. The
+shared default therefore never risks corruption; the override is about
+avoiding churn, not preventing races. Do not reach for it as a routine
+default — a per-worktree cache discards the cross-worktree reuse the shared
+cache exists to provide.
+
+Because the cache is shared, per-checkout maintenance must stay scoped to the
+checkout's own keys. `xtask clean <target>` (behind `./run.sh clean` and
+`./run.sh rebuild`) removes only the generation stored under the cache key
+this checkout's inputs currently resolve to, for the target and its
+reverse-dependency cascade, plus this checkout's mirrored outputs under
+`local-binaries/source-only-v1`. Generations of the same package under other
+keys were built from other inputs, usually another worktree's, and are left
+in place; deleting them would silently force that worktree to rebuild the
+package and everything built on it.
+
+Stale generations are reclaimed only by cache garbage collection, never by a
+per-checkout command: `./run.sh cache-gc` (a dry run unless `--apply`) and
+the automatic collection a successful local build runs at most once a day.
+It removes a generation only when no live checkout root names its key and it
+has gone unused past the age limit (or, with `--below-abi N`, was built for an
+ABI below `N`), and it skips while any build holds the cache lock. Do not hand-delete cache entries or add another sweeper: every
+build that uses the cache must hold `cache_gc::CacheUseLock` for as long as it
+can read a generation, or collection can remove an entry underneath it. Run
+destructive collection against the shared cache only when the user asks;
+test it against a scratch `KANDELO_SOURCE_CACHE_ROOT`, and set
+`KANDELO_CACHE_GC_AUTO=0` when a build must not collect. See
+[Cache garbage collection](../package-management.md#cache-garbage-collection).
+
+## Line editing for REPL CLIs
+
+A command-line program with an interactive REPL — a read-eval-print loop that
+reads lines from a TTY, such as `sqlite3` or a language shell — should link a
+line-editing library so users get history, cursor movement, and the REPL's own
+Ctrl-D/EOF handling, unless the upstream maintainer explicitly omits it. A bare
+`fgets`/`getline` reader is the fallback, not the default.
+
+Choose the editor by the *consuming program's* license, because the standard
+choice — GNU `readline` — is GPL-3.0-or-later, and linking it makes the
+resulting **binary** a GPL aggregate. That aggregate is scoped to that one
+binary; it does not relicense other libraries the binary also links (e.g.
+`libsqlite3` stays public domain).
+
+- Public-domain / MIT / BSD / Apache-2.0 / otherwise GPL-compatible program:
+  GNU `readline` is the default — the `readline` package linked against
+  `ncurses`' `libtinfow` (define `-DHAVE_READLINE=1`, link
+  `-lreadline -lhistory -ltinfow`). Note in the package that the binary is a
+  GPL aggregate.
+- GPL-incompatible program (proprietary, GPLv2-only, or one that must stay
+  under a permissive license): do NOT link GPL `readline`. Use a BSD line
+  editor (libedit) or the program's built-in editor instead.
+
+Record which shipped binaries link GPL `readline` so each binary's aggregate
+license is known.
+
 Builds must use the worktree-local SDK. Source `sdk/activate.sh` from package
 scripts; do not rely on `npm link` or a globally installed wrapper. If a build
 only works because the host PATH leaks a tool, fix `flake.nix` or the build

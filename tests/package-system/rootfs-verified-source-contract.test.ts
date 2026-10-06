@@ -10,20 +10,25 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
+// The fourth column says whether `rootfs` must also declare the package as a
+// direct dependency. `dash` keeps the verified-archive build contract because
+// mariadb-vfs and mariadb-test still depend on it, but it left the base image
+// when bash became the only shell including /bin/sh (PR #1403), so rootfs no
+// longer names it.
 const verifiedArchivePackages = [
-  ["dash", "DASH_VERSION", "auto"],
-  ["bash", "BASH_VERSION_PKG", "auto"],
-  ["ncurses", "NCURSES_VERSION", "auto"],
-  ["coreutils", "COREUTILS_VERSION", "auto"],
-  ["gawk", "GAWK_VERSION", "auto"],
-  ["grep", "GREP_VERSION", "auto"],
-  ["sed", "SED_VERSION", "auto"],
-  ["bc", "BC_VERSION", "disabled"],
-  ["file", "FILE_VERSION", "auto"],
-  ["m4", "M4_VERSION", "auto"],
-  ["make", "MAKE_VERSION", "auto"],
-  ["findutils", "FINDUTILS_VERSION", "auto"],
-  ["diffutils", "DIFFUTILS_VERSION", "auto"],
+  ["dash", "DASH_VERSION", "auto", "not-in-rootfs"],
+  ["bash", "BASH_VERSION_PKG", "auto", "in-rootfs"],
+  ["ncurses", "NCURSES_VERSION", "auto", "in-rootfs"],
+  ["coreutils", "COREUTILS_VERSION", "auto", "in-rootfs"],
+  ["gawk", "GAWK_VERSION", "auto", "in-rootfs"],
+  ["grep", "GREP_VERSION", "auto", "in-rootfs"],
+  ["sed", "SED_VERSION", "auto", "in-rootfs"],
+  ["bc", "BC_VERSION", "disabled", "in-rootfs"],
+  ["file", "FILE_VERSION", "auto", "in-rootfs"],
+  ["m4", "M4_VERSION", "auto", "in-rootfs"],
+  ["make", "MAKE_VERSION", "auto", "in-rootfs"],
+  ["findutils", "FINDUTILS_VERSION", "auto", "in-rootfs"],
+  ["diffutils", "DIFFUTILS_VERSION", "auto", "in-rootfs"],
 ] as const;
 
 const gnuMirrorPackages = [
@@ -83,6 +88,7 @@ describe("source-rootfs verified archive contract", () => {
     packageName,
     versionVariable,
     forkInstrumentation,
+    rootfsMembership,
   ] of verifiedArchivePackages) {
     it(`${packageName} binds isolated builds to its manifest source`, () => {
       const manifest = readFileSync(
@@ -141,7 +147,11 @@ describe("source-rootfs verified archive contract", () => {
       expect(buildScript).not.toContain('"/tmp/$TARBALL"');
       expect(buildToml).toContain('"scripts/package-build-roots.sh"');
       expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-      expect(rootfsManifest).toContain(`"${packageName}@${version}"`);
+      if (rootfsMembership === "in-rootfs") {
+        expect(rootfsManifest).toContain(`"${packageName}@${version}"`);
+      } else {
+        expect(rootfsManifest).not.toContain(`"${packageName}@`);
+      }
     });
   }
 

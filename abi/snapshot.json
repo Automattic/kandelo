@@ -1,5 +1,5 @@
 {
-  "abi_version": 43,
+  "abi_version": 47,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -941,6 +941,61 @@
       "number": 3
     }
   ],
+  "clipboard_device_abi": {
+    "ack": {
+      "fields": [
+        {
+          "name": "seq",
+          "offset": 0,
+          "type": "u32"
+        },
+        {
+          "name": "status",
+          "offset": 4,
+          "type": "i32"
+        }
+      ],
+      "size": 8
+    },
+    "constants": {
+      "KANDELO_CLIPBOARD_ACK_NO_AGENT": -6,
+      "KANDELO_CLIPBOARD_ACK_PENDING": 1,
+      "KANDELO_CLIPBOARD_ACK_SIZE": 8,
+      "KANDELO_CLIPBOARD_ACK_SUPERSEDED": -125,
+      "KANDELO_CLIPBOARD_ACK_UNKNOWN_SEQ": -2,
+      "KANDELO_CLIPBOARD_KIND_GUEST_TEXT": 2,
+      "KANDELO_CLIPBOARD_KIND_OFFER_TEXT": 1,
+      "KANDELO_CLIPBOARD_MAX_TEXT_BYTES": 1048576,
+      "KANDELO_CLIPBOARD_RECORD_HEADER_SIZE": 16,
+      "KANDELO_CLIPBOARD_RECORD_VERSION": 1
+    },
+    "device_path": "/dev/kandelo/clipboard",
+    "record_header": {
+      "fields": [
+        {
+          "name": "version",
+          "offset": 0,
+          "type": "u32"
+        },
+        {
+          "name": "kind",
+          "offset": 4,
+          "type": "u32"
+        },
+        {
+          "name": "seq",
+          "offset": 8,
+          "type": "u32"
+        },
+        {
+          "name": "len",
+          "offset": 12,
+          "type": "u32"
+        }
+      ],
+      "size": 16
+    }
+  },
   "custom_sections": [
     "kandelo.wpk_fork.capabilities",
     "kandelo.wpk_fork.exception_codec",
@@ -976,7 +1031,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 43,
+      "abi_version": 47,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1046,6 +1101,11 @@
       }
     ],
     "optional_kernel_exports": [
+      "kernel_clipboard_ack",
+      "kernel_clipboard_guest_generation",
+      "kernel_clipboard_guest_read",
+      "kernel_clipboard_offer",
+      "kernel_clipboard_stage",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
@@ -1078,6 +1138,7 @@
       "kernel_has_sa_nocldstop",
       "kernel_host_adapter_manifest_len",
       "kernel_host_adapter_manifest_ptr",
+      "kernel_install_host_stdin_pipe",
       "kernel_ipc_shm_lookup_mapping_for_task",
       "kernel_ipc_shm_record_mapping_for_process",
       "kernel_ipc_shm_record_mapping_for_task",
@@ -1151,6 +1212,73 @@
       }
     ]
   },
+  "host_env_imports": [
+    {
+      "kind": "tag",
+      "link_time": true,
+      "name": "__c_longjmp"
+    },
+    {
+      "kind": "global",
+      "link_time": true,
+      "name": "__channel_base"
+    },
+    {
+      "kind": "tag",
+      "link_time": true,
+      "name": "__cpp_exception"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlclose"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlerror"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlopen"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlopen_commit"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlopen_main"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlopen_next"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlopen_prepare"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_dlsym"
+    },
+    {
+      "kind": "function",
+      "link_time": true,
+      "name": "__wasm_posix_vm_interrupt_after"
+    },
+    {
+      "kind": "memory",
+      "link_time": true,
+      "name": "memory"
+    }
+  ],
   "host_intercepted_syscalls": [
     {
       "name": "SYS_EXECVE",
@@ -1224,6 +1352,12 @@
     }
   },
   "ioctl_request_contracts": {
+    "1074021776": {
+      "argKind": "scalar-i32",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
     "1074024452": {
       "argKind": "pointer",
       "direction": "in",
@@ -1326,6 +1460,12 @@
       "wasm32Size": 0,
       "wasm64Size": 0
     },
+    "2147763457": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
     "2147766274": {
       "argKind": "pointer",
       "direction": "out",
@@ -1379,6 +1519,12 @@
       "direction": "out",
       "wasm32Size": 4,
       "wasm64Size": 4
+    },
+    "2148025602": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 8,
+      "wasm64Size": 8
     },
     "2148028435": {
       "argKind": "pointer",
@@ -1632,6 +1778,18 @@
       "wasm32Size": 16,
       "wasm64Size": 16
     },
+    "3222299872": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299873": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
     "3222561958": {
       "argKind": "pointer",
       "direction": "inout",
@@ -1759,6 +1917,71 @@
       "wasm64Size": null
     }
   },
+  "ioctl_request_families": [
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 6,
+      "nrLast": 6
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 32,
+      "nrLast": 63
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 7,
+      "nrLast": 9
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": 24,
+      "magic": 69,
+      "maxCallerSize": null,
+      "nrFirst": 64,
+      "nrLast": 127
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 24,
+      "nrLast": 24
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 25,
+      "nrLast": 25
+    },
+    {
+      "dir": 2,
+      "direction": "out",
+      "fixedSize": null,
+      "magic": 69,
+      "maxCallerSize": 256,
+      "nrFirst": 27,
+      "nrLast": 27
+    }
+  ],
   "kernel_exports": [
     {
       "kind": "func",
@@ -1859,6 +2082,31 @@
       "kind": "func",
       "name": "kernel_clear_fork_exec",
       "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_ack",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_guest_generation",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_guest_read",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_offer",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_clipboard_stage",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1974,6 +2222,11 @@
       "kind": "func",
       "name": "kernel_epoll_pwait",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_epoll_watched_fd",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2404,6 +2657,16 @@
       "kind": "func",
       "name": "kernel_inject_mouse_event",
       "signature": "(i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_input_event",
+      "signature": "(i32,i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_install_host_stdin_pipe",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2882,6 +3145,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_restore_poll_sigmask",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rewinddir",
       "signature": "(i32) -> (i32)"
     },
@@ -2969,6 +3237,11 @@
       "kind": "func",
       "name": "kernel_set_fork_fd_action",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_input_canvas_dims",
+      "signature": "(i32,i32) -> ()"
     },
     {
       "kind": "func",
@@ -3169,6 +3442,11 @@
       "kind": "func",
       "name": "kernel_statx",
       "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_swap_poll_sigmask",
+      "signature": "(i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -4314,9 +4592,14 @@
           "name": "_pad",
           "offset": 84,
           "span": 4
+        },
+        {
+          "name": "st_rdev",
+          "offset": 88,
+          "span": 8
         }
       ],
-      "size": 88
+      "size": 96
     },
     "WasmStatfs": {
       "fields": [
@@ -5679,7 +5962,7 @@
             "size": 4
           },
           {
-            "name": "import_ordinal",
+            "name": "reserved_zero",
             "offset": 20,
             "size": 4
           }
@@ -5687,7 +5970,7 @@
         "record_header_size": 24,
         "section": "kandelo.wpk_fork.imported_globals",
         "shared_flag": 2,
-        "version": 1
+        "version": 2
       },
       "imported_tables": {
         "header_size": 16,
@@ -5735,7 +6018,7 @@
             "size": 4
           },
           {
-            "name": "import_ordinal",
+            "name": "reserved_zero",
             "offset": 20,
             "size": 4
           }
@@ -5743,7 +6026,7 @@
         "record_header_size": 24,
         "section": "kandelo.wpk_fork.imported_tables",
         "table64_flag": 1,
-        "version": 1
+        "version": 2
       },
       "linked_frame_descriptor": {
         "alignment": 8,

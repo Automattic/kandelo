@@ -66,6 +66,15 @@ for tool in "$CC" "$AR" "$RANLIB"; do
     fi
 done
 
+# The KandeloCallTypes compiler plugin: every libc object carries the
+# `kandelo.calltypes` facts fork instrumentation reads, like any object the
+# SDK compiles (docs/sdk-guide.md "Compiler facts for fork instrumentation").
+# The SDK builds and caches the plugin for this exact compiler; musl is
+# compiled with $CC directly, so ask it for the path and pass the SDK's
+# flags. The plugin leaves the code unchanged.
+CALLTYPES_PLUGIN="$(node --experimental-strip-types "$REPO_ROOT/sdk/src/lib/calltypes-plugin.ts" "$CC")"
+CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $CALLTYPES_PLUGIN -Xclang -add-plugin -Xclang kandelo-fncasts -fpass-plugin=$CALLTYPES_PLUGIN"
+
 # ---------------------------------------------------------------
 # 1. Copy overlay files into musl source tree
 # ---------------------------------------------------------------
@@ -238,7 +247,7 @@ prefix = $SYSROOT
 CC = $CC --target=$TARGET
 AR = $AR
 RANLIB = $RANLIB
-CFLAGS = -O2 -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fno-trapping-math
+CFLAGS = -O2 -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fno-trapping-math $CALLTYPES_FLAGS
 CFLAGS_AUTO =
 LDFLAGS_AUTO =
 LIBCC =
@@ -289,7 +298,7 @@ make install
 # 6. Build __main_void wrapper and add to libc.a
 # ---------------------------------------------------------------
 echo "==> Building __main_void wrapper..."
-"$CC" --target=$TARGET -O2 -c \
+"$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS -c \
     "$OVERLAY_DIR/src/env/__main_void.c" \
     -o "$SYSROOT/lib/__main_void.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/__main_void.o"
@@ -306,7 +315,7 @@ echo "==> Building __main_void wrapper..."
 # 7. Build setjmp runtime (requires -fwasm-exceptions for __builtin_wasm_throw)
 # ---------------------------------------------------------------
 echo "==> Building setjmp runtime..."
-"$CC" --target=$TARGET -O2 \
+"$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS \
     -fwasm-exceptions -matomics -mbulk-memory \
     -I"$SYSROOT/include" \
     -c "$OVERLAY_DIR/src/setjmp/$SETJMP_DIR/rt.c" \
@@ -317,12 +326,29 @@ echo "==> Building setjmp runtime..."
 # 8. Build sigsetjmp helpers and add to libc.a
 # ---------------------------------------------------------------
 echo "==> Building sigsetjmp helpers..."
-"$CC" --target=$TARGET -O2 \
+"$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS \
     -matomics -mbulk-memory \
     -I"$SYSROOT/include" \
     -c "$OVERLAY_DIR/src/signal/$SIGSETJMP_DIR/sigsetjmp.c" \
     -o "$SYSROOT/lib/sigsetjmp_helpers.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/sigsetjmp_helpers.o"
+
+# ---------------------------------------------------------------
+# 8b. Build the opt-in ucontext stand-ins (NOT part of libc.a)
+# ---------------------------------------------------------------
+# ucontext is unsupported, so by default a program that calls it fails to
+# link. Packages that reference ucontext without depending on it (PHP's
+# always-compiled Fibers) opt in with -lkandelo-ucontext-unsupported; see
+# the source for why these abort instead of returning an error.
+echo "==> Building opt-in ucontext stand-ins..."
+"$CC" --target=$TARGET -O2 \
+    -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -c "$REPO_ROOT/libc/glue/ucontext_unsupported.c" \
+    -o "$SYSROOT/lib/ucontext_unsupported.o"
+rm -f "$SYSROOT/lib/libkandelo-ucontext-unsupported.a"
+"$AR" rcs "$SYSROOT/lib/libkandelo-ucontext-unsupported.a" "$SYSROOT/lib/ucontext_unsupported.o"
+rm -f "$SYSROOT/lib/ucontext_unsupported.o"
 
 # ---------------------------------------------------------------
 # 9. Install override headers

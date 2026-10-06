@@ -26,16 +26,6 @@ kernel = "required"
 host = "required"
 
 [[registrations]]
-product = "browser-node"
-node = ["node-vfs-node-startup"]
-browser = ["node-vfs-browser-startup"]
-
-[registrations.applicability]
-abi = "required"
-kernel = "required"
-host = "required"
-
-[[registrations]]
 product = "browser-nginx"
 node = ["nginx-vfs-node-startup"]
 browser = ["nginx-vfs-browser-startup"]
@@ -49,6 +39,16 @@ host = "required"
 product = "browser-nginx-php"
 node = ["nginx-php-vfs-node-startup"]
 browser = ["nginx-php-vfs-browser-startup"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
+
+[[registrations]]
+product = "browser-nginx-python"
+node = ["nginx-python-vfs-node-startup"]
+browser = ["nginx-python-vfs-browser-startup"]
 
 [registrations.applicability]
 abi = "required"

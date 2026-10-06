@@ -365,7 +365,7 @@ shared_link_flags=(
   -Wl,--shared
   -Wl,--shared-memory
   -Wl,--export-all
-  -Wl,--allow-undefined
+  -Wl,--allow-undefined # side-module: dynamic linking resolves at dlopen
 )
 
 max_executable_memory_size=1073741824
@@ -378,7 +378,9 @@ exe_link_flags=(
   -Wl,--import-memory
   -Wl,--shared-memory
   "-Wl,--max-memory=${max_executable_memory_size}"
-  -Wl,--allow-undefined
+  # Only imports the host supplies may stay undefined (generated from
+  # shared::abi::HOST_ENV_IMPORTS; keep in sync with sdk/src/lib/flags.ts).
+  "-Wl,--allow-undefined-file=${GLUE_DIR}/kandelo-host-imports.txt"
   # Reserve an 8 MiB main-thread shadow stack. wasm-ld's default is only ~64 KiB,
   # and WebAssembly has no stack guard page, so a deep call chain silently
   # overflows past __data_end into .bss and corrupts the pthread/TLS globals that
@@ -400,7 +402,6 @@ exe_link_flags=(
   -Wl,--export=__tls_align
   -Wl,--export=__stack_pointer
   -Wl,--export=__wasm_thread_init
-  -Wl,--export=__abi_version
 )
 
 if [[ "$linking" -ne 0 ]]; then

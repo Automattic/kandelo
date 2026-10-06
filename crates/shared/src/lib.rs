@@ -110,8 +110,68 @@ pub mod process_layout;
 ///     completions consumed outside libc's post-syscall trampoline. OSS PCM
 ///     ioctl transfers use request-sized arguments, `/dev/dsp` descriptors
 ///     share a refcounted stream across fork and exec, and the host consumes a
-///     versioned bounded transport paced by the audio clock.
-pub const ABI_VERSION: u32 = 43;
+///     versioned bounded transport paced by the audio clock. evdev
+///     `/dev/input/event{0,1}` join the kernel device surface additively: the
+///     kernel gains the `kernel_input_event` and `kernel_set_input_canvas_dims`
+///     exports and the `E`-magic `EVIOC*` ioctl family, and — like `/dev/dsp` —
+///     shares one refcounted event ring per open file description across `dup`,
+///     `fork`, and `exec` so a buffered record is delivered once rather than
+///     duplicated into each descendant. These are new surfaces, not changes to
+///     existing 43 contracts, so they ride ABI 43.
+/// 44: `WasmStat` grows 88→96 with a trailing `st_rdev: u64` (offset 88, the
+///     slot the libc `struct kstat` already reserved). Virtual device nodes
+///     report a Linux-encoded `dev_t` — `/dev/input/event{N}` is char major
+///     13, minor 64+N — so a `stat().st_rdev` uniquely identifies an evdev
+///     node. Required by the real libinput path backend
+///     (`udev_device_new_from_devnum`), which is handed only the `st_rdev`
+///     and must recover the devnode from it. The same epoch carries the
+///     Wayland stack's other contract changes, structural and semantic:
+///     the `SO_PEERCRED` option (peer credentials; it used to fail with
+///     `ENOPROTOOPT`), the evdev `EVIOCGPHYS`/`EVIOCGUNIQ`/`EVIOCGPROP`
+///     ioctl family, `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`, a blocking read
+///     of `/dev/dri/card0` that waits for an event instead of returning 0,
+///     dma-buf `lseek` on prime fds, epoll registrations keyed on (fd, open
+///     file description) and inherited across fork/spawn, epoll fds that
+///     report readiness inside poll, prime fds that stay referenced while in
+///     flight over SCM_RIGHTS, and the `kernel_epoll_watched_fd` export. docs/abi-versioning.md ("ABI 44") lists
+///     each with why it belongs to this epoch.
+/// 45: the DRI desktop stack (GPU-tier buffers, layer shell, the toolkit
+///     ports). The kernel's `host_gl_present` import now returns a status
+///     (`i32`), a new `host_gbm_gpu_bo_create` import backs
+///     `DRM_IOCTL_WPK_CREATE_GPU_BO` (previously ENOSYS), `GLIO_CREATE_SURFACE`
+///     attributes grow a target-bo field, a `host_kms_connector_mm` import
+///     reports the connector's physical size, and the kernel exports
+///     `kernel_swap_poll_sigmask` / `kernel_restore_poll_sigmask`. Semantic changes ride along:
+///     epoll_pwait holds its signal mask for the whole
+///     wait and a signal ends a parked wait, SA_RESTART alone decides whether
+///     an interrupted wait restarts, sendmsg/recvmsg gather every iovec, a
+///     new thread's stack pointer is 16-byte aligned, the GL command stream
+///     gains three ops and a query, /dev/input/event1 is an absolute
+///     pointer, inotify fails with ENOSYS, and a MAP_FIXED mapping inside a
+///     mapping carves it. docs/abi-versioning.md ("ABI 45") lists each.
+/// 46: fork metadata survives tools that run after instrumentation. The
+///     imported-globals and imported-tables sections move to format 2: the
+///     record word that held the import's position is reserved (zero) and
+///     hosts find the import by kind, module and name, because wasm-opt may
+///     remove or reorder imports. Hosts require only the linked-frame
+///     imports (`__wpk_fork_frame_reserve/commit/next`) as a set; the other
+///     fork-runtime imports may be absent when the module never calls them.
+///     The instrumenter declares the Wasm features its code uses in
+///     `target_features` and runs wasm-opt over its own output.
+///     Fork sinks: the instrumenter may stop the fork unwind at a boundary
+///     function, which calls the new `env.__wpk_fork_boundary` import; the
+///     child then enters through the new `wpk_fork_resume_sink` export, and
+///     the `kandelo.wpk_fork.boundaries` section lists the boundaries.
+///     docs/abi-versioning.md ("ABI 46") lists each.
+/// 47: honest program links and kernel-owned host stdin. `HOST_ENV_IMPORTS`
+///     declares every `env` import the host provides; executables link against
+///     the generated allowance instead of `--allow-undefined`, and the host
+///     refuses a program importing anything else. Host-supplied stdin is a
+///     kernel pipe on fd 0 (`kernel_install_host_stdin_pipe`), shared across
+///     fork/dup/exec, instead of a host handle answered per pid. The GL
+///     command stream gains OP_BLEND_FUNC_SEPARATE, OP_BLEND_EQUATION_SEPARATE
+///     and QOP_FINISH.
+pub const ABI_VERSION: u32 = 47;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -850,6 +910,7 @@ pub enum Errno {
     EIDRM = 43,
     ENODATA = 61,
     EOVERFLOW = 75,
+    EBADFD = 77,
     ENOTSOCK = 88,
     EDESTADDRREQ = 89,
     EMSGSIZE = 90,
@@ -920,6 +981,7 @@ impl Errno {
             43 => Some(Errno::EIDRM),
             61 => Some(Errno::ENODATA),
             75 => Some(Errno::EOVERFLOW),
+            77 => Some(Errno::EBADFD),
             88 => Some(Errno::ENOTSOCK),
             89 => Some(Errno::EDESTADDRREQ),
             90 => Some(Errno::EMSGSIZE),
@@ -1071,6 +1133,10 @@ pub mod socket {
     pub const SO_ACCEPTCONN: u32 = 30;
     pub const SO_REUSEPORT: u32 = 15;
     pub const SO_PASSCRED: u32 = 16;
+    /// `SO_PEERCRED` (Linux value). Returns `struct ucred { pid, uid, gid }`
+    /// for a connected AF_UNIX socket. libwayland's `wl_client_create` calls
+    /// this on every accepted client and fails if it errors.
+    pub const SO_PEERCRED: u32 = 17;
     pub const SHUT_RD: u32 = 0;
     pub const SHUT_WR: u32 = 1;
     pub const SHUT_RDWR: u32 = 2;
@@ -1379,7 +1445,10 @@ mod channel_abi_tests {
 /// Stat structure for the Wasm POSIX interface.
 ///
 /// Uses `repr(C)` for a stable, predictable memory layout that can be
-/// shared across the Wasm shared-memory boundary.
+/// shared across the Wasm shared-memory boundary. 96 bytes total; the
+/// libc side reads it into `struct kstat` (see
+/// `libc/musl-overlay/arch/*/kstat.h`), whose `st_rdev` sits at offset
+/// 88 to match `st_rdev` below.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct WasmStat {
@@ -1397,6 +1466,12 @@ pub struct WasmStat {
     pub st_ctime_sec: u64,
     pub st_ctime_nsec: u32,
     pub _pad: u32,
+    /// Device ID for a special file (char/block device), encoded like
+    /// Linux `dev_t` (see musl `makedev`). 0 for anything that is not a
+    /// device node. Offset 88 — kept last so the layout through
+    /// `st_ctime_nsec`/`_pad` is unchanged; the libc `struct kstat`
+    /// already reserves `st_rdev` at this offset.
+    pub st_rdev: u64,
 }
 
 /// Directory entry structure for the Wasm POSIX interface.
@@ -1945,6 +2020,69 @@ pub mod abi {
     /// the host can thread channel / TLS state through fork and exec.
     pub const PROCESS_EXPECTED_GLOBALS: &[&str] = &["__channel_base", "__tls_base"];
 
+    /// Kind of an import the host supplies to a user program from `env`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HostEnvImportKind {
+        Function,
+        Global,
+        Memory,
+        Table,
+        Tag,
+    }
+
+    impl HostEnvImportKind {
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::Function => "function",
+                Self::Global => "global",
+                Self::Memory => "memory",
+                Self::Table => "table",
+                Self::Tag => "tag",
+            }
+        }
+    }
+
+    /// One import the host supplies to a user program from the `env` module.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct HostEnvImport {
+        pub name: &'static str,
+        pub kind: HostEnvImportKind,
+        /// Allowed to stay undefined when an executable is linked. False only
+        /// for imports a later build step adds (none today outside the fork
+        /// runtime, which is declared by `WPK_FORK_REQUIRED_*`).
+        pub link_time: bool,
+        pub reason: &'static str,
+    }
+
+    /// The `env` imports the host really provides to user programs, besides
+    /// the fork runtime's imports (declared by `WPK_FORK_REQUIRED_IMPORTS`,
+    /// `WPK_FORK_REQUIRED_TABLE_IMPORTS`, `WPK_FORK_GLOBAL_IMPORTS`, and the
+    /// unwind tag, which fork instrumentation adds after linking).
+    ///
+    /// WHY one declaration: the SDK's link-time allowance
+    /// (`libc/glue/kandelo-host-imports.txt`) and the host's load-time check
+    /// are both generated from this list, so a program can leave a symbol
+    /// undefined only if the host will supply it. C and C++ library functions
+    /// never belong here; they come from libc, libc++abi, or libc++. Before
+    /// ABI 47 the SDK linked with `--allow-undefined` and the host stubbed any
+    /// unknown import with a throwing function, so configure checks accepted
+    /// functions Kandelo lacks and programs trapped when they first called one.
+    pub const HOST_ENV_IMPORTS: &[HostEnvImport] = &[
+        HostEnvImport { name: "memory", kind: HostEnvImportKind::Memory, link_time: true, reason: "process linear memory" },
+        HostEnvImport { name: "__channel_base", kind: HostEnvImportKind::Global, link_time: true, reason: "syscall channel base address" },
+        HostEnvImport { name: "__c_longjmp", kind: HostEnvImportKind::Tag, link_time: true, reason: "setjmp/longjmp exception tag shared with the host" },
+        HostEnvImport { name: "__cpp_exception", kind: HostEnvImportKind::Tag, link_time: true, reason: "C++ exception tag shared with the host" },
+        HostEnvImport { name: "__wasm_dlopen_main", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: main-program handle" },
+        HostEnvImport { name: "__wasm_dlopen_prepare", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: stage a side module" },
+        HostEnvImport { name: "__wasm_dlopen_next", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: advance a staged load" },
+        HostEnvImport { name: "__wasm_dlopen_commit", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: commit a staged load" },
+        HostEnvImport { name: "__wasm_dlopen", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: single-step load" },
+        HostEnvImport { name: "__wasm_dlsym", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: symbol lookup" },
+        HostEnvImport { name: "__wasm_dlclose", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: unload" },
+        HostEnvImport { name: "__wasm_dlerror", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: last error text" },
+        HostEnvImport { name: "__wasm_posix_vm_interrupt_after", kind: HostEnvImportKind::Function, link_time: true, reason: "host timer that sets a VM interrupt flag (PHP max_execution_time)" },
+    ];
+
     /// Pointer-sensitive value types used by program-artifact function
     /// requirements. `Pointer` resolves to i32 for wasm32 artifacts and i64
     /// for wasm64 artifacts.
@@ -1977,6 +2115,15 @@ pub mod abi {
         pub element: ProgramArtifactValueType,
         pub minimum: u64,
         pub maximum: Option<u64>,
+    }
+
+    /// One immutable global import that fork instrumentation adds to a
+    /// program artifact.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ProgramArtifactGlobalImport {
+        pub module: &'static str,
+        pub name: &'static str,
+        pub value: ProgramArtifactValueType,
     }
 
     /// One required function export in an instrumented program artifact.
@@ -2204,7 +2351,11 @@ pub mod abi {
     /// constant initializers that observe imported globals.
     pub const WPK_FORK_IMPORTED_GLOBALS_SECTION: &str = "kandelo.wpk_fork.imported_globals";
     pub const WPK_FORK_IMPORTED_GLOBALS_MAGIC: [u8; 4] = *b"KFIG";
-    pub const WPK_FORK_IMPORTED_GLOBALS_VERSION: u16 = 1;
+    /// Format 2 (ABI 46): the record word at offset 20 is reserved and must
+    /// be zero. Format 1 stored the import's position there, which wasm-opt
+    /// invalidates by removing or reordering imports; hosts now resolve the
+    /// import by kind, module and name.
+    pub const WPK_FORK_IMPORTED_GLOBALS_VERSION: u16 = 2;
     pub const WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE: u16 = 16;
     pub const WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE: u16 = 24;
     pub const WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE: u8 = 1 << 0;
@@ -2213,7 +2364,8 @@ pub mod abi {
         WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE | WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED;
     pub const WPK_FORK_IMPORTED_TABLES_SECTION: &str = "kandelo.wpk_fork.imported_tables";
     pub const WPK_FORK_IMPORTED_TABLES_MAGIC: [u8; 4] = *b"KFIT";
-    pub const WPK_FORK_IMPORTED_TABLES_VERSION: u16 = 1;
+    /// Format 2 (ABI 46): as for imported globals, offset 20 is reserved.
+    pub const WPK_FORK_IMPORTED_TABLES_VERSION: u16 = 2;
     pub const WPK_FORK_IMPORTED_TABLES_HEADER_SIZE: u16 = 16;
     pub const WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE: u16 = 24;
     pub const WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64: u8 = 1 << 0;
@@ -2280,9 +2432,30 @@ pub mod abi {
     pub const WPK_FORK_FRAME_IMPORT_RESERVE: &str = "__wpk_fork_frame_reserve";
     pub const WPK_FORK_FRAME_IMPORT_COMMIT: &str = "__wpk_fork_frame_commit";
     pub const WPK_FORK_FRAME_IMPORT_NEXT: &str = "__wpk_fork_frame_next";
+    /// The linked-frame imports every instrumented activation calls. They are
+    /// all-or-nothing; the other `WPK_FORK_REQUIRED_IMPORTS` serve optional
+    /// state and may be absent when nothing calls them (ABI 46: wasm-opt runs
+    /// after instrumentation and removes unused imports).
+    pub const WPK_FORK_CORE_FRAME_IMPORTS: [&str; 3] = [
+        WPK_FORK_FRAME_IMPORT_RESERVE,
+        WPK_FORK_FRAME_IMPORT_COMMIT,
+        WPK_FORK_FRAME_IMPORT_NEXT,
+    ];
     pub const WPK_FORK_FRAME_IMPORT_PEEK: &str = "__wpk_fork_frame_peek";
     pub const WPK_FORK_RESUME_IMPORT_PEEK: &str = "__wpk_fork_resume_peek";
     pub const WPK_FORK_RESUME_IMPORT_TABLE: &str = "__wpk_fork_resume_table";
+
+    /// Fork boundaries (sinks; docs/plans/2026-10-02-fork-sinks.md). A module
+    /// that has boundary functions imports `env.__wpk_fork_boundary: () -> ()`:
+    /// the deepest boundary on the stack calls it after committing its own
+    /// frame, instead of rethrowing the unwind tag. The host seals the
+    /// capture, forks, and begins parent replay before it returns. Such a
+    /// module also exports `wpk_fork_resume_sink(sig_index)`, the child entry
+    /// for a continuation rooted at a boundary, and lists its boundary
+    /// functions in `kandelo.wpk_fork.boundaries`.
+    pub const WPK_FORK_BOUNDARY_IMPORT: &str = "__wpk_fork_boundary";
+    pub const WPK_FORK_RESUME_SINK_EXPORT: &str = "wpk_fork_resume_sink";
+    pub const WPK_FORK_BOUNDARIES_SECTION: &str = "kandelo.wpk_fork.boundaries";
 
     pub const WPK_FORK_MODULE_STATE_IMPORT_MODULE: &str = "env";
     pub const WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT: &str =
@@ -2696,6 +2869,25 @@ pub mod abi {
         },
     ];
 
+    /// Immutable globals fork instrumentation imports, which the host's fork
+    /// runtime supplies per Worker: the activation index the exception and GC
+    /// codecs read, and the address of the shared table-generation fence
+    /// (always i64, whatever the pointer width). Like the lists above, these
+    /// are `env` imports a program may carry although no link left them
+    /// undefined, so import checks read them from here.
+    pub const WPK_FORK_GLOBAL_IMPORTS: &[ProgramArtifactGlobalImport] = &[
+        ProgramArtifactGlobalImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+            value: I32,
+        },
+        ProgramArtifactGlobalImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_GENERATION_ADDR,
+            value: I64,
+        },
+    ];
+
     pub const WPK_FORK_REQUIRED_EXPORTS: &[ProgramArtifactExport] = &[
         ProgramArtifactExport {
             name: WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE,
@@ -2994,6 +3186,7 @@ pub mod abi {
         "kernel_has_sa_nocldstop",
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",
+        "kernel_install_host_stdin_pipe",
         "kernel_ipc_shm_lookup_mapping_for_task",
         "kernel_ipc_shm_record_mapping_for_process",
         "kernel_ipc_shm_record_mapping_for_task",
@@ -3052,6 +3245,11 @@ pub mod abi {
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
+        "kernel_clipboard_ack",
+        "kernel_clipboard_guest_generation",
+        "kernel_clipboard_guest_read",
+        "kernel_clipboard_offer",
+        "kernel_clipboard_stage",
         "kernel_reserve_host_region",
         "kernel_reserve_host_region_at",
         "kernel_set_max_addr",
@@ -4177,6 +4375,73 @@ pub mod oss {
 
 }
 
+/// `/dev/kandelo/clipboard`: host clipboard text offered to a guest agent.
+///
+/// The host stages UTF-8 text with `kernel_clipboard_stage` (in chunks, as
+/// an offer can exceed one kernel scratch lease) and offers it with
+/// `kernel_clipboard_offer`. The single process that holds the device open
+/// (the clipboard agent) reads each offer as one record — a
+/// [`ClipboardRecordHeader`] followed by `len` payload bytes — and
+/// acknowledges it by writing a [`ClipboardAck`]. The host reads the
+/// acknowledgement back with `kernel_clipboard_ack`. In the other direction
+/// the agent writes the desktop's selection as a `KIND_GUEST_TEXT` record;
+/// the host watches `kernel_clipboard_guest_generation` and reads it with
+/// `kernel_clipboard_guest_read`. The generated
+/// `<kandelo/clipboard.h>` mirrors these values for C agents.
+pub mod clipboard {
+    /// Device path; `open()` of it is how an agent claims the device.
+    pub const DEVICE_PATH: &str = "/dev/kandelo/clipboard";
+    /// `ClipboardRecordHeader::version` for the layout below.
+    pub const RECORD_VERSION: u32 = 1;
+    /// `ClipboardRecordHeader::kind`: the payload is UTF-8 text the host
+    /// offers as the new clipboard contents.
+    pub const KIND_OFFER_TEXT: u32 = 1;
+    /// `ClipboardRecordHeader::kind` of a record the agent WRITES: the
+    /// desktop's new selection, as UTF-8 text, for the host to copy out.
+    /// `seq` is unused (0).
+    pub const KIND_GUEST_TEXT: u32 = 2;
+    /// Largest payload an offer may carry. The host refuses larger text
+    /// before offering it and the kernel refuses it again with EMSGSIZE;
+    /// clipboard text is never truncated.
+    pub const MAX_TEXT_BYTES: u32 = 1024 * 1024;
+    /// `kernel_clipboard_ack` result while the agent has not answered yet.
+    /// Settled results are 0 (the agent installed the selection) or a
+    /// negative errno: the agent's own, or one of the three below.
+    pub const ACK_PENDING: i32 = 1;
+    /// -ECANCELED (musl's 125): a newer offer replaced this one.
+    pub const ACK_SUPERSEDED: i32 = -125;
+    /// -ENXIO: the agent closed the device before answering.
+    pub const ACK_NO_AGENT: i32 = -6;
+    /// -ENOENT: no offer with this sequence number was ever made.
+    pub const ACK_UNKNOWN_SEQ: i32 = -2;
+
+    /// One record as read from the device, little-endian.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ClipboardRecordHeader {
+        pub version: u32,
+        pub kind: u32,
+        /// Offer sequence number, never 0; echoed in the acknowledgement.
+        pub seq: u32,
+        /// Payload bytes that follow the header.
+        pub len: u32,
+    }
+
+    /// What the agent writes back after handling an offer.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ClipboardAck {
+        pub seq: u32,
+        /// 0 once the selection is installed, else a negative errno.
+        pub status: i32,
+    }
+
+    pub const RECORD_HEADER_SIZE: u32 = core::mem::size_of::<ClipboardRecordHeader>() as u32;
+    pub const ACK_SIZE: u32 = core::mem::size_of::<ClipboardAck>() as u32;
+    const _: () = assert!(RECORD_HEADER_SIZE == 16);
+    const _: () = assert!(ACK_SIZE == 8);
+}
+
 /// Implementation-neutral PCM host transport contract.
 pub mod pcm {
     pub const PCM_TRANSPORT_MAGIC: u32 = 0x314d_4350; // "PCM1" LE
@@ -4432,6 +4697,11 @@ pub mod gl {
     pub const OP_FRONT_FACE: u16 = 0x000A;
     pub const OP_LINE_WIDTH: u16 = 0x000B;
     pub const OP_PIXEL_STOREI: u16 = 0x000C;
+    /// `glBlendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha)`: four u32.
+    pub const OP_BLEND_FUNC_SEPARATE: u16 = 0x000D;
+    /// `glBlendEquationSeparate(modeRGB, modeAlpha)`: two u32. `glBlendEquation`
+    /// encodes as this op with both modes equal.
+    pub const OP_BLEND_EQUATION_SEPARATE: u16 = 0x000E;
 
     pub const OP_GEN_BUFFERS: u16 = 0x0100;
     pub const OP_DELETE_BUFFERS: u16 = 0x0101;
@@ -4458,6 +4728,7 @@ pub mod gl {
     pub const OP_USE_PROGRAM: u16 = 0x0307;
     pub const OP_BIND_ATTRIB_LOCATION: u16 = 0x0308;
     pub const OP_DELETE_PROGRAM: u16 = 0x0309;
+    pub const OP_DETACH_SHADER: u16 = 0x030A;
 
     pub const OP_UNIFORM1I: u16 = 0x0400;
     pub const OP_UNIFORM1F: u16 = 0x0401;
@@ -4475,6 +4746,10 @@ pub mod gl {
     pub const OP_VERTEX_ATTRIB_POINTER: u16 = 0x0502;
     pub const OP_DRAW_ARRAYS: u16 = 0x0503;
     pub const OP_DRAW_ELEMENTS: u16 = 0x0504;
+    /// `glVertexAttrib4fv(index, value)` — constant (non-array) vertex
+    /// attribute. ScummVM's shader pipeline feeds the per-draw color
+    /// through this when the attribute array is disabled.
+    pub const OP_VERTEX_ATTRIB_4FV: u16 = 0x0505;
 
     pub const OP_GEN_VERTEX_ARRAYS: u16 = 0x0600;
     pub const OP_DELETE_VERTEX_ARRAYS: u16 = 0x0601;
@@ -4487,6 +4762,7 @@ pub mod gl {
     pub const OP_BIND_RENDERBUFFER: u16 = 0x0704;
     pub const OP_RENDERBUFFER_STORAGE: u16 = 0x0705;
     pub const OP_FRAMEBUFFER_RENDERBUFFER: u16 = 0x0706;
+    pub const OP_DELETE_FRAMEBUFFERS: u16 = 0x0707;
 
     // --- sync query op tags (used in GlQueryInfo.op) -----------------------
 
@@ -4502,6 +4778,10 @@ pub mod gl {
     pub const QOP_GET_PROGRAM_INFO_LOG: u32 = 0x0A;
     pub const QOP_READ_PIXELS: u32 = 0x0B;
     pub const QOP_CHECK_FB_STATUS: u32 = 0x0C;
+    pub const QOP_GET_SHADER_PRECISION_FORMAT: u32 = 0x0D;
+    /// `glFinish`: no input, no output. The reply is sent only after the host
+    /// has executed every earlier command and `finish()`ed the context.
+    pub const QOP_FINISH: u32 = 0x0E;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -4733,9 +5013,18 @@ pub mod dri {
 
     /// `_IOWR('d', 0xE1, WpkDrmBindForeignTexture)` — bind a foreign bo as
     /// a `WebGLTexture` in the caller's GL context. The caller must already
-    /// hold a local bo handle (via PRIME_FD_TO_HANDLE), and the bo must be
-    /// GPU-tier. Used by the compositor to sample client bos and by
-    /// `gbm_bo_import` callers that want texture-side access.
+    /// hold a local bo handle (via PRIME_FD_TO_HANDLE). Used by the
+    /// compositor to sample client bos and by `gbm_bo_import` callers that
+    /// want texture-side access.
+    ///
+    /// Implemented for CPU-tier (dumb) bos: each successful call
+    /// (re)uploads the bo's current pixels into the texture from host-side
+    /// storage, so callers refresh a texture by re-issuing the ioctl after
+    /// the producer commits new content. The returned `gl_texture_id` is
+    /// stable across rebinds of the same bo. On a GPU-tier bo
+    /// (`WPK_CREATE_GPU_BO`) the bind is zero-copy: the pixels already live
+    /// as a `WebGLTexture` on the shared context, so it returns that
+    /// texture id directly with no upload.
     pub const DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: u32 = 0xc010_64e1;
 
     /// GPU-bo allocator argument. 16 bytes on wasm32 (4 × u32). `format` and
@@ -4982,6 +5271,563 @@ pub mod dri {
         pub tv_sec: u32,   // 8
         pub tv_usec: u32,  // 12
                            // total: 16
+    }
+}
+
+/// evdev — `/dev/input/event*` UAPI exposed to user programs.
+///
+/// Mirror image of [`dri`] above: the kernel synthesises records and
+/// user programs drain them through `read()` / `poll()`. The struct
+/// layouts, ioctl numbers, and code points here are Linux-verbatim so
+/// libinput / SDL2 / X11 evdev paths can be ported without an
+/// abstraction layer.
+///
+/// **Additive only.** Adding new `EV_*` / `KEY_*` / `EVIOC*` is
+/// allowed without bumping [`ABI_VERSION`]; changing the layout of
+/// [`input::WpkInputEvent`] or the value of any existing constant is
+/// not.
+pub mod input {
+    // --- Event types (struct input_event.type) ---------------------------
+
+    /// `EV_SYN` = 0. End-of-logical-event sentinel; readers use this
+    /// to coalesce a (REL_X, REL_Y) pair into one cursor move.
+    pub const EV_SYN: u16 = 0x00;
+    /// `EV_KEY` = 1. Press / release / autorepeat. Value is
+    /// 0 = release, 1 = press, 2 = repeat.
+    pub const EV_KEY: u16 = 0x01;
+    /// `EV_REL` = 2. Relative axis (pointer dx/dy/wheel).
+    pub const EV_REL: u16 = 0x02;
+    /// `EV_ABS` = 3. Absolute axis (pointer position when not locked,
+    /// joystick, touch coords).
+    pub const EV_ABS: u16 = 0x03;
+    /// `EV_MSC` = 4. Misc events (scancode, timestamp). Not produced
+    /// in v1.
+    pub const EV_MSC: u16 = 0x04;
+
+    // --- SYN codes (struct input_event.code when type == EV_SYN) ---------
+
+    /// `SYN_REPORT` = 0. End-of-frame; readers should treat
+    /// everything since the previous `SYN_REPORT` as atomic.
+    pub const SYN_REPORT: u16 = 0x00;
+    /// `SYN_DROPPED` = 3. Posted when the ring overflowed and the
+    /// oldest record was dropped; userspace should resynchronise
+    /// (re-query EVIOCG* state).
+    pub const SYN_DROPPED: u16 = 0x03;
+
+    // --- KEY_* codes (verbatim from linux/input-event-codes.h) -----------
+    //
+    // Range 0..248 covers every code Chrome / Firefox / WebKit emit
+    // through `KeyboardEvent.code`; values >248 (KEY_BUTTONCONFIG, the
+    // KEY_VENDOR range, etc.) are not browser-reachable.
+
+    pub const KEY_RESERVED: u16 = 0;
+    pub const KEY_ESC: u16 = 1;
+    pub const KEY_1: u16 = 2;
+    pub const KEY_2: u16 = 3;
+    pub const KEY_3: u16 = 4;
+    pub const KEY_4: u16 = 5;
+    pub const KEY_5: u16 = 6;
+    pub const KEY_6: u16 = 7;
+    pub const KEY_7: u16 = 8;
+    pub const KEY_8: u16 = 9;
+    pub const KEY_9: u16 = 10;
+    pub const KEY_0: u16 = 11;
+    pub const KEY_MINUS: u16 = 12;
+    pub const KEY_EQUAL: u16 = 13;
+    pub const KEY_BACKSPACE: u16 = 14;
+    pub const KEY_TAB: u16 = 15;
+    pub const KEY_Q: u16 = 16;
+    pub const KEY_W: u16 = 17;
+    pub const KEY_E: u16 = 18;
+    pub const KEY_R: u16 = 19;
+    pub const KEY_T: u16 = 20;
+    pub const KEY_Y: u16 = 21;
+    pub const KEY_U: u16 = 22;
+    pub const KEY_I: u16 = 23;
+    pub const KEY_O: u16 = 24;
+    pub const KEY_P: u16 = 25;
+    pub const KEY_LEFTBRACE: u16 = 26;
+    pub const KEY_RIGHTBRACE: u16 = 27;
+    pub const KEY_ENTER: u16 = 28;
+    pub const KEY_LEFTCTRL: u16 = 29;
+    pub const KEY_A: u16 = 30;
+    pub const KEY_S: u16 = 31;
+    pub const KEY_D: u16 = 32;
+    pub const KEY_F: u16 = 33;
+    pub const KEY_G: u16 = 34;
+    pub const KEY_H: u16 = 35;
+    pub const KEY_J: u16 = 36;
+    pub const KEY_K: u16 = 37;
+    pub const KEY_L: u16 = 38;
+    pub const KEY_SEMICOLON: u16 = 39;
+    pub const KEY_APOSTROPHE: u16 = 40;
+    pub const KEY_GRAVE: u16 = 41;
+    pub const KEY_LEFTSHIFT: u16 = 42;
+    pub const KEY_BACKSLASH: u16 = 43;
+    pub const KEY_Z: u16 = 44;
+    pub const KEY_X: u16 = 45;
+    pub const KEY_C: u16 = 46;
+    pub const KEY_V: u16 = 47;
+    pub const KEY_B: u16 = 48;
+    pub const KEY_N: u16 = 49;
+    pub const KEY_M: u16 = 50;
+    pub const KEY_COMMA: u16 = 51;
+    pub const KEY_DOT: u16 = 52;
+    pub const KEY_SLASH: u16 = 53;
+    pub const KEY_RIGHTSHIFT: u16 = 54;
+    pub const KEY_KPASTERISK: u16 = 55;
+    pub const KEY_LEFTALT: u16 = 56;
+    pub const KEY_SPACE: u16 = 57;
+    pub const KEY_CAPSLOCK: u16 = 58;
+    pub const KEY_F1: u16 = 59;
+    pub const KEY_F2: u16 = 60;
+    pub const KEY_F3: u16 = 61;
+    pub const KEY_F4: u16 = 62;
+    pub const KEY_F5: u16 = 63;
+    pub const KEY_F6: u16 = 64;
+    pub const KEY_F7: u16 = 65;
+    pub const KEY_F8: u16 = 66;
+    pub const KEY_F9: u16 = 67;
+    pub const KEY_F10: u16 = 68;
+    pub const KEY_NUMLOCK: u16 = 69;
+    pub const KEY_SCROLLLOCK: u16 = 70;
+    pub const KEY_KP7: u16 = 71;
+    pub const KEY_KP8: u16 = 72;
+    pub const KEY_KP9: u16 = 73;
+    pub const KEY_KPMINUS: u16 = 74;
+    pub const KEY_KP4: u16 = 75;
+    pub const KEY_KP5: u16 = 76;
+    pub const KEY_KP6: u16 = 77;
+    pub const KEY_KPPLUS: u16 = 78;
+    pub const KEY_KP1: u16 = 79;
+    pub const KEY_KP2: u16 = 80;
+    pub const KEY_KP3: u16 = 81;
+    pub const KEY_KP0: u16 = 82;
+    pub const KEY_KPDOT: u16 = 83;
+    pub const KEY_ZENKAKUHANKAKU: u16 = 85;
+    pub const KEY_102ND: u16 = 86;
+    pub const KEY_F11: u16 = 87;
+    pub const KEY_F12: u16 = 88;
+    pub const KEY_RO: u16 = 89;
+    pub const KEY_KATAKANA: u16 = 90;
+    pub const KEY_HIRAGANA: u16 = 91;
+    pub const KEY_HENKAN: u16 = 92;
+    pub const KEY_KATAKANAHIRAGANA: u16 = 93;
+    pub const KEY_MUHENKAN: u16 = 94;
+    pub const KEY_KPJPCOMMA: u16 = 95;
+    pub const KEY_KPENTER: u16 = 96;
+    pub const KEY_RIGHTCTRL: u16 = 97;
+    pub const KEY_KPSLASH: u16 = 98;
+    pub const KEY_SYSRQ: u16 = 99;
+    pub const KEY_RIGHTALT: u16 = 100;
+    pub const KEY_LINEFEED: u16 = 101;
+    pub const KEY_HOME: u16 = 102;
+    pub const KEY_UP: u16 = 103;
+    pub const KEY_PAGEUP: u16 = 104;
+    pub const KEY_LEFT: u16 = 105;
+    pub const KEY_RIGHT: u16 = 106;
+    pub const KEY_END: u16 = 107;
+    pub const KEY_DOWN: u16 = 108;
+    pub const KEY_PAGEDOWN: u16 = 109;
+    pub const KEY_INSERT: u16 = 110;
+    pub const KEY_DELETE: u16 = 111;
+    pub const KEY_MACRO: u16 = 112;
+    pub const KEY_MUTE: u16 = 113;
+    pub const KEY_VOLUMEDOWN: u16 = 114;
+    pub const KEY_VOLUMEUP: u16 = 115;
+    pub const KEY_POWER: u16 = 116;
+    pub const KEY_KPEQUAL: u16 = 117;
+    pub const KEY_KPPLUSMINUS: u16 = 118;
+    pub const KEY_PAUSE: u16 = 119;
+    pub const KEY_SCALE: u16 = 120;
+    pub const KEY_KPCOMMA: u16 = 121;
+    pub const KEY_HANGEUL: u16 = 122;
+    pub const KEY_HANJA: u16 = 123;
+    pub const KEY_YEN: u16 = 124;
+    pub const KEY_LEFTMETA: u16 = 125;
+    pub const KEY_RIGHTMETA: u16 = 126;
+    pub const KEY_COMPOSE: u16 = 127;
+    pub const KEY_STOP: u16 = 128;
+    pub const KEY_AGAIN: u16 = 129;
+    pub const KEY_PROPS: u16 = 130;
+    pub const KEY_UNDO: u16 = 131;
+    pub const KEY_FRONT: u16 = 132;
+    pub const KEY_COPY: u16 = 133;
+    pub const KEY_OPEN: u16 = 134;
+    pub const KEY_PASTE: u16 = 135;
+    pub const KEY_FIND: u16 = 136;
+    pub const KEY_CUT: u16 = 137;
+    pub const KEY_HELP: u16 = 138;
+    pub const KEY_MENU: u16 = 139;
+    pub const KEY_CALC: u16 = 140;
+    pub const KEY_SLEEP: u16 = 142;
+    pub const KEY_WAKEUP: u16 = 143;
+    pub const KEY_PLAYPAUSE: u16 = 164;
+    pub const KEY_PREVIOUSSONG: u16 = 165;
+    pub const KEY_STOPCD: u16 = 166;
+    pub const KEY_NEXTSONG: u16 = 163;
+    pub const KEY_EJECTCD: u16 = 161;
+    pub const KEY_REFRESH: u16 = 173;
+    pub const KEY_F13: u16 = 183;
+    pub const KEY_F14: u16 = 184;
+    pub const KEY_F15: u16 = 185;
+    pub const KEY_F16: u16 = 186;
+    pub const KEY_F17: u16 = 187;
+    pub const KEY_F18: u16 = 188;
+    pub const KEY_F19: u16 = 189;
+    pub const KEY_F20: u16 = 190;
+    pub const KEY_F21: u16 = 191;
+    pub const KEY_F22: u16 = 192;
+    pub const KEY_F23: u16 = 193;
+    pub const KEY_F24: u16 = 194;
+    pub const KEY_PLAYCD: u16 = 200;
+    pub const KEY_PAUSECD: u16 = 201;
+    pub const KEY_BRIGHTNESSDOWN: u16 = 224;
+    pub const KEY_BRIGHTNESSUP: u16 = 225;
+    pub const KEY_MICMUTE: u16 = 248;
+
+    // --- BTN_* codes (button class; reuse the EV_KEY event type) ---------
+
+    pub const BTN_LEFT: u16 = 0x110;
+    pub const BTN_RIGHT: u16 = 0x111;
+    pub const BTN_MIDDLE: u16 = 0x112;
+    pub const BTN_SIDE: u16 = 0x113;
+    pub const BTN_EXTRA: u16 = 0x114;
+
+    // --- REL_* codes (relative axes; EV_REL records carry these) ---------
+
+    pub const REL_X: u16 = 0x00;
+    pub const REL_Y: u16 = 0x01;
+    pub const REL_HWHEEL: u16 = 0x06;
+    pub const REL_WHEEL: u16 = 0x08;
+
+    // --- ABS_* codes (absolute axes; EV_ABS records carry these) ---------
+
+    pub const ABS_X: u16 = 0x00;
+    pub const ABS_Y: u16 = 0x01;
+
+    /// Canonical `(name, value)` index of every evdev event-type / SYN /
+    /// KEY / BTN / REL / ABS code above. The individual `pub const`s
+    /// remain the sole source of truth for the values; this table only
+    /// enumerates them so `cargo xtask dump-abi` can emit them into the
+    /// generated ABI (`host/src/generated/abi.ts` `INPUT_CODES`). The
+    /// browser input translator imports those codes instead of
+    /// hand-redeclaring them, so a code renumber here cannot silently
+    /// leave the host emitting a stale value. `code_table_matches_consts`
+    /// gates name/value coverage.
+    pub const CODE_TABLE: &[(&str, u16)] = &[
+        ("EV_SYN", EV_SYN),
+        ("EV_KEY", EV_KEY),
+        ("EV_REL", EV_REL),
+        ("EV_ABS", EV_ABS),
+        ("EV_MSC", EV_MSC),
+        ("SYN_REPORT", SYN_REPORT),
+        ("SYN_DROPPED", SYN_DROPPED),
+        ("KEY_RESERVED", KEY_RESERVED),
+        ("KEY_ESC", KEY_ESC),
+        ("KEY_1", KEY_1),
+        ("KEY_2", KEY_2),
+        ("KEY_3", KEY_3),
+        ("KEY_4", KEY_4),
+        ("KEY_5", KEY_5),
+        ("KEY_6", KEY_6),
+        ("KEY_7", KEY_7),
+        ("KEY_8", KEY_8),
+        ("KEY_9", KEY_9),
+        ("KEY_0", KEY_0),
+        ("KEY_MINUS", KEY_MINUS),
+        ("KEY_EQUAL", KEY_EQUAL),
+        ("KEY_BACKSPACE", KEY_BACKSPACE),
+        ("KEY_TAB", KEY_TAB),
+        ("KEY_Q", KEY_Q),
+        ("KEY_W", KEY_W),
+        ("KEY_E", KEY_E),
+        ("KEY_R", KEY_R),
+        ("KEY_T", KEY_T),
+        ("KEY_Y", KEY_Y),
+        ("KEY_U", KEY_U),
+        ("KEY_I", KEY_I),
+        ("KEY_O", KEY_O),
+        ("KEY_P", KEY_P),
+        ("KEY_LEFTBRACE", KEY_LEFTBRACE),
+        ("KEY_RIGHTBRACE", KEY_RIGHTBRACE),
+        ("KEY_ENTER", KEY_ENTER),
+        ("KEY_LEFTCTRL", KEY_LEFTCTRL),
+        ("KEY_A", KEY_A),
+        ("KEY_S", KEY_S),
+        ("KEY_D", KEY_D),
+        ("KEY_F", KEY_F),
+        ("KEY_G", KEY_G),
+        ("KEY_H", KEY_H),
+        ("KEY_J", KEY_J),
+        ("KEY_K", KEY_K),
+        ("KEY_L", KEY_L),
+        ("KEY_SEMICOLON", KEY_SEMICOLON),
+        ("KEY_APOSTROPHE", KEY_APOSTROPHE),
+        ("KEY_GRAVE", KEY_GRAVE),
+        ("KEY_LEFTSHIFT", KEY_LEFTSHIFT),
+        ("KEY_BACKSLASH", KEY_BACKSLASH),
+        ("KEY_Z", KEY_Z),
+        ("KEY_X", KEY_X),
+        ("KEY_C", KEY_C),
+        ("KEY_V", KEY_V),
+        ("KEY_B", KEY_B),
+        ("KEY_N", KEY_N),
+        ("KEY_M", KEY_M),
+        ("KEY_COMMA", KEY_COMMA),
+        ("KEY_DOT", KEY_DOT),
+        ("KEY_SLASH", KEY_SLASH),
+        ("KEY_RIGHTSHIFT", KEY_RIGHTSHIFT),
+        ("KEY_KPASTERISK", KEY_KPASTERISK),
+        ("KEY_LEFTALT", KEY_LEFTALT),
+        ("KEY_SPACE", KEY_SPACE),
+        ("KEY_CAPSLOCK", KEY_CAPSLOCK),
+        ("KEY_F1", KEY_F1),
+        ("KEY_F2", KEY_F2),
+        ("KEY_F3", KEY_F3),
+        ("KEY_F4", KEY_F4),
+        ("KEY_F5", KEY_F5),
+        ("KEY_F6", KEY_F6),
+        ("KEY_F7", KEY_F7),
+        ("KEY_F8", KEY_F8),
+        ("KEY_F9", KEY_F9),
+        ("KEY_F10", KEY_F10),
+        ("KEY_NUMLOCK", KEY_NUMLOCK),
+        ("KEY_SCROLLLOCK", KEY_SCROLLLOCK),
+        ("KEY_KP7", KEY_KP7),
+        ("KEY_KP8", KEY_KP8),
+        ("KEY_KP9", KEY_KP9),
+        ("KEY_KPMINUS", KEY_KPMINUS),
+        ("KEY_KP4", KEY_KP4),
+        ("KEY_KP5", KEY_KP5),
+        ("KEY_KP6", KEY_KP6),
+        ("KEY_KPPLUS", KEY_KPPLUS),
+        ("KEY_KP1", KEY_KP1),
+        ("KEY_KP2", KEY_KP2),
+        ("KEY_KP3", KEY_KP3),
+        ("KEY_KP0", KEY_KP0),
+        ("KEY_KPDOT", KEY_KPDOT),
+        ("KEY_ZENKAKUHANKAKU", KEY_ZENKAKUHANKAKU),
+        ("KEY_102ND", KEY_102ND),
+        ("KEY_F11", KEY_F11),
+        ("KEY_F12", KEY_F12),
+        ("KEY_RO", KEY_RO),
+        ("KEY_KATAKANA", KEY_KATAKANA),
+        ("KEY_HIRAGANA", KEY_HIRAGANA),
+        ("KEY_HENKAN", KEY_HENKAN),
+        ("KEY_KATAKANAHIRAGANA", KEY_KATAKANAHIRAGANA),
+        ("KEY_MUHENKAN", KEY_MUHENKAN),
+        ("KEY_KPJPCOMMA", KEY_KPJPCOMMA),
+        ("KEY_KPENTER", KEY_KPENTER),
+        ("KEY_RIGHTCTRL", KEY_RIGHTCTRL),
+        ("KEY_KPSLASH", KEY_KPSLASH),
+        ("KEY_SYSRQ", KEY_SYSRQ),
+        ("KEY_RIGHTALT", KEY_RIGHTALT),
+        ("KEY_LINEFEED", KEY_LINEFEED),
+        ("KEY_HOME", KEY_HOME),
+        ("KEY_UP", KEY_UP),
+        ("KEY_PAGEUP", KEY_PAGEUP),
+        ("KEY_LEFT", KEY_LEFT),
+        ("KEY_RIGHT", KEY_RIGHT),
+        ("KEY_END", KEY_END),
+        ("KEY_DOWN", KEY_DOWN),
+        ("KEY_PAGEDOWN", KEY_PAGEDOWN),
+        ("KEY_INSERT", KEY_INSERT),
+        ("KEY_DELETE", KEY_DELETE),
+        ("KEY_MACRO", KEY_MACRO),
+        ("KEY_MUTE", KEY_MUTE),
+        ("KEY_VOLUMEDOWN", KEY_VOLUMEDOWN),
+        ("KEY_VOLUMEUP", KEY_VOLUMEUP),
+        ("KEY_POWER", KEY_POWER),
+        ("KEY_KPEQUAL", KEY_KPEQUAL),
+        ("KEY_KPPLUSMINUS", KEY_KPPLUSMINUS),
+        ("KEY_PAUSE", KEY_PAUSE),
+        ("KEY_SCALE", KEY_SCALE),
+        ("KEY_KPCOMMA", KEY_KPCOMMA),
+        ("KEY_HANGEUL", KEY_HANGEUL),
+        ("KEY_HANJA", KEY_HANJA),
+        ("KEY_YEN", KEY_YEN),
+        ("KEY_LEFTMETA", KEY_LEFTMETA),
+        ("KEY_RIGHTMETA", KEY_RIGHTMETA),
+        ("KEY_COMPOSE", KEY_COMPOSE),
+        ("KEY_STOP", KEY_STOP),
+        ("KEY_AGAIN", KEY_AGAIN),
+        ("KEY_PROPS", KEY_PROPS),
+        ("KEY_UNDO", KEY_UNDO),
+        ("KEY_FRONT", KEY_FRONT),
+        ("KEY_COPY", KEY_COPY),
+        ("KEY_OPEN", KEY_OPEN),
+        ("KEY_PASTE", KEY_PASTE),
+        ("KEY_FIND", KEY_FIND),
+        ("KEY_CUT", KEY_CUT),
+        ("KEY_HELP", KEY_HELP),
+        ("KEY_MENU", KEY_MENU),
+        ("KEY_CALC", KEY_CALC),
+        ("KEY_SLEEP", KEY_SLEEP),
+        ("KEY_WAKEUP", KEY_WAKEUP),
+        ("KEY_PLAYPAUSE", KEY_PLAYPAUSE),
+        ("KEY_PREVIOUSSONG", KEY_PREVIOUSSONG),
+        ("KEY_STOPCD", KEY_STOPCD),
+        ("KEY_NEXTSONG", KEY_NEXTSONG),
+        ("KEY_EJECTCD", KEY_EJECTCD),
+        ("KEY_REFRESH", KEY_REFRESH),
+        ("KEY_F13", KEY_F13),
+        ("KEY_F14", KEY_F14),
+        ("KEY_F15", KEY_F15),
+        ("KEY_F16", KEY_F16),
+        ("KEY_F17", KEY_F17),
+        ("KEY_F18", KEY_F18),
+        ("KEY_F19", KEY_F19),
+        ("KEY_F20", KEY_F20),
+        ("KEY_F21", KEY_F21),
+        ("KEY_F22", KEY_F22),
+        ("KEY_F23", KEY_F23),
+        ("KEY_F24", KEY_F24),
+        ("KEY_PLAYCD", KEY_PLAYCD),
+        ("KEY_PAUSECD", KEY_PAUSECD),
+        ("KEY_BRIGHTNESSDOWN", KEY_BRIGHTNESSDOWN),
+        ("KEY_BRIGHTNESSUP", KEY_BRIGHTNESSUP),
+        ("KEY_MICMUTE", KEY_MICMUTE),
+        ("BTN_LEFT", BTN_LEFT),
+        ("BTN_RIGHT", BTN_RIGHT),
+        ("BTN_MIDDLE", BTN_MIDDLE),
+        ("BTN_SIDE", BTN_SIDE),
+        ("BTN_EXTRA", BTN_EXTRA),
+        ("REL_X", REL_X),
+        ("REL_Y", REL_Y),
+        ("REL_HWHEEL", REL_HWHEEL),
+        ("REL_WHEEL", REL_WHEEL),
+        ("ABS_X", ABS_X),
+        ("ABS_Y", ABS_Y),
+    ];
+
+    // --- BUS_* constants (subset) ----------------------------------------
+
+    /// `BUS_VIRTUAL` = 0x06 — closest match for a kernel-synthesised
+    /// device (Linux uses this for `uinput`-backed devices).
+    pub const BUS_VIRTUAL: u16 = 0x06;
+
+    // --- ioctl numbers ('E' magic, Linux UAPI verbatim) ------------------
+    //
+    // Encoding: `(dir << 30) | (size << 16) | (magic << 8) | nr`.
+    // `_IOR` = dir 2 (kernel writes back to userland buffer),
+    // `_IOW` = dir 1 (kernel reads from userland buffer). The
+    // `evioc_numbers_match_linux_uapi` test below re-derives each one
+    // through `ioc(...)` so a copy-paste typo cannot survive.
+
+    /// `_IOR('E', 0x01, int)` = `0x8004_4501`.
+    pub const EVIOCGVERSION: u32 = 0x8004_4501;
+
+    /// `_IOR('E', 0x02, WpkInputId)` = `0x8008_4502`.
+    pub const EVIOCGID: u32 = 0x8008_4502;
+
+    /// `_IOC(_IOC_READ, 'E', 0x06, len)` — `EVIOCGNAME(len)` in C.
+    /// `len` is caller-supplied; A3 matches on `(dir, magic, nr)`
+    /// and recomputes the buffer size from the encoded `size` field
+    /// at dispatch time (1 ≤ size ≤ 256).
+    pub const EVIOCGNAME_NR: u32 = 0x06;
+
+    /// `EVIOCGBIT(ev_type, len)` — same variable-length shape as
+    /// `EVIOCGNAME`. `nr = 0x20 + ev_type`.
+    pub const EVIOCGBIT_NR_BASE: u32 = 0x20;
+
+    /// `EVIOCGABS(axis)` — `_IOR('E', 0x40 + axis, WpkInputAbsinfo)`.
+    /// `axis` is a small integer (`ABS_X = 0`, `ABS_Y = 1`, …).
+    pub const EVIOCGABS_NR_BASE: u32 = 0x40;
+
+    // Variable-length device-introspection reads (`_IOC(_IOC_READ, 'E',
+    // nr, len)`), matched on `nr`. libevdev's `libevdev_set_fd` issues
+    // every one of these during construction and treats most as fatal on
+    // failure (see docs/plans/2026-07-08-dri-wayland-compositor-plan.md
+    // §5 PR5). Our virtual devices have no phys/uniq node, no input
+    // properties, and no keys/LEDs/switches currently latched, so the
+    // kernel answers with the honest empty state.
+
+    /// `EVIOCGPHYS(len)` — physical location string. Virtual devices have
+    /// none; the kernel returns `ENOENT`, which libevdev treats as "unset".
+    pub const EVIOCGPHYS_NR: u32 = 0x07;
+
+    /// `EVIOCGUNIQ(len)` — unique identifier string. As with phys, unset →
+    /// `ENOENT`.
+    pub const EVIOCGUNIQ_NR: u32 = 0x08;
+
+    /// `EVIOCGPROP(len)` — `INPUT_PROP_*` bitmap. No properties → zeroed.
+    pub const EVIOCGPROP_NR: u32 = 0x09;
+
+    /// `EVIOCGKEY(len)` — currently-pressed key/button state bitmap.
+    pub const EVIOCGKEY_NR: u32 = 0x18;
+
+    /// `EVIOCGLED(len)` — current LED state bitmap.
+    pub const EVIOCGLED_NR: u32 = 0x19;
+
+    /// `EVIOCGSW(len)` — current switch state bitmap.
+    pub const EVIOCGSW_NR: u32 = 0x1b;
+
+    /// `_IOW('E', 0x90, int)` = `0x4004_4590`.
+    pub const EVIOCGRAB: u32 = 0x4004_4590;
+
+    /// `KEY_MAX` / `KEY_CNT` — the largest `EV_KEY` code and the bit count
+    /// of an `EVIOCGKEY` bitmap (`KEY_CNT / 8 = 96` bytes), matching Linux
+    /// UAPI. The keystate bitmap is sized to `KEY_CNT` so it can hold every
+    /// code Kandelo emits (keys `1..=KEY_MICMUTE` and `BTN_*` up to
+    /// `BTN_EXTRA = 0x114`).
+    pub const KEY_MAX: u16 = 0x2ff;
+    pub const KEY_CNT: u16 = KEY_MAX + 1;
+
+    // --- marshalled structs ----------------------------------------------
+
+    /// `struct input_event` on wasm32-musl (`time_t = int64_t`,
+    /// `suseconds_t = int32_t`, `__u16` + `__u16` + `__s32`).
+    /// Total = 24 bytes.
+    ///
+    /// The explicit `_pad: i32` at byte 12 is **load-bearing**.
+    /// `repr(C)` would otherwise place `ev_type` at offset 12 (no
+    /// interior padding between the `i32 tv_usec` and the `u16
+    /// ev_type`), but C's `struct timeval` substruct is itself 16
+    /// bytes on wasm32-musl: the `int64_t tv_sec` forces 8-byte
+    /// alignment of the substruct, and the trailing `int32_t
+    /// tv_usec` is padded to 16 to satisfy that alignment. So the
+    /// C reader expects `ev_type` at offset 16 while the
+    /// pad-less Rust writer would put it at offset 12 — silent
+    /// corruption on every record. The `input_event_field_offsets`
+    /// test below gates the layout; if `ev_type` ever drifts back
+    /// to offset 12, restore `_pad`.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkInputEvent {
+        pub tv_sec: i64,    // 0   CLOCK_MONOTONIC seconds since kernel boot
+        pub tv_usec: i32,   // 8   microseconds; matches musl suseconds_t
+        pub _pad: i32,      // 12  pad so the trailing union 8-aligns with C
+        pub ev_type: u16,   // 16  EV_KEY / EV_REL / EV_ABS / EV_SYN / EV_MSC
+        pub code: u16,      // 18  KEY_* / BTN_* / REL_* / ABS_* / SYN_*
+        pub value: i32,     // 20  press/release/repeat; delta; absolute pos
+                            // total: 24
+    }
+
+    /// `struct input_id` — 8 bytes (4 × u16). Returned by `EVIOCGID`.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkInputId {
+        pub bustype: u16,   // 0   BUS_VIRTUAL = 0x06
+        pub vendor: u16,    // 2
+        pub product: u16,   // 4   0x0001 = kbd, 0x0002 = ptr
+        pub version: u16,   // 6
+                            // total: 8
+    }
+
+    /// `struct input_absinfo` — 24 bytes (6 × i32). Returned by
+    /// `EVIOCGABS(axis)`. Used for `ABS_X` / `ABS_Y` on the pointer
+    /// device when pointer lock is not active.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkInputAbsinfo {
+        pub value: i32,     // 0   current value
+        pub minimum: i32,   // 4
+        pub maximum: i32,   // 8   canvas width-1 / height-1
+        pub fuzz: i32,      // 12
+        pub flat: i32,      // 16
+        pub resolution: i32,// 20  1 unit per pixel
+                            // total: 24
     }
 }
 
@@ -5247,6 +6093,8 @@ mod gl_tests {
             OP_FRONT_FACE,
             OP_LINE_WIDTH,
             OP_PIXEL_STOREI,
+            OP_BLEND_FUNC_SEPARATE,
+            OP_BLEND_EQUATION_SEPARATE,
             OP_GEN_BUFFERS,
             OP_DELETE_BUFFERS,
             OP_BIND_BUFFER,
@@ -5270,6 +6118,7 @@ mod gl_tests {
             OP_USE_PROGRAM,
             OP_BIND_ATTRIB_LOCATION,
             OP_DELETE_PROGRAM,
+            OP_DETACH_SHADER,
             OP_UNIFORM1I,
             OP_UNIFORM1F,
             OP_UNIFORM2F,
@@ -5282,6 +6131,7 @@ mod gl_tests {
             OP_VERTEX_ATTRIB_POINTER,
             OP_DRAW_ARRAYS,
             OP_DRAW_ELEMENTS,
+            OP_VERTEX_ATTRIB_4FV,
             OP_GEN_VERTEX_ARRAYS,
             OP_DELETE_VERTEX_ARRAYS,
             OP_BIND_VERTEX_ARRAY,
@@ -5292,6 +6142,7 @@ mod gl_tests {
             OP_BIND_RENDERBUFFER,
             OP_RENDERBUFFER_STORAGE,
             OP_FRAMEBUFFER_RENDERBUFFER,
+            OP_DELETE_FRAMEBUFFERS,
         ];
         for (i, &a) in ops.iter().enumerate() {
             for &b in &ops[i + 1..] {
@@ -5315,11 +6166,129 @@ mod gl_tests {
             QOP_GET_PROGRAM_INFO_LOG,
             QOP_READ_PIXELS,
             QOP_CHECK_FB_STATUS,
+            QOP_GET_SHADER_PRECISION_FORMAT,
+            QOP_FINISH,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {
                 assert_ne!(a, b, "duplicate query opcode 0x{a:02x}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::input::*;
+    use core::mem::size_of;
+
+    // Linux's `_IOC` packs (dir, size, magic, nr) into a u32.
+    // Mirrors include/uapi/asm-generic/ioctl.h. `IOC_READ = 2`
+    // (`_IOR`); `IOC_WRITE = 1` (`_IOW`).
+    const fn ioc(dir: u32, magic: u32, nr: u32, size: u32) -> u32 {
+        (dir << 30) | (size << 16) | (magic << 8) | nr
+    }
+    const IOC_READ: u32 = 2;
+    const IOC_WRITE: u32 = 1;
+
+    #[test]
+    fn input_struct_sizes_match_wasm32_repr_c() {
+        assert_eq!(size_of::<WpkInputEvent>(), 24);
+        assert_eq!(size_of::<WpkInputId>(), 8);
+        assert_eq!(size_of::<WpkInputAbsinfo>(), 24);
+    }
+
+    #[test]
+    fn input_event_field_offsets() {
+        // The 24-byte layout is load-bearing — every reader walks
+        // the ring 24 bytes at a time. Lock the offsets explicitly.
+        let e = WpkInputEvent::default();
+        let base = (&e as *const _) as usize;
+        assert_eq!((&e.tv_sec as *const _ as usize) - base, 0);
+        assert_eq!((&e.tv_usec as *const _ as usize) - base, 8);
+        assert_eq!((&e.ev_type as *const _ as usize) - base, 16);
+        assert_eq!((&e.code as *const _ as usize) - base, 18);
+        assert_eq!((&e.value as *const _ as usize) - base, 20);
+    }
+
+    #[test]
+    fn code_table_matches_consts() {
+        // Every entry's value is its named const (referencing the const
+        // directly makes this trivially true, but it also proves the
+        // table compiles against the live const set — a renamed const
+        // breaks the build here, not silently in the browser).
+        for (name, value) in CODE_TABLE {
+            match *name {
+                "EV_KEY" => assert_eq!(*value, EV_KEY),
+                "KEY_A" => assert_eq!(*value, KEY_A),
+                "BTN_LEFT" => assert_eq!(*value, BTN_LEFT),
+                "REL_WHEEL" => assert_eq!(*value, REL_WHEEL),
+                "SYN_REPORT" => assert_eq!(*value, SYN_REPORT),
+                _ => {}
+            }
+        }
+        // No duplicate names (nested scan; the table is small).
+        for (i, (a, _)) in CODE_TABLE.iter().enumerate() {
+            for (b, _) in &CODE_TABLE[i + 1..] {
+                assert!(a != b, "duplicate CODE_TABLE entry: {a}");
+            }
+        }
+        // Anchors the browser input translator and key-code table depend
+        // on must all be present.
+        for required in [
+            "EV_SYN", "EV_KEY", "EV_REL", "EV_ABS", "SYN_REPORT", "REL_X", "REL_Y",
+            "REL_WHEEL", "REL_HWHEEL", "ABS_X", "ABS_Y", "BTN_LEFT", "BTN_RIGHT",
+            "BTN_MIDDLE", "KEY_A", "KEY_Z", "KEY_F1", "KEY_MICMUTE",
+        ] {
+            assert!(
+                CODE_TABLE.iter().any(|(n, _)| *n == required),
+                "CODE_TABLE missing {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn evioc_numbers_match_linux_uapi() {
+        assert_eq!(
+            EVIOCGVERSION,
+            ioc(IOC_READ, 'E' as u32, 0x01, 4)
+        );
+        assert_eq!(
+            EVIOCGID,
+            ioc(IOC_READ, 'E' as u32, 0x02, size_of::<WpkInputId>() as u32)
+        );
+        assert_eq!(
+            EVIOCGRAB,
+            ioc(IOC_WRITE, 'E' as u32, 0x90, 4)
+        );
+        // EVIOCGABS(ABS_X) — exercises both the variable nr base
+        // and the absinfo struct size.
+        assert_eq!(
+            ioc(
+                IOC_READ,
+                'E' as u32,
+                EVIOCGABS_NR_BASE + ABS_X as u32,
+                size_of::<WpkInputAbsinfo>() as u32
+            ),
+            0x8018_4540
+        );
+    }
+
+    #[test]
+    fn evioc_nr_bases_match_linux_uapi() {
+        // Spot-check the variable-length / per-axis bases used by
+        // A3's dispatch; the precise number is only known once the
+        // size field is filled in at ioctl time.
+        assert_eq!(EVIOCGNAME_NR, 0x06);
+        assert_eq!(EVIOCGBIT_NR_BASE, 0x20);
+        assert_eq!(EVIOCGABS_NR_BASE, 0x40);
+        // State-query reads used for SYN_DROPPED resync.
+        assert_eq!(EVIOCGKEY_NR, 0x18);
+        assert_eq!(EVIOCGLED_NR, 0x19);
+        assert_eq!(EVIOCGSW_NR, 0x1b);
+        // KEY_CNT / 8 = 96-byte EVIOCGKEY bitmap, and every code Kandelo
+        // emits fits (BTN_EXTRA = 0x114 < KEY_CNT).
+        assert_eq!(KEY_CNT, 0x300);
+        assert!(BTN_EXTRA < KEY_CNT);
     }
 }

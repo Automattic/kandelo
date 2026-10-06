@@ -259,8 +259,8 @@ describe("shell VFS base composition", () => {
     expect(builders).toEqual([
       "build-lamp-vfs-image.ts",
       "build-nginx-php-vfs-image.ts",
+      "build-nginx-python-vfs-image.ts",
       "build-nginx-vfs-image.ts",
-      "build-node-vfs-image.ts",
       "build-wp-vfs-image.ts",
     ]);
     for (const builder of builders) {
@@ -273,8 +273,8 @@ describe("shell VFS base composition", () => {
     const packageNames = [
       "lamp",
       "nginx-php-vfs",
+      "nginx-python-vfs",
       "nginx-vfs",
-      "node-vfs",
       "wordpress",
     ] as const;
     const shellDerivedRevisions = Object.fromEntries(packageNames.map((name) => {
@@ -293,11 +293,11 @@ describe("shell VFS base composition", () => {
       return [name, Number(revision![1])] as const;
     }));
     expect(shellDerivedRevisions).toEqual({
-      lamp: 17,
-      "nginx-php-vfs": 7,
-      "nginx-vfs": 7,
-      "node-vfs": 23,
-      wordpress: 18,
+      lamp: 18,
+      "nginx-php-vfs": 9,
+      "nginx-python-vfs": 4,
+      "nginx-vfs": 8,
+      wordpress: 19,
     });
   });
 

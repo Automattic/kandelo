@@ -786,6 +786,18 @@ fn immutable_imports_keep_their_original_binding_and_preinstantiation_recipe() {
     });
     assert!(!assigns_import);
 
+    // The generated helpers use these features; tools that run after
+    // instrumentation (wasm-opt) enable only declared features.
+    let features = custom_section(&bytes, "target_features");
+    for feature in ["exception-handling", "reference-types"] {
+        let mut entry = vec![b'+', feature.len() as u8];
+        entry.extend_from_slice(feature.as_bytes());
+        assert!(
+            features.windows(entry.len()).any(|w| w == entry),
+            "target_features lacks +{feature}"
+        );
+    }
+
     let descriptor = custom_section(&bytes, WPK_FORK_IMPORTED_GLOBALS_SECTION);
     assert!(descriptor.len() >= usize::from(WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE));
     assert_eq!(&descriptor[..4], &WPK_FORK_IMPORTED_GLOBALS_MAGIC);
@@ -799,8 +811,8 @@ fn immutable_imports_keep_their_original_binding_and_preinstantiation_recipe() {
     );
     assert_eq!(
         u32::from_le_bytes(descriptor[record + 20..record + 24].try_into().unwrap()),
-        1,
-        "KFIG must name the full import-section ordinal, including the preceding function",
+        0,
+        "KFIG format 2 reserves the former import-ordinal word: hosts resolve by name",
     );
 }
 
@@ -870,8 +882,8 @@ fn imported_table_identity_has_exact_preinstantiation_recipe_and_catalog() {
     );
     assert_eq!(
         u32::from_le_bytes(descriptor[record + 20..record + 24].try_into().unwrap()),
-        1,
-        "KFIT must name the full import-section ordinal",
+        0,
+        "KFIT format 2 reserves the former import-ordinal word: hosts resolve by name",
     );
 }
 

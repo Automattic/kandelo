@@ -5,14 +5,29 @@ set -euo pipefail
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # gzip has its own deflate implementation (does NOT link zlib).
-# Output: packages/registry/gzip/bin/gzip.wasm
+# Output: bin/gzip.wasm under the resolver work root (beside this
+# script when run standalone).
 
 GZIP_VERSION="${GZIP_VERSION:-1.14}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/gzip-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/gzip-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -30,12 +45,19 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # --- Download gzip source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading gzip $GZIP_VERSION..."
-    TARBALL="gzip-${GZIP_VERSION}.tar.xz"
-    URL="https://ftpmirror.gnu.org/gzip/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    URL="https://ftpmirror.gnu.org/gzip/gzip-${GZIP_VERSION}.tar.xz"
+    # ftpmirror.gnu.org picks one mirror per client and some mirrors lack
+    # this tarball entirely (observed: mirror.freedif.org 404s 1.14), so a
+    # mirror failure falls back to the canonical GNU host.
+    FALLBACK_URL="https://ftp.gnu.org/gnu/gzip/gzip-${GZIP_VERSION}.tar.xz"
+    # WHY: a unique archive under the work root; a fixed /tmp name let two
+    # concurrent builds overwrite or delete each other's download.
+    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/gzip-source.XXXXXX")"
+    curl --retry 3 --retry-delay 5 --retry-max-time 120 --retry-all-errors -fsSL "$URL" -o "$TARBALL" \
+        || curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$FALLBACK_URL" -o "$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -190,4 +212,4 @@ echo "Binary: $BIN_DIR/gzip.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary gzip "$SCRIPT_DIR/bin/gzip.wasm"
+install_local_binary gzip "$BIN_DIR/gzip.wasm"

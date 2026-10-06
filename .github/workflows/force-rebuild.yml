@@ -228,7 +228,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -372,7 +372,7 @@ jobs:
           echo "toolchain-cache key: $KEY"
 
       - name: Cache musl sysroot + libc++
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache
         with:
           path: |
@@ -783,6 +783,9 @@ jobs:
             cmp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
+            # Every built program imports from env only what the host
+            # provides (HOST_ENV_IMPORTS + the fork runtime's imports).
+            bash scripts/check-program-env-imports.sh
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh

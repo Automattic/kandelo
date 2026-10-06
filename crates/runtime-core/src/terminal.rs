@@ -61,6 +61,20 @@ pub use wasm_posix_shared::ioctl_contract::{
 /// musl struct termios size: 4 flags (16) + c_line (1) + c_cc (32) + pad (3) + speeds (8) = 60
 pub const TERMIOS_SIZE: usize = wasm_posix_shared::ioctl_contract::TERMIOS_SIZE as usize;
 
+/// Whether ECHOCTL renders `byte` as a printable `^X` pair rather than echoing
+/// it raw.
+///
+/// Matches Linux's `echo_char()` in `n_tty.c`: every control character except
+/// TAB, which must keep its column-advancing effect. Newline never reaches
+/// this path — line completion handles it earlier.
+///
+/// This is what stops a program with no line editing from driving the terminal
+/// with its own keystrokes: an arrow key sends `ESC [ A`, and echoing the ESC
+/// raw would have the emulator obey it as a cursor-movement command.
+fn echoctl_renders_as_caret(byte: u8) -> bool {
+    (byte < 0x20 || byte == 0x7F) && byte != b'\t'
+}
+
 /// Window size structure
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +105,12 @@ pub struct TerminalState {
     pub line_buffer: Vec<u8>,
     /// Completed lines ready to be read (includes the terminating newline).
     pub cooked_buffer: Vec<u8>,
+    /// One-shot end-of-input, armed when VEOF (Ctrl-D) is received on an
+    /// empty line in canonical mode. A zero-length cooked buffer alone is
+    /// indistinguishable from "no input yet", so the read paths consume this
+    /// flag to return Ok(0) (EOF) instead of EAGAIN. Consumed on the read
+    /// that reports EOF and cleared by any fresh input.
+    pub eof_pending: bool,
 }
 
 impl TerminalState {
@@ -115,7 +135,7 @@ impl TerminalState {
             c_iflag: ICRNL | IXON | IXANY | IMAXBEL,
             c_oflag: OPOST | ONLCR,
             c_cflag: CS8 | CREAD | HUPCL | B38400,
-            c_lflag: ECHO | ECHOE | ECHOK | ICANON | ISIG | IEXTEN,
+            c_lflag: ECHO | ECHOE | ECHOK | ECHOCTL | ICANON | ISIG | IEXTEN,
             c_line: 0,
             c_cc,
             c_ispeed: B38400,
@@ -132,6 +152,7 @@ impl TerminalState {
             session_id: 0,
             line_buffer: Vec::new(),
             cooked_buffer: Vec::new(),
+            eof_pending: false,
         }
     }
 
@@ -219,6 +240,7 @@ impl TerminalState {
                 if self.c_lflag & NOFLSH == 0 {
                     self.line_buffer.clear();
                     self.cooked_buffer.clear();
+                    self.eof_pending = false;
                 }
                 return (echo, Some(signum));
             }
@@ -255,14 +277,24 @@ impl TerminalState {
 
         // Check for VEOF (^D)
         if self.control_char_matches(VEOF, byte) {
-            // Flush current line buffer without adding the EOF character
-            self.cooked_buffer.extend_from_slice(&self.line_buffer);
-            self.line_buffer.clear();
+            if self.line_buffer.is_empty() {
+                // POSIX: VEOF on an empty line delivers end-of-input. The
+                // next read returns 0 (EOF). Represented as a one-shot flag
+                // because an empty cooked buffer is otherwise read as EAGAIN.
+                self.eof_pending = true;
+            } else {
+                // Non-empty line: flush the partial line immediately as a
+                // short read, without adding the EOF character or a newline.
+                self.cooked_buffer.extend_from_slice(&self.line_buffer);
+                self.line_buffer.clear();
+            }
             return (echo, None);
         }
 
         // Newline or VEOL: complete the line
         if byte == b'\n' || self.control_char_matches(VEOL, byte) {
+            // A completed line supersedes any stale empty-line EOF.
+            self.eof_pending = false;
             self.line_buffer.push(byte);
             self.cooked_buffer.extend_from_slice(&self.line_buffer);
             self.line_buffer.clear();
@@ -272,10 +304,17 @@ impl TerminalState {
             return (echo, None);
         }
 
-        // Regular character: add to line buffer
+        // Regular character: add to line buffer. Fresh input supersedes any
+        // stale empty-line EOF that no reader has consumed yet.
+        self.eof_pending = false;
         self.line_buffer.push(byte);
         if do_echo {
-            echo.push(byte);
+            if self.c_lflag & ECHOCTL != 0 && echoctl_renders_as_caret(byte) {
+                echo.push(b'^');
+                echo.push(byte ^ 0x40);
+            } else {
+                echo.push(byte);
+            }
         }
         (echo, None)
     }
@@ -295,6 +334,18 @@ impl TerminalState {
     /// Check if cooked data is available for reading.
     pub fn has_cooked_data(&self) -> bool {
         !self.cooked_buffer.is_empty()
+    }
+
+    /// Whether a one-shot canonical EOF (VEOF on an empty line) is armed.
+    /// Used by read/poll paths to treat EOF as a readable condition.
+    pub fn eof_pending(&self) -> bool {
+        self.eof_pending
+    }
+
+    /// Consume the one-shot canonical EOF. Returns true exactly once per
+    /// VEOF-on-empty-line, then false until another is armed.
+    pub fn take_eof(&mut self) -> bool {
+        core::mem::take(&mut self.eof_pending)
     }
 
     /// Take every byte already accepted by the canonical line discipline.
@@ -480,6 +531,49 @@ mod tests {
     }
 
     #[test]
+    fn test_veof_empty_line_arms_one_shot_eof() {
+        let mut ts = TerminalState::new();
+        assert!(!ts.eof_pending());
+
+        // ^D on an empty line arms a one-shot EOF. A zero-length cooked
+        // buffer is otherwise indistinguishable from "no input yet", so the
+        // read paths need this flag to return Ok(0) instead of EAGAIN.
+        ts.process_input_byte(0x04);
+        assert!(ts.eof_pending(), "VEOF on empty line must arm EOF");
+
+        let mut buf = [0u8; 8];
+        assert_eq!(ts.read_cooked(&mut buf), 0);
+
+        // One-shot: consumed once, then gone.
+        assert!(ts.take_eof());
+        assert!(!ts.take_eof());
+        assert!(!ts.eof_pending());
+    }
+
+    #[test]
+    fn test_veof_nonempty_line_does_not_arm_eof() {
+        let mut ts = TerminalState::new();
+        for &b in b"data" {
+            ts.process_input_byte(b);
+        }
+        // ^D on a non-empty line flushes the partial line as a short read,
+        // NOT an EOF.
+        ts.process_input_byte(0x04);
+        assert!(!ts.eof_pending());
+        assert!(ts.has_cooked_data());
+    }
+
+    #[test]
+    fn test_fresh_input_clears_pending_eof() {
+        let mut ts = TerminalState::new();
+        ts.process_input_byte(0x04); // arm EOF on empty line
+        assert!(ts.eof_pending());
+        // Fresh input supersedes a stale empty-line EOF nobody read yet.
+        ts.process_input_byte(b'x');
+        assert!(!ts.eof_pending());
+    }
+
+    #[test]
     fn test_echo_output() {
         let mut ts = TerminalState::new();
 
@@ -492,6 +586,68 @@ mod tests {
         let (echo, sig) = ts.process_input_byte(b'\n');
         assert_eq!(echo, vec![b'\n']);
         assert!(sig.is_none());
+    }
+
+    #[test]
+    fn test_echoctl_is_on_by_default() {
+        // Linux's TTYDEF_LFLAG (sys/ttydefaults.h, vendored in libc/musl)
+        // includes ECHOCTL. A tty that echoes control bytes raw lets a program
+        // with no line editing drive the emulator with its own keystrokes.
+        let ts = TerminalState::new();
+        assert!(ts.c_lflag & ECHOCTL != 0);
+    }
+
+    #[test]
+    fn test_echoctl_echoes_escape_as_caret_bracket() {
+        // The reported failure: pressing an arrow key sends ESC [ A. Echoed
+        // raw, the emulator obeys it as a cursor-up command and the cursor
+        // walks over earlier output. ECHOCTL echoes ESC as the two printable
+        // characters "^[", so the sequence is visible and inert.
+        let mut ts = TerminalState::new();
+
+        let (echo, _) = ts.process_input_byte(0x1B);
+        assert_eq!(echo, b"^[");
+
+        // The rest of the sequence is printable and echoes unchanged.
+        let (echo, _) = ts.process_input_byte(b'[');
+        assert_eq!(echo, vec![b'[']);
+        let (echo, _) = ts.process_input_byte(b'A');
+        assert_eq!(echo, vec![b'A']);
+    }
+
+    #[test]
+    fn test_echoctl_does_not_alter_the_line_buffer() {
+        // ECHOCTL changes what the terminal displays, never what the program
+        // reads. The shell still receives the raw escape bytes.
+        let mut ts = TerminalState::new();
+        for byte in [0x1B, b'[', b'A', b'\n'] {
+            ts.process_input_byte(byte);
+        }
+        let mut buf = [0u8; 16];
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(&buf[..n], b"\x1b[A\n");
+    }
+
+    #[test]
+    fn test_echoctl_exempts_tab_and_newline() {
+        // POSIX exempts TAB, NL and the flow-control characters: echoing TAB
+        // as "^I" would break column alignment.
+        let mut ts = TerminalState::new();
+
+        let (echo, _) = ts.process_input_byte(b'\t');
+        assert_eq!(echo, vec![b'\t']);
+
+        let (echo, _) = ts.process_input_byte(b'\n');
+        assert_eq!(echo, vec![b'\n']);
+    }
+
+    #[test]
+    fn test_echoctl_disabled_echoes_control_bytes_raw() {
+        let mut ts = TerminalState::new();
+        ts.c_lflag &= !ECHOCTL;
+
+        let (echo, _) = ts.process_input_byte(0x1B);
+        assert_eq!(echo, vec![0x1B]);
     }
 
     #[test]

@@ -6,10 +6,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 VERSION="7.2.7"
-TARBALL="redis-${VERSION}.tar.gz"
-SRC_DIR="$SCRIPT_DIR/redis-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/redis-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # Check SDK
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -17,24 +30,24 @@ if ! command -v wasm32posix-cc &>/dev/null; then
     exit 1
 fi
 
-# Download if needed
-if [ ! -f "$SCRIPT_DIR/$TARBALL" ]; then
+# Download and extract if needed
+if [ ! -d "$SRC_DIR/src" ]; then
     echo "==> Downloading Redis $VERSION..."
+    rm -rf "$SRC_DIR"
+    # WHY: a unique archive under the work root; the old fixed archive and
+    # extraction names beside this script were shared by concurrent builds.
+    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/redis-source.XXXXXX")"
     # `-f` (--fail) is load-bearing here: without it, curl returns 0
     # and writes the error HTML payload to TARBALL on a 5xx response,
     # which then poisons the tar-extract step downstream. Combined
     # with --retry to ride out transient mirror outages (#406).
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
-        -o "$SCRIPT_DIR/$TARBALL" \
+        -o "$TARBALL" \
         "https://github.com/redis/redis/archive/refs/tags/${VERSION}.tar.gz"
-fi
-
-# Extract if needed
-if [ ! -d "$SRC_DIR/src" ]; then
     echo "==> Extracting..."
-    rm -rf "$SRC_DIR"
-    tar xf "$SCRIPT_DIR/$TARBALL" -C "$SCRIPT_DIR"
-    mv "$SCRIPT_DIR/redis-${VERSION}" "$SRC_DIR"
+    mkdir -p "$SRC_DIR"
+    tar xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
 fi
 
 cd "$SRC_DIR"
@@ -152,5 +165,5 @@ ls -lh "$BIN_DIR/"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary redis "$SCRIPT_DIR/bin/redis-server.wasm" redis-server.wasm
-install_local_binary redis "$SCRIPT_DIR/bin/redis-cli.wasm" redis-cli.wasm
+install_local_binary redis "$BIN_DIR/redis-server.wasm" redis-server.wasm
+install_local_binary redis "$BIN_DIR/redis-cli.wasm" redis-cli.wasm

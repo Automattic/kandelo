@@ -35,6 +35,8 @@ pub enum DevfsEntry {
     InputDir,
     /// /dev/dri
     DriDir,
+    /// /dev/kandelo — Kandelo's own devices (the host clipboard)
+    KandeloDir,
 }
 
 /// Match a resolved path to a devfs directory entry.
@@ -47,6 +49,7 @@ pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
         b"/dev/fd" => Some(DevfsEntry::FdDir),
         b"/dev/input" => Some(DevfsEntry::InputDir),
         b"/dev/dri" => Some(DevfsEntry::DriDir),
+        b"/dev/kandelo" => Some(DevfsEntry::KandeloDir),
         _ => None,
     }
 }
@@ -69,6 +72,7 @@ pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         });
     }
     None
@@ -94,6 +98,7 @@ pub fn devfs_symlink_stat(path: &[u8], target_len: usize, uid: u32, gid: u32) ->
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: 0,
     }
 }
 
@@ -163,11 +168,24 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
             entries.push((b"mqueue".into(), DT_DIR, devfs_ino(b"/dev/mqueue")));
             entries.push((b"input".into(), DT_DIR, devfs_ino(b"/dev/input")));
             entries.push((b"dri".into(), DT_DIR, devfs_ino(b"/dev/dri")));
+            entries.push((b"kandelo".into(), DT_DIR, devfs_ino(b"/dev/kandelo")));
+        }
+        DevfsEntry::KandeloDir => {
+            // /dev/kandelo/clipboard — host clipboard text for the guest's
+            // clipboard agent (crate::clipboard).
+            entries.push((
+                b"clipboard".into(),
+                DT_CHR,
+                devfs_ino(b"/dev/kandelo/clipboard"),
+            ));
         }
         DevfsEntry::InputDir => {
             // /dev/input/mice — Linux-compatible PS/2 mouse stream.
-            // No /dev/input/eventN evdev nodes yet (mousedev surface only).
             entries.push((b"mice".into(), DT_CHR, devfs_ino(b"/dev/input/mice")));
+            // /dev/input/event0 — keyboard evdev (plan 5).
+            // /dev/input/event1 — pointer evdev.
+            entries.push((b"event0".into(), DT_CHR, devfs_ino(b"/dev/input/event0")));
+            entries.push((b"event1".into(), DT_CHR, devfs_ino(b"/dev/input/event1")));
         }
         DevfsEntry::DriDir => {
             // /dev/dri/card0 — KMS / display side.
@@ -367,6 +385,19 @@ mod tests {
     }
 
     #[test]
+    fn kandelo_dir_lists_the_clipboard_device() {
+        let proc = crate::process::Process::new(1);
+        let root = dir_entries(&proc, &DevfsEntry::Root);
+        assert!(root.iter().any(|(n, t, _)| n.as_slice() == b"kandelo" && *t == DT_DIR));
+        let entries = dir_entries(&proc, &DevfsEntry::KandeloDir);
+        let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
+        assert_eq!(names, [b"clipboard".as_slice()]);
+        assert_eq!(entries[0].1, DT_CHR);
+        let st = match_devfs_stat(b"/dev/kandelo", 0, 0).unwrap();
+        assert_eq!(st.st_mode & 0o170000, S_IFDIR);
+    }
+
+    #[test]
     fn dri_dir_lists_card0_and_renderd128() {
         let proc = crate::process::Process::new(1);
         let entries = dir_entries(&proc, &DevfsEntry::DriDir);
@@ -522,5 +553,21 @@ mod tests {
             devfs_getdents64(&proc, b"/dev", &mut empty, -1),
             Err(Errno::EINVAL)
         );
+    }
+
+    #[test]
+    fn event0_and_event1_listed_in_dev_input_dir() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::InputDir);
+        let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
+        assert!(names.iter().any(|n| *n == b"event0"), "event0 missing: {:?}", names);
+        assert!(names.iter().any(|n| *n == b"event1"), "event1 missing: {:?}", names);
+        // event2 deliberately NOT synthesised.
+        assert!(!names.iter().any(|n| *n == b"event2"));
+        for (name, dtype, _) in entries.iter() {
+            if name.as_slice() == b"event0" || name.as_slice() == b"event1" {
+                assert_eq!(*dtype, DT_CHR);
+            }
+        }
     }
 }

@@ -1,7 +1,7 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { gitIgnoredPaths } from "../../scripts/git-ignored-paths.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const projectionPath = join(
@@ -94,33 +94,7 @@ const excludedFiles = new Set([
   "scripts/resolve-binary.bundle.mjs",
 ]);
 
-const ignoredSourcePaths = (() => {
-  const result = spawnSync(
-    "git",
-    [
-      "-C",
-      repoRoot,
-      "ls-files",
-      "-z",
-      "--others",
-      "--ignored",
-      "--exclude-standard",
-      "--directory",
-    ],
-    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-  );
-  if (result.error || result.status !== 0) {
-    throw new Error(
-      `could not enumerate ignored source paths: ${result.stderr || result.error?.message}`,
-    );
-  }
-  return new Set(
-    result.stdout
-      .split("\0")
-      .filter((path) => path.length > 0)
-      .map((path) => path.endsWith("/") ? path.slice(0, -1) : path),
-  );
-})();
+const ignoredSourcePaths = gitIgnoredPaths(repoRoot);
 
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;

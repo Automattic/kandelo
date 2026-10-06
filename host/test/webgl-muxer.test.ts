@@ -17,7 +17,10 @@ import {
 
 class RecordingGl {
   log: Array<[string, unknown[]]> = [];
+  private nextVao = 1;
+  createVertexArray() { const vao = { vao: this.nextVao++ }; this.log.push(["createVertexArray", [vao]]); return vao; }
   bindVertexArray(v: unknown) { this.log.push(["bindVertexArray", [v]]); }
+  blendEquationSeparate(...a: number[]) { this.log.push(["blendEquationSeparate", a]); }
   bindFramebuffer(t: number, f: unknown) { this.log.push(["bindFramebuffer", [t, f]]); }
   viewport(...a: number[]) { this.log.push(["viewport", a]); }
   scissor(...a: number[]) { this.log.push(["scissor", a]); }
@@ -49,6 +52,41 @@ function mk(): { gl: RecordingGl; mux: GlMuxer } {
 }
 
 describe("GlMuxer.switchTo", () => {
+  it("gives each binding its own default vertex array", () => {
+    // Two programs sharing one WebGL context must not share vertex
+    // attribute state: GL gives every context its own vertex array 0.
+    const { gl, mux } = mk();
+    const a = newTarget();
+    const b = newTarget();
+    mux.switchTo(a);
+    mux.switchTo(b);
+    mux.switchTo(a);
+    const created = gl.callsOf("createVertexArray").map((c) => c[0]);
+    expect(created).toHaveLength(2);
+    expect(a.shadow.defaultVao).toBe(created[0]);
+    expect(b.shadow.defaultVao).toBe(created[1]);
+    expect(gl.callsOf("bindVertexArray").map((c) => c[0]))
+      .toEqual([created[0], created[1], created[0]]);
+  });
+
+  it("binds the program's own vertex array when it has one bound", () => {
+    const { gl, mux } = mk();
+    const t = newTarget();
+    const vao = { app: 1 };
+    t.shadow.vao = vao as unknown as WebGLVertexArrayObject;
+    mux.switchTo(t);
+    expect(gl.callsOf("createVertexArray")).toHaveLength(0);
+    expect(gl.callsOf("bindVertexArray")).toEqual([[vao]]);
+  });
+
+  it("replays the blend equation", () => {
+    const { gl, mux } = mk();
+    const t = newTarget();
+    t.shadow.blendEquation = { rgb: 0x800a, alpha: 0x8006 };
+    mux.switchTo(t);
+    expect(gl.callsOf("blendEquationSeparate")).toEqual([[0x800a, 0x8006]]);
+  });
+
   it("replays viewport, clearColor, useProgram from the target shadow", () => {
     const { gl, mux } = mk();
     const t = newTarget();
@@ -177,6 +215,8 @@ describe("GlMuxer.switchTo", () => {
     const after = gl.log.length;
     mux.invalidateCurrent();
     mux.switchTo(t);
-    expect(gl.log.length).toBe(after * 2);
+    // The second replay is the first minus the one-time creation of the
+    // binding's default vertex array.
+    expect(gl.log.length - after).toBe(after - 1);
   });
 });

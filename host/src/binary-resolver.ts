@@ -198,7 +198,6 @@ function requirePortableResolverPath(relPath: string): string {
  *
  * Example paths:
  *   `kernel.wasm`
- *   `userspace.wasm`
  *   `programs/vim.zip`               (implicit wasm32 — see below)
  *   `programs/git/git.wasm`          (implicit wasm32)
  *   `programs/php/icu.dat`           (implicit wasm32 runtime file)
@@ -230,12 +229,8 @@ function packagedBinaryCandidates(
 ): string[] {
   const adjusted = applyDefaultArch(relPath);
   const candidates = [join(root, adjusted)];
-  if (relPath === "kernel.wasm") {
-    candidates.push(join(root, "kandelo-kernel.wasm"));
-  } else if (relPath === "userspace.wasm") {
-    candidates.push(join(root, "wasm_posix_userspace.wasm"));
-  } else if (relPath === "rootfs.vfs") {
-    candidates.push(join(root, "rootfs.vfs"));
+  if (relPath === "rootfs.vfs.zst") {
+    candidates.push(join(root, "rootfs.vfs.zst"));
   }
   return candidates;
 }
@@ -243,7 +238,11 @@ function packagedBinaryCandidates(
 interface BinaryCandidateTier {
   label: string;
   root: string;
-  identity: "local-generation" | "program-cache" | "installed-package";
+  identity:
+    | "local-generation"
+    | "program-cache"
+    | "installed-package"
+    | "source-only-generation";
   /**
    * A genuine installed npm package is one versioned installation identity.
    * A source checkout's host/wasm tree is mutable and never qualifies.
@@ -264,6 +263,24 @@ export class BinaryNotFoundError extends Error {
  * Ordered provenance roots used by both single-artifact and package-closure
  * resolution. Keeping the grouping explicit lets a closure fall back as a
  * unit without ever combining local, fetched, and installed-package bytes.
+ *
+ * `local-binaries/source-only-v1/` is the hermetic tree the source-only-v1
+ * policy materializes for the browser. When it exists on disk it is the
+ * FIRST (highest-priority) tier, so Node/Vitest under the default policy
+ * resolves the same kernel the browser does — one kernel, not an ambient
+ * `local-binaries`/`binaries` copy plus a separate hermetic copy. It is
+ * listed ahead of, not instead of, `local-binaries`/`binaries`: those keep
+ * resolving non-kernel local outputs (built programs) that source-only-v1
+ * does not carry.
+ *
+ * Freshness scope: `tools/xtask`'s `verify-fresh` pre-test check (run from
+ * `./run.sh test`) only inspects `kernel.wasm` (the literal filename the
+ * engine writes here and this tier's `candidatesFor` resolves unadjusted),
+ * the one artifact here with an ABI to go stale (`__abi_version`). Everything
+ * under `programs/` is a content-addressed generation the local-build engine
+ * keys by cache key — a stale input there
+ * is a cache-key mismatch the engine's normal rebuild path already catches,
+ * not a silent-staleness hazard `verify-fresh` needs to separately guard.
  */
 function binaryCandidateTiers(): BinaryCandidateTier[] {
   const tiers: BinaryCandidateTier[] = [];
@@ -271,6 +288,25 @@ function binaryCandidateTiers(): BinaryCandidateTier[] {
   try {
     const repo = resolverRepoRoot();
     sourceCheckout = true;
+    const sourceOnlyRoot = join(repo, "local-binaries", "source-only-v1");
+    if (existsSync(sourceOnlyRoot)) {
+      tiers.push({
+        label: "source-only-v1",
+        root: sourceOnlyRoot,
+        identity: "source-only-generation",
+        // The engine writes real files here, not links into a shared cache,
+        // so this tier would otherwise be refused for every multi-artifact
+        // package the moment `pinPackageClosureIdentity` saw regular files.
+        // Its identity is not the directory shape: it is the projection
+        // authority in `.kandelo/`, which binds each member to a package,
+        // cache key and sha256. `pinPackageClosureIdentity` checks exactly
+        // that for this tier — see its `source-only-generation` branch.
+        allowRegularFileClosure: true,
+        candidatesFor(relPath: string): string[] {
+          return [join(sourceOnlyRoot, applyDefaultArch(relPath))];
+        },
+      });
+    }
     for (const [label, root] of [
       ["local-binaries", join(repo, "local-binaries")],
       ["binaries", join(repo, "binaries")],
@@ -679,6 +715,17 @@ function requireRegularXtask(path: string): string {
   throw new Error(`Prepared xtask is not a regular file: ${path}`);
 }
 
+/** Compiler variables a caller may set for its own C builds (see below). */
+const CHECKER_BUILD_SCRUBBED_ENV = [
+  "CC",
+  "CXX",
+  "AR",
+  "CFLAGS",
+  "CXXFLAGS",
+  "CPPFLAGS",
+  "LDFLAGS",
+] as const;
+
 function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   const explicit = process.env.WASM_POSIX_XTASK_BIN;
   if (explicit !== undefined) {
@@ -692,9 +739,17 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   }
 
   const host = rustHostTarget(sourceRepoRoot);
+  // WHY a private target directory and a scrubbed compiler environment: the
+  // checker's dependency graph includes C build scripts (ring) whose
+  // fingerprints depend on CC and friends. Callers inherit different values
+  // (the dev shell sets CC=clang; conformance runners export an absolute
+  // clang path), and every change invalidates the whole release build, which
+  // takes about 100 s. Building into a directory nothing else writes, with
+  // those variables removed, keeps its inputs identical across callers, so
+  // after the first build every preparation is Cargo's no-op.
+  const checkerTargetDir = join(sourceRepoRoot, "target", "program-index-checker");
   const xtaskPath = join(
-    sourceRepoRoot,
-    "target",
+    checkerTargetDir,
     host,
     "release",
     process.platform === "win32" ? "xtask.exe" : "xtask",
@@ -710,6 +765,8 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
     "xtask",
     "--target",
     host,
+    "--target-dir",
+    checkerTargetDir,
     "--quiet",
   ];
   const inDevShell = process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined;
@@ -717,9 +774,12 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   const args = inDevShell
     ? cargoArgs
     : [join(sourceRepoRoot, "scripts", "dev-shell.sh"), "cargo", ...cargoArgs];
+  const env = { ...process.env };
+  for (const name of CHECKER_BUILD_SCRUBBED_ENV) delete env[name];
   const result = spawnSync(command, args, {
     cwd: sourceRepoRoot,
     encoding: "utf8",
+    env,
   });
   if (result.status !== 0) {
     throw new Error(commandFailure(command, args, result));
@@ -771,6 +831,17 @@ function ensureProgramIndexesInSourceContext(): void {
       }`,
     );
   }
+}
+
+/**
+ * Run `operation` inside one program-index freshness boundary: the index is
+ * checked (and regenerated if stale) once, and resolver calls nested inside
+ * reuse that check. Exported for batch callers such as
+ * scripts/check-artifact-closures.ts, which resolves every package and would
+ * otherwise pay the multi-second freshness check once per package.
+ */
+export function withProgramIndexFreshness<T>(operation: () => T): T {
+  return withFreshProgramIndexes(["programs/"], operation);
 }
 
 function withFreshProgramIndexes<T>(
@@ -1432,6 +1503,22 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
   if (root === null) {
     throw new Error("Source-only projection requested outside source-only-v1");
   }
+  return readSourceOnlyProjectionAt(root);
+}
+
+/**
+ * Parse the SourceOnly projection authority that lives inside `root`.
+ *
+ * Split out from `readSourceOnlyProjection` so the ambient
+ * `source-only-generation` candidate tier can authenticate a package closure
+ * out of the generation it is already offering, without asserting the
+ * `WASM_POSIX_RESOLUTION_POLICY=source-only-v1` *policy*. Those are different
+ * claims: the policy says "serve nothing that is not in this projection",
+ * which is the browser build's hermetic contract; the tier only needs "these
+ * exact bytes belong to this package generation", which the same authority
+ * answers. `root` must already be the canonical generation root.
+ */
+function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
   const metadataRoot = join(root, ".kandelo");
   try {
     const metadata = lstatSync(metadataRoot);
@@ -1690,7 +1777,7 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
       projectedProgram?.arches.includes(targetArch) ?? false;
     const isRootMirrorNode =
       !projection.packages.has(packageName)
-      && (packageName === "kernel" || packageName === "userspace")
+      && packageName === "kernel"
       && members.length === 1
       && !members[0]!.mirrorPath.includes("/");
     if (!isExactProgramNode && !isRootMirrorNode) {
@@ -3059,8 +3146,9 @@ function mutableGenerationIdentityFailure(
     }
     const expectedParent = realpathSync(expectedParentPath);
     const generationName = basename(sharedRoot);
+    // `xtask`'s `canonical_path`: `<name>-<version>-rev<N>-<arch>-abi<N>-<key>`.
     const hasCanonicalName = generationName.startsWith(`${packageName}-`)
-      && new RegExp(`-rev[0-9]+-${arch}-${cacheKey}$`).test(generationName);
+      && new RegExp(`-rev[0-9]+-${arch}-abi[0-9]+-${cacheKey}$`).test(generationName);
     return dirname(sharedRoot) === expectedParent && hasCanonicalName
       ? null
       : "fetched mirror targets are not one canonical program-cache generation";
@@ -3083,6 +3171,88 @@ interface RejectedPackageClosure {
  * can be atomically replaced after validation, changing what those strings
  * name before a caller reads them.
  */
+/**
+ * Pin a package closure inside the local SourceOnly generation.
+ *
+ * The generation holds regular files, so the directory shape proves nothing.
+ * Its authority is `.kandelo/source-only-program-projection-v1.json`, which
+ * names each member's owning package, that package's cache key, and the
+ * member's sha256. Validating through it is the same check
+ * `resolveSourceOnlyBinary` performs under the hermetic browser policy — one
+ * owning node for the whole closure, then per-member digest and
+ * artifact-policy verification — so the tier is accepted on the strength of
+ * the producer's receipt rather than on the file being where it was expected.
+ */
+function pinSourceOnlyGenerationClosure(
+  tier: BinaryCandidateTier,
+  selected: readonly string[],
+  members: readonly ProgramPackageClosureMember[],
+): PinnedPackageClosure | RejectedPackageClosure {
+  let loaded: LoadedSourceOnlyProjection;
+  try {
+    loaded = readSourceOnlyProjectionAt(tier.root);
+  } catch (error) {
+    return {
+      failure: `source-only projection is unusable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  const owner = loaded.ownerByMirrorPath.get(members[0]!.relPath);
+  if (!owner) {
+    return {
+      failure: `source-only projection does not own ${members[0]!.relPath}`,
+    };
+  }
+  // One projection node owns the whole closure, exactly as one canonical
+  // generation owns a symlink closure. A member the projection attributes to
+  // a different package would mix two generations' bytes under one identity.
+  for (const member of members) {
+    if (loaded.ownerByMirrorPath.get(member.relPath) !== owner) {
+      return {
+        failure:
+          "declared members are not one source-only package projection node",
+      };
+    }
+  }
+  if (owner.packageName !== members[0]!.packageName) {
+    return {
+      failure: `source-only projection attributes ${members[0]!.relPath} to ${
+        JSON.stringify(owner.packageName)
+      }, not ${JSON.stringify(members[0]!.packageName)}`,
+    };
+  }
+  let validated: Map<string, string>;
+  try {
+    validated = validateSourceOnlyNode(loaded, owner);
+  } catch (error) {
+    return {
+      failure: `source-only package member is invalid: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  const pinnedPaths: string[] = [];
+  for (let index = 0; index < members.length; index++) {
+    const resolved = validated.get(members[index]!.relPath);
+    if (resolved === undefined) {
+      return {
+        failure: `source-only package closure omitted ${members[index]!.relPath}`,
+      };
+    }
+    // The tier offered `selected[index]`; the projection validated its own
+    // mirror path. They must be the same file, or the closure that was
+    // checked is not the closure the caller would read.
+    if (realpathSync(resolved) !== realpathSync(selected[index]!)) {
+      return {
+        failure: `source-only projection validated a different file for ${members[index]!.relPath}`,
+      };
+    }
+    pinnedPaths.push(resolved);
+  }
+  return { paths: pinnedPaths };
+}
+
 function pinPackageClosureIdentity(
   tier: BinaryCandidateTier,
   selected: readonly string[],
@@ -3117,6 +3287,9 @@ function pinPackageClosureIdentity(
         return {
           failure: "a mutable source-checkout wasm tree is not an installed package identity",
         };
+      }
+      if (tier.identity === "source-only-generation") {
+        return pinSourceOnlyGenerationClosure(tier, selected, members);
       }
       const packageName = members[0]!.packageName;
       const projectionIdentity = members[0]!.projectionIdentity;

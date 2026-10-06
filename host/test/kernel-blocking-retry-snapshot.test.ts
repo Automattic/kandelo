@@ -71,16 +71,18 @@ const KERNEL_WORKER_SOURCE = readFileSync(
   "utf8",
 );
 const BLOCKED_RETRY_SOURCE = readFileSync(
-  new URL("../../crates/kernel/src/blocked_retry.rs", import.meta.url),
+  new URL("../../crates/runtime-core/src/blocked_retry.rs", import.meta.url),
   "utf8",
 );
 const CHANNEL_SYSCALL_SOURCE = readFileSync(
   new URL("../../libc/glue/channel_syscall.c", import.meta.url),
   "utf8",
 );
-const PTHREAD_CANCEL_SOURCE = readFileSync(
+// The cancellation checks every cancellation point links live in
+// syscall_cp.c, apart from pthread_cancel itself (see that file).
+const SYSCALL_CP_SOURCE = readFileSync(
   new URL(
-    "../../libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c",
+    "../../libc/musl-overlay/src/thread/wasm32posix/syscall_cp.c",
     import.meta.url,
   ),
   "utf8",
@@ -557,10 +559,10 @@ describe("blocking retry snapshot contract", () => {
     expect(CHANNEL_SYSCALL_SOURCE).not.toMatch(
       /n == SYS_OPEN\s*\|\|\s*n == SYS_OPENAT/,
     );
-    expect(PTHREAD_CANCEL_SOURCE).toContain(
+    expect(SYSCALL_CP_SOURCE).toContain(
       "hidden int __syscall_cp_cancel_wake_allowed(void)",
     );
-    expect(PTHREAD_CANCEL_SOURCE).toContain(
+    expect(SYSCALL_CP_SOURCE).toContain(
       "self->canceldisable != PTHREAD_CANCEL_DISABLE",
     );
 
@@ -675,7 +677,7 @@ describe("blocking retry snapshot contract", () => {
     ]);
 
     const fromSyscall = BLOCKED_RETRY_SOURCE.match(
-      /pub\(crate\) fn from_syscall\(syscall: u32\) -> Result<Self, Errno> \{([\s\S]*?)\n    \}/,
+      /pub fn from_syscall\(syscall: u32\) -> Result<Self, Errno> \{([\s\S]*?)\n    \}/,
     )?.[1];
     expect(fromSyscall, "BlockingRetryOperation::from_syscall").toBeDefined();
     const targetedFamilies = Array.from(
@@ -4635,6 +4637,69 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
       await Promise.resolve();
 
       expect(harness.onKernelFatal).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    [
+      "signal-target selector",
+      (harness: RetryHarness) => {
+        harness.kernelExports.kernel_pick_signal_target_tid = vi.fn(
+          () => -ESRCH,
+        );
+      },
+    ],
+    [
+      "deliverable-signal query",
+      (harness: RetryHarness) => {
+        harness.kernelExports.kernel_thread_has_deliverable = vi.fn(
+          () => -ESRCH,
+        );
+      },
+    ],
+  ] as const)(
+    "treats -ESRCH from the %s as a vanished target, not corruption",
+    async (_description, configure) => {
+      const harness = createRetryHarness(4);
+      const futexPointer = 0x1000;
+      new Int32Array(
+        harness.processMemory.buffer,
+      )[futexPointer >>> 2] = 0;
+      writeRequest(harness, ABI_SYSCALLS.Futex, [
+        BigInt(futexPointer),
+        0n,
+        0n,
+        0n,
+        0n,
+        0n,
+      ]);
+      harness.kernelExports.kernel_handle_channel = vi.fn(
+        (rawPointer: number | bigint) => {
+          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
+          return 0;
+        },
+      );
+      harness.kernelExports.kernel_dequeue_signal = vi.fn(() => 0);
+      harness.worker.handleSyscall(harness.channel);
+      expect(
+        harness.worker.pendingFutexWaits.has(harness.channel),
+      ).toBe(true);
+      configure(harness);
+
+      harness.worker.testAuthority.sendSignalForTest(
+        harness.channel.pid,
+        SIGUSR1,
+      );
+      await Promise.resolve();
+
+      expect(harness.onKernelFatal).not.toHaveBeenCalled();
+      expect(
+        harness.kernelExports.kernel_dequeue_signal,
+      ).not.toHaveBeenCalled();
+      expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
+      expect(
+        harness.worker.pendingFutexWaits.has(harness.channel),
+      ).toBe(true);
     },
   );
 

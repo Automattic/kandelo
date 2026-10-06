@@ -438,3 +438,10 @@ describe('inferThreadSlotDeclaration', () => {
       .toBe(THREAD_SLOT_USE_HOST_DEFAULT);
   });
 });
+
+describe('archive group flags', () => {
+  it('drops --start-group/--end-group, which wasm-ld rejects', () => {
+    const result = filterArgs(['main.o', '-Wl,--start-group', 'liba.a', 'libb.a', '-Wl,--end-group']);
+    expect(result.filtered).toEqual(['main.o', 'liba.a', 'libb.a']);
+  });
+});

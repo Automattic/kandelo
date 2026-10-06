@@ -85,10 +85,19 @@ function vfsProductsVirtualModule(): Plugin {
  */
 function vfsProductsPlugin(base: string): Plugin {
   const configuredMap = process.env.KANDELO_PAGES_PRODUCT_MAP;
+  const configuredAssetGroup = process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
   if (configuredMap === undefined) {
+    // An asset group only means anything to a scoped product deployment, which
+    // a private map defines. Ignoring the group here would quietly produce an
+    // ordinary build and ship a site without the authenticated group the
+    // deployer asked for — fail loudly instead.
+    if (configuredAssetGroup !== undefined) {
+      throw new Error(
+        "KANDELO_PAGES_VFS_ASSET_GROUP_DIR requires KANDELO_PAGES_PRODUCT_MAP",
+      );
+    }
     return vfsProductsVirtualModule();
   }
-  const configuredAssetGroup = process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
   if (!path.isAbsolute(configuredMap)) {
     throw new Error(
       "KANDELO_PAGES_PRODUCT_MAP must be an absolute private map path",
@@ -145,7 +154,7 @@ const sourceOnlyViteAssets = configuredSourceOnlyRoot === null
     createSourceOnlyBinarySnapshotSession(),
     [
       "kernel.wasm",
-      "programs/wasm32/rootfs.vfs",
+      "programs/wasm32/rootfs.vfs.zst",
       ...authoredBrowserBinaryRelPaths,
     ],
     {
@@ -316,12 +325,16 @@ function injectBlobIframeInterceptorPlaceholder(content: string): string {
 /**
  * Vite plugin: resolve `@kernel-wasm` and `@rootfs-vfs` lazily.
  *
- * Lookup order for `@kernel-wasm` (first hit wins):
- *   1. `<repoRoot>/local-binaries/kernel.wasm` — populated by `bash build.sh`.
- *   2. `<repoRoot>/binaries/kernel.wasm` — populated by `./run.sh fetch`.
+ * `@kernel-wasm` resolves through the same authoritative path as every other
+ * host consumer: the SourceOnly-v1 projection when
+ * `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` is configured, otherwise
+ * `tryResolveBinary("kernel.wasm")` (the shared resolver's ordered
+ * `local-binaries/source-only-v1` → `local-binaries` → `binaries` →
+ * installed-package tiers). There is no legacy fallback path; a missing
+ * kernel fails loudly instead.
  *
- * `@rootfs-vfs` resolves to `<repoRoot>/host/wasm/rootfs.vfs` (built by
- * mkrootfs during `bash build.sh`).
+ * `@rootfs-vfs` resolves to `<repoRoot>/host/wasm/rootfs.vfs.zst` (built by
+ * mkrootfs during `./run.sh setup`).
  *
  * Resolution is deferred until import time so pages that don't consume
  * these aliases can run without a kernel build present. Pages that do
@@ -350,31 +363,28 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
               configuredSourceOnlyRoot,
           );
         }
-        const local = path.resolve(repoRoot, "local-binaries/kernel.wasm");
-        const fetched = path.resolve(repoRoot, "binaries/kernel.wasm");
         this.error(
-          "kernel.wasm not found, or every candidate is stale. Run `bash build.sh` from the repo root.\n" +
-            `  Looked at: ${local}\n  Looked at: ${fetched}`,
+          "kernel.wasm not found. Build it with ./run.sh setup (or cargo xtask bootstrap kernel).",
         );
       }
       if (pathPart === ROOTFS) {
         if (configuredSourceOnlyRoot !== null) {
           return sourceOnlyViteAssets!.resolve(
-            "programs/wasm32/rootfs.vfs",
+            "programs/wasm32/rootfs.vfs.zst",
           );
         }
         const candidates = [
-          path.resolve(repoRoot, "host/wasm/rootfs.vfs"),
-          path.resolve(repoRoot, "local-binaries/rootfs.vfs"),
-          path.resolve(repoRoot, "binaries/rootfs.vfs"),
-          path.resolve(repoRoot, "local-binaries/programs/wasm32/rootfs.vfs"),
-          path.resolve(repoRoot, "binaries/programs/wasm32/rootfs.vfs"),
+          path.resolve(repoRoot, "host/wasm/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "local-binaries/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "binaries/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "local-binaries/programs/wasm32/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "binaries/programs/wasm32/rootfs.vfs.zst"),
         ];
         for (const file of candidates) {
           if (fs.existsSync(file)) return access.approve(file) + query;
         }
         this.error(
-          "rootfs.vfs not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
+          "rootfs.vfs.zst not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
             candidates.map((file) => `  Looked at: ${file}`).join("\n"),
         );
       }

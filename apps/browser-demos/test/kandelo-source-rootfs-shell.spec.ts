@@ -10,12 +10,20 @@ async function terminalText(page: Page): Promise<string> {
   );
 }
 
+async function ensureGuideOpen(page: Page): Promise<void> {
+  // The demo guide no longer auto-opens; open it from the dock on first use.
+  if (await page.locator("aside.kdemo").count()) return;
+  await page.getByRole("button", { name: "Demo guide" }).click({ timeout: 120_000 });
+  await page.waitForSelector("aside.kdemo", { timeout: 30_000 });
+}
+
 async function runGuideScript(
   page: Page,
   script: string,
   expected: string | RegExp,
   timeout = 120_000,
 ): Promise<void> {
+  await ensureGuideOpen(page);
   const runButton = page.locator(".kdemo-run").first();
   await page.locator(".kdemo textarea").first().fill(script);
   await runButton.click();
@@ -55,9 +63,14 @@ test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async 
   page.on("response", (response) => {
     if (response.ok()) fetchedAssets.push(response.url());
   });
-  await page.goto(new URL("?demo=shell", productBase).href, {
+  // `&profile=` names a profile THIS image declares. No `?vfs=` is needed:
+  // with none, the app boots the gallery roster's first product, which is the
+  // main shell image this deployment serves.
+  await page.goto(new URL("?profile=shell", productBase).href, {
     waitUntil: "domcontentloaded",
   });
+  // "Ready" renders inside the demo guide panel, which no longer auto-opens.
+  await ensureGuideOpen(page);
   await expect
     .poll(() => page.evaluate(() => document.body.innerText), {
       timeout: 180_000,

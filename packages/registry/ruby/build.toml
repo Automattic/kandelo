@@ -1,12 +1,17 @@
 script_path = "packages/registry/ruby/build-ruby.sh"
 inputs = [
   "packages/registry/ruby/build-ruby.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
   "packages/registry/ruby/kandelo-ruby-cc",
   "packages/registry/ruby/patches",
   "crates/wasm-local-root-spill",
   "scripts/build-local-root-spill-tool.sh",
   "scripts/run-wasm-local-root-spill.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/activate.sh",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 14
+revision    = 19

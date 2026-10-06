@@ -126,12 +126,18 @@ if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ]; then
     LIBYAML_SHA256="c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4"
     LIBYAML_SRC="$WORK_DIR/libyaml-src"
     if [ ! -d "$LIBYAML_SRC" ]; then
-        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
-            -o "/tmp/yaml-${LIBYAML_VERSION}.tar.gz"
-        echo "$LIBYAML_SHA256  /tmp/yaml-${LIBYAML_VERSION}.tar.gz" | shasum -a 256 -c -
+        # WHY a unique file under the work root: a fixed shared temp name let one
+        # concurrent build delete the tarball while another extracted it.
+        LIBYAML_TARBALL="$(mktemp "$WORK_DIR/yaml-source.XXXXXX")"
+        if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
+                -o "$LIBYAML_TARBALL" ||
+           ! echo "$LIBYAML_SHA256  $LIBYAML_TARBALL" | shasum -a 256 -c -; then
+            rm -f "$LIBYAML_TARBALL"
+            exit 1
+        fi
         mkdir -p "$LIBYAML_SRC"
-        tar xzf "/tmp/yaml-${LIBYAML_VERSION}.tar.gz" -C "$LIBYAML_SRC" --strip-components=1
-        rm "/tmp/yaml-${LIBYAML_VERSION}.tar.gz"
+        tar xzf "$LIBYAML_TARBALL" -C "$LIBYAML_SRC" --strip-components=1
+        rm -f "$LIBYAML_TARBALL"
     fi
     cd "$LIBYAML_SRC"
     if [ ! -f Makefile ]; then
@@ -162,15 +168,23 @@ done
 # --- Download Ruby source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Ruby $RUBY_VERSION..."
-    TARBALL="ruby-${RUBY_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/${TARBALL}"
+    # A unique file under the work root, not a fixed shared temp name that
+    # concurrent builds would share.
+    TARBALL="$(mktemp "$WORK_DIR/ruby-source.XXXXXX")"
+    if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"; then
+        rm -f "$TARBALL"
+        exit 1
+    fi
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  /tmp/${TARBALL}" | shasum -a 256 -c -
+        if ! echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -; then
+            rm -f "$TARBALL"
+            exit 1
+        fi
     fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
     printf '%s\n' "$EXPECTED_SOURCE_MARKER" > "$SOURCE_MARKER"
     echo "==> Source extracted to $SRC_DIR"
 fi
@@ -959,7 +973,7 @@ SITE_EOF
         --without-fiddle \
         --without-readline \
         --with-static-linked-ext \
-        --with-ext=stringio,zlib,monitor,psych,digest,digest/md5,digest/sha1,digest/sha2,json,json/parser,json/generator,strscan,date,etc,fcntl,io/console,pty,socket,continuation \
+        --with-ext=stringio,zlib,monitor,psych,digest,digest/md5,digest/sha1,digest/sha2,json,json/parser,json/generator,strscan,date,etc,fcntl,io/console,io/wait,pty,socket,continuation,ripper \
         --with-out-ext=openssl,fiddle,readline,syslog,nkf,bigdecimal \
         2>&1 | tail -50
 
@@ -1167,8 +1181,89 @@ if [ ! -f exts.mk ]; then
     exit 1
 fi
 
-STATIC_EXTINITS="continuation date_core digest digest/md5 digest/sha1 digest/sha2 etc fcntl io/console json/ext/generator json/ext/parser monitor psych pty socket stringio strscan zlib"
-STATIC_EXTOBJS="ext/extinit.o ext/continuation/continuation.a ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/etc/etc.a ext/fcntl/fcntl.a ext/io/console/console.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/psych/psych.a ext/pty/pty.a ext/socket/socket.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a"
+# ---------------------------------------------------------------------------
+# sqlite3 gem as a built-in static extension — the first native gem on Kandelo.
+#
+# Ruby here is built --with-static-linked-ext (no runtime .so loading), so a
+# native gem must be linked into ruby.wasm at build time. We compile the SQLite
+# amalgamation (same distribution the `sqlite` package uses) together with the
+# sqlite3 gem's C extension into one static archive and add it to the static-ext
+# link, so guest code can `require "sqlite3"`. No gem source patches are needed
+# on Ruby 4.0: the gem already uses the public rb_integer_pack path.
+#
+# The extinit generator maps a feature name to Init_<name with '/'→'_'>, so the
+# feature "sqlite3/sqlite3_native" wants Init_sqlite3_sqlite3_native, while the
+# gem defines Init_sqlite3_native — a tiny alias shim bridges the two.
+# ---------------------------------------------------------------------------
+SQLITE_AMALG_URL="https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
+SQLITE_AMALG_SHA256="6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3"
+SQLITE3_GEM_VERSION="2.9.6"
+SQLITE3_GEM_SHA256="956fe606956420d04ac7157d3ace620c8caba2135b2e05c76e483493da24d08e"
+SQLITE_WORK="$WORK_DIR/sqlite3-ext-src"
+SQLITE_EXT_DIR="$CROSS_BUILD_DIR/ext/sqlite3"
+mkdir -p "$SQLITE_WORK" "$SQLITE_EXT_DIR"
+
+if [ ! -f "$SQLITE_WORK/amalg/sqlite3.c" ]; then
+    echo "==> Fetching SQLite amalgamation for the sqlite3 ext..."
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
+        "$SQLITE_AMALG_URL" -o "$SQLITE_WORK/amalg.zip"
+    echo "$SQLITE_AMALG_SHA256  $SQLITE_WORK/amalg.zip" | shasum -a 256 -c -
+    rm -rf "$SQLITE_WORK/amalg" "$SQLITE_WORK"/sqlite-amalgamation-*
+    unzip -oq "$SQLITE_WORK/amalg.zip" -d "$SQLITE_WORK"
+    mkdir -p "$SQLITE_WORK/amalg"
+    mv "$SQLITE_WORK"/sqlite-amalgamation-*/* "$SQLITE_WORK/amalg/"
+fi
+
+if [ ! -d "$SQLITE_WORK/gem/ext" ]; then
+    echo "==> Fetching sqlite3 gem ${SQLITE3_GEM_VERSION}..."
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
+        "https://rubygems.org/downloads/sqlite3-${SQLITE3_GEM_VERSION}.gem" -o "$SQLITE_WORK/sqlite3.gem"
+    echo "$SQLITE3_GEM_SHA256  $SQLITE_WORK/sqlite3.gem" | shasum -a 256 -c -
+    rm -rf "$SQLITE_WORK/gem"; mkdir -p "$SQLITE_WORK/gem/data"
+    tar -xf "$SQLITE_WORK/sqlite3.gem" -C "$SQLITE_WORK/gem"
+    tar -xzf "$SQLITE_WORK/gem/data.tar.gz" -C "$SQLITE_WORK/gem/data"
+    cp -R "$SQLITE_WORK/gem/data/ext" "$SQLITE_WORK/gem/ext"
+    cp -R "$SQLITE_WORK/gem/data/lib" "$SQLITE_WORK/gem/lib"
+fi
+
+echo "==> Compiling built-in sqlite3 extension..."
+SQLITE_GEMEXT="$SQLITE_WORK/gem/ext/sqlite3"
+cp "$SQLITE_WORK/amalg/sqlite3.h" "$SQLITE_GEMEXT/sqlite3.h"
+# SQLITE_ENABLE_COLUMN_METADATA makes HAVE_SQLITE3_COLUMN_DATABASE_NAME below
+# true (the sqlite package builds the same way). Without it the gem referenced
+# sqlite3_column_database_name that nothing defined: the link used to succeed
+# and Statement#database_name trapped; with honest links it fails to link.
+SQLITE_CFG="-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DEFAULT_MEMSTATUS=0 \
+-DSQLITE_ENABLE_COLUMN_METADATA"
+SQLITE_GEM_DEFS="-DHAVE_SQLITE3_H -DHAVE_RB_INTEGER_PACK -DHAVE_RB_PROC_ARITY \
+-DHAVE_RB_ENC_INTERNED_STR_CSTR -DHAVE_SQLITE3_INITIALIZE -DHAVE_SQLITE3_BACKUP_INIT \
+-DHAVE_SQLITE3_COLUMN_DATABASE_NAME -DHAVE_SQLITE3_OPEN_V2 -DHAVE_SQLITE3_PREPARE_V2"
+SQLITE_RUBY_INCS="-I$SRC_DIR/include -I.ext/include/wasm32-none -I$SQLITE_GEMEXT"
+wasm32posix-cc -O2 $SQLITE_CFG -I"$SQLITE_WORK/amalg" \
+    -c "$SQLITE_WORK/amalg/sqlite3.c" -o "$SQLITE_EXT_DIR/sqlite3_amalg.o"
+for c in aggregator backup database exception sqlite3 statement; do
+    wasm32posix-cc -O2 $SQLITE_RUBY_INCS $SQLITE_GEM_DEFS \
+        -c "$SQLITE_GEMEXT/$c.c" -o "$SQLITE_EXT_DIR/gem_$c.o"
+done
+cat > "$SQLITE_EXT_DIR/shim.c" <<'SQLITE_SHIM'
+/* extinit calls Init_sqlite3_sqlite3_native for feature "sqlite3/sqlite3_native";
+ * the gem defines Init_sqlite3_native. Bridge the two. */
+void Init_sqlite3_native(void);
+void Init_sqlite3_sqlite3_native(void) { Init_sqlite3_native(); }
+SQLITE_SHIM
+wasm32posix-cc -O2 -c "$SQLITE_EXT_DIR/shim.c" -o "$SQLITE_EXT_DIR/shim.o"
+rm -f "$SQLITE_EXT_DIR/sqlite3.a"
+wasm32posix-ar rcs "$SQLITE_EXT_DIR/sqlite3.a" \
+    "$SQLITE_EXT_DIR/sqlite3_amalg.o" \
+    "$SQLITE_EXT_DIR/gem_aggregator.o" "$SQLITE_EXT_DIR/gem_backup.o" \
+    "$SQLITE_EXT_DIR/gem_database.o" "$SQLITE_EXT_DIR/gem_exception.o" \
+    "$SQLITE_EXT_DIR/gem_sqlite3.o" "$SQLITE_EXT_DIR/gem_statement.o" \
+    "$SQLITE_EXT_DIR/shim.o"
+wasm32posix-ranlib "$SQLITE_EXT_DIR/sqlite3.a"
+echo "==> sqlite3 ext archive ready"
+
+STATIC_EXTINITS="continuation date_core digest digest/md5 digest/sha1 digest/sha2 etc fcntl io/console io/wait json/ext/generator json/ext/parser monitor psych pty ripper socket stringio strscan zlib sqlite3/sqlite3_native"
+STATIC_EXTOBJS="ext/extinit.o ext/continuation/continuation.a ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/etc/etc.a ext/fcntl/fcntl.a ext/io/console/console.a ext/io/wait/wait.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/psych/psych.a ext/pty/pty.a ext/ripper/ripper.a ext/socket/socket.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a ext/sqlite3/sqlite3.a"
 STATIC_ENCOBJS="enc/encinit.o enc/libenc.a enc/libtrans.a"
 STATIC_EXTLIBS="-lyaml -lz"
 STATIC_LINK_PATHS="-L. -L$SYSROOT/lib -L$ZLIB_PREFIX/lib"
@@ -1182,6 +1277,12 @@ make -f exts.mk \
     "BASERUBY=$BASERUBY_COMMAND" \
     "MINIRUBY=$BASERUBY_COMMAND -I. -rwasm32-none-fake" \
     static
+
+# Regenerate extinit.c from the augmented EXTINITS so the built-in sqlite3 ext
+# is registered. The exts.mk static step above regenerates it from the
+# configured ext list (without sqlite3); removing it forces the final `make
+# ruby` to rebuild it from the EXTINITS passed below.
+rm -f ext/extinit.c ext/extinit.o
 
 # Ruby's generated LDFLAGS include CFLAGS. Passing those compile flags through
 # the final wasm32 link produces a smaller executable shape that loses the
@@ -1235,6 +1336,30 @@ for ext_lib_dir in "$SRC_DIR/ext/monitor/lib" "$SRC_DIR/ext/socket/lib"; do
         cp -R "$ext_lib_dir"/. "$RUBY_LIB_DIR"/
     fi
 done
+# Install the sqlite3 gem's Ruby-side library (the C ext is linked in above).
+if [ -d "$SQLITE_WORK/gem/lib" ]; then
+    echo "==> Installing sqlite3 gem Ruby library..."
+    cp "$SQLITE_WORK/gem/lib/sqlite3.rb" "$RUBY_LIB_DIR/"
+    cp -R "$SQLITE_WORK/gem/lib/sqlite3" "$RUBY_LIB_DIR/"
+fi
+# Reproducibility: rbconfig.rb records the exact configure flags, which embed
+# absolute build-scratch dependency paths — e.g. `-L<cache-root>/source-only-v1/
+# compiled/libs/zlib-<key>/lib` in configure_args/CPPFLAGS/LDFLAGS/DLDFLAGS.
+# The <dep>-<key> tail is deterministic; only the build-scratch roots vary with
+# the build location, so canonicalize them to the same stable prefixes the SDK
+# cc wrapper uses for -ffile-prefix-map, keeping the generated config identical
+# across build locations. Rewrite the more-specific work dir first so its
+# occurrences are not partially rewritten by the broader cache-root rule.
+canonicalize_rbconfig_paths() {
+    local f="$1"
+    [ -f "$f" ] || return 0
+    perl -pi -e "s{\Q$WORK_DIR\E}{/usr/src/kandelo-build/ruby}g" "$f"
+    if [ -n "${WASM_POSIX_SOURCE_ONLY_CACHE_ROOT:-}" ]; then
+        perl -pi -e "s{\Q$WASM_POSIX_SOURCE_ONLY_CACHE_ROOT\E}{/usr/src/kandelo-build-deps}g" "$f"
+    fi
+}
+canonicalize_rbconfig_paths rbconfig.rb
+
 RUBY_ARCH_DIR="$RUBY_LIB_DIR/wasm32-none"
 mkdir -p "$RUBY_ARCH_DIR"
 cp rbconfig.rb "$RUBY_ARCH_DIR/rbconfig.rb"
@@ -1268,6 +1393,32 @@ load File.expand_path("bundle", __dir__)
 EOF
 chmod 755 "$RUBY_INSTALL_ROOT/bin/gem" "$RUBY_INSTALL_ROOT/bin/bundle" "$RUBY_INSTALL_ROOT/bin/bundler"
 
+# irb + reline are bundled default gems. `make install` would place them, but
+# it fails on this cross target (it runs the wasm ruby) and the manual fallback
+# above only copies lib/, so irb was missing from the runtime entirely. Install
+# the extracted bundled-gem lib trees onto the default load path and add a
+# bin/irb stub so the irb REPL works. reline provides irb's line editing atop
+# the statically-linked io/console extension.
+for gem_lib in "$SRC_DIR"/.bundle/gems/irb-*/lib "$SRC_DIR"/.bundle/gems/reline-*/lib; do
+    [ -d "$gem_lib" ] && cp -R "$gem_lib"/. "$RUBY_LIB_DIR"/
+done
+if [ ! -f "$RUBY_LIB_DIR/irb.rb" ]; then
+    echo "ERROR: irb library not installed to $RUBY_LIB_DIR (bundled irb gem missing under $SRC_DIR/.bundle/gems)" >&2
+    exit 1
+fi
+# This Ruby does not auto-load RubyGems at startup (like bin/gem, scripts must
+# require it explicitly). irb's locale loader calls Gem.try_activate to find
+# localized message files, so without RubyGems it dies with "undefined method
+# 'try_activate' for module Gem" whenever LANG is set (as the shell demo sets
+# LANG=en_US.UTF-8). Require rubygems first so Gem is fully defined.
+cat >"$RUBY_INSTALL_ROOT/bin/irb" <<'EOF'
+#!/usr/bin/env ruby
+require "rubygems"
+require "irb"
+IRB.start(__FILE__)
+EOF
+chmod 755 "$RUBY_INSTALL_ROOT/bin/irb"
+
 rm -f "$RUNTIME_ZIP"
 RUNTIME_STAGE="$(mktemp -d)"
 trap 'rm -rf "$RUNTIME_STAGE"' EXIT
@@ -1278,7 +1429,11 @@ mkdir -p "$RUNTIME_STAGE/usr/lib"
 # still retain the selected guest prefix.
 cp -R "$RUBY_INSTALL_ROOT/lib/ruby" "$RUNTIME_STAGE/usr/lib/ruby"
 cp -R "$RUBY_INSTALL_ROOT/bin" "$RUNTIME_STAGE/usr/bin"
-(cd "$RUNTIME_STAGE" && zip -r -q "$RUNTIME_ZIP" usr)
+# Produce a byte-reproducible archive: plain `zip -r` embeds each member's
+# wall-clock mtime, so two builds minutes apart differ even with identical
+# contents. The shared helper normalizes mtimes, entry order, and modes.
+bash "$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh" \
+    "$RUNTIME_STAGE" "$RUNTIME_ZIP"
 echo "==> Ruby runtime archive: $RUNTIME_ZIP"
 
 echo ""

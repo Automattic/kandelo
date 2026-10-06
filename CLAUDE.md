@@ -104,6 +104,19 @@ Browser-facing fixes are not complete from code reasoning alone. Use browser
 tests where possible and manually verify user-visible browser demo fixes with
 `./run.sh browser`.
 
+Runs under 10 minutes: one foreground Bash call with output to a log file.
+Longer runs: `scripts/agent-job start`, then repeat `scripts/agent-job wait
+<id>` (it blocks on the job's PID up to 9 minutes per call). To wait on
+another workspace's build, find it with `scripts/agent-job list --all` and
+wait on its id (or `wait --peer <text>`), not on its PID. Do not poll with
+`sleep` or `pgrep -f`, never end a headless session's or subagent's turn to
+wait, and do not make subagents wait on whole-tree builds. Why: each poll
+turn re-reads the whole conversation; `pgrep -f` matches the waiting shell
+and never returns; a headless session or subagent stops when its turn ends,
+losing the result; and a subagent's 5-minute cache makes long waits rewrite
+its context. See "Waiting on long builds and suites" in
+`docs/agent-guidance/validation.md`.
+
 See `docs/agent-guidance/validation.md` for suite selection and exact command
 guidance.
 
@@ -173,6 +186,20 @@ Node.js and browser hosts are peers. A host-runtime behavior change is
 incomplete until both hosts have the same platform-observable behavior or the
 difference is explicitly justified by a real platform boundary. Do not land
 Node-first or browser-later host changes.
+
+A declared memory ceiling is a spent resource. WebKit/JavaScriptCore charges a
+shared `WebAssembly.Memory`'s `maximum` and a growable `SharedArrayBuffer`'s
+`maxByteLength` against one process-wide reservation pool at construction,
+whether or not the space is used; V8 and SpiderMonkey do not. Do not add or
+raise a ceiling without accounting for that cost, and never reserve past a
+capacity the resource cannot actually reach. Host budgets live in
+`host/src/runtime-memory-profile.ts`.
+
+The main thread must never own a VFS `SharedArrayBuffer`. Only
+`Worker.terminate()` reclaims shared memory deterministically on WebKit, so
+main-thread VFS buffers accumulate across machine boots until Safari throws
+`Out of memory`. Compose images in a worker and hand the main thread plain,
+transferable bytes.
 
 Shared files are cross-host changes by default. Changes to
 `host/src/kernel-worker.ts`, `host/src/worker-main.ts`, VFS behavior,
@@ -272,6 +299,22 @@ commands should run from repo-declared tools, not undeclared host state. Use
 `scripts/dev-shell.sh` for build and verification claims; direnv is acceptable
 as a local interactive convenience, but it is not the verification contract.
 
+Building artifacts is expected work, not scope creep. This project builds
+everything locally: no CI status check pre-materializes the sysroots, kernel
+wasm, program and test-fixture binaries (`local-binaries/`), rootfs image, or
+package artifacts, and a fresh checkout or `git worktree` inherits none of
+them. When a goal — running a suite, reproducing a failure, validating before
+a merge — needs an artifact that is missing, build it and continue. A missing
+artifact is a `./run.sh setup` / `build-musl.sh` / `build-programs.sh` step
+away (under `scripts/dev-shell.sh`), not a "cannot proceed" boundary and not a
+reason to hand the task back. Distinguish this
+from a genuine platform defect: a missing artifact you can produce is
+provisioning; an artifact that fails to build, or an ABI-mismatched one that
+must be rebuilt through the normal path, is the truthful failure the
+platform-values contract tells you to surface. Report what you built to reach
+a claim, then make the claim. See `docs/agent-guidance/validation.md` for the
+fresh-worktree provisioning steps.
+
 CI runs only reviewed code. Every third-party action in `.github/` is pinned to
 a full 40-character commit SHA with the version in a trailing comment
 (`uses: actions/checkout@9c091bb… # v7.0.0`). Never introduce or restore a tag
@@ -281,9 +324,10 @@ whoever can move the ref can change what executes in a job holding
 the sole exception; they resolve to the running commit. Dependabot keeps the
 pins current.
 
-`bash build.sh` does not rebuild musl. After editing `libc/musl-overlay/` or
+`./run.sh setup` does not rebuild musl once a sysroot already exists —
+it only re-syncs overlay headers. After editing `libc/musl-overlay/` or
 `libc/glue/channel_syscall.c`, run `scripts/build-musl.sh` before relying on
-`build.sh`, Vitest, or conformance tests.
+`./run.sh setup`, Vitest, or conformance tests.
 
 PR titles and commit subjects must begin with a concise purpose prefix in the
 form `Area: Purpose`, such as `Packages:`, `Kernel:`, `POSIX:`, `CI:`,

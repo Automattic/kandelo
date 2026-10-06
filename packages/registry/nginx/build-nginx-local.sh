@@ -3,28 +3,47 @@ set -euo pipefail
 
 NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/nginx-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/nginx-src"
 BUILD_DIR="$SRC_DIR/objs"
+OUT="$KANDELO_PACKAGE_WORK_DIR/nginx.wasm"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # Download nginx source
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading nginx $NGINX_VERSION..."
-    TARBALL="nginx-${NGINX_VERSION}.tar.gz"
-    curl -fsSL "https://nginx.org/download/${TARBALL}" -o "/tmp/${TARBALL}"
+    # WHY: a unique archive under the work root; a fixed /tmp name let two
+    # concurrent builds overwrite or delete each other's download.
+    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/nginx-source.XXXXXX")"
+    curl -fsSL "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" -o "$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
 fi
 
+# The auto/* patches and the in-tree configure below edit this private
+# source copy under the work root, never a checkout tree.
 cd "$SRC_DIR"
 
 # =============================================================================
@@ -410,22 +429,21 @@ if [ -f objs/ngx_modules.c ]; then
 fi
 
 echo "  Linking nginx.wasm..."
-wasm32posix-cc "${OBJS[@]}" -o "$SCRIPT_DIR/nginx.wasm" -lcrypt
+wasm32posix-cc "${OBJS[@]}" -o "$OUT" -lcrypt
 
 # Fork instrumentation (master_process on requires fork children to
 # resume from the fork point rather than re-executing _start).
 # wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
-# no onlylist needed. Must run last — it hardcodes mutable-global offsets
-# and any later pass reordering globals would corrupt the fork buffer.
+# no onlylist needed. The tool also runs wasm-opt over the code it adds.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "  Applying fork instrumentation..."
-"$FORK_INSTRUMENT" "$SCRIPT_DIR/nginx.wasm" -o "$SCRIPT_DIR/nginx.wasm.instr"
-mv "$SCRIPT_DIR/nginx.wasm.instr" "$SCRIPT_DIR/nginx.wasm"
+"$FORK_INSTRUMENT" "$OUT" -o "$OUT.instr"
+mv "$OUT.instr" "$OUT"
 
 echo "==> nginx.wasm built successfully!"
-ls -la "$SCRIPT_DIR/nginx.wasm"
+ls -la "$OUT"
 
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary nginx "$SCRIPT_DIR/nginx.wasm"
+install_local_binary nginx "$OUT"

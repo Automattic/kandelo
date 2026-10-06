@@ -1264,9 +1264,9 @@ grep -Fq "staged local resolver link has an untrusted generation namespace root"
 rm "$FIXTURE/local-binaries/kernel.wasm"
 ln -s "$local_kernel" "$FIXTURE/local-binaries/kernel.wasm"
 
-# Kernel and userspace compatibility paths are package mirrors. Regular bytes
-# at either path have no generation/cache ownership and must never enter a
-# prepared workspace.
+# The kernel compatibility path is a package mirror. Regular bytes at that
+# path have no generation/cache ownership and must never enter a prepared
+# workspace.
 cp "$local_kernel" "$TMP_DIR/regular-kernel.wasm"
 rm "$FIXTURE/local-binaries/kernel.wasm"
 cp "$TMP_DIR/regular-kernel.wasm" "$FIXTURE/local-binaries/kernel.wasm"
@@ -1283,42 +1283,23 @@ grep -Fq "package-owned root mirror must remain a local-generation symlink" \
 rm "$FIXTURE/local-binaries/kernel.wasm"
 ln -s "$local_kernel" "$FIXTURE/local-binaries/kernel.wasm"
 
-printf 'identityless userspace\n' > "$FIXTURE/local-binaries/userspace.wasm"
+printf 'internal but identityless root bytes\n' \
+    > "$FIXTURE/local-binaries/not-a-generation.wasm"
+package_owned_root="$FIXTURE/local-binaries/kernel.wasm"
+rm "$package_owned_root"
+ln -s "not-a-generation.wasm" "$package_owned_root"
 if PATH="$FIXTURE/bin:$PATH" \
     WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
     bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" \
-        "$TMP_DIR/regular-userspace-workspace.tar.zst" \
-        > "$TMP_DIR/regular-userspace-workspace.out" 2>&1; then
-    echo "pack-ci-test-workspace.sh accepted an identityless regular userspace mirror" >&2
+        "$TMP_DIR/internal-kernel-workspace.tar.zst" \
+        > "$TMP_DIR/internal-kernel-workspace.out" 2>&1; then
+    echo "pack-ci-test-workspace.sh accepted an internal identityless kernel mirror" >&2
     exit 1
 fi
-grep -Fq "package-owned root mirror must remain a local-generation symlink" \
-    "$TMP_DIR/regular-userspace-workspace.out"
-rm "$FIXTURE/local-binaries/userspace.wasm"
-
-printf 'internal but identityless root bytes\n' \
-    > "$FIXTURE/local-binaries/not-a-generation.wasm"
-for package_owned_root in kernel userspace; do
-    root_mirror="$FIXTURE/local-binaries/$package_owned_root.wasm"
-    if [ "$package_owned_root" = kernel ]; then
-        rm "$root_mirror"
-    fi
-    ln -s "not-a-generation.wasm" "$root_mirror"
-    if PATH="$FIXTURE/bin:$PATH" \
-        WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
-        bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" \
-            "$TMP_DIR/internal-$package_owned_root-workspace.tar.zst" \
-            > "$TMP_DIR/internal-$package_owned_root-workspace.out" 2>&1; then
-        echo "pack-ci-test-workspace.sh accepted an internal identityless $package_owned_root mirror" >&2
-        exit 1
-    fi
-    grep -Fq "package-owned root mirror must select a declared local generation" \
-        "$TMP_DIR/internal-$package_owned_root-workspace.out"
-    rm "$root_mirror"
-    if [ "$package_owned_root" = kernel ]; then
-        ln -s "$local_kernel" "$root_mirror"
-    fi
-done
+grep -Fq "package-owned root mirror must select a declared local generation" \
+    "$TMP_DIR/internal-kernel-workspace.out"
+rm "$package_owned_root"
+ln -s "$local_kernel" "$package_owned_root"
 rm "$FIXTURE/local-binaries/not-a-generation.wasm"
 
 mv "$FIXTURE/binaries/programs" "$TMP_DIR/programs-with-package-mirrors"

@@ -17,6 +17,9 @@ SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 OS_TEST="$REPO_ROOT/tests/sortix/os-test"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
+# Upstream tests that do not test a POSIX requirement on Kandelo are
+# reported as SKIP; see scripts/sortix-not-applicable.sh.
+source "$REPO_ROOT/scripts/sortix-not-applicable.sh"
 BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
@@ -174,7 +177,8 @@ LINK_FLAGS=(
     -Wl,--import-memory
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
+    -Wl,-z,stack-size=8388608
+    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
     -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--growable-table
@@ -188,10 +192,14 @@ LINK_FLAGS=(
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
+# Stamp each compiled test program with this checkout's ABI-contract digest.
+source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+
 instrument_wasm() {
     local wasm="$1"
     "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
     mv "$wasm.instr" "$wasm"
+    abi_contract_stamp "$wasm"
 }
 
 TEST_TIMEOUT=30000  # ms (for browser runner)
@@ -463,6 +471,15 @@ run_runtime_suite() {
     local build_fail_count=0
 
     for test_name in "${tests[@]}"; do
+        local skip_reason
+        skip_reason="$(not_applicable_reason "$suite" "$test_name")"
+        if [ -n "$skip_reason" ]; then
+            TOTAL=$((TOTAL + 1))
+            echo "SKIP  ${suite}/${test_name} (${skip_reason})"
+            RESULTS+=("SKIP  ${suite}/${test_name}")
+            SKIP=$((SKIP + 1))
+            continue
+        fi
         if build_runtime_test "$suite" "$test_name" 2>/dev/null; then
             wasm_files+=("$BUILD_DIR/$suite/${test_name}.wasm")
             test_names+=("$test_name")
@@ -696,6 +713,7 @@ if [ ! -d "$OS_TEST" ]; then
     echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
     exit 1
 fi
+abi_contract_stamp_prepare || exit 1
 
 PASS=0
 FAIL=0

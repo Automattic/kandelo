@@ -1,7 +1,7 @@
 //! Assemble a single release bundle for one program.
 //!
 //! Produces `<program>-<upstream_version>-rev<revision>-<short-sha>.zip`
-//! (or `.wasm` for the kernel/userspace case) in the output directory.
+//! (or `.wasm` for the kernel case) in the output directory.
 //! The zip contains the wasm binary and any runtime data files the
 //! program needs, plus a LICENSE file copied from the program's
 //! upstream source tree when we can find it.
@@ -18,8 +18,8 @@
 //!       --out-dir /tmp/release-staging
 //!
 //! For a bare program (no runtime) omit `--runtime-root`. For the
-//! kernel / userspace case use `--plain-wasm` to skip zip packaging
-//! and just copy + rename the input file with a short hash suffix.
+//! kernel case use `--plain-wasm` to skip zip packaging and just
+//! copy + rename the input file with a short hash suffix.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

@@ -2,20 +2,39 @@
   "version": 1,
   "profiles": {
     "doom": {
+      "identity": {
+        "title": "fbDOOM",
+        "summary": "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
+        "accent": "#b5301c",
+        "glyph": "D",
+        "packages": [
+          "fbdoom@local",
+          "doom-shareware@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "framebuffer"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["framebuffer", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad"
+        "touchControls": true
       },
       "assets": [
         {
           "path": "/doom1.wad",
           "url": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
           "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
-          "mode": 420,
-          "devCorsProxy": true
+          "mode": 420
         }
       ],
       "ingest": {
@@ -28,13 +47,342 @@
         }
       }
     },
-    "modeset": {
+    "quake": {
+      "identity": {
+        "title": "Quake (software)",
+        "summary": "TyrQuake's software renderer on /dev/fb0, extracted from id's shareware archive inside Kandelo.",
+        "accent": "#8a1c1c",
+        "glyph": "Q",
+        "packages": [
+          "tyrquake@local",
+          "lhasa@local",
+          "unzip@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "framebuffer"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/quake"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["framebuffer", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "touchControls": true
+      },
+      "assets": [
+        {
+          "path": "/usr/share/quake/quake106.zip",
+          "url": "https://cdn.jsdelivr.net/gh/Jason2Brownlee/QuakeOfficialArchive@30c29bd5907fd999b0bb8e52c941ef770b4d3ba8/bin/quake106.zip",
+          "sha256": "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239",
+          "mode": 420
+        }
+      ],
+      "ingest": {
+        "accept": [".pak"],
+        "targetPath": "/usr/share/quake/id1/pak0.pak",
+        "maxBytes": 33554432,
+        "label": "Load pak0.pak",
+        "onLoad": {
+          "restart": "/usr/local/bin/quake"
+        }
+      }
+    },
+    "ffmpeg-fbdev": {
+      "identity": {
+        "title": "FFmpeg to /dev/fb0",
+        "summary": "FFmpeg drawing a test pattern into the framebuffer with a tone on /dev/dsp.",
+        "accent": "#2e7d32",
+        "glyph": "F",
+        "packages": [
+          "ffmpeg@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "framebuffer"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/bin/ffmpeg -nostdin -re -f lavfi -i testsrc=duration=60:size=320x240:rate=10 -f lavfi -i sine=duration=60 -map 0:v -pix_fmt bgra -f fbdev /dev/fb0 -map 1:a -f oss /dev/dsp"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["framebuffer", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
+    "ffplay": {
+      "identity": {
+        "title": "ffplay",
+        "summary": "ffplay showing a test pattern through SDL2 on /dev/dri/card0, with a tone.",
+        "accent": "#1565c0",
+        "glyph": "P",
+        "packages": [
+          "ffmpeg@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/bin/ffplay -autoexit -f lavfi 'testsrc=duration=60:size=320x240:rate=10[out0];sine=duration=60[out1]'"
+      },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["kms", "terminal", "syslog"],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "autoCommand": "/usr/local/bin/modeset"
+        "internalsAccess": "drawer"
+      }
+    },
+    "modeset": {
+      "identity": {
+        "title": "DRM/KMS fluid sim",
+        "summary": "Pavel-style EGL/GLES fluid simulation presented through /dev/dri/card0 page flips.",
+        "accent": "#4f8fd6",
+        "glyph": "K",
+        "packages": [
+          "modeset@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/modeset"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["kms", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
+    "scummvm": {
+      "identity": {
+        "title": "ScummVM",
+        "summary": "ScummVM fullscreen on /dev/dri/card0: SDL2's KMSDRM backend takes the display as DRM master and renders GLES2 directly, with OSS audio on /dev/dsp. Play a freeware game fetches any of the freeware adventures the ScummVM project distributes, from inside the machine, and starts it; Load game data takes your own zipped SCUMM title, which you then add from the launcher.",
+        "accent": "#c46a3c",
+        "glyph": "G",
+        "packages": [
+          "scummvm@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/scummvm"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["kms", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "dockActions": [
+        {
+          "id": "freeware",
+          "label": "Play a freeware game",
+          "description": "Pick one of the freeware games the ScummVM project distributes; the machine quits ScummVM, downloads the game from downloads.scummvm.org, verifies it, and starts it",
+          "menu": [
+            {
+              "id": "steel-sky",
+              "label": "Beneath a Steel Sky",
+              "detail": "69 MB",
+              "restart": "/usr/local/bin/scummvm-play steel-sky"
+            },
+            {
+              "id": "drascula",
+              "label": "Dráscula: The Vampire Strikes Back",
+              "detail": "33 MB",
+              "restart": "/usr/local/bin/scummvm-play drascula"
+            },
+            {
+              "id": "dreamweb",
+              "label": "DreamWeb",
+              "detail": "10 MB",
+              "restart": "/usr/local/bin/scummvm-play dreamweb"
+            },
+            {
+              "id": "fotaq",
+              "label": "Flight of the Amazon Queen",
+              "detail": "113 MB",
+              "restart": "/usr/local/bin/scummvm-play fotaq"
+            },
+            {
+              "id": "god-of-thunder",
+              "label": "God of Thunder",
+              "detail": "1 MB",
+              "restart": "/usr/local/bin/scummvm-play god-of-thunder"
+            },
+            {
+              "id": "griffon",
+              "label": "The Griffon Legend",
+              "detail": "10 MB",
+              "restart": "/usr/local/bin/scummvm-play griffon"
+            },
+            {
+              "id": "lure",
+              "label": "Lure of the Temptress",
+              "detail": "6 MB",
+              "restart": "/usr/local/bin/scummvm-play lure"
+            },
+            {
+              "id": "mystery-house",
+              "label": "Hi-Res Adventure #1: Mystery House",
+              "detail": "59 KB",
+              "restart": "/usr/local/bin/scummvm-play mystery-house"
+            },
+            {
+              "id": "nippon-safes",
+              "label": "Nippon Safes, Inc.",
+              "detail": "2 MB",
+              "restart": "/usr/local/bin/scummvm-play nippon-safes"
+            },
+            {
+              "id": "sfinx",
+              "label": "Sfinx",
+              "detail": "17 MB",
+              "restart": "/usr/local/bin/scummvm-play sfinx"
+            },
+            {
+              "id": "soltys",
+              "label": "Sołtys",
+              "detail": "3 MB",
+              "restart": "/usr/local/bin/scummvm-play soltys"
+            },
+            {
+              "id": "above-the-waves",
+              "label": "Above the Waves",
+              "detail": "30 MB",
+              "restart": "/usr/local/bin/scummvm-play above-the-waves"
+            },
+            {
+              "id": "cubert-badbone",
+              "label": "Cubert Badbone, P.I.",
+              "detail": "11 MB",
+              "restart": "/usr/local/bin/scummvm-play cubert-badbone"
+            },
+            {
+              "id": "frasse",
+              "label": "Frasse and the Peas of Kejick",
+              "detail": "13 MB",
+              "restart": "/usr/local/bin/scummvm-play frasse"
+            },
+            {
+              "id": "full-moon",
+              "label": "Full Moon",
+              "detail": "73 MB",
+              "restart": "/usr/local/bin/scummvm-play full-moon"
+            },
+            {
+              "id": "the-interview",
+              "label": "The Interview",
+              "detail": "2 MB",
+              "restart": "/usr/local/bin/scummvm-play the-interview"
+            },
+            {
+              "id": "leptons-quest",
+              "label": "Lepton's Quest",
+              "detail": "71 MB",
+              "restart": "/usr/local/bin/scummvm-play leptons-quest"
+            },
+            {
+              "id": "life-flashes-by",
+              "label": "Life Flashes By",
+              "detail": "160 MB",
+              "restart": "/usr/local/bin/scummvm-play life-flashes-by"
+            },
+            {
+              "id": "mandy-christmas",
+              "label": "Mandy Christmas Adventure",
+              "detail": "4 MB",
+              "restart": "/usr/local/bin/scummvm-play mandy-christmas"
+            },
+            {
+              "id": "nathans-second-chance",
+              "label": "Nathan's Second Chance",
+              "detail": "8 MB",
+              "restart": "/usr/local/bin/scummvm-play nathans-second-chance"
+            },
+            {
+              "id": "out-of-order",
+              "label": "Out of Order",
+              "detail": "11 MB",
+              "restart": "/usr/local/bin/scummvm-play out-of-order"
+            },
+            {
+              "id": "robins-rescue",
+              "label": "Robin's Rescue",
+              "detail": "14 MB",
+              "restart": "/usr/local/bin/scummvm-play robins-rescue"
+            },
+            {
+              "id": "sam-and-max-flintlocked",
+              "label": "Sam and Max Flintlocked",
+              "detail": "14 MB",
+              "restart": "/usr/local/bin/scummvm-play sam-and-max-flintlocked"
+            },
+            {
+              "id": "cruise-ship",
+              "label": "The Game That Takes Place on a Cruise Ship",
+              "detail": "20 MB",
+              "restart": "/usr/local/bin/scummvm-play cruise-ship"
+            },
+            {
+              "id": "tremendous-corporation",
+              "label": "The Secret of Tremendous Corporation",
+              "detail": "35 MB",
+              "restart": "/usr/local/bin/scummvm-play tremendous-corporation"
+            },
+            {
+              "id": "wage-collection",
+              "label": "World Builder (WAGE) game collection",
+              "detail": "93 MB",
+              "restart": "/usr/local/bin/scummvm-play wage-collection"
+            },
+            {
+              "id": "broken-sword-25",
+              "label": "Broken Sword 2.5: The Return of the Templars",
+              "unavailable": "needs Theora video and Lua, which this ScummVM build leaves out, and its 859 MB archive does not fit the machine's filesystem"
+            },
+            {
+              "id": "helga-deep-in-trouble",
+              "label": "Helga Deep in Trouble",
+              "unavailable": "needs the Wintermute engine's JPEG support, which this ScummVM build leaves out"
+            }
+          ]
+        }
+      ],
+      "ingest": {
+        "accept": [".zip"],
+        "targetPath": "/usr/share/scummvm-games/upload.zip",
+        "maxBytes": 536870912,
+        "label": "Load game data"
       }
     }
   }

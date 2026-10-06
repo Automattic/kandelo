@@ -1,0 +1,42 @@
+# Per-library manifest for libdom. See docs/package-management.md.
+#
+# libdom is NetSurf's implementation of the W3C Document Object Model (DOM):
+# the tree of elements, attributes and text that scripts read and modify.
+# ELinks builds a libdom tree for each page and exposes it to JavaScript.
+#
+# Only the HTML binding (via libhubbub) is built. libdom can also parse XML
+# through expat or libxml2, but ELinks never calls that binding, and enabling
+# it would add an XML parser dependency that nothing exercises.
+#
+# Built with the NetSurf project's own build system (the
+# netsurf-buildsystem-source package) through scripts/netsurf-library-build.sh.
+
+kind = "library"
+
+name = "libdom"
+version = "0.4.2"
+kernel_abi = 44
+depends_on = [
+  "netsurf-buildsystem-source@1.10",
+  "libparserutils@0.2.5",
+  "libwapcaplet@0.4.3",
+  "libhubbub@0.3.8",
+]
+arches = ["wasm32"]
+
+[source]
+url = "https://download.netsurf-browser.org/libs/releases/libdom-0.4.2-src.tar.gz"
+sha256 = "d05e45af16547014c2b0a3aecf3670fa13d419f505b3f5fc7ac8a1491fc30f3c"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://git.netsurf-browser.org/libdom.git/tree/COPYING?h=release/0.4.2"
+
+[build]
+script_path = "packages/registry/libdom/build-libdom.sh"
+
+[outputs]
+libs = ["lib/libdom.a"]
+headers = ["include/dom"]
+pkgconfig = ["lib/pkgconfig/libdom.pc"]

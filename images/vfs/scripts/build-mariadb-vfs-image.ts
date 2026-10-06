@@ -13,6 +13,9 @@
  * Two target architectures are supported:
  *   bash build-mariadb-vfs-image.sh           → public/mariadb.vfs.zst    (wasm32)
  *   bash build-mariadb-vfs-image.sh --wasm64  → public/mariadb-64.vfs.zst (wasm64)
+ *
+ * A non-flag argument overrides the output path (a resolver build passes
+ * one under its work root).
  */
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -28,6 +31,7 @@ import {
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   exactVfsImageMetadata,
+  installBashAsPosixShell,
   saveImage,
   type ExactVfsImageAbi,
 } from "./vfs-image-helpers";
@@ -133,6 +137,7 @@ export interface MariadbVfsImageBuildInputs {
   architecture: "wasm32" | "wasm64";
   mariadbd: Uint8Array;
   systemTablesDirectory: string;
+  bash: Uint8Array;
   dash: Uint8Array;
   coreutils: Uint8Array;
   dinit?: DinitBinaryInputs;
@@ -158,12 +163,13 @@ export async function buildMariadbVfsImage(
   }
   prepareMariadbWritableDirectories(fs);
 
-  // Bake dash and coreutils so the service wrappers and shell utilities are
-  // available without ambient browser assets.
+  // Bake bash as /bin/sh -- the same POSIX shell every Kandelo image binds
+  // there -- plus coreutils, so the service wrappers and shell utilities are
+  // available without ambient browser assets. dash stays an ordinary command
+  // at its own name; it does not claim /bin/sh.
+  installBashAsPosixShell(fs, inputs.bash);
   writeVfsBinary(fs, "/bin/dash", inputs.dash);
-  symlink(fs, "/bin/dash", "/bin/sh");
   symlink(fs, "/bin/dash", "/usr/bin/dash");
-  symlink(fs, "/bin/dash", "/usr/bin/sh");
   writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils);
   for (const name of COREUTILS_SYMLINK_NAMES) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
@@ -246,6 +252,9 @@ function resolveLegacySystemTablesDirectory(
 async function main(): Promise<void> {
   const repositoryRoot = findRepoRoot();
   const useWasm64 = process.argv.includes("--wasm64");
+  const outputArgument = process.argv
+    .slice(2)
+    .find((argument) => !argument.startsWith("--"));
   const architecture = useWasm64 ? "wasm64" : "wasm32";
   const mariadbPath = resolveBinary(useWasm64
     ? "programs/wasm64/mariadb/mariadbd.wasm"
@@ -257,14 +266,17 @@ async function main(): Promise<void> {
       repositoryRoot,
       useWasm64,
     ),
+    bash: new Uint8Array(readFileSync(resolveBinary("programs/bash.wasm"))),
     dash: new Uint8Array(readFileSync(resolveBinary("programs/dash.wasm"))),
     coreutils: new Uint8Array(
       readFileSync(resolveBinary("programs/coreutils.wasm")),
     ),
-    outputPath: join(
-      repositoryRoot,
-      `apps/browser-demos/public/${useWasm64 ? "mariadb-64" : "mariadb"}.vfs.zst`,
-    ),
+    outputPath: outputArgument
+      ? resolve(outputArgument)
+      : join(
+        repositoryRoot,
+        `apps/browser-demos/public/${useWasm64 ? "mariadb-64" : "mariadb"}.vfs.zst`,
+      ),
   });
 }
 

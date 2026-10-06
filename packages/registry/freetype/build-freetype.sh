@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# Build freetype (libfreetype.a) for wasm32-posix-kernel.
+#
+# Honors the dep-resolver build-script contract (see
+# docs/package-management.md). Autotools cross-build like libpng.
+# zlib comes from the resolver; every other optional dep (png,
+# harfbuzz, brotli, bzip2) is disabled — fcft needs none of them, and
+# each would drag another port into the stack.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/freetype-src"
+
+FREETYPE_VERSION="${WASM_POSIX_DEP_VERSION:-2.13.3}"
+INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/freetype-install}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289}"
+
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/freetype-build"
+
+if ! command -v wasm32posix-cc &>/dev/null; then
+    echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
+    exit 1
+fi
+
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set (must be invoked via cargo xtask build-deps resolve freetype)}"
+
+# --- Stage verified source ---
+if [ ! -d "$SRC_DIR" ]; then
+    echo "==> Staging verified freetype $FREETYPE_VERSION source..."
+    kandelo_package_stage_verified_source freetype "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
+fi
+
+rm -rf "$BUILD_DIR"
+# The resolver-created output directory is itself publication authority, so
+# a recipe must populate that inode rather than delete and recreate it.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: freetype resolver output directory must start empty" >&2
+        exit 1
+    fi
+else
+    rm -rf "$INSTALL_DIR"
+fi
+mkdir -p "$BUILD_DIR"
+
+echo "==> Configuring freetype for wasm32 (zlib at $ZLIB_PREFIX)..."
+(
+    cd "$BUILD_DIR"
+    CFLAGS="-O2" \
+    "$SRC_DIR/configure" \
+        --host=wasm32-unknown-none \
+        --prefix="$INSTALL_DIR" \
+        --enable-static \
+        --disable-shared \
+        --with-zlib=yes \
+        --with-png=no \
+        --with-harfbuzz=no \
+        --with-brotli=no \
+        --with-bzip2=no \
+        CC=wasm32posix-cc \
+        AR=wasm32posix-ar \
+        RANLIB=wasm32posix-ranlib \
+        ZLIB_CFLAGS="-I$ZLIB_PREFIX/include" \
+        ZLIB_LIBS="-L$ZLIB_PREFIX/lib -lz"
+
+    echo "==> Building freetype..."
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+
+    echo "==> Installing to $INSTALL_DIR..."
+    make install
+)
+
+rm -rf "$INSTALL_DIR/bin" "$INSTALL_DIR/share"
+
+if [ -f "$INSTALL_DIR/lib/libfreetype.a" ]; then
+    echo "==> freetype build complete!"
+    ls -lh "$INSTALL_DIR/lib/libfreetype.a"
+else
+    echo "ERROR: Build failed — library not found at $INSTALL_DIR/lib/libfreetype.a" >&2
+    exit 1
+fi

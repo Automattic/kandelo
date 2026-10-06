@@ -1,0 +1,31 @@
+# GNU readline — line-editing library (history, emacs/vi bindings) for
+# REPL-style CLIs. Built against the ncurses package's libtinfow terminfo
+# backend, exactly as bash's vendored readline already is on this target.
+#
+# License note: readline is GPL-3.0-or-later. Linking it makes the
+# *consuming binary* a GPL aggregate (it does not affect other libraries).
+# Only link it into programs whose licenses are GPL-compatible; for a
+# GPL-incompatible consumer, use a BSD line editor (libedit) instead.
+kind = "library"
+
+name = "readline"
+version = "8.2"
+kernel_abi = 7
+depends_on = ["ncurses@6.5"]
+arches = ["wasm32"]
+
+[source]
+url = "https://ftp.gnu.org/gnu/readline/readline-8.2.tar.gz"
+sha256 = "3feb7171f16a84ee82ca18a36d7b9be109a52c04f492a053331d7d1095007c35"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://www.gnu.org/licenses/gpl-3.0.html"
+
+[build]
+script_path = "packages/registry/readline/build-readline.sh"
+
+[outputs]
+libs = ["lib/libreadline.a", "lib/libhistory.a"]
+headers = ["include/readline"]

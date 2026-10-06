@@ -1,0 +1,16 @@
+script_path = "packages/registry/espeak-ng/build-espeak-ng.sh"
+inputs = [
+  "packages/registry/espeak-ng/build-espeak-ng.sh",
+  "packages/registry/espeak-ng/wasm32-posix-toolchain.cmake",
+  "libc/glue/abi_constants.h",
+  "libc/glue/channel_syscall.c",
+  "libc/glue/compiler_rt.c",
+  "sdk/activate.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = ""
+revision    = 3

@@ -1,0 +1,25 @@
+{
+    "programs": [
+
+    ],
+    "stream_groups": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "mpeg4",
+            "codec_type": "video",
+            "width": 176,
+            "height": 144,
+            "pix_fmt": "yuv420p"
+        },
+        {
+            "index": 1,
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "sample_rate": "22050",
+            "channels": 1
+        }
+    ]
+}

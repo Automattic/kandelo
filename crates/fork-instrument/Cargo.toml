@@ -14,6 +14,11 @@ path = "src/main.rs"
 name = "fork_instrument"
 path = "src/lib.rs"
 
+[features]
+# Opt-in per-category byte attribution of generated code; see
+# src/size_attribution.rs. Default builds emit identical modules.
+size-attribution = []
+
 [dependencies]
 wasm-posix-shared = { path = "../shared" }
 

@@ -101,6 +101,13 @@ export interface CentralizedWorkerInitMessage {
    */
   forkChildThreadFnPtr?: number;
   forkChildThreadArgPtr?: number;
+  /**
+   * The fork caller was a vfork child, which publishes its launch root in its
+   * own borrowed control slot. The copied process anchor still holds the
+   * parked vfork parent's root, so the child adopts `forkBufAddr` instead of
+   * reading that word (as a thread fork does).
+   */
+  forkLaunchRootFromCaller?: boolean;
   /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
   ptrWidth?: 4 | 8;
   /**
@@ -109,6 +116,14 @@ export interface CentralizedWorkerInitMessage {
    * own `__abi_version` export and refuses mismatches.
    */
   kernelAbiVersion?: number;
+  /**
+   * Kernel's ABI-contract digest (32 bytes, read from the kernel wasm's own
+   * `kandelo.abi.contract` custom section at startup). The worker compares
+   * this against the program's own stamp and refuses a mismatch even when the
+   * ABI version NUMBERS coincide. Uint8Array clones fine across postMessage.
+   * Absent when the kernel build predates the stamp.
+   */
+  kernelAbiContractDigest?: Uint8Array;
 }
 
 /**
@@ -148,6 +163,8 @@ export interface CentralizedThreadInitMessage {
   ptrWidth?: 4 | 8;
   /** See [`CentralizedWorkerInitMessage#kernelAbiVersion`]. */
   kernelAbiVersion?: number;
+  /** See [`CentralizedWorkerInitMessage#kernelAbiContractDigest`]. */
+  kernelAbiContractDigest?: Uint8Array;
 }
 
 export interface WorkerTerminateMessage {

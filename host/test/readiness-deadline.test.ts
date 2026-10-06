@@ -664,7 +664,10 @@ describe("host-emulated epoll signal delivery", () => {
     expect(harness.completeChannel).not.toHaveBeenCalled();
     expect(harness.relistenChannel).not.toHaveBeenCalled();
     expect(harness.state.pendingPollRetries.size).toBe(0);
-    expect(harness.handleChannel).not.toHaveBeenCalled();
+    // One nonblocking pass of the kernel's epoll_pwait (it owns the
+    // registrations, even an empty list), then the signal boundary -- the
+    // same order as with an interest registered.
+    expect(harness.handleChannel).toHaveBeenCalledOnce();
     expect(
       new DataView(harness.processMemory.buffer).getUint32(CH_STATUS, true),
     ).toBe(CHANNEL_STATUS_PENDING);

@@ -432,6 +432,13 @@ export interface VfsImageOptions {
    * Omit this for ordinary runtime snapshots that must preserve POSIX times.
    */
   normalizeTimestampsMs?: number;
+  /**
+   * Serialize only through the highest allocated block, so a distributable
+   * image does not carry the allocator's unused capacity. Set this when writing
+   * a product artifact; leave it off for live snapshots. See
+   * {@link SharedFsSnapshotOptions.trimFreeCapacity} for why it is not default.
+   */
+  trimFreeCapacity?: boolean;
 }
 
 /** Options for restoring a VFS image into a live filesystem. */
@@ -7033,6 +7040,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 
     const { bytes: sabBytes, identities } = this.fs.snapshotState({
       normalizeTimestampsMs: options?.normalizeTimestampsMs,
+      trimFreeCapacity: options?.trimFreeCapacity,
     });
     this.reconcileLazyIdentityState(identities);
     const lazyEntries = this.serializeLazyEntries();

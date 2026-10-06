@@ -39,8 +39,8 @@ import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
 import { drainSubmitQueue } from "./webgl/submit-drain";
+import { resolveIoctlContract } from "./ioctl-contract";
 import {
-  IOCTL_REQUESTS,
   KERNEL_SCRATCH_FD_PAIR_BYTES,
   KERNEL_SCRATCH_SOCKLEN_BYTES,
   SELECT_FD_SET_BYTES,
@@ -57,7 +57,10 @@ import {
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
-import { detectPtrWidth } from "./constants";
+import { bindForeignTexture } from "./webgl/foreign-texture";
+import { blitPresentTarget, ensurePresentTarget } from "./webgl/present-target";
+import { buildVirtualConnectorMode, connectorModeSize } from "./dri/kms-registry";
+import { DEFAULT_KERNEL_MAX_PAGES, detectPtrWidth } from "./constants";
 import {
   allocateKernelScratchRegion,
   checkedMemoryRange,
@@ -608,57 +611,6 @@ function bufferSourceToArrayBuffer(source: BufferSource): ArrayBuffer {
   ) as ArrayBuffer;
 }
 
-const DEFAULT_KMS_MODE_WIDTH = 1920;
-const DEFAULT_KMS_MODE_HEIGHT = 1080;
-const DEFAULT_KMS_REFRESH_HZ = 60;
-
-function kmsModeInfoBytes(
-  width?: number,
-  height?: number,
-  refreshHz = DEFAULT_KMS_REFRESH_HZ,
-): Uint8Array {
-  const w = clampModeDim(width, DEFAULT_KMS_MODE_WIDTH);
-  const h = clampModeDim(height, DEFAULT_KMS_MODE_HEIGHT);
-  const hsyncStart = clampU16(w + 16);
-  const hsyncEnd = clampU16(w + 48);
-  const htotal = clampU16(w + 160);
-  const vsyncStart = clampU16(h + 3);
-  const vsyncEnd = clampU16(h + 8);
-  const vtotal = clampU16(h + 45);
-  const clock = Math.max(1, Math.min(0xffffffff, Math.round(htotal * vtotal * refreshHz / 1000)));
-  const out = new IntrinsicUint8Array(STRUCT_SIZE_WPK_DRM_MODE_MODEINFO);
-  const dv = new IntrinsicDataView(typedArrayBuffer(out));
-  dataViewSetUint32(dv, 0, clock, true);
-  dataViewSetUint16(dv, 4, w, true);
-  dataViewSetUint16(dv, 6, hsyncStart, true);
-  dataViewSetUint16(dv, 8, hsyncEnd, true);
-  dataViewSetUint16(dv, 10, htotal, true);
-  dataViewSetUint16(dv, 12, 0, true);
-  dataViewSetUint16(dv, 14, h, true);
-  dataViewSetUint16(dv, 16, vsyncStart, true);
-  dataViewSetUint16(dv, 18, vsyncEnd, true);
-  dataViewSetUint16(dv, 20, vtotal, true);
-  dataViewSetUint16(dv, 22, 0, true);
-  dataViewSetUint32(dv, 24, refreshHz, true);
-  dataViewSetUint32(dv, 28, 0, true);
-  // DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED
-  dataViewSetUint32(dv, 32, 0x1 | 0x8, true);
-  const name = `${w}x${h}`;
-  for (let i = 0; i < Math.min(name.length, 31); i++) {
-    out[36 + i] = name.charCodeAt(i) & 0xff;
-  }
-  return out;
-}
-
-function clampModeDim(value: number | undefined, fallback: number): number {
-  if (value === undefined || !Number.isFinite(value) || value < 1) return fallback;
-  return clampU16(Math.trunc(value));
-}
-
-function clampU16(value: number): number {
-  return Math.max(1, Math.min(0xffff, Math.trunc(value)));
-}
-
 /**
  * Map filesystem error codes to negative errno values.
  * Handles both Node.js-style string codes ("ENOENT") and
@@ -770,6 +722,20 @@ const WASM_STATFS_SIZE = STRUCT_SIZE_WASM_STATFS;
 /** Size of the WasmDirent struct: d_ino(u64) + d_type(u32) + d_namlen(u32). */
 const WASM_DIRENT_SIZE = STRUCT_SIZE_WASM_DIRENT;
 
+/**
+ * A KMS display as the embedder reports it: its size in device pixels, and
+ * optionally its physical size in millimetres. A browser derives the physical
+ * size from the CSS box (CSS defines 96 px per inch), so a client computing
+ * DPI from it gets the page's device-pixel ratio — the scale a HiDPI screen
+ * needs. Absent means unknown (a host with no display).
+ */
+export interface KmsDisplaySize {
+  width: number;
+  height: number;
+  mmWidth?: number;
+  mmHeight?: number;
+}
+
 export interface KernelCallbacks {
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
@@ -779,8 +745,6 @@ export interface KernelCallbacks {
   onUdpUnbind?: (handle: number) => number;
   onStdout?: (data: Uint8Array) => void;
   onStderr?: (data: Uint8Array) => void;
-  /** Read up to maxLen bytes from stdin. Return a Uint8Array with available data, or empty/null for EOF. */
-  onStdin?: (maxLen: number) => Uint8Array | null;
   /**
    * Resolve the wasm `Memory` for `pid`. The GL bridge reads cmdbuf bytes
    * directly out of the process's Memory SAB on `host_gl_submit` and
@@ -807,11 +771,59 @@ export interface KernelCallbacks {
    */
   getKmsCanvas?: (crtcId: number) => OffscreenCanvas | HTMLCanvasElement | undefined;
   /**
+   * List the CRTC ids for which the embedder has registered a scanout
+   * canvas. `host_gl_create_context` uses this to auto-attach when a
+   * DRM-master pid creates its GL context *before* it has bound an FB
+   * with `drmModeSetCrtc` — the ordering SDL2's KMSDRM backend uses
+   * (it defers the first `drmModeSetCrtc` to the first `SwapWindow`,
+   * after `eglCreateContext` and all shader compiles). Without this,
+   * such a pid's context is built with no canvas and every GLES call
+   * silently no-ops. Returning `[]` (or omitting the callback) keeps
+   * the FB-binding-first behavior.
+   */
+  getKmsCrtcIds?: () => number[];
+  /**
    * Notify the embedder that GL has claimed the canvas for `crtcId`.
    * The KMS vblank pump uses this to skip the CPU `putImageData` blit
    * for canvases now painted directly by WebGL2. Idempotent.
    */
   markKmsCanvasGlOwned?: (crtcId: number) => void;
+  /**
+   * Inverse of `markKmsCanvasGlOwned`: the GL session that claimed the
+   * canvas is gone (context destroyed or renderD128 session terminated),
+   * so the pump presenter should resume in its pre-claim mode. Fired on
+   * a GPU compositor's runtime degrade to its CPU path. Idempotent.
+   */
+  markKmsCanvasGlReleased?: (crtcId: number) => void;
+  /**
+   * Embedder-reported display size (device pixels) for the KMS scanout,
+   * if one has been registered via `setKmsDisplaySize`. Used by
+   * `host_kms_mode_info` to advertise a connector mode matching the
+   * display's aspect ratio, so mode-picking clients fill the pane
+   * without letterboxing. `undefined` → the 1920x1080 default.
+   */
+  getKmsDisplaySize?: () => KmsDisplaySize | undefined;
+  /**
+   * A program has pointed a CRTC at a framebuffer (SETCRTC or PAGE_FLIP).
+   * From here on its page flips retire at vblank, so the host must be
+   * ticking kernel_vblank even with no canvas attached (a Node host, a
+   * headless test). The worker starts its vblank pump on this signal rather
+   * than running it on every kernel, most of which never touch KMS.
+   */
+  onKmsScanoutActive?: () => void;
+  /**
+   * A SETCRTC/PAGE_FLIP latched `fbId` onto `crtcId`; `width`/`height`
+   * are that framebuffer's dimensions. The scanout framebuffer defines
+   * the pointer coordinate space — the embedder maps pointer positions
+   * into framebuffer pixels and `sendPointerAbs` forwards them as
+   * `EV_ABS` — so the worker uses this to keep the pointer device's
+   * advertised `EVIOCGABS` range equal to the space those coordinates
+   * are in for consumers that open the device after the modeset. A
+   * consumer that is already running never re-reads the range (libinput
+   * caches absinfo at device open); open-time correctness comes from
+   * `setKmsDisplaySize` advertising the derived connector mode.
+   */
+  onKmsScanoutFb?: (crtcId: number, width: number, height: number) => void;
 }
 
 export class WasmPosixKernel {
@@ -892,6 +904,23 @@ export class WasmPosixKernel {
    */
   readonly gl = new GlContextRegistry();
   /**
+   * A bo owns the foreign textures bound from it (see shared's
+   * BIND_FOREIGN_TEXTURE doc), so they die with the bo however it goes:
+   * the guest's GEM_CLOSE (`host_gbm_bo_destroy`) or a process teardown that
+   * releases the bo's last owner (`releaseProcessViews` → `releaseProcess`,
+   * the path a crashed or force-terminated client takes). Hooking only the
+   * GEM_CLOSE import left every crashed client's textures alive in the
+   * compositor's GL context for the rest of the session.
+   */
+  private readonly offBoTextureCleanup = this.bos.onChange((_pid, bo_id, event) => {
+    if (event !== "destroy") return;
+    // A bo owns the foreign textures bound from it, and a GPU-tier bo owns
+    // a texture+FBO on the shared context; drop both before its storage
+    // goes away, on the guest destroy path and the teardown path alike.
+    this.gl.dropForeignTexturesForBo(bo_id);
+    this.gl.destroyGpuBo(bo_id);
+  });
+  /**
    * Worker-side submit lanes. The compositor (current DRM_MASTER on
    * card0) jumps ahead of clients; clients round-robin. Drain runs
    * synchronously inside `host_gl_submit` because the C process is
@@ -912,6 +941,107 @@ export class WasmPosixKernel {
   }
 
   /**
+   * Attach the KMS scanout canvas to `pid`'s GL binding and build its
+   * WebGL2 context when the pid holds DRM master and the embedder has
+   * registered a scanout canvas — independent of whether the pid has yet
+   * bound an FB with `drmModeSetCrtc`.
+   *
+   * Two orderings must both work:
+   *  - modeset.c: `drmModeSetCrtc` → `eglCreateContext`. A CRTC already
+   *    has an FB bound, so `masterCrtcForPid` resolves the canvas.
+   *  - SDL2 KMSDRM: `eglCreateContext` (+ every shader compile) →
+   *    first `SDL_GL_SwapWindow` → first `drmModeSetCrtc`. At context
+   *    creation no FB is bound, so we fall back to a registered scanout
+   *    CRTC for the master pid. Without this the context is built with
+   *    no canvas, `b.gl` stays null, and every GLES call silently
+   *    no-ops (black screen; audio, on its own `/dev/dsp` path, is fine).
+   *
+   * Idempotent: returns early once `b.gl` exists. Called from
+   * `host_gl_create_context` and `host_kms_set_fb`.
+   */
+  private tryAttachKmsGlCanvas(pid: number): void {
+    const b = this.gl.get(pid);
+    if (!b || b.forward) return;
+    if (b.contextId == null) return; // GL context not created yet
+    if (b.gl) return; // already built
+    // The CRTC we attach in this call, if any — used to defer
+    // `markKmsCanvasGlOwned` until a WebGL2 context is confirmed.
+    let attachedCrtc: number | null = null;
+    if (!b.canvas) {
+      // Prefer a CRTC that already has an FB bound (modeset order);
+      // otherwise, if the pid holds DRM master, take a registered scanout
+      // CRTC even without an FB binding yet (SDL2 order — the FB is bound
+      // later, on the first SwapWindow). The kernel advertises a single
+      // CRTC (see kms-registry.ts), so the first registered id is that
+      // CRTC; multi-head would need a pid→CRTC map here.
+      let crtc = this.kms.masterCrtcForPid(pid);
+      if (crtc == null && this.kms.isMasterPid(pid)) {
+        const ids = this.callbacks.getKmsCrtcIds?.() ?? [];
+        crtc = ids.length > 0 ? ids[0] : null;
+      }
+      if (crtc == null) return;
+      const canvas = this.callbacks.getKmsCanvas?.(crtc);
+      if (!canvas) return;
+      // Match the OffscreenCanvas drawing buffer to the kernel-side FB
+      // so glViewport and gl_FragCoord operate on the full surface rather
+      // than the default 300×150 corner. With no FB yet (the SDL2
+      // ordering above), size it to the mode the connector advertises —
+      // the size the program is about to render at. Skipping that leaves
+      // a HiDPI pane on the 1920x1080 default, so the guest renders below
+      // the panel's device-pixel count and the browser upscales it.
+      const fb = this.kms.currentFb(crtc)
+        ?? connectorModeSize(this.callbacks.getKmsDisplaySize?.());
+      if (canvas.width !== fb.width || canvas.height !== fb.height) {
+        canvas.width = fb.width;
+        canvas.height = fb.height;
+      }
+      this.gl.attachCanvas(pid, canvas);
+      b.canvas = canvas;
+      attachedCrtc = crtc;
+    }
+    if (!b.canvas) return;
+    const ctx = b.canvas.getContext("webgl2", {
+      antialias: false,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true,
+    }) as WebGL2RenderingContext | null;
+    if (ctx) {
+      // Mirror main-forward.ts: enable the WebGL2 float extensions so
+      // RGBA16F framebuffers are renderable and float textures accept
+      // LINEAR filtering. Without these, ping-pong sims (Pavel-style
+      // fluid, GPU-side image processing) hit
+      // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT silently.
+      ctx.getExtension("EXT_color_buffer_float");
+      ctx.getExtension("OES_texture_float_linear");
+      ctx.getExtension("EXT_float_blend");
+      // Seed the shadow viewport with the actual WebGL2 default (the
+      // canvas drawing-buffer size). Otherwise `defaultShadow()`'s
+      // [0,0,0,0] reaches the context through `GlMuxer.switchTo` the
+      // first time sessions share it and clobbers the implicit default
+      // viewport, so a program that never calls glViewport (SDL2's
+      // KMSDRM/OpenGLES backend) draws into a 0×0 region.
+      b.shadow.viewport = [0, 0, b.canvas.width, b.canvas.height];
+    }
+    b.gl = ctx;
+    // Claim the canvas for GL (disabling the vblank 2D-blit pump for this
+    // CRTC) only once a WebGL2 context truly exists. Marking it earlier
+    // would strand the canvas with neither GL nor the 2D blit if
+    // getContext("webgl2") returned null (e.g. a prior 2D acquisition).
+    if (ctx && attachedCrtc != null) {
+      // Record the claim on the binding. releaseClaimedKmsCanvas reads it to
+      // hand the CRTC back to the pump when this GL session ends; without it
+      // that release is a no-op and the canvas freezes on the last GL frame.
+      b.claimedKmsCrtc = attachedCrtc;
+      this.callbacks.markKmsCanvasGlOwned?.(attachedCrtc);
+      // Render offscreen and flip on present, so the browser never
+      // composites a cleared or half-drawn frame (see present-target.ts).
+      // Failure is non-fatal: the session falls back to drawing straight
+      // at the canvas.
+      ensurePresentTarget(b);
+    }
+  }
+
+  /**
    * Release every device-side alias owned by one process generation.
    *
    * Normal guest close/unmap paths remain authoritative for device semantics;
@@ -920,6 +1050,13 @@ export class WasmPosixKernel {
    */
   releaseProcessViews(pid: number): void {
     this.gl_submit_queue.removePid(pid);
+    // Hand a GL-claimed CRTC back to the vblank pump BEFORE unbind, which
+    // deletes the binding that holds `claimedKmsCrtc`. Afterwards the claim
+    // is unreachable, `markKmsCanvasGlReleased` never fires, and both pump
+    // presenters skip the CRTC — the canvas freezes on the dead process's
+    // last GL frame. This backstop runs exactly when the guest-side release
+    // hooks did not: exec, traps, forced termination.
+    this.releaseClaimedKmsCanvas(pid);
     this.gl.unbind(pid);
     this.framebuffers.unbind(pid);
     this.bos.releaseProcess(pid);
@@ -1213,11 +1350,44 @@ export class WasmPosixKernel {
     }
   }
 
+  /** Hand a GL-claimed KMS canvas back to the vblank pump. Fired from
+   *  context destruction and renderD128 session teardown so a GPU
+   *  compositor that degrades to its CPU path (or exits) doesn't leave
+   *  the canvas frozen on its last GL frame. */
+  private releaseClaimedKmsCanvas(pid: number): void {
+    const b = this.gl.get(pid);
+    if (!b || b.claimedKmsCrtc == null) return;
+    const crtc = b.claimedKmsCrtc;
+    b.claimedKmsCrtc = null;
+    b.canvas = null;
+    this.callbacks.markKmsCanvasGlReleased?.(crtc);
+  }
+
+  /** The shared multiplexer context that backs GPU-tier bos: the
+   *  DRM-master compositor's scanout WebGL2 context. WebGL textures are
+   *  not shareable across contexts, so every GPU-bo texture (and the FBO
+   *  its producer renders into) must live here for the compositor to
+   *  sample it zero-copy. Null when no pid holds master, or the master
+   *  has no live context yet (headless Node, or before the compositor's
+   *  `eglCreateContext`) — the GPU-bo path then degrades to CPU tier. */
+  #sharedGlContext(): WebGL2RenderingContext | null {
+    const masterPid = this.kms.getMasterPid();
+    if (masterPid == null) return null;
+    return this.gl.get(masterPid)?.gl ?? null;
+  }
+
   #createKernelMemory(pointerWidth: 4 | 8): WebAssembly.Memory {
+    // The ceiling is a host budget, not a kernel requirement: the kernel Wasm
+    // starts at 24 pages and grows on demand. Engines that charge a declared
+    // `maximum` against a reservation pool pass a smaller one.
+    const maximumPages = this.config.kernelMaxPages ?? DEFAULT_KERNEL_MAX_PAGES;
+    if (!Number.isSafeInteger(maximumPages) || maximumPages < 24) {
+      throw new Error(`invalid kernel maximum pages: ${maximumPages}`);
+    }
     if (pointerWidth === 8) {
       return new IntrinsicWasmMemory({
         initial: 24n,
-        maximum: 16384n,
+        maximum: BigInt(maximumPages),
         shared: true,
         address: "i64",
       } as unknown as WebAssembly.MemoryDescriptor);
@@ -1227,7 +1397,7 @@ export class WasmPosixKernel {
       // the kernel Wasm's linker-derived minimum and leaves headroom for
       // future static data without re-tuning host construction each time.
       initial: 24,
-      maximum: 16384,
+      maximum: maximumPages,
       shared: true,
     });
   }
@@ -2016,7 +2186,37 @@ export class WasmPosixKernel {
             return -12; // ENOMEM
           }
         },
+        // WPK_CREATE_GPU_BO: allocate a GPU-tier bo backed by a
+        // WebGLTexture (+FBO) on the shared multiplexer context — no SAB,
+        // unmappable, sampled zero-copy by the compositor and rendered
+        // into by its producer (PR10).
+        //
+        // The shared context is the DRM-master compositor's scanout
+        // context (`sharedGlContext`). When it is absent — headless Node
+        // (no WebGL at all), or the browser before the compositor's
+        // `eglCreateContext` — we return -ENOSYS so the kernel rolls back
+        // its registry allocation and libgbm falls back to a CPU-tier
+        // dumb bo. That fallback is the correct behavior, not a defect.
+        // A createGpuBo failure (context couldn't allocate the objects)
+        // returns -ENOMEM, likewise rolled back by the kernel.
+        host_gbm_gpu_bo_create: (
+          _pid: number,
+          bo_id: number,
+          width: number,
+          height: number,
+          _format: number,
+          _usage: number,
+        ): number => {
+          const ctx = this.#sharedGlContext();
+          if (!ctx) return -38; // -ENOSYS → guest falls back to CPU tier
+          const texId = this.gl.createGpuBo(bo_id, ctx, width, height);
+          if (texId == null) return -12; // -ENOMEM
+          return 0;
+        },
         host_gbm_bo_destroy: (pid: number, bo_id: number): void => {
+          // Its foreign textures and any GPU-tier texture+FBO are dropped by
+          // the bos "destroy" listener (offBoTextureCleanup), shared with the
+          // teardown path.
           this.bos.destroy(pid, bo_id);
         },
         host_gbm_bo_bind: (
@@ -2074,6 +2274,7 @@ export class WasmPosixKernel {
           });
         },
         host_gl_unbind: (pid: number): void => {
+          this.releaseClaimedKmsCanvas(pid);
           this.gl.unbind(pid);
         },
         host_gl_create_context: (
@@ -2087,55 +2288,41 @@ export class WasmPosixKernel {
             b.forward.onCreateContext();
             return;
           }
-          if (!b.canvas) {
-            // Auto-attach the KMS scanout canvas if this pid holds DRM
-            // master on a CRTC the embedder has registered with
-            // `kmsAttachCanvas`. Without this, a libdrm/libgbm/EGL
-            // program (e.g. modeset.c) that drove drmModeSetCrtc and
-            // is about to call eglCreateContext would silently no-op
-            // every shader compile/link/draw because `b.canvas` stays
-            // null and `b.gl` is never built.
-            const crtc = this.kms.masterCrtcForPid(pid);
-            if (crtc != null) {
-              const canvas = this.callbacks.getKmsCanvas?.(crtc);
-              if (canvas) {
-                // Resize the OffscreenCanvas's drawing buffer to match
-                // the kernel-side FB before WebGL2 binds, so glViewport
-                // and gl_FragCoord operate on the full surface rather
-                // than the default 300×150 corner. Modeset programs set
-                // their viewport from CANVAS_W/H (the FB they registered
-                // via drmModeAddFB2) and would otherwise render into a
-                // tiny clipped region of a default-sized canvas.
-                const fb = this.kms.currentFb(crtc);
-                if (fb && (canvas.width !== fb.width || canvas.height !== fb.height)) {
-                  canvas.width = fb.width;
-                  canvas.height = fb.height;
-                }
-                this.gl.attachCanvas(pid, canvas);
-                b.canvas = canvas;
-                this.callbacks.markKmsCanvasGlOwned?.(crtc);
-              }
+          // GPU-tier producer routing (PR10 §7.1): a non-master GL client
+          // has no display canvas to build a context on. Route it onto
+          // the shared multiplexer context — the DRM-master compositor's
+          // scanout context — so its GPU-bo FBO renders live on the same
+          // context the compositor samples zero-copy. The existing
+          // `GlMuxer` (keyed by the WebGL2 context) multiplexes the two
+          // sessions by replaying each binding's shadow on `switchTo`.
+          //
+          // Ordering: the compositor (DRM master) must have created its
+          // context first, or `sharedGlContext()` is null and we fall
+          // through — leaving `b.gl = null`, i.e. inert (submit/query
+          // no-op), exactly as before. That also keeps this path inert on
+          // headless Node (no WebGL at all). The client's render target
+          // is redirected to its bo's FBO at `gl_create_surface` time; the
+          // viewport is seeded from the bo dims there.
+          if (!b.canvas && !this.kms.isMasterPid(pid)) {
+            const shared = this.#sharedGlContext();
+            if (shared) {
+              b.gl = shared;
+              // The window surface may have been created before this
+              // context (SDL2 order); apply any pending GPU-bo render
+              // target now that `b.gl` exists.
+              this.gl.applyRenderTarget(b);
+              return;
             }
-            if (!b.canvas) return;
           }
-          const ctx = b.canvas.getContext("webgl2", {
-            antialias: false,
-            premultipliedAlpha: false,
-            preserveDrawingBuffer: true,
-          }) as WebGL2RenderingContext | null;
-          if (ctx) {
-            // Mirror main-forward.ts: enable the WebGL2 float extensions
-            // so RGBA16F framebuffers are renderable and float textures
-            // accept LINEAR filtering. Without these, ping-pong sims
-            // (Pavel-style fluid, GPU-side image processing) hit
-            // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT silently.
-            ctx.getExtension("EXT_color_buffer_float");
-            ctx.getExtension("OES_texture_float_linear");
-            ctx.getExtension("EXT_float_blend");
-          }
-          b.gl = ctx;
+          // Auto-attach the KMS scanout canvas and build the WebGL2
+          // context. This handles both the modeset ordering (SETCRTC
+          // before eglCreateContext) and the SDL2 KMSDRM ordering
+          // (eglCreateContext, then shader compiles, then the first
+          // SETCRTC on the first SwapWindow) — see tryAttachKmsGlCanvas.
+          this.tryAttachKmsGlCanvas(pid);
         },
         host_gl_destroy_context: (pid: number, _ctxId: number): void => {
+          this.releaseClaimedKmsCanvas(pid);
           const b = this.gl.get(pid);
           if (!b) return;
           b.gl = null;
@@ -2145,14 +2332,74 @@ export class WasmPosixKernel {
         },
         host_gl_create_surface: (
           pid: number, surfaceId: number,
-          _attrsPtr: KernelPointer, _attrsLen: KernelPointer,
+          attrsPtr: KernelPointer, attrsLen: KernelPointer,
         ): void => {
           const b = this.gl.get(pid);
-          if (b) b.surfaceId = surfaceId;
+          if (!b) return;
+          b.surfaceId = surfaceId;
+          // GlSurfaceAttrs: u32 kind, width, height, config_id,
+          //                 reserved[0]=target bo_id, reserved[1..4].
+          // Non-zero width/height is an explicit drawing-buffer size
+          // request (libEGL forwards EGL_WIDTH/EGL_HEIGHT window-surface
+          // attribs). A KMS compositor creates its surface before its
+          // first ADDFB, when the create-context fb-resize has nothing
+          // to size against — and the canvas may still carry the pump
+          // presenter's display-sized drawing buffer.
+          const attrsBytes = this.#checkedKernelIndex(
+            attrsLen,
+            "host_gl_create_surface attrs length",
+          );
+          if (attrsBytes >= 20) {
+            const attrs = this.#readKernelBytes(attrsPtr, 20);
+            const dv = new DataView(attrs.buffer, attrs.byteOffset, 20);
+            const w = dv.getUint32(4, true);
+            const h = dv.getUint32(8, true);
+            if (b.canvas && w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
+              b.canvas.width = w;
+              b.canvas.height = h;
+            }
+            // GPU-tier producer target: reserved[0] is the global bo_id
+            // (the kernel already translated the per-fd handle) whose FBO
+            // this window surface renders into. When it names a GPU bo on
+            // this session's shared context, redirect the client's default
+            // framebuffer to that FBO and size its viewport to the bo. A 0
+            // id (the common canvas/scanout case) leaves the target unset.
+            // Capture the target and apply the redirect. SDL2's
+            // Wayland+GLES backend creates the window surface (here,
+            // during SDL_CreateWindow) BEFORE the GL context (during
+            // SDL_GL_CreateContext), so `b.gl` may still be null at this
+            // point — `applyRenderTarget` is a no-op then and the pending
+            // id is re-checked when the context is created.
+            const targetBoId = dv.getUint32(16, true);
+            if (targetBoId !== 0) {
+              b.pendingRenderTargetBoId = targetBoId;
+              this.gl.applyRenderTarget(b);
+            }
+          }
         },
         host_gl_destroy_surface: (pid: number, _surfaceId: number): void => {
           const b = this.gl.get(pid);
-          if (b) b.surfaceId = null;
+          if (!b) return;
+          b.surfaceId = null;
+          // Drop the producer render-target reference — the FBO itself is
+          // owned by the GPU bo (freed via destroyGpuBo on bo destroy),
+          // so never delete it here. Reset shadow.fbo so a subsequent
+          // surface on this binding starts at the default framebuffer.
+          // Also clear the pending target so a re-created context does not
+          // re-apply a stale redirect.
+          b.pendingRenderTargetBoId = 0;
+          if (b.renderTargetFbo) {
+            b.renderTargetFbo = null;
+            b.shadow.fbo = null;
+          }
+          // The canvas-backed present target IS owned by this binding, so
+          // dropping the redirect above has to free it as well; a later
+          // context rebuilds one.
+          if (b.presentTarget) {
+            b.gl?.deleteFramebuffer(b.presentTarget.fbo);
+            b.gl?.deleteTexture(b.presentTarget.tex);
+            b.presentTarget = null;
+          }
         },
         host_gl_make_current: (
           _pid: number, _ctxId: number, _surfaceId: number,
@@ -2234,9 +2481,47 @@ export class WasmPosixKernel {
             (bb, off, len) => decodeAndDispatch(bb, off, len),
           );
         },
-        host_gl_present: (_pid: number): void => {
-          // RAF-driven canvas presentation handles itself in v1. Hook
-          // is here for explicit-swap / pbuffer paths in v2.
+        host_gl_present: (pid: number): number => {
+          // A lost WebGL context silently no-ops every GL call, so a
+          // present into it would report success while the canvas stays
+          // frozen. EIO here fails the guest's `eglSwapBuffers`, which is
+          // its cue to degrade to CPU compositing and hand the canvas
+          // back to the vblank pump (`eglTerminate` →
+          // `markKmsCanvasGlReleased`).
+          const b = this.gl.get(pid);
+          if (b?.gl?.isContextLost()) return -5; // EIO
+          // A GPU-tier producer renders into an offscreen bo FBO on the
+          // shared context, so `eglSwapBuffers` must fence the queued GL
+          // work: `flush()` guarantees the producer's draws are submitted
+          // before the compositor samples the bo (their command order
+          // through the one shared context then gives render-before-sample
+          // for free — no explicit sync object in v1). Canvas-backed
+          // sessions present via RAF and need no fence here.
+          if (b?.renderTargetFbo) b.gl?.flush();
+          // Canvas-backed session: the frame is complete, so flip the
+          // offscreen target onto the default framebuffer. Re-ensure first
+          // so a mode change that resized the canvas rebuilds the target
+          // instead of blitting a stale size.
+          //
+          // Ensure rather than test for one. `host_gl_destroy_surface`
+          // frees the present target, and only the first canvas claim in
+          // `host_gl_create_context` ever built one, so a guest that
+          // recreates its EGL window surface on the context it already has
+          // never got another. ScummVM does exactly that when it leaves the
+          // launcher for a game. Without a target the bind-0 redirect is
+          // gone too, so every clear and half-drawn frame went straight to
+          // the canvas for the browser to composite, and the picture
+          // blinked for the rest of the session. `ensurePresentTarget`
+          // still declines for a GPU-tier producer and for a canvas-less
+          // session, so this widens nothing else.
+          if (b && b.claimedKmsCrtc != null) {
+            // A target this call had to create is empty, and the frame it
+            // would present has already gone to the canvas directly. Blit
+            // only when one was established before the frame.
+            const established = b.presentTarget !== null;
+            if (ensurePresentTarget(b) && established) blitPresentTarget(b);
+          }
+          return 0;
         },
         host_gl_query: (
           pid: number, op: number,
@@ -2290,6 +2575,35 @@ export class WasmPosixKernel {
             );
           }
           return written;
+        },
+        // DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: upload a CPU-tier bo's
+        // pixels (canonical storage: the DRI registry SAB) into a
+        // WebGLTexture in `pid`'s context. Returns the stable guest-
+        // visible texture id, or negative errno — the kernel surfaces
+        // any failure as EIO and callers degrade to their CPU path.
+        host_gl_bind_foreign_texture: (
+          pid: number, ctxId: number, boId: number, glTarget: number,
+        ): number => {
+          const b = this.gl.get(pid);
+          if (!b || !b.gl || b.contextId !== ctxId) return -5;  // EIO
+          if (glTarget !== 0x0de1) return -22;                  // EINVAL: TEXTURE_2D only
+          // GPU-tier bo: the texture already lives on the shared context,
+          // so binding it degenerates to "return the texture id" — zero
+          // copies, no upload. The caller must be on that same context
+          // (WebGL textures aren't shareable); otherwise EIO.
+          const gpu = this.gl.gpuBo(boId);
+          if (gpu) {
+            if (b.gl !== gpu.gl) return -5;                     // EIO
+            b.textures.set(gpu.texId, gpu.tex);
+            return gpu.texId;
+          }
+          const dims = this.bos.dims(boId);
+          const bytes = this.bos.pixelView(boId);
+          if (!dims || !bytes) return -2;                       // ENOENT
+          // The SAB is bind-boundary-synced; pull the producer's live
+          // mapping in first so the texture sees its latest commit.
+          this.bos.syncCreatorToSab(boId);
+          return bindForeignTexture(b, boId, bytes, dims);
         },
         host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },
         host_kms_drop_master: (_pid: number): void => { this.kms.dropMaster(); },
@@ -2373,8 +2687,26 @@ export class WasmPosixKernel {
             STRUCT_SIZE_WPK_DRM_MODE_MODEINFO,
             "host_kms_mode_info destination",
           );
-          const canvas = this.callbacks.getKmsCanvas?.(connector_id);
-          const bytes = kmsModeInfoBytes(canvas?.width, canvas?.height);
+          const bytes = buildVirtualConnectorMode(
+            connector_id,
+            this.callbacks.getKmsDisplaySize?.(),
+          );
+          this.#writeKernelBytes(destination, bytes);
+        },
+        host_kms_connector_mm: (
+          _connector_id: number,
+          out_ptr: KernelPointer,
+        ): void => {
+          const destination = this.#rustLentKernelDestination(
+            out_ptr,
+            8,
+            "host_kms_connector_mm destination",
+          );
+          const display = this.callbacks.getKmsDisplaySize?.();
+          const bytes = new Uint8Array(8);
+          const view = new DataView(bytes.buffer);
+          view.setUint32(0, display?.mmWidth ?? 0, true);
+          view.setUint32(4, display?.mmHeight ?? 0, true);
           this.#writeKernelBytes(destination, bytes);
         },
         host_kms_addfb: (
@@ -2390,8 +2722,27 @@ export class WasmPosixKernel {
           return 0;
         },
         host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
-        host_kms_set_fb: (_pid: number, crtc_id: number, fb_id: number): void => {
+        host_kms_set_fb: (pid: number, crtc_id: number, fb_id: number): void => {
           this.kms.setFb(crtc_id, fb_id);
+          this.callbacks.onKmsScanoutActive?.();
+          // SDL2's KMSDRM backend creates its GL context before the first
+          // drmModeSetCrtc (deferred to the first SwapWindow). The
+          // create-context attach normally already ran via the master +
+          // registered-canvas fallback, but complete it here too in case
+          // the canvas was registered late, and — whether or not the
+          // context was already built — size the drawing buffer to the
+          // freshly-bound FB so glViewport(fb.w, fb.h) isn't clipped.
+          this.tryAttachKmsGlCanvas(pid);
+          const b = this.gl.get(pid);
+          const fb = this.kms.currentFb(crtc_id);
+          if (fb) this.callbacks.onKmsScanoutFb?.(crtc_id, fb.width, fb.height);
+          if (
+            b?.canvas && fb &&
+            (b.canvas.width !== fb.width || b.canvas.height !== fb.height)
+          ) {
+            b.canvas.width = fb.width;
+            b.canvas.height = fb.height;
+          }
         },
       },
     };
@@ -2677,37 +3028,10 @@ export class WasmPosixKernel {
         return publish(readEntry.pipe.read(staged));
       }
 
-      // stdin
-      if (h === 0) {
-        if (this.callbacks.onStdin) {
-          const data = this.callbacks.onStdin(destinationCapacity);
-          if (data === null) return 0; // EOF
-          let exactData: Uint8Array;
-          try {
-            exactData = intrinsicUint8ArrayView(data, "stdin callback output");
-          } catch {
-            return -5; // EIO: the callback violated its byte-source contract.
-          }
-          const exactLength = typedArrayByteLength(exactData);
-          if (exactLength === 0) {
-            return -11; // EAGAIN — no data yet, retry later
-          }
-          const n = Math.min(exactLength, destinationCapacity);
-          intrinsicApply(
-            intrinsicUint8ArraySet,
-            staged,
-            [
-            new IntrinsicUint8Array(
-              typedArrayBuffer(exactData),
-              typedArrayByteOffset(exactData),
-              n,
-            ),
-            ],
-          );
-          return publish(n);
-        }
-        return 0; // EOF when no stdin callback
-      }
+      // Host handle 0 is the stdin a process has when the host supplied
+      // none. Host-supplied stdin is a kernel pipe installed at spawn
+      // (kernel_install_host_stdin_pipe), so reads of it never reach here.
+      if (h === 0) return 0; // EOF
     }
 
     try {
@@ -3995,7 +4319,7 @@ export class WasmPosixKernel {
       bufLen: number,
       processPointerWidth: number,
     ) => number;
-    const contract = IOCTL_REQUESTS[request >>> 0];
+    const contract = resolveIoctlContract(request);
     const wasm32Size = contract?.wasm32Size;
     if (contract && wasm32Size === null) {
       throw new Error(

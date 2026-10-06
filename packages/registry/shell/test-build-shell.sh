@@ -33,8 +33,8 @@ expect_failure() {
     }
 }
 
-grep -Eq '^revision[[:space:]]*=[[:space:]]*29$' "$BUILD_TOML" ||
-    fail "canonical source shell revision must be 29"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*32$' "$BUILD_TOML" ||
+    fail "canonical source shell revision must be 32"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical source shell must await publication"
 grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
@@ -79,8 +79,8 @@ grep -Eq '\bcurl\b|\bwget\b' "$SHELL_BUILDER" &&
 mapfile -t declared_dependencies < <(
     node "$CONTRACT_READER" --print-resolver-owned "$CONTRACT" "$PACKAGE_TOML"
 )
-[ "${#declared_dependencies[@]}" -eq 16 ] ||
-    fail "canonical contract must expose 16 lazy resolver dependencies"
+[ "${#declared_dependencies[@]}" -eq 25 ] ||
+    fail "canonical contract must expose 25 lazy resolver dependencies"
 [ "$(grep -Fc '[[outputs]]' "$PACKAGE_TOML")" -eq 1 ] ||
     fail "canonical shell must publish exactly one output"
 grep -Fq 'wasm = "shell.vfs.zst"' "$PACKAGE_TOML" ||
@@ -154,7 +154,7 @@ make_fixture() {
     local root="$TMP_ROOT/$name"
     mkdir -p "$root/out" "$root/work" "$root/rootfs" "$root/bash" \
         "$root/fbdoom" "$root/modeset" "$root/dependencies"
-    printf 'rootfs\n' >"$root/rootfs/rootfs.vfs"
+    printf 'rootfs\n' >"$root/rootfs/rootfs.vfs.zst"
     printf 'bash\n' >"$root/bash/bash.wasm"
     printf 'fbdoom\n' >"$root/fbdoom/fbdoom.wasm"
     printf 'modeset\n' >"$root/modeset/modeset.wasm"

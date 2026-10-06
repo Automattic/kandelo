@@ -1,4 +1,9 @@
-import type { DemoGuideConfig, DemoIngestConfig } from "./demo-config";
+import type {
+  DemoDockActionConfig,
+  DemoGuideConfig,
+  DemoIngestConfig,
+} from "./demo-config";
+import type { ClipboardPasteFailure } from "./clipboard-paste";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
@@ -106,6 +111,47 @@ export interface LazyDownloadEvent {
   t: number;
 }
 
+/** Stage of a machine switch that can report progress. */
+export type MachinePhase = "destroying" | "image";
+
+/**
+ * Progress of a machine switch: tearing the outgoing machine down, then
+ * loading the incoming machine's VFS image.
+ *
+ * Deliberately separate from {@link LazyDownloadEvent}: both halves run while
+ * no kernel is attached, and `attachKernel` clears the lazy-download ledger.
+ *
+ * Every field is a scalar. This record must never retain image bytes or
+ * process memory — the main thread is not an owner of machine memory.
+ *
+ * `total` is absent when no total is known, which callers render as
+ * indeterminate rather than inventing a denominator. `totalProvisional` marks
+ * a total that is a lower bound and may still grow; see the teardown phases in
+ * `host/src/destroy-progress-reporter.ts`.
+ */
+export interface MachineProgress {
+  phase: MachinePhase;
+  label: string;
+  completed: number;
+  total?: number;
+  totalProvisional?: boolean;
+  unit: "processes" | "bytes";
+  status: "loading" | "complete" | "error";
+  error?: string;
+}
+
+/**
+ * Teardown progress from the kernel worker. Mirrors
+ * host/src/browser-kernel-protocol.ts: DestroyProgressEvent — duplicated as a
+ * structural type for the same reason as LazyDownloadEvent above.
+ */
+export interface DestroyProgressEvent {
+  phase: "draining" | "terminating";
+  completed: number;
+  total: number;
+  totalProvisional: boolean;
+}
+
 /**
  * Authoritative latest state for one lazy VFS transport asset.
  *
@@ -161,20 +207,50 @@ export interface KernelLike {
    */
   injectMouseEvent?(dx: number, dy: number, buttons: number): void;
   /**
+   * Inject one evdev record into `/dev/input/event{0,1}`. `device` is
+   * 0 for the keyboard, 1 for the pointer; the remaining fields mirror
+   * Linux `struct input_event` (`ev_type`, `code`, `value`). Used to
+   * feed absolute-position pointer events to programs that read evdev
+   * (e.g. SDL2's KMSDRM backend on `/dev/input/event1`) rather than
+   * the PS/2 `/dev/input/mice` node `injectMouseEvent` targets.
+   */
+  injectInputEvent?(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void;
+  /**
    * Hand an `OffscreenCanvas` to the kernel worker as the scanout
    * target for KMS CRTC `crtcId`. Optional `stats` SAB receives
    * blit + page-flip telemetry. `opts.mode` declares how the canvas
    * is painted (see `CentralizedKernelWorker.attachKmsCanvas`):
    * `"auto"` (default) defers context acquisition to whichever path
-   * arrives first; `"2d"` opts into the legacy CPU-blit pump; `"webgl2"`
-   * tells the pump the canvas is GL-owned so it stays hands-off and
-   * lets a libdrm/libgbm/EGL program (e.g. modeset.c) claim it.
+   * arrives first; `"2d"` opts into the legacy CPU-blit pump;
+   * `"webgl2-scanout"` has the pump present the scanout through a
+   * WebGL2 texture (GPU swizzle + scaling); `"webgl2"` tells the pump
+   * the canvas is GL-owned so it stays hands-off and lets a
+   * libdrm/libgbm/EGL program (e.g. modeset.c) claim it.
    */
   kmsAttachCanvas?(
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
+  ): void;
+  /**
+   * Report the CRTC canvas's display size in device pixels. The
+   * `webgl2-scanout` presenter resizes its drawing buffer to match, so
+   * the scanout is GPU-scaled exactly once — at display resolution —
+   * instead of the page compositor rescaling an fb-sized bitmap.
+   * `physicalMm` is the display's physical size, which the kernel reports
+   * on the DRM connector so a compositor can derive its output scale.
+   */
+  kmsSetDisplaySize?(
+    crtcId: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
   ): void;
   /**
    * Register a stats SAB for `crtcId` without binding a scanout
@@ -199,6 +275,13 @@ export interface KernelLike {
   getAudioState?(): MachineAudioState;
   onAudioStateChange?(cb: (state: MachineAudioState) => void): () => void;
   /**
+   * Has a guest in this machine opened the audio device? Orthogonal to
+   * `getAudioState`, which describes the host sink rather than demand for it.
+   * Latched for the machine's lifetime.
+   */
+  getAudioActivity?(): boolean;
+  onAudioActivityChange?(cb: (active: boolean) => void): () => void;
+  /**
    * Subscribe to the kernel-worker's live syscall trace. Each event
    * carries the raw syscall number + args + firing pid. The underlying
    * ring buffer is enabled lazily; nothing runs on the syscall hot path
@@ -210,6 +293,14 @@ export interface KernelLike {
    * when it materializes content on first exec/open.
    */
   subscribeLazyDownloads?(cb: (event: LazyDownloadEvent) => void): () => void;
+  /**
+   * Subscribe to teardown progress. Emitted by the kernel worker while
+   * `destroy()` reaps processes. Optional: a kernel without it reports
+   * nothing, and the destroy phase stays indeterminate.
+   */
+  subscribeDestroyProgress?(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void;
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
@@ -257,6 +348,14 @@ export interface KernelLike {
 }
 
 // ── Status & lifecycle ─────────────────────────────────────────────────────
+
+/**
+ * The CRTC a KMS display pane scans out. The kernel exposes one CRTC today
+ * (SETCRTC and PAGE_FLIP reject any other id), so the pane, the host API
+ * defaults, and the boot flow's display-size wait all name it through this
+ * constant rather than each hard-coding 1.
+ */
+export const KMS_PRIMARY_CRTC = 1;
 
 export type MachineStatus =
   | "idle"      // no descriptor applied yet
@@ -310,6 +409,57 @@ export interface BootCommand {
   env: Record<string, string>;
   uid?: number;
   gid?: number;
+  /**
+   * Structured, application-defined boot parameters. Materialized to
+   * `/run/kandelo/boot-input.json` alongside any boot inputs; never
+   * inferred from unrelated browser query parameters.
+   */
+  parameters?: BootParameters;
+  /**
+   * Content-addressed files to resolve and stage before the initial
+   * process is started.
+   */
+  inputs?: BootInput[];
+}
+
+export type BootJsonPrimitive = null | boolean | number | string;
+export type BootJsonValue =
+  | BootJsonPrimitive
+  | BootJsonValue[]
+  | { [key: string]: BootJsonValue };
+
+export type BootParameters = Record<string, BootJsonValue>;
+
+export type BootInputSource =
+  | {
+      kind: "resolver";
+      /** Host-provided resolver name, for example `internet-archive`. */
+      resolver: string;
+      /** Resolver-specific data which remains JSON-safe and size-bounded. */
+      locator: BootJsonValue;
+    }
+  | {
+      kind: "inline";
+      /** Canonical unpadded base64url of the bytes carried by the descriptor. */
+      data: string;
+      /**
+       * Optional transport compression. Verification and `byteLength` always
+       * describe the final decompressed guest file, never this encoded payload.
+       */
+      compression?: "gzip";
+    };
+
+export interface BootInput {
+  /** Stable logical name used to derive the guest directory. */
+  id: string;
+  /** Safe basename written below `/run/kandelo/inputs/<id>/`. */
+  filename: string;
+  mediaType?: string;
+  /** Exact final byte length after any resolver-side extraction. */
+  byteLength: number;
+  /** Lowercase SHA-256 of the exact final bytes. */
+  sha256: string;
+  source: BootInputSource;
 }
 
 export interface Capabilities {
@@ -425,6 +575,9 @@ export type MachineAudioState =
  *   4: last blit µs
  *   5: kernel-side PAGE_FLIP commit count
  *   6: kernel-side last frame µs (clock at PAGE_FLIP completion)
+ *   7: renderer that owns the canvas (1 = 2d blit, 2 = webgl2 scanout,
+ *      3 = a GL program claimed the canvas and paints it directly;
+ *      0 = nothing painting)
  */
 export interface KmsDisplayHandle {
   /** CRTC the canvas is bound to (matches what the wasm process passes
@@ -439,11 +592,30 @@ export interface KmsDisplayHandle {
    *  positive Y up). `buttons` uses PS/2 bits: bit0=left, bit1=right,
    *  bit2=middle. No-op when the wrapped kernel lacks mouse injection. */
   sendMouseEvent(dx: number, dy: number, buttons: number): void;
+  /** Inject an absolute-position pointer update into evdev
+   *  `/dev/input/event1`. `x`/`y` are framebuffer pixels (origin
+   *  top-left, matching the canvas drawing buffer); `buttons` uses the
+   *  same bitmask as `sendMouseEvent` (bit0=left, bit1=right,
+   *  bit2=middle). This is the path SDL2's KMSDRM/evdev backend reads —
+   *  `sendMouseEvent` only feeds the PS/2 `/dev/input/mice` node, which
+   *  evdev consumers like SDL2 ignore. The handle tracks button state
+   *  internally so callers can pass the full bitmask every call and
+   *  only press/release transitions are emitted. No-op when the wrapped
+   *  kernel lacks evdev injection. */
+  sendPointerAbs(x: number, y: number, buttons: number): void;
   /** Detach the canvas. Subsequent vblank ticks no-op for this CRTC. */
   close(): void;
 }
 
-export type WebPreviewStatus = "starting" | "running" | "error";
+export type WebPreviewStatus =
+  | "starting"
+  | "running"
+  | "error"
+  // The machine's owning tab went away (terminal) or its service worker is
+  // restarting (transient). Both keep the web-preview pane mounted so the demo
+  // chrome can annotate the last-known preview rather than silently vanishing.
+  | "offline"
+  | "reconnecting";
 
 export interface WebPreviewState {
   label: string;
@@ -451,6 +623,14 @@ export interface WebPreviewState {
   status: WebPreviewStatus;
   message?: string;
   pendingRequests?: number;
+  /**
+   * The in-machine TCP port that `url` forwards to through the service-worker
+   * HTTP bridge. Consumers that have to decide whether a loopback URL the
+   * machine printed is reachable from the page need this: the bridge forwards
+   * exactly this one port, so `http://localhost:<port>/` is reachable only
+   * when `<port>` matches.
+   */
+  port?: number;
 }
 
 // ── Presentation intent ──────────────────────────────────────────────────
@@ -475,10 +655,20 @@ export interface DemoPresentation {
   /** Where detailed system views live when they are not primary. */
   internalsAccess: "primary" | "drawer" | "side";
   /**
-   * Optional command to inject into the persistent shell after boot. Used by
-   * framebuffer demos so exiting the app returns to the shell command.
+   * Whether the demo wants an on-screen touch control overlay on coarse-pointer
+   * devices. Used by keyboard-driven framebuffer demos that are otherwise
+   * unplayable without a physical keyboard.
    */
-  autoCommand?: string;
+  touchControls?: boolean;
+  /**
+   * Whether the browser's own pointer stays visible over the display surface.
+   * A KMS scanout shows exactly what the guest renders, so a guest that draws
+   * its own cursor (modeset, ScummVM, a Wayland compositor) must hide the
+   * browser pointer or two arrows stack and drift apart. A guest that draws no
+   * cursor at all needs it, otherwise the user cannot see where they point.
+   * Defaults to hidden.
+   */
+  hostPointer?: boolean;
 }
 
 // ── Process lifecycle events ──────────────────────────────────────────────
@@ -623,6 +813,12 @@ export interface KernelHost {
   subscribeDmesg(cb: (line: DmesgLine) => void): () => void;
   dmesgHistory(): DmesgLine[];
 
+  // Machine switch progress. Null outside an in-flight switch.
+  getMachineProgress(): MachineProgress | null;
+  subscribeMachineProgress(
+    cb: (progress: MachineProgress | null) => void,
+  ): () => void;
+
   // Lazy VFS materialization progress
   subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void;
   /** Bounded chronological log for low-level diagnostics. */
@@ -643,6 +839,14 @@ export interface KernelHost {
   /** Resolve after a command has been written, without waiting for a prompt. */
   dispatchShellCommand(command: string): Promise<void>;
   runShellCommand(command: string): Promise<void>;
+  /**
+   * Type the terminal's interrupt character (Ctrl+C) into the machine's
+   * shell PTY and resolve once the shell prints its next prompt, i.e. once
+   * the foreground job has actually exited. Rejects if no prompt appears
+   * within `timeoutMs`: the job ignored SIGINT, and the caller must not
+   * pretend it stopped.
+   */
+  interruptShellForeground(opts?: { timeoutMs?: number }): Promise<void>;
 
   // VFS / procfs
   readFile(path: string): Promise<Uint8Array>;
@@ -678,6 +882,9 @@ export interface KernelHost {
   suspendAudio(): Promise<void>;
   getAudioState(): MachineAudioState;
   subscribeAudioState(cb: (state: MachineAudioState) => void): () => void;
+  /** Latched: has any guest in this machine opened the audio device? */
+  getAudioActivity(): boolean;
+  subscribeAudioActivity(cb: (active: boolean) => void): () => void;
 
   // framebuffer — mirrors /dev/fb0 into a 2D canvas and returns a handle
   // that the embedder uses to forward keyboard and mouse input for the bound
@@ -688,16 +895,26 @@ export interface KernelHost {
   // KMS display — registers a canvas as the scanout target for a
   // DRM CRTC. `opts.mode` (default "webgl2") selects how the canvas
   // is painted: "webgl2" hands ownership to the libdrm/libgbm/EGL
-  // path (modeset.c etc.); "2d" keeps the legacy CPU-blit pump that
-  // copies the kernel's scanout BO into the canvas at 60 Hz; "auto"
-  // defers the choice to whichever path arrives first. Returns null
-  // when the wrapped kernel does not yet expose `kmsAttachCanvas`
-  // (older ABI, Node host without an OffscreenCanvas polyfill, etc.).
+  // path (modeset.c etc.); "webgl2-scanout" has the vblank pump
+  // present the scanout BO through a WebGL2 texture (GPU swizzle +
+  // scaling — the path for CPU compositors like wlcompositor); "2d"
+  // keeps the legacy CPU-blit pump that copies the scanout BO into
+  // the canvas at 60 Hz; "auto" defers the choice to whichever path
+  // arrives first. Returns null when the wrapped kernel does not yet
+  // expose `kmsAttachCanvas` (older ABI, Node host without an
+  // OffscreenCanvas polyfill, etc.).
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId?: number,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): KmsDisplayHandle | null;
+  // The one canvas a display pane mounts for a CRTC, kept for the kernel's
+  // lifetime so a pane remount cannot strand a program's WebGL context on
+  // a detached element. `size` applies only when the canvas is created.
+  kmsDisplayCanvas(
+    crtcId?: number,
+    size?: { width: number; height: number },
+  ): HTMLCanvasElement;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
   getWebPreview(): WebPreviewState | null;
@@ -713,6 +930,11 @@ export interface KernelHost {
   /** File-ingest capability declared by the current VFS image, if any. */
   getDemoIngest(): DemoIngestConfig | null;
   subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void;
+  /** Dock buttons declared by the current VFS image; empty when none. */
+  getDemoDockActions(): DemoDockActionConfig[];
+  subscribeDemoDockActions(cb: (state: DemoDockActionConfig[]) => void): () => void;
+  /** Paste gestures that could not reach the guest (`clipboard` feature). */
+  subscribeClipboardPasteFailures(cb: (failure: ClipboardPasteFailure) => void): () => void;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -963,6 +1185,8 @@ export class LiveKernelHost implements KernelHost {
   private lazyDownloadListeners = new ListenerSet<LazyDownloadEvent>();
   private lazyDownloadSummaryListeners = new ListenerSet<void>();
   private lazyDownloadCapacity = 512;
+  private machineProgress: MachineProgress | null = null;
+  private machineProgressListeners = new ListenerSet<MachineProgress | null>();
   private processListeners = new ListenerSet<ProcessEvent>();
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private presentationListeners = new ListenerSet<DemoPresentation>();
@@ -970,7 +1194,10 @@ export class LiveKernelHost implements KernelHost {
   private galleryListeners = new ListenerSet<void>();
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
   private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
+  private demoDockActionListeners = new ListenerSet<DemoDockActionConfig[]>();
+  private clipboardPasteFailureListeners = new ListenerSet<ClipboardPasteFailure>();
   private audioStateListeners = new ListenerSet<MachineAudioState>();
+  private audioActivityListeners = new ListenerSet<boolean>();
 
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
@@ -979,10 +1206,12 @@ export class LiveKernelHost implements KernelHost {
   private webPreview: WebPreviewState | null = null;
   private demoGuide: DemoGuideConfig | null = null;
   private demoIngest: DemoIngestConfig | null = null;
+  private demoDockActions: DemoDockActionConfig[] = [];
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
   private offLazyDownloads: (() => void) | null = null;
   private offAudioState: (() => void) | null = null;
+  private offAudioActivity: (() => void) | null = null;
 
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
@@ -998,12 +1227,48 @@ export class LiveKernelHost implements KernelHost {
    */
   private shellPids = new Map<number, string>();
   /**
-   * KMS display handles keyed by their canvas DOM node. React 18 StrictMode
-   * double-invokes effects, and `transferControlToOffscreen()` may only run
-   * once per canvas, so attachKmsDisplay memoizes the handle here. A WeakMap
-   * lets the handle drop naturally when the canvas itself is GC'd.
+   * KMS display handles keyed by their canvas DOM node. A pane remount
+   * (React 18 StrictMode double-invokes effects; see kmsDisplayCanvas for
+   * the others) attaches the same canvas again, and
+   * `transferControlToOffscreen()` may only run once per canvas, so
+   * attachKmsDisplay memoizes the handle here. A WeakMap lets the handle
+   * drop naturally when the canvas itself is GC'd.
    */
   private kmsHandles = new WeakMap<HTMLCanvasElement, KmsDisplayHandle>();
+  /** The one display canvas per CRTC for the current kernel
+   *  (kmsDisplayCanvas). Scoped to the kernel: detachKernel clears it. */
+  private kmsDisplayCanvases = new Map<number, HTMLCanvasElement>();
+  /** The display-size ResizeObserver per attached canvas: disconnected when
+   *  the pane closes its handle, reconnected when the cached handle is
+   *  reused (StrictMode's mount → cleanup → mount). */
+  private kmsResizeObservers = new WeakMap<HTMLCanvasElement, ResizeObserver>();
+  /**
+   * Default paint mode for `attachKmsDisplay` when the caller passes no
+   * explicit `opts.mode`. The wayland boot flow sets `"webgl2-scanout"`
+   * so the kernel worker's vblank pump presents the scanout BO through a
+   * WebGL2 texture whenever the compositor is compositing CPU-side —
+   * at boot, and permanently if its GLES probe or a GL frame fails. In
+   * the browser the compositor's own GL context normally claims the
+   * canvas for GPU compositing as the steady state, standing the
+   * presenter down (`"2d"` is the legacy CPU blit). GL-driven demos keep
+   * the `"webgl2"` default and let the GL bridge claim the canvas.
+   */
+  private kmsDisplayModeDefault: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null = null;
+  /**
+   * Last display size (device pixels) reported per CRTC by the
+   * attachKmsDisplay ResizeObserver, which also forwards it to the kernel
+   * (`kmsSetDisplaySize`), where `host_kms_mode_info` derives the
+   * connector's advertised mode from it. Boot flows await the first report
+   * with {@link whenKmsDisplaySized} before spawning a mode-picking client
+   * (wlcompositor), so the mode it picks follows the pane. Scoped to the
+   * current kernel: detachKernel clears it.
+   */
+  private kmsDisplaySizes = new Map<number, { width: number; height: number }>();
+  /** Pending {@link whenKmsDisplaySized} calls per CRTC. */
+  private kmsDisplaySizeWaiters = new Map<
+    number,
+    Set<(size: { width: number; height: number } | undefined) => void>
+  >();
 
   constructor(opts: LiveKernelHostOptions = {}) {
     this._status = opts.status ?? "idle";
@@ -1036,6 +1301,8 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.offAudioState?.();
     this.offAudioState = null;
+    this.offAudioActivity?.();
+    this.offAudioActivity = null;
     this.invalidatePtySessions(previousKernel);
     this.kernel = kernel;
     if (kernel.framebuffers) {
@@ -1054,6 +1321,12 @@ export class LiveKernelHost implements KernelHost {
       });
     }
     this.audioStateListeners.emit(this.getAudioState());
+    if (kernel.onAudioActivityChange) {
+      this.offAudioActivity = kernel.onAudioActivityChange((active) => {
+        this.audioActivityListeners.emit(active);
+      });
+    }
+    this.audioActivityListeners.emit(this.getAudioActivity());
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.refreshKmsAvailability();
@@ -1070,14 +1343,28 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.offAudioState?.();
     this.offAudioState = null;
+    this.offAudioActivity?.();
+    this.offAudioActivity = null;
     this.invalidatePtySessions(detachedKernel);
     this.kernel = undefined;
     this.audioStateListeners.emit("unavailable");
+    this.audioActivityListeners.emit(false);
+    // The sizes describe the DETACHED kernel's panes. Left in place, the
+    // next boot's whenKmsDisplaySized would resolve at once with the
+    // previous session's size, before the new pane has pushed a real size
+    // to the new kernel — the desktop falls back to a 1920×1080 letterbox.
+    // Waiters on the detached kernel will never see a report: release them.
+    this.kmsDisplaySizes.clear();
+    this.settleKmsDisplaySizeWaiters(undefined, undefined);
+    // Each canvas's control was transferred to the detached kernel's worker;
+    // the next kernel needs canvases of its own.
+    this.kmsDisplayCanvases.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
     this.setDemoIngest(null);
+    this.setDemoDockActions([]);
   }
 
   /** Configure the program attachPty spawns by default. */
@@ -1124,10 +1411,21 @@ export class LiveKernelHost implements KernelHost {
     this.demoGuideListeners.emit(this.getDemoGuide());
   }
 
+  /** Report a paste gesture the guest never received (see clipboard-paste). */
+  reportClipboardPasteFailure(failure: ClipboardPasteFailure): void {
+    this.clipboardPasteFailureListeners.emit({ ...failure });
+  }
+
   /** Update the optional file-ingest capability exposed by the current image. */
   setDemoIngest(ingest: DemoIngestConfig | null): void {
     this.demoIngest = ingest ? structuredClone(ingest) : null;
     this.demoIngestListeners.emit(this.getDemoIngest());
+  }
+
+  /** Update the dock buttons exposed by the current image. */
+  setDemoDockActions(actions: DemoDockActionConfig[]): void {
+    this.demoDockActions = structuredClone(actions);
+    this.demoDockActionListeners.emit(this.getDemoDockActions());
   }
 
   private async startShellCommand(
@@ -1189,12 +1487,67 @@ export class LiveKernelHost implements KernelHost {
     await completion;
   }
 
+  /**
+   * Deliberately NOT queued behind `ptyCommandQueues`: the command it ends is
+   * usually the one still holding that queue (a machine's long-lived
+   * foreground program was dispatched and never returned to a prompt).
+   * Commands dispatched afterwards wait on that same prompt through the
+   * queue, so they reach the shell, not the dying program.
+   */
+  async interruptShellForeground(opts: { timeoutMs?: number } = {}): Promise<void> {
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    const pty = await this.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+    const terminalProgram = this.shell ?? this.terminalSessions?.initial;
+    const prompt = terminalProgram ? shellPrompt(terminalProgram) : null;
+    // Listen before writing, or a fast exit prints its prompt unobserved.
+    const back = waitForPtyReadiness(pty, {
+      includeHistory: false,
+      timeoutMs,
+      prompt,
+    });
+    pty.write("\x03");
+    try {
+      await back;
+    } catch {
+      throw new Error(
+        `the foreground program did not exit within ${timeoutMs}ms of Ctrl+C`,
+      );
+    } finally {
+      pty.close();
+    }
+  }
+
   /** Update the status and fan out to subscribers. */
   setStatus(s: MachineStatus): void {
     if (s === this._status) return;
     this._status = s;
+    // The boot screen owns this record; once the machine leaves `booting`
+    // there is no boot screen left to show it.
+    if (s !== "booting") this.setMachineProgress(null);
     this.refreshTerminalAvailability();
     this.statusListeners.emit(s);
+  }
+
+  /**
+   * Publish machine-switch progress. Pass `null` to clear it.
+   *
+   * Survives `attachKernel` on purpose: both the teardown and the image load
+   * finish before the incoming kernel is created, so this cannot live in the
+   * lazy-download ledger.
+   */
+  setMachineProgress(progress: MachineProgress | null): void {
+    this.machineProgress = progress === null ? null : { ...progress };
+    this.machineProgressListeners.emit(this.machineProgress);
+  }
+
+  getMachineProgress(): MachineProgress | null {
+    return this.machineProgress === null ? null : { ...this.machineProgress };
+  }
+
+  subscribeMachineProgress(
+    cb: (progress: MachineProgress | null) => void,
+  ): () => void {
+    return this.machineProgressListeners.add(cb);
   }
 
   /**
@@ -1325,7 +1678,17 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private refreshWebAvailability(): void {
-    this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
+    // A running preview is available; "offline" and "reconnecting" also keep
+    // the web surface available so the pane stays mounted to show that state
+    // rather than the view silently falling back to syslog/terminal when a
+    // machine's bridge goes away.
+    const status = this.webPreview?.status;
+    this.setSurfaceAvailability({
+      web:
+        status === "running" ||
+        status === "offline" ||
+        status === "reconnecting",
+    });
   }
 
   /**
@@ -1373,9 +1736,12 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.offAudioState?.();
     this.offAudioState = null;
+    this.offAudioActivity?.();
+    this.offAudioActivity = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
     this.setDemoIngest(null);
+    this.setDemoDockActions([]);
     const kernel = this.kernel;
     this.invalidatePtySessions(kernel);
     this.kernel = undefined;
@@ -2131,6 +2497,16 @@ export class LiveKernelHost implements KernelHost {
     return off;
   }
 
+  getAudioActivity(): boolean {
+    return this.kernel?.getAudioActivity?.() ?? false;
+  }
+
+  subscribeAudioActivity(cb: (active: boolean) => void): () => void {
+    const off = this.audioActivityListeners.add(cb);
+    cb(this.getAudioActivity());
+    return off;
+  }
+
   /**
    * Walk the parent chain of `pid` and return the shell pid it descends from
    * when it shares a terminal PTY for stdin. Used by attachFramebuffer to pick
@@ -2317,37 +2693,226 @@ export class LiveKernelHost implements KernelHost {
 
   // ── KernelHost: KMS display ──────────────────────────────────────────────
 
+  /** See {@link kmsDisplayModeDefault}. Call before the display pane
+   *  mounts (attachKmsDisplay memoizes per canvas). */
+  setKmsDisplayMode(mode: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null): void {
+    this.kmsDisplayModeDefault = mode;
+  }
+
+  /** See {@link kmsDisplaySizes}: last device-pixel display size the
+   *  attached pane reported for `crtcId`, or undefined before the
+   *  first ResizeObserver delivery. */
+  getKmsDisplaySize(crtcId: number = KMS_PRIMARY_CRTC): { width: number; height: number } | undefined {
+    const size = this.kmsDisplaySizes.get(crtcId);
+    return size ? { ...size } : undefined;
+  }
+
+  /**
+   * Resolve once the pane attached to `crtcId` has reported its display
+   * size to the current kernel (at once if it already has), or with
+   * `undefined` after `timeoutMs` or when the kernel detaches first.
+   *
+   * Only a `"webgl2-scanout"` pane reports a size. A boot flow awaits this
+   * before starting a client that picks a video mode, so the connector
+   * already advertises the pane's aspect when the client asks. The bound
+   * keeps a pane that never lays out (no display, a headless host) from
+   * stalling boot; the connector then keeps its 1920×1080 default.
+   */
+  whenKmsDisplaySized(
+    crtcId: number,
+    timeoutMs: number,
+  ): Promise<{ width: number; height: number } | undefined> {
+    const now = this.getKmsDisplaySize(crtcId);
+    if (now) return Promise.resolve(now);
+    return new Promise((resolve) => {
+      let waiters = this.kmsDisplaySizeWaiters.get(crtcId);
+      if (!waiters) {
+        waiters = new Set();
+        this.kmsDisplaySizeWaiters.set(crtcId, waiters);
+      }
+      const settle = (size: { width: number; height: number } | undefined) => {
+        clearTimeout(timer);
+        waiters!.delete(settle);
+        resolve(size ? { ...size } : undefined);
+      };
+      const timer = setTimeout(() => settle(undefined), timeoutMs);
+      waiters.add(settle);
+    });
+  }
+
+  /** Settle {@link whenKmsDisplaySized} waiters for `crtcId` (every CRTC
+   *  when undefined) with `size`. */
+  private settleKmsDisplaySizeWaiters(
+    crtcId: number | undefined,
+    size: { width: number; height: number } | undefined,
+  ): void {
+    const sets = crtcId === undefined
+      ? Array.from(this.kmsDisplaySizeWaiters.values())
+      : [this.kmsDisplaySizeWaiters.get(crtcId)].filter((w) => w !== undefined);
+    for (const waiters of sets) {
+      for (const settle of Array.from(waiters)) settle(size);
+    }
+  }
+
+  /**
+   * The display canvas for `crtcId` on the current kernel, created on first
+   * use. A display pane mounts THIS element instead of rendering its own.
+   *
+   * Why the host owns it: attachKmsDisplay transfers the canvas's control to
+   * the kernel worker, and a program's WebGL context is bound to that one
+   * canvas for good — a context cannot move to another canvas. A pane that
+   * rendered a fresh `<canvas>` on each mount would, after any remount while
+   * a GL program runs (a compositor, a game), show a blank element while the
+   * program kept drawing into the detached one. With one element per CRTC
+   * for the kernel's lifetime, a remount is a DOM move the kernel never
+   * sees, and attachKmsDisplay returns the memoized handle.
+   *
+   * `size` is the drawing-buffer size to start with. It applies only when
+   * the canvas is created: once its control is transferred, the main thread
+   * can no longer resize it.
+   */
+  kmsDisplayCanvas(
+    crtcId: number = KMS_PRIMARY_CRTC,
+    size?: { width: number; height: number },
+  ): HTMLCanvasElement {
+    let canvas = this.kmsDisplayCanvases.get(crtcId);
+    if (!canvas) {
+      canvas = globalThis.document.createElement("canvas");
+      if (size) {
+        canvas.width = size.width;
+        canvas.height = size.height;
+      }
+      this.kmsDisplayCanvases.set(crtcId, canvas);
+    }
+    return canvas;
+  }
+
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
-    crtcId: number = 1,
-    opts: { mode?: "auto" | "2d" | "webgl2" } = { mode: "webgl2" },
+    crtcId: number = KMS_PRIMARY_CRTC,
+    opts: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" } = {},
   ): KmsDisplayHandle | null {
     if (!this.kernel?.kmsAttachCanvas) return null;
     if (typeof canvas.transferControlToOffscreen !== "function") return null;
-    // React 18 StrictMode double-invokes effects: mount → cleanup → mount,
-    // and the second mount hits this method again on the same DOM canvas.
+    // A remounted pane hits this method again on the same DOM canvas: React
+    // 18 StrictMode double-invokes effects (mount → cleanup → mount), and a
+    // pane using kmsDisplayCanvas gets the same element on every mount.
     // `transferControlToOffscreen()` can only be called once per canvas, so
     // memoize the handle here. The cached handle keeps the original
-    // statsSab/OffscreenCanvas alive across the StrictMode unmount.
+    // statsSab/OffscreenCanvas alive across the unmount.
     const cached = this.kmsHandles.get(canvas);
-    if (cached) return cached;
-    // 7 i32 slots × 4 bytes = 28 bytes; align to 64 so atomics are happy.
+    if (cached) {
+      // The earlier close() disconnected the observer; the reused handle
+      // must keep feeding display sizes.
+      this.kmsResizeObservers.get(canvas)?.observe(canvas);
+      return cached;
+    }
+    // 8 i32 slots × 4 bytes = 32 bytes; align to 64 so atomics are happy.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
+    const mode = opts.mode ?? this.kmsDisplayModeDefault ?? "webgl2";
     const offscreen = canvas.transferControlToOffscreen();
-    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, opts);
+    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, {
+      ...opts,
+      mode,
+    });
     const kernel = this.kernel;
+    // The webgl2-scanout presenter renders at display resolution: track
+    // the canvas element's device-pixel size and forward it so the pump
+    // sizes its drawing buffer to the pixels the user actually sees.
+    // `devicePixelContentBoxSize` gives exact device pixels where
+    // supported; fall back to CSS size × devicePixelRatio.
+    if (
+      mode === "webgl2-scanout" &&
+      kernel.kmsSetDisplaySize &&
+      typeof ResizeObserver !== "undefined"
+    ) {
+      const resizeObserver = new ResizeObserver((entries) => {
+        // Bound to the kernel that attached this canvas. Once that kernel
+        // is detached (reboot), stop for good — otherwise this closure
+        // would keep re-populating kmsDisplaySizes (which detachKernel
+        // just cleared) with the dead session's size and pushing sizes
+        // into the dead kernel. The next boot's pane remount attaches a
+        // fresh canvas with its own observer.
+        if (this.kernel !== kernel) {
+          resizeObserver.disconnect();
+          return;
+        }
+        const entry = entries[entries.length - 1];
+        const dp = entry.devicePixelContentBoxSize?.[0];
+        const width = dp
+          ? dp.inlineSize
+          : entry.contentRect.width * (globalThis.devicePixelRatio || 1);
+        const height = dp
+          ? dp.blockSize
+          : entry.contentRect.height * (globalThis.devicePixelRatio || 1);
+        // The physical size, from the CSS box: CSS defines 96 px per inch,
+        // so a client deriving DPI from it gets the device-pixel ratio —
+        // the output scale a HiDPI screen needs. It is the browser's
+        // reference size, not a measured panel.
+        const physicalMm = {
+          width: (entry.contentRect.width * 25.4) / 96,
+          height: (entry.contentRect.height * 25.4) / 96,
+        };
+        // A hidden pane reports 0×0 — keep the last real size (the
+        // worker ignores non-positive dims too).
+        if (width >= 1 && height >= 1) {
+          this.kmsDisplaySizes.set(crtcId, { width, height });
+          kernel.kmsSetDisplaySize?.(crtcId, width, height, physicalMm);
+          this.settleKmsDisplaySizeWaiters(crtcId, { width, height });
+        }
+      });
+      resizeObserver.observe(canvas);
+      this.kmsResizeObservers.set(canvas, resizeObserver);
+    }
+    // evdev codes for the pointer path (struct input_event).
+    const EV_SYN = 0x00, EV_KEY = 0x01, EV_ABS = 0x03;
+    const SYN_REPORT = 0x00, ABS_X = 0x00, ABS_Y = 0x01;
+    const BTN_LEFT = 0x110, BTN_RIGHT = 0x111, BTN_MIDDLE = 0x112;
+    let prevButtons = 0;
     const handle: KmsDisplayHandle = {
       crtcId,
       stats,
       sendMouseEvent: (dx, dy, buttons) => {
         kernel.injectMouseEvent?.(dx, dy, buttons);
       },
+      sendPointerAbs: (x, y, buttons) => {
+        const inject = kernel.injectInputEvent;
+        if (!inject) return;
+        const rx = Math.round(x), ry = Math.round(y);
+        // The position, then the buttons, in that order: a consumer
+        // flushes motion on the SYN, so the cursor is already at (rx, ry)
+        // when a press arrives in the next frame.
+        //
+        // `/dev/input/event1` is an absolute pointer, so this states the
+        // position directly. It used to advertise REL_X and REL_Y as well,
+        // which made SDL classify it as a relative mouse and discard these
+        // records; the host compensated by driving the cursor to the
+        // origin with an over-large negative delta before every event, and
+        // any click that landed before the corrective frame registered at
+        // (0, 0). The axis range comes from `kernel_set_input_canvas_dims`,
+        // which is why these are framebuffer pixels and not a normalised
+        // value.
+        inject.call(kernel, 1, EV_ABS, ABS_X, rx);
+        inject.call(kernel, 1, EV_ABS, ABS_Y, ry);
+        inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
+        const changed = buttons ^ prevButtons;
+        if (changed) {
+          if (changed & 1) inject.call(kernel, 1, EV_KEY, BTN_LEFT, buttons & 1 ? 1 : 0);
+          if (changed & 2) inject.call(kernel, 1, EV_KEY, BTN_RIGHT, buttons & 2 ? 1 : 0);
+          if (changed & 4) inject.call(kernel, 1, EV_KEY, BTN_MIDDLE, buttons & 4 ? 1 : 0);
+          inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
+          prevButtons = buttons;
+        }
+      },
       close: () => {
         // The worker auto-stops the pump tick for unused CRTCs on the
-        // next teardown; there's no explicit detach API yet. Closing
-        // the handle just drops the local view so callers can drop
-        // their reference.
+        // next teardown; there's no explicit detach API yet. Closing the
+        // handle disconnects its display-size observer, so an unmounted
+        // pane stops holding the canvas and the kernel it attached to
+        // (an observer on a removed element need not fire again to notice).
+        // A remount reuses the cached handle and reconnects it.
+        this.kmsResizeObservers.get(canvas)?.disconnect();
       },
     };
     this.kmsHandles.set(canvas, handle);
@@ -2388,6 +2953,20 @@ export class LiveKernelHost implements KernelHost {
 
   subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void {
     return this.demoIngestListeners.add(cb);
+  }
+
+  getDemoDockActions(): DemoDockActionConfig[] {
+    return structuredClone(this.demoDockActions);
+  }
+
+  subscribeDemoDockActions(cb: (state: DemoDockActionConfig[]) => void): () => void {
+    return this.demoDockActionListeners.add(cb);
+  }
+
+  subscribeClipboardPasteFailures(
+    cb: (failure: ClipboardPasteFailure) => void,
+  ): () => void {
+    return this.clipboardPasteFailureListeners.add(cb);
   }
 
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {

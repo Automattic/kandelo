@@ -15,18 +15,30 @@ set -euo pipefail
 # hooks, pager, credential helpers, etc.). wasm-fork-instrument auto-discovers
 # fork paths via call-graph analysis — no onlylist is needed.
 #
-# HTTP/HTTPS transport is always built (git-remote-http). HTTPS URLs
-# are rewritten to HTTP at runtime via gitconfig; the browser's
-# fetch() API + CORS proxy handles the actual TLS.
+# HTTP/HTTPS transport is always built (git-remote-http, symlinked to
+# git-remote-https in the VFS). git does a real end-to-end TLS handshake
+# through its libcurl+OpenSSL. On Node the guest's TLS runs over a real
+# outbound socket (TcpNetworkBackend). In the browser the host's
+# TlsNetworkBackend terminates that TLS locally with a per-session MITM CA
+# (installed at /etc/ssl/certs/ca-certificates.crt), decrypts the HTTP
+# request, and re-issues it with fetch() through the configured CORS proxy —
+# so no HTTPS->HTTP gitconfig rewrite is used or needed.
 #
-# Output: packages/registry/git/bin/git.wasm
-#         packages/registry/git/bin/git-remote-http.wasm
+# Output: bin/git.wasm and bin/git-remote-http.wasm under the resolver work
+#         root (beside this script when run standalone).
 
 GIT_VERSION="${GIT_VERSION:-2.47.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/git-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/git-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 # Explicit env wins; else the in-tree sysroot. Matches build-libcurl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
@@ -43,6 +55,13 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 export WASM_POSIX_GLUE_DIR="$REPO_ROOT/libc/glue"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Resolve zlib, openssl, and libcurl via the dep cache ---
 # openssl is a transitive dep: our cached libcurl.a references
@@ -101,12 +120,14 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 # --- Download Git source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading git $GIT_VERSION..."
-    TARBALL="git-${GIT_VERSION}.tar.xz"
-    URL="https://www.kernel.org/pub/software/scm/git/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    URL="https://www.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz"
+    # WHY: a unique archive under the work root; a fixed /tmp name let two
+    # concurrent builds overwrite or delete each other's download.
+    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/git-source.XXXXXX")"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm -f "$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -227,15 +248,13 @@ echo "==> Collected git-remote-http.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
 echo "==> Pre-instrument size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# --- Size optimization + fork instrumentation ---
-# wasm-opt -O2 runs first to shrink the binary. wasm-fork-instrument must
-# run LAST because it hardcodes mutable-global offsets at instrument time —
-# any later pass that reorders globals would corrupt the fork buffer.
-# wasm-fork-instrument auto-discovers fork paths via call-graph analysis,
-# so no onlylist is needed.
-echo "==> Optimizing git.wasm with wasm-opt -O2..."
-"$WASM_OPT" -g -O2 "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm"
-
+# --- Fork instrumentation, then optimization ---
+# git.wasm reaches the instrumenter as wasm-ld wrote it. Its compiler facts
+# (the `kandelo.calltypes` section) describe that exact code, and they shrink
+# git's fork-path instrumentation to a few dozen functions; a wasm-opt pass
+# first would inline call sites across functions, and the instrumenter would
+# then ignore the facts (their code hash no longer matches). The instrumenter
+# runs wasm-opt -O2 over the whole module afterwards.
 echo "==> Applying fork instrumentation to git.wasm..."
 "$FORK_INSTRUMENT" "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm.instr"
 mv "$BIN_DIR/git.wasm.instr" "$BIN_DIR/git.wasm"
@@ -243,6 +262,10 @@ mv "$BIN_DIR/git.wasm.instr" "$BIN_DIR/git.wasm"
 SIZE_AFTER=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
 echo "==> Post-instrument size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"
 
+# git-remote-http keeps wasm-opt first: curl's SIGALRM longjmp keeps most
+# of it on the fork path even with facts, so the inlined, smaller call graph
+# instruments smaller (docs/plans/2026-10-02-fork-sinks.md, "jmp_buf identity
+# and curl").
 # Apply the same pipeline to git-remote-http — libcurl may call fork()
 # internally (e.g., for DNS resolution when pthreads are unavailable).
 # git-remote-http is always built post-Phase-7 (HTTP/HTTPS transport

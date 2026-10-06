@@ -10,6 +10,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
+import { retryKernelEntryResult } from "../src/kernel-entry-retry";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { ThreadPageAllocator } from "../src/thread-allocator";
@@ -185,6 +186,11 @@ export interface RunProgramOptions {
   /** Exact VFS image for tests that stage package runtime files. Overrides
    * `useDefaultRootfs`; omitted means the canonical image. */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /** Exact kernel wasm to boot (worker-thread mode). Omitted resolves the
+   * kernel through the normal binary resolver. A caller that already holds
+   * the kernel artifact — e.g. a build-time step that cannot rely on the
+   * source-only program projection — passes it here to avoid resolution. */
+  kernelWasmBytes?: ArrayBuffer | Uint8Array;
   /** Observe process lifecycle events emitted by NodeKernelHost. Worker-thread mode only. */
   onProcessEvent?: (event: {
     kind: "spawn" | "exec" | "exit";
@@ -303,7 +309,21 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     },
   });
 
-  await host.init();
+  let kernelInitBytes: ArrayBuffer | undefined;
+  if (options.kernelWasmBytes !== undefined) {
+    const src = options.kernelWasmBytes;
+    if (src instanceof Uint8Array) {
+      // Copy into a fresh, non-shared ArrayBuffer: the source may be a Buffer
+      // view over a larger/pooled (or shared) allocation, which the worker
+      // init protocol does not accept.
+      const out = new ArrayBuffer(src.byteLength);
+      new Uint8Array(out).set(src);
+      kernelInitBytes = out;
+    } else {
+      kernelInitBytes = src;
+    }
+  }
+  await host.init(kernelInitBytes);
 
   // Capture the spawned pid so child process events can sample its
   // kernel-side fork_count. The user-supplied onStarted (if any) still runs.
@@ -619,12 +639,18 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         const childChannelOffset = childLayout.channelOffset;
         new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
-        kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-          ptrWidth: parentPtrWidth,
-          maxAddr: childLayout.maxAddr,
-          mmapBase: childLayout.mmapBase,
-        });
-        kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
+        // Same as the Node host's fork launch: the fork callback can run
+        // while another kernel entry is active, so registration and
+        // inheritance wait for it rather than failing the fork with a
+        // reentrancy error ("Cannot fork" in the guest).
+        await retryKernelEntryResult(() =>
+          kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
+            ptrWidth: parentPtrWidth,
+            maxAddr: childLayout.maxAddr,
+            mmapBase: childLayout.mmapBase,
+          }));
+        await retryKernelEntryResult(() =>
+          kernelWorker.inheritProcessSharedMappings(parentPid, childPid));
 
         const activeForkBufAddr = continuation.forkBufAddr;
         const parentForkReplayContext = forkReplayContexts.get(parentPid);
@@ -1143,12 +1169,17 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     maxAddr: layout.maxAddr,
   });
   kernelWorker.setCredentials(pid, { uid: options.uid, gid: options.gid });
+  // Query before stdin is installed, as the Node and browser worker entries
+  // do: delivering stdin wakes blocked readers through a deferred effect, and
+  // a synchronous kernel query must not run while that effect is queued.
+  const secureExec = kernelWorker.processSecureExec(pid);
   processProgramBytes.set(pid, programBytes);
   processMemories.set(pid, memory);
   processLayouts.set(pid, layout);
   threadAllocators.set(pid, threadAllocator);
   processPtrWidths.set(pid, ptrWidth);
 
+  kernelWorker.installHostStdinPipe(pid);
   if (options.stdinBytes != null) {
     kernelWorker.setStdinData(pid, options.stdinBytes);
   } else if (options.stdin != null) {
@@ -1182,7 +1213,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     programBytes,
     memory,
     channelOffset,
-    secureExec: kernelWorker.processSecureExec(pid),
+    secureExec,
     env: options.env,
     argv: options.argv ?? [options.programPath],
     ptrWidth,

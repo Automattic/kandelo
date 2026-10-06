@@ -15,10 +15,12 @@ describe("browser demo CORS proxy configuration", () => {
         "accept",
         "content-type",
         "git-protocol",
+        "range",
         "wp_blog",
         "wp_install",
       ],
       allowAnonymousGetHeaderOmission: true,
+      rangeRequestHeaderAlias: "x-cors-proxy-range",
     });
     expect(Object.isFrozen(DEFAULT_BROWSER_CORS_PROXY_CONFIG)).toBe(true);
     expect(Object.isFrozen(

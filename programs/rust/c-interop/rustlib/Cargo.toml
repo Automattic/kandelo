@@ -1,0 +1,22 @@
+[package]
+name = "kandelo-interop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+# cargo-c: installs libkandelo_interop.a and kandelo_interop.pc. The C
+# header is hand-written (../kandelo_interop.h), not generated.
+[package.metadata.capi.header]
+enabled = false
+
+[features]
+capi = []
+
+[profile.release]
+panic = "abort"
+
+# Detach from the repo-root Cargo workspace.
+[workspace]

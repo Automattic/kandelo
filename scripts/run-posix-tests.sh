@@ -27,8 +27,42 @@ RUNNER_FIXTURE_ROOT="$BUILD_DIR/runner-fixtures"
 EXPECTED_FAIL=(
     munmap/1-1                  # wasm can't revoke page access — see docs/wasm-limitations.md §6
     munmap/1-2                  # wasm can't revoke page access — see docs/wasm-limitations.md §6
-    mlock/12-1                  # needs pwd.h (getpwnam)
+    # mlock() succeeds for an unprivileged caller whose RLIMIT_MEMLOCK is 0;
+    # the test expects EPERM. Kandelo does not enforce RLIMIT_MEMLOCK. (This
+    # entry used to say "needs pwd.h"; the test has built since pwd.h landed,
+    # and the XFAIL reason check found the stale rationale on 2026-09-30.)
+    mlock/12-1
 )
+
+# How each XFAIL above is expected to fail, checked by xfail_check (see
+# scripts/xfail-reasons.sh). Why: an XFAIL entry used to turn ANY failure of
+# its test green, so a test that started failing for a new reason (a broken
+# helper, a runner that never started the guest) stayed hidden behind its old
+# rationale, and the run was cited as clean until someone re-investigated.
+# Kinds this runner observes: build (compile or link failed; output is the
+# compiler's), unresolved (PTS_UNRESOLVED), timeout, fail (PTS_FAIL), exit
+# (any other exit; output starts with "exit <code>"). An XFAIL that fails any
+# other way is an XFAIL-MISMATCH.
+xfail_expected_reason() {
+    case "$1" in
+        munmap/1-1|munmap/1-2) echo "fail:Did not trigger SIGSEGV" ;;
+        mlock/12-1) echo "fail:You have the right to call mlock" ;;
+        *) echo "" ;;
+    esac
+}
+
+# shellcheck source=scripts/xfail-reasons.sh
+source "$REPO_ROOT/scripts/xfail-reasons.sh"
+
+# A mismatched XFAIL counts as a FAIL: the test is failing for a reason
+# nobody has accepted, and the run must not read as clean.
+record_xfail_mismatch() {
+    local id="$1" output="$2"
+    echo "XFAIL-MISMATCH ${id} (${XFAIL_MISMATCH})"
+    printf '%s\n' "$output" | tail -10 | head -5 | sed 's/^/  /'
+    RESULTS+=("FAIL  ${id}")
+    FAIL=$((FAIL + 1))
+}
 
 find_llvm_bin() {
     if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
@@ -77,7 +111,8 @@ LINK_FLAGS=(
     -Wl,--import-memory
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
+    -Wl,-z,stack-size=8388608
+    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
     -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--export=__wasm_init_tls
@@ -91,13 +126,19 @@ LINK_FLAGS=(
 # Fork-instrumentation for fork()
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
+# Stamp each compiled test program with this checkout's ABI-contract digest.
+source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+
 instrument_wasm() {
     local wasm="$1"
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm" && abi_contract_stamp "$wasm"
 }
 
-# Timeout per test (seconds)
-TEST_TIMEOUT=30
+# The per-test budget in seconds. It is forwarded to examples/run-example.ts
+# as TIMEOUT (its own guest watchdog, 30 s by default, which exits 124 like
+# timeout(1)), so raising TEST_TIMEOUT really lets a slow guest run longer;
+# the outer kill gets a few seconds of grace behind it.
+TEST_TIMEOUT=${TEST_TIMEOUT:-30}
 
 # ── Helper functions ──────────────────────────────────────
 
@@ -179,7 +220,11 @@ run_test() {
 
     # Build
     if ! build_test "$iface" "$test_name" 2>/dev/null; then
-        if $is_xfail; then
+        local build_output
+        build_output=$(cat /tmp/posix-test-build-err.txt 2>/dev/null || true)
+        if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" build "$build_output"; then
+            record_xfail_mismatch "$test_id" "$build_output"
+        elif $is_xfail; then
             echo "XFAIL $test_id (expected — build failure)"
             RESULTS+=("XFAIL $test_id")
             XFAIL=$((XFAIL + 1))
@@ -205,7 +250,8 @@ run_test() {
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM="$fixture_program" \
         KANDELO_RUNNER_VFS=isolated \
-        timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref \
+        TIMEOUT="$((TEST_TIMEOUT * 1000))" \
+        timeout "$((TEST_TIMEOUT + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null 2>&1)
     rc=$?
@@ -234,7 +280,9 @@ run_test() {
             SKIP=$((SKIP + 1))
             ;;
         2)  # PTS_UNRESOLVED
-            if $is_xfail; then
+            if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" unresolved "$output"; then
+                record_xfail_mismatch "$test_id" "$output"
+            elif $is_xfail; then
                 echo "XFAIL $test_id (expected — unresolved)"
                 RESULTS+=("XFAIL $test_id")
                 XFAIL=$((XFAIL + 1))
@@ -246,7 +294,9 @@ run_test() {
             fi
             ;;
         124) # timeout
-            if $is_xfail; then
+            if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" timeout "$output"; then
+                record_xfail_mismatch "$test_id" "$output"
+            elif $is_xfail; then
                 echo "XFAIL $test_id (expected — timeout)"
                 RESULTS+=("XFAIL $test_id")
                 XFAIL=$((XFAIL + 1))
@@ -257,7 +307,9 @@ run_test() {
             fi
             ;;
         1)  # PTS_FAIL
-            if $is_xfail; then
+            if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" fail "$output"; then
+                record_xfail_mismatch "$test_id" "$output"
+            elif $is_xfail; then
                 echo "XFAIL $test_id (expected)"
                 RESULTS+=("XFAIL $test_id")
                 XFAIL=$((XFAIL + 1))
@@ -269,7 +321,9 @@ run_test() {
             fi
             ;;
         *)  # Other exit codes (crash, signal, etc.)
-            if $is_xfail; then
+            if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" exit "exit $rc"$'\n'"$output"; then
+                record_xfail_mismatch "$test_id" "$output"
+            elif $is_xfail; then
                 echo "XFAIL $test_id (expected — exit $rc)"
                 RESULTS+=("XFAIL $test_id")
                 XFAIL=$((XFAIL + 1))
@@ -320,6 +374,17 @@ if [ ${#INTERFACES[@]} -eq 0 ]; then
     exit 1
 fi
 
+# Reject a misspelled or unvendored interface before building anything; a
+# run that tested nothing must not reach the summary looking like one that
+# passed.
+for iface in "${INTERFACES[@]}"; do
+    if [ ! -d "$IFACE_DIR/$iface" ]; then
+        echo "Error: interface '$iface' not found in $IFACE_DIR" >&2
+        echo "Run $0 --list for the available interfaces." >&2
+        exit 1
+    fi
+done
+
 # Verify prerequisites
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
@@ -330,6 +395,7 @@ if [ ! -f "$KERNEL_WASM" ]; then
     echo "Error: kernel wasm not found. Run build.sh first." >&2
     exit 1
 fi
+abi_contract_stamp_prepare || exit 1
 
 PASS=0
 FAIL=0
@@ -352,6 +418,14 @@ for iface in "${INTERFACES[@]}"; do
         run_test "$iface" "$test_name"
     done < <(discover_tests "$iface")
 done
+
+# Interfaces that exist but contain no runnable tests used to exit 0 with
+# TOTAL 0. Why fail it: a run that tested nothing gets cited as a pass, and
+# every claim built on it must later be re-checked.
+if [ "$TOTAL" -eq 0 ]; then
+    echo "Error: no Open POSIX tests were discovered in: ${INTERFACES[*]}" >&2
+    exit 1
+fi
 
 # ── Summary ───────────────────────────────────────────────
 

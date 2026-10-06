@@ -1,0 +1,9 @@
+script_path = "packages/registry/ruby-browser-bundle/build-ruby-browser-bundle.sh"
+inputs = [
+  "packages/registry/ruby-browser-bundle/build-ruby-browser-bundle.sh",
+  "images/vfs/scripts/build-ruby-zip.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
+commit      = "309c7f1f4974a4cbae3a74c27a3bc3fc449c00c9"
+revision    = 1

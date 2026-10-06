@@ -1041,23 +1041,18 @@ describe("Rust-owned host import ranges", () => {
       .toEqual(new Uint8Array(16).fill(0xa5));
   });
 
-  it("clips hostile stdin bytes through a plain exact view and preserves the canary", () => {
-    const output = hostileBytes(20);
-    Uint8Array.prototype.set.call(output, [1, 2, 3, 4, 5]);
+  it("answers host stdin handle 0 with EOF and preserves the canary", () => {
+    // Host-supplied stdin is a kernel pipe installed at spawn; host handle 0
+    // is only what a process sees when the host supplied none.
     const { kernel, memory } = kernelHarness({});
-    Object.assign(kernel, {
-      callbacks: {
-        onStdin: () => output,
-      },
-    });
     const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     new Uint8Array(memory.buffer).fill(0xa5, 4096, 4104);
 
-    expect(imports.env.host_read(0n, 4096, 4)).toBe(4);
+    expect(imports.env.host_read(0n, 4096, 4)).toBe(0);
     expect(new Uint8Array(memory.buffer, 4096, 8))
-      .toEqual(new Uint8Array([1, 2, 3, 4, 0xa5, 0xa5, 0xa5, 0xa5]));
+      .toEqual(new Uint8Array(8).fill(0xa5));
   });
 
   it("rejects a null positive-length getrandom pointer", () => {

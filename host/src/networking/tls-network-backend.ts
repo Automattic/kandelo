@@ -46,10 +46,14 @@ interface HttpConnectionState {
   ip: Uint8Array;
   port: number;
   sendBuf: Uint8Array;
+  /** Response bytes not yet consumed by recv(), from `responseOffset`. */
   responseBuf: Uint8Array | null;
   responseOffset: number;
   fetchDone: boolean;
   fetchError: Error | null;
+  /** Bumped per request, so a response still streaming for an earlier
+   *  request on this keep-alive connection stops appending. */
+  requestGeneration: number;
 }
 
 interface TlsConnectionState {
@@ -87,6 +91,16 @@ function concatBuffers(a: Uint8Array, b: Uint8Array): Uint8Array {
   return result;
 }
 
+/** Queue response bytes for recv(), keeping only what is still unread so a
+ *  long stream does not re-copy everything the guest already consumed. */
+function appendHttpResponse(conn: HttpConnectionState, piece: Uint8Array): void {
+  const unread = conn.responseBuf
+    ? conn.responseBuf.subarray(conn.responseOffset)
+    : new Uint8Array(0);
+  conn.responseBuf = concatBuffers(unread, piece);
+  conn.responseOffset = 0;
+}
+
 function findHeaderEnd(buf: Uint8Array): number {
   for (let i = 0; i <= buf.length - 4; i++) {
     if (buf[i] === 0x0d && buf[i + 1] === 0x0a && buf[i + 2] === 0x0d && buf[i + 3] === 0x0a) {
@@ -104,12 +118,13 @@ function parseContentLength(headers: string): number {
 function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
   method: string;
   path: string;
+  version: string;
   headers: HttpHeaderOccurrence[];
   body: Uint8Array | null;
 } {
   const headerStr = new TextDecoder().decode(buf.subarray(0, headerEnd));
   const lines = headerStr.split("\r\n");
-  const [method, path] = lines[0].split(" ");
+  const [method, path, version] = lines[0].split(" ");
   const headers: HttpHeaderOccurrence[] = [];
   for (let i = 1; i < lines.length; i++) {
     const colon = lines[i].indexOf(":");
@@ -122,7 +137,117 @@ function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
   }
   const bodyStart = headerEnd + 4;
   const body = bodyStart < buf.length ? buf.subarray(bodyStart) : null;
-  return { method, path, headers, body };
+  return { method, path, version, headers, body };
+}
+
+function indexOfCRLF(buf: Uint8Array, from: number): number {
+  for (let i = from; i + 1 < buf.length; i++) {
+    if (buf[i] === 0x0d && buf[i + 1] === 0x0a) return i;
+  }
+  return -1;
+}
+
+/** Decode an HTTP/1.1 `Transfer-Encoding: chunked` request body starting at
+ *  `start`. Returns the dechunked bytes plus how many buffer bytes the encoded
+ *  form occupied, or null if the terminating zero-chunk has not arrived yet.
+ *  git streams a large `git-upload-pack` negotiation this way (requests over
+ *  http.postBuffer, default 1 MiB), so the MITM must reassemble it before
+ *  handing a plain body to fetch(). */
+function parseChunkedBody(
+  buf: Uint8Array,
+  start: number,
+): { body: Uint8Array; consumed: number } | null {
+  const chunks: Uint8Array[] = [];
+  let pos = start;
+  for (;;) {
+    const lineEnd = indexOfCRLF(buf, pos);
+    if (lineEnd === -1) return null;
+    const sizeToken = new TextDecoder()
+      .decode(buf.subarray(pos, lineEnd))
+      .split(";")[0]
+      .trim();
+    const size = parseInt(sizeToken, 16);
+    if (!Number.isFinite(size) || size < 0) return null;
+    const dataStart = lineEnd + 2;
+    if (size === 0) {
+      // Last chunk: consume any trailer lines up to the terminating blank line.
+      let trailerPos = dataStart;
+      for (;;) {
+        const trailerEnd = indexOfCRLF(buf, trailerPos);
+        if (trailerEnd === -1) return null;
+        if (trailerEnd === trailerPos) {
+          return { body: concatChunks(chunks), consumed: trailerPos + 2 - start };
+        }
+        trailerPos = trailerEnd + 2;
+      }
+    }
+    const dataEnd = dataStart + size;
+    if (buf.length < dataEnd + 2) return null; // need the data and its CRLF
+    chunks.push(buf.subarray(dataStart, dataEnd));
+    pos = dataEnd + 2;
+  }
+}
+
+function concatChunks(parts: readonly Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const part of parts) total += part.length;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+/** Decode a `Content-Encoding`-compressed request body to plaintext so the
+ *  re-issued fetch() carries an identity-encoded body. git gzip-compresses the
+ *  `git-upload-pack` (fetch command) request and sets `Content-Encoding: gzip`;
+ *  the browser CORS proxy allow-list does not carry `content-encoding`, so the
+ *  faithful pass-through of the compressed body is refused. Decoding here lets
+ *  the request traverse the proxy today. Returns null for an identity or
+ *  unrecognized encoding, leaving the body and header untouched.
+ *
+ *  A more faithful alternative — forwarding `Content-Encoding` and the
+ *  compressed body verbatim — is the more complete long-term behavior but
+ *  requires the dev relay and the upstream CORS proxy to allow-list
+ *  `content-encoding` (as they did `git-protocol`). Tracked as future work. */
+async function decodeContentEncodingBody(
+  body: Uint8Array,
+  encoding: string,
+): Promise<Uint8Array<ArrayBuffer> | null> {
+  const token = encoding.trim().toLowerCase();
+  const format = token === "gzip" || token === "x-gzip"
+    ? "gzip"
+    : token === "deflate"
+    ? "deflate"
+    : null;
+  if (format === null) return null;
+  const decoded = new Response(
+    new Response(body).body!.pipeThrough(new DecompressionStream(format)),
+  );
+  return new Uint8Array(await decoded.arrayBuffer()) as Uint8Array<ArrayBuffer>;
+}
+
+/** Decide whether the MITM connection stays open after this response.
+ *  HTTP/1.1 defaults to keep-alive unless `Connection: close`; HTTP/1.0
+ *  defaults to close unless `Connection: keep-alive`. git-remote-http / libcurl
+ *  issue ref-discovery and upload-pack as HTTP/1.1 keep-alive requests over one
+ *  connection, so honoring this is what lets a smart-HTTP clone complete. */
+function requestKeepsConnectionAlive(
+  version: string,
+  headers: readonly HttpHeaderOccurrence[],
+): boolean {
+  const connection = (lastHeaderValue(headers, "connection") ?? "").toLowerCase();
+  if (connection.split(",").some((token) => token.trim() === "close")) {
+    return false;
+  }
+  if (version === "HTTP/1.0") {
+    return connection
+      .split(",")
+      .some((token) => token.trim() === "keep-alive");
+  }
+  return true;
 }
 
 function lastHeaderValue(
@@ -181,6 +306,84 @@ function formatHttpResponse(
   result.set(headerBytes);
   result.set(bodyBytes, headerBytes.length);
   return result;
+}
+
+/**
+ * Whether the response to this request can reach the guest as it arrives.
+ *
+ * Streaming needs chunked framing, because the length the guest will receive
+ * is not knowable up front: fetch() decodes any Content-Encoding, and across
+ * origins (the CORS proxy) the page cannot even see whether it did, so the
+ * upstream Content-Length may describe bytes the guest never gets. Chunked
+ * framing is HTTP/1.1-only, and some responses have no body to stream; those
+ * keep the buffered form with an exact Content-Length.
+ */
+function responseStreams(method: string, version: string, response: Response): boolean {
+  return version === "HTTP/1.1"
+    && method !== "HEAD"
+    && response.body !== null
+    && response.status !== 204
+    && response.status !== 304
+    && response.status >= 200;
+}
+
+function formatChunkedHttpResponseHead(
+  status: number,
+  statusText: string,
+  headers: Headers,
+): Uint8Array {
+  let headerStr = `HTTP/1.1 ${status} ${statusText}\r\n`;
+  headers.forEach((value, key) => {
+    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase()) && key.toLowerCase() !== "content-length") {
+      headerStr += `${key}: ${value}\r\n`;
+    }
+  });
+  headerStr += "Transfer-Encoding: chunked\r\n\r\n";
+  return new TextEncoder().encode(headerStr);
+}
+
+function chunkFrame(data: Uint8Array): Uint8Array {
+  const size = new TextEncoder().encode(`${data.length.toString(16)}\r\n`);
+  const frame = new Uint8Array(size.length + data.length + 2);
+  frame.set(size);
+  frame.set(data, size.length);
+  frame.set([0x0d, 0x0a], size.length + data.length);
+  return frame;
+}
+
+/**
+ * The response as the guest receives it, in the order its bytes become
+ * available: the head as soon as fetch() has one, then each body piece as the
+ * network delivers it. Buffering the whole body first (the earlier behavior)
+ * meant a guest saw nothing of a large download until it had finished — curl
+ * reported no progress for the length of a 69 MB fetch, then 100%.
+ *
+ * A failure partway through the body throws after some pieces were yielded;
+ * the caller must then cut the connection, which the guest sees as a
+ * truncated transfer rather than a forged complete one.
+ */
+async function* httpResponseBytes(
+  response: Response,
+  method: string,
+  version: string,
+): AsyncGenerator<Uint8Array> {
+  if (!responseStreams(method, version, response)) {
+    yield formatHttpResponse(
+      response.status,
+      response.statusText,
+      response.headers,
+      await response.arrayBuffer(),
+    );
+    return;
+  }
+  yield formatChunkedHttpResponseHead(response.status, response.statusText, response.headers);
+  const reader = response.body!.getReader();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value.length > 0) yield chunkFrame(value);
+  }
+  yield new TextEncoder().encode("0\r\n\r\n");
 }
 
 // ------------------------------------------------------------------ backend
@@ -291,6 +494,7 @@ export class TlsNetworkBackend implements NetworkIO {
         responseOffset: 0,
         fetchDone: false,
         fetchError: null,
+        requestGeneration: 0,
       });
     }
   }
@@ -487,18 +691,35 @@ export class TlsNetworkBackend implements NetworkIO {
 
     const headerStr = new TextDecoder().decode(conn.plaintextBuf.subarray(0, headerEnd));
     const contentLength = parseContentLength(headerStr);
+    const isChunked = /transfer-encoding:[^\r\n]*\bchunked\b/i.test(headerStr);
     const bodyStart = headerEnd + 4;
     const bodyReceived = conn.plaintextBuf.length - bodyStart;
 
-    if (contentLength > 0 && bodyReceived < contentLength) return;
+    // Determine whether the full request body has arrived, and isolate exactly
+    // its bytes — never trailing bytes from a pipelined next request, which the
+    // connection now stays open to receive.
+    let requestBody: Uint8Array | null;
+    let totalRequestLen: number;
+    if (isChunked) {
+      const parsed = parseChunkedBody(conn.plaintextBuf, bodyStart);
+      if (!parsed) return; // terminating zero-chunk not here yet
+      requestBody = parsed.body.length > 0 ? parsed.body : null;
+      totalRequestLen = bodyStart + parsed.consumed;
+    } else {
+      if (contentLength > 0 && bodyReceived < contentLength) return;
+      requestBody = contentLength > 0
+        ? conn.plaintextBuf.subarray(bodyStart, bodyStart + contentLength)
+        : null;
+      totalRequestLen = bodyStart + Math.max(contentLength, 0);
+    }
 
     // Complete HTTP request — parse and fetch
     conn.httpResponsePending = true;
 
-    const { method, path, headers, body } = parseHttpRequest(conn.plaintextBuf, headerEnd);
+    const { method, path, version, headers } = parseHttpRequest(conn.plaintextBuf, headerEnd);
+    const keepAlive = requestKeepsConnectionAlive(version, headers);
 
-    // Consume the request from the plaintext buffer
-    const totalRequestLen = headerEnd + 4 + Math.max(contentLength, 0);
+    // Consume exactly this request from the plaintext buffer.
     conn.plaintextBuf = conn.plaintextBuf.subarray(totalRequestLen);
 
     const host = lastHeaderValue(headers, "host") || conn.hostname;
@@ -506,38 +727,77 @@ export class TlsNetworkBackend implements NetworkIO {
     const browserHeaders = browserRepresentableHeaders(headers);
 
     const fetchBody: Uint8Array<ArrayBuffer> | undefined =
-      body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
+      requestBody && requestBody.length > 0
+        ? new Uint8Array(requestBody) as Uint8Array<ArrayBuffer>
+        : undefined;
+    const contentEncoding = lastHeaderValue(headers, "content-encoding");
     const url = this.corsProxy ? this.corsProxy.urlFor(upstreamUrl) : upstreamUrl;
 
     (async () => {
+      let responseStarted = false;
       try {
-        const fetchHeaders = this.corsProxy
-          ? this.corsProxy.project({
+        // Decode a compressed request body to identity so it can traverse the
+        // proxy, and drop the now-inaccurate Content-Encoding from the headers.
+        let outgoingBody = fetchBody;
+        let outgoingHeaders = browserHeaders;
+        if (fetchBody && contentEncoding !== undefined) {
+          const decoded = await decodeContentEncodingBody(fetchBody, contentEncoding);
+          if (decoded !== null) {
+            outgoingBody = decoded;
+            outgoingHeaders = browserHeaders.filter(
+              ([name]) => name.toLowerCase() !== "content-encoding",
+            );
+          }
+        }
+        const requestBody = method !== "GET" && method !== "HEAD"
+          ? outgoingBody
+          : undefined;
+        const response = this.corsProxy
+          ? await this.corsProxy.fetch({
             method,
-            headers: browserHeaders,
-            bodyPresent: fetchBody !== undefined,
+            headers: outgoingHeaders,
+            body: requestBody,
+            // A body sent with GET/HEAD is dropped, but projection still
+            // judges the request the guest actually made.
+            bodyPresent: outgoingBody !== undefined,
             targetUrl: upstreamUrl,
           })
-          : headersFromOccurrences(browserHeaders);
-        const response = await fetch(url, {
-          method,
-          headers: fetchHeaders,
-          body: method !== "GET" && method !== "HEAD" ? fetchBody : undefined,
-        });
+          : await fetch(url, {
+            method,
+            headers: headersFromOccurrences(outgoingHeaders),
+            body: requestBody,
+          });
 
-        const responseBytes = formatHttpResponse(
-          response.status,
-          response.statusText,
-          response.headers,
-          await response.arrayBuffer(),
-        );
-
-        // Write plaintext response to server downstream — TLS engine encrypts
-        // it automatically and it appears on clientEnd.downstream.readable.
-        await conn.serverDownstreamWriter.write(responseBytes);
-        await conn.serverDownstreamWriter.close();
+        // Write the plaintext response to server downstream piece by piece —
+        // the TLS engine encrypts each as it arrives and it appears on
+        // clientEnd.downstream.readable for the guest's recv().
+        for await (const piece of httpResponseBytes(response, method, version)) {
+          await conn.serverDownstreamWriter.write(piece);
+          responseStarted = true;
+        }
+        // Keep the MITM connection open for a keep-alive client so it can send
+        // the next request on the same socket. Closing after every response
+        // (the earlier single-shot behavior) broke git's smart-HTTP clone,
+        // which reuses one connection for info/refs then git-upload-pack.
+        if (!keepAlive) {
+          await conn.serverDownstreamWriter.close();
+        }
       } catch (err) {
-        // Send a 502 Bad Gateway response through TLS
+        if (responseStarted) {
+          // The head (and maybe part of the body) is already on its way, so a
+          // 502 can no longer be sent. Closing mid-body is how the guest
+          // learns the transfer failed: its chunked decoder sees no final
+          // zero-length chunk.
+          try {
+            await conn.serverDownstreamWriter.close();
+          } catch {
+            // Ignore write errors
+          }
+          conn.httpResponsePending = false;
+          return;
+        }
+        // Send a 502 Bad Gateway response through TLS, then close: a failed
+        // fetch leaves no reliable way to continue this connection.
         const errorBody = `Error fetching ${url}: ${err}`;
         const errorResponse = formatHttpResponse(
           502,
@@ -551,8 +811,16 @@ export class TlsNetworkBackend implements NetworkIO {
         } catch {
           // Ignore write errors
         }
+        conn.httpResponsePending = false;
+        return;
       }
       conn.httpResponsePending = false;
+      // A keep-alive client may have already pipelined its next request into
+      // plaintextBuf while this fetch was in flight; drain it now since the
+      // upstream reader only calls this on newly arriving bytes.
+      if (keepAlive && !conn.closed) {
+        this.tryProcessHttpRequest(conn);
+      }
     })();
   }
 
@@ -576,7 +844,7 @@ export class TlsNetworkBackend implements NetworkIO {
     if (contentLength > 0 && bodyReceived < contentLength) return data.length;
 
     // Complete request — parse and issue fetch
-    const { method, path, headers, body } = parseHttpRequest(conn.sendBuf, headerEnd);
+    const { method, path, version, headers, body } = parseHttpRequest(conn.sendBuf, headerEnd);
     const hostHeader = lastHeaderValue(headers, "host");
     const scheme = conn.port === 443 ? "https" : "http";
     const portSuffix = (conn.port === 80 || conn.port === 443) ? "" : `:${conn.port}`;
@@ -593,32 +861,31 @@ export class TlsNetworkBackend implements NetworkIO {
       body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
     const url = this.corsProxy ? this.corsProxy.urlFor(upstreamUrl) : upstreamUrl;
 
+    const generation = ++conn.requestGeneration;
     const doFetch = async () => {
       try {
-        const fetchHeaders = this.corsProxy
-          ? this.corsProxy.project({
+        const response = this.corsProxy
+          ? await this.corsProxy.fetch({
             method,
             headers: browserHeaders,
-            bodyPresent: fetchBody !== undefined,
+            body: fetchBody,
             targetUrl: upstreamUrl,
           })
-          : headersFromOccurrences(browserHeaders);
-        const response = await fetch(url, {
-          method,
-          headers: fetchHeaders,
-          body: fetchBody,
-        });
+          : await fetch(url, {
+            method,
+            headers: headersFromOccurrences(browserHeaders),
+            body: fetchBody,
+          });
 
-        const bodyBuf = await response.arrayBuffer();
-
-        conn.responseBuf = formatHttpResponse(
-          response.status,
-          response.statusText,
-          response.headers,
-          bodyBuf,
-        );
+        // Hand each piece to recv() as it arrives (see httpResponseBytes).
+        for await (const piece of httpResponseBytes(response, method, version)) {
+          if (conn.requestGeneration !== generation) return;
+          appendHttpResponse(conn, piece);
+        }
+        if (conn.requestGeneration !== generation) return;
         conn.fetchDone = true;
       } catch (e) {
+        if (conn.requestGeneration !== generation) return;
         conn.fetchError = e as Error;
         conn.fetchDone = true;
       }
@@ -637,25 +904,25 @@ export class TlsNetworkBackend implements NetworkIO {
   }
 
   private httpRecv(conn: HttpConnectionState, maxLen: number, flags: number): Uint8Array {
+    // Bytes that have arrived are delivered first, even while the rest of the
+    // response is still streaming (or after it failed partway).
+    const remaining = conn.responseBuf ? conn.responseBuf.length - conn.responseOffset : 0;
+    if (remaining > 0 && maxLen > 0) {
+      const len = Math.min(maxLen, remaining);
+      const result = conn.responseBuf!.slice(conn.responseOffset, conn.responseOffset + len);
+      if ((flags & MSG_PEEK) === 0) {
+        conn.responseOffset += len;
+      }
+      return result;
+    }
+
     if (!conn.fetchDone) {
       throw new EagainError();
     }
 
     if (conn.fetchError) throw conn.fetchError;
 
-    if (!conn.responseBuf) {
-      return new Uint8Array(0);
-    }
-
-    const remaining = conn.responseBuf.length - conn.responseOffset;
-    const len = Math.min(maxLen, remaining);
-    if (len === 0) return new Uint8Array(0);
-
-    const result = conn.responseBuf.slice(conn.responseOffset, conn.responseOffset + len);
-    if ((flags & MSG_PEEK) === 0) {
-      conn.responseOffset += len;
-    }
-    return result;
+    return new Uint8Array(0); // EOF
   }
 
   poll(handle: number, events: number): number {
@@ -668,19 +935,12 @@ export class TlsNetworkBackend implements NetworkIO {
     }
 
     if (conn.kind === "http") {
-      if (conn.fetchError) return revents | POLLERR;
-      if (
-        (events & POLLIN) !== 0 &&
-        conn.responseBuf &&
-        conn.responseOffset < conn.responseBuf.length
-      ) {
+      const unread = conn.responseBuf !== null && conn.responseOffset < conn.responseBuf.length;
+      if (conn.fetchError && !unread) return revents | POLLERR;
+      if ((events & POLLIN) !== 0 && unread) {
         revents |= POLLIN;
       }
-      if (
-        conn.fetchDone &&
-        conn.responseBuf &&
-        conn.responseOffset >= conn.responseBuf.length
-      ) {
+      if (conn.fetchDone && conn.responseBuf && !unread) {
         revents |= POLLHUP;
       }
       return revents;

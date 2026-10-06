@@ -856,6 +856,291 @@ separate Node.js/real-Chromium results belong in the draft PR evidence ledger
 after the candidate is frozen. No latency improvement or broad performance
 no-regression is claimed here.
 
+### ABI 44 device identity and the Wayland stack
+
+ABI 44 exists because `WasmStat` changed shape: it grows from 88 to 96
+bytes with a trailing `st_rdev: u64` (offset 88, the slot libc's
+`struct kstat` already reserved). Virtual device nodes report a
+Linux-encoded `dev_t` -- `/dev/input/event{N}` is char major 13, minor
+64+N -- because the real libinput path backend is handed only a node's
+`st_rdev` (`udev_device_new_from_devnum`) and must recover the node from
+it. Every artifact built against ABI 43 must be rebuilt; strict
+`__abi_version` equality already refuses to mix them.
+
+The rest of the Wayland stack's contract changes ride the same epoch. The
+structural ones are recorded in the snapshot; the semantic ones change
+what an existing call returns, which the snapshot cannot see, so they are
+listed here:
+
+- **`SO_PEERCRED`** (`struct ucred {pid, uid, gid}`), with Linux's
+  capture points: an accepted AF_UNIX stream socket reports the process
+  that called `connect()`, the connecting socket reports the listener as
+  of `listen()`, a socketpair and a listener report their creator, and a
+  socket with no AF_UNIX peer reports `{0, -1, -1}`. Before this epoch
+  the kernel did not implement the option: `getsockopt(SO_PEERCRED)`
+  failed with `ENOPROTOOPT`.
+- **evdev ioctls**: `EVIOCGPHYS`/`EVIOCGUNIQ`/`EVIOCGPROP` join the
+  caller-length `E`-magic families that libevdev issues while it
+  constructs a device.
+- **`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`**: an in/out ioctl that binds a
+  bo imported from another process as a GL texture on the caller's GL
+  session (GPU compositing).
+- **Blocking `read()` of `/dev/dri/card0`** with no event queued now waits
+  for one (the host parks it until the vblank tick delivers flip
+  completions), as Linux's `drm_read` does. It used to return 0 -- end of
+  file -- which libdrm's `drmHandleEvent` took as "no event", so a program
+  that page-flipped and then waited flipped again into `EBUSY`.
+- **`lseek()` on a prime-bo fd** behaves like a Linux dma-buf: only
+  offset 0 with `SEEK_SET` or `SEEK_END`, and `SEEK_END` reports the
+  buffer's size. It used to fail as an unsupported seek.
+- **epoll registrations** are keyed on (fd, open file description), as on
+  Linux: one survives `close(fd)` while a `dup` keeps its description
+  open, ends once the last fd to it closes, and a new file reusing the fd
+  number is a separate registration. Before, a registration was keyed on
+  the fd number alone and outlived its file. Epoll instances now also cross
+  `fork()` and `posix_spawn()` with their registrations (the child's
+  inherited epoll fd used to name no instance), and the host's `epoll_wait`
+  evaluates the kernel's registrations instead of keeping its own mirror;
+  the new `kernel_epoll_watched_fd(pid, index)` export lists the fds a
+  parked wait registers wakeups on. Fork state moves to `FORK_VERSION` 16
+  to carry the instances (and each socket's peer credentials).
+- **An epoll fd inside `poll()` or another epoll** reports `POLLIN` when
+  one of its registrations is ready, as on Linux (nesting is followed four
+  levels deep). It used to report never ready, so an event loop that
+  watches an inner epoll fd -- libinput's inside libwayland's -- never woke.
+- **A PRIME buffer fd passed over `SCM_RIGHTS`** holds its own reference
+  to the buffer while in flight, as a Linux dma-buf fd does. The sender
+  may close its copy as soon as `sendmsg()` returns; that used to drop the
+  last reference and destroy the buffer before the receiver imported it.
+
+Each semantic change corrects behavior toward Linux without changing a
+layout. They share this epoch rather than taking their own because a
+binary built against ABI 43 cannot run against an ABI 44 kernel at all;
+no artifact can observe the old semantics under the new number.
+
+### ABI 45 the DRI desktop stack
+
+The Hyprland-class compositor, the toolkit ports behind foot, Waybar and
+mako, the Omarchy desktop shell, Qt with Quickshell, and ScummVM change
+the kernel's host-facing contract, so they take a new epoch. Every artifact built against ABI 44
+must be rebuilt.
+
+Structural changes (recorded in the snapshot):
+
+- **`host_gl_present` returns a status.** The kernel import changed from
+  `(i32) -> ()` to `(i32) -> (i32)`, so a GPU-tier present can report
+  failure to the guest's `eglSwapBuffers`. A host built for ABI 44
+  provides the old signature and cannot instantiate this kernel.
+- **GPU-tier buffer objects.** `DRM_IOCTL_WPK_CREATE_GPU_BO` used to fail
+  with `ENOSYS`; it now allocates a bo backed by a host WebGL2 texture and
+  framebuffer through the new `host_gbm_gpu_bo_create` import, and joins
+  the ioctl contract table. Without a shared GL context (headless Node, or
+  before the compositor's context exists) the host returns `ENOSYS` and
+  the guest falls back to a CPU dumb bo.
+- **`GLIO_CREATE_SURFACE` attributes** grow from 12 to 20 bytes: a
+  reserved field names the bo whose framebuffer the window surface
+  renders into.
+- **A new `host_kms_connector_mm` import** reports the display's physical
+  size, which `DRM_IOCTL_MODE_GETCONNECTOR` now returns in
+  `mm_width`/`mm_height` (they were always 0). A host built for ABI 44
+  lacks the import and cannot instantiate this kernel. Host imports are not
+  in the structural snapshot, which is why this is listed by hand.
+- **`kernel_swap_poll_sigmask` / `kernel_restore_poll_sigmask`** exports
+  let the host hold an epoll_pwait signal mask for the whole wait. The
+  host still runs epoll_pwait itself (it converts the wait to poll
+  retries), so without them the mask argument would be ignored and a
+  signal the caller unblocks only inside the wait would never arrive.
+
+Semantic changes (not visible to the snapshot):
+
+- **epoll_pwait's signal mask covers the whole wait,** and a signal that
+  the mask allows ends a parked wait so its handler runs. Before, a
+  thread parked in epoll_pwait never saw a signal until the wait ended
+  on its own (foot reaps children with SIGCHLD from exactly that wait).
+- **SA_RESTART alone decides** whether a wait interrupted by a handler
+  restarts; a handler without it now makes the call fail with `EINTR`.
+- **sendmsg and recvmsg gather every iovec,** not only the first.
+- **A new thread's initial stack pointer is 16-byte aligned,** which C++
+  and varargs code require.
+- **The GL command stream gains three ops and a query:**
+  `OP_DETACH_SHADER`, `OP_VERTEX_ATTRIB_4FV`, `OP_DELETE_FRAMEBUFFERS` and
+  `QOP_GET_SHADER_PRECISION_FORMAT` (`crates/shared` `gl` module,
+  `libc/glue/gl_abi.h`). A guest GLES library that emits them needs a host
+  that decodes them.
+- **`/dev/input/event1` is an absolute pointer.** It no longer advertises
+  `REL_X`/`REL_Y` (only the wheel axes stay relative), so consumers such as
+  SDL's evdev backend read its `EV_ABS` positions, and its `EVIOCGABS`
+  range follows the connector mode the display advertises. Before, the host
+  faked absolute positions by pegging a relative cursor to the origin.
+- **`inotify_init`, `inotify_add_watch` and `inotify_rm_watch` fail with
+  `ENOSYS`.** They used to succeed with an fd that never delivered events,
+  which kept Qt's and glib's file watchers from taking their polling
+  fallback.
+- **A `MAP_FIXED` mapping inside an existing mapping carves it,** leaving
+  the rest of the old mapping in place, rather than evicting the whole
+  mapping.
+
+These share one epoch because a binary or host built for ABI 44 cannot
+run against an ABI 45 kernel at all.
+
+### ABI 46 fork metadata that survives wasm-opt
+
+Fork instrumentation used to be the last step before a binary shipped.
+From ABI 46 the instrumenter runs `wasm-opt -O2` over its own output,
+which shrinks the code section of every measured program by 3–6% (see
+"Optimization around instrumentation" in
+[fork-instrumentation.md](fork-instrumentation.md)). wasm-opt is free to
+delete imports nothing calls and to renumber the rest, so this epoch
+removes the instrumenter metadata's dependence on import positions. Every
+fork-instrumented artifact built against ABI 45 must be rebuilt.
+
+Structural changes (recorded in the snapshot):
+
+- **`kandelo.wpk_fork.imported_globals` and
+  `kandelo.wpk_fork.imported_tables` move to format 2.** Each record's
+  word at offset 20 used to hold the import's position in the import
+  section. It is now reserved and must be zero. Hosts find the import by
+  its kind, module name and field name instead. If several imports share
+  that identity, the k-th record pairs with the k-th such import, and the
+  counts must agree. A format 1 section fails validation.
+
+Semantic changes (not visible to the snapshot):
+
+- **Fork-runtime imports are optional when absent and exact when
+  present.** Instrumentation is proven by the capability section, the
+  `wpk_fork_*` control exports and the descriptors, which wasm-opt keeps.
+  Imports are not: a module cannot use an import it does not declare, and
+  wasm-opt removes the ones nothing calls. Two rules remain. The
+  linked-frame core (`__wpk_fork_frame_reserve`, `commit`, `next`) is
+  all-or-nothing, and a module with those frame imports must import the
+  private unwind tag, because every instrumented frame catches it. A module
+  with no fork-path frames of its own (it only re-exports `env.fork`, or
+  wasm-opt removed every fork-path function) imports neither. Previously
+  hosts, the shell guards and package publication required every
+  `__wpk_fork_*` import, the resume table and the activation global, and
+  required the frame core whenever fork was imported.
+- **Instrumented modules declare every Wasm feature they use** in
+  `target_features`. The instrumenter scans its output (operators, value
+  and block types, memories, tables, tags) and adds what is missing. Its
+  reference codecs use GC instructions such as `ref.test (ref i31)`,
+  exception codecs return tuples (multivalue), and shared memories get
+  atomic guards; wasm-opt enables only the features a module declares, so
+  without the declaration it rejected every instrumented module.
+
+Fork sinks (prototype; see
+[plans/2026-10-02-fork-sinks.md](plans/2026-10-02-fork-sinks.md)) share
+this epoch:
+
+- **New optional import `env.__wpk_fork_boundary`, new export
+  `wpk_fork_resume_sink(i32)`, and a new custom section
+  `kandelo.wpk_fork.boundaries`** (`KFSB`, format 1: a count, then one
+  record per boundary of a frame ordinal and a thunk-signature index).
+  They are present only when the instrumenter found a boundary. A
+  boundary is a function whose child, after fork, never returns to its
+  caller.
+- **Fork can complete below `_start`.** The parent's unwind stops at the
+  deepest boundary on the stack. That function calls
+  `__wpk_fork_boundary`, during which the host seals the capture, sends
+  `SYS_FORK` and begins parent or abort replay. It then restarts its own
+  callees in place. A child whose outermost replay frame is a boundary
+  enters through `wpk_fork_resume_sink` instead of `_start`. That entry
+  returns only if the sink itself returned, which the host reports as
+  "fork child returned through its sink frame". A trap in the child's own
+  code ends the process by its signal, like any other trap.
+- **New custom section `kandelo.wpk_fork.dlopen_contract`** on a
+  dlopen-capable main module analysed with compiler facts. Its text form
+  is `v1`, a `mode` line (`traced-entries` or
+  `assume-all-entries-fork-returning`), an `address-taken` line (`0` or
+  `1`) and one `fork-returning <export>` line per exported function whose
+  fork child can return to its caller. Under `traced-entries`, hosts
+  refuse at `dlopen` a side module that imports a listed export (as an
+  `env` function or a `GOT.func` slot), and every side module when
+  `address-taken` is `1` (today's instrumenter never emits that
+  combination; it switches such a module to
+  `assume-all-entries-fork-returning`). A module without the section loads side modules
+  as before; the instrumenter then never assumed anything about them.
+  `kandelo.calltypes` and `kandelo.calltypes.code-sha256` are build inputs
+  to the instrumenter, which removes them; they are not part of the ABI.
+- **The crt no longer passes `main` as a pointer, and
+  `__libc_start_main` calls its stage 2 directly**, so neither function
+  is in the indirect function table. This is not an ABI surface by
+  itself. The fork analysis relies on it.
+- **A vfork child may `fork()` and `posix_spawn()`.** Both used to fail
+  with `EAGAIN`. The fork copies the borrowed memory, and the grandchild
+  adopts the vfork child's own continuation root (worker init field
+  `forkLaunchRootFromCaller`). This is a host and kernel behavior change
+  with no layout change. A binary built for an earlier ABI 46 host gets
+  success where it got `EAGAIN`, which no correct program relied on. A
+  nested `vfork()` and `pthread_create()` from a vfork child still fail
+  with `EAGAIN`.
+
+Additive changes within ABI 46 (no bump; see "Additive changes within an
+ABI epoch" below):
+
+- **`/dev/kandelo/clipboard`, the host clipboard device.** Five new
+  kernel exports, listed as optional host-adapter exports, so a host
+  checks for them and reports "unsupported" against a kernel without
+  them: `kernel_clipboard_stage(ptr, len, offset)`,
+  `kernel_clipboard_offer()` and `kernel_clipboard_ack(seq)` carry host
+  text to the agent and its answer back, and
+  `kernel_clipboard_guest_generation()` and
+  `kernel_clipboard_guest_read(out_ptr, out_capacity, offset)` read back the
+  desktop selection the agent reports (copy-out). A new
+  `clipboard_device_abi` snapshot section records the guest-visible
+  record header `{u32 version, u32 kind, u32 seq, u32 len}`, its two
+  kinds (`KIND_OFFER_TEXT` = 1, host to agent; `KIND_GUEST_TEXT` = 2,
+  agent to host), the acknowledgement `{u32 seq, i32 status}` and their
+  constants, generated into `<kandelo/clipboard.h>` and
+  `host/src/generated/abi.ts`. A `write()` to the device is either an
+  8-byte acknowledgement or one whole `KIND_GUEST_TEXT` record. The new
+  device path changes `open("/dev/kandelo/clipboard")` from `ENOENT` to
+  success and adds `/dev/kandelo` to `ls /dev`; no binary built before it
+  depended on either, and an agent built against it fails with `ENOENT`
+  on an older ABI 46 kernel, which is the honest answer. Changing the
+  record or acknowledgement layout later is incompatible and needs a
+  bump; `dump-abi` accepts the section's first appearance as additive
+  and classifies later changes inside it like any other section. No new
+  kernel imports and no new wakeup types: the host learns the agent's
+  answer by polling `kernel_clipboard_ack` on a timer, and a copy-out by
+  polling `kernel_clipboard_guest_generation` while a copy gesture is
+  pending.
+
+### ABI 47 honest program links and kernel-owned host stdin
+
+ABI 47 declares, in `shared::abi::HOST_ENV_IMPORTS`, every import the host
+supplies to a user program from the `env` module (besides the fork runtime's,
+which `WPK_FORK_REQUIRED_*` already declare). The snapshot records it as
+`host_env_imports`, the host receives it as `HOST_ENV_IMPORTS` in
+`host/src/generated/abi.ts`, and `dump-abi` writes the link-time allowance
+`libc/glue/kandelo-host-imports.txt`, which replaces `--allow-undefined` in
+every executable link. Before ABI 47 an executable could leave any symbol
+undefined and the host stubbed unknown imports with a throwing function, so
+configure checks accepted functions Kandelo lacks and programs trapped when
+they first called one. An ABI 47 host refuses to instantiate a program that
+imports anything undeclared from `env` (`host/src/env-imports.ts`), and
+`scripts/check-program-env-imports.sh` surveys built programs for the same
+rule. Both read the fork runtime's imports from the declarations too,
+including `WPK_FORK_GLOBAL_IMPORTS`, the two immutable globals fork
+instrumentation adds (the activation index and the table-generation fence).
+
+ABI 47 also gives host-supplied stdin a kernel pipe
+(`kernel_install_host_stdin_pipe`): fd 0 is an ordinary pipe read end shared
+across `fork`, `dup`, and `exec`, instead of a host handle answered per pid.
+
+The GL command stream gains `OP_BLEND_FUNC_SEPARATE`,
+`OP_BLEND_EQUATION_SEPARATE` and the query `QOP_FINISH` (`crates/shared` `gl`
+module, `libc/glue/gl_abi.h`, `host/src/webgl/ops.ts`), which back
+`glBlendFuncSeparate`, `glBlendEquationSeparate`/`glBlendEquation` and
+`glFinish`. Without them SDL2's GLES2 renderer, which looks up all of these at
+startup, could not be created. A guest GLES library that emits them needs a
+host that decodes them, so they ride this epoch rather than `OP_VERSION`.
+
+Every artifact is rebuilt for ABI 47; the strict `__abi_version` equality
+check rejects ABI 46 programs. As with any bump, the committed resolver bundle
+`scripts/resolve-binary.bundle.mjs` embeds the ABI version and the required
+kernel exports, so it is regenerated (`scripts/build-resolve-binary-bundle.sh`)
+in the same change; a stale bundle rejects the new kernel "by artifact policy".
+
 ## The snapshot
 
 `abi/snapshot.json` is generated by `cargo xtask dump-abi` from the
