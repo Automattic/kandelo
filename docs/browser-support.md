@@ -1163,13 +1163,26 @@ download completed. Both views reset when the kernel is replaced; neither is
 persisted as a machine snapshot.
 
 Cross-origin browser fetches are routed through `public/service-worker.js`,
-which defaults to `https://wordpress-playground-cors-proxy.net/?`. Override it
-with `VITE_CORS_PROXY_URL` when testing another proxy:
+which defaults to `https://wordpress-playground-cors-proxy.net/?`. Only GET
+and HEAD requests are wrapped in the proxy: the proxy exists to make
+CORS-less read-only resources readable under COEP, and its only POST
+authority is the reviewed `git-upload-pack` boundary, which targets the proxy
+URL deliberately. Requests with any other method go directly to their target,
+including guest HTTP requests issued by controlled kernel workers, so that
+server must grant CORS itself. A CORS-less POST fails at the browser's CORS
+boundary; the service worker cannot make it readable. Override the proxy with
+`VITE_CORS_PROXY_URL` when testing another proxy:
 
 ```bash
 cd apps/browser-demos
 VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 ```
+
+An explicit guest `BrowserKernel({ corsProxy })` configuration already directs
+requests to the proxy in `NetworkIO`. Those deliberate requests keep their
+existing route and header policy. The GET/HEAD automatic-wrapping boundary
+applies to unwrapped page and worker requests, including guest fetches from
+an embedder without an explicit backend proxy.
 
 Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
 prefixes receive percent-encoded targets.
