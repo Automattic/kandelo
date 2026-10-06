@@ -124,6 +124,10 @@ name = "fcft"
 class = "platform"
 
 [[packages]]
+name = "ffmpeg"
+class = "user-software"
+
+[[packages]]
 name = "file"
 class = "user-software"
 

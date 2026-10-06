@@ -75,6 +75,23 @@ fn top_level_carryover_uses_switch_dispatch_with_carryover_spills() {
 }
 
 #[test]
+fn simd_lane_memory_ops_keep_carryover_count_exact() {
+    // v128.loadN_lane is 2 -> 1 and v128.storeN_lane is 2 -> 0, though
+    // walrus files both under Instr::LoadSimd with the 1 -> 1 plain SIMD
+    // loads. Treating them as 1 -> 1 overcounts the stack at the call and
+    // spills carryovers that do not exist, which fails validation.
+    let wat = include_str!("fixtures/switch_dispatch/simd_lane_carryover.wat");
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+    let module = Module::from_buffer(&output).expect("walrus parse");
+    assert!(
+        has_top_level_br_table_dispatch(&module, "main"),
+        "`main` must use switch-dispatch with a single carryover spill"
+    );
+}
+
+#[test]
 fn switch_dispatch_skips_non_fork_path_direct_call_on_rewind() {
     // Regression for the 8 sortix fork-semantic FAILs (waitpid,
     // dup3-clofork-fork, ...). Non-fork-path direct calls — like
