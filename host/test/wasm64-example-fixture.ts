@@ -29,6 +29,40 @@ function fixtureBuildContract() {
   return wasm64BuildContract;
 }
 
+let hostTarget: string | null = null;
+
+/**
+ * Stamp this checkout's kandelo.abi.contract digest, as global-setup does for
+ * the fixtures it builds. Without it the host warns that a program compiled
+ * seconds ago is a legacy pre-rollout binary. scripts/build-programs.sh stamps
+ * only what it builds itself, so this builder must stamp its own outputs.
+ */
+function stampAbiContract(out: string): void {
+  hostTarget ??= execFileSync("rustc", ["-vV"], { encoding: "utf8" })
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("host: "))
+    ?.slice(6)
+    .trim() ?? null;
+  if (!hostTarget) {
+    throw new Error("could not determine the Rust host target");
+  }
+  execFileSync(
+    "cargo",
+    [
+      "run",
+      "-p",
+      "xtask",
+      "--target",
+      hostTarget,
+      "--quiet",
+      "--",
+      "stamp-abi-contract",
+      out,
+    ],
+    { cwd: repoRoot, stdio: "pipe" },
+  );
+}
+
 /** Build the memory64 counterpart owned by the test that imports it. */
 export function ensureWasm64ExampleFixture(cFile: string): string {
   const src = join(repoRoot, "examples", cFile);
@@ -44,6 +78,7 @@ export function ensureWasm64ExampleFixture(cFile: string): string {
       stdio: "pipe",
     });
     stampProgramFixture(src, out, contract);
+    stampAbiContract(out);
   }
   return out;
 }

@@ -14,6 +14,8 @@ BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
 BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/build-programs-abi-stamp.sh"
 # Per-arch output dirs match the layout the resolver's
 # `place_binaries_symlinks` writes:
 # binaries/programs/<arch>/ and local-binaries/programs/<arch>/.
@@ -271,6 +273,7 @@ build_program() {
     # helpers even when they have no local fork import.
     "$FORK_INSTRUMENT" "$raw_wasm" -o "$next_wasm"
     mv "$next_wasm" "$wasm"
+    record_built_program_output "$wasm"
     rm -f "$raw_wasm"
 }
 
@@ -314,12 +317,14 @@ build_cpp_program() {
             "$src" \
             -lc++ -lc++abi \
             -o "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
+        record_built_program_output "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
     fi
 
     # Publish the resolver-visible path only after instrumentation and its
     # complete ABI 43 artifact contract succeed.
     "$FORK_INSTRUMENT" "$raw_wasm" -o "$next_wasm"
     mv "$next_wasm" "$wasm"
+    record_built_program_output "$wasm"
     rm -f "$raw_wasm"
 }
 
@@ -941,6 +946,7 @@ if [ -n "$LIBINPUT_REAL_PREFIX" ] && [ -f "$REPO_ROOT/programs/libinput_smoke.c"
         -o "$libinput_wasm"
     "$FORK_INSTRUMENT" "$libinput_wasm" -o "$libinput_wasm.instr"
     mv "$libinput_wasm.instr" "$libinput_wasm"
+    record_built_program_output "$libinput_wasm"
 fi
 
 # Wayland compositor (PR6): a standalone libwayland *server* (wlcompositor)
@@ -1103,6 +1109,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             -o "$comp_wasm"
         "$FORK_INSTRUMENT" "$comp_wasm" -o "$comp_wasm.instr"
         mv "$comp_wasm.instr" "$comp_wasm"
+        record_built_program_output "$comp_wasm"
     fi
 
     # Client.
@@ -1125,6 +1132,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         -o "$client_wasm"
     "$FORK_INSTRUMENT" "$client_wasm" -o "$client_wasm.instr"
     mv "$client_wasm.instr" "$client_wasm"
+    record_built_program_output "$client_wasm"
 
     # kwlctl (PR14c): the hyprctl-analog CLI over the compositor's
     # /tmp/kwlctl-0 control socket. Plain libc + sockets, no wayland libs.
@@ -1138,6 +1146,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             -o "$kwlctl_wasm"
         "$FORK_INSTRUMENT" "$kwlctl_wasm" -o "$kwlctl_wasm.instr"
         mv "$kwlctl_wasm.instr" "$kwlctl_wasm"
+        record_built_program_output "$kwlctl_wasm"
     fi
 
     # Clipboard client: the wl_data_device selection and the
@@ -1159,6 +1168,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             -o "$clip_wasm"
         "$FORK_INSTRUMENT" "$clip_wasm" -o "$clip_wasm.instr"
         mv "$clip_wasm.instr" "$clip_wasm"
+        record_built_program_output "$clip_wasm"
     fi
 
     # dmabuf client (PR11): drives the zwp_linux_dmabuf_v1 buffer path so
@@ -1179,6 +1189,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             -o "$dmabuf_wasm"
         "$FORK_INSTRUMENT" "$dmabuf_wasm" -o "$dmabuf_wasm.instr"
         mv "$dmabuf_wasm.instr" "$dmabuf_wasm"
+        record_built_program_output "$dmabuf_wasm"
     fi
 
 fi
@@ -1230,6 +1241,7 @@ if [ -d "$LIBKWL_DIR/src" ]; then
             -o "$kwl_app_wasm"
         "$FORK_INSTRUMENT" "$kwl_app_wasm" -o "$kwl_app_wasm.instr"
         mv "$kwl_app_wasm.instr" "$kwl_app_wasm"
+        record_built_program_output "$kwl_app_wasm"
     done
 fi
 
@@ -1266,6 +1278,7 @@ if ls "$REPO_ROOT"/programs/wlterm/*.c >/dev/null 2>&1 &&
     # forkpty() forks — instrumentation is required, not optional.
     "$FORK_INSTRUMENT" "$wlterm_wasm" -o "$wlterm_wasm.instr"
     mv "$wlterm_wasm.instr" "$wlterm_wasm"
+    record_built_program_output "$wlterm_wasm"
 fi
 
 for src in "$REPO_ROOT/programs/"*.cpp; do
@@ -1336,6 +1349,7 @@ PY
             -o "$sdl2_wasm"
         "$FORK_INSTRUMENT" "$sdl2_wasm" -o "$sdl2_wasm.instr"
         mv "$sdl2_wasm.instr" "$sdl2_wasm"
+        record_built_program_output "$sdl2_wasm"
     fi
 fi
 
@@ -1411,6 +1425,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         # Keep empty optional flags safe under Bash 3.2 with `set -u`.
         "$CC" "${CFLAGS64[@]}" ${extra_flags[@]+"${extra_flags[@]}"} "$src" "${LINK_FLAGS64[@]}" \
             -o "$OUT_DIR_64/${local_name}.wasm"
+        record_built_program_output "$OUT_DIR_64/${local_name}.wasm"
     done
 
     # WHY: owning Vitests can build these on demand, but browser-only and
@@ -1426,6 +1441,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         echo "  Compiling $(basename "$source_rel" .c) (wasm64)..."
         "$CC" "${CFLAGS64[@]}" "$source_path" "${LINK_FLAGS64[@]}" \
             -o "$output_path"
+        record_built_program_output "$output_path"
     done <<< "$memory64_example_sources"
 
     # Fork continuation instrumentation is currently a wasm32 artifact
@@ -1444,6 +1460,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
             "$sjlj_noexcept_src" \
             -lc++ -lc++abi \
             -o "$TEST_FIXTURE_DIR/wasm64/sjlj_noexcept_boundary.raw.wasm"
+        record_built_program_output "$TEST_FIXTURE_DIR/wasm64/sjlj_noexcept_boundary.raw.wasm"
     fi
 fi
 
@@ -1454,20 +1471,9 @@ fi
 # ABI-contract-digest rollout" (host/src/constants.ts) — a false claim that also
 # writes to stderr, which breaks tests asserting the host stays quiet. Stamp
 # them here so a locally built guest carries the same ABI identity a
-# package-built one does.
+# package-built one does. Only this run's recorded outputs are stamped; see
+# scripts/build-programs-abi-stamp.sh for why the output trees are not swept.
 echo "==> Stamping ABI contract digest on locally built programs..."
-STAMP_HOST_TARGET="${HOST_TARGET:-$(rustc -vV | awk '/^host/ {print $2}')}"
-stamp_targets=()
-while IFS= read -r wasm; do
-    stamp_targets+=("$wasm")
-done < <(
-    find "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR" \
-        "$REPO_ROOT/examples" "$BENCH_OUT_DIR" \
-        -type f -name '*.wasm' 2>/dev/null | sort
-)
-if [ "${#stamp_targets[@]}" -gt 0 ]; then
-    (cd "$REPO_ROOT" && cargo run -p xtask --target "$STAMP_HOST_TARGET" --quiet -- \
-        stamp-abi-contract "${stamp_targets[@]}")
-fi
+stamp_built_program_outputs
 
 echo "Programs built."
