@@ -150,7 +150,7 @@ function gatheringSettled(connection: RTCPeerConnection): Promise<void> {
   });
 }
 
-/** Own the channels from arrival, so early peer messages cannot be lost. */
+/** Own incoming channels and their delivery settings from arrival. */
 function connectionLifecycle(declaration: PeerConnectionDeclaration) {
   const iceServers = declaration.iceServers ?? ICE_SERVERS;
   const hasTurn = iceServers.some(({ urls }) =>
