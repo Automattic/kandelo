@@ -353,13 +353,51 @@ fn slot_graph(side: &Side, pass: &[(String, String, String, String)]) -> SlotGra
     g
 }
 
+/// The slot edges for `slot_links`: function f of type T has its parameter k
+/// fed by every indirect call of type T, and of every type its conversions
+/// reach (`reach`); its result reaches the results of those calls.
+///
+/// WHY a join slot per reach set: a reach set can hold thousands of types
+/// (every type GLib's `GCallback` is cast back to), and the functions with
+/// one share a few such sets. Linking each function to each type it reaches
+/// took billions of edges on GTK programs. One join slot per distinct
+/// (reach set, k) carries the same origins in edges that grow with the
+/// distinct sets: `pt:u:k -> join -> p:f:k`, and `r:f -> join -> rt:u`.
+fn link_slots(side: &Side, reach: &Reach, tys: &Interner, edge: &mut impl FnMut(&str, &str)) {
+    let mut joins: HashMap<(&[u32], &str), String> = HashMap::new();
+    for (t, k, fname) in &side.slot_links {
+        let ret = k == "ret";
+        let (tail, head) = if ret { (format!("r:{fname}"), format!("rt:{t}")) } else { (format!("pt:{t}:{k}"), format!("p:{fname}:{k}")) };
+        edge(&tail, &head);
+        let Some(r) = reach.get(fname).filter(|r| !r.is_empty()) else { continue };
+        let join = joins.entry((r.as_slice(), k.as_str())).or_default();
+        if join.is_empty() {
+            // '#' starts no slot name the plugin writes.
+            *join = format!("#join:{fname}:{k}");
+            for &u in r {
+                let u = &tys.names[u as usize];
+                if ret {
+                    edge(join, &format!("rt:{u}"));
+                } else {
+                    edge(&format!("pt:{u}:{k}"), join);
+                }
+            }
+        }
+        if ret {
+            edge(&tail, join);
+        } else {
+            edge(join, &head);
+        }
+    }
+}
+
 fn slot_flow(side: &Side, base: &SlotGraph, reach: &Reach, tys: &Interner) -> (HashMap<String, HashSet<String>>, HashMap<String, HashSet<String>>) {
     // Round edges on top of the base graph; new slot names get ids after it.
     let mut ids: HashMap<String, u32> = HashMap::new();
     let mut names: Vec<String> = vec![];
     let mut extra: HashMap<u32, Vec<u32>> = HashMap::new();
     let nb = base.names.len() as u32;
-    let mut id = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| -> u32 {
+    let id = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| -> u32 {
         if let Some(&i) = base.ids.get(s).or_else(|| ids.get(s)) {
             return i;
         }
@@ -368,19 +406,10 @@ fn slot_flow(side: &Side, base: &SlotGraph, reach: &Reach, tys: &Interner) -> (H
         ids.insert(s.to_string(), i);
         i
     };
-    // Function f of type T: its parameter k is fed by every indirect call of
-    // type T, and of every type its conversions reach.
-    for (t, k, fname) in &side.slot_links {
-        let mut ts: Vec<&str> = vec![t];
-        if let Some(r) = reach.get(fname) {
-            ts.extend(r.iter().map(|&i| tys.names[i as usize].as_str()));
-        }
-        for u in ts {
-            let (a, b) = if k == "ret" { (format!("r:{fname}"), format!("rt:{u}")) } else { (format!("pt:{u}:{k}"), format!("p:{fname}:{k}")) };
-            let (x, y) = (id(&a, &mut ids, &mut names), id(&b, &mut ids, &mut names));
-            extra.entry(x).or_default().push(y);
-        }
-    }
+    link_slots(side, reach, tys, &mut |a, b| {
+        let (x, y) = (id(a, &mut ids, &mut names), id(b, &mut ids, &mut names));
+        extra.entry(x).or_default().push(y);
+    });
     let name_of = |i: u32| -> &str { if i < nb { base.names[i as usize].as_str() } else { names[(i - nb) as usize].as_str() } };
     // Propagate origin sets (least fixpoint of set union), moving only the
     // origins a slot has newly gained.
@@ -875,4 +904,101 @@ pub(crate) fn defined_functions(module: &Module) -> Vec<(u32, String, &[ValType]
         .collect();
     v.sort_by_key(|x| x.0);
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Per function: (name, own type ids, linked parameters, reached types).
+    fn fixture(fns: &[(&str, &[&str], &[&str], &[&str])]) -> (Side, Reach, Interner) {
+        let (mut side, mut reach, mut tys) = (Side::default(), Reach::new(), Interner::default());
+        for &(f, own, ks, reached) in fns {
+            for t in own {
+                for k in ks {
+                    side.slot_links.push((t.to_string(), k.to_string(), f.to_string()));
+                }
+            }
+            let mut r: Vec<u32> = reached.iter().map(|u| tys.id(u)).collect();
+            r.sort_unstable();
+            reach.insert(f.to_string(), r);
+        }
+        (side, reach, tys)
+    }
+
+    fn link_edges(side: &Side, reach: &Reach, tys: &Interner) -> Vec<(String, String)> {
+        let mut out = vec![];
+        link_slots(side, reach, tys, &mut |a, b| out.push((a.to_string(), b.to_string())));
+        out
+    }
+
+    /// The plugin slots each plugin slot feeds, through any join slots.
+    fn feeds(edges: &[(String, String)]) -> BTreeSet<(String, String)> {
+        let mut succ: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (a, b) in edges {
+            succ.entry(a).or_default().push(b);
+        }
+        let mut out = BTreeSet::new();
+        for &from in succ.keys().filter(|a| !a.starts_with('#')) {
+            let mut work = vec![from];
+            let mut seen = HashSet::new();
+            while let Some(x) = work.pop() {
+                for &y in succ.get(x).into_iter().flatten() {
+                    if !seen.insert(y) {
+                        continue;
+                    }
+                    if y.starts_with('#') {
+                        work.push(y);
+                    } else {
+                        out.insert((from.to_string(), y.to_string()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The same flow with every reached type linked to the function directly.
+    fn direct_feeds(side: &Side, reach: &Reach, tys: &Interner) -> BTreeSet<(String, String)> {
+        let mut out = BTreeSet::new();
+        for (t, k, f) in &side.slot_links {
+            let reached = reach.get(f).into_iter().flatten().map(|&u| tys.names[u as usize].as_str());
+            for u in std::iter::once(t.as_str()).chain(reached) {
+                out.insert(if k == "ret" { (format!("r:{f}"), format!("rt:{u}")) } else { (format!("pt:{u}:{k}"), format!("p:{f}:{k}")) });
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn join_slots_carry_the_same_flow_as_direct_links() {
+        let abc: &[&str] = &["A", "B", "C"];
+        let (side, reach, tys) = fixture(&[
+            // Two own type ids (exact and generalized), like the plugin writes.
+            ("f1", &["F", "F.generalized"], &["0", "ret"], abc),
+            ("f2", &["G"], &["0", "1", "ret"], abc),
+            ("f3", &["H"], &["0"], &["B", "C"]),
+            ("f4", &["F"], &["0", "1"], &[]),
+            ("f5", &["A"], &["1"], abc),
+        ]);
+        assert_eq!(feeds(&link_edges(&side, &reach, &tys)), direct_feeds(&side, &reach, &tys));
+    }
+
+    #[test]
+    fn functions_sharing_a_reach_set_share_its_edges() {
+        // GLib's case: every function cast through GCallback reaches every
+        // type GCallback is cast back to.
+        let types: Vec<String> = (0..300).map(|i| format!("T{i}")).collect();
+        let types: Vec<&str> = types.iter().map(String::as_str).collect();
+        let fns: Vec<(String, String)> = (0..300).map(|i| (format!("f{i}"), format!("F{i}"))).collect();
+        let own: Vec<[&str; 1]> = fns.iter().map(|(_, t)| [t.as_str()]).collect();
+        let spec: Vec<(&str, &[&str], &[&str], &[&str])> =
+            fns.iter().zip(&own).map(|((f, _), own)| (f.as_str(), &own[..], &["0"][..], &types[..])).collect();
+        let (side, reach, tys) = fixture(&spec);
+        let edges = link_edges(&side, &reach, &tys);
+        // Per function its own link and one from the join slot, plus one per
+        // reached type into the join slot; direct links would be 300 * 301.
+        assert_eq!(edges.len(), 300 + 300 + 300);
+        assert_eq!(feeds(&edges), direct_feeds(&side, &reach, &tys));
+    }
 }
