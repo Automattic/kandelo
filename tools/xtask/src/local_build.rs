@@ -617,13 +617,18 @@ fn is_executable_file(path: &Path) -> bool {
 
 /// Ensure the musl sysroot for `arch` exists, mirroring the old
 /// `need_sysroot`/`need_sysroot64`: build it from scratch when the sysroot's
-/// `libc.a` is missing, otherwise just re-sync overlay headers (cheap: a few
-/// `cp`s) so newly added `libc/musl-overlay/include/` files reach an
+/// `libc.a` or the opt-in ucontext archive is missing, otherwise just re-sync
+/// overlay headers (cheap: a few `cp`s) so newly added
+/// `libc/musl-overlay/include/` files reach an
 /// existing sysroot without forcing a full musl rebuild.
 fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<(), String> {
     let sysroot_path = repo.join(sysroot_dir);
     let libc_a = sysroot_path.join("lib/libc.a");
-    if libc_a.is_file() {
+    // A sysroot provisioned before the opt-in unsupported-API library was
+    // introduced is incomplete even when libc.a exists. Rebuild it through
+    // the normal musl path rather than letting package configure links fail.
+    let ucontext_a = sysroot_path.join("lib/libkandelo-ucontext-unsupported.a");
+    if libc_a.is_file() && ucontext_a.is_file() {
         let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
         run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])?;
         if arch == "wasm32posix" {
@@ -5855,6 +5860,43 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn bootstrap_sysroot_rebuilds_when_opt_in_archive_is_missing() {
+        for (sysroot_dir, arch, expected_args) in [
+            ("sysroot", "wasm32posix", ""),
+            ("sysroot64", "wasm64posix", "--arch wasm64posix"),
+        ] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let repo = temp.path();
+            let lib = repo.join(sysroot_dir).join("lib");
+            write(&lib.join("libc.a"), "libc fixture");
+            write(
+                &repo.join("scripts/build-musl.sh"),
+                "printf '%s' \"$*\" > musl-build-args\n",
+            );
+            for script in [
+                "install-overlay-headers.sh",
+                "build-dri-stubs.sh",
+                "build-gles-stubs.sh",
+            ] {
+                write(&repo.join("scripts").join(script), "exit 0\n");
+            }
+            bootstrap_sysroot_step(repo, sysroot_dir, arch).unwrap();
+            assert_eq!(
+                fs::read_to_string(repo.join("musl-build-args")).unwrap(),
+                expected_args
+            );
+
+            fs::remove_file(repo.join("musl-build-args")).unwrap();
+            write(&lib.join("libkandelo-ucontext-unsupported.a"), "opt-in fixture");
+            bootstrap_sysroot_step(repo, sysroot_dir, arch).unwrap();
+            assert!(
+                !repo.join("musl-build-args").exists(),
+                "complete sysroot must use the resync path"
+            );
+        }
     }
 
     #[test]

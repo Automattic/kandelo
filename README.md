@@ -174,7 +174,7 @@ artifacts.
 ### 1. Set up the repository
 
 ```bash
-git submodule update --init libc/musl
+git submodule update --init libc/musl sdk/rust/libc-upstream
 
 # Hermetic build: musl sysroot(s) and SDK, fork-instrument tool,
 # local-build engine (all packages), rootfs image, then the
@@ -182,9 +182,14 @@ git submodule update --init libc/musl
 ./run.sh setup
 ```
 
+The Rust libc submodule supplies the pinned source used to build Rust
+packages, including librsvg; initializing musl alone is not enough for
+the full package graph.
+
 `./run.sh setup` is the single entry point for a working repo: it
 provisions the musl sysroot (building it from scratch on a fresh
-checkout, or just re-syncing overlay headers if it already exists),
+checkout or if its opt-in ucontext library is missing; a complete sysroot
+uses the header and graphics-library resync path),
 builds the fork-instrument host tool, resolves and builds every
 package in the local-build graph, produces the rootfs VFS image, and
 builds the TypeScript host. See [Which command do I

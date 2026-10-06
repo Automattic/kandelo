@@ -15,7 +15,9 @@ scripts/dev-shell.sh bash
 `./run.sh setup` provisions the musl sysroot for you on a fresh
 checkout (see "First build in a fresh checkout or worktree" below); it
 only re-syncs overlay headers — plus the sysroot's DRI/GL archives,
-which carry their own input-digest stamp — if a sysroot already exists.
+which carry their own input-digest stamp — if a complete sysroot already
+exists. A sysroot missing the opt-in ucontext archive is incomplete and
+is rebuilt through `scripts/build-musl.sh`.
 
 Do not use bare `nix develop` for build verification. `scripts/dev-shell.sh`
 uses `nix develop --ignore-environment` with a curated keep-list so undeclared
@@ -116,7 +118,8 @@ bash scripts/build-musl.sh   # Rebuild the wasm32 musl sysroot after editing lib
 scripts/build-programs.sh    # Rebuild test/example C programs
 ```
 
-`./run.sh setup` does not rebuild musl. After editing `libc/musl-overlay/` or
+`./run.sh setup` does not refresh a complete musl sysroot when libc sources
+change. After editing `libc/musl-overlay/` or
 `libc/glue/channel_syscall.c`, run `scripts/build-musl.sh` before relying on
 `./run.sh setup`, Vitest, or conformance tests. Otherwise user programs can link
 against a stale `sysroot/lib/libc.a`, hiding or inventing syscall, ABI, and

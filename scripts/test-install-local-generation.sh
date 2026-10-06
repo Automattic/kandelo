@@ -28,6 +28,28 @@ fail() {
     exit 1
 }
 
+# Fixtures exercise generation publication, not ABI compatibility. Construct
+# valid programs from the authoritative ABI instead of admitting stale bytes
+# or hardcoding a version that breaks at the next platform ABI change.
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+current_abi="$(wasm_current_abi_version "$REPO_ROOT")"
+[[ "$current_abi" =~ ^[0-9]+$ ]] || fail "could not read the current ABI"
+
+write_program_wat() {
+    local marker="$1"
+    local output="$2"
+    cat >"$work/program-$marker.wat" <<EOF
+(module
+  (func \$abi (result i32) i32.const $current_abi)
+  (func \$start)
+  (export "__abi_version" (func \$abi))
+  (export "_start" (func \$start))
+  (global (export "$marker") i32 (i32.const 1)))
+EOF
+    wat2wasm "$work/program-$marker.wat" -o "$output"
+}
+
 # Every native xtask lookup must pin the declared LLVM archive pair. On Darwin,
 # LLVM supplies llvm-ar rather than an `ar` alias, so dropping AR/RANLIB makes
 # a cold Cargo cache fall through to the incompatible Apple archiver. Target
@@ -38,9 +60,10 @@ metadata_repo="$work/metadata-repo"
 metadata_calls="$work/metadata-calls"
 metadata_source="$work/metadata-source.wasm"
 metadata_runtime="$work/metadata-runtime.dat"
-mkdir -p "$metadata_tools" "$metadata_repo/scripts"
+mkdir -p "$metadata_tools" "$metadata_repo/scripts" "$metadata_repo/libc/glue"
 cp "$REPO_ROOT/scripts/install-local-binary.sh" "$metadata_repo/scripts/"
 cp "$REPO_ROOT/scripts/wasm-artifact-guards.sh" "$metadata_repo/scripts/"
+cp "$REPO_ROOT/libc/glue/kandelo-host-imports.txt" "$metadata_repo/libc/glue/"
 printf '\000asm\001\000\000\000' >"$metadata_source"
 printf 'metadata runtime\n' >"$metadata_runtime"
 cat >"$metadata_tools/cargo" <<'EOF'
@@ -110,13 +133,9 @@ artifact = "share/python-runtime.zip"
 guest_path = "/usr/share/local-python/python-runtime.zip"
 EOF
 
-# Minimal executables export the two normal program entry points. Distinct
-# custom sections make fetched and local bytes observably different while
-# retaining valid Wasm.
-printf '\000asm\001\000\000\000\001\005\001\140\000\001\177\003\002\001\000\007\032\002\015__abi_version\000\000\006_start\000\000\012\006\001\004\000\101\000\013\000\006\005fetch' \
-    >"$fetched/bin/python.wasm"
-printf '\000asm\001\000\000\000\001\005\001\140\000\001\177\003\002\001\000\007\032\002\015__abi_version\000\000\006_start\000\000\012\006\001\004\000\101\000\013\000\006\005local' \
-    >"$source_dir/python.wasm"
+# Distinct marker exports keep fetched and local bytes observably different.
+write_program_wat fetched "$fetched/bin/python.wasm"
+write_program_wat local "$source_dir/python.wasm"
 printf 'FETCHED-RUNTIME\n' >"$fetched/share/python-runtime.zip"
 printf 'LOCAL-RUNTIME\n' >"$source_dir/python-runtime.zip"
 
@@ -324,19 +343,6 @@ EOF
     chmod +x "$package_root/build-$package.sh"
 }
 
-write_program_wat() {
-    local marker="$1"
-    local output="$2"
-    cat >"$work/program-$marker.wat" <<EOF
-(module
-  (func \$entry (result i32) i32.const 0)
-  (export "__abi_version" (func \$entry))
-  (export "_start" (func \$entry))
-  (global (export "$marker") i32 (i32.const 1)))
-EOF
-    wat2wasm "$work/program-$marker.wat" -o "$output"
-}
-
 write_kernel_wat() {
     local marker="$1"
     local output="$2"
@@ -350,11 +356,16 @@ write_kernel_wat() {
     {
         printf '%s\n' '(module' \
             '  (func $entry (result i32) i32.const 0)'
+        printf '  (func $abi (result i32) i32.const %s)\n' "$current_abi"
         # WHY: this fixture validates relocation, not an independent adapter
         # protocol. Reading the generated ABI evidence prevents every required
         # export change from creating a second hand-maintained manifest here.
         while IFS= read -r export_name; do
-            printf '  (export "%s" (func $entry))\n' "$export_name"
+            if [ "$export_name" = __abi_version ]; then
+                printf '  (export "%s" (func $abi))\n' "$export_name"
+            else
+                printf '  (export "%s" (func $entry))\n' "$export_name"
+            fi
         done <<<"$required_exports"
         printf '  (global (export "%s") i32 (i32.const 1)))\n' "$marker"
     } >"$work/kernel-$marker.wat"
@@ -411,7 +422,7 @@ for packer_support in \
     browser-memory64-example-fixtures.txt; do
     cp "$REPO_ROOT/scripts/$packer_support" "$composed_repo/scripts/"
 done
-: >"$composed_repo/host/wasm/rootfs.vfs"
+: >"$composed_repo/host/wasm/rootfs.vfs.zst"
 for required in \
     gencat.wasm \
     pthread_channel_reuse_test.wasm \

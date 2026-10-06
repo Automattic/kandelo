@@ -1063,7 +1063,18 @@ strips it. The declared `sha256` still governs what is accepted, and the
 fallback is announced on stderr. No other host gets an invented fallback: a
 dead non-GNU origin fails after its retry budget.
 
-Known migration gap: 29 Archive-provider recipes in the current local build
+The `gzip`, `wget`, and `libiconv` recipes use this handoff and do not
+redownload resolver-supplied source. `gzip` and `wget` build their
+manifest-declared releases; their standalone download paths also verify
+the declared SHA-256. All three keep mutable build state below the
+caller's work root.
+
+The `libzip` recipe links all archive members into a smoke executable and
+audits every Wasm import. Its allowed libc imports include
+`kernel.kernel_clone`, declared by the syscall glue and thread startup;
+unrecognized imports still fail the build.
+
+Known migration gap: 26 Archive-provider recipes in the current local build
 set still use their legacy recipe-owned download path instead of the
 SourceOnlyV1 source handoff. The directed acyclic graph (DAG) and compiled
 artifact cache still apply—a cache hit does not run the recipe—but a cold miss
@@ -1073,12 +1084,12 @@ retain mutable checkout-local source or build state. Migrating these recipes
 to `kandelo_package_stage_verified_source` and resolver-owned work directories
 is explicit future work after the initial local-build restoration lands.
 
-The affected recipes are `bzip2`, `cpython`, `curl`, `git`, `gzip`, `icu`,
-`less`, `libcurl`, `libiconv`, `libpng`, `libxml2`, `libzip`, `msmtpd`,
+The affected recipes are `bzip2`, `cpython`, `curl`, `git`, `icu`,
+`less`, `libcurl`, `libpng`, `libxml2`, `libzip`, `msmtpd`,
 `netcat`, `nginx`, `openssl`, `redis`, `ruby`, `sdl2`,
-`sdl2-mixer-playwave`, `sdl3`, `tar`, `unzip`, `vim`, `wget`, `xz`, `zip`,
-`zlib`, and `zstd`. Five legacy script defaults currently disagree with their
-package manifests (`gzip`, `redis`, `wget`, `xz`, and `zstd`); those cold paths
+`sdl2-mixer-playwave`, `sdl3`, `tar`, `unzip`, `vim`, `xz`, `zip`,
+`zlib`, and `zstd`. Three legacy script defaults currently disagree with their
+package manifests (`redis`, `xz`, and `zstd`); those cold paths
 also require version alignment during the migration.
 
 The libcxx package is intentionally stricter than ordinary source-fetching
@@ -1177,6 +1188,15 @@ symlink it creates routes every shell to a single worktree's
 source.
 
 ### Sysroot libraries are not packages
+
+The opt-in `libkandelo-ucontext-unsupported.a` is also a sysroot artifact,
+not a package. Bootstrap rebuilds musl when either this archive or `libc.a`
+is missing, including sysroots provisioned before the opt-in library was
+introduced. This is a completeness check, not source freshness tracking;
+after changing libc overlays or glue, still run `scripts/build-musl.sh`.
+The full `./run.sh local-build` and `./run.sh build-browser` paths provision
+the SDK and both architecture sysroots before deriving the package graph's
+cache identities, matching the prerequisite ordering of bootstrap builds.
 
 Some APIs are part of the Kandelo sysroot rather than the package graph. The
 GBM/EGL/GLES shims (`libgbm.a`, `libEGL.a`, `libGLESv2.a`) are built by

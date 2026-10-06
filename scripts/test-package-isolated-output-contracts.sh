@@ -286,12 +286,17 @@ perl_valid_git="$TEST_ROOT/perl-valid-cross"
 perl_valid_sysroot="$TEST_ROOT/perl-valid-sysroot"
 perl_valid_repo="$TEST_ROOT/perl-valid-repo"
 perl_policy_marker="$TEST_ROOT/perl-valid-policy"
+perl_fixture_version="$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' \
+    "$REPO_ROOT/packages/registry/perl/package.toml")"
+[ -n "$perl_fixture_version" ] || fail "Perl manifest has no version"
 mkdir -p \
     "$perl_valid_work/source" "$perl_valid_out" "$perl_valid_git" \
     "$perl_valid_sysroot/lib" \
     "$perl_valid_repo/packages/registry/perl" "$perl_valid_repo/scripts" \
-    "$perl_valid_repo/sdk"
+    "$perl_valid_repo/sdk" "$perl_valid_repo/images/vfs/scripts"
 cp "$perl" "$perl_valid_repo/packages/registry/perl/build-perl.sh"
+cp "$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh" \
+    "$perl_valid_repo/images/vfs/scripts/"
 ln -s "$REPO_ROOT/scripts/package-build-roots.sh" \
     "$perl_valid_repo/scripts/package-build-roots.sh"
 cat >"$perl_valid_repo/sdk/activate.sh" <<'SH'
@@ -319,6 +324,19 @@ cat >"$fake_bin/make" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [ -f ./perl ] || exit 97
+# The real recipe now publishes its installed standard library as well as
+# perl.wasm. Model that install in the caller's work root and let the real ZIP
+# builder package it; do not skip the recipe's runtime-output validation.
+if [ "${1:-}" = install.perl ]; then
+    stage=""
+    for arg in "$@"; do
+        case "$arg" in DESTDIR=*) stage="${arg#DESTDIR=}" ;; esac
+    done
+    [ "$stage" = "$WASM_POSIX_DEP_WORK_DIR/install-stage" ] || exit 96
+    archlib="$stage/usr/lib/perl5/${WASM_POSIX_DEP_VERSION:?}/fixture-arch"
+    mkdir -p "$archlib"
+    printf 'package XSLoader; 1;\n' > "$archlib/XSLoader.pm"
+fi
 exit 0
 SH
 chmod 0755 "$fake_bin/make"
@@ -335,6 +353,7 @@ env \
     WASM_POSIX_DEP_WORK_DIR="$perl_valid_work" \
     WASM_POSIX_DEP_OUT_DIR="$perl_valid_out" \
     WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
+    WASM_POSIX_DEP_VERSION="$perl_fixture_version" \
     WASM_POSIX_SYSROOT="$perl_valid_sysroot" \
     WASM_POSIX_BUILD_GIT_PERL_CROSS_DIR="$perl_valid_git" \
     WASM_POSIX_BUILD_GIT_PERL_CROSS_COMMIT=0cc3a1c5432cab8f121f7a629f61893713e7d27a \
@@ -349,6 +368,12 @@ env \
     fail "Perl valid SourceOnly path did not publish perl.wasm"
 [ -f "$perl_policy_marker" ] ||
     fail "Perl valid SourceOnly install did not execute with fork policy auto"
+[ -s "$perl_valid_out/perl-runtime.zip" ] ||
+    fail "Perl valid SourceOnly path did not publish its runtime archive"
+[ "$(unzip -p "$perl_valid_out/perl-runtime.zip" \
+    "lib/perl5/$perl_fixture_version/fixture-arch/XSLoader.pm")" = \
+    'package XSLoader; 1;' ] ||
+    fail "Perl runtime archive omitted the installed fixture module"
 
 msmtpd="$REPO_ROOT/packages/registry/msmtpd/build-msmtpd.sh"
 msmtpd_source='https://snapshot.debian.org/archive/debian/20251129T142942Z/pool/main/m/msmtp/msmtp_1.8.32.orig.tar.xz'
@@ -878,6 +903,7 @@ mkdir -p \
     "$ncurses_source" \
     "$ncurses_work/ncurses-host-build/progs" \
     "$ncurses_work/terminfo/x" \
+    "$ncurses_work/terminfo-runtime/x" \
     "$ncurses_out" \
     "$ncurses_bin"
 : >"$ncurses_archive"
@@ -901,6 +927,9 @@ SH
     chmod +x "$ncurses_work/ncurses-host-build/progs/$tool"
 done
 : >"$ncurses_work/terminfo/x/xterm-256color"
+# This fixture stops at cross-configure to inspect output-directory ownership.
+# Both prebuilt databases are prerequisites; it does not test tic compilation.
+: >"$ncurses_work/terminfo-runtime/x/xterm-256color"
 cat >"$ncurses_bin/wasm32posix-cc" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -956,6 +985,7 @@ assert_compressor_sysroot_isolation() {
     mkdir -p "$recipe_dir" "$repo/scripts" "$seed/lib" "$seed/include" \
         "$work" "$out" "$fake_bin"
     cp "$REPO_ROOT/packages/registry/$package/build-$package.sh" "$recipe"
+    cp "$REPO_ROOT/scripts/package-build-roots.sh" "$repo/scripts/"
     cat >"$repo/scripts/install-local-binary.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -999,6 +1029,10 @@ SH
         local shared_header="$seed/include/lzma.h"
         local output="$out/xz.wasm"
     fi
+
+    # Resolver builds stage their source under the caller-owned work root;
+    # direct invocations retain the separate package-local fixture above.
+    cp -R "$recipe_dir/$package-src" "$work/$package-src"
 
     before="$(tree_digest "$seed")"
     if ! env \

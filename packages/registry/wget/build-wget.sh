@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build GNU wget 1.24.5 for wasm32-posix-kernel.
+# Build GNU wget for wasm32-posix-kernel.
 #
 # Resolves OpenSSL and zlib via `cargo xtask build-deps resolve <name>` —
 # the shared library cache (or builds on miss). See
@@ -11,9 +11,13 @@ set -euo pipefail
 # Output: bin/wget.wasm under the resolver work root (beside this script
 # when run standalone).
 
-WGET_VERSION="${WGET_VERSION:-1.24.5}"
+WGET_VERSION="${WASM_POSIX_DEP_VERSION:-${WGET_VERSION:-1.25.0}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/wget/wget-${WGET_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-766e48423e79359ea31e41db9e5c289675947a7fcf2efdcedb726ac9d0da3784}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
 # WHY: two resolves of this recipe can run at once in one checkout (two
@@ -35,7 +39,7 @@ fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
     exit 1
 fi
 
@@ -85,20 +89,14 @@ EXTRA_LDFLAGS="-L$OPENSSL_DIR/lib -L$ZLIB_DIR/lib"
 export OPENSSL_CFLAGS="-I$OPENSSL_DIR/include"
 export OPENSSL_LIBS="-L$OPENSSL_DIR/lib -lssl -lcrypto"
 
-# --- Download wget source ---
+# --- Stage verified wget source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading wget $WGET_VERSION..."
-    # Use GNU's canonical selector path so exact builds can reach a healthy
-    # mirror without relying on the selector's legacy /gnu compatibility path.
-    URL="https://ftpmirror.gnu.org/wget/wget-${WGET_VERSION}.tar.gz"
-    # WHY: a unique archive under the work root; a fixed /tmp name let two
-    # concurrent builds overwrite or delete each other's download.
-    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/wget-source.XXXXXX")"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm -f "$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+    echo "==> Staging verified wget $WGET_VERSION source..."
+    # WHY: the resolver supplies the manifest's verified release; a second
+    # download both depends on mirror uptime and can select another version.
+    kandelo_package_stage_verified_source wget "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
 fi
 
 cd "$SRC_DIR"
