@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.tu-chemnitz.de/pub/tug/historic/systems/texlive/${TEXLIVE_VERSION}/texlive-${TEXLIVE_VERSION}0308-source.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-fffdb1a3d143c177a4398a2229a40d6a88f18098e5f6dcfd57648c9f2417490f}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+TEXLIVE_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 # Exported so build-texlive-bundle.sh's tlnet-final URL pins to the
 # same release as the source tarball below — keeps the engine and
 # its texmf-dist macros from drifting across upstream rollovers.
 export TEXLIVE_VERSION
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
 # shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -64,25 +66,7 @@ echo "==> zlib at $ZLIB_PREFIX"
 echo "==> libpng at $LIBPNG_PREFIX"
 
 # Download TeX Live source
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading TeX Live $TEXLIVE_VERSION source..."
-    # A unique file under the work root, not a fixed shared temp name that
-    # concurrent builds would race on.
-    TARBALL="$(mktemp "$WORK_DIR/texlive-source.XXXXXX")"
-    if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" \
-            -o "$TARBALL"; then
-        rm -f "$TARBALL"
-        exit 1
-    fi
-    echo "==> Verifying TeX Live source sha256..."
-    if ! echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -; then
-        rm -f "$TARBALL"
-        exit 1
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm -f "$TARBALL"
-fi
+kandelo_package_stage_primary_source texlive "$SRC_DIR" "$WORK_DIR"
 
 # TeX Live always runs luajit's sub-configure even when all Lua engines are
 # disabled. On macOS/ARM the luajit configure fails (can't find pow(), pointer

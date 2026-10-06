@@ -12,8 +12,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$HERE"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$HERE" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC="$WORK_DIR/tyrquake-src"
@@ -22,8 +23,8 @@ OUT_BIN="$WORK_DIR/quake.wasm"
 # Upstream publishes tags, not release tarballs. Pin the exact commit archive
 # the v0.71 tag dereferences to; the sha256 makes it byte-verifiable.
 TYRQUAKE_COMMIT="52c707768f7e9b118b1517476c65a7c87a929602"
-TYRQUAKE_SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/sezero/tyrquake/archive/${TYRQUAKE_COMMIT}.tar.gz}"
-TYRQUAKE_SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-178bfcd6f571c966be7949988af7b0ad6a83cb847c098a17923e1c876663a63c}"
+TYRQUAKE_SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+TYRQUAKE_SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TYRQUAKE_VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 
 # A resolver/Formula caller owns the declared work and output roots. Keep the

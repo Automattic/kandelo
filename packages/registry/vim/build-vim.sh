@@ -14,11 +14,13 @@ set -euo pipefail
 # Output: bin/vim.wasm and runtime/ under the resolver work root (beside
 # this script when run standalone).
 
-VIM_VERSION="${VIM_VERSION:-9.1.0900}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+VIM_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -88,18 +90,7 @@ fi
 echo "==> ncurses at $NCURSES_PREFIX"
 
 # --- Download Vim source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading vim $VIM_VERSION..."
-    URL="https://github.com/vim/vim/archive/refs/tags/v${VIM_VERSION}.tar.gz"
-    # WHY: a unique archive under the work root; a fixed /tmp name let two
-    # concurrent builds overwrite or delete each other's download.
-    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/vim-source.XXXXXX")"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm -f "$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
-fi
+kandelo_package_stage_primary_source vim "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 

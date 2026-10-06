@@ -1,8 +1,12 @@
 schema = 1
 policy = "source-only-v1"
 dependency_only = [
+  "libyaml-source",
   "netsurf-buildsystem-source",
+  "pcaudiolib-source",
   "pcre2-source",
+  "sqlite-amalgamation-source",
+  "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
 ]
 registry_non_roots = []

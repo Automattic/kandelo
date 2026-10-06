@@ -1063,23 +1063,75 @@ strips it. The declared `sha256` still governs what is accepted, and the
 fallback is announced on stderr. No other host gets an invented fallback: a
 dead non-GNU origin fails after its retry budget.
 
-Known migration gap: 29 Archive-provider recipes in the current local build
-set still use their legacy recipe-owned download path instead of the
-SourceOnlyV1 source handoff. The directed acyclic graph (DAG) and compiled
-artifact cache still apply—a cache hit does not run the recipe—but a cold miss
-for one of these nodes does not reuse the resolver source cache and must not be
-described as a hermetic SourceOnly build. Fifteen of the legacy recipes also
-retain mutable checkout-local source or build state. Migrating these recipes
-to `kandelo_package_stage_verified_source` and resolver-owned work directories
-is explicit future work after the initial local-build restoration lands.
+The `gzip`, `wget`, and `libiconv` recipes use this handoff and do not
+redownload resolver-supplied source. `gzip` and `wget` build their
+manifest-declared releases; their standalone download paths also verify
+the declared SHA-256. All three keep mutable build state below the
+caller's work root.
 
-The affected recipes are `bzip2`, `cpython`, `curl`, `git`, `gzip`, `icu`,
-`less`, `libcurl`, `libiconv`, `libpng`, `libxml2`, `libzip`, `msmtpd`,
-`netcat`, `nginx`, `openssl`, `redis`, `ruby`, `sdl2`,
-`sdl2-mixer-playwave`, `sdl3`, `tar`, `unzip`, `vim`, `wget`, `xz`, `zip`,
-`zlib`, and `zstd`. Five legacy script defaults currently disagree with their
-package manifests (`gzip`, `redis`, `wget`, `xz`, and `zstd`); those cold paths
-also require version alignment during the migration.
+Archive recipes read primary version, URL, and SHA-256 identity with
+`kandelo_package_load_source_metadata "$SCRIPT_DIR"`. The helper reads
+`package.toml` using Python 3.11+'s TOML parser, rejects a conflicting resolver
+tuple, and supplies the same metadata for standalone builds. It does not
+export standalone identity into child recipes. Scripts must not maintain
+fallback copies of these fields. NetSurf library wrappers use the shared
+NetSurf driver for this check; output-only wrappers delegate compilation.
+
+The formerly legacy primary download paths now consume resolver-verified
+source and caller-owned work roots. `kandelo_package_stage_primary_source`
+replaces an existing private source copy, never the verified input, and
+rejects overlap with source or output roots. Disposable scratch directories
+come from `kandelo_package_make_work_dir`, below the caller's work root.
+Redis, xz, and zstd now build their manifest releases; their publish
+revisions were advanced because the previous defaults selected other bytes.
+
+Auxiliary archives used by Ruby (libyaml, SQLite amalgamation, and the
+sqlite3 gem) and espeak-ng (pcaudiolib) are direct source-kind dependencies.
+`kandelo_package_stage_source_dependency` consumes their separately sealed
+trees; standalone invocations resolve those same dependencies. The source
+extractor accepts RubyGems `.gem` tar containers; a recipe unpacks the
+verified inner `data.tar.gz` only inside its work root. This is not an
+operating-system network sandbox. Runtime-data bundlers, host build tools,
+and auxiliary inputs still require their own declared-input review before
+claiming an entire compilation is offline or hermetic.
+
+`libzip` and `libcurl` link every archive member into smoke executables and
+call `scripts/check-package-imports.sh --require-startup`. There are no
+package-local import allowlists. Executable and directly declared Wasm
+side-file admission also runs in the resolver. Wasm inside runtime archives
+is not recursively audited here. Host names and kinds come from shared ABI
+declarations; typed kernel process imports come from the current
+architecture's actual SDK libc and startup objects, plus the shared fork
+import declaration.
+Kernel-worker-only exports are not process imports. Unknown modules,
+unknown main-module host names, and wrong kernel function types fail.
+Side modules may import ordinary dynamic-library symbols and the loader's
+`GOT.mem`/`GOT.func` namespaces (global offset table cells). GOT imports
+must be mutable, non-shared globals with the module's pointer width, as
+the shared loader supplies. Ordinary executables cannot import them.
+Unknown kernel imports and reserved host imports of the wrong kind fail.
+Relocatable objects are not audited as final programs. The smoke option preserves the
+required memory and syscall-channel imports even for an otherwise empty
+import section.
+
+The shell audit runs its native Cargo tool with target compiler and linker
+variables removed, including Wasm C/C++ and Rust flags. Caller-owned Cargo
+directories and resolver identity remain intact. A package's cross-build
+environment must not compile the native tool's C dependencies for Wasm.
+
+Repository package build entry points ensure musl core freshness before
+cache identities are calculated. Both sysroots record input fingerprints
+and installed core-output receipts. A current source stamp with missing or
+altered installed bytes is not a cache hit. Builds compile from private
+musl copies under architecture-specific locks and publish only a validated
+core; they do not overlay or clean the input submodule. Graphics refresh
+is separate from core freshness during package resolution.
+
+Automation fixtures use `scripts/package-test-fixtures.sh` to copy the
+real recipe metadata and source helpers and to emit programs with the
+current ABI contract. Tests exercise metadata disagreement, immutable
+source handoff, private output roots, and stale/incomplete SDK rejection
+without encoding the current package release as an expected test result.
 
 The libcxx package is intentionally stricter than ordinary source-fetching
 packages. It builds the C++ standard library from the exact LLVM source
@@ -1116,12 +1168,11 @@ The usual shape is:
 
 ```bash
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32   # standalone default
 SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/<name>-src"
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/<name>-build"
-kandelo_package_stage_verified_source <name> "$SRC_DIR" \
-    "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-    "$KANDELO_PACKAGE_WORK_DIR"
+kandelo_package_stage_primary_source <name> "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     export WASM_POSIX_INSTALL_LOCAL_MIRROR=0          # before install_local_binary
     export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
@@ -1178,6 +1229,16 @@ source.
 
 ### Sysroot libraries are not packages
 
+The opt-in `libkandelo-ucontext-unsupported.a` is also a sysroot artifact,
+not a package. Bootstrap checks required core outputs and installed-byte
+receipts against the current musl, overlay, glue, build-script, and
+toolchain inputs. Missing archives, stale input stamps, or altered outputs
+trigger `scripts/build-musl.sh --ensure`, including sysroots provisioned
+before receipts were introduced.
+The full `./run.sh local-build` and `./run.sh build-browser` paths provision
+the SDK and both architecture sysroots before deriving the package graph's
+cache identities, matching the prerequisite ordering of bootstrap builds.
+
 Some APIs are part of the Kandelo sysroot rather than the package graph. The
 GBM/EGL/GLES shims (`libgbm.a`, `libEGL.a`, `libGLESv2.a`) are built by
 `scripts/build-musl.sh` and exposed through `wasm32posix-pkg-config`; they are
@@ -1188,8 +1249,8 @@ resolves `packages/registry/libdrm` and copies the result in.
 
 Both stub scripts record the digest of the sources they build from in
 `sysroot/.kandelo-{dri,gles}-stubs.input-hash`, and `xtask bootstrap
-sysroot` runs them on every resync — including the fast path that only
-re-syncs overlay headers because `sysroot/lib/libc.a` already exists.
+sysroot` runs them on every resync — including the fast path that reuses
+a core whose source stamp and installed-byte receipt are current.
 Without that, a sysroot provisioned before a glue or `libdrm` change kept
 its old archives indefinitely: declaring the sources in `build.toml.inputs`
 moves the *cache key*, but the link still consumes whatever `sysroot/lib`

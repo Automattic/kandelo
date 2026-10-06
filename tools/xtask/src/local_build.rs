@@ -374,8 +374,25 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     match command {
         LocalBuildCommandV1::Plan { set } => run_plan(set),
         LocalBuildCommandV1::PlanStatus(args) => run_plan_status(args),
-        LocalBuildCommandV1::Run(args) => run_aggregate(args),
-        LocalBuildCommandV1::RunNode(args) => run_node(args),
+        LocalBuildCommandV1::Run(args) => {
+            // Resolve the installed SDK before any graph cache identities.
+            for arch in [
+                crate::pkg_manifest::TargetArch::Wasm32,
+                crate::pkg_manifest::TargetArch::Wasm64,
+            ] {
+                ensure_package_sysroot(&crate::repo_root(), arch)?;
+            }
+            run_aggregate(args)
+        }
+        LocalBuildCommandV1::RunNode(args) => {
+            for arch in [
+                crate::pkg_manifest::TargetArch::Wasm32,
+                crate::pkg_manifest::TargetArch::Wasm64,
+            ] {
+                ensure_package_sysroot(&crate::repo_root(), arch)?;
+            }
+            run_node(args)
+        }
     }
 }
 
@@ -485,6 +502,11 @@ fn run_repo_script_with_env(
     let script = repo.join(rel);
     let mut command = Command::new("bash");
     command.arg(&script).args(args).current_dir(repo);
+    if rel == "scripts/build-musl.sh" {
+        // Build-deps paths and local-build results are machine-readable stdout.
+        // SDK prerequisite diagnostics must not contaminate that channel.
+        command.stdout(std::process::Stdio::from(std::io::stderr()));
+    }
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -615,37 +637,28 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-/// Ensure the musl sysroot for `arch` exists, mirroring the old
-/// `need_sysroot`/`need_sysroot64`: build it from scratch when the sysroot's
-/// `libc.a` is missing, otherwise just re-sync overlay headers (cheap: a few
-/// `cp`s) so newly added `libc/musl-overlay/include/` files reach an
-/// existing sysroot without forcing a full musl rebuild.
+/// Refresh musl from its complete input identity, not libc.a existence.
+/// The builder owns locking, completeness, staging and the cheap current path.
 fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<(), String> {
-    let sysroot_path = repo.join(sysroot_dir);
-    let libc_a = sysroot_path.join("lib/libc.a");
-    if libc_a.is_file() {
-        let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
-        run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])?;
-        if arch == "wasm32posix" {
-            // The resync above copies headers only. `sysroot/lib/{libdrm,
-            // libgbm,libEGL,libGLESv2}.a` are sysroot *artifacts*, installed
-            // by these two scripts and only ever from inside build-musl.sh —
-            // which this branch deliberately skips. A worktree therefore kept
-            // whatever graphics archives it was first provisioned with, no
-            // matter how far libc/glue or the libdrm package moved on; every
-            // entry point a stale archive lacks then fails the link of each
-            // program that uses it (before ABI 47 it became an `env.*` import
-            // that trapped at call time). Both scripts skip on a matching
-            // input digest, so this is a no-op once the sysroot is current.
-            run_repo_script(repo, "scripts/build-dri-stubs.sh", &[])?;
-            run_repo_script(repo, "scripts/build-gles-stubs.sh", &[])?;
-        }
-    } else if arch == "wasm32posix" {
-        run_repo_script(repo, "scripts/build-musl.sh", &[])?;
-    } else {
-        run_repo_script(repo, "scripts/build-musl.sh", &["--arch", arch])?;
-    }
-    verify_sysroot_abi_headers(repo, &sysroot_path, arch)
+    run_repo_script(repo, "scripts/build-musl.sh", &["--ensure", "--arch", arch])?;
+    verify_sysroot_abi_headers(repo, &repo.join(sysroot_dir), arch)
+}
+
+pub(crate) fn ensure_package_sysroot(
+    repo: &Path,
+    arch: crate::pkg_manifest::TargetArch,
+) -> Result<(), String> {
+    let target = match arch {
+        crate::pkg_manifest::TargetArch::Wasm32 => "wasm32posix",
+        crate::pkg_manifest::TargetArch::Wasm64 => "wasm64posix",
+    };
+    // Core-only avoids recursively resolving graphics packages just to build a
+    // package. Full bootstrap refreshes those independently stamped libraries.
+    run_repo_script(
+        repo,
+        "scripts/build-musl.sh",
+        &["--ensure", "--core-only", "--arch", target],
+    )
 }
 
 /// Fail loud if a sysroot is missing — or holds stale copies of — the generated
@@ -745,15 +758,23 @@ fn run_bootstrap_step(
         "fork-instrument-tool" => {
             run_repo_script(repo, "scripts/build-fork-instrument-tool.sh", &[])
         }
-        "engine" => run_aggregate(LocalBuildRunArgsV1 {
-            set: repo.join("packages/sets/local-supported.toml"),
-            source_cache_root: default_source_cache_root()?,
-            output_root: repo.join("local-binaries/source-only-v1"),
-            products,
-            jobs,
-            rebuild,
-            verify_cache,
-        }),
+        "engine" => {
+            for arch in [
+                crate::pkg_manifest::TargetArch::Wasm32,
+                crate::pkg_manifest::TargetArch::Wasm64,
+            ] {
+                ensure_package_sysroot(repo, arch)?;
+            }
+            run_aggregate(LocalBuildRunArgsV1 {
+                set: repo.join("packages/sets/local-supported.toml"),
+                source_cache_root: default_source_cache_root()?,
+                output_root: repo.join("local-binaries/source-only-v1"),
+                products,
+                jobs,
+                rebuild,
+                verify_cache,
+            })
+        }
         // `--rebuild` (`bootstrap --rebuild` / `./run.sh rebuild`) must force
         // these two scripts' own input-hash skip check, so a forced rebuild
         // is never masked by a matching stamp from a previous run.
@@ -5855,6 +5876,47 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn bootstrap_sysroot_always_checks_freshness_even_when_complete() {
+        for (sysroot_dir, arch, expected_args) in [
+            ("sysroot", "wasm32posix", "--ensure --arch wasm32posix"),
+            ("sysroot64", "wasm64posix", "--ensure --arch wasm64posix"),
+        ] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let repo = temp.path();
+            let lib = repo.join(sysroot_dir).join("lib");
+            write(&lib.join("libc.a"), "libc fixture");
+            write(
+                &repo.join("scripts/build-musl.sh"),
+                "printf '%s' \"$*\" > musl-build-args\n",
+            );
+            for script in [
+                "install-overlay-headers.sh",
+                "build-dri-stubs.sh",
+                "build-gles-stubs.sh",
+            ] {
+                write(&repo.join("scripts").join(script), "exit 0\n");
+            }
+            bootstrap_sysroot_step(repo, sysroot_dir, arch).unwrap();
+            assert_eq!(
+                fs::read_to_string(repo.join("musl-build-args")).unwrap(),
+                expected_args
+            );
+
+            fs::remove_file(repo.join("musl-build-args")).unwrap();
+            write(
+                &lib.join("libkandelo-ucontext-unsupported.a"),
+                "opt-in fixture",
+            );
+            bootstrap_sysroot_step(repo, sysroot_dir, arch).unwrap();
+            assert_eq!(
+                fs::read_to_string(repo.join("musl-build-args")).unwrap(),
+                expected_args,
+                "archive existence alone cannot establish freshness"
+            );
+        }
     }
 
     #[test]

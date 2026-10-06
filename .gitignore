@@ -8,6 +8,9 @@
 /target
 /sysroot/
 /sysroot64/
+/sysroot.build-lock
+/sysroot64.build-lock
+/.musl-build-*/
 /tools/bin/
 host/dist/
 host/docs/

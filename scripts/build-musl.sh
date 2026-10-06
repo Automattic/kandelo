@@ -8,7 +8,7 @@ set -euo pipefail
 #   scripts/build-musl.sh --arch wasm64posix   # build wasm64posix
 #
 # Approach:
-#   1. Copy overlay files from libc/musl-overlay/ into libc/musl/arch/<ARCH>/
+#   1. Copy musl and its overlays into an invocation-private source tree
 #   2. Write config.mak directly (bypassing configure which doesn't know our arch)
 #   3. Run make to build libc.a and CRT objects
 #   4. Install headers + libs into sysroot/
@@ -19,9 +19,13 @@ OVERLAY_DIR="$REPO_ROOT/libc/musl-overlay"
 
 # Parse arguments
 ARCH="wasm32posix"
+ENSURE=0
+CORE_ONLY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
+        --ensure) ENSURE=1; shift ;;
+        --core-only) CORE_ONLY=1; shift ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -74,6 +78,48 @@ done
 # flags. The plugin leaves the code unchanged.
 CALLTYPES_PLUGIN="$(node --experimental-strip-types "$REPO_ROOT/sdk/src/lib/calltypes-plugin.ts" "$CC")"
 CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $CALLTYPES_PLUGIN -Xclang -add-plugin -Xclang kandelo-fncasts -fpass-plugin=$CALLTYPES_PLUGIN"
+
+source "$REPO_ROOT/scripts/musl-build-state.sh"
+INPUT_HASH="$(kandelo_musl_input_hash "$REPO_ROOT" "$ARCH" "$CC" "$CALLTYPES_PLUGIN")"
+# A nested graphics dependency resolve may check core freshness while the
+# outer builder still holds its lock. The complete stamped core is safe to use.
+if [ "$ENSURE" = 1 ] && [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != 1 ] && \
+    kandelo_musl_is_current "$SYSROOT" "$INPUT_HASH"; then
+    echo "==> $ARCH musl sysroot is current ($INPUT_HASH)"
+    if [ "$CORE_ONLY" = 0 ] && [ "$ARCH" = wasm32posix ]; then
+        bash "$REPO_ROOT/scripts/build-dri-stubs.sh"
+        bash "$REPO_ROOT/scripts/build-gles-stubs.sh"
+    fi
+    exit 0
+fi
+
+# Each architecture has a separate output lock and private source tree. The
+# historical in-place overlay/clean raced wasm32 against wasm64 and modified
+# the user's musl submodule. Never edit that input while producing the SDK.
+if [ "${KANDELO_MUSL_BUILD_LOCK:-}" != "$SYSROOT" ]; then
+    KANDELO_MUSL_BUILD_LOCK="$SYSROOT" exec python3 -c '
+import fcntl, os, sys
+lock = open(sys.argv[1], "w")
+fcntl.flock(lock, fcntl.LOCK_EX)
+os.set_inheritable(lock.fileno(), True)
+os.execvp(sys.argv[2], sys.argv[2:])
+' "$SYSROOT.build-lock" bash "$0" --arch "$ARCH" \
+        $([ "$ENSURE" = 1 ] && printf '%s' --ensure) \
+        $([ "$CORE_ONLY" = 1 ] && printf '%s' --core-only)
+fi
+BUILD_ROOT="$(mktemp -d "$REPO_ROOT/.musl-build-$ARCH.XXXXXX")"
+FINAL_SYSROOT="$SYSROOT"
+MUSL_INPUT_DIR="$MUSL_DIR"
+MUSL_DIR="$BUILD_ROOT/source"
+SYSROOT="$BUILD_ROOT/sysroot"
+cleanup() {
+    if [ -d "$BUILD_ROOT/previous" ] && [ ! -e "$FINAL_SYSROOT" ]; then
+        mv "$BUILD_ROOT/previous" "$FINAL_SYSROOT"
+    fi
+    rm -rf "$BUILD_ROOT"
+}
+trap cleanup EXIT
+cp -a "$MUSL_INPUT_DIR" "$MUSL_DIR"
 
 # ---------------------------------------------------------------
 # 1. Copy overlay files into musl source tree
@@ -273,7 +319,7 @@ echo "==> Building musl (pass 1: discover failures)..."
 
 # First, try a full build and capture failures
 set +e
-make -j"$NJOBS" 2>&1 | tee /tmp/musl-build.log
+make -j"$NJOBS" 2>&1 | tee "$BUILD_ROOT/build.log"
 BUILD_RC=${PIPESTATUS[0]}
 set -e
 
@@ -281,9 +327,9 @@ if [ $BUILD_RC -ne 0 ]; then
     echo ""
     echo "==> Build had errors. Analyzing failures..."
     # Extract failing source files from the log
-    grep -oE 'obj/[^ ]+\.o' /tmp/musl-build.log | sort -u | head -40
+    grep -oE 'obj/[^ ]+\.o' "$BUILD_ROOT/build.log" | sort -u | head -40
     echo ""
-    echo "==> See /tmp/musl-build.log for full output"
+    echo "==> See this command's log for full output"
     exit 1
 fi
 
@@ -356,10 +402,29 @@ rm -f "$SYSROOT/lib/ucontext_unsupported.o"
 echo "==> Installing override headers..."
 bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$SYSROOT"
 
+# Do not label an output current if its sources changed during compilation.
+if [ "$INPUT_HASH" != "$(kandelo_musl_input_hash "$REPO_ROOT" "$ARCH" "$CC" "$CALLTYPES_PLUGIN")" ]; then
+    echo "ERROR: musl inputs changed during the build; not publishing" >&2
+    exit 1
+fi
+node "$REPO_ROOT/scripts/musl-output-state.mjs" write "$SYSROOT" > "$SYSROOT/.kandelo-musl.outputs.json"
+write_build_stamp "$SYSROOT/.kandelo-musl.input-hash" "$INPUT_HASH"
+kandelo_musl_is_current "$SYSROOT" "$INPUT_HASH" || {
+    echo "ERROR: musl build did not produce a complete sysroot" >&2
+    exit 1
+}
+# Stage and validate all core files before replacing the previous SDK. Failed
+# compilation leaves it intact; EXIT cleanup restores it if publication fails.
+if [ -e "$FINAL_SYSROOT" ]; then
+    mv "$FINAL_SYSROOT" "$BUILD_ROOT/previous"
+fi
+mv "$SYSROOT" "$FINAL_SYSROOT"
+SYSROOT="$FINAL_SYSROOT"
+
 # ---------------------------------------------------------------
 # 10. Build platform graphics/DRI stub libraries
 # ---------------------------------------------------------------
-if [ "$ARCH" = "wasm32posix" ]; then
+if [ "$ARCH" = "wasm32posix" ] && [ "$CORE_ONLY" = 0 ]; then
     echo "==> Building platform graphics stubs..."
     bash "$REPO_ROOT/scripts/build-dri-stubs.sh"
     bash "$REPO_ROOT/scripts/build-gles-stubs.sh"

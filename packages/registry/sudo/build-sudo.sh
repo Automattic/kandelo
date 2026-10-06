@@ -5,10 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 
-SOURCE_URL="https://github.com/sudo-project/sudo/archive/refs/tags/v1.9.17p2.tar.gz"
-SOURCE_SHA256="cabee23359afa698d147478c3a141437dbfecb510382e114eaf4b5087a1f8ca5"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 SOURCE_DIR="$KANDELO_PACKAGE_WORK_DIR/sudo-source"
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/sudo-build"
 PATCH_FILE="$SCRIPT_DIR/patches/wasm-main-envp.patch"
@@ -53,10 +54,10 @@ fi
     export ac_cv_func_pw_dup=no ac_cv_func_setgroupent=no
     export ac_cv_func_setpassent=no ac_cv_func_sysctl=no
     export CONFIG_SITE="$SDK_ROOT/config.site"
-    PREFIX_MAPS="-ffile-prefix-map=$KANDELO_PACKAGE_WORK_DIR=/usr/src/sudo-1.9.17p2"
-    PREFIX_MAPS+=" -fdebug-prefix-map=$KANDELO_PACKAGE_WORK_DIR=/usr/src/sudo-1.9.17p2"
-    PREFIX_MAPS+=" -fmacro-prefix-map=$KANDELO_PACKAGE_WORK_DIR=/usr/src/sudo-1.9.17p2"
-    PREFIX_MAPS+=" -fdebug-compilation-dir=/usr/src/sudo-1.9.17p2"
+    PREFIX_MAPS="-ffile-prefix-map=$KANDELO_PACKAGE_WORK_DIR=/usr/src/sudo-$WASM_POSIX_DEP_VERSION"
+    PREFIX_MAPS+=" -fdebug-prefix-map=$KANDELO_PACKAGE_WORK_DIR=/usr/src/sudo-$WASM_POSIX_DEP_VERSION"
+    PREFIX_MAPS+=" -fmacro-prefix-map=$KANDELO_PACKAGE_WORK_DIR=/usr/src/sudo-$WASM_POSIX_DEP_VERSION"
+    PREFIX_MAPS+=" -fdebug-compilation-dir=/usr/src/sudo-$WASM_POSIX_DEP_VERSION"
     export CFLAGS="-O2 -D_GNU_SOURCE $PREFIX_MAPS"
 
     "$SOURCE_DIR/configure" \

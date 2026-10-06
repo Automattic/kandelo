@@ -21,8 +21,7 @@ source "$SCRIPT_DIR/../../../scripts/netsurf-library-build.sh"
 # generated from.
 ELEMENT_TYPE_GPERF_SHA256="bf3ad6526a27954b11718b877844a8591530af1994061b37dca7c6e101574611"
 
-netsurf_library_setup "$SCRIPT_DIR" libhubbub 0.3.8 \
-    8ac1e6f5f3d48c05141d59391719534290c59cd029efc249eb4fdbac102cd5a5
+netsurf_library_setup "$SCRIPT_DIR" libhubbub
 netsurf_library_require_dep libparserutils lib/libparserutils.a
 netsurf_library_stage_source
 

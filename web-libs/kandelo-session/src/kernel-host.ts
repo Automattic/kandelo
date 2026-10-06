@@ -483,6 +483,17 @@ export interface DmesgLine {
   msg: string;
 }
 
+export interface PtySize {
+  cols: number;
+  rows: number;
+}
+
+/**
+ * Size a PTY starts at when no terminal has reported one yet. The first
+ * sized attach replaces it.
+ */
+const DEFAULT_PTY_SIZE: PtySize = { cols: 80, rows: 24 };
+
 export interface PtyHandle {
   write(bytes: string | Uint8Array): void;
   onData(cb: (bytes: Uint8Array) => void): () => void;
@@ -833,7 +844,18 @@ export interface KernelHost {
   subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void;
 
   // shell / pty
-  attachPty(path?: string, opts?: { cols: number; rows: number }): Promise<PtyHandle>;
+  /**
+   * Attach to the PTY at `path`, starting its program if needed.
+   *
+   * `opts` is the size of the terminal that will display this PTY. Pass it
+   * only from a surface that renders the output (the Shell pane's xterm):
+   * the winsize belongs to whatever the user is looking at, so a sized
+   * attach sets it (TIOCSWINSZ, SIGWINCH on change). Programmatic writers —
+   * boot-link scripts, demo actions, output followers — omit `opts` and
+   * leave the winsize alone; a full-screen program they launch (vim, nano)
+   * then sizes itself to the visible terminal rather than to a guess.
+   */
+  attachPty(path?: string, opts?: PtySize): Promise<PtyHandle>;
   /** Remove the logical PTY, including its process and pending restart. */
   removePty(path: string): void;
   /** Resolve after a command has been written, without waiting for a prompt. */
@@ -1450,7 +1472,7 @@ export class LiveKernelHost implements KernelHost {
 
     try {
       await previousCommandDone.catch(() => {});
-      const pty = await this.attachPty(sessionKey, { cols: 100, rows: 30 });
+      const pty = await this.attachPty(sessionKey);
       const terminalProgram = this.shell ?? this.terminalSessions?.initial;
       const prompt = terminalProgram ? shellPrompt(terminalProgram) : null;
       await waitForPtyReadiness(pty, {
@@ -1496,7 +1518,7 @@ export class LiveKernelHost implements KernelHost {
    */
   async interruptShellForeground(opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 10_000;
-    const pty = await this.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+    const pty = await this.attachPty("/dev/pts/0");
     const terminalProgram = this.shell ?? this.terminalSessions?.initial;
     const prompt = terminalProgram ? shellPrompt(terminalProgram) : null;
     // Listen before writing, or a fast exit prints its prompt unobserved.
@@ -1790,7 +1812,7 @@ export class LiveKernelHost implements KernelHost {
 
   async attachPty(
     path: string = "/dev/pts/0",
-    opts: { cols: number; rows: number } = { cols: 80, rows: 24 },
+    opts?: PtySize,
   ): Promise<PtyHandle> {
     if (!this.kernel) {
       throw new Error(
@@ -1817,10 +1839,16 @@ export class LiveKernelHost implements KernelHost {
       ),
     );
 
-    session.cols = opts.cols;
-    session.rows = opts.rows;
-    if (session.pid > 0 && !session.closed) {
-      kernel.ptyResize(session.pid, opts.rows, opts.cols);
+    // Only a terminal that displays this PTY may size it. A headless attach
+    // (no opts) must not overwrite the size the visible terminal set: that
+    // terminal's xterm only reports changes to its own dimensions, so it
+    // would never put the correct size back.
+    if (opts) {
+      session.cols = opts.cols;
+      session.rows = opts.rows;
+      if (session.pid > 0 && !session.closed) {
+        kernel.ptyResize(session.pid, opts.rows, opts.cols);
+      }
     }
 
     const encoder = new TextEncoder();
@@ -1895,7 +1923,7 @@ export class LiveKernelHost implements KernelHost {
     kernel: KernelLike,
     shell: LiveKernelHostOptions["shell"],
     policy: TerminalSessionPolicy | undefined,
-    opts: { cols: number; rows: number },
+    opts: PtySize | undefined,
   ): Promise<LivePtySession> {
     let session = this.ptySessions.get(sessionKey);
     if (session && !session.closed && !(await this.isPtySessionAlive(session.pid))) {
@@ -1930,12 +1958,12 @@ export class LiveKernelHost implements KernelHost {
         dataListeners: new ListenerSet<Uint8Array>(),
         history: [],
         closed: true,
-        cols: opts.cols,
-        rows: opts.rows,
+        cols: (opts ?? DEFAULT_PTY_SIZE).cols,
+        rows: (opts ?? DEFAULT_PTY_SIZE).rows,
         supervised: policy !== undefined,
       };
       this.ptySessions.set(sessionKey, session);
-    } else {
+    } else if (opts) {
       session.cols = opts.cols;
       session.rows = opts.rows;
     }

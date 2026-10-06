@@ -18,8 +18,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 export WASM_POSIX_DEP_WORK_DIR="$WORK_DIR"
@@ -27,9 +28,9 @@ SRC_DIR="$WORK_DIR/elinks-src"
 BIN_DIR="$WORK_DIR/bin"
 SOURCE_MARKER="$WORK_DIR/.kandelo-elinks-source"
 
-ELINKS_VERSION="${WASM_POSIX_DEP_VERSION:-0.20.0}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/rkd77/elinks/releases/download/v${ELINKS_VERSION}/elinks-${ELINKS_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-75af7ba88af99ff5069ec7b4b7a3241d5920f4089764c7297cff3c8484a9e33f}"
+ELINKS_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 
 # Always use this worktree's SDK wrappers. A resolver caller owns the work and
