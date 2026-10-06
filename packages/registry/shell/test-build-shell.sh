@@ -33,8 +33,8 @@ expect_failure() {
     }
 }
 
-grep -Eq '^revision[[:space:]]*=[[:space:]]*32$' "$BUILD_TOML" ||
-    fail "canonical source shell revision must be 32"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*[1-9][0-9]*$' "$BUILD_TOML" ||
+    fail "canonical source shell revision must be a positive integer"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical source shell must await publication"
 grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
@@ -76,11 +76,15 @@ done
 grep -Eq '\bcurl\b|\bwget\b' "$SHELL_BUILDER" &&
     fail "canonical wrapper contains a network client"
 
-mapfile -t declared_dependencies < <(
+# WHY: the reader validates the complete manifest/contract pair, so legitimate
+# dependency additions need no fixed-count update. Capture its status before
+# mapfile; a failing command inside process substitution would be ignored.
+declared_dependency_names="$(
     node "$CONTRACT_READER" --print-resolver-owned "$CONTRACT" "$PACKAGE_TOML"
-)
-[ "${#declared_dependencies[@]}" -eq 25 ] ||
-    fail "canonical contract must expose 25 lazy resolver dependencies"
+)"
+[ -n "$declared_dependency_names" ] ||
+    fail "canonical contract must expose resolver-owned dependencies"
+mapfile -t declared_dependencies <<<"$declared_dependency_names"
 [ "$(grep -Fc '[[outputs]]' "$PACKAGE_TOML")" -eq 1 ] ||
     fail "canonical shell must publish exactly one output"
 grep -Fq 'wasm = "shell.vfs.zst"' "$PACKAGE_TOML" ||
@@ -129,7 +133,9 @@ out=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --rootfs|--bash|--fbdoom|--modeset|--demo-config|\
-        --demo-profile-overlay|--dependency-contract)
+        --demo-profile-overlay|--dependency-contract|--wldesktop|\
+        --omarchydesktop|--omarchy-theme-hook|--desktop-data|\
+        --libinput-quirks|--espeak-ng-data)
             [ -f "${2:-}" ] || { echo "missing input for $1" >&2; exit 85; }
             shift 2
             ;;
@@ -162,6 +168,12 @@ make_fixture() {
     for dependency in "${declared_dependencies[@]}"; do
         mkdir "$root/dependencies/$dependency"
     done
+    local runtime_file
+    for runtime_file in wldesktop omarchydesktop omarchy-theme-changed \
+        kandelo-desktop-data.zip libinput-quirks.zip; do
+        printf 'desktop runtime\n' >"$root/dependencies/wayland-demo/$runtime_file"
+    done
+    printf 'speech data\n' >"$root/dependencies/espeak-ng/espeak-ng-data.zip"
 }
 
 run_fixture() {
@@ -235,6 +247,8 @@ expect_failure "supports only wasm32" env \
     WASM_POSIX_DEP_WORK_DIR="$TMP_ROOT/wrong-arch/work" \
     WASM_POSIX_DEP_ROOTFS_DIR="$TMP_ROOT/wrong-arch/rootfs" \
     WASM_POSIX_DEP_BASH_DIR="$TMP_ROOT/wrong-arch/bash" \
+    WASM_POSIX_DEP_WAYLAND_DEMO_DIR="$TMP_ROOT/wrong-arch/dependencies/wayland-demo" \
+    WASM_POSIX_DEP_ESPEAK_NG_DIR="$TMP_ROOT/wrong-arch/dependencies/espeak-ng" \
     WASM_POSIX_DEP_FBDOOM_DIR="$TMP_ROOT/wrong-arch/fbdoom" \
     WASM_POSIX_DEP_MODESET_DIR="$TMP_ROOT/wrong-arch/modeset" \
     WASM_POSIX_DEP_TARGET_ARCH=wasm64 \

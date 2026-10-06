@@ -11,17 +11,24 @@ function source(path: string): string {
 describe("espeak-ng package contract", () => {
   it("pins both upstream archives by version and digest", () => {
     const manifest = source("packages/registry/espeak-ng/package.toml");
+    const pcaudiolib = source("packages/registry/pcaudiolib-source/package.toml");
     const build = source("packages/registry/espeak-ng/build-espeak-ng.sh");
 
     expect(manifest).toContain('version = "1.52.0"');
     expect(manifest).toContain(
       'sha256 = "bb4338102ff3b49a81423da8a1a158b420124b055b60fa76cfb4b18677130a23"',
     );
-    expect(build).toContain('PCAUDIO_VERSION="1.3"');
-    expect(build).toContain(
-      'PCAUDIO_SOURCE_SHA256="e8bd15f460ea171ccd0769ea432e188532a7fb27fa73ec2d526088a082abaaad"',
+    expect(pcaudiolib).toContain('version = "1.3"');
+    expect(pcaudiolib).toContain(
+      'sha256 = "e8bd15f460ea171ccd0769ea432e188532a7fb27fa73ec2d526088a082abaaad"',
     );
-    expect(build).toContain("shasum -a 256 -c -");
+    expect(manifest).toMatch(
+      /^depends_on\s*=\s*\[[^\]]*"pcaudiolib-source@1\.3"/m,
+    );
+    expect(build).toContain("kandelo_package_stage_primary_source espeak-ng");
+    expect(build).toContain(
+      "kandelo_package_stage_source_dependency pcaudiolib-source",
+    );
   });
 
   it("selects the OSS backend without patching either source tree", () => {
@@ -64,7 +71,7 @@ describe("espeak-ng package contract", () => {
     const manifest = source("packages/registry/espeak-ng/package.toml");
     const build = source("packages/registry/espeak-ng/build-espeak-ng.sh");
 
-    expect(manifest).toContain('depends_on = ["libcxx@21.1.7"]');
+    expect(manifest).toMatch(/^depends_on\s*=\s*\[[^\]]*"libcxx@21\.1\.7"/m);
     expect(build).toContain("build-deps --arch=wasm32 resolve libcxx");
   });
 

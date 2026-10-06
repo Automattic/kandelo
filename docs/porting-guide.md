@@ -22,13 +22,41 @@ wasm32posix-configure [--enable-static] [other flags]
 make
 ```
 
-The SDK links with `-Wl,--allow-undefined`, so every `AC_CHECK_FUNCS`
-link test "succeeds" — including for functions the sysroot does not
-provide. Cross-check detected functions against
-`nm sysroot/lib/libc.a` and force the absent ones off with
-`ac_cv_func_<name>=no`, or the build breaks on guarded includes
-(dbus's `getpeerucred` pulls Solaris `ucred.h`) or traps at runtime on
-a null table entry.
+Executable links allow unresolved symbols only from the generated host
+import list (`-Wl,--allow-undefined-file=...`). Since ABI 46, ordinary
+Autoconf link probes reject missing functions; they no longer succeed for
+every symbol. Shared-library side modules still allow unresolved symbols
+because the dynamic loader resolves them against the main program.
+See [SDK Guide](sdk-guide.md) for the linking contract.
+
+The configure wrappers load `sdk/config.site` for target cache answers.
+If a cached result disagrees with the target, inspect the actual sysroot:
+
+```bash
+wasm32posix-nm "$WASM_POSIX_SYSROOT/lib/libc.a" | grep -E ' [TW] function_name$'
+```
+
+`T` and `W` identify defined functions, including weak definitions; `U`
+is an unresolved reference. A function that links may still report
+`ENOSYS` at runtime, so symbol presence is not proof of syscall support.
+For a function supplied by a dependency, inspect that dependency's target
+archive and include its required libraries in `LIBS`.
+
+Inspect upstream's `configure.ac`, macros, or generated `configure` before
+seeding cache answers. Custom probes may use different keys or meanings
+from `ac_cv_func_<name>`. For example, jq's `AC_FIND_FUNC` macros also read
+`ac_cv_funclib_<name>`; a cached `ac_cv_func_<name>=yes` can skip populating
+that key and leave the custom result empty. Its math probes use
+`ac_cv_lib_m_<name>`. Seed the keys the macro actually consumes from target
+evidence, preserving each macro's expected answer format, rather than
+forcing features off to make the build pass.
+
+Cross-compilation still prevents configure from running target programs.
+Use verified target answers, and investigate a failed probe's actual
+compile/link diagnostic before adding a cache override. Check
+[POSIX status](posix-status.md) for runtime semantics, and declare required
+libraries explicitly in `LIBS` rather than forcing library searches to
+report success.
 
 **CMake projects** (MariaDB, PCRE2):
 ```bash
@@ -1025,7 +1053,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio incl. the gdbus client core and the GApplication/GAction/GMenu family (GtkApplication's parent types), hand-curated config.h + glibconfig.h, three patches (no dbus built-ins, wasm callback signatures, wasm credentials backend); GRegex is in, compiled against the pcre2 package — glibmm's `Glib::Error::register_init()` calls `g_regex_error_quark` at startup, so every glibmm consumer needs it |
 | pcre2 | `packages/registry/pcre2/build-pcre2.sh` | cmake | 10.44, 8-bit code unit width only, static, no JIT (wasm cannot generate code at runtime), no pcre2grep/pcre2test; backs glib's GRegex. Separate from the `pcre2-source` package, which stages the unbuilt tree MariaDB configures itself |
 | expat | `packages/registry/expat/build-expat.sh` | autoconf | dbus config-parser dependency; entropy from kernel getrandom() |
-| dbus | `packages/registry/dbus/build-dbus.sh` | autoconf | 1.14.10 (last autotools series): dbus-daemon/dbus-send/dbus-monitor, session bus only, EXTERNAL auth over SO_PEERCRED, `ac_cv_func_*` overrides for --allow-undefined false positives |
+| dbus | `packages/registry/dbus/build-dbus.sh` | autoconf | 1.14.10 (last autotools series): dbus-daemon/dbus-send/dbus-monitor, session bus only, EXTERNAL auth over SO_PEERCRED, package-specific cross-probe cache answers |
 | harfbuzz | `packages/registry/harfbuzz/build-harfbuzz.sh` | meson bypass | Single-TU amalgam (src/harfbuzz.cc) with the freetype + glib backends; hand-installed headers and .pc; C++, so harfbuzz.pc carries `-lc++ -lc++abi` from the resolved libcxx (a C consumer's link driver does not add them) |
 | fribidi | `packages/registry/fribidi/build-fribidi.sh` | autoconf | pango's bidi dependency, plain cross-compile |
 | cairo | `packages/registry/cairo/build-cairo.sh` | meson | 1.18.6 via upstream meson and `sdk/meson/wasm32posix.ini`: image surfaces + ft/fc fonts + png, pdf/ps/svg (GTK3 needs cairo-pdf.h; meson ties them and the script surface to zlib), cairo-gobject; upstream 1.18 already passes typed spline callbacks, so no arity patch; the `LD_PRELOAD`-based cairo-trace tool is not published (Kandelo programs are static) |
@@ -1145,10 +1173,12 @@ section survives) and extend the patch with the same shapes.
 When porting a GObject-based library, watch for the same pattern in
 the library's own code: any `(SomeFunc)` cast where the target has a
 different argument count needs a thunk. The failure mode is a trap at
-first use, not a build error, and `-Wl,--allow-undefined` (part of the
-SDK link flags) additionally turns *missing* symbols into null table
-entries with the same trap — check `wasm32posix-nm` for undefined
-symbols when a port traps before `main`.
+first use, not a build error. Current executable links reject missing
+symbols outside the declared host import list. Shared-library side modules
+resolve imports dynamically, so inspect their unresolved symbols with
+`wasm32posix-nm` when a port traps before `main`.
+Also inspect function signatures and dynamic-linking diagnostics rather
+than assuming the executable linker silently accepted a missing function.
 
 CPython's source recipe takes its source, work directory, output directory,
 sysroot, zlib prefix, and guest prefix from the package-resolver contract. It
@@ -1215,10 +1245,58 @@ through `scripts/run-wasm-fork-instrument.sh`. Fork-using programs must export
 the complete `wpk_fork_*` set. Legacy Asyncify artifacts are intentionally not
 accepted. See [fork-instrumentation.md](fork-instrumentation.md).
 
-**"Maximum call stack size exceeded" in browser**: The program's fork-path closure (as discovered by `wasm-fork-instrument --discover-only`) is large. This is rare — the tool instruments only fork-reachable functions, not the whole module. If it happens, check whether `call_indirect` is pulling in a much broader closure than expected. Literal table indexes are checked against active element slots, but dynamic indexes, passive `table.init`, and dynamic table writes remain conservative.
+**"Maximum call stack size exceeded" in browser**: Identify the trapped
+functions first. Deep guest recursion can exhaust the engine's native
+Wasm call stack independently of fork instrumentation or the linear-memory
+shadow stack. If the trace points to fork continuation code, inspect the
+fork-path closure with `wasm-fork-instrument --discover-only` and check
+whether `call_indirect` broadens it. Literal table indexes are checked
+against active element slots, but dynamic indexes, passive `table.init`,
+and dynamic table writes remain conservative. See the large-compiler
+diagnostics below for other resource boundaries.
 
-**Deterministic heap corruption / `memory access out of bounds` in malloc**: Check the linked stack size before suspecting the allocator. The wasm shadow stack sits directly above the data segment, so a frame larger than the remaining stack silently overwrites globals — libc's malloc state is the first victim. The SDK links every executable with `-Wl,-z,stack-size=8388608` (8MB, the Linux main-thread default); a build script that calls clang directly with its own linker flags must pass the same flag or it gets lld's 64KB default. `wasm-objdump -x prog.wasm | grep __stack_pointer` shows the stack top; the stack bottom is that value minus the stack size.
+**Deterministic heap corruption / `memory access out of bounds` in malloc**:
+Check the linked shadow-stack size before suspecting the allocator. A
+frame larger than the remaining stack can silently overwrite globals.
+The SDK defaults to 8 MiB only when no stack size was requested; explicit
+requests are honored, and repeated requests use the last linker operand.
+A script invoking Clang directly must choose its own stack size or get
+wasm-ld's roughly 64 KiB default. `wasm-objdump -x prog.wasm` shows
+`__stack_pointer`; subtract the linked stack size to find its bottom.
+See [SDK stack policy](sdk-guide.md#why-an-8-mib-main-thread-stack).
 
 **Process hangs on read**: The fd might be in blocking mode waiting for data. Check that writers are properly closing their end of the pipe.
 
 **Browser SharedArrayBuffer unavailable**: Ensure COOP/COEP headers are set. In production, the service worker handles this. In dev, Vite's config sets them.
+
+### Large compiler builds and runtime limits
+
+Large toolchains can fail at several independent layers. Capture the
+first diagnostic and a symbolized trace before changing resource limits.
+
+- **Native LLVM linker crash with very large custom sections:** Inspect
+  object and archive section sizes, including compiler-facts metadata,
+  rather than only code size. LLVM toolchain builds have produced several
+  GiB of facts, exceeding native linker's signed section-offset capacity.
+  Preserve the facts required for fork analysis; do not remove metadata
+  or skip instrumentation/admission to make the link finish. Consult
+  [compiler-facts format](fork-instrumentation.md) and the [SDK guide](sdk-guide.md)
+  for the supported representation.
+- **Native Binaryen crash during optimization:** A trace in recursive
+  `StackIRGenerator` on a small macOS worker stack indicates a host-tool
+  stack boundary. For that diagnosed case, `BINARYEN_CORES=1` runs the
+  normal optimization on the main thread. Keep the full optimization and
+  admission path; this is not a default requirement for all packages.
+- **Browser executable-memory allocation failure:** Record the engine
+  diagnostic and compare a fresh machine with repeated tool invocations.
+  Compiled code consumes an engine-managed arena separate from guest
+  linear memory. See the documented
+  [Firefox executable-code limit](browser-support.md#firefox-executable-code-limit).
+- **Browser native call-stack exhaustion:** Deep compiler recursion can
+  hit an engine's call-stack limit even when the guest shadow stack has
+  room. A larger `-z stack-size` or memory maximum does not fix it. Compare
+  engines and preserve the real failing trace as a documented boundary.
+
+Report successful compiler cases separately from diagnosed engine
+failures. A test that asserts the boundary proves the diagnostic, not
+successful compilation of the failed case.

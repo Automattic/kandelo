@@ -27,7 +27,7 @@ script_path = "packages/registry/espeak-ng/build-espeak-ng.sh"
 
 [[host_tools]]
 name = "cmake"
-version_constraint = ">=3.15"
+version_constraint = ">=3.20"
 probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

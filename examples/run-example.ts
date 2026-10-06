@@ -15,7 +15,7 @@
 
 import { closeSync, existsSync, openSync, readFileSync, statSync } from "fs";
 import { resolve, dirname, isAbsolute } from "path";
-import { NodeKernelHost } from "../host/src/node-kernel-host";
+import { NodeKernelHost, resolveRootfsArtifact } from "../host/src/node-kernel-host";
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import { writeAllSync } from "./run-example-output";
 import {
@@ -23,6 +23,7 @@ import {
     type ResolvedBuiltinPrograms,
 } from "./run-example-builtins";
 import { isWithinRealDirectory } from "./run-example-paths";
+import { prepareRunExampleRootfs } from "./run-example-rootfs";
 import {
     buildRunExampleGuestEnvironment,
     resolveRunExampleFilesystem,
@@ -507,14 +508,19 @@ async function main() {
     let host: NodeKernelHost | undefined;
     let status = 1;
     try {
+        const rootfs = runnerFilesystem.isolated
+            ? prepareRunExampleRootfs(new Uint8Array(
+                readFileSync(resolveRootfsArtifact().selectedPath),
+            ))
+            : {};
         host = new NodeKernelHost({
             maxWorkers: 4,
-            rootfsImage: runnerFilesystem.rootfsImage,
+            // Exec authority stays in the image; local bytes only supply its
+            // declared lazy transport. Host exec maps cannot override it.
+            ...rootfs,
             sessionSeedTrees: runnerFilesystem.sessionSeedTrees,
-            // WHY: isolated mode must give explicitly resolved guest tools
-            // precedence over same-named lazy rootfs stubs. `execPrograms` is
-            // the worker's narrow, pre-VFS capability; waiting for the
-            // fallback callback would let the stub start transport I/O first.
+            // These maps are spawn-preflight inputs only. VFS-backed exec
+            // materializes the image's own executable through lazy transport.
             execPrograms: isolatedExecPrograms,
             // Direct build outputs are not immutable resolver generations.
             // Snapshot their exact bytes before worker startup so replacement
