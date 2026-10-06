@@ -59,6 +59,8 @@ type TestRunnerWindow = Window & {
     argv: string[],
     timeoutMs: number,
     options?: {
+      dataFiles?: Array<{ path: string; data: number[] }>;
+      env?: string[];
       corsProxy?: {
         url: string;
         allowedRequestHeaderNames: readonly string[];
@@ -878,4 +880,98 @@ test("guest proxy rejects lossy credentials and state-changing requests", async 
   } finally {
     await close(proxy);
   }
+});
+
+test("controlled guest curl POST goes direct and preserves the CORS boundary", async ({
+  context,
+  page,
+}) => {
+  const observed: ProxyRequest[] = [];
+  const proxy = constrainedProxyFixture(observed);
+  const proxyRoot = await listen(proxy);
+  const directObserved: ProxyRequest[] = [];
+  const target = corsOpenTargetFixture(directObserved);
+  const targetRoot = (await listen(target)).replace("127.0.0.1", "localtest.me");
+  const relayedPosts: string[] = [];
+  context.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/?")) {
+      relayedPosts.push(request.url());
+    }
+  });
+  try {
+    const bytes = Array.from(await readFile(curlPath));
+    await page.goto("/pages/test-runner/?minimal=1", { waitUntil: "domcontentloaded" });
+    await page.evaluate(async () => {
+      await navigator.serviceWorker.register("/service-worker.js", {
+        scope: "/", updateViaCache: "none",
+      });
+      await navigator.serviceWorker.ready;
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null
+      && (window as unknown as TestRunnerWindow).__testRunnerReady === true);
+    const run = (url: string) => page.evaluate(
+      async ({ bytes, url, proxyRoot, config }) =>
+        (window as unknown as TestRunnerWindow).__runTest(
+          new Uint8Array(bytes).buffer,
+          ["curl", "-sS", "-X", "POST", "--data-binary", "guest-body", url],
+          60_000,
+          { corsProxy: { url: `${proxyRoot}/?`, ...config } },
+        ),
+      { bytes, url, proxyRoot, config: EFFECTIVE_PROXY_CONFIG },
+    );
+    const open = await run(`${targetRoot}/guest-post`);
+    expect(open.exitCode, JSON.stringify(open)).toBe(0);
+    expect(open.stdout).toBe("cors-open target response\n");
+    expect(directObserved).toMatchObject([
+      { method: "POST", url: "/guest-post", body: "guest-body" },
+    ]);
+    const blocked = await run(`${proxyRoot.replace("127.0.0.1", "localtest.me")}/cors-less`);
+    expect(blocked.exitCode, JSON.stringify(blocked)).not.toBe(0);
+    expect(observed).toMatchObject([
+      { method: "POST", url: "/cors-less", body: "guest-body" },
+    ]);
+    expect(relayedPosts).toEqual([]);
+  } finally {
+    await Promise.all([close(proxy), close(target)]);
+  }
+});
+
+test("controlled guest git clone preserves the reviewed HTTPS proxy POST", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const gitBytes = Array.from(await readFile(resolveBinary("programs/git/git.wasm")));
+  const helperBytes = Array.from(await readFile(resolveBinary("programs/git/git-remote-http.wasm")));
+  const uploadPacks: string[] = [];
+  context.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("__kandelo_cors_proxy")
+      && request.url().includes("git-upload-pack")) uploadPacks.push(request.url());
+  });
+  await page.goto("/pages/test-runner/", { waitUntil: "domcontentloaded" });
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.register("/service-worker.js", { scope: "/", updateViaCache: "none" });
+    await navigator.serviceWorker.ready;
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => navigator.serviceWorker.controller !== null
+    && (window as unknown as TestRunnerWindow).__testRunnerReady === true);
+  const result = await page.evaluate(async ({ gitBytes, helperBytes }) =>
+    (window as unknown as TestRunnerWindow).__runTest(
+      new Uint8Array(gitBytes).buffer,
+      ["git", "clone", "--depth=1", "https://github.com/Automattic/page-optimize.git", "/tmp/clone"],
+      120_000,
+      {
+        env: ["PATH=/bin:/usr/bin", "HOME=/tmp", "GIT_EXEC_PATH=/usr/libexec/git-core", "GIT_TERMINAL_PROMPT=0"],
+        dataFiles: [
+          { path: "/usr/bin/git", data: gitBytes },
+          { path: "/usr/libexec/git-core/git", data: gitBytes },
+          { path: "/usr/libexec/git-core/git-remote-http", data: helperBytes },
+          { path: "/usr/libexec/git-core/git-remote-https", data: helperBytes },
+        ],
+      },
+    ), { gitBytes, helperBytes });
+  expect(result.exitCode, JSON.stringify(result)).toBe(0);
+  expect(uploadPacks.length).toBeGreaterThan(0);
 });
