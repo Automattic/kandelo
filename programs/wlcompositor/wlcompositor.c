@@ -481,7 +481,7 @@ static struct {
     GLuint prog;
     GLint loc_rect;             /* vec4 NDC x0,y0(top),x1,y1(bottom) */
     GLint loc_uv;               /* vec4 texture uv0.xy,uv1.xy */
-    GLint loc_use_tex;          /* 0 = flat u_color, 1 = opaque tex, 2 = blend */
+    GLint loc_use_tex;          /* 0 = flat u_color; see glc_tex_mode */
     GLint loc_color;
     unsigned wallpaper_tex;
 } glc;
@@ -1483,7 +1483,8 @@ static struct shm_buffer *dmabuf_make_buffer(struct wl_client *c,
         *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_DIMENSIONS;
         return NULL;
     }
-    if (format != DRM_FORMAT_XRGB8888 && format != DRM_FORMAT_ARGB8888) {
+    if (format != DRM_FORMAT_XRGB8888 && format != DRM_FORMAT_ARGB8888 &&
+        format != DRM_FORMAT_XBGR8888 && format != DRM_FORMAT_ABGR8888) {
         *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT;
         return NULL;
     }
@@ -1684,8 +1685,13 @@ static void dmabuf_bind(struct wl_client *c, void *data, uint32_t version,
     if (!r) { wl_client_post_no_memory(c); return; }
     wl_resource_set_implementation(r, &dmabuf_impl, NULL, NULL);
     /* Advertise the formats the GPU tier + gbm import path handle, LINEAR
-     * only. The modifier event exists since interface version 3. */
-    static const uint32_t fmts[] = { DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888 };
+     * only. The modifier event exists since interface version 3. The BGR
+     * pair is the byte order of a GL RGBA texture, so a GL client's
+     * GPU-tier bo is one of those (libwayland-egl). */
+    static const uint32_t fmts[] = {
+        DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888,
+        DRM_FORMAT_XBGR8888, DRM_FORMAT_ABGR8888,
+    };
     for (unsigned i = 0; i < sizeof(fmts) / sizeof(fmts[0]); i++) {
         zwp_linux_dmabuf_v1_send_format(r, fmts[i]);
         if (version >= ZWP_LINUX_DMABUF_V1_MODIFIER_SINCE_VERSION)
@@ -2667,18 +2673,51 @@ static uint32_t bo_get_fb(struct gbm_bo *bo) {
 
 /* Does this buffer's format carry a meaningful alpha channel? The wl_shm and
  * linux-dmabuf paths store their own format enums in the same field, so both
- * ARGB constants are checked. They cannot collide: WL_SHM_FORMAT_ARGB8888 is
- * 0 and the DRM constants are fourcc codes. */
+ * ARGB constants are checked, plus dmabuf's ABGR. They cannot collide:
+ * WL_SHM_FORMAT_ARGB8888 is 0 and the DRM constants are fourcc codes. */
 static inline int buffer_has_alpha(const struct shm_buffer *b) {
     return b->format == WL_SHM_FORMAT_ARGB8888 ||
-           b->format == DRM_FORMAT_ARGB8888;
+           b->format == DRM_FORMAT_ARGB8888 ||
+           b->format == DRM_FORMAT_ABGR8888;
 }
 
-/* Whether a surface's current buffer carries alpha (a layer surface's
- * texture is drawn source-over when it does). */
-static int layer_has_alpha(const struct surface *s) {
+/* Does this buffer store its pixels red-first? DRM XRGB/ARGB8888 is
+ * little-endian [B,G,R,X/A] in memory; XBGR/ABGR8888 is [R,G,B,X/A], the
+ * byte order of a GL RGBA texture, which is what a GL client's GPU-tier bo
+ * holds. Only linux-dmabuf accepts the BGR pair. */
+static inline int buffer_is_bgr_format(const struct shm_buffer *b) {
+    return b->format == DRM_FORMAT_XBGR8888 ||
+           b->format == DRM_FORMAT_ABGR8888;
+}
+
+/* One XBGR/ABGR pixel as the XRGB/ARGB word the scanout holds. */
+static inline uint32_t swap_red_blue(uint32_t px) {
+    return (px & 0xff00ff00u) | ((px & 0xffu) << 16) | ((px >> 16) & 0xffu);
+}
+
+/* Fragment-shader texture modes (u_use_tex). An alpha buffer (ARGB/ABGR)
+ * keeps its sampled alpha and composites source-over; an opaque one forces
+ * alpha to 1 because its fourth channel carries no coverage. A BGR-format
+ * buffer (XBGR/ABGR) is read without the red/blue swizzle. */
+enum {
+    GLC_TEX_OPAQUE = 1,
+    GLC_TEX_ALPHA = 2,
+    GLC_TEX_OPAQUE_RGBA_ORDER = 3,
+    GLC_TEX_ALPHA_RGBA_ORDER = 4,
+};
+
+static int glc_tex_mode(const struct shm_buffer *b) {
+    int alpha = buffer_has_alpha(b);
+    if (buffer_is_bgr_format(b))
+        return alpha ? GLC_TEX_ALPHA_RGBA_ORDER : GLC_TEX_OPAQUE_RGBA_ORDER;
+    return alpha ? GLC_TEX_ALPHA : GLC_TEX_OPAQUE;
+}
+
+/* The texture mode for a surface's current buffer (a layer surface's
+ * texture is drawn source-over when it carries alpha). */
+static int layer_tex_mode(const struct surface *s) {
     struct shm_buffer *b = s->buffer ? wl_resource_get_user_data(s->buffer) : NULL;
-    return b ? buffer_has_alpha(b) : 0;
+    return b ? glc_tex_mode(b) : GLC_TEX_OPAQUE;
 }
 
 /* Source-over composite of one premultiplied ARGB pixel onto an opaque
@@ -2723,6 +2762,7 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
     if (dw <= 0 || dh <= 0) return;
     const int64_t PW = (int64_t)g.pw, PH = (int64_t)g.ph;
     int alpha = buffer_has_alpha(b);
+    int bgr = buffer_is_bgr_format(b);
 
     if (s->vp_src_w > 0 || dw != b->width || dh != b->height) {
         double sx0 = 0.0, sy0 = 0.0;
@@ -2744,6 +2784,7 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
                 if (sx < 0) sx = 0;
                 if (sx >= b->width) sx = b->width - 1;
                 uint32_t px = src[(size_t)sy * src_stride_px + (size_t)sx];
+                if (bgr) px = swap_red_blue(px);
                 uint32_t *slot = &dst[(size_t)(oy + row) * dst_stride_px + (size_t)(ox + col)];
                 *slot = alpha ? blend_premultiplied(px, *slot) : px;
             }
@@ -2763,12 +2804,14 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
     for (int64_t row = y0; row < y1; row++) {
         uint32_t *drow = dst + (size_t)(oy + row) * dst_stride_px + (size_t)(ox + x0);
         const uint32_t *srow = src + (size_t)row * src_stride_px + (size_t)x0;
-        if (!alpha) {
+        if (!alpha && !bgr) {
             memcpy(drow, srow, (size_t)(x1 - x0) * 4);
             continue;
         }
-        for (int64_t col = 0; col < x1 - x0; col++)
-            drow[col] = blend_premultiplied(srow[col], drow[col]);
+        for (int64_t col = 0; col < x1 - x0; col++) {
+            uint32_t px = bgr ? swap_red_blue(srow[col]) : srow[col];
+            drow[col] = alpha ? blend_premultiplied(px, drow[col]) : px;
+        }
     }
 }
 
@@ -3610,9 +3653,11 @@ static void ext_control_mgr_bind(struct wl_client *c, void *data, uint32_t ver,
 
 /* One quad per draw: the vertex shader expands gl_VertexID (triangle
  * strip, no VBO) across a uniform NDC rect; the fragment shader samples
- * the surface texture (with the XRGB [B,G,R,X] → RGB swizzle, exactly
- * like the host's webgl2-scanout presenter) or fills a flat color for
- * the focus border. */
+ * the surface texture or fills a flat color for the focus border. An
+ * XRGB/ARGB texture holds [B,G,R,X] bytes uploaded verbatim as RGBA, so it
+ * is read with the .bgr swizzle exactly like the host's webgl2-scanout
+ * presenter; an XBGR/ABGR one already holds RGBA order and is read as is
+ * (see glc_tex_mode). */
 static const char GLC_VS[] =
     "#version 300 es\n"
     "uniform vec4 u_rect;\n"
@@ -3635,7 +3680,8 @@ static const char GLC_FS[] =
     "void main() {\n"
     "  if (u_use_tex == 0) { o_color = u_color; return; }\n"
     "  vec4 t = texture(u_tex, v_uv);\n"
-    "  o_color = vec4(t.bgr, u_use_tex == 2 ? t.a : 1.0);\n"
+    "  vec3 c = u_use_tex >= 3 ? t.rgb : t.bgr;\n"
+    "  o_color = vec4(c, (u_use_tex == 2 || u_use_tex == 4) ? t.a : 1.0);\n"
     "}\n";
 
 /* Compile one shader; returns 0 on failure. On a headless host the sync
@@ -3672,24 +3718,21 @@ static void glc_rect_ndc(int32_t x, int32_t y, int32_t w, int32_t h,
 /* Logical unit → device pixel. */
 static inline int32_t glc_px(int32_t v) { return v * (int32_t)g.scale; }
 
-/* `alpha` selects the fragment shader's texture branch: an ARGB8888 buffer
- * keeps its sampled alpha and composites source-over, an XRGB8888 one forces
- * alpha to 1 because its fourth channel carries no coverage. */
-static void glc_draw_tex_rect(unsigned tex, int alpha, int32_t x, int32_t y,
+static void glc_draw_tex_rect(unsigned tex, int mode, int32_t x, int32_t y,
                               int32_t w, int32_t h, const float uv[4]) {
     float r[4];
     glc_rect_ndc(x, y, w, h, r);
     glUniform4f(glc.loc_rect, r[0], r[1], r[2], r[3]);
     glUniform4f(glc.loc_uv, uv[0], uv[1], uv[2], uv[3]);
-    glUniform1i(glc.loc_use_tex, alpha ? 2 : 1);
+    glUniform1i(glc.loc_use_tex, mode);
     glBindTexture(GL_TEXTURE_2D, tex);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
-static void glc_draw_tex(unsigned tex, int alpha, int32_t x, int32_t y,
+static void glc_draw_tex(unsigned tex, int mode, int32_t x, int32_t y,
                          int32_t w, int32_t h) {
     static const float full_uv[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
-    glc_draw_tex_rect(tex, alpha, x, y, w, h, full_uv);
+    glc_draw_tex_rect(tex, mode, x, y, w, h, full_uv);
 }
 
 /* Destination box + source-uv rect for a surface's committed buffer under
@@ -3891,10 +3934,10 @@ static int repaint_gl(void) {
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glc_draw_tex(glc.wallpaper_tex, 0, 0, 0, (int32_t)g.pw, (int32_t)g.ph);
+    glc_draw_tex(glc.wallpaper_tex, GLC_TEX_OPAQUE, 0, 0, (int32_t)g.pw, (int32_t)g.ph);
     for (int i = 0; i < g.n_layers; i++)
         if (g.layers[i]->frame_tex && layer_in_band(g.layers[i], 0))
-            glc_draw_tex(g.layers[i]->frame_tex, layer_has_alpha(g.layers[i]),
+            glc_draw_tex(g.layers[i]->frame_tex, layer_tex_mode(g.layers[i]),
                          glc_px(g.layers[i]->x),
                          glc_px(g.layers[i]->y),
                          glc_px(g.layers[i]->w), glc_px(g.layers[i]->h));
@@ -3909,7 +3952,7 @@ static int repaint_gl(void) {
         if (g.kbd_focus == s)   /* 2px accent ring behind the window */
             glc_draw_solid(th.border_active, glc_px(s->x - 2), glc_px(s->y - 2),
                            glc_px(dw + 4), glc_px(dh + 4));
-        glc_draw_tex_rect(s->frame_tex, buffer_has_alpha(b), glc_px(s->x), glc_px(s->y),
+        glc_draw_tex_rect(s->frame_tex, glc_tex_mode(b), glc_px(s->x), glc_px(s->y),
                           glc_px(dw), glc_px(dh), uv);
         /* One-shot per window: the GL renderer drew this window's own
          * texture. Every protocol marker (map, focus, tile, frame callback)
@@ -3934,14 +3977,14 @@ static int repaint_gl(void) {
             int32_t sdw, sdh;
             float suv[4];
             surface_draw_box(sub, sb, &sdw, &sdh, suv);
-            glc_draw_tex_rect(t, buffer_has_alpha(sb), glc_px(sub->x),
+            glc_draw_tex_rect(t, glc_tex_mode(sb), glc_px(sub->x),
                               glc_px(sub->y), glc_px(sdw), glc_px(sdh), suv);
         }
         top = s;
     }
     for (int i = 0; i < g.n_layers; i++)
         if (g.layers[i]->frame_tex && layer_in_band(g.layers[i], 1))
-            glc_draw_tex(g.layers[i]->frame_tex, layer_has_alpha(g.layers[i]),
+            glc_draw_tex(g.layers[i]->frame_tex, layer_tex_mode(g.layers[i]),
                          glc_px(g.layers[i]->x),
                          glc_px(g.layers[i]->y),
                          glc_px(g.layers[i]->w), glc_px(g.layers[i]->h));

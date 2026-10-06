@@ -6,8 +6,8 @@
  * client (programs/wlcompositor/wldmabuf-test.c) under one NodeKernelHost,
  * talking over the real AF_UNIX socket at /tmp/wayland-0. The client:
  *
- *   - binds zwp_linux_dmabuf_v1 and confirms it advertises XRGB8888 + LINEAR
- *     (the one format/modifier the GPU tier + gbm import path handle);
+ *   - binds zwp_linux_dmabuf_v1 and confirms it advertises the buffer's
+ *     format + LINEAR;
  *   - allocates a renderD128 dumb-bo, paints it red, and turns its prime-fd
  *     into a wl_buffer via zwp_linux_buffer_params_v1.create_immed;
  *   - attaches + commits, and its frame callback fires only after the
@@ -15,7 +15,10 @@
  *
  * The compositor samples the composited pixel and we assert it is the
  * client's red — proving the dmabuf buffer traversed the same import +
- * composite path as wl_shm. Input routing is covered by the wl_shm gate
+ * composite path as wl_shm. It runs once per byte order: XRGB8888 stores
+ * red as [B,G,R,X] bytes and XBGR8888 as [R,G,B,X], the order a GL client's
+ * buffer holds (libwayland-egl declares it), so a compositor that ignored
+ * the format would show one of them blue. Input routing is covered by the wl_shm gate
  * (wlcompositor-smoke.test.ts); this one is purely the dmabuf buffer path.
  *
  * Both processes exit 0. Skips if the binaries aren't built (bare checkout).
@@ -52,9 +55,9 @@ async function waitFor(
 }
 
 describe("wlcompositor — composites a zwp_linux_dmabuf_v1 client buffer", () => {
-  it.skipIf(!hasBinaries)(
-    "dmabuf-imported buffer lands on card0 red",
-    async () => {
+  it.skipIf(!hasBinaries).each(["xrgb", "xbgr"])(
+    "%s dmabuf-imported buffer lands on card0 red",
+    async (byteOrder) => {
       const compositorBytes = loadBytes(compositorBin!);
       const clientBytes = loadBytes(clientBin!);
 
@@ -75,7 +78,7 @@ describe("wlcompositor — composites a zwp_linux_dmabuf_v1 client buffer", () =
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
         await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
 
-        const clientExit = host.spawn(clientBytes, ["wldmabuf-test"], {});
+        const clientExit = host.spawn(clientBytes, ["wldmabuf-test", byteOrder], {});
 
         // The client only prints DMABUF_CLIENT_OK after the compositor
         // imported its dmabuf and flipped it (frame callback fired).
