@@ -49,7 +49,7 @@ patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0001-recognize-kandelo-platform.p
 
 echo "==> Configuring SDL3 with only the OSS playback backend..."
 cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
-    -DCMAKE_TOOLCHAIN_FILE="$SCRIPT_DIR/cmake/kandelo-toolchain.cmake" \
+    -DCMAKE_TOOLCHAIN_FILE="$REPO_ROOT/sdk/cmake/kandelo-toolchain.cmake" \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG $REPRO_FLAGS" \

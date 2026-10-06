@@ -164,11 +164,10 @@ if [ ! -f src/auto/config.mk ]; then
     # -I<ncurses>/include pulls in the top-level termcap.h and
     # curses.h symlinks the ncurses build emits.
     export CFLAGS="-O2 -gline-tables-only -I$NCURSES_PREFIX/include"
-    # --export=__abi_version pins the ABI marker through wasm-ld DCE;
-    # without it, LLVM's gc-sections drops the function because no
-    # other object in the link graph calls it (the host does, after
-    # instantiation).
-    export LDFLAGS="-Wl,-z,stack-size=1048576 -Wl,--export=__abi_version -L$NCURSES_PREFIX/lib"
+    # The ABI marker needs no linker flag: libc/glue/channel_syscall.c
+    # exports it itself (export_name "__abi_version", used, retain), and an
+    # export survives gc-sections.
+    export LDFLAGS="-Wl,-z,stack-size=1048576 -L$NCURSES_PREFIX/lib"
     export LIBS="-lncursesw -ltinfow"
 
     wasm32posix-configure \

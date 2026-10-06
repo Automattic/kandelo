@@ -76,6 +76,7 @@ import {
   WPK_FORK_RESUME_SINK_EXPORT,
   type ProcessForkMode,
 } from "./generated/abi";
+import { assertDeclaredEnvImports } from "./env-imports";
 import {
   FORK_SAVE_BUFFER_SIZE,
   FORK_SAVE_CONTROL_PREFIX_SIZE,
@@ -2353,7 +2354,6 @@ function buildImportObject(
   kernelImports: Record<string, WebAssembly.ExportValue>,
   channelOffset: number,
   dlopenImports?: Record<string, WebAssembly.ExportValue>,
-  getInstance?: () => WebAssembly.Instance | undefined,
   ptrWidth: 4 | 8 = 4,
   longjmpTag?: WebAssembly.Tag,
   cppExceptionTag?: WebAssembly.Tag,
@@ -2366,6 +2366,10 @@ function buildImportObject(
   forkEnvImports?: Record<string, WebAssembly.ImportValue>,
 ): WebAssembly.Imports {
   assertSupportedKernelFunctionImports(module, kernelImports);
+  // Refuse, before instantiation, a program that imports from env anything
+  // the host does not provide (src/env-imports.ts). Library functions come
+  // from libc, libc++abi, or libc++; the host never fakes them.
+  assertDeclaredEnvImports(module);
 
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
   /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
@@ -2522,230 +2526,6 @@ function buildImportObject(
     ): void => {
       postVmInterruptTimer(n(timedOutPtr), n(vmInterruptPtr), n(seconds));
     };
-  }
-
-  // C++ operator new/delete fallbacks — delegate to the wasm instance's malloc/free.
-  // Normally resolved by MariaDB's my_new.cc (USE_MYSYS_NEW), but kept as safety net.
-  if (getInstance) {
-    const cppMalloc = (size: number | bigint): number | bigint => {
-      const inst = getInstance();
-      const malloc = inst?.exports.malloc as
-        ((n: number | bigint) => number | bigint) | undefined;
-      if (!malloc) return ptrWidth === 8 ? 0n : 0;
-      return malloc(size || (ptrWidth === 8 ? 1n : 1));
-    };
-    const cppFree = (ptr: number | bigint): void => {
-      const inst = getInstance();
-      const free = inst?.exports.free as
-        ((p: number | bigint) => void) | undefined;
-      if (free) free(ptr);
-    };
-    envImports._Znwm = cppMalloc; // operator new(size_t)
-    envImports._Znam = cppMalloc; // operator new[](size_t)
-    envImports._ZdlPv = cppFree; // operator delete(void*)
-    envImports._ZdlPvm = cppFree; // operator delete(void*, size_t)
-    envImports._ZdaPv = cppFree; // operator delete[](void*)
-    envImports._ZdaPvm = cppFree; // operator delete[](void*, size_t)
-    envImports._ZnwmRKSt9nothrow_t = cppMalloc; // operator new(size_t, nothrow)
-    envImports._ZnamRKSt9nothrow_t = cppMalloc; // operator new[](size_t, nothrow)
-  }
-
-  // C++ runtime stubs — libc++/libc++abi functions that may be imported when
-  // the wasm binary links against empty stub archives.
-  // __cxa_guard_acquire/release: thread-safe static initialization.
-  // Wasm is single-threaded per instance so no real locking needed.
-  envImports.__cxa_guard_acquire = (guardPtr: number | bigint): number => {
-    const view = new Uint8Array(memory.buffer);
-    if (view[n(guardPtr)]) return 0; // already initialized
-    return 1; // needs initialization
-  };
-  envImports.__cxa_guard_release = (guardPtr: number | bigint): void => {
-    const view = new Uint8Array(memory.buffer);
-    view[n(guardPtr)] = 1; // mark initialized
-  };
-  envImports.__cxa_guard_abort = (_guardPtr: number | bigint): void => {
-    /* no-op */
-  };
-  envImports.__cxa_pure_virtual = (): void => {
-    throw new Error("pure virtual method called");
-  };
-  envImports.__cxa_atexit = (): number => 0; // no-op, return success
-  envImports.__cxa_thread_atexit = (): number => 0; // no-op, return success
-
-  // libc++ verbose abort — called on internal library errors
-  envImports._ZNSt3__122__libcpp_verbose_abortEPKcz = (
-    _fmt: number | bigint,
-    _args: number | bigint,
-  ): void => {
-    throw new Error("libc++ verbose abort");
-  };
-
-  // libc++ sort — MariaDB doesn't actually call this at runtime
-  // (linked from empty stub libc++.a). Signature: sort<less<ull>, ull*>(first, last, comp)
-  envImports["_ZNSt3__16__sortIRNS_6__lessIyyEEPyEEvT0_S5_T_"] = (
-    _first: number | bigint,
-    _last: number | bigint,
-    _comp: number | bigint,
-  ): void => {
-    throw new Error("libc++ sort called unexpectedly");
-  };
-  const dcTiClassCache = new Map<number, number>(); // typeinfo addr → metaclass (0=leaf, 1=SI, 2=VMI)
-  // __dynamic_cast: Itanium C++ ABI dynamic_cast implementation.
-  // Reads RTTI from the object's vtable and walks the type hierarchy to
-  // check if dst_type is reachable from the object's runtime type.
-  // Args: (src_ptr, src_typeinfo*, dst_typeinfo*, src2dst_hint)
-  envImports.__dynamic_cast = (
-    srcPtr_: number | bigint,
-    _srcType: number | bigint,
-    dstType_: number | bigint,
-    _src2dst: number | bigint,
-  ): number | bigint => {
-    const srcPtr = n(srcPtr_);
-    const dstType = n(dstType_);
-    if (srcPtr === 0) return retPtr(0);
-    const view = new DataView(memory.buffer);
-    const memSize = memory.buffer.byteLength;
-    const PS = ptrWidth; // pointer size in bytes
-    const readPtr = (addr: number): number =>
-      PS === 8
-        ? Number(view.getBigUint64(addr, true))
-        : view.getUint32(addr, true);
-    const readSPtr = (addr: number): number =>
-      PS === 8
-        ? Number(view.getBigInt64(addr, true))
-        : view.getInt32(addr, true);
-
-    // Read vtable pointer from object (Itanium ABI: first word is vtable ptr)
-    const vtablePtr = readPtr(srcPtr);
-    if (vtablePtr === 0 || vtablePtr >= memSize) return retPtr(0);
-
-    // Itanium ABI vtable layout:
-    //   vtable[-PS*2] = offset_to_top (ptrdiff_t)
-    //   vtable[-PS]   = RTTI pointer (typeinfo*)
-    //   vtable[0]     = first virtual function
-    if (vtablePtr < 2 * PS) return retPtr(0);
-    const rttiPtr = readPtr(vtablePtr - PS);
-    if (rttiPtr === 0 || rttiPtr >= memSize) return retPtr(0);
-    const offsetToTop = readSPtr(vtablePtr - 2 * PS);
-
-    // Direct match: runtime type IS the destination type
-    if (rttiPtr === dstType) return retPtr(srcPtr + offsetToTop);
-
-    // Walk the type hierarchy from the runtime type, checking if dstType
-    // is a base class. typeinfo layout (pointer-sized fields):
-    //   [0]      vtable ptr (for the typeinfo meta-class)
-    //   [PS]     name ptr (mangled type name)
-    //   -- __si_class_type_info adds:
-    //   [2*PS]   base typeinfo ptr
-    //   -- __vmi_class_type_info adds:
-    //   [2*PS]   flags (uint32)
-    //   [2*PS+4] base_count (uint32)
-    //   [2*PS+8 + i*(PS+4)] base_info[i].base_type (ptr)
-    //   [2*PS+8 + i*(PS+4) + PS] base_info[i].offset_flags (long)
-    const TI_FIELD2 = 2 * PS; // offset of first field after (vtablePtr, namePtr)
-    const BASE_INFO_STRIDE = PS + PS; // base_type(ptr) + offset_flags(long/ptr)
-
-    const tiClassCache = dcTiClassCache;
-
-    const isTypeAncestor = (
-      ti: number,
-      target: number,
-      visited: Set<number>,
-    ): boolean => {
-      if (ti === target) return true;
-      if (ti === 0 || ti >= memSize || visited.has(ti)) return false;
-      visited.add(ti);
-
-      if (ti + TI_FIELD2 + PS > memSize) return false;
-
-      const cached = tiClassCache.get(ti);
-      if (cached === 0) return false; // leaf
-      if (cached === 1) {
-        // SI: field at TI_FIELD2 is base typeinfo ptr
-        const basePtr = readPtr(ti + TI_FIELD2);
-        return isTypeAncestor(basePtr, target, visited);
-      }
-      if (cached === 2) {
-        // VMI: flags(u32) + base_count(u32) then base_info array
-        const baseCount = view.getUint32(ti + TI_FIELD2 + 4, true);
-        for (let i = 0; i < baseCount; i++) {
-          const baseType = readPtr(ti + TI_FIELD2 + 8 + i * BASE_INFO_STRIDE);
-          if (baseType > 0 && isTypeAncestor(baseType, target, visited))
-            return true;
-        }
-        return false;
-      }
-
-      // Not cached — classify by trying SI first, then VMI
-      const field2 = readPtr(ti + TI_FIELD2);
-
-      // Try SI: field2 is a pointer to another typeinfo
-      if (field2 > 0x100 && field2 + PS <= memSize) {
-        const possibleTiName = readPtr(field2 + PS);
-        if (possibleTiName > 0 && possibleTiName < memSize) {
-          tiClassCache.set(ti, 1);
-          if (isTypeAncestor(field2, target, visited)) return true;
-          tiClassCache.delete(ti);
-        }
-      }
-
-      // Try VMI: field at TI_FIELD2 is flags (u32, 0-3), [TI_FIELD2+4] is base_count
-      const flags32 = view.getUint32(ti + TI_FIELD2, true);
-      if (flags32 <= 3 && ti + TI_FIELD2 + 8 <= memSize) {
-        const baseCount = view.getUint32(ti + TI_FIELD2 + 4, true);
-        if (
-          baseCount > 0 &&
-          baseCount < 100 &&
-          ti + TI_FIELD2 + 8 + baseCount * BASE_INFO_STRIDE <= memSize
-        ) {
-          tiClassCache.set(ti, 2);
-          for (let i = 0; i < baseCount; i++) {
-            const baseType = readPtr(ti + TI_FIELD2 + 8 + i * BASE_INFO_STRIDE);
-            if (baseType > 0 && isTypeAncestor(baseType, target, visited))
-              return true;
-          }
-          return false;
-        }
-      }
-
-      tiClassCache.set(ti, 0);
-      return false;
-    };
-
-    if (isTypeAncestor(rttiPtr, dstType, new Set())) {
-      return retPtr(srcPtr + offsetToTop);
-    }
-    return retPtr(0);
-  };
-
-  // libc++ sort specialization — sort uint64 array in-place
-  envImports["_ZNSt3__16__sortIRNS_6__lessIyyEEPyEEvT0_S5_T_"] = (
-    begin_: number | bigint,
-    end_: number | bigint,
-  ): void => {
-    const begin = n(begin_),
-      end = n(end_);
-    const view = new DataView(memory.buffer);
-    const count = (end - begin) / 8;
-    const arr: bigint[] = [];
-    for (let i = 0; i < count; i++)
-      arr.push(view.getBigUint64(begin + i * 8, true));
-    arr.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    for (let i = 0; i < count; i++)
-      view.setBigUint64(begin + i * 8, arr[i], true);
-  };
-
-  // Environment integrations fail at the point of use when the host does not
-  // implement them. Kernel imports were validated above and are never faked.
-  for (const imp of wasmModuleImports(module)) {
-    if (imp.kind !== "function") continue;
-    if (imp.module === "env") {
-      if (!Object.hasOwn(envImports, imp.name)) {
-        envImports[imp.name] = (..._args: unknown[]) => {
-          throw new Error(`Unimplemented import: env.${imp.name}`);
-        };
-      }
-    }
   }
 
   const importObject: WebAssembly.Imports = { env: envImports };
@@ -4111,7 +3891,6 @@ export async function centralizedWorkerMain(
         kernelImports,
         channelOffset,
         dlopenSupport.imports,
-        () => processInstance ?? undefined,
         ptrWidth,
         processLongjmpTag,
         processCppExceptionTag,
@@ -4509,7 +4288,6 @@ export async function centralizedWorkerMain(
         kernelImports,
         channelOffset,
         dlopenSupport.imports,
-        () => processInstance ?? undefined,
         ptrWidth,
         processLongjmpTag,
         processCppExceptionTag,
@@ -5971,7 +5749,6 @@ export async function centralizedThreadWorkerMain(
       kernelImports,
       channelOffset,
       threadDlopenSupport.imports,
-      () => threadInstance,
       ptrWidth,
       threadLongjmpTag,
       threadCppExceptionTag,

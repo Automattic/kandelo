@@ -32,6 +32,7 @@ host/test/clock-id-validation.test.ts	prepared-product
 host/test/clone-tid-authority.test.ts	source-only
 host/test/closed-lazy-assets.test.ts	source-only
 host/test/compiled-worker-entry.test.ts	prepared-product
+host/test/concurrent-launch.test.ts	prepared-product
 host/test/connect-pending-retry.test.ts	source-only
 host/test/cpp-throw-test.test.ts	prepared-product
 host/test/datagram-wakeup.test.ts	source-only
@@ -129,6 +130,7 @@ host/test/in-kernel-http.test.ts	prepared-product
 host/test/input-attach-source.test.ts	prepared-product
 host/test/input-evdev.test.ts	prepared-product
 host/test/input-source.test.ts	source-only
+host/test/int128-division-guest.test.ts	prepared-product
 host/test/interactive-stdin.test.ts	prepared-product
 host/test/ioctl-arg-size.test.ts	source-only
 host/test/ioctl-contract.test.ts	source-only

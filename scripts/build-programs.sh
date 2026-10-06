@@ -183,7 +183,7 @@ LINK_POST_LIBS=(
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
     -Wl,-z,stack-size=8388608
-    -Wl,--allow-undefined
+    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
     -Wl,--table-base=3
     -Wl,--export-table
     -Wl,--growable-table
@@ -193,7 +193,6 @@ LINK_POST_LIBS=(
     -Wl,--export=__tls_align
     -Wl,--export=__stack_pointer
     -Wl,--export=__wasm_thread_init
-    -Wl,--export=__abi_version
 )
 
 # Fork support comes from wasm-fork-instrument. The tool auto-discovers
@@ -277,9 +276,8 @@ build_program() {
 # Build a C++ program via the SDK's wasm32posix-c++ wrapper. The SDK
 # injects the toolchain's standard compile + link flags, the channel
 # syscall glue, the C++ runtime stubs (cxxrt.c), and the sysroot path.
-# The default include search includes the sysroot's libc++ headers so
-# no extra -isystem is needed; we only have to supply -lc++ / -lc++abi
-# at link time.
+# libc++ comes from the resolved libcxx package (libcxx_flags), not from
+# the sysroot.
 build_cpp_program() {
     local src="$1"
     local out_dir="$2"
@@ -296,9 +294,11 @@ build_cpp_program() {
     # `__cxa_throw; unreachable` and DCEs the catch handlers, so the
     # whole exception-propagation chain (libunwind + libc++abi) never
     # runs.
+    # shellcheck disable=SC2046
     wasm32posix-c++ \
         -O2 \
         -fwasm-exceptions \
+        $(libcxx_flags "$LIBCXX_PREFIX_32") \
         "$src" \
         -lc++ -lc++abi \
         -o "$raw_wasm"
@@ -307,10 +307,12 @@ build_cpp_program() {
     # normally instrumented fork-bearing program.
     if [ "$name" = "sjlj_noexcept_boundary" ]; then
         mkdir -p "$TEST_FIXTURE_DIR/wasm32"
+        # shellcheck disable=SC2046
         wasm32posix-c++ \
             -O2 \
             -fwasm-exceptions \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \
+            $(libcxx_flags "$LIBCXX_PREFIX_32") \
             "$src" \
             -lc++ -lc++abi \
             -o "$TEST_FIXTURE_DIR/wasm32/${name}.raw.wasm"
@@ -330,7 +332,7 @@ build_cpp_program() {
 # fails every later package that seeds its private sysroot from this one
 # (kandelo-sdk first). `rm -f` first matters too -- cp onto an existing
 # symlink writes THROUGH it, into the resolver cache it points at. This is
-# the same rm-then-cp shape ensure_libcxx_in_sysroot and the SDL2 staging use.
+# the same rm-then-cp shape the SDL2 staging uses.
 stage_sysroot_file() {
     rm -f "$2"
     cp "$1" "$2"
@@ -341,23 +343,20 @@ stage_sysroot_tree() {
     cp -RL "$1" "$2"
 }
 
-ensure_libcxx_in_sysroot() {
+# Resolve libcxx and print its output directory. C++ programs compile and
+# link against that directory directly. Copying it into the shared worktree
+# sysroot made libc++'s presence there depend on build order
+# (scripts/build-musl.sh recreates the sysroot without it), so a package
+# build could silently find, or miss, whichever copy was left behind.
+resolve_libcxx_prefix() {
     local arch="$1"
-    local sysroot="$2"
-    echo "==> Resolving libcxx for $arch C++ programs..."
+    echo "==> Resolving libcxx for $arch C++ programs..." >&2
     local host_triple
-    local libcxx_prefix
     host_triple="$(rustc -vV | awk '/^host/ {print $2}')"
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_triple" --quiet -- \
         build-deps --arch "$arch" resolve libcxx >/dev/null)
-    libcxx_prefix="$(cd "$REPO_ROOT" && cargo run -p xtask \
-        --target "$host_triple" --quiet -- build-deps --arch "$arch" path libcxx)"
-    mkdir -p "$sysroot/lib" "$sysroot/include/c++"
-    rm -f "$sysroot/lib/libc++.a" "$sysroot/lib/libc++abi.a"
-    cp "$libcxx_prefix/lib/libc++.a" "$sysroot/lib/libc++.a"
-    cp "$libcxx_prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
-    rm -rf "$sysroot/include/c++/v1"
-    cp -RL "$libcxx_prefix/include/c++/v1" "$sysroot/include/c++/v1"
+    (cd "$REPO_ROOT" && cargo run -p xtask \
+        --target "$host_triple" --quiet -- build-deps --arch "$arch" path libcxx)
 }
 
 # libwpkdraw (PR7): in-tree CPU rasterizer + font engine. Built inline
@@ -375,11 +374,17 @@ if [ -d "$WPKDRAW_DIR/src" ]; then
     CC="$CC" AR="$LLVM_BIN/llvm-ar" bash "$WPKDRAW_DIR/build.sh" "$SYSROOT"
 fi
 
-# Resolve libcxx and copy its outputs into the sysroot if there are any .cpp
-# programs to build. Refresh every run so an interrupted prior copy cannot be
-# mistaken for a complete regular-file projection.
+# Compile and link flags that take libc++ from a resolved libcxx directory:
+# -nostdinc++ drops the sysroot's C++ header search so only the resolved,
+# version-matched headers are visible.
+libcxx_flags() {
+    local prefix="$1"
+    printf '%s\n' -nostdinc++ -isystem "$prefix/include/c++/v1" -L"$prefix/lib"
+}
+
+LIBCXX_PREFIX_32=""
 if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
-    ensure_libcxx_in_sysroot wasm32 "$SYSROOT"
+    LIBCXX_PREFIX_32="$(resolve_libcxx_prefix wasm32)"
 fi
 
 # Resolve SDL2 and stage it in the sysroot when there are SDL2 programs to
@@ -515,9 +520,14 @@ fi
 if ls "$REPO_ROOT"/programs/fontstack_*.c >/dev/null 2>&1; then
     echo "==> Resolving fcft + fontconfig + freetype for font-stack programs..."
     HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
-    for pkg in fcft fontconfig freetype libxml2 zlib; do
+    # libiconv is a link dependency of libxml2 (it converts encodings
+    # through GNU libiconv). It is linked from its resolved prefix rather
+    # than staged: a libiconv in the sysroot would shadow libc's iconv for
+    # every other program.
+    for pkg in fcft fontconfig freetype libxml2 libiconv zlib; do
         (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve "$pkg" >/dev/null)
     done
+    LIBICONV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libiconv)"
     FCFT_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path fcft)"
     FONTCONFIG_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path fontconfig)"
     FREETYPE_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path freetype)"
@@ -551,6 +561,9 @@ if ls "$REPO_ROOT"/programs/pango_*.c >/dev/null 2>&1; then
     FREETYPE_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path freetype)"
     LIBXML2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libxml2)"
     ZLIB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path zlib)"
+    # libxml2's libiconv, linked from its prefix (see the font-stack block).
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libiconv >/dev/null)
+    LIBICONV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libiconv)"
 
     for a in libpango-1.0.a libpangoft2-1.0.a libpangocairo-1.0.a; do
         stage_sysroot_file "$PANGO_PREFIX/lib/$a" "$SYSROOT/lib/$a"
@@ -802,10 +815,11 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libfontconfig.a" \
                 "$SYSROOT/lib/libfreetype.a" \
                 "$SYSROOT/lib/libxml2.a" \
+                "$LIBICONV_PREFIX/lib/libiconv.a" \
                 "$SYSROOT/lib/libpng.a" \
                 "$SYSROOT/lib/libz.a" \
-                "$SYSROOT/lib/libc++.a" \
-                "$SYSROOT/lib/libc++abi.a"
+                "$LIBCXX_PREFIX_32/lib/libc++.a" \
+                "$LIBCXX_PREFIX_32/lib/libc++abi.a"
             ;;
         gtk3_smoke.c)
             # PR24: unmodified GTK3 wayland client — window + label
@@ -814,7 +828,8 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # the wayland client libs + xkbcommon + cairo-gobject, then
             # the PR23 render closure, glib stack, and font stack.
             # libgbm/libdrm back gdk's wl_shm pools (see the gtk3
-            # package's wayland-shm-gbm-pool.patch).
+            # package's wayland-shm-gbm-pool.patch); libEGL and libGLESv2
+            # back libwayland-egl.
             build_program "$src" "$OUT_DIR_32" \
                 "-I$SYSROOT/include/gtk-3.0" \
                 "-I$SYSROOT/include/atk-1.0" \
@@ -849,12 +864,15 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libfontconfig.a" \
                 "$SYSROOT/lib/libfreetype.a" \
                 "$SYSROOT/lib/libxml2.a" \
+                "$LIBICONV_PREFIX/lib/libiconv.a" \
                 "$SYSROOT/lib/libpng.a" \
                 "$SYSROOT/lib/libz.a" \
                 "$SYSROOT/lib/libgbm.a" \
                 "$SYSROOT/lib/libdrm.a" \
-                "$SYSROOT/lib/libc++.a" \
-                "$SYSROOT/lib/libc++abi.a"
+                "$SYSROOT/lib/libEGL.a" \
+                "$SYSROOT/lib/libGLESv2.a" \
+                "$LIBCXX_PREFIX_32/lib/libc++.a" \
+                "$LIBCXX_PREFIX_32/lib/libc++abi.a"
             ;;
         fontstack_smoke.c)
             # monospace resolve + glyph rasterization through the whole
@@ -864,6 +882,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libfontconfig.a" \
                 "$SYSROOT/lib/libfreetype.a" \
                 "$SYSROOT/lib/libxml2.a" \
+                "$LIBICONV_PREFIX/lib/libiconv.a" \
                 "$SYSROOT/lib/libpixman-1.a" \
                 "$SYSROOT/lib/libz.a"
             ;;
@@ -903,13 +922,37 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # dlopen). SDL_Init(VIDEO) probes Wayland first: the real
             # wl_display_connect(NULL) returns NULL when no compositor is
             # running, so SDL falls through to KMSDRM, as on real hardware.
-            # libffi backs libwayland-client's wl_closure marshalling.
+            # libffi backs libwayland-client's wl_closure marshalling. The
+            # Wayland backend also calls libwayland-egl, libwayland-cursor
+            # and libxkbcommon (the sdl2-demo package links the same set).
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
                 "$SYSROOT/lib/libwayland-client.a" \
+                "$SYSROOT/lib/libwayland-egl.a" \
+                "$SYSROOT/lib/libwayland-cursor.a" \
+                "$SYSROOT/lib/libxkbcommon.a" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
                 "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
                 "$SYSROOT/lib/libffi.a"
+            ;;
+        f_01_ucontext_get.c|f_02_ucontext_makeswap.c)
+            # ucontext (getcontext/makecontext/swapcontext/setcontext) is a
+            # documented unsupported API (docs/posix-status.md), and libc has
+            # no such symbols. Since ABI 46 links are honest, so the boundary
+            # shows up where it belongs: these fixtures must FAIL to link on
+            # exactly those symbols. If one ever links, revisit the boundary.
+            local_log="$(mktemp)"
+            if "$CC" "${CFLAGS[@]}" "${LINK_PRE_LIBS[@]}" "$src" "${LINK_POST_LIBS[@]}" \
+                    -o "$(mktemp -d)/ucontext.wasm" >"$local_log" 2>&1; then
+                echo "Error: $(basename "$src") linked, but ucontext is documented as unsupported" >&2
+                rm -f "$local_log"; exit 1
+            fi
+            if ! grep -qE 'undefined symbol: (getcontext|makecontext|swapcontext|setcontext)$' "$local_log"; then
+                echo "Error: $(basename "$src") failed to link for an unexpected reason:" >&2
+                cat "$local_log" >&2; rm -f "$local_log"; exit 1
+            fi
+            rm -f "$local_log"
+            echo "  $(basename "$src" .c): does not link (ucontext unsupported) — as expected"
             ;;
         posix-timer-thread.c)
             # Keep the fixture's pthread capacity small so its timer-helper
@@ -1330,8 +1373,13 @@ PY
         "$CC" "${CFLAGS[@]}" -I"$REPO_ROOT/third_party" "${sdl2_sources[@]}" \
             "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libSDL2.a" \
+            "$SYSROOT/lib/libwayland-client.a" \
+            "$SYSROOT/lib/libwayland-egl.a" \
+            "$SYSROOT/lib/libwayland-cursor.a" \
+            "$SYSROOT/lib/libxkbcommon.a" \
             "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
             "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
+            "$SYSROOT/lib/libffi.a" \
             "${LINK_POST_LIBS[@]}" \
             -o "$sdl2_wasm"
         "$FORK_INSTRUMENT" "$sdl2_wasm" -o "$sdl2_wasm.instr"
@@ -1380,7 +1428,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -Wl,--shared-memory
         -Wl,--max-memory=1073741824
         -Wl,-z,stack-size=8388608
-        -Wl,--allow-undefined
+        -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
         -Wl,--table-base=3
         -Wl,--export-table
         -Wl,--growable-table
@@ -1390,7 +1438,6 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -Wl,--export=__tls_align
         -Wl,--export=__stack_pointer
         -Wl,--export=__wasm_thread_init
-        -Wl,--export=__abi_version
     )
 
     for src in \
@@ -1434,13 +1481,15 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
     # fork anchor. Keep it in the test-only tree for symmetry with wasm32.
     sjlj_noexcept_src="$REPO_ROOT/programs/sjlj_noexcept_boundary.cpp"
     if [ -f "$sjlj_noexcept_src" ]; then
-        ensure_libcxx_in_sysroot wasm64 "$SYSROOT64"
+        LIBCXX_PREFIX_64="$(resolve_libcxx_prefix wasm64)"
         mkdir -p "$TEST_FIXTURE_DIR/wasm64"
         echo "  Compiling sjlj_noexcept_boundary (raw wasm64 test fixture)..."
+        # shellcheck disable=SC2046
         wasm64posix-c++ \
             -O2 \
             -fwasm-exceptions \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \
+            $(libcxx_flags "$LIBCXX_PREFIX_64") \
             "$sjlj_noexcept_src" \
             -lc++ -lc++abi \
             -o "$TEST_FIXTURE_DIR/wasm64/sjlj_noexcept_boundary.raw.wasm"

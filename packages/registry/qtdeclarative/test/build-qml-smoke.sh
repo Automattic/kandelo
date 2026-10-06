@@ -18,7 +18,7 @@ OUT="${1:?usage: build-qml-smoke.sh <out.wasm>}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
-for tool in wasm32posix-c++ cargo wasm-objdump; do
+for tool in wasm32posix-c++ cargo; do
     if ! command -v "$tool" &>/dev/null; then
         echo "ERROR: $tool not found. Enter scripts/dev-shell.sh." >&2
         exit 1
@@ -52,6 +52,7 @@ rm -f "$OUT" "$RAW"
 
 wasm32posix-c++ \
     -O2 -std=c++17 -fwasm-exceptions \
+    -nostdinc++ -isystem "$LIBCXX/include/c++/v1" -L"$LIBCXX/lib" \
     -D__linux__=1 -DQT_LINUXBASE \
     -I"$QTBASE/include" \
     -I"$QTBASE/include/QtCore" \
@@ -88,23 +89,10 @@ wasm32posix-c++ \
     "$LIBCXX/lib/libc++abi.a" \
     -o "$RAW"
 
-# The SDK link does not fail on an undefined symbol — it leaves one as a
-# host import, and the program traps only if that path ever runs. A
-# missing archive therefore reaches the kernel as
-# `Unimplemented import: env.<symbol>`. These three are the runtime's own
-# surface; anything else here is a library the line forgot.
-UNDEFINED="$(
-    wasm-objdump -j Import -x "$RAW" |
-        grep -o 'env\.[A-Za-z_0-9]*' |
-        sort -u |
-        grep -v -x -e 'env.memory' -e 'env.__channel_base' -e 'env.__cxa_thread_atexit' ||
-        true
-)"
-if [ -n "$UNDEFINED" ]; then
-    echo "ERROR: the link left library symbols undefined:" >&2
-    printf '  %s\n' $UNDEFINED >&2
-    exit 1
-fi
+# The link fails on any symbol no archive defines (the SDK leaves only the
+# host's declared imports undefined), so a library this line forgets is a
+# link error naming the symbol. libc++ comes from the resolved libcxx
+# package; the shared worktree sysroot does not carry it.
 
 bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$RAW" -o "$OUT"
 rm -f "$RAW"

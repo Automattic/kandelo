@@ -1169,12 +1169,17 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     maxAddr: layout.maxAddr,
   });
   kernelWorker.setCredentials(pid, { uid: options.uid, gid: options.gid });
+  // Query before stdin is installed, as the Node and browser worker entries
+  // do: delivering stdin wakes blocked readers through a deferred effect, and
+  // a synchronous kernel query must not run while that effect is queued.
+  const secureExec = kernelWorker.processSecureExec(pid);
   processProgramBytes.set(pid, programBytes);
   processMemories.set(pid, memory);
   processLayouts.set(pid, layout);
   threadAllocators.set(pid, threadAllocator);
   processPtrWidths.set(pid, ptrWidth);
 
+  kernelWorker.installHostStdinPipe(pid);
   if (options.stdinBytes != null) {
     kernelWorker.setStdinData(pid, options.stdinBytes);
   } else if (options.stdin != null) {
@@ -1208,7 +1213,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     programBytes,
     memory,
     channelOffset,
-    secureExec: kernelWorker.processSecureExec(pid),
+    secureExec,
     env: options.env,
     argv: options.argv ?? [options.programPath],
     ptrWidth,

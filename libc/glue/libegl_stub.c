@@ -518,19 +518,22 @@ void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
 #define WPK_GL_PROC_LIST(X) \
     X(glActiveTexture) X(glAttachShader) X(glBindAttribLocation) \
     X(glBindBuffer) X(glBindFramebuffer) X(glBindTexture) \
-    X(glBlendFunc) X(glBufferData) X(glBufferSubData) \
+    X(glBlendEquation) X(glBlendEquationSeparate) X(glBlendFunc) \
+    X(glBlendFuncSeparate) X(glBufferData) X(glBufferSubData) \
     X(glCheckFramebufferStatus) X(glClear) X(glClearColor) \
     X(glCompileShader) X(glCreateProgram) X(glCreateShader) \
     X(glDeleteBuffers) X(glDeleteFramebuffers) X(glDeleteProgram) \
     X(glDeleteShader) X(glDeleteTextures) X(glDetachShader) \
     X(glDisable) X(glDisableVertexAttribArray) X(glDrawArrays) \
-    X(glEnable) X(glEnableVertexAttribArray) X(glFramebufferTexture2D) \
+    X(glEnable) X(glEnableVertexAttribArray) X(glFinish) \
+    X(glFramebufferTexture2D) \
     X(glGenBuffers) X(glGenFramebuffers) X(glGenTextures) \
     X(glGenerateMipmap) X(glGetAttribLocation) X(glGetError) \
     X(glGetIntegerv) X(glGetProgramInfoLog) X(glGetProgramiv) \
     X(glGetShaderInfoLog) X(glGetShaderPrecisionFormat) X(glGetShaderiv) \
     X(glGetString) X(glGetUniformLocation) X(glHint) X(glLinkProgram) \
-    X(glPixelStorei) X(glReadPixels) X(glScissor) X(glShaderSource) \
+    X(glPixelStorei) X(glReadPixels) X(glScissor) X(glShaderBinary) \
+    X(glShaderSource) \
     X(glTexImage2D) X(glTexParameteri) X(glTexSubImage2D) \
     X(glUniform1f) X(glUniform1i) X(glUniform2f) X(glUniform3f) \
     X(glUniform4f) X(glUniformMatrix4fv) X(glUseProgram) \

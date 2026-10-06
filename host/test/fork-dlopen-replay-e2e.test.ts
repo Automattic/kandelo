@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { execFileSync, execSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -62,9 +62,24 @@ function findLibcxxPrefix(): string | undefined {
   ) {
     return explicit;
   }
-  const sysrootArchive = join(SYSROOT, "lib", "libc++.a");
-  if (!existsSync(sysrootArchive)) return undefined;
-  const prefix = dirname(dirname(realpathSync(sysrootArchive)));
+  // Ask the resolver where the libcxx package lives. libc++ is not in the
+  // shared sysroot (a copy there made its presence depend on build order),
+  // and following a sysroot libc++.a back to its package only ever worked
+  // when that file happened to be a symlink.
+  let prefix: string;
+  try {
+    const hostTarget = execFileSync("rustc", ["-vV"], { encoding: "utf8" })
+      .match(/^host: (\S+)$/m)?.[1];
+    if (!hostTarget) return undefined;
+    prefix = execFileSync(
+      "cargo",
+      ["run", "-p", "xtask", "--target", hostTarget, "--quiet", "--",
+        "build-deps", "--arch", "wasm32", "path", "libcxx"],
+      { cwd: REPO_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+  } catch {
+    return undefined;
+  }
   return existsSync(join(prefix, "lib", "libc++-pic.a"))
       && existsSync(join(prefix, "lib", "libc++abi-pic.a"))
     ? prefix

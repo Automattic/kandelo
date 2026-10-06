@@ -131,6 +131,26 @@ existing Linux-VT guests working and preserve Node/browser parity.
 
 ## Browser
 
+### Investigate the WebKit fbDOOM WAD-drop failure
+`apps/browser-demos/test/kandelo-doom-ingest.spec.ts` "dropping a WAD on the
+framebuffer loads it" failed in WebKit in three of three local runs on
+2026-09-28, each at a different step: the 90 s wait for the restarted
+fbDOOM to render, and a locator that never became visible. The drop itself
+works — the screenshot shows the shell running
+`/usr/local/bin/fbdoom -iwad /user.wad`, and the new fbDOOM initializing
+through `HU_Init` before it stops making visible progress. Chromium passes
+the same test, and WebKit passes the Load WAD button path, which uses the
+same restart command.
+
+That demo's keyboard input goes through the PTY (`ptyWrite`), not the host
+stdin pipe that ABI 47 changed, and no old-code baseline was available
+locally to compare against, so the failure is recorded here rather than
+attributed. The investigation should: run the test on main in WebKit to
+establish whether it predates ABI 47; compare what the drop path does
+differently from the button path (synthetic `DataTransfer` drop, focus,
+pane switching to the terminal); and capture the kernel's view of the
+restarted fbDOOM (blocked syscall, fb0 ownership) when it stalls.
+
 ### Replace the constrained public CORS proxy with an owned relay
 
 The current public proxy has a narrow six-name request-header profile. A
@@ -301,6 +321,70 @@ Any follow-up should:
   or retry logic rather than kernel pointer width;
 - if the approach still looks useful, expose it as a separate `kernel32.wasm`
   build option.
+
+### Copy between kernel and process memories with a multi-memory bridge module
+Every byte that moves between a process and the kernel crosses two separate
+`WebAssembly.Memory` objects. Wasm code can address only the memories it was
+instantiated with, so today the kernel worker's JavaScript makes that hop, and
+a pipe read travels pipe buffer → kernel scratch → the reader's syscall
+channel area. Host-supplied stdin adds host → kernel scratch → pipe buffer in
+front of that (ABI 47 made host stdin a kernel pipe so a forked child shares
+fd 0 with its parent; see `docs/abi-versioning.md`).
+
+A small reusable Wasm module could remove the JavaScript hop and the scratch
+copies. It would import two memories (the kernel's and one process's, or a
+pipe arena and a process's) and export only fixed-shape copies built on
+cross-memory `memory.copy`. The host instantiates one per registered process
+and places its exports in a table the kernel owns, and the kernel calls
+through `call_indirect`, so no JavaScript sits on the copy path. A pipe read
+then becomes one copy from the pipe buffer into the reader's destination, for
+every pipe and socket, not only stdin. Importing existing memories reserves
+no new memory, so this adds no declared ceiling for JavaScriptCore to charge.
+
+The split must stay mechanism versus policy: the host supplies the bridge the
+way it supplies the memory, and the kernel alone decides pid, addresses,
+lengths, and ordering. Any follow-up should:
+
+- verify multi-memory support in every shipped engine, JavaScriptCore first
+  (V8 and SpiderMonkey ship it); without it the gain is not available on
+  Safari/iOS;
+- keep exactly one copy interface: if an engine lacks multi-memory, a
+  JavaScript fallback (`Uint8Array.set`) implements the same interface and
+  bounds, selected once at startup, never a second transfer implementation;
+- rebuild a process's bridge when `exec` replaces its memory and create a new
+  one for each `fork` child;
+- keep bytes in kernel-owned buffers. Considered and rejected, 2026-09-28:
+  leaving pipe bytes in the writer's memory (POSIX lets a writer reuse its
+  buffer as soon as `write()` returns; a pipe outlives and is shared across
+  writers), a shared pipe arena imported by every process (any process could
+  read every pipe, and C cannot address a second memory), and a host-backed
+  stdin stream that keeps all bytes in host memory (a second read path and
+  more host surface to save one copy through a 64 KiB window);
+- measure with the `stdin-throughput` and `syscall-io` suites on Node and
+  browser, before and after.
+
+### Close the Node gap in host stdin throughput
+The `stdin-throughput` suite (24 MiB of host-supplied stdin read by one
+process) measured the ABI 47 kernel-pipe path against the per-pid host
+buffer it replaced on 2026-09-28, alternating runs at load average 6–10:
+
+| Host | Per-pid host buffer (before) | Kernel pipe (ABI 47) |
+|---|---|---|
+| Node | 818, 796, 793 MiB/s | 691, 705, 679 MiB/s |
+| Chromium | 727, 774 MiB/s | 800, 828 MiB/s |
+
+Node is about 13–16% slower; Chromium is no worse (its runs take 30–33 ms and
+the guest clock has 1 ms granularity there). The likely cause, not yet
+profiled: the pipe holds 64 KiB, so 24 MiB takes about 384 refills, and if the
+reader drains the pipe before the host refills it, each refill costs a
+parked-worker wake. A second candidate is visible in the code: every refill
+defers `notifyPipeReadable`, whose last step is a broad
+`scheduleWakeBlockedRetries`, so 24 MiB schedules about 384 broad wakes of
+every blocked retry. The follow-up should profile Node first; if wakes
+dominate, refill within the kernel entry that drained the pipe so the reader
+never observes it empty, and wake only this pipe's readers and pollers. A larger host-stdin pipe would also cut refills,
+at a kernel-memory cost per spawned process. Copies are the less likely cause;
+the bridge module above addresses them.
 
 ## Kernel — regressions
 

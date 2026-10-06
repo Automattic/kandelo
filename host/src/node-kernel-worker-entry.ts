@@ -1326,7 +1326,11 @@ async function handleSpawn(msg: SpawnMessage) {
     createdMemoryRegistered = true;
 
     kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
-    const secureExec = kernelWorker.processSecureExec(pid);
+    // Same contention as registerProcess above: the gate can still hold
+    // work another launch queued (its host stdin pipe install, for one), and
+    // the query rejects rather than defers. Retry on a later host turn.
+    const secureExec = await retryKernelEntryResult(() =>
+      kernelWorker.processSecureExec(pid));
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
@@ -1349,6 +1353,9 @@ async function handleSpawn(msg: SpawnMessage) {
         post({ type: "pty_output", pid, data });
       });
     } else {
+      // fd 0 becomes a kernel pipe the host writes into, so children that
+      // inherit it share the stream (and read offset) as POSIX requires.
+      kernelWorker.installHostStdinPipe(pid);
       if (msg.stdin) {
         const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
         kernelWorker.setStdinData(pid, stdinData);
