@@ -30,7 +30,7 @@ script_path = "packages/registry/libcurl/build-libcurl.sh"
 
 [[host_tools]]
 name = "curl"
-version_constraint = ">=7.0"
+version_constraint = ">=7.71.0"
 probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

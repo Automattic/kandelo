@@ -493,7 +493,7 @@ complete transitive selected dependency identity for every supported
 architecture. The host resolver, standalone shell bundle, and browser scanner
 therefore validate the same first-hit registry context before accepting a
 program mirror. Dependency order has no selection meaning and names must be
-unique. The Rust generator emits a deterministic order so the checked-in JSON
+unique. The Rust generator emits a deterministic order so the generated JSON
 is reproducible and CI can detect stale projections. Runtime consumers compare
 the closure as a unique package-identity set, so reordering the same entries
 does not change the accepted program identity.
@@ -520,7 +520,9 @@ root-artifact ABI and export validation instead of pretending to be a guest
 program package. Its package identity remains in the all-package identity map
 so dependency-context validation stays complete.
 
-Generate or verify an index with:
+The source checkout's main-registry projection is generated and ignored by
+Git. Regenerate it after recipe changes rather than committing or editing
+it by hand. Generate or verify an index with:
 
 ```bash
 KANDELO_ROOT="$(pwd -P)"
@@ -1905,14 +1907,14 @@ The resolver maps Rust's `target_os = "macos"` to the user-facing
 key `darwin` so manifest authors don't have to think about
 Rust-specific naming.
 
-**Cache-key impact: zero**
+**Cache-key impact**
 
-Host-tool declarations do **not** contribute to the consumer's
-cache-key sha. A `cmake` upgrade on a developer machine does not
-invalidate the MariaDB cache entry. If a tool change actually
-affects build output (a new compiler bug-fix that changes
-generated code, say), bump the consumer's `revision` — that is
-the existing knob. See decision 10.
+Declared host-tool minimum versions and probes contribute to a buildable
+package's cache identity. Changing either changes the consumer's cache
+key; no revision bump is needed merely to invalidate that metadata change.
+Install hints and the installed host tool's probed version are not part of
+the key. If a tool change affects build output without changing another
+keyed input, bump the consumer's `revision`.
 
 **`xtask build-deps check`**
 
@@ -1922,6 +1924,13 @@ manifests declare the same host-tool `name` with different
 reports it. The intent is to keep the project's host-toolchain
 floor coherent — one project-wide minimum per tool — without
 forcing a single shared declaration file.
+
+When adding a consumer, reuse the existing minimum and probe for each
+shared tool. If upstream needs a higher minimum, raise every consumer of
+that tool to the highest required minimum; do not lower another package's
+requirement to silence the check. Confirm the repository dev shell
+provides that version, regenerate any existing program index in its
+registry context, then run `cargo xtask build-deps check`.
 
 See decisions 10 (cache-key impact) and 11 (probe + install hint
 contract) in `docs/plans/2026-04-22-deps-management-v2-design.md`.

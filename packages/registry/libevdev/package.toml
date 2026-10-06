@@ -30,7 +30,7 @@ kernel_abi = 16
 # tarball ships the generator, not its output). Provided via flake.nix
 # (pkgs.python3).
 name = "python3"
-version_constraint = ">=3.6"
+version_constraint = ">=3.11"
 probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "provided by flake.nix (pkgs.python3); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.python3); or apt install python3" }
 
