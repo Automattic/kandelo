@@ -698,6 +698,14 @@ This prevents an ABI-current glue object linked against a stale musl sysroot
 from turning a private libc helper into a runtime trap and then caching or
 publishing that broken executable.
 
+When an executable needs fork instrumentation, `install_local_binary`
+replaces the source file in place with the instrumented module and keeps the
+source file's mode, so the published mode never depends on whether the
+instrumenter ran. Installation never prompts. Recipes often copy binaries out
+of a read-only `make install` stage, and workspace setup runs with stdin on a
+terminal, where a plain `mv` would stop and ask before replacing a read-only
+file.
+
 A sealed publisher instead sets
 `WASM_POSIX_INSTALL_LOCAL_MIRROR=0`, provides
 `WASM_POSIX_DEP_OUT_DIR`, and supplies the reviewed fork-instrumentation policy

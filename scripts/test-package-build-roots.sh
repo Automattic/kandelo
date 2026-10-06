@@ -936,6 +936,8 @@ grep -F "artifact must be a portable relative path" "$err" >/dev/null ||
     fail "unsafe caller-owned runtime artifact escaped its output root"
 
 bash "$REPO_ROOT/scripts/test-graphics-pkgconfig.sh"
+bash "$REPO_ROOT/scripts/test-install-local-binary-noninteractive.sh"
+bash "$REPO_ROOT/scripts/test-build-programs-abi-stamp.sh"
 bash "$REPO_ROOT/scripts/test-install-local-generation.sh"
 
 # Every exact-shell registry recipe must enter through this tested root
