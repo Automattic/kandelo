@@ -16,7 +16,7 @@ use wasm_posix_shared::rlimit::{RLIMIT_AS, RLIMIT_FSIZE, RLIM_INFINITY};
 use wasm_posix_shared::seek::*;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::{
-    platform_limits, WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec,
+    WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec,
 };
 
 use crate::blocked_retry::{BlockingRetryOperation, BlockingRetryTarget, StableOfdTarget};
@@ -64,6 +64,9 @@ pub fn resolve_io_ofd(proc: &Process, fd: i32) -> Result<usize, Errno> {
         let target = match &binding.target {
             BlockingRetryTarget::Ofd(target)
             | BlockingRetryTarget::Sendmsg {
+                carrier: target, ..
+            }
+            | BlockingRetryTarget::Vector {
                 carrier: target, ..
             } => target,
             BlockingRetryTarget::OfdPair { input, output } => {
@@ -1103,13 +1106,42 @@ fn handle_drm_version(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
     Ok(())
 }
 
-/// Convert a fixed-width DRM UAPI pointer to the process-memory bridge.
+/// Prove a DRM UAPI output pointer is writable BEFORE any output is written.
 ///
-/// WHY: KMS structs use `u64` pointers even for wasm32 compatibility, while
-/// the current host bridge accepts only a lossless `u32` process address.
-/// Truncation would redirect a wasm64 pointer into unrelated low memory.
-fn checked_dri_process_pointer(pointer: u64) -> Result<u32, Errno> {
-    u32::try_from(pointer).map_err(|_| Errno::EFAULT)
+/// WHY: `DRM_IOCTL_MODE_GETRESOURCES` and `MODE_GETCONNECTOR` each hand back
+/// several independently-addressed nested buffers. If the third one turns out
+/// to be a bad address, the caller must see a clean `EFAULT` with none of its
+/// buffers touched, not two of three filled in. So every nested address is
+/// validated up front and the writes only begin once all of them have passed.
+///
+/// This used to be a pure narrowing check (`u32::try_from`), because the
+/// process-memory bridge accepted only a 32-bit guest address while KMS
+/// structs carry `u64` pointers on every guest width; the check existed to
+/// turn a wasm64 pointer above 4 GiB into `EFAULT` instead of silently
+/// redirecting it into unrelated low memory. `HostIO::proc_read_bytes` /
+/// `proc_write_bytes` now take the guest address at its full `u64` width, so
+/// there is nothing left to narrow — but the ordering guarantee still has to
+/// come from somewhere, and only the host knows a process's real extent.
+///
+/// So the pre-pass now probes each address with a `proc_read_bytes` of the
+/// exact length that will later be written. Reading is side-effect-free, and
+/// a range that is inside the process's memory now is still inside it when
+/// the writes begin a few instructions later: linear memory only ever grows,
+/// and the host dispatches this syscall synchronously without re-entering the
+/// kernel. A concurrent thread may change the *bytes* in between — that is
+/// inherent and documented on `HostIO::proc_write_bytes` — but it cannot
+/// shrink the range out from under the write.
+fn probe_dri_process_pointer(
+    host: &mut dyn HostIO,
+    pid: i32,
+    pointer: u64,
+    len: usize,
+) -> Result<u64, Errno> {
+    let mut probe: alloc::vec::Vec<u8> = alloc::vec![0u8; len];
+    if host.proc_read_bytes(pid, pointer, &mut probe) < 0 {
+        return Err(Errno::EFAULT);
+    }
+    Ok(pointer)
 }
 
 /// Shared render-node ioctls: probe (VERSION / GET_CAP), the dumb-buffer
@@ -1661,7 +1693,7 @@ fn handle_dri_ioctl(
             // the host needs to dispatch.
             let mut in_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.in_buf_len as usize];
             if info.in_buf_len > 0 {
-                let rc = host.proc_read_bytes(pid, info.in_buf_ptr, &mut in_buf);
+                let rc = host.proc_read_bytes(pid, u64::from(info.in_buf_ptr), &mut in_buf);
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
@@ -1673,7 +1705,7 @@ fn handle_dri_ioctl(
             }
             let n = (written as usize).min(out_buf.len());
             if n > 0 && info.out_buf_ptr != 0 {
-                let rc = host.proc_write_bytes(pid, info.out_buf_ptr, &out_buf[..n]);
+                let rc = host.proc_write_bytes(pid, u64::from(info.out_buf_ptr), &out_buf[..n]);
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
@@ -1726,13 +1758,13 @@ fn handle_dri_card_ioctl(
             // unrepresentable wasm64 pointer cannot leave earlier outputs
             // partially updated.
             let crtc_id_ptr = (req.count_crtcs >= 1 && req.crtc_id_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.crtc_id_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.crtc_id_ptr, 4))
                 .transpose()?;
             let connector_id_ptr = (req.count_connectors >= 1 && req.connector_id_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.connector_id_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.connector_id_ptr, 4))
                 .transpose()?;
             let encoder_id_ptr = (req.count_encoders >= 1 && req.encoder_id_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.encoder_id_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.encoder_id_ptr, 4))
                 .transpose()?;
             if let Some(pointer) = crtc_id_ptr {
                 let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
@@ -1816,10 +1848,17 @@ fn handle_dri_card_ioctl(
                 return Err(Errno::ENOENT);
             }
             let modes_ptr = (req.count_modes >= 1 && req.modes_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.modes_ptr))
+                .then(|| {
+                    probe_dri_process_pointer(
+                        host,
+                        pid,
+                        req.modes_ptr,
+                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                    )
+                })
                 .transpose()?;
             let encoders_ptr = (req.count_encoders >= 1 && req.encoders_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.encoders_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.encoders_ptr, 4))
                 .transpose()?;
             if let Some(pointer) = modes_ptr {
                 let mode = host.kms_mode_info(1);
@@ -4500,11 +4539,19 @@ pub fn ensure_blocking_retry_mqueue_binding(
     }
 }
 
+/// Bind a blocked `msgsnd`/`msgrcv` to the exact queue generation it observed.
+///
+/// `pending_send` carries the `msgsnd` payload the dispatch already copied out
+/// of the caller's memory, so every retry sends those bytes rather than
+/// re-reading a buffer the caller may have changed while it was blocked. It is
+/// `None` for `msgrcv`, and `None` when the binding is prepared after the fact
+/// by the host's retry preflight rather than by the dispatch itself.
 pub fn ensure_blocking_retry_sysv_message_binding(
     proc: &mut Process,
     tid: u32,
     syscall: u32,
     qid: i32,
+    pending_send: Option<crate::blocked_retry::PendingSysvMessage>,
 ) -> Result<i64, Errno> {
     let operation = BlockingRetryOperation::from_syscall(syscall)?;
     if !matches!(
@@ -4526,11 +4573,14 @@ pub fn ensure_blocking_retry_sysv_message_binding(
         token,
         tid,
         operation,
-        BlockingRetryTarget::SysvMessage(pinned),
+        BlockingRetryTarget::SysvMessage {
+            queue: pinned,
+            pending_send,
+        },
     ) {
         Ok(()) => Ok(token),
-        Err((error, BlockingRetryTarget::SysvMessage(pinned))) => {
-            let _ = ipc.release_msg_queue_pin(pinned);
+        Err((error, BlockingRetryTarget::SysvMessage { queue, .. })) => {
+            let _ = ipc.release_msg_queue_pin(queue);
             Err(error)
         }
         Err((_error, _)) => unreachable!("message insertion returned another target kind"),
@@ -4598,12 +4648,18 @@ fn release_blocking_retry_target(
         BlockingRetryTarget::Mqueue(pinned) => unsafe {
             crate::mqueue::global_mqueue_table().release_pinned_descriptor(pinned)
         },
-        BlockingRetryTarget::SysvMessage(pinned) => unsafe {
-            crate::ipc::global_ipc_table().release_msg_queue_pin(pinned)
+        BlockingRetryTarget::SysvMessage { queue, .. } => unsafe {
+            crate::ipc::global_ipc_table().release_msg_queue_pin(queue)
         },
         BlockingRetryTarget::SysvSemaphore(pinned) => unsafe {
             crate::ipc::global_ipc_table().release_sem_set_pin(pinned)
         },
+        BlockingRetryTarget::Vector { carrier, pending } => {
+            drop(pending);
+            let result = release_ofd_reference_impl(proc, Some(&mut *locks), host, carrier.ofd_idx);
+            drain_deferred_scm_rights_releases(locks, host);
+            result
+        }
     }
 }
 
@@ -4684,12 +4740,15 @@ pub fn discard_blocking_retry_bindings_for_process_removal(proc: &mut Process) {
     for binding in proc.blocked_retries.take_all() {
         match binding.target {
             BlockingRetryTarget::Ofd(_) | BlockingRetryTarget::OfdPair { .. } => {}
+            // The retained payload is plain kernel-owned memory and the
+            // carrier's OFD refcount dies with the process's own table.
+            BlockingRetryTarget::Vector { pending, .. } => drop(pending),
             BlockingRetryTarget::Sendmsg { ancillary, .. } => drop(ancillary),
             BlockingRetryTarget::Mqueue(pinned) => unsafe {
                 let _ = crate::mqueue::global_mqueue_table().release_pinned_descriptor(pinned);
             },
-            BlockingRetryTarget::SysvMessage(pinned) => unsafe {
-                let _ = crate::ipc::global_ipc_table().release_msg_queue_pin(pinned);
+            BlockingRetryTarget::SysvMessage { queue, .. } => unsafe {
+                let _ = crate::ipc::global_ipc_table().release_msg_queue_pin(queue);
             },
             BlockingRetryTarget::SysvSemaphore(pinned) => unsafe {
                 let _ = crate::ipc::global_ipc_table().release_sem_set_pin(pinned);
@@ -4719,6 +4778,91 @@ pub fn clone_active_sendmsg_ancillary(
         cloned.push(fd.try_clone_retained()?);
     }
     Ok(Some(cloned))
+}
+
+/// Take the scatter/gather request a blocked `writev`/`readv` retained.
+///
+/// The payload is moved out rather than cloned: it can be up to `SSIZE_MAX`
+/// bytes, and the dispatch that consumes it needs `&mut Process` for the
+/// transfer itself. A retry that still ends in EAGAIN hands the same request
+/// back through [`ensure_blocking_retry_vector_binding`].
+pub fn take_active_vector_io(
+    proc: &mut Process,
+    tid: u32,
+    operation: BlockingRetryOperation,
+) -> Result<Option<crate::blocked_retry::PendingVectorIo>, Errno> {
+    let Some(binding) = proc.blocked_retries.active_binding_mut(tid, operation)? else {
+        return Ok(None);
+    };
+    let BlockingRetryTarget::Vector { pending, .. } = &mut binding.target else {
+        // A scalar `read`/`write` blocked on this task retains no vector
+        // request. Report that plainly rather than inventing one.
+        return Ok(None);
+    };
+    Ok(pending.take())
+}
+
+/// Pin the open file description a blocked scatter/gather call names and
+/// retain the exact request the caller presented.
+///
+/// A first EAGAIN creates the binding; a later one stores the request back
+/// into the binding it already owns.
+pub fn ensure_blocking_retry_vector_binding(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    tid: u32,
+    syscall: u32,
+    fd: i32,
+    pending: crate::blocked_retry::PendingVectorIo,
+) -> Result<i64, Errno> {
+    let operation = BlockingRetryOperation::from_syscall(syscall)?;
+    if !operation.is_single_ofd() {
+        return Err(Errno::EINVAL);
+    }
+    if let Ok(token) = proc.blocked_retries.token_for(tid, operation) {
+        let binding = proc
+            .blocked_retries
+            .binding_for_token_mut(token)
+            .ok_or(Errno::ENOENT)?;
+        let BlockingRetryTarget::Vector {
+            pending: slot,
+            carrier,
+        } = &mut binding.target
+        else {
+            return Err(Errno::EINVAL);
+        };
+        if carrier.original_fd != fd {
+            return Err(Errno::EINVAL);
+        }
+        *slot = Some(pending);
+        return Ok(token);
+    }
+    if proc.blocked_retries.has_binding_for_tid(tid) {
+        return Err(Errno::EBUSY);
+    }
+
+    let token = proc.blocked_retries.prepare_insert()?;
+    let carrier = stable_ofd_target(proc, fd)?;
+    proc.ofd_table
+        .try_inc_ref_exact(carrier.ofd_idx, carrier.ofd_id)?;
+    let target = BlockingRetryTarget::Vector {
+        carrier,
+        pending: Some(pending),
+    };
+    if let Err((error, target)) = proc
+        .blocked_retries
+        .insert_prepared(token, tid, operation, target)
+    {
+        let BlockingRetryTarget::Vector { carrier, pending } = target else {
+            unreachable!("vector insertion returned a non-vector target");
+        };
+        drop(pending);
+        let release = release_ofd_reference_impl(proc, Some(&mut *locks), host, carrier.ofd_idx);
+        drain_deferred_scm_rights_releases(locks, host);
+        return release.and(Err(error));
+    }
+    Ok(token)
 }
 
 /// Return the cursor after a byte transfer without narrowing or wrapping.
@@ -6353,40 +6497,6 @@ pub fn sys_pwrite(
 /// preadv -- scatter-gather read at offset.
 /// Reads into multiple buffers from a file descriptor at the given offset
 /// without modifying the file position.
-pub fn sys_preadv(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    fd: i32,
-    iovecs: &mut [&mut [u8]],
-    offset: i64,
-) -> Result<usize, Errno> {
-    require_io_fd(proc, fd)?;
-    let requested_len = checked_iovec_len(iovecs.len(), iovecs.iter().map(|buf| buf.len()))?;
-    let mut gathered = try_initialized_vec(requested_len)?;
-    let read = sys_pread(proc, host, fd, &mut gathered, offset)?;
-    scatter_iovec_prefix(iovecs, &gathered, read)?;
-    Ok(read)
-}
-
-/// Validate the total byte count represented by one wasm32 scatter/gather
-/// operation. Syscall return values are signed 32-bit even when the guest uses
-/// memory64, so a larger aggregate cannot be reported faithfully.
-fn checked_iovec_len(
-    iovec_count: usize,
-    lengths: impl IntoIterator<Item = usize>,
-) -> Result<usize, Errno> {
-    if iovec_count > wasm_posix_shared::platform_limits::IOV_MAX {
-        return Err(Errno::EINVAL);
-    }
-    let total = lengths.into_iter().try_fold(0usize, |total, length| {
-        total.checked_add(length).ok_or(Errno::EINVAL)
-    })?;
-    if total > platform_limits::MAX_REPORTABLE_TRANSFER_BYTES {
-        return Err(Errno::EINVAL);
-    }
-    Ok(total)
-}
-
 fn try_initialized_vec(length: usize) -> Result<Vec<u8>, Errno> {
     try_initialized_vec_with_reserve(length, |bytes, additional| {
         bytes
@@ -6406,72 +6516,6 @@ fn try_initialized_vec_with_reserve(
     }
     bytes.resize(length, 0);
     Ok(bytes)
-}
-
-fn gather_iovecs(iovecs: &[&[u8]]) -> Result<Vec<u8>, Errno> {
-    gather_iovecs_with_reserve(iovecs, |bytes, additional| {
-        bytes
-            .try_reserve_exact(additional)
-            .map_err(|_| Errno::ENOMEM)
-    })
-}
-
-fn gather_iovecs_with_reserve(
-    iovecs: &[&[u8]],
-    reserve: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), Errno>,
-) -> Result<Vec<u8>, Errno> {
-    let length = checked_iovec_len(iovecs.len(), iovecs.iter().map(|buf| buf.len()))?;
-    let mut gathered = Vec::new();
-    reserve(&mut gathered, length)?;
-    if gathered.capacity() < length {
-        return Err(Errno::ENOMEM);
-    }
-    for buf in iovecs {
-        gathered.extend_from_slice(buf);
-    }
-    Ok(gathered)
-}
-
-fn scatter_iovec_prefix(
-    iovecs: &mut [&mut [u8]],
-    gathered: &[u8],
-    length: usize,
-) -> Result<(), Errno> {
-    let source = gathered.get(..length).ok_or(Errno::EIO)?;
-    let mut copied = 0usize;
-    for destination in iovecs {
-        if copied == source.len() {
-            break;
-        }
-        let count = destination.len().min(source.len() - copied);
-        destination[..count].copy_from_slice(&source[copied..copied + count]);
-        copied += count;
-    }
-    if copied == source.len() {
-        Ok(())
-    } else {
-        Err(Errno::EIO)
-    }
-}
-
-/// pwritev -- scatter-gather write at offset.
-/// Writes from multiple buffers to a file descriptor at the given offset
-/// without modifying the file position.
-pub fn sys_pwritev(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    fd: i32,
-    iovecs: &[&[u8]],
-    offset: i64,
-) -> Result<usize, Errno> {
-    require_io_fd(proc, fd)?;
-    if offset < 0 {
-        return Err(Errno::EINVAL);
-    }
-    let gathered = gather_iovecs(iovecs)?;
-    // One scalar positioned write preserves the operation-wide file offset,
-    // file-size-limit decision, and backing-object atomicity.
-    sys_pwrite(proc, host, fd, &gathered, offset)
 }
 
 /// sendfile -- copy data between file descriptors.
@@ -15257,6 +15301,156 @@ pub fn sys_ioctl(
         return Ok(());
     }
 
+    // --- Network-interface ioctls: fixed-size `struct ifreq` requests ---
+    // (Workstream H4). `buf` is already sized to exactly `ifreq_size` for the
+    // calling process's pointer width (32 or 40 bytes) by the generic
+    // ioctl-contract dispatch in `wasm_api::kernel_ioctl`; the offsets below
+    // (0..16 = ifr_name, 16.. = union) do not otherwise depend on that width.
+    // Linux requires a socket fd here; Kandelo's prior host-side
+    // implementation validated no fd at all. Reaching this point already
+    // proves `fd` names an open descriptor (the `fd_table.get(fd)` above),
+    // which is a strictly truthful improvement (EBADF on a bogus fd) without
+    // narrowing any previously-working caller (real programs pass a socket).
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFCONF {
+        // `SIOCGIFCONF` enumerates every interface into a caller-supplied
+        // buffer. Unlike its `ifreq` siblings above, its argument is a
+        // `struct ifconf` holding a SECOND process-memory pointer
+        // (`ifc_buf`) whose size the caller chooses at runtime via `ifc_len`.
+        //
+        // That nested, runtime-sized indirection is why this request used to
+        // be marshalled entirely by the host, and it is still why the ioctl
+        // contract table cannot describe the inner buffer: the table names one
+        // static size per request. The kernel handles it here instead by
+        // reading `ifc_len`/`ifc_buf` out of the staged outer struct and
+        // writing the entries straight into the caller's memory through
+        // `HostIO::proc_write_bytes` — the same primitive the DRI/KMS paths
+        // have used all along.
+        //
+        // `buf` is the OUTER struct, already copied into kernel memory by the
+        // contract dispatch. Parsing `ifc_len` and `ifc_buf` from that copy —
+        // never re-reading them from the guest — is the copy-once-then-parse
+        // rule `HostIO::proc_write_bytes` documents, and it is what keeps this
+        // free of the time-of-check/time-of-use hazard a naive conversion
+        // would introduce.
+        //
+        // Layout (`struct ifconf`, `<net/if.h>`): `int ifc_len` at 0, then the
+        // pointer union at the platform's pointer alignment — offset 4 in an
+        // 8-byte wasm32 struct, offset 8 in a 16-byte wasm64 one. The staged
+        // length is the contract's declared size for the caller's width, so it
+        // is what tells us which width we are serving.
+        let pointer_width: u8 = match buf.len() {
+            8 => 4,
+            16 => 8,
+            _ => return Err(Errno::EINVAL),
+        };
+        let ifc_len = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        if ifc_len < 0 {
+            return Err(Errno::EINVAL);
+        }
+        let ifc_buf: u64 = if pointer_width == 8 {
+            u64::from_le_bytes([
+                buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+            ])
+        } else {
+            u64::from(u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]))
+        };
+
+        // Linux treats a null `ifc_buf` as a size query: report how many bytes
+        // a full enumeration would need and write nothing.
+        if ifc_buf == 0 {
+            let total = crate::netif::ifconf_total_size(pointer_width) as i32;
+            buf[0..4].copy_from_slice(&total.to_le_bytes());
+            return Ok(());
+        }
+
+        let entry_size = crate::netif::ifreq_size(pointer_width);
+        if entry_size == 0 || (ifc_len as usize) < entry_size {
+            // Not even one whole entry fits. Linux reports zero bytes written
+            // rather than failing.
+            buf[0..4].copy_from_slice(&0i32.to_le_bytes());
+            return Ok(());
+        }
+
+        // Bound the kernel-side allocation by what the interface table can
+        // actually produce, not by the caller's `ifc_len`. Reaching a
+        // caller's memory directly removes the host transport's 64 KiB
+        // ceiling, so a guest-supplied length must not be allowed to size a
+        // kernel allocation on its own.
+        let requested = (ifc_len as usize / entry_size) * entry_size;
+        let bytes = requested.min(crate::netif::ifconf_total_size(pointer_width));
+        let mut out: alloc::vec::Vec<u8> = alloc::vec![0u8; bytes];
+        let written = crate::netif::ifconf_write(pointer_width, &mut out, host);
+        if written > 0 {
+            let rc = host.proc_write_bytes(proc.pid as i32, ifc_buf, &out[..written]);
+            if rc < 0 {
+                return Err(Errno::EFAULT);
+            }
+        }
+        buf[0..4].copy_from_slice(&(written as i32).to_le_bytes());
+        return Ok(());
+    }
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFNAME {
+        if buf.len() < crate::netif::IF_NAMESIZE + 4 {
+            return Err(Errno::EINVAL);
+        }
+        let ifindex = i32::from_le_bytes([
+            buf[crate::netif::IF_NAMESIZE],
+            buf[crate::netif::IF_NAMESIZE + 1],
+            buf[crate::netif::IF_NAMESIZE + 2],
+            buf[crate::netif::IF_NAMESIZE + 3],
+        ]);
+        let iface = crate::netif::find_by_index(ifindex as u32).ok_or(Errno::ENODEV)?;
+        crate::netif::write_name(buf, iface.name.as_bytes());
+        return Ok(());
+    }
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFHWADDR {
+        if buf.len() < crate::netif::IF_NAMESIZE + 8 {
+            return Err(Errno::EINVAL);
+        }
+        let (name_buf, name_len) = crate::netif::read_name_bytes(buf);
+        let iface =
+            crate::netif::find_by_name(&name_buf[..name_len]).ok_or(Errno::ENODEV)?;
+        let ns = crate::netif::IF_NAMESIZE;
+        buf[ns..].fill(0);
+        let family: u16 = if iface.loopback {
+            crate::netif::ARPHRD_LOOPBACK
+        } else {
+            crate::netif::ARPHRD_ETHER
+        };
+        buf[ns..ns + 2].copy_from_slice(&family.to_le_bytes());
+        if !iface.loopback {
+            let mac = crate::netif::machine_mac(host);
+            buf[ns + 2..ns + 8].copy_from_slice(&mac);
+        }
+        return Ok(());
+    }
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFADDR {
+        if buf.len() < crate::netif::IF_NAMESIZE + 8 {
+            return Err(Errno::EINVAL);
+        }
+        let (name_buf, name_len) = crate::netif::read_name_bytes(buf);
+        let iface =
+            crate::netif::find_by_name(&name_buf[..name_len]).ok_or(Errno::ENODEV)?;
+        let addr =
+            crate::netif::interface_address(iface, host).ok_or(Errno::EADDRNOTAVAIL)?;
+        let ns = crate::netif::IF_NAMESIZE;
+        buf[ns..].fill(0);
+        buf[ns..ns + 2].copy_from_slice(&crate::netif::AF_INET.to_le_bytes());
+        buf[ns + 4..ns + 8].copy_from_slice(&addr);
+        return Ok(());
+    }
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFINDEX {
+        if buf.len() < crate::netif::IF_NAMESIZE + 4 {
+            return Err(Errno::EINVAL);
+        }
+        let (name_buf, name_len) = crate::netif::read_name_bytes(buf);
+        let iface =
+            crate::netif::find_by_name(&name_buf[..name_len]).ok_or(Errno::ENODEV)?;
+        let ns = crate::netif::IF_NAMESIZE;
+        buf[ns..ns + 4].copy_from_slice(&iface.index.to_le_bytes());
+        return Ok(());
+    }
+
     // Device-specific handlers intentionally own unknown-ioctl errno policy,
     // but a terminal request on a non-terminal must consistently be ENOTTY.
     // Gate that shared namespace before framebuffer/audio/DRM dispatch so a
@@ -17066,37 +17260,114 @@ pub fn sys_fchown(
     }
 }
 
-/// writev -- write data from multiple buffers as one logical operation.
-pub fn sys_writev(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    fd: i32,
-    buffers: &[&[u8]],
-) -> Result<usize, Errno> {
-    require_io_fd(proc, fd)?;
-    let gathered = gather_iovecs(buffers)?;
-    // WHY: issuing one scalar write preserves PIPE_BUF and datagram message
-    // atomicity. Iterating per iovec would create multiple operations with
-    // observably different boundaries.
-    sys_write(proc, host, fd, &gathered)
+/// What one scatter/gather syscall does once its request is assembled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorIoKind {
+    Write,
+    Read,
+    Pwrite { offset: i64 },
+    Pread { offset: i64 },
 }
 
-/// readv -- perform one read, then scatter its returned prefix.
-pub fn sys_readv(
+impl VectorIoKind {
+    fn is_write(self) -> bool {
+        matches!(self, Self::Write | Self::Pwrite { .. })
+    }
+}
+
+/// writev/readv/preadv/pwritev over the CALLER's own `struct iovec` table.
+///
+/// The table and the buffers it names live in the calling process's address
+/// space, not in kernel memory, so every access goes through the cross-memory
+/// primitives in [`crate::guest_ptr`]. `pointer_width` is the caller's, never
+/// the kernel's: one kernel instance serves both wasm32 and wasm64 processes.
+///
+/// WHY one gathered buffer rather than a transfer per entry. POSIX defines
+/// `writev` as `write` applied to the concatenation of the `iovcnt` buffers,
+/// so issuing one scalar operation is what preserves PIPE_BUF atomicity and
+/// datagram boundaries; iterating per entry would create several operations
+/// with observably different boundaries. `readv` likewise makes exactly one
+/// observation and scatters only the prefix that came back.
+///
+/// A request that blocks is retained rather than re-read; see
+/// [`crate::blocked_retry::PendingVectorIo`] for why that is a POSIX
+/// requirement and not a convenience.
+#[allow(clippy::too_many_arguments)]
+pub fn sys_vector_io(
     proc: &mut Process,
     host: &mut dyn HostIO,
+    locks: &mut AdvisoryLockManager,
+    tid: u32,
+    syscall_nr: u32,
     fd: i32,
-    buffers: &mut [&mut [u8]],
+    iov_addr: u64,
+    iovcnt: u32,
+    pointer_width: u8,
+    kind: VectorIoKind,
 ) -> Result<usize, Errno> {
+    // Reject a descriptor that cannot carry I/O before reading caller memory,
+    // so a zero-length vector on a closed or path-only fd still fails.
     require_io_fd(proc, fd)?;
-    let requested_len = checked_iovec_len(buffers.len(), buffers.iter().map(|buf| buf.len()))?;
-    let mut gathered = try_initialized_vec(requested_len)?;
-    // WHY: one scalar read consumes at most one datagram and makes a single
-    // stream/pipe observation. Scatter happens only after that operation has
-    // completed.
-    let read = sys_read(proc, host, fd, &mut gathered)?;
-    scatter_iovec_prefix(buffers, &gathered, read)?;
-    Ok(read)
+    let operation = BlockingRetryOperation::from_syscall(syscall_nr)?;
+    let pid = proc.pid as i32;
+
+    let request = match take_active_vector_io(proc, tid, operation)? {
+        Some(pending) => pending,
+        None => {
+            let entries = crate::msghdr::read_iovecs(host, pid, iov_addr, iovcnt, pointer_width)?;
+            let total = crate::msghdr::iovec_total(&entries)?;
+            let outgoing = if kind.is_write() {
+                crate::msghdr::gather(host, pid, &entries)?
+            } else {
+                Vec::new()
+            };
+            crate::blocked_retry::PendingVectorIo {
+                entries,
+                outgoing,
+                total,
+            }
+        }
+    };
+
+    let outcome = match kind {
+        VectorIoKind::Write => sys_write(proc, host, fd, &request.outgoing),
+        VectorIoKind::Pwrite { offset } => sys_pwrite(proc, host, fd, &request.outgoing, offset),
+        VectorIoKind::Read | VectorIoKind::Pread { .. } => {
+            match try_initialized_vec(request.total) {
+                Err(error) => Err(error),
+                Ok(mut staging) => {
+                    let read = match kind {
+                        VectorIoKind::Read => sys_read(proc, host, fd, &mut staging),
+                        VectorIoKind::Pread { offset } => {
+                            sys_pread(proc, host, fd, &mut staging, offset)
+                        }
+                        _ => unreachable!("write kinds are handled above"),
+                    };
+                    match read {
+                        Ok(n) => match staging.get(..n) {
+                            Some(prefix) => {
+                                crate::msghdr::scatter(host, pid, &request.entries, prefix)
+                                    .map(|_| n)
+                            }
+                            None => Err(Errno::EIO),
+                        },
+                        Err(error) => Err(error),
+                    }
+                }
+            }
+        }
+    };
+
+    match outcome {
+        // Nothing was transferred: `sys_write` returns a short count whenever
+        // any byte moved, so retaining and replaying the whole request can
+        // never move the same byte twice.
+        Err(Errno::EAGAIN) => {
+            ensure_blocking_retry_vector_binding(proc, locks, host, tid, syscall_nr, fd, request)?;
+            Err(Errno::EAGAIN)
+        }
+        other => other,
+    }
 }
 
 /// getrlimit — get resource limits
@@ -18136,6 +18407,8 @@ pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_posix_shared::abi::extended_syscalls;
+    use wasm_posix_shared::Syscall;
     use crate::credentials::Credentials;
     use crate::process::ProcessState;
     use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
@@ -18574,7 +18847,12 @@ mod tests {
         gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
         /// Recorded pid for every `gl_unbind` call.
         gl_unbind_calls: Vec<i32>,
-        proc_write_calls: Vec<(i32, u32, Vec<u8>)>,
+        proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
+        /// Simulated guest linear memory for `proc_read_bytes` /
+        /// `proc_write_bytes`. Without it every cross-memory call fails with
+        /// the trait's `-ENOSYS` default, which would make a test that means
+        /// to prove "this address is REJECTED" pass for the wrong reason.
+        proc_memory: Vec<u8>,
         /// Override for `gbm_bo_bind`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gbm_bo_bind_rc: i32,
@@ -18644,6 +18922,22 @@ mod tests {
     }
 
     impl MockHostIO {
+        /// Resolve `(ptr, len)` against the simulated process memory, the same
+        /// way a real host resolves it against a guest's live linear memory:
+        /// the address must be representable, non-null for a positive length,
+        /// and the whole range must fit inside the memory that owns it.
+        fn proc_range(memory: &[u8], ptr: u64, len: usize) -> Option<usize> {
+            let offset = usize::try_from(ptr).ok()?;
+            if offset == 0 && len != 0 {
+                return None;
+            }
+            let end = offset.checked_add(len)?;
+            if end > memory.len() {
+                return None;
+            }
+            Some(offset)
+        }
+
         fn new() -> Self {
             MockHostIO {
                 next_handle: 100,
@@ -18683,6 +18977,10 @@ mod tests {
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
                 proc_write_calls: Vec::new(),
+                // 64 KiB — one wasm page, enough for every address these
+                // tests use and small enough that a deliberately-high
+                // address is out of range.
+                proc_memory: alloc::vec![0u8; 65536],
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
                 net_connect_result: Err(Errno::ECONNREFUSED),
@@ -19318,22 +19616,6 @@ mod tests {
             Ok(())
         }
 
-        fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-            if self.sigsuspend_error {
-                return Err(Errno::EINTR);
-            }
-            Ok(self.sigsuspend_signal)
-        }
-
-        fn host_call_signal_handler(
-            &mut self,
-            _handler_index: u32,
-            _signum: u32,
-            _sa_flags: u32,
-        ) -> Result<(), Errno> {
-            Ok(())
-        }
-
         fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
             // Fill with deterministic pattern for testing
             for (i, b) in buf.iter_mut().enumerate() {
@@ -19422,14 +19704,6 @@ mod tests {
             result[..copied].copy_from_slice(&bytes[..copied]);
             Ok(self.getaddrinfo_reported)
         }
-        fn host_futex_wait(
-            &mut self,
-            _addr: usize,
-            _expected: u32,
-            _timeout_ns: i64,
-        ) -> Result<i32, Errno> {
-            Err(Errno::EAGAIN)
-        }
         fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
             Ok(0)
         }
@@ -19490,10 +19764,23 @@ mod tests {
         fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize) -> i32 {
             self.gl_submit_rc
         }
-        fn proc_write_bytes(&mut self, pid: i32, ptr: u32, bytes: &[u8]) -> i32 {
+        fn proc_write_bytes(&mut self, pid: i32, ptr: u64, bytes: &[u8]) -> i32 {
+            let Some(offset) = Self::proc_range(&self.proc_memory, ptr, bytes.len()) else {
+                return -(Errno::EFAULT as i32);
+            };
+            self.proc_memory[offset..offset + bytes.len()].copy_from_slice(bytes);
             self.proc_write_calls.push((pid, ptr, bytes.to_vec()));
             0
         }
+
+        fn proc_read_bytes(&mut self, _pid: i32, ptr: u64, dst: &mut [u8]) -> i32 {
+            let Some(offset) = Self::proc_range(&self.proc_memory, ptr, dst.len()) else {
+                return -(Errno::EFAULT as i32);
+            };
+            dst.copy_from_slice(&self.proc_memory[offset..offset + dst.len()]);
+            0
+        }
+
         fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {
             self.kms_set_fb_calls.push((pid, crtc_id, fb_id));
         }
@@ -19512,6 +19799,104 @@ mod tests {
             self.gl_create_surface_calls
                 .push((pid, surface_id, attrs.to_vec()));
         }
+    }
+
+    /// Lay a caller-native `struct iovec` table plus its buffers into the
+    /// mock guest memory, and return the table's guest address.
+    ///
+    /// Mirrors what a real guest does: the table entries point at buffers in
+    /// the same address space, and the kernel never sees kernel-owned slices.
+    fn stage_guest_iovecs(
+        host: &mut MockHostIO,
+        table_addr: u64,
+        buffers_addr: u64,
+        buffers: &[&[u8]],
+        pointer_width: u8,
+    ) -> u64 {
+        let entry_size = if pointer_width == 8 { 16usize } else { 8 };
+        let len_offset = if pointer_width == 8 { 8usize } else { 4 };
+        let mut cursor = buffers_addr;
+        for (index, buffer) in buffers.iter().enumerate() {
+            let entry = table_addr as usize + index * entry_size;
+            let base = if buffer.is_empty() { 0 } else { cursor };
+            let base_bytes = base.to_le_bytes();
+            let len_bytes = (buffer.len() as u64).to_le_bytes();
+            let width = pointer_width as usize;
+            host.proc_memory[entry..entry + width].copy_from_slice(&base_bytes[..width]);
+            host.proc_memory[entry + len_offset..entry + len_offset + width]
+                .copy_from_slice(&len_bytes[..width]);
+            if !buffer.is_empty() {
+                let at = cursor as usize;
+                host.proc_memory[at..at + buffer.len()].copy_from_slice(buffer);
+                cursor += buffer.len() as u64;
+            }
+        }
+        table_addr
+    }
+
+    /// Read back the bytes one staged iovec entry names.
+    fn guest_iovec_contents(
+        host: &MockHostIO,
+        buffers_addr: u64,
+        lengths: &[usize],
+    ) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut cursor = buffers_addr as usize;
+        for &len in lengths {
+            out.push(host.proc_memory[cursor..cursor + len].to_vec());
+            cursor += len;
+        }
+        out
+    }
+
+    const IOV_TABLE_ADDR: u64 = 0x100;
+    const IOV_BUFFERS_ADDR: u64 = 0x400;
+
+    /// Run one vector syscall over a freshly staged guest table.
+    fn vector_bufs(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        syscall_nr: u32,
+        fd: i32,
+        bufs: &[&[u8]],
+        kind: VectorIoKind,
+    ) -> Result<usize, Errno> {
+        let iov = stage_guest_iovecs(host, IOV_TABLE_ADDR, IOV_BUFFERS_ADDR, bufs, 4);
+        vector_io(proc, host, syscall_nr, fd, iov, bufs.len() as u32, kind)
+    }
+
+    /// Run one vector read over zero-filled guest buffers of the given sizes,
+    /// returning the result and what each buffer holds afterwards.
+    fn vector_read(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        syscall_nr: u32,
+        fd: i32,
+        lengths: &[usize],
+        fill: u8,
+        kind: VectorIoKind,
+    ) -> (Result<usize, Errno>, Vec<Vec<u8>>) {
+        let owned: Vec<Vec<u8>> = lengths.iter().map(|&n| alloc::vec![fill; n]).collect();
+        let refs: Vec<&[u8]> = owned.iter().map(|b| b.as_slice()).collect();
+        let iov = stage_guest_iovecs(host, IOV_TABLE_ADDR, IOV_BUFFERS_ADDR, &refs, 4);
+        let result = vector_io(proc, host, syscall_nr, fd, iov, lengths.len() as u32, kind);
+        let contents = guest_iovec_contents(host, IOV_BUFFERS_ADDR, lengths);
+        (result, contents)
+    }
+
+    fn vector_io(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        syscall_nr: u32,
+        fd: i32,
+        iov_addr: u64,
+        iovcnt: u32,
+        kind: VectorIoKind,
+    ) -> Result<usize, Errno> {
+        let mut locks = AdvisoryLockManager::new();
+        sys_vector_io(
+            proc, host, &mut locks, 0, syscall_nr, fd, iov_addr, iovcnt, 4, kind,
+        )
     }
 
     fn user_process(pid: u32) -> Process {
@@ -20689,17 +21074,38 @@ mod tests {
         assert_eq!(sys_pwrite(proc, host, fd, b"x", -1), Err(Errno::EBADF));
         assert_eq!(sys_lseek(proc, host, fd, 0, SEEK_SET), Err(Errno::EBADF));
 
-        let mut read_iovecs: [&mut [u8]; 1] = [&mut byte];
+        let iov = stage_guest_iovecs(host, IOV_TABLE_ADDR, IOV_BUFFERS_ADDR, &[b"x"], 4);
         assert_eq!(
-            sys_preadv(proc, host, fd, &mut read_iovecs, 0),
+            vector_io(
+                proc,
+                host,
+                extended_syscalls::SYS_PREADV,
+                fd,
+                iov,
+                1,
+                VectorIoKind::Pread { offset: 0 },
+            ),
             Err(Errno::EBADF),
         );
         assert_eq!(
-            sys_readv(proc, host, fd, &mut read_iovecs),
+            vector_io(proc, host, Syscall::Readv as u32, fd, iov, 1, VectorIoKind::Read),
             Err(Errno::EBADF),
         );
-        assert_eq!(sys_pwritev(proc, host, fd, &[b"x"], 0), Err(Errno::EBADF));
-        assert_eq!(sys_writev(proc, host, fd, &[b"x"]), Err(Errno::EBADF));
+        assert_eq!(
+            vector_bufs(
+                proc,
+                host,
+                extended_syscalls::SYS_PWRITEV,
+                fd,
+                &[b"x"],
+                VectorIoKind::Pwrite { offset: 0 },
+            ),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            vector_bufs(proc, host, Syscall::Writev as u32, fd, &[b"x"], VectorIoKind::Write),
+            Err(Errno::EBADF),
+        );
         assert_eq!(
             sys_getdents64(proc, host, fd, &mut [0u8; 64]),
             Err(Errno::EBADF)
@@ -31822,7 +32228,15 @@ mod tests {
         let mut host = MockHostIO::new();
         let (r, w) = sys_pipe(&mut proc).unwrap();
         let bufs: &[&[u8]] = &[b"hello", b" ", b"world"];
-        let n = sys_writev(&mut proc, &mut host, w, bufs).unwrap();
+        let n = vector_bufs(
+            &mut proc,
+            &mut host,
+            Syscall::Writev as u32,
+            w,
+            bufs,
+            VectorIoKind::Write,
+        )
+        .unwrap();
         assert_eq!(n, 11);
         // Read back
         let mut rbuf = [0u8; 32];
@@ -31839,13 +32253,18 @@ mod tests {
         // Write data to pipe
         sys_write(&mut proc, &mut host, w, b"helloworld").unwrap();
         // Read into multiple buffers
-        let mut buf1 = [0u8; 5];
-        let mut buf2 = [0u8; 5];
-        let mut buffers: [&mut [u8]; 2] = [&mut buf1, &mut buf2];
-        let n = sys_readv(&mut proc, &mut host, r, &mut buffers).unwrap();
-        assert_eq!(n, 10);
-        assert_eq!(&buf1, b"hello");
-        assert_eq!(&buf2, b"world");
+        let (n, buffers) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            r,
+            &[5, 5],
+            0,
+            VectorIoKind::Read,
+        );
+        assert_eq!(n, Ok(10));
+        assert_eq!(buffers[0].as_slice(), b"hello");
+        assert_eq!(buffers[1].as_slice(), b"world");
     }
 
     #[test]
@@ -31854,7 +32273,15 @@ mod tests {
         let mut host = MockHostIO::new();
         let (_r, w) = sys_pipe(&mut proc).unwrap();
         let bufs: &[&[u8]] = &[b"", b"data", b""];
-        let n = sys_writev(&mut proc, &mut host, w, bufs).unwrap();
+        let n = vector_bufs(
+            &mut proc,
+            &mut host,
+            Syscall::Writev as u32,
+            w,
+            bufs,
+            VectorIoKind::Write,
+        )
+        .unwrap();
         assert_eq!(n, 4);
     }
 
@@ -31863,7 +32290,14 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let bufs: &[&[u8]] = &[b"hello"];
-        let result = sys_writev(&mut proc, &mut host, 99, bufs);
+        let result = vector_bufs(
+            &mut proc,
+            &mut host,
+            Syscall::Writev as u32,
+            99,
+            bufs,
+            VectorIoKind::Write,
+        );
         assert_eq!(result, Err(Errno::EBADF));
     }
 
@@ -31871,9 +32305,15 @@ mod tests {
     fn test_readv_bad_fd() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let mut buf1 = [0u8; 5];
-        let mut buffers: [&mut [u8]; 1] = [&mut buf1];
-        let result = sys_readv(&mut proc, &mut host, 99, &mut buffers);
+        let (result, _) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            99,
+            &[5],
+            0,
+            VectorIoKind::Read,
+        );
         assert_eq!(result, Err(Errno::EBADF));
     }
 
@@ -31882,20 +32322,28 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let (r, w) = sys_pipe(&mut proc).unwrap();
-        let mut empty1 = [0u8; 0];
-        let mut empty2 = [0u8; 0];
-        let mut empty_buffers: [&mut [u8]; 2] = [&mut empty1, &mut empty2];
-        assert_eq!(
-            sys_readv(&mut proc, &mut host, r, &mut empty_buffers),
-            Ok(0),
+        let (empty, _) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            r,
+            &[0, 0],
+            0,
+            VectorIoKind::Read,
         );
+        assert_eq!(empty, Ok(0));
         sys_write(&mut proc, &mut host, w, b"data").unwrap();
-        let mut buf1 = [0u8; 0];
-        let mut buf2 = [0u8; 4];
-        let mut buffers: [&mut [u8]; 2] = [&mut buf1, &mut buf2];
-        let n = sys_readv(&mut proc, &mut host, r, &mut buffers).unwrap();
-        assert_eq!(n, 4);
-        assert_eq!(&buf2, b"data");
+        let (n, buffers) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            r,
+            &[0, 4],
+            0,
+            VectorIoKind::Read,
+        );
+        assert_eq!(n, Ok(4));
+        assert_eq!(buffers[1].as_slice(), b"data");
     }
 
     #[test]
@@ -31911,25 +32359,38 @@ mod tests {
             0o644,
         )
         .unwrap();
-        let empty_writes: &[&[u8]] = &[b"", b""];
+        let empty: &[&[u8]] = &[b"", b""];
 
-        let mut first = [0u8; 0];
-        let mut second = [0u8; 0];
-        let mut empty_reads: [&mut [u8]; 2] = [&mut first, &mut second];
+        // A zero-byte vector still validates the descriptor and its direction,
+        // and still refuses a nonsensical offset, without reaching the host.
         assert_eq!(
-            sys_readv(&mut proc, &mut host, read_fd, &mut empty_reads),
+            vector_bufs(&mut proc, &mut host, Syscall::Readv as u32, read_fd, empty, VectorIoKind::Read),
             Ok(0),
         );
         assert_eq!(
-            sys_writev(&mut proc, &mut host, write_fd, empty_writes),
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, write_fd, empty, VectorIoKind::Write),
             Ok(0),
         );
         assert_eq!(
-            sys_preadv(&mut proc, &mut host, read_fd, &mut empty_reads, 17),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PREADV,
+                read_fd,
+                empty,
+                VectorIoKind::Pread { offset: 17 },
+            ),
             Ok(0),
         );
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, write_fd, empty_writes, 23),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                write_fd,
+                empty,
+                VectorIoKind::Pwrite { offset: 23 },
+            ),
             Ok(0),
         );
         assert_eq!(host.read_calls, 0);
@@ -31938,46 +32399,88 @@ mod tests {
         assert!(host.pwrite_calls.is_empty());
 
         assert_eq!(
-            sys_readv(&mut proc, &mut host, write_fd, &mut empty_reads),
+            vector_bufs(&mut proc, &mut host, Syscall::Readv as u32, write_fd, empty, VectorIoKind::Read),
             Err(Errno::EBADF),
         );
         assert_eq!(
-            sys_writev(&mut proc, &mut host, read_fd, empty_writes),
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, read_fd, empty, VectorIoKind::Write),
             Err(Errno::EBADF),
         );
         assert_eq!(
-            sys_preadv(&mut proc, &mut host, write_fd, &mut empty_reads, 0),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PREADV,
+                write_fd,
+                empty,
+                VectorIoKind::Pread { offset: 0 },
+            ),
             Err(Errno::EBADF),
         );
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, read_fd, empty_writes, 0),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                read_fd,
+                empty,
+                VectorIoKind::Pwrite { offset: 0 },
+            ),
             Err(Errno::EBADF),
         );
         assert_eq!(
-            sys_preadv(&mut proc, &mut host, read_fd, &mut empty_reads, -1),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PREADV,
+                read_fd,
+                empty,
+                VectorIoKind::Pread { offset: -1 },
+            ),
             Err(Errno::EINVAL),
         );
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, write_fd, empty_writes, -1),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                write_fd,
+                empty,
+                VectorIoKind::Pwrite { offset: -1 },
+            ),
             Err(Errno::EINVAL),
         );
 
         let (pipe_read, pipe_write) = sys_pipe(&mut proc).unwrap();
         assert_eq!(
-            sys_readv(&mut proc, &mut host, pipe_read, &mut empty_reads),
+            vector_bufs(&mut proc, &mut host, Syscall::Readv as u32, pipe_read, empty, VectorIoKind::Read),
             Ok(0),
             "an empty pipe read must not report EAGAIN",
         );
         assert_eq!(
-            sys_writev(&mut proc, &mut host, pipe_write, empty_writes),
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, pipe_write, empty, VectorIoKind::Write),
             Ok(0),
         );
         assert_eq!(
-            sys_preadv(&mut proc, &mut host, pipe_read, &mut empty_reads, 0),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PREADV,
+                pipe_read,
+                empty,
+                VectorIoKind::Pread { offset: 0 },
+            ),
             Err(Errno::ESPIPE),
         );
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, pipe_write, empty_writes, 0),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                pipe_write,
+                empty,
+                VectorIoKind::Pwrite { offset: 0 },
+            ),
             Err(Errno::ESPIPE),
         );
     }
@@ -31996,36 +32499,56 @@ mod tests {
         )
         .unwrap();
 
-        let mut first = [0xAA; 2];
-        let mut second = [0xAA; 4];
-        let mut read_iovecs: [&mut [u8]; 2] = [&mut first, &mut second];
-        assert_eq!(
-            sys_readv(&mut proc, &mut host, read_fd, &mut read_iovecs),
-            Ok(5),
+        let (n, buffers) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            read_fd,
+            &[2, 4],
+            0xAA,
+            VectorIoKind::Read,
         );
+        assert_eq!(n, Ok(5));
         assert_eq!(host.read_calls, 0);
         assert_eq!(host.pread_calls, vec![(100, 0, 6)]);
-        assert_eq!(&first, b"he");
-        assert_eq!(&second, &[b'l', b'l', b'o', 0xAA]);
+        assert_eq!(buffers[0].as_slice(), b"he");
+        assert_eq!(buffers[1].as_slice(), &[b'l', b'l', b'o', 0xAA]);
 
         assert_eq!(
-            sys_writev(&mut proc, &mut host, write_fd, &[b"ab", b"cd"]),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                Syscall::Writev as u32,
+                write_fd,
+                &[b"ab", b"cd"],
+                VectorIoKind::Write,
+            ),
             Ok(4),
         );
         assert_eq!(host.write_calls, 0);
         assert_eq!(host.pwrite_calls, vec![(101, 0, b"abcd".to_vec())],);
 
-        let mut positioned_first = [0u8; 2];
-        let mut positioned_second = [0u8; 3];
-        let mut positioned_iovecs: [&mut [u8]; 2] = [&mut positioned_first, &mut positioned_second];
-        assert_eq!(
-            sys_preadv(&mut proc, &mut host, read_fd, &mut positioned_iovecs, 7,),
-            Ok(5),
+        let (positioned, _) = vector_read(
+            &mut proc,
+            &mut host,
+            extended_syscalls::SYS_PREADV,
+            read_fd,
+            &[2, 3],
+            0,
+            VectorIoKind::Pread { offset: 7 },
         );
+        assert_eq!(positioned, Ok(5));
         assert_eq!(host.read_calls, 0);
         assert_eq!(host.pread_calls, vec![(100, 0, 6), (100, 7, 5)]);
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, write_fd, &[b"ef", b"gh"], 9,),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                write_fd,
+                &[b"ef", b"gh"],
+                VectorIoKind::Pwrite { offset: 9 },
+            ),
             Ok(4),
         );
         assert_eq!(host.write_calls, 0);
@@ -32370,17 +32893,30 @@ mod tests {
         let value = 0x0102_0304_0506_0708u64.to_le_bytes();
 
         assert_eq!(
-            sys_writev(&mut proc, &mut host, fd, &[&value[..4], &value[4..]]),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                Syscall::Writev as u32,
+                fd,
+                &[&value[..4], &value[4..]],
+                VectorIoKind::Write,
+            ),
             Ok(8),
         );
 
-        let mut first = [0u8; 3];
-        let mut second = [0u8; 5];
-        let mut iovecs: [&mut [u8]; 2] = [&mut first, &mut second];
-        assert_eq!(sys_readv(&mut proc, &mut host, fd, &mut iovecs), Ok(8),);
+        let (n, buffers) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            fd,
+            &[3, 5],
+            0,
+            VectorIoKind::Read,
+        );
+        assert_eq!(n, Ok(8));
         let mut observed = [0u8; 8];
-        observed[..3].copy_from_slice(&first);
-        observed[3..].copy_from_slice(&second);
+        observed[..3].copy_from_slice(&buffers[0]);
+        observed[3..].copy_from_slice(&buffers[1]);
         assert_eq!(u64::from_le_bytes(observed), u64::from_le_bytes(value));
     }
 
@@ -32396,7 +32932,14 @@ mod tests {
         );
 
         assert_eq!(
-            sys_writev(&mut proc, &mut host, write_fd, &[b"ab", b"cd"]),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                Syscall::Writev as u32,
+                write_fd,
+                &[b"ab", b"cd"],
+                VectorIoKind::Write,
+            ),
             Err(Errno::EAGAIN),
         );
         let mut observed = vec![0u8; DEFAULT_PIPE_CAPACITY];
@@ -32417,18 +32960,28 @@ mod tests {
             sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
 
         assert_eq!(
-            sys_writev(&mut proc, &mut host, sender, &[b"abc", b"def"]),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                Syscall::Writev as u32,
+                sender,
+                &[b"abc", b"def"],
+                VectorIoKind::Write,
+            ),
             Ok(6),
         );
-        let mut first = [0u8; 2];
-        let mut second = [0u8; 4];
-        let mut iovecs: [&mut [u8]; 2] = [&mut first, &mut second];
-        assert_eq!(
-            sys_readv(&mut proc, &mut host, receiver, &mut iovecs),
-            Ok(6),
+        let (n, buffers) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            receiver,
+            &[2, 4],
+            0,
+            VectorIoKind::Read,
         );
-        assert_eq!(&first, b"ab");
-        assert_eq!(&second, b"cdef");
+        assert_eq!(n, Ok(6));
+        assert_eq!(buffers[0].as_slice(), b"ab");
+        assert_eq!(buffers[1].as_slice(), b"cdef");
 
         let mut empty = [0u8; 1];
         assert_eq!(
@@ -32444,42 +32997,29 @@ mod tests {
         let mut host = MockHostIO::new();
         let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
         let exact = vec![&[][..]; wasm_posix_shared::platform_limits::IOV_MAX];
-        assert_eq!(sys_writev(&mut proc, &mut host, write_fd, &exact), Ok(0),);
+        assert_eq!(
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, write_fd, &exact, VectorIoKind::Write),
+            Ok(0),
+        );
         let iovecs = vec![&[][..]; wasm_posix_shared::platform_limits::IOV_MAX + 1];
         assert_eq!(
-            sys_writev(&mut proc, &mut host, write_fd, &iovecs),
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, write_fd, &iovecs, VectorIoKind::Write),
             Err(Errno::EINVAL),
         );
     }
 
     #[test]
     fn vector_io_allocation_failure_is_enomem() {
-        assert_eq!(
-            checked_iovec_len(2, [i32::MAX as usize, 0]),
-            Ok(i32::MAX as usize),
-        );
-        assert_eq!(
-            checked_iovec_len(2, [i32::MAX as usize, 1]),
-            Err(Errno::EINVAL),
-        );
-        assert_eq!(
-            gather_iovecs_with_reserve(&[b"a", b"bc"], |bytes, length| {
-                assert!(bytes.is_empty());
-                assert_eq!(length, 3);
-                Err(Errno::ENOMEM)
-            }),
-            Err(Errno::ENOMEM),
-        );
+        // The aggregate-length and staging-allocation rules moved to
+        // `msghdr::read_iovecs` / `guest_ptr::zeroed_staging` with the table
+        // walk itself. What stays here is the one helper the vector path still
+        // owns: the read staging buffer.
         assert_eq!(
             try_initialized_vec_with_reserve(7, |bytes, length| {
                 assert!(bytes.is_empty());
                 assert_eq!(length, 7);
                 Err(Errno::ENOMEM)
             }),
-            Err(Errno::ENOMEM),
-        );
-        assert_eq!(
-            gather_iovecs_with_reserve(&[b"abc"], |_, _| Ok(())),
             Err(Errno::ENOMEM),
         );
         assert_eq!(
@@ -32707,7 +33247,10 @@ mod tests {
         sys_setrlimit(&mut proc, RLIMIT_FSIZE, 5, 5).unwrap();
         let iovecs: &[&[u8]] = &[b"ab", b"cde", b"f"];
 
-        assert_eq!(sys_writev(&mut proc, &mut host, write_fd, iovecs), Ok(5));
+        assert_eq!(
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, write_fd, iovecs, VectorIoKind::Write),
+            Ok(5),
+        );
         assert!(!fsize_signal_pending(&proc));
         assert_eq!(
             sys_write(&mut proc, &mut host, write_fd, b"x"),
@@ -32717,8 +33260,15 @@ mod tests {
 
         clear_fsize_signal(&mut proc);
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, pwrite_fd, iovecs, 0),
-            Ok(5)
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                pwrite_fd,
+                iovecs,
+                VectorIoKind::Pwrite { offset: 0 },
+            ),
+            Ok(5),
         );
         assert!(!fsize_signal_pending(&proc));
         assert_eq!(
@@ -34157,17 +34707,6 @@ mod tests {
         ) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-            Err(Errno::EINTR)
-        }
-        fn host_call_signal_handler(
-            &mut self,
-            _handler_index: u32,
-            _signum: u32,
-            _sa_flags: u32,
-        ) -> Result<(), Errno> {
-            Ok(())
-        }
         fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
             for (i, b) in buf.iter_mut().enumerate() {
                 *b = (i & 0xFF) as u8;
@@ -34223,14 +34762,6 @@ mod tests {
         }
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
-        }
-        fn host_futex_wait(
-            &mut self,
-            _addr: usize,
-            _expected: u32,
-            _timeout_ns: i64,
-        ) -> Result<i32, Errno> {
-            Err(Errno::EAGAIN)
         }
         fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
             Ok(0)
@@ -35311,12 +35842,6 @@ mod tests {
             ) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-                Err(Errno::EINTR)
-            }
-            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
                 for x in b.iter_mut() {
                     *x = 0x42;
@@ -35362,9 +35887,6 @@ mod tests {
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Err(Errno::ENOENT)
-            }
-            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
-                Err(Errno::EAGAIN)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
@@ -35553,42 +36075,6 @@ mod tests {
         // Fourth should fail
         let r4 = sys_sigtimedwait(&mut proc, &mut host, mask, 0);
         assert_eq!(r4, Err(Errno::EAGAIN));
-    }
-
-    // ===== preadv / pwritev tests =====
-
-    #[test]
-    fn test_preadv_basic() {
-        let mut proc = Process::new(1);
-        let mut host = TrackingHostIO::new();
-        let fd = sys_open(&mut proc, &mut host, b"/test/file", O_RDONLY, 0).unwrap();
-        let mut buf1 = [0u8; 4];
-        let mut buf2 = [0u8; 4];
-        let mut iovecs: [&mut [u8]; 2] = [&mut buf1, &mut buf2];
-        // TrackingHostIO reads return 0 (EOF), so total should be 0
-        let result = sys_preadv(&mut proc, &mut host, fd, &mut iovecs, 0);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_preadv_rejects_pipe() {
-        let mut proc = Process::new(1);
-        let mut host = TrackingHostIO::new();
-        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
-        let mut buf = [0u8; 4];
-        let mut iovecs: [&mut [u8]; 1] = [&mut buf];
-        let result = sys_preadv(&mut proc, &mut host, read_fd, &mut iovecs, 0);
-        assert_eq!(result, Err(Errno::ESPIPE));
-    }
-
-    #[test]
-    fn test_pwritev_rejects_pipe() {
-        let mut proc = Process::new(1);
-        let mut host = TrackingHostIO::new();
-        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
-        let iovecs: [&[u8]; 1] = [b"hello"];
-        let result = sys_pwritev(&mut proc, &mut host, write_fd, &iovecs, 0);
-        assert_eq!(result, Err(Errno::ESPIPE));
     }
 
     // ===== sendfile tests =====
@@ -39855,12 +40341,6 @@ mod tests {
             ) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-                Err(Errno::EINTR)
-            }
-            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
                 for x in b.iter_mut() {
                     *x = 0x42;
@@ -39906,9 +40386,6 @@ mod tests {
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Ok(0)
-            }
-            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
-                Err(Errno::EAGAIN)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
@@ -40070,12 +40547,6 @@ mod tests {
             ) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-                Err(Errno::EINTR)
-            }
-            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
                 for x in b.iter_mut() {
                     *x = 0x42;
@@ -40120,9 +40591,6 @@ mod tests {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
@@ -40282,12 +40750,6 @@ mod tests {
             ) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-                Err(Errno::EINTR)
-            }
-            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
                 for x in b.iter_mut() {
                     *x = 0x42;
@@ -40332,9 +40794,6 @@ mod tests {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
@@ -42716,6 +43175,173 @@ mod tests {
             desc_ptr,
         );
         assert_eq!(buf[64], 0xa5);
+    }
+
+    /// Build the staged outer `struct ifconf` the ioctl contract hands the
+    /// kernel: `int ifc_len` at 0, then the pointer union at the platform's
+    /// pointer alignment (offset 4 in an 8-byte wasm32 struct, offset 8 in a
+    /// 16-byte wasm64 one).
+    fn ifconf_buf(pointer_width: u8, ifc_len: i32, ifc_buf: u64) -> alloc::vec::Vec<u8> {
+        let size = if pointer_width == 8 { 16 } else { 8 };
+        let mut buf = alloc::vec![0u8; size];
+        buf[0..4].copy_from_slice(&ifc_len.to_le_bytes());
+        if pointer_width == 8 {
+            buf[8..16].copy_from_slice(&ifc_buf.to_le_bytes());
+        } else {
+            buf[4..8].copy_from_slice(&(ifc_buf as u32).to_le_bytes());
+        }
+        buf
+    }
+
+    fn socket_fd_for_ifconf(proc: &mut Process, host: &mut MockHostIO) -> i32 {
+        sys_socket(proc, host, 2 /* AF_INET */, 2 /* SOCK_DGRAM */, 0).unwrap()
+    }
+
+    #[test]
+    fn ifconf_null_buffer_reports_the_size_of_a_full_enumeration() {
+        for pointer_width in [4u8, 8u8] {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = socket_fd_for_ifconf(&mut proc, &mut host);
+
+            let mut buf = ifconf_buf(pointer_width, 0, 0);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut buf,
+            )
+            .unwrap();
+
+            assert_eq!(
+                i32::from_le_bytes(buf[0..4].try_into().unwrap()),
+                crate::netif::ifconf_total_size(pointer_width) as i32,
+            );
+            // A size query writes nothing into the caller's memory.
+            assert!(host.proc_write_calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn ifconf_writes_whole_entries_into_the_callers_nested_buffer() {
+        for pointer_width in [4u8, 8u8] {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = socket_fd_for_ifconf(&mut proc, &mut host);
+
+            let total = crate::netif::ifconf_total_size(pointer_width);
+            let ifc_buf: u64 = 4096;
+            let mut buf = ifconf_buf(pointer_width, total as i32, ifc_buf);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut buf,
+            )
+            .unwrap();
+
+            assert_eq!(
+                i32::from_le_bytes(buf[0..4].try_into().unwrap()),
+                total as i32,
+            );
+            assert_eq!(host.proc_write_calls.len(), 1);
+            let (pid, addr, bytes) = &host.proc_write_calls[0];
+            assert_eq!(*pid, 1);
+            assert_eq!(*addr, ifc_buf);
+            assert_eq!(bytes.len(), total);
+            // First entry is the loopback interface, name-first.
+            assert_eq!(&bytes[..2], b"lo");
+        }
+    }
+
+    #[test]
+    fn ifconf_truncates_to_whole_entries_and_never_partially_fills_one() {
+        for pointer_width in [4u8, 8u8] {
+            let entry_size = crate::netif::ifreq_size(pointer_width);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = socket_fd_for_ifconf(&mut proc, &mut host);
+
+            // Room for one entry plus a byte: POSIX/Linux report one entry.
+            let mut buf = ifconf_buf(pointer_width, entry_size as i32 + 1, 4096);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut buf,
+            )
+            .unwrap();
+
+            assert_eq!(
+                i32::from_le_bytes(buf[0..4].try_into().unwrap()),
+                entry_size as i32,
+            );
+            assert_eq!(host.proc_write_calls[0].2.len(), entry_size);
+        }
+    }
+
+    #[test]
+    fn ifconf_reports_zero_when_not_one_whole_entry_fits() {
+        for pointer_width in [4u8, 8u8] {
+            let entry_size = crate::netif::ifreq_size(pointer_width);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = socket_fd_for_ifconf(&mut proc, &mut host);
+
+            let mut buf = ifconf_buf(pointer_width, entry_size as i32 - 1, 4096);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut buf,
+            )
+            .unwrap();
+
+            assert_eq!(i32::from_le_bytes(buf[0..4].try_into().unwrap()), 0);
+            assert!(host.proc_write_calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn ifconf_rejects_a_negative_length_and_an_unreachable_nested_buffer() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = socket_fd_for_ifconf(&mut proc, &mut host);
+
+        let mut negative = ifconf_buf(4, -1, 4096);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut negative,
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert!(host.proc_write_calls.is_empty());
+
+        // A wasm64 nested pointer above the process's memory must fail
+        // outright, not alias its low 32 bits onto a valid low address. 4096
+        // is a perfectly good address in this mock's memory; `1 << 32 | 4096`
+        // must not become it.
+        let total = crate::netif::ifconf_total_size(8);
+        let aliasing = (1u64 << 32) | 4096;
+        let mut wide = ifconf_buf(8, total as i32, aliasing);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut wide,
+            ),
+            Err(Errno::EFAULT),
+        );
     }
 
     #[test]

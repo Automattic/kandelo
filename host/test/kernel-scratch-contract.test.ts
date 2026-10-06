@@ -660,9 +660,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#generateHostSignalWithinKernelEntry::kernel-export-direct-use::generateHostSignal(targetPid, signum)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#handleSyscallInner::kernel-export-direct-use::messageSizeForDescriptor( channel.pid, this.guestTidForChannel(channel), origArgs[0], )",
-  ),
-  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::kernelShmat!( prepared.childPid, mapping.segId, mapping.mapAddr, mapping.readOnly ? SHM_RDONLY : 0, )",
   ),
   reviewedScalarKernelExportCall(
@@ -728,6 +725,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#reserveHostRegionWithinKernelEntry::kernel-export-direct-use::reserveHostRegionFn(pid, this.toKernelPtr(checkedLength))",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#setPointerWidthWithinKernelEntry::kernel-export-direct-use::setPointerWidthFn(pid, pointerWidth)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#resolveExecListenerFdWithinKernelEntry::kernel-export-direct-use::fdIsOpen(pid, oldFd)",
@@ -846,12 +846,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcShmdt::kernel-export-direct-use::kernelShmdt(channel.pid, callerTid, kernelAddr)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleSemctl::kernel-export-direct-use::arrayBytes( channel.pid, this.guestTidForChannel(channel), semid, rawCmd, )",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleSemctl::kernel-export-direct-use::statBytes(processPointerWidth)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.inheritHostFdMirrors::kernel-export-direct-use::getAcceptWake?.(parentPid, parentTarget.fd)",
@@ -1356,11 +1350,6 @@ const auditAllowances: AuditAllowance[] = [
     why: "An allocator-owned KernelScratchExportPointer cannot represent null. This secret-capability fixed wait companion is the only intentional direct null call to this export and proves Rust rejects the destination before selecting or consuming child status; guarded destinations still require opaque lease tokens.",
   },
   {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcControl::kernel-pointer-export-bypass::structureBytes(pointerWidth)",
-    disposition: "kernel-control",
-    why: "This exact two-name IPC metadata branch passes only pointer width and returns a structure-size scalar.",
-  },
-  {
     key: "host/src/kernel.ts::bufferByteLength::kernel-buffer-escape::intrinsicApply( intrinsicSharedArrayBufferByteLength, buffer, [], )",
     disposition: "kernel-read",
     why: "The captured byteLength getter authenticates and measures the current kernel buffer for page-count and range checks without retaining or mutating it.",
@@ -1546,9 +1535,9 @@ const auditAllowances: AuditAllowance[] = [
     why: "The connector physical-size import binds its exact pointer formal to the two-u32 capacity the kernel lends before inspecting display state.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.#hostFutexWait::kernel-view::new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory))",
-    disposition: "kernel-control",
-    why: "The lossless pointer, four-byte current-memory range, and alignment are proved before constructing this one synchronous futex-wait atomic view.",
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, 4, "host_network_local_address destination", )',
+    disposition: "rust-lent",
+    why: "The host_network_local_address import binds its pointer formal to a fixed four-byte capacity, and the single write that follows is guarded by an exact four-byte length check on the host-owned address.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#hostFutexWake::kernel-view::new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory))",
@@ -1789,6 +1778,41 @@ describe("kernel scratch static contract", () => {
       "kernel_preadv",
       "kernel_pwritev",
       "kernel_prepare_write_operation",
+      // ABI 44: exports deleted because nothing called them -- not the
+      // kernel, not the TypeScript host, not crates/host-native, not any
+      // test, script or .mjs harness, and no dynamic export lookup. Listing
+      // them here keeps the deletion permanent: a reintroduced name would
+      // have to come back in wasm_api.rs, one of the two legacy glue files,
+      // or the ABI snapshot, and all four are asserted below.
+      //
+      // kernel_ipc_shmdt is the one entry with live prefix relatives
+      // (kernel_ipc_shmdt_addr, _for_process, _for_task, ...). The \b
+      // anchors below stop those from masking the exact obsolete name,
+      // because "_" is a word character.
+      "kernel_clear_argv",
+      "kernel_convert_pipe_to_host",
+      "kernel_get_exit_status",
+      "kernel_get_fork_exec_path_pid",
+      "kernel_get_fork_state",
+      "kernel_get_pipe_ofds",
+      "kernel_getpgid_direct",
+      "kernel_gettimeofday",
+      "kernel_ipc_shmdt",
+      "kernel_is_fork_child_pid",
+      "kernel_is_signal_blocked",
+      "kernel_mmap",
+      "kernel_mq_is_mqd",
+      "kernel_mremap",
+      "kernel_posix_timer_interval_fire",
+      "kernel_prctl",
+      "kernel_rewinddir",
+      "kernel_rt_sigtimedwait",
+      "kernel_seekdir",
+      "kernel_sendfile",
+      "kernel_set_fork_exec",
+      "kernel_set_fork_fd_action",
+      "kernel_telldir",
+      "kernel_tgkill",
     ]) {
       expect(kernelWasmApiSource).not.toMatch(
         new RegExp(
@@ -1808,6 +1832,17 @@ describe("kernel scratch static contract", () => {
       expect(abiKernelExportNames.has(obsoleteRawExport)).toBe(false);
     }
 
+    // The four vector adapters used to parse a `KernelIovecWire` table out of
+    // kernel scratch, so the rule was that each must carry the allocation
+    // region alongside the table pointer -- a pointer alone proves only that
+    // it lands somewhere in kernel memory, not inside the live allocation.
+    //
+    // They parse nothing in kernel scratch now. Their `struct iovec *` is
+    // `SyscallArgSize::KernelDereferenced`: the host stages no table, and the
+    // kernel reads the CALLER's own table through the cross-memory primitives.
+    // Passing a `ChannelScratchRegion` would be meaningless, and the property
+    // that replaces it is stronger -- they must take a caller GUEST address
+    // and the caller's pointer width, and must never be handed kernel scratch.
     for (const helper of [
       "channel_readv",
       "channel_writev",
@@ -1817,16 +1852,25 @@ describe("kernel scratch static contract", () => {
       expect(kernelWasmApiSource).toMatch(
         new RegExp(
           `fn\\s+${helper}\\s*\\([\\s\\S]*?` +
-            `region:\\s*ChannelScratchRegion[\\s\\S]*?\\)\\s*->\\s*i32`,
+            `iov_addr:\\s*u64[\\s\\S]*?pointer_width:\\s*u32[\\s\\S]*?\\)\\s*->\\s*i32`,
+        ),
+      );
+      expect(kernelWasmApiSource).not.toMatch(
+        new RegExp(
+          `fn\\s+${helper}\\s*\\([\\s\\S]*?` +
+            `ChannelScratchRegion[\\s\\S]*?\\)\\s*->\\s*i32`,
         ),
       );
       expect(kernelWasmApiSource).toMatch(
-        new RegExp(`${helper}\\([\\s\\S]*?scratch_region[\\s\\S]*?\\)`),
+        new RegExp(
+          `${helper}\\([\\s\\S]*?guest_address!\\(1\\)[\\s\\S]*?` +
+            `caller_pointer_width!\\(\\)[\\s\\S]*?\\)`,
+        ),
       );
     }
-    expect(kernelWasmApiSource).toContain(
-      "checked_kernel_iovec_entries(iov_ptr, iovcnt, region)",
-    );
+    // The fixed kernel-scratch iovec wire is retired; nothing may parse one.
+    expect(kernelWasmApiSource).not.toContain("KernelIovecWire");
+    expect(kernelWasmApiSource).not.toContain("checked_kernel_iovec_entries");
     // Total linear-memory size can never stand in for allocation ownership.
     expect(kernelWasmApiSource).not.toContain("current_kernel_memory_bytes");
   });

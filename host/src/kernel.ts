@@ -188,7 +188,6 @@ const intrinsicWasmInstanceExports = Object.getOwnPropertyDescriptor(
   WebAssembly.Instance.prototype,
   "exports",
 )!.get!;
-const intrinsicWasmTableGet = WebAssembly.Table.prototype.get;
 
 const wasmPosixKernelTestCapability = {};
 
@@ -851,9 +850,6 @@ export class WasmPosixKernel {
     | "initializing"
     | "initialized" = "uninitialized";
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
-  private signalWakeSab: SharedArrayBuffer | null = null;
-  private programFuncTable: WebAssembly.Table | null = null;
-  #kernelFuncTable: WebAssembly.Table | null = null;
   private waitpidSab: SharedArrayBuffer | null = null;
   /**
    * A backend directory iterator may already have advanced before the host
@@ -1065,14 +1061,6 @@ export class WasmPosixKernel {
     if (this.kms.isMasterPid(pid)) this.kms.dropMaster();
   }
 
-  /**
-   * Set the user program's indirect function table so signal handlers
-   * registered by the program can be called from the kernel.
-   */
-  setProgramFuncTable(table: WebAssembly.Table): void {
-    this.programFuncTable = table;
-  }
-
   constructor(
     config: KernelConfig,
     io: PlatformIO,
@@ -1089,13 +1077,6 @@ export class WasmPosixKernel {
         throw new Error("missing WasmPosixKernel test runtime");
       }
       this.#instance = testRuntime.instance ?? null;
-      this.#kernelFuncTable = testRuntime.instance === undefined
-        || testRuntime.instance === null
-        ? null
-        : (
-            wasmInstanceExports(testRuntime.instance)
-              .__indirect_function_table as WebAssembly.Table | undefined
-          ) ?? null;
       this.#memory = testRuntime.memory ?? null;
       this.#kernelPtrWidth = testRuntime.pointerWidth ?? 4;
       this.#testEngine = testRuntime.engine;
@@ -1565,10 +1546,6 @@ export class WasmPosixKernel {
     return this.sharedPipes;
   }
 
-  registerSignalWakeSab(sab: SharedArrayBuffer): void {
-    this.signalWakeSab = sab;
-  }
-
   registerWaitpidSab(sab: SharedArrayBuffer): void {
     this.waitpidSab = sab;
   }
@@ -1596,10 +1573,6 @@ export class WasmPosixKernel {
               [module, importObject],
             ) as WebAssembly.Instance
           : await this.#testEngine.instantiate(module, importObject);
-      this.#kernelFuncTable = (
-        wasmInstanceExports(rawInstance)
-          .__indirect_function_table as WebAssembly.Table | undefined
-      ) ?? null;
       this.#instance = createKernelEntryGatedInstance(
         rawInstance,
         this.#kernelEntryGate,
@@ -1645,7 +1618,6 @@ export class WasmPosixKernel {
     // A failed first attempt has created no usable kernel generation. Clear
     // the partially published import state so callers may retry cleanly.
     this.#instance = null;
-    this.#kernelFuncTable = null;
     this.#memoryGeneration = intrinsicObjectFreeze({});
     this.#memory = null;
     this.#kernelPtrWidth = 4;
@@ -1963,37 +1935,6 @@ export class WasmPosixKernel {
           const intervalMs = (intervalMsHi >>> 0) * 0x100000000 + (intervalMsLo >>> 0);
           return this.#hostSetPosixTimer(timerId, signo, valueMs, intervalMs);
         },
-        host_sigsuspend_wait: (): number => {
-          return this.#hostSigsuspendWait();
-        },
-        host_call_signal_handler: (handler_index: number, signum: number, sa_flags: number): number => {
-          const SA_SIGINFO = 4;
-          const table = this.programFuncTable
-            ?? this.#kernelFuncTable;
-          if (!table) {
-            return -22; // EINVAL
-          }
-          const handler = intrinsicApply(
-            intrinsicWasmTableGet,
-            table,
-            [handler_index],
-          );
-          if (handler) {
-            try {
-              if (sa_flags & SA_SIGINFO) {
-                // SA_SIGINFO: call handler(signum, siginfo_ptr, ucontext_ptr)
-                // siginfo_ptr=0 and ucontext_ptr=0 for now (no siginfo written to memory yet)
-                (handler as Function)(signum, 0, 0);
-              } else {
-                (handler as Function)(signum);
-              }
-              return 0;
-            } catch (e) {
-              return -5; // EIO
-            }
-          }
-          return -22; // EINVAL
-        },
         host_getrandom: (bufPtr: KernelPointer, bufLen: number): number => {
           try {
             const destination = this.#rustLentKernelDestination(
@@ -2016,6 +1957,25 @@ export class WasmPosixKernel {
             return destination.capacity;
           } catch (error) {
             return negErrno(error);
+          }
+        },
+        // Workstream H4 (host-surface minimization): the network-interface
+        // ioctl content (interface table, MAC, ifreq/ifconf layout) is now
+        // kernel-owned (`crates/runtime-core/src/netif.rs`). This is the one
+        // remaining host-owned fact the kernel cannot compute itself.
+        host_network_local_address: (bufPtr: KernelPointer): number => {
+          const address = this.io.network?.localAddress;
+          if (address?.length !== 4) return 0;
+          try {
+            const destination = this.#rustLentKernelDestination(
+              bufPtr,
+              4,
+              "host_network_local_address destination",
+            );
+            this.#writeKernelBytes(destination, address);
+            return 1;
+          } catch {
+            return 0;
           }
         },
         host_utimensat: (
@@ -2110,9 +2070,6 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
-        },
-        host_futex_wait: (addr: KernelPointer, expected: number, timeoutLo: number, timeoutHi: number): number => {
-          return this.#hostFutexWait(addr, expected, timeoutLo, timeoutHi);
         },
         host_futex_wake: (addr: KernelPointer, count: number): number => {
           return this.#hostFutexWake(addr, count);
@@ -2609,21 +2566,53 @@ export class WasmPosixKernel {
         },
         host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },
         host_kms_drop_master: (_pid: number): void => { this.kms.dropMaster(); },
+        // `addr` is a GUEST address and arrives as a BigInt, because the
+        // kernel declares it `u64` so that one import signature serves both a
+        // wasm32 and a wasm64 guest.
+        //
+        // The width passed to `checkedWasmImportMemoryRange` below is
+        // therefore 8, and that 8 describes HOW THE VALUE ARRIVED (an i64
+        // import parameter), not how wide the target process's address space
+        // is. It used to be a hardcoded 4, which was consistent only while the
+        // kernel-side type was `u32`; left at 4 against an i64 parameter it
+        // would reject every call, and "fixed" by narrowing the BigInt it
+        // would alias a wasm64 address above 4 GiB onto its low 32 bits —
+        // exactly the failure `checkHandwrittenProcessAddressArguments` warns
+        // about in `kernel-worker.ts`.
+        //
+        // Width 8 needs no per-process width lookup, because it is not
+        // standing in for one: the real bound is the target process's OWN
+        // current buffer length, which `checkedRange` enforces against
+        // `procMem` directly. A wasm32 process's buffer never exceeds 4 GiB,
+        // so an out-of-range address is rejected by the buffer it misses
+        // rather than by an assumed pointer width — a truer check, and one
+        // that needs no new callback on this class.
         host_proc_write_bytes: (
           pid: number,
-          addr: number,
+          addr: bigint,
           src_ptr: KernelPointer,
           len: number,
         ): number => {
           const procMem = this.callbacks.getProcessMemory?.(pid);
           if (!procMem) return -14;
           try {
+            // WHY allowAddressZero: byte 0 of a guest's linear memory is an
+            // ordinary addressable byte, and the range proof against `procMem`
+            // -- not a null-pointer convention -- is what establishes that the
+            // caller owns it. Refusing address zero here would make the host
+            // impose a null-pointer meaning on caller memory, which the
+            // `KernelDereferenced` contract explicitly reserves to the kernel:
+            // the correct errno for a null pointer is per-syscall, and for the
+            // IPC control calls per-command. The kernel-side destination above
+            // stays strict, because there zero really does mean allocator
+            // failure.
             checkedWasmImportMemoryRange(
               procMem,
               addr,
               len,
-              4,
+              8,
               "host_proc_write_bytes process destination",
+              true,
             );
             const src = this.#readKernelBytes(src_ptr, len);
             // Reacquire the process buffer after copying the kernel source:
@@ -2632,8 +2621,9 @@ export class WasmPosixKernel {
               procMem,
               addr,
               len,
-              4,
+              8,
               "host_proc_write_bytes process destination",
+              true,
             );
             intrinsicApply(
               intrinsicUint8ArraySet,
@@ -2645,9 +2635,11 @@ export class WasmPosixKernel {
             return -14;
           }
         },
+        // `addr` arrives as a BigInt and is checked at width 8 for the same
+        // reason as `host_proc_write_bytes` above.
         host_proc_read_bytes: (
           pid: number,
-          addr: number,
+          addr: bigint,
           dst_ptr: KernelPointer,
           len: number,
         ): number => {
@@ -2661,12 +2653,23 @@ export class WasmPosixKernel {
             );
             const procMem = this.callbacks.getProcessMemory?.(pid);
             if (!procMem) return -14;
+            // WHY allowAddressZero: byte 0 of a guest's linear memory is an
+            // ordinary addressable byte, and the range proof against `procMem`
+            // -- not a null-pointer convention -- is what establishes that the
+            // caller owns it. Refusing address zero here would make the host
+            // impose a null-pointer meaning on caller memory, which the
+            // `KernelDereferenced` contract explicitly reserves to the kernel:
+            // the correct errno for a null pointer is per-syscall, and for the
+            // IPC control calls per-command. The kernel-side destination above
+            // stays strict, because there zero really does mean allocator
+            // failure.
             const source = checkedWasmImportMemoryRange(
               procMem,
               addr,
               len,
-              4,
+              8,
               "host_proc_read_bytes process source",
+              true,
             );
             const processView = new IntrinsicUint8Array(
               wasmMemoryBuffer(procMem),
@@ -4013,42 +4016,6 @@ export class WasmPosixKernel {
     return 0;
   }
 
-  #hostSigsuspendWait(): number {
-    if (!this.signalWakeSab) {
-      return -(4); // -EINTR, no SAB available
-    }
-    const view = new IntrinsicInt32Array(this.signalWakeSab);
-
-    // Check if already signaled (race-safe via CAS)
-    const old = intrinsicApply(
-      intrinsicAtomicsCompareExchange,
-      Atomics,
-      [view, 0, 1, 0],
-    ) as number;
-    if (old === 1) {
-      const sig = intrinsicApply(
-        intrinsicAtomicsLoad,
-        Atomics,
-        [view, 1],
-      ) as number;
-      intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 1, 0]);
-      return sig;
-    }
-
-    // Block until notified
-    intrinsicApply(intrinsicAtomicsWait, Atomics, [view, 0, 0]);
-
-    // Read signal and reset
-    const sig = intrinsicApply(
-      intrinsicAtomicsLoad,
-      Atomics,
-      [view, 1],
-    ) as number;
-    intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 0, 0]);
-    intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 1, 0]);
-    return sig;
-  }
-
   // ---- Public API: Socket & Poll operations ----
 
   /**
@@ -4978,60 +4945,6 @@ export class WasmPosixKernel {
       if (e?.errno === 11) return -11; // -EAGAIN — kernel-worker retries
       return negErrno(e);
     }
-  }
-
-  #hostFutexWait(
-    addr: KernelPointer,
-    expected: number,
-    timeoutLo: number,
-    timeoutHi: number,
-  ): number {
-    if (!this.#memory) return -22; // -EINVAL
-
-    let index: number;
-    try {
-      const range = checkedWasmImportMemoryRange(
-        this.#memory,
-        addr,
-        4,
-        this.#kernelPtrWidth,
-        "host_futex_wait word",
-      );
-      if (range.pointer % 4 !== 0) return -22; // EINVAL
-      index = range.pointer / 4;
-    } catch {
-      return -14; // EFAULT
-    }
-    const i32view = new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory));
-
-    // Reconstruct 64-bit timeout_ns from lo/hi
-    const timeoutNs = BigInt(timeoutHi >>> 0) * 0x100000000n + BigInt(timeoutLo >>> 0);
-    // Convert to signed
-    const signed = BigInt.asIntN(64, timeoutNs);
-
-    let timeoutMs: number | undefined;
-    if (signed >= 0n) {
-      // Convert ns → ms (rounding up to at least 1ms if nonzero)
-      timeoutMs = Number(signed / 1_000_000n);
-      if (timeoutMs === 0 && signed > 0n) timeoutMs = 1;
-    }
-    // signed < 0 → infinite wait (undefined timeout)
-
-    let result: "ok" | "not-equal" | "timed-out";
-    try {
-      result = intrinsicApply(
-        intrinsicAtomicsWait,
-        Atomics,
-        [i32view, index, expected, timeoutMs],
-      ) as "ok" | "not-equal" | "timed-out";
-    } catch {
-      return -22; // EINVAL: memory was not shared or became unusable
-    }
-    if (result === "timed-out") {
-      return -110; // -ETIMEDOUT
-    }
-    if (result === "not-equal") return -11;  // -EAGAIN
-    return 0; // "ok"
   }
 
   #hostFutexWake(addr: KernelPointer, count: number): number {

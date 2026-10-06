@@ -42,10 +42,13 @@ const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // This header version is also shared by the cfg(test) exec-state fixture.
 // v15 preserves complete credentials plus the kernel-owned secure-exec marker.
 // v16 carries each socket's SO_PEERCRED peer credentials and the process's
-// epoll instances (their registrations), which the child inherits.
+// epoll instances (their registrations), which the child inherits. v17 also
+// carries the process's registered pointer width: a forked child runs on a
+// copy of its parent's address space, so it inherits that address space's
+// data model rather than having the host register it again.
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
-const FORK_VERSION: u32 = 16;
+const FORK_VERSION: u32 = 17;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -341,7 +344,16 @@ fn read_bounded_count(r: &mut Reader<'_>, max: usize) -> Result<usize, Errno> {
     Ok(count)
 }
 
-fn write_credentials_and_secure_exec(w: &mut Writer<'_>, proc: &Process) -> Result<(), Errno> {
+/// Write the kernel-owned facts that belong to the process image: its
+/// credentials, its secure-startup marker, and the pointer width of its
+/// address space.
+///
+/// `pointer_width` rides here because `fork` must hand the child the parent's
+/// width -- a child inherits the address space, so it inherits the data model
+/// -- and because the exec record carries process state across the image
+/// transport that `exec` performs. Omitting it would leave a forked wasm64
+/// child silently reading wasm32 structure layouts.
+fn write_credentials_and_image_facts(w: &mut Writer<'_>, proc: &Process) -> Result<(), Errno> {
     let credentials = proc.credentials();
     if credentials.supplementary_groups.len() > NGROUPS_MAX {
         return Err(Errno::EINVAL);
@@ -356,10 +368,11 @@ fn write_credentials_and_secure_exec(w: &mut Writer<'_>, proc: &Process) -> Resu
     for group in &credentials.supplementary_groups {
         w.write_u32(*group)?;
     }
-    w.write_u32(u32::from(proc.secure_exec))
+    w.write_u32(u32::from(proc.secure_exec))?;
+    w.write_u32(u32::from(proc.pointer_width))
 }
 
-fn read_credentials_and_secure_exec(r: &mut Reader<'_>) -> Result<(Credentials, bool), Errno> {
+fn read_credentials_and_image_facts(r: &mut Reader<'_>) -> Result<(Credentials, bool, u8), Errno> {
     let ruid = r.read_u32()?;
     let euid = r.read_u32()?;
     let suid = r.read_u32()?;
@@ -374,7 +387,7 @@ fn read_credentials_and_secure_exec(r: &mut Reader<'_>) -> Result<(Credentials, 
         .checked_mul(size_of::<u32>())
         .ok_or(Errno::EINVAL)?;
     let remaining_required = group_bytes
-        .checked_add(size_of::<u32>())
+        .checked_add(2 * size_of::<u32>())
         .ok_or(Errno::EINVAL)?;
     if r.remaining() < remaining_required {
         return Err(Errno::EINVAL);
@@ -391,6 +404,13 @@ fn read_credentials_and_secure_exec(r: &mut Reader<'_>) -> Result<(Credentials, 
         1 => true,
         _ => return Err(Errno::EINVAL),
     };
+    // Only the two data models this kernel serves are representable. A record
+    // claiming any other width is malformed, not a width to be guessed at.
+    let pointer_width = match r.read_u32()? {
+        4 => 4u8,
+        8 => 8u8,
+        _ => return Err(Errno::EINVAL),
+    };
     Ok((
         Credentials {
             ruid,
@@ -402,6 +422,7 @@ fn read_credentials_and_secure_exec(r: &mut Reader<'_>) -> Result<(Credentials, 
             supplementary_groups,
         },
         secure_exec,
+        pointer_width,
     ))
 }
 
@@ -1005,7 +1026,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Identity, credentials, and process scalars ──
     // Write the parent's pid as the child's ppid (child's parent is this process)
     w.write_u32(proc.pid)?;
-    write_credentials_and_secure_exec(&mut w, proc)?;
+    write_credentials_and_image_facts(&mut w, proc)?;
     w.write_u32(proc.pgid)?;
     w.write_u32(proc.sid)?;
     w.write_u32(proc.umask)?;
@@ -1348,7 +1369,8 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
 
     // ── Identity, credentials, and process scalars ──
     let ppid = r.read_u32()?;
-    let (credentials, secure_exec) = read_credentials_and_secure_exec(&mut r)?;
+    let (credentials, secure_exec, pointer_width) =
+        read_credentials_and_image_facts(&mut r)?;
     let pgid = r.read_u32()?;
     let sid = r.read_u32()?;
     let umask = r.read_u32()?;
@@ -1757,6 +1779,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.ppid = ppid;
     child.install_credentials(credentials);
     child.secure_exec = secure_exec;
+    child.pointer_width = pointer_width;
     child.pgid = pgid;
     child.sid = sid;
     // POSIX: fork children inherit sid but are NEVER session leaders. The
@@ -1854,7 +1877,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Identity, credentials, and process scalars ──
     // Preserve the process's own ppid (exec replaces the image, not the process)
     w.write_u32(proc.ppid)?;
-    write_credentials_and_secure_exec(&mut w, proc)?;
+    write_credentials_and_image_facts(&mut w, proc)?;
     w.write_u32(proc.pgid)?;
     w.write_u32(proc.sid)?;
     w.write_u32(proc.is_session_leader as u32)?;
@@ -2037,7 +2060,8 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
 
     // ── Identity, credentials, and process scalars ──
     let ppid = r.read_u32()?;
-    let (credentials, secure_exec) = read_credentials_and_secure_exec(&mut r)?;
+    let (credentials, secure_exec, pointer_width) =
+        read_credentials_and_image_facts(&mut r)?;
     let pgid = r.read_u32()?;
     let sid = r.read_u32()?;
     let is_session_leader = r.read_u32()? != 0; // preserved across exec
@@ -2231,6 +2255,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.ppid = ppid;
     process.install_credentials(credentials);
     process.secure_exec = secure_exec;
+    process.pointer_width = pointer_width;
     process.pgid = pgid;
     process.sid = sid;
     process.is_session_leader = is_session_leader;
@@ -2364,6 +2389,10 @@ mod tests {
             vec![1000, 2000, 3000, 4000, 5000, 6000, 2, 7000, 8000],
         );
         assert_eq!(u32::from_le_bytes(buf[52..56].try_into().unwrap()), 1);
+        // The pointer width follows secure_exec in wire order, and a forked
+        // child inherits it: it inherits the address space it describes.
+        assert_eq!(u32::from_le_bytes(buf[56..60].try_into().unwrap()), 4);
+        assert_eq!(child.pointer_width, 4);
         assert_eq!(child.real_uid(), 1000);
         assert_eq!(child.effective_uid(), 2000);
         assert_eq!(child.saved_uid(), 3000);
@@ -2463,7 +2492,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_format_roundtrips_complete_credentials_and_secure_exec() {
+    fn exec_format_roundtrips_complete_credentials_and_image_facts() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 101,
