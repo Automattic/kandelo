@@ -6,7 +6,7 @@ marker. It does not exercise Go's scheduler on that thread.
 
 Build the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port)
-at commit `96e1169` with Go 1.25.6 as `GOROOT_BOOTSTRAP`. Keep its checkout
+at commit `bad577d` with Go 1.25.6 as `GOROOT_BOOTSTRAP`. Keep its checkout
 next to this Kandelo checkout as `../go-kandelo`.
 
 From the Kandelo repository root:
@@ -28,3 +28,10 @@ The runner requires exit code 0, both M1 and M2 markers, and no host
 diagnostics. The Go fork's eight-slot arena declaration is in the linked
 binary; the runner uses the normal Node process-worker path with the
 ABI-48 kernel built above.
+
+The `../clone-handoff/` fixture requests five Go runtime threads in
+sequence to exercise the child acknowledgment before the shared handoff
+is reused. Build it from `tests/go/clone-handoff` with the same command,
+choosing `.context/go-m2/multi.wasm` as output, then run the same Node
+runner with `5` as its final argument. It asserts five child markers;
+this is not a parallel goroutine or full-scheduler test.

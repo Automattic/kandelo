@@ -728,6 +728,18 @@ focused parser behavior is exercised by the synthetic Wasm layout
 tests. Next: `mstart`, real parking, clone acknowledgment, teardown,
 and observable parallel goroutines.
 
+**2026-10-06 — Child-ack handoff (fork `bad577d`).** The parent now holds
+the single-M clone lock until the child has consumed the shared `g0` and
+stack-top words, captured its per-M channel base, and published an
+atomic acknowledgment. A timed `memory.atomic.wait32` fails loudly if
+the new Worker never reaches the entry. The checked-in
+`tests/go/clone-handoff/` probe requests five Ms in sequence; each
+acknowledged child emitted its marker through its own channel. The Node
+run returned exit 0, five markers, and zero host diagnostics. This
+proves repeated handoff reuse, not concurrent spawns from different Ms:
+`lock_kandelo.go` still lacks a cross-thread atomic mutex, and the
+child still exits without running `mstart`. Both remain Phase-4 work.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
