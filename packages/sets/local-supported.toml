@@ -208,6 +208,10 @@ name = "icu"
 class = "platform"
 
 [[packages]]
+name = "jq"
+class = "user-software"
+
+[[packages]]
 name = "jsoncpp"
 class = "platform"
 

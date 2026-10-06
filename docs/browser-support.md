@@ -2034,6 +2034,10 @@ platform rootfs, adds the package-owned shell demo data, and serializes one
 image. Bash and `login` are embedded boot inputs. `sudo-lite`, upstream `sudo`,
 and the ordinary command set retain authenticated package-backed lazy outputs
 that resolve through the normal VFS path on first use.
+The command set includes jq 1.8.2 at `/usr/bin/jq` (also `/bin/jq`),
+with its bundled Oniguruma regular expressions and decimal-number support.
+Its executable stays lazy until first use, including for commands such as
+`printf '%s\n' '{"answer":42}' | jq '.answer'`.
 `./run.sh --fetch-only build shell-vfs` refuses source fallback.
 
 Shell-derived packages consume that resolved image as a declared dependency.
