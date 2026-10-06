@@ -693,6 +693,41 @@ trampoline marker for `mstart()` + make `newosprocKandelo` the real
 wait32`/`notify`); child-ack handshake so the single handoff slot
 tolerates >1 in-flight spawn; `dropm`/`mdestroy` slot teardown.
 
+**2026-10-06 — Phase 4 memory-partition work resumed (draft PR #1492).**
+Merged current `origin/main` (ABI 47) and began an explicit opt-in
+preallocated thread arena for the Go runtime. The earlier suggestion to
+preallocate every binary with a positive slot count would also change
+existing C pthread programs, including fork and vfork behavior. The
+new `__wasm_posix_preallocate_thread_slots=1` declaration leaves their
+dynamic layout intact. The host's shared process-memory calculation now
+reserves the declared eight Go slots below `brk_base`; the thread
+allocator takes ordinary Go M slots from that arena and keeps host-only
+control workspaces separate. The ABI snapshot and Go linker's marker
+are moving together at ABI 48. The Go fork is now published at
+`https://github.com/kandelo-dev/go`, branch `kandelo-port`, commit
+`96e1169` (upstream base `go1.25.6`).
+
+**2026-10-06 — Phase 4 memory-partition validation.** Rebuilt the fork
+with `make.bash` using Go 1.25.6, then built the existing second-M
+probe. Node 24 accepted the resulting Wasm (`WebAssembly.validate`
+returned true) and found `__abi_version`,
+`__wasm_posix_thread_slots`, and the new preallocation export. A
+temporary Vitest through the real `NodeKernelHost` and the ABI-48
+kernel returned exit 0, stdout through `M1: after spawn`, stderr
+`M2 alive via kernel_clone`, and zero host diagnostics. The focused
+layout, allocator, and host parity tests passed (32 total with the
+temporary Go probe); the host TypeScript build and ABI snapshot check
+also passed. The source is now checked in at `tests/go/second-m/`, with
+an executable Node runner and reproduction steps; rebuilding and
+running that checked-in fixture yielded the same exit 0 and markers.
+This proves the opt-in arena preserves the two-M mechanics
+probe, not that the full Go scheduler runs. Browser execution and broad
+conformance remain unrun. The broad parser-suite attempt did not load
+because a cached SpiderMonkey package artifact predates ABI 48; the
+focused parser behavior is exercised by the synthetic Wasm layout
+tests. Next: `mstart`, real parking, clone acknowledgment, teardown,
+and observable parallel goroutines.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed

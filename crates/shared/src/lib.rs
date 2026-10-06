@@ -2179,6 +2179,8 @@ pub mod process_memory {
     /// the requested concurrent pthread limit.
     pub const THREAD_SLOT_DECL_EXPORT: &str = "__wasm_posix_thread_slots";
 
+    pub const THREAD_SLOT_PREALLOCATE_EXPORT: &str = "__wasm_posix_preallocate_thread_slots";
+
     /// Legacy kernel MemoryManager::MMAP_BASE. Compact hosts override this
     /// per process but still expose the legacy boundary for compatibility.
     pub const LEGACY_MMAP_BASE: u32 = 0x0400_0000;
