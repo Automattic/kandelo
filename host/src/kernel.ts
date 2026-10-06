@@ -43,6 +43,7 @@ import { resolveIoctlContract } from "./ioctl-contract";
 import {
   KERNEL_SCRATCH_FD_PAIR_BYTES,
   KERNEL_SCRATCH_SOCKLEN_BYTES,
+  NET_READINESS,
   SELECT_FD_SET_BYTES,
   SELECT_FD_SETSIZE,
   STRUCT_SIZE_WASM_DIRENT,
@@ -1912,9 +1913,6 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
-        host_nanosleep: (sec: bigint, nsec: bigint): number => {
-          return this.#hostNanosleep(sec, nsec);
-        },
         host_ftruncate: (handle: bigint, length: bigint): number => {
           return this.#hostFtruncate(handle, length);
         },
@@ -2026,8 +2024,8 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
-        host_net_poll: (handle: number, events: number): number => {
-          return this.#hostNetPoll(handle, events);
+        host_net_readiness: (handle: number): number => {
+          return this.#hostNetReadiness(handle);
         },
         host_net_connect_status: (handle: number): number => {
           return this.#hostNetConnectStatus(handle);
@@ -3939,21 +3937,6 @@ export class WasmPosixKernel {
     }
   }
 
-  /**
-   * host_nanosleep(sec: i64, nsec: i64) -> i32
-   *
-   * Sleep for the specified duration. The i64 parameters appear as
-   * BigInt in JavaScript.
-   */
-  #hostNanosleep(sec: bigint, nsec: bigint): number {
-    try {
-      this.io.nanosleep(Number(sec), Number(nsec));
-      return 0;
-    } catch {
-      return -1;
-    }
-  }
-
   // ---- Phase 11: ftruncate/fsync/fchmod/fchown host imports ----
 
   #hostFtruncate(handle: bigint, length: bigint): number {
@@ -4784,7 +4767,13 @@ export class WasmPosixKernel {
         : -5;
     } catch (e: any) {
       if (e?.errno === 11) return -11; // -EAGAIN
-      return -32; // -EPIPE
+      // WHY: this used to answer -EPIPE for every backend failure, telling the
+      // guest a specific TCP event had happened that no layer had determined.
+      // `negErrno` reports what the backend actually said — a Node socket
+      // error's `code` ("ECONNREFUSED", "ETIMEDOUT", …) or an explicit POSIX
+      // `errno` — and falls back to EIO when nothing classified it, which is
+      // the truthful answer for an unclassified failure.
+      return negErrno(e);
     }
   }
 
@@ -4821,22 +4810,28 @@ export class WasmPosixKernel {
       return dataLength;
     } catch (e: any) {
       if (e?.errno === 11) return -11; // -EAGAIN
-      return -104; // -ECONNRESET
+      // WHY: this used to answer -ECONNRESET for every backend failure. See
+      // the note in #hostNetSend — report what the backend determined.
+      return negErrno(e);
     }
   }
 
-  #hostNetPoll(handle: number, events: number): number {
-    const POLLIN = 0x0001;
-    const POLLOUT = 0x0004;
+  /**
+   * Forward the backend's observable facts to the kernel, which decides
+   * `revents` from them in `runtime_core::net_readiness`. Nothing here
+   * interprets readiness.
+   */
+  #hostNetReadiness(handle: number): number {
     if (!this.io.network) return -107; // -ENOTCONN
+    const network = this.io.network;
+    // A backend with no readiness source. This used to answer
+    // `events & (POLLIN | POLLOUT)` — a readiness claim the backend had not
+    // made. Report the absence instead and let the kernel handle it.
+    if (!network.readiness) return NET_READINESS.UNOBSERVABLE;
     try {
-      if (this.io.network.poll) {
-        return this.io.network.poll(handle, events);
-      }
-      return events & (POLLIN | POLLOUT);
+      return network.readiness(handle);
     } catch (e: any) {
-      if (typeof e?.errno === "number") return -Math.abs(e.errno);
-      return -104; // -ECONNRESET
+      return negErrno(e);
     }
   }
 

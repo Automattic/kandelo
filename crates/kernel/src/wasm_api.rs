@@ -107,7 +107,6 @@ unsafe extern "C" {
     fn host_readdir(dir_handle: i64, dirent_ptr: *mut u8, name_ptr: *mut u8, name_len: u32) -> i32;
     fn host_closedir(dir_handle: i64) -> i32;
     fn host_clock_gettime(clock_id: u32, sec_ptr: *mut i64, nsec_ptr: *mut i64) -> i32;
-    fn host_nanosleep(sec: i64, nsec: i64) -> i32;
     fn host_ftruncate(handle: i64, length: i64) -> i32;
     fn host_fsync(handle: i64) -> i32;
     fn host_fchmod(handle: i64, mode: u32) -> i32;
@@ -135,7 +134,7 @@ unsafe extern "C" {
     fn host_net_connect_status(handle: i32) -> i32;
     fn host_net_send(handle: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_recv(handle: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32;
-    fn host_net_poll(handle: i32, events: u32) -> i32;
+    fn host_net_readiness(handle: i32) -> i32;
     fn host_net_close(handle: i32) -> i32;
     fn host_net_listen(
         fd: i32,
@@ -660,13 +659,6 @@ impl HostIO for WasmHostIO {
         Ok((sec, nsec))
     }
 
-    fn host_nanosleep(&mut self, seconds: i64, nanoseconds: i64) -> Result<(), Errno> {
-        gkl_release();
-        let result = unsafe { host_nanosleep(seconds, nanoseconds) };
-        gkl_acquire();
-        i32_to_result(result)
-    }
-
     fn host_ftruncate(&mut self, handle: i64, length: i64) -> Result<(), Errno> {
         let result = unsafe { host_ftruncate(handle, length) };
         i32_to_result(result)
@@ -800,15 +792,15 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_net_poll(&mut self, handle: i32, events: i16) -> Result<i16, Errno> {
-        let result = unsafe { host_net_poll(handle, events as u32) };
+    fn host_net_readiness(&mut self, handle: i32) -> Result<u32, Errno> {
+        let result = unsafe { host_net_readiness(handle) };
         if result < 0 {
             match Errno::from_u32((-result) as u32) {
                 Some(e) => Err(e),
                 None => Err(Errno::EIO),
             }
         } else {
-            Ok(result as i16)
+            Ok(result as u32)
         }
     }
 
@@ -1365,6 +1357,195 @@ pub extern "C" fn kernel_spawn_scratch_begin(minimum_capacity: usize) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_spawn_scratch_pointer(token: i64) -> usize {
     crate::spawn::spawn_scratch_pointer(token).unwrap_or(0)
+}
+
+// ---- Kernel-owned wait deadlines (K3) ----
+//
+// The host still owns the parks -- the timers and the wake routing -- but the
+// *deadline* of every finite blocking timeout is kernel state. The host used
+// to compute `Date.now() + timeoutMs` and compare against `Date.now()`, so a
+// system clock step (NTP correction, DST change, a user setting the clock)
+// moved every pending timeout in the machine: a `poll(fds, n, 100)` could
+// return after one second or never return at all. These exports replace that
+// with `CLOCK_MONOTONIC` deadlines in `crate::wait_queue`.
+//
+// Return conventions, shared by all of them:
+//   * `>= 0`             a real answer (a handle, or nanoseconds remaining)
+//   * `WAIT_NO_DEADLINE` the wait is live but has no deadline (wait forever)
+//   * `< 0`              `-errno`; a protocol failure the host must not paper
+//                        over, since treating a lost handle as "no deadline"
+//                        would silently turn a finite timeout into an
+//                        infinite one.
+
+/// Sentinel for "this wait is live and has no deadline".
+///
+/// Deliberately not `-1`: that is `-EPERM`, and an error must never be
+/// mistaken for an answer.
+const WAIT_NO_DEADLINE: i64 = i64::MIN;
+
+/// Read `CLOCK_MONOTONIC` as nanoseconds, for the wait queue's deadlines.
+fn wait_now_ns() -> Result<i64, Errno> {
+    let (sec, nsec) = HostIO::host_clock_gettime(
+        &mut WasmHostIO,
+        wasm_posix_shared::clock::CLOCK_MONOTONIC,
+    )?;
+    sec.checked_mul(1_000_000_000)
+        .and_then(|s| s.checked_add(nsec))
+        .ok_or(Errno::EOVERFLOW)
+}
+
+/// Map the host's numeric wait kind onto the typed [`WaitKind`].
+///
+/// Unknown values are refused rather than defaulted. A new blocking family
+/// must name itself here; silently parking it as a generic sleep would lose
+/// the distinction the enum exists to keep.
+fn wait_kind_from_u32(kind: u32) -> Result<crate::wait_queue::WaitKind, Errno> {
+    use crate::wait_queue::WaitKind;
+    Ok(match kind {
+        1 => WaitKind::Poll,
+        2 => WaitKind::Select,
+        3 => WaitKind::EpollWait,
+        4 => WaitKind::Sleep,
+        5 => WaitKind::SigTimedWait { mask: 0 },
+        6 => WaitKind::ChildWait { options: 0 },
+        7 => WaitKind::AdvisoryLock,
+        8 => WaitKind::Futex,
+        _ => return Err(Errno::EINVAL),
+    })
+}
+
+/// Enable (nonzero) or disable (zero) kernel-owned waiting. Returns the
+/// previous state (0/1), or `-errno`.
+///
+/// Disabling while tasks are parked is refused with `EBUSY` rather than
+/// silently dropping their wakeups.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_wait_queue_enabled(enabled: u32) -> i32 {
+    match crate::wait_queue::global::set_enabled(enabled != 0) {
+        Ok(previous) => previous as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Open a wait and arm its deadline. Returns the handle (> 0), or `-errno`.
+///
+/// `timeout_ms` below zero parks with no deadline. The handle is an execution
+/// generation: it is never reused, so a timer armed before an `exec` cannot
+/// complete a request issued after it (invariant 1 in `wait_queue`).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_deadline_open(
+    pid: u32,
+    tid: u32,
+    kind: u32,
+    timeout_ms: i64,
+) -> i64 {
+    let kind = match wait_kind_from_u32(kind) {
+        Ok(kind) => kind,
+        Err(error) => return -(error as i64),
+    };
+    let now_ns = match wait_now_ns() {
+        Ok(now) => now,
+        Err(error) => return -(error as i64),
+    };
+    let timeout_ns = if timeout_ms < 0 {
+        None
+    } else {
+        match timeout_ms.checked_mul(1_000_000) {
+            Some(ns) => Some(ns),
+            None => return -(Errno::EOVERFLOW as i64),
+        }
+    };
+    match crate::wait_queue::global::open_deadline(pid, tid, kind, now_ns, timeout_ns) {
+        Ok(channel) => i64::try_from(channel.0).unwrap_or(i64::MAX),
+        Err(error) => -(error as i64),
+    }
+}
+
+/// Nanoseconds left on `handle`, saturating at zero when the deadline has
+/// passed. `WAIT_NO_DEADLINE` if the wait has none; `-ESRCH` if the handle
+/// names no live wait.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_deadline_remaining_ns(handle: i64) -> i64 {
+    if handle <= 0 {
+        return -(Errno::EINVAL as i64);
+    }
+    let now_ns = match wait_now_ns() {
+        Ok(now) => now,
+        Err(error) => return -(error as i64),
+    };
+    let channel = crate::wait_queue::ChannelGeneration(handle as u64);
+    match crate::wait_queue::global::remaining_ns(channel, now_ns) {
+        Ok(Some(remaining)) => remaining,
+        Ok(None) => WAIT_NO_DEADLINE,
+        Err(error) => -(error as i64),
+    }
+}
+
+/// Retire a wait once its call has completed. Returns 1 if the handle named a
+/// live wait, 0 if it did not, or `-errno`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_deadline_close(handle: i64) -> i32 {
+    if handle <= 0 {
+        return -(Errno::EINVAL as i32);
+    }
+    let channel = crate::wait_queue::ChannelGeneration(handle as u64);
+    crate::wait_queue::global::close(channel) as i32
+}
+
+/// Retire every wait belonging to `pid`. Returns how many were dropped.
+///
+/// Process teardown: a sleeper left behind would hold a deadline for a
+/// process that can never be completed.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_retire_process(pid: u32) -> i32 {
+    let dropped = crate::wait_queue::global::retire_process(pid).len();
+    i32::try_from(dropped).unwrap_or(i32::MAX)
+}
+
+/// The earliest deadline in the machine, as absolute `CLOCK_MONOTONIC`
+/// nanoseconds, or `WAIT_NO_DEADLINE` if nothing is timed.
+///
+/// This is what lets one host timer for the whole machine replace the
+/// per-waiter timers spread across the host's parking containers. Nothing
+/// arms that single timer yet; the export is the half the host half needs.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_next_wait_deadline_ns() -> i64 {
+    crate::wait_queue::global::next_deadline_ns().unwrap_or(WAIT_NO_DEADLINE)
+}
+
+/// Number of waits currently parked. Diagnostics and teardown assertions.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_queue_len() -> i32 {
+    i32::try_from(crate::wait_queue::global::len()).unwrap_or(i32::MAX)
+}
+
+/// Write the wait queue's counters as eight little-endian `u64`s, in
+/// `WaitQueueStats` declaration order. Returns the bytes written, or `-errno`.
+///
+/// A missed wakeup has no error message, so the only way to see one before a
+/// user does is to count the things that stand in for it.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_queue_stats(out_ptr: *mut u8, len: u32) -> i32 {
+    const FIELDS: usize = 7;
+    const BYTES: usize = FIELDS * 8;
+    if out_ptr.is_null() || (len as usize) < BYTES {
+        return -(Errno::EINVAL as i32);
+    }
+    let stats = crate::wait_queue::global::stats();
+    let values = [
+        stats.parked,
+        stats.woken_by_source,
+        stats.woken_by_deadline,
+        stats.broad_wakes,
+        stats.deadline_expiries_with_sources,
+        stats.retired,
+        stats.cancelled,
+    ];
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, BYTES) };
+    for (i, value) in values.iter().enumerate() {
+        out[i * 8..(i + 1) * 8].copy_from_slice(&value.to_le_bytes());
+    }
+    BYTES as i32
 }
 
 /// Writable byte capacity of exactly the SYS_SPAWN reservation named by
@@ -7223,8 +7404,19 @@ pub fn kernel_epoll_create1(flags: u32) -> i32 {
 /// Modify an epoll interest list.
 /// Returns 0 on success, or negative errno on error.
 pub fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    // The event pointer is declared nullable because `EPOLL_CTL_DEL` ignores
+    // it. The operations that DO read it treat a null as `EFAULT`, matching
+    // Linux; accepting it as `events = 0, data = 0` would silently register an
+    // interest that can never report anything. Which operations read it is a
+    // syscall semantic, so `runtime-core` owns and tests that predicate.
+    //
+    // Checked before taking the process lock, as `kernel_setgroups` does: an
+    // argument fault is decidable from the arguments alone.
+    if event_ptr.is_null() && syscalls::epoll_ctl_reads_event(op) {
+        return -(Errno::EFAULT as i32);
+    }
 
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let (events, data) = if !event_ptr.is_null() {
         // The shared record is compiler-checked against both Kandelo musl
         // targets: 16-byte stride, with data at offset 8.
@@ -13272,6 +13464,99 @@ pub extern "C" fn kernel_get_fd_accept_wake_idx(pid: u32, fd: i32) -> i32 {
     syscalls::listener_accept_wake_for_entry(proc, entry)
         .map(|idx| idx as i32)
         .unwrap_or(-1)
+}
+
+/// Collect the targeted wake tokens an `epoll_pwait` on `epfd` should register
+/// against, resolved from the kernel's own interest list.
+///
+/// # Why this is a kernel export and not a host loop
+///
+/// The host used to keep a `"pid:epfd"` -> interest-array mirror in
+/// TypeScript, seeded from `epoll_create1` and replayed from every
+/// `epoll_ctl`, purely so it could call `kernel_get_socket_recv_pipe` and
+/// `kernel_get_fd_accept_wake_idx` once per interest. Since the epoll instance
+/// became owned by the open file description rather than the process
+/// (`descriptor_backing::with_epolls`), that mirror was not merely redundant
+/// but a *weaker model*: it was per-process and keyed on numeric descriptors,
+/// where an interest is shared across `fork` and keyed on `(fd, OfdId)`. The
+/// join belongs where the interest list lives.
+///
+/// `kind` selects the token family, because the two are separate host wake
+/// domains and the caller keys them separately:
+///
+/// * `0` — pipe/socket receive-buffer indices, for every interest.
+/// * `1` — listener accept-wake tokens, for interests that asked for
+///   `EPOLLIN`.
+///
+/// Writes up to `out_len` bytes as little-endian `i32` values at `out_ptr` and
+/// returns the number of values written, or a negative errno. A buffer too
+/// small for the whole set is `-E2BIG`: a truncated wake set would silently
+/// lose a wakeup, which is a hang, so it must be a loud failure rather than a
+/// partial answer.
+///
+/// The tokens are an optimization, not a correctness requirement — the caller
+/// also re-checks readiness on a timer — but an interest resolved here is one
+/// the *calling* process can currently reach, matching what `sys_epoll_pwait`
+/// itself will evaluate.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_wake_indices(
+    pid: u32,
+    epfd: i32,
+    kind: u32,
+    out_ptr: *mut u8,
+    out_len: u32,
+) -> i32 {
+    use wasm_posix_shared::epoll::EPOLLIN;
+
+    const KIND_PIPE: u32 = 0;
+    const KIND_ACCEPT: u32 = 1;
+    // Validated before any work, so an unknown `kind` is EINVAL even when the
+    // interest list is empty and the loop below would never see it.
+    if kind != KIND_PIPE && kind != KIND_ACCEPT {
+        return -(Errno::EINVAL as i32);
+    }
+
+    // The borrow ends with this block: the resolved interests are owned, and
+    // the per-fd lookups below re-derive their own process reference.
+    let interests = {
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        let Some(proc) = table.get(pid) else {
+            return -(Errno::ESRCH as i32);
+        };
+        match syscalls::epoll_resolved_interests(proc, epfd) {
+            Ok(interests) => interests,
+            Err(e) => return -(e as i32),
+        }
+    };
+
+    let mut values: alloc::vec::Vec<i32> = alloc::vec::Vec::new();
+    for (fd, interest) in &interests {
+        let idx = if kind == KIND_PIPE {
+            kernel_get_socket_recv_pipe(pid, *fd)
+        } else if interest.events & EPOLLIN != 0 {
+            kernel_get_fd_accept_wake_idx(pid, *fd)
+        } else {
+            -1
+        };
+        if idx >= 0 {
+            values.push(idx);
+        }
+    }
+
+    let needed = values.len() * core::mem::size_of::<i32>();
+    if needed > out_len as usize {
+        return -(Errno::E2BIG as i32);
+    }
+    if !values.is_empty() {
+        if out_ptr.is_null() {
+            return -(Errno::EFAULT as i32);
+        }
+        let bytes: alloc::vec::Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), out_ptr, bytes.len());
+        }
+    }
+    values.len() as i32
 }
 
 /// Find the lowest live listener fd carrying `wake_idx` in `pid`.
