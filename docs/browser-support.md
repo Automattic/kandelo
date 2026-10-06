@@ -1141,6 +1141,29 @@ interpret purpose or carry guest traffic. A session name grants access to
 its codes; sessions expire after ten minutes and are bounded to 256 stored
 sessions, with a 64 KiB limit per code.
 
+The Kandelo app can exchange those codes by session name when configured
+with `?signalling=<http(s)-URL>` or `VITE_SIGNALLING_URL`. The machine holder
+hosts the name; the other computer joins it. Without a configured server,
+the Network popup retains manual code exchange. An invalid name is refused
+before a request, and cancelling or replacing an attempt closes its pending
+connection. The server only carries setup codes; machine sharing still uses
+the migration connection's four channels.
+
+Nicknames describe the person at each computer. They are page-local,
+control-character stripped and capped at 24 characters. The input is available
+before connecting. A viewer's dock names the person it watches (or shows
+Anonymous); the machine holder's dock shows Sharing. Taking over changes which
+person is watched without changing who owns each nickname. Nicknames travel as
+presentation messages on the shared replication-log transport, whose exchange
+is also exercised in Node tests; they do not change guest process state.
+
+PHP and Composer for real-server validation are declared in
+`apps/signalling/tools.nix`; deployment and test commands are documented in
+`apps/signalling/README.md`. The Chromium two-context fixture enables loopback
+ICE candidates and grants microphone permission to expose them, without
+capturing microphone input. A missing PHP server or failed connection fails
+the test rather than being counted as successful validation.
+
 ### Memory per process
 Each process gets a fresh memory layout whose requested initial pages cover the
 program's imported minimum memory and low syscall control area; it does not
