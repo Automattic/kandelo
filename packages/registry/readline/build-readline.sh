@@ -9,16 +9,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/readline-src"
 INSTALL_DIR="${KANDELO_PACKAGE_OUT_DIR:-$WORK_DIR/readline-install}"
 
-READLINE_VERSION="${WASM_POSIX_DEP_VERSION:-8.2}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.gnu.org/gnu/readline/readline-${READLINE_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-3feb7171f16a84ee82ca18a36d7b9be109a52c04f492a053331d7d1095007c35}"
+READLINE_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 # Worktree-local SDK on PATH (provides wasm32posix-configure/-cc/-ar).
 # shellcheck source=/dev/null

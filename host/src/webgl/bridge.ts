@@ -110,13 +110,25 @@ function tailBytesPayload(v: DataView, headerLen: number, lenOffset: number): bo
   return v.byteLength === headerLen + dataLen;
 }
 
+/** `n` little-endian f32s at byte `at` of `v`. Records are packed with no
+ *  padding, so any record after one whose payload is not a multiple of 4
+ *  bytes (a texture upload with an odd row width, say) starts unaligned. A
+ *  Float32Array cannot view unaligned bytes, so those are copied out. */
+function floatsAt(v: DataView, at: number, n: number): Float32Array {
+  const start = v.byteOffset + at;
+  if (start % 4 === 0) return new Float32Array(v.buffer, start, n);
+  const out = new Float32Array(n);
+  new Uint8Array(out.buffer).set(new Uint8Array(v.buffer, start, n * 4));
+  return out;
+}
+
 function countedFloatPayload(
   v: DataView,
   headerLen: number,
   countOffset: number,
   floatsPerCount: number,
 ): boolean {
-  if (v.byteLength < countOffset + 4 || v.byteOffset % 4 !== 0) return false;
+  if (v.byteLength < countOffset + 4) return false;
   const count = v.getUint32(countOffset, true);
   return v.byteLength === headerLen + count * floatsPerCount * 4;
 }
@@ -144,6 +156,7 @@ function validPayload(op: number, v: DataView): boolean {
       return exact(v, 4);
 
     case O.OP_BLEND_FUNC:
+    case O.OP_BLEND_EQUATION_SEPARATE:
     case O.OP_PIXEL_STOREI:
     case O.OP_BIND_BUFFER:
     case O.OP_BIND_TEXTURE:
@@ -168,6 +181,7 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_DRAW_ELEMENTS:
     case O.OP_RENDERBUFFER_STORAGE:
     case O.OP_FRAMEBUFFER_RENDERBUFFER:
+    case O.OP_BLEND_FUNC_SEPARATE:
       return exact(v, 16);
 
     case O.OP_UNIFORM4F:
@@ -262,6 +276,19 @@ function dispatch(
       const s = v.getUint32(p, true), d = v.getUint32(p + 4, true);
       gl.blendFunc(s, d);
       b.shadow.blendFunc = { srcRGB: s, dstRGB: d, srcA: s, dstA: d };
+      return;
+    }
+    case O.OP_BLEND_FUNC_SEPARATE: {
+      const srcRGB = v.getUint32(p, true), dstRGB = v.getUint32(p + 4, true);
+      const srcA = v.getUint32(p + 8, true), dstA = v.getUint32(p + 12, true);
+      gl.blendFuncSeparate(srcRGB, dstRGB, srcA, dstA);
+      b.shadow.blendFunc = { srcRGB, dstRGB, srcA, dstA };
+      return;
+    }
+    case O.OP_BLEND_EQUATION_SEPARATE: {
+      const rgb = v.getUint32(p, true), alpha = v.getUint32(p + 4, true);
+      gl.blendEquationSeparate(rgb, alpha);
+      b.shadow.blendEquation = { rgb, alpha };
       return;
     }
     case O.OP_DEPTH_FUNC:
@@ -556,24 +583,14 @@ function dispatch(
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
       const count = v.getUint32(p + 4, true);
       const transpose = v.getUint32(p + 8, true) !== 0;
-      const mat = new Float32Array(
-        v.buffer,
-        v.byteOffset + p + 12,
-        count * 16,
-      );
-      gl.uniformMatrix4fv(loc, transpose, mat);
+      gl.uniformMatrix4fv(loc, transpose, floatsAt(v, p + 12, count * 16));
       return;
     }
     // Payload: i32 location, u32 count, f32 v[count*4]
     case O.OP_UNIFORM4FV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
       const count = v.getUint32(p + 4, true);
-      const arr = new Float32Array(
-        v.buffer,
-        v.byteOffset + p + 8,
-        count * 4,
-      );
-      gl.uniform4fv(loc, arr);
+      gl.uniform4fv(loc, floatsAt(v, p + 8, count * 4));
       return;
     }
 
@@ -644,7 +661,8 @@ function dispatch(
     }
     case O.OP_BIND_VERTEX_ARRAY: {
       const vao = b.vaos.get(v.getUint32(p, true)) ?? null;
-      gl.bindVertexArray(vao);
+      // Vertex array 0 is this binding's own default (see GlShadowState).
+      gl.bindVertexArray(vao ?? b.shadow.defaultVao);
       b.shadow.vao = vao;
       return;
     }

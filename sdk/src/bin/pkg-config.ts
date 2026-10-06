@@ -24,9 +24,29 @@ export function buildPkgConfigEnv(
   sysroot: string,
 ): Record<string, string | undefined> {
   const callerPath = callerEnv.PKG_CONFIG_PATH ?? '';
+  // The resolver already knows the answer, so ask it instead of guessing from
+  // the spelling. `WASM_POSIX_DEP_PKG_CONFIG_PATH` is set per build script
+  // (`build_deps.rs`) to the colon-joined pkgconfig directory of every
+  // dependency it installed for THIS package. A path in that list is
+  // wasm32/64-targeted by provenance -- the resolver put it there -- whatever
+  // the cache root happens to be called.
+  //
+  // Without this, the name test below is the only gate, and it is a test on a
+  // STRING: `p.includes('kandelo/')` holds for `~/.cache/kandelo/...` and fails
+  // for `~/.cache/kandelo-lane-f/...`, because "kandelo" is followed by "-"
+  // rather than "/". Every per-worktree cache root is spelled that way, so in
+  // those trees the filter silently emptied PKG_CONFIG_PATH and php's configure
+  // reported `No package 'icu-uc' found` while all three icu .pc files sat
+  // exactly where the build script pointed. Fixing it here fixes it for every
+  // package at once; no build script changes.
+  const resolverProvided = new Set(
+    (callerEnv.WASM_POSIX_DEP_PKG_CONFIG_PATH ?? '')
+      .split(':')
+      .filter((p) => p !== ''),
+  );
   const filtered = callerPath
     .split(':')
-    .filter((p) => p === '' ? false : isWasmPosixPath(p))
+    .filter((p) => p === '' ? false : isWasmPosixPath(p) || resolverProvided.has(p))
     .join(':');
   return {
     ...callerEnv,

@@ -223,3 +223,124 @@ test("Load game data extracts an upload into the directory the launcher browses"
   await expect.poll(() => terminalText(page), { timeout: 60_000 })
     .toContain("ARCHIVE_REMOVED");
 });
+
+// The freeware menu's Beneath a Steel Sky: Ctrl+C ends the running ScummVM,
+// and the in-machine `scummvm-play` fetches the game through the guest's
+// normal HTTPS path (the CORS proxy in a browser), verifies its pinned
+// SHA-256, and starts it, loading the Sky engine plugin. @slow: it downloads
+// 69 MB from downloads.scummvm.org through the proxy.
+test("Beneath a Steel Sky from the freeware menu fetches the game and starts it @slow", async ({ page }) => {
+  test.setTimeout(600_000);
+  await bootScummvm(page);
+
+  await openSurface(page, "Demo");
+  const play = page.getByTestId("kms-dock-action-freeware");
+  await expect(play).toHaveText("Play a freeware game ▾");
+  // The image's action comes before the generic upload control.
+  await expect(page.locator(".kdemo-surface-action").first())
+    .toHaveAttribute("data-testid", "kms-dock-action-freeware");
+
+  await play.click();
+  await page.getByTestId("kms-dock-menu-entry-steel-sky").click();
+  // While the display is dark the stage shows what the script says it is
+  // doing, then clears once the replacement engine is presenting frames.
+  // A failure to stop ScummVM, or a script that exits, is an error toast.
+  await expect(page.getByTestId("kms-dock-action-status"))
+    .toHaveText(/Downloading Beneath a Steel Sky/, { timeout: 60_000 });
+  // The script reports the download against the archive's catalog size.
+  await expect(page.getByTestId("kms-dock-action-status"))
+    .toHaveText(/Downloading Beneath a Steel Sky.* \d+%/, { timeout: 120_000 });
+  await expect(page.getByTestId("kms-dock-action-progress"))
+    .toBeHidden({ timeout: 300_000 });
+  await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);
+  await expect(play).toHaveText("Play a freeware game ▾");
+
+  // The machine's own terminal carries the script's progress.
+  await openSurface(page, "Terminal");
+  await expect
+    .poll(() => terminalText(page), { timeout: 300_000 })
+    .toMatch(/scummvm-play: Starting Beneath a Steel Sky/);
+  // The screen text has no line breaks, so name the script's failure lines
+  // exactly; ScummVM's own start-up output contains the word "Failed".
+  expect(await terminalText(page)).not.toMatch(
+    /scummvm-play: (Download failed|Checksum mismatch|Unpacking failed)/,
+  );
+
+  // The engine now running is the one the script started, on the target
+  // ScummVM detected in the verified data, which kept its licence readme.
+  await runInShell(
+    page,
+    "G=/usr/share/scummvm-games/steel-sky"
+      + " && T=$(cat $G/.targets)"
+      + " && for f in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < $f; echo; done"
+      + " | grep -q -- \"^/usr/bin/scummvm .* $T \""
+      + " && test -s \"$(find $G -name sky.dsk | head -n1)\""
+      + " && test -s \"$(find $G -name readme.txt | head -n1)\""
+      + ` && ${marker("STEEL_SKY", "RUNNING")}`,
+  );
+  await expect.poll(() => terminalText(page), { timeout: 60_000 })
+    .toContain("STEEL_SKY_RUNNING");
+
+  // A running process is not a running game: the display must be receiving
+  // frames. The dock badge reports the KMS page-flip count, which the
+  // replacement engine drives once its intro starts.
+  await openSurface(page, "Demo");
+  const badge = page.locator(".kdemo-surface-badge").first();
+  await expect.poll(async () => {
+    const flips = /(\d+) flips/i.exec(await badge.innerText());
+    return flips ? Number(flips[1]) : 0;
+  }, { timeout: 180_000, intervals: [2_000, 5_000] }).toBeGreaterThan(50);
+});
+
+// The freeware menu lists the image's catalog: every game the machine can
+// fetch, plus the ones this build cannot run, disabled with the reason.
+test("the freeware menu lists the catalog and marks unrunnable games", async ({ page }) => {
+  test.setTimeout(300_000);
+  await bootScummvm(page);
+
+  await openSurface(page, "Demo");
+  const menuButton = page.getByTestId("kms-dock-action-freeware");
+  await expect(menuButton).toHaveAttribute("aria-expanded", "false");
+  await menuButton.click();
+  const menu = page.getByTestId("kms-dock-menu-freeware");
+  await expect(menu.getByRole("menuitem")).toHaveCount(28);
+  await expect(page.getByTestId("kms-dock-menu-entry-steel-sky"))
+    .toContainText("69 MB");
+  const unrunnable = page.getByTestId("kms-dock-menu-entry-broken-sword-25");
+  await expect(unrunnable).toBeDisabled();
+  await expect(unrunnable).toContainText("Theora");
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+});
+
+// A menu entry end to end, on the smallest catalog game (59 KB): ScummVM's
+// own detection adds it, and starting it loads the ADL engine plugin from
+// /usr/lib/scummvm. @slow: it downloads from downloads.scummvm.org through
+// the proxy.
+test("a freeware menu entry fetches its game and starts it on its engine plugin @slow", async ({ page }) => {
+  test.setTimeout(600_000);
+  await bootScummvm(page);
+
+  await openSurface(page, "Demo");
+  await page.getByTestId("kms-dock-action-freeware").click();
+  await page.getByTestId("kms-dock-menu-entry-mystery-house").click();
+  await expect(page.getByTestId("kms-dock-action-progress"))
+    .toBeHidden({ timeout: 300_000 });
+  await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);
+
+  await openSurface(page, "Terminal");
+  await expect
+    .poll(() => terminalText(page), { timeout: 300_000 })
+    .toMatch(/scummvm-play: Starting Hi-Res Adventure #1: Mystery House/);
+
+  // The game, not the launcher it replaced, is presenting frames.
+  await openSurface(page, "Demo");
+  const badge = page.locator(".kdemo-surface-badge").first();
+  const flips = async () => {
+    const match = /(\d+) flips/i.exec(await badge.innerText());
+    return match ? Number(match[1]) : 0;
+  };
+  const started = await flips();
+  await expect.poll(flips, { timeout: 180_000, intervals: [2_000, 5_000] })
+    .toBeGreaterThan(started + 20);
+});

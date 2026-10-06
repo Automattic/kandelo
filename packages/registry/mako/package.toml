@@ -16,8 +16,8 @@ version = "1.10.0"
 kernel_abi = 17
 depends_on = [
   "basu@0.2.1",
-  "cairo@1.16.0",
-  "pango@1.42.4",
+  "cairo@1.18.6",
+  "pango@1.56.4",
   "glib@2.84.4",
   "pcre2@10.44",
   "harfbuzz@10.1.0",
@@ -28,6 +28,7 @@ depends_on = [
   "libpng@1.6.43",
   "zlib@1.3.1",
   "libxml2@2.13.8",
+  "libiconv@1.17",
   "libwayland@1.24.0",
   "libffi@0.1.0",
   "wayland-protocols@1.45",

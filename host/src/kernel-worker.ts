@@ -25,6 +25,7 @@
  * explanatory only and generated-file drift tests cover the live values.
  */
 
+import { LongTimeouts, MAX_ENGINE_TIMER_DELAY_MS } from "./long-timeout";
 import {
   getWasmPosixKernelRuntimeAccess,
   negErrno,
@@ -78,6 +79,7 @@ import {
   type ExecLaunchCallback,
   type PreparedExecKernel,
 } from "./exec-target";
+import { WasmModuleCache } from "./wasm-module-cache";
 import {
   buildRawHttpRequest,
   parseRawHttpResponse,
@@ -270,7 +272,18 @@ import {
   WAKEUP_EVENT_RECORD_BYTES,
   WAKEUP_EVENT_TYPES,
   type SyscallArgDesc,
+  KANDELO_CLIPBOARD_ACK_PENDING,
+  KANDELO_CLIPBOARD_MAX_TEXT_BYTES,
 } from "./generated/abi";
+import {
+  CLIPBOARD_ACK_POLL_MS,
+  CLIPBOARD_ACK_TIMEOUT_MS,
+  clipboardAckFailure,
+  clipboardOfferFailure,
+  GUEST_CLIPBOARD_TIMEOUT_MS,
+  type ClipboardOfferResult,
+  type GuestClipboardResult,
+} from "./clipboard";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
 import {
   ABI_CONTRACT_SECTION,
@@ -3034,6 +3047,12 @@ export class CentralizedKernelWorker {
   }>();
   /** Secure-exec state for a newly-created spawn child with no old image. */
   private committedExecSecureExec = new Map<number, boolean>();
+  /**
+   * The one compiler for program and thread modules on this host. Spawn and
+   * exec use it here; the host entry uses it for top-level launches and
+   * thread modules, and fork children inherit their parent's module.
+   */
+  readonly wasmModules = new WasmModuleCache();
   /** Capacity travels with the allocator-owned pointer. */
   #scratchRegion: KernelScratchRegion | null = null;
   #pcmTransportDescriptor: PcmTransportDescriptor | null = null;
@@ -3193,6 +3212,8 @@ export class CentralizedKernelWorker {
     {
       timeout: ReturnType<typeof setTimeout>;
       interval?: ReturnType<typeof setInterval>;
+      /** Re-armed one-shot for an interval longer than an engine timer. */
+      longInterval?: ReturnType<typeof setTimeout>;
       signo: number;
     }
   >();
@@ -3414,14 +3435,21 @@ export class CentralizedKernelWorker {
     number,
     { count: number; totalTimeMs: number; retries: number }
   > | null = PROFILING ? new Map() : null;
-  /** Per-process stdin buffers: pid → { data, offset } */
-  private stdinBuffers = new Map<
+  /**
+   * Host-supplied stdin. fd 0 of a spawned (non-PTY) process is the read end
+   * of a kernel pipe whose write end the host owns, so a forked child shares
+   * the parent's stdin and read offset as POSIX requires. The pipe is bounded;
+   * `pending` holds bytes it has not accepted yet, fed as readers drain it.
+   * Keyed by pipe, because the pipe outlives the process that created it.
+   */
+  #hostStdinPipes = new Map<
     number,
-    { data: Uint8Array; offset: number }
+    { pending: Uint8Array[]; closeWhenDrained: boolean }
   >();
-  /** Processes with finite stdin (setStdinData). Reads return EOF when buffer exhausted.
-   *  Processes NOT in this set get EAGAIN (blocking) when no stdin data is available. */
-  private stdinFinite = new Set<number>();
+  /** pid → its host stdin pipe; only routes setStdinData/appendStdinData. */
+  #hostStdinPipeByPid = new Map<number, number>();
+  /** Pids whose host stdin was fully delivered and its write end closed. */
+  #hostStdinDelivered = new Set<number>();
   /** Active TCP connections per process for piggyback flushing */
   private tcpConnections = new Map<
     number,
@@ -3454,10 +3482,6 @@ export class CentralizedKernelWorker {
   private sharedMappingInheritancePids = new Set<number>();
   /** Process fd → resolved backing identity, including negative lookups. */
   private sharedMmapFdCache = new Map<string, { backingKey: string | null }>();
-  /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
-   *  Maintained by intercepting epoll_ctl results. Used by handleEpollPwait
-   *  to convert epoll_pwait to poll without calling kernel_handle_channel
-   *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
   /**
    * Byte-coherence mirrors for Rust-owned SysV shared-memory attachments.
    *
@@ -3652,27 +3676,6 @@ export class CentralizedKernelWorker {
       // The first SETCRTC/PAGE_FLIP needs vblank ticks to retire its flips;
       // startVblankPump is a no-op once the pump runs.
       onKmsScanoutActive: () => this.startVblankPump(),
-      onStdin: (maxLen: number): Uint8Array | null => {
-        const pid = this.currentHandlePid;
-        const buf = this.stdinBuffers.get(pid);
-        if (!buf) {
-          // No buffer: finite stdin → EOF, otherwise block (EAGAIN)
-          return this.stdinFinite.has(pid) ? null : new Uint8Array(0);
-        }
-        const remaining = buf.data.length - buf.offset;
-        if (remaining <= 0) {
-          this.stdinBuffers.delete(pid);
-          // Buffer exhausted: finite stdin → EOF, otherwise block
-          return this.stdinFinite.has(pid) ? null : new Uint8Array(0);
-        }
-        const n = Math.min(remaining, maxLen);
-        const chunk = buf.data.subarray(buf.offset, buf.offset + n);
-        buf.offset += n;
-        if (buf.offset >= buf.data.length) {
-          this.stdinBuffers.delete(pid);
-        }
-        return chunk;
-      },
       onAlarm: (seconds: number): number => {
         const pid = this.currentHandlePid;
         if (pid === 0) return 0;
@@ -3766,15 +3769,20 @@ export class CentralizedKernelWorker {
         // Cancel any existing timer for this slot
         const existing = this.posixTimers.get(key);
         if (existing) {
-          clearTimeout(existing.timeout);
+          this.#cancelRegisteredTimeout(existing.timeout);
           if (existing.interval) clearInterval(existing.interval);
+          if (existing.longInterval) {
+            this.#cancelRegisteredTimeout(existing.longInterval);
+          }
           this.posixTimers.delete(key);
         }
 
         if (valueMs > 0 || intervalMs > 0) {
           // valueMs > 0 means armed (0 = disarm, kernel ensures >= 1ms for armed timers)
           const delay = Math.max(0, valueMs);
-          const timeout = setTimeout(() => {
+          // #registerTimeout, not setTimeout: an expiry or interval past an
+          // engine timer's 2^31-1 ms limit must still fire on time.
+          const timeout = this.#registerTimeout(() => {
             const current = this.posixTimers.get(key);
             if (!current || current.timeout !== timeout) return;
             if (!this.processes.has(pid)) {
@@ -3784,7 +3792,26 @@ export class CentralizedKernelWorker {
             this.firePosixTimer(pid, timerId, signo);
 
             // Set up repeating interval if needed
-            if (intervalMs > 0) {
+            if (intervalMs > MAX_ENGINE_TIMER_DELAY_MS) {
+              const rearm = (): void => {
+                const next = this.#registerTimeout(() => {
+                  const intervalEntry = this.posixTimers.get(key);
+                  if (!intervalEntry || intervalEntry.longInterval !== next) {
+                    return;
+                  }
+                  if (!this.processes.has(pid)) {
+                    this.posixTimers.delete(key);
+                    return;
+                  }
+                  this.firePosixTimer(pid, timerId, signo);
+                  rearm();
+                }, intervalMs);
+                const entry = this.posixTimers.get(key);
+                if (entry?.timeout === timeout) entry.longInterval = next;
+                else this.#cancelRegisteredTimeout(next);
+              };
+              rearm();
+            } else if (intervalMs > 0) {
               const iv = setInterval(() => {
                 const intervalEntry = this.posixTimers.get(key);
                 if (!intervalEntry || intervalEntry.interval !== iv) {
@@ -7478,25 +7505,44 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Provide data that will be returned when the process reads from stdin (fd 0).
-   * Data is returned in chunks until exhausted, then EOF is returned.
-   * Must be called before the process starts reading stdin.
+   * Give `pid` host-supplied stdin: replace its fd 0 with the read end of a
+   * kernel pipe whose write end the host owns. Call once, at spawn, before
+   * the program runs, for processes whose stdin is not a PTY.
    */
-  setStdinData(pid: number, data: Uint8Array): void {
-    const owned = new Uint8Array(
-      intrinsicUint8ArrayView(data, "finite stdin data"),
-    );
+  installHostStdinPipe(pid: number): void {
     this.#runOrDeferKernelEntry(
-      `finite stdin replacement pid=${pid}`,
-      () => {
-        // WHY: host imports consume this buffer during later kernel exports.
-        // Install an owned snapshot only at a serialized entry boundary so a
-        // reentrant caller cannot replace bytes while Rust is reading them.
-        this.stdinBuffers.set(pid, { data: owned, offset: 0 });
-        this.stdinFinite.add(pid); // EOF after data is consumed
+      `host stdin pipe install pid=${pid}`,
+      (entry) => {
+        const install = this.#kernelInstanceForEntry(entry).exports
+          .kernel_install_host_stdin_pipe as (pid: number) => number;
+        const pipeIdx = install(pid);
+        if (!Number.isSafeInteger(pipeIdx) || pipeIdx < 0) {
+          // WHY not throw: a throw inside a kernel entry is fatal to the whole
+          // kernel. A failed install (no such pid, pipe table exhausted) is a
+          // per-process outcome: the process keeps host handle 0 as stdin,
+          // which reads as end-of-file.
+          console.warn(
+            `[kernel-worker] could not give pid ${pid} host stdin ` +
+              `(kernel_install_host_stdin_pipe returned ${pipeIdx}); ` +
+              "its stdin reads as end-of-file",
+          );
+          return undefined;
+        }
+        this.#hostStdinPipes.set(pipeIdx, { pending: [], closeWhenDrained: false });
+        this.#hostStdinPipeByPid.set(pid, pipeIdx);
+        this.#hostStdinDelivered.delete(pid);
         return undefined;
       },
     );
+  }
+
+  /**
+   * Provide the whole of a process's stdin: the bytes are written into its
+   * stdin pipe and the write end is closed, so readers see end-of-file once
+   * they have read them.
+   */
+  setStdinData(pid: number, data: Uint8Array): void {
+    this.#queueHostStdin(pid, data, true, "finite stdin data");
   }
 
   /**
@@ -7533,39 +7579,166 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Append data to a process's stdin buffer without marking stdin as a pipe.
-   * Used for interactive stdin where data arrives incrementally.
-   * Wakes any blocked stdin readers after appending.
+   * Append bytes to a process's stdin without closing it. Used for
+   * interactive input that arrives incrementally; blocked readers wake as
+   * soon as the bytes reach the pipe.
    */
   appendStdinData(pid: number, data: Uint8Array): void {
-    const owned = new Uint8Array(
-      intrinsicUint8ArrayView(data, "incremental stdin data"),
-    );
+    this.#queueHostStdin(pid, data, false, "incremental stdin data");
+  }
+
+  /**
+   * Whether the host has delivered every byte of `pid`'s stdin into its pipe
+   * and closed the write end. Bytes may still sit in the pipe for a reader;
+   * the host no longer owns them, and once the write end is closed the pipe
+   * index can be reclaimed, so the host does not query it afterwards.
+   */
+  isStdinConsumed(pid: number): boolean {
+    return this.#hostStdinDelivered.has(pid);
+  }
+
+  #queueHostStdin(
+    pid: number,
+    data: Uint8Array,
+    close: boolean,
+    label: string,
+  ): void {
+    const owned = new Uint8Array(intrinsicUint8ArrayView(data, label));
     this.#runOrDeferKernelEntry(
-      `incremental stdin append pid=${pid}`,
+      `${label} pid=${pid}`,
       (entry) => {
-        const existing = this.stdinBuffers.get(pid);
-        if (existing) {
-          // Concatenate with remaining unread data.
-          const remaining = existing.data.subarray(existing.offset);
-          const combined = new Uint8Array(remaining.length + owned.length);
-          combined.set(remaining);
-          combined.set(owned, remaining.length);
-          this.stdinBuffers.set(pid, { data: combined, offset: 0 });
-        } else {
-          this.stdinBuffers.set(pid, { data: owned, offset: 0 });
+        const pipeIdx = this.#hostStdinPipeForPid(pid, entry);
+        const state = pipeIdx === undefined
+          ? undefined
+          : this.#hostStdinPipes.get(pipeIdx);
+        if (pipeIdx === undefined || state === undefined) {
+          // Nothing can read these bytes: the process uses a PTY, closed or
+          // replaced fd 0 until no reader remained, its stdin was already
+          // closed with setStdinData, or it (and every ancestor) exited. Like
+          // a write to a pipe with no reader, the bytes are discarded. This is
+          // an ordinary outcome of host input racing a process's lifetime
+          // (a keypress arriving just after exit), never a kernel fault: a
+          // throw here would latch the kernel entry gate as fatal.
+          this.#warnHostStdinDropped(pid, owned.byteLength);
+          return undefined;
         }
-        // Wake any blocked readers only after this exact replacement is
-        // visible; the scheduler effect is detached by the entry context.
-        this.scheduleWakeBlockedRetries(entry);
+        if (owned.byteLength > 0) state.pending.push(owned);
+        if (close) state.closeWhenDrained = true;
+        this.#pumpHostStdin(pipeIdx, entry);
         return undefined;
       },
     );
   }
 
-  /** Exact host-side finite-stdin state; exposes no backing buffer authority. */
-  isStdinConsumed(pid: number): boolean {
-    return this.stdinFinite.has(pid) && !this.stdinBuffers.has(pid);
+  /**
+   * The host stdin pipe that input addressed to `pid` should go to: the pid's
+   * own, or else the nearest ancestor's. A forked child that inherited fd 0
+   * reads its parent's pipe (framebuffer demos address keyboard input to
+   * whichever descendant owns the display), so the first resolution through
+   * an ancestor is cached for later input. A pid whose own pipe was closed
+   * resolves to nothing rather than to an ancestor's stream. Kernel task IDs
+   * are never reused, so a cached route cannot reach an unrelated process.
+   */
+  #hostStdinPipeForPid(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): number | undefined {
+    const own = this.#hostStdinPipeByPid.get(pid);
+    if (own !== undefined) return own;
+    if (this.#hostStdinDelivered.has(pid)) return undefined;
+    let ancestor = this.getParentPid(pid, entry);
+    for (let depth = 0; ancestor !== undefined && depth < 64; depth++) {
+      if (this.#hostStdinDelivered.has(ancestor)) return undefined;
+      const inherited = this.#hostStdinPipeByPid.get(ancestor);
+      if (inherited !== undefined) {
+        this.#hostStdinPipeByPid.set(pid, inherited);
+        return inherited;
+      }
+      ancestor = this.getParentPid(ancestor, entry);
+    }
+    return undefined;
+  }
+
+  /** Report discarded host stdin once per pid, not once per keypress. */
+  #hostStdinDropWarned = new Set<number>();
+  #warnHostStdinDropped(pid: number, byteLength: number): void {
+    if (this.#hostStdinDropWarned.has(pid)) return;
+    this.#hostStdinDropWarned.add(pid);
+    console.warn(
+      `[kernel-worker] discarding ${byteLength} byte(s) of host stdin for pid ` +
+        `${pid}: no open host stdin reaches it (later discards for this pid ` +
+        "are not reported)",
+    );
+  }
+
+  /**
+   * Move queued stdin bytes into the pipe until it is full, close the write
+   * end once everything is delivered (setStdinData), and wake readers. Runs
+   * again whenever the kernel reports the pipe writable.
+   */
+  #pumpHostStdin(pipeIdx: number, entry: KernelWorkerEntryContext): void {
+    const state = this.#hostStdinPipes.get(pipeIdx);
+    if (!state) return;
+    if (!this.#tcpPipeReadOpenWithinKernelEntry(pipeIdx, entry)) {
+      // Every reader closed fd 0 or exited: nothing can read these bytes.
+      this.#closeHostStdinPipe(pipeIdx, entry);
+      return;
+    }
+    let wrote = false;
+    while (state.pending.length > 0) {
+      const chunk = state.pending[0]!;
+      const n = this.writePipeChunked(0, pipeIdx, chunk, entry);
+      if (n > 0) wrote = true;
+      if (n >= chunk.byteLength) {
+        state.pending.shift();
+      } else {
+        state.pending[0] = chunk.subarray(n);
+        break;
+      }
+    }
+    let closed = false;
+    if (state.pending.length === 0 && state.closeWhenDrained) {
+      this.#closeHostStdinPipe(pipeIdx, entry);
+      closed = true;
+    }
+    if (wrote || closed) {
+      entry.deferProtocolEffect(() => {
+        this.notifyPipeReadable(pipeIdx);
+        return undefined;
+      });
+    }
+  }
+
+  #closeHostStdinPipe(pipeIdx: number, entry: KernelWorkerEntryContext): void {
+    this.#hostStdinPipes.delete(pipeIdx);
+    for (const [pid, idx] of this.#hostStdinPipeByPid) {
+      if (idx !== pipeIdx) continue;
+      this.#hostStdinPipeByPid.delete(pid);
+      this.#hostStdinDelivered.add(pid);
+    }
+    this.#closeTcpPipeWriteWithinKernelEntry(pipeIdx, entry);
+  }
+
+  /**
+   * The process that owned a host stdin pipe exited. Children that inherited
+   * fd 0 may still read it, so keep feeding the pipe while it has readers;
+   * release it now only if none remain.
+   */
+  #releaseHostStdinForExitedProcess(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const pipeIdx = this.#hostStdinPipeByPid.get(pid);
+    if (pipeIdx === undefined) return;
+    // Keep the pid's route while the pipe lives: a child that inherited fd 0
+    // may still read it, and input addressed to the exited pid (or resolved
+    // through it by a descendant) still belongs to that stream.
+    if (
+      this.#hostStdinPipes.has(pipeIdx)
+      && !this.#tcpPipeReadOpenWithinKernelEntry(pipeIdx, entry)
+    ) {
+      this.#closeHostStdinPipe(pipeIdx, entry);
+    }
   }
 
   // ── PTY management ──
@@ -8204,8 +8377,7 @@ export class CentralizedKernelWorker {
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
     this.committedExecSecureExec.delete(pid);
-    this.stdinFinite.delete(pid);
-    this.stdinBuffers.delete(pid);
+    this.#releaseHostStdinForExitedProcess(pid, entry);
 
     // Stop poller if no more processes
     if (this.usePolling && this.processes.size === 0) {
@@ -8408,6 +8580,9 @@ export class CentralizedKernelWorker {
       if (timer.interval !== undefined) {
         this.#cancelRegisteredInterval(timer.interval);
       }
+      if (timer.longInterval !== undefined) {
+        this.#cancelRegisteredTimeout(timer.longInterval);
+      }
     }
     if (plan.mismatch !== null) {
       throw new Error(`process ${pid} timer ownership mismatch: ${plan.mismatch}`);
@@ -8484,8 +8659,7 @@ export class CentralizedKernelWorker {
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
     this.committedExecSecureExec.delete(pid);
-    this.stdinFinite.delete(pid);
-    this.stdinBuffers.delete(pid);
+    this.#releaseHostStdinForExitedProcess(pid, entry);
     // Cancel pending sleeps for every thread in this process.
     this.cancelPendingSleepsForProcess(pid);
     // Clean up pending poll retries
@@ -9574,14 +9748,17 @@ export class CentralizedKernelWorker {
 
     for (const [key, entry] of this.posixTimers) {
       if (key.startsWith(`${pid}:`)) {
-        clearTimeout(entry.timeout);
+        this.#cancelRegisteredTimeout(entry.timeout);
         if (entry.interval) clearInterval(entry.interval);
+        if (entry.longInterval) {
+          this.#cancelRegisteredTimeout(entry.longInterval);
+        }
         this.posixTimers.delete(key);
       }
     }
     for (const [ch, timer] of this.socketTimeoutTimers) {
       if (ch.pid === pid) {
-        clearTimeout(timer);
+        this.#cancelRegisteredTimeout(timer);
         this.socketTimeoutTimers.delete(ch);
       }
     }
@@ -10369,25 +10546,39 @@ export class CentralizedKernelWorker {
     }
   }
 
+  /** Delays past an engine timer's limit; see long-timeout.ts. */
+  readonly #longTimeouts = new LongTimeouts<ReturnType<typeof setTimeout>>({
+    schedule: (operation, delayMs) =>
+      kernelEntryIntrinsicApply(
+        this.#scheduleTimeout,
+        this.#schedulerReceiver,
+        [operation, delayMs],
+      ) as ReturnType<typeof setTimeout>,
+    cancel: (handle) => {
+      kernelEntryIntrinsicApply(
+        this.#cancelTimeout,
+        this.#schedulerReceiver,
+        [handle],
+      );
+    },
+    now: () => Date.now(),
+  });
+
   #registerTimeout(
     operation: () => void,
     delayMs: number,
   ): ReturnType<typeof setTimeout> {
-    return kernelEntryIntrinsicApply(
-      this.#scheduleTimeout,
-      this.#schedulerReceiver,
-      [operation, delayMs],
+    return this.#longTimeouts.register(
+      operation,
+      delayMs,
     ) as ReturnType<typeof setTimeout>;
   }
 
   #cancelRegisteredTimeout(
     timer: Parameters<typeof clearTimeout>[0],
   ): void {
-    kernelEntryIntrinsicApply(
-      this.#cancelTimeout,
-      this.#schedulerReceiver,
-      [timer],
-    );
+    if (timer === undefined) return;
+    this.#longTimeouts.cancel(timer as ReturnType<typeof setTimeout>);
   }
 
   #registerInterval(
@@ -12902,6 +13093,11 @@ export class CentralizedKernelWorker {
           );
           const sec = Number(pv.getBigInt64(0, true));
           const nsec = Number(pv.getBigInt64(8, true));
+          // POSIX/Linux: a negative tv_sec or a tv_nsec outside
+          // [0, 1e9) is EINVAL, not a (possibly enormous) timeout.
+          if (sec < 0 || nsec < 0 || nsec >= 1_000_000_000) {
+            throw new KernelScratchError("ppoll timeout is not a valid timespec", EINVAL);
+          }
           const timeoutMs = sec * 1000 + Math.floor(nsec / 1_000_000);
           readinessTimeoutMs = timeoutMs;
           adjustedArgs[2] = timeoutMs;
@@ -15809,6 +16005,10 @@ export class CentralizedKernelWorker {
       }
 
       if (wakeType & WAKEUP_EVENT_TYPES.writable) {
+        // A reader drained (or closed) a host stdin pipe: feed it more.
+        if (this.#hostStdinPipes.has(wakeIdx)) {
+          this.#pumpHostStdin(wakeIdx, entry);
+        }
         // Pipe became writable — wake pending writers on this pipe
         const writers = this.pendingPipeWriters.get(wakeIdx);
         if (writers && writers.length > 0) {
@@ -22486,6 +22686,7 @@ export class CentralizedKernelWorker {
         const candidate = await compileSpawnCandidateSnapshot(
           selected.programBytes,
           this.getKernelAbiVersion(),
+          (bytes) => this.wasmModules.programModule(bytes),
         );
         return {
           programBytes: candidate.targetBytes,
@@ -23462,10 +23663,8 @@ export class CentralizedKernelWorker {
             expectedSize,
             markTargetConsumed,
           ),
-        preflightCandidate: {
-          targetBytes: candidate.programBytes,
-          targetModule: candidate.programModule,
-        },
+        compileModule: (bytes) => this.wasmModules.programModule(bytes),
+        preflightModule: candidate.programModule,
       }, async (request) => ({
         // onSpawn owns no replacement image before commit. If a future host
         // adds staged resources, they must remain bounded to this hook.
@@ -23536,6 +23735,7 @@ export class CentralizedKernelWorker {
             expectedSize,
             markTargetConsumed,
           ),
+        compileModule: (bytes) => this.wasmModules.programModule(bytes),
       }, callback);
     } catch (error) {
       if (error instanceof PreparedExecTargetError) return -error.errno;
@@ -30556,6 +30756,181 @@ export class CentralizedKernelWorker {
         this.scheduleWakeBlockedRetries(entry);
       },
     );
+  }
+
+  /**
+   * Offer host clipboard text to the guest's clipboard agent through
+   * `/dev/kandelo/clipboard`, and resolve with the agent's answer.
+   *
+   * The text is staged into the kernel in main-scratch-sized chunks and
+   * committed as one offer inside a single kernel entry, then parked
+   * readers are woken. The answer is polled on a timer, and only while
+   * this offer is pending: nothing is added to the syscall path. `text` is
+   * UTF-8; callers normalize line endings first (see `encodeClipboardText`).
+   */
+  offerClipboardText(
+    text: Uint8Array,
+    options: { timeoutMs?: number } = {},
+  ): Promise<ClipboardOfferResult> {
+    if (text.byteLength > KANDELO_CLIPBOARD_MAX_TEXT_BYTES) {
+      return Promise.resolve({ ok: false, reason: "too-large" });
+    }
+    const timeoutMs = options.timeoutMs ?? CLIPBOARD_ACK_TIMEOUT_MS;
+    // The entry may run later; never read the caller's buffer after return.
+    const bytes = text.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("clipboard offer and wake", (entry) => {
+        const exports = entry.instance.exports;
+        const offer = exports.kernel_clipboard_offer as
+          | (() => number)
+          | undefined;
+        if (
+          typeof exports.kernel_clipboard_stage !== "function"
+          || typeof offer !== "function"
+          || typeof exports.kernel_clipboard_ack !== "function"
+        ) {
+          resolve({ ok: false, reason: "unsupported" });
+          return undefined;
+        }
+        const scratch = this.#requireMainScratchRegion();
+        let staged = 0;
+        scratch.withLease((lease) => {
+          let offset = 0;
+          // At least one call, so an empty text still restarts staging.
+          do {
+            const length = Math.min(bytes.byteLength - offset, scratch.capacity);
+            if (length > 0) lease.copyFrom(bytes, 0, offset, length);
+            staged = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_clipboard_stage",
+              [lease.exportPointer(0, length), length, offset],
+            );
+            if (staged !== 0) return;
+            offset += length;
+          } while (offset < bytes.byteLength);
+        });
+        if (staged !== 0) {
+          resolve(clipboardOfferFailure(staged));
+          return undefined;
+        }
+        const seq = offer();
+        if (!Number.isSafeInteger(seq) || seq <= 0) {
+          resolve(clipboardOfferFailure(seq));
+          return undefined;
+        }
+        // Wake the agent parked in read() or poll() on the device.
+        this.scheduleWakeBlockedRetries(entry);
+        this.#awaitClipboardAck(seq, Date.now() + timeoutMs, resolve);
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * Copy-out: resolve with the next desktop selection the guest's clipboard
+   * agent reports, or `timeout`. The generation is sampled when this
+   * request runs, so callers send it before delivering the copy chord; it
+   * is then polled on a timer only until it moves or the time runs out.
+   */
+  waitForGuestClipboardText(
+    options: { timeoutMs?: number } = {},
+  ): Promise<GuestClipboardResult> {
+    const deadline = Date.now() + (options.timeoutMs ?? GUEST_CLIPBOARD_TIMEOUT_MS);
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("clipboard guest baseline", (entry) => {
+        const generation = entry.instance.exports.kernel_clipboard_guest_generation as
+          | (() => number)
+          | undefined;
+        if (
+          typeof generation !== "function"
+          || typeof entry.instance.exports.kernel_clipboard_guest_read !== "function"
+        ) {
+          resolve({ ok: false, reason: "unsupported" });
+          return undefined;
+        }
+        this.#awaitGuestClipboard(generation(), deadline, resolve);
+        return undefined;
+      });
+    });
+  }
+
+  #awaitGuestClipboard(
+    baseline: number,
+    deadline: number,
+    resolve: (result: GuestClipboardResult) => void,
+  ): void {
+    setTimeout(() => {
+      this.#runOrDeferKernelEntry("clipboard guest poll", (entry) => {
+        const generation = entry.instance.exports.kernel_clipboard_guest_generation as
+          () => number;
+        if (generation() === baseline) {
+          if (Date.now() >= deadline) resolve({ ok: false, reason: "timeout" });
+          else this.#awaitGuestClipboard(baseline, deadline, resolve);
+          return undefined;
+        }
+        // Read it in scratch-sized chunks inside this one entry, so the text
+        // cannot change between chunks.
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        let dropped = false;
+        const scratch = this.#requireMainScratchRegion();
+        scratch.withLease((lease) => {
+          for (;;) {
+            const n = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_clipboard_guest_read",
+              [lease.exportPointer(0, scratch.capacity), scratch.capacity, total],
+            );
+            // -ENOENT: the agent released the device after reporting, which
+            // drops the text. Reading it as "" would empty the host clipboard.
+            if (n < 0) { dropped = true; return; }
+            if (!Number.isSafeInteger(n) || n === 0 || n > scratch.capacity) return;
+            chunks.push(lease.copyOut(0, n));
+            total += n;
+          }
+        });
+        if (dropped) {
+          resolve({ ok: false, reason: "no-agent" });
+          return undefined;
+        }
+        const bytes = new Uint8Array(total);
+        let at = 0;
+        for (const c of chunks) { bytes.set(c, at); at += c.byteLength; }
+        try {
+          resolve({ ok: true, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) });
+        } catch {
+          resolve({ ok: false, reason: "invalid-text" });
+        }
+        return undefined;
+      });
+    }, CLIPBOARD_ACK_POLL_MS);
+  }
+
+  #awaitClipboardAck(
+    seq: number,
+    deadline: number,
+    resolve: (result: ClipboardOfferResult) => void,
+  ): void {
+    setTimeout(() => {
+      this.#runOrDeferKernelEntry("clipboard ack poll", (entry) => {
+        const ack = entry.instance.exports.kernel_clipboard_ack as
+          | ((seq: number) => number)
+          | undefined;
+        const status = typeof ack === "function" ? ack(seq) : KANDELO_CLIPBOARD_ACK_PENDING;
+        if (status === 0) {
+          resolve({ ok: true, seq });
+        } else if (status !== KANDELO_CLIPBOARD_ACK_PENDING) {
+          resolve(clipboardAckFailure(status));
+        } else if (Date.now() >= deadline) {
+          resolve({ ok: false, reason: "timeout" });
+        } else {
+          this.#awaitClipboardAck(seq, deadline, resolve);
+        }
+        return undefined;
+      });
+    }, CLIPBOARD_ACK_POLL_MS);
   }
 
   /**

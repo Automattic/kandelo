@@ -25,7 +25,8 @@ export class GlMuxer {
     const s = target.shadow;
     const gl = this.gl;
 
-    gl.bindVertexArray(s.vao);
+    if (s.vao === null && s.defaultVao === null) s.defaultVao = gl.createVertexArray();
+    gl.bindVertexArray(s.vao ?? s.defaultVao);
     gl.bindFramebuffer(GL_FRAMEBUFFER, s.fbo);
     gl.viewport(...s.viewport);
 
@@ -44,6 +45,7 @@ export class GlMuxer {
       s.blendFunc.srcRGB, s.blendFunc.dstRGB,
       s.blendFunc.srcA, s.blendFunc.dstA,
     );
+    gl.blendEquationSeparate(s.blendEquation.rgb, s.blendEquation.alpha);
 
     if (s.cullFaceEnabled) gl.enable(GL_CULL_FACE); else gl.disable(GL_CULL_FACE);
     gl.cullFace(s.cullFace);

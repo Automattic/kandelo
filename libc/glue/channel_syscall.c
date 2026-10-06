@@ -187,11 +187,27 @@ void __wasm_posix_longjmp_cleanup(unsigned long target_depth)
     }
 }
 
+/*
+ * ppoll's timeout crosses the channel in the time64 wire form: two int64
+ * words, { tv_sec, tv_nsec }. That is what musl's ppoll() submits
+ * (`(long long[]){s, ns}`) and what the host decodes.
+ *
+ * WHY not `struct timespec`: on wasm32 musl declares tv_nsec as a 32-bit
+ * `long` followed by 32 bits of unnamed padding, so the struct is 16 bytes
+ * but its second word is not an int64. The host reads that word as int64,
+ * so a struct whose padding was never written turns a zero remaining time
+ * into stack garbage << 32 nanoseconds -- weeks of sleep. That is how a
+ * restarted ppoll(..., {0, 0}, mask) hung forever after its SA_RESTART
+ * handler. Read and write only the int64 wire words here.
+ */
+typedef int64_t kandelo_ppoll_wire_timeout[2];
+
 static int kandelo_capture_ppoll_deadline(
     long n,
     long long timeout_arg,
     struct timespec *deadline)
 {
+    kandelo_ppoll_wire_timeout wire;
     struct timespec timeout;
     struct timespec now;
     uintptr_t timeout_ptr;
@@ -202,12 +218,13 @@ static int kandelo_capture_ppoll_deadline(
     timeout_ptr = (uintptr_t)timeout_arg;
     memory_bytes = (uintptr_t)__builtin_wasm_memory_size(0) * 65536u;
     if (timeout_ptr > memory_bytes ||
-        sizeof(timeout) > memory_bytes - timeout_ptr)
+        sizeof(wire) > memory_bytes - timeout_ptr)
         return 0;
-    __builtin_memcpy(&timeout, (const void *)timeout_ptr, sizeof(timeout));
-    if (timeout.tv_sec < 0 || timeout.tv_nsec < 0 ||
-        timeout.tv_nsec >= 1000000000L)
+    __builtin_memcpy(&wire, (const void *)timeout_ptr, sizeof(wire));
+    if (wire[0] < 0 || wire[1] < 0 || wire[1] >= 1000000000LL)
         return 0;
+    timeout.tv_sec = (time_t)wire[0];
+    timeout.tv_nsec = (long)wire[1];
     /* Reading the clock is internal accounting for the enclosing ppoll, not
      * a guest signal checkpoint. In particular, a signal already pending at
      * ppoll entry must interrupt ppoll itself rather than this timestamp. */
@@ -231,7 +248,7 @@ static int kandelo_capture_ppoll_deadline(
 
 static void kandelo_ppoll_remaining(
     const struct timespec *deadline,
-    struct timespec *remaining)
+    kandelo_ppoll_wire_timeout remaining)
 {
     struct timespec now;
 
@@ -244,16 +261,16 @@ static void kandelo_ppoll_remaining(
             CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
         ) != 0 || now.tv_sec > deadline->tv_sec ||
         (now.tv_sec == deadline->tv_sec && now.tv_nsec >= deadline->tv_nsec)) {
-        remaining->tv_sec = 0;
-        remaining->tv_nsec = 0;
+        remaining[0] = 0;
+        remaining[1] = 0;
         return;
     }
-    remaining->tv_sec = deadline->tv_sec - now.tv_sec;
+    remaining[0] = (int64_t)(deadline->tv_sec - now.tv_sec);
     if (deadline->tv_nsec < now.tv_nsec) {
-        remaining->tv_sec--;
-        remaining->tv_nsec = 1000000000L + deadline->tv_nsec - now.tv_nsec;
+        remaining[0]--;
+        remaining[1] = 1000000000LL + deadline->tv_nsec - now.tv_nsec;
     } else {
-        remaining->tv_nsec = deadline->tv_nsec - now.tv_nsec;
+        remaining[1] = (int64_t)(deadline->tv_nsec - now.tv_nsec);
     }
 }
 
@@ -759,7 +776,7 @@ static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
                               uint32_t extra_request_flags)
 {
     struct timespec kandelo_ppoll_deadline;
-    struct timespec kandelo_ppoll_remaining_timeout;
+    kandelo_ppoll_wire_timeout kandelo_ppoll_remaining_timeout;
     int kandelo_ppoll_has_deadline = kandelo_capture_ppoll_deadline(
         n,
         a3,
@@ -976,9 +993,9 @@ restart_wait_syscall:
         if (kandelo_ppoll_has_deadline) {
             kandelo_ppoll_remaining(
                 &kandelo_ppoll_deadline,
-                &kandelo_ppoll_remaining_timeout
+                kandelo_ppoll_remaining_timeout
             );
-            a3 = (long long)(uintptr_t)&kandelo_ppoll_remaining_timeout;
+            a3 = (long long)(uintptr_t)kandelo_ppoll_remaining_timeout;
         }
         goto restart_wait_syscall;
     }

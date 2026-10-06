@@ -10,12 +10,8 @@
  */
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import {
-  saveImage,
-  writeVfsBinary,
-} from "./vfs-image-helpers";
-import { populateShellEnvironment, resolveVfsArtifact } from "./shell-vfs-build";
+import { saveImage } from "./vfs-image-helpers";
+import { populateShellEnvironment } from "./shell-vfs-build";
 import { writeMainShellDemoConfig } from "./main-shell-demo-config";
 import { restoreTrustedShellRootfs } from "./shell-rootfs-restore";
 
@@ -37,12 +33,9 @@ async function main() {
   );
 
   console.log("Populating shell environment...");
+  // Doom and modeset arrive as lazy files with the rest of
+  // SHELL_LAZY_BINARY_SPECS.
   populateShellEnvironment(fs, { eagerBinaries: false, baseProvided: true });
-
-  console.log("Populating Doom runtime...");
-  populateDoomRuntime(fs);
-  console.log("Populating modeset runtime...");
-  populateModesetRuntime(fs);
   writeMainShellDemoConfig(fs);
 
   await saveImage(fs, OUT_FILE);
@@ -52,13 +45,3 @@ main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
-
-function populateDoomRuntime(fs: MemoryFileSystem): void {
-  const fbdoomBytes = readFileSync(resolveVfsArtifact("programs/fbdoom.wasm", "fbdoom"));
-  writeVfsBinary(fs, "/usr/local/bin/fbdoom", new Uint8Array(fbdoomBytes), 0o755);
-}
-
-function populateModesetRuntime(fs: MemoryFileSystem): void {
-  const modesetBytes = readFileSync(resolveVfsArtifact("programs/modeset.wasm", "modeset"));
-  writeVfsBinary(fs, "/usr/local/bin/modeset", new Uint8Array(modesetBytes), 0o755);
-}

@@ -15,7 +15,12 @@
 #                                  unless these come after them.
 #
 # Plugins precede the modules they extend, and every library follows its
-# users: a static link resolves in one pass.
+# users: a static link resolves in one pass. A library the line forgets is
+# a link error naming the symbol (the SDK allows only the host's declared
+# imports to stay undefined).
+#
+# libc++'s headers and archives come from the resolved libcxx package; the
+# shared worktree sysroot does not carry libc++.
 
 set -euo pipefail
 
@@ -53,9 +58,14 @@ ZLIB="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 LIBCXX="${WASM_POSIX_DEP_LIBCXX_DIR:?WASM_POSIX_DEP_LIBCXX_DIR not set}"
 
 source "$REPO_ROOT/sdk/activate.sh"
-export WASM_POSIX_SYSROOT="$REPO_ROOT/sysroot"
+# WHY a private sysroot: the SDK sysroot carries libc only. libc++'s headers
+# live in the resolved libcxx package, so project them over the SDK seed for
+# this build (the pattern every C++ recipe uses), or <type_traits> and the
+# rest of the C++ library are not found.
+WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot qtgallery "$REPO_ROOT/sysroot" libcxx)"
+export WASM_POSIX_SYSROOT
 
-for tool in wasm32posix-c++ wasm-objdump; do
+for tool in wasm32posix-c++; do
     command -v "$tool" >/dev/null || {
         echo "ERROR: $tool not found — run through scripts/dev-shell.sh" >&2
         exit 1
@@ -66,7 +76,9 @@ echo "==> Building qtgallery (the Omarchy theme gallery)..."
 RAW="$WORK_DIR/qtgallery.raw.wasm"
 wasm32posix-c++ \
     -O2 -std=c++17 -fwasm-exceptions \
+    -nostdinc++ -isystem "$LIBCXX/include/c++/v1" -L"$LIBCXX/lib" \
     -D__linux__=1 -DQT_LINUXBASE \
+    -nostdinc++ -isystem "$LIBCXX/include/c++/v1" \
     -I"$QTBASE/include" \
     -I"$QTBASE/include/QtCore" \
     -I"$QTBASE/include/QtGui" \
@@ -94,22 +106,6 @@ wasm32posix-c++ \
     "$LIBCXX/lib/libc++abi.a" \
     -o "$RAW"
 
-# The SDK link does not fail on an undefined symbol — it leaves one as a
-# host import, and the program traps only if that path ever runs. These
-# three are the runtime's own surface; anything else here is a library
-# the line forgot.
-UNDEFINED="$(
-    wasm-objdump -j Import -x "$RAW" |
-        grep -o 'env\.[A-Za-z_0-9]*' |
-        sort -u |
-        grep -v -x -e 'env.memory' -e 'env.__channel_base' -e 'env.__cxa_thread_atexit' ||
-        true
-)"
-if [ -n "$UNDEFINED" ]; then
-    echo "ERROR: the link left library symbols undefined:" >&2
-    printf '  %s\n' $UNDEFINED >&2
-    exit 1
-fi
 mv "$RAW" "$WORK_DIR/qtgallery.wasm"
 
 cd "$REPO_ROOT"

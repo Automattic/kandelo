@@ -18,18 +18,28 @@
 #     WASM_POSIX_DEP_SOURCE_URL       # tarball URL
 #     WASM_POSIX_DEP_SOURCE_SHA256    # expected sha256 of the tarball
 #     WASM_POSIX_DEP_GLIB_DIR         # resolved glib prefix
+#     WASM_POSIX_DEP_WORK_DIR         # private source/build root
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/atk-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/atk-src"
 
-ATK_VERSION="${WASM_POSIX_DEP_VERSION:-2.36.0}"
+ATK_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/atk-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.gnome.org/sources/atk/2.36/atk-${ATK_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
-BUILD_DIR="$SCRIPT_DIR/atk-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/atk-build"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
@@ -38,20 +48,12 @@ fi
 
 GLIB_PREFIX="${WASM_POSIX_DEP_GLIB_DIR:?WASM_POSIX_DEP_GLIB_DIR not set (must be invoked via cargo xtask build-deps resolve atk)}"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading atk $ATK_VERSION..."
-    TARBALL="/tmp/atk-${ATK_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified atk $ATK_VERSION source..."
+    kandelo_package_stage_verified_source atk "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
     # Hand-written get_type functions cast 1-argument class/iface init
     # functions to the 2-argument GClassInitFunc / GInterfaceInitFunc.
     # Native ABIs tolerate the extra arguments; wasm's typed

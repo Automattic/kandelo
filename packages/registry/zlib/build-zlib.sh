@@ -5,17 +5,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-zlib.XXXXXX")"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+ZLIB_VERSION="$WASM_POSIX_DEP_VERSION"
+WORK_DIR="$(kandelo_package_make_work_dir zlib)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 SRC_DIR="$WORK_DIR/source"
 
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
-ZLIB_VERSION="${WASM_POSIX_DEP_VERSION:-${ZLIB_VERSION:-1.3.1}}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/zlib-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
 case "$TARGET_ARCH" in
@@ -42,13 +44,7 @@ for tool in "$CC" "$AR" "$RANLIB"; do
     }
 done
 
-echo "==> Downloading zlib $ZLIB_VERSION..."
-TARBALL="$WORK_DIR/zlib.tar.gz"
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "==> Verifying source sha256..."
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR"
-tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+kandelo_package_stage_primary_source zlib "$SRC_DIR" "$WORK_DIR"
 
 cd "$SRC_DIR"
 echo "==> Configuring zlib for $TARGET_ARCH..."

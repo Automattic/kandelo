@@ -11,8 +11,11 @@ use crate::build_deps::{
     materialize_planned_source_only_cache_roots, plan_canonical_source_only_cache_roots,
     read_source_only_cache_receipt, resolve_local_build_package_node_with_cache_policy,
     resolved_dependency_graph_from_manifests, source_only_cache_receipt_path,
-    source_only_skip_receipt_if_clean, source_only_program_package_index_for_nodes,
-    with_source_only_program_projection_lock,
+    source_only_skip_receipt_if_clean, source_only_skip_receipt_if_clean_with_use,
+    source_only_program_package_index_for_nodes, with_source_only_program_projection_lock,
+};
+use crate::local_build_timing::{
+    DurationRecorder, EventLog, NodeDurationRecordV1, RunRecordV1, TimingHistory,
 };
 use crate::local_build_executor::{
     NodeCompletionV1, SchedulerEventV1, ValidatedChildResultV1, execute_graph_with_events,
@@ -244,6 +247,7 @@ pub(crate) enum LifecycleTokenV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum LocalBuildCommandV1 {
     Plan { set: PathBuf },
+    PlanStatus(LocalBuildPlanStatusArgsV1),
     Run(LocalBuildRunArgsV1),
     RunNode(LocalBuildRunNodeArgsV1),
 }
@@ -257,6 +261,22 @@ struct LocalBuildRunArgsV1 {
     jobs: usize,
     rebuild: bool,
     verify_cache: bool,
+}
+
+/// `plan --status`: the same selection inputs as `run`, read without writing.
+/// They mirror `run`'s so the dry run answers for exactly the build the agent
+/// is about to start; a plan over a different cache root, output root, or
+/// product set would report a different cached/will-run split. There is no
+/// `--rebuild` or `--verify-cache`: both turn off `run`'s up-front cache
+/// check, so there is nothing for the dry run to predict.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LocalBuildPlanStatusArgsV1 {
+    set: PathBuf,
+    source_cache_root: PathBuf,
+    output_root: PathBuf,
+    products: Vec<String>,
+    jobs: usize,
+    json: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -353,8 +373,26 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     )?;
     match command {
         LocalBuildCommandV1::Plan { set } => run_plan(set),
-        LocalBuildCommandV1::Run(args) => run_aggregate(args),
-        LocalBuildCommandV1::RunNode(args) => run_node(args),
+        LocalBuildCommandV1::PlanStatus(args) => run_plan_status(args),
+        LocalBuildCommandV1::Run(args) => {
+            // Resolve the installed SDK before any graph cache identities.
+            for arch in [
+                crate::pkg_manifest::TargetArch::Wasm32,
+                crate::pkg_manifest::TargetArch::Wasm64,
+            ] {
+                ensure_package_sysroot(&crate::repo_root(), arch)?;
+            }
+            run_aggregate(args)
+        }
+        LocalBuildCommandV1::RunNode(args) => {
+            for arch in [
+                crate::pkg_manifest::TargetArch::Wasm32,
+                crate::pkg_manifest::TargetArch::Wasm64,
+            ] {
+                ensure_package_sysroot(&crate::repo_root(), arch)?;
+            }
+            run_node(args)
+        }
     }
 }
 
@@ -464,6 +502,11 @@ fn run_repo_script_with_env(
     let script = repo.join(rel);
     let mut command = Command::new("bash");
     command.arg(&script).args(args).current_dir(repo);
+    if rel == "scripts/build-musl.sh" {
+        // Build-deps paths and local-build results are machine-readable stdout.
+        // SDK prerequisite diagnostics must not contaminate that channel.
+        command.stdout(std::process::Stdio::from(std::io::stderr()));
+    }
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -594,37 +637,28 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-/// Ensure the musl sysroot for `arch` exists, mirroring the old
-/// `need_sysroot`/`need_sysroot64`: build it from scratch when the sysroot's
-/// `libc.a` is missing, otherwise just re-sync overlay headers (cheap: a few
-/// `cp`s) so newly added `libc/musl-overlay/include/` files reach an
-/// existing sysroot without forcing a full musl rebuild.
+/// Refresh musl from its complete input identity, not libc.a existence.
+/// The builder owns locking, completeness, staging and the cheap current path.
 fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<(), String> {
-    let sysroot_path = repo.join(sysroot_dir);
-    let libc_a = sysroot_path.join("lib/libc.a");
-    if libc_a.is_file() {
-        let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
-        run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])?;
-        if arch == "wasm32posix" {
-            // The resync above copies headers only. `sysroot/lib/{libdrm,
-            // libgbm,libEGL,libGLESv2}.a` are sysroot *artifacts*, installed
-            // by these two scripts and only ever from inside build-musl.sh —
-            // which this branch deliberately skips. A worktree therefore kept
-            // whatever graphics archives it was first provisioned with, no
-            // matter how far libc/glue or the libdrm package moved on, and
-            // `-Wl,--allow-undefined` turned every entry point the stale
-            // archive lacked into an `env.*` import that traps at call time
-            // rather than failing the link. Both scripts skip on a matching
-            // input digest, so this is a no-op once the sysroot is current.
-            run_repo_script(repo, "scripts/build-dri-stubs.sh", &[])?;
-            run_repo_script(repo, "scripts/build-gles-stubs.sh", &[])?;
-        }
-    } else if arch == "wasm32posix" {
-        run_repo_script(repo, "scripts/build-musl.sh", &[])?;
-    } else {
-        run_repo_script(repo, "scripts/build-musl.sh", &["--arch", arch])?;
-    }
-    verify_sysroot_abi_headers(repo, &sysroot_path, arch)
+    run_repo_script(repo, "scripts/build-musl.sh", &["--ensure", "--arch", arch])?;
+    verify_sysroot_abi_headers(repo, &repo.join(sysroot_dir), arch)
+}
+
+pub(crate) fn ensure_package_sysroot(
+    repo: &Path,
+    arch: crate::pkg_manifest::TargetArch,
+) -> Result<(), String> {
+    let target = match arch {
+        crate::pkg_manifest::TargetArch::Wasm32 => "wasm32posix",
+        crate::pkg_manifest::TargetArch::Wasm64 => "wasm64posix",
+    };
+    // Core-only avoids recursively resolving graphics packages just to build a
+    // package. Full bootstrap refreshes those independently stamped libraries.
+    run_repo_script(
+        repo,
+        "scripts/build-musl.sh",
+        &["--ensure", "--core-only", "--arch", target],
+    )
 }
 
 /// Fail loud if a sysroot is missing — or holds stale copies of — the generated
@@ -724,15 +758,23 @@ fn run_bootstrap_step(
         "fork-instrument-tool" => {
             run_repo_script(repo, "scripts/build-fork-instrument-tool.sh", &[])
         }
-        "engine" => run_aggregate(LocalBuildRunArgsV1 {
-            set: repo.join("packages/sets/local-supported.toml"),
-            source_cache_root: default_source_cache_root()?,
-            output_root: repo.join("local-binaries/source-only-v1"),
-            products,
-            jobs,
-            rebuild,
-            verify_cache,
-        }),
+        "engine" => {
+            for arch in [
+                crate::pkg_manifest::TargetArch::Wasm32,
+                crate::pkg_manifest::TargetArch::Wasm64,
+            ] {
+                ensure_package_sysroot(repo, arch)?;
+            }
+            run_aggregate(LocalBuildRunArgsV1 {
+                set: repo.join("packages/sets/local-supported.toml"),
+                source_cache_root: default_source_cache_root()?,
+                output_root: repo.join("local-binaries/source-only-v1"),
+                products,
+                jobs,
+                rebuild,
+                verify_cache,
+            })
+        }
         // `--rebuild` (`bootstrap --rebuild` / `./run.sh rebuild`) must force
         // these two scripts' own input-hash skip check, so a forced rebuild
         // is never masked by a matching stamp from a previous run.
@@ -1238,9 +1280,23 @@ fn clean_package_node_outputs(
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        if let Some(cache_key_sha) = file_name.strip_prefix(prefix.as_str()) {
-            matches.push((entry.path(), cache_key_sha.to_string()));
-        }
+        let Some(rest) = file_name.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        // Libraries and programs name their ABI before the key
+        // (`abi<N>-<key>`, see `canonical_path`); generations named before
+        // that segment existed have the key alone.
+        let cache_key_sha = match rest.split_once('-') {
+            Some((abi, key))
+                if abi.len() > 3
+                    && abi.starts_with("abi")
+                    && abi[3..].bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                key
+            }
+            _ => rest,
+        };
+        matches.push((entry.path(), cache_key_sha.to_string()));
     }
     matches.sort();
     for (canonical, cache_key_sha) in matches {
@@ -1504,6 +1560,291 @@ fn run_plan(set: PathBuf) -> Result<(), String> {
     let bytes = canonical_plan_bytes(&graph.plan)?;
     std::io::Write::write_all(&mut std::io::stdout().lock(), &bytes)
         .map_err(|error| format!("write local-build plan: {error}"))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum PlanNodeStatusV1 {
+    Cached,
+    WillRun,
+    /// `Source`-kind packages are never skipped up front: their child checks
+    /// the fetched source itself, so the dry run cannot say whether it will
+    /// find work.
+    WillRunSourceCheck,
+}
+
+impl PlanNodeStatusV1 {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cached => "cached",
+            Self::WillRun => "will run",
+            Self::WillRunSourceCheck => "will run (source check)",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PlanStatusNodeV1 {
+    node: String,
+    status: PlanNodeStatusV1,
+    /// Per node rather than only a total, so a reader can see which node
+    /// dominates the estimate (usually one toolchain) instead of guessing.
+    median_seconds: Option<f64>,
+}
+
+/// The `plan --status --json` document. It is versioned (`schema`) because
+/// scripts consume it to choose between a foreground build and a background
+/// one, and the estimate's parts are reported, not just the total, so a
+/// reader can tell a history-backed estimate from one built on fallbacks.
+#[derive(Debug, Serialize)]
+struct PlanStatusV1 {
+    schema: u32,
+    jobs: usize,
+    source_cache_root: PathBuf,
+    nodes: Vec<PlanStatusNodeV1>,
+    cached: usize,
+    will_run: usize,
+    source_checks: usize,
+    #[serde(flatten)]
+    estimate: crate::local_build_timing::BuildEstimateV1,
+    fallback_seconds: f64,
+}
+
+/// `plan --status`: report which nodes a `run` with the same selection would
+/// serve from cache and which it would run, with an estimated duration.
+///
+/// WHY: a build that is all cache hits takes seconds and one that rebuilds a
+/// toolchain takes most of an hour, and nothing else tells an agent which
+/// before it starts. That answer decides how to run the build: a short one
+/// fits in one foreground call, a 10+ minute one belongs under
+/// `scripts/agent-job`. A wrong guess is expensive: a headless session or
+/// subagent that ends its turn on a long foreground call, or that hits the
+/// tool timeout, loses the build's result and has to run it again.
+///
+/// It must be a pure dry run, because it is asked *before* deciding to build
+/// and may be asked repeatedly. It performs the same skip check as `run` but
+/// writes nothing -- no cache directories, no last-used stamps (which would
+/// skew `cache-gc`), no generated indexes -- and takes no cache lock: a held
+/// build lock makes a concurrent `cache-gc` skip its collection. Without the
+/// lock, a concurrent `cache-gc` can make the answer momentarily stale but
+/// never wrong about the tree it read.
+fn run_plan_status(args: LocalBuildPlanStatusArgsV1) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
+    let set = resolve_repo_file(&repo, &args.set, "supported set")?;
+    let set = fs::canonicalize(&set)
+        .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;
+    let registry = fixed_registry(&repo);
+    let graph = load_and_plan(&repo, &set, &registry)?;
+    let selected = select_graph_dependencies(&graph, &args.products)?;
+    let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
+    // Not materialized: materializing would create cache directories, which a
+    // dry run must not do. A missing cache simply makes every node "will run".
+    let cache_roots = SourceOnlyCacheRoots {
+        base: planned_cache.base.clone(),
+        compiled: planned_cache.compiled.clone(),
+    };
+    let output_root = canonicalize_with_missing_tail(&args.output_root)?;
+    let skip = compute_skip_receipts(
+        &registry,
+        &graph,
+        &selected,
+        &cache_roots,
+        &output_root,
+        false,
+    );
+    let history = TimingHistory::load(&cache_roots.base);
+
+    let mut will_run = BTreeSet::new();
+    let mut nodes = Vec::new();
+    // Dependency order, so the listing reads the way the build proceeds. The
+    // plan's levels hold only buildable nodes; selected `Source`-kind
+    // packages still run a child, so list them after the levels.
+    let mut ordered = graph
+        .plan
+        .levels
+        .iter()
+        .flatten()
+        .filter(|node| selected.contains_key(*node))
+        .collect::<Vec<_>>();
+    let leveled = ordered.iter().copied().collect::<BTreeSet<_>>();
+    ordered.extend(selected.keys().filter(|node| !leveled.contains(node)));
+    for node in ordered {
+        let status = if skip.contains_key(node) {
+            PlanNodeStatusV1::Cached
+        } else {
+            will_run.insert(node.clone());
+            match node {
+                PlanNodeV1::Package { name, .. }
+                    if registry
+                        .load(name)
+                        .is_ok_and(|manifest| manifest.kind == ManifestKind::Source) =>
+                {
+                    PlanNodeStatusV1::WillRunSourceCheck
+                }
+                _ => PlanNodeStatusV1::WillRun,
+            }
+        };
+        let label = node_label(node);
+        nodes.push(PlanStatusNodeV1 {
+            median_seconds: history.node_medians.get(&label).copied(),
+            node: label,
+            status,
+        });
+    }
+    let estimate = crate::local_build_timing::estimate(
+        &selected,
+        &will_run,
+        &history,
+        args.jobs,
+        node_label,
+    );
+    let status = PlanStatusV1 {
+        schema: 1,
+        jobs: args.jobs,
+        source_cache_root: cache_roots.base.clone(),
+        cached: nodes
+            .iter()
+            .filter(|node| node.status == PlanNodeStatusV1::Cached)
+            .count(),
+        will_run: will_run.len(),
+        source_checks: nodes
+            .iter()
+            .filter(|node| node.status == PlanNodeStatusV1::WillRunSourceCheck)
+            .count(),
+        nodes,
+        estimate,
+        fallback_seconds: history.fallback_seconds(),
+    };
+    let mut stdout = std::io::stdout().lock();
+    let text = if args.json {
+        let mut bytes = serde_json::to_vec_pretty(&status)
+            .map_err(|error| format!("serialize local-build plan status: {error}"))?;
+        bytes.push(b'\n');
+        bytes
+    } else {
+        render_plan_status(&status, started.elapsed().as_secs_f64()).into_bytes()
+    };
+    stdout
+        .write_all(&text)
+        .map_err(|error| format!("write local-build plan status: {error}"))
+}
+
+/// Human-readable `plan --status`. It prints the estimate's formula with each
+/// term filled in, and how many nodes were priced by fallback, because a bare
+/// total cannot be judged: an estimate dominated by one toolchain or by
+/// no-history guesses deserves less trust than one built from recorded
+/// medians. The plan's own time is printed because the skip check hashes the
+/// whole graph and is itself not free.
+fn render_plan_status(status: &PlanStatusV1, plan_seconds: f64) -> String {
+    use crate::local_build_timing::human_seconds;
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for node in &status.nodes {
+        let duration = match (node.status, node.median_seconds) {
+            (PlanNodeStatusV1::Cached, _) => String::new(),
+            (_, Some(seconds)) => format!("~{}", human_seconds(seconds)),
+            (_, None) => "no history".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "{:<24} {:>11}  {}",
+            node.status.label(),
+            duration,
+            node.node
+        );
+    }
+    let estimate = &status.estimate;
+    let _ = writeln!(
+        out,
+        "\n{} nodes: {} cached, {} will run ({} source checks)",
+        status.nodes.len(),
+        status.cached,
+        status.will_run,
+        status.source_checks,
+    );
+    if estimate.unknown_nodes > 0 {
+        let _ = writeln!(
+            out,
+            "{} will-run nodes have no recorded duration; each is counted as {}",
+            estimate.unknown_nodes,
+            human_seconds(status.fallback_seconds),
+        );
+    }
+    let _ = writeln!(
+        out,
+        "estimate: ~{} = max(critical path {}, work / {} jobs {}) + recorded overhead {}",
+        human_seconds(estimate.estimate_seconds),
+        human_seconds(estimate.critical_path_seconds),
+        status.jobs,
+        human_seconds(estimate.parallel_seconds),
+        human_seconds(estimate.overhead_seconds),
+    );
+    let _ = writeln!(
+        out,
+        "timing history: {} (plan took {:.1}s)",
+        crate::local_build_timing::timings_dir(&status.source_cache_root).display(),
+        plan_seconds,
+    );
+    out
+}
+
+/// Record how long a node's child ran, from its Running event to its terminal
+/// event, into `node-durations.jsonl`.
+///
+/// WHY: these records are the only source of the per-node medians that
+/// `plan --status` and the run's own prediction price will-run nodes with;
+/// without them every estimate is a flat fallback guess. Nodes the up-front
+/// cache check skipped never start a child, so there is no build time to
+/// record, and recording ~0 would teach the estimator that building the node
+/// is free. Blocked nodes never ran, so they are not recorded either. The
+/// cache key, when the child returned a receipt, ties a duration to the
+/// exact inputs it built.
+fn record_node_duration(
+    event: &SchedulerEventV1,
+    label: &str,
+    running_since: &mut BTreeMap<PlanNodeV1, std::time::Instant>,
+    skipped: &BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>>,
+    receipts: &Mutex<BTreeMap<PlanNodeV1, PackageNodeReceiptV1>>,
+    recorder: &mut DurationRecorder,
+) {
+    let (node, outcome) = match event {
+        SchedulerEventV1::Ready { .. } => return,
+        SchedulerEventV1::Running { node } => {
+            if !skipped.contains_key(node) {
+                running_since.insert(node.clone(), std::time::Instant::now());
+            }
+            return;
+        }
+        SchedulerEventV1::Terminal { result } => match result {
+            NodeRunResultV1::Succeeded { node, disposition } => (
+                node,
+                match disposition {
+                    SuccessDispositionV1::Published => "published",
+                    SuccessDispositionV1::RebuiltEquivalent => "reused",
+                    // The child itself found the cache entry current.
+                    SuccessDispositionV1::Cached => "cached",
+                },
+            ),
+            NodeRunResultV1::Failed { node, .. } => (node, "failed"),
+            NodeRunResultV1::Blocked { .. } => return,
+        },
+    };
+    let Some(started) = running_since.remove(node) else {
+        return;
+    };
+    let cache_key = receipts.lock().ok().and_then(|receipts| {
+        receipts
+            .get(node)
+            .map(|receipt| receipt.cache_key_sha256.clone())
+    });
+    recorder.record(&NodeDurationRecordV1 {
+        node: label.to_string(),
+        cache_key,
+        seconds: started.elapsed().as_secs_f64(),
+        outcome: outcome.to_string(),
+        at: crate::local_build_timing::unix_now(),
+    });
 }
 
 fn fixed_registry(repo: &Path) -> Registry {
@@ -1807,6 +2148,11 @@ fn carry_forward_published_nodes(
 /// The value stored per skippable node: `Some(receipt)` for a compiled package
 /// (which the projection finalizer needs a receipt for), `None` for a product
 /// (which only validates its mapped package and carries no receipt).
+///
+/// `record_use` is true for `run` and false for `plan --status`: one function
+/// serves both so the dry run's cached/will-run answer cannot drift from the
+/// check a real run makes, while the dry run still leaves `cache-gc`'s
+/// last-used stamps untouched.
 #[cfg(unix)]
 fn compute_skip_receipts(
     registry: &Registry,
@@ -1814,6 +2160,7 @@ fn compute_skip_receipts(
     selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     cache_roots: &SourceOnlyCacheRoots,
     output_root: &Path,
+    record_use: bool,
 ) -> BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>> {
     // Each check hashes the node's projected members, so spread the nodes over
     // worker threads. Every worker keeps its own cache-key memo; recomputing a
@@ -1842,6 +2189,7 @@ fn compute_skip_receipts(
                             cache_roots,
                             output_root,
                             &mut memo,
+                            record_use,
                         ) {
                             skip.push(((*node).clone(), entry));
                         }
@@ -1872,6 +2220,7 @@ fn skip_entry_for_node(
     cache_roots: &SourceOnlyCacheRoots,
     output_root: &Path,
     memo: &mut BTreeMap<String, [u8; 32]>,
+    record_use: bool,
 ) -> Option<Option<PackageNodeReceiptV1>> {
     match node {
         PlanNodeV1::Package { name, target_arch } => {
@@ -1880,7 +2229,7 @@ fn skip_entry_for_node(
             if manifest.kind == ManifestKind::Source || !manifest.target_arches.contains(&arch) {
                 return None;
             }
-            source_only_skip_receipt_if_clean(
+            source_only_skip_receipt_if_clean_with_use(
                 &manifest,
                 registry,
                 arch,
@@ -1888,6 +2237,7 @@ fn skip_entry_for_node(
                 cache_roots,
                 output_root,
                 memo,
+                record_use,
             )
             .map(Some)
         }
@@ -1901,7 +2251,7 @@ fn skip_entry_for_node(
             if manifest.kind != ManifestKind::Program || !manifest.target_arches.contains(&arch) {
                 return None;
             }
-            source_only_skip_receipt_if_clean(
+            source_only_skip_receipt_if_clean_with_use(
                 &manifest,
                 registry,
                 arch,
@@ -1909,6 +2259,7 @@ fn skip_entry_for_node(
                 cache_roots,
                 output_root,
                 memo,
+                record_use,
             )
             .map(|_| None)
         }
@@ -1922,11 +2273,16 @@ fn compute_skip_receipts(
     _selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     _cache_roots: &SourceOnlyCacheRoots,
     _output_root: &Path,
+    _record_use: bool,
 ) -> BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>> {
     BTreeMap::new()
 }
 
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
+    // Started before dependency install and index generation, so the run's
+    // recorded `actual_seconds` includes the fixed overhead a waiting agent
+    // really sits through, not just the scheduler's share.
+    let run_started = std::time::Instant::now();
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
     // Sealed package builds run tools from the root node_modules but never
     // install them; provision the locked tree here, before any node runs.
@@ -1943,6 +2299,10 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         load_and_plan(&repo, &set, &registry)
     })?;
     let selected = select_graph_dependencies(&graph, &args.products)?;
+    // The first event carries the node total, so a reader such as
+    // `scripts/agent-job status` can report "N of M done" from the file alone.
+    let mut events = EventLog::from_env();
+    events.plan(selected.len());
 
     let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
     let output_intended = canonicalize_with_missing_tail(&args.output_root)?;
@@ -2008,10 +2368,48 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         BTreeMap::new()
     } else {
         report_phase("Checking cached packages", || {
-            compute_skip_receipts(&registry, &graph, &selected, &cache_roots, &output_root)
+            compute_skip_receipts(
+                &registry,
+                &graph,
+                &selected,
+                &cache_roots,
+                &output_root,
+                true,
+            )
         })
     };
+    // Marks the end of the up-front cache check, which hashes the whole graph
+    // before any scheduler event appears, and says right away how much of the
+    // graph needs no work: a reader learns early whether this is a seconds-
+    // long cached run or a real rebuild.
+    events.cached_check(skip_receipts.len());
+    // Predicted before any node runs, from the same history `plan --status`
+    // reads, and recorded with the actual duration at the end. Without the
+    // pair in `runs.jsonl`, nobody could tell whether the estimate agents
+    // decide on is accurate or how far off it runs.
+    let predicted = {
+        let will_run = selected
+            .keys()
+            .filter(|node| !skip_receipts.contains_key(*node))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        crate::local_build_timing::estimate(
+            &selected,
+            &will_run,
+            &TimingHistory::load(&cache_roots.base),
+            args.jobs,
+            node_label,
+        )
+    };
     let skip_receipts = Arc::new(skip_receipts);
+    let mut durations = DurationRecorder::new(&cache_roots.base);
+    let mut running_since = BTreeMap::<PlanNodeV1, std::time::Instant>::new();
+    let duration_receipts = Arc::clone(&retained_receipts);
+    let duration_skips = Arc::clone(&skip_receipts);
+    // Timed separately from `run_started`: the difference is the run's fixed
+    // overhead, which the estimator adds back because even a fully cached
+    // run spends it.
+    let graph_started = std::time::Instant::now();
     let results = execute_graph_with_events(
         &selected,
         args.jobs,
@@ -2128,8 +2526,25 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
                 Ok(())
             }
         },
-        |event| render_scheduler_event(event, color, &mut aggregate_failed),
+        |event| {
+            // The event file and duration history hang off the same callback
+            // that renders the terminal output, so they can never disagree
+            // with what the build log shows. Rendering consumes the event, so
+            // it goes last.
+            let label = node_label(crate::local_build_timing::scheduler_event_kind(&event).1);
+            events.scheduler_event(&event, &label);
+            record_node_duration(
+                &event,
+                &label,
+                &mut running_since,
+                &duration_skips,
+                &duration_receipts,
+                &mut durations,
+            );
+            render_scheduler_event(event, color, &mut aggregate_failed)
+        },
     )?;
+    let graph_seconds = graph_started.elapsed().as_secs_f64();
 
     let retained_receipts = retained_receipts
         .lock()
@@ -2311,6 +2726,38 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     }
     #[cfg(not(unix))]
     let _ = published_generations;
+    let count = |wanted: &[SuccessDispositionV1]| {
+        results
+            .iter()
+            .filter(|result| {
+                matches!(result, NodeRunResultV1::Succeeded { disposition, .. }
+                    if wanted.contains(disposition))
+            })
+            .count()
+    };
+    // One `runs.jsonl` line per completed run: predicted vs actual measures
+    // the estimate, and actual minus graph time feeds the overhead term. A
+    // failure to record only warns: timing history is advisory and must
+    // never turn a successful build into a failed one.
+    let run_record = RunRecordV1 {
+        predicted_seconds: Some(predicted.estimate_seconds),
+        actual_seconds: run_started.elapsed().as_secs_f64(),
+        graph_seconds: Some(graph_seconds),
+        nodes: results.len(),
+        built: count(&[
+            SuccessDispositionV1::Published,
+            SuccessDispositionV1::RebuiltEquivalent,
+        ]),
+        cached: count(&[SuccessDispositionV1::Cached]),
+        jobs: args.jobs,
+        at: crate::local_build_timing::unix_now(),
+    };
+    if let Err(error) = crate::local_build_timing::append_jsonl(
+        &crate::local_build_timing::runs_path(&cache_roots.base),
+        &run_record,
+    ) {
+        eprintln!("local-build warning: record run duration: {error}");
+    }
     let result = LocalBuildRunResultV1 {
         schema: 1,
         policy: LOCAL_SUPPORTED_POLICY.to_string(),
@@ -5090,10 +5537,56 @@ fn parse_local_build_args_with_jobs(
         .ok_or_else(|| "usage: xtask local-build <plan|run|run-node> ...".to_string())?;
     match command.as_str() {
         "plan" => {
-            let mut flags = parse_named_flags(rest, &["--set"], &[], &[])?;
-            Ok(LocalBuildCommandV1::Plan {
-                set: PathBuf::from(take_required_flag(&mut flags, "--set")?),
-            })
+            let mut flags = parse_named_flags(
+                rest,
+                &["--set", "--source-cache-root", "--output-root", "--jobs"],
+                &["--product"],
+                &["--status", "--json"],
+            )?;
+            let set = PathBuf::from(take_required_flag(&mut flags, "--set")?);
+            if !flags.switches.contains("--status") {
+                // Plain `plan` prints the static graph and ignores cache,
+                // jobs, and product inputs. Rejecting those flags without
+                // `--status` keeps a forgotten `--status` from silently
+                // returning the wrong kind of answer.
+                if let Some(flag) = flags
+                    .values
+                    .keys()
+                    .chain(flags.repeated.keys())
+                    .chain(flags.switches.iter())
+                    .next()
+                {
+                    return Err(format!("local-build plan flag {flag} requires --status"));
+                }
+                return Ok(LocalBuildCommandV1::Plan { set });
+            }
+            // Defaults match `./run.sh local-build` and `./run.sh setup`, so a
+            // bare `plan --status` describes the build those would run.
+            let source_cache_root = match flags.values.remove("--source-cache-root") {
+                Some(value) => absolute_authored_path(value, "--source-cache-root")?,
+                None => default_source_cache_root()?,
+            };
+            let output_root = match flags.values.remove("--output-root") {
+                Some(value) => absolute_authored_path(value, "--output-root")?,
+                None => crate::repo_root().join("local-binaries/source-only-v1"),
+            };
+            let products = flags.repeated.remove("--product").unwrap_or_default();
+            for product in &products {
+                if product != "all" {
+                    validate_name(product, "product filter")?;
+                }
+            }
+            let explicit_jobs = flags.values.remove("--jobs");
+            let jobs =
+                select_job_count(explicit_jobs.as_deref(), environment_jobs, available_jobs)?;
+            Ok(LocalBuildCommandV1::PlanStatus(LocalBuildPlanStatusArgsV1 {
+                set,
+                source_cache_root,
+                output_root,
+                products,
+                jobs,
+                json: flags.switches.contains("--json"),
+            }))
         }
         "run" => {
             let mut flags = parse_named_flags(
@@ -5383,6 +5876,47 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn bootstrap_sysroot_always_checks_freshness_even_when_complete() {
+        for (sysroot_dir, arch, expected_args) in [
+            ("sysroot", "wasm32posix", "--ensure --arch wasm32posix"),
+            ("sysroot64", "wasm64posix", "--ensure --arch wasm64posix"),
+        ] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let repo = temp.path();
+            let lib = repo.join(sysroot_dir).join("lib");
+            write(&lib.join("libc.a"), "libc fixture");
+            write(
+                &repo.join("scripts/build-musl.sh"),
+                "printf '%s' \"$*\" > musl-build-args\n",
+            );
+            for script in [
+                "install-overlay-headers.sh",
+                "build-dri-stubs.sh",
+                "build-gles-stubs.sh",
+            ] {
+                write(&repo.join("scripts").join(script), "exit 0\n");
+            }
+            bootstrap_sysroot_step(repo, sysroot_dir, arch).unwrap();
+            assert_eq!(
+                fs::read_to_string(repo.join("musl-build-args")).unwrap(),
+                expected_args
+            );
+
+            fs::remove_file(repo.join("musl-build-args")).unwrap();
+            write(
+                &lib.join("libkandelo-ucontext-unsupported.a"),
+                "opt-in fixture",
+            );
+            bootstrap_sysroot_step(repo, sysroot_dir, arch).unwrap();
+            assert_eq!(
+                fs::read_to_string(repo.join("musl-build-args")).unwrap(),
+                expected_args,
+                "archive existence alone cannot establish freshness"
+            );
+        }
     }
 
     #[test]
@@ -5844,10 +6378,15 @@ mod tests {
         version: &str,
         revision: u32,
         arch: &str,
+        abi: Option<u32>,
         cache_key_sha: &str,
         mirror_relative: &str,
     ) -> PathBuf {
-        let basename = format!("{name}-{version}-rev{revision}-{arch}-{cache_key_sha}");
+        // `canonical_path` names the ABI after the arch; generations named
+        // before it did have no ABI segment.
+        let abi_segment = abi.map(|abi| format!("abi{abi}-")).unwrap_or_default();
+        let basename =
+            format!("{name}-{version}-rev{revision}-{arch}-{abi_segment}{cache_key_sha}");
         let canonical = compiled_cache_root.join("programs").join(&basename);
         fs::create_dir_all(&canonical).unwrap();
         fs::write(canonical.join("marker"), b"fixture generation").unwrap();
@@ -5900,6 +6439,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             alpha_cache_key,
             "programs/wasm32/alpha.wasm",
         );
@@ -5910,6 +6450,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             beta_cache_key,
             "programs/wasm32/beta.wasm",
         );
@@ -6002,6 +6543,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             other_key,
             "programs/wasm32/alpha.wasm",
         );
@@ -6012,6 +6554,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             current_key,
             "programs/wasm32/alpha.wasm",
         );
@@ -6043,6 +6586,68 @@ mod tests {
         assert!(
             !removed.contains(&other_canonical) && !removed.contains(&other_receipt_sidecar),
             "the removed list must not report the surviving generation; got {removed:?}"
+        );
+    }
+
+    #[test]
+    fn clean_package_node_outputs_reads_the_key_after_the_abi_segment() {
+        // Library and program generations carry `abi<N>-` between the arch
+        // and the key. If clean took `abi<N>-<key>` for the key it would
+        // never match the current key and would leave the generation behind.
+        let root = tempfile::TempDir::new().unwrap();
+        let root = root.path();
+        package(root, "alpha", &[], &[]);
+        let reg = registry(root);
+
+        let cache = tempfile::TempDir::new().unwrap();
+        let compiled_cache_root = cache.path().join("compiled");
+        let output = tempfile::TempDir::new().unwrap();
+        let output_root = output.path();
+
+        let current_key = "cachekey-current-000000000000000000000000000000000000000";
+        let other_key = "cachekey-other-checkout-0000000000000000000000000000000";
+        let other_output = tempfile::TempDir::new().unwrap();
+        let other_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            other_output.path(),
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            Some(45),
+            other_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let current_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            Some(46),
+            current_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let current_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&current_canonical, current_key)
+                .unwrap();
+
+        let removed = clean_package_node_outputs(
+            &reg,
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "wasm32",
+            current_key,
+        )
+        .unwrap();
+
+        assert!(!current_canonical.exists(), "current generation must be removed");
+        assert!(!current_receipt_sidecar.exists(), "current receipt must be removed");
+        assert!(
+            other_canonical.is_dir(),
+            "another cache key's generation must survive; removed {removed:?}"
         );
     }
 
@@ -8142,6 +8747,63 @@ materialization = "lazy"
         ] {
             assert!(run(args).is_err());
         }
+    }
+
+    #[test]
+    fn plan_status_flags_parse_only_with_status() {
+        let args = |values: &[&str]| values.iter().map(|value| value.to_string()).collect::<Vec<_>>();
+        let jobs = std::num::NonZeroUsize::new(3);
+        assert_eq!(
+            parse_local_build_args_with_jobs(&args(&["plan", "--set", "s.toml"]), None, jobs)
+                .unwrap(),
+            LocalBuildCommandV1::Plan {
+                set: PathBuf::from("s.toml")
+            }
+        );
+        for extra in [&["--json"][..], &["--jobs", "2"], &["--product", "shell"]] {
+            let mut values = vec!["plan", "--set", "s.toml"];
+            values.extend_from_slice(extra);
+            let error =
+                parse_local_build_args_with_jobs(&args(&values), None, jobs).unwrap_err();
+            assert!(error.contains("requires --status"), "got: {error}");
+        }
+        let parsed = parse_local_build_args_with_jobs(
+            &args(&[
+                "plan",
+                "--set",
+                "s.toml",
+                "--status",
+                "--json",
+                "--source-cache-root",
+                "/cache",
+                "--output-root",
+                "/out",
+                "--product",
+                "shell",
+            ]),
+            Some("5"),
+            jobs,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            LocalBuildCommandV1::PlanStatus(LocalBuildPlanStatusArgsV1 {
+                set: PathBuf::from("s.toml"),
+                source_cache_root: PathBuf::from("/cache"),
+                output_root: PathBuf::from("/out"),
+                products: vec!["shell".to_string()],
+                jobs: 5,
+                json: true,
+            })
+        );
+        assert!(
+            parse_local_build_args_with_jobs(
+                &args(&["plan", "--set", "s.toml", "--status", "--source-cache-root", "rel"]),
+                None,
+                jobs,
+            )
+            .is_err()
+        );
     }
 
     #[test]

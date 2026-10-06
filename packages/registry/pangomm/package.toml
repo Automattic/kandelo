@@ -3,11 +3,11 @@ name = "pangomm"
 version = "2.42.0"
 kernel_abi = 17
 depends_on = [
-  "pango@1.42.4",
+  "pango@1.56.4",
   "glibmm@2.62.0",
   "cairomm@1.12.2",
   "glib@2.84.4",
-  "cairo@1.16.0",
+  "cairo@1.18.6",
   "fontconfig@2.15.0",
   "freetype@2.13.3",
   "libsigcxx@2.10.3",

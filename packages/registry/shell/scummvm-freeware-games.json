@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "games": [
+    {
+      "id": "steel-sky",
+      "title": "Beneath a Steel Sky",
+      "engine": "sky",
+      "url": "https://downloads.scummvm.org/frs/extras/Beneath%20a%20Steel%20Sky/bass-cd-1.2.zip",
+      "sha256": "53209b9400eab6fd7fa71518b2f357c8de75cfeaa5ba57024575ab79cc974593",
+      "bytes": 69377781
+    },
+    {
+      "id": "drascula",
+      "title": "Dráscula: The Vampire Strikes Back",
+      "engine": "drascula",
+      "url": "https://downloads.scummvm.org/frs/extras/Drascula_%20The%20Vampire%20Strikes%20Back/drascula-1.0.zip",
+      "sha256": "b731f6cb5a22ba8b4c3b3362f570b9a10a67b6cb0b395394b19a94b36e4e42de",
+      "bytes": 32842993
+    },
+    {
+      "id": "dreamweb",
+      "title": "DreamWeb",
+      "engine": "dreamweb",
+      "url": "https://downloads.scummvm.org/frs/extras/Dreamweb/dreamweb-uk-1.1.zip",
+      "sha256": "0f98e5fbeedfff5f5b904220d3bd3288da5a272f9192da03f2160c5edb8cdfb3",
+      "bytes": 10198532
+    },
+    {
+      "id": "fotaq",
+      "title": "Flight of the Amazon Queen",
+      "engine": "queen",
+      "url": "https://downloads.scummvm.org/frs/extras/Flight%20of%20the%20Amazon%20Queen/FOTAQ_Talkie-original.zip",
+      "sha256": "a298e68243f18a741d4816ef636a5a77a1593816fb2c9e23a09124c35a95dfec",
+      "bytes": 112625523
+    },
+    {
+      "id": "god-of-thunder",
+      "title": "God of Thunder",
+      "engine": "got",
+      "url": "https://downloads.scummvm.org/frs/extras/God%20of%20Thunder/gotfree.zip",
+      "sha256": "94962e6fcbc6d547debda11224d00fdec7a0d03bacdf7d82d08ed8ea289c0c5e",
+      "bytes": 1059686
+    },
+    {
+      "id": "griffon",
+      "title": "The Griffon Legend",
+      "engine": "griffon",
+      "url": "https://downloads.scummvm.org/frs/extras/Griffon%20Legend/griffon-1.0.zip",
+      "sha256": "0aad5fb10f51afb5c121cf04cc86539a6f0d89db85809f9e1767dfdc8d3191a4",
+      "bytes": 9552316
+    },
+    {
+      "id": "lure",
+      "title": "Lure of the Temptress",
+      "engine": "lure",
+      "url": "https://downloads.scummvm.org/frs/extras/Lure%20of%20the%20Temptress/lure-1.1.zip",
+      "sha256": "f3178245a1483da1168c3a11e70b65d33c389f1f5df63d4f3a356886c1890108",
+      "bytes": 5678861
+    },
+    {
+      "id": "mystery-house",
+      "title": "Hi-Res Adventure #1: Mystery House",
+      "engine": "adl",
+      "url": "https://downloads.scummvm.org/frs/extras/Mystery%20House/MYSTHOUS.zip",
+      "sha256": "ada412228a149394489b28c6c7f9ebab0722b52e04732fd0aa22949673cfa3a0",
+      "bytes": 59353
+    },
+    {
+      "id": "nippon-safes",
+      "title": "Nippon Safes, Inc.",
+      "engine": "parallaction",
+      "url": "https://downloads.scummvm.org/frs/extras/Nippon%20Safes/nippon-1.0.zip",
+      "sha256": "53e7e2c60065e4aed193169bbcdcfd1113fa68d3efe1c8240ba073c0e20d613f",
+      "bytes": 1977894
+    },
+    {
+      "id": "sfinx",
+      "title": "Sfinx",
+      "engine": "cge2",
+      "url": "https://downloads.scummvm.org/frs/extras/Sfinx/sfinx-en-v1.1.zip",
+      "sha256": "f516b30a046526f78cbc923d8f907d267ab964ccd9b770afc72350e8d467ec4d",
+      "bytes": 16549117
+    },
+    {
+      "id": "soltys",
+      "title": "Sołtys",
+      "engine": "cge",
+      "url": "https://downloads.scummvm.org/frs/extras/Soltys/soltys-en-v1.0.zip",
+      "sha256": "87b89e654b8a5b8ebe342cb4c5c6049ab9a43a5efb474d9c49bafb77dcce48f6",
+      "bytes": 3484518
+    },
+    {
+      "id": "above-the-waves",
+      "title": "Above the Waves",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/atw.zip",
+      "sha256": "270760dc77fa6b75ba1e9a8344df968698bdd73274992dc6d01fd6f9c352f1fa",
+      "bytes": 29863121
+    },
+    {
+      "id": "cubert-badbone",
+      "title": "Cubert Badbone, P.I.",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/cubert.zip",
+      "sha256": "594c2c88405d239be689526e3af94bf164c60a9d40e01bee53fdc64c2ba8051c",
+      "bytes": 11089204
+    },
+    {
+      "id": "frasse",
+      "title": "Frasse and the Peas of Kejick",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/frasse-1.03.zip",
+      "sha256": "7adf3e0fb56a3d4543234a8aca569af0dd20989f84ca2a6fc7b5082c37e359aa",
+      "bytes": 12775942
+    },
+    {
+      "id": "full-moon",
+      "title": "Full Moon",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/fullmoon.zip",
+      "sha256": "6f24b3e875f38d60dc1691a3ecc6bda5404119224efa0106491e214e6ddc842c",
+      "bytes": 73233832
+    },
+    {
+      "id": "the-interview",
+      "title": "The Interview",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/interview.zip",
+      "sha256": "576c20c971e04bd29de42400750015a55fcd5975dbd1d4f47843bd749d42c79b",
+      "bytes": 2112057
+    },
+    {
+      "id": "leptons-quest",
+      "title": "Lepton's Quest",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/leptonsquest.zip",
+      "sha256": "b838bfe8191f9d76a6377fc857320ad45b2c545d921cbd3ebb8d6a364bb670b3",
+      "bytes": 70652351
+    },
+    {
+      "id": "life-flashes-by",
+      "title": "Life Flashes By",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/life.zip",
+      "sha256": "9c8e61a9509e2b10080e735eade2db7f3a8dabee3f0febafeb537ed4e7eb4999",
+      "bytes": 159698577
+    },
+    {
+      "id": "mandy-christmas",
+      "title": "Mandy Christmas Adventure",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/mandy-1.2.zip",
+      "sha256": "91627f0f43791cc2aa9b356d2e4075ea49f720263c09e668bb2b65c9648e2c75",
+      "bytes": 4431839
+    },
+    {
+      "id": "nathans-second-chance",
+      "title": "Nathan's Second Chance",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/nsc.zip",
+      "sha256": "b269b11fc74ceeeeaa8692d2f695786ce6bd9b104a7bbf7fdf913ab62d45b4de",
+      "bytes": 7883785
+    },
+    {
+      "id": "out-of-order",
+      "title": "Out of Order",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/outoforder.zip",
+      "sha256": "e57a2fda60ff41e3d22ee6ac763de89762eaeb719104d8851662f1d6146f38ec",
+      "bytes": 10606154
+    },
+    {
+      "id": "robins-rescue",
+      "title": "Robin's Rescue",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/robinsrescue.zip",
+      "sha256": "5727726234a85633f4bc5327f238de82cf6844cbc68d097c9ba3c9e798314859",
+      "bytes": 14149282
+    },
+    {
+      "id": "sam-and-max-flintlocked",
+      "title": "Sam and Max Flintlocked",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/samnmaxfl.zip",
+      "sha256": "3293f6c467c31322d6f49eaa421f7ed0755622bdbe5f60593663744d8ed0f7ed",
+      "bytes": 14257803
+    },
+    {
+      "id": "cruise-ship",
+      "title": "The Game That Takes Place on a Cruise Ship",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/tgttpoacs.zip",
+      "sha256": "21100169bae295fa45e7e9bca29dc2c4d39fbdb1abf93c7f1bd7af2cfe7d6ebc",
+      "bytes": 19693018
+    },
+    {
+      "id": "tremendous-corporation",
+      "title": "The Secret of Tremendous Corporation",
+      "engine": "sludge",
+      "url": "https://downloads.scummvm.org/frs/extras/SLUDGE/tsotc-v6.zip",
+      "sha256": "4493047914318167cf1e955795028c65592be99fe620a389745c5d6bec97d24b",
+      "bytes": 34612275
+    },
+    {
+      "id": "wage-collection",
+      "title": "World Builder (WAGE) game collection",
+      "engine": "wage",
+      "url": "https://downloads.scummvm.org/frs/extras/WAGE/wage-games-master-1.0.zip",
+      "sha256": "175e8fc818228694286c37577fb9806e9cbc8c259815dfb1c61dcceff6954473",
+      "bytes": 93402535
+    }
+  ],
+  "unavailable": [
+    {
+      "id": "broken-sword-25",
+      "title": "Broken Sword 2.5: The Return of the Templars",
+      "reason": "needs Theora video and Lua, which this ScummVM build leaves out, and its 859 MB archive does not fit the machine's filesystem"
+    },
+    {
+      "id": "helga-deep-in-trouble",
+      "title": "Helga Deep in Trouble",
+      "reason": "needs the Wintermute engine's JPEG support, which this ScummVM build leaves out"
+    }
+  ]
+}

@@ -25,6 +25,7 @@ class StubGl {
   disable() {}
   blendFunc() {}
   blendFuncSeparate() {}
+  blendEquationSeparate() {}
   depthFunc() {}
   cullFace() {}
   frontFace() {}
@@ -211,6 +212,32 @@ describe("cmdbuf decoder — shadow writes", () => {
     expect(b.shadow.blendFunc).toEqual({
       srcRGB: 0x0302, dstRGB: 0x0303, srcA: 0x0302, dstA: 0x0303,
     });
+  });
+
+  it("OP_BLEND_FUNC_SEPARATE writes all four factors", () => {
+    const b = setupBinding();
+    const spy = vi.spyOn(b.gl!, "blendFuncSeparate");
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_BLEND_FUNC_SEPARATE, 16);
+    [0x0302, 0x0303, 0x0001, 0x0303].forEach((f, i) => t.view.setUint32(h.p + i * 4, f, true));
+    decodeAndDispatch(b, 0, t.p);
+    expect(spy).toHaveBeenCalledWith(0x0302, 0x0303, 0x0001, 0x0303);
+    expect(b.shadow.blendFunc).toEqual({
+      srcRGB: 0x0302, dstRGB: 0x0303, srcA: 0x0001, dstA: 0x0303,
+    });
+  });
+
+  it("OP_BLEND_EQUATION_SEPARATE writes both modes and survives switchTo", () => {
+    const b = setupBinding();
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_BLEND_EQUATION_SEPARATE, 8);
+    t.view.setUint32(h.p, 0x800a, true);     // GL_FUNC_SUBTRACT
+    t.view.setUint32(h.p + 4, 0x8006, true); // GL_FUNC_ADD
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.blendEquation).toEqual({ rgb: 0x800a, alpha: 0x8006 });
+    const spy = vi.spyOn(b.gl!, "blendEquationSeparate");
+    new GlMuxer(b.gl!).switchTo(b);
+    expect(spy).toHaveBeenCalledWith(0x800a, 0x8006);
   });
 
   it("OP_DEPTH_FUNC / OP_CULL_FACE / OP_FRONT_FACE write their shadow fields", () => {

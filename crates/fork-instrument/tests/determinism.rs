@@ -47,6 +47,10 @@ fn cli_output_is_byte_reproducible_across_processes() {
             .arg(&input_path)
             .arg("--output")
             .arg(&output_path)
+            // This test pins the instrumenter's own determinism; the
+            // wasm-opt post-pass is covered in cli_post_optimize.rs.
+            .arg("--post-optimize")
+            .arg("none")
             .output()
             .expect("run wasm-fork-instrument");
         assert!(

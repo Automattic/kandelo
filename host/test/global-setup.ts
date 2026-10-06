@@ -18,6 +18,7 @@ import { chromium } from "@playwright/test";
 import {
   captureProgramFixtureBuildContract,
   programFixtureNeedsRebuild,
+  sdkProgramBuildInputs,
   stampProgramFixture,
   type ProgramFixtureBuildContract,
 } from "./program-fixture-freshness";
@@ -85,6 +86,7 @@ const TEST_PROGRAMS = [
   "select_signal_test.c",
   "dsp_signal_test.c",
   "lseek_invalid_test.c",
+  "int128_division_test.c",
   "environment_lifecycle_test.c",
   "chown_sentinel_test.c",
   "fstatat_empty_path_test.c",
@@ -128,7 +130,7 @@ const TEST_PROGRAMS = [
 ];
 
 /** Memory64 counterparts needed to prove pointer-width-neutral syscall input. */
-const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c"];
+const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c", "int128_division_test.c"];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "environment_lifecycle_test.c",
@@ -198,13 +200,7 @@ function fixtureBuildContract(
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const inputs = [
-    join(repoRoot, "sdk/bin"),
-    join(repoRoot, "sdk/src"),
-    join(repoRoot, "sdk/package.json"),
-    join(repoRoot, "sdk/package-lock.json"),
-    join(repoRoot, arch === "wasm64" ? "sysroot64" : "sysroot"),
-  ];
+  const inputs = sdkProgramBuildInputs(repoRoot, arch);
   if (forkInstrumented) {
     const configuredTool = process.env.WASM_POSIX_FORK_INSTRUMENT;
     const instrumenter = configuredTool

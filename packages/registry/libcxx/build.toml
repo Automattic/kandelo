@@ -1,8 +1,10 @@
 script_path = "packages/registry/libcxx/build-libcxx.sh"
 inputs = [
     "packages/registry/libcxx/build-libcxx.sh",
+    "sdk/cmake/Platform/Kandelo.cmake",
     "flake.nix",
     "flake.lock",
+    "sdk/activate.sh",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
@@ -18,4 +20,8 @@ commit      = "UNPUBLISHED"
 # Revision 7: map the worktree (including the assembled LLVM source and both
 # build variants) to a stable producer path so archives do not retain the
 # caller's absolute checkout directory.
-revision    = 7
+# Revision 8: configure as CMAKE_SYSTEM_NAME=Kandelo (sdk/cmake/Platform/
+# Kandelo.cmake, a Unix) instead of Generic, so libc++abi builds
+# cxa_thread_atexit.cpp and thread_local destructors run; seed
+# LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF (musl has no _impl).
+revision    = 8

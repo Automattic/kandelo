@@ -20,7 +20,7 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `43` (see
+ABI version: `46` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
 
@@ -381,6 +381,21 @@ wrong-width, or conflicting state fails before continuation replay. This is
 a host reconstruction correction within ABI 43: it does not change the KFMS
 wire format or require rebuilt guest artifacts.
 
+Only a fork child has that snapshot. A pthread Worker started after a
+`dlopen`, or any live Worker reconciling a peer's publication, shares the
+process and rebuilds each GOT cell the way the publishing Worker computed
+it: by the loader's own resolution, which reproduces the publisher's table
+index because replay places the same modules at the same archived table
+bases in the same order. The activation says which applies
+(`replayImportState`: `"saved"` for a fork child, `"resolved"` otherwise).
+Before this distinction a later pthread demanded a fork snapshot for any
+side module that took the address of a main-program function (in C++, every
+vtable with a pure virtual references `__cxa_pure_virtual`), so its rebuild
+failed. A failed replay also releases only its own Worker's index of the
+memory it adopted: that region is the process's live mapping (or a fork
+child's copy of it), and unmapping it would let the next `mmap` hand the
+same addresses out zero-filled under the library still using them.
+
 Pthread workers have distinct Wasm instances, tables, tags, and Stores; no
 JavaScript reference is copied between them. Each pthread therefore owns a
 local dynamic-linker replica driven by the process archive's generation
@@ -560,6 +575,16 @@ wasm64 before alignment.
 | `+12`  | 4    | reference-vector ordinal   | Process-transaction recipe vector for this landing; zero when none |
 | `+16`  | var  | `saved_scalars[]`          | User/synthetic scalars and scalar catch payload union, aligned |
 
+Scalars are grouped by type, widest first (`v128`, `i64`, `f64`, `i32`,
+`f32`), which also aligns each one naturally after the 16-byte header. In
+scratch-spill mode only the user locals are grouped, because the spill region
+must stay contiguous for its single `memory.copy`. The payload is private to
+the module that wrote it: only the function's own generated code and its
+resume thunk read the scalars, and the host reads only the header. Frames with
+the same scalar types therefore share one generated
+`__wpk_fork_frame_save_N` / `__wpk_fork_frame_restore_N` helper pair; see
+[Generated code size](#generated-code-size).
+
 References are deliberately not copied into the frame and never name a
 module-static stash slot. Existing live reference locals and parameters are
 encoded into a call-specific process recipe vector; the frame owns only the
@@ -601,9 +626,32 @@ thunk would add a second native engine frame for each recursive Wasm
 activation and can exhaust the engine stack well before the continuation
 chain is exhausted. Indirect/reference calls, cross-module or
 tail-transparent boundaries, and targets whose lexical identity is not proven
-still use the process resume catalog. The lexical fast path adds no
-ordinary-activation local and no continuation bytes; its second
+still use the process resume catalog. Every such boundary is a generated
+`__wpk_fork_unwind_transport_*` helper, so the routing lives once in each
+helper rather than in each caller: during replay the helper asks
+`__wpk_fork_resume_peek` for the next event and either calls the resume thunk
+it names or falls through to the original operation. Callers therefore emit
+one lexical call for both normal execution and replay. The lexical fast path
+adds no ordinary-activation local and no continuation bytes; the
 non-consuming event lookup runs only during replay.
+
+Only activations that replay can enter from outside their lexical caller get
+a resume thunk and catalog record: functions exported, referenced by an
+element segment or `ref.func`, or targeted by a direct `return_call`. Every
+other activation is reachable only by direct calls from activations, which
+re-execute the call lexically. The catalog's ordinal-to-slot records are
+therefore sparse but still strictly ordered; a replay event naming a function
+without a thunk fails in the host with "fork replay target ... is not
+registered" rather than mis-resuming.
+
+A resume thunk enters its function with zero for every scalar parameter when
+that is the shorter encoding. The function's preamble restores each scalar
+parameter from the frame before any other code reads it, and its
+`frame_next` performs the same identity and size validation `frame_peek`
+would. Thunks for functions with reference parameters, or whose float
+parameters would make zero constants longer than frame loads, keep the
+frame-reading form, because a non-nullable reference signature needs a
+decoded value on entry.
 
 ## Scratch-frame spill storage
 
@@ -659,6 +707,133 @@ Measured on the CPython stdlib import chain (2026-09-22,
 4258 → 1585; `python.wasm` ~112 KB smaller. Scratch-mode capture/replay
 is covered by `crates/fork-instrument/tests/scratch_spill_node.rs`.
 
+## Generated code size
+
+Nearly every function in a large C++ program can reach `fork()` through
+indirect calls, so per-function instrumentation overhead multiplies across
+most of the module (Quickshell: 51,942 of 65,901 functions). Browsers compile
+all of it, and Firefox caps compiled code at 2 GiB per process. The transform
+therefore keeps each rewritten function small with these encodings; none
+changes the save-buffer layout, frame header, imports, exports, or custom
+sections:
+
+- **One lexical call per call site.** A call whose replay re-executes the
+  same operation is emitted once, not as identical `if`/`else` arms. Direct
+  activation callees validate the next frame themselves; indirect, reference,
+  and imported boundaries go through transport helpers that perform the
+  process resume routing (see [Frame format](#frame-format)).
+- **One unwind catch per function.** Each function's body sits in a single
+  `try_table` that catches the private unwind tag; the handler calls
+  `__wpk_fork_select_unwind_frame(call_index, frame_size)` and branches to
+  the postamble or the abort restart. A function with two or more
+  fork-reaching call sites records each call's static index in one i32 local
+  (`i32.const <index>; local.set`) immediately before the call; a function
+  with one call site passes the constant zero and declares no local. A
+  per-call `try_table` with its result and catch blocks was the largest
+  per-call cost in the module and also the most expensive construct in
+  baseline-compiled code. The one local is not a per-reference, per-recipe,
+  or per-catch local: measured on the PR #701 recursion shape with two fork
+  call sites, it did not change the surviving recursion depth on V8 (Liftoff
+  and optimized) or SpiderMonkey (baseline and optimized).
+- **Shared frame codecs.** The postamble passes its ordinal, catch selector,
+  and local-resident scalars to `__wpk_fork_frame_save_N`, which writes the
+  header and scalars and, when nothing else writes the payload, commits it.
+  The replay preamble calls `__wpk_fork_frame_restore_N`, which consumes the
+  frame with `frame_next`, publishes it in `*(buf + 0)` and in the
+  instance-private `_wpk_fork_frame` cursor, and returns one value (the catch
+  selector or the first scalar); the preamble loads the remaining scalars
+  through the cursor. A helper returning every scalar as multiple results
+  would keep them all live on the caller's value stack, and baseline
+  compilers size the native frame for that peak: on the P-10 recursion
+  fixture it cut V8 Liftoff's surviving depth by a quarter. Reference-recipe runs likewise call
+  `__wpk_fork_refs_save_N` / `__wpk_fork_refs_restore_N`. Helpers are keyed by
+  type shape and shared across functions. Frames whose scalar count exceeds
+  engine parameter limits keep the inline sequences.
+- **Compact replay dispatch.** The frame restore helper and the frame
+  selector record the selected call index in the instance-private global
+  `_wpk_fork_call_index`. It is added after the saveable-globals scan, so it
+  is never snapshotted and is not host-visible. It is read only while
+  `state >= REWINDING` (or in the postamble after selection), so its value
+  outside replay is never consulted. Dispatch is a `br_if` state guard
+  followed by `global.get; br_table`; a region with one landing uses only the
+  guard, and a landing with nothing before it needs no dispatch.
+
+Measured on Quickshell (29.4 MB raw link, 2026-10-02), the code section went
+from 67.1 MB to 38.0 MB and the file without its name section from 80.7 MB to
+51.4 MB. The added code per instrumented function went from a median of 370
+bytes to 158 bytes (p90 1,697 to 672). SpiderMonkey compiled 12 copies of the
+module before running out of memory with lazy tiering, up from 6 (7 with
+eager tier-2, up from 3). For bash, instrumentation overhead in the code
+section fell from 1.68 MB to 0.67 MB. Building the crate with
+`--features size-attribution` and setting `WPK_FORK_SIZE_ATTRIBUTION=<path>`
+writes a per-function TSV that attributes every output byte to the emitter
+that produced it; see `crates/fork-instrument/src/size_attribution.rs`.
+
+
+## Optimization around instrumentation
+
+A fork-using program goes through Binaryen's `wasm-opt` twice:
+
+1. **Before instrumentation.** The SDK's `-O` link runs `wasm-opt` (clang
+   schedules it after `wasm-ld`), and some recipes run their own pass.
+   Inlining, dead-function removal and identical-function merging shrink
+   the call graph the instrumenter has to cover. Quickshell's raw link has
+   108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
+2. **After instrumentation.** The CLI runs `wasm-opt -O2` over its own
+   output (`--post-optimize`; `$WASM_OPT`, else `wasm-opt` on PATH). This
+   pass simplifies the dispatch and frame code the transform adds, merges
+   or removes generated helpers, and drops runtime imports nothing calls.
+
+Measured on code-section size (static, captured links, 2026-10-02):
+
+| program | wasm-opt → instrument | + wasm-opt after | instrument → wasm-opt |
+|---|---|---|---|
+| foot | 3,465,173 | −3.3% | −1.8% |
+| bash | 1,611,255 | −3.7% | −3.5% |
+| git | 5,368,248 | −3.9% | −4.9% |
+| python | 8,448,545 | −3.9% | −4.1% |
+| php | 16,888,534 | −5.8% | −5.9% |
+| waybar | 22,532,525 | −4.4% | −1.1% |
+| ruby | 12,769,437 | −3.9% | −4.9% |
+| qtgallery | 11,697,323 | −4.4% | +12.5% |
+| quickshell | 36,978,834 | −4.2% | +18.7% |
+
+Instrumenting the raw link instead (last column) gives up step 1: every
+function of the unoptimized graph gets instrumented, and wasm-opt does not
+recover that afterwards. On C programs the difference is small; on Qt
+programs it is large.
+
+Why a pass after instrumentation is safe:
+
+- The transform is expressed in ordinary Wasm semantics plus calls to the
+  `__wpk_fork_*` imports. wasm-opt preserves the module's observable
+  behaviour, including those calls, stores to the save buffer, and exports.
+- The custom sections the host reads do not depend on positions that
+  wasm-opt changes. Imported globals and tables are identified by kind,
+  module and name (format 2, ABI 46), and owners are bound through named
+  catalog exports.
+- A runtime import nothing calls may be removed. Instrumentation is proven
+  by the capability section, control exports and descriptors, not by
+  imports. Hosts and validators treat every fork-runtime import as optional
+  when absent and exact when present, with two rules: the linked-frame core
+  (`__wpk_fork_frame_reserve`, `commit`, `next`) is all-or-nothing, and a
+  module with frames must import the private unwind tag. A module with no
+  fork-path frames of its own imports neither.
+- The instrumenter scans its output and declares every Wasm feature it
+  uses in `target_features` (`src/target_features.rs`), because wasm-opt
+  enables only declared features. The generated code's needs depend on the
+  input (atomic guards for shared memories, GC codecs only for GC
+  references), so the declaration is derived, not listed.
+- The pass keeps a name section and DWARF (`-g`) when the input had them,
+  and does not run at all when instrumentation left the module unchanged.
+- A missing or failing `wasm-opt` is an error. `--post-optimize none`
+  exists to inspect the transform's raw output; shipped artifacts do not use
+  it.
+
+Do not add `--closed-world` or other whole-program GC type passes after
+instrumentation: they may rewrite the GC types the reference codecs
+describe in `kandelo.wpk_fork.gc_codec`.
+
 ## Dispatch schemes
 
 Every fork-path function uses **one of two dispatch shapes**, chosen by the
@@ -666,7 +841,7 @@ tool per-function based on call-site topology:
 
 | Scheme                       | When picked                                                                                                                                                                                                                                                                                                                       | How replay reaches the resumed call                                                                                                                                                                                            |
 |------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c). Pure scalar call-argument tails can be replayed instead of spilled. | A top-level `br_table`, gated by `state >= REWINDING`, jumps directly to the matching `$POST_K` label for ordinary or abort replay. The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call, followed by spilled or replayed call args. |
+| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c). Pure scalar call-argument tails can be replayed instead of spilled. | A top-level `br_table` over the `_wpk_fork_call_index` replay cursor, gated by `state >= REWINDING`, jumps directly to the matching `$POST_K` label for ordinary or abort replay (a single landing uses a `br_if`, or nothing when no code precedes it). The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call, followed by spilled or replayed call args. |
 | switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies. Sub-commits 2.5/2.6 made this scheme cover: direct-call carryovers at any nesting depth (2.5c), nested-Loop-with-carryover (2.5c side benefit), multi-value-params SubRegion bodies via body-input-param prespill (2.6c). Pure scalar direct-call args and condition-only `IfElse` carryovers can be replayed instead of spilled. | Cascading `POST_K` blocks plus a per-region `br_table` route ordinary or abort replay through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch). For multi-value-params bodies, the body's input params are pre-spilled at body entry and reloaded inside POST_0 to bridge the `Simple(None)` POST_K typing. |
 
 A third path — **guard-dispatch** — existed before commits 3-4 of the
@@ -1007,7 +1182,11 @@ if (then ...) (else ...)     ;; original IfElse, untouched.
 - only THEN has fork-path calls → `i32.const 1`
 - only ELSE → `i32.const 0`
 - both branches → range-membership test on THEN's call_idx range
-  (`call_idx >= then_lo && call_idx <= then_hi`)
+  (`call_idx - then_lo <= then_hi - then_lo`, unsigned), reading the
+  `_wpk_fork_call_index` replay cursor. The normal path selects the value
+  away; reading the global touches no memory, whereas the earlier
+  `*(_wpk_fork_buf + 0) + 4` load dereferenced address zero during ordinary
+  execution.
 
 On NORMAL the rewritten cond evaluates to `orig_cond`, preserving the
 program's semantics. On REWIND it forces entry into whichever branch
@@ -1282,6 +1461,140 @@ libc output. The broader "instrument every address-taken function" rule from
 the original C3 plan was not needed for this PR and was not added; K-01, K-02,
 K-04, and K-07 cover the current behavior.
 
+## Fork sinks and compiler facts
+
+The closure above is the conservative fork path. By default the instrumenter
+then reduces it with a sink analysis (`crates/fork-instrument/src/sink.rs`):
+a function whose fork child can never return to its caller (it calls `_exit`
+or `exec*`) is a boundary; the parent's unwind stops there and the callers
+above it stay uninstrumented. `--no-sinks` keeps the full closure. The
+design and its measurements are in
+[`plans/2026-10-02-fork-sinks.md`](plans/2026-10-02-fork-sinks.md).
+
+The analysis resolves each `call_indirect` in one of two ways.
+
+- **With compiler facts.** The SDK's KandeloCallTypes clang plugin writes,
+  per object, a text description of the object's functions and call sites
+  (CFI type ids, virtual-call slots, function-pointer conversions, untyped
+  pointer flow per slot, `pthread_cleanup_push` pairs, `jmp_buf` identity,
+  each unit's aliasing mode) into a custom section named `kandelo.calltypes`.
+  wasm-ld concatenates those sections in input order, so the linked module
+  carries one section made of per-object chunks. The link also records
+  `kandelo.calltypes.code-sha256`, the SHA-256 of the code section payload
+  (from the function count to the section end). The instrumenter uses the
+  facts only when that hash matches the code it receives; a tool that
+  rewrites code after linking (a `wasm-opt` run in a package build, for
+  example) keeps unknown custom sections but changes the code, and the facts
+  would then describe the wrong functions. A mismatch or a missing hash
+  prints one line and falls back to the analysis without facts.
+- **Without facts**, call sites match by Wasm signature (plus the musl
+  registry, parameter and constant-slot refinements).
+
+Facts are bound to functions without a linker map. Objects keep their order
+on both sides, so each module function is matched, in index order, to a
+same-named definition in the current or a later chunk; inside one chunk
+functions match by name, because clang does not emit a file's functions in
+the order the plugin lists them. Names that are unique on both sides anchor
+the alignment. The name section holds demangled names only, so one name can
+stand for several definitions: a C++ constructor's or destructor's complete-
+and base-object variants in one object, or same-named file-local functions
+(including linkonce copies) in several objects between two anchors. Such a
+function is bound to all of them and the analysis uses the union of their
+facts (call sites of every variant whose indirect-call signatures match the
+body, every variant's type ids, no registry-hub rule), never a guess by
+order. A pair whose Wasm parameters cannot be the wasm32 lowering of the IR
+parameters (equal count, or extra `i32` for a variadic tail or a 128-bit
+result pointer and `i64` pairs for 128-bit values) is not bound.
+Definitions the link removed are skipped. Functions with no binding
+(linker-synthesized code, objects built without the plugin) are analysed
+without facts: their own indirect calls and their use as targets match by
+Wasm signature.
+
+Known gap: a function-pointer conversion made inside an object without facts
+is invisible to the type rules. If such an object takes the address of a
+function defined in an object with facts and calls it through another C
+type from a site that has facts, that edge is missed. The research results
+were measured with this same per-function fallback; falling back for the
+whole module whenever any object lacks facts would close the gap at the cost
+of the precision. Which objects lack facts is reported by `--sink-report`
+(`bound` against `defined`).
+
+The rules applied with facts: exact CFI type matching except for functions
+the source converts, puns or passes through untyped pointers to another
+function type; C's effective-type rule in units compiled with strict
+aliasing; the musl and libc++ callback registries; `pthread_cleanup_pop`
+running only its own scope's handlers; calls through a `sigaction()`
+old-action global dispatching only registered handlers; and per-buffer
+`longjmp` targets.
+
+Which analysis runs:
+
+| Module | Analysis |
+|---|---|
+| wasm32 main module, `kernel.kernel_fork` entry, facts with a matching hash | with facts |
+| main module that cannot dlopen, facts absent, unreadable, unhashed or stale, or wasm64 | without facts |
+| main module that can dlopen, no usable facts | none (full closure) |
+| side module (`dylink.0` or `--entry env.fork`) | none (full closure) |
+
+A module that can dlopen is analysed with facts too. What it may assume
+about side modules is chosen with `--side-modules`:
+
+- `traced-entries` (the default). The analysis treats a side module as
+  entering the main program only through its imports (an `env` function or
+  a `GOT.func` slot). A function whose fork child can return to a caller is
+  *fork-returning*; it stays instrumented in the callers' frames. The
+  instrumenter records the main module's side of that assumption in a
+  `kandelo.wpk_fork.dlopen_contract` custom section: the exported
+  fork-returning functions, and whether any fork-returning function is in
+  the indirect-call table (`address-taken`). At `dlopen` both hosts read the
+  section (`host/src/fork-side-module-contract.ts`) and refuse, with a
+  `dlerror()` message naming the import, a side module that imports a
+  fork-returning function, or any side module at all when a fork-returning
+  function's address is taken (a side module could then reach it through a
+  function pointer the analysis never saw). The refusal is the real
+  boundary: the main program was compiled to fork correctly only from the
+  calls it could see. Refusing every side module would take `dlopen` away
+  from a program that has it, so when the analysis finds an address-taken
+  fork-returning function the instrumenter prints one line and plans that
+  module for `assume-all-entries-fork-returning` instead.
+- `assume-all-entries-fork-returning`. Any indirect call may enter a side
+  module whose fork child returns anything, so every function whose fork
+  path can pass through a side module stays instrumented and is never a
+  boundary. The contract section says so and the hosts impose no
+  restriction. Use it for a program that must load arbitrary plugins.
+
+Facts that cannot be read, or an
+internal error in the facts analysis, fall back to the analysis without
+facts with a one-line message, never to anything less conservative. The
+`kandelo.calltypes` and `kandelo.calltypes.code-sha256` sections are removed
+from every output, including a module the instrumenter otherwise returns
+unchanged.
+
+Flags:
+
+- `--no-facts` ignores the facts (diagnosis).
+- `--no-effective-types` applies C's effective-type rule nowhere.
+- `--side-modules=traced-entries|assume-all-entries-fork-returning` (above).
+- `--sink-report` (hidden) prints which analysis decided (`source\t<closure|builtin|facts>`),
+  the facts' coverage, and the instrumented set and boundaries as
+  `A\t<name>`/`B\t<name>` rows.
+
+When the analysis moved into this crate (#1471) it was checked against the
+research tools it replaced, on their research links, with the per-object
+facts concatenated in link order into the section. The tools and that
+comparison harness were removed afterwards; they remain in git history at
+a3f0eb448 (`tools/fork-sink-research`,
+`crates/fork-instrument/examples/facts_equivalence.rs`). For
+foot, git and bash every function's binding is, or (for 141, 51 and 1
+functions bound to a union) contains, the research tools' map-based binding,
+the exported indirect-call targets, cleanup and `jmp_buf` facts are
+byte-identical to theirs, and the instrumented sets and boundaries equal the
+research results (4, 25 and 1,912 distinct names). Those research results
+assume the dlopen contract (`--side-modules=traced-entries`), which only
+bash needs (it can dlopen); with `assume-all-entries-fork-returning` bash
+keeps 1,927 of 1,929 functions. Instrumented binaries
+built through the SDK with embedded facts have not been run yet.
+
 ## Guarantees and non-guarantees
 
 ### Guaranteed
@@ -1467,15 +1780,20 @@ to identify which switch-dispatch shape the offending function uses:
 wasm-tools print "$BIN" | awk '/^\s+\(func [^;]*main/{found=1} found{print}' | head -200
 ```
 
-A leading `loop ... block ... block ... if (state >= REWINDING) ... br_table ...`
-shape at the function's entry means switch-dispatch is active. A historical
+A replay preamble `if (state >= REWINDING) ... end` followed by a `loop`
+whose body opens the function's landing blocks means switch-dispatch is
+active. A dispatch with several landings is
+`block (state < REWINDING; br_if 0) (global.get $_wpk_fork_call_index) br_table`;
+a region with one landing instead begins its landing block with
+`state >= REWINDING; br_if <landing>`, and a region whose landing has nothing
+before it needs no dispatch at all. A historical
 `block $unwind_save` followed by per-call `(state == NORMAL || (REWINDING &&
 call_idx == K))` if-elses means an old guard-dispatch binary is being
 inspected, not current PR output.
 
 To distinguish top-level switch-dispatch from nested switch-dispatch,
 look inside the enclosing instructions: nested switch-dispatch emits the
-same `if (state >= REWINDING) ... br_table ...` shape inside any
+same dispatch shapes inside any
 fork-bearing `block` / `loop` / `if` / `try_table`, plus a `select`
 rewriting any fork-bearing IfElse's condition afterwards. Impure IfElse
 conditions also show a `local.set $cond_swap_local` at the end of the

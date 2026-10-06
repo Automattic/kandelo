@@ -489,6 +489,56 @@ impl ProcessTable {
         self.create_process_with_stdio(StdioConfig::captured())
     }
 
+    /// Make fd 0 of `pid` the read end of a new kernel pipe whose write end
+    /// the host holds, and return the pipe index.
+    ///
+    /// WHY: host-supplied stdin used to live in host buffers keyed by pid and
+    /// was read through host handle 0, so a child that inherited fd 0 read
+    /// nothing and blocked forever. As an ordinary pipe read end, fd 0 is one
+    /// open file description shared across fork, dup, and exec, with one read
+    /// position, end-of-file, and poll readiness from the pipe. The pipe
+    /// starts with one writer reference, which is the host's: it feeds bytes
+    /// with `kernel_pipe_write` as space allows and releases the reference
+    /// with `kernel_pipe_close_write`, after which readers see end-of-file.
+    /// The pipe is bounded (`DEFAULT_PIPE_CAPACITY`) so kernel memory stays
+    /// bounded however much the host supplies.
+    pub fn install_host_stdin_pipe(
+        &mut self,
+        pid: u32,
+        host: &mut dyn crate::process::HostIO,
+    ) -> Result<usize, Errno> {
+        use wasm_posix_shared::flags::O_RDONLY;
+        let proc = self.get_mut(pid).ok_or(Errno::ESRCH)?;
+        match crate::syscalls::sys_close(proc, host, 0) {
+            Ok(()) | Err(Errno::EBADF) => {}
+            Err(error) => return Err(error),
+        }
+        let pipe_idx = unsafe {
+            crate::pipe::global_pipe_table()
+                .alloc(crate::pipe::PipeBuffer::new(crate::pipe::DEFAULT_PIPE_CAPACITY))
+        };
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Pipe,
+            O_RDONLY,
+            -((pipe_idx as i64) + 1),
+            b"/dev/stdin".to_vec(),
+        );
+        match proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
+            Ok(0) => Ok(pipe_idx),
+            Ok(fd) => {
+                // fd 0 was just closed, so the lowest free descriptor must be
+                // 0; anything else means the table is inconsistent.
+                let _ = proc.fd_table.free(fd);
+                proc.ofd_table.dec_ref(ofd_idx);
+                Err(Errno::EIO)
+            }
+            Err(error) => {
+                proc.ofd_table.dec_ref(ofd_idx);
+                Err(error)
+            }
+        }
+    }
+
     /// Create a new process with explicit stdio wiring and add it to the table.
     pub fn create_process_with_stdio(&mut self, stdio: StdioConfig) -> Result<u32, Errno> {
         self.ensure_init();
@@ -1102,7 +1152,13 @@ impl ProcessTable {
             if !parent.is_live_explicit_tid(caller_tid) {
                 return Err(Errno::ESRCH);
             }
-            if parent.vfork_child {
+            // WHY only vfork: a vfork child borrows its parked parent's
+            // address space, and a second borrower of the same memory would
+            // need the host to stack lifetimes it does not support. An
+            // ordinary fork copies the memory into a new process, as Linux
+            // does when a vfork child forks (Qt's startDetached does exactly
+            // this), so it needs no borrowing.
+            if parent.vfork_child && mode == wasm_posix_shared::fork_contract::Mode::Vfork {
                 return Err(Errno::EAGAIN);
             }
             (
@@ -1179,9 +1235,8 @@ impl ProcessTable {
             if !parent.is_live_explicit_tid(caller_tid) {
                 return Err(Errno::ESRCH);
             }
-            if parent.vfork_child {
-                return Err(Errno::EAGAIN);
-            }
+            // A vfork child may spawn: spawn builds the child from a path and
+            // copied arguments and never touches the caller's memory.
             // Compute the SIG_IGN-disposition bitmask for signals 1..=64.
             let mut ignored_signals: u64 = 0;
             for sig in 1u32..=64 {
@@ -1959,6 +2014,82 @@ mod wait_tests {
         assert_eq!(table.get(spawn_pid).unwrap().ppid, parent_pid);
     }
 
+    fn host_stdin_pipe_fixture() -> (ProcessTable, u32, usize) {
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let mut host = crate::process::test_host::NoopHost;
+        let pipe_idx = table.install_host_stdin_pipe(pid, &mut host).unwrap();
+        (table, pid, pipe_idx)
+    }
+
+    fn host_stdin_write(pipe_idx: usize, bytes: &[u8]) {
+        let pipe = unsafe { crate::pipe::global_pipe_table() }.get_mut(pipe_idx).unwrap();
+        assert_eq!(pipe.write(bytes), bytes.len());
+    }
+
+    #[test]
+    fn host_stdin_pipe_replaces_fd0_with_fifo_read_end() {
+        use crate::ofd::FileType;
+        let (mut table, pid, pipe_idx) = host_stdin_pipe_fixture();
+        let proc = table.get_mut(pid).unwrap();
+        let ofd_idx = proc.fd_table.get(0).unwrap().ofd_ref.0;
+        let ofd = proc.ofd_table.get(ofd_idx).unwrap();
+        assert_eq!(ofd.file_type, FileType::Pipe);
+        assert_eq!(
+            ofd.status_flags() & wasm_posix_shared::flags::O_ACCMODE,
+            wasm_posix_shared::flags::O_RDONLY
+        );
+        assert_eq!(ofd.host_handle, -((pipe_idx as i64) + 1));
+        let mut host = crate::process::test_host::NoopHost;
+        let st = crate::syscalls::sys_fstat(proc, &mut host, 0).unwrap();
+        assert_eq!(st.st_mode & wasm_posix_shared::mode::S_IFMT, wasm_posix_shared::mode::S_IFIFO);
+    }
+
+    #[test]
+    fn host_stdin_pipe_is_shared_across_fork() {
+        let (mut table, pid, pipe_idx) = host_stdin_pipe_fixture();
+        host_stdin_write(pipe_idx, b"abcdef");
+        let child = table.fork_process_for_caller(pid, pid).unwrap();
+        let mut host = crate::process::test_host::NoopHost;
+        let mut buf = [0u8; 3];
+        let n = crate::syscalls::sys_read(table.get_mut(child).unwrap(), &mut host, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"abc");
+        let n = crate::syscalls::sys_read(table.get_mut(pid).unwrap(), &mut host, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"def");
+    }
+
+    #[test]
+    fn host_stdin_pipe_eof_after_close_write() {
+        let (mut table, pid, pipe_idx) = host_stdin_pipe_fixture();
+        host_stdin_write(pipe_idx, b"x");
+        unsafe { crate::pipe::global_pipe_table() }.get_mut(pipe_idx).unwrap().close_write_end();
+        let mut host = crate::process::test_host::NoopHost;
+        let mut buf = [0u8; 8];
+        let proc = table.get_mut(pid).unwrap();
+        assert_eq!(crate::syscalls::sys_read(proc, &mut host, 0, &mut buf).unwrap(), 1);
+        assert_eq!(buf[0], b'x');
+        assert_eq!(crate::syscalls::sys_read(proc, &mut host, 0, &mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn host_stdin_pipe_read_would_block_while_open_and_empty() {
+        let (mut table, pid, _pipe_idx) = host_stdin_pipe_fixture();
+        let mut host = crate::process::test_host::NoopHost;
+        let mut buf = [0u8; 8];
+        let r = crate::syscalls::sys_read(table.get_mut(pid).unwrap(), &mut host, 0, &mut buf);
+        assert_eq!(r, Err(wasm_posix_shared::Errno::EAGAIN));
+    }
+
+    #[test]
+    fn host_stdin_pipe_rejects_unknown_pid() {
+        let mut table = ProcessTable::new();
+        let mut host = crate::process::test_host::NoopHost;
+        assert_eq!(
+            table.install_host_stdin_pipe(4242, &mut host),
+            Err(wasm_posix_shared::Errno::ESRCH)
+        );
+    }
+
     #[test]
     fn fork_shares_one_evdev_ring_with_parent() {
         // POSIX/Linux: a forked `struct file` carries one shared
@@ -2089,7 +2220,7 @@ mod wait_tests {
     }
 
     #[test]
-    fn vfork_child_rejects_nested_process_owners() {
+    fn vfork_child_may_fork_and_spawn_but_not_vfork() {
         use crate::process::test_host::NoopHost;
         use crate::spawn::SpawnAttrs;
         use wasm_posix_shared::fork_contract::Mode;
@@ -2106,13 +2237,20 @@ mod wait_tests {
             .unwrap();
         assert!(table.get(child_pid).unwrap().vfork_child);
 
+        // A second borrower of the parked parent's memory stays refused.
         assert_eq!(
-            table.fork_process_for_caller(child_pid, child_pid),
+            table.fork_process_for_caller_with_mode(child_pid, child_pid, Mode::Vfork),
             Err(Errno::EAGAIN),
         );
+        // An ordinary fork copies; the grandchild owns its own memory.
+        let grandchild_pid = table.fork_process_for_caller(child_pid, child_pid).unwrap();
+        let grandchild = table.get(grandchild_pid).unwrap();
+        assert!(!grandchild.vfork_child);
+        assert_eq!(grandchild.ppid, child_pid);
+
         let mut host = NoopHost;
-        assert_eq!(
-            table.spawn_child_for_caller(
+        assert!(table
+            .spawn_child_for_caller(
                 child_pid,
                 child_pid,
                 &[b"/bin/child".as_slice()],
@@ -2120,9 +2258,8 @@ mod wait_tests {
                 &[],
                 &SpawnAttrs::empty(),
                 &mut host,
-            ),
-            Err(Errno::EAGAIN),
-        );
+            )
+            .is_ok());
     }
 
     #[test]

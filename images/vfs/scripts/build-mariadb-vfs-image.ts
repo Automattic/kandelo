@@ -13,6 +13,9 @@
  * Two target architectures are supported:
  *   bash build-mariadb-vfs-image.sh           → public/mariadb.vfs.zst    (wasm32)
  *   bash build-mariadb-vfs-image.sh --wasm64  → public/mariadb-64.vfs.zst (wasm64)
+ *
+ * A non-flag argument overrides the output path (a resolver build passes
+ * one under its work root).
  */
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -249,6 +252,9 @@ function resolveLegacySystemTablesDirectory(
 async function main(): Promise<void> {
   const repositoryRoot = findRepoRoot();
   const useWasm64 = process.argv.includes("--wasm64");
+  const outputArgument = process.argv
+    .slice(2)
+    .find((argument) => !argument.startsWith("--"));
   const architecture = useWasm64 ? "wasm64" : "wasm32";
   const mariadbPath = resolveBinary(useWasm64
     ? "programs/wasm64/mariadb/mariadbd.wasm"
@@ -265,10 +271,12 @@ async function main(): Promise<void> {
     coreutils: new Uint8Array(
       readFileSync(resolveBinary("programs/coreutils.wasm")),
     ),
-    outputPath: join(
-      repositoryRoot,
-      `apps/browser-demos/public/${useWasm64 ? "mariadb-64" : "mariadb"}.vfs.zst`,
-    ),
+    outputPath: outputArgument
+      ? resolve(outputArgument)
+      : join(
+        repositoryRoot,
+        `apps/browser-demos/public/${useWasm64 ? "mariadb-64" : "mariadb"}.vfs.zst`,
+      ),
   });
 }
 

@@ -2,7 +2,12 @@ kind = "program"
 name = "ruby"
 version = "4.0.5"
 kernel_abi = 15
-depends_on = ["zlib@1.3.1"]
+depends_on = [
+    "zlib@1.3.1",
+    "libyaml-source@0.2.5",
+    "sqlite-amalgamation-source@3.49.1",
+    "sqlite3-ruby-source@2.9.6",
+]
 
 [source]
 url = "https://cache.ruby-lang.org/pub/ruby/4.0/ruby-4.0.5.tar.gz"

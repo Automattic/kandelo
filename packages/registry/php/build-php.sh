@@ -17,12 +17,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR/php-work" wasm32
-PHP_VERSION="${WASM_POSIX_DEP_VERSION:-${PHP_VERSION:-8.3.15}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.php.net/distributions/php-${PHP_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-67073c3c9c56c86461e0715d9e1806af5ddffe8e6e2eb9781f7923bbb5bd67fa}"
+PHP_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
     WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
@@ -873,18 +874,20 @@ if [ ! -f Makefile ]; then
     # musl so intl.so shares one libc state — one allocator, one pthread key
     # table; without -u they never enter php.wasm and intl.so fails to load.
     #
-    # -Wl,-z,stack-size=4194304: 4 MB wasm stack. The default wasm-ld
-    # stack is 64 KB, which sits ~100 KB above PHP's `alloc_globals`
-    # data segment. Opcache's PASS_6 (DFA-based SSA optimization) calls
-    # zend_build_ssa, which uses do_alloca() for its DFG bitsets and
-    # var-rename worklist; on large functions like WordPress's
-    # wp-includes/ID3/module.audio-video.asf.php Analyze() (1700+ lines),
-    # the alloca'd buffer plus the deep zend_ssa_rename recursion can
-    # underflow the stack into alloc_globals, scribbling garbage onto
-    # AG(mm_heap). The next _efree call then traps with "memory access
-    # out of bounds" because it tries to dereference the now-bogus heap
-    # pointer. 4 MB gives PASS_6 enough headroom for any function that
-    # passes its own `blocks*vars > 4M` size guard.
+    # No -z stack-size= override here: the SDK's own 8 MiB default main-
+    # thread stack (see sdk/src/lib/flags.ts and docs/sdk-guide.md) is
+    # already well above the 4 MiB this build once requested explicitly for
+    # opcache's PASS_6 (DFA-based SSA optimization), which calls
+    # zend_build_ssa and can otherwise overflow a too-small stack on large
+    # functions like WordPress's wp-includes/ID3/module.audio-video.asf.php
+    # Analyze() (1700+ lines). That 4 MB request predates the SDK's 8 MiB
+    # floor (it was set against wasm-ld's original 64 KiB default, when it
+    # was genuinely load-bearing); once the SDK floor existed, the request
+    # sat below it, and the SDK at the time silently raised any sub-floor
+    # request to 8 MiB, so this call site had already been linking with
+    # 8 MiB in practice for as long as the floor existed. Removing it lets
+    # the actual, real value (the SDK default) apply without a stale number
+    # on this call site that nobody chose.
     #
     # ac_cv_lib_iconv_libiconv=yes: PHP's autoconf probe calls `libiconv()`
     # with an old-style no-argument prototype. That is tolerated by native ELF
@@ -906,7 +909,14 @@ if [ ! -f Makefile ]; then
     # musl exposes Linux unshare() as an ENOSYS stub. PHP must not advertise
     # pcntl_unshare() when this target cannot provide namespace isolation, so
     # override the cross probe with the target's real capability.
+    #
+    # Zend always compiles Fibers, and with no Fiber assembly for Wasm
+    # (--disable-fiber-asm) it builds them on <ucontext.h>. Kandelo does not
+    # support ucontext and libc defines none of it, so PHP opts in to the
+    # SDK's abort-on-call stand-ins: PHP code that never starts a Fiber runs
+    # normally, and starting one aborts with a diagnostic naming ucontext.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
+    LIBS="-lkandelo-ucontext-unsupported" \
     CPPFLAGS="$DEP_CPPFLAGS" \
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
@@ -920,8 +930,7 @@ if [ ! -f Makefile ]; then
 -u pthread_cond_broadcast -u pthread_cond_destroy -u pthread_cond_signal \
 -u pthread_cond_timedwait -u pthread_cond_wait -u pthread_detach \
 -u pthread_getspecific -u pthread_key_create -u pthread_self \
--u pthread_setspecific \
--Wl,-z,stack-size=4194304" \
+-u pthread_setspecific" \
     ZLIB_CFLAGS="$ZLIB_CFLAGS_VALUE" \
     ZLIB_LIBS="$ZLIB_LIBS_VALUE" \
     SQLITE_CFLAGS="$SQLITE_CFLAGS_VALUE" \
@@ -1143,13 +1152,11 @@ if [ -f main/php_config.h ]; then
 fi
 
 # `make` per-file rules embed `INCLUDES` from configure but ignore
-# `CPPFLAGS` (which only contains `-D_GNU_SOURCE`); `INCLUDES` for
-# our libxml2 ends up as `-I.../include/libxml` because PHP's
-# `ext/libxml/config.m4` adds the `/libxml` suffix. The real PHP
-# sources `#include <libxml/parser.h>`, which needs the parent
-# `-I.../include`. Pass it via `EXTRA_CFLAGS`, which the per-file
-# rules append last.
-EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include"
+# `CPPFLAGS` (which only contains `-D_GNU_SOURCE`), so pass libxml2's own
+# pkg-config Cflags via `EXTRA_CFLAGS`, which the per-file rules append
+# last. With libxml2's upstream layout that is `-I…/include/libxml2`,
+# the directory PHP's `#include <libxml/parser.h>` resolves against.
+EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include/libxml2"
 
 echo "==> Building PHP CLI..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" cli
@@ -1349,10 +1356,9 @@ cp sapi/fpm/php-fpm "$BIN_DIR/php-fpm.wasm"
 
 # CLI and FPM both retain libc paths that can reach kernel_fork
 # (system/popen/fork wrappers for CLI, worker forks for FPM), so both
-# must be fork-instrumented. wasm-opt runs first, then fork
-# instrumentation as the tail step because the instrumenter hardcodes
-# mutable-global offsets and any later pass that reorders globals would
-# invalidate them. wasm-fork-instrument auto-discovers fork paths via
+# must be fork-instrumented. wasm-opt runs first so instrumentation covers
+# the smaller, inlined call graph; wasm-fork-instrument then runs its own
+# wasm-opt pass over the code it adds. It auto-discovers fork paths via
 # call-graph analysis; no onlylist file is required.
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -z "$WASM_OPT" ]; then

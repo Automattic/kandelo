@@ -3,7 +3,7 @@ name = "cairomm"
 version = "1.12.2"
 kernel_abi = 17
 depends_on = [
-  "cairo@1.16.0",
+  "cairo@1.18.6",
   "libsigcxx@2.10.3",
   "glib@2.84.4",
   "pixman@0.42.2",

@@ -10,8 +10,10 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
   parseKandeloDemoConfig,
+  resolveDemoDockActions,
   resolveDemoInit,
   validateKandeloDemoConfig,
+  type DemoDockMenuEntryConfig,
   type KandeloDemoConfig,
 } from "../../../web-libs/kandelo-session/src/demo-config";
 import {
@@ -39,6 +41,7 @@ import {
 } from "./source-rootfs-shell-overlay";
 
 const REGULAR_FILE_MODE = 0o100000;
+const DIRECTORY_MODE = 0o040000;
 const SYMBOLIC_LINK_MODE = 0o120000;
 const FILE_TYPE_MASK = 0o170000;
 const EXECUTE_BITS = 0o111;
@@ -67,21 +70,11 @@ const SDL2_SHADER_PRESETS: ReadonlyArray<{
 export interface SourceRootfsShellInputs {
   rootfsPath: string;
   bashPath: string;
-  fbdoomPath: string;
-  modesetPath: string;
-  sdl2Path: string;
-  wlcompositorPath: string;
-  wltermPath: string;
-  wlclockPath: string;
-  wlpaintPath: string;
   wldesktopPath: string;
-  klauncherPath: string;
-  notifySendPath: string;
   omarchydesktopPath: string;
   omarchyThemeHookPath: string;
   desktopDataPath: string;
   libinputQuirksPath: string;
-  espeakNgPath: string;
   espeakNgDataPath: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
@@ -90,7 +83,26 @@ export interface SourceRootfsShellInputs {
   sourceDateEpoch?: string;
 }
 
-const REQUIRED_BASH_ALIASES = ["/bin/bash", "/usr/bin/bash"] as const;
+// Every image binds bash as /bin/sh (docs/package-management.md); check
+// the sh aliases, not only the bash names, so a regression cannot pass.
+const REQUIRED_BASH_ALIASES = [
+  "/bin/bash",
+  "/usr/bin/bash",
+  "/bin/sh",
+  "/usr/bin/sh",
+] as const;
+
+/**
+ * The only Wasm programs this composer may write eagerly, together with every
+ * hard link to them (Bash is also /bin/sh). Bash is the account shell: login
+ * execs it on every boot, before any machine could benefit from deferring it.
+ * Every other program is a lazy file (SHELL_LAZY_BINARY_SPECS).
+ * WHY enforce it: each eager byte is downloaded by every visitor before the
+ * machine boots, and eager programs accumulate one convenient addition at a
+ * time — 2.4 MB of compressed image had grown to 4.1 MB this way.
+ */
+const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set(["/usr/bin/bash"]);
+const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d] as const;
 export const SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES = [
   ...readSourceRootfsShellResolverDependencies(),
 ] as const;
@@ -233,6 +245,14 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
     executable: "/usr/local/bin/scummvm",
     command: "/usr/local/bin/scummvm",
   },
+  "ffmpeg-fbdev": {
+    executable: "/usr/bin/ffmpeg",
+    command: "/usr/bin/ffmpeg -nostdin -re -f lavfi -i testsrc=duration=60:size=320x240:rate=10 -f lavfi -i sine=duration=60 -map 0:v -pix_fmt bgra -f fbdev /dev/fb0 -map 1:a -f oss /dev/dsp",
+  },
+  ffplay: {
+    executable: "/usr/bin/ffplay",
+    command: "/usr/bin/ffplay -autoexit -f lavfi 'testsrc=duration=60:size=320x240:rate=10[out0];sine=duration=60[out1]'",
+  },
 } as const;
 
 /**
@@ -281,9 +301,11 @@ exec /usr/bin/quake -basedir "$BASE" "$@"
  *   OSS either way.
  * - The config lives in the user's home, because ScummVM rewrites it whenever
  *   the user adds a game or changes an option. The first launch seeds it so
- *   the launcher's "Add Game" browser opens in the upload directory. The GUI
- *   scale stays at 100%: the browser's device-pixel ratio does not reach the
- *   machine (see docs/browser-support.md on HiDPI).
+ *   the launcher's "Add Game" browser opens in the upload directory.
+ *   gui_scale is ScummVM's own user multiplier and stays at its default of
+ *   100%; the display's factor comes from SDL's display DPI, which SDL
+ *   computes from the physical size the kernel reports on the connector
+ *   (KMSDRM) or the compositor reports on wl_output (Wayland).
  *
  * It then stays alive beside the engine to unpack uploads. "Load game data"
  * writes one archive to $GAMES/upload.zip while ScummVM keeps running (the
@@ -293,6 +315,14 @@ exec /usr/bin/quake -basedir "$BASE" "$@"
  * falls back to — unzips it in place, and removes it so the peak filesystem
  * cost is one archive plus its contents. The host writes the file in one
  * kernel-worker task, so the wrapper never sees a partial archive.
+ *
+ * Because the engine runs as an asynchronous list in a non-interactive shell,
+ * POSIX has it start with SIGINT and SIGQUIT ignored, so Ctrl+C at the
+ * machine's terminal (and the ScummVM machine's dock action, which sends
+ * exactly that) would kill only this wrapper and orphan an engine still
+ * holding the display. The trap forwards the interrupt as SIGTERM, which the
+ * engine does not ignore (SDL turns it into a normal quit), and waits for it,
+ * so the shell prompt returns only once the display is free.
  */
 const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
 set -e
@@ -308,6 +338,7 @@ if [ -z "\${XDG_RUNTIME_DIR:-}" ] || [ ! -S "$XDG_RUNTIME_DIR/\${WAYLAND_DISPLAY
 fi
 /usr/bin/scummvm --config="$INI" "$@" &
 engine=$!
+trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; exit 130' INT TERM
 set +e
 while kill -0 "$engine" 2>/dev/null; do
     if [ -f "$GAMES/upload.zip" ]; then
@@ -322,6 +353,266 @@ while kill -0 "$engine" 2>/dev/null; do
     sleep 1
 done
 wait "$engine"
+`;
+
+/**
+ * The freeware games the ScummVM machine can fetch: one tracked data file,
+ * repository-owned like the demo config and the SDL2 presets, read directly.
+ *
+ * The rights holders made these games freeware and the ScummVM project
+ * distributes them. No package carries one: `scummvm-play` downloads the
+ * archive from inside the machine the first time it is asked to, through
+ * the guest's ordinary HTTPS path (in a browser, the machine's CORS proxy,
+ * because downloads.scummvm.org grants no CORS). The file therefore lands in
+ * the image as the catalog that script reads, and the ScummVM profile's dock
+ * menu in /etc/kandelo/demo.json must list exactly its games
+ * (`requireScummvmFreewareMenu`), so a menu entry can never name a game the
+ * machine cannot fetch, nor a fetchable game go missing from the menu.
+ *
+ * A game the catalog knows but this build cannot run is `unavailable`, with
+ * the reason: the menu shows it disabled, so the gap stays visible.
+ */
+const SCUMMVM_FREEWARE_CATALOG_SOURCE = fileURLToPath(
+  new URL("../../../packages/registry/shell/scummvm-freeware-games.json", import.meta.url),
+);
+const SCUMMVM_PLAY_CATALOG = "/usr/local/share/scummvm-play/games.tsv";
+const SCUMMVM_PLAY_COMMAND = "/usr/local/bin/scummvm-play";
+/** The dock action whose menu lists the catalog. */
+const SCUMMVM_FREEWARE_MENU_ACTION = "freeware";
+
+export interface ScummvmFreewareGame {
+  id: string;
+  title: string;
+  /** The engine plugin the game loads (lib<engine>.so). */
+  engine: string;
+  url: string;
+  /** The digest ScummVM publishes beside the archive (<archive>.sha256). */
+  sha256: string;
+  /**
+   * The archive's size. scummvm-play reports progress against it: guest
+   * downloads reach the program as chunked responses, so curl itself never
+   * learns the total.
+   */
+  bytes: number;
+}
+
+export interface ScummvmFreewareCatalog {
+  games: ScummvmFreewareGame[];
+  unavailable: Array<{ id: string; title: string; reason: string }>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function loadScummvmFreewareCatalog(
+  path = SCUMMVM_FREEWARE_CATALOG_SOURCE,
+): ScummvmFreewareCatalog {
+  const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const fail = (message: string): never => {
+    throw new Error(`ScummVM freeware catalog ${path}: ${message}`);
+  };
+  if (!isRecord(value) || value.version !== 1) fail("must be version 1");
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.games) || !Array.isArray(record.unavailable)) {
+    fail("must list games and unavailable");
+  }
+  const ids = new Set<string>();
+  const id = (entry: Record<string, unknown>): string => {
+    const value = entry.id;
+    // An id is a scummvm-play argument and a directory name.
+    if (typeof value !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
+      fail(`invalid id ${JSON.stringify(value)}`);
+    }
+    if (ids.has(value as string)) fail(`duplicate id ${value}`);
+    ids.add(value as string);
+    return value as string;
+  };
+  // Titles become one TSV field and a status line.
+  const text = (value: unknown, field: string): string =>
+    typeof value === "string" && value.length > 0 && !/[\t\r\n]/.test(value)
+      ? value
+      : fail(`${field} must be one line of text`);
+  const games = (record.games as unknown[]).map((entry): ScummvmFreewareGame => {
+    if (!isRecord(entry)) fail("every game must be an object");
+    const game = entry as Record<string, unknown>;
+    const gameId = id(game);
+    // The builder names no URL itself (nothing it composes is fetched at
+    // build time), so the catalog's are checked by their parts.
+    const url = typeof game.url === "string" && URL.canParse(game.url)
+      ? new URL(game.url)
+      : null;
+    if (
+      url === null
+      || url.protocol !== "https:"
+      || url.hostname !== "downloads.scummvm.org"
+      || !url.pathname.startsWith("/frs/")
+    ) {
+      fail(`${gameId} must download over HTTPS from the ScummVM project's /frs/ archive`);
+    }
+    if (typeof game.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(game.sha256)) {
+      fail(`${gameId} needs a lowercase hex SHA-256`);
+    }
+    if (!Number.isSafeInteger(game.bytes) || (game.bytes as number) <= 0) {
+      fail(`${gameId} needs its archive size in bytes`);
+    }
+    return {
+      id: gameId,
+      title: text(game.title, `${gameId}.title`),
+      engine: text(game.engine, `${gameId}.engine`),
+      url: game.url as string,
+      sha256: game.sha256 as string,
+      bytes: game.bytes as number,
+    };
+  });
+  const unavailable = (record.unavailable as unknown[]).map((entry) => {
+    if (!isRecord(entry)) fail("every unavailable game must be an object");
+    const game = entry as Record<string, unknown>;
+    const gameId = id(game);
+    return {
+      id: gameId,
+      title: text(game.title, `${gameId}.title`),
+      reason: text(game.reason, `${gameId}.reason`),
+    };
+  });
+  return { games, unavailable };
+}
+
+/** "69 MB", or "59 KB" below a megabyte: the menu's and the script's size. */
+export function formatDownloadSize(bytes: number): string {
+  return bytes >= 1_000_000
+    ? `${Math.round(bytes / 1_000_000)} MB`
+    : `${Math.max(1, Math.round(bytes / 1_000))} KB`;
+}
+
+/** The dock menu entries the catalog requires, in catalog order. */
+export function scummvmFreewareMenuEntries(
+  catalog: ScummvmFreewareCatalog,
+): DemoDockMenuEntryConfig[] {
+  return [
+    ...catalog.games.map((game) => ({
+      id: game.id,
+      label: game.title,
+      detail: formatDownloadSize(game.bytes),
+      restart: `${SCUMMVM_PLAY_COMMAND} ${game.id}`,
+    })),
+    ...catalog.unavailable.map((game) => ({
+      id: game.id,
+      label: game.title,
+      unavailable: game.reason,
+    })),
+  ];
+}
+
+/** One game per line: id, bytes, size label, SHA-256, URL, title. */
+function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
+  return catalog.games
+    .map((game) => [
+      game.id,
+      String(game.bytes),
+      formatDownloadSize(game.bytes),
+      game.sha256,
+      game.url,
+      game.title,
+    ].join("\t") + "\n")
+    .join("");
+}
+
+/**
+ * `/usr/local/bin/scummvm-play GAME`, the ScummVM machine's dock actions:
+ * fetch a catalog game, verify it, unpack it, and start it. `--list` prints
+ * the catalog, so the same games are a command away in the terminal.
+ *
+ * - The download runs in the background so the script can report a
+ *   percentage against the catalog's size, and the trap stops it on Ctrl+C:
+ *   a background job in a non-interactive shell ignores SIGINT, so the
+ *   dock's interrupt would otherwise leave curl running.
+ * - The SHA-256 makes a changed or truncated download a loud failure instead
+ *   of a game that half-starts. The archive is deleted once unpacked, so the
+ *   filesystem holds one copy, beside the game's own licence files.
+ * - ScummVM itself finds the game: `--add --recursive` runs only its
+ *   detection (compiled into the program, so no engine plugin loads) and
+ *   records each game it adds as a launcher target. One target starts
+ *   directly; a collection (the WAGE games) opens the launcher instead.
+ *   `.targets` is written last, so a session that stopped partway fetches
+ *   again rather than trusting a partial unpack.
+ *
+ * Every step announces itself as a `scummvm-play: ` line and the download
+ * as a `#### N%` line: the dock shows both while the display is dark.
+ */
+const SCUMMVM_PLAY_SCRIPT = `#!/bin/sh
+set -e
+CATALOG=${SCUMMVM_PLAY_CATALOG}
+GAMES=/usr/share/scummvm-games
+TAB=$(printf '\\t')
+say() { echo "scummvm-play: $*" >&2; }
+if [ "\${1:-}" = "--list" ]; then
+    cut -f1,3,6 "$CATALOG"
+    exit 0
+fi
+case "\${1:-}" in
+    ""|*[!a-z0-9-]*)
+        echo "usage: scummvm-play GAME (scummvm-play --list shows the games)" >&2
+        exit 2
+        ;;
+esac
+LINE=$(grep "^$1$TAB" "$CATALOG" || true)
+if [ -z "$LINE" ]; then
+    say "No game called $1 (scummvm-play --list shows the games)"
+    exit 2
+fi
+IFS="$TAB" read -r ID BYTES SIZE SHA256 URL TITLE <<ROW
+$LINE
+ROW
+DIR="$GAMES/$ID"
+ZIP="$GAMES/$ID.zip"
+if [ ! -f "$DIR/.targets" ]; then
+    say "Downloading $TITLE ($SIZE) from downloads.scummvm.org..."
+    rm -f "$ZIP"
+    curl -fsSL -o "$ZIP" "$URL" &
+    fetch=$!
+    trap 'kill "$fetch" 2>/dev/null; rm -f "$ZIP"; exit 130' INT TERM
+    while kill -0 "$fetch" 2>/dev/null; do
+        got=0
+        if [ -f "$ZIP" ]; then got=$(wc -c < "$ZIP"); fi
+        printf '#### %d%%\\r' $((got * 100 / BYTES)) >&2
+        sleep 1
+    done
+    status=0
+    wait "$fetch" || status=$?
+    trap - INT TERM
+    if [ "$status" -ne 0 ]; then
+        rm -f "$ZIP"
+        say "Download failed"
+        exit 1
+    fi
+    printf '#### 100%%\\n' >&2
+    say "Verifying the download (SHA-256)..."
+    if ! echo "$SHA256  $ZIP" | sha256sum -c - >/dev/null 2>&1; then
+        rm -f "$ZIP"
+        say "Checksum mismatch; refusing to run the download"
+        exit 1
+    fi
+    say "Unpacking the game..."
+    rm -rf "$DIR"
+    mkdir -p "$DIR"
+    if ! unzip -o -q "$ZIP" -d "$DIR"; then
+        rm -rf "$ZIP" "$DIR"
+        say "Unpacking failed"
+        exit 1
+    fi
+    rm -f "$ZIP"
+    say "Adding it to ScummVM..."
+    /usr/local/bin/scummvm --add --recursive -p "$DIR" \\
+        | sed -n 's/^  Target: *//p' > "$DIR/.targets.partial"
+    mv "$DIR/.targets.partial" "$DIR/.targets"
+fi
+if [ "$(grep -c . "$DIR/.targets" || true)" = 1 ]; then
+    say "Starting $TITLE..."
+    exec /usr/local/bin/scummvm "$(cat "$DIR/.targets")"
+fi
+say "Opening the ScummVM launcher; $TITLE is in its game list"
+exec /usr/local/bin/scummvm
 `;
 
 export function composeSourceRootfsDemoConfig(
@@ -435,6 +726,44 @@ function requireOwnedDemoCommands(
         `source-rootfs demo profile ${profileId} does not own executable ${expected.executable}`,
       );
     }
+  }
+}
+
+/**
+ * The ScummVM profile's dock actions may run only catalog games, and its
+ * freeware menu must list the whole catalog, in order. The overlay JSON is
+ * tracked so the browser can read the menu without building the image; this
+ * keeps that copy and the catalog from drifting apart.
+ */
+function requireScummvmFreewareMenu(
+  demoBytes: Uint8Array,
+  catalog: ScummvmFreewareCatalog,
+): void {
+  const config = parseKandeloDemoConfig(decodeUtf8(demoBytes, "composed demo config"));
+  if (config === null) {
+    throw new Error("composed demo config has an unsupported version");
+  }
+  const actions = resolveDemoDockActions(config, "scummvm");
+  const gameIds = new Set(catalog.games.map((game) => game.id));
+  for (const action of actions) {
+    if (!("restart" in action)) continue;
+    const gameId = action.restart.startsWith(`${SCUMMVM_PLAY_COMMAND} `)
+      ? action.restart.slice(SCUMMVM_PLAY_COMMAND.length + 1)
+      : "";
+    if (!gameIds.has(gameId)) {
+      throw new Error(
+        `scummvm dock action ${action.id} must run ${SCUMMVM_PLAY_COMMAND} with a catalog game`,
+      );
+    }
+  }
+  const menu = actions.find((action) => action.id === SCUMMVM_FREEWARE_MENU_ACTION);
+  const expected = scummvmFreewareMenuEntries(catalog);
+  if (menu === undefined || !("menu" in menu) || !isDeepStrictEqual(menu.menu, expected)) {
+    throw new Error(
+      `scummvm dock action ${SCUMMVM_FREEWARE_MENU_ACTION} must list the freeware `
+        + "catalog (packages/registry/shell/scummvm-freeware-games.json); expected menu:\n"
+        + JSON.stringify(expected, null, 2),
+    );
   }
 }
 
@@ -712,6 +1041,76 @@ function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * Paths of the regular files whose bytes are stored in the image and begin
+ * with the Wasm magic. Lazy files and lazy-archive trees are skipped without
+ * being read, so the walk never materializes deferred content.
+ */
+function eagerWasmPrograms(fs: MemoryFileSystem): Set<string> {
+  const programs = new Set<string>();
+  const magic = new Uint8Array(WASM_MAGIC.length);
+  const walk = (dir: string): void => {
+    const handle = fs.opendir(dir);
+    try {
+      for (let entry = fs.readdir(handle); entry; entry = fs.readdir(handle)) {
+        if (entry.name === "." || entry.name === "..") continue;
+        const path = dir === "/" ? `/${entry.name}` : `${dir}/${entry.name}`;
+        if (fs.isPathDeferred(path)) continue;
+        const stat = fs.lstat(path);
+        const type = stat.mode & FILE_TYPE_MASK;
+        if (type === DIRECTORY_MODE) {
+          walk(path);
+          continue;
+        }
+        if (
+          type !== REGULAR_FILE_MODE ||
+          fs.getLazyEntry(path) !== null ||
+          stat.size < magic.byteLength
+        ) {
+          continue;
+        }
+        const fd = fs.open(path, 0, 0);
+        try {
+          if (fs.read(fd, magic, null, magic.byteLength) !== magic.byteLength) {
+            throw new Error(`short VFS read for ${path}`);
+          }
+        } finally {
+          fs.close(fd);
+        }
+        if (WASM_MAGIC.every((byte, index) => magic[index] === byte)) {
+          programs.add(path);
+        }
+      }
+    } finally {
+      fs.closedir(handle);
+    }
+  };
+  walk("/");
+  return programs;
+}
+
+function requireLazyShellPrograms(
+  sourcePrograms: ReadonlySet<string>,
+  fs: MemoryFileSystem,
+): void {
+  const allowedInodes = new Set(
+    [...EAGER_SHELL_PROGRAMS].map((path) => fs.stat(path).ino),
+  );
+  const added = [...eagerWasmPrograms(fs)]
+    .filter(
+      (path) =>
+        !sourcePrograms.has(path) && !allowedInodes.has(fs.lstat(path).ino),
+    )
+    .sort();
+  if (added.length > 0) {
+    throw new Error(
+      "source-rootfs shell must add programs as lazy files " +
+        "(SHELL_LAZY_BINARY_SPECS), but wrote eager Wasm at: " +
+        added.join(", "),
+    );
+  }
+}
+
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false;
   return left.every((byte, index) => byte === right[index]);
@@ -836,10 +1235,14 @@ export async function buildSourceRootfsShellImage(
   // authenticate atomic seals before the source image gains that authority.
   await fs.verifyImportedLazyAtomicGroupSeals();
   const terminalSession = readExperimentalTerminalSession(fs);
+  // The rootfs owns its own eager programs (login); only what this composer
+  // adds is held to the lazy default.
+  const sourceEagerPrograms = eagerWasmPrograms(fs);
   const demo = composeSourceRootfsDemoConfig(
     inputs.demoConfigPath,
     inputs.demoProfileOverlayPath,
   );
+  const scummvmCatalog = loadScummvmFreewareCatalog();
 
   // WHY: the terminal document is image-owned policy. Validate its programs
   // against the unmodified source rootfs before overlays can accidentally make
@@ -861,22 +1264,10 @@ export async function buildSourceRootfsShellImage(
   const unrelatedLazyBefore = lazyRecords(fs, omittedLazyIdentities);
 
   const bash = readRegularInput(inputs.bashPath, "bash dependency");
-  const fbdoom = readRegularInput(inputs.fbdoomPath, "fbdoom dependency");
-  const modeset = readRegularInput(inputs.modesetPath, "modeset dependency");
-  const sdl2 = readRegularInput(inputs.sdl2Path, "sdl2 dependency");
-  const wlcompositor = readRegularInput(
-    inputs.wlcompositorPath,
-    "wlcompositor dependency",
-  );
-  const wlterm = readRegularInput(inputs.wltermPath, "wlterm dependency");
-  const wlclock = readRegularInput(inputs.wlclockPath, "wlclock dependency");
-  const wlpaint = readRegularInput(inputs.wlpaintPath, "wlpaint dependency");
   const wldesktop = readRegularInput(
     inputs.wldesktopPath,
     "wldesktop launcher dependency",
   );
-  const klauncher = readRegularInput(inputs.klauncherPath, "klauncher dependency");
-  const notifySend = readRegularInput(inputs.notifySendPath, "notify-send dependency");
   const omarchydesktop = readRegularInput(
     inputs.omarchydesktopPath,
     "omarchydesktop launcher dependency",
@@ -893,7 +1284,6 @@ export async function buildSourceRootfsShellImage(
     inputs.libinputQuirksPath,
     "libinput quirks dependency",
   );
-  const espeakNg = readRegularInput(inputs.espeakNgPath, "espeak-ng dependency");
   const espeakNgData = readRegularInput(
     inputs.espeakNgDataPath,
     "espeak-ng data dependency",
@@ -917,26 +1307,11 @@ export async function buildSourceRootfsShellImage(
   requireCompleteProductShellContract(fs);
 
   ensureDirRecursive(fs, "/usr/local/bin");
-  writeVfsBinary(fs, "/usr/local/bin/fbdoom", fbdoom, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/sdl2", sdl2, 0o755);
-  // The Wayland desktop. /usr/local/bin/wldesktop arrives as a wayland-demo
-  // runtime_file and execs these four by name, so they must be on PATH as
-  // regular eager programs — a launcher whose programs are missing exits
-  // immediately and the machine shows an empty KMS surface.
-  writeVfsBinary(fs, "/usr/local/bin/wlcompositor", wlcompositor, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/wlterm", wlterm, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/wlclock", wlclock, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/wlpaint", wlpaint, 0o755);
+  // The desktops' launchers are small scripts, written eagerly. Every Wasm
+  // program they exec (wlcompositor, wlterm, klauncher, foot, Waybar, ...)
+  // is a lazy file registered by the overlay above, so a machine that never
+  // starts a desktop never fetches them.
   writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
-  // The tiling (hyprland) and Omarchy-shaped (omarchy) desktops start the
-  // same compositor through their own launchers. klauncher and notify-send
-  // are small in-tree programs, eager like the other wl* programs; foot,
-  // Waybar, mako and dbus-daemon are large and arrive as lazy rootfs files
-  // (images/rootfs/PACKAGES.toml), so machines that never start them do not
-  // pay for them.
-  writeVfsBinary(fs, "/usr/local/bin/klauncher", klauncher, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/notify-send", notifySend, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/omarchy-theme-changed", omarchyThemeHook, 0o755);
   // Configs, themes, launcher entries, fontconfig and D-Bus configs, and the
@@ -960,16 +1335,29 @@ export async function buildSourceRootfsShellImage(
   // the extracted pak.
   ensureDirRecursive(fs, "/usr/share");
   ensureDirRecursive(fs, "/usr/share/quake", 0o777);
-  // ScummVM: the engine and its GUI data are lazy; only the launch wrapper is
-  // eager. Game data is the user's own (no Kandelo package carries a
-  // commercial SCUMM title), so the profile takes it as an upload into this
-  // directory and the unprivileged demo user unzips it in place — it must be
-  // world-writable, like the Quake basedir above.
+  // ScummVM: the engine, its plugins and its GUI data are lazy; only the launch
+  // wrapper, scummvm-play and its catalog are eager. Game data is either the
+  // user's own upload or a freeware game scummvm-play fetches; both land in
+  // this directory and the unprivileged demo user unzips them in place — it
+  // must be world-writable, like the Quake basedir above.
   writeVfsBinary(
     fs,
     "/usr/local/bin/scummvm",
     new TextEncoder().encode(SCUMMVM_LAUNCH_SCRIPT),
     0o755,
+  );
+  writeVfsBinary(
+    fs,
+    SCUMMVM_PLAY_COMMAND,
+    new TextEncoder().encode(SCUMMVM_PLAY_SCRIPT),
+    0o755,
+  );
+  ensureDirRecursive(fs, "/usr/local/share/scummvm-play");
+  writeVfsBinary(
+    fs,
+    SCUMMVM_PLAY_CATALOG,
+    new TextEncoder().encode(scummvmPlayCatalogTsv(scummvmCatalog)),
+    0o644,
   );
   ensureDirRecursive(fs, "/usr/share/scummvm-games", 0o777);
   // Create the id1 game dir too: the bring-your-own-pak ingest writes
@@ -977,8 +1365,7 @@ export async function buildSourceRootfsShellImage(
   // to exist), and that path must work even offline when no quake106.zip was
   // staged and the wrapper's own `mkdir -p id1` never ran.
   ensureDirRecursive(fs, "/usr/share/quake/id1", 0o777);
-  ensureDirRecursive(fs, "/usr/bin");
-  writeVfsBinary(fs, "/usr/bin/espeak-ng", espeakNg, 0o755);
+  // /usr/bin/espeak-ng itself is a lazy file.
   // libespeak-ng's PATH_ESPEAK_DATA is compiled in as /usr/share.
   unpackDataZip(fs, "/usr/share/espeak-ng-data", espeakNgData);
   writeSdl2ShaderPresets(fs);
@@ -986,8 +1373,12 @@ export async function buildSourceRootfsShellImage(
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot
   // advertise a demo that boots successfully but never launches its workload.
   requireOwnedDemoCommands(fs, demo);
+  requireScummvmFreewareMenu(demo, scummvmCatalog);
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demo, 0o644);
+
+  // Checked before saving so a rejected composition writes no output.
+  requireLazyShellPrograms(sourceEagerPrograms, fs);
 
   // WHY: Bash is the one intentional eager identity. Every other source-rootfs
   // first-use download must retain the same path, URL, size, and tree metadata.
@@ -1037,21 +1428,11 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
   const allowed = new Set([
     "--rootfs",
     "--bash",
-    "--fbdoom",
-    "--modeset",
-    "--sdl2",
-    "--wlcompositor",
-    "--wlterm",
-    "--wlclock",
-    "--wlpaint",
     "--wldesktop",
-    "--klauncher",
-    "--notify-send",
     "--omarchydesktop",
     "--omarchy-theme-hook",
     "--desktop-data",
     "--libinput-quirks",
-    "--espeak-ng",
     "--espeak-ng-data",
     "--demo-config",
     "--demo-profile-overlay",
@@ -1070,17 +1451,12 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     ) {
       throw new Error(
         "usage: build-source-rootfs-shell-image.ts " +
-          "--rootfs <rootfs.vfs.zst> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
-          "--modeset <modeset.wasm> --sdl2 <sdl2.wasm> " +
-          "--wlcompositor <wlcompositor.wasm> --wlterm <wlterm.wasm> " +
-          "--wlclock <wlclock.wasm> --wlpaint <wlpaint.wasm> " +
-          "--wldesktop <wldesktop> --klauncher <klauncher.wasm> " +
-          "--notify-send <notify-send.wasm> " +
+          "--rootfs <rootfs.vfs.zst> --bash <bash.wasm> " +
+          "--wldesktop <wldesktop> " +
           "--omarchydesktop <omarchydesktop> " +
           "--omarchy-theme-hook <omarchy-theme-changed> " +
           "--desktop-data <kandelo-desktop-data.zip> " +
           "--libinput-quirks <libinput-quirks.zip> " +
-          "--espeak-ng <espeak-ng.wasm> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
@@ -1095,21 +1471,11 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
   return {
     rootfsPath: values.get("--rootfs")!,
     bashPath: values.get("--bash")!,
-    fbdoomPath: values.get("--fbdoom")!,
-    modesetPath: values.get("--modeset")!,
-    sdl2Path: values.get("--sdl2")!,
-    wlcompositorPath: values.get("--wlcompositor")!,
-    wltermPath: values.get("--wlterm")!,
-    wlclockPath: values.get("--wlclock")!,
-    wlpaintPath: values.get("--wlpaint")!,
     wldesktopPath: values.get("--wldesktop")!,
-    klauncherPath: values.get("--klauncher")!,
-    notifySendPath: values.get("--notify-send")!,
     omarchydesktopPath: values.get("--omarchydesktop")!,
     omarchyThemeHookPath: values.get("--omarchy-theme-hook")!,
     desktopDataPath: values.get("--desktop-data")!,
     libinputQuirksPath: values.get("--libinput-quirks")!,
-    espeakNgPath: values.get("--espeak-ng")!,
     espeakNgDataPath: values.get("--espeak-ng-data")!,
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,

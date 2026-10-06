@@ -9,15 +9,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-sdl2.XXXXXX")"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+SDL_VERSION="$WASM_POSIX_DEP_VERSION"
+WORK_DIR="$(kandelo_package_make_work_dir sdl2)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
-SDL_VERSION="${WASM_POSIX_DEP_VERSION:-2.32.10}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL2-${SDL_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:?WASM_POSIX_DEP_OUT_DIR must name the resolver staging directory}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
@@ -59,15 +61,16 @@ SRC_DIR="$WORK_DIR/source"
 BUILD_DIR="$WORK_DIR/build"
 REPRO_FLAGS="-ffile-prefix-map=$WORK_DIR=/usr/src/sdl2 -fdebug-prefix-map=$WORK_DIR=/usr/src/sdl2 -fmacro-prefix-map=$WORK_DIR=/usr/src/sdl2"
 
-echo "==> Downloading SDL2 $SDL_VERSION..."
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-    -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR" "$BUILD_DIR"
-tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+kandelo_package_stage_primary_source sdl2 "$SRC_DIR" "$WORK_DIR"
+
+mkdir -p "$BUILD_DIR"
 
 echo "==> Applying the Kandelo platform-classification patch..."
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0001-recognize-kandelo-as-unix.patch"
+# The KMSDRM backend has no GetDisplayDPI; without it a fullscreen client that
+# scales its UI by DPI (ScummVM) stays at 1x on a HiDPI display. Upstreamable.
+echo "==> Applying the KMSDRM display-DPI patch..."
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0002-kmsdrm-display-dpi-from-connector.patch"
 
 # --- Wayland pkg-config wiring (step 12b) ------------------------------
 # SDL2's configure gates the Wayland backend on a hard pkg-config probe
@@ -117,12 +120,24 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
 # variables short-circuits the lookup (acinclude/pkg.m4, _PKG_CONFIG's
 # first branch).
 #
+# --enable-render: ffplay (and any SDL program using SDL_CreateRenderer)
+# draws every frame through SDL's render API. It was disabled only because
+# this package began audio-only and its first video consumer draws with
+# GLES2 directly. On Kandelo the GLES2 renderer presents through the
+# browser's WebGL; KMSDRM has no window framebuffer, so SDL's software
+# renderer cannot present without GL (the Node host has none).
+#
 # SDL_VIDEO_STATIC_ANGLE forces src/video/SDL_egl.c's LOAD_FUNC macro
 # down its static-link branch, so `_this->egl_data->eglFoo` binds to the
-# libEGL.a symbol instead of going through SDL_LoadFunction. With
-# --disable-loadso that loader returns NULL and EGL init fails before a
-# window can exist. The ANGLE in the name means "EGL symbols are linked
-# in, not dlopened" — the same path the Vita and WinRT builds take.
+# libEGL.a symbol instead of going through SDL_LoadFunction: there is no
+# libEGL.so for the loader to open. The ANGLE in the name means "EGL
+# symbols are linked in, not dlopened" — the same path the Vita and WinRT
+# builds take.
+#
+# SDL_LoadObject itself is real (--enable-loadso, backed by dlopen):
+# programs such as ScummVM load their own plugins through it. A program
+# that links -ldl gets Kandelo's dynamic loader; one that does not gets
+# musl's stub, which fails honestly with "Dynamic loading not supported".
 (
     cd "$BUILD_DIR"
     LIBDRM_CFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \
@@ -164,13 +179,13 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
         --enable-video-opengl-es2 \
         --enable-events \
         --enable-input-events \
-        --disable-render \
+        --enable-render \
         --disable-joystick \
         --disable-haptic \
         --disable-hidapi \
         --disable-sensor \
         --disable-power \
-        --disable-loadso \
+        --enable-loadso \
         --disable-libudev \
         --disable-dbus \
         --disable-ime \
@@ -182,7 +197,6 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
         CFLAGS="-O2 $REPRO_FLAGS -DSDL_VIDEO_STATIC_ANGLE=1" \
         CPPFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \
         LDFLAGS="-L$LIBDRM_PREFIX/lib -L$WASM_POSIX_SYSROOT/lib" \
-        ac_cv_func_dlopen=no \
         ac_cv_func_sysctlbyname=no \
         ac_cv_func_elf_aux_info=no \
         ac_cv_func_pthread_set_name_np=no \
@@ -227,8 +241,9 @@ rm -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc.bak"
 # src/video/SDL_egl.c bind `eglFoo` as a direct symbol reference instead of
 # an SDL_LoadFunction lookup. libSDL2.a therefore has hard undefined
 # references to EGL and GLES2, and consumers that link through this file must
-# be told so. Without it, `-Wl,--allow-undefined` turns each one into an
-# `env.*` import that traps the first time a window is created. The same
+# be told so. Without it their links fail on the undefined EGL/GLES2
+# symbols (before ABI 47, `--allow-undefined` turned each into an `env.*`
+# import that trapped the first time a window was created). The same
 # holds for libffi: configure's Libs names the static Wayland archives, but
 # libwayland-client marshals every request through ffi_call, and nothing
 # else would tell a consumer to link it.
@@ -277,10 +292,16 @@ test -f "$INSTALL_DIR/lib/pkgconfig/sdl2.pc"
 # library that links but cannot open a window. Fail the build instead.
 for feature in SDL_VIDEO_DRIVER_KMSDRM SDL_VIDEO_DRIVER_WAYLAND \
     SDL_VIDEO_OPENGL_ES2 SDL_VIDEO_OPENGL_EGL SDL_INPUT_LINUXEV \
-    SDL_AUDIO_DRIVER_OSS; do
+    SDL_AUDIO_DRIVER_OSS SDL_VIDEO_RENDER_OGL_ES2; do
     grep -q "^#define $feature 1" "$INSTALL_DIR/include/SDL2/SDL_config.h" || {
         echo "ERROR: configure did not enable $feature" >&2
         exit 1
     }
 done
+# The render subsystem (SDL_CreateRenderer and friends) must be compiled in:
+# ffplay and other SDL programs draw every frame through it.
+if grep -q "^#define SDL_RENDER_DISABLED 1" "$INSTALL_DIR/include/SDL2/SDL_config.h"; then
+    echo "ERROR: SDL's render subsystem is disabled" >&2
+    exit 1
+fi
 echo "==> SDL2 static package complete (KMSDRM + Wayland video, evdev input, OSS audio)"

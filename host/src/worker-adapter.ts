@@ -104,6 +104,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NODE_WORKER_INIT_BY_MESSAGE } from "./node-worker-initialization";
+import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
 
 // Wasm guest stacks consume the embedding worker's native stack when engines
 // recurse through Wasm frames. Keep the default high enough for stack-heavy
@@ -195,6 +196,13 @@ export class NodeWorkerAdapter implements WorkerAdapter {
   /**
    * Try to find a compiled .js version of the entry file.
    * Checks: ../dist/<basename>.js (tsup output), then sibling .js.
+   *
+   * A compiled entry is used only if it embeds the current host source
+   * fingerprint — the same rule the kernel worker follows in
+   * node-kernel-host.ts. Without it, a source checkout silently ran a stale
+   * dist/worker-entry.js for every process and thread Worker after any
+   * host/src edit, so tests and debugging exercised old code. A stale bundle
+   * falls through to the source-bundling path below.
    */
   private resolveCompiledEntry(): URL | null {
     if (this._compiledEntry !== undefined) {
@@ -205,17 +213,24 @@ export class NodeWorkerAdapter implements WorkerAdapter {
       return null;
     }
     const href = this.entryUrl.href;
+    const sourcePath = fileURLToPath(this.entryUrl);
 
     // Check tsup dist output: src/worker-entry.ts → dist/worker-entry.js
     const distUrl = new URL(href.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js"));
-    if (distUrl.href !== href && existsSync(distUrl)) {
+    if (
+      distUrl.href !== href &&
+      compiledWorkerEntryIsCurrent(sourcePath, fileURLToPath(distUrl))
+    ) {
       this._compiledEntry = distUrl;
       return distUrl;
     }
 
     // Check sibling .js file
     const jsUrl = new URL(href.replace(/\.ts$/, ".js"));
-    if (jsUrl.href !== href && existsSync(jsUrl)) {
+    if (
+      jsUrl.href !== href &&
+      compiledWorkerEntryIsCurrent(sourcePath, fileURLToPath(jsUrl))
+    ) {
       this._compiledEntry = jsUrl;
       return jsUrl;
     }

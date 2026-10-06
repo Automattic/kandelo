@@ -102,11 +102,16 @@ if [ ! -d "$NIX_LIBUNWIND_SOURCE/libunwind" ]; then
     exit 1
 fi
 
-BUILD_DIR="$SCRIPT_DIR/build-${ARCH}"
+# WHY: two resolves of this recipe can run at once in one checkout. Each
+# keeps its source and build trees under its own resolver work root so
+# neither's `rm -rf` deletes the other's. A run without one keeps them
+# beside this script.
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+BUILD_DIR="$WORK_DIR/build-${ARCH}"
 # Assembled source tree lives OUTSIDE the build dirs so both the default
 # (static, non-PIC) build and the position-independent build below can share it
 # without one build's `rm -rf` deleting the other's source.
-LLVM_SRC_DIR="$SCRIPT_DIR/llvm-source-${ARCH}"
+LLVM_SRC_DIR="$WORK_DIR/llvm-source-${ARCH}"
 
 # --- Verify prerequisites ---
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
@@ -138,13 +143,18 @@ echo "==> Building libc++ and libc++abi for ${ARCH}..."
 # archive must also compile with `-wasm-use-legacy-eh=false` (the
 # SDK's `compileFlags` was updated in lock-step).
 #
-# LLVM records source/compilation paths in archive members. All assembled
-# sources and both variant build directories live under REPO_ROOT, so one
-# stable worktree mapping covers LLVM_SRC_DIR, BUILD_DIR, PIC_BUILD_DIR, the
-# generated smoke source, and sysroot paths for both PIC and non-PIC builds.
-# Without it, libc++abi.a and every side module absorbing it differ solely by
-# the caller's checkout path.
+# LLVM records source/compilation paths in archive members. The worktree
+# mapping covers sysroot paths. The assembled sources, both variant build
+# directories, and the generated smoke source live under WORK_DIR: beside this
+# script (inside REPO_ROOT) for a direct run, or under the resolver work root,
+# whose path carries a per-build PID. This recipe compiles with raw clang, so
+# the SDK wrapper's automatic work-root map does not apply; map it here, after
+# the worktree map so it wins where the two overlap. Without these, libc++abi.a
+# and every side module absorbing it differ by the caller's paths.
 REPRODUCIBLE_PREFIX_MAPS="-ffile-prefix-map=${REPO_ROOT}=/usr/src/kandelo -fdebug-prefix-map=${REPO_ROOT}=/usr/src/kandelo -fmacro-prefix-map=${REPO_ROOT}=/usr/src/kandelo"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    REPRODUCIBLE_PREFIX_MAPS="${REPRODUCIBLE_PREFIX_MAPS} -ffile-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx -fdebug-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx -fmacro-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx"
+fi
 WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG ${REPRODUCIBLE_PREFIX_MAPS}"
 
 # Start with a fresh source tree so a cache-miss rebuild does not mix old + new
@@ -176,15 +186,30 @@ NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 # compile-flags string (plus any extra cmake args). Factored so the default
 # static archives and the position-independent variant (below) share ONE cmake
 # recipe and cannot drift apart.
+# The KandeloCallTypes compiler plugin: libc++, libc++abi and libunwind
+# objects carry the `kandelo.calltypes` facts fork instrumentation reads,
+# like every object the SDK compiles (docs/sdk-guide.md, "Compiler facts for
+# fork instrumentation"). This recipe drives clang directly, so ask the SDK
+# for the plugin built for this exact compiler and pass the SDK's flags. The
+# plugin leaves the code unchanged.
+CALLTYPES_PLUGIN="$(node --experimental-strip-types "$REPO_ROOT/sdk/src/lib/calltypes-plugin.ts" "$LLVM_CLANG")"
+CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $CALLTYPES_PLUGIN -Xclang -add-plugin -Xclang kandelo-fncasts -fpass-plugin=$CALLTYPES_PLUGIN"
+
+# LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF: with
+# CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY, CMake's check_library_exists
+# only compiles, never links, so it reports every function present. musl has
+# no __cxa_thread_atexit_impl, so libc++abi must use its own pthread-key
+# implementation of __cxa_thread_atexit (the answer is seeded, not probed).
 build_libcxx_variant() {
     local variant_build_dir="$1"; shift
-    local variant_c_flags="$1"; shift
+    local variant_c_flags="$1 $CALLTYPES_FLAGS"; shift
     rm -rf "$variant_build_dir"
     mkdir -p "$variant_build_dir"
     ( cd "$variant_build_dir"
       cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/runtimes" \
         -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
-        -DCMAKE_SYSTEM_NAME=Generic \
+        -DCMAKE_SYSTEM_NAME=Kandelo \
+        -DCMAKE_MODULE_PATH="$REPO_ROOT/sdk/cmake" \
         -DCMAKE_SYSTEM_PROCESSOR="${ARCH}" \
         -DCMAKE_C_COMPILER="$LLVM_CLANG" \
         -DCMAKE_CXX_COMPILER="$LLVM_CLANG" \
@@ -221,6 +246,7 @@ build_libcxx_variant() {
         -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
         -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=ON \
         -DLIBCXXABI_ENABLE_THREADS=ON \
+        -DLIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF \
         -DLIBCXXABI_HAS_PTHREAD_API=ON \
         -DLIBCXXABI_INCLUDE_TESTS=OFF \
         \
@@ -333,7 +359,7 @@ echo "==> Header smoke compile passed."
 # and the header set above are untouched, so existing static consumers are
 # unaffected; only side-module consumers reach for the -pic archives.
 echo "==> Building position-independent libc++/libc++abi (for wasm side modules)..."
-PIC_BUILD_DIR="$SCRIPT_DIR/build-${ARCH}-pic"
+PIC_BUILD_DIR="$WORK_DIR/build-${ARCH}-pic"
 build_libcxx_variant "$PIC_BUILD_DIR" "${WASM_C_FLAGS} -fPIC" -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 
 LIBCXX_PIC_A=$(find "$PIC_BUILD_DIR" -name "libc++.a" -not -path "*/CMakeFiles/*" | head -1)

@@ -9,11 +9,10 @@ version = "1.52.0"
 # and unpack the data at /usr/share/espeak-ng-data, matching
 # CMAKE_INSTALL_PREFIX=/usr so libespeak-ng's PATH_ESPEAK_DATA resolves.
 kernel_abi = 43
-depends_on = ["libcxx@21.1.7"]
+depends_on = ["libcxx@21.1.7", "pcaudiolib-source@1.3"]
 
 # espeak-ng publishes no source archive as a release asset, so the pin
-# is its tag archive. The build script pins pcaudiolib 1.3 separately
-# against its published release tarball.
+# is its tag archive. pcaudiolib is a declared source dependency.
 [source]
 url = "https://github.com/espeak-ng/espeak-ng/archive/refs/tags/1.52.0.tar.gz"
 sha256 = "bb4338102ff3b49a81423da8a1a158b420124b055b60fa76cfb4b18677130a23"
@@ -52,7 +51,7 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 
 [[host_tools]]
 name = "python3"
-version_constraint = ">=3.10"
+version_constraint = ">=3.11"
 probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

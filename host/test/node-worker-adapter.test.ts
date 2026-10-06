@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { NodeWorkerAdapter, type WorkerHandle } from "../src/worker-adapter";
+import { hostBuildFingerprintBanner } from "../src/compiled-worker-entry";
 
 function waitForMessage(handle: WorkerHandle): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -33,6 +34,41 @@ function waitForMessage(handle: WorkerHandle): Promise<unknown> {
 }
 
 describe("NodeWorkerAdapter", () => {
+  it("ignores a compiled dist entry that does not match the sources", async () => {
+    // A source checkout's host/dist is whatever the last build produced.
+    // Without a matching build fingerprint it must not run guest processes.
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-worker-adapter-stale-"));
+    mkdirSync(join(dir, "src"));
+    mkdirSync(join(dir, "dist"));
+    const entryPath = join(dir, "src", "worker-entry.ts");
+    writeFileSync(
+      entryPath,
+      [
+        'import { parentPort } from "node:worker_threads";',
+        'parentPort?.postMessage("source");',
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "dist", "worker-entry.js"),
+      'import { parentPort } from "node:worker_threads";\nparentPort?.postMessage("stale dist");\n',
+    );
+
+    const adapter = new NodeWorkerAdapter(pathToFileURL(entryPath));
+    const handle = adapter.createWorker({ pid: 1 });
+    let bundledDir: string | undefined;
+    try {
+      await expect(waitForMessage(handle)).resolves.toBe("source");
+      const bundledEntry = (
+        adapter as unknown as { _bundledSourceEntry?: URL | false }
+      )._bundledSourceEntry;
+      if (bundledEntry instanceof URL) bundledDir = dirname(fileURLToPath(bundledEntry));
+    } finally {
+      await handle.terminate().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+      if (bundledDir !== undefined) rmSync(bundledDir, { recursive: true, force: true });
+    }
+  });
+
   it("bundles a TypeScript source worker when no compiled entry exists", async () => {
     const dir = mkdtempSync(join(tmpdir(), "kandelo-worker-adapter-test-"));
     const entryPath = join(dir, "worker-entry.ts");
@@ -80,6 +116,34 @@ describe("NodeWorkerAdapter", () => {
       if (bundledDir !== undefined) {
         rmSync(bundledDir, { recursive: true, force: true });
       }
+    }
+  });
+
+  it("uses a compiled dist entry only while it matches the host source", () => {
+    // Process and thread Workers must not run a stale dist bundle after a
+    // host/src edit; the kernel Worker already enforces the same fingerprint.
+    const root = mkdtempSync(join(tmpdir(), "kandelo-worker-dist-test-"));
+    try {
+      for (const file of ["package-lock.json", "package.json", "tsconfig.json", "tsup.config.ts"]) {
+        writeFileSync(join(root, file), `${file}\n`);
+      }
+      mkdirSync(join(root, "src"));
+      mkdirSync(join(root, "dist"));
+      const entryPath = join(root, "src", "worker-entry.ts");
+      const distPath = join(root, "dist", "worker-entry.js");
+      writeFileSync(entryPath, "export {};\n");
+      const resolve = () =>
+        (new NodeWorkerAdapter(pathToFileURL(entryPath)) as unknown as {
+          resolveCompiledEntry: () => URL | null;
+        }).resolveCompiledEntry();
+
+      writeFileSync(distPath, `${hostBuildFingerprintBanner(root)}\n`);
+      expect(resolve()?.href).toBe(pathToFileURL(distPath).href);
+
+      writeFileSync(entryPath, "export const edited = true;\n");
+      expect(resolve()).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

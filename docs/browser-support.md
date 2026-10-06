@@ -211,6 +211,15 @@ pipe pair.
   (`apps/browser-demos/pages/kandelo/panes/Shell.tsx`) builds its own
   `Terminal`; `apps/browser-demos/lib/pty-terminal.ts` provides a standalone
   `PtyTerminal` for pages that drive a `BrowserKernel` directly.
+- The PTY window size (`TIOCGWINSZ`) is the size of the terminal displaying
+  it. Only an `attachPty()` call that passes `{ cols, rows }` (the Shell
+  pane's fitted xterm) sets it, sending `SIGWINCH` to the foreground process
+  group when it changes. Programmatic writers that share the PTY without
+  rendering it — boot-link scripts, demo guide and dock actions,
+  `runShellCommand`, `interruptShellForeground` — attach without a size and
+  leave the winsize alone, so a full-screen program they launch (`vim`,
+  `nano`) fills the visible terminal. A PTY started before any terminal
+  reports a size starts at 80×24 until the first sized attach.
 
 #### Clickable links
 
@@ -368,11 +377,10 @@ Located in `apps/browser-demos/pages/`:
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
 | network | bash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
-| sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package and is baked into the image with its shader presets before boot. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
-| espeak | espeak-ng | dinit | Speech synthesis through upstream pcaudiolib's OSS backend, so playback rides the same `/dev/dsp` path as the doom demo. The binary and the voice data both come from the `espeak-ng` package closure — the data as the `espeak-ng-data.zip` runtime file, unpacked into `/usr/share/espeak-ng-data` while the image is composed, because libespeak-ng's `PATH_ESPEAK_DATA` is fixed at build time. |
-| modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package and is baked into the image before boot; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
-| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. No game ships; the profile takes a zipped game as an upload. |
-| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package and are baked into the image before boot; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
+| sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package as a lazy file in the image, fetched when the profile first runs it; its shader presets are baked into the image. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
+| modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
+| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
+| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + mako + Waybar + klauncher + qtgallery + Quickshell | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor, mako and Waybar; windows, including the Qt clients, are opened from the launcher and keybinds. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
@@ -669,9 +677,9 @@ eight-window launch storm that guards the kernel's SCM_RIGHTS fd delivery).
 
 ### Omarchy desktop demo
 
-The Omarchy desktop machine (`?vfs=<shell image>&profile=omarchy`) is the
-tiling desktop above plus the shell that makes it a desktop: a status bar,
-a launcher, notifications, and themes. Omarchy is not a program but a set of
+The Omarchy-style desktop machine (`?vfs=<shell image>&profile=omarchy`) is
+the tiling desktop above plus the shell that makes it a desktop: a status
+bar, a launcher, notifications, and themes. Omarchy is not a program but a set of
 files layered over Hyprland, so this machine is the same `wlcompositor`
 binary with its own `/usr/share/kandelo/omarchy/wlcompositor.conf`, an app
 registry under `/usr/share/kandelo/apps`, and six themes under
@@ -781,6 +789,57 @@ on the compositor's own process rather than on a foreground terminal.
   the browser, which reserves `SUPER` (see the caveat above). Tiled
   windows receive xdg-shell's `tiled_*` states, so a client that keeps
   its own size when floating — SDL, and so ScummVM — takes the tile's.
+- **Copy and paste inside the desktop.** The compositor keeps a real
+  Wayland clipboard, so text copied in one window pastes in another.
+  Omarchy's universal-clipboard binds are in the image: `Super+C` copies,
+  `Super+V` pastes, `Super+X` cuts and `Super+A` selects all. Each sends
+  the focused window the application's own shortcut — `Ctrl+C`/`Ctrl+V`,
+  or `Ctrl+Shift+C`/`Ctrl+Shift+V` for a window tagged `terminal` (foot,
+  by its app id, through the same window rule Omarchy uses). On macOS
+  these are `Cmd+C`/`Cmd+V`/`Cmd+X`/`Cmd+A`: Cmd reaches the desktop as
+  Super, and the page keeps those four keys from the browser. Only `V` is
+  also bound on `Ctrl`, so `Ctrl+V` pastes on Windows and Linux too. That
+  costs a terminal its literal-next key (`^V`); `Ctrl+C` is deliberately
+  not bound, so it still sends SIGINT. The chords Linux and Windows users
+  expect are bound too: `Shift+Insert` pastes and `Ctrl+Insert` copies,
+  routed by the same terminal tag. In foot, select text with the mouse,
+  then `Cmd+C`, `Ctrl+Shift+C` or `Ctrl+Insert`, and paste with `Cmd+V`,
+  `Ctrl+V`, `Ctrl+Shift+V` or `Shift+Insert`. Today foot is the only client on this desktop that reads the
+  clipboard; klauncher, Waybar, mako and the Qt demos take no pasted
+  text.
+- **Paste from your own clipboard.** Text copied anywhere on your
+  computer pastes into the desktop with the same chord: `Cmd+V` on macOS,
+  `Ctrl+V`, `Ctrl+Shift+V` or `Shift+Insert` elsewhere. The page lets the browser's own paste happen, hands
+  the text to the machine (through `/dev/kandelo/clipboard` to `kclipd`,
+  which makes it the desktop's selection), and only then delivers the
+  chord, so the focused window pastes the new text; keys typed meanwhile
+  wait behind it. Line endings are converted to LF. The browser never
+  asks for clipboard permission, because the text comes from the paste
+  you made, and the page reads the clipboard only then. If the text
+  cannot be delivered — no agent running, over 1 MiB, or no answer within
+  two seconds — a toast in the desktop pane says why, and the chord and
+  the keys typed while it was pending are discarded rather than typed
+  into the window. Pasting the same host text twice in a row pastes the
+  desktop's current selection instead, so a copy made inside the desktop
+  since then is kept.
+- **Copy to your own clipboard.** A copy chord over the desktop —
+  `Cmd+C`/`Cmd+X` on macOS; `Ctrl+Shift+C`, `Ctrl+Insert`, `Ctrl+C` or
+  `Ctrl+X` elsewhere — puts what the focused window copies on your
+  computer's clipboard. The page starts the clipboard write on the
+  chord's keydown and waits up to two seconds for the desktop's new
+  selection (reported by `kclipd`); if nothing is copied in that time —
+  `Ctrl+C` in a terminal is SIGINT, not copy — your clipboard keeps what
+  it had. Only copies made with one of these chords reach your clipboard:
+  a copy made from a menu with the mouse stays inside the desktop, and so
+  the earlier catch remains for it (copying X on the host, Y from a menu
+  in the desktop, then X on the host again pastes Y). Chrome may reserve
+  `Ctrl+Shift+C` for its developer tools when they are open; use
+  `Ctrl+Insert` then. The write uses a `ClipboardItem` whose text is a
+  promise, created during the keydown, because the text arrives after the
+  gesture; browsers without `ClipboardItem` fall back to `writeText` once
+  the text arrives, which a browser may refuse outside the gesture (the
+  Internals log says so). Automated tests cover Chromium; other engines
+  are verified by hand.
 
 #### What is not real yet (deferred work)
 
@@ -812,6 +871,14 @@ follow-ups, not as the end state.
 
 Smaller gaps, each a follow-up:
 
+- **Clipboard gaps.** Copies made without a copy chord (from a menu)
+  stay inside the desktop. Touch devices cannot copy or paste between the
+  desktop and the host: iOS and iPadOS have no paste chord, and selecting
+  text and using the system copy menu is future work in
+  `docs/superpowers/specs/2026-10-01-omarchy-clipboard-paste-design.md`.
+  Also missing: the clipboard manager Omarchy opens on `Super+Ctrl+V`,
+  drag-and-drop, the primary (middle-click) selection, and text formats
+  other than plain text.
 - **No `xdg_popup`**, so tooltips and menus are refused (see the bar,
   above).
 - **Super needs fullscreen keyboard lock.** Omarchy binds everything on
@@ -833,13 +900,20 @@ Smaller gaps, each a follow-up:
 #### Quickshell QML limits
 
 One host cost bounds Quickshell in the browser: compiled wasm code.
-`quickshell.wasm` is ~93 MB and Chromium compiles it to hundreds of MB of
-machine code — and it compiles that copy **per Web Worker**, because a
-worker is a separate V8 isolate and isolates do not share a module's
-compiled code even when the same `WebAssembly.Module` is posted to each.
-Every guest pthread is one worker, so each thread Quickshell starts costs
-another compiled copy on top of the running desktop
-(compositor, Waybar, qtgallery, foot, mako, dbus-daemon).
+`quickshell.wasm` is ~78 MB and Chromium compiles it to hundreds of MB of
+machine code, on top of the running desktop (compositor, Waybar,
+qtgallery, foot, mako, dbus-daemon). An earlier version of this section
+said every Web Worker compiles its own copy because isolates do not share
+a posted module's code. Measurement does not support that: one
+`WebAssembly.Module` posted to several workers shares its machine code in
+V8 and JavaScriptCore, and only a separate compilation of the same bytes
+makes another copy (see
+[architecture.md](architecture.md#compiled-module-sharing)). The kernel
+worker compiles each distinct program once while a copy is alive and posts
+that module to every process and thread worker that runs it. A guest
+pthread runs the thread-patched variant of the program's bytes, which is a
+second module: compiled once per program, then shared by every thread of
+every process running those bytes.
 
 Two facts about this cost were established by measurement, correcting two
 earlier half-explanations:
@@ -912,8 +986,9 @@ worker on the page. Compiled wasm code is several times the module's size:
 the 93 MB `quickshell.wasm` alone costs ~620 MB of that region. With the
 full desktop running — compositor, Waybar, qtgallery, foot, mako, dbus-daemon,
 klauncher — the region already holds ~1.2 GB of live code. Quickshell's
-launch compile fits (~1.9 GB), but any `pthread_create` compiles the
-thread-patched module as a second full copy, which cannot fit; the compile
+launch compile fits (~1.9 GB), but its first `pthread_create` compiles the
+thread-patched module as a second full copy (once per program; later
+threads reuse it), which cannot fit; the compile
 throws SpiderMonkey's `InternalError: out of memory`, Qt logs
 `QThread::start: Thread creation error`, and the panel never maps. The
 thread cuts above shrink how many second copies a Qt client makes but do
@@ -951,12 +1026,26 @@ AudioWorklet intentionally exposes transport cursors, not rendered samples.
 ### ScummVM demo
 
 The ScummVM machine (`?vfs=<shell image>&profile=scummvm`) runs unmodified
-upstream ScummVM's SCUMM engine fullscreen on `/dev/dri/card0`: SDL2's
+upstream ScummVM fullscreen on `/dev/dri/card0`: SDL2's
 KMSDRM backend takes DRM master and renders GLES2 straight to the display,
-and audio goes through OSS on `/dev/dsp`. The engine
+and audio goes through OSS on `/dev/dsp`. The program
 (`/usr/bin/scummvm`) and the GUI data the package declares as runtime files
 (themes, icons and fonts under `/usr/share/scummvm`) are lazy files in the
-shell image, fetched on first use. The machine's command is
+shell image, fetched on first use.
+
+Each engine is a separate plugin, `/usr/lib/scummvm/lib<engine>.so`, and
+also a lazy file: the SCUMM engine (with its `scumm-7-8` sub-engine) plus
+the engine of every freeware game below (Sky, Drascula, DreamWeb, Queen,
+God of Thunder, Griffon, Lure, ADL, Parallaction, CGE, CGE2, SLUDGE and
+WAGE). ScummVM's own plugin support loads them with `dlopen` in its
+"uncached" mode, opening only the one engine a game needs, by engine id
+(`sky` → `libsky.so`). Game detection stays in the program, so the launcher
+recognizes every game without loading an engine. A machine therefore
+downloads the program plus the one engine of the game it plays. SDL2's
+`SDL_LoadObject` is the real loader (the `sdl2` package builds with
+`--enable-loadso`), and the program links with `--export-all` so a plugin
+resolves every function it imports against it; the package build fails if
+any plugin import has no export to bind to. The machine's command is
 `/usr/local/bin/scummvm`, a small wrapper in the image that:
 
 - names SDL's backends in the environment. Kandelo has no libudev, so
@@ -965,13 +1054,49 @@ shell image, fetched on first use. The machine's command is
   [package-management.md](package-management.md#packages-that-are-not-real-upstream-builds-yet)).
 - seeds `~/scummvm.ini` on first launch. ScummVM rewrites its config
   whenever the user adds a game, so it lives in the writable home rather
-  than in image content. The GUI scale is fixed at 100%: ScummVM's
-  KMSDRM path does not read the connector's physical size the way the
-  desktops do (see the HiDPI note above), so on a HiDPI screen its
-  launcher is drawn small. Game graphics are unaffected; they scale to
-  the display.
+  than in image content. `gui_scale` stays at ScummVM's default of 100%;
+  that key is the user's own multiplier. The display's factor comes from
+  SDL: ScummVM sizes its launcher by `SDL_GetDisplayDPI` (its reference
+  is 90 dpi, clamped to 1x-4x), and SDL derives the DPI from the
+  connector's physical size, which the kernel reports from the pane. SDL2's
+  KMSDRM backend has no DPI query upstream, so the `sdl2` package adds
+  one (`patches/0002-kmsdrm-display-dpi-from-connector.patch`). On a
+  display at twice the reference density the launcher is drawn at about
+  twice the size. Game graphics always scale to the display.
 
-No game ships with the machine: no Kandelo package carries a commercial
+The display's dock offers the freeware games the ScummVM project
+distributes: **Play a freeware game** opens a menu of them with each
+download's size. The rights holders made these
+games freeware (Beneath a Steel Sky's licence, the `readme.txt` inside its
+archive and kept beside the data, allows free redistribution as long as
+that readme and the copyright notices stay intact). Two catalog games are
+listed but disabled, with the reason: Broken Sword 2.5 needs Theora video
+and Lua, which the build leaves out, and its 859 MB archive does not fit
+the machine's filesystem; Helga Deep in Trouble needs the Wintermute
+engine's JPEG support.
+
+The catalog is image content. `packages/registry/shell/scummvm-freeware-games.json`
+lists each game's archive URL on `downloads.scummvm.org`, its size, and the
+SHA-256 the ScummVM project publishes beside it; the image builder writes it
+to `/usr/local/share/scummvm-play/games.tsv`, and fails if the ScummVM
+profile's dock menu does not list exactly its games. Each button and menu
+entry is a `dockActions` command: it ends the running ScummVM with Ctrl+C,
+then runs `/usr/local/bin/scummvm-play <game>` in the machine's shell. That
+script downloads the archive with the machine's own `curl` — in the browser
+that goes through the CORS proxy described below, because the site grants
+no CORS — reporting a percentage against the catalog size (the guest
+receives downloads as chunked responses, so `curl` never learns the total),
+checks the SHA-256, unzips into `/usr/share/scummvm-games/<game>`, and
+deletes the archive. ScummVM's own `--add --recursive` then finds the game
+and records it as a launcher target, and the script starts that target; a
+collection (the WAGE games) opens the launcher instead. A failed download
+or a digest mismatch stops there with a message in the machine's terminal;
+nothing is started from unverified data. `scummvm-play --list` prints the
+catalog in the terminal. A game stays unpacked for the rest of the session,
+so choosing it again starts it without downloading; nothing persists across
+a reboot.
+
+No other game ships with the machine: no Kandelo package carries a commercial
 SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
 512 MiB, the platform's ingest ceiling) and writes it to
 `/usr/share/scummvm-games/upload.zip` while ScummVM keeps running. The
@@ -991,15 +1116,22 @@ Wayland backend, and ScummVM runs as a GL client in a tile. It is told
 it is tiled (xdg-shell's `tiled_*` states), so it takes the tile's size,
 and its GL buffer is reallocated to that size (the `libwayland-egl` resize
 path in [architecture.md](architecture.md#drmkms-devdricard0-devdrirenderd128)).
-The fixed 100% GUI scale applies there too, so on a HiDPI desktop its
-launcher is drawn small; having the seeded config follow the display
-scale is a follow-up.
+Its launcher scales with the display there too: the compositor reports
+the connector's physical size in `wl_output.geometry`, and SDL's Wayland
+backend derives the DPI from it.
 
 Gated in the browser by `apps/browser-demos/test/kandelo-scummvm.spec.ts`
-(the GUI data reaches the guest, the config is writable, and an upload is
-extracted where the launcher browses). The Wayland path was verified by
-hand in Chromium at a device scale factor of 2 (full launcher in the tile;
-a click opens Global Options); no spec gates it yet.
+(the GUI data reaches the guest, the config is writable, an upload is
+extracted where the launcher browses, and the freeware menu lists the
+catalog with its unrunnable games disabled; tagged `@slow`, since they
+download through the proxy, the Steel Sky action and a menu entry each
+replace the running ScummVM with their game on its engine plugin). The Wayland path is gated by
+`apps/browser-demos/test/kandelo-omarchy.spec.ts`: ScummVM launched from
+the launcher is tiled, drawn by the GPU path, and commits a buffer of its
+tile's size. Pointer input and the launcher's size on a HiDPI display are
+checked by hand (Chromium at a device scale factor of 2), because
+Playwright's emulated device scale does not change the size the pane
+reports.
 
 ### Kandelo session UI
 
@@ -1423,8 +1555,8 @@ alone is therefore enough to boot a first-party machine or a stranger's image,
 and both travel one code path.
 
 An image may declare several profiles — the shell image carries `shell`,
-`node`, `doom`, `quake`, `modeset`, `sdl2`, `wayland`, and `espeak` — so one
-channel selects one:
+`node`, `doom`, `quake`, `modeset`, `sdl2`, `scummvm`, `wayland`, and
+`omarchy` — so one channel selects one:
 
 1. `&profile=<id>` on the page URL.
 2. else the image's own `defaultProfile`.
@@ -1604,8 +1736,13 @@ declare these blocks.
   computes `kandelo:shell@abi<N>` from the ABI it was built with, and real
   ABI compatibility is enforced by the `__abi_version` check on binaries.
 - `runtime` — what the machine needs: `features` (any of `framebuffer`,
-  `kms`, `kms-gl-scanout`, `evdev-input`) and `requests` (`memoryPages`,
-  `maxWorkers`) which the host clamps to its own policy. `kms-gl-scanout`
+  `kms`, `kms-gl-scanout`, `evdev-input`, `clipboard`) and `requests`
+  (`memoryPages`, `maxWorkers`) which the host clamps to its own policy.
+  `clipboard` says the image runs an agent on `/dev/kandelo/clipboard`
+  (kclipd), so the host turns a browser paste over the machine into an
+  offer on it, and a copy chord over the machine into a copy-out from it;
+  it rides on the DOM input source, so the parser rejects it
+  without `evdev-input`. `kms-gl-scanout`
   additionally routes the KMS surface through the vblank pump's WebGL2
   scanout presenter, which a Wayland compositor needs: its own GL context
   claims the canvas as the steady state, but the presenter has to cover
@@ -1665,6 +1802,61 @@ uses the kernel signal path and bounded process/device waits before dispatching
 the image-owned command. Write, signal, timeout, and command-dispatch failures
 remain visible. An absent `ingest` block means the image exposes no upload
 capability; the loader does not infer one from a package or profile name.
+
+A profile may also declare up to four dock buttons that replace the machine's
+foreground program. The browser UI shows them on the display surface's dock,
+before the ingest control:
+
+```json
+{
+  "dockActions": [
+    {
+      "id": "demo",
+      "label": "Run the demo",
+      "description": "Shown as the button's tooltip",
+      "restart": "/usr/local/bin/run-demo"
+    },
+    {
+      "id": "freeware",
+      "label": "Play a freeware game",
+      "menu": [
+        {
+          "id": "lure",
+          "label": "Lure of the Temptress",
+          "detail": "6 MB",
+          "restart": "/usr/local/bin/scummvm-play lure"
+        },
+        {
+          "id": "helga-deep-in-trouble",
+          "label": "Helga Deep in Trouble",
+          "unavailable": "needs the Wintermute engine's JPEG support"
+        }
+      ]
+    }
+  ]
+}
+```
+
+An action declares exactly one of `restart` (the button runs it) or `menu`
+(the button opens a list of up to 40 entries, and the chosen entry's
+`restart` runs the same way). An entry's optional `detail` is shown beside
+its label and `group` collects entries under a heading. An entry the image
+knows about but cannot run declares `unavailable`, the reason, instead of
+`restart`; the menu shows it disabled with that reason, so the gap stays
+visible rather than silently missing.
+
+A display machine's command (its `init.shellCommand`) is a long-lived program
+that owns the machine's terminal and a single-owner display device, so running
+something else means ending that program first. A click does what a person at
+the terminal would: the host types the interrupt character (Ctrl+C) into the
+machine's shell PTY, which the kernel's line discipline delivers as `SIGINT`
+to the foreground process group, and waits for the shell's prompt to come
+back (`KernelHost.interruptShellForeground`). The prompt is the evidence the
+program exited and released its devices; if it does not appear within ten
+seconds the action fails visibly and the command is not sent. Only then is
+`restart` written to the shell, exactly as if typed. Like `ingest.onLoad`,
+`restart` is the image author's command, never user input. `id`s must be
+unique within the profile, and entry `id`s within their menu.
 
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
@@ -1797,7 +1989,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | package-built platform rootfs plus shell demo assets; Bash and login are embedded, while sudo and the ordinary command set remain first-use package outputs |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | package-built platform rootfs plus shell demo assets; Bash and login are embedded; every other program — sudo, the ordinary command set, and the demo machines' programs — is a first-use package output, and the composer rejects any other program it would embed |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
@@ -2094,6 +2286,65 @@ new churn after it is crossed, but an already-grown generation or simultaneous
 exits can exceed it. JavaScript cannot hard-bound native backing that the
 browser engine has not reclaimed. Garbage-collection observations and bounded,
 coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
+
+### Text-mode web browsing (ELinks) in the browser
+
+The shell image ships ELinks, a text-mode web browser, built with the
+QuickJS-NG JavaScript engine. `elinks <url>` browses interactively and
+`elinks -dump <url>` prints a page as text. The image's
+`/etc/elinks/elinks.conf` turns page JavaScript on (upstream ships it off) and
+selects 24-bit color; both are ordinary ELinks options a user can change.
+
+On the Node.js host ELinks uses real TCP sockets. In the browser its requests
+cross the same boundary as every other guest HTTP client (the CORS proxy
+profile is described under [Kandelo session UI](#kandelo-session-ui)): the
+kernel terminates the guest's TLS locally and re-issues the request with
+`fetch()` through the CORS proxy. Plain page loads work that way — fetching
+`example.com`, Hacker News, a Wikipedia article, DuckDuckGo's HTML search
+results, and CNN's lite site were each checked in Chromium. The boundary does
+change what a browser-hosted ELinks can do:
+
+- **No cookies, so no logins.** The Fetch API never exposes `Set-Cookie`
+  response headers to script, so they cannot be relayed to the guest and
+  ELinks never learns a site's cookies. Sites that need a session (logins,
+  carts, consent walls that set a cookie) do not work. This is a browser
+  limit, not an ELinks setting: ELinks's own cookie support is compiled in and
+  works on Node.js. A request that does carry a `Cookie` header is refused
+  before dispatch rather than sent without it, as described above.
+- **Sites see the real browser's `User-Agent`.** `User-Agent`,
+  `Accept-Language`, and `Referer` are set by the browser on every `fetch()`;
+  ELinks's values never reach the site. A site that serves simplified HTML to
+  text browsers by sniffing the user agent will serve its full page instead.
+- **HTTP and HTTPS only.** ELinks is built with Gopher, Gemini, finger, and
+  FTP support, but those need raw TCP, which a browser cannot open. They have
+  not been tested on Node.js either.
+- **Form submission is untested.** A `POST` crosses the proxy only with the
+  request headers the proxy profile allows; ELinks's form posts have not been
+  checked against it.
+
+The ELinks build itself leaves out features whose libraries Kandelo does not
+package: translations (the interface is English), regular-expression search,
+international domain names, XBEL bookmark import/export, and brotli or zstd
+content decoding. `elinks -version` lists what is compiled in.
+
+### SDL rendering needs GL, which only the browser host provides
+
+SDL2 on Kandelo presents video through its KMSDRM backend with the OpenGL ES 2
+renderer, which the browser host bridges to WebGL on the `/dev/dri/card0`
+scanout. The Node host has no GL context (`host_gl_query` returns -1), and SDL2's
+KMSDRM backend implements no window framebuffer, so SDL's software renderer
+cannot present there either. A program that creates an SDL renderer therefore
+shows video only in the browser. On Node, `ffplay` reports
+`Failed to create window or renderer: Couldn't find matching render driver` and
+exits as upstream does (status 0); `ffplay -nodisp` still plays audio through
+SDL's OSS backend to `/dev/dsp`, and FFmpeg's own `fbdev` and `oss` outputs work
+on both hosts.
+
+Why not a Node software path: it would need either a GL implementation on the
+Node host or a KMSDRM window framebuffer in SDL, and SDL's KMSDRM backend has no
+framebuffer path upstream. Residual risk: an SDL program that falls back from a
+failed renderer differently from ffplay may behave differently on Node than in
+the browser.
 
 ### npm registry access in the browser
 

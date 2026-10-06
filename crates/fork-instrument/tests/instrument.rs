@@ -134,7 +134,20 @@ fn protected_unwind_body_seq(module: &Module, id: FunctionId) -> InstrSeqId {
         1,
         "expected exactly one wrapper Block in entry of func {id:?}",
     );
-    blocks[0]
+    // The body sits inside the function-wide private-tag catch:
+    // `block $postamble (block $caught (try_table (catch $unwind $caught)
+    // (block $unwind_save ...) br $postamble)) <select> br_if br)`.
+    let postamble = blocks[0];
+    let Some((Instr::Block(caught), _)) = f.block(postamble).instrs.first() else {
+        panic!("expected the private-tag catch block in func {id:?}");
+    };
+    let Some((Instr::TryTable(try_table), _)) = f.block(caught.seq).instrs.first() else {
+        panic!("expected the function-wide try_table in func {id:?}");
+    };
+    let Some((Instr::Block(body), _)) = f.block(try_table.seq).instrs.first() else {
+        panic!("expected the unwind-save block in func {id:?}");
+    };
+    body.seq
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -250,13 +263,7 @@ fn assert_function_calls_codec_pair(
 ) {
     let encode = reference_codec_function(module, encode_name);
     let decode = reference_codec_function(module, decode_name);
-    let function = local_func(module, func_by_name(module, function_name));
-    let mut calls = HashSet::new();
-    walk_all(function, function.entry_block(), &mut |_, instruction| {
-        if let Instr::Call(call) = instruction {
-            calls.insert(call.func);
-        }
-    });
+    let calls = calls_including_codec_helpers(module, func_by_name(module, function_name));
     assert!(
         calls.contains(&encode),
         "`{function_name}` must encode its live reference through `{encode_name}`"
@@ -265,6 +272,31 @@ fn assert_function_calls_codec_pair(
         calls.contains(&decode),
         "`{function_name}` must decode its live reference through `{decode_name}`"
     );
+}
+
+/// Direct callees of `function`, plus those of the shared codec helpers it
+/// calls.
+fn calls_including_codec_helpers(module: &Module, function: FunctionId) -> HashSet<FunctionId> {
+    fn direct(module: &Module, function: FunctionId) -> HashSet<FunctionId> {
+        let local = local_func(module, function);
+        let mut calls = HashSet::new();
+        walk_all(local, local.entry_block(), &mut |_, instruction| {
+            if let Instr::Call(call) = instruction {
+                calls.insert(call.func);
+            }
+        });
+        calls
+    }
+    let mut calls = direct(module, function);
+    let helpers: Vec<FunctionId> = calls
+        .iter()
+        .copied()
+        .filter(|callee| is_codec_helper(module, *callee))
+        .collect();
+    for helper in helpers {
+        calls.extend(direct(module, helper));
+    }
+    calls
 }
 
 fn assert_function_uses_exception_recipe(module: &Module, function_name: &str) {
@@ -292,23 +324,32 @@ fn sequences_with_direct_call(
 ) -> Vec<Vec<InstrKind>> {
     let owner = local_func(module, func_by_name(module, owner_name));
     let target = func_by_name(module, target_name);
-    let mut sequences = HashSet::new();
-    walk_all(owner, owner.entry_block(), &mut |sequence, instruction| {
-        if matches!(instruction, Instr::Call(call) if call.func == target) {
-            sequences.insert(sequence);
+    // Each call's operand sequence: the instructions after the preceding
+    // block or call-index `local.set`, through the call itself.
+    let mut out = Vec::new();
+    walk_all(owner, owner.entry_block(), &mut |sequence, _| {
+        let instrs = &owner.block(sequence).instrs;
+        for (index, (instruction, _)) in instrs.iter().enumerate() {
+            if !matches!(instruction, Instr::Call(call) if call.func == target) {
+                continue;
+            }
+            let start = instrs[..index]
+                .iter()
+                .rposition(|(previous, _)| {
+                    matches!(previous, Instr::Block(_) | Instr::LocalSet(_) | Instr::IfElse(_))
+                })
+                .map_or(0, |boundary| boundary + 1);
+            out.push(
+                instrs[start..=index]
+                    .iter()
+                    .map(|(instruction, _)| InstrKind::of(instruction))
+                    .collect(),
+            );
         }
     });
-    sequences
-        .into_iter()
-        .map(|sequence| {
-            owner
-                .block(sequence)
-                .instrs
-                .iter()
-                .map(|(instruction, _)| InstrKind::of(instruction))
-                .collect()
-        })
-        .collect()
+    out.sort_by_key(|kinds: &Vec<InstrKind>| kinds.len());
+    out.dedup();
+    out
 }
 
 fn assert_resume_routing(module: &Module, owner_name: &str) {
@@ -332,18 +373,38 @@ fn assert_resume_routing(module: &Module, owner_name: &str) {
             _ => None,
         })
         .expect("resume table import");
-    let owner = local_func(module, func_by_name(module, owner_name));
+    // The owner replays its lexical call; the generated transport helper it
+    // calls owns the process resume routing.
+    let owner_id = func_by_name(module, owner_name);
+    let owner = local_func(module, owner_id);
+    let mut routers = vec![owner_id];
+    walk_all(owner, owner.entry_block(), &mut |_, instruction| {
+        if let Instr::Call(call) = instruction {
+            if module
+                .funcs
+                .get(call.func)
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("__wpk_fork_unwind_transport_"))
+            {
+                routers.push(call.func);
+            }
+        }
+    });
     let mut peeks = 0;
     let mut dispatches = 0;
-    walk_all(
-        owner,
-        owner.entry_block(),
-        &mut |_, instruction| match instruction {
-            Instr::Call(call) if call.func == resume_peek => peeks += 1,
-            Instr::CallIndirect(call) if call.table == resume_table => dispatches += 1,
-            _ => {}
-        },
-    );
+    for router in routers {
+        let router = local_func(module, router);
+        walk_all(
+            router,
+            router.entry_block(),
+            &mut |_, instruction| match instruction {
+                Instr::Call(call) if call.func == resume_peek => peeks += 1,
+                Instr::CallIndirect(call) if call.table == resume_table => dispatches += 1,
+                _ => {}
+            },
+        );
+    }
     assert!(peeks > 0, "{owner_name} must peek the next replay event");
     assert!(
         dispatches > 0,
@@ -394,6 +455,42 @@ fn assert_direct_activation_replay_is_lexical(module: &Module, owner_name: &str)
         "{owner_name} must enter its exact direct activation without adding a \
          resume-thunk frame"
     );
+}
+
+/// Replay dispatch points: `br_table`s plus single-target
+/// `state >= REWINDING; br_if` guards.
+fn count_replay_dispatches(f: &LocalFunction) -> usize {
+    let mut count = count_br_tables(f);
+    fn guards(f: &LocalFunction, seq: InstrSeqId) -> usize {
+        let instrs = &f.block(seq).instrs;
+        let mut n = instrs
+            .windows(4)
+            .filter(|w| {
+                matches!(w[0].0, Instr::GlobalGet(_))
+                    && matches!(
+                        w[1].0,
+                        Instr::Const(ir::Const {
+                            value: ir::Value::I32(2)
+                        })
+                    )
+                    && matches!(
+                        w[2].0,
+                        Instr::Binop(ir::Binop {
+                            op: ir::BinaryOp::I32GeU
+                        })
+                    )
+                    && matches!(w[3].0, Instr::BrIf(_))
+            })
+            .count();
+        for (instr, _) in instrs {
+            for child in nested_of(instr) {
+                n += guards(f, child);
+            }
+        }
+        n
+    }
+    count += guards(f, f.entry_block());
+    count
 }
 
 fn count_br_tables(f: &LocalFunction) -> usize {
@@ -662,17 +759,42 @@ fn direct_caller_entry_shape_is_preamble_wrapper_postamble() {
 }
 
 #[test]
-fn fork_path_function_has_one_top_level_br_table() {
+fn single_call_with_empty_prefix_needs_no_replay_dispatch() {
+    // Nothing precedes the only fork call, so replay and normal execution
+    // reach it by the same fallthrough.
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     validate(&bytes);
     let module = Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
     let f = local_func(&module, caller);
     assert_eq!(
-        count_br_tables(f),
-        1,
-        "each fork-path function should emit exactly one dispatch br_table",
+        count_replay_dispatches(f),
+        0,
+        "an empty pre-call chunk needs no replay dispatch",
     );
+}
+
+#[test]
+fn single_call_with_prefix_uses_one_single_target_replay_guard() {
+    let bytes = instrument_wat(FIXTURE_MIXED_CALLEES);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let f = local_func(&module, func_by_name(&module, "caller"));
+    assert_eq!(count_br_tables(f), 0, "one landing needs no index table");
+    assert_eq!(
+        count_replay_dispatches(f),
+        1,
+        "replay must skip the helper call before the only fork call",
+    );
+}
+
+#[test]
+fn multiple_calls_use_one_top_level_br_table() {
+    let bytes = instrument_wat(FIXTURE_TWO_CALLS);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let f = local_func(&module, func_by_name(&module, "caller"));
+    assert_eq!(count_br_tables(f), 1, "one dispatch br_table");
 }
 
 #[test]
@@ -726,10 +848,10 @@ fn transitive_callers_are_all_wrapped() {
 
     for name in ["caller_leaf", "caller_mid"] {
         let id = func_by_name(&module, name);
-        assert_eq!(
-            count_br_tables(local_func(&module, id)),
-            1,
-            "transitive caller `{name}` should have a dispatch br_table",
+        let kinds = entry_instr_kinds(&module, id);
+        assert!(
+            matches!(kinds.last(), Some(InstrKind::Throw)),
+            "transitive caller `{name}` should carry the unwind postamble: {kinds:?}",
         );
     }
 
@@ -819,19 +941,8 @@ fn find_dispatch_normal(module: &Module, func_id: FunctionId) -> Option<InstrSeq
     let f = local_func(module, func_id);
     let mut dispatch: Option<InstrSeqId> = None;
     walk_all(f, f.entry_block(), &mut |seq, instr| {
-        if dispatch.is_some() {
-            return;
-        }
-        if let Instr::IfElse(ie) = instr {
-            // Check whether the if-then contains a BrTable.
-            let then_seq = f.block(ie.consequent);
-            if then_seq
-                .instrs
-                .iter()
-                .any(|(i, _)| matches!(i, Instr::BrTable(_)))
-            {
-                dispatch = Some(seq);
-            }
+        if dispatch.is_none() && matches!(instr, Instr::BrTable(_)) {
+            dispatch = Some(seq);
         }
     });
     dispatch
@@ -839,32 +950,47 @@ fn find_dispatch_normal(module: &Module, func_id: FunctionId) -> Option<InstrSeq
 
 #[test]
 fn dispatch_block_contains_rewind_guarded_br_table() {
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let bytes = instrument_wat(FIXTURE_TWO_CALLS);
     validate(&bytes);
     let module = Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
     let dispatch = find_dispatch_normal(&module, caller).expect("dispatch block missing");
-    // Shape: GlobalGet, Const, Binop, IfElse.
+    // Shape: `state < REWINDING` leaves the block for the normal path, then
+    // the selected call index drives the br_table.
     assert_eq!(
         seq_kinds(&module, caller, dispatch),
         vec![
             InstrKind::GlobalGet,
             InstrKind::Const,
             InstrKind::Binop,
-            InstrKind::IfElse,
+            InstrKind::BrIf,
+            InstrKind::GlobalGet,
+            InstrKind::BrTable,
         ],
+    );
+    let f = local_func(&module, caller);
+    let instrs = &f.block(dispatch).instrs;
+    assert!(
+        matches!(&instrs[3].0, Instr::BrIf(br) if br.block == dispatch),
+        "the state guard must leave the dispatch block itself"
+    );
+    assert!(
+        matches!(&instrs[4].0, Instr::GlobalGet(get)
+            if module.globals.get(get.global).name.as_deref() == Some("_wpk_fork_call_index")),
+        "replay reads the selected call index from the runtime global"
     );
 }
 
 #[test]
 fn br_table_default_points_to_unwind_save() {
     // For a function with N fork-path calls, the br_table has N
-    // target entries + default. For FIXTURE_DIRECT_CALLER (one call),
-    // br_table has one target (POST_0) and a default ($unwind_save).
-    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    // target entries + default. For FIXTURE_TWO_CALLS, br_table has two
+    // targets (POST_0, POST_1) and a default ($unwind_save).
+    let bytes = instrument_wat(FIXTURE_TWO_CALLS);
     let module = Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
     let f = local_func(&module, caller);
+    let unwind_save = protected_unwind_body_seq(&module, caller);
 
     let mut br_table_info: Option<(Vec<InstrSeqId>, InstrSeqId)> = None;
     walk_all(f, f.entry_block(), &mut |_, instr| {
@@ -872,8 +998,9 @@ fn br_table_default_points_to_unwind_save() {
             br_table_info = Some((bt.blocks.to_vec(), bt.default));
         }
     });
-    let (blocks, _default) = br_table_info.expect("br_table missing");
-    assert_eq!(blocks.len(), 1, "one call → one br_table target");
+    let (blocks, default) = br_table_info.expect("br_table missing");
+    assert_eq!(blocks.len(), 2, "two calls → two br_table targets");
+    assert_eq!(default, unwind_save, "an invalid index leaves the body for the postamble");
 }
 
 #[test]
@@ -926,15 +1053,15 @@ fn source_call_results_do_not_cross_an_unwinding_state_probe() {
         .expect("direct imported-call transport helper")
         .id();
 
-    // The lexical call now lives in NORMAL and zero-sentinel branches, while
-    // REWIND with another committed frame uses the shared resume table.
+    // One lexical call serves NORMAL and REWIND; the transport helper routes
+    // replay through the shared resume table itself, and the function-wide
+    // catch owns unwinding. With one call site and nothing before it, the
+    // body is just the call.
     let kinds = seq_kinds(&module, caller, unwind_save);
-    assert_eq!(kinds.first(), Some(&InstrKind::Block));
     assert_eq!(
-        kinds.get(1),
-        Some(&InstrKind::Block),
-        "the lexical call should be followed by a per-site result-typed \
-         private-tag boundary, not a selector LocalSet: {kinds:?}",
+        kinds,
+        vec![InstrKind::Call, InstrKind::Return],
+        "a single call needs no per-site boundary or index LocalSet: {kinds:?}",
     );
     assert!(
         !kinds.contains(&InstrKind::LocalSet),
@@ -978,7 +1105,7 @@ fn source_call_results_do_not_cross_an_unwinding_state_probe() {
         count
     }
     post_result_state_probes += count_post_result_probes(caller_local, caller_local.entry_block());
-    assert_eq!(transport_calls, 2, "NORMAL and zero-sentinel helper calls");
+    assert_eq!(transport_calls, 1, "one lexical helper call for NORMAL and REWIND");
     assert_eq!(
         post_result_state_probes, 0,
         "a replay-selection IfElse result must not cross a following \
@@ -1071,7 +1198,7 @@ fn call_with_pure_args_replays_tail_without_spill_locals() {
     // replaying the pure tail here preserves the call arguments without
     // adding frame-backed arg locals.
     let lexical = sequences_with_direct_call(&module, "caller_with_args", "leaf");
-    assert_eq!(lexical.len(), 2, "NORMAL and direct-replay lexical calls");
+    assert_eq!(lexical.len(), 1, "one lexical call serves NORMAL and replay");
     assert!(
         lexical
             .iter()
@@ -1079,17 +1206,13 @@ fn call_with_pure_args_replays_tail_without_spill_locals() {
     );
     assert_direct_activation_replay_is_lexical(&module, "caller_with_args");
 
-    // Find $POST_0 — it's the inner Block of $unwind_save.
-    let f = local_func(&module, caller);
-    let post_0 = match f.block(unwind_save).instrs[0].0 {
-        Instr::Block(ir::Block { seq }) => seq,
-        _ => panic!("expected Block"),
-    };
-    let post_0_kinds = seq_kinds(&module, caller, post_0);
+    // The pure tail is removed from chunk 0 instead of spilled, leaving
+    // nothing for replay to skip: no $POST_0 block or dispatch remains.
+    let kinds = seq_kinds(&module, caller, unwind_save);
     assert_eq!(
-        post_0_kinds,
-        vec![InstrKind::Block],
-        "chunk 0 pure arg tail must be removed instead of spilled: {post_0_kinds:?}",
+        kinds,
+        vec![InstrKind::Const, InstrKind::Const, InstrKind::Call, InstrKind::Return],
+        "chunk 0 pure arg tail must be removed instead of spilled: {kinds:?}",
     );
 }
 
@@ -1102,7 +1225,7 @@ fn call_with_non_pure_arg_falls_back_to_spill_local() {
     let caller = func_by_name(&module, "caller_with_load_arg");
     let unwind_save = protected_unwind_body_seq(&module, caller);
     let lexical = sequences_with_direct_call(&module, "caller_with_load_arg", "leaf");
-    assert_eq!(lexical.len(), 2, "NORMAL and direct-replay lexical calls");
+    assert_eq!(lexical.len(), 1, "one lexical call serves NORMAL and replay");
     assert!(
         lexical
             .iter()
@@ -1132,7 +1255,7 @@ fn call_with_i64_shift_arg_replays_shift_tail() {
     let caller = func_by_name(&module, "caller_with_i64_shift_arg");
     let unwind_save = protected_unwind_body_seq(&module, caller);
     let lexical = sequences_with_direct_call(&module, "caller_with_i64_shift_arg", "leaf");
-    assert_eq!(lexical.len(), 2, "NORMAL and direct-replay lexical calls");
+    assert_eq!(lexical.len(), 1, "one lexical call serves NORMAL and replay");
     assert!(lexical.iter().all(|kinds| {
         kinds
             == &vec![
@@ -1147,14 +1270,15 @@ fn call_with_i64_shift_arg_replays_shift_tail() {
         "caller_with_i64_shift_arg",
     );
 
-    let f = local_func(&module, caller);
-    let post_0 = match f.block(unwind_save).instrs[0].0 {
-        Instr::Block(ir::Block { seq }) => seq,
-        _ => panic!("expected Block"),
-    };
     assert_eq!(
-        seq_kinds(&module, caller, post_0),
-        vec![InstrKind::Block],
+        seq_kinds(&module, caller, unwind_save),
+        vec![
+            InstrKind::Const,
+            InstrKind::Const,
+            InstrKind::Binop,
+            InstrKind::Call,
+            InstrKind::Return
+        ],
         "pure i64 shift arg tail must be removed instead of spilled",
     );
 }
@@ -1193,9 +1317,13 @@ fn two_calls_assign_sequential_call_idx() {
         }
     }
 
-    let mut idxs: Vec<i32> = Vec::new();
+    // The function-wide catch passes the call-index local and the static
+    // frame size to the shared selector once; each call site records its
+    // static index in that local first.
     let mut frame_sizes = Vec::new();
     let mut frame_select_calls = 0usize;
+    let mut index_local = None;
+    let mut idxs: Vec<i32> = Vec::new();
     walk_seqs(f, f.entry_block(), &mut |seq| {
         let instrs = &f.block(seq).instrs;
         for index in 2..instrs.len() {
@@ -1204,22 +1332,33 @@ fn two_calls_assign_sequential_call_idx() {
                 Instr::Call(ir::Call { func }) if func == frame_select
             ) {
                 let (
+                    Instr::LocalGet(ir::LocalGet { local }),
                     Instr::Const(ir::Const {
                         value: ir::Value::I32(size),
                     }),
-                    Instr::Const(ir::Const {
-                        value: ir::Value::I32(call_index),
-                    }),
                 ) = (&instrs[index - 2].0, &instrs[index - 1].0)
                 else {
-                    panic!(
-                        "unwind-frame selector must receive static size and \
-                         call-index constants"
-                    );
+                    panic!("unwind-frame selector must receive the call-index local and size");
                 };
                 frame_select_calls += 1;
                 frame_sizes.push(*size);
-                idxs.push(*call_index);
+                index_local = Some(*local);
+            }
+        }
+    });
+    let index_local = index_local.expect("call-index local");
+    walk_seqs(f, f.entry_block(), &mut |seq| {
+        for pair in f.block(seq).instrs.windows(2) {
+            if let (
+                Instr::Const(ir::Const {
+                    value: ir::Value::I32(value),
+                }),
+                Instr::LocalSet(ir::LocalSet { local }),
+            ) = (&pair[0].0, &pair[1].0)
+            {
+                if *local == index_local {
+                    idxs.push(*value);
+                }
             }
         }
     });
@@ -1240,30 +1379,10 @@ fn two_calls_assign_sequential_call_idx() {
                 .count();
         },
     );
-
-    let mut active_selectors = Vec::new();
-    walk_seqs(f, f.entry_block(), &mut |seq| {
-        let instrs = &f.block(seq).instrs;
-        for pair in instrs.windows(2) {
-            if let (
-                Instr::Const(ir::Const {
-                    value: ir::Value::I32(value),
-                }),
-                Instr::LocalSet(_),
-            ) = (&pair[0].0, &pair[1].0)
-            {
-                if matches!(*value, 1 | 2) {
-                    active_selectors.push(*value);
-                }
-            }
-        }
-    });
-    active_selectors.sort();
     idxs.sort();
     assert_eq!(
-        frame_select_calls, 2,
-        "each statically indexed private-tag call boundary should call the \
-         shared unwind-frame selector once",
+        frame_select_calls, 1,
+        "the function-wide catch calls the shared unwind-frame selector once",
     );
     assert_eq!(
         helper_reserve_calls, 1,
@@ -1272,19 +1391,13 @@ fn two_calls_assign_sequential_call_idx() {
     );
     assert_eq!(
         frame_sizes,
-        vec![16, 16],
-        "both call sites should pass this function's exact static frame size",
-    );
-    assert_eq!(
-        active_selectors,
-        Vec::<i32>::new(),
-        "static call boundaries must not install an activation-local selector",
+        vec![16],
+        "the selector receives this function's exact static frame size",
     );
     assert_eq!(
         idxs,
         vec![0, 1],
-        "each call should pass its static zero-based index directly to the \
-         shared frame selector",
+        "each call records its static zero-based index before the call",
     );
 }
 
@@ -1321,7 +1434,7 @@ fn call_indirect_replays_pure_table_index_arg() {
             lexical_calls += 1;
         }
     });
-    assert_eq!(lexical_calls, 2, "NORMAL and zero-sentinel helper calls");
+    assert_eq!(lexical_calls, 1, "one lexical helper call for NORMAL and REWIND");
     let helper = local_func(&module, transport_id);
     let mut helper_indirect_calls = 0;
     walk_all(helper, helper.entry_block(), &mut |_, instruction| {
@@ -1335,17 +1448,13 @@ fn call_indirect_replays_pure_table_index_arg() {
     );
     assert_resume_routing(&module, "caller");
 
-    // The pure table-index tail is removed from $POST_0 rather than
-    // spilled into a frame-backed local.
-    let post_0 = match f.block(unwind_save).instrs[0].0 {
-        Instr::Block(ir::Block { seq }) => seq,
-        _ => panic!("expected Block"),
-    };
-    let post_0_kinds = seq_kinds(&module, caller, post_0);
+    // The pure table-index tail is removed from chunk 0 rather than
+    // spilled into a frame-backed local, so no $POST_0 block remains.
+    let kinds = seq_kinds(&module, caller, unwind_save);
     assert_eq!(
-        post_0_kinds,
-        vec![InstrKind::Block],
-        "pure table-index tail must be removed from chunk 0: {post_0_kinds:?}",
+        kinds,
+        vec![InstrKind::Const, InstrKind::Call, InstrKind::Return],
+        "pure table-index tail must be removed from chunk 0: {kinds:?}",
     );
 }
 
@@ -1395,10 +1504,31 @@ fn preamble_then_requests_next_linked_frame() {
     assert_eq!(
         kinds,
         vec![
+            InstrKind::Const, // frame_size
+            InstrKind::Call,  // shared frame restore helper
+        ],
+    );
+    // The shared helper consumes the frame and publishes it in *(buf + 0).
+    let f = local_func(&module, caller);
+    let Instr::Call(restore) = &f.block(preamble_then).instrs[1].0 else {
+        unreachable!()
+    };
+    let next = module
+        .imports
+        .iter()
+        .find_map(|import| match import.kind {
+            walrus::ImportKind::Function(id) if import.name == "__wpk_fork_frame_next" => Some(id),
+            _ => None,
+        })
+        .expect("frame_next import");
+    assert!(calls_including_codec_helpers(&module, restore.func).contains(&next));
+    assert_eq!(
+        seq_kinds(&module, restore.func, local_func(&module, restore.func).entry_block())[..4],
+        [
             InstrKind::GlobalGet, // buf store address
-            InstrKind::Const,     // frame_size
+            InstrKind::LocalGet,  // frame_size
             InstrKind::Call,      // __wpk_fork_frame_next
-            InstrKind::Other,     // Store current frame pointer
+            InstrKind::Other,     // tee the frame pointer
         ],
     );
 }
@@ -1414,24 +1544,29 @@ fn postamble_writes_and_commits_the_reserved_linked_frame() {
     let postamble: Vec<InstrKind> = kinds[postamble_start..].to_vec();
 
     let expected = vec![
-        InstrKind::GlobalGet,
-        InstrKind::Other, // Load current frame
-        InstrKind::Const,
-        InstrKind::Other, // Store func_index
-        InstrKind::GlobalGet,
-        InstrKind::Other, // Load current frame
-        InstrKind::Const,
-        InstrKind::Other, // Store zero catch_region_id
-        InstrKind::GlobalGet,
-        InstrKind::Other, // Load current frame
-        InstrKind::Const,
-        InstrKind::Other, // Store reserved zero catch metadata
-        InstrKind::GlobalGet,
-        InstrKind::Other, // Load current frame
-        InstrKind::Call,  // __wpk_fork_frame_commit
+        InstrKind::Const, // func_index
+        InstrKind::Call,  // shared save helper: header, scalars, commit
         InstrKind::Throw, // process-owned unwind transport
     ];
     assert_eq!(postamble, expected);
+
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let text = extract_function_text(&printed, "caller");
+    for store in ["i32.store\n", "i32.store offset=8", "i32.store offset=12"] {
+        assert!(text.contains(store), "header store `{store}` missing:\n{text}");
+    }
+    let commit = module
+        .imports
+        .iter()
+        .find_map(|import| match import.kind {
+            walrus::ImportKind::Function(id) if import.name == "__wpk_fork_frame_commit" => Some(id),
+            _ => None,
+        })
+        .expect("frame_commit import");
+    assert!(
+        calls_including_codec_helpers(&module, caller).contains(&commit),
+        "the save helper commits a frame with no trailing payload writers"
+    );
 }
 
 #[test]
@@ -1482,20 +1617,19 @@ fn user_scalar_locals_are_saved_and_restored_in_frame() {
     let caller = func_by_name(&module, "caller");
     let (preamble_then, _, _) = entry_preamble_and_postamble(&module, caller);
 
-    // With one i32 user local, preamble-then should end by loading
-    // the current frame pointer, loading the scalar, and setting the
-    // user local.
+    // With one i32 user local, the shared restore helper returns its value
+    // and preamble-then sets the user local.
     let kinds = seq_kinds(&module, caller, preamble_then);
-    let tail: Vec<_> = kinds.iter().copied().rev().take(4).collect();
     assert_eq!(
-        tail,
-        vec![
-            InstrKind::LocalSet,
-            InstrKind::Other,
-            InstrKind::Other,
-            InstrKind::GlobalGet,
-        ],
+        kinds,
+        vec![InstrKind::Const, InstrKind::Call, InstrKind::LocalSet],
         "preamble-then must restore the i32 user local: {kinds:?}",
+    );
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let text = extract_function_text(&printed, "caller");
+    assert!(
+        text.contains("i32.load offset=16") && text.contains("i32.store offset=16"),
+        "the user local round-trips through frame offset 16:\n{text}"
     );
 }
 
@@ -1511,20 +1645,18 @@ fn postamble_serializes_user_scalar_locals() {
     let kinds = entry_instr_kinds(&module, caller);
     let postamble = &kinds[postamble_start..];
 
-    // Postamble with one user local:
-    //   4 current-frame pointer loads/stores plus four payload stores
-    //   (func_index, catch_region_id, reserved zero, user_x) = 8 stores/loads,
-    //   plus the linked-frame reservation result = 9 Others. The catch fields
-    //   remain separate i32 slots so a catch-capable function can store its
-    //   dynamic region identifier without changing the frame shape. The final
-    //   private Throw has its own instruction kind and is not counted here.
-    let other_count = postamble
-        .iter()
-        .filter(|k| matches!(k, InstrKind::Other))
-        .count();
+    // Postamble with one user local: the function passes its ordinal and
+    // the local to the shared save helper, which writes the header fields
+    // (func_index, catch_region_id, reserved zero) and user_x, then commits.
     assert_eq!(
-        other_count, 9,
-        "postamble should load/store the active payload and serialize its fields: {postamble:?}",
+        postamble,
+        &[
+            InstrKind::Const,
+            InstrKind::LocalGet,
+            InstrKind::Call,
+            InstrKind::Throw
+        ],
+        "postamble should pass its scalars to the shared save helper: {postamble:?}",
     );
 }
 
@@ -1702,11 +1834,11 @@ fn call_specific_reference_vectors_do_not_enlarge_activation_frames() {
                             value: ir::Value::I32(size),
                         }),
                         _,
-                    )) = index.checked_sub(2).and_then(|i| instructions.get(i))
+                    )) = index.checked_sub(1).and_then(|i| instructions.get(i))
                     else {
                         panic!(
-                            "unwind-frame selector is not preceded by its \
-                             constant size and call index"
+                            "unwind-frame selector is not immediately preceded \
+                             by its constant frame size"
                         );
                     };
                     reserve_sizes.push(*size);
@@ -1737,6 +1869,33 @@ fn call_specific_reference_vectors_do_not_enlarge_activation_frames() {
         &mut reserve_sizes,
         &mut vector_calls,
     );
+    // Recipe encoding and decoding run in shared reference helpers; both
+    // landings carry one externref, so they share one helper pair.
+    let caller_id = func_by_name(&module, "caller");
+    let mut helper_sites = 0usize;
+    walk_all(caller, caller.entry_block(), &mut |_, instruction| {
+        if matches!(instruction, Instr::Call(call) if is_codec_helper(&module, call.func)
+            && module.funcs.get(call.func).name.as_deref().is_some_and(|n| n.starts_with("__wpk_fork_refs_")))
+        {
+            helper_sites += 1;
+        }
+    });
+    assert_eq!(helper_sites, 4, "save and restore sites for each landing");
+    for helper in calls_including_codec_helpers(&module, caller_id) {
+        if !is_codec_helper(&module, helper) {
+            continue;
+        }
+        let helper = local_func(&module, helper);
+        let mut sizes = Vec::new();
+        visit_sequences(
+            helper,
+            helper.entry_block(),
+            frame_select,
+            [vector_begin, vector_append, vector_finish, vector_get],
+            &mut sizes,
+            &mut vector_calls,
+        );
+    }
 
     assert!(!reserve_sizes.is_empty());
     assert!(
@@ -1747,13 +1906,13 @@ fn call_specific_reference_vectors_do_not_enlarge_activation_frames() {
          union: {reserve_sizes:?}",
     );
     assert!(vector_calls[0] > 0, "save path must allocate a call vector");
-    assert!(vector_calls[1] >= 2, "each live recipe must be appended");
+    assert!(vector_calls[1] >= 1, "each live recipe must be appended");
     assert!(
         vector_calls[2] > 0,
         "save path must replace its transient builder handle with a canonical ordinal"
     );
     assert!(
-        vector_calls[3] >= 2,
+        vector_calls[3] >= 1,
         "rewind must perform indexed vector lookup"
     );
 }
@@ -2110,11 +2269,20 @@ fn concrete_gc_reference_uses_anyref_recipe_codec_and_narrowing() {
         runtime_names::IMPORT_REF_ENCODE_ANYREF,
         runtime_names::IMPORT_REF_DECODE_ANYREF,
     );
-    let caller = local_func(&module, func_by_name(&module, "caller"));
+    // The decode, and so the narrowing cast, may live in the shared
+    // reference restore helper the caller calls.
+    let caller_id = func_by_name(&module, "caller");
     let mut has_narrowing_cast = false;
-    walk_all(caller, caller.entry_block(), &mut |_, instruction| {
-        has_narrowing_cast |= matches!(instruction, Instr::RefCast(_));
-    });
+    for function in std::iter::once(caller_id).chain(
+        calls_including_codec_helpers(&module, caller_id)
+            .into_iter()
+            .filter(|callee| is_codec_helper(&module, *callee)),
+    ) {
+        let function = local_func(&module, function);
+        walk_all(function, function.entry_block(), &mut |_, instruction| {
+            has_narrowing_cast |= matches!(instruction, Instr::RefCast(_));
+        });
+    }
     assert!(
         has_narrowing_cast,
         "decoded anyref must be narrowed back to the concrete `$pair` type",
@@ -2711,6 +2879,8 @@ fn call_in_nested_block_uses_per_block_switch_dispatch() {
           (import "kernel" "kernel_fork" (func $fork (result i32)))
           (func $caller (export "caller") (result i32)
             (block (result i32)
+              i32.const 0
+              drop
               call $fork))
           (memory 1))
     "#;
@@ -2720,11 +2890,11 @@ fn call_in_nested_block_uses_per_block_switch_dispatch() {
     let caller = func_by_name(&module, "caller");
     let f = local_func(&module, caller);
 
-    // Nested per-block switch-dispatch: at least one br_table is
-    // emitted (function-level dispatch + per-block dispatch inside
-    // the `block`).
+    // Nested per-block switch-dispatch: the `block`'s own dispatch skips
+    // the `i32.const; drop` prefix on replay. (Without it, nothing would precede the call and
+    // no dispatch would be needed at either level.)
     assert!(
-        count_br_tables(f) >= 1,
+        count_replay_dispatches(f) >= 1,
         "nested-call functions must use per-block switch-dispatch \
          (br_table emitted), not guard-dispatch's body-replay",
     );
@@ -2739,6 +2909,8 @@ fn fork_inside_try_body_uses_per_block_switch_dispatch() {
           (func $caller (export "caller") (result i32)
             (block $h (result (ref null exn))
               (try_table (result (ref null exn)) (catch_ref $exn $h)
+                i32.const 0
+                drop
                 call $fork
                 drop
                 ref.null exn))
@@ -2753,10 +2925,9 @@ fn fork_inside_try_body_uses_per_block_switch_dispatch() {
     let f = local_func(&module, caller);
 
     // Per-block switch-dispatch handles fork-path calls inside
-    // try_table bodies — at least one br_table is emitted (function-
-    // level dispatch + per-block dispatch inside the try_table body).
+    // try_table bodies — the try_table body's own dispatch skips its prefix.
     assert!(
-        count_br_tables(f) >= 1,
+        count_replay_dispatches(f) >= 1,
         "fork-in-try-body must use per-block switch-dispatch \
          (br_table emitted), not guard-dispatch's body-replay",
     );
@@ -2790,8 +2961,8 @@ fn fork_inside_loop_uses_per_block_switch_dispatch() {
     let f = local_func(&module, caller);
 
     assert!(
-        count_br_tables(f) >= 1,
-        "fork-in-loop must use per-block switch-dispatch (br_table emitted)",
+        count_replay_dispatches(f) >= 1,
+        "fork-in-loop must use per-block switch-dispatch",
     );
 }
 
@@ -2830,10 +3001,11 @@ fn fork_in_both_top_level_and_nested_uses_per_block_switch_dispatch() {
             ifelse_count += 1;
         }
     });
-    // preamble + 2 per-call gates = at least 3 IfElse instructions.
-    assert!(
-        ifelse_count >= 3,
-        "guard-dispatch emits one IfElse per call + preamble (>=3): {ifelse_count}",
+    // Replay re-executes each lexical call, so the only IfElse is the
+    // preamble's state test; guard-dispatch would add one per call.
+    assert_eq!(
+        ifelse_count, 1,
+        "switch-dispatch adds no per-call replay gate: {ifelse_count}",
     );
 }
 
@@ -3661,12 +3833,12 @@ fn catch_payload_frame_overlays_arms_at_the_maximum_arm_size() {
                     }),
                     _,
                 )) = index
-                    .checked_sub(2)
+                    .checked_sub(1)
                     .and_then(|previous| instructions.get(previous))
                 else {
                     panic!(
-                        "unwind-frame selector must be preceded by its exact \
-                         static size and call index"
+                        "unwind-frame selector must be immediately preceded by \
+                         its exact static frame size"
                     );
                 };
                 sizes.push(*size);
@@ -3706,8 +3878,49 @@ fn catch_payload_frame_overlays_arms_at_the_maximum_arm_size() {
     );
 }
 
-/// Extract the `(func $name ... )` section from a wasmprinter dump.
+/// Extract the `(func $name ... )` section from a wasmprinter dump, followed
+/// by the text of every shared frame/reference codec helper it calls: those
+/// helpers write and read the function's frame on its behalf.
 fn extract_function_text<'a>(printed: &'a str, name: &str) -> String {
+    let own = extract_single_function_text(printed, name);
+    let mut text = own.clone();
+    let mut seen = HashSet::new();
+    for prefix in CODEC_HELPER_PREFIXES {
+        let marker = format!("call ${prefix}");
+        let mut rest = own.as_str();
+        while let Some(at) = rest.find(&marker) {
+            let tail = &rest[at + "call $".len()..];
+            let helper: String = tail
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if seen.insert(helper.clone()) {
+                text.push('\n');
+                text.push_str(&extract_single_function_text(printed, &helper));
+            }
+            rest = &tail[helper.len()..];
+        }
+    }
+    text
+}
+
+/// Generated helpers that perform frame and reference I/O for a function.
+const CODEC_HELPER_PREFIXES: [&str; 4] = [
+    "__wpk_fork_frame_save_",
+    "__wpk_fork_frame_restore_",
+    "__wpk_fork_refs_save_",
+    "__wpk_fork_refs_restore_",
+];
+
+fn is_codec_helper(module: &Module, function: FunctionId) -> bool {
+    module.funcs.get(function).name.as_deref().is_some_and(|name| {
+        CODEC_HELPER_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+    })
+}
+
+fn extract_single_function_text(printed: &str, name: &str) -> String {
     let needle = format!("(func ${name} ");
     let start = printed.find(&needle).unwrap_or_else(|| {
         panic!("function ${name} not found in:\n{printed}");
@@ -4045,4 +4258,269 @@ fn reference_payload_emits_complete_exception_dispatch() {
     validate(&bytes);
     let module = Module::from_buffer(&bytes).unwrap();
     assert_function_uses_exception_recipe(&module, "caller");
+}
+
+// --- Compact encodings ----------------------------------------------------
+
+const FIXTURE_SHARED_FRAME_SHAPE: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $first (export "first") (param i32 i64) (result i32)
+        call $fork
+        local.get 0
+        i32.add)
+      (func $second (export "second") (param i64 i32) (result i32)
+        call $fork
+        local.get 1
+        i32.add)
+      (func $wide (export "wide") (param f64 i32) (result i32)
+        call $fork
+        local.get 1
+        i32.add)
+      (memory 1))
+"#;
+
+fn codec_helpers_of(module: &Module, name: &str) -> Vec<String> {
+    let mut helpers: Vec<String> = calls_including_codec_helpers(module, func_by_name(module, name))
+        .into_iter()
+        .filter(|callee| is_codec_helper(module, *callee))
+        .filter_map(|callee| module.funcs.get(callee).name.clone())
+        .collect();
+    helpers.sort();
+    helpers
+}
+
+#[test]
+fn frames_with_the_same_scalar_types_share_codec_helpers() {
+    // `first` and `second` declare (i32, i64) in different orders; frames
+    // group scalars by type, so both use one save/restore pair. `wide` has a
+    // different shape and gets its own pair.
+    let bytes = instrument_wat(FIXTURE_SHARED_FRAME_SHAPE);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let first = codec_helpers_of(&module, "first");
+    assert_eq!(first.len(), 2, "one save and one restore helper: {first:?}");
+    assert_eq!(first, codec_helpers_of(&module, "second"));
+    let wide = codec_helpers_of(&module, "wide");
+    assert_eq!(wide.len(), 2);
+    assert!(wide.iter().all(|helper| !first.contains(helper)));
+
+    // Widest scalars come first, so the i64 lands at the 8-aligned offset
+    // directly after the 16-byte header and the i32 follows it.
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let text = extract_function_text(&printed, "first");
+    assert!(
+        text.contains("i64.store offset=16") && text.contains("i32.store offset=24"),
+        "scalars are grouped widest first:\n{text}"
+    );
+}
+
+#[test]
+fn transport_helper_routes_replay_so_callers_replay_lexically() {
+    let bytes = instrument_wat(FIXTURE_INDIRECT);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    // The caller performs no routing of its own...
+    assert_direct_activation_replay_is_lexical(&module, "caller");
+    // ...because the indirect-call transport helper it calls does.
+    assert_resume_routing(&module, "caller");
+}
+
+#[test]
+fn scalar_parameter_resume_thunk_enters_its_function_with_zeroes() {
+    // The resumed function's preamble restores every scalar parameter from
+    // the frame, so the thunk needs neither frame_peek nor parameter loads.
+    let bytes = instrument_wat(FIXTURE_SHARED_FRAME_SHAPE);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let first = func_by_name(&module, "first");
+    let thunk = module
+        .funcs
+        .iter()
+        .filter(|function| {
+            function
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("__wpk_fork_resume_"))
+        })
+        .find(|function| {
+            let FunctionKind::Local(local) = &function.kind else {
+                return false;
+            };
+            local
+                .block(local.entry_block())
+                .instrs
+                .iter()
+                .any(|(instr, _)| matches!(instr, Instr::Call(call) if call.func == first))
+        })
+        .expect("resume thunk for `first`");
+    assert_eq!(
+        seq_kinds(&module, thunk.id(), local_func(&module, thunk.id()).entry_block()),
+        vec![InstrKind::Const, InstrKind::Const, InstrKind::Call],
+    );
+}
+
+#[test]
+fn call_index_global_is_not_part_of_the_saved_global_prefix() {
+    // The replay cursor is instance-private: snapshotting it would change
+    // the host-visible fixed prefix size.
+    let plain = instrument_wat(FIXTURE_DIRECT_CALLER);
+    let module = Module::from_buffer(&plain).unwrap();
+    let cursor = module
+        .globals
+        .iter()
+        .find(|global| global.name.as_deref() == Some("_wpk_fork_call_index"))
+        .expect("call-index global");
+    assert!(cursor.mutable);
+    assert!(
+        !module
+            .exports
+            .iter()
+            .any(|export| matches!(export.item, ExportItem::Global(id) if id == cursor.id())),
+        "the call-index global is not host-visible"
+    );
+    let unwind_begin = module
+        .exports
+        .iter()
+        .find_map(|export| match export.item {
+            ExportItem::Function(id) if export.name == runtime_names::EXPORT_UNWIND_BEGIN => {
+                Some(id)
+            }
+            _ => None,
+        })
+        .expect("unwind_begin export");
+    let begin = local_func(&module, unwind_begin);
+    let mut reads_cursor = false;
+    walk_all(begin, begin.entry_block(), &mut |_, instruction| {
+        reads_cursor |= matches!(instruction, Instr::GlobalGet(get) if get.global == cursor.id());
+    });
+    assert!(!reads_cursor, "unwind_begin must not snapshot the call-index global");
+}
+
+#[test]
+fn only_multi_call_functions_record_a_call_index() {
+    let count_local_sets = |wat: &str| {
+        let bytes = instrument_wat(wat);
+        validate(&bytes);
+        let module = Module::from_buffer(&bytes).unwrap();
+        let f = local_func(&module, func_by_name(&module, "caller"));
+        let mut sets = 0usize;
+        walk_all(f, f.entry_block(), &mut |_, instruction| {
+            sets += usize::from(matches!(instruction, Instr::LocalSet(_)));
+        });
+        sets
+    };
+    // A single call site's index is always zero, so the catch passes a
+    // constant and the source function gains no local.
+    assert_eq!(count_local_sets(FIXTURE_DIRECT_CALLER), 0);
+    assert_eq!(count_local_sets(FIXTURE_TWO_CALLS), 2);
+}
+
+#[test]
+fn shared_restore_helpers_return_at_most_one_value() {
+    // Several results would all be live on the caller's value stack at once
+    // and enlarge its baseline-compiled native frame (measured on P-10).
+    let bytes = instrument_wat(FIXTURE_SHARED_FRAME_SHAPE);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let mut helpers = 0usize;
+    for function in module.funcs.iter() {
+        let name = function.name.as_deref().unwrap_or_default();
+        if name.starts_with("__wpk_fork_frame_restore_") || name.starts_with("__wpk_fork_refs_restore_") {
+            helpers += 1;
+            let results = module.types.get(function.ty()).results().len();
+            assert!(results <= 1, "{name} returns {results} values");
+        }
+    }
+    assert!(helpers > 0);
+    // `first` has an i64 and an i32 parameter: the helper returns the i64,
+    // and the preamble loads the i32 through the frame cursor.
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let text = extract_function_text(&printed, "first");
+    assert!(
+        text.contains("global.get $_wpk_fork_frame\n") && text.contains("i32.load offset=24"),
+        "the second scalar is loaded through the frame cursor:\n{text}"
+    );
+}
+
+#[test]
+fn resume_thunks_exist_only_for_non_lexical_replay_entries() {
+    // `leaf` is reached only by a direct call from an activation, so replay
+    // always re-enters it lexically. `cb` is a table member, `entry` is
+    // exported, and `tail_target` is a tail-call target: replay can reach each
+    // of those through the process resume table.
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $sig (func (result i32)))
+          (table 1 1 funcref)
+          (elem (i32.const 0) $cb)
+          (func $leaf (result i32) call $fork)
+          (func $cb (type $sig) call $leaf)
+          (func $tail_target (result i32) call $fork)
+          (func $tail (result i32) return_call $tail_target)
+          (func $entry (export "entry") (result i32)
+            call $tail
+            drop
+            i32.const 0
+            call_indirect (type $sig))
+          (memory 1))
+        "#,
+    );
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+    let mut resumed = Vec::new();
+    for function in module.funcs.iter() {
+        if !function
+            .name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("__wpk_fork_resume_"))
+        {
+            continue;
+        }
+        let FunctionKind::Local(local) = &function.kind else {
+            continue;
+        };
+        walk_all(local, local.entry_block(), &mut |_, instruction| {
+            if let Instr::Call(call) = instruction {
+                if let Some(name) = module.funcs.get(call.func).name.clone() {
+                    resumed.push(name);
+                }
+            }
+        });
+    }
+    resumed.sort();
+    assert_eq!(resumed, ["cb", "entry", "tail_target"]);
+
+    // The catalog stays well-formed: one record per thunk, strictly ordered
+    // function ordinals, and slots matching the exported table.
+    let catalog = module
+        .customs
+        .iter()
+        .find(|(_, section)| section.name() == "kandelo.wpk_fork.resume_catalog")
+        .map(|(_, section)| section.data(&Default::default()).into_owned())
+        .expect("resume catalog");
+    let count = u32::from_le_bytes(catalog[8..12].try_into().unwrap()) as usize;
+    assert_eq!(count, 3);
+    let records: Vec<(u32, u32)> = catalog[12..]
+        .chunks_exact(8)
+        .map(|record| {
+            (
+                u32::from_le_bytes(record[0..4].try_into().unwrap()),
+                u32::from_le_bytes(record[4..8].try_into().unwrap()),
+            )
+        })
+        .collect();
+    assert!(records.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    assert_eq!(
+        records.iter().map(|record| record.1).collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    let table = module
+        .tables
+        .iter()
+        .find(|table| table.name.as_deref() == Some("__wpk_fork_resume_catalog"))
+        .expect("resume catalog table");
+    assert_eq!(table.initial, 3);
 }

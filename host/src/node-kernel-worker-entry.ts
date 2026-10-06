@@ -236,7 +236,12 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
   programBytes: ArrayBuffer;
-  programModule?: WebAssembly.Module;
+  /**
+   * Compiled from `programBytes` by the kernel worker's shared module cache
+   * when the image was launched. Fork children inherit it, so a fork never
+   * compiles.
+   */
+  programModule: WebAssembly.Module;
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
   channelOffset: number;
   ptrWidth: 4 | 8;
@@ -1233,6 +1238,27 @@ async function handleInit(msg: InitMessage) {
 
 // --- Spawn ---
 
+/**
+ * Compile a host-requested program through the kernel worker's shared cache,
+ * so its process and every fork child and thread reuse one module. A compile
+ * failure answers the request with ENOEXEC, as exec and posix_spawn do.
+ */
+async function compileTopLevelProgram(
+  requestId: number,
+  programBytes: ArrayBuffer,
+): Promise<WebAssembly.Module | null> {
+  try {
+    return await kernelWorker.wasmModules.programModule(programBytes);
+  } catch (error) {
+    if (!(error instanceof WebAssembly.CompileError)) throw error;
+    respondError(
+      requestId,
+      `ENOEXEC: program failed WebAssembly compilation: ${error.message}`,
+    );
+    return null;
+  }
+}
+
 async function handleSpawn(msg: SpawnMessage) {
   let releaseMutation: (() => void) | undefined;
   let createdPid: number | undefined;
@@ -1256,7 +1282,6 @@ async function handleSpawn(msg: SpawnMessage) {
     }
     const programBytes = msg.programBytes ??
       await readExecFromVfs(msg.programPath!);
-    const programModule = hasProgramBytes ? msg.programModule : undefined;
     if (programBytes === null) {
       respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
       return;
@@ -1265,6 +1290,11 @@ async function handleSpawn(msg: SpawnMessage) {
       respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
       return;
     }
+    const programModule = await compileTopLevelProgram(
+      msg.requestId,
+      programBytes,
+    );
+    if (!programModule) return;
 
     const pid = kernelWorker.createProcess(
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
@@ -1296,7 +1326,11 @@ async function handleSpawn(msg: SpawnMessage) {
     createdMemoryRegistered = true;
 
     kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
-    const secureExec = kernelWorker.processSecureExec(pid);
+    // Same contention as registerProcess above: the gate can still hold
+    // work another launch queued (its host stdin pipe install, for one), and
+    // the query rejects rather than defers. Retry on a later host turn.
+    const secureExec = await retryKernelEntryResult(() =>
+      kernelWorker.processSecureExec(pid));
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
@@ -1319,6 +1353,9 @@ async function handleSpawn(msg: SpawnMessage) {
         post({ type: "pty_output", pid, data });
       });
     } else {
+      // fd 0 becomes a kernel pipe the host writes into, so children that
+      // inherit it share the stream (and read offset) as POSIX requires.
+      kernelWorker.installHostStdinPipe(pid);
       if (msg.stdin) {
         const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
         kernelWorker.setStdinData(pid, stdinData);
@@ -1639,13 +1676,6 @@ async function handleVfork(
     throw new VforkAddressSpaceBusyError(
       "vfork replay workspace exceeds one host control slot",
     );
-  }
-
-  if (!parentInfo.programModule) {
-    // Stay synchronous until the alias lease, child generation, and lifetime
-    // are all installed. A sibling pthread may otherwise replace the parent
-    // generation in the first yielded turn.
-    parentInfo.programModule = new WebAssembly.Module(parentProgram);
   }
 
   const memoryStatsBefore = sampleProcessMemoryStats(
@@ -2016,7 +2046,7 @@ async function handleOrdinaryFork(
 
   const ptrWidth = parentInfo.ptrWidth;
   const childLayout = parentInfo.layout;
-  // WHY: compilation below yields. A sibling exec may then retire the parent's
+  // WHY: the launch below yields. A sibling exec may then retire the parent's
   // exact generation, so the committed fork must pass retired-memory
   // admission and own its clone before the first await.
   const memoryStatsBeforeClone = sampleProcessMemoryStats(
@@ -2057,9 +2087,6 @@ async function handleOrdinaryFork(
     `fork child pid=${childPid}`,
   );
   try {
-    if (!parentInfo.programModule) {
-      parentInfo.programModule = await WebAssembly.compile(parentProgram);
-    }
     if (!await retryKernelEntryResult(
       () => kernelWorker.shouldLaunchPendingChild(childPid),
     )) {
@@ -2146,6 +2173,9 @@ async function handleOrdinaryFork(
       forkReplayGate: forkReplay.gate,
       forkChildThreadFnPtr: forkReplayContext?.fnPtr,
       forkChildThreadArgPtr: forkReplayContext?.argPtr,
+      // A vfork child's capture root lives in its own slot, not the copied
+      // process anchor (which still names the parked parent's root).
+      forkLaunchRootFromCaller: vforkLifetimes.isActiveBorrower(parentInfo),
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
@@ -2947,12 +2977,18 @@ async function handleClone(
   const processInfo = processes.get(pid);
   if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
 
-  // Auto-compile thread module if not already cached per-PID
+  // threadModuleCache holds this process image's thread module for all of
+  // its threads (and keeps it reachable in the shared cache while the image
+  // lives).
   let threadModule = threadModuleCache.get(pid);
   let cacheCompiledModule = false;
   if (!threadModule) {
-    const patched = patchWasmForThread(processInfo.programBytes);
-    threadModule = await WebAssembly.compile(patched);
+    // Content-addressed: threads of every process running these exact bytes
+    // share one thread module.
+    threadModule = await kernelWorker.wasmModules.threadModule(
+      processInfo.programBytes,
+      patchWasmForThread,
+    );
     cacheCompiledModule = true;
   }
 
@@ -3523,6 +3559,7 @@ async function performDestroy() {
   processTeardowns.clear();
   reportedExits.clear();
   threadModuleCache.clear();
+  kernelWorker.wasmModules.clear();
   threadWorkers.clear();
   ptyByPid.clear();
   if (!(await kernelWorker.waitForPcmDrain(PCM_DESTROY_DRAIN_TIMEOUT_MS))) {
@@ -3641,6 +3678,40 @@ async function handleHttpRequest(msg: HttpRequestMessage) {
     respond(msg.requestId, response);
   } catch (e) {
     respondError(msg.requestId, String(e));
+  }
+}
+
+async function handleClipboardGuestWait(
+  msg: Extract<MainToKernelMessage, { type: "clipboard_guest_wait" }>,
+) {
+  if (!initReady) {
+    respondError(msg.requestId, "clipboard copy-out requires an initialized kernel");
+    return;
+  }
+  try {
+    respond(
+      msg.requestId,
+      await kernelWorker.waitForGuestClipboardText({ timeoutMs: msg.timeoutMs }),
+    );
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleClipboardOffer(
+  msg: Extract<MainToKernelMessage, { type: "clipboard_offer" }>,
+) {
+  if (!initReady) {
+    respondError(msg.requestId, "clipboard offer requires an initialized kernel");
+    return;
+  }
+  try {
+    respond(
+      msg.requestId,
+      await kernelWorker.offerClipboardText(msg.text, { timeoutMs: msg.timeoutMs }),
+    );
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -3844,6 +3915,12 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "export_rootfs_image":
       void handleExportRootfsImage(msg);
       break;
+    case "clipboard_offer":
+      void handleClipboardOffer(msg);
+      break;
+    case "clipboard_guest_wait":
+      void handleClipboardGuestWait(msg);
+      break;
     case "read_vfs_file":
       void handleReadVfsFile(msg);
       break;
@@ -3892,6 +3969,13 @@ port.on("message", (msg: MainToKernelMessage) => {
       }
       break;
     }
+    case "get_wasm_module_cache_stats":
+      post({
+        type: "response",
+        requestId: msg.requestId,
+        result: kernelWorker.wasmModules.stats(),
+      });
+      break;
     case "get_spawn_scratch_capacity": {
       try {
         post({

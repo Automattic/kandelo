@@ -2993,7 +2993,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
             &mut BTreeMap::new(),
             &mut Vec::new(),
         )?;
-        let canonical = canonical_path(&roots.compiled, target, arch, &cache_key);
+        let canonical = canonical_path(&roots.compiled, target, arch, abi_version, &cache_key);
         let before = capture_source_only_package_authority(
             target,
             registry,
@@ -6011,6 +6011,34 @@ where
     F: FnMut(&Path, &Path) -> std::io::Result<()>,
     R: FnMut() -> Result<Vec<u8>, String>,
 {
+    write_program_package_index_atomically_with_hooks(
+        output,
+        bytes,
+        refresh_source,
+        replace,
+        &mut || {},
+    )
+}
+
+/// `before_lock` runs after the caller computed `bytes` and immediately before
+/// this writer asks for the publication lock: the exact window in which a
+/// cooperating writer may publish. It exists because the "target changed
+/// before publication" race only reproduces by timing in real concurrent
+/// runs; the hook lets tests interleave a competing publication into that
+/// window deterministically, so the lock-before-snapshot order stays pinned
+/// by a test rather than by luck. Production passes a no-op.
+fn write_program_package_index_atomically_with_hooks<F, R, B>(
+    output: &Path,
+    bytes: &[u8],
+    refresh_source: &mut R,
+    replace: &mut F,
+    before_lock: &mut B,
+) -> Result<(), String>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+    R: FnMut() -> Result<Vec<u8>, String>,
+    B: FnMut(),
+{
     let parent = output
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -6023,7 +6051,49 @@ where
         )
     })?;
     let output = parent.join(file_name);
+    before_lock();
+
+    // All xtask index publishers (vitest global setup, every vitest worker's
+    // context ensure, build-programs.sh, prepare-host-package.sh, and
+    // local-build/bootstrap) coordinate through one durable lock inode. Take
+    // it BEFORE snapshotting the target: the snapshot is the compare half of
+    // a compare-and-swap, so a snapshot taken outside the lock goes stale the
+    // moment another writer renames its own (usually byte-identical) index
+    // into place, and this writer then failed with "target changed before
+    // publication" for no real conflict (14 such failures across 7 agent
+    // sessions in Aug-Sep 2026, from concurrent vitest and build runs over an
+    // unchanged registry). Holding the lock from snapshot
+    // through rename and the parent-directory sync makes the CAS atomic with
+    // respect to every cooperating writer; the snapshot validation below
+    // still catches a non-cooperating writer (an editor, `git checkout`).
+    //
+    // The caller's projection pass that produced `bytes` deliberately runs
+    // before the lock. It takes seconds and is pure with respect to the index
+    // file, so holding the lock across it would only serialize concurrent
+    // test runs without making publication any safer: the refresh below
+    // re-derives the projection under the lock whenever this writer would
+    // actually replace the target.
+    let _publication_lock = lock_program_package_index_publication(&parent, file_name)?;
     let target_snapshot = inspect_program_package_index_target(&output)?;
+
+    // Concurrent writers over one unchanged registry compute identical bytes.
+    // When the target already holds them, publishing would only swap in a new
+    // inode with the same contents, so return without renaming: readers and
+    // later writers see an undisturbed file. The staged file would inherit the
+    // target's own permissions, so equal bytes are the whole comparison.
+    // Skipping the source refresh here is safe: nothing is overwritten, so a
+    // stale writer cannot regress a newer index.
+    if let Some(LocalMirrorEntrySnapshot {
+        kind: LocalMirrorEntryKind::Regular { len, sha256 },
+        ..
+    }) = &target_snapshot.entry
+    {
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        if *len == bytes.len() as u64 && *sha256 == digest {
+            return Ok(());
+        }
+    }
+
     let existing_permissions = target_snapshot.permissions.clone();
     let (transaction_root, stage, mut stage_file, stage_identity) =
         reserve_program_package_index_transaction(&parent, file_name)?;
@@ -6062,15 +6132,6 @@ where
             .map_err(|e| format!("sync staged program package index {}: {e}", stage.display()))?;
         drop(stage_file);
 
-        // The target snapshot check and overwriting rename are not a compare-
-        // and-swap by themselves: another generator could replace the target
-        // after validation and then be overwritten by this writer. All xtask
-        // index publishers coordinate through one durable lock inode. Keep the
-        // lock through source refresh, target validation, replacement, and the
-        // parent-directory sync so an older cooperating writer can never land
-        // after a newer one in that gap.
-        let _publication_lock = lock_program_package_index_publication(&parent, file_name)?;
-
         // Recompute the complete registry projection at the publication
         // boundary. A writer that staged an older registry snapshot must not
         // overwrite an index generated after the recipe graph changed.
@@ -6083,10 +6144,10 @@ where
             );
         }
 
-        // Refuse when another writer changed the old target after our initial
-        // snapshot. This is a cooperative compare-and-swap boundary: writers
-        // over unchanged source stage byte-identical content, while stale
-        // writers fail either this check or the source refresh above.
+        // Refuse when the target changed after the snapshot taken under the
+        // lock. Cooperating writers cannot get here (they wait on the lock),
+        // so this catches only a non-cooperating replacement; stale
+        // cooperating writers fail the source refresh above instead.
         validate_program_package_index_target_snapshot(&output, &target_snapshot)?;
         replace(&stage, &output).map_err(|e| {
             format!(
@@ -6151,12 +6212,31 @@ fn lock_program_package_index_publication(
             lock_path.display()
         )
     })?;
-    lock.lock().map_err(|e| {
-        format!(
-            "lock program package index publication {}: {e}",
-            lock_path.display()
-        )
-    })?;
+    // Try first so a contended wait is visible. A bare blocking `lock()`
+    // looks exactly like a hang to whoever is watching the build, and the
+    // contention it hides cannot be measured. Printing one line, only when
+    // the lock is actually held elsewhere, tells the watcher that this writer
+    // is waiting for another index publication to finish, and lets the
+    // build-waiting eval (evals/build-waiting) count lock waits from
+    // transcripts. An uncontended lock prints nothing.
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            eprintln!("waiting for program-index lock ({})", lock_path.display());
+            lock.lock().map_err(|e| {
+                format!(
+                    "lock program package index publication {}: {e}",
+                    lock_path.display()
+                )
+            })?;
+        }
+        Err(std::fs::TryLockError::Error(e)) => {
+            return Err(format!(
+                "lock program package index publication {}: {e}",
+                lock_path.display()
+            ));
+        }
+    }
 
     let opened_metadata = lock.metadata().map_err(|e| {
         format!(
@@ -6849,6 +6929,12 @@ fn compute_sha_with_identity_context_for_platform(
     chain.pop();
 
     let build_inputs = build_input_digests_from_repo(target, registry, main_repo_root, policy)?;
+    let build_script_input = match target.kind {
+        ManifestKind::Library | ManifestKind::Program => {
+            build_script_input_digest(target, main_repo_root)?
+        }
+        ManifestKind::Source => None,
+    };
     let global_toolchain_inputs = match target.kind {
         ManifestKind::Library | ManifestKind::Program => match global_toolchain_inputs_override {
             Some(inputs) => inputs.to_vec(),
@@ -7054,6 +7140,13 @@ fn compute_sha_with_identity_context_for_platform(
             h.update(b"\n");
         }
     }
+    if let Some(script) = &build_script_input {
+        h.update(b"build-script:v1\n");
+        h.update(script.label.as_bytes());
+        h.update(b"\n");
+        h.update(script.digest);
+        h.update(b"\n");
+    }
     if !global_toolchain_inputs.is_empty() {
         h.update(b"global-toolchain-inputs:\n");
         for input in &global_toolchain_inputs {
@@ -7111,6 +7204,14 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "scripts/install-local-binary.sh",
     "scripts/wasm-artifact-guards.sh",
     "scripts/build-musl.sh",
+    "scripts/musl-build-state.sh",
+    "scripts/musl-input-hash.mjs",
+    "scripts/musl-output-state.mjs",
+    "scripts/package-build-roots.sh",
+    "scripts/package-source-metadata.py",
+    "scripts/check-package-imports.sh",
+    "tools/xtask/src/package_imports.rs",
+    "tools/xtask/src/program_env_imports.rs",
     "scripts/install-overlay-headers.sh",
     ".github/actions/package-archive-build",
     ".github/actions/package-toolchain",
@@ -7645,6 +7746,51 @@ fn build_input_digests(
     build_input_digests_from_repo(target, registry, &repo_root(), ResolvePolicy::Default)
 }
 
+/// The build script the engine will execute for `target`, digested.
+///
+/// WHY THIS IS NOT A `build.toml` INPUT: the script IS the build, so it is the
+/// first member of the build closure, and leaving it to a hand-listed `inputs`
+/// entry let it fall out. On 2026-10-02 seventeen of 91 registry packages did
+/// not list their own script, so editing `build-wget.sh` left wget's key at
+/// `309ce6bf…` and the engine served the artifact the OLD script had built.
+/// This path comes from `DepsManifest::build_script_path`, the same function
+/// `build_into_cache` uses to choose what to run, so the key and the executed
+/// script cannot name different files. A package whose script does not exist
+/// contributes nothing here; `build_into_cache` refuses to build it anyway.
+///
+/// Packages that also list their script in `inputs` hash it twice. That is
+/// harmless, and the explicit entries stay: source-only label validation and
+/// several contract tests read them.
+fn build_script_input_digest(
+    target: &DepsManifest,
+    main_repo_root: &Path,
+) -> Result<Option<BuildInputDigest>, String> {
+    let script = target.build_script_path(main_repo_root);
+    if !script.is_file() {
+        return Ok(None);
+    }
+    // The label must not depend on where a checkout or registry lives, or
+    // byte-identical trees get different keys. An authored `script_path` is
+    // already a portable repo-relative spelling. The fallback script sits in
+    // the package's own directory, which can be under any registry root
+    // (an external `WASM_POSIX_DEPS_REGISTRY` is not below `main_repo_root`),
+    // so it is labelled relative to that directory.
+    let label = match target.build.script_path.as_deref() {
+        Some(authored) => authored.to_owned(),
+        None => format!(
+            "package-dir/{}",
+            script
+                .strip_prefix(&target.dir)
+                .unwrap_or(&script)
+                .to_string_lossy()
+        ),
+    };
+    Ok(Some(BuildInputDigest {
+        label,
+        digest: hash_build_input(&script)?,
+    }))
+}
+
 fn build_input_digests_from_repo(
     target: &DepsManifest,
     registry: &Registry,
@@ -7728,6 +7874,40 @@ fn build_input_digests_from_repo(
         };
         out.push(BuildInputDigest {
             label: input.clone(),
+            digest,
+        });
+    }
+    // The build script is the recipe, so it is always part of the build
+    // closure, whether or not `inputs` names it. Sixteen packages did not list
+    // theirs; editing the script left their cache keys unchanged and the
+    // resolver kept serving the artifact the old script produced. A script
+    // already covered by a declared input (exactly, or under an input
+    // directory) is not hashed twice, so those packages keep their keys.
+    let script = build.script_path.trim();
+    let script_covered = build.inputs.iter().any(|input| {
+        let input = input.trim_end_matches('/');
+        script == input || script.starts_with(&format!("{input}/"))
+    });
+    if !script.is_empty() && !script_covered {
+        // A script that does not resolve is keyed as absent rather than
+        // rejected here: resolving it is the build's job, which fails loudly
+        // when there is nothing to run, and the key still changes the moment
+        // the script appears.
+        let digest = match resolve_build_input_path_from_repo(target, registry, script, main_repo_root) {
+            Ok(path) if validate_declared_source_inputs => {
+                let authority_root =
+                    repository_source_authority_root(&path, registry, main_repo_root)?;
+                strict_source_build_input_digest(&authority_root, &path)?
+            }
+            Ok(path) => hash_build_input(&path)?,
+            Err(_) => {
+                let mut h = Sha256::new();
+                h.update(b"wasm-posix-build-script-absent\0");
+                h.finalize().into()
+            }
+        };
+        out.push(BuildInputDigest {
+            label: format!("build-script:{script}"),
             digest,
         });
     }
@@ -8758,13 +8938,19 @@ fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<()
 /// full cache identity disambiguates — but a visible arch segment makes the
 /// cache layout self-explanatory at a glance.
 ///
-/// For source-kind manifests, the layout omits the arch segment per
-/// design decision 6: source artifacts are arch-agnostic, so a single
-/// cache entry serves both wasm32 and wasm64 consumers.
+/// Libs and programs also carry an `abi<N>` segment naming the kernel ABI
+/// their key was computed for. The key already commits to it; the segment
+/// is what lets `cache-gc --below-abi` and a reader of the cache tell which
+/// ABI a generation serves without opening it.
+///
+/// For source-kind manifests, the layout omits the arch and ABI segments
+/// per design decision 6: source artifacts are arch- and ABI-agnostic, so
+/// a single cache entry serves every consumer.
 pub fn canonical_path(
     cache_root: &Path,
     m: &DepsManifest,
     arch: TargetArch,
+    abi_version: u32,
     sha: &[u8; 32],
 ) -> PathBuf {
     let kind_subdir = match m.kind {
@@ -8775,11 +8961,12 @@ pub fn canonical_path(
     let basename = match m.kind {
         ManifestKind::Source => format!("{}-{}-rev{}-{}", m.name, m.version, m.revision, hex(sha)),
         ManifestKind::Library | ManifestKind::Program => format!(
-            "{}-{}-rev{}-{}-{}",
+            "{}-{}-rev{}-{}-abi{}-{}",
             m.name,
             m.version,
             m.revision,
             arch.as_str(),
+            abi_version,
             hex(sha)
         ),
     };
@@ -8966,7 +9153,8 @@ fn capture_source_only_package_authority(
         &mut Vec::new(),
     )?;
     let cache_key_sha256 = hex(&cache_key);
-    let expected_canonical = canonical_path(&roots.compiled, &manifest, arch, &cache_key);
+    let expected_canonical =
+        canonical_path(&roots.compiled, &manifest, arch, abi_version, &cache_key);
     if canonical != expected_canonical {
         return Err(format!(
             "{}: resolved source-only cache path {} does not equal expected canonical {}",
@@ -9294,6 +9482,38 @@ pub(crate) fn source_only_skip_receipt_if_clean(
     output_root: &Path,
     memo: &mut BTreeMap<String, [u8; 32]>,
 ) -> Option<PackageNodeReceiptV1> {
+    source_only_skip_receipt_if_clean_with_use(
+        target,
+        registry,
+        arch,
+        abi_version,
+        roots,
+        output_root,
+        memo,
+        true,
+    )
+}
+
+/// [`source_only_skip_receipt_if_clean`] with control over its one write:
+/// `record_use = false` leaves the generation's last-used stamp alone.
+///
+/// WHY: `local-build plan --status` must give the same cached/will-run answer
+/// as `run` while writing nothing. `cache-gc` evicts by last-used stamp, so a
+/// dry run that touched stamps would keep every generation it merely looked
+/// at alive as if a build had used it, and asking "how long would a build
+/// take?" would change what the cache keeps.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn source_only_skip_receipt_if_clean_with_use(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+    record_use: bool,
+) -> Option<PackageNodeReceiptV1> {
     if target.kind == ManifestKind::Source {
         return None;
     }
@@ -9308,7 +9528,7 @@ pub(crate) fn source_only_skip_receipt_if_clean(
     )
     .ok()?;
     let cache_key_sha256 = hex(&sha);
-    let canonical = canonical_path(&roots.compiled, target, arch, &sha);
+    let canonical = canonical_path(&roots.compiled, target, arch, abi_version, &sha);
     // Cheap identity check only: the entry exists and its provenance marker
     // matches. Deliberately NOT the full `validate_cache_entry` (which reads and
     // parses every declared wasm) — this pre-pass runs serially over the whole
@@ -9337,8 +9557,12 @@ pub(crate) fn source_only_skip_receipt_if_clean(
             return None;
         }
     }
-    // A skipped node is still a cache hit: record the use for `cache_gc`.
-    crate::cache_gc::touch_generation_last_used(&canonical, &cache_key_sha256);
+    // A skipped node is still a cache hit: record the use for `cache_gc`,
+    // which would otherwise evict a generation that every build is reusing.
+    // A dry run passes `record_use = false` (see the doc comment above).
+    if record_use {
+        crate::cache_gc::touch_generation_last_used(&canonical, &cache_key_sha256);
+    }
     Some(receipt)
 }
 
@@ -10126,7 +10350,7 @@ fn try_fetch_without_deps(
         memo,
         &mut chain,
     )?;
-    let canonical = canonical_path(opts.cache_root, target, arch, &sha);
+    let canonical = canonical_path(opts.cache_root, target, arch, abi_version, &sha);
     let cache_key_sha_hex = hex(&sha);
     if canonical.is_dir() {
         match validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex) {
@@ -10445,7 +10669,7 @@ fn ensure_built_uncached(
         memo,
         &mut chain,
     )?;
-    let canonical = canonical_path(opts.cache_root, target, arch, &sha);
+    let canonical = canonical_path(opts.cache_root, target, arch, abi_version, &sha);
     let cache_key_sha_hex = hex(&sha);
     let source_only_cache_parent = (opts.policy == ResolvePolicy::SourceOnlyV1)
         .then(|| SourceOnlyCacheParentGuard::prepare(opts.cache_root, &canonical))
@@ -10605,13 +10829,11 @@ fn ensure_built_uncached(
             // Race against a peer process that finished its own extract
             // first: keep theirs, drop ours. Identical inputs produce
             // identical outputs.
-            if canonical.exists() {
+            if canonical.exists() || !rename_default_stage_or_detect_winner(&tmp, &canonical)? {
                 let _ = std::fs::remove_dir_all(&tmp);
                 validate_cache_entry(target, &canonical, arch, abi_version, &cache_key_sha_hex)?;
                 return Ok(ResolvedNode::compiled(canonical, transitive));
             }
-            std::fs::rename(&tmp, &canonical)
-                .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), canonical.display()))?;
             Ok(ResolvedNode::compiled(canonical, transitive))
         }
         (ManifestKind::Source, true) => {
@@ -12571,21 +12793,15 @@ fn validate_source_only_cache_artifacts_from_receipt(
             }
             for relative in &target.outputs.files {
                 require_source_only_receipt_entry(target, receipt, relative, "files", true)?;
+                validate_source_only_side_file_imports(root, receipt, relative)?;
             }
         }
         ManifestKind::Program => {
             for output in &target.program_outputs {
-                let entry = require_source_only_receipt_entry(
-                    target,
-                    receipt,
-                    &output.wasm,
-                    "wasm",
-                    true,
-                )?;
-                let mut source = StableProjectionSource::open_from_anchored_root(
-                    root,
-                    &output.wasm,
-                )?;
+                let entry =
+                    require_source_only_receipt_entry(target, receipt, &output.wasm, "wasm", true)?;
+                let mut source =
+                    StableProjectionSource::open_from_anchored_root(root, &output.wasm)?;
                 let mut bytes = Vec::new();
                 std::io::Read::read_to_end(&mut source.file, &mut bytes).map_err(|error| {
                     format!(
@@ -12625,9 +12841,51 @@ fn validate_source_only_cache_artifacts_from_receipt(
                     "runtime file",
                     true,
                 )?;
+                validate_source_only_side_file_imports(root, receipt, &runtime_file.artifact)?;
             }
         }
         ManifestKind::Source => {}
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_source_only_side_file_imports(
+    root: &AnchoredDirectory,
+    receipt: &CompleteCacheReceiptV1,
+    relative: &str,
+) -> Result<(), String> {
+    if !relative.ends_with(".wasm") && !relative.ends_with(".so") {
+        return Ok(());
+    }
+    let mut source = StableProjectionSource::open_from_anchored_root(root, relative)?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut source.file, &mut bytes)
+        .map_err(|error| format!("read {relative}: {error}"))?;
+    source.validate()?;
+    let entry = receipt
+        .entries
+        .iter()
+        .find(|entry| entry.path == relative)
+        .ok_or_else(|| format!("missing receipt for {relative}"))?;
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+    if entry.size != Some(bytes.len() as u64)
+        || entry.sha256.as_deref() != Some(hex(&digest).as_str())
+    {
+        return Err(format!(
+            "{relative}: artifact changed after its complete receipt"
+        ));
+    }
+    validate_side_file_import_bytes(&bytes, relative)
+}
+
+fn validate_side_file_import_bytes(bytes: &[u8], relative: &str) -> Result<(), String> {
+    if !is_wasm_bytes(bytes) {
+        return Ok(());
+    }
+    let failures = crate::package_imports::failures(bytes, &crate::repo_root())?;
+    if !failures.is_empty() {
+        return Err(format!("{relative}: {}", failures.join("; ")));
     }
     Ok(())
 }
@@ -13508,6 +13766,167 @@ fn require_current_source_only_cache_key(
     Ok(())
 }
 
+
+/// Labeled digests of everything that feeds a package's OWN contribution to
+/// its cache key, captured before its build script runs.
+///
+/// WHY this exists: when a build mutates one of its own cache-key inputs, the
+/// post-build verification can only say `before <sha>, after <sha>`. Two
+/// opaque shas name the symptom and hide the cause, which is the same shape as
+/// B29 (a stale kernel reported as a broken kernel) and B30 (a killed build
+/// reported as an undeclared artifact). It also reads exactly like a
+/// concurrent-edit race, which invites a retry loop instead of a fix. The
+/// snapshot lets the failure name the file.
+#[derive(Clone, Default)]
+struct CacheKeyInputSnapshot {
+    /// The package's own `build.toml` `inputs`, digested per declared entry.
+    declared: Vec<BuildInputDigest>,
+    /// `GLOBAL_PACKAGE_TOOLCHAIN_INPUTS` as the cache key saw them. This is
+    /// the MEMOIZED view: `global_package_toolchain_digests` caches per repo
+    /// root for the life of the process, so the pre- and post-build cache keys
+    /// necessarily agree about it even if the tree underneath changed. That
+    /// blind spot is precisely why the drift report re-reads these uncached.
+    global_toolchain_memoized: Vec<BuildInputDigest>,
+}
+
+/// Capture the per-input digests behind `target`'s cache key. Best effort:
+/// this is diagnostics, and a capture failure must never displace the real
+/// build error, so errors degrade to an empty side rather than propagating.
+fn capture_cache_key_inputs(
+    target: &DepsManifest,
+    registry: &Registry,
+    repo_root: &Path,
+    policy: ResolvePolicy,
+) -> CacheKeyInputSnapshot {
+    CacheKeyInputSnapshot {
+        declared: build_input_digests_from_repo(target, registry, repo_root, policy)
+            .unwrap_or_default(),
+        global_toolchain_memoized: global_package_toolchain_digests().unwrap_or_default(),
+    }
+}
+
+fn digest_map(digests: &[BuildInputDigest]) -> BTreeMap<String, [u8; 32]> {
+    digests
+        .iter()
+        .map(|entry| (entry.label.clone(), entry.digest))
+        .collect()
+}
+
+/// Compare two labeled digest sets and render the labels that moved.
+fn render_digest_drift(
+    heading: &str,
+    before: &[BuildInputDigest],
+    after: &[BuildInputDigest],
+    lines: &mut Vec<String>,
+) -> bool {
+    let (before, after) = (digest_map(before), digest_map(after));
+    let mut found = false;
+    for (label, before_digest) in &before {
+        match after.get(label) {
+            Some(after_digest) if after_digest == before_digest => {}
+            Some(after_digest) => {
+                found = true;
+                lines.push(format!(
+                    "  {heading} changed: {label} ({} -> {})",
+                    &hex(before_digest)[..16],
+                    &hex(after_digest)[..16]
+                ));
+            }
+            None => {
+                found = true;
+                lines.push(format!("  {heading} disappeared: {label}"));
+            }
+        }
+    }
+    for label in after.keys() {
+        if !before.contains_key(label) {
+            found = true;
+            lines.push(format!("  {heading} appeared: {label}"));
+        }
+    }
+    found
+}
+
+/// Name the cache-key inputs that changed while `target`'s build script ran.
+///
+/// Returns a human-readable block appended to the refusal. It never returns an
+/// error: a diagnostic that can fail would replace a real build failure with
+/// its own.
+fn describe_cache_key_input_drift(
+    before: &CacheKeyInputSnapshot,
+    target: &DepsManifest,
+    registry: &Registry,
+    repo_root: &Path,
+    policy: ResolvePolicy,
+) -> String {
+    let after_declared =
+        build_input_digests_from_repo(target, registry, repo_root, policy).unwrap_or_default();
+    // Re-read the global toolchain inputs UNCACHED. The cache key consulted a
+    // per-process memo, so a global input that changed mid-build is invisible
+    // to the key comparison itself; without this re-read the report would say
+    // "nothing changed" while a shared input had in fact moved underneath.
+    let after_global =
+        global_package_build_input_digests_for(repo_root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+            .unwrap_or_default();
+    describe_cache_key_input_drift_lines(
+        &before.declared,
+        &after_declared,
+        &before.global_toolchain_memoized,
+        &after_global,
+        &target.name,
+    )
+}
+
+/// The pure rendering half of the drift report: given the two before/after
+/// digest sets, produce the block appended to the refusal. Split out so the
+/// wording and the classification are testable without a registry on disk.
+fn describe_cache_key_input_drift_lines(
+    before_declared: &[BuildInputDigest],
+    after_declared: &[BuildInputDigest],
+    before_global: &[BuildInputDigest],
+    after_global: &[BuildInputDigest],
+    target_name: &str,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let declared_moved = render_digest_drift(
+        "declared build input",
+        before_declared,
+        after_declared,
+        &mut lines,
+    );
+    let global_moved = render_digest_drift(
+        "global toolchain input",
+        before_global,
+        after_global,
+        &mut lines,
+    );
+
+    if !declared_moved && !global_moved {
+        return format!(
+            "\n  no declared or global input changed; the difference is in a \
+             dependency's cache key, in {}'s own manifest fields (version, \
+             revision, source.url, source.sha256, declared outputs), or in the \
+             fork-instrument tool inputs",
+            target_name
+        );
+    }
+
+    let mut report = String::from("\n  inputs that changed while the build script ran:\n");
+    report.push_str(&lines.join("\n"));
+    if global_moved {
+        report.push_str(
+            "\n  NOTE: a global toolchain input changed. The cache key could \
+             not see this (it is memoized per process), so the key comparison \
+             understates the drift.",
+        );
+    }
+    report.push_str(
+        "\n  A build must not write into its own cache-key inputs. Either the \
+         path is a build OUTPUT that should not be a key input, or the step \
+         that writes it should run outside the tree.",
+    );
+    report
+}
 fn build_into_cache(
     target: &DepsManifest,
     registry: &Registry,
@@ -13524,6 +13943,7 @@ fn build_into_cache(
     policy: ResolvePolicy,
     force_rebuild: bool,
 ) -> Result<LocalBuildDisposition, String> {
+    let mut pre_build_cache_key_inputs: Option<CacheKeyInputSnapshot> = None;
     let dependency_variables = direct_dependency_variable_names(dep_dirs, policy)
         .map_err(|error| format!("{}: {error}", target.spec()))?;
     let parent = canonical
@@ -13679,6 +14099,16 @@ fn build_into_cache(
     };
 
     let post_git_result = (|| -> Result<LocalBuildDisposition, String> {
+    // WHY: concurrent resolves of one recipe in one checkout share its
+    // package directory. A recipe that builds there instead of under
+    // WASM_POSIX_DEP_WORK_DIR deletes a sibling build's tree, so any write
+    // to the reviewed recipe tree fails this build. See recipe_tree_guard.
+    let mut guarded_recipe_roots = vec![target.dir.clone()];
+    if let Some(script_dir) = script.parent() {
+        guarded_recipe_roots.push(script_dir.to_path_buf());
+    }
+    let recipe_tree = crate::recipe_tree_guard::RecipeTreeSnapshot::capture(&guarded_recipe_roots)
+        .map_err(|error| format!("{}: record recipe tree before build: {error}", target.spec()))?;
     let status = {
         let mut cmd = Command::new("bash");
         if policy == ResolvePolicy::SourceOnlyV1 {
@@ -13784,6 +14214,12 @@ fn build_into_cache(
             }
         }
         git_inputs.export_to(&mut cmd);
+        // Captured before the build script runs so that, if the post-build
+        // cache-key verification refuses, the refusal can name the input that
+        // moved instead of printing two opaque shas. Diagnostics only: it
+        // feeds no key and gates nothing.
+        pre_build_cache_key_inputs =
+            Some(capture_cache_key_inputs(target, registry, repo_root, policy));
         for (name, variable) in &dependency_variables {
             let path = dependency_paths.get(name).ok_or_else(|| {
                 format!(
@@ -13816,6 +14252,24 @@ fn build_into_cache(
         cmd.status()
             .map_err(|e| format!("spawn bash {}: {e}", script.display()))?
     };
+
+    if let Some(changes) = recipe_tree
+        .describe_changes()
+        .map_err(|error| format!("{}: recheck recipe tree after build: {error}", target.spec()))?
+    {
+        return Err(format!(
+            "{}: build script {} ({status}) wrote into its reviewed recipe tree:{changes}\n\
+             Recipes must configure, fetch, patch, and compile only under \
+             $WASM_POSIX_DEP_WORK_DIR and install only into $WASM_POSIX_DEP_OUT_DIR: \
+             another resolve of the same recipe in this checkout may be running and \
+             would share any tree kept here. Derive the path from \
+             kandelo_package_prepare_build_roots (KANDELO_PACKAGE_WORK_DIR) or \
+             \"${{WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}}\"; see docs/package-management.md \
+             \"Recipes build only in their work root\".",
+            target.spec(),
+            script.display(),
+        ));
+    }
 
     if let Err(e) = git_inputs.verify_unchanged() {
         return Err(format!(
@@ -13880,10 +14334,24 @@ fn build_into_cache(
         )?;
         if post_build_key != cache_key_sha {
             return Err(format!(
-                "{}: cache key changed while building {} ({}): before {cache_key_sha}, after {post_build_key}; refusing publication under the pre-build key",
+                "{}: cache key changed while building {} ({}): before {cache_key_sha}, after {post_build_key}; refusing publication under the pre-build key{}",
                 target.spec(),
                 target.name,
-                arch.as_str()
+                arch.as_str(),
+                match &pre_build_cache_key_inputs {
+                    Some(before) => describe_cache_key_input_drift(
+                        before, &refreshed_target, registry, repo_root, policy,
+                    ),
+                    // Reaching here means the pre-build capture did not run on
+                    // a path that then reached the post-build check. Say so
+                    // rather than degrading silently back to two opaque shas:
+                    // a diagnostic that quietly disappears is indistinguishable
+                    // from one that was never added.
+                    None => "\n  (no pre-build input snapshot was captured, so \
+                             the changed input cannot be named here; that is a \
+                             defect in this refusal path, not in the build)"
+                        .to_string(),
+                }
             ));
         }
         git_inputs.cleanup_source_only().map_err(|error| {
@@ -14040,7 +14508,7 @@ fn build_into_cache(
         // not satisfy `Path::exists`, so the ordinary rename below retains
         // Default's established repair behavior. SourceOnlyV1 never takes
         // this branch and remains fail-closed/no-follow.
-        if canonical.exists() {
+        if canonical.exists() || !rename_default_stage_or_detect_winner(&tmp, canonical)? {
             stage.cleanup()?;
             validate_cache_entry(target, canonical, arch, abi_version, cache_key_sha).map_err(
                 |error| {
@@ -14052,8 +14520,6 @@ fn build_into_cache(
             )?;
             return Ok(LocalBuildDisposition::Published);
         }
-        std::fs::rename(&tmp, canonical)
-            .map_err(|error| format!("rename {} -> {}: {error}", tmp.display(), canonical.display()))?;
         stage.mark_published();
         return Ok(LocalBuildDisposition::Published);
     }
@@ -14856,6 +15322,16 @@ fn wasm_artifact_policy_failures_for(
         return failures;
     }
 
+    // The kernel is a host-adapter module, not a user process. Every other
+    // executable/side module uses the shared process import audit, including
+    // cache admission and direct installation, before publication.
+    if required_exports != wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS {
+        match crate::package_imports::failures(bytes, &crate::repo_root()) {
+            Ok(import_failures) => failures.extend(import_failures),
+            Err(error) => failures.push(format!("process import audit: {error}")),
+        }
+    }
+
     let missing_required_exports = required_exports
         .iter()
         .copied()
@@ -15083,24 +15559,37 @@ fn wasm_artifact_policy_failures_for(
 
     // A no-seed instrumenter invocation deliberately leaves frame hooks
     // unimported so an inert side module remains instantiable. Once a module
-    // imports kernel.kernel_fork or any linked-frame hook, however, all three
-    // hooks are one transactional ABI and publication must reject partial
-    // instrumentation before an archive can enter a resolver index.
+    // imports kernel.kernel_fork or any linked-frame hook, however, the three
+    // core hooks are one transactional ABI and publication must reject partial
+    // instrumentation before an archive can enter a resolver index. The other
+    // fork-runtime imports serve optional state: wasm-opt runs after
+    // instrumentation and removes them when nothing calls them, and Wasm code
+    // cannot call an import it does not declare. Present ones are still
+    // checked for duplicates and signatures below.
     let requires_linked_frame_imports = facts.imports_kernel_fork || present_fork_imports > 0;
     if requires_linked_frame_imports {
         let missing_imports = fork_imports
             .iter()
+            .filter(|requirement| {
+                wasm_posix_shared::abi::WPK_FORK_CORE_FRAME_IMPORTS.contains(&requirement.name)
+            })
             .filter(|requirement| {
                 !facts
                     .function_imports
                     .contains_key(&(requirement.module.to_string(), requirement.name.to_string()))
             })
             .map(|requirement| format!("{}.{}", requirement.module, requirement.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        if !missing_imports.is_empty() {
+            .collect::<Vec<_>>();
+        // All three absent is consistent: a module with no fork-path frames
+        // of its own (it only re-exports fork, or wasm-opt removed every
+        // fork-path function). The capability and control exports still
+        // prove instrumentation.
+        if !missing_imports.is_empty()
+            && missing_imports.len() < wasm_posix_shared::abi::WPK_FORK_CORE_FRAME_IMPORTS.len()
+        {
             failures.push(format!(
-                "has incomplete ABI 43 linked-frame imports; missing {missing_imports}"
+                "has incomplete linked-frame imports; missing {}",
+                missing_imports.join(", ")
             ));
         }
         for requirement in fork_imports {
@@ -15285,6 +15774,11 @@ fn validate_declared_artifact(
             label,
             rel
         ));
+    }
+    if metadata.is_file() && label != "wasm" && (rel.ends_with(".wasm") || rel.ends_with(".so")) {
+        let bytes =
+            std::fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+        validate_side_file_import_bytes(&bytes, rel)?;
     }
     if !require_regular_file {
         if metadata.is_file() {
@@ -16308,6 +16802,33 @@ pub(crate) fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Res
     Ok(())
 }
 
+/// Publish a Default-policy stage at `canonical` with one `rename(2)`.
+///
+/// Returns `Ok(false)` when a peer resolve of the same key published first.
+/// Callers check `canonical.exists()` before calling, but a peer can publish
+/// between that check and the rename; `rename(2)` then refuses to replace the
+/// peer's non-empty directory with `ENOTEMPTY` or `EEXIST`. That is the
+/// concurrent-winner case the existence check already accepts, not a build
+/// failure, and the caller validates the winner the same way.
+fn rename_default_stage_or_detect_winner(stage: &Path, canonical: &Path) -> Result<bool, String> {
+    match std::fs::rename(stage, canonical) {
+        Ok(()) => Ok(true),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::AlreadyExists
+            ) && canonical.is_dir() =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(format!(
+            "rename {} -> {}: {error}",
+            stage.display(),
+            canonical.display()
+        )),
+    }
+}
+
 fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String> {
     match target.kind {
         ManifestKind::Library => {
@@ -16835,6 +17356,17 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     )?;
 
     match sub.as_str() {
+        "toolchain-inputs" => {
+            if target.is_some() || extra.is_some() {
+                return Err("build-deps toolchain-inputs: takes no arguments".into());
+            }
+            println!(
+                "{}",
+                serde_json::to_string(GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+                    .map_err(|error| format!("serialize toolchain inputs: {error}"))?
+            );
+            Ok(())
+        }
         "cache-root" => {
             if target.is_some() || extra.is_some() {
                 return Err("build-deps cache-root: takes no arguments".into());
@@ -16920,6 +17452,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 "resolve" => {
                     if extra.is_some() {
                         return Err("build-deps resolve: unexpected extra arg".into());
+                    }
+                    if matches!(manifest.kind, ManifestKind::Library | ManifestKind::Program) {
+                        crate::local_build::ensure_package_sysroot(&repo, arch)?;
                     }
                     cmd_resolve(
                         &manifest,
@@ -17089,11 +17624,12 @@ fn cmd_path(
 ) -> Result<(), String> {
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
+    let abi_version = current_abi_version();
     let sha = compute_sha_for_policy(
         m,
         registry,
         arch,
-        current_abi_version(),
+        abi_version,
         policy,
         &mut memo,
         &mut chain,
@@ -17102,7 +17638,7 @@ fn cmd_path(
         ResolvePolicy::SourceOnlyV1 => source_only_cache_roots()?.compiled,
         ResolvePolicy::Default => default_cache_root(),
     };
-    let path = canonical_path(&cache_root, m, arch, &sha);
+    let path = canonical_path(&cache_root, m, arch, abi_version, &sha);
     println!("{}", path.display());
     Ok(())
 }
@@ -17589,6 +18125,7 @@ fn cmd_install_local_artifact(
         binaries_dir,
         arch,
     )?;
+    let staged = matches!(outcome, LocalArtifactInstall::Staged { .. });
     match outcome {
         LocalArtifactInstall::Staged {
             generation,
@@ -17611,7 +18148,122 @@ fn cmd_install_local_artifact(
             println!("installed {}", mirror.display());
         }
     }
-    Ok(())
+    if staged {
+        // Nothing is published yet, so nothing can be shadowed yet. The
+        // completing member of the same session runs the check below.
+        return Ok(());
+    }
+    report_higher_priority_tier_shadow(manifest, artifact, source, binaries_dir, arch)
+}
+
+/// The higher-priority resolver tier that lives inside a `--binaries-dir`
+/// root. `host/src/binary-resolver.ts`'s `binaryCandidateTiers` orders
+/// `local-binaries/source-only-v1` **before** ambient `local-binaries`, so a
+/// file staged here shadows the same relative path installed by
+/// `install-local-artifact`.
+const SOURCE_ONLY_TIER_DIR: &str = "source-only-v1";
+
+/// Where `install-local-artifact` publishes `declared`, relative to the
+/// `--binaries-dir` root. Pure, so the tier-shadow check and the publisher
+/// cannot drift: it reproduces exactly the `binaries_dir` vs `arch_root`
+/// choice `install_local_artifact` makes from `uses_root_binary_mirror`.
+fn local_artifact_mirror_rel(
+    manifest: &DepsManifest,
+    mirror_relative: &Path,
+    arch: TargetArch,
+) -> PathBuf {
+    if manifest.uses_root_binary_mirror() {
+        mirror_relative.to_path_buf()
+    } else {
+        Path::new("programs").join(arch.as_str()).join(mirror_relative)
+    }
+}
+
+/// Fail loudly when a successful install leaves a HIGHER-priority resolver
+/// tier holding different bytes for the same path.
+///
+/// WHY: the resolver tries `local-binaries/source-only-v1/` before ambient
+/// `local-binaries/` (`binaryCandidateTiers` in `host/src/binary-resolver.ts`).
+/// `./run.sh rebuild kernel` refreshes the first; this command refreshes the
+/// second. Running only this one therefore refreshes the copy the guest tests
+/// do NOT read, and they keep executing the previous kernel while the command
+/// prints `installed ...` and exits 0. That cost one agent two hours, and it is
+/// the same shape as every other silent-success defect this project has found:
+/// a step that did half its job reported success anyway.
+///
+/// WHY A FAILURE RATHER THAN ALSO REFRESHING THE OTHER TIER: the SourceOnlyV1
+/// root is a content-addressed projection with its own manifest of per-member
+/// sizes and digests (`.kandelo/source-only-program-projection-v1.json`, which
+/// the browser resolver validates fetched bytes against). Only the local-build
+/// engine can write it consistently. Copying bytes into it from here would
+/// leave the manifest describing the old member — trading a loud stale tier for
+/// a silent inconsistent one. So this reports the real boundary and names the
+/// command that owns the other tier.
+///
+/// SCOPE: skipped when `WASM_POSIX_DEP_OUT_DIR` is set. That marks a
+/// resolver-driven package build, where the engine is mid-run and will publish
+/// its own projection when the build completes — the two tiers are *expected*
+/// to disagree in that window, and failing there would break every ordinary
+/// `./run.sh setup`. Also skipped when the root carries no SourceOnlyV1 tier at
+/// all (nothing can shadow), and when the higher tier has no entry for this
+/// path (the ambient copy is the only one, so it is the one that resolves).
+fn report_higher_priority_tier_shadow(
+    manifest: &DepsManifest,
+    artifact: &str,
+    source: &Path,
+    binaries_dir: &Path,
+    arch: TargetArch,
+) -> Result<(), String> {
+    if std::env::var_os("WASM_POSIX_DEP_OUT_DIR").is_some() {
+        return Ok(());
+    }
+    let higher_root = binaries_dir.join(SOURCE_ONLY_TIER_DIR);
+    if !higher_root.is_dir() {
+        return Ok(());
+    }
+    let declared = declared_local_artifact(manifest, artifact)?;
+    let mirror_rel = local_artifact_mirror_rel(manifest, &declared.mirror_relative, arch);
+    let shadowing = higher_root.join(&mirror_rel);
+    let shadowing_bytes = match std::fs::read(&shadowing) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "{}: read higher-priority resolver tier entry {}: {error}",
+                manifest.spec(),
+                shadowing.display()
+            ));
+        }
+    };
+    let installed_bytes = std::fs::read(source).map_err(|error| {
+        format!(
+            "{}: re-read installed artifact {} to compare tiers: {error}",
+            manifest.spec(),
+            source.display()
+        )
+    })?;
+    if shadowing_bytes == installed_bytes {
+        return Ok(());
+    }
+    Err(format!(
+        "{}: this install refreshed a LOWER-priority resolver tier and left a \
+         higher-priority one stale, so nothing will actually load the bytes just \
+         installed.\n  \
+         installed (lower priority):  {}\n  \
+         still shadows it (higher):   {}\n\
+         The resolver tries `{}` before ambient `local-binaries` \
+         (`binaryCandidateTiers` in host/src/binary-resolver.ts), so every consumer \
+         keeps resolving the older artifact.\n\
+         Refresh the higher tier through the build engine that owns it -- \
+         `./run.sh rebuild {}` (or `cargo xtask bootstrap {}`) -- then run \
+         `cargo xtask verify-fresh`.",
+        manifest.spec(),
+        binaries_dir.join(&mirror_rel).display(),
+        shadowing.display(),
+        SOURCE_ONLY_TIER_DIR,
+        manifest.name,
+        manifest.name,
+    ))
 }
 
 fn install_local_artifact(
@@ -21708,6 +22360,27 @@ spdx = "MIT"
     }
 
     #[test]
+    fn editing_the_build_script_changes_the_cache_key_even_when_inputs_omit_it() {
+        // Sixteen registry packages did not list their build script in
+        // build.toml `inputs`, so editing the script left their cache keys
+        // unchanged and the resolver kept serving the old artifact.
+        let root = tempdir("build-script-is-an-implicit-input");
+        write(&root, "scripted", "1.0.0", &[]);
+        write_build_revision(&root, "scripted", 1);
+        let script = root.join("scripted/build-scripted.sh");
+        fs::write(&script, "#!/bin/sh\necho one\n").unwrap();
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let before =
+            package_context_cache_keys(&registry.load("scripted").unwrap(), &registry).unwrap();
+        fs::write(&script, "#!/bin/sh\necho two\n").unwrap();
+        let after =
+            package_context_cache_keys(&registry.load("scripted").unwrap(), &registry).unwrap();
+        assert_ne!(before, after, "a build-script edit must change the cache key");
+    }
+
+    #[test]
     fn source_context_check_rejects_revision_input_and_transitive_input_mutations() {
         let root = tempdir("program-index-context-source-freshness");
         write(&root, "dependency", "1.0.0", &[]);
@@ -22034,6 +22707,110 @@ spdx = "MIT"
         .unwrap();
 
         assert_eq!(fs::read(&output).unwrap(), b"{\"generation\":\"new\"}\n");
+    }
+
+    /// Writer A publishes between writer B computing its bytes and B taking
+    /// the publication lock. Before the fix B snapshotted the target outside
+    /// the lock and failed with "target changed before publication" even
+    /// though A wrote exactly B's bytes.
+    #[cfg(unix)]
+    #[test]
+    fn program_package_projection_accepts_an_identical_publication_before_its_lock() {
+        use std::os::unix::fs::MetadataExt;
+        let root = tempdir("program-projection-identical-race");
+        let output = root.join("program-packages.json");
+        fs::write(&output, b"{\"generation\":\"old\"}\n").unwrap();
+        let bytes = b"{\"generation\":\"new\"}\n".to_vec();
+        let writer_a_output = output.clone();
+        let writer_a_bytes = bytes.clone();
+        let published_by_a = std::cell::Cell::new(None);
+        let mut writer_a_publishes = || {
+            let stage = writer_a_output.with_file_name("writer-a-stage");
+            fs::write(&stage, &writer_a_bytes).unwrap();
+            fs::rename(&stage, &writer_a_output).unwrap();
+            published_by_a.set(Some(fs::metadata(&writer_a_output).unwrap().ino()));
+        };
+        let expected = bytes.clone();
+        let mut refresh_source = || Ok(expected.clone());
+        let mut replace = |from: &Path, to: &Path| fs::rename(from, to);
+
+        write_program_package_index_atomically_with_hooks(
+            &output,
+            &bytes,
+            &mut refresh_source,
+            &mut replace,
+            &mut writer_a_publishes,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&output).unwrap(), bytes);
+        // B left A's identical publication in place rather than renaming a
+        // new inode over it.
+        assert_eq!(
+            Some(fs::metadata(&output).unwrap().ino()),
+            published_by_a.get()
+        );
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".index-transaction-")
+        }));
+    }
+
+    /// A different publication landing before B's lock is not a conflict
+    /// either: B re-derives its projection under the lock, and when that still
+    /// matches its staged bytes, B's index is the current one.
+    #[test]
+    fn program_package_projection_revalidates_a_different_publication_before_its_lock() {
+        let root = tempdir("program-projection-different-race");
+        let output = root.join("program-packages.json");
+        fs::write(&output, b"{\"generation\":\"old\"}\n").unwrap();
+        let bytes = b"{\"generation\":\"new\"}\n".to_vec();
+        let writer_a_output = output.clone();
+        let mut writer_a_publishes = || {
+            let stage = writer_a_output.with_file_name("writer-a-stage");
+            fs::write(&stage, b"{\"generation\":\"a\"}\n").unwrap();
+            fs::rename(&stage, &writer_a_output).unwrap();
+        };
+        let expected = bytes.clone();
+        let mut refresh_source = || Ok(expected.clone());
+        let mut replace = |from: &Path, to: &Path| fs::rename(from, to);
+
+        write_program_package_index_atomically_with_hooks(
+            &output,
+            &bytes,
+            &mut refresh_source,
+            &mut replace,
+            &mut writer_a_publishes,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&output).unwrap(), bytes);
+    }
+
+    #[test]
+    fn program_package_projection_leaves_an_identical_target_untouched() {
+        let root = tempdir("program-projection-identical-noop");
+        let output = root.join("program-packages.json");
+        let bytes = b"{\"generation\":\"same\"}\n";
+        fs::write(&output, bytes).unwrap();
+        let mut refresh_source = || -> Result<Vec<u8>, String> {
+            panic!("an identical target must not pay for a source refresh")
+        };
+        let mut replace = |_from: &Path, _to: &Path| -> std::io::Result<()> {
+            panic!("an identical target must not be replaced")
+        };
+
+        write_program_package_index_atomically_with_source(
+            &output,
+            bytes,
+            &mut refresh_source,
+            &mut replace,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&output).unwrap(), bytes);
     }
 
     #[test]
@@ -23049,6 +23826,66 @@ revision    = 2
         );
     }
 
+    /// The executed build script moves the key even when `build.toml` does
+    /// not list it: wget's did not, and editing `build-wget.sh` left its key
+    /// unchanged (see `build_script_input_digest`).
+    #[test]
+    fn cache_key_changes_when_unlisted_build_script_changes() {
+        let root = tempdir("ckcs-unlisted-script");
+        write(&root, "libScript", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let pkg = root.join("libScript");
+        std::fs::write(pkg.join("recipe.txt"), "fixed\n").unwrap();
+        std::fs::write(
+            pkg.join("build.toml"),
+            r#"
+script_path = "libScript/build-libScript.sh"
+inputs = ["libScript/recipe.txt"]
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision    = 1
+"#,
+        )
+        .unwrap();
+        let script = pkg.join("build-libScript.sh");
+        std::fs::write(&script, "#!/bin/sh\necho one\n").unwrap();
+
+        // `root` stands in for the repository root, which is what the engine
+        // resolves `script_path` against (`DepsManifest::build_script_path`).
+        let key = || {
+            let manifest = DepsManifest::load_with_overlay(&pkg).unwrap();
+            assert_eq!(
+                manifest.build_script_path(&root),
+                script,
+                "the fixture must exercise the script the engine would run"
+            );
+            hex(&compute_sha_with_identity_context(
+                &manifest,
+                &reg,
+                TargetArch::Wasm32,
+                TEST_ABI,
+                ResolvePolicy::Default,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+                Some(&[]),
+                &root,
+                None,
+            )
+            .unwrap())
+        };
+
+        let before = key();
+        assert_eq!(before, key(), "the key must be stable for an unchanged tree");
+        std::fs::write(&script, "#!/bin/sh\necho two\n").unwrap();
+        assert_ne!(
+            before,
+            key(),
+            "editing the executed build script must change the cache key even when build.toml does not list it"
+        );
+    }
+
     #[test]
     fn compute_cache_key_sha_uses_build_toml_inputs() {
         let root = tempdir("ckcs-build-inputs");
@@ -23134,12 +23971,15 @@ revision = 7
             compute_cache_key_sha_for_package(&package, &registry, TargetArch::Wasm32, TEST_ABI)
                 .unwrap();
 
-        // Golden produced by the resolver before build.toml learned the
-        // optional [[git_inputs]] section. Merely adding that schema must not
-        // invalidate every package whose immutable-Git vector remains empty.
+        // Golden for a package with no [[git_inputs]]: merely having that
+        // optional schema must not invalidate every package whose
+        // immutable-Git vector is empty. Regenerated when the build script
+        // became an implicit input (this fixture's `build.sh` is not listed in
+        // `inputs`, so its key gained the absent-script digest); the property
+        // pinned here is unchanged.
         assert_eq!(
             actual,
-            "db1f2fac54f8b14e0caf4f8a2e2fe15767f07260a4b0437cdb276ce6d40b5fb5"
+            "8eca625925211a672d10f958a215920e3beb98575db84da10cfb4e18fa925781"
         );
     }
 
@@ -23183,7 +24023,8 @@ commit = "2222222222222222222222222222222222222222"
         )
         .unwrap();
         let cache_root = root.join("cache");
-        let old_canonical = canonical_path(&cache_root, &manifest, TEST_ARCH, &sha_before);
+        let old_canonical =
+            canonical_path(&cache_root, &manifest, TEST_ARCH, TEST_ABI, &sha_before);
         std::fs::create_dir_all(&old_canonical).unwrap();
         std::fs::write(old_canonical.join("stale"), "old git identity\n").unwrap();
 
@@ -23206,8 +24047,13 @@ commit = "2222222222222222222222222222222222222222"
         )
         .unwrap();
         assert_ne!(sha_before, sha_changed_commit);
-        let changed_canonical =
-            canonical_path(&cache_root, &manifest, TEST_ARCH, &sha_changed_commit);
+        let changed_canonical = canonical_path(
+            &cache_root,
+            &manifest,
+            TEST_ARCH,
+            TEST_ABI,
+            &sha_changed_commit,
+        );
         assert_ne!(old_canonical, changed_canonical);
         assert!(
             !changed_canonical.exists(),
@@ -24971,6 +25817,94 @@ libs = ["lib/libWorkFail.a"]
     }
 
     #[test]
+    fn default_publication_rename_accepts_a_peer_that_won_after_the_existence_check() {
+        let root = tempdir("default-publication-race");
+        let canonical = root.join("pkg-1.0.0-rev1-wasm32-key");
+        let ours = root.join(".pkg.build-stage-1-0");
+        fs::create_dir_all(&ours).unwrap();
+        fs::write(ours.join("ours"), "ours").unwrap();
+
+        // The peer published between our `canonical.exists()` check and
+        // the rename: rename(2) refuses to replace its non-empty directory.
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(canonical.join("peer"), "peer").unwrap();
+        assert!(!rename_default_stage_or_detect_winner(&ours, &canonical).unwrap());
+        assert!(canonical.join("peer").exists());
+        assert!(ours.join("ours").exists(), "the caller cleans up its own stage");
+
+        fs::remove_dir_all(&canonical).unwrap();
+        assert!(rename_default_stage_or_detect_winner(&ours, &canonical).unwrap());
+        assert!(canonical.join("ours").exists());
+        assert!(!ours.exists());
+    }
+
+    #[test]
+    fn recipe_that_builds_in_its_package_directory_fails_and_publishes_nothing() {
+        let root = tempdir("built-in-tree-reg");
+        let cache = tempdir("built-in-tree-cache");
+        // The shape that let two qtbase resolves delete each other's tree.
+        write_lib(
+            &root,
+            "libInTree",
+            "1.0.0",
+            &[],
+            r#"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_DIR="$SCRIPT_DIR/libInTree-build"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+touch "$BUILD_DIR/libInTree.a"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+cp "$BUILD_DIR/libInTree.a" "$WASM_POSIX_DEP_OUT_DIR/lib/"
+"#,
+            r#"[outputs]
+libs = ["lib/libInTree.a"]
+"#,
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = reg.load("libInTree").unwrap();
+        let published = || -> Vec<_> {
+            fs::read_dir(cache.join("libs"))
+                .map(|entries| {
+                    entries
+                        .map(|entry| entry.unwrap().file_name())
+                        .filter(|name| name.to_string_lossy().starts_with("libInTree"))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let error = ensure_built(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap_err();
+        assert!(error.contains("libInTree@1.0.0"), "got: {error}");
+        assert!(error.contains("wrote into its reviewed recipe tree"), "got: {error}");
+        assert!(error.contains("added    libInTree-build"), "got: {error}");
+        assert!(error.contains("WASM_POSIX_DEP_WORK_DIR"), "got: {error}");
+        assert_eq!(published(), Vec::<std::ffi::OsString>::new(), "in-tree build published");
+
+        // A stale tree left by a standalone run is deleted and recreated
+        // with identical names; the guard still sees the replacement.
+        let error = ensure_built(
+            &manifest,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap_err();
+        assert!(error.contains("libInTree-build"), "got: {error}");
+        assert_eq!(published(), Vec::<std::ffi::OsString>::new(), "in-tree build published");
+    }
+
+    #[test]
     fn ensure_built_is_idempotent_on_cache_hit() {
         let root = tempdir("built-hit-reg");
         let cache = tempdir("built-hit-cache");
@@ -25043,7 +25977,7 @@ revision = 1
             &mut Vec::new(),
         )
         .unwrap();
-        let first_path = canonical_path(&cache, &first_manifest, TEST_ARCH, &first_sha);
+        let first_path = canonical_path(&cache, &first_manifest, TEST_ARCH, TEST_ABI, &first_sha);
         fs::create_dir_all(first_path.join("lib")).unwrap();
         fs::write(first_path.join("lib/libMemoGit.a"), b"first").unwrap();
         let resolved_first = ensure_built(
@@ -25079,7 +26013,8 @@ commit = "1111111111111111111111111111111111111111"
         )
         .unwrap();
         assert_ne!(first_sha, second_sha);
-        let second_path = canonical_path(&cache, &second_manifest, TEST_ARCH, &second_sha);
+        let second_path =
+            canonical_path(&cache, &second_manifest, TEST_ARCH, TEST_ABI, &second_sha);
         fs::create_dir_all(second_path.join("lib")).unwrap();
         fs::write(second_path.join("lib/libMemoGit.a"), b"second").unwrap();
         write_cache_provenance(
@@ -25668,7 +26603,7 @@ libs = ["lib/libC.a"]
             &mut Vec::new(),
         )
         .unwrap();
-        let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
+        let canonical = canonical_path(&cache, &m, TEST_ARCH, TEST_ABI, &sha);
         assert!(
             !canonical.exists(),
             "canonical cache dir must not exist on failure"
@@ -25825,7 +26760,7 @@ libs = ["lib/libD.a"]
             &mut Vec::new(),
         )
         .unwrap();
-        assert!(!canonical_path(&cache, &m, TEST_ARCH, &sha).exists());
+        assert!(!canonical_path(&cache, &m, TEST_ARCH, TEST_ABI, &sha).exists());
     }
 
     /// Regression: build-script stdout must NOT leak to xtask's stdout.
@@ -26180,13 +27115,17 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         )
         .unwrap();
         let cache = PathBuf::from("/tmp/testcache");
-        let path = canonical_path(&cache, &m, TEST_ARCH, &sha);
+        let path = canonical_path(&cache, &m, TEST_ARCH, TEST_ABI, &sha);
 
         let parent = path.parent().unwrap();
         assert_eq!(parent, cache.join("libs"));
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        // The path includes the arch segment between revN and the full cache key.
-        assert!(name.starts_with("zlib-1.3.1-rev1-wasm32-"), "got {name}");
+        // The path includes the arch and ABI segments between revN and the
+        // full cache key.
+        assert!(
+            name.starts_with(&format!("zlib-1.3.1-rev1-wasm32-abi{TEST_ABI}-")),
+            "got {name}"
+        );
         let key = name.rsplit('-').next().unwrap();
         assert_eq!(key.len(), 64);
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
@@ -26199,7 +27138,7 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         let m = parse_source_manifest(&dir);
         let sha = [0u8; 32];
         let cache = PathBuf::from("/cache");
-        let path = canonical_path(&cache, &m, TargetArch::Wasm32, &sha);
+        let path = canonical_path(&cache, &m, TargetArch::Wasm32, TEST_ABI, &sha);
         assert_eq!(
             path,
             PathBuf::from(format!(
@@ -26220,12 +27159,79 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         first[31] = 1;
         second[31] = 2;
 
-        let first_path = canonical_path(Path::new("/cache"), &m, TEST_ARCH, &first);
-        let second_path = canonical_path(Path::new("/cache"), &m, TEST_ARCH, &second);
+        let first_path = canonical_path(Path::new("/cache"), &m, TEST_ARCH, TEST_ABI, &first);
+        let second_path = canonical_path(Path::new("/cache"), &m, TEST_ARCH, TEST_ABI, &second);
 
         assert_ne!(first_path, second_path);
         assert!(first_path.to_string_lossy().ends_with(&hex(&first)));
         assert!(second_path.to_string_lossy().ends_with(&hex(&second)));
+    }
+
+    /// The tier-shadow check compares the file it just published against the
+    /// same relative path in `source-only-v1`. If this placement ever drifts
+    /// from `install_local_artifact`'s own `uses_root_binary_mirror` branch,
+    /// the check would compare the wrong file and go quiet again -- which is
+    /// the exact failure mode it exists to end.
+    #[test]
+    fn local_artifact_mirror_rel_matches_the_publishers_root_vs_programs_choice() {
+        let dir = Path::new("/registry/kernel");
+        let kernel = DepsManifest::parse(
+            r#"
+kind = "program"
+name = "kernel"
+version = "0.1.0"
+depends_on = []
+
+[source]
+url = "https://example.test/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+
+[[outputs]]
+name = "kernel"
+wasm = "kandelo-kernel.wasm"
+"#,
+            dir.to_path_buf(),
+        )
+        .unwrap();
+        assert!(kernel.uses_root_binary_mirror());
+        assert_eq!(
+            local_artifact_mirror_rel(&kernel, Path::new("kernel.wasm"), TEST_ARCH),
+            PathBuf::from("kernel.wasm"),
+            "the kernel publishes at the binary root, so its higher-tier twin \
+             is `source-only-v1/kernel.wasm`, not one under programs/<arch>/"
+        );
+
+        let ordinary = DepsManifest::parse(
+            r#"
+kind = "program"
+name = "tar"
+version = "1.35"
+depends_on = []
+
+[source]
+url = "https://example.test/tar.tar.xz"
+sha256 = "4d62ff37342ec7aed748535323930c7cf94acf71c3591882b26a7ea50f3edc16"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+
+[[outputs]]
+name = "tar"
+wasm = "tar.wasm"
+"#,
+            dir.to_path_buf(),
+        )
+        .unwrap();
+        assert!(!ordinary.uses_root_binary_mirror());
+        assert_eq!(
+            local_artifact_mirror_rel(&ordinary, Path::new("tar.wasm"), TEST_ARCH),
+            Path::new("programs").join(TEST_ARCH.as_str()).join("tar.wasm")
+        );
     }
 
     fn parse_source_manifest(dir: &Path) -> DepsManifest {
@@ -26574,7 +27580,7 @@ wasm = "vim.wasm"
         )
         .unwrap();
         let sha = [0u8; 32];
-        let p = canonical_path(Path::new("/cache"), &m, TargetArch::Wasm32, &sha);
+        let p = canonical_path(Path::new("/cache"), &m, TargetArch::Wasm32, TEST_ABI, &sha);
         let s = p.to_string_lossy();
         assert!(s.contains("/programs/"), "got: {s}");
         assert!(s.contains("vim-9.1.0900-rev1-wasm32-"), "got: {s}");
@@ -29154,7 +30160,7 @@ wasm = "bad.wasm"
     }
 
     #[test]
-    fn program_artifact_policy_rejects_each_missing_abi43_fork_import() {
+    fn program_artifact_policy_rejects_each_missing_core_frame_import_only() {
         let all_imports = wasm_posix_shared::abi::WPK_FORK_REQUIRED_IMPORTS
             .iter()
             .map(|requirement| requirement.name)
@@ -29180,11 +30186,32 @@ wasm = "bad.wasm"
                 &[linked_frame_descriptor(4)],
             );
             let failures = wasm_artifact_policy_failures(&bytes, ForkInstrumentationPolicy::Auto);
-            assert!(
-                failures.iter().any(|failure| failure.contains(missing)),
-                "missing {missing} was not reported: {failures:?}"
-            );
+            let reported = failures.iter().any(|failure| failure.contains(missing));
+            // Only the linked-frame core is all-or-nothing; wasm-opt removes
+            // the other runtime imports when nothing calls them (ABI 46).
+            if wasm_posix_shared::abi::WPK_FORK_CORE_FRAME_IMPORTS.contains(missing) {
+                assert!(reported, "missing {missing} was not reported: {failures:?}");
+            } else {
+                assert!(
+                    failures.is_empty(),
+                    "optional {missing} was required: {failures:?}"
+                );
+            }
         }
+
+        // No runtime imports at all: an instrumented module with no fork-path
+        // frames of its own after wasm-opt. The exports prove instrumentation.
+        let bytes = wasm_fork_artifact(
+            4,
+            4,
+            4,
+            true,
+            &[],
+            &all_exports,
+            &[linked_frame_descriptor(4)],
+        );
+        let failures = wasm_artifact_policy_failures(&bytes, ForkInstrumentationPolicy::Auto);
+        assert!(failures.is_empty(), "frameless module rejected: {failures:?}");
     }
 
     #[test]
@@ -30251,7 +31278,7 @@ version_constraint = ">=99.99"
             &mut Vec::new(),
         )
         .unwrap();
-        let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
+        let canonical = canonical_path(&cache, &m, TEST_ARCH, TEST_ABI, &sha);
         std::fs::create_dir_all(canonical.join("lib")).unwrap();
         std::fs::write(canonical.join("lib/libfake.a"), b"").unwrap();
 
@@ -30998,7 +32025,9 @@ libs = ["lib/libF3b.a"]
         );
         assert_eq!(
             hex(&source_only),
-            "9954d4bfe2c4fd86789b9201dab865c7d3ed2c3cf7c9276a06fd11df3c88f48a",
+            // Regenerated when the build script became an implicit
+            // source-only input (the fixture does not list its script).
+            "1011893256fa81b97d562408507251aa056cd05b6697063007cdc9d9b67af262",
             "this golden binds the exact source-only-v1 provider-domain bytes"
         );
     }
@@ -31608,7 +32637,24 @@ libs = ["lib/libF3b.a"]
         // duration of both computations.
         let src = crate::repo_root();
         let tmp = tempdir("kernel-cargo-config");
-        copy_dir_recursive(&src, &tmp).expect("copy repo");
+        // Copy inputs, not unrelated mutable build products. In particular,
+        // private musl scratch trees may disappear during SDK publication.
+        let mut inputs = GLOBAL_PACKAGE_TOOLCHAIN_INPUTS.iter()
+            .map(|path| path.to_string()).collect::<BTreeSet<_>>();
+        inputs.extend(crate::cargo_closure::cargo_closure_paths(&src, "kandelo").unwrap());
+        inputs.extend(fork_instrument_tool_input_paths(&src).unwrap());
+        inputs.extend(["Cargo.toml", "Cargo.lock", "crates", "tools/xtask", "packages/registry/kernel"]
+            .into_iter().map(str::to_string));
+        for relative in inputs {
+            let source = src.join(&relative);
+            let destination = tmp.join(&relative);
+            if source.is_dir() {
+                copy_dir_recursive(&source, &destination).expect("copy declared input directory");
+            } else {
+                fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                fs::copy(source, destination).expect("copy declared input file");
+            }
+        }
         let _repo_root = crate::install_repo_root_override(tmp.clone()).unwrap();
 
         let reg = Registry {
@@ -31638,7 +32684,10 @@ libs = ["lib/libF3b.a"]
         )
         .expect("key after");
 
-        assert_ne!(before, after, ".cargo/config.toml must be a kernel cache input");
+        assert_ne!(
+            before, after,
+            ".cargo/config.toml must be a kernel cache input"
+        );
     }
 
     #[cfg(unix)]
@@ -32548,7 +33597,14 @@ revision = 1
             &mut Vec::new(),
         )
         .unwrap();
-        std::fs::remove_dir_all(canonical_path(&cache, &dep, TEST_ARCH, &dep_sha)).unwrap();
+        std::fs::remove_dir_all(canonical_path(
+            &cache,
+            &dep,
+            TEST_ARCH,
+            current_abi_version(),
+            &dep_sha,
+        ))
+        .unwrap();
         build_memo().lock().unwrap().clear();
 
         ensure_built(
@@ -32948,7 +34004,7 @@ printf 'CLEAN-ENV\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             &mut Vec::new(),
         )
         .unwrap();
-        let canonical = canonical_path(&cache, &target, TEST_ARCH, &cache_key);
+        let canonical = canonical_path(&cache, &target, TEST_ARCH, TEST_ABI, &cache_key);
         assert_eq!(fs::read(canonical.join("lib/out.a")).unwrap(), b"CLEAN-ENV\n");
     }
 
@@ -37331,6 +38387,42 @@ commit = "1111111111111111111111111111111111111111"
         let _override =
             crate::install_repo_root_override(fs::canonicalize(&repo).unwrap()).unwrap();
 
+        // `plan --status` runs the same check as a dry run: same answer, but
+        // it must not refresh the generation's last-used stamp.
+        fn last_used_stamps(dir: &Path) -> Vec<PathBuf> {
+            let mut found = Vec::new();
+            for entry in fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    found.extend(last_used_stamps(&path));
+                } else if path.to_string_lossy().ends_with(".kandelo-last-used") {
+                    found.push(path);
+                }
+            }
+            found
+        }
+        for stamp in last_used_stamps(&roots.compiled) {
+            fs::remove_file(stamp).unwrap();
+        }
+        let mut memo_dry = BTreeMap::new();
+        assert_eq!(
+            source_only_skip_receipt_if_clean_with_use(
+                &target,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                &roots,
+                &output,
+                &mut memo_dry,
+                false,
+            ),
+            Some(receipt.clone()),
+        );
+        assert!(
+            last_used_stamps(&roots.compiled).is_empty(),
+            "a dry-run skip check must not write a last-used stamp"
+        );
+
         let mut memo = BTreeMap::new();
         assert_eq!(
             source_only_skip_receipt_if_clean(
@@ -37338,6 +38430,11 @@ commit = "1111111111111111111111111111111111111111"
             ),
             Some(receipt.clone()),
             "a clean built node must be skippable with its persisted receipt"
+        );
+        assert_eq!(
+            last_used_stamps(&roots.compiled).len(),
+            1,
+            "a real skip records the cache hit for cache-gc"
         );
 
         // A mirror left by an earlier cache key sits at the same path with
@@ -37663,14 +38760,18 @@ commit = "1111111111111111111111111111111111111111"
             &[],
             &format!(
                 "mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\nprintf bytes > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"\nprintf changed > {:?}",
-                repo.join("input-race/declared.txt")
+                repo.join("shared-inputs/declared.txt")
             ),
             "[outputs]\nlibs = [\"lib/out.a\"]\n",
         );
-        fs::write(repo.join("input-race/declared.txt"), b"before").unwrap();
+        // The declared input lives outside the recipe directory: a write
+        // inside it is refused earlier by the recipe-tree guard, and this
+        // test pins the cache-key recheck that covers every other input.
+        fs::create_dir_all(repo.join("shared-inputs")).unwrap();
+        fs::write(repo.join("shared-inputs/declared.txt"), b"before").unwrap();
         fs::write(
             repo.join("input-race/build.toml"),
-            "script_path = \"input-race/build-input-race.sh\"\ninputs = [\"input-race/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
+            "script_path = \"input-race/build-input-race.sh\"\ninputs = [\"shared-inputs/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         let registry = Registry { roots: vec![repo.clone()] };
@@ -37691,12 +38792,8 @@ commit = "1111111111111111111111111111111111111111"
             )
             .unwrap()
         };
-        let old_canonical = canonical_path(
-            &roots.compiled,
-            &manifest,
-            TEST_ARCH,
-            &old_sha,
-        );
+        let old_canonical =
+            canonical_path(&roots.compiled, &manifest, TEST_ARCH, TEST_ABI, &old_sha);
         let error = run_local_rebuild_fixture(
             &manifest, &registry, &roots, &repo, &output, false,
         )
@@ -38214,5 +39311,154 @@ commit = "1111111111111111111111111111111111111111"
             live_before,
             "cache authority changed after staging but the live projection was mutated",
         );
+    }
+}
+
+/// Guards for the cache-key drift report. The report exists so a build that
+/// writes into its own cache-key inputs names the file instead of printing two
+/// opaque shas (B37). A report that named nothing would be worse than none: it
+/// would read as "the key moved for no reason", which is exactly the
+/// concurrent-edit misreading that invites a retry loop.
+#[cfg(test)]
+mod cache_key_drift_report_tests {
+    use super::{BuildInputDigest, describe_cache_key_input_drift_lines, render_digest_drift};
+
+    fn digest(seed: u8) -> [u8; 32] {
+        [seed; 32]
+    }
+
+    fn input(label: &str, seed: u8) -> BuildInputDigest {
+        BuildInputDigest {
+            label: label.to_string(),
+            digest: digest(seed),
+        }
+    }
+
+    #[test]
+    fn a_changed_input_is_named_with_both_digests() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[input("sdk/src", 1), input("libc/glue", 2)],
+            &[input("sdk/src", 9), input("libc/glue", 2)],
+            &mut lines,
+        );
+        assert!(moved, "a changed digest must report drift");
+        assert_eq!(lines.len(), 1, "only the changed input should be named");
+        assert!(lines[0].contains("sdk/src"), "got: {}", lines[0]);
+        assert!(lines[0].contains("changed"), "got: {}", lines[0]);
+        assert!(
+            !lines[0].contains("libc/glue"),
+            "an unchanged input must not be reported: {}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn an_input_that_disappeared_is_named() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[input("sdk/src", 1)],
+            &[],
+            &mut lines,
+        );
+        assert!(moved);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("disappeared"), "got: {}", lines[0]);
+        assert!(lines[0].contains("sdk/src"), "got: {}", lines[0]);
+    }
+
+    #[test]
+    fn an_input_that_appeared_is_named() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[],
+            &[input("sdk/generated", 3)],
+            &mut lines,
+        );
+        assert!(moved);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("appeared"), "got: {}", lines[0]);
+        assert!(lines[0].contains("sdk/generated"), "got: {}", lines[0]);
+    }
+
+    /// An identical set must report NOTHING and must say so. A report that
+    /// emitted noise for an unchanged set would train readers to ignore it.
+    #[test]
+    fn an_unchanged_set_reports_no_drift() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[input("sdk/src", 1), input("libc/glue", 2)],
+            &[input("libc/glue", 2), input("sdk/src", 1)],
+            &mut lines,
+        );
+        assert!(!moved, "an unchanged set must not report drift");
+        assert!(lines.is_empty(), "got: {lines:?}");
+    }
+
+    /// The whole point of the report: when a declared input moved, the block
+    /// must name it, and must say a build may not write into its own inputs.
+    #[test]
+    fn the_rendered_block_names_the_input_and_the_rule() {
+        let report = describe_cache_key_input_drift_lines(
+            &[input("sdk/package-lock.json", 1)],
+            &[input("sdk/package-lock.json", 7)],
+            &[input("libc/musl", 4)],
+            &[input("libc/musl", 4)],
+            "kandelo-sdk",
+        );
+        assert!(
+            report.contains("sdk/package-lock.json"),
+            "the changed input must be named: {report}"
+        );
+        assert!(
+            report.contains("must not write into its own cache-key inputs"),
+            "the rule must be stated: {report}"
+        );
+        assert!(
+            !report.contains("no declared or global input changed"),
+            "a real change must not render the nothing-changed branch: {report}"
+        );
+    }
+
+    /// A global toolchain input that moved is invisible to the cache key
+    /// itself, because `global_package_toolchain_digests` memoizes per
+    /// process. The report re-reads them uncached precisely so that case is
+    /// visible, and it must say that the key understated the drift.
+    #[test]
+    fn a_moved_global_input_is_reported_as_invisible_to_the_key() {
+        let report = describe_cache_key_input_drift_lines(
+            &[input("sdk/src", 1)],
+            &[input("sdk/src", 1)],
+            &[input("libc/musl", 4)],
+            &[input("libc/musl", 8)],
+            "kandelo-sdk",
+        );
+        assert!(report.contains("libc/musl"), "got: {report}");
+        assert!(
+            report.contains("memoized"),
+            "the report must explain why the key could not see this: {report}"
+        );
+    }
+
+    /// When nothing in either set moved, the report must say where else to
+    /// look rather than implying the inputs are the cause.
+    #[test]
+    fn no_drift_points_the_reader_elsewhere() {
+        let report = describe_cache_key_input_drift_lines(
+            &[input("sdk/src", 1)],
+            &[input("sdk/src", 1)],
+            &[input("libc/musl", 4)],
+            &[input("libc/musl", 4)],
+            "kandelo-sdk",
+        );
+        assert!(
+            report.contains("no declared or global input changed"),
+            "got: {report}"
+        );
+        assert!(report.contains("dependency"), "got: {report}");
     }
 }

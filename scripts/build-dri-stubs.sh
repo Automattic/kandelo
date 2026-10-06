@@ -53,11 +53,12 @@ STAMP="$SYSROOT/.kandelo-dri-stubs.input-hash"
 # provisioned before these sources changed keeps whatever libdrm.a /
 # libgbm.a it was first given — and every program that links `-ldrm`
 # or `-lgbm` afterwards silently picks up the older entry-point set.
-# The SDK links executables with `-Wl,--allow-undefined` (autoconf link
-# probes depend on it), so the missing entry points do not fail the link:
-# they become `env.*` imports the host resolves to a throwing stub, and
-# the program dies mid-run on the first call. That is how the shipped
-# SDL2 demo ended up calling `env.drmAuthMagic`.
+# Before ABI 46 the SDK linked executables with `-Wl,--allow-undefined`,
+# so missing entry points did not fail the link: they became `env.*`
+# imports the host resolved to a throwing stub, and the program died
+# mid-run on the first call (that is how the shipped SDL2 demo ended up
+# calling `env.drmAuthMagic`). Links now fail instead, but a stale archive
+# would still break every program linking it, so keep the digest check.
 #
 # Record the digest of the sources these archives are built from, so
 # bootstrap can call this script on every sysroot resync and it costs

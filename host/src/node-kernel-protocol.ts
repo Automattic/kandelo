@@ -96,8 +96,6 @@ export interface SpawnMessage {
    */
   programBytes?: ArrayBuffer;
   programPath?: string;
-  /** Optional pre-compiled module for the same bytes. */
-  programModule?: WebAssembly.Module;
   argv: string[];
   env?: string[];
   cwd?: string;
@@ -253,6 +251,12 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
+/** Read the kernel worker's compiled-module cache counters. */
+export interface GetWasmModuleCacheStatsRequestMessage {
+  type: "get_wasm_module_cache_stats";
+  requestId: number;
+}
+
 /** Read the retained capacity of the kernel-owned large-spawn region. */
 export interface GetSpawnScratchCapacityRequestMessage {
   type: "get_spawn_scratch_capacity";
@@ -386,6 +390,29 @@ export interface SetInputCanvasDimsMessage {
   height: number;
 }
 
+/**
+ * Offer host clipboard text to the guest's clipboard agent through
+ * `/dev/kandelo/clipboard`. Answered with a `ClipboardOfferResult` once the
+ * agent installs it, or with the reason it could not.
+ */
+export interface ClipboardOfferMessage {
+  type: "clipboard_offer";
+  requestId: number;
+  /** UTF-8, line endings already normalized (`encodeClipboardText`). */
+  text: Uint8Array;
+  timeoutMs?: number;
+}
+
+/**
+ * Copy-out: answer with the next desktop selection the guest's clipboard
+ * agent reports (a `GuestClipboardResult`). Sent before the copy chord.
+ */
+export interface ClipboardGuestWaitMessage {
+  type: "clipboard_guest_wait";
+  requestId: number;
+  timeoutMs?: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -405,10 +432,13 @@ export type MainToKernelMessage =
   | TerminateProcessMessage
   | DestroyMessage
   | ExportRootfsImageMessage
+  | ClipboardOfferMessage
+  | ClipboardGuestWaitMessage
   | ReadVfsFileMessage
   | WriteVfsFileMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetWasmModuleCacheStatsRequestMessage
   | GetSpawnScratchCapacityRequestMessage
   | SignalProcessMessage
   | ResolveExecResponseMessage

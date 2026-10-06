@@ -715,6 +715,17 @@ function requireRegularXtask(path: string): string {
   throw new Error(`Prepared xtask is not a regular file: ${path}`);
 }
 
+/** Compiler variables a caller may set for its own C builds (see below). */
+const CHECKER_BUILD_SCRUBBED_ENV = [
+  "CC",
+  "CXX",
+  "AR",
+  "CFLAGS",
+  "CXXFLAGS",
+  "CPPFLAGS",
+  "LDFLAGS",
+] as const;
+
 function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   const explicit = process.env.WASM_POSIX_XTASK_BIN;
   if (explicit !== undefined) {
@@ -728,9 +739,17 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   }
 
   const host = rustHostTarget(sourceRepoRoot);
+  // WHY a private target directory and a scrubbed compiler environment: the
+  // checker's dependency graph includes C build scripts (ring) whose
+  // fingerprints depend on CC and friends. Callers inherit different values
+  // (the dev shell sets CC=clang; conformance runners export an absolute
+  // clang path), and every change invalidates the whole release build, which
+  // takes about 100 s. Building into a directory nothing else writes, with
+  // those variables removed, keeps its inputs identical across callers, so
+  // after the first build every preparation is Cargo's no-op.
+  const checkerTargetDir = join(sourceRepoRoot, "target", "program-index-checker");
   const xtaskPath = join(
-    sourceRepoRoot,
-    "target",
+    checkerTargetDir,
     host,
     "release",
     process.platform === "win32" ? "xtask.exe" : "xtask",
@@ -746,6 +765,8 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
     "xtask",
     "--target",
     host,
+    "--target-dir",
+    checkerTargetDir,
     "--quiet",
   ];
   const inDevShell = process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined;
@@ -753,9 +774,12 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   const args = inDevShell
     ? cargoArgs
     : [join(sourceRepoRoot, "scripts", "dev-shell.sh"), "cargo", ...cargoArgs];
+  const env = { ...process.env };
+  for (const name of CHECKER_BUILD_SCRUBBED_ENV) delete env[name];
   const result = spawnSync(command, args, {
     cwd: sourceRepoRoot,
     encoding: "utf8",
+    env,
   });
   if (result.status !== 0) {
     throw new Error(commandFailure(command, args, result));
@@ -807,6 +831,17 @@ function ensureProgramIndexesInSourceContext(): void {
       }`,
     );
   }
+}
+
+/**
+ * Run `operation` inside one program-index freshness boundary: the index is
+ * checked (and regenerated if stale) once, and resolver calls nested inside
+ * reuse that check. Exported for batch callers such as
+ * scripts/check-artifact-closures.ts, which resolves every package and would
+ * otherwise pay the multi-second freshness check once per package.
+ */
+export function withProgramIndexFreshness<T>(operation: () => T): T {
+  return withFreshProgramIndexes(["programs/"], operation);
 }
 
 function withFreshProgramIndexes<T>(
@@ -3111,8 +3146,9 @@ function mutableGenerationIdentityFailure(
     }
     const expectedParent = realpathSync(expectedParentPath);
     const generationName = basename(sharedRoot);
+    // `xtask`'s `canonical_path`: `<name>-<version>-rev<N>-<arch>-abi<N>-<key>`.
     const hasCanonicalName = generationName.startsWith(`${packageName}-`)
-      && new RegExp(`-rev[0-9]+-${arch}-${cacheKey}$`).test(generationName);
+      && new RegExp(`-rev[0-9]+-${arch}-abi[0-9]+-${cacheKey}$`).test(generationName);
     return dirname(sharedRoot) === expectedParent && hasCanonicalName
       ? null
       : "fetched mirror targets are not one canonical program-cache generation";

@@ -14,15 +14,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+CURL_VERSION="$WASM_POSIX_DEP_VERSION"
 
 # Use the SDK from this checkout rather than whichever npm link happens to be
 # globally active.
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
-CURL_VERSION="${WASM_POSIX_DEP_VERSION:-${CURL_VERSION:-8.11.1}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://curl.se/download/curl-${CURL_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-c7ca7db48b0909743eaef34250da02c19bc61d4f1dcedd6603f109409536ab56}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 PACKAGE_NAME="${WASM_POSIX_DEP_NAME:-legacy}"
 
@@ -46,7 +48,7 @@ for tool in curl make tar shasum wasm-objdump; do
     fi
 done
 
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-libcurl.XXXXXX")"
+WORK_DIR="$(kandelo_package_make_work_dir libcurl)"
 cleanup() {
     if [ "${WASM_POSIX_KEEP_BUILD_DIR:-0}" = "1" ]; then
         echo "==> Preserving curl build directory: $WORK_DIR" >&2
@@ -91,15 +93,7 @@ if [ ! -f "$OPENSSL_PREFIX/lib/libssl.a" ] \
     exit 1
 fi
 
-echo "==> Downloading curl $CURL_VERSION..."
-TARBALL="$WORK_DIR/curl.tar.xz"
-curl --retry 10 --retry-delay 5 --retry-max-time 300 \
-    -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "==> Verifying source sha256..."
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-rm -rf "$SRC_DIR"
-mkdir -p "$SRC_DIR"
-tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+kandelo_package_stage_primary_source libcurl "$SRC_DIR" "$SCRIPT_DIR"
 
 cd "$SRC_DIR"
 
@@ -235,73 +229,7 @@ make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 mkdir -p "$INSTALL_DIR"
 
 audit_wasm_imports() {
-    local wasm_path="$1"
-    local label="$2"
-    local import_dump declared_import_count wasm_imports parsed_import_count
-    local wasm_import required_import allowed candidate
-    local unexpected_imports=()
-    local allowed_imports=(
-        env.__channel_base
-        env.memory
-        kernel.kernel_apply_fork_fd_actions
-        kernel.kernel_argv_read
-        kernel.kernel_clear_fork_exec
-        kernel.kernel_environ_count
-        kernel.kernel_environ_get
-        kernel.kernel_execve
-        kernel.kernel_exit
-        kernel.kernel_get_argc
-        kernel.kernel_get_fork_exec_argc
-        kernel.kernel_get_fork_exec_argv
-        kernel.kernel_get_fork_exec_path
-        kernel.kernel_get_secure_exec
-        kernel.kernel_is_fork_child
-        kernel.kernel_push_argv
-    )
-
-    import_dump="$(wasm-objdump -x "$wasm_path")"
-    declared_import_count="$(
-        sed -n 's/^Import\[\([0-9][0-9]*\)\]:$/\1/p' <<<"$import_dump" | head -n 1
-    )"
-    wasm_imports="$(
-        awk '
-            /^Import\[[0-9]+\]:$/ { inside = 1; next }
-            inside && /^[[:alpha:]_][[:alnum:]_]*\[/ { exit }
-            inside && / <- / { sub(/^.* <- /, ""); print }
-        ' <<<"$import_dump"
-    )"
-    parsed_import_count="$(sed '/^$/d' <<<"$wasm_imports" | wc -l | tr -d ' ')"
-    if [ -z "$declared_import_count" ] ||
-       [ "$parsed_import_count" -ne "$declared_import_count" ]; then
-        echo "ERROR: $label import audit could not account for every import: declared=${declared_import_count:-<missing>} parsed=$parsed_import_count" >&2
-        exit 1
-    fi
-
-    while IFS= read -r wasm_import; do
-        [ -n "$wasm_import" ] || continue
-        allowed=0
-        for candidate in "${allowed_imports[@]}"; do
-            if [ "$wasm_import" = "$candidate" ]; then
-                allowed=1
-                break
-            fi
-        done
-        if [ "$allowed" -eq 0 ]; then
-            unexpected_imports+=("$wasm_import")
-        fi
-    done <<<"$wasm_imports"
-    for required_import in env.__channel_base env.memory; do
-        if ! grep -Fxq "$required_import" <<<"$wasm_imports"; then
-            echo "ERROR: $label is missing required import: $required_import" >&2
-            exit 1
-        fi
-    done
-    if [ "${#unexpected_imports[@]}" -ne 0 ]; then
-        echo "ERROR: $label has unexpected imports:" >&2
-        printf '%s\n' "${unexpected_imports[@]}" >&2
-        exit 1
-    fi
-    echo "==> Validated $label import closure ($declared_import_count imports)"
+    bash "$REPO_ROOT/scripts/check-package-imports.sh" --require-startup "$1"
 }
 
 if [ "$RESOLVER_MODE" = "1" ]; then

@@ -46,15 +46,15 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib [flags]
 **Missing features**: Check [wasm-limitations.md](wasm-limitations.md) for what cannot be implemented (mprotect, raw server sockets in browser, `PTHREAD_CANCEL_ASYNCHRONOUS`). Most software has graceful fallbacks for these.
 
 **fork() support**: If the program uses `fork()` or fork-like behavior, run
-`wasm-fork-instrument` as the final step of the wasm pipeline (after any
-`wasm-opt -O2`). Fork-like behavior includes `vfork()`, `_Fork()`, shell
+`wasm-fork-instrument` after linking and after any `wasm-opt` pass of your
+own. The tool runs `wasm-opt -O2` over its output itself. Fork-like behavior includes `vfork()`, `_Fork()`, shell
 pipelines, command substitution, `system()`, `popen()`, and helper processes
 implemented through fork.
 ```bash
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm
 ```
 
-The tool auto-discovers the fork-call closure via call-graph analysis (direct + indirect calls). No onlylist file is needed, and no manual tracing of fork paths. It must run last — it hardcodes mutable-global offsets at instrument time, and any later pass that reorders globals will corrupt the fork save buffer.
+The tool auto-discovers the fork-call closure via call-graph analysis (direct + indirect calls). No onlylist file is needed, and no manual tracing of fork paths. Optimize before instrumenting (the SDK's `-O` link already runs `wasm-opt`): wasm-opt's inlining shrinks the call graph the tool has to instrument, and the tool's own post-pass then cleans up the code it added. See "Optimization around instrumentation" in [fork-instrumentation.md](fork-instrumentation.md).
 
 Instrumentation is mandatory for fork-using programs. Do not treat it as an
 optional optimization, and do not use Binaryen Asyncify as a fallback. The host
@@ -65,8 +65,11 @@ for the full transform and ABI.
 **Thread support**: Programs that create threads (MariaDB, Redis) work via the kernel's `clone()` syscall. No special compilation flags needed, but the host runner must implement the `onClone` callback.
 
 **C++ and libc++**: For C++ programs, depend on the `libcxx` package and
-compile against its resolved headers and libraries, normally symlinked into
-the Kandelo sysroot by the consuming package build script. Do not copy libc++
+compile against its resolved headers and libraries. Package builds overlay
+them onto a private copy of the SDK sysroot with
+`kandelo_package_prepare_private_sysroot` (`scripts/package-build-roots.sh`);
+never copy them into the shared worktree sysroot, whose contents would then
+depend on build order. Do not copy libc++
 headers from an arbitrary host LLVM install; the libcxx package generates and
 ships a version-matched header tree with its `libc++.a` and `libc++abi.a`.
 See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
@@ -392,7 +395,12 @@ kernelWorker.registerProcess(pid, memory, channelOffsets, options?)
 // Set process working directory
 kernelWorker.setCwd(pid, path)
 
-// Provide stdin data
+// Give a spawned (non-PTY) process host-supplied stdin: fd 0 becomes the
+// read end of a kernel pipe whose write end the host owns
+kernelWorker.installHostStdinPipe(pid)
+
+// Write into that pipe: setStdinData closes it after the bytes, so readers
+// see EOF; appendStdinData leaves it open for more
 kernelWorker.setStdinData(pid, data: Uint8Array)
 kernelWorker.appendStdinData(pid, data: Uint8Array)
 
@@ -532,9 +540,10 @@ const exitCode = await kernel.spawn(programBytes, argv, {
   pty?: boolean,          // Allocate a PTY for this process
 })
 
-// Stdin operations
-kernel.setStdinData(pid, data)       // Set complete stdin (implies EOF)
-kernel.appendStdinData(pid, data)    // Append to stdin buffer (interactive)
+// Stdin operations. Host stdin is a kernel pipe on fd 0, so children that
+// inherit fd 0 share the stream and its read offset, as on Unix.
+kernel.setStdinData(pid, data)       // Write the bytes, then close (EOF)
+kernel.appendStdinData(pid, data)    // Write the bytes, keep open (interactive)
 
 // PTY operations (for terminal demos)
 kernel.ptyWrite(pid, data)           // Write to PTY master
@@ -751,7 +760,7 @@ library dep) for canonical references; the schema reference is in
 kind = "program"           # or "library" or "source"
 name = "myprog"
 version = "1.2.3"
-kernel_abi = 45            # current ABI_VERSION; required for packages with a [build] block
+kernel_abi = 47            # current ABI_VERSION; required for packages with a [build] block
 depends_on = ["zlib@1.3.1"]   # transitive deps the resolver will pull first
 
 [source]
@@ -1017,10 +1026,12 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | pcre2 | `packages/registry/pcre2/build-pcre2.sh` | cmake | 10.44, 8-bit code unit width only, static, no JIT (wasm cannot generate code at runtime), no pcre2grep/pcre2test; backs glib's GRegex. Separate from the `pcre2-source` package, which stages the unbuilt tree MariaDB configures itself |
 | expat | `packages/registry/expat/build-expat.sh` | autoconf | dbus config-parser dependency; entropy from kernel getrandom() |
 | dbus | `packages/registry/dbus/build-dbus.sh` | autoconf | 1.14.10 (last autotools series): dbus-daemon/dbus-send/dbus-monitor, session bus only, EXTERNAL auth over SO_PEERCRED, `ac_cv_func_*` overrides for --allow-undefined false positives |
-| harfbuzz | `packages/registry/harfbuzz/build-harfbuzz.sh` | meson bypass | Single-TU amalgam (src/harfbuzz.cc) with the freetype + glib backends; hand-installed headers and .pc; C++, links libc++ |
+| harfbuzz | `packages/registry/harfbuzz/build-harfbuzz.sh` | meson bypass | Single-TU amalgam (src/harfbuzz.cc) with the freetype + glib backends; hand-installed headers and .pc; C++, so harfbuzz.pc carries `-lc++ -lc++abi` from the resolved libcxx (a C consumer's link driver does not add them) |
 | fribidi | `packages/registry/fribidi/build-fribidi.sh` | autoconf | pango's bidi dependency, plain cross-compile |
-| cairo | `packages/registry/cairo/build-cairo.sh` | autoconf | 1.16.0 (last autotools release): image surfaces + ft/fc fonts + png only; the png probe needs `png_REQUIRES` + PKG_CONFIG_PATH; `src/wasm-callback-arity.patch` wraps 2-argument line_to functions cast to the 3-argument `cairo_spline_add_point_func_t` in the fill/stroke/in-fill spline decomposition paths (see the arity section below) |
-| pango | `packages/registry/pango/build-pango.sh` | autoconf | 1.42.4 (last autotools release): pango/pangoft2/pangocairo; deps probed via PKG_CONFIG_PATH over the resolved prefixes; needs glib's gthread-2.0.pc shim + glib-mkenums; `src/wasm-callback-arity.patch` wraps 1-argument free functions cast to `GFunc` in `g_list_foreach` / `g_slist_foreach` (see the arity section below) |
+| cairo | `packages/registry/cairo/build-cairo.sh` | meson | 1.18.6 via upstream meson and `sdk/meson/wasm32posix.ini`: image surfaces + ft/fc fonts + png, pdf/ps/svg (GTK3 needs cairo-pdf.h; meson ties them and the script surface to zlib), cairo-gobject; upstream 1.18 already passes typed spline callbacks, so no arity patch; the `LD_PRELOAD`-based cairo-trace tool is not published (Kandelo programs are static) |
+| pango | `packages/registry/pango/build-pango.sh` | meson | 1.56.4 via upstream meson and `sdk/meson/wasm32posix.ini` (newest series whose glib/harfbuzz/fontconfig floors the registry meets): pango/pangoft2/pangocairo, no Xft/libthai/introspection; upstream's pango-view/pango-list/pango-segmentation tools are not published from this library package; `src/wasm-callback-arity.patch` wraps 1-argument free/copy functions cast to `GFunc` (`g_list_foreach` / `g_slist_foreach`) or `GCopyFunc` (`g_ptr_array_copy`) (see the arity section below) |
+| librsvg | `packages/registry/librsvg/build-librsvg.sh` | meson + cargo-c | 2.63.2, the first package with a Rust core: upstream meson builds the C side and runs `cargo cbuild` for `wasm32-unknown-kandelo-std` against a private Rust sysroot the script assembles in its work root; `libc` is pinned to the Kandelo fork, crates are vendored from the tarball's `Cargo.lock` (checksum-verified), and two crates are patched at the custom-target boundary (`patches/`, see docs/package-management.md "Patches"); pixbuf API on, no pixbuf loader/introspection/avif; the converter is the separate rsvg-convert package |
+| rsvg-convert | `packages/registry/rsvg-convert/build-rsvg-convert.sh` | cargo | 2.63.2, librsvg's converter (a Rust program): same source and Rust setup as librsvg (`packages/registry/librsvg/rust-build-env.sh`), built with `cargo build -p rsvg_convert` because upstream's meson rule copies an unsuffixed `rsvg-convert` from the cargo target dir and a Kandelo executable is `rsvg-convert.wasm` |
 | gdk-pixbuf | `packages/registry/gdk-pixbuf/build-gdk-pixbuf.sh` | autoconf | 2.36.12 (last autotools release): png loader compiled in statically, no dynamic loader modules; `gio_can_sniff=no` forces builtin signature sniffing — the default `GDK_PIXBUF_USE_GIO_MIME` path selects loaders via `g_content_type_guess`, which returns `application/octet-stream` without a shared-mime-info database and rejects every image as "Unrecognized image file format" |
 | atk | `packages/registry/atk/build-atk.sh` | meson bypass | 2.36.0 (final release; GTK 3.24.34 needs >= 2.32, last autotools 2.28 is too old): hand config.h, glib-mkenums + glib-genmarshal generation, upstream TU list; `src/wasm-callback-arity.patch` adds `gpointer class_data` to 1-argument `class_init` functions and routes atkhyperlink's action interface through `g_wasm_iface_init_thunk` |
 | libepoxy | `packages/registry/libepoxy/build-libepoxy.sh` | autoconf | 1.5.4 via autoreconf (tarball ships no configure; xorg-macros from flake.nix): EGL dispatch only, vendored EGL/KHR platform headers + headers-only egl.pc stub; GL symbols resolve by dlopen at first call, so no GL library exists until a context is created |
@@ -1033,6 +1044,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | libxkbregistry | `packages/registry/libxkbregistry/build-libxkbregistry.sh` | meson bypass | The `rxkb_*` half of libxkbcommon 1.7.0 (one TU against libxml2), split into its own package so adding it does not re-key libxkbcommon and cascade a rebuild through gtk3 and every compositor consumer. Waybar's `hyprland/language` module links it |
 | fmt / spdlog / jsoncpp | `packages/registry/{fmt,spdlog,jsoncpp}/build-*.sh` | cmake | Waybar's C++ base: fmt 11.2.0, spdlog 1.15.3 (`SPDLOG_FMT_EXTERNAL`), jsoncpp 1.9.6. No toolchain file — each passes `-DCMAKE_SYSTEM_NAME=Linux`, the `wasm32posix-{cc,c++}` wrappers, `-fwasm-exceptions`, and `CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY` so cmake's compiler probe never links an executable. fmt carries one patch: `format.h` calls `malloc`/`free` without including `<cstdlib>`, which glibc provides transitively and libc++-on-musl does not |
 | waybar | `packages/registry/waybar/build-waybar.sh` | meson bypass | 0.14.0, the O2 gate's bar: core + the dependency-free compositor module families (hyprland, sway, river, dwl, niri, wayfire, wlr-taskbar) + `simpleclock`. The `is_linux` modules (battery, cpu, memory, systemd units) stay out — their headers are guarded on `__linux__`, which wasm32-unknown-unknown does not define, and nothing here serves `/proc`, `/sys` or logind. `src/glib-static-init.c` forces glib's initializer ahead of gobject's with a priority-101 constructor: upstream relies on shared-library load order for that, which a static link does not have |
+| FFmpeg | `packages/registry/ffmpeg/build-ffmpeg.sh` | custom configure | n9.0, unpatched: `--arch=wasm --target-os=none` (upstream knows wasm and its simd128 extension; `--target-os=none` makes configure probe everything instead of assuming the build machine's OS). Never `--disable-asm`, which also turns off simd128. `--disable-autodetect` keeps the dependency set equal to `depends_on`, and then needs `--enable-pthreads`, since threads are autodetected. The configure arguments compiled into the binaries name dependency prefixes symbolically (`ffmpeg_normalize_configuration`), so the build is the same on every machine. ffplay draws through SDL2's GLES2 renderer, so it needs GL: browser only |
 
 ## Callback casts that change arity trap on wasm
 
@@ -1082,6 +1094,12 @@ routes every arity-changing cast through a typed thunk:
   arguments than the signal (`g_signal_connect (win, "destroy",
   G_CALLBACK (gtk_main_quit), NULL)`) ride the per-type c-closure
   marshal and still trap — connect with a wrapper of exact arity.
+- GTest: `g_test_add_func` / `g_test_add_data_func{,_full}` store the
+  0- or 1-argument test function (and the `GDestroyNotify`) cast to
+  the 2-argument `GTestFixtureFunc` and call it through that type, so
+  every GTest case trapped before it ran. The patched `gtestutils.c`
+  keeps the typed callbacks on the test case and calls each through
+  its own type, with upstream's teardown/free ordering unchanged.
 
 GTK 3 carries the same idiom in its own code. The port's
 `packages/registry/gtk3/src/wasm-callback-arity.patch` fixes the

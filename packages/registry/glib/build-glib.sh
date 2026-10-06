@@ -23,12 +23,21 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/glib-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/glib-src"
 
-GLIB_VERSION="${WASM_POSIX_DEP_VERSION:-2.84.4}"
+GLIB_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/glib-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.gnome.org/sources/glib/2.84/glib-${GLIB_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set (must be invoked via cargo xtask build-deps resolve glib)}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
@@ -43,29 +52,20 @@ for tool in wasm32posix-cc wasm32posix-ar python3; do
     fi
 done
 
-# --- Fetch + verify source ---------------------------------------------
+# --- Stage verified source ---------------------------------------------
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading glib $GLIB_VERSION..."
-    TARBALL="/tmp/glib-${GLIB_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified glib $GLIB_VERSION source..."
+    kandelo_package_stage_verified_source glib "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
     # Keep the dbus-backed built-in module registrations (notification
     # backends, portal monitors) out of gio init — their TUs are not
     # compiled. GIO_DBUS_BUILTIN_MODULES gates them back in if a port
     # ever needs one.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/giomodule-no-dbus-builtins.patch"
     # Route arity-changing callback casts (GDestroyNotify-as-GFunc,
-    # GCompareFunc-as-GCompareDataFunc, GClosureNotify casts) through
-    # typed thunks. Native ABIs tolerate the extra arguments; wasm's
+    # GCompareFunc-as-GCompareDataFunc, GClosureNotify casts, GTest
+    # test functions stored as GTestFixtureFunc) through typed thunks. Native ABIs tolerate the extra arguments; wasm's
     # typed call_indirect traps on them.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-signatures.patch"
     # GCredentials backend selection keys off platform macros;
@@ -75,7 +75,7 @@ fi
 
 # Fresh build + install each run — stale objects would shadow config
 # changes and the cache key varies per build.
-BUILD_DIR="$SCRIPT_DIR/glib-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/glib-build"
 rm -rf "$BUILD_DIR"
 # The resolver-created output directory is itself publication authority, so
 # a recipe must populate that inode rather than delete and recreate it.
@@ -90,6 +90,8 @@ fi
 mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib"
 
 # --- Curated config + generated headers ---------------------------------
+# These land in $SRC_DIR on every run. SRC_DIR is this build's private
+# work-root copy, so a concurrent resolve never sees them change mid-compile.
 cp "$SCRIPT_DIR/src/config.h" "$SRC_DIR/config.h"
 cp "$SCRIPT_DIR/src/glibconfig.h" "$SRC_DIR/glib/glibconfig.h"
 
@@ -435,19 +437,20 @@ for lib in glib gmodule gmodule-no-export gobject gio gio-unix gthread; do
         # Static build — gmodule and gmodule-no-export are the same
         # archive; gdk-pixbuf and GTK3 probe the no-export variant.
         gmodule | gmodule-no-export) libs="-lgmodule-2.0 -lglib-2.0" ;;
-        gobject) libs="-lgobject-2.0 -lglib-2.0 -lffi" ;;
+        gobject) libs="-lgobject-2.0 -lglib-2.0 -L$LIBFFI_PREFIX/lib -lffi" ;;
         # The unix symbols (gunixfdlist, gunixsocketaddress, …) are
         # compiled into libgio; gio-unix-2.0 is a probe-name shim for
         # consumers that require it (GTK3, dbus tools).
-        gio | gio-unix) libs="-lgio-2.0 -lgobject-2.0 -lgmodule-2.0 -lglib-2.0 -lffi -lz" ;;
+        gio | gio-unix) libs="-lgio-2.0 -lgobject-2.0 -lgmodule-2.0 -lglib-2.0 -L$LIBFFI_PREFIX/lib -lffi -L$ZLIB_PREFIX/lib -lz" ;;
         # Threading lives in libglib since 2.32; upstream still ships
         # a gthread-2.0.pc for consumers that probe it (pango 1.42).
         gthread) libs="-lglib-2.0" ;;
     esac
     # gregex.c lives in libglib-2.0, which every variant above links,
-    # so each one needs pcre2. The search path is absolute: consumer
+    # so each one needs pcre2. Every dependency library carries an
+    # absolute search path (pcre2 here, libffi and zlib above): consumer
     # build scripts compose PKG_CONFIG_PATH from their own declared
-    # prefixes and would not find a bare -lpcre2-8.
+    # prefixes and would not find a bare -lpcre2-8, -lffi, or -lz.
     libs="$libs -L$PCRE2_PREFIX/lib -lpcre2-8"
     cat > "$PC_DIR/$lib-2.0.pc" <<EOF
 prefix=$INSTALL_DIR

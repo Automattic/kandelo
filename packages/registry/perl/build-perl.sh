@@ -13,18 +13,19 @@ set -euo pipefail
 #
 # Output: packages/registry/perl/bin/perl.wasm
 
-PERL_VERSION="${WASM_POSIX_DEP_VERSION:-${PERL_VERSION:-5.40.3}}"
 PERL_CROSS_VERSION="${PERL_CROSS_VERSION:-1.6.4}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+PERL_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR/perl-work" wasm32
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
 
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.cpan.org/src/5.0/perl-${PERL_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-4c155b4e6160682b38919b55ac319081b898db11857cf18a7d9ffed2648ccaff}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/source"
     BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"

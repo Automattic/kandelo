@@ -44,14 +44,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/gtk3-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/gtk3-src"
 
-GTK3_VERSION="${WASM_POSIX_DEP_VERSION:-3.24.34}"
+GTK3_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/gtk3-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.gnome.org/sources/gtk+/3.24/gtk+-${GTK3_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
-BUILD_DIR="$SCRIPT_DIR/gtk3-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/gtk3-build"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
@@ -74,22 +83,16 @@ LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DI
 LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set}"
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
+LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:?WASM_POSIX_DEP_LIBCXX_DIR not set}"
+LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set}"
 PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/xml"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading gtk+ $GTK3_VERSION..."
-    TARBALL="/tmp/gtk+-${GTK3_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified gtk+ $GTK3_VERSION source..."
+    kandelo_package_stage_verified_source gtk3 "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
     # Signal handlers connected with fewer arguments than the signal
     # (default_display_notify_cb, display_opened_cb, display_closed_cb)
     # get their full marshal arity. Native ABIs tolerate the extra
@@ -171,6 +174,11 @@ for prefix in "$GLIB_PREFIX" "$ATK_PREFIX" "$PANGO_PREFIX" "$CAIRO_PREFIX" \
               "$LIBXKBCOMMON_PREFIX"; do
     PC_PATH="$PC_PATH:$prefix/lib/pkgconfig"
 done
+# cairo and pango are meson-built static libraries, so their .pc files
+# list every link dependency as a public Requires (zlib, pixman,
+# libxml2 via fontconfig, ...). pkg-config needs the whole closure,
+# which the resolver composes.
+PC_PATH="$PC_PATH:${WASM_POSIX_DEP_PKG_CONFIG_PATH:?WASM_POSIX_DEP_PKG_CONFIG_PATH not set}"
 
 echo "==> Configuring gtk+ for wasm32..."
 (
@@ -179,8 +187,24 @@ echo "==> Configuring gtk+ for wasm32..."
     # tool is a compiled host binary (flake.nix pkgs.glib.dev), so the
     # env override supplies it. glib's pc files reference -lffi / -lz
     # by bare name; the build's own executables need the search paths.
+    #
+    # LIBS completes the static link of the executables gtk builds
+    # (gtk-launch, gtk-builder-tool, gtk-query-settings); no .pc file this
+    # configure reads lists these, and a link without them fails on the
+    # undefined symbols:
+    #   - libEGL, libGLESv2, libgbm, libdrm (base sysroot):
+    #     wayland-shm-gbm-pool.patch makes GDK allocate its wl_shm pools
+    #     with libgbm, and libwayland-egl calls libgbm and libEGL;
+    #   - libiconv: fontconfig parses its configuration with libxml2, and
+    #     this libxml2 converts encodings through GNU libiconv;
+    #   - libc++, libc++abi: pango shapes through harfbuzz, which is C++.
+    # They are named as -l flags with their directories in LDFLAGS, never
+    # as archive paths: libtool unpacks an archive path it finds among a
+    # static library's dependencies and merges its members into that
+    # library, which corrupts libgdk-3.a.
     CFLAGS="-O2" \
-    LDFLAGS="-L$LIBFFI_PREFIX/lib -L$ZLIB_PREFIX/lib" \
+    LDFLAGS="-L$LIBFFI_PREFIX/lib -L$ZLIB_PREFIX/lib -L$LIBICONV_PREFIX/lib -L$LIBCXX_PREFIX/lib" \
+    LIBS="-lEGL -lGLESv2 -lgbm -ldrm -liconv -lc++ -lc++abi" \
     PKG_CONFIG_PATH="$PC_PATH" \
     GLIB_COMPILE_RESOURCES="$(command -v glib-compile-resources)" \
     "$SRC_DIR/configure" \

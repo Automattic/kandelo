@@ -4,6 +4,8 @@ inputs = [
   "images/vfs/scripts/build-redis-vfs-image.ts",
   "images/vfs/scripts/dinit-image-helpers.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
+  "scripts/install-local-binary.sh",
+  "scripts/wasm-artifact-guards.sh",
   "images/rootfs/etc/services",
   # The builder reads the shared resolver and VFS format transitively. Track
   # those ownership boundaries without making unrelated host changes rebuild
@@ -17,6 +19,7 @@ inputs = [
   "host/src/statfs.ts",
   "host/src/types.ts",
   "host/src/vfs",
+  "host/src/networking/byte-range-fetch.ts",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"

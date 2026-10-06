@@ -131,6 +131,26 @@ existing Linux-VT guests working and preserve Node/browser parity.
 
 ## Browser
 
+### Investigate the WebKit fbDOOM WAD-drop failure
+`apps/browser-demos/test/kandelo-doom-ingest.spec.ts` "dropping a WAD on the
+framebuffer loads it" failed in WebKit in three of three local runs on
+2026-09-28, each at a different step: the 90 s wait for the restarted
+fbDOOM to render, and a locator that never became visible. The drop itself
+works — the screenshot shows the shell running
+`/usr/local/bin/fbdoom -iwad /user.wad`, and the new fbDOOM initializing
+through `HU_Init` before it stops making visible progress. Chromium passes
+the same test, and WebKit passes the Load WAD button path, which uses the
+same restart command.
+
+That demo's keyboard input goes through the PTY (`ptyWrite`), not the host
+stdin pipe that ABI 47 changed, and no old-code baseline was available
+locally to compare against, so the failure is recorded here rather than
+attributed. The investigation should: run the test on main in WebKit to
+establish whether it predates ABI 47; compare what the drop path does
+differently from the button path (synthetic `DataTransfer` drop, focus,
+pane switching to the terminal); and capture the kernel's view of the
+restarted fbDOOM (blocked syscall, fb0 ownership) when it stalls.
+
 ### Replace the constrained public CORS proxy with an owned relay
 
 The current public proxy has a narrow six-name request-header profile. A
@@ -302,6 +322,70 @@ Any follow-up should:
 - if the approach still looks useful, expose it as a separate `kernel32.wasm`
   build option.
 
+### Copy between kernel and process memories with a multi-memory bridge module
+Every byte that moves between a process and the kernel crosses two separate
+`WebAssembly.Memory` objects. Wasm code can address only the memories it was
+instantiated with, so today the kernel worker's JavaScript makes that hop, and
+a pipe read travels pipe buffer → kernel scratch → the reader's syscall
+channel area. Host-supplied stdin adds host → kernel scratch → pipe buffer in
+front of that (ABI 47 made host stdin a kernel pipe so a forked child shares
+fd 0 with its parent; see `docs/abi-versioning.md`).
+
+A small reusable Wasm module could remove the JavaScript hop and the scratch
+copies. It would import two memories (the kernel's and one process's, or a
+pipe arena and a process's) and export only fixed-shape copies built on
+cross-memory `memory.copy`. The host instantiates one per registered process
+and places its exports in a table the kernel owns, and the kernel calls
+through `call_indirect`, so no JavaScript sits on the copy path. A pipe read
+then becomes one copy from the pipe buffer into the reader's destination, for
+every pipe and socket, not only stdin. Importing existing memories reserves
+no new memory, so this adds no declared ceiling for JavaScriptCore to charge.
+
+The split must stay mechanism versus policy: the host supplies the bridge the
+way it supplies the memory, and the kernel alone decides pid, addresses,
+lengths, and ordering. Any follow-up should:
+
+- verify multi-memory support in every shipped engine, JavaScriptCore first
+  (V8 and SpiderMonkey ship it); without it the gain is not available on
+  Safari/iOS;
+- keep exactly one copy interface: if an engine lacks multi-memory, a
+  JavaScript fallback (`Uint8Array.set`) implements the same interface and
+  bounds, selected once at startup, never a second transfer implementation;
+- rebuild a process's bridge when `exec` replaces its memory and create a new
+  one for each `fork` child;
+- keep bytes in kernel-owned buffers. Considered and rejected, 2026-09-28:
+  leaving pipe bytes in the writer's memory (POSIX lets a writer reuse its
+  buffer as soon as `write()` returns; a pipe outlives and is shared across
+  writers), a shared pipe arena imported by every process (any process could
+  read every pipe, and C cannot address a second memory), and a host-backed
+  stdin stream that keeps all bytes in host memory (a second read path and
+  more host surface to save one copy through a 64 KiB window);
+- measure with the `stdin-throughput` and `syscall-io` suites on Node and
+  browser, before and after.
+
+### Close the Node gap in host stdin throughput
+The `stdin-throughput` suite (24 MiB of host-supplied stdin read by one
+process) measured the ABI 47 kernel-pipe path against the per-pid host
+buffer it replaced on 2026-09-28, alternating runs at load average 6–10:
+
+| Host | Per-pid host buffer (before) | Kernel pipe (ABI 47) |
+|---|---|---|
+| Node | 818, 796, 793 MiB/s | 691, 705, 679 MiB/s |
+| Chromium | 727, 774 MiB/s | 800, 828 MiB/s |
+
+Node is about 13–16% slower; Chromium is no worse (its runs take 30–33 ms and
+the guest clock has 1 ms granularity there). The likely cause, not yet
+profiled: the pipe holds 64 KiB, so 24 MiB takes about 384 refills, and if the
+reader drains the pipe before the host refills it, each refill costs a
+parked-worker wake. A second candidate is visible in the code: every refill
+defers `notifyPipeReadable`, whose last step is a broad
+`scheduleWakeBlockedRetries`, so 24 MiB schedules about 384 broad wakes of
+every blocked retry. The follow-up should profile Node first; if wakes
+dominate, refill within the kernel entry that drained the pipe so the reader
+never observes it empty, and wake only this pipe's readers and pollers. A larger host-stdin pipe would also cut refills,
+at a kernel-memory cost per spawned process. Copies are the less likely cause;
+the bridge module above addresses them.
+
 ## Kernel — regressions
 
 ### wasm64 musl: missing `__NR_pselect6_time64` alias forces select() through SYS_select
@@ -420,10 +504,11 @@ Future cleanup:
 ### Add a real shadow-stack overflow guard beyond the SDK's 8 MiB floor
 Upstream `wasm-ld` reserves a default 64 KiB shadow stack (the linear-memory
 region the compiler uses for spilled locals, `alloca`, and address-taken
-locals). Kandelo's SDK raises executable links to an 8 MiB floor while
-preserving larger explicit requests. That floor covers the mainstream
-workloads that exposed the 64 KiB default, but it is a capacity policy rather
-than an overflow guard.
+locals). Kandelo's SDK applies an 8 MiB default to executable links that make
+no explicit stack-size request, and honours an explicit request verbatim
+(with a warning below the default). That default covers the mainstream
+workloads that exposed the 64 KiB `wasm-ld` default, but it is a capacity
+policy rather than an overflow guard.
 
 The shadow stack grows **downward** from `__stack_high`, and `wasm-ld` places it
 *immediately below* the `.data` / `.bss` segments in the same linear memory.
@@ -438,11 +523,19 @@ shadow-stack frame underflowed by ~108 KiB into PHP's `alloc_globals` data
 segment, silently corrupting `AG(mm_heap)`. The next `_efree` call dereferenced
 the now-bogus heap pointer and trapped — surfacing as "memory access out of
 bounds" inside the optimizer, with no indication that the actual cause was
-stack overflow ~thousands of frames earlier. The PHP recipe still requests
-`LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB), which the SDK raises to its 8 MiB
-floor. The larger reserve covers PHP's observed workload but doesn't *prevent*
-the failure mode: a deeper recursion or a larger `alloca` can still silently
-corrupt data, and every linked program has the same undetected-overflow risk.
+stack overflow ~thousands of frames earlier. The PHP recipe originally worked
+around this with an explicit `LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB)
+request; since that value sat below the SDK's 8 MiB default and the SDK at
+the time silently raised any sub-floor request to the default, the recipe was
+already linking with 8 MiB in practice, so the explicit flag recorded an
+intention nobody had actually verified. It has since been removed (the SDK
+now honours an explicit sub-floor request instead of silently discarding it,
+so leaving a stale 4 MiB flag in place would have started actually shrinking
+the reservation) and PHP now links with the SDK's 8 MiB default like any
+other package that makes no request. The 8 MiB reserve covers PHP's observed
+workload but doesn't *prevent* the failure mode: a deeper recursion or a
+larger `alloca` can still silently corrupt data, and every linked program has
+the same undetected-overflow risk.
 
 A real fix needs runtime detection so the failure surfaces as an obvious
 crash, not silent corruption. Possible approaches:
@@ -469,17 +562,28 @@ crash, not silent corruption. Possible approaches:
   region and trap on writes to it via `kernel_*` checks at syscall time
   (degrades to the bounds-check approach above).
 
-Once a real guard is in place, the per-program `-Wl,-z,stack-size=...`
-overrides should be audited: programs that genuinely need a larger shadow
-stack (PHP optimizer, deep parser stacks) keep the explicit override and
-document why; everything else can drop the package-local flag and rely on the
-SDK floor plus the guard.
+Once a real guard is in place, the remaining per-program
+`-Wl,-z,stack-size=...` overrides should be audited: a package task already
+removed eight call sites across seven packages (sqlite-cli, vim, sqlite's
+testfixture build, bash, git, ruby's two call sites, and php) whose explicit
+request was below the SDK's 8 MiB default and so was already linking at the
+default in practice — recording an intention nobody had actually formed.
+mariadb's two toolchain files had the same explicit 1 MiB request, but
+mariadb links through raw clang rather than through `wasm32posix-cc`, so it
+gets no SDK-applied default to fall back to; its flag was restored rather
+than removed, since deleting it would have silently dropped mariadb to
+`wasm-ld`'s own ~64 KiB default instead of any 8 MiB floor. Programs that
+genuinely need a shadow stack *larger* than the SDK default (SpiderMonkey's
+16 MiB is the current example) should keep their explicit override and
+document why; everything else that goes through the SDK driver should rely
+on the SDK default plus the guard, with no package-local flag at all.
 
 **Files:** `sdk/src/lib/flags.ts` and `sdk/kandelo/bin/wasm32posix-cc` (current
-8 MiB floor), `packages/registry/php/build-php.sh` (current 4 MiB request),
-`libc/glue/channel_syscall.c` (likely site for a syscall-entry bounds check),
-`host/src/worker-main.ts` (instantiation-time wiring for stack bounds),
-plus any other `build-*.sh` that hits the same wall in the meantime.
+8 MiB default), `packages/registry/php/build-php.sh` (no stack-size override;
+relies on the SDK default), `libc/glue/channel_syscall.c` (likely site for a
+syscall-entry bounds check), `host/src/worker-main.ts` (instantiation-time
+wiring for stack bounds), plus any other `build-*.sh` that hits the same wall
+in the meantime.
 
 **Related:** PR #423 (commit `fa9f579f6 feat(php): make opcache fully load opcache.so + survive PASS_6`) for the original root-cause analysis.
 

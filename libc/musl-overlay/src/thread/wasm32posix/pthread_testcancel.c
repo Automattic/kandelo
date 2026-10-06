@@ -5,16 +5,11 @@
  * that calls `__testcancel()`.  The intent is that if pthread_cancel.c
  * is also linked it overrides the weak with a strong `__testcancel`.
  *
- * With wasm-ld + archive semantics that override is fragile: if the weak
- * version's object file is pulled from the archive first to satisfy the
- * channel-syscall reference to `__testcancel`, the later strong
- * definition in pthread_cancel.o never gets linked in.  We hit exactly
- * that on our builds — __testcancel ran the empty dummy and cancellation
- * was silently ignored.
- *
- * Fix: remove the weak alias here and route `__pthread_testcancel` at
- * our strong `__testcancel` in pthread_cancel.c.  The overlay shadows
- * the stock file, so pthread_cancel.o is the only definition in libc.a.
+ * Here __testcancel is a strong definition in syscall_cp.c, which every
+ * program links, so there is no weak/strong race to lose. syscall_cp.c in
+ * turn reaches the acting __cancel through a weak definition that the strong
+ * one in pthread_cancel.c replaces whenever pthread_cancel or timer_create is
+ * linked.
  */
 
 #include "pthread_impl.h"

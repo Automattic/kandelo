@@ -924,6 +924,73 @@
   opacity: 0.7;
 }
 
+/* An image-declared dock menu. The list is portaled to <body> and fixed
+   above its button (DockActions.tsx sets right/bottom), so neither the
+   dock's clipping nor the stage's canvas can cover it. */
+.kdemo-dock-menu {
+  flex: 0 0 auto;
+}
+
+.kdemo-dock-menu-list {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, 80vw);
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--kdock-border);
+  border-radius: 8px;
+  background: var(--kdock-bg-raised);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+}
+
+.kdemo-dock-menu-group {
+  padding: 6px 8px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.kdemo-dock-menu-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--kdock-active-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kdemo-dock-menu-item:hover:not(:disabled),
+.kdemo-dock-menu-item:focus-visible {
+  background: color-mix(in oklch, var(--kdock-active-bg) 30%, transparent);
+}
+
+.kdemo-dock-menu-item:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.kdemo-dock-menu-detail {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.kdemo-dock-menu-reason {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
 /* Drag-and-drop affordance + ingest status, overlaid on the fb stage. */
 .kframebuffer-surface[data-drag-active="true"] {
   outline: 2px dashed var(--k-accent);
@@ -4513,3 +4580,27 @@
 }
 
 .kmprogress-error .kmprogress-detail { color: var(--k-err); }
+
+/* A dock action's progress: the command's own status line, and a bar when
+   the command reports a percentage. */
+.kdemo-progress {
+  flex-direction: column;
+  align-items: stretch;
+  min-width: min(90%, 360px);
+}
+
+.kdemo-progress-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kdemo-progress-label {
+  font-weight: 600;
+}
+
+.kdemo-progress-bar {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--k-accent, currentColor);
+}

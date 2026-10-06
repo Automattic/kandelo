@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodePlatformIO } from "../src/platform/node";
+import { tryResolveBinary } from "../src/binary-resolver";
 import {
   FORK_CAP_DYLINK_MAIN,
   FORK_CAP_SIDE_ENTRY,
@@ -31,8 +32,9 @@ const buildDir = join(tmpdir(), "kandelo-fork-from-side-module");
 const hasPrerequisites =
   existsSync(join(sysroot, "lib", "libc.a"))
   && (
-    existsSync(join(repoRoot, "binaries", "kernel.wasm"))
-    || existsSync(join(repoRoot, "local-binaries", "kernel.wasm"))
+    // The resolver runCentralizedProgram boots from; legacy-path checks
+    // skipped this suite in source-only checkouts.
+    tryResolveBinary("kernel.wasm") !== null
   );
 
 if (process.env.KANDELO_REQUIRE_SIDE_MODULE_FORK_E2E === "1" && !hasPrerequisites) {

@@ -27,7 +27,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-libxml2.XXXXXX")"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+LIBXML2_VERSION="$WASM_POSIX_DEP_VERSION"
+WORK_DIR="$(kandelo_package_make_work_dir libxml2)"
 cleanup() {
     if [ "${WASM_POSIX_KEEP_BUILD_DIR:-0}" = "1" ]; then
         echo "==> Preserving libxml2 build directory: $WORK_DIR" >&2
@@ -40,14 +44,13 @@ SRC_DIR="$WORK_DIR/source"
 
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
 # --- Inputs from resolver, with legacy fallbacks ---
-LIBXML2_VERSION="${WASM_POSIX_DEP_VERSION:-${LIBXML2_VERSION:-2.13.8}}"
+
 LIBXML2_MAJOR_MINOR="${LIBXML2_VERSION%.*}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libxml2-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.gnome.org/sources/libxml2/${LIBXML2_MAJOR_MINOR}/libxml2-${LIBXML2_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-277294cb33119ab71b2bc81f2f445e9bc9435b893ad15bb2cd2b0e859a0ee84a}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
 if [ "$TARGET_ARCH" != "wasm32" ]; then
@@ -98,13 +101,7 @@ if [ ! -f "$LIBICONV_PREFIX/lib/libiconv.a" ]; then
 fi
 
 # --- Fetch + verify source ---
-echo "==> Downloading libxml2 $LIBXML2_VERSION..."
-TARBALL="$WORK_DIR/libxml2.tar.xz"
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "==> Verifying source sha256..."
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR"
-tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+kandelo_package_stage_primary_source libxml2 "$SRC_DIR" "$WORK_DIR"
 
 cd "$SRC_DIR"
 
@@ -199,10 +196,15 @@ wasm32posix-ar rcs libxml2.a "${OBJS[@]}"
 
 # --- Install ---
 echo "==> Installing to $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include/libxml" "$INSTALL_DIR/lib/pkgconfig"
+# Install the layout upstream's `make install` produces: headers under
+# include/libxml2/libxml/ and Cflags pointing at include/libxml2. Software
+# written against libxml2 relies on it (FFmpeg's configure probes
+# <libxml2/libxml/xmlversion.h>); an earlier include/libxml/ layout forced
+# consumers to add their own -I to compensate.
+mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include/libxml2/libxml" "$INSTALL_DIR/lib/pkgconfig"
 
 cp libxml2.a "$INSTALL_DIR/lib/"
-cp include/libxml/*.h "$INSTALL_DIR/include/libxml/"
+cp include/libxml/*.h "$INSTALL_DIR/include/libxml2/libxml/"
 
 # Write relocatable pkg-config metadata. The resolver supplies direct
 # dependency prefixes through PKG_CONFIG_PATH, so Requires.private carries
@@ -220,7 +222,7 @@ Version: $LIBXML2_VERSION
 Requires.private: libiconv zlib
 Libs: -L\${libdir} -lxml2
 Libs.private: -lm
-Cflags: -I\${includedir}
+Cflags: -I\${includedir}/libxml2
 PCEOF
 
 if [ -f "$INSTALL_DIR/lib/libxml2.a" ]; then

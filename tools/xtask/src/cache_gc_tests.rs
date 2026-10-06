@@ -48,12 +48,40 @@ fn cache() -> Cache {
 
 /// A generation shaped like the engine's: the content-addressed directory
 /// plus the receipt sidecar at the engine's own receipt path, every mtime set
-/// `unused_for` in the past.
+/// `unused_for` in the past. Named the way generations were before names
+/// carried an ABI.
 fn generation(cache: &Cache, kind: &str, name: &str, key: &str, unused_for: Duration) -> PathBuf {
-    let canonical = cache
-        .compiled
-        .join(kind)
-        .join(format!("{name}-1.0-rev1-wasm32-{key}"));
+    named_generation(cache, kind, &format!("{name}-1.0-rev1-wasm32"), key, unused_for)
+}
+
+/// A generation named the way `canonical_path` names libraries and programs
+/// now, with the ABI segment.
+fn abi_generation(
+    cache: &Cache,
+    kind: &str,
+    name: &str,
+    abi: u32,
+    key: &str,
+    unused_for: Duration,
+) -> PathBuf {
+    named_generation(
+        cache,
+        kind,
+        &format!("{name}-1.0-rev1-wasm32-abi{abi}"),
+        key,
+        unused_for,
+    )
+}
+
+/// `generation` with the whole name before `-<key>` given.
+fn named_generation(
+    cache: &Cache,
+    kind: &str,
+    head: &str,
+    key: &str,
+    unused_for: Duration,
+) -> PathBuf {
+    let canonical = cache.compiled.join(kind).join(format!("{head}-{key}"));
     fs::create_dir_all(canonical.join("lib")).unwrap();
     fs::write(canonical.join("lib/lib.a"), vec![7u8; 10_000]).unwrap();
     let receipt = source_only_cache_receipt_path(&canonical, key).unwrap();
@@ -100,6 +128,12 @@ fn live_checkout(cache: &Cache, keys: &[&str]) -> tempfile::TempDir {
 
 fn policy() -> GcPolicy {
     GcPolicy::manual(DEFAULT_MAX_AGE, None)
+}
+
+fn below_abi(floor: u32) -> GcPolicy {
+    let mut policy = policy();
+    policy.below_abi = Some(floor);
+    policy
 }
 
 fn apply(cache: &Cache, policy: &GcPolicy) -> GcReport {
@@ -496,4 +530,112 @@ fn name_parsing() {
     assert_eq!(parse_size("1536MiB").unwrap(), 1536 << 20);
     assert_eq!(parse_size("4096").unwrap(), 4096);
     assert!(parse_size("12Q").is_err());
+
+    let named = format!("zlib-1.3.1-rev3-wasm32-abi46-{k}");
+    assert_eq!(generation_key(&named), Some(k.as_str()));
+    assert_eq!(generation_named_abi(&named), Some(46));
+    assert_eq!(generation_named_abi(&basename), None);
+    assert_eq!(generation_named_abi(&format!("pcre2-source-10.42-rev1-{k}")), None);
+    assert_eq!(generation_named_abi(&format!("zlib-1.3.1-rev3-wasm32-abi-{k}")), None);
+    assert_eq!(generation_named_abi(&format!("zlib-1.3.1-rev3-wasm32-abi4x-{k}")), None);
+    assert_eq!(generation_named_abi("abi46"), None);
+}
+
+#[test]
+fn below_abi_collects_old_abi_generations_at_any_age_past_a_day() {
+    let cache = cache();
+    let old_lib_key = key(30);
+    let old_lib = abi_generation(&cache, "libs", "zlib", 45, &old_lib_key, 2 * DAY);
+    let old_program = abi_generation(&cache, "programs", "bash", 45, &key(31), 2 * DAY);
+    let current = abi_generation(&cache, "libs", "zlib", 46, &key(32), 2 * DAY);
+    let old_receipt = receipt(&old_lib, &old_lib_key);
+
+    apply(&cache, &policy());
+    assert!(
+        old_lib.is_dir() && old_program.is_dir(),
+        "without --below-abi, a two-day-old generation is recent"
+    );
+
+    let report = apply(&cache, &below_abi(46));
+
+    assert!(!old_lib.exists() && !old_program.exists());
+    assert!(!old_receipt.exists(), "a collected generation's sidecars go with it");
+    assert!(current.is_dir(), "a generation at the floor is not below it");
+    assert_eq!(report.plan.generations_recent, 1);
+    assert!(report
+        .plan
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.category == Category::Generation)
+        .all(|candidate| candidate.reason.starts_with("built for ABI 45, below --below-abi 46")));
+}
+
+#[test]
+fn below_abi_keeps_root_protected_and_recently_used_generations() {
+    let cache = cache();
+    let protected_key = key(33);
+    let protected = abi_generation(&cache, "libs", "zlib", 45, &protected_key, 90 * DAY);
+    let _checkout = live_checkout(&cache, &[&protected_key]);
+    let today = abi_generation(&cache, "programs", "bash", 45, &key(34), HOUR);
+
+    let report = apply(&cache, &below_abi(46));
+
+    assert!(protected.is_dir(), "a live root protects a generation of any ABI");
+    assert!(today.is_dir(), "a generation used within the last day may be in use");
+    assert_eq!(report.plan.generations_below_abi_kept, 2);
+    assert!(report.plan.candidates.is_empty());
+}
+
+#[test]
+fn unnamed_generations_count_as_the_last_unnamed_abi_or_older() {
+    let cache = cache();
+    let unnamed = generation(&cache, "libs", "zlib", &key(35), 2 * DAY);
+
+    let report = apply(&cache, &below_abi(UNNAMED_GENERATION_MAX_ABI));
+    assert!(
+        unnamed.is_dir(),
+        "an unnamed generation may be exactly the last unnamed ABI"
+    );
+    assert_eq!(report.plan.generations_abi_unknown, 1);
+
+    let report = apply(&cache, &below_abi(UNNAMED_GENERATION_MAX_ABI + 1));
+    assert!(!unnamed.exists());
+    assert_eq!(report.plan.generations_abi_unknown, 0);
+    let reason = &report
+        .plan
+        .candidates
+        .iter()
+        .find(|candidate| candidate.category == Category::Generation)
+        .unwrap()
+        .reason;
+    assert!(
+        reason.contains(&format!("built for ABI {UNNAMED_GENERATION_MAX_ABI} or older")),
+        "{reason}"
+    );
+}
+
+#[test]
+fn below_abi_never_collects_source_generations() {
+    let cache = cache();
+    fs::create_dir_all(cache.compiled.join("sources")).unwrap();
+    let source = named_generation(
+        &cache,
+        "sources",
+        "pcre2-source-10.42-rev1",
+        &key(36),
+        2 * DAY,
+    );
+
+    let report = apply(&cache, &below_abi(u32::MAX));
+
+    assert!(source.is_dir(), "a source generation serves every ABI");
+    assert_eq!(report.plan.generations_abi_unknown, 0);
+}
+
+#[test]
+fn below_abi_rejects_a_floor_that_is_not_an_abi() {
+    for value in ["0", "-1", "forty", ""] {
+        let error = run(vec!["--below-abi".to_string(), value.to_string()]).unwrap_err();
+        assert!(error.contains("--below-abi"), "{value:?}: {error}");
+    }
 }

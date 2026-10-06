@@ -17,6 +17,10 @@
 # consumer pins (libwayland, foot) key on it, the public surface only
 # grew, and `build.toml.revision` is what invalidates cached archives.
 #
+# FOLLOW-UP: this is Kandelo's own implementation of the libffi API, not
+# upstream libffi. It is listed in docs/package-management.md ("Packages
+# that are not real upstream builds yet") with what replacing it takes.
+#
 # No upstream source is fetched; the build script compiles the bundled
 # `src/` + generated TUs directly. The `[source]` block carries a
 # sentinel URL + zero sha so the manifest schema parses but no remote

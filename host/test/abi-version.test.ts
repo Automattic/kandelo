@@ -74,8 +74,12 @@ describe("ABI version marker", () => {
         continue;
       }
       for (let remaining = uleb(); remaining > 0; remaining--) {
-        at += uleb();
-        at += uleb();
+        // Skip the module and field names. `at += uleb()` would read `at`
+        // before uleb() advances it past the length, dropping that byte.
+        for (let name = 0; name < 2; name++) {
+          const length = uleb();
+          at += length;
+        }
         const kind = bytes[at++]!;
         if (kind === 0x02) {
           uleb();

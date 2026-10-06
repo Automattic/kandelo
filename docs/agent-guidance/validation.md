@@ -57,6 +57,124 @@ rustc -vV | awk '/^host/ {print $2}'
 `scripts/ci-run-test-suite.sh` does not currently expose an `abi` suite; run
 `bash scripts/check-abi-version.sh` separately for ABI-adjacent changes.
 
+## Waiting on long builds and suites
+
+`./run.sh setup`, `local-build`, full Vitest, and the conformance suites can
+run for more than 10 minutes. Full builds include compilation, fork
+instrumentation, and artifact verification; their duration depends on
+package cache reuse. In August and September 2026, agents spent about 12%
+of their input tokens on poll turns and on cache rewrites after long blocking
+calls. They also waited on `pgrep -f` patterns that matched the waiting shell
+itself and never returned, and started second runs that broke the first.
+`scripts/agent-job` removes those choices:
+
+A run that fits in one Bash call, under the tool's 10-minute limit, needs
+none of this. Run it in the foreground with output to a log file
+(`cmd > .context/x.log 2>&1; echo exit=$?`): that is one call and no waiting
+turns. For anything longer:
+
+```bash
+scripts/agent-job start -- ./run.sh setup   # prints a job id (run.sh enters the dev shell itself)
+scripts/agent-job wait <id>      # blocks on the job's PID for up to 9 min; exit 124 = still running, run it again
+scripts/agent-job status [<id>]  # elapsed vs usual duration, local-build progress, live processes
+scripts/agent-job result <id>    # exit status, [suite-health] lines, log tail
+```
+
+The command after `--` can take either of two forms, and both run exactly
+as written:
+
+```bash
+# Several words: an argv, re-quoted so each word reaches bash unchanged.
+scripts/agent-job start -- scripts/dev-shell.sh bash -c 'cd host && npx vitest run test/foo.test.ts'
+# One quoted word: a shell string, run verbatim by bash -c.
+scripts/agent-job start -- "scripts/dev-shell.sh bash -c 'cd host && npx vitest run test/foo.test.ts'"
+```
+
+Before 2026-10-02, the several-words form joined the words with plain
+spaces and lost their quoting. The inner `bash -c` then received only `cd`,
+and the rest ran outside the dev shell from the repo root. If a vitest job
+log's ` RUN  v… <path>` line names the repo root instead of `.../host`, the
+run used the wrong config and toolchain, and its results are invalid.
+
+- **Waiting:** repeat `agent-job wait <id>` in the foreground until it
+  returns the job's status. That is one turn per 9 minutes, never a
+  `sleep`/`tail` poll. If an agent client yields a running terminal session,
+  resume that session to collect the result. An interactive main session may
+  instead run `agent-job wait <id> --timeout 0` in the background and use a
+  completion notification. A headless session or subagent must not end its
+  turn while waiting: it stops there, and the result is lost.
+- **Subagents** must not wait on whole-tree builds or full suites. A
+  subagent's prompt cache expires after 5 minutes, so every long blocking
+  call rewrites its whole context. Build what a subagent needs before
+  dispatching it. A subagent that discovers it needs one reports the command
+  back instead of running it.
+- **Progress:** for `./run.sh setup`, `local-build`, and `build <target>`,
+  `agent-job status` shows nodes done out of the total. Start them as
+  `./run.sh …`, not under `scripts/dev-shell.sh`, which drops the events
+  variable. `./run.sh local-build --plan` previews a build (cache hits,
+  nodes to build, estimated time) before you start it.
+- **Locked runs:** `agent-job start` refuses a second locked run (vitest,
+  `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup, local-build) in the
+  same worktree while one is running. Those runs race each other.
+- **Another workspace's build:** waiting on a build that another worktree
+  (another Conductor workspace) is running is supported, and `agent-job` is
+  the tool for it. Do not hand-roll a `kill -0 <pid>`, `pgrep`, or `sleep`
+  loop on its process. Job records are machine-wide, so every command
+  accepts a peer's job id:
+
+  ```bash
+  scripts/agent-job list --all               # every worktree's jobs: state, worktree, commit, relation to your HEAD
+  scripts/agent-job status <id>              # its progress, worktree, and commit
+  scripts/agent-job wait <id>                # same 540 s / exit-124 contract as for your own jobs
+  scripts/agent-job wait --peer prepare-browser   # the one running job whose command contains the text
+  ```
+
+  - **Check the commit before relying on the build.** `list --all` shows
+    each job's `HEAD`, with `*` when its tree had uncommitted tracked
+    changes at start, and how that commit relates to yours: `same`,
+    `N behind` (it built an ancestor of your `HEAD`), `N ahead` (a
+    descendant), `diverged`, or `unrelated`; `-` means the job was
+    started before commits were recorded. `status` and `wait` spell the
+    same out, and list the uncommitted paths. Untracked files are not
+    counted. Worktrees share the build cache, and its entries are keyed
+    on build inputs. Once a peer's build finishes, your own run reuses
+    whatever it built from the same inputs, so the closer its commit is
+    to yours, the more your run can reuse.
+  - **`--peer <text>` never guesses.** When no running job's command
+    contains `<text>`, or more than one does, it lists the candidates on
+    stderr and exits 2; then wait on one by id. A job that itself exits
+    2 also makes `wait` exit 2, so read the output.
+  - The locked-run check is per worktree: a peer's `local-build` does not
+    stop yours from starting. Choosing to wait on it is the agent's call.
+- **Before a suite**, `npx tsx scripts/check-artifact-closures.ts` reports
+  any program package whose artifact closure would fail to resolve with
+  "Package artifact closure is incomplete". It takes about 3 s once warm, and
+  saves the minutes a suite would spend reaching the same error.
+- **Every Vitest run** ends with a `[suite-health]` line. When many files
+  fail to load, it groups them by the missing thing, so one line replaces
+  scrolling hundreds of failure blocks. `WARN` means part of the suite did
+  not run (a load error or zero tests).
+- **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
+  patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
+  `pgrep -f` waiters, and subagents running whole-tree builds or full
+  suites, and every denial says what to do instead. It is opt-in.
+  - **Install or update** with
+    `python3 .claude/hooks/install-hooks.py --user` (all your sessions) or
+    `--project-local` (this checkout only). It edits only its own entry,
+    keeps a `.bak` of the settings file, and changes nothing when run again.
+  - **Check for a stale copy** with `--check`, which exits 1 when the
+    installed hook is out of date. `--uninstall` removes it. The installed
+    hook also tells you itself, once per session, when the checkout you
+    work in has a newer `HOOK_VERSION`.
+  - **Changing the hook:** bump `HOOK_VERSION` in `wait-guard.py` with any
+    change to a rule or message, and say in the PR to re-run the
+    installer.
+  - **Scope:** the hook acts only in checkouts that contain
+    `scripts/agent-job`.
+
+Whether each of these helps is measured, with a rule for keeping or removing
+it, in `evals/build-waiting/README.md`.
+
 ## Preparing a fresh checkout or worktree to run the suites
 
 The Vitest, browser, libc, posix, and sortix suites need built artifacts and
@@ -76,21 +194,18 @@ part of the task. Build or fetch what is missing:
    If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
    build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
    --init libc/musl`.
-2. **Kernel wasm + host + rootfs + musl sysroot** — ~1.5min; `./run.sh setup`
-   builds the musl sysroot from scratch on a fresh checkout (or just
-   re-syncs overlay headers and refreshes the sysroot's DRI/GL archives
-   when a sysroot already exists), then the
+2. **Kernel wasm + host + rootfs + musl sysroot** — `./run.sh setup`
+   checks both musl sysroots, rebuilding missing, stale, or altered core
+   outputs and refreshing the graphics archives, then builds the
    kernel, every package, and the rootfs, producing
    `local-binaries/kernel.wasm` (the binary resolver prefers it over
    `binaries/`) and `host/wasm/rootfs.vfs.zst`:
    ```bash
    scripts/dev-shell.sh ./run.sh setup
    ```
-   If a sysroot already exists and you just edited
-   `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, `setup` will
-   not rebuild musl for you — rebuild it explicitly first:
+   To check just the wasm32 core SDK after editing libc inputs:
    ```bash
-   scripts/dev-shell.sh bash scripts/build-musl.sh
+   scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only
    ```
 3. **Node dependencies** — `node_modules` are per-checkout, and both the repo
    root (the conformance runners load `tsx` from root) and `host/` are needed.
@@ -124,11 +239,9 @@ part of the task. Build or fetch what is missing:
    ```
    `./run.sh setup` already builds the wasm64 sysroot (its bootstrap step plan
    runs `sysroot64` unconditionally, alongside the wasm32 `sysroot`). If the
-   wasm64 sysroot is missing (e.g. a partial checkout) or you just edited
-   `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, rebuild it explicitly
-   first:
+   wasm64 sysroot needs checking separately from setup:
    ```bash
-   scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+   scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only --arch wasm64posix
    ```
 
 After that the full suites run. Do **not** report "I can't run Vitest / the
@@ -149,9 +262,9 @@ pre-existing failure as pre-existing, not as your regression.
 
 After editing kernel Rust, rebuild the kernel wasm (`./run.sh setup`) before the
 Vitest/conformance suites — they load `local-binaries/kernel.wasm`, so a stale
-wasm silently runs your OLD kernel code. `./run.sh setup` does not rebuild musl;
-after editing `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, run
-`scripts/build-musl.sh` first. (`bash build.sh` still works as a deprecated
+wasm silently runs your OLD kernel code. Setup also checks musl freshness;
+after editing libc inputs, rebuild linked programs and fixtures through the
+normal setup/program paths. (`bash build.sh` still works as a deprecated
 delegator to `./run.sh setup`.)
 
 The table names primary evidence, not a universal checklist. Choose the suites

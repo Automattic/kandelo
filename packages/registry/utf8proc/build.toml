@@ -1,4 +1,8 @@
 script_path = "packages/registry/utf8proc/build-utf8proc.sh"
+inputs = [
+  "packages/registry/utf8proc/build-utf8proc.sh",
+  "scripts/package-build-roots.sh",
+]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "d1c57b6b5"
 revision    = 1

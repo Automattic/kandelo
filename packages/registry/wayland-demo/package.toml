@@ -1,5 +1,5 @@
 kind = "program"
-# Runtime backing for `/?demo=wayland`: the four binaries that make up the
+# Runtime backing for the `wayland` machine in the shell image: the four binaries that make up the
 # Wayland desktop, plus the launcher that starts them in order. The browser
 # app consumes these through the VFS image like every other machine, so they
 # need a registry owner — a demo must not fetch its own binaries at boot.
@@ -75,6 +75,12 @@ wasm = "klauncher.wasm"
 [[outputs]]
 name = "notify-send"
 wasm = "notify-send.wasm"
+
+# The host-clipboard agent omarchydesktop starts: it turns offers on
+# /dev/kandelo/clipboard into the desktop's Wayland selection.
+[[outputs]]
+name = "kclipd"
+wasm = "kclipd.wasm"
 
 # The launcher is the machine's single `init.shellCommand`. It owns the
 # start order the desktop needs — compositor first (it takes DRM master and

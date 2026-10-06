@@ -1106,9 +1106,16 @@ instance, loader, and continuation controller. Only the calling parent thread
 stays parked in the asynchronous fork import; sibling pthreads continue to
 run.
 
-The kernel marks the vfork child's independent Process record. Nested fork,
-vfork, spawn, and pthread clone fail with `EAGAIN`; failed exec preserves the
-marker and returns to the child. Successful exec commit, `_exit()`, and exact
+The kernel marks the vfork child's independent Process record. A nested
+vfork and pthread clone fail with `EAGAIN`: a second borrower of the parked
+parent's memory would need stacked lifetimes the host does not provide.
+Ordinary fork and spawn are allowed. A vfork child's fork copies the borrowed
+memory like any fork. The child captures its continuation with its own
+mappings and publishes the root in its borrowed control slot, below its own
+channel, because the process anchor still belongs to the parked parent. It
+takes no archive lock, since the parent's reader already pins the snapshot.
+The grandchild adopts that root as a thread fork does. Failed exec preserves
+the marker and returns to the child. Successful exec commit, `_exit()`, and exact
 signal/trap teardown quiesce the borrowing Worker, release its alias and
 workspace, and resume the exact parked caller once. An ambiguous forced Worker
 termination cannot prove that shared-memory access stopped, so the host
@@ -1281,7 +1288,10 @@ pipes, sockets, PTYs, terminal devices, and listener queues.
    rewritten once, and a separately prepared interpreter becomes the sole
    final target; script set-ID state is never applied.
 4. The host validates the exact bytes' ABI marker and fork-artifact policy,
-   compiles those same bytes, validates the 4 MiB combined argv/environment
+   obtains the module for those same bytes from the kernel worker's
+   content-addressed cache (see
+   [Compiled module sharing](#compiled-module-sharing)), validates the 4 MiB
+   combined argv/environment
    representation and generated vector caps, and completes replacement
    `WebAssembly.Memory` allocation/layout preflight before the irreversible
    transition. Each metadata string must also fit the current 64 KiB transfer.
@@ -1350,8 +1360,9 @@ caller now take.
    caller memory, validates argv + envp against the same 4 MiB `ARG_MAX`
    contract as `execve`, and performs a side-effect-free candidate lookup and
    compilation. Shared trusted code immediately snapshots the resolver bytes
-   and compiles the candidate module from that exact isolated snapshot; a
-   separately callback-supplied module is ignored. That preflight prevents
+   and obtains the candidate module for that exact isolated snapshot from the
+   content-addressed module cache; a separately callback-supplied module is
+   ignored. That preflight prevents
    failed PATH probes from creating a child, but it is never executable
    authority. The host then copies the blob to bounded kernel-owned scratch.
    Each argv/environment entry also has the separate 64 KiB
@@ -1413,9 +1424,11 @@ caller now take.
    forward order. Failure on any action rolls back via `remove_process`.
 5. In the resulting child CWD, descriptor, and credential state, the host asks
    Rust to prepare an exact executable target. The host reads those retained
-   bytes and reuses only the module compiled from the isolated preflight
-   snapshot, and only when every byte is identical; otherwise it recompiles
-   the final bytes. The opaque child-bound token is
+   bytes, runs the same ABI and artifact checks on them, and asks the module
+   cache for their module: the preflight module is reused only when the final
+   bytes have the same SHA-256 digest and length, and otherwise the final
+   bytes are compiled. The preflight module stays reachable until that lookup
+   completes. The opaque child-bound token is
    committed with `kernel_spawn_exec_commit`, which evaluates set-ID and
    trusted-mount/nosuid policy and closes remaining `FD_CLOEXEC` descriptors.
    Any prepare, read, policy, compile, or commit failure cancels the exact
@@ -1515,6 +1528,87 @@ lifecycle gap is separate from reaping direct host-owned launches.
 6. Thread starts executing the given function pointer with the given argument
 
 Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
+
+### Compiled module sharing
+
+Every program a process runs is a `WebAssembly.Module` compiled by the
+dedicated kernel worker and posted to the process worker (and, for threads,
+to each thread worker). V8 and JavaScriptCore keep one copy of a module's
+machine code however many workers it is posted to, while each separate
+compilation of the same bytes makes another copy (measurements below;
+SpiderMonkey was not measured). Compiled code is the dominant browser
+cost for large guests — SpiderMonkey caps all JIT and Wasm code at 2 GiB per
+content process — so the kernel worker compiles a given program once while a
+compiled copy is still alive.
+
+`WasmModuleCache` (`host/src/wasm-module-cache.ts`) is that compiler. One
+instance belongs to each `CentralizedKernelWorker` (`kernelWorker.wasmModules`)
+on both hosts:
+
+| Launch | Module source |
+|---|---|
+| Host `spawn`/`spawnFromVfs` (top-level) | `programModule(bytes)`; a `CompileError` answers the request with `ENOEXEC` |
+| `posix_spawn` preflight and final target | `programModule(bytes)` |
+| `execve`/`execveat` | `programModule(bytes)` |
+| `fork`/`vfork` | the parent's module; a fork never compiles |
+| `clone` | `threadModule(programBytes, patchWasmForThread)` |
+
+**Identity is the exact bytes.** The key is the SHA-256 digest and byte
+length of the bytes being launched, plus the variant (`program` or `thread`),
+never a path. Exec and spawn read the target's current bytes from the kernel
+for every launch, so a file rewritten in place hashes differently at its next
+exec and can never run a module compiled from older contents. The thread
+variant is keyed on the *program's* digest; `patchWasmForThread` is a pure
+function of those bytes. When the patch leaves the bytes unchanged (a module
+without a start section), the thread module is the program module itself.
+
+**Admission is never skipped.** The cache replaces only the compile step.
+The ABI marker and artifact-policy checks still run on every launch's bytes
+before the lookup, exec permission and set-ID policy are still decided by the
+kernel's prepared target, and the process worker still re-runs the artifact
+policy and fork-instrumentation validation on the module it is given. A
+compile failure is reported to every caller waiting on it and is never
+cached.
+
+**Lifetime.** The cache's own index holds each module through a `WeakRef`.
+Strong references belong to the users: each process record's
+`programModule`, the per-process thread module, and launch continuations in
+flight (a spawn's preflight module stays reachable until its final target is
+looked up). A module is therefore shareable exactly while some live process
+or pending launch holds it and becomes collectable with its last user. Two
+launches of the same bytes that overlap share one in-flight compilation.
+
+On top of that a bounded retention window keeps recently launched modules
+strongly referenced: at most 16 MiB of Wasm bytes in total, each for 30
+seconds after its most recent launch, least recently launched evicted first.
+Modules larger than the bound (Quickshell at 75 MB, Waybar at 51 MB,
+qtgallery at 23 MB) are never retained past their last user. The window exists
+because weak references alone lose short-lived programs to the garbage
+collector between runs: a shell running coreutils `ls` 20 times compiled
+coreutils 10–13 times with weak references only, and once with the window
+(Node 24, measured). The bound keeps the retained code small next to the
+2 GiB SpiderMonkey arena; the timer never keeps a Node kernel worker alive.
+
+**Cost.** Each spawn or exec hashes its target bytes with WebCrypto SHA-256
+in the kernel worker (twice for `posix_spawn`: the preflight snapshot and
+the final target). A thread lookup reuses the digest recorded for the
+process's own bytes buffer. Hashing 78 MB took 33–42 ms on Node 24, and
+34 ms in Chromium and 53 ms in WebKit inside a dedicated worker. That is less
+than the JavaScript byte-by-byte comparison it replaced on the spawn path
+(67–294 ms, 68 ms and 59 ms for the same bytes).
+
+An 11 MB synthetic module posted to 8 workers that each instantiated it
+and ran every function grew the process by about 140 MB on Node 24, 365 MB
+in Chromium and 820–906 MB in WebKit; when each worker compiled the same
+bytes itself, the growth was about 335 MB, 540 MB and 1,070 MB.
+
+`NodeKernelHost.getWasmModuleCacheStats()` and
+`BrowserKernel.getWasmModuleCacheStats()` return the cache's counters
+(compilations, reuse, digest time, retained bytes, and the thread-module
+compilations and reuse counted separately) for diagnostics.
+`apps/browser-demos/test/wasm-module-cache-threads.spec.ts` uses them to check
+in a real browser that three processes running the same threaded program
+compile one thread module between them.
 
 ## Memory Layout
 
@@ -2280,6 +2374,126 @@ The kernel buffers raw 3-byte packets — there is no userspace queue until the 
 
 Single-open semantics match real Linux mousedev exclusive-grab. The host inverts browser `deltaY` (browser positive-down → PS/2 positive-up) before injecting, so the kernel queue holds canonical PS/2 sign convention. ABI version bumped 6 → 7 to register the new `kernel_inject_mouse_event(i32, i32, u32) -> ()` export.
 
+## Host clipboard (`/dev/kandelo/clipboard`)
+
+Text the user pastes over a machine reaches the guest the way a VM guest agent
+(SPICE's `spice-vdagent`) gets it: the host feeds a device, and an agent in the
+guest turns it into the desktop's own clipboard. Three layers, each usable
+without the next. Copy-out, the reverse direction, runs through the same
+device and agent (below).
+
+```text
+ browser `paste` event          BrowserInputSource (clipboard feature)
+        │  text                   holds the chord + later keys
+        ▼
+ offerClipboardText(text)      BrowserKernel / NodeKernelHost (same API)
+        │                       CRLF → LF, ≤ 1 MiB, never truncated
+        ▼
+ kernel_clipboard_stage ×N     kernel worker: scratch-sized chunks,
+ kernel_clipboard_offer()        one kernel entry, then wake parked readers
+        │
+        ▼
+ /dev/kandelo/clipboard  ──►  kclipd (read one record, block when empty)
+        ▲                          │ ext_data_control_v1 set_selection
+        │ {seq, status}            ▼
+ kernel_clipboard_ack(seq) ◄── write(ack)   wlcompositor selection → foot
+   (host timer, only while pending)
+```
+
+- **The device** (`crates/runtime-core/src/clipboard.rs`) holds at most one
+  unread offer; a newer one replaces it, and a record already being read is
+  finished first. Each offer reads as one record — a 16-byte header and the
+  UTF-8 text — and a `read()` never crosses into the next record. An empty
+  device returns `EAGAIN`, which parks a blocking reader until the next
+  offer's wake, as `/dev/dri/card0` does. One process may hold it open, and
+  last close or exit drops whatever it had not read. The state is machine-wide
+  rather than per open file description, so `fork` carries nothing new. See
+  `docs/posix-status.md` for the exact semantics.
+- **The host API** (`offerClipboardText`, `host/src/clipboard.ts`) is the same
+  on Node and in the browser. It resolves once the agent has acknowledged
+  the offer, or with the reason it could not: no agent, over the cap, invalid
+  text, the agent's own errno, superseded, or a 2 s timeout. The worker polls
+  `kernel_clipboard_ack` every 16 ms while an offer is pending and not
+  otherwise, which keeps the syscall completion path untouched. Only the
+  paste gesture is browser-only: Node has no DOM `paste` event, the same
+  boundary `NodeInputSource` documents.
+- **kclipd** (`programs/kclipd.c`, started by `omarchydesktop`) speaks
+  `ext_data_control_v1` rather than reading the device inside the compositor,
+  so it keeps working when a real Hyprland replaces `wlcompositor`. It serves
+  pastes by writing into the pasting client's pipe without blocking, and logs
+  sequence numbers and lengths, never the text.
+- **The gesture** (`BrowserInputSource`, images that declare the `clipboard`
+  runtime feature): a Cmd/Ctrl+V keydown is not cancelled, so the browser's
+  own paste binding decides whether it was a paste. If `paste` fires within
+  500 ms, its `text/plain` is offered (unless it is empty or the text the guest
+  already accepted) and the chord, with every key typed meanwhile, is
+  delivered only after the agent's acknowledgement — so "paste, Enter" cannot
+  run the line before the text lands. If no `paste` follows, the chord is
+  ordinary keys (and Internals logs that). The window is not "until the
+  next task": on macOS the page sees the Cmd+V keydown first, and the
+  browser fires `paste` from its Edit menu only after the page leaves the
+  key unhandled, a task or more later. Playwright's synthetic chord fires
+  `paste` in the same task, so automated tests cannot catch a window that
+  is too short. Internals also logs each paste's length and outcome. On failure the chord and held keys are dropped (modifier
+  transitions still go through) and the KMS pane shows the cause.
+
+The text exists in kernel memory only between the offer and the agent's read;
+it is never a file, so it cannot reach a persisted mount or a shared snapshot.
+
+### Copy-out (guest → host)
+
+```text
+ copy chord keydown              BrowserInputSource (clipboard feature)
+        │  before the chord's keys are emitted
+        ▼
+ startHostClipboardCopyOut      navigator.clipboard.write(ClipboardItem
+        │                         whose text is a pending promise)
+        ▼
+ waitForGuestClipboardText()    BrowserKernel / NodeKernelHost (same API)
+        │                         sample kernel_clipboard_guest_generation,
+        │                         poll it every 16 ms for up to 2 s
+        ▼
+ foot copies → wlcompositor selection → kclipd (ext_data_control_v1)
+        │  reads the offer through a pipe, whole, ≤ 1 MiB
+        ▼
+ write(KIND_GUEST_TEXT record) ─► /dev/kandelo/clipboard: guest text,
+                                   generation + 1
+        ▼
+ kernel_clipboard_guest_read ×N  → UTF-8 text → resolves the promise
+```
+
+- **kclipd reports every selection it did not set.** Its own selections
+  (host text it installed) are recognised by the source it still holds: the
+  compositor cancels that source before announcing any replacement, so a
+  selection that arrives while kclipd holds one is its own echo. The rest
+  are read as text (`text/plain;charset=utf-8`, then `text/plain`, then
+  `UTF8_STRING`) and written as one `KIND_GUEST_TEXT` record in one
+  `write()`. A selection over 1 MiB, or with no text type, is not reported:
+  never a truncated copy.
+- **The device keeps only the latest report** and a generation counter
+  that changes with each one. Neither is readable by the guest; the host
+  reads them through `kernel_clipboard_guest_generation` and
+  `kernel_clipboard_guest_read`, which copies the text out in scratch-sized
+  chunks within one kernel entry. Release drops the text, so a copy
+  gesture that sees the counter move after the agent has exited reports
+  `no-agent` rather than putting an empty string on the host clipboard.
+- **The host copies out only after a copy gesture**, never on every
+  selection change: a selection made in the desktop is not the user asking
+  for their own clipboard to change. The wait samples the generation before
+  the chord reaches the guest, so the guest's copy cannot land before the
+  host starts watching; a chord that copies nothing (`Ctrl+C` in a
+  terminal is SIGINT) times out after 2 s, and the host clipboard is left
+  as it was.
+- **Why the clipboard write starts at keydown.** Safari and Firefox let a
+  page write the clipboard only inside a user gesture, and the guest's text
+  arrives well after the keydown handler returns. A `ClipboardItem` whose
+  data is a promise is created in the gesture and filled when the text
+  arrives; a rejected promise writes nothing. Without `ClipboardItem` the
+  text is written with `writeText` once it arrives.
+- **Latest copy wins for keyboard copies.** A successful copy-out records
+  the text as the one the guest already holds, so the next host paste of
+  anything else is offered and the same text is not re-offered.
+
 ## Audio output (`/dev/dsp`)
 
 Kandelo separates the Unix compatibility API from its physical audio
@@ -2444,7 +2658,7 @@ This section is the implementation walk-through; [Linux-compatible graphics devi
 
 ## Wayland compositor (`wlcompositor`, `wlterm`)
 
-On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.25.0 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). Buffer sharing is zero-copy: clients allocate `wl_shm` pools backed by `gbm` dumb BOs and pass the prime-fd to the compositor via `SCM_RIGHTS`. The same prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888` + `LINEAR` only, no feedback): `zwp_linux_buffer_params_v1.add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to importing with `gbm_bo_import` and CPU-blitting into the scanout buffer. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-EIO` when the canvas context reports `isContextLost()`, `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails, and the compositor's repaint falls through to the CPU path and terminates EGL — no guest-side context-loss API is needed. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
+On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.25.0 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). Buffer sharing is zero-copy: clients allocate `wl_shm` pools backed by `gbm` dumb BOs and pass the prime-fd to the compositor via `SCM_RIGHTS`. The same prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888`/`XBGR8888`/`ABGR8888` + `LINEAR` only, no feedback; a GL client's buffer from `libwayland-egl` is `XBGR8888`, because a WebGL RGBA texture stores `[R,G,B,A]` bytes, and the compositor samples it without the red/blue swizzle it applies to `XRGB8888` `[B,G,R,X]` buffers): `zwp_linux_buffer_params_v1.add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to importing with `gbm_bo_import` and CPU-blitting into the scanout buffer. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-EIO` when the canvas context reports `isContextLost()`, `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails, and the compositor's repaint falls through to the CPU path and terminates EGL — no guest-side context-loss API is needed. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
 
 Kandelo-authored clients build on `libkwl` (`examples/libs/libkwl/`), a small toolkit over `libwayland-client` that wraps registry bind, an `xdg` CSD toplevel, double-buffered `wl_shm` back buffers, xkb keysym/UTF-8 translation, and a `kwl_dispatch` event loop; it exposes `kwl_display_fd()` so an app can `poll` the Wayland connection alongside its own fds. Drawing goes through `libwpkdraw` (`examples/libs/wpkdraw/`), a CPU rasterizer (alpha-blended clear/pixel/rect + an `stb_truetype` font engine over a bundled Inconsolata) that renders into a caller-owned ARGB buffer. `programs/wlterm/` is the first real client: a terminal that `forkpty()`s `sh` (bash, which every Kandelo image binds to `/bin/sh`), runs an in-tree VT100 core (`vt100.c`), and multiplexes the Wayland display fd and the PTY master fd in one `poll` loop — Wayland key events become PTY writes, PTY output feeds the VT100 grid and is rendered back into the libkwl window. Because `wlterm` forks, its wasm is mandatorily processed by `wasm-fork-instrument` (see [fork-instrumentation.md](fork-instrumentation.md)).
 
@@ -2456,13 +2670,15 @@ The same `wlcompositor` binary is also a Hyprland-class tiling WM (PR14); the fl
 
 - **Layout engine.** `compute_tiling(area, n)` is a pure function: it partitions the output among `n` windows by recursively splitting the remaining region along its longer side (Hyprland's dwindle default — near half to window *i*, remainder carried forward), insetting an outer gap from the screen edge and an inner gap between windows. `retile()` runs it over the mapped windows on the active workspace (in map order = z-order) and pushes each dictated size through the `xdg_toplevel.configure` path; `FLOATING` mode keeps the app_id placement rules and makes `retile()` a no-op. Because the tiler is pure, the Node gate predicts the exact partition and compares it against the emitted `TILE` markers. A surface enters that list only once it carries the `xdg_toplevel` role: a client's cursor surface (`wl_pointer.set_cursor` is accepted and ignored, since the host pointer already draws the sprite) commits a buffer under no role, and would otherwise map, take the keyboard, and claim a tile of its own. Waybar's cursor theme is the case that reaches it.
 - **Workspaces.** Nine 1-based workspaces on the single output. Each surface carries a workspace id (assigned at first map); `surface_visible()` (mapped AND on the active workspace) gates compositing, input hit-testing, and tiling. `switch_workspace()` restores focus to the target's top window (z-order doubles as per-workspace focus memory); `move_focus_to_workspace()` sends the focused window away and re-tiles the remainder.
-- **`kwlctl` IPC.** A control + event socket at `/tmp/kwlctl-0` (the hyprctl analog), polled in the compositor's `wl_event_loop` alongside the wayland + libinput fds. Verbs: `clients` / `workspaces` / `activeworkspace` / `activewindow` / `monitors` / `workspacerules` / `theme` (JSON queries, each also accepted behind hyprctl's `j/` prefix), `dispatch <workspace N|focusworkspaceoncurrentmonitor N|movetoworkspace N|close|exec <path…>|theme <name|next|prev>>`, and `--listen` (a newline-delimited `event>>data` stream in Hyprland's socket2 format). `dispatch exec` uses the non-forking `posix_spawnp` (`SYS_SPAWN`) — a `fork()` from inside an event-loop callback would wedge the server — and accepted control fds are `CLOEXEC` so they don't leak into spawned children. The CLI client is `programs/wlcompositor/kwlctl.c` (`KWLCTL_SOCKET` overrides the path).
+- **`kwlctl` IPC.** A control + event socket at `/tmp/kwlctl-0` (the hyprctl analog), polled in the compositor's `wl_event_loop` alongside the wayland + libinput fds. Verbs: `clients` / `workspaces` / `activeworkspace` / `activewindow` / `monitors` / `workspacerules` / `theme` (JSON queries, each also accepted behind hyprctl's `j/` prefix), `dispatch <workspace N|focusworkspaceoncurrentmonitor N|movetoworkspace N|close|exec <path…>|theme <name|next|prev>|sendshortcut MODS, KEY|kandelo:sendshortcutiftag TAG, MODS, KEY, MODS, KEY>`, and `--listen` (a newline-delimited `event>>data` stream in Hyprland's socket2 format). `dispatch exec` uses the non-forking `posix_spawnp` (`SYS_SPAWN`) — a `fork()` from inside an event-loop callback would wedge the server — and accepted control fds are `CLOEXEC` so they don't leak into spawned children. The CLI client is `programs/wlcompositor/kwlctl.c` (`KWLCTL_SOCKET` overrides the path).
 - **Hyprland IPC compatibility.** The same command table and event bus are also served on Hyprland's own socket pair, where an unmodified Waybar looks for them: `/tmp/hypr/wlcompositor/.socket.sock` (request/reply) and `.socket2.sock` (the event stream, which needs no handshake — a client that connects is a listener). `main()` exports `HYPRLAND_INSTANCE_SIGNATURE=wlcompositor` and defaults `XDG_RUNTIME_DIR=/tmp`, so anything the compositor execs finds the directory. The query replies carry the `hyprctl -j` field set Waybar's `hyprland/*` modules read — window `class`/`title`/`workspace`/`floating`/`mapped`, workspace `id`/`name`/`monitor`/`windows`, and a single `virtual-0` monitor — and the events it subscribes to: `workspace`/`workspacev2`, `createworkspace`/`destroyworkspace` (+`v2`), `focusedmon`(`v2`), `activewindow`/`activewindowv2`, `openwindow`/`closewindow`, `movewindow`(`v2`), `windowtitle`(`v2`). Window titles exist only for this: `xdg_toplevel.set_title` is stored on the surface and relayed, never drawn (clients keep their own CSD titlebars).
-- **Keybinds.** A config-driven bind table parsed from `WLC_CONFIG` / `/etc/kandelo/wlcompositor.conf` (a hyprland.conf-shaped subset: `bind = MODS, KEY, DISPATCHER[, ARGS]`); absent config installs generic SUPER-based defaults, not demo-specific ones. Keys are intercepted in the compositor's keyboard path before the focused client: a bind matches on the pressed key's shift-independent base keysym plus an exact modifier mask. Modifiers: `SUPER` (Mod4), `SHIFT`, `CTRL`, `ALT` (Mod1) — the self-contained xkb keymap carries `Super_L`, both Shifts, `Control_L`, `Alt_L`, the four arrow keys, `F1`–`F12`, and the nav cluster (Home/End/PgUp/PgDn/Insert/Delete). `CTRL` exists because a browser reserves the Cmd/Win (`SUPER`) key, so the in-browser demo mirrors every `SUPER` bind onto `CTRL`. Dispatchers: `exec`, `workspace`, `movetoworkspace`, `killactive`, `cyclenext`/`cycleprev` (focus cycling without z-order reordering, so a tiled layout keeps its geometry). The `exec` dispatcher is how new panes are opened Hyprland-style — a per-app launch bind rather than a launcher UI: the `/?demo=hyprland` config binds `Return`→`wlterm`, `K`→`wlclock`, `P`→`wlpaint` (each on both `SUPER` and `CTRL`), and on the keypress the compositor runs `kwlctl_exec` → `posix_spawnp` of the `/usr/local/bin` binary, which connects as a new tiled client. Because bound combos are grabbed before the focused client, a `CTRL`-letter launch bind shadows the terminal's like-named control key in-browser; the clock is deliberately on `K` (not `C`) so `Ctrl+C` SIGINT still reaches `wlterm`. A real Hyprland session drives these on `SUPER` and avoids the clash entirely. `killactive` sends `xdg_toplevel.close` to the focused window; the client is responsible for tearing its surface down (the compositor retiles once the surface is destroyed). `wlterm` closes its window immediately and hangs its shell up with `SIGHUP` — closing the pty master alone does not wake a shell blocked in `read()`, so without the explicit hangup the reap (and the tile) would block forever.
+- **Keybinds.** A config-driven bind table parsed from `WLC_CONFIG` / `/etc/kandelo/wlcompositor.conf` (a hyprland.conf-shaped subset: `bind = MODS, KEY, DISPATCHER[, ARGS]`); absent config installs generic SUPER-based defaults, not demo-specific ones. Keys are intercepted in the compositor's keyboard path before the focused client: a bind matches on the pressed key's shift-independent base keysym plus an exact modifier mask. Modifiers: `SUPER` (Mod4), `SHIFT`, `CTRL`, `ALT` (Mod1) — the self-contained xkb keymap carries `Super_L`, both Shifts, `Control_L`, `Alt_L`, the four arrow keys, `F1`–`F12`, and the nav cluster (Home/End/PgUp/PgDn/Insert/Delete). `CTRL` exists because a browser reserves the Cmd/Win (`SUPER`) key, so the in-browser demo mirrors every `SUPER` bind onto `CTRL`. Dispatchers: `exec`, `workspace`, `movetoworkspace`, `killactive`, `cyclenext`/`cycleprev` (focus cycling without z-order reordering, so a tiled layout keeps its geometry). The `exec` dispatcher is how new panes are opened Hyprland-style — a per-app launch bind rather than a launcher UI: the `/?demo=hyprland` config binds `Return`→`wlterm`, `K`→`wlclock`, `P`→`wlpaint` (each on both `SUPER` and `CTRL`), and on the keypress the compositor runs `kwlctl_exec` → `posix_spawnp` of the `/usr/local/bin` binary, which connects as a new tiled client. Because bound combos are grabbed before the focused client, a `CTRL`-letter launch bind shadows the terminal's like-named control key in-browser; the clock is deliberately on `K` (not `C`) so `Ctrl+C` SIGINT still reaches `wlterm`. A real Hyprland session drives these on `SUPER` and avoids the clash entirely. `killactive` sends `xdg_toplevel.close` to the focused window; the client is responsible for tearing its surface down (the compositor retiles once the surface is destroyed). `wlterm` closes its window immediately and hangs its shell up with `SIGHUP` — closing the pty master alone does not wake a shell blocked in `read()`, so without the explicit hangup the reap (and the tile) would block forever. The `ARGS` field is the rest of the line, commas included, as in Hyprland.
+- **`sendshortcut` and window tags.** `sendshortcut, MODS, KEY` (Hyprland's dispatcher) delivers a chord to the focused surface as `wl_keyboard` events: a `modifiers` event carrying exactly the chord's modifiers, the key's press and release, then a `modifiers` event restoring the real state. The chord's modifiers replace the held ones rather than merging with them, so `SUPER+V` bound to `sendshortcut, CTRL SHIFT, V` reaches the client as Ctrl+Shift+V while SUPER is still physically down (the problem Omarchy's `clipboard.lua` works around). Hyprland's optional third argument, a target window, is not supported and must be empty. `windowrule = tag +NAME, class:REGEX` tags every window whose `app_id` the POSIX extended regex matches in full; `kwlctl clients`/`activewindow` report the tags. `kandelo:sendshortcutiftag, TAG, MODS, KEY, MODS, KEY` sends the first chord when the focused window carries `TAG` and the second otherwise. It has no Hyprland equivalent: Omarchy chooses the chord in a Lua function (`universal_clipboard_shortcut`), and `wlcompositor` has no Lua, so this dispatcher is a Kandelo stand-in for that one function, and its `kandelo:` prefix (the namespace style of Hyprland plugin dispatchers) says so in the config. Rules support only `tag +NAME` and only the `class:` matcher; anything else is refused with a message on stderr.
+- **Clipboard (the selection).** `wl_data_device_manager` v3 and `zwlr_data_control_manager_v1` v2 share one selection per seat. A client sets it with `wl_data_device.set_selection` (a serial older than the current selection's is dropped, as wlroots does) or, with no window and no serial, through data-control (a clipboard tool or agent). Setting it sends `cancelled` to the source it replaces. The compositor offers the selection — a fresh `wl_data_offer`, one `offer` event per MIME type, then `selection` — to a client just before that client receives keyboard focus, again when the selection changes while it is focused, and when it creates its data device while focused; data-control devices receive every change regardless of focus. A paste is `wl_data_offer.receive(mime, fd)`: the compositor forwards the fd to the source client as `send(mime, fd)` and closes its own copy, so the two clients exchange the bytes over the pipe directly (the pipe's write end crosses the Wayland socket twice by `SCM_RIGHTS`) and the compositor never reads them. An offer whose source is no longer the selection gets its fd closed at once, so the reader sees EOF. Drag-and-drop (`start_drag` is a no-op; an offer's `accept`/`finish`/`set_actions` are accepted for v3 clients) and the primary selection (neither `zwp_primary_selection` nor data-control's `set_primary_selection`) are not implemented. Gated by `host/test/wlcompositor-clipboard-smoke.test.ts` with the `programs/wlcompositor/wlclip-test.c` client.
 - **Server-side decoration.** The compositor advertises `zxdg_decoration_manager_v1` and negotiates the mode by layout: `dwindle` → `SERVER_SIDE` (a tiled window has no titlebar), `floating` → `CLIENT_SIDE` (the client keeps its CSD titlebar). A libkwl client honors the negotiated mode (`decoration_configure`): under SSD it sets its titlebar height to 0 and treats all pointer events as content, so the tiled desktop looks like Hyprland.
 - **Client-side resize.** The compositor composites each surface at its **native** buffer size (`blit_surface` does not scale to the tile; the one exception is an explicit `wp_viewport` destination, which scales that surface's committed source rect), so tiling requires the *client* to resize into the size the compositor dictates. `retile()` sends `xdg_toplevel.configure(w,h)`; libkwl records it and, on the `xdg_surface.configure` ack barrier, rebuilds both `wl_shm` buffers at the new size and pushes a `KWL_RESIZE` event (new content w/h). Clients react: `wlclock` recomputes its dial geometry, `wlterm` reflows its VT100 grid (`vt100_resize` + `TIOCSWINSZ` + `SIGWINCH`), `wlpaint` reallocates its canvas (preserving the painting) so the toolbar + drawing area fill the whole tile rather than a fixed 640×420 corner. The initial `get_toplevel` `configure(0,0)` ("you decide") is ignored, so a floating client (`/?demo=wayland`) never resizes and is byte-identical to before.
 
-These are entirely in-kernel (client↔compositor over the wayland + `/tmp/kwlctl-0` sockets) — no host-runtime change — and gated by `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`. The browser's Hyprland machine (the shell image's `hyprland` profile, whose `/usr/local/bin/hyprdesktop` launcher sets `WLC_LAYOUT=dwindle` and `WLC_CONFIG=/usr/share/kandelo/hyprland/wlcompositor.conf`; gated by `apps/browser-demos/test/kandelo-hyprland.spec.ts`) boots the same compositor plus a `wlclock` and two `wlterm` terminals, which tile into gapped borderless frames and resize into their tiles — the first end-to-end Hyprland-class desktop. `wlpaint` is in the image but not started, so the `Ctrl+P` launch bind summons it on demand. See [browser-support.md](browser-support.md#hyprland-tiling-demo).
+These are entirely in-kernel (client↔compositor over the wayland + `/tmp/kwlctl-0` sockets) — no host-runtime change — and gated by `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration,clipboard}-smoke.test.ts`. The browser's Hyprland machine (the shell image's `hyprland` profile, whose `/usr/local/bin/hyprdesktop` launcher sets `WLC_LAYOUT=dwindle` and `WLC_CONFIG=/usr/share/kandelo/hyprland/wlcompositor.conf`; gated by `apps/browser-demos/test/kandelo-hyprland.spec.ts`) boots the same compositor plus a `wlclock` and two `wlterm` terminals, which tile into gapped borderless frames and resize into their tiles — the first end-to-end Hyprland-class desktop. `wlpaint` is in the image but not started, so the `Ctrl+P` launch bind summons it on demand. See [browser-support.md](browser-support.md#hyprland-tiling-demo).
 
 ### Desktop shell (`zwlr_layer_shell_v1`, `kbar`, `klauncher`, themes)
 
@@ -2563,9 +2779,10 @@ staged in any VFS image.
 What it took, on each side of the protocol:
 
 - **Compositor surface for stock clients.** `wl_subcompositor` (subsurfaces
-  composited glued to their parent — foot's URL/search overlays), an inert
-  `wl_data_device_manager` v3 stub (foot binds it unconditionally for
-  clipboard), `wl_seat` at v5 (`repeat_info` + pointer `frame` events),
+  composited glued to their parent — foot's URL/search overlays),
+  `wl_data_device_manager` v3 (foot binds it unconditionally; it carries
+  the clipboard between windows, see the tiling section's clipboard
+  paragraph), `wl_seat` at v5 (`repeat_info` + pointer `frame` events),
   `wl_surface.enter` at map, and `wl_output` `scale`+`done` with a physical
   size of 0×0 — sending pixels as millimetres made foot derive a 25.4 DPI and
   garble its font reload. `wp_presentation` (above) is its frame clock.
@@ -2859,8 +3076,9 @@ The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
 
 For programs that use `fork()` or fork-like helpers, the in-tree
 `wasm-fork-instrument` tool (see
-[fork-instrumentation.md](fork-instrumentation.md)) must be the **last**
-post-link pass — after any `wasm-opt -O2`. Build scripts call
+[fork-instrumentation.md](fork-instrumentation.md)) runs after linking and
+after any `wasm-opt` pass, and then runs `wasm-opt -O2` over its own output.
+Build scripts call
 `scripts/run-wasm-fork-instrument.sh`, which builds the tool on demand if the
 prebuilt `tools/bin/wasm-fork-instrument` is absent. The tool auto-discovers
 fork-path functions via call-graph analysis from the `kernel.kernel_fork`
@@ -2879,7 +3097,7 @@ Package resolution is **local-first**: every package is source-built through the
 
 1. Read `packages/registry/<name>/package.toml` for the recipe and `packages/registry/<name>/build.toml` for the project view (`revision`, build inputs).
 2. Return a hand-patched override under `local-libs/<name>/build/` (libraries) or `local-binaries/programs/<arch>/...` (programs) if present.
-3. Otherwise return the canonical content-addressed cache entry `<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<cache-key-sha>/` if it exists.
+3. Otherwise return the canonical content-addressed cache entry `<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-abi<ABI>-<cache-key-sha>/` if it exists.
 4. On a cache miss, **build from source**: fetch the upstream source archive from `[source].url`, verify it against `[source].sha256`, run `build-<name>.sh` via the SDK, validate the declared outputs, and atomically install the result into the canonical cache.
 
 The cache key is computed over the recipe identity, `revision`, source pin, target arch, `ABI_VERSION`, declared outputs, declared build inputs, `[[git_inputs]]`, the global toolchain/sysroot fingerprint, and the transitive dependency cache keys. Any change to those inputs invalidates the entry and triggers a source rebuild of that package and its dependents.

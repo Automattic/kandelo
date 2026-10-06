@@ -39,6 +39,10 @@ export const BENCHMARK_STATIC_ARTIFACTS: BenchmarkStaticArtifactSelection[] = [
     suites: ["syscall-io"],
   },
   {
+    path: "benchmarks/wasm/stdin-throughput.wasm",
+    suites: ["stdin-throughput"],
+  },
+  {
     path: "benchmarks/wasm/hello.wasm",
     suites: ["process-lifecycle", "spawn-scratch"],
   },
@@ -63,6 +67,7 @@ export const BENCHMARK_STATIC_ARTIFACTS: BenchmarkStaticArtifactSelection[] = [
 
 export const RUNNABLE_BENCHMARK_SUITES = [
   "syscall-io",
+  "stdin-throughput",
   "process-lifecycle",
   "spawn-scratch",
   "wordpress",

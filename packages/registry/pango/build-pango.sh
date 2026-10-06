@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Build pango 1.42.4 (libpango-1.0.a, libpangoft2-1.0.a,
-# libpangocairo-1.0.a) for wasm32-posix-kernel.
+# Build pango (libpango-1.0.a, libpangoft2-1.0.a, libpangocairo-1.0.a)
+# for wasm32-posix-kernel.
 #
-# 1.42.4 is the last autotools release (1.43 moved to meson), so the
-# port rides the standard configure cross-compile pattern. Every dep
-# is probed through pkg-config, so the script builds a PKG_CONFIG_PATH
-# from the resolved prefixes instead of passing *_CFLAGS/*_LIBS pairs.
+# pango is meson-only since 1.43, so the port builds through upstream's
+# meson build with the SDK cross file (sdk/meson/wasm32posix.ini).
+# Backends: fontconfig/freetype fonts, cairo rendering; no Xft, no
+# libthai, no introspection.
 #
 # Honors the dep-resolver build-script contract (see
 # docs/package-management.md). When invoked via
@@ -17,58 +17,54 @@
 #     WASM_POSIX_DEP_VERSION          # upstream version
 #     WASM_POSIX_DEP_SOURCE_URL       # tarball URL
 #     WASM_POSIX_DEP_SOURCE_SHA256    # expected sha256 of the tarball
-#     WASM_POSIX_DEP_GLIB_DIR         # resolved glib prefix
-#     WASM_POSIX_DEP_HARFBUZZ_DIR     # resolved harfbuzz prefix
-#     WASM_POSIX_DEP_FRIBIDI_DIR      # resolved fribidi prefix
-#     WASM_POSIX_DEP_CAIRO_DIR        # resolved cairo prefix
-#     WASM_POSIX_DEP_FONTCONFIG_DIR   # resolved fontconfig prefix
-#     WASM_POSIX_DEP_FREETYPE_DIR     # resolved freetype prefix
+#     WASM_POSIX_DEP_PKG_CONFIG_PATH  # every transitive dep's lib/pkgconfig
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/pango-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/pango-src"
 
-PANGO_VERSION="${WASM_POSIX_DEP_VERSION:-1.42.4}"
+PANGO_VERSION="$WASM_POSIX_DEP_VERSION"
+PANGO_SERIES="${PANGO_VERSION%.*}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/pango-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.gnome.org/sources/pango/1.42/pango-${PANGO_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
-BUILD_DIR="$SCRIPT_DIR/pango-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/pango-build"
+CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
     exit 1
 fi
 
-GLIB_PREFIX="${WASM_POSIX_DEP_GLIB_DIR:?WASM_POSIX_DEP_GLIB_DIR not set (must be invoked via cargo xtask build-deps resolve pango)}"
-HARFBUZZ_PREFIX="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not set}"
-FRIBIDI_PREFIX="${WASM_POSIX_DEP_FRIBIDI_DIR:?WASM_POSIX_DEP_FRIBIDI_DIR not set}"
-CAIRO_PREFIX="${WASM_POSIX_DEP_CAIRO_DIR:?WASM_POSIX_DEP_CAIRO_DIR not set}"
-FONTCONFIG_PREFIX="${WASM_POSIX_DEP_FONTCONFIG_DIR:?WASM_POSIX_DEP_FONTCONFIG_DIR not set}"
-FREETYPE_PREFIX="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not set}"
+# Static meson lookups follow Requires.private, so pkg-config needs the
+# whole dependency closure (cairo -> pixman, fontconfig -> libxml2, ...),
+# which the resolver composes.
+DEP_PKG_CONFIG_PATH="${WASM_POSIX_DEP_PKG_CONFIG_PATH:?WASM_POSIX_DEP_PKG_CONFIG_PATH not set (must be invoked via cargo xtask build-deps resolve pango)}"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading pango $PANGO_VERSION..."
-    TARBALL="/tmp/pango-${PANGO_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
-    # Route arity-changing (GFunc) casts of 1-argument free functions
-    # through 2-argument wrappers. Native ABIs tolerate the extra
-    # argument; wasm's typed call_indirect traps on it.
+    echo "==> Staging verified pango $PANGO_VERSION source..."
+    kandelo_package_stage_verified_source pango "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
+    # Route arity-changing casts (one-argument free/copy functions passed
+    # as GFunc/GCopyFunc) through correctly typed wrappers. Native ABIs
+    # tolerate the extra argument; wasm's typed call_indirect traps on it.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-arity.patch"
 fi
 
-# Fresh build dir each run — autoconf bakes --prefix into Makefiles.
+# Fresh build dir each run — meson bakes --prefix into the build tree.
 rm -rf "$BUILD_DIR"
 # The resolver-created output directory is itself publication authority, so
 # a recipe must populate that inode rather than delete and recreate it.
@@ -80,39 +76,38 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
 else
     rm -rf "$INSTALL_DIR"
 fi
-mkdir -p "$BUILD_DIR"
 
-PC_PATH="$GLIB_PREFIX/lib/pkgconfig"
-PC_PATH="$PC_PATH:$HARFBUZZ_PREFIX/lib/pkgconfig"
-PC_PATH="$PC_PATH:$FRIBIDI_PREFIX/lib/pkgconfig"
-PC_PATH="$PC_PATH:$CAIRO_PREFIX/lib/pkgconfig"
-PC_PATH="$PC_PATH:$FONTCONFIG_PREFIX/lib/pkgconfig"
-PC_PATH="$PC_PATH:$FREETYPE_PREFIX/lib/pkgconfig"
+echo "==> Configuring pango $PANGO_VERSION for wasm32..."
+PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" meson setup "$BUILD_DIR" "$SRC_DIR" \
+    --cross-file "$CROSS_FILE" \
+    --prefix "$INSTALL_DIR" \
+    --libdir lib \
+    -Dbuildtype=plain \
+    -Doptimization=2 \
+    -Dfontconfig=enabled \
+    -Dfreetype=enabled \
+    -Dcairo=enabled \
+    -Dxft=disabled \
+    -Dlibthai=disabled \
+    -Dsysprof=disabled \
+    -Dintrospection=disabled \
+    -Ddocumentation=false \
+    -Dgtk_doc=false \
+    -Dman-pages=false \
+    -Dbuild-testsuite=false \
+    -Dbuild-examples=false
 
-echo "==> Configuring pango for wasm32..."
-(
-    cd "$BUILD_DIR"
-    CFLAGS="-O2" \
-    PKG_CONFIG_PATH="$PC_PATH" \
-    "$SRC_DIR/configure" \
-        --host=wasm32-unknown-none \
-        --prefix="$INSTALL_DIR" \
-        --enable-static \
-        --disable-shared \
-        --with-cairo \
-        --disable-gtk-doc \
-        --disable-introspection \
-        CC=wasm32posix-cc \
-        AR=wasm32posix-ar \
-        RANLIB=wasm32posix-ranlib
+echo "==> Building pango..."
+ninja -C "$BUILD_DIR"
 
-    echo "==> Building pango..."
-    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" -C pango
+echo "==> Installing to $INSTALL_DIR..."
+meson install -C "$BUILD_DIR" --no-rebuild
 
-    echo "==> Installing to $INSTALL_DIR..."
-    make -C pango install
-    make install-pkgconfigDATA
-)
+# Upstream always builds and installs pango-view, pango-list and
+# pango-segmentation. This is a library package: its declared outputs are
+# the archives, headers and .pc files. Shipping a program needs a program
+# package (VFS outputs, ABI stamp), so the tools are not published here.
+rm -rf "$INSTALL_DIR/bin"
 
 for lib in libpango-1.0.a libpangoft2-1.0.a libpangocairo-1.0.a; do
     if [ ! -f "$INSTALL_DIR/lib/$lib" ]; then

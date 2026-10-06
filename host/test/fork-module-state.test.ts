@@ -211,6 +211,46 @@ function moduleWithDescriptors(...descriptors: Uint8Array[]): WebAssembly.Module
   return moduleWithCustomSections(FORK_MODULE_STATE_SECTION, ...descriptors);
 }
 
+type TestImport = {
+  module: string;
+  name: string;
+  kind: "function" | "global" | "table";
+};
+
+/**
+ * A module whose import section declares `imports` in order (functions take
+ * type 0 `() -> ()`, globals are immutable i32, tables are funcref) followed
+ * by one custom section.
+ */
+function moduleWithImports(
+  imports: readonly TestImport[],
+  sectionName: string,
+  descriptor: Uint8Array,
+): WebAssembly.Module {
+  const encoder = new TextEncoder();
+  const vec = (bytes: number[]) => [...uleb128(bytes.length), ...bytes];
+  const str = (value: string) => vec([...encoder.encode(value)]);
+  const entries = imports.flatMap((imported) => [
+    ...str(imported.module),
+    ...str(imported.name),
+    ...(imported.kind === "function"
+      ? [0x00, 0x00]
+      : imported.kind === "global"
+        ? [0x03, 0x7f, 0x00]
+        : [0x01, 0x70, 0x00, 0x00]),
+  ]);
+  const typeSection = [0x01, ...vec([0x01, 0x60, 0x00, 0x00])];
+  const importSection = [0x02, ...vec([...uleb128(imports.length), ...entries])];
+  const name = [...encoder.encode(sectionName)];
+  const payload = [...uleb128(name.length), ...name, ...descriptor];
+  return new WebAssembly.Module(new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    ...typeSection,
+    ...importSection,
+    0x00, ...uleb128(payload.length), ...payload,
+  ]));
+}
+
 function moduleWithCustomSections(
   sectionName: string,
   ...descriptors: Uint8Array[]
@@ -231,16 +271,15 @@ function importedGlobalsSection(
     module: string;
     name: string;
     ownerId: number;
-    importOrdinal?: number;
+    reservedWord?: number;
     typeCode: number;
     mutable?: boolean;
     shared?: boolean;
   }>,
 ): Uint8Array {
   const encoder = new TextEncoder();
-  const encoded = records.map((record, importOrdinal) => ({
+  const encoded = records.map((record) => ({
     ...record,
-    importOrdinal: record.importOrdinal ?? importOrdinal,
     moduleBytes: encoder.encode(record.module),
     nameBytes: encoder.encode(record.name),
   }));
@@ -274,7 +313,7 @@ function importedGlobalsSection(
     );
     view.setUint32(offset + 12, record.moduleBytes.byteLength, true);
     view.setUint32(offset + 16, record.nameBytes.byteLength, true);
-    view.setUint32(offset + 20, record.importOrdinal, true);
+    view.setUint32(offset + 20, record.reservedWord ?? 0, true);
     bytes.set(
       record.moduleBytes,
       offset + WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE,
@@ -295,15 +334,14 @@ function importedTablesSection(
     module: string;
     name: string;
     ownerId: number;
-    importOrdinal?: number;
+    reservedWord?: number;
     typeCode: number;
     table64?: boolean;
   }>,
 ): Uint8Array {
   const encoder = new TextEncoder();
-  const encoded = records.map((record, importOrdinal) => ({
+  const encoded = records.map((record) => ({
     ...record,
-    importOrdinal: record.importOrdinal ?? importOrdinal,
     moduleBytes: encoder.encode(record.module),
     nameBytes: encoder.encode(record.name),
   }));
@@ -333,7 +371,7 @@ function importedTablesSection(
     view.setUint8(offset + 9, record.table64 ? 1 : 0);
     view.setUint32(offset + 12, record.moduleBytes.byteLength, true);
     view.setUint32(offset + 16, record.nameBytes.byteLength, true);
-    view.setUint32(offset + 20, record.importOrdinal, true);
+    view.setUint32(offset + 20, record.reservedWord ?? 0, true);
     bytes.set(
       record.moduleBytes,
       offset + WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE,
@@ -444,27 +482,33 @@ describe("fork imported-global ownership", () => {
       {
         module: "callbacks",
         name: "handler",
-        importOrdinal: 0,
         ownerId: 2,
         typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
       },
       {
         module: "env",
         name: "counter",
-        importOrdinal: 1,
         ownerId: 7,
         typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64,
         mutable: true,
         shared: true,
       },
     ]);
-    expect(readForkImportedGlobals(
-      moduleWithCustomSections(WPK_FORK_IMPORTED_GLOBALS_SECTION, descriptor),
-    )).toEqual([
+    // Ordinals come from the module's own import section, counted across
+    // every import kind, in whatever order a later tool left them.
+    expect(readForkImportedGlobals(moduleWithImports(
+      [
+        { module: "env", name: "counter", kind: "global" },
+        { module: "env", name: "fork", kind: "function" },
+        { module: "callbacks", name: "handler", kind: "global" },
+      ],
+      WPK_FORK_IMPORTED_GLOBALS_SECTION,
+      descriptor,
+    ))).toEqual([
       {
         module: "callbacks",
         name: "handler",
-        importOrdinal: 0,
+        importOrdinal: 2,
         ownerId: 2,
         typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
         mutable: false,
@@ -473,13 +517,38 @@ describe("fork imported-global ownership", () => {
       {
         module: "env",
         name: "counter",
-        importOrdinal: 1,
+        importOrdinal: 0,
         ownerId: 7,
         typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64,
         mutable: true,
         shared: true,
       },
     ]);
+  });
+
+  it("rejects format 1 ordinals and records without a matching import", () => {
+    const record = {
+      module: "env",
+      name: "value",
+      ownerId: 1,
+      typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
+    };
+    const valueImport = { module: "env", name: "value", kind: "global" } as const;
+    expect(() => readForkImportedGlobals(moduleWithImports(
+      [valueImport],
+      WPK_FORK_IMPORTED_GLOBALS_SECTION,
+      importedGlobalsSection([{ ...record, reservedWord: 1 }]),
+    ))).toThrow("reserved import word is nonzero");
+    expect(() => readForkImportedGlobals(moduleWithImports(
+      [{ module: "env", name: "value", kind: "table" }],
+      WPK_FORK_IMPORTED_GLOBALS_SECTION,
+      importedGlobalsSection([record]),
+    ))).toThrow("which the module does not import");
+    expect(() => readForkImportedGlobals(moduleWithImports(
+      [valueImport, valueImport],
+      WPK_FORK_IMPORTED_GLOBALS_SECTION,
+      importedGlobalsSection([record]),
+    ))).toThrow("records cover 1 of 2 global imports named env.value");
   });
 
   it("preserves repeated bindings but rejects ambiguous owners and trailing bytes", () => {
@@ -497,9 +566,15 @@ describe("fork imported-global ownership", () => {
         typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
       },
     ]);
-    expect(readForkImportedGlobals(
-      moduleWithCustomSections(WPK_FORK_IMPORTED_GLOBALS_SECTION, duplicate),
-    )).toHaveLength(2);
+    const valueImport = { module: "env", name: "value", kind: "global" } as const;
+    expect(readForkImportedGlobals(moduleWithImports(
+      [valueImport, { module: "env", name: "fork", kind: "function" }, valueImport],
+      WPK_FORK_IMPORTED_GLOBALS_SECTION,
+      duplicate,
+    )).map(({ ownerId, importOrdinal }) => [ownerId, importOrdinal])).toEqual([
+      [1, 0],
+      [2, 2],
+    ]);
 
     const duplicateOwner = importedGlobalsSection([
       {
@@ -528,27 +603,33 @@ describe("fork imported-global ownership", () => {
 });
 
 describe("fork imported-table ownership", () => {
-  it("parses exact import ordinals, reference classes, and table64 flags", () => {
+  it("resolves import ordinals by name and parses reference classes and table64 flags", () => {
     const descriptor = importedTablesSection([
       {
         module: "env",
         name: "dispatch",
-        importOrdinal: 2,
         ownerId: 3,
         typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
       },
       {
         module: "shared",
         name: "objects",
-        importOrdinal: 7,
         ownerId: 8,
         typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF,
         table64: true,
       },
     ]);
-    expect(readForkImportedTables(
-      moduleWithCustomSections(WPK_FORK_IMPORTED_TABLES_SECTION, descriptor),
-    )).toEqual([
+    // A global import with the same module and name is a different identity.
+    expect(readForkImportedTables(moduleWithImports(
+      [
+        { module: "env", name: "fork", kind: "function" },
+        { module: "env", name: "dispatch", kind: "global" },
+        { module: "env", name: "dispatch", kind: "table" },
+        { module: "shared", name: "objects", kind: "table" },
+      ],
+      WPK_FORK_IMPORTED_TABLES_SECTION,
+      descriptor,
+    ))).toEqual([
       {
         module: "env",
         name: "dispatch",
@@ -560,7 +641,7 @@ describe("fork imported-table ownership", () => {
       {
         module: "shared",
         name: "objects",
-        importOrdinal: 7,
+        importOrdinal: 3,
         ownerId: 8,
         typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF,
         table64: true,
@@ -568,26 +649,20 @@ describe("fork imported-table ownership", () => {
     ]);
   });
 
-  it("rejects duplicate owners, unordered ordinals, and non-reference elements", () => {
-    expect(() => readForkImportedTables(moduleWithCustomSections(
+  it("rejects format 1 ordinals, duplicate owners, and non-reference elements", () => {
+    expect(() => readForkImportedTables(moduleWithImports(
+      [{ module: "env", name: "a", kind: "table" }],
       WPK_FORK_IMPORTED_TABLES_SECTION,
       importedTablesSection([
         {
           module: "env",
           name: "a",
-          importOrdinal: 1,
+          reservedWord: 1,
           ownerId: 1,
           typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
         },
-        {
-          module: "env",
-          name: "b",
-          importOrdinal: 0,
-          ownerId: 2,
-          typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
-        },
       ]),
-    ))).toThrow("duplicated or unordered import ordinal");
+    ))).toThrow("reserved import word is nonzero");
     expect(() => readForkImportedTables(moduleWithCustomSections(
       WPK_FORK_IMPORTED_TABLES_SECTION,
       importedTablesSection([

@@ -7,6 +7,9 @@
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh local-build [--json] Build all local SourceOnly VFS products
+#   ./run.sh local-build --plan [--json]
+#                                 Preview it: cache hits, nodes to build, and
+#                                 an estimated duration
 #   ./run.sh cache-gc [args]      Garbage-collect the shared SourceOnly build
 #                                 cache (dry run unless --apply)
 #   ./run.sh run <example> [args] Run a Node.js example
@@ -224,6 +227,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
+    kernel_install_host_stdin_pipe
     kernel_ipc_shm_lookup_mapping_for_task
     kernel_ipc_shm_record_mapping_for_process
     kernel_ipc_shm_record_mapping_for_task
@@ -539,7 +543,26 @@ bootstrap_target() {
         err "bootstrap_target $target: could not build xtask"
         return 1
     }
-    bash "$REPO_ROOT/scripts/dev-shell.sh" "$xtask" bootstrap "$target" "$@"
+    local_build_events_env
+    bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
+        "$xtask" bootstrap "$target" "$@"
+}
+
+# local_build_events_env: set LOCAL_BUILD_EVENTS_ENV to an `env` prefix that
+# carries KANDELO_LOCAL_BUILD_EVENTS (the local-build scheduler's JSON-lines
+# progress file, read by scripts/agent-job) into the dev shell, or to an
+# empty array when the caller did not set it. dev-shell.sh starts from an
+# empty environment and keeps only its fixed --keep list; that list is not
+# extended here because scripts/dev-shell.sh is a global package toolchain
+# input, so any edit to it changes every package cache key and forces a full
+# rebuild. The variable only names where progress is reported and cannot
+# change what is built, so it is forwarded per call instead.
+local_build_events_env() {
+    LOCAL_BUILD_EVENTS_ENV=()
+    if [ -n "${KANDELO_LOCAL_BUILD_EVENTS:-}" ]; then
+        LOCAL_BUILD_EVENTS_ENV=(env "KANDELO_LOCAL_BUILD_EVENTS=$KANDELO_LOCAL_BUILD_EVENTS")
+    fi
 }
 
 need_kernel() {
@@ -779,12 +802,7 @@ build_redis() {
 build_dinit() {
     need_kernel
     need_sdk
-    # dinit uses libc++ which the mariadb build script installs into
-    # the sysroot. Force a mariadb build first if libc++ isn't there
-    # — it's the cheapest path to get the headers + library set up.
-    if [ ! -f "$REPO_ROOT/sysroot/lib/libc++.a" ]; then
-        build_mariadb
-    fi
+    # dinit resolves libcxx itself and builds against a private sysroot.
     if ! has_dinit; then
         step "Building dinit"
         bash "$REPO_ROOT/packages/registry/dinit/build-dinit.sh"
@@ -2476,7 +2494,7 @@ cmd_rebuild() {
     info "Rebuild complete"
 }
 
-# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE]` —
+# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--below-abi N]` —
 # garbage-collect the SourceOnly build cache this checkout uses
 # (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). A dry run
 # unless --apply; the policy and its safety rules live in `xtask cache-gc`
@@ -2491,6 +2509,52 @@ cmd_cache_gc() {
 }
 
 cmd_local_build() {
+    # `--plan` previews this exact build without running it: which nodes are
+    # cache hits, which will build, and an estimate from recorded timings.
+    # Why: whether a build takes seconds (all cached) or 10+ minutes decides
+    # how an agent should run it. A short one is one foreground call; a long
+    # one needs scripts/agent-job. Guessing wrong in a headless session or a
+    # subagent loses the result and forces a full re-run. It uses the release
+    # xtask binary because the debug build `cargo run` produces takes 6-15 s
+    # to plan, against about 1 s here; see docs/package-management.md.
+    if [ "${1:-}" = "--plan" ]; then
+        shift
+        local plan_json=()
+        if [ "${1:-}" = "--json" ]; then
+            plan_json=(--json)
+            shift
+        fi
+        if [ $# -ne 0 ]; then
+            err "Usage: $0 local-build --plan [--json]"
+            exit 2
+        fi
+        # One dev-shell entry for both the freshness build and the plan: the
+        # plan must run inside the declared shell (toolchain identity is part
+        # of every cache key, so outside it nodes look unbuilt), and each
+        # `nix develop` costs seconds, or minutes on a loaded machine.
+        local host="$KANDELO_XTASK_HOST_TRIPLE"
+        [ -n "$host" ] || { err "could not determine the host target (is rustc installed?)"; exit 1; }
+        # The plan's stdout goes to a file written inside the shell, because
+        # shell-hook banners share the launcher's stdout and would corrupt
+        # --json (the same reason cmd_local_build below uses a result file).
+        local plan_out status=0
+        plan_out="$(mktemp "${TMPDIR:-/tmp}/kandelo-local-build-plan.XXXXXX")"
+        bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
+            set -e
+            cd "$1"
+            cargo build --release -p xtask --target "$2" --quiet >&2
+            out="$3"
+            shift 3
+            "$@" > "$out"' kandelo-local-build-plan "$REPO_ROOT" "$host" "$plan_out" \
+            "$REPO_ROOT/target/$host/release/xtask" local-build plan \
+            --set "$REPO_ROOT/packages/sets/local-supported.toml" --status \
+            --source-cache-root "${KANDELO_SOURCE_CACHE_ROOT:-$HOME/.cache/kandelo/source-only}" \
+            --output-root "$REPO_ROOT/local-binaries/source-only-v1" --product all --jobs 16 \
+            "${plan_json[@]+"${plan_json[@]}"}" >&2 || status=$?
+        command cat -- "$plan_out"
+        rm -f -- "$plan_out"
+        return "$status"
+    fi
     local emit_json=0
     if [ "${1:-}" = "--json" ]; then
         emit_json=1
@@ -2516,8 +2580,10 @@ cmd_local_build() {
     # Write the helper's machine result inside that shell: Nix warnings and
     # shell-hook banners share the launcher's stdout, so capturing the outer
     # stream would corrupt the JSON protocol before jq can validate it.
+    local_build_events_env
     local command=(
         bash "$REPO_ROOT/scripts/dev-shell.sh"
+        ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"}
         bash -c 'exec bash "$1" >"$2"' kandelo-local-build "$helper" "$result_file"
     )
 
@@ -2603,7 +2669,9 @@ cmd_local_build() {
 # build. Delegates to xtask bootstrap (scripts/setup.sh) inside the
 # repository dev shell; see docs/agent-guidance/packages-and-builds.md.
 cmd_setup() {
+    local_build_events_env
     exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
         bash "$REPO_ROOT/scripts/setup.sh" "$@"
 }
 
@@ -2791,7 +2859,7 @@ cmd_browser() {
 cmd_test() {
     local suites=("$@")
     if [ ${#suites[@]} -eq 0 ]; then
-        suites=(cargo vitest libc posix)
+        suites=(cargo vitest sdk libc posix)
     fi
 
     # Pre-test freshness check (not a divergence guard: Stage 2 collapsed
@@ -2820,6 +2888,22 @@ cmd_test() {
             vitest)
                 step "Running vitest"
                 cd "$REPO_ROOT/host"
+                if ! npx vitest run; then
+                    failed=1
+                fi
+                cd "$REPO_ROOT"
+                ;;
+            sdk)
+                # The SDK ships its own vitest suite and nothing ran it: no
+                # workflow, and no invocation in run.sh, scripts/ or xtask. Its
+                # `PKG_CONFIG_PATH` filter is what decides whether a package can
+                # see its dependencies, and a per-worktree cache root
+                # (`kandelo-lane-f`) failing that filter is what blocked php --
+                # and through php, wordpress and lamp -- for a whole session.
+                # That rule is worth a guard that actually executes.
+                step "Running SDK tests"
+                cd "$REPO_ROOT/sdk"
+                [ -d node_modules ] || npm install
                 if ! npx vitest run; then
                     failed=1
                 fi

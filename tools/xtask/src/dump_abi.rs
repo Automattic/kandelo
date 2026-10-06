@@ -100,7 +100,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let thread_syscalls_header = render_thread_syscalls_header();
     let spawn_header = render_spawn_contract_header();
     let soundcard_header = render_soundcard_header();
+    let clipboard_header = render_clipboard_header();
     let ts_module = render_ts_module();
+    let host_imports = render_host_imports_file();
 
     let out = out_path.unwrap_or_else(|| repo_root().join("abi/snapshot.json"));
     let header_out = repo_root().join("libc/glue/abi_constants.h");
@@ -115,7 +117,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let spawn_header_out =
         repo_root().join("libc/musl-overlay/src/process/wasm32posix/spawn_contract.h");
     let soundcard_header_out = repo_root().join("libc/musl-overlay/include/sys/soundcard.h");
+    let clipboard_header_out =
+        repo_root().join("libc/musl-overlay/include/kandelo/clipboard.h");
     let ts_out = repo_root().join("host/src/generated/abi.ts");
+    let host_imports_out = repo_root().join("libc/glue/kandelo-host-imports.txt");
 
     if check {
         check_file(&out, &rendered, "ABI snapshot")?;
@@ -146,7 +151,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             &soundcard_header,
             "libc/musl-overlay/include/sys/soundcard.h",
         )?;
+        check_file(
+            &clipboard_header_out,
+            &clipboard_header,
+            "libc/musl-overlay/include/kandelo/clipboard.h",
+        )?;
         check_file(&ts_out, &ts_module, "host/src/generated/abi.ts")?;
+        check_file(&host_imports_out, &host_imports, "libc/glue/kandelo-host-imports.txt")?;
         println!("abi snapshot up-to-date: {}", out.display());
         println!("abi header up-to-date:  {}", header_out.display());
         println!(
@@ -173,6 +184,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "OSS header up-to-date:  {}",
             soundcard_header_out.display()
         );
+        println!(
+            "clipboard header up-to-date: {}",
+            clipboard_header_out.display()
+        );
         println!("abi TS bindings up-to-date: {}", ts_out.display());
         return Ok(());
     }
@@ -193,8 +208,12 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     println!("wrote {}", spawn_header_out.display());
     write_file(&soundcard_header_out, &soundcard_header)?;
     println!("wrote {}", soundcard_header_out.display());
+    write_file(&clipboard_header_out, &clipboard_header)?;
+    println!("wrote {}", clipboard_header_out.display());
     write_file(&ts_out, &ts_module)?;
     println!("wrote {}", ts_out.display());
+    write_file(&host_imports_out, &host_imports)?;
+    println!("wrote {}", host_imports_out.display());
     Ok(())
 }
 
@@ -1749,6 +1768,18 @@ fn render_ts_module() -> String {
             "WPK_FORK_RESUME_IMPORT_TABLE",
             shared::abi::WPK_FORK_RESUME_IMPORT_TABLE,
         ),
+        (
+            "WPK_FORK_BOUNDARY_IMPORT",
+            shared::abi::WPK_FORK_BOUNDARY_IMPORT,
+        ),
+        (
+            "WPK_FORK_RESUME_SINK_EXPORT",
+            shared::abi::WPK_FORK_RESUME_SINK_EXPORT,
+        ),
+        (
+            "WPK_FORK_BOUNDARIES_SECTION",
+            shared::abi::WPK_FORK_BOUNDARIES_SECTION,
+        ),
     ] {
         out.push_str(&format!("export const {name} = {value:?} as const;\n"));
     }
@@ -2107,6 +2138,24 @@ fn render_ts_module() -> String {
         render_ts_program_artifact_types(process_fork_import.params),
         render_ts_program_artifact_types(process_fork_import.results),
     ));
+    out.push_str(
+        "/** The `env` imports the host supplies to user programs (besides the fork runtime's). */\n",
+    );
+    out.push_str("export const HOST_ENV_IMPORTS = [\n");
+    {
+        let mut list: Vec<&shared::abi::HostEnvImport> =
+            shared::abi::HOST_ENV_IMPORTS.iter().collect();
+        list.sort_by_key(|i| i.name);
+        for i in list {
+            out.push_str(&format!(
+                "  {{ name: \"{}\", kind: \"{}\", linkTime: {} }},\n",
+                i.name,
+                i.kind.as_str(),
+                i.link_time
+            ));
+        }
+    }
+    out.push_str("] as const;\n\n");
     out.push_str("export const WPK_FORK_REQUIRED_IMPORTS = [\n");
     for requirement in shared::abi::WPK_FORK_REQUIRED_IMPORTS {
         out.push_str(&format!(
@@ -2130,6 +2179,16 @@ fn render_ts_module() -> String {
             requirement
                 .maximum
                 .map_or_else(|| "null".to_owned(), |maximum| maximum.to_string()),
+        ));
+    }
+    out.push_str("] as const;\n");
+    out.push_str("export const WPK_FORK_GLOBAL_IMPORTS = [\n");
+    for import in shared::abi::WPK_FORK_GLOBAL_IMPORTS {
+        out.push_str(&format!(
+            "  {{ module: {:?}, name: {:?}, value: {:?} }},\n",
+            import.module,
+            import.name,
+            program_artifact_type_name(import.value),
         ));
     }
     out.push_str("] as const;\n");
@@ -2814,6 +2873,8 @@ fn render_ts_module() -> String {
     render_pcm_ts_bindings(&mut out);
 
     render_input_ts_bindings(&mut out);
+
+    render_clipboard_ts_bindings(&mut out);
 
     out.push_str("export const HOST_ADAPTER_MANIFEST_FIELDS = {\n");
     for field in host_adapter_manifest_fields() {
@@ -3834,6 +3895,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     root.insert("channel_scalar_contract".into(), channel_scalar_contract());
 
     root.insert("marshalled_structs".into(), marshalled_structs());
+    root.insert("clipboard_device_abi".into(), clipboard_device_abi());
     root.insert("oss_source_abi".into(), oss_source_abi());
     root.insert("pcm_transport_abi".into(), pcm_transport_abi());
     root.insert("syscalls".into(), syscalls());
@@ -3855,6 +3917,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "process_expected_globals".into(),
         process_expected_globals(),
     );
+    root.insert("host_env_imports".into(), host_env_imports());
     root.insert("program_artifact".into(), program_artifact());
 
     root.insert("export_deny".into(), export_deny());
@@ -4517,6 +4580,127 @@ fn channel_buffers() -> Value {
     m.insert("data_size".into(), json!(DATA_SIZE));
     m.insert("min_channel_size".into(), json!(MIN_CHANNEL_SIZE));
     Value::Object(m.into_iter().collect())
+}
+
+/// `/dev/kandelo/clipboard`'s guest-visible wire format and the
+/// `kernel_clipboard_*` export results, one list for every rendering.
+fn clipboard_constants() -> Vec<(&'static str, i64)> {
+    use shared::clipboard::*;
+    vec![
+        ("KANDELO_CLIPBOARD_RECORD_VERSION", RECORD_VERSION as i64),
+        ("KANDELO_CLIPBOARD_KIND_OFFER_TEXT", KIND_OFFER_TEXT as i64),
+        ("KANDELO_CLIPBOARD_KIND_GUEST_TEXT", KIND_GUEST_TEXT as i64),
+        ("KANDELO_CLIPBOARD_MAX_TEXT_BYTES", MAX_TEXT_BYTES as i64),
+        ("KANDELO_CLIPBOARD_RECORD_HEADER_SIZE", RECORD_HEADER_SIZE as i64),
+        ("KANDELO_CLIPBOARD_ACK_SIZE", ACK_SIZE as i64),
+        ("KANDELO_CLIPBOARD_ACK_PENDING", ACK_PENDING as i64),
+        ("KANDELO_CLIPBOARD_ACK_SUPERSEDED", ACK_SUPERSEDED as i64),
+        ("KANDELO_CLIPBOARD_ACK_NO_AGENT", ACK_NO_AGENT as i64),
+        ("KANDELO_CLIPBOARD_ACK_UNKNOWN_SEQ", ACK_UNKNOWN_SEQ as i64),
+    ]
+}
+
+fn clipboard_device_abi() -> Value {
+    use shared::clipboard::*;
+    let mut constants: JsonMap = BTreeMap::new();
+    for (name, value) in clipboard_constants() {
+        constants.insert(name.into(), json!(value));
+    }
+    let mut abi: JsonMap = BTreeMap::new();
+    abi.insert("device_path".into(), json!(DEVICE_PATH));
+    abi.insert("constants".into(), Value::Object(constants.into_iter().collect()));
+    abi.insert(
+        "record_header".into(),
+        json!({
+            "size": size_of::<ClipboardRecordHeader>(),
+            "fields": [
+                {"name": "version", "offset": offset_of!(ClipboardRecordHeader, version), "type": "u32"},
+                {"name": "kind", "offset": offset_of!(ClipboardRecordHeader, kind), "type": "u32"},
+                {"name": "seq", "offset": offset_of!(ClipboardRecordHeader, seq), "type": "u32"},
+                {"name": "len", "offset": offset_of!(ClipboardRecordHeader, len), "type": "u32"},
+            ],
+        }),
+    );
+    abi.insert(
+        "ack".into(),
+        json!({
+            "size": size_of::<ClipboardAck>(),
+            "fields": [
+                {"name": "seq", "offset": offset_of!(ClipboardAck, seq), "type": "u32"},
+                {"name": "status", "offset": offset_of!(ClipboardAck, status), "type": "i32"},
+            ],
+        }),
+    );
+    Value::Object(abi.into_iter().collect())
+}
+
+fn render_clipboard_ts_bindings(out: &mut String) {
+    out.push_str(&format!(
+        "export const KANDELO_CLIPBOARD_DEVICE_PATH = {:?} as const;\n",
+        shared::clipboard::DEVICE_PATH
+    ));
+    for (name, value) in clipboard_constants() {
+        out.push_str(&format!("export const {name} = {value} as const;\n"));
+    }
+    out.push('\n');
+}
+
+/// `<kandelo/clipboard.h>`: what a C clipboard agent reads and writes.
+fn render_clipboard_header() -> String {
+    use shared::clipboard::*;
+    let mut out = String::from(
+        "/* GENERATED by `cargo xtask dump-abi`. Do not edit by hand. */\n\
+         /* /dev/kandelo/clipboard: host clipboard text for a guest agent. */\n\
+         /* Source of truth: crates/shared/src/lib.rs, module `clipboard`. */\n\
+         #ifndef KANDELO_CLIPBOARD_H\n\
+         #define KANDELO_CLIPBOARD_H\n\
+         \n\
+         #include <stddef.h>\n\
+         #include <stdint.h>\n\
+         \n",
+    );
+    out.push_str(&format!("#define KANDELO_CLIPBOARD_DEVICE_PATH {:?}\n", DEVICE_PATH));
+    for (name, value) in clipboard_constants() {
+        out.push_str(&format!("#define {name} ({value})\n"));
+    }
+    out.push_str(
+        "\n\
+         /* One record as read from the device: this header, then `len` */\n\
+         /* bytes of UTF-8 text. All fields are little-endian. */\n\
+         struct kandelo_clipboard_record {\n\
+         \tuint32_t version;\n\
+         \tuint32_t kind;\n\
+         \tuint32_t seq;\n\
+         \tuint32_t len;\n\
+         };\n\
+         \n\
+         /* Written back after an offer: status 0 once the selection is */\n\
+         /* installed, else a negative errno. */\n\
+         struct kandelo_clipboard_ack {\n\
+         \tuint32_t seq;\n\
+         \tint32_t status;\n\
+         };\n\
+         \n\
+         #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L\n",
+    );
+    out.push_str(&format!(
+        "_Static_assert(sizeof(struct kandelo_clipboard_record) == {}, \"record ABI size\");\n",
+        size_of::<ClipboardRecordHeader>()
+    ));
+    out.push_str(&format!(
+        "_Static_assert(offsetof(struct kandelo_clipboard_record, len) == {}, \"record.len ABI offset\");\n",
+        offset_of!(ClipboardRecordHeader, len)
+    ));
+    out.push_str(&format!(
+        "_Static_assert(sizeof(struct kandelo_clipboard_ack) == {}, \"ack ABI size\");\n",
+        size_of::<ClipboardAck>()
+    ));
+    out.push_str(&format!(
+        "_Static_assert(offsetof(struct kandelo_clipboard_ack, status) == {}, \"ack.status ABI offset\");\n",
+        offset_of!(ClipboardAck, status)
+    ));
+    out.push_str("#endif\n\n#endif /* KANDELO_CLIPBOARD_H */\n");
+    out
 }
 
 fn oss_source_abi() -> Value {
@@ -5767,6 +5951,38 @@ fn custom_sections() -> Value {
     Value::Array(sections.into_iter().map(Value::from).collect())
 }
 
+fn host_env_imports() -> Value {
+    let mut list: Vec<&shared::abi::HostEnvImport> = shared::abi::HOST_ENV_IMPORTS.iter().collect();
+    list.sort_by_key(|i| i.name);
+    Value::Array(
+        list.into_iter()
+            .map(|i| {
+                let mut m = serde_json::Map::new();
+                m.insert("kind".into(), Value::from(i.kind.as_str()));
+                m.insert("link_time".into(), Value::from(i.link_time));
+                m.insert("name".into(), Value::from(i.name));
+                Value::Object(m)
+            })
+            .collect(),
+    )
+}
+
+/// The link-time allowance: one symbol per line, sorted. Every executable link
+/// passes it to wasm-ld with `--allow-undefined-file`, so a program can leave a
+/// symbol undefined only if the host supplies it (see
+/// `shared::abi::HOST_ENV_IMPORTS`).
+fn render_host_imports_file() -> String {
+    let mut names: Vec<&str> = shared::abi::HOST_ENV_IMPORTS
+        .iter()
+        .filter(|i| i.link_time)
+        .map(|i| i.name)
+        .collect();
+    names.sort();
+    let mut out = names.join("\n");
+    out.push('\n');
+    out
+}
+
 fn process_expected_globals() -> Value {
     let mut list: Vec<&str> = shared::abi::PROCESS_EXPECTED_GLOBALS.to_vec();
     list.sort();
@@ -6535,7 +6751,7 @@ fn program_artifact() -> Value {
             {"name": "reserved", "offset": 10, "size": 2},
             {"name": "module_name_length", "offset": 12, "size": 4},
             {"name": "field_name_length", "offset": 16, "size": 4},
-            {"name": "import_ordinal", "offset": 20, "size": 4}
+            {"name": "reserved_zero", "offset": 20, "size": 4}
         ]),
     );
     imported_globals.insert("section".into(), json!(WPK_FORK_IMPORTED_GLOBALS_SECTION));
@@ -6565,7 +6781,7 @@ fn program_artifact() -> Value {
             {"name": "reserved", "offset": 10, "size": 2},
             {"name": "module_name_length", "offset": 12, "size": 4},
             {"name": "field_name_length", "offset": 16, "size": 4},
-            {"name": "import_ordinal", "offset": 20, "size": 4}
+            {"name": "reserved_zero", "offset": 20, "size": 4}
         ]),
     );
     imported_tables.insert("section".into(), json!(WPK_FORK_IMPORTED_TABLES_SECTION));
@@ -7082,10 +7298,16 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
     Ok(report)
 }
 
+/// Sections whose first appearance cannot affect an existing binary. Once
+/// present, any change inside one of them is classified like every other
+/// section: `clipboard_device_abi`, for one, describes a device no program
+/// built before it could open, but changing its record layout later would
+/// break the agents built against it.
 fn additive_top_level_section(section: &str) -> bool {
     matches!(
         section,
-        "host_adapter"
+        "clipboard_device_abi"
+            | "host_adapter"
             | "io_multiplexing"
             | "ioctl_request_families"
             | "syscall_arg_descriptors"
@@ -7270,6 +7492,41 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn host_env_imports_generate_one_link_allowance() {
+        let mut declared: Vec<&str> = shared::abi::HOST_ENV_IMPORTS
+            .iter()
+            .filter(|i| i.link_time)
+            .map(|i| i.name)
+            .collect();
+        declared.sort();
+        let rendered = super::render_host_imports_file();
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(
+            lines, declared,
+            "allowance file must list exactly the link-time imports, sorted"
+        );
+        for fake in ["_Znwm", "__cxa_thread_atexit", "__dynamic_cast", "re_search"] {
+            assert!(
+                !lines.contains(&fake),
+                "{fake} is a library function, not a host service"
+            );
+        }
+        for real in [
+            "__channel_base",
+            "__wasm_dlopen_main",
+            "__wasm_dlsym",
+            "__wasm_posix_vm_interrupt_after",
+        ] {
+            assert!(lines.contains(&real), "{real} must be allowed at link time");
+        }
+        assert!(
+            !lines.iter().any(|l| l.starts_with("__wpk_fork_")),
+            "fork imports are added by instrumentation after linking"
+        );
+        assert!(super::render_ts_module().contains("export const HOST_ENV_IMPORTS"));
+    }
     use super::*;
     use serde_json::json;
 
@@ -8373,6 +8630,20 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"syscall_arg_descriptors\""]
+        );
+    }
+
+    #[test]
+    fn adding_the_clipboard_device_section_is_compatible() {
+        let mut new = base_snapshot();
+        new.as_object_mut()
+            .unwrap()
+            .insert("clipboard_device_abi".into(), clipboard_device_abi());
+        let report = classify_compat_change(&base_snapshot(), &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"clipboard_device_abi\""]
         );
     }
 

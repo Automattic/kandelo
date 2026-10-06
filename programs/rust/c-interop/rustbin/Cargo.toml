@@ -1,0 +1,15 @@
+[package]
+name = "kandelo-rust-calls-c"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "rust-calls-c"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"
+
+# Detach from the repo-root Cargo workspace.
+[workspace]

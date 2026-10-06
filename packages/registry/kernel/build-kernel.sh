@@ -3,6 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# WHY: cargo's lock serializes builds in a shared target dir, but the copy
+# out of $OUT below runs after cargo releases it, so a concurrent resolve
+# could swap the file mid-copy. A resolver build gets a private target dir
+# under its work root; a standalone run keeps the checkout's target/.
+if [ -z "${CARGO_TARGET_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    CARGO_TARGET_DIR="$WASM_POSIX_DEP_WORK_DIR/target"
+fi
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 export CARGO_TARGET_DIR
 OUT="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/kandelo_kernel.wasm"
@@ -19,7 +26,8 @@ if ! cargo -V | grep -q 'nightly'; then
     exit 1
 fi
 
-cargo build --release -p kandelo -Z build-std=core,alloc
+# --locked: never rewrite the checkout's Cargo.lock from a package build.
+cargo build --locked --release -p kandelo -Z build-std=core,alloc
 
 if [ ! -f "$OUT" ]; then
     echo "build-kernel: expected output not found: $OUT" >&2
@@ -52,6 +60,7 @@ wasm_require_exports "$OUT" \
     kernel_has_sa_nocldstop \
     kernel_host_adapter_manifest_len \
     kernel_host_adapter_manifest_ptr \
+    kernel_install_host_stdin_pipe \
     kernel_ipc_shm_lookup_mapping_for_task \
     kernel_ipc_shm_record_mapping_for_process \
     kernel_ipc_shm_record_mapping_for_task \

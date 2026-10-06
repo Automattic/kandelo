@@ -5,6 +5,7 @@ import {
   filterArgs,
   inferThreadSlotDeclaration,
   LINK_FLAGS,
+  linkFlags,
   MAX_EXECUTABLE_MEMORY_SIZE,
   MAX_RESPONSE_FILE_EXPANSIONS,
   mainThreadStackSize,
@@ -214,6 +215,15 @@ describe('LINK_FLAGS', () => {
   it('reserves an 8 MiB main-thread shadow stack (wasm-ld default ~64 KiB is too small)', () => {
     expect(LINK_FLAGS).toContain('-Wl,-z,stack-size=8388608');
   });
+
+  it('omits the stack-size flag entirely for a null request', () => {
+    // sdk/src/bin/cc.ts's prepareExecutableLinker() relies on this to build
+    // an uncontaminated measurement trace: it must not itself inject any
+    // `-z stack-size=` occurrence that could shadow the caller's own,
+    // since mainThreadStackSize() resolves repeated occurrences last-wins.
+    const flags = linkFlags('wasm32', '/glue/kandelo-host-imports.txt', null);
+    expect(flags.some((f) => f.startsWith('-Wl,-z,stack-size='))).toBe(false);
+  });
 });
 
 describe('mainThreadStackSize', () => {
@@ -221,17 +231,48 @@ describe('mainThreadStackSize', () => {
     expect(mainThreadStackSize(['main.o'])).toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
   });
 
-  it('raises smaller requests to the SDK floor', () => {
-    expect(mainThreadStackSize(['-z', 'stack-size=1048576', 'main.o']))
-      .toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
+  it('honours an explicit request smaller than the SDK floor instead of raising it', () => {
+    const restore = console.warn;
+    console.warn = () => {};
+    try {
+      expect(mainThreadStackSize(['-z', 'stack-size=1048576', 'main.o']))
+        .toBe(1048576);
+    } finally {
+      console.warn = restore;
+    }
   });
 
-  it('retains the largest request in the exact lld argv', () => {
+  it('resolves an ascending multi-occurrence request by last-one-wins', () => {
+    // Ascending order: the last occurrence and the largest occurrence
+    // coincide here, so this case alone passes under either a last-wins or
+    // an old max-wins reading. See the reversed-order case below, which is
+    // the one that can actually only pass under last-wins.
     expect(mainThreadStackSize([
       '-z', 'stack-size=1048576',
       'main.o',
       '-z', 'stack-size=16777216',
     ])).toBe(16 * 1024 * 1024);
+  });
+
+  it('resolves a descending multi-occurrence request by last-one-wins, not by maximum', () => {
+    // The larger value comes FIRST here, so a max-wins reading would keep
+    // 16 MiB; wasm-ld itself resolves repeated -z stack-size= operands
+    // last-one-wins (verified empirically against LLVM 21's wasm-ld:
+    // linking the same object twice with the operand order reversed shows
+    // the second occurrence's value winning both times), so 1 MiB is
+    // correct here. This is the case every other multi-occurrence test in
+    // this file (all ascending) cannot distinguish.
+    const restore = console.warn;
+    console.warn = () => {};
+    try {
+      expect(mainThreadStackSize([
+        '-z', 'stack-size=16777216',
+        'main.o',
+        '-z', 'stack-size=1048576',
+      ])).toBe(1048576);
+    } finally {
+      console.warn = restore;
+    }
   });
 
   it('recognizes both accepted lld -z spellings', () => {
@@ -270,12 +311,23 @@ describe('mainThreadStackSize', () => {
   });
 
   it('treats leading-zero values as octal rather than padded decimal', () => {
-    expect(mainThreadStackSize(['-z', 'stack-size=020000000', 'main.o']))
-      .toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
-    expect(mainThreadStackSize(
-      ['@/tmp/objects.list'],
-      () => responseFile('-z\nstack-size=020000000\n'),
-    )).toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
+    // 0o20000000 = 4194304, which is below the SDK floor — a decimal
+    // misparse (20000000) would instead exceed the floor and be kept as-is,
+    // so asserting the exact octal value (not just "below the floor") is
+    // what actually distinguishes the two interpretations now that smaller
+    // requests are honoured rather than clamped.
+    const restore = console.warn;
+    console.warn = () => {};
+    try {
+      expect(mainThreadStackSize(['-z', 'stack-size=020000000', 'main.o']))
+        .toBe(4194304);
+      expect(mainThreadStackSize(
+        ['@/tmp/objects.list'],
+        () => responseFile('-z\nstack-size=020000000\n'),
+      )).toBe(4194304);
+    } finally {
+      console.warn = restore;
+    }
   });
 
   it('retains larger radix-prefixed requests in directly referenced response files', () => {
@@ -409,6 +461,24 @@ describe('mainThreadStackSize', () => {
       `response-file expansion exceeds the ${MAX_RESPONSE_FILE_EXPANSIONS}-file safety limit`,
     );
   });
+
+  it("honours an explicit stack smaller than the floor, and warns", () => {
+    const warnings: string[] = [];
+    const restore = console.warn;
+    console.warn = (msg: string) => warnings.push(String(msg));
+    try {
+      const size = mainThreadStackSize(["-z", "stack-size=65536"]);
+      expect(size, "the caller's explicit request wins").toBe(65536);
+      expect(warnings.join("\n")).toMatch(/stack-size=65536/);
+      expect(warnings.join("\n")).toMatch(/\.bss|guard page|corrupt/i);
+    } finally {
+      console.warn = restore;
+    }
+  });
+
+  it("still applies the floor when no stack size is requested", () => {
+    expect(mainThreadStackSize([])).toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
+  });
 });
 
 describe('inferThreadSlotDeclaration', () => {
@@ -436,5 +506,12 @@ describe('inferThreadSlotDeclaration', () => {
     const objectOnly = parseArgs(['main.o', '-o', 'main.wasm']);
     expect(inferThreadSlotDeclaration(objectOnly, ['main.o', '-o', 'main.wasm']))
       .toBe(THREAD_SLOT_USE_HOST_DEFAULT);
+  });
+});
+
+describe('archive group flags', () => {
+  it('drops --start-group/--end-group, which wasm-ld rejects', () => {
+    const result = filterArgs(['main.o', '-Wl,--start-group', 'liba.a', 'libb.a', '-Wl,--end-group']);
+    expect(result.filtered).toEqual(['main.o', 'liba.a', 'libb.a']);
   });
 });

@@ -1,0 +1,23 @@
+--- a/src/build_targets.rs
++++ b/src/build_targets.rs
+@@ -163,7 +163,7 @@
+     ) -> Option<Self> {
+         let (shared_lib, static_lib, impl_lib, debug_info, def) = match target.os.as_str() {
+             "none" | "linux" | "freebsd" | "dragonfly" | "netbsd" | "android" | "haiku"
+-            | "illumos" | "openbsd" | "emscripten" | "hurd" => {
++            | "illumos" | "openbsd" | "emscripten" | "hurd" | "kandelo" => {
+                 let static_lib = targetdir.join(format!("lib{lib_name}.a"));
+                 let shared_lib = targetdir.join(format!("lib{lib_name}.so"));
+                 (shared_lib, static_lib, None, None, None)
+--- a/src/install.rs
++++ b/src/install.rs
+@@ -104,7 +104,8 @@
+             | ("illumos", _)
+             | ("openbsd", _)
+             | ("emscripten", _)
+-            | ("hurd", _) => LibType::So,
++            | ("hurd", _)
++            | ("kandelo", _) => LibType::So,
+             ("macos", _) | ("ios", _) | ("tvos", _) | ("visionos", _) => LibType::Dylib,
+             ("windows", _) => LibType::Windows,
+             _ => unimplemented!("The target {}-{} is not supported yet", os, env),

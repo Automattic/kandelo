@@ -40,9 +40,16 @@ case "$source_cache_root" in
         ;;
 esac
 
+# The whole graph includes C/C++ consumers on both architectures. Match
+# bootstrap's prerequisite ordering before deriving any package cache keys:
+# an existing libc.a alone does not mean the SDK sysroot is complete.
+# Keep prerequisite output on stderr; stdout is the local-build JSON result.
+cargo run -p xtask --target "$host_target" -- bootstrap sdk >&2
+cargo run -p xtask --target "$host_target" -- bootstrap sysroot64 >&2
+
 exec cargo run -p xtask --target "$host_target" -- local-build run \
     --set "$REPO_ROOT/packages/sets/local-supported.toml" \
     --source-cache-root "$source_cache_root" \
     --output-root "$REPO_ROOT/local-binaries/source-only-v1" \
     --product all \
-    --jobs 16
+    --jobs "${WASM_POSIX_LOCAL_BUILD_JOBS:-16}"

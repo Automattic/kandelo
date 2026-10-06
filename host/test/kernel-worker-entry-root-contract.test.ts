@@ -37,8 +37,6 @@ const FORBIDDEN_WORKER_MEMBERS = new Set([
   "scheduleWakeBlockedRetries",
   "scratchOffset",
   "scratchRegion",
-  "stdinBuffers",
-  "stdinFinite",
   "tcpScratchRegion",
 ]);
 

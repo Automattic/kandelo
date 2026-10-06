@@ -126,13 +126,14 @@ pub mod process_layout;
 ///     (`udev_device_new_from_devnum`), which is handed only the `st_rdev`
 ///     and must recover the devnode from it. The same epoch carries the
 ///     Wayland stack's other contract changes, structural and semantic:
-///     the `SO_PEERCRED` option, the evdev `EVIOCGPHYS`/`EVIOCGUNIQ`/
-///     `EVIOCGPROP` ioctl family, `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`,
-///     real peer credentials from `SO_PEERCRED`, a blocking read of
-///     `/dev/dri/card0` that waits for an event instead of returning 0,
+///     the `SO_PEERCRED` option (peer credentials; it used to fail with
+///     `ENOPROTOOPT`), the evdev `EVIOCGPHYS`/`EVIOCGUNIQ`/`EVIOCGPROP`
+///     ioctl family, `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`, a blocking read
+///     of `/dev/dri/card0` that waits for an event instead of returning 0,
 ///     dma-buf `lseek` on prime fds, epoll registrations keyed on (fd, open
-///     file description) and inherited across fork/spawn, and the
-///     `kernel_epoll_watched_fd` export. docs/abi-versioning.md ("ABI 44") lists
+///     file description) and inherited across fork/spawn, epoll fds that
+///     report readiness inside poll, prime fds that stay referenced while in
+///     flight over SCM_RIGHTS, and the `kernel_epoll_watched_fd` export. docs/abi-versioning.md ("ABI 44") lists
 ///     each with why it belongs to this epoch.
 /// 45: the DRI desktop stack (GPU-tier buffers, layer shell, the toolkit
 ///     ports). The kernel's `host_gl_present` import now returns a status
@@ -148,7 +149,29 @@ pub mod process_layout;
 ///     gains three ops and a query, /dev/input/event1 is an absolute
 ///     pointer, inotify fails with ENOSYS, and a MAP_FIXED mapping inside a
 ///     mapping carves it. docs/abi-versioning.md ("ABI 45") lists each.
-pub const ABI_VERSION: u32 = 45;
+/// 46: fork metadata survives tools that run after instrumentation. The
+///     imported-globals and imported-tables sections move to format 2: the
+///     record word that held the import's position is reserved (zero) and
+///     hosts find the import by kind, module and name, because wasm-opt may
+///     remove or reorder imports. Hosts require only the linked-frame
+///     imports (`__wpk_fork_frame_reserve/commit/next`) as a set; the other
+///     fork-runtime imports may be absent when the module never calls them.
+///     The instrumenter declares the Wasm features its code uses in
+///     `target_features` and runs wasm-opt over its own output.
+///     Fork sinks: the instrumenter may stop the fork unwind at a boundary
+///     function, which calls the new `env.__wpk_fork_boundary` import; the
+///     child then enters through the new `wpk_fork_resume_sink` export, and
+///     the `kandelo.wpk_fork.boundaries` section lists the boundaries.
+///     docs/abi-versioning.md ("ABI 46") lists each.
+/// 47: honest program links and kernel-owned host stdin. `HOST_ENV_IMPORTS`
+///     declares every `env` import the host provides; executables link against
+///     the generated allowance instead of `--allow-undefined`, and the host
+///     refuses a program importing anything else. Host-supplied stdin is a
+///     kernel pipe on fd 0 (`kernel_install_host_stdin_pipe`), shared across
+///     fork/dup/exec, instead of a host handle answered per pid. The GL
+///     command stream gains OP_BLEND_FUNC_SEPARATE, OP_BLEND_EQUATION_SEPARATE
+///     and QOP_FINISH.
+pub const ABI_VERSION: u32 = 47;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1997,6 +2020,69 @@ pub mod abi {
     /// the host can thread channel / TLS state through fork and exec.
     pub const PROCESS_EXPECTED_GLOBALS: &[&str] = &["__channel_base", "__tls_base"];
 
+    /// Kind of an import the host supplies to a user program from `env`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HostEnvImportKind {
+        Function,
+        Global,
+        Memory,
+        Table,
+        Tag,
+    }
+
+    impl HostEnvImportKind {
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::Function => "function",
+                Self::Global => "global",
+                Self::Memory => "memory",
+                Self::Table => "table",
+                Self::Tag => "tag",
+            }
+        }
+    }
+
+    /// One import the host supplies to a user program from the `env` module.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct HostEnvImport {
+        pub name: &'static str,
+        pub kind: HostEnvImportKind,
+        /// Allowed to stay undefined when an executable is linked. False only
+        /// for imports a later build step adds (none today outside the fork
+        /// runtime, which is declared by `WPK_FORK_REQUIRED_*`).
+        pub link_time: bool,
+        pub reason: &'static str,
+    }
+
+    /// The `env` imports the host really provides to user programs, besides
+    /// the fork runtime's imports (declared by `WPK_FORK_REQUIRED_IMPORTS`,
+    /// `WPK_FORK_REQUIRED_TABLE_IMPORTS`, `WPK_FORK_GLOBAL_IMPORTS`, and the
+    /// unwind tag, which fork instrumentation adds after linking).
+    ///
+    /// WHY one declaration: the SDK's link-time allowance
+    /// (`libc/glue/kandelo-host-imports.txt`) and the host's load-time check
+    /// are both generated from this list, so a program can leave a symbol
+    /// undefined only if the host will supply it. C and C++ library functions
+    /// never belong here; they come from libc, libc++abi, or libc++. Before
+    /// ABI 47 the SDK linked with `--allow-undefined` and the host stubbed any
+    /// unknown import with a throwing function, so configure checks accepted
+    /// functions Kandelo lacks and programs trapped when they first called one.
+    pub const HOST_ENV_IMPORTS: &[HostEnvImport] = &[
+        HostEnvImport { name: "memory", kind: HostEnvImportKind::Memory, link_time: true, reason: "process linear memory" },
+        HostEnvImport { name: "__channel_base", kind: HostEnvImportKind::Global, link_time: true, reason: "syscall channel base address" },
+        HostEnvImport { name: "__c_longjmp", kind: HostEnvImportKind::Tag, link_time: true, reason: "setjmp/longjmp exception tag shared with the host" },
+        HostEnvImport { name: "__cpp_exception", kind: HostEnvImportKind::Tag, link_time: true, reason: "C++ exception tag shared with the host" },
+        HostEnvImport { name: "__wasm_dlopen_main", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: main-program handle" },
+        HostEnvImport { name: "__wasm_dlopen_prepare", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: stage a side module" },
+        HostEnvImport { name: "__wasm_dlopen_next", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: advance a staged load" },
+        HostEnvImport { name: "__wasm_dlopen_commit", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: commit a staged load" },
+        HostEnvImport { name: "__wasm_dlopen", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: single-step load" },
+        HostEnvImport { name: "__wasm_dlsym", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: symbol lookup" },
+        HostEnvImport { name: "__wasm_dlclose", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: unload" },
+        HostEnvImport { name: "__wasm_dlerror", kind: HostEnvImportKind::Function, link_time: true, reason: "dynamic loader: last error text" },
+        HostEnvImport { name: "__wasm_posix_vm_interrupt_after", kind: HostEnvImportKind::Function, link_time: true, reason: "host timer that sets a VM interrupt flag (PHP max_execution_time)" },
+    ];
+
     /// Pointer-sensitive value types used by program-artifact function
     /// requirements. `Pointer` resolves to i32 for wasm32 artifacts and i64
     /// for wasm64 artifacts.
@@ -2029,6 +2115,15 @@ pub mod abi {
         pub element: ProgramArtifactValueType,
         pub minimum: u64,
         pub maximum: Option<u64>,
+    }
+
+    /// One immutable global import that fork instrumentation adds to a
+    /// program artifact.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ProgramArtifactGlobalImport {
+        pub module: &'static str,
+        pub name: &'static str,
+        pub value: ProgramArtifactValueType,
     }
 
     /// One required function export in an instrumented program artifact.
@@ -2256,7 +2351,11 @@ pub mod abi {
     /// constant initializers that observe imported globals.
     pub const WPK_FORK_IMPORTED_GLOBALS_SECTION: &str = "kandelo.wpk_fork.imported_globals";
     pub const WPK_FORK_IMPORTED_GLOBALS_MAGIC: [u8; 4] = *b"KFIG";
-    pub const WPK_FORK_IMPORTED_GLOBALS_VERSION: u16 = 1;
+    /// Format 2 (ABI 46): the record word at offset 20 is reserved and must
+    /// be zero. Format 1 stored the import's position there, which wasm-opt
+    /// invalidates by removing or reordering imports; hosts now resolve the
+    /// import by kind, module and name.
+    pub const WPK_FORK_IMPORTED_GLOBALS_VERSION: u16 = 2;
     pub const WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE: u16 = 16;
     pub const WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE: u16 = 24;
     pub const WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE: u8 = 1 << 0;
@@ -2265,7 +2364,8 @@ pub mod abi {
         WPK_FORK_IMPORTED_GLOBAL_FLAG_MUTABLE | WPK_FORK_IMPORTED_GLOBAL_FLAG_SHARED;
     pub const WPK_FORK_IMPORTED_TABLES_SECTION: &str = "kandelo.wpk_fork.imported_tables";
     pub const WPK_FORK_IMPORTED_TABLES_MAGIC: [u8; 4] = *b"KFIT";
-    pub const WPK_FORK_IMPORTED_TABLES_VERSION: u16 = 1;
+    /// Format 2 (ABI 46): as for imported globals, offset 20 is reserved.
+    pub const WPK_FORK_IMPORTED_TABLES_VERSION: u16 = 2;
     pub const WPK_FORK_IMPORTED_TABLES_HEADER_SIZE: u16 = 16;
     pub const WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE: u16 = 24;
     pub const WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64: u8 = 1 << 0;
@@ -2332,9 +2432,30 @@ pub mod abi {
     pub const WPK_FORK_FRAME_IMPORT_RESERVE: &str = "__wpk_fork_frame_reserve";
     pub const WPK_FORK_FRAME_IMPORT_COMMIT: &str = "__wpk_fork_frame_commit";
     pub const WPK_FORK_FRAME_IMPORT_NEXT: &str = "__wpk_fork_frame_next";
+    /// The linked-frame imports every instrumented activation calls. They are
+    /// all-or-nothing; the other `WPK_FORK_REQUIRED_IMPORTS` serve optional
+    /// state and may be absent when nothing calls them (ABI 46: wasm-opt runs
+    /// after instrumentation and removes unused imports).
+    pub const WPK_FORK_CORE_FRAME_IMPORTS: [&str; 3] = [
+        WPK_FORK_FRAME_IMPORT_RESERVE,
+        WPK_FORK_FRAME_IMPORT_COMMIT,
+        WPK_FORK_FRAME_IMPORT_NEXT,
+    ];
     pub const WPK_FORK_FRAME_IMPORT_PEEK: &str = "__wpk_fork_frame_peek";
     pub const WPK_FORK_RESUME_IMPORT_PEEK: &str = "__wpk_fork_resume_peek";
     pub const WPK_FORK_RESUME_IMPORT_TABLE: &str = "__wpk_fork_resume_table";
+
+    /// Fork boundaries (sinks; docs/plans/2026-10-02-fork-sinks.md). A module
+    /// that has boundary functions imports `env.__wpk_fork_boundary: () -> ()`:
+    /// the deepest boundary on the stack calls it after committing its own
+    /// frame, instead of rethrowing the unwind tag. The host seals the
+    /// capture, forks, and begins parent replay before it returns. Such a
+    /// module also exports `wpk_fork_resume_sink(sig_index)`, the child entry
+    /// for a continuation rooted at a boundary, and lists its boundary
+    /// functions in `kandelo.wpk_fork.boundaries`.
+    pub const WPK_FORK_BOUNDARY_IMPORT: &str = "__wpk_fork_boundary";
+    pub const WPK_FORK_RESUME_SINK_EXPORT: &str = "wpk_fork_resume_sink";
+    pub const WPK_FORK_BOUNDARIES_SECTION: &str = "kandelo.wpk_fork.boundaries";
 
     pub const WPK_FORK_MODULE_STATE_IMPORT_MODULE: &str = "env";
     pub const WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT: &str =
@@ -2748,6 +2869,25 @@ pub mod abi {
         },
     ];
 
+    /// Immutable globals fork instrumentation imports, which the host's fork
+    /// runtime supplies per Worker: the activation index the exception and GC
+    /// codecs read, and the address of the shared table-generation fence
+    /// (always i64, whatever the pointer width). Like the lists above, these
+    /// are `env` imports a program may carry although no link left them
+    /// undefined, so import checks read them from here.
+    pub const WPK_FORK_GLOBAL_IMPORTS: &[ProgramArtifactGlobalImport] = &[
+        ProgramArtifactGlobalImport {
+            module: WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+            value: I32,
+        },
+        ProgramArtifactGlobalImport {
+            module: WPK_FORK_MODULE_STATE_IMPORT_MODULE,
+            name: WPK_FORK_MODULE_STATE_IMPORT_TABLE_GENERATION_ADDR,
+            value: I64,
+        },
+    ];
+
     pub const WPK_FORK_REQUIRED_EXPORTS: &[ProgramArtifactExport] = &[
         ProgramArtifactExport {
             name: WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE,
@@ -3046,6 +3186,7 @@ pub mod abi {
         "kernel_has_sa_nocldstop",
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",
+        "kernel_install_host_stdin_pipe",
         "kernel_ipc_shm_lookup_mapping_for_task",
         "kernel_ipc_shm_record_mapping_for_process",
         "kernel_ipc_shm_record_mapping_for_task",
@@ -3104,6 +3245,11 @@ pub mod abi {
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
+        "kernel_clipboard_ack",
+        "kernel_clipboard_guest_generation",
+        "kernel_clipboard_guest_read",
+        "kernel_clipboard_offer",
+        "kernel_clipboard_stage",
         "kernel_reserve_host_region",
         "kernel_reserve_host_region_at",
         "kernel_set_max_addr",
@@ -4229,6 +4375,73 @@ pub mod oss {
 
 }
 
+/// `/dev/kandelo/clipboard`: host clipboard text offered to a guest agent.
+///
+/// The host stages UTF-8 text with `kernel_clipboard_stage` (in chunks, as
+/// an offer can exceed one kernel scratch lease) and offers it with
+/// `kernel_clipboard_offer`. The single process that holds the device open
+/// (the clipboard agent) reads each offer as one record — a
+/// [`ClipboardRecordHeader`] followed by `len` payload bytes — and
+/// acknowledges it by writing a [`ClipboardAck`]. The host reads the
+/// acknowledgement back with `kernel_clipboard_ack`. In the other direction
+/// the agent writes the desktop's selection as a `KIND_GUEST_TEXT` record;
+/// the host watches `kernel_clipboard_guest_generation` and reads it with
+/// `kernel_clipboard_guest_read`. The generated
+/// `<kandelo/clipboard.h>` mirrors these values for C agents.
+pub mod clipboard {
+    /// Device path; `open()` of it is how an agent claims the device.
+    pub const DEVICE_PATH: &str = "/dev/kandelo/clipboard";
+    /// `ClipboardRecordHeader::version` for the layout below.
+    pub const RECORD_VERSION: u32 = 1;
+    /// `ClipboardRecordHeader::kind`: the payload is UTF-8 text the host
+    /// offers as the new clipboard contents.
+    pub const KIND_OFFER_TEXT: u32 = 1;
+    /// `ClipboardRecordHeader::kind` of a record the agent WRITES: the
+    /// desktop's new selection, as UTF-8 text, for the host to copy out.
+    /// `seq` is unused (0).
+    pub const KIND_GUEST_TEXT: u32 = 2;
+    /// Largest payload an offer may carry. The host refuses larger text
+    /// before offering it and the kernel refuses it again with EMSGSIZE;
+    /// clipboard text is never truncated.
+    pub const MAX_TEXT_BYTES: u32 = 1024 * 1024;
+    /// `kernel_clipboard_ack` result while the agent has not answered yet.
+    /// Settled results are 0 (the agent installed the selection) or a
+    /// negative errno: the agent's own, or one of the three below.
+    pub const ACK_PENDING: i32 = 1;
+    /// -ECANCELED (musl's 125): a newer offer replaced this one.
+    pub const ACK_SUPERSEDED: i32 = -125;
+    /// -ENXIO: the agent closed the device before answering.
+    pub const ACK_NO_AGENT: i32 = -6;
+    /// -ENOENT: no offer with this sequence number was ever made.
+    pub const ACK_UNKNOWN_SEQ: i32 = -2;
+
+    /// One record as read from the device, little-endian.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ClipboardRecordHeader {
+        pub version: u32,
+        pub kind: u32,
+        /// Offer sequence number, never 0; echoed in the acknowledgement.
+        pub seq: u32,
+        /// Payload bytes that follow the header.
+        pub len: u32,
+    }
+
+    /// What the agent writes back after handling an offer.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ClipboardAck {
+        pub seq: u32,
+        /// 0 once the selection is installed, else a negative errno.
+        pub status: i32,
+    }
+
+    pub const RECORD_HEADER_SIZE: u32 = core::mem::size_of::<ClipboardRecordHeader>() as u32;
+    pub const ACK_SIZE: u32 = core::mem::size_of::<ClipboardAck>() as u32;
+    const _: () = assert!(RECORD_HEADER_SIZE == 16);
+    const _: () = assert!(ACK_SIZE == 8);
+}
+
 /// Implementation-neutral PCM host transport contract.
 pub mod pcm {
     pub const PCM_TRANSPORT_MAGIC: u32 = 0x314d_4350; // "PCM1" LE
@@ -4484,6 +4697,11 @@ pub mod gl {
     pub const OP_FRONT_FACE: u16 = 0x000A;
     pub const OP_LINE_WIDTH: u16 = 0x000B;
     pub const OP_PIXEL_STOREI: u16 = 0x000C;
+    /// `glBlendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha)`: four u32.
+    pub const OP_BLEND_FUNC_SEPARATE: u16 = 0x000D;
+    /// `glBlendEquationSeparate(modeRGB, modeAlpha)`: two u32. `glBlendEquation`
+    /// encodes as this op with both modes equal.
+    pub const OP_BLEND_EQUATION_SEPARATE: u16 = 0x000E;
 
     pub const OP_GEN_BUFFERS: u16 = 0x0100;
     pub const OP_DELETE_BUFFERS: u16 = 0x0101;
@@ -4561,6 +4779,9 @@ pub mod gl {
     pub const QOP_READ_PIXELS: u32 = 0x0B;
     pub const QOP_CHECK_FB_STATUS: u32 = 0x0C;
     pub const QOP_GET_SHADER_PRECISION_FORMAT: u32 = 0x0D;
+    /// `glFinish`: no input, no output. The reply is sent only after the host
+    /// has executed every earlier command and `finish()`ed the context.
+    pub const QOP_FINISH: u32 = 0x0E;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -5872,6 +6093,8 @@ mod gl_tests {
             OP_FRONT_FACE,
             OP_LINE_WIDTH,
             OP_PIXEL_STOREI,
+            OP_BLEND_FUNC_SEPARATE,
+            OP_BLEND_EQUATION_SEPARATE,
             OP_GEN_BUFFERS,
             OP_DELETE_BUFFERS,
             OP_BIND_BUFFER,
@@ -5944,6 +6167,7 @@ mod gl_tests {
             QOP_READ_PIXELS,
             QOP_CHECK_FB_STATUS,
             QOP_GET_SHADER_PRECISION_FORMAT,
+            QOP_FINISH,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

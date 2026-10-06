@@ -45,6 +45,8 @@
 #define OP_FRONT_FACE                  0x000Au
 #define OP_LINE_WIDTH                  0x000Bu
 #define OP_PIXEL_STOREI                0x000Cu
+#define OP_BLEND_FUNC_SEPARATE         0x000Du
+#define OP_BLEND_EQUATION_SEPARATE     0x000Eu
 
 #define OP_GEN_BUFFERS                 0x0100u
 #define OP_DELETE_BUFFERS              0x0101u
@@ -115,6 +117,7 @@
 #define QOP_READ_PIXELS           0x0Bu
 #define QOP_CHECK_FB_STATUS       0x0Cu
 #define QOP_GET_SHADER_PRECISION_FORMAT 0x0Du
+#define QOP_FINISH                0x0Eu
 
 /* Marshalled ioctl arg structs — must match shared::gl byte-for-byte. */
 struct gl_submit_info { uint32_t offset; uint32_t length; };

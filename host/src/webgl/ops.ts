@@ -23,6 +23,8 @@ export const OP_CULL_FACE                   = 0x0009;
 export const OP_FRONT_FACE                  = 0x000A;
 export const OP_LINE_WIDTH                  = 0x000B;
 export const OP_PIXEL_STOREI                = 0x000C;
+export const OP_BLEND_FUNC_SEPARATE         = 0x000D;
+export const OP_BLEND_EQUATION_SEPARATE     = 0x000E;
 
 export const OP_GEN_BUFFERS                 = 0x0100;
 export const OP_DELETE_BUFFERS              = 0x0101;
@@ -100,6 +102,7 @@ export const QOP_GET_PROGRAM_INFO_LOG  = 0x0A;
 export const QOP_READ_PIXELS           = 0x0B;
 export const QOP_CHECK_FB_STATUS       = 0x0C;
 export const QOP_GET_SHADER_PRECISION_FORMAT = 0x0D;
+export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` handler rejects mismatching values with `ENOSYS`. */

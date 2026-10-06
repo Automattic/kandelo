@@ -1,6 +1,7 @@
 script_path = "packages/registry/spidermonkey-node/build-spidermonkey-node.sh"
 inputs = [
   "packages/registry/spidermonkey-node/build-spidermonkey-node.sh",
+  "sdk/activate.sh",
   "scripts/install-local-binary.sh",
   "scripts/wasm-artifact-guards.sh",
 ]

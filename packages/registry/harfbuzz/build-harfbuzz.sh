@@ -20,19 +20,28 @@
 #     WASM_POSIX_DEP_SOURCE_SHA256   # expected sha256 of the tarball
 #     WASM_POSIX_DEP_FREETYPE_DIR    # resolved freetype prefix
 #     WASM_POSIX_DEP_GLIB_DIR        # resolved glib prefix
+#     WASM_POSIX_DEP_LIBCXX_DIR      # resolved libc++/libc++abi prefix
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/harfbuzz-src"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/harfbuzz-src"
 
-HARFBUZZ_VERSION="${WASM_POSIX_DEP_VERSION:-10.1.0}"
+HARFBUZZ_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/harfbuzz-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/harfbuzz/harfbuzz/releases/download/${HARFBUZZ_VERSION}/harfbuzz-${HARFBUZZ_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
-BUILD_DIR="$SCRIPT_DIR/harfbuzz-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/harfbuzz-build"
 
 if ! command -v wasm32posix-c++ &>/dev/null; then
     echo "ERROR: wasm32posix-c++ not found. Enter scripts/dev-shell.sh." >&2
@@ -41,33 +50,24 @@ fi
 
 FREETYPE_PREFIX="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not set (must be invoked via cargo xtask build-deps resolve harfbuzz)}"
 GLIB_PREFIX="${WASM_POSIX_DEP_GLIB_DIR:?WASM_POSIX_DEP_GLIB_DIR not set}"
+LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:?WASM_POSIX_DEP_LIBCXX_DIR not set}"
 
 # The amalgam includes <cassert>. wasm32posix-c++ resolves libc++ headers
 # through the sysroot, so project a private sysroot with the resolved libcxx
 # overlaid: the worktree SDK seed is an input tree for every package build and
 # must hold no symlink (mariadb pattern — see scripts/package-build-roots.sh).
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot harfbuzz "$SDK_SYSROOT" libcxx
 )"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading harfbuzz $HARFBUZZ_VERSION..."
-    TARBALL="/tmp/harfbuzz-${HARFBUZZ_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified harfbuzz $HARFBUZZ_VERSION source..."
+    kandelo_package_stage_verified_source harfbuzz "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
 fi
 
 rm -rf "$BUILD_DIR"
@@ -110,6 +110,10 @@ for h in hb.h hb-aat.h hb-aat-layout.h hb-blob.h hb-buffer.h \
     cp "$SRC_DIR/src/$h" "$INSTALL_DIR/include/harfbuzz/"
 done
 
+# libharfbuzz.a is C++ and references the libc++/libc++abi runtime it was
+# compiled against (std::mutex, operator new, ...). A static archive carries
+# no record of that, so the .pc must: a C consumer (pango's tests, any C
+# program) links with the C driver, which does not add libc++ itself.
 cat > "$INSTALL_DIR/lib/pkgconfig/harfbuzz.pc" <<EOF
 prefix=$INSTALL_DIR
 libdir=\${prefix}/lib
@@ -118,7 +122,7 @@ includedir=\${prefix}/include
 Name: harfbuzz
 Description: harfbuzz for wasm32-posix-kernel (static, freetype backend)
 Version: $HARFBUZZ_VERSION
-Libs: -L\${libdir} -lharfbuzz
+Libs: -L\${libdir} -lharfbuzz -L$LIBCXX_PREFIX/lib -lc++ -lc++abi
 Cflags: -I\${includedir}/harfbuzz
 Requires.private: freetype2, glib-2.0
 EOF

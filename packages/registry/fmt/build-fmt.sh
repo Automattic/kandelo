@@ -23,14 +23,22 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/fmt-src"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/fmt-src"
 
-FMT_VERSION="${WASM_POSIX_DEP_VERSION:-11.2.0}"
+FMT_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/fmt-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/fmtlib/fmt/archive/refs/tags/${FMT_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
-BUILD_DIR="$SCRIPT_DIR/fmt-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/fmt-build"
 
 if ! command -v wasm32posix-c++ &>/dev/null; then
     echo "ERROR: wasm32posix-c++ not found. Enter scripts/dev-shell.sh." >&2
@@ -41,28 +49,18 @@ fi
 # private sysroot with the resolved libcxx overlaid: the worktree SDK seed
 # is an input tree for every package build and must hold no symlink
 # (mariadb pattern — see scripts/package-build-roots.sh).
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot fmt "$SDK_SYSROOT" libcxx
 )"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading fmt $FMT_VERSION..."
-    TARBALL="/tmp/fmt-${FMT_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified fmt $FMT_VERSION source..."
+    kandelo_package_stage_verified_source fmt "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/include-cstdlib.patch"
 fi
 

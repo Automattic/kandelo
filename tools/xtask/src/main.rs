@@ -20,6 +20,17 @@
 //!                         Stream one exact regular package-archive member to
 //!                         a new output file without exposing partial bytes.
 //!   local-build           Resolve and source-build a package closure locally.
+//!                         `plan --set <file> --status [--json]` is a
+//!                         read-only dry run listing each node as cached or
+//!                         will-run, with an estimated duration from recorded
+//!                         timings, so a caller knows before starting whether
+//!                         the build takes seconds or tens of minutes. `run`
+//!                         appends scheduler events as JSON lines to
+//!                         `$KANDELO_LOCAL_BUILD_EVENTS` when set, so
+//!                         `scripts/agent-job status` can report progress,
+//!                         and records per-node and per-run durations under
+//!                         `<source cache root>/timings/` to feed that
+//!                         estimate.
 //!   bootstrap             One-command hermetic build: fork-instrument host
 //!                         tool, then the local-build engine over the whole
 //!                         supported set, then the TypeScript host build.
@@ -59,9 +70,13 @@ mod host_tool_probe;
 mod local_abi_identity;
 mod local_build;
 mod local_build_executor;
+mod local_build_timing;
 mod package_archive_limits;
 mod package_matrix;
 mod pkg_manifest;
+mod program_env_imports;
+mod package_imports;
+mod recipe_tree_guard;
 mod remote_fetch;
 mod root_js_deps;
 mod source_archive_cache;
@@ -77,7 +92,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh"
+                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh"
             );
             return ExitCode::from(2);
         }
@@ -88,6 +103,8 @@ fn main() -> ExitCode {
     }
     let result = match sub.as_str() {
         "dump-abi" => dump_abi::run(rest),
+        "check-program-env-imports" => program_env_imports::run(rest),
+        "check-package-imports" => package_imports::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),

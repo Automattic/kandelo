@@ -32,6 +32,7 @@ host/test/clock-id-validation.test.ts	prepared-product
 host/test/clone-tid-authority.test.ts	source-only
 host/test/closed-lazy-assets.test.ts	source-only
 host/test/compiled-worker-entry.test.ts	prepared-product
+host/test/concurrent-launch.test.ts	prepared-product
 host/test/connect-pending-retry.test.ts	source-only
 host/test/cpp-throw-test.test.ts	prepared-product
 host/test/datagram-wakeup.test.ts	source-only
@@ -129,6 +130,7 @@ host/test/in-kernel-http.test.ts	prepared-product
 host/test/input-attach-source.test.ts	prepared-product
 host/test/input-evdev.test.ts	prepared-product
 host/test/input-source.test.ts	source-only
+host/test/int128-division-guest.test.ts	prepared-product
 host/test/interactive-stdin.test.ts	prepared-product
 host/test/ioctl-arg-size.test.ts	source-only
 host/test/ioctl-contract.test.ts	source-only
@@ -347,6 +349,8 @@ host/test/wasi-shim.test.ts	prepared-product
 host/test/wasm-binary-parse.test.ts	prepared-product
 host/test/wasm-guest-pointer.test.ts	source-only
 host/test/wasm-memory-write-audit.test.ts	prepared-product
+host/test/wasm-module-cache-host.test.ts	prepared-product
+host/test/wasm-module-cache.test.ts	source-only
 host/test/wasm-module-reflection.test.ts	source-only
 host/test/wasm-trap.test.ts	prepared-product
 host/test/wasm64.test.ts	prepared-product
@@ -394,9 +398,15 @@ packages/registry/dash/test/dash.test.ts	prepared-product
 packages/registry/dinit/test/dinit-scripted-service.test.ts	prepared-product
 packages/registry/dinit/test/dinitctl.test.ts	prepared-product
 packages/registry/erlang/test/erlang.test.ts	prepared-product
+packages/registry/ffmpeg/test/ffmpeg-devices.test.ts	prepared-product
+packages/registry/ffmpeg/test/ffmpeg-process-runtime.test.ts	prepared-product
+packages/registry/ffmpeg/test/ffmpeg-tier1.test.ts	prepared-product
+packages/registry/ffmpeg/test/ffmpeg-tier2-bbb.test.ts	prepared-product
+packages/registry/ffmpeg/test/fixtures-manifest.test.ts	source-only
 packages/registry/git/test/git.test.ts	prepared-product
 packages/registry/grep/test/grep.test.ts	prepared-product
 packages/registry/gzip/test/gzip.test.ts	prepared-product
+packages/registry/libxml2/test/libxml2-layout.test.ts	prepared-product
 packages/registry/nginx/test/nginx.test.ts	prepared-product
 packages/registry/openssl/test/certificates.test.ts	prepared-product
 packages/registry/openssl/test/ssl-basic.test.ts	prepared-product
@@ -445,6 +455,7 @@ tests/package-system/source-rootfs-shell-bridge.test.ts	prepared-product
 tests/package-system/validate-wasm-artifacts.test.ts	prepared-product
 tests/package-system/vite-binary-resolution.test.ts	prepared-product
 tests/package-system/wasm-artifact-guards.test.ts	prepared-product
+web-libs/kandelo-session/test/demo-dock-action.test.ts	source-only
 web-libs/kandelo-session/test/demo-ingest.test.ts	source-only
 web-libs/kandelo-session/test/deployment-scope.test.ts	source-only
 web-libs/kandelo-session/test/kandelo-session.test.ts	source-only

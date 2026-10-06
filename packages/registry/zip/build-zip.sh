@@ -5,14 +5,31 @@ set -euo pipefail
 #
 # Plain Makefile build with CC override.
 # zip has its own deflate (no zlib needed).
-# Output: packages/registry/zip/bin/zip.wasm
+# Output: bin/zip.wasm under the resolver work root (beside this
+# script when run standalone).
 
-ZIP_VERSION="${ZIP_VERSION:-30}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/zip-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+ZIP_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/zip-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
+
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -27,17 +44,14 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download zip source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading zip $ZIP_VERSION..."
-    TARBALL="zip${ZIP_VERSION}.tar.gz"
-    URL="https://downloads.sourceforge.net/infozip/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL -L "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
-fi
+# --- Stage the pinned zip source ---
+# Under the resolver the verified, unpacked source arrives in
+# WASM_POSIX_DEP_SOURCE_DIR (from the resolver's source-archive cache, so a
+# rebuild does not depend on the upstream mirror being up); a direct run
+# downloads the archive and checks its sha256.
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
+kandelo_package_stage_primary_source zip "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 
@@ -70,4 +84,4 @@ echo "Binary: $BIN_DIR/zip.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary zip "$SCRIPT_DIR/bin/zip.wasm"
+install_local_binary zip "$BIN_DIR/zip.wasm"

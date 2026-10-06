@@ -1,7 +1,12 @@
 schema = 1
 policy = "source-only-v1"
 dependency_only = [
+  "libyaml-source",
+  "netsurf-buildsystem-source",
+  "pcaudiolib-source",
   "pcre2-source",
+  "sqlite-amalgamation-source",
+  "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
 ]
 registry_non_roots = []
@@ -103,6 +108,10 @@ name = "dinit"
 class = "user-software"
 
 [[packages]]
+name = "elinks"
+class = "user-software"
+
+[[packages]]
 name = "espeak-ng"
 class = "user-software"
 
@@ -117,6 +126,10 @@ class = "user-software"
 [[packages]]
 name = "fcft"
 class = "platform"
+
+[[packages]]
+name = "ffmpeg"
+class = "user-software"
 
 [[packages]]
 name = "file"
@@ -219,11 +232,19 @@ name = "lhasa"
 class = "user-software"
 
 [[packages]]
+name = "libcss"
+class = "platform"
+
+[[packages]]
 name = "libcurl"
 class = "platform"
 
 [[packages]]
 name = "libcxx"
+class = "platform"
+
+[[packages]]
+name = "libdom"
 class = "platform"
 
 [[packages]]
@@ -243,6 +264,10 @@ name = "libffi"
 class = "platform"
 
 [[packages]]
+name = "libhubbub"
+class = "platform"
+
+[[packages]]
 name = "libiconv"
 class = "platform"
 
@@ -251,7 +276,15 @@ name = "libinput"
 class = "platform"
 
 [[packages]]
+name = "libparserutils"
+class = "platform"
+
+[[packages]]
 name = "libpng"
+class = "platform"
+
+[[packages]]
+name = "librsvg"
 class = "platform"
 
 [[packages]]
@@ -260,6 +293,10 @@ class = "platform"
 
 [[packages]]
 name = "libudev"
+class = "platform"
+
+[[packages]]
+name = "libwapcaplet"
 class = "platform"
 
 [[packages]]
@@ -441,6 +478,10 @@ name = "qtshadertools"
 class = "platform"
 
 [[packages]]
+name = "quickjs-ng"
+class = "platform"
+
+[[packages]]
 name = "quickshell"
 class = "user-software"
 
@@ -451,6 +492,10 @@ class = "user-software"
 [[packages]]
 name = "rootfs"
 class = "platform"
+
+[[packages]]
+name = "rsvg-convert"
+class = "user-software"
 
 [[packages]]
 name = "ruby"

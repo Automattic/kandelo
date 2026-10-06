@@ -71,6 +71,45 @@ set(CMAKE_AR "${LLVM_AR}" CACHE FILEPATH "Archiver")
 set(CMAKE_RANLIB "${LLVM_RANLIB}" CACHE FILEPATH "Ranlib")
 set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM")
 
+# --- HAND-MAINTAINED MIRROR OF THE SDK LINK CONTRACT. IT HAS DRIFTED. ---
+#
+# The flags below are a hand-copied mirror of the SDK's compile/link contract
+# (sdk/src/lib/flags.ts, plus the conditional branches in sdk/src/bin/cc.ts).
+# Nothing keeps the copy in step with the original, and it is behind today.
+#
+# Converting MariaDB to the SDK wrapper (sdk/bin/wasm32posix-cc, as lsof and
+# scripts/build-programs.sh now do) was DELIBERATELY DEFERRED, not overlooked.
+# MariaDB's CMake drives raw clang by design -- it inspects and rewrites the
+# compiler command line, runs its own link probes, and builds host-side
+# generator executables in the same configure pass -- so pointing
+# CMAKE_C_COMPILER at a wrapper is a real port, not a substitution. That port
+# has not been scheduled.
+#
+# MEASURED DRIFT against the SDK at 2026-09-20 (re-checked 2026-10-06), all
+# three absent here:
+#
+#   -Wl,--no-stack-first            (cc.ts:474-477) Conditional: LLD 22 made
+#       --stack-first the default, and LLD 21 neither defaults to it nor
+#       accepts the negation. The SDK emits it only when lldMajor >= 22.
+#       Built with LLD 22, these files silently get the opposite shadow-stack
+#       placement from every other package.
+#
+#   -D__unix__=1 -D__unix=1         (flags.ts:14-15) Kandelo is a Unix/POSIX
+#       userspace and says so through the conventional macros, which is how
+#       upstream feature selection stays truthful.
+#
+#   -mllvm -wasm-use-legacy-eh=false  (flags.ts:27) THE CONSEQUENTIAL ONE.
+#       LLVM 21 defaults -wasm-use-legacy-eh to TRUE, so omitting the flag is
+#       not neutral: it selects legacy `try`/`catch` lowering. The SDK passes
+#       =false explicitly to get modern `try_table`/`catch_ref` (flags.ts:20-26
+#       records the 2026-05-14 disassembly check that established this). So
+#       MariaDB is still compiled on legacy EH while every package built
+#       through the SDK moved to try_table/catch_ref.
+#
+# Do not "catch up" by hand-adding flags here -- hand-copying is what produced
+# this drift. A missing flag is an SDK change; re-mirror deliberately, or do
+# the wrapper port.
+#
 # --- Compiler flags (mirror sdk/src/lib/flags.ts COMPILE_FLAGS) ---
 set(WASM32_FLAGS
   "--target=wasm32-unknown-unknown"
@@ -86,6 +125,19 @@ string(REPLACE ";" " " WASM32_FLAGS_STR "${WASM32_FLAGS}")
 set(CMAKE_C_FLAGS_INIT "${WASM32_FLAGS_STR}")
 set(CMAKE_CXX_FLAGS_INIT "${WASM32_FLAGS_STR} -nostdinc++ -isystem ${WASM_POSIX_SYSROOT}/include/c++/v1 -D_LIBCPP_HAS_MUSL_LIBC -D_LIBCPP_HAS_THREAD_API_PTHREAD -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE")
 
+# Executables may leave undefined only the imports the host supplies:
+# libc/glue/kandelo-host-imports.txt, generated from
+# shared::abi::HOST_ENV_IMPORTS (same contract as sdk/src/lib/flags.ts).
+if(DEFINED ENV{WASM_POSIX_GLUE_DIR})
+  set(_KANDELO_GLUE_DIR "$ENV{WASM_POSIX_GLUE_DIR}")
+else()
+  get_filename_component(_KANDELO_GLUE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../libc/glue" ABSOLUTE)
+endif()
+set(_KANDELO_HOST_IMPORTS "${_KANDELO_GLUE_DIR}/kandelo-host-imports.txt")
+if(NOT EXISTS "${_KANDELO_HOST_IMPORTS}")
+  message(FATAL_ERROR "Link allowance not found at ${_KANDELO_HOST_IMPORTS}")
+endif()
+
 # --- Linker flags (mirror sdk/src/lib/flags.ts LINK_FLAGS) ---
 set(WASM32_LINK_FLAGS
   "-nostdlib"
@@ -95,7 +147,7 @@ set(WASM32_LINK_FLAGS
   "-Wl,--import-memory"
   "-Wl,--shared-memory"
   "-Wl,--max-memory=1073741824"
-  "-Wl,--allow-undefined"
+  "-Wl,--allow-undefined-file=${_KANDELO_HOST_IMPORTS}"
   "-Wl,--global-base=1114112"
   "-Wl,--table-base=3"
   "-Wl,--export-table"
@@ -106,6 +158,15 @@ set(WASM32_LINK_FLAGS
   "-Wl,--export=__tls_align"
   "-Wl,--export=__stack_pointer"
   "-Wl,--export=__wasm_thread_init"
+  # This toolchain drives raw clang (CMAKE_C_COMPILER/CMAKE_CXX_COMPILER
+  # above are set from find_program(LLVM_CLANG NAMES clang), not
+  # wasm32posix-cc), so it never goes through the SDK driver and gets no
+  # SDK-applied stack-size default. Unlike the SDK-driven packages that had
+  # this same flag removed, deleting it here does not fall through to any
+  # default at all — it silently drops to wasm-ld's own ~64 KiB default
+  # instead. This toolchain must therefore keep naming its own stack size.
+  # Do not delete this without also giving mariadb a real default some
+  # other way.
   "-Wl,-z,stack-size=1048576"
 )
 string(REPLACE ";" " " WASM32_LINK_FLAGS_STR "${WASM32_LINK_FLAGS}")

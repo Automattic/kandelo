@@ -127,6 +127,20 @@
             # whenever it is on PATH (QtProcessConfigureArgs.cmake:1136),
             # so it is the generator Qt builds and tests against.
             pkgs.ninja
+            # meson — the build system GNOME/freedesktop packages (glib,
+            # pango >= 1.43, GTK, …) moved to from autotools. The SDK pairs
+            # it with a Kandelo cross file (sdk/meson/) so meson cross-builds
+            # for the wasm target instead of probing the host.
+            pkgs.meson
+            # cargo-c (`cargo cbuild`) builds Rust crates as C libraries with
+            # headers and .pc files; librsvg's meson build drives it. Upstream
+            # names output files per target OS, in both its build and install
+            # steps, and rejects an OS it does not list, so the SDK carries a
+            # patch adding `kandelo` to both tables (`lib<name>.a`/`.so`, like
+            # the other ELF-style unix OSes).
+            (pkgs.cargo-c.overrideAttrs (old: {
+              patches = (old.patches or [ ]) ++ [ ./sdk/rust/cargo-c-kandelo.patch ];
+            }))
             pkgs.autoconf
             pkgs.automake
             pkgs.libtool
@@ -386,6 +400,15 @@
             # prefix and refuse a host/target version mismatch, so it also
             # fixes the version a Qt recipe may declare.
             export QT_HOST_PATH=${qtHostTree}
+            # The SDK builds its KandeloCallTypes compiler plugin
+            # (sdk/src/plugin/build.sh) against the exact LLVM/Clang that
+            # loads it. The headers are separate `dev` outputs that no tool
+            # above references; naming them here makes `nix develop` realize
+            # them, so the build never resolves them ad hoc.
+            export KANDELO_LLVM_DEV=${llvmPkg.llvm.dev}
+            export KANDELO_LLVM_LIB=${llvmPkg.llvm.lib}
+            export KANDELO_CLANG_DEV=${llvmPkg.clang-unwrapped.dev}
+            export KANDELO_CLANG_LIB=${llvmPkg.clang-unwrapped.lib}
             export WASM_POSIX_LLVM_LIBCXX_SOURCE=${llvmPkg.libcxx.src}
             export WASM_POSIX_LLVM_LIBUNWIND_SOURCE=${llvmPkg.libunwind.src}
             ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
@@ -421,6 +444,17 @@
             if [ -d "$__repo_root/sdk/bin" ]; then
               export KANDELO_DEV_SHELL_TOOL_PATH="$__repo_root/sdk/bin:$KANDELO_DEV_SHELL_TOOL_PATH"
               export PATH="$__repo_root/sdk/bin:$PATH"
+            fi
+            # Same treatment for scripts/bin, which carries `cargo-xtask`.
+            # `cargo xtask <verb>` is written throughout this tree (docs,
+            # README, the porting skill, xtask's own messages) and resolves
+            # nowhere without it: there is no cargo alias that can work,
+            # because `[build] target` would build a host tool for wasm and
+            # cargo cannot override that from inside an alias. See the
+            # shim's own comment.
+            if [ -d "$__repo_root/scripts/bin" ]; then
+              export KANDELO_DEV_SHELL_TOOL_PATH="$__repo_root/scripts/bin:$KANDELO_DEV_SHELL_TOOL_PATH"
+              export PATH="$__repo_root/scripts/bin:$PATH"
             fi
             if [ -f "$__repo_root/scripts/check-dev-shell-tools.sh" ]; then
               bash "$__repo_root/scripts/check-dev-shell-tools.sh"

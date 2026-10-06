@@ -1,5 +1,6 @@
 import { defineConfig } from "@playwright/test";
-import { lstatSync } from "node:fs";
+import { lstatSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -92,6 +93,32 @@ for (const key of browserEnvironmentKeys) {
   }
 }
 
+// TEMPORARY WORKAROUND: remove once the pinned Playwright bundles Firefox
+// 158 or later. The bundled version is the "firefox" entry's
+// "browserVersion" in node_modules/playwright-core/browsers.json (153.0 with
+// Playwright 1.62.1).
+//
+// macOS 27 protects ~/Library/Application Support/Firefox (the installed
+// Firefox's app-data directory) behind Full Disk Access. Playwright's bundled
+// Firefox resolves that same directory despite -profile, so from a terminal
+// or agent without Full Disk Access every launch hangs or fails with "Could
+// not find profile folder". A fresh, empty CoreFoundation home keeps that
+// lookup inside a directory the test run owns.
+// Upstream: https://github.com/microsoft/playwright/issues/42768 and
+// Mozilla's fix https://phabricator.services.mozilla.com/D326501.
+//
+// To remove: delete firefoxLaunchEnv and the firefox project's
+// launchOptions, then on macOS, from a process without Full Disk Access,
+// confirm test/coi.spec.ts and test/opfs-*.spec.ts pass with
+// --project=firefox.
+const firefoxLaunchEnv: Record<string, string> =
+  process.platform === "darwin"
+    ? {
+        ...browserLaunchEnv,
+        CFFIXED_USER_HOME: mkdtempSync(join(tmpdir(), "kandelo-pw-firefox-home-")),
+      }
+    : browserLaunchEnv;
+
 const sharedLaunchArgs =
   protectedBrowserBaseUrl === undefined
     ? []
@@ -182,7 +209,13 @@ export default defineConfig({
     },
     {
       name: "firefox",
-      use: { browserName: "firefox" },
+      use: {
+        browserName: "firefox",
+        launchOptions: {
+          env: firefoxLaunchEnv,
+          args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
+        },
+      },
     },
     {
       name: "webkit",

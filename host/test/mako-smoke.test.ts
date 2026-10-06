@@ -117,6 +117,13 @@ describe("mako — upstream notification daemon on wlcompositor + dbus", () => {
 `,
       );
 
+      // Host-side gate: the guest sees the host filesystem, so the test
+      // releases makoctl only after it has seen the toast mapped. Without
+      // it the script dismisses the notification while mako is still
+      // laying out its first toast, and the map it is asserting never
+      // happens.
+      const toastSeen = join(root, "toast-seen");
+
       const script = [
         `printf '%s\\n' '${SESSION_CONF}' > /tmp/mako-session.conf`,
         `${daemonBin!} --config-file=/tmp/mako-session.conf --nofork &`,
@@ -135,6 +142,7 @@ describe("mako — upstream notification daemon on wlcompositor + dbus", () => {
         `  j=0; while [ $j -lt 20000 ]; do j=$((j+1)); done`,
         `done`,
         `[ $tries -ge 60 ] && while read l; do echo "notify.err: $l"; done < /tmp/notify.err`,
+        `while [ ! -e ${toastSeen} ]; do :; done`,
         `${makoctlBin!} dismiss --all && echo MAKOCTL_OK`,
         `kill $mako_pid`,
         `wait $mako_pid`,
@@ -192,6 +200,7 @@ describe("mako — upstream notification daemon on wlcompositor + dbus", () => {
         await waitFor(out, "BUFFER_SCALE app=notifications scale=2", 20_000, dump);
         expect(out.value, "the toast drew a frame at scale 1 first")
           .not.toContain("BUFFER_SCALE app=notifications scale=1");
+        writeFileSync(toastSeen, "");
 
         // makoctl spoke fr.emersion.Mako over the same bus.
         await waitFor(out, "MAKOCTL_OK", 30_000, dump);

@@ -32,6 +32,11 @@
 # before the archives, so libunwind's __wasm_lpad_context stays
 # undefined for the module's target apps unless they come after them
 # (the constraint build-gui-smoke.sh documents for manual links).
+# It also names the archives the target apps (tools/qml, qmleasing) need
+# but Qt's exported targets do not carry: libxml2 and libiconv behind
+# fontconfig, libffi behind libwayland-client, and libgbm/libdrm behind
+# Qt6WaylandClient's buffer pools. A link that omits one fails on the
+# undefined symbol.
 #
 # CMAKE_DISABLE_FIND_PACKAGE_harfbuzz forces Qt6Gui's recorded
 # find_package(WrapSystemHarfbuzz) down its pkg-config branch, which
@@ -54,19 +59,29 @@
 #     WASM_POSIX_DEP_LIBCXX_DIR        WASM_POSIX_DEP_LIBXKBCOMMON_DIR
 #     WASM_POSIX_DEP_ZLIB_DIR          WASM_POSIX_DEP_LIBWAYLAND_DIR
 #     WASM_POSIX_DEP_FREETYPE_DIR      WASM_POSIX_DEP_FONTCONFIG_DIR
+#     WASM_POSIX_DEP_LIBFFI_DIR        WASM_POSIX_DEP_LIBXML2_DIR
+#     WASM_POSIX_DEP_LIBICONV_DIR
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/qtdeclarative-src"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/qtdeclarative-src"
 
-QTDECLARATIVE_VERSION="${WASM_POSIX_DEP_VERSION:-6.10.2}"
+QTDECLARATIVE_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/qtdeclarative-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.qt.io/archive/qt/6.10/${QTDECLARATIVE_VERSION}/submodules/qtdeclarative-everywhere-src-${QTDECLARATIVE_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
-BUILD_DIR="$SCRIPT_DIR/qtdeclarative-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/qtdeclarative-build"
 
 for tool in wasm32posix-c++ wasm32posix-cc cmake ninja qmake; do
     if ! command -v "$tool" &>/dev/null; then
@@ -97,29 +112,22 @@ HARFBUZZ_PREFIX="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not 
 LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?WASM_POSIX_DEP_LIBPNG_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
 LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
 LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
+LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
+LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:?WASM_POSIX_DEP_LIBXML2_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
+LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set (must be invoked via cargo xtask build-deps resolve qtdeclarative)}"
 
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot qtdeclarative "$SDK_SYSROOT" libcxx
 )"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading qtdeclarative $QTDECLARATIVE_VERSION..."
-    TARBALL="/tmp/qtdeclarative-${QTDECLARATIVE_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified qtdeclarative $QTDECLARATIVE_VERSION source..."
+    kandelo_package_stage_verified_source qtdeclarative "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qv4-stack-bounds-on-wasm.patch"
 fi
 
@@ -171,7 +179,7 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
     `# MinSizeRel, not Release: the browser compiles the linked module once per worker thread, so code size multiplies across workers (docs/browser-support.md#quickshell-qml-limits).` \
     -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
-    -DCMAKE_CXX_STANDARD_LIBRARIES="-lc++ -lc++abi" \
+    -DCMAKE_CXX_STANDARD_LIBRARIES="$LIBXML2_PREFIX/lib/libxml2.a $LIBICONV_PREFIX/lib/libiconv.a $LIBFFI_PREFIX/lib/libffi.a $SYSROOT/lib/libgbm.a $SYSROOT/lib/libdrm.a -lc++ -lc++abi" \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
     -DCMAKE_PREFIX_PATH="$CMAKE_PREFIXES" \
     -DCMAKE_INSTALL_PREFIX="$GUEST_PREFIX" \

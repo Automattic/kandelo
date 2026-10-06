@@ -12,6 +12,7 @@
  *   const exitCode = await host.spawn(programBytes, ["hello"], { env: [...] });
  *   await host.destroy();
  */
+import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +49,11 @@ import {
 import type { MountSpec } from "./vfs/default-mounts";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
+import {
+  encodeClipboardText,
+  type ClipboardOfferResult,
+  type GuestClipboardResult,
+} from "./clipboard";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 import type { InputEvent, InputSource } from "./input/input-source";
 import { batchBySynReport } from "./input/input-batch";
@@ -197,7 +203,10 @@ export interface SpawnOptions {
   /** Finite stdin buffer. If omitted for a non-PTY spawn without onStarted,
    * stdin defaults to an immediate EOF. */
   stdin?: Uint8Array;
-  /** Optional pre-compiled module for the supplied program bytes. */
+  /**
+   * Accepted for compatibility and ignored: the kernel worker compiles every
+   * program through its own content-addressed module cache.
+   */
   programModule?: WebAssembly.Module;
   pty?: boolean;
   /** Initial PTY winsize. Applied before the wasm program starts so the
@@ -490,8 +499,9 @@ export class NodeKernelHost {
       // the main thread -> kernel worker -> process worker chain. Reusing that
       // two-hop clone with SpiderMonkey's shared-memory worker runtime can leave
       // later process workers stuck before exit. The option remains an API hint;
-      // Node's dedicated kernel worker compiles/caches fork and pthread modules
-      // internally where it can pass them across a single worker boundary.
+      // the dedicated kernel worker compiles every program through its own
+      // content-addressed cache and passes modules across a single worker
+      // boundary.
       argv,
       env: mergeEnv(options?.env ?? []),
       cwd: options?.cwd,
@@ -811,6 +821,19 @@ export class NodeKernelHost {
   }
 
   /**
+   * Counters of the kernel worker's content-addressed compiled-module cache:
+   * compilations, reuse, digest cost, and what the retention window holds.
+   * Diagnostics only. Mirrors `BrowserKernel.getWasmModuleCacheStats`.
+   */
+  async getWasmModuleCacheStats(): Promise<WasmModuleCacheStats> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: "get_wasm_module_cache_stats",
+      requestId,
+    }) as WasmModuleCacheStats;
+  }
+
+  /**
    * Return the retained capacity of the kernel-owned large-spawn region.
    * Zero means no spawn has exceeded the ordinary channel-sized scratch.
    */
@@ -1004,6 +1027,51 @@ export class NodeKernelHost {
       },
       [owned.buffer],
     );
+  }
+
+  /**
+   * Offer `text` as the host clipboard to the guest's clipboard agent
+   * (`/dev/kandelo/clipboard`, read by kclipd on the Omarchy desktop).
+   * Resolves once the agent has installed it as the desktop's selection, or
+   * with the reason it could not — no agent running, over the 1 MiB cap,
+   * an agent error, or no answer within the timeout. CRLF line endings
+   * become LF; the text is never truncated.
+   */
+  async offerClipboardText(
+    text: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<ClipboardOfferResult> {
+    const bytes = encodeClipboardText(text);
+    if (bytes === null) return { ok: false, reason: "too-large" };
+    const requestId = this._nextRequestId++;
+    const result = await this.request(
+      requestId,
+      {
+        type: "clipboard_offer",
+        requestId,
+        text: bytes,
+        timeoutMs: options.timeoutMs,
+      },
+      [bytes.buffer as ArrayBuffer],
+    );
+    return result as ClipboardOfferResult;
+  }
+
+  /**
+   * Copy-out: resolve with the next selection the guest desktop reports
+   * (through its clipboard agent), or `timeout`. Call it before delivering
+   * the copy chord, so the guest's copy is the change it waits for.
+   */
+  async waitForGuestClipboardText(
+    options: { timeoutMs?: number } = {},
+  ): Promise<GuestClipboardResult> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "clipboard_guest_wait",
+      requestId,
+      timeoutMs: options.timeoutMs,
+    });
+    return result as GuestClipboardResult;
   }
 
   /**

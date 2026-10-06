@@ -1,4 +1,8 @@
 script_path = "packages/registry/freetype/build-freetype.sh"
+inputs = [
+  "packages/registry/freetype/build-freetype.sh",
+  "scripts/package-build-roots.sh",
+]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "e2226dc6a"
 revision    = 1

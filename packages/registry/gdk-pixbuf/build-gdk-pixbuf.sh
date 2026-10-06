@@ -22,14 +22,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/gdk-pixbuf-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/gdk-pixbuf-src"
 
-GDK_PIXBUF_VERSION="${WASM_POSIX_DEP_VERSION:-2.36.12}"
+GDK_PIXBUF_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/gdk-pixbuf-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.gnome.org/sources/gdk-pixbuf/2.36/gdk-pixbuf-${GDK_PIXBUF_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
-BUILD_DIR="$SCRIPT_DIR/gdk-pixbuf-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/gdk-pixbuf-build"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
@@ -41,20 +50,12 @@ LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?WASM_POSIX_DEP_LIBPNG_DIR not set}"
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 
-# --- Fetch + verify source ---
+# --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading gdk-pixbuf $GDK_PIXBUF_VERSION..."
-    TARBALL="/tmp/gdk-pixbuf-${GDK_PIXBUF_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    echo "==> Staging verified gdk-pixbuf $GDK_PIXBUF_VERSION source..."
+    kandelo_package_stage_verified_source gdk-pixbuf "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.
@@ -118,6 +119,25 @@ echo "==> Configuring gdk-pixbuf for wasm32..."
 # The loaders are compiled in, so the query/csource tools (wasm
 # binaries) have no consumer; drop them from the install tree.
 rm -rf "$INSTALL_DIR/bin"
+
+# glib-genmarshal names its input list, by absolute path, in a comment
+# above every marshaller in the installed gdk-pixbuf-marshal.h. Under the
+# resolver that path is the work root, whose name carries the builder's
+# PID. Map it to the name the SDK driver gives the same tree in compiled
+# objects, and fail if the work root reaches any other installed file.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    while IFS= read -r -d '' header; do
+        if grep -qF "$KANDELO_PACKAGE_WORK_DIR" "$header"; then
+            KANDELO_FROM="$KANDELO_PACKAGE_WORK_DIR" \
+            KANDELO_TO="/usr/src/kandelo-build/gdk-pixbuf" \
+                perl -pi -e 's/\Q$ENV{KANDELO_FROM}\E/$ENV{KANDELO_TO}/g' "$header"
+        fi
+    done < <(find "$INSTALL_DIR/include" -type f -name '*.h' -print0)
+    if grep -rlF "$KANDELO_PACKAGE_WORK_DIR" "$INSTALL_DIR" >&2; then
+        echo "ERROR: installed gdk-pixbuf files above embed the resolver work root" >&2
+        exit 1
+    fi
+fi
 
 if [ -f "$INSTALL_DIR/lib/libgdk_pixbuf-2.0.a" ]; then
     echo "==> gdk-pixbuf build complete!"

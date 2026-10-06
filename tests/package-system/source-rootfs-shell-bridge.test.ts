@@ -23,6 +23,9 @@ import type { ZipEntry } from "../../host/src/vfs/zip";
 import {
   buildSourceRootfsShellImage,
   composeSourceRootfsDemoConfig,
+  formatDownloadSize,
+  loadScummvmFreewareCatalog,
+  scummvmFreewareMenuEntries,
   SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES,
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
 import { SHELL_LAZY_BINARY_SPECS, shellLazySpecDependency } from "../../images/vfs/lib/init/shell-binaries";
@@ -37,6 +40,7 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
   parseKandeloDemoConfig,
   resolveDemoAssets,
+  resolveDemoDockActions,
   resolveDemoInit,
   resolveDemoPresentation,
   validateKandeloDemoConfig,
@@ -124,6 +128,10 @@ async function writeRootfs(
   ensureDirRecursive(fs, "/bin");
   ensureDirRecursive(fs, "/etc/kandelo");
   fs.symlink("/usr/bin/bash", "/bin/bash");
+  // Every Kandelo rootfs also binds bash as /bin/sh (images/rootfs/PACKAGES.toml
+  // `aliases`), and the shell image builder asserts all four names.
+  fs.symlink("/usr/bin/bash", "/bin/sh");
+  fs.symlink("/usr/bin/bash", "/usr/bin/sh");
   writeVfsBinary(
     fs,
     "/usr/bin/login",
@@ -219,22 +227,11 @@ function text(bytes: Uint8Array): string {
 function fixturePaths(root: string) {
   const rootfsPath = join(root, "rootfs.vfs.zst");
   const bashPath = join(root, "bash.wasm");
-  const fbdoomPath = join(root, "fbdoom.wasm");
-  const modesetPath = join(root, "modeset.wasm");
-  const sdl2Path = join(root, "sdl2.wasm");
-  const espeakNgPath = join(root, "espeak-ng.wasm");
   const espeakNgDataPath = join(root, "espeak-ng-data.zip");
-  // The wayland-demo package's outputs: four programs, the launcher, and
-  // libinput's device quirks.
-  const wlcompositorPath = join(root, "wlcompositor.wasm");
-  const wltermPath = join(root, "wlterm.wasm");
-  const wlclockPath = join(root, "wlclock.wasm");
-  const wlpaintPath = join(root, "wlpaint.wasm");
+  // The files the composer writes eagerly: the desktops' launchers, the
+  // Omarchy theme hook, and the data archives. Their programs are lazy
+  // files, written below with every other SHELL_LAZY_BINARY_SPECS entry.
   const wldesktopPath = join(root, "wldesktop");
-  // The tiling and Omarchy desktops: two more programs, two launchers, the
-  // theme hook, and the data archive unpacked at /usr/share/kandelo.
-  const klauncherPath = join(root, "klauncher.wasm");
-  const notifySendPath = join(root, "notify-send.wasm");
   const omarchydesktopPath = join(root, "omarchydesktop");
   const omarchyThemeHookPath = join(root, "omarchy-theme-changed");
   const desktopDataPath = join(root, "kandelo-desktop-data.zip");
@@ -251,17 +248,7 @@ function fixturePaths(root: string) {
     bashPath,
     new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
   );
-  writeFileSync(fbdoomPath, new Uint8Array([0xfa, 0xbd, 0x00, 0x01]));
-  writeFileSync(modesetPath, new Uint8Array([0x6d, 0x6f, 0x64, 0x65]));
-  writeFileSync(sdl2Path, new Uint8Array([0x73, 0x64, 0x6c, 0x32]));
-  writeFileSync(espeakNgPath, new Uint8Array([0x65, 0x73, 0x70, 0x6b]));
-  writeFileSync(wlcompositorPath, new Uint8Array([0x77, 0x6c, 0x63, 0x31]));
-  writeFileSync(wltermPath, new Uint8Array([0x77, 0x6c, 0x74, 0x31]));
-  writeFileSync(wlclockPath, new Uint8Array([0x77, 0x6c, 0x6b, 0x31]));
-  writeFileSync(wlpaintPath, new Uint8Array([0x77, 0x6c, 0x70, 0x31]));
   writeFileSync(wldesktopPath, "#!/bin/sh\nexec wlterm\n");
-  writeFileSync(klauncherPath, new Uint8Array([0x6b, 0x6c, 0x6e, 0x31]));
-  writeFileSync(notifySendPath, new Uint8Array([0x6e, 0x73, 0x6e, 0x31]));
   writeFileSync(omarchydesktopPath, "#!/bin/sh\nexec wlcompositor\n");
   writeFileSync(omarchyThemeHookPath, "#!/usr/bin/bash\nexit 0\n");
   writeFileSync(
@@ -356,18 +343,8 @@ function fixturePaths(root: string) {
   return {
     rootfsPath,
     bashPath,
-    fbdoomPath,
-    modesetPath,
-    sdl2Path,
-    espeakNgPath,
     espeakNgDataPath,
-    wlcompositorPath,
-    wltermPath,
-    wlclockPath,
-    wlpaintPath,
     wldesktopPath,
-    klauncherPath,
-    notifySendPath,
     omarchydesktopPath,
     omarchyThemeHookPath,
     desktopDataPath,
@@ -445,11 +422,12 @@ describe("canonical source-rootfs shell", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*34$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*36$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "packages/registry/shell/source-rootfs-shell-demo.json",
       "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
+      "packages/registry/shell/scummvm-freeware-games.json",
       "images/vfs/scripts/build-source-rootfs-shell-image.ts",
       "images/vfs/scripts/source-rootfs-shell-overlay.ts",
       "images/vfs/scripts/shell-lazy-archives.ts",
@@ -460,7 +438,7 @@ describe("canonical source-rootfs shell", () => {
       expect(buildToml).toContain(`"${input}"`);
     }
 
-    for (const name of ["ROOTFS", "BASH", "FBDOOM", "MODESET"]) {
+    for (const name of ["ROOTFS", "BASH"]) {
       expect(wrapper).toContain(`WASM_POSIX_DEP_${name}_DIR`);
     }
     expect(wrapper).toContain("EXTENDED_DEPENDENCIES=(");
@@ -614,6 +592,15 @@ describe("canonical source-rootfs shell", () => {
     for (const spec of SHELL_LAZY_BINARY_SPECS) {
       expect(fs.getLazyEntry(spec.vfsPath), spec.id).not.toBeNull();
     }
+    // FFmpeg's three programs are lazy files provided by the ffmpeg package.
+    for (const id of ["ffmpeg", "ffprobe", "ffplay"]) {
+      const spec = SHELL_LAZY_BINARY_SPECS.find((candidate) => candidate.id === id);
+      expect(spec, id).toBeDefined();
+      expect(spec!.vfsPath).toBe(`/usr/bin/${id}`);
+      expect(spec!.resolverPath).toBe(`programs/ffmpeg/${id}.wasm`);
+      expect(shellLazySpecDependency(spec!)).toBe("ffmpeg");
+      expect(fs.getLazyEntry(`/usr/bin/${id}`), id).not.toBeNull();
+    }
     for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
       expect(
         fs
@@ -638,43 +625,84 @@ describe("canonical source-rootfs shell", () => {
       url: "binaries/programs/wasm32/grep.wasm",
       size: 412_000,
     });
-    expect(readVfsFile(fs, "/usr/local/bin/fbdoom")).toEqual(
-      new Uint8Array(readFileSync(paths.fbdoomPath)),
-    );
-    expect(readVfsFile(fs, "/usr/local/bin/modeset")).toEqual(
-      new Uint8Array(readFileSync(paths.modesetPath)),
-    );
-    expect(fs.stat("/usr/local/bin/fbdoom").mode & 0o777).toBe(0o755);
-    expect(fs.stat("/usr/local/bin/modeset").mode & 0o777).toBe(0o755);
-
-    // WHY: sdl2 and espeak-ng were previously fetched from the
-    // page origin and written into the image at browser boot. An image the
-    // host has to complete after the fact is not self-describing, so this
-    // asserts they ship inside the built image itself.
-    expect(readVfsFile(fs, "/usr/local/bin/sdl2")).toEqual(
-      new Uint8Array(readFileSync(paths.sdl2Path)),
-    );
-    expect(fs.stat("/usr/local/bin/sdl2").mode & 0o777).toBe(0o755);
-    expect(readVfsFile(fs, "/usr/bin/espeak-ng")).toEqual(
-      new Uint8Array(readFileSync(paths.espeakNgPath)),
-    );
-    expect(fs.stat("/usr/bin/espeak-ng").mode & 0o777).toBe(0o755);
+    // WHY: every program the shell adds is a lazy file the image itself
+    // declares -- path, size, mode and package-relative URL -- so it is
+    // self-describing without costing every visitor the program's bytes.
+    // (sdl2 and espeak-ng were once fetched by the page and written into the
+    // image at browser boot; the image must not depend on that.)
+    for (const [guest, url] of [
+      ["/usr/local/bin/fbdoom", "kandelo-lazy:programs/fbdoom.wasm"],
+      ["/usr/local/bin/modeset", "kandelo-lazy:programs/modeset.wasm"],
+      ["/usr/local/bin/sdl2", "kandelo-lazy:programs/sdl2.wasm"],
+      ["/usr/bin/espeak-ng", "kandelo-lazy:programs/espeak-ng/espeak-ng.wasm"],
+      [
+        "/usr/local/bin/wlcompositor",
+        "kandelo-lazy:programs/wayland-demo/wlcompositor.wasm",
+      ],
+      ["/usr/local/bin/wlterm", "kandelo-lazy:programs/wayland-demo/wlterm.wasm"],
+      ["/usr/local/bin/wlclock", "kandelo-lazy:programs/wayland-demo/wlclock.wasm"],
+      ["/usr/local/bin/wlpaint", "kandelo-lazy:programs/wayland-demo/wlpaint.wasm"],
+      [
+        "/usr/local/bin/klauncher",
+        "kandelo-lazy:programs/wayland-demo/klauncher.wasm",
+      ],
+      [
+        "/usr/local/bin/notify-send",
+        "kandelo-lazy:programs/wayland-demo/notify-send.wasm",
+      ],
+    ]) {
+      const spec = SHELL_LAZY_BINARY_SPECS.find((entry) => entry.vfsPath === guest);
+      expect(spec, guest).toBeDefined();
+      expect(fs.getLazyEntry(guest), guest).toMatchObject({
+        url,
+        size: `${spec!.id} fixture`.length,
+      });
+      expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
+    }
     // PATH_ESPEAK_DATA is compiled into the binary as /usr/share, so the
     // voice-data zip must land unpacked rather than staying a lazy archive.
     expect(text(readVfsFile(fs, "/usr/share/espeak-ng-data/en/en_dict"))).toBe(
       "espeak voice data fixture",
     );
-    // The Wayland desktop: the launcher and the four programs it execs are
-    // eager executables on PATH, and wlcompositor's statically linked
+    // The ScummVM machine's dock actions run this script, so it must be an
+    // eager executable, and every game it can fetch must be pinned in the
+    // catalog it reads: an unverified download would let a changed file
+    // start as the game.
+    const play = text(readVfsFile(fs, "/usr/local/bin/scummvm-play"));
+    expect(fs.stat("/usr/local/bin/scummvm-play").mode & 0o777).toBe(0o755);
+    expect(play).toContain("sha256sum -c -");
+    const catalog = loadScummvmFreewareCatalog();
+    const catalogRows = text(
+      readVfsFile(fs, "/usr/local/share/scummvm-play/games.tsv"),
+    ).trimEnd().split("\n").map((line) => line.split("\t"));
+    expect(catalogRows).toEqual(catalog.games.map((game) => [
+      game.id,
+      String(game.bytes),
+      formatDownloadSize(game.bytes),
+      game.sha256,
+      game.url,
+      game.title,
+    ]));
+    // The dock menu offers exactly the catalog, so no entry names a game the
+    // machine cannot fetch.
+    const bakedDemo = parseKandeloDemoConfig(
+      text(readVfsFile(fs, KANDELO_DEMO_CONFIG_PATH)),
+    )!;
+    const scummvmMenu = resolveDemoDockActions(bakedDemo, "scummvm")
+      .find((action) => action.id === "freeware");
+    expect(scummvmMenu && "menu" in scummvmMenu ? scummvmMenu.menu : null)
+      .toEqual(scummvmFreewareMenuEntries(catalog));
+    // Ctrl+C at the machine's terminal must stop ScummVM itself. The wrapper
+    // runs the engine in the background, where POSIX has SIGINT ignored, so
+    // the wrapper must forward it or the old engine keeps the display.
+    expect(text(readVfsFile(fs, "/usr/local/bin/scummvm"))).toContain(
+      `trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; exit 130' INT TERM`,
+    );
+    // The desktops' launchers are eager scripts on PATH (the programs they
+    // exec are the lazy files above), and wlcompositor's statically linked
     // libinput finds its device quirks at LIBINPUT_QUIRKS_DIR.
     for (const [guest, host] of [
-      ["/usr/local/bin/wlcompositor", paths.wlcompositorPath],
-      ["/usr/local/bin/wlterm", paths.wltermPath],
-      ["/usr/local/bin/wlclock", paths.wlclockPath],
-      ["/usr/local/bin/wlpaint", paths.wlpaintPath],
       ["/usr/local/bin/wldesktop", paths.wldesktopPath],
-      ["/usr/local/bin/klauncher", paths.klauncherPath],
-      ["/usr/local/bin/notify-send", paths.notifySendPath],
       ["/usr/local/bin/omarchydesktop", paths.omarchydesktopPath],
       ["/usr/local/bin/omarchy-theme-changed", paths.omarchyThemeHookPath],
     ]) {
@@ -729,6 +757,14 @@ describe("canonical source-rootfs shell", () => {
       "defaultBranch = main",
     );
     expect(text(readVfsFile(fs, "/etc/profile"))).toContain("NETHACKOPTIONS");
+    // The image turns page JavaScript on for ELinks; upstream's default is
+    // off, so losing this file would silently disable the QuickJS engine the
+    // elinks package is built with.
+    const elinksConf = text(readVfsFile(fs, "/etc/elinks/elinks.conf"));
+    expect(elinksConf).toContain("set ecmascript.enable = 1");
+    // 24-bit color keeps ELinks's menus readable under themes that recolor
+    // the 16 base palette entries (the default Kandelo theme does).
+    expect(elinksConf).toContain("set terminal.xterm-256color.colors = 4");
     expect(fs.stat("/home/.nethack")).toMatchObject({
       uid: 1000,
       gid: 1000,
@@ -788,6 +824,29 @@ describe("canonical source-rootfs shell", () => {
         sha256: QUAKE_ZIP_SHA256,
         mode: 0o644,
       },
+    ]);
+    expect(resolveDemoInit(demo!, "ffmpeg-fbdev")).toEqual({
+      shellCommand:
+        "/usr/bin/ffmpeg -nostdin -re -f lavfi -i testsrc=duration=60:size=320x240:rate=10 " +
+        "-f lavfi -i sine=duration=60 -map 0:v -pix_fmt bgra -f fbdev /dev/fb0 " +
+        "-map 1:a -f oss /dev/dsp",
+    });
+    expect(resolveDemoPresentation(demo!, "ffmpeg-fbdev")?.runningPrimary).toEqual([
+      "framebuffer",
+      "terminal",
+      "syslog",
+    ]);
+    // The profile command runs through the machine's shell, so the filter
+    // graph's ';' and '[...]' are quoted.
+    expect(resolveDemoInit(demo!, "ffplay")).toEqual({
+      shellCommand:
+        "/usr/bin/ffplay -autoexit -f lavfi " +
+        "'testsrc=duration=60:size=320x240:rate=10[out0];sine=duration=60[out1]'",
+    });
+    expect(resolveDemoPresentation(demo!, "ffplay")?.runningPrimary).toEqual([
+      "kms",
+      "terminal",
+      "syslog",
     ]);
     expect(resolveDemoInit(demo!, "modeset")).toEqual({
       shellCommand: "/usr/local/bin/modeset",
@@ -972,6 +1031,33 @@ describe("canonical source-rootfs shell", () => {
     ).rejects.toThrow("/bin/missing");
   });
 
+  // WHY: lazy is the default for every program the shell adds, and eager
+  // programs accumulate one convenient addition at a time. A Wasm program
+  // threaded through an eagerly written input must fail the build, while
+  // the rootfs's own eager login (written by writeRootfs) stays allowed.
+  it("rejects a Wasm program the composer would write eagerly", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    writeFileSync(
+      paths.wldesktopPath,
+      new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
+    );
+
+    await expect(
+      buildSourceRootfsShellImage({
+        ...paths,
+        outFile: join(root, "eager-program.vfs.zst"),
+        sourceDateEpoch: "0",
+      }),
+    ).rejects.toThrow(
+      "source-rootfs shell must add programs as lazy files " +
+        "(SHELL_LAZY_BINARY_SPECS), but wrote eager Wasm at: " +
+        "/usr/local/bin/wldesktop",
+    );
+    expect(existsSync(join(root, "eager-program.vfs.zst"))).toBe(false);
+  });
+
   it("rejects a demo profile that no longer launches its owned executable", async () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
@@ -1022,7 +1108,7 @@ describe("canonical source-rootfs shell", () => {
         sourceDateEpoch: "0",
       }),
     ).rejects.toThrow(
-      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, modeset",
+      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffplay, modeset, quake, scummvm",
     );
   });
 
@@ -1032,24 +1118,9 @@ describe("canonical source-rootfs shell", () => {
     const workDir = join(root, "work");
     const rootfsDir = join(root, "rootfs");
     const bashDir = join(root, "bash");
-    const fbdoomDir = join(root, "fbdoom");
-    const modesetDir = join(root, "modeset");
-    const sdl2Dir = join(root, "sdl2-demo");
-    const espeakNgDir = join(root, "espeak-ng");
-    const waylandDemoDir = join(root, "wayland-demo");
     const toolDir = join(root, "tools");
     const extendedDependencyDirs = new Map<string, string>();
-    for (const dir of [
-      outDir,
-      workDir,
-      rootfsDir,
-      bashDir,
-      fbdoomDir,
-      modesetDir,
-      sdl2Dir,
-      espeakNgDir,
-      toolDir,
-    ]) {
+    for (const dir of [outDir, workDir, rootfsDir, bashDir, toolDir]) {
       ensureDirRecursiveOnHost(dir);
     }
     for (const dependency of SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES) {
@@ -1057,22 +1128,15 @@ describe("canonical source-rootfs shell", () => {
       ensureDirRecursiveOnHost(dir);
       extendedDependencyDirs.set(dependency, dir);
     }
+    // Their programs are lazy files the composer resolves itself; the wrapper
+    // threads only the files the composer writes eagerly.
+    const espeakNgDir = extendedDependencyDirs.get("espeak-ng")!;
+    const waylandDemoDir = extendedDependencyDirs.get("wayland-demo")!;
     writeFileSync(join(rootfsDir, "rootfs.vfs.zst"), "rootfs");
     writeFileSync(join(bashDir, "bash.wasm"), "bash");
-    writeFileSync(join(fbdoomDir, "fbdoom.wasm"), "fbdoom");
-    writeFileSync(join(modesetDir, "modeset.wasm"), "modeset");
-    writeFileSync(join(sdl2Dir, "sdl2.wasm"), "sdl2");
-    writeFileSync(join(espeakNgDir, "espeak-ng.wasm"), "espeak-ng");
     writeFileSync(join(espeakNgDir, "espeak-ng-data.zip"), "espeak-ng-data");
-    ensureDirRecursiveOnHost(waylandDemoDir);
     for (const name of [
-      "wlcompositor.wasm",
-      "wlterm.wasm",
-      "wlclock.wasm",
-      "wlpaint.wasm",
       "wldesktop",
-      "klauncher.wasm",
-      "notify-send.wasm",
       "omarchydesktop",
       "omarchy-theme-changed",
       "kandelo-desktop-data.zip",
@@ -1137,11 +1201,6 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
         WASM_POSIX_DEP_WORK_DIR: workDir,
         WASM_POSIX_DEP_ROOTFS_DIR: rootfsDir,
         WASM_POSIX_DEP_BASH_DIR: bashDir,
-        WASM_POSIX_DEP_FBDOOM_DIR: fbdoomDir,
-        WASM_POSIX_DEP_MODESET_DIR: modesetDir,
-        WASM_POSIX_DEP_SDL2_DEMO_DIR: sdl2Dir,
-        WASM_POSIX_DEP_ESPEAK_NG_DIR: espeakNgDir,
-        WASM_POSIX_DEP_WAYLAND_DEMO_DIR: waylandDemoDir,
         ...dependencyEnv,
       },
       stdio: "pipe",
@@ -1154,16 +1213,24 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     const invocation = readFileSync(logPath, "utf8");
     expect(invocation).toContain(`--rootfs ${rootfsDir}/rootfs.vfs.zst`);
     expect(invocation).toContain(`--bash ${bashDir}/bash.wasm`);
-    expect(invocation).toContain(`--fbdoom ${fbdoomDir}/fbdoom.wasm`);
-    expect(invocation).toContain(`--modeset ${modesetDir}/modeset.wasm`);
-    expect(invocation).toContain(`--sdl2 ${sdl2Dir}/sdl2.wasm`);
-    expect(invocation).toContain(`--espeak-ng ${espeakNgDir}/espeak-ng.wasm`);
+    for (const lazyProgram of [
+      "--fbdoom",
+      "--modeset",
+      "--sdl2",
+      "--espeak-ng ",
+      "--wlcompositor",
+      "--wlterm",
+      "--wlclock",
+      "--wlpaint",
+      "--klauncher",
+      "--notify-send",
+    ]) {
+      expect(invocation).not.toContain(lazyProgram);
+    }
     expect(invocation).toContain(
       `--espeak-ng-data ${espeakNgDir}/espeak-ng-data.zip`,
     );
     expect(invocation).toContain(`--wldesktop ${waylandDemoDir}/wldesktop`);
-    expect(invocation).toContain(`--klauncher ${waylandDemoDir}/klauncher.wasm`);
-    expect(invocation).toContain(`--notify-send ${waylandDemoDir}/notify-send.wasm`);
     expect(invocation).toContain(`--omarchydesktop ${waylandDemoDir}/omarchydesktop`);
     expect(invocation).toContain(
       `--omarchy-theme-hook ${waylandDemoDir}/omarchy-theme-changed`,

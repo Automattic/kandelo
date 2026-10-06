@@ -132,6 +132,79 @@ Retrying a failed node while the original aggregate process remains active is
 not supported today; that additive workflow is recorded in
 [package-management future work](package-management-future-work.md#retry-a-failed-node-during-an-active-aggregate).
 
+### Progress, timing history, and `plan --status`
+
+A full build runs for tens of minutes. The engine therefore makes its progress
+and history readable by other tools, so nobody has to inspect processes or
+tail logs to guess how far along a build is or how long it will take.
+
+**Progress events.** When `KANDELO_LOCAL_BUILD_EVENTS` names a file,
+`local-build run` appends one JSON object per line to it. `xtask bootstrap`,
+and therefore `./run.sh setup`, does the same. The writer creates the file if
+needed and flushes every line. The first line is
+`{"event":"plan","nodes":<n>,"at":<unix seconds>}`. After the up-front cache
+check comes `{"event":"cached-check","cached":<n>,"at":...}`. Each scheduler
+event follows as `{"event":"<kind>","node":"<name>/<arch>","at":...}`, where
+`<kind>` is `ready`, `running`, `succeeded`, `cached`, `reused`, `failed`, or
+`blocked`. Products are named `product/<id>`. `scripts/agent-job` sets the
+variable and summarizes the file as nodes done out of the total.
+`scripts/dev-shell.sh` starts from an empty environment, so `./run.sh setup`,
+`./run.sh local-build`, and `./run.sh build <target>` forward the variable
+into the dev shell explicitly. If you run xtask under `scripts/dev-shell.sh`
+yourself, set the variable inside that shell. A write failure prints one
+warning and never fails the build.
+
+**Timing history.** Every node that launches a build child records its wall
+time, from `running` to its result, in
+`<source cache root>/timings/node-durations.jsonl`. Each record holds the node,
+its cache key when the child returned a receipt, the seconds taken, the outcome
+(`published`, `reused`, `cached` when the child itself found the entry current,
+or `failed`), and a timestamp. Nodes that the up-front check reports cached
+never start a child, so they are not recorded. Every completed run also
+appends one line to `<source cache root>/timings/runs.jsonl`. That line holds
+the predicted and actual seconds, the seconds spent in the scheduler, and the
+node, built, and cached counts, plus the job count. Comparing predicted with
+actual is how the estimate's accuracy is measured. The source cache root is
+shared by every worktree, so all of them build and use one history. `cache-gc`
+reads only `roots/`, the compiled cache directories, and its own trash, so it
+leaves `timings/` alone.
+
+**`plan --status`.** Before you start a build, this shows which nodes it would
+take from the cache and roughly how long the rest would take:
+
+```bash
+cargo xtask local-build plan --set packages/sets/local-supported.toml --status
+cargo xtask local-build plan --set packages/sets/local-supported.toml --status --json
+```
+
+It runs the same up-front cache check as `run` and lists each selected node as
+`cached` or `will run`, with the node's median recorded duration. That median
+is taken over its 10 most recent non-failed runs. `Source`-kind packages are
+never skipped up front, because their child checks the fetched source itself.
+They therefore appear as `will run (source check)`. The estimate has two
+parts. The first is the larger of two numbers: the longest dependency chain,
+weighted by node medians, and the total will-run time divided by the job
+count. The second is the median time recent runs spent outside the scheduler:
+installing JavaScript dependencies, generating indexes, planning, the cache
+check, and finalizing. Cached nodes cost nothing. A will-run node with no
+history is counted at the median of the nodes that have history, or at 60
+seconds when there is no history at all. The output says how many nodes were
+counted this way.
+
+The defaults match `./run.sh setup`: the default source cache root, this
+checkout's `local-binaries/source-only-v1`, every product, and the job count
+from `--jobs`, then `WASM_POSIX_LOCAL_BUILD_JOBS`, then the CPU count.
+`./run.sh local-build` uses 16 jobs, so pass `--jobs 16` to estimate that
+command. `--source-cache-root`, `--output-root`, and `--product` work as they
+do for `run`.
+
+The dry run writes nothing. It creates no cache directories, does not refresh
+last-used stamps, and regenerates neither the catalog nor the program index.
+It also takes no cache lock. A `cache-gc` running at the same moment can
+therefore make the report slightly out of date, but the report still describes
+the tree it read. `--rebuild` and `--verify-cache` turn off the up-front check
+in `run`, so the plan does not describe those runs.
+
 ## Artifact invalidation model
 
 Use precise artifact concepts when changing CI gates or package cache
@@ -474,6 +547,18 @@ The root passed to `program-index` or `program-index-check` must be the
 highest-priority existing root in `WASM_POSIX_DEPS_REGISTRY`. Generate a lower
 root's committed fallback with the registry suffix beginning at that root.
 `build-deps check` verifies every present index against its own suffix context.
+Many processes regenerate the index: vitest global setup and every vitest
+worker, `build-programs.sh`, `prepare-host-package.sh`, and `local-build`.
+Each computes the projection first, then publishes it under one lock file,
+`<registry-root>/.program-packages.json.kandelo-index.lock`. The writer takes
+that lock before it looks at the existing index, so another writer's
+publication cannot slip in between the look and the replace. When the index
+already holds the exact bytes, the writer leaves the file in place instead of
+renaming a new copy over it. Concurrent runs over one unchanged registry
+therefore all succeed. A writer that has to wait prints
+`waiting for program-index lock (<path>)` once. The lock is an OS file lock,
+so it is released when its holder exits, even after a crash.
+
 `program-index-context-check` is the stricter consumer boundary: it skips
 nonexistent optional roots, requires an index for every existing configured
 root, and validates each in its exact suffix context. Source-checkout program
@@ -596,9 +681,9 @@ symlink. That symlink always targets bash: every Kandelo image binds
 `/bin/sh`, `/bin/bash` and `/usr/bin/sh` to `/usr/bin/bash`, and bash
 honors POSIX mode when invoked as `sh`. The base rootfs declares the binding
 as bash's `aliases` in `images/rootfs/PACKAGES.toml`; images composed on it
-(the source-rootfs shell image) inherit it and assert that `/bin/bash`
-and `/usr/bin/bash` resolve to the image's bash (the builder does not yet
-check the `sh` names); images built from scratch (the MariaDB, MariaDB-test and SQLite-test
+(the source-rootfs shell image) inherit it and assert that `/bin/bash`,
+`/usr/bin/bash`, `/bin/sh` and `/usr/bin/sh` all resolve to the image's
+bash; images built from scratch (the MariaDB, MariaDB-test and SQLite-test
 builders, and the lazy shell image in `shell-vfs-build.ts`) bind it with
 `installBashAsPosixShell` in `images/vfs/scripts/vfs-image-helpers.ts`. An image may also ship dash (or any other shell) as an
 ordinary command at its own name, but no other shell claims `/bin/sh` —
@@ -612,6 +697,14 @@ the host implements it and the shared artifact guard explicitly allows it.
 This prevents an ABI-current glue object linked against a stale musl sysroot
 from turning a private libc helper into a runtime trap and then caching or
 publishing that broken executable.
+
+When an executable needs fork instrumentation, `install_local_binary`
+replaces the source file in place with the instrumented module and keeps the
+source file's mode, so the published mode never depends on whether the
+instrumenter ran. Installation never prompts. Recipes often copy binaries out
+of a read-only `make install` stage, and workspace setup runs with stdin on a
+terminal, where a plain `mv` would stop and ask before replacing a read-only
+file.
 
 A sealed publisher instead sets
 `WASM_POSIX_INSTALL_LOCAL_MIRROR=0`, provides
@@ -652,7 +745,10 @@ commit     = "<exact 40-character lowercase commit>"
 ```
 
 - `script_path` typically equals `package.toml`'s `[build].script_path`;
-  a project that monkey-patches a recipe sets its own override.
+  a project that monkey-patches a recipe sets its own override. The engine
+  folds the script it will execute into every library and program cache key
+  itself, located by the same lookup that chooses what to run, so editing the
+  script always moves the key whether or not `inputs` lists it.
 - `inputs` declares the complete repository-local source closure that can
   affect the built artifact. For JavaScript and TypeScript image builders,
   include every transitive runtime import from the declared source roots; the
@@ -841,7 +937,7 @@ Inspect:
 
 ```bash
 cargo xtask build-deps sha     zlib   # → e33c5e9a4383afdd…
-cargo xtask build-deps path    zlib   # → ~/.cache/kandelo/libs/zlib-1.3.1-rev1-wasm32-e33c5e9a4383afdd…
+cargo xtask build-deps path    zlib   # → ~/.cache/kandelo/libs/zlib-1.3.1-rev1-wasm32-abi46-e33c5e9a4383afdd…
 cargo xtask build-deps parse   zlib   # → normalized dump of package.toml
 cargo xtask build-deps resolve zlib   # → build-if-needed, then print the path
 ```
@@ -854,13 +950,16 @@ in turn, it checks:
 1. **`<repo>/local-libs/<name>/build/`** — hand-patched, in-progress.
    Returned as-is; the build script never runs. Per-worktree,
    gitignored. Mirrors `local-binaries/`.
-2. **`<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<cache-key-sha>/`** —
+2. **`<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-abi<ABI>-<cache-key-sha>/`** —
    canonical cache. The suffix is the complete 64-character SHA-256 so two
    identities that share an archive filename's eight-character label cannot
-   alias locally. Packages with immutable Git inputs also require a matching
+   alias locally. The key already commits to the kernel ABI; the `abi<ABI>`
+   segment names it so cache tools (and people) can tell which ABI an entry
+   serves without opening it. Packages with immutable Git inputs also require a matching
    adjacent provenance marker; users invalidate an entry by deleting it or
-   bumping `revision`. Old short-key cache entries are left unused and rebuilt
-   under the full-key path rather than migrated or trusted in place.
+   bumping `revision`. Old short-key cache entries, and entries named before
+   the `abi<ABI>` segment existed, are left unused and rebuilt under the
+   current path rather than migrated or trusted in place.
 
    The marker is a resolver-owned sibling named
    `.<canonical-cache-basename>.kandelo-provenance.toml`. It binds the schema,
@@ -931,7 +1030,7 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_BINARY_CACHE_ROOT`       | Canonical absolute cache root selected by the current resolver invocation. It overrides inherited ambient state and keeps nested resolvers aligned with direct dependency paths.                                                                                                             |
 | `WASM_POSIX_SOURCE_ONLY_CACHE_ROOT`  | SourceOnlyV1 only: canonical cache base that owns the exact `source-only-v1/compiled` binary-cache child and immutable verified archive payloads. It is absent under Default resolution.                                                                                                                                                           |
 | `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` | SourceOnlyV1 non-Rust consumers only: normalized canonical absolute directory containing regular-file materializations and `.kandelo/source-only-program-projection-v1.json`. The TypeScript/shell resolver accepts this one aggregate-owned tier and never searches Default mirrors, the ordinary compiled cache, or an installed package. Each authority member is limited to 512 MiB; Vite also limits its complete pinned snapshot batch to 512 MiB. |
-| `WASM_POSIX_DEP_WORK_DIR`            | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. Direct ad-hoc script invocation may retain a package-local default.                                                                                                |
+| `WASM_POSIX_DEP_WORK_DIR`            | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. Every source tree, build tree, download, and scratch file the recipe writes belongs here; see "Recipes build only in their work root" below. Direct ad-hoc script invocation may retain a package-local default. |
 | `WASM_POSIX_DEP_<UPPER>_DIR`         | For each _direct_ dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`.                                                                                          |
 | `WASM_POSIX_DEP_<KEY>_SRC_DIR`       | SourceOnlyV1 direct source dependencies only: a fresh sealed per-consumer extraction below the same resolver-owned source-input root, disjoint from recipe work and output. `<KEY>` is exactly `K_` followed by the uppercase hexadecimal encoding of the package name's UTF-8 bytes (`foo-bar` → `K_666F6F2D626172`). Default source-kind dependencies retain the legacy uppercased-name spelling. |
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR`    | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name.                                                                                                                                                                                           |
@@ -967,23 +1066,75 @@ strips it. The declared `sha256` still governs what is accepted, and the
 fallback is announced on stderr. No other host gets an invented fallback: a
 dead non-GNU origin fails after its retry budget.
 
-Known migration gap: 29 Archive-provider recipes in the current local build
-set still use their legacy recipe-owned download path instead of the
-SourceOnlyV1 source handoff. The directed acyclic graph (DAG) and compiled
-artifact cache still apply—a cache hit does not run the recipe—but a cold miss
-for one of these nodes does not reuse the resolver source cache and must not be
-described as a hermetic SourceOnly build. Fifteen of the legacy recipes also
-retain mutable checkout-local source or build state. Migrating these recipes
-to `kandelo_package_stage_verified_source` and resolver-owned work directories
-is explicit future work after the initial local-build restoration lands.
+The `gzip`, `wget`, and `libiconv` recipes use this handoff and do not
+redownload resolver-supplied source. `gzip` and `wget` build their
+manifest-declared releases; their standalone download paths also verify
+the declared SHA-256. All three keep mutable build state below the
+caller's work root.
 
-The affected recipes are `bzip2`, `cpython`, `curl`, `git`, `gzip`, `icu`,
-`less`, `libcurl`, `libiconv`, `libpng`, `libxml2`, `libzip`, `msmtpd`,
-`netcat`, `nginx`, `openssl`, `redis`, `ruby`, `sdl2`,
-`sdl2-mixer-playwave`, `sdl3`, `tar`, `unzip`, `vim`, `wget`, `xz`, `zip`,
-`zlib`, and `zstd`. Five legacy script defaults currently disagree with their
-package manifests (`gzip`, `redis`, `wget`, `xz`, and `zstd`); those cold paths
-also require version alignment during the migration.
+Archive recipes read primary version, URL, and SHA-256 identity with
+`kandelo_package_load_source_metadata "$SCRIPT_DIR"`. The helper reads
+`package.toml` using Python 3.11+'s TOML parser, rejects a conflicting resolver
+tuple, and supplies the same metadata for standalone builds. It does not
+export standalone identity into child recipes. Scripts must not maintain
+fallback copies of these fields. NetSurf library wrappers use the shared
+NetSurf driver for this check; output-only wrappers delegate compilation.
+
+The formerly legacy primary download paths now consume resolver-verified
+source and caller-owned work roots. `kandelo_package_stage_primary_source`
+replaces an existing private source copy, never the verified input, and
+rejects overlap with source or output roots. Disposable scratch directories
+come from `kandelo_package_make_work_dir`, below the caller's work root.
+Redis, xz, and zstd now build their manifest releases; their publish
+revisions were advanced because the previous defaults selected other bytes.
+
+Auxiliary archives used by Ruby (libyaml, SQLite amalgamation, and the
+sqlite3 gem) and espeak-ng (pcaudiolib) are direct source-kind dependencies.
+`kandelo_package_stage_source_dependency` consumes their separately sealed
+trees; standalone invocations resolve those same dependencies. The source
+extractor accepts RubyGems `.gem` tar containers; a recipe unpacks the
+verified inner `data.tar.gz` only inside its work root. This is not an
+operating-system network sandbox. Runtime-data bundlers, host build tools,
+and auxiliary inputs still require their own declared-input review before
+claiming an entire compilation is offline or hermetic.
+
+`libzip` and `libcurl` link every archive member into smoke executables and
+call `scripts/check-package-imports.sh --require-startup`. There are no
+package-local import allowlists. Executable and directly declared Wasm
+side-file admission also runs in the resolver. Wasm inside runtime archives
+is not recursively audited here. Host names and kinds come from shared ABI
+declarations; typed kernel process imports come from the current
+architecture's actual SDK libc and startup objects, plus the shared fork
+import declaration.
+Kernel-worker-only exports are not process imports. Unknown modules,
+unknown main-module host names, and wrong kernel function types fail.
+Side modules may import ordinary dynamic-library symbols and the loader's
+`GOT.mem`/`GOT.func` namespaces (global offset table cells). GOT imports
+must be mutable, non-shared globals with the module's pointer width, as
+the shared loader supplies. Ordinary executables cannot import them.
+Unknown kernel imports and reserved host imports of the wrong kind fail.
+Relocatable objects are not audited as final programs. The smoke option preserves the
+required memory and syscall-channel imports even for an otherwise empty
+import section.
+
+The shell audit runs its native Cargo tool with target compiler and linker
+variables removed, including Wasm C/C++ and Rust flags. Caller-owned Cargo
+directories and resolver identity remain intact. A package's cross-build
+environment must not compile the native tool's C dependencies for Wasm.
+
+Repository package build entry points ensure musl core freshness before
+cache identities are calculated. Both sysroots record input fingerprints
+and installed core-output receipts. A current source stamp with missing or
+altered installed bytes is not a cache hit. Builds compile from private
+musl copies under architecture-specific locks and publish only a validated
+core; they do not overlay or clean the input submodule. Graphics refresh
+is separate from core freshness during package resolution.
+
+Automation fixtures use `scripts/package-test-fixtures.sh` to copy the
+real recipe metadata and source helpers and to emit programs with the
+current ABI contract. Tests exercise metadata disagreement, immutable
+source handoff, private output roots, and stale/incomplete SDK rejection
+without encoding the current package release as an expected test result.
 
 The libcxx package is intentionally stricter than ordinary source-fetching
 packages. It builds the C++ standard library from the exact LLVM source
@@ -998,6 +1149,67 @@ After the script exits 0, the resolver verifies every path in
 `outputs.{libs,headers,pkgconfig,files}` exists under `$WASM_POSIX_DEP_OUT_DIR`.
 A missing output fails the build (and the temp dir is cleaned up,
 so a retry starts clean).
+
+### Recipes build only in their work root
+
+A recipe configures, fetches, patches, generates, and compiles only under
+`WASM_POSIX_DEP_WORK_DIR`, and installs only into `WASM_POSIX_DEP_OUT_DIR`.
+It does not write its package directory, other checkout paths such as
+`sysroot/`, `local-binaries/`, or `apps/`, or a fixed path such as
+`/tmp/<name>-<version>.tar.xz`.
+
+The reason is concurrency within one worktree. Two resolves of the same
+recipe can run at once: two Vitest files that both miss a package's cache, a
+`local-build` beside a test, or the wasm32 and wasm64 builds of one recipe.
+Each gets its own work root, but a tree at a fixed path such as
+`$SCRIPT_DIR/qtbase-build` is shared. When two qtbase resolves ran together,
+the second build's `rm -rf "$BUILD_DIR"` deleted the first one's tree while it
+was linking (`llvm-ranlib: unable to load 'lib/libQt6InputSupport.a'`). Run
+one after the other, both passed.
+
+The usual shape is:
+
+```bash
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32   # standalone default
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/<name>-src"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/<name>-build"
+kandelo_package_stage_primary_source <name> "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0          # before install_local_binary
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
+```
+
+A standalone run (no resolver variables) keeps its trees beside the script,
+as before. `"${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"` is the equivalent
+one-line form for recipes that do not use the helper.
+
+The SDK compiler driver maps `WASM_POSIX_DEP_WORK_DIR` to
+`/usr/src/kandelo-build/<name>` in `-ffile-prefix-map`, so a work root whose
+name carries the builder's PID does not reach compiled output. A recipe that
+compiles with raw `clang` or `rustc` must add the equivalent map itself.
+
+The resolver enforces the recipe-directory part of this contract. Before the
+build script runs, it records the metadata of every entry below the package
+directory and below the build script's directory (type, size, mode, inode,
+link target, and modification and status-change times, without following
+symlinks). After the script exits, it records them again. Any difference
+fails the build with the recipe's name, the changed paths, and this rule, and
+nothing is published. Deleting and recreating a stale tree, or creating and
+removing a scratch file, is caught through the containing directory's times.
+The guard watches only those directories: writes elsewhere in the checkout
+are not detected and remain review's responsibility.
+
+Two shared locations outside the work root are intentionally written during
+builds and are safe under concurrency. `scripts/run-wasm-fork-instrument.sh`
+rebuilds `tools/bin/wasm-fork-instrument` when its input-hash stamp is stale,
+staging under a per-process name and publishing with `mv`. The VFS image
+builders' source cache (`images/vfs/scripts/source-extract-helper.ts`, under
+`$XDG_CACHE_HOME/kandelo` or `~/.cache/kandelo`) downloads to a per-process
+partial file and extracts to a per-process directory before renaming it into
+place.
 
 ### Toolchain on PATH
 
@@ -1020,6 +1232,16 @@ source.
 
 ### Sysroot libraries are not packages
 
+The opt-in `libkandelo-ucontext-unsupported.a` is also a sysroot artifact,
+not a package. Bootstrap checks required core outputs and installed-byte
+receipts against the current musl, overlay, glue, build-script, and
+toolchain inputs. Missing archives, stale input stamps, or altered outputs
+trigger `scripts/build-musl.sh --ensure`, including sysroots provisioned
+before receipts were introduced.
+The full `./run.sh local-build` and `./run.sh build-browser` paths provision
+the SDK and both architecture sysroots before deriving the package graph's
+cache identities, matching the prerequisite ordering of bootstrap builds.
+
 Some APIs are part of the Kandelo sysroot rather than the package graph. The
 GBM/EGL/GLES shims (`libgbm.a`, `libEGL.a`, `libGLESv2.a`) are built by
 `scripts/build-musl.sh` and exposed through `wasm32posix-pkg-config`; they are
@@ -1030,8 +1252,8 @@ resolves `packages/registry/libdrm` and copies the result in.
 
 Both stub scripts record the digest of the sources they build from in
 `sysroot/.kandelo-{dri,gles}-stubs.input-hash`, and `xtask bootstrap
-sysroot` runs them on every resync — including the fast path that only
-re-syncs overlay headers because `sysroot/lib/libc.a` already exists.
+sysroot` runs them on every resync — including the fast path that reuses
+a core whose source stamp and installed-byte receipt are current.
 Without that, a sysroot provisioned before a glue or `libdrm` change kept
 its old archives indefinitely: declaring the sources in `build.toml.inputs`
 moves the *cache key*, but the link still consumes whatever `sysroot/lib`
@@ -1362,9 +1584,11 @@ previous version of the cache entry or the full new one — never a partial
 write.
 
 If two builds of the same cache key race, the first `rename` wins.
-The second notices the canonical path exists and discards its own
-staging directory. Identical inputs yield identical outputs, so keeping
-either copy is correct.
+The second discards its own staging directory and keeps the winner,
+whether it sees the canonical path before renaming or its own `rename`
+is refused because the winner landed in between (`ENOTEMPTY` or
+`EEXIST`). Identical inputs yield identical outputs, so keeping either
+copy is correct.
 
 This race rule covers creation of a previously absent cache key. Maintenance
 that deliberately removes an existing key—force-source rebuild or stale-cache
@@ -1384,7 +1608,7 @@ them once their pid is gone and they are a day old.
 ## Cache garbage collection
 
 The SourceOnly cache is content-addressed: a generation directory
-`compiled/{libs,programs}/<name>-<version>-rev<N>-<arch>-<cache key>/` is
+`compiled/{libs,programs}/<name>-<version>-rev<N>-<arch>-abi<ABI>-<cache key>/` is
 never modified once published, and any change to a package's inputs
 produces a new generation under a new key instead of replacing the old
 one. Because the cache is shared by every checkout on the machine (see
@@ -1399,6 +1623,7 @@ show is unused:
 | Entry | Removed when |
 | ----- | ------------ |
 | Generation directory (plus its receipt, provenance, and last-used sidecars) | No live checkout root names its cache key **and** it has not been used for `--max-age-days` (default 14). |
+| Generation, under `--below-abi N` | Built for a kernel ABI below `N`, no live checkout root names its key, and not used within the last day. Applies at any age. A generation named without an ABI predates the `abi<ABI>` name segment and counts as ABI 46 or older, so it is collected only when `N` is above 46. |
 | Generation, under `--max-size SIZE` | After the age pass, still over the budget: least recently used first, never a root-protected one, never one used within the last day. `SIZE` is bytes or `K`/`M`/`G`/`T` (binary multiples). |
 | `.work-<pid>-*`, `.build-stage-<pid>-*`, `.git-inputs-<pid>-*`, `.source-only-dispose-<pid>-*`, `.kandelo-receipt-tmp-<pid>` | The owning pid is not running and the entry is at least a day old. |
 | Receipt/provenance/last-used sidecar whose generation directory is gone | At least a day old. |
@@ -1414,6 +1639,23 @@ build that reuses hundreds of generations does not write hundreds of files
 each run. A generation without a stamp — every generation written before
 this mechanism existed — is dated by the newest of its directory and
 receipt mtimes.
+
+**ABI.** A program built for one kernel ABI cannot run on a kernel of
+another (the host compares the module's `__abi_version` export with the
+kernel's), so after an ABI bump every older generation is dead weight for
+any checkout that has moved past it. Every library and program cache key
+commits to one ABI, and the generation's name carries it
+(`...-abi<ABI>-<key>`), so `--below-abi N` selects generations by name
+without opening them. Generations named before the segment existed were
+written by older code, so they were built for ABI 46 (the ABI current when
+names gained the segment) or older: `--below-abi 47` and above collect them
+like any old-ABI generation, and a lower floor leaves them to the age rule,
+which removes them once they go unused because no current build reads
+them. Live roots and the one-day
+recent-use floor still protect an old-ABI generation: a checkout that has
+not rebuilt since the bump is still using it. Source generations serve
+every ABI, carry none in their names, and are never collected by this
+rule.
 
 **Live roots.** When a local build publishes its projection, it records the
 cache keys that projection depends on (programs, the kernel, and the
@@ -1442,7 +1684,8 @@ orphaned sidecars exists for them.
 **Dry run by default.** Without `--apply`, `cache-gc` takes no lock and
 changes nothing; it prints each entry it would remove, why, its size, and
 totals, including how many generations are protected by a root versus kept
-only because they are recent.
+only because they are recent, and, under `--below-abi`, how many old-ABI
+generations were kept and how many were named without an ABI.
 
 **Automatic collection.** After a successful local build the engine runs
 the same collection with `--apply`, a 30-day age limit, and no size budget,
@@ -1782,10 +2025,11 @@ not Kandelo defects. They stay until the engine or the upstream code changes.
 
 | Package | Patch | Reason | Follow-up |
 |---|---|---|---|
-| `sdl2` | `patches/0001-recognize-kandelo-as-unix.patch`: `configure` accepts `wasm32-*-none` as a Unix target. | SDL's `configure` has a fixed list of host triples. | Upstreamable as generic-Unix detection. |
+| `sdl2` | `patches/0001-recognize-kandelo-as-unix.patch`: `configure` accepts `wasm32-*-none` as a Unix target. `patches/0002-kmsdrm-display-dpi-from-connector.patch`: the KMSDRM backend answers `SDL_GetDisplayDPI` from the connector's physical size. | SDL's `configure` has a fixed list of host triples. SDL2's KMSDRM backend has no DPI query, unlike its X11 and Wayland backends, so a fullscreen client that scales by DPI (ScummVM) stayed at 1x. | Both are upstreamable: generic-Unix detection, and a missing backend feature that is not Kandelo-specific. |
 | `scummvm` | `patches/0001-kandelo-host-triple.patch`: `configure` maps the `wasm32posix` host to its generic POSIX/SDL backend (every `wasm32-*` triple otherwise selects the Emscripten port). `patches/0002-kandelo-opengl-default-graphics-manager.patch`: default to the OpenGL graphics manager. | ScummVM's hand-written `configure` keys on the triple. Kandelo's SDL2 is built without `SDL_Render`, so the OpenGL manager is the only presentation path. | The first is upstreamable. The second goes away if SDL2 is built with a renderer. |
 | `glib` | `src/wasm-credentials.patch`: declare Linux `ucred` credentials for wasm32. `src/giomodule-no-dbus-builtins.patch`: guard the D-Bus built-in GIO modules behind a build flag. | `gcredentialsprivate.h` has a fixed list of platforms; the kernel provides `SO_PEERCRED`. The second follows from the hand-rolled build, which leaves out the D-Bus-backed GIO sources those registrations point at. | The first needs a generic upstream path for a non-Linux `SO_PEERCRED` platform. The second goes away with an upstream meson build. |
 | `glibmm`, `fmt` | `glibmm/src/libcxx-contenttype-string.patch`, `fmt/src/include-cstdlib.patch`. | Upstream defects against current libc++ (a removed `char_traits<unsigned char>`, a missing `<cstdlib>` include). | Drop when the pinned upstream versions carry the fixes. |
+| `librsvg`, `rsvg-convert` | `librsvg/patches/system-deps-7.0.8.patch`: evaluate `cfg(...)`-keyed dependencies from the `CARGO_CFG_*` values Cargo gives build scripts. `librsvg/patches/parking_lot_core-0.9.12.patch`: build `libc::timespec` by field assignment. | Both crates assume a target known to the Rust ecosystem. `system-deps` parses an unknown target name as a `target-lexicon` triple and panics on `kandelo`; `parking_lot_core` uses a struct literal, which `libc`'s private time64 padding on 32-bit musl forbids (as on any 32-bit musl target with `RUST_LIBC_UNSTABLE_MUSL_V1_2_3`). | Upstream both fixes (system-deps, parking_lot); then drop the patches. A second Rust package would want a shared SDK location for crate patches. |
 
 ## Out of scope
 

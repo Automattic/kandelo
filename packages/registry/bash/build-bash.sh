@@ -11,16 +11,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/bash-src"
 BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
-BASH_VERSION_PKG="${WASM_POSIX_DEP_VERSION:-${BASH_VERSION_PKG:-5.2.37}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/bash/bash-${BASH_VERSION_PKG}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff}"
+BASH_VERSION_PKG="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-bash-source"
 
@@ -138,7 +139,7 @@ if [ ! -f Makefile ]; then
     # -gline-tables-only keeps DWARF line tables for symbolication and
     # debug stack traces; the flag is kept for general debuggability.
     export CFLAGS="-O2 -gline-tables-only -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
-    export LDFLAGS="-Wl,-z,stack-size=1048576 ${LDFLAGS_NCURSES:-}"
+    export LDFLAGS="${LDFLAGS_NCURSES:-}"
 
     # Stock shell startup uses compgen while resetting Bash's builtin command set
     # during every invocation. Keep programmable completion enabled even when

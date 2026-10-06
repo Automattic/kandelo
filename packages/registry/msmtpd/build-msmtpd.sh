@@ -4,50 +4,53 @@
 # shell delivery command that writes each accepted message into the VFS.
 set -euo pipefail
 
-VERSION="1.8.32"
-TARBALL="msmtp-${VERSION}.tar.xz"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://snapshot.debian.org/archive/debian/20251129T142942Z/pool/main/m/msmtp/msmtp_1.8.32.orig.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-20cd58b58dd007acf7b937fa1a1e21f3afb3e9ef5bbcfb8b4f5650deadc64db4}"
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/msmtp-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/msmtp-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 OUT="$BIN_DIR/msmtpd.wasm"
 
-if [ -f "$OUT" ]; then
-    echo "==> Reusing existing msmtpd artifact in $BIN_DIR (skip rebuild)."
-    source "$REPO_ROOT/scripts/install-local-binary.sh"
-    install_local_binary msmtpd "$OUT"
-    exit 0
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 fi
+
+# There used to be a standalone-only reuse guard here: if "$OUT" existed,
+# install it and `exit 0`. It was the only one of its kind in the registry,
+# and it skipped the compile AND the fork instrumentation. After the fork
+# instrumenter changed, a standalone run therefore reinstalled the previous
+# artifact byte-for-byte while reporting success; on the branch where this
+# was found, the stale binary died before `_start` because the instrumenter
+# had gained an export the host requires at process start.
+#
+# `bin/` is gitignored, so a fresh clone never had the stale input. That is
+# what made this invisible: it only reproduced in a long-lived checkout that
+# had built msmtpd before.
+#
+# Caching belongs to the resolver and the source-only cache, which key on the
+# build closure. A package script deciding for itself that its own output is
+# still good cannot see that a tool upstream of it changed.
 
 if ! command -v wasm32posix-cc >/dev/null 2>&1; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
-if [ ! -f "$SCRIPT_DIR/$TARBALL" ]; then
-    echo "==> Downloading msmtp $VERSION..."
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
-        -o "$SCRIPT_DIR/$TARBALL" \
-        "$SOURCE_URL"
-fi
-
-actual_sha="$(shasum -a 256 "$SCRIPT_DIR/$TARBALL" | awk '{print $1}')"
-if [ "$actual_sha" != "$SOURCE_SHA256" ]; then
-    echo "ERROR: checksum mismatch for $TARBALL" >&2
-    echo "  expected: $SOURCE_SHA256" >&2
-    echo "  actual:   $actual_sha" >&2
-    exit 1
-fi
-
-if [ ! -d "$SRC_DIR/src" ]; then
-    echo "==> Extracting msmtp $VERSION..."
-    rm -rf "$SRC_DIR"
-    tar xf "$SCRIPT_DIR/$TARBALL" -C "$SCRIPT_DIR"
-    mv "$SCRIPT_DIR/msmtp-$VERSION" "$SRC_DIR"
-fi
+kandelo_package_stage_primary_source msmtpd "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR/src"
 

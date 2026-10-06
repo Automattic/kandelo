@@ -24,6 +24,10 @@ import {
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
+import {
+  CopyOutFailure,
+  startHostClipboardCopyOut,
+} from "../../../../../host/src/input/clipboard-copy-out";
 import { demoSurfaceCaptureGate } from "../../../../../host/src/input/demo-surface-gate";
 import {
   resolveBrowserCorsProxyConfig,
@@ -44,6 +48,7 @@ import { webPreviewForMachineChromeMessage } from "../../../../../web-libs/kande
 import { resolveInitArgv } from "../../../../../web-libs/kandelo-session/src/init-boot-identity";
 import {
   genericDemoPresentation,
+  resolveDemoDockActions,
   resolveDemoGuide,
   resolveDemoIdentity,
   resolveDemoIngest,
@@ -1340,6 +1345,7 @@ async function bootProfile(
   // Ingest is an image-owned capability. Absence is valid and must not be
   // replaced with a package- or profile-name-specific UI promise.
   host.setDemoIngest(resolveDemoIngest(imageConfig, profileId));
+  host.setDemoDockActions(resolveDemoDockActions(imageConfig, profileId));
   // The one command this machine asked its login shell to run, if any. Read
   // once here: `init` is the single block that says what a machine runs.
   const machineShellCommand = shellCommandForMachine(machine.init);
@@ -1776,7 +1782,7 @@ function attachDeclaredInputSource(
   kernel: BrowserKernel,
   machine: ImageMachine,
   tick: (msg: string) => void,
-  host: { getKmsDisplaySize(crtcId?: number): { width: number; height: number } | undefined },
+  host: Pick<LiveKernelHost, "getKmsDisplaySize" | "reportClipboardPasteFailure">,
 ): void {
   const displaySelector = machine.runtime.features.includes("kms")
     ? ".kmodeset-surface"
@@ -1816,6 +1822,46 @@ function attachDeclaredInputSource(
       shouldCapture: demoSurfaceCaptureGate(
         () => document.querySelector(displaySelector ?? "main"),
       ),
+      // `clipboard`: the image runs an agent on /dev/kandelo/clipboard, so a
+      // browser paste over the machine becomes the guest's selection before
+      // the paste chord is delivered. A failure is shown, not swallowed.
+      ...(machine.runtime.features.includes("clipboard")
+        ? {
+          paste: {
+            // The log names lengths and outcomes, never the pasted text.
+            offer: async (text: string) => {
+              const result = await kernel.offerClipboardText(text);
+              tick(
+                `clipboard: paste of ${text.length} characters `
+                  + (result.ok
+                    ? `delivered to the guest (offer ${result.seq})`
+                    : `failed: ${result.reason}`
+                      + (result.errno === undefined ? "" : ` (errno ${result.errno})`)),
+              );
+              return result;
+            },
+            onFailure: (failure) => host.reportClipboardPasteFailure(failure),
+            onNoPaste: () =>
+              tick("clipboard: paste chord produced no browser paste event; sent as keys"),
+          },
+          // Copy-out: a copy chord over the machine puts the guest's next
+          // selection on the host clipboard. Nothing copied in time (Ctrl+C
+          // in a terminal is SIGINT) leaves the host clipboard as it was.
+          copy: {
+            onCopyGesture: () => {
+              const copied = startHostClipboardCopyOut(() => kernel.waitForGuestClipboardText());
+              copied.then(
+                (text) => tick(`clipboard: copied ${text.length} characters to the host`),
+                (error: unknown) => tick(
+                  `clipboard: copy chord copied nothing to the host (${
+                    error instanceof CopyOutFailure ? error.reason : String(error)})`,
+                ),
+              );
+              return copied;
+            },
+          },
+        }
+        : {}),
     }),
     dims(),
   );

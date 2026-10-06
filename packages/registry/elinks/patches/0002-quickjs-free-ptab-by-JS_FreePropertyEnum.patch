@@ -1,0 +1,36 @@
+Backport of upstream ELinks commit 149e12354821c05f9a01ca7d80d7327a58d130f9
+(https://github.com/rkd77/elinks), applied unmodified. It landed after the
+0.20.0 release and is needed with QuickJS-NG 0.17.0.
+
+JS_GetOwnPropertyNames returns a table allocated by QuickJS's own
+allocator. ELinks 0.20.0 released it with libc free(). That was already
+the wrong deallocator (it also leaked the property-name atoms), and it
+became fatal once QuickJS-NG started serving small allocations from an
+internal arena: the pointer is then not a malloc() block at all, and
+`new URLSearchParams({...})` aborts inside free(). Upstream's fix releases
+the table with the matching QuickJS call.
+
+From 149e12354821c05f9a01ca7d80d7327a58d130f9 Mon Sep 17 00:00:00 2001
+From: Witold Filipczyk <witekfl@poczta.onet.pl>
+Date: Sun, 2 Aug 2026 18:16:07 +0200
+Subject: [PATCH] [quickjs] Free ptab by JS_FreePropertyEnum
+
+---
+ src/js/quickjs/urlsearchparams.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/src/js/quickjs/urlsearchparams.c b/src/js/quickjs/urlsearchparams.c
+index d086cec4c..0ccb68ed5 100644
+--- a/src/js/quickjs/urlsearchparams.c
++++ b/src/js/quickjs/urlsearchparams.c
+@@ -198,9 +198,7 @@ js_urlSearchParams_constructor(JSContext *ctx, JSValueConst new_target, int argc
+ 				JS_FreeValue(ctx, vv[1]);
+ 				JS_FreeValue(ctx, u->map);
+ 			}
+-			if (ptab) {
+-				free(ptab);
+-			}
++			JS_FreePropertyEnum(ctx, ptab, plen);
+ 		} else {
+ 			size_t len;
+ 			const char *str = JS_ToCStringLen(ctx, &len, argv[0]);

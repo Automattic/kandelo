@@ -1,3 +1,5 @@
+import { findGlueDir } from './toolchain.ts';
+import { join } from 'node:path';
 import type { WasmArch } from './arch.ts';
 import { targetTriple, toolPrefix } from './arch.ts';
 
@@ -25,6 +27,40 @@ export function compileFlags(arch: WasmArch): string[] {
     '-mllvm', '-wasm-use-legacy-eh=false',
     '-fno-trapping-math',
   ];
+}
+
+/**
+ * Load the KandeloCallTypes plugin (sdk/src/lib/calltypes-plugin.ts) into a
+ * compile, so each object carries a `kandelo.calltypes` section.
+ *
+ * WHY these cc1 flags: the plugin reads indirect-call type ids from clang's
+ * CFI type tests (cfi-icall, trap mode so no runtime is referenced) and
+ * vtable type metadata (-flto-unit, -fwhole-program-vtables). They go
+ * through -Xclang because the driver would demand -flto for them; the
+ * plugin's first pass deletes every test it recorded, so the optimizer and
+ * code generator see the ordinary build and the code does not change. The
+ * same dylib is a Clang AST plugin (kandelo-fncasts) and an LLVM pass plugin.
+ */
+export function calltypesPluginFlags(plugin: string): string[] {
+  return [
+    '-Xclang', '-fsanitize=cfi-icall',
+    '-Xclang', '-fsanitize-trap=cfi-icall',
+    '-Xclang', '-flto-unit',
+    '-Xclang', '-fwhole-program-vtables',
+    '-Xclang', '-load', '-Xclang', plugin,
+    '-Xclang', '-add-plugin', '-Xclang', 'kandelo-fncasts',
+    `-fpass-plugin=${plugin}`,
+  ];
+}
+
+/**
+ * Does this invocation's own sanitizer request include CFI? The plugin
+ * deletes CFI type tests after recording them, which would silently remove
+ * a check the caller asked for, so such compiles go without facts.
+ */
+export function requestsCfi(args: string[]): boolean {
+  return args.some((arg) =>
+    arg.startsWith('-fsanitize=') && arg.slice('-fsanitize='.length).split(',').some((kind) => kind.startsWith('cfi')));
 }
 
 export const DEFAULT_MAIN_THREAD_STACK_SIZE = 8 * 1024 * 1024;
@@ -209,10 +245,13 @@ export function expandResponseFiles(
 }
 
 /**
- * Apply the SDK's stack-size floor while retaining explicit larger requests.
- * Callers pass the exact argv emitted for wasm-ld by Clang's `-###` trace. That
- * keeps Clang's option classification and ordering in Clang itself instead of
- * duplicating its driver option table here.
+ * Apply the SDK's stack-size floor when no explicit request is present, and
+ * otherwise honour the caller's explicit request verbatim — even below the
+ * floor — the same way repeated `-z stack-size=` operands resolve in
+ * wasm-ld itself: last one wins. Callers pass the exact argv emitted for
+ * wasm-ld by Clang's `-###` trace. That keeps Clang's option classification
+ * and ordering in Clang itself instead of duplicating its driver option
+ * table here.
  */
 export function mainThreadStackSize(
   linkerArgs: string[],
@@ -227,7 +266,27 @@ export function mainThreadStackSize(
         `stack-size=${value} exceeds the SDK's ${MAX_EXECUTABLE_MEMORY_SIZE}-byte executable memory limit`,
       );
     }
-    if (requested.kind === 'valid' && requested.value > result) result = requested.value;
+    if (requested.kind !== 'valid') return;
+    if (requested.value < DEFAULT_MAIN_THREAD_STACK_SIZE) {
+      // HONOUR IT, LOUDLY. Silently substituting the floor meant the SDK built
+      // something other than what was asked for and did not say so. Absence of
+      // a request still gets the floor (see the initial value of `result`):
+      // that is a default. An explicit smaller request is a CHOICE, and the
+      // only situation that warrants one is a fixture deliberately exercising
+      // a constrained layout.
+      //
+      // The warning is informational, not the safety mechanism. WebAssembly
+      // has no stack guard page, so an overflow writes past `__data_end` into
+      // `.bss` and corrupts the pthread/TLS globals there rather than
+      // trapping. The DEFAULT is the protection.
+      console.warn(
+        `wasm32posix: stack-size=${requested.value} is below the SDK floor of ` +
+          `${DEFAULT_MAIN_THREAD_STACK_SIZE}. Honouring it. WebAssembly has no ` +
+          `stack guard page: an overflow will corrupt .bss silently instead of ` +
+          `trapping.`,
+      );
+    }
+    result = requested.value;
   };
 
   const lldArgs = readResponseFile
@@ -253,9 +312,18 @@ export function mainThreadStackSize(
   return result;
 }
 
+/** The generated link-time allowance (see `hostImportsAllowance`). */
+export const HOST_IMPORTS_ALLOWANCE_FILE = 'kandelo-host-imports.txt';
+
+/** Path of the link-time allowance inside a glue directory. */
+export function hostImportsAllowance(glueDir: string): string {
+  return join(glueDir, HOST_IMPORTS_ALLOWANCE_FILE);
+}
+
 export function linkFlags(
   arch: WasmArch,
-  mainThreadStackSizeBytes = DEFAULT_MAIN_THREAD_STACK_SIZE,
+  hostImportsFile: string,
+  mainThreadStackSizeBytes: number | null = DEFAULT_MAIN_THREAD_STACK_SIZE,
 ): string[] {
   return [
     '-nostdlib',
@@ -267,7 +335,14 @@ export function linkFlags(
     '-Wl,--import-memory',
     '-Wl,--shared-memory',
     `-Wl,--max-memory=${MAX_EXECUTABLE_MEMORY_SIZE}`,
-    '-Wl,--allow-undefined',
+    // An executable may leave undefined only what the host supplies:
+    // libc/glue/kandelo-host-imports.txt, generated by `xtask dump-abi` from
+    // shared::abi::HOST_ENV_IMPORTS. Anything else is a link error, so
+    // configure checks report missing functions as missing and no program
+    // ships a call that traps at run time. (`--allow-undefined`, used before
+    // ABI 46, is `--import-undefined` plus `--unresolved-symbols=ignore-all`:
+    // it accepted every missing function, and no later flag can undo it.)
+    `-Wl,--allow-undefined-file=${hostImportsFile}`,
     // Reserve an 8 MiB main-thread shadow stack. wasm-ld's default is only
     // ~64 KiB, and WebAssembly has no stack guard page, so a deep call chain
     // silently overflows past __data_end into .bss and corrupts the pthread/TLS
@@ -276,12 +351,25 @@ export function linkFlags(
     // real fault. POSIX leaves the default stack size implementation-defined,
     // but 8 MiB is the de-facto Linux/glibc RLIMIT_STACK default that mainstream
     // C software (GTK, etc.) is written and tested against, so matching it
-    // maximizes portability. Treat it as a floor: callers retain explicit larger
-    // requests. This sizes only the main thread; pthreads get their own stacks
+    // maximizes portability. Applied only as a DEFAULT when no explicit
+    // request is present (see mainThreadStackSize() above); an explicit
+    // caller request, larger OR smaller, is honoured verbatim, since a
+    // request that is present is a choice, not an absence to fill in for.
+    // This sizes only the main thread; pthreads get their own stacks
     // from musl's __default_stacksize. Cost: at least ~8 MiB of initial linear
     // memory per process (it raises __heap_base 1:1). Keep in sync with the bash
     // wasm32posix-cc. See docs/sdk-guide.md.
-    `-Wl,-z,stack-size=${mainThreadStackSizeBytes}`,
+    //
+    // `null` omits this flag entirely instead of falling back to the
+    // default. sdk/src/bin/cc.ts's prepareExecutableLinker() uses that to
+    // take an uncontaminated measurement of a caller's own
+    // `-z stack-size=` request: wasm-ld resolves repeated `-z stack-size=`
+    // operands last-one-wins, so injecting even the default value here
+    // would sit after (and so override) a genuine caller request in the
+    // same measurement trace.
+    ...(mainThreadStackSizeBytes === null
+      ? []
+      : [`-Wl,-z,stack-size=${mainThreadStackSizeBytes}`]),
     '-Wl,--global-base=1114112',
     '-Wl,--table-base=3',
     '-Wl,--export-table',
@@ -292,31 +380,49 @@ export function linkFlags(
     '-Wl,--export=__tls_align',
     '-Wl,--export=__stack_pointer',
     '-Wl,--export=__wasm_thread_init',
-    // Pinned so later build stages do not drop the runtime ABI marker the host
-    // verifies against. See docs/abi-versioning.md.
-    '-Wl,--export=__abi_version',
+    // `__abi_version` is exported by libc/glue/channel_syscall.c itself
+    // (`export_name`, `used`, `retain`); an export is a root for any later
+    // dead-code pass, so no linker flag is needed. The symbol behind that
+    // export is `__wasm_posix_user_abi_version`: an `--export=__abi_version`
+    // flag names a symbol that does not exist and only linked while
+    // `--allow-undefined` was in force.
   ];
 }
 
 /** @deprecated Use compileFlags('wasm32') */
 export const COMPILE_FLAGS: string[] = compileFlags('wasm32');
-/** @deprecated Use linkFlags('wasm32') */
-export const LINK_FLAGS: string[] = linkFlags('wasm32');
+/** @deprecated Use linkFlags('wasm32', hostImportsAllowance(glueDir)) */
+export const LINK_FLAGS: string[] = linkFlags('wasm32', hostImportsAllowance(findGlueDir()));
 
 /** Link flags for building shared Wasm libraries (.so side modules). */
 export const SHARED_LINK_FLAGS: string[] = [
+  // Side modules keep --allow-undefined: their undefined symbols are resolved
+  // against the main program by the dynamic loader at dlopen, a real
+  // dynamic-linking boundary (docs/plans/2026-09-27-honest-links-and-kernel-stdin-design.md §3.4).
   '-nostdlib',
   '-Wl,--experimental-pic',
   '-Wl,--shared',
   '-Wl,--shared-memory',
   '-Wl,--export-all',
-  '-Wl,--allow-undefined',
+  '-Wl,--allow-undefined', // side-module: dynamic linking resolves at dlopen
 ];
 
 const IGNORED_EXACT = new Set([
   '-lpthread',
   '-fPIE', '-pie',
   '-lrt', '-lresolv', '-lm', '-lcrypt', '-lutil',
+  // -lgcc_s: WebAssembly has no shared libgcc; unwinder/intrinsic symbols
+  // come from the compiler runtime (compiler_builtins for Rust,
+  // compiler_rt glue for C), so a -lgcc_s request (e.g. from rustc's link
+  // line when it drives the SDK as its linker) must be dropped rather than
+  // passed to wasm-ld, which would fail to find it. A bare -lc is NOT
+  // ignored here: the SDK deliberately preserves and orders explicit -lc
+  // after the syscall glue (it resolves to the sysroot musl libc.a).
+  '-lgcc_s',
+  // wasm-ld rejects --start-group/--end-group. They are unnecessary: like ELF
+  // lld, wasm-ld resolves archive members regardless of command-line order.
+  // Meson emits them around static libraries on GNU-style targets.
+  '-Wl,--start-group', '-Wl,--end-group',
   '-rdynamic', '-Wl,-Bsymbolic',
   '-Wl,-z,noexecstack', '-Wl,-z,text', '-Wl,-z,relro',
   '-Wl,-z,now', '-Wl,-z,nocopyreloc',

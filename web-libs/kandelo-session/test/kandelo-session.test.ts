@@ -37,6 +37,7 @@ import {
   validateBootDescriptor,
 } from "../src/boot-descriptor";
 import { webPreviewForMachineChromeMessage } from "../src/machine-chrome-message";
+import { followShellOutput } from "../src/demo-dock-action";
 
 /**
  * Vitest coverage for the kandelo-session kernel-host surface:
@@ -889,6 +890,79 @@ describe("LiveKernelHost: shell command queue", () => {
       }),
     );
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("leaves the winsize to the visible terminal when commands are written headlessly", async () => {
+    const encoder = new TextEncoder();
+    let onOutput: ((data: Uint8Array) => void) | null = null;
+    const resizes: Array<[number, number, number]> = [];
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          onOutput = callback;
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize(pid: number, rows: number, cols: number) {
+          resizes.push([pid, rows, cols]);
+        },
+        ptyWrite(_pid: number, data: Uint8Array) {
+          // Ctrl+C ends the foreground editor; everything else starts one.
+          if (data[0] === 0x03) onOutput?.(encoder.encode("^C\nkandelo$ "));
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/maker",
+    });
+
+    // The Shell pane fits xterm to the viewport and attaches at that size.
+    await host.attachPty("/dev/pts/0", { cols: 174, rows: 51 });
+    // A boot-link script, a demo guide action, and a dock action all reach
+    // the same PTY without a terminal of their own.
+    await host.dispatchShellCommand("vim /etc/gitconfig");
+    const stopFollowing = await followShellOutput(host, () => {});
+    stopFollowing();
+    await host.interruptShellForeground();
+
+    expect(resizes).toEqual([[100, 51, 174]]);
+  });
+
+  it("spawns a headlessly attached shell at the size the visible terminal last set", async () => {
+    const spawnFromVfs = vi.fn(async () => ({
+      pid: 100,
+      exit: new Promise<number>(() => {}),
+    }));
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawnFromVfs,
+        onPtyOutput() {},
+        ptyResize() {},
+        ptyWrite() {},
+        // The shell (pid 100) is no longer in the process table.
+        enumProcs: async () => [{ pid: 1 }],
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      argv: ["bash", "-l", "-i"],
+    });
+
+    await host.attachPty("/dev/pts/0", { cols: 174, rows: 51 });
+    // The shell has since exited; a headless attach respawns it.
+    await host.attachPty("/dev/pts/0");
+
+    expect(spawnFromVfs).toHaveBeenCalledTimes(2);
+    expect(spawnFromVfs).toHaveBeenLastCalledWith(
+      "/bin/bash",
+      ["bash", "-l", "-i"],
+      expect.objectContaining({ ptyCols: 174, ptyRows: 51 }),
+    );
   });
 
   it("rejects a default shell without a VFS path or fallback bytes", () => {

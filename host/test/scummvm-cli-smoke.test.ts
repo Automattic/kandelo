@@ -5,31 +5,19 @@
  * visual launcher gate lives in the browser spec
  * (apps/browser-demos/test/kandelo-scummvm.spec.ts).
  *
- * The binary comes from the package cache; build it with
- * `cargo run -p xtask -- build-deps resolve scummvm` first. The test
- * skips when the package has not been built.
+ * The binary comes from the binary resolver (the same tiers every other
+ * program test uses); build it with `./run.sh setup` or
+ * `cargo run -p xtask -- build-deps resolve scummvm` first. The test skips
+ * when the package has not been built.
  */
 import { describe, it, expect } from "vitest";
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { tryResolveBinary } from "../src/binary-resolver";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
-function tryResolveScummvm(): string | null {
-  const cacheDir = join(homedir(), ".cache", "kandelo", "programs");
-  try {
-    const candidates = readdirSync(cacheDir)
-      .filter((name) => /^scummvm-\d/.test(name))
-      .map((name) => join(cacheDir, name, "scummvm.wasm"))
-      .filter(existsSync)
-      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-    return candidates[0] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-const programBinary = tryResolveScummvm();
+// WHY the resolver and not the newest ~/.cache/kandelo/programs/scummvm-*
+// directory: that cache is shared by every checkout on the machine, so the
+// newest entry can belong to another worktree built for a different ABI.
+const programBinary = tryResolveBinary("programs/scummvm/scummvm.wasm");
 
 describe("ScummVM CLI", () => {
   it.skipIf(!programBinary)(

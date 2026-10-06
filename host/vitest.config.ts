@@ -55,6 +55,12 @@ export default defineConfig({
       "../scripts/vfs-product-catalog.test.mjs",
     ],
     globalSetup: ["test/global-setup.ts"],
+    // The default reporter counts a file that never loaded as a failed file,
+    // and reports a zero-test run as a pass. The suite-health line keeps
+    // "did not run" apart from "ran and failed", so a green or "nothing new
+    // failed" run is not mistaken for coverage. Why it exists in detail:
+    // test/support/suite-health-reporter.ts.
+    reporters: ["default", "./test/support/suite-health-reporter.ts"],
     // Keep test files in child processes. The suite itself starts many
     // worker_threads and large shared Wasm memories; nesting that work inside
     // Vitest's thread pool has historically made task reporting unreliable

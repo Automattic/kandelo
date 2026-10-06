@@ -101,6 +101,60 @@ export interface DemoIngestConfig {
 }
 
 /**
+ * A dock button that replaces the machine's foreground program.
+ *
+ * A display machine's command is a long-lived program that owns the
+ * machine's terminal and its display device, so offering "run this instead"
+ * means ending that program first. The host does it as a person at the
+ * terminal would — Ctrl+C, then this command once the shell prompt is back
+ * (`runDemoDockAction` in demo-dock-action.ts) — so an action behaves exactly
+ * like typing its command after quitting the program by hand.
+ *
+ * `restart` is an author-provided shell command from the VFS image, never
+ * user input: same vocabulary and same trust as `ingest.onLoad.restart`.
+ *
+ * An action declares exactly one of `restart` (the button runs it) or
+ * `menu` (the button opens a list, and the chosen entry's `restart` runs the
+ * same way). A menu is for a family of commands too long for buttons, such
+ * as one per downloadable game.
+ */
+export type DemoDockActionConfig = DemoDockCommandConfig | DemoDockMenuActionConfig;
+
+/** A command the dock runs: an action's own, or a menu entry's. */
+export interface DemoDockCommandConfig {
+  id: string;
+  label: string;
+  description?: string;
+  restart: string;
+}
+
+export interface DemoDockMenuActionConfig {
+  id: string;
+  label: string;
+  description?: string;
+  menu: DemoDockMenuEntryConfig[];
+}
+
+/**
+ * One menu entry. `detail` is a short qualifier shown beside the label (a
+ * download size); `group` collects entries under a heading, in first-seen
+ * order. An entry the image knows about but cannot run declares
+ * `unavailable` — the reason, shown on the disabled entry — instead of
+ * `restart`, so the gap stays visible rather than silently missing.
+ */
+export type DemoDockMenuEntryConfig = {
+  id: string;
+  label: string;
+  detail?: string;
+  group?: string;
+} & ({ restart: string } | { unavailable: string });
+
+/** A dock has room for a few buttons; anything longer belongs in a menu. */
+const MAX_DOCK_ACTIONS = 4;
+/** A menu that needs scrolling past this is no longer a choice. */
+const MAX_DOCK_MENU_ENTRIES = 40;
+
+/**
  * Declared runtime shape of a machine.
  *
  * There is deliberately no `network` flag. One was carried here as
@@ -136,14 +190,17 @@ export interface DemoRuntimeConfigInput {
  * `kms` select a display surface, `kms-gl-scanout` additionally routes that
  * surface through the vblank pump's WebGL2 scanout presenter, and
  * `evdev-input` makes the host attach a DOM input source before the machine's
- * command runs. A feature with no consumer is a claim the platform does not
- * honour, so it does not belong in this union.
+ * command runs, and `clipboard` makes that source turn the browser's paste
+ * gesture into an offer on `/dev/kandelo/clipboard` (the image runs an agent,
+ * kclipd, that reads it). A feature with no consumer is a claim the platform
+ * does not honour, so it does not belong in this union.
  */
 export type DemoRuntimeFeature =
   | "framebuffer"
   | "kms"
   | "kms-gl-scanout"
-  | "evdev-input";
+  | "evdev-input"
+  | "clipboard";
 
 /**
  * What the image ASKS for. The host clamps each of these to its own policy
@@ -275,6 +332,7 @@ export interface KandeloDemoProfileConfig {
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
   ingest?: DemoIngestConfig;
+  dockActions?: DemoDockActionConfig[];
   runtime?: DemoRuntimeConfigInput;
   init?: DemoInitConfig;
   web?: DemoWebConfigInput;
@@ -367,6 +425,7 @@ const PROFILE_ONLY_KEYS = [
   "assets",
   "guide",
   "ingest",
+  "dockActions",
   "runtime",
   "init",
   "web",
@@ -449,6 +508,16 @@ export function resolveDemoIngest(
     : normalizeIngest(profile.ingest, `profiles.${profileId}.ingest`);
 }
 
+export function resolveDemoDockActions(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoDockActionConfig[] {
+  const profile = profileConfig(config, profileId);
+  return profile?.dockActions === undefined
+    ? []
+    : normalizeDockActions(profile.dockActions, `profiles.${profileId}.dockActions`);
+}
+
 /** Upper bound on any image-declared cap, so a bad image can't ask the browser
  *  to buffer an unbounded upload into the VFS. The upload is held in page
  *  memory and then written into the machine's filesystem, whose own ceiling
@@ -463,6 +532,7 @@ const RUNTIME_FEATURES = new Set<DemoRuntimeFeature>([
   "kms",
   "kms-gl-scanout",
   "evdev-input",
+  "clipboard",
 ]);
 
 function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
@@ -497,6 +567,11 @@ function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
   // that never mounts. Reject the combination from untrusted image metadata.
   if (features.includes("kms-gl-scanout") && !features.includes("kms")) {
     throw new Error(`${field}.features: "kms-gl-scanout" requires "kms"`);
+  }
+  // The paste gesture is part of the DOM input source; without one there is
+  // nothing to carry it.
+  if (features.includes("clipboard") && !features.includes("evdev-input")) {
+    throw new Error(`${field}.features: "clipboard" requires "evdev-input"`);
   }
 
   return {
@@ -986,6 +1061,79 @@ function validateProfileFields(
   if (value.ingest !== undefined) {
     normalizeIngest(value.ingest, `${field}.ingest`);
   }
+  if (value.dockActions !== undefined) {
+    normalizeDockActions(value.dockActions, `${field}.dockActions`);
+  }
+}
+
+function normalizeDockActions(value: unknown, field: string): DemoDockActionConfig[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${field} must be an array`);
+  }
+  if (value.length > MAX_DOCK_ACTIONS) {
+    throw new Error(`${field} may declare at most ${MAX_DOCK_ACTIONS} actions`);
+  }
+  const seen = new Set<string>();
+  return value.map((action, index) => {
+    const at = `${field}[${index}]`;
+    if (!isRecord(action)) {
+      throw new Error(`${at} must be an object`);
+    }
+    const id = requiredString(action.id, `${at}.id`);
+    if (seen.has(id)) {
+      throw new Error(`${field} has duplicate dock action id: ${id}`);
+    }
+    seen.add(id);
+    const common = {
+      id,
+      label: requiredString(action.label, `${at}.label`),
+      ...(typeof action.description === "string" ? { description: action.description } : {}),
+    };
+    if ((action.restart === undefined) === (action.menu === undefined)) {
+      throw new Error(`${at} must declare exactly one of restart or menu`);
+    }
+    if (action.menu === undefined) {
+      return { ...common, restart: requiredString(action.restart, `${at}.restart`) };
+    }
+    return { ...common, menu: normalizeDockMenu(action.menu, `${at}.menu`) };
+  });
+}
+
+function normalizeDockMenu(value: unknown, field: string): DemoDockMenuEntryConfig[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${field} must be a non-empty array`);
+  }
+  if (value.length > MAX_DOCK_MENU_ENTRIES) {
+    throw new Error(`${field} may declare at most ${MAX_DOCK_MENU_ENTRIES} entries`);
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    const at = `${field}[${index}]`;
+    if (!isRecord(entry)) {
+      throw new Error(`${at} must be an object`);
+    }
+    const id = requiredString(entry.id, `${at}.id`);
+    if (seen.has(id)) {
+      throw new Error(`${field} has duplicate menu entry id: ${id}`);
+    }
+    seen.add(id);
+    const common = {
+      id,
+      label: requiredString(entry.label, `${at}.label`),
+      ...(entry.detail !== undefined
+        ? { detail: requiredString(entry.detail, `${at}.detail`) }
+        : {}),
+      ...(entry.group !== undefined
+        ? { group: requiredString(entry.group, `${at}.group`) }
+        : {}),
+    };
+    if ((entry.restart === undefined) === (entry.unavailable === undefined)) {
+      throw new Error(`${at} must declare exactly one of restart or unavailable`);
+    }
+    return entry.restart !== undefined
+      ? { ...common, restart: requiredString(entry.restart, `${at}.restart`) }
+      : { ...common, unavailable: requiredString(entry.unavailable, `${at}.unavailable`) };
+  });
 }
 
 function normalizePresentationConfig(config: unknown): DemoPresentation {

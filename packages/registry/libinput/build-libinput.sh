@@ -2,11 +2,9 @@
 #
 # Build libinput.a for wasm32-posix-kernel, pinned to libinput 1.25.0.
 #
-# This is the REAL libinput core (path backend), replacing the historical
-# libinput-lite no-op stub for the compositor path. SDL2 keeps depending on
-# libinput-lite — it references zero libinput symbols and uses libinput only
-# as an optional-detection stub — so this port is scoped to the Wayland
-# compositor consumer (PR6/PR7) and its smoke test. See
+# This is the REAL libinput core (path backend), scoped to the Wayland
+# compositor and its smoke tests. SDL2 does not use libinput (it is built
+# with --disable-libudev). See
 # docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5c).
 #
 # We bypass upstream's meson build: its feature probes misreport against the
@@ -27,23 +25,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
 # Source, build scratch and patched copies live in the resolver-owned work
 # root (or a direct run's private one), never under the reviewed checkout.
 # shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/libinput-src"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$WORK_DIR/.kandelo-libinput-source"
 
-LIBINPUT_VERSION="${WASM_POSIX_DEP_VERSION:-1.25.0}"
+LIBINPUT_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libinput-install}"
 # The gitlab auto-archive sits behind an Anubis JS-PoW wall that curl cannot
 # clear; the Ubuntu `orig` tarball is the byte-identical 1.25.0 tree (sha256
 # below matches the gitlab archive) and its pool mirror is durable.
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-http://archive.ubuntu.com/ubuntu/pool/main/libi/libinput/libinput_${LIBINPUT_VERSION}.orig.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-f7e8425f185cadba5761d0a1dae6be041750d351163ffa04adc5b9a79a13c0ec}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 # --- Toolchain ----------------------------------------------------------
 for tool in wasm32posix-cc wasm32posix-ar; do

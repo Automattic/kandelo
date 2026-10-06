@@ -38,8 +38,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/ncurses-src"
@@ -49,10 +50,10 @@ WASM_BUILD_DIR="$WORK_DIR/ncurses-wasm-build"
 BIN_DIR="$WORK_DIR/bin"
 
 # --- Inputs from resolver, with legacy fallbacks ---
-NCURSES_VERSION="${WASM_POSIX_DEP_VERSION:-${NCURSES_VERSION:-6.5}}"
+NCURSES_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${KANDELO_PACKAGE_OUT_DIR:-$WORK_DIR/ncurses-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://invisible-mirror.net/archives/ncurses/ncurses-${NCURSES_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-ncurses-source"
 

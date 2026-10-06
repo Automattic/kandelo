@@ -7,4 +7,7 @@ inputs = [
   "packages/registry/waybar/build-waybar.sh",
   "packages/registry/waybar/src/glib-static-init.c",
   "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/wasm-artifact-guards.sh",
 ]

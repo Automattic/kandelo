@@ -6,4 +6,7 @@ revision    = 1
 inputs = [
   "packages/registry/dbus/build-dbus.sh",
   "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "scripts/run-wasm-fork-instrument.sh",
 ]

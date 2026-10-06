@@ -26,15 +26,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR/dbus-work" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/dbus-src"
 
-DBUS_VERSION="${WASM_POSIX_DEP_VERSION:-${DBUS_VERSION:-1.14.10}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://dbus.freedesktop.org/releases/dbus/dbus-${DBUS_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-ba1f21d2bd9d339da2d4aa8780c09df32fea87998b73da24f49ab9df1e36a50f}"
+DBUS_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 
 EXPAT_PREFIX="${WASM_POSIX_DEP_EXPAT_DIR:?WASM_POSIX_DEP_EXPAT_DIR not set (must be invoked via cargo xtask build-deps resolve dbus)}"
@@ -52,8 +53,9 @@ rm -rf "$SRC_DIR"
 kandelo_package_stage_verified_source dbus "$SRC_DIR" \
     "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
 
-# Fresh build dir each run — autoconf bakes --prefix into Makefiles.
-BUILD_DIR="$SCRIPT_DIR/dbus-build"
+# Fresh build dir each run — autoconf bakes --prefix into Makefiles. It
+# lives under the work root so a concurrent resolve cannot delete it.
+BUILD_DIR="$WORK_DIR/dbus-build"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
@@ -114,16 +116,25 @@ done
 
 # install_local_binary applies fork instrumentation (policy auto) and
 # also stages each output into WASM_POSIX_DEP_OUT_DIR for the resolver.
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-mkdir -p "$SCRIPT_DIR/bin"
+# The .wasm staging names live under the work root: install_local_binary
+# instruments them in place.
+BIN_DIR="$WORK_DIR/bin"
+mkdir -p "$BIN_DIR"
 for out in dbus-daemon dbus-send dbus-monitor; do
     case "$out" in
         dbus-daemon) src="$BUILD_DIR/bus/$out" ;;
         *)           src="$BUILD_DIR/tools/$out" ;;
     esac
-    cp "$src" "$SCRIPT_DIR/bin/$out.wasm"
-    install_local_binary dbus "$SCRIPT_DIR/bin/$out.wasm"
+    cp "$src" "$BIN_DIR/$out.wasm"
+    install_local_binary dbus "$BIN_DIR/$out.wasm"
 done
 
 echo "==> dbus $DBUS_VERSION built successfully!"
-ls -lh "$SCRIPT_DIR/bin/"*.wasm
+ls -lh "$BIN_DIR/"*.wasm

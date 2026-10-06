@@ -1,4 +1,13 @@
 script_path = "packages/registry/texlive/build-texlive.sh"
+inputs = [
+  "packages/registry/texlive/build-texlive.sh",
+  "images/vfs/scripts/build-texlive-bundle.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/activate.sh",
+]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
 revision    = 2

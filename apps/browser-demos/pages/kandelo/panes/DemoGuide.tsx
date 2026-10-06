@@ -43,7 +43,7 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onClose, onOpenTerminal, o
         setMessage(`Sent ${action.label}`);
       } else if (action.kind === "terminal.write") {
         onOpenTerminal();
-        const pty = await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+        const pty = await host.attachPty("/dev/pts/0");
         pty.write(action.payload);
         pty.close();
         setMessage(`Sent ${action.label}`);

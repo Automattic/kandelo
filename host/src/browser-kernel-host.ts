@@ -7,6 +7,7 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
+import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import {
   MemoryFileSystem,
   type LazyDownloadEvent,
@@ -49,6 +50,11 @@ import {
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import type { MountSpec } from "./vfs/default-mounts";
 import { FILE_MODES } from "./generated/abi";
+import {
+  encodeClipboardText,
+  type ClipboardOfferResult,
+  type GuestClipboardResult,
+} from "./clipboard";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
 import { pcmControlWords } from "./audio/pcm-transport";
@@ -843,6 +849,19 @@ export class BrowserKernel {
   }
 
   /**
+   * Counters of the kernel worker's content-addressed compiled-module cache:
+   * compilations, reuse, digest cost, and what the retention window holds.
+   * Diagnostics only. Mirrors `NodeKernelHost.getWasmModuleCacheStats`.
+   */
+  async getWasmModuleCacheStats(): Promise<WasmModuleCacheStats> {
+    const requestId = this.nextRequestId++;
+    return await this.request(requestId, {
+      type: "get_wasm_module_cache_stats",
+      requestId,
+    }) as WasmModuleCacheStats;
+  }
+
+  /**
    * Return the retained capacity of the kernel-owned large-spawn region.
    * Zero means no spawn has exceeded the ordinary channel-sized scratch.
    */
@@ -1454,6 +1473,51 @@ export class BrowserKernel {
       path,
     });
     return result === true;
+  }
+
+  /**
+   * Offer `text` as the host clipboard to the guest's clipboard agent
+   * (`/dev/kandelo/clipboard`, read by kclipd on the Omarchy desktop).
+   * Resolves once the agent has installed it as the desktop's selection, or
+   * with the reason it could not — no agent running, over the 1 MiB cap,
+   * an agent error, or no answer within the timeout. CRLF line endings
+   * become LF; the text is never truncated.
+   */
+  async offerClipboardText(
+    text: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<ClipboardOfferResult> {
+    const bytes = encodeClipboardText(text);
+    if (bytes === null) return { ok: false, reason: "too-large" };
+    const requestId = this.nextRequestId++;
+    const result = await this.request(
+      requestId,
+      {
+        type: "clipboard_offer",
+        requestId,
+        text: bytes,
+        timeoutMs: options.timeoutMs,
+      },
+      [bytes.buffer as ArrayBuffer],
+    );
+    return result as ClipboardOfferResult;
+  }
+
+  /**
+   * Copy-out: resolve with the next selection the guest desktop reports
+   * (through its clipboard agent), or `timeout`. Call it before delivering
+   * the copy chord, so the guest's copy is the change it waits for.
+   */
+  async waitForGuestClipboardText(
+    options: { timeoutMs?: number } = {},
+  ): Promise<GuestClipboardResult> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "clipboard_guest_wait",
+      requestId,
+      timeoutMs: options.timeoutMs,
+    });
+    return result as GuestClipboardResult;
   }
 
   /**
