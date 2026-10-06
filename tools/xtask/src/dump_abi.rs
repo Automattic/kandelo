@@ -2718,6 +2718,21 @@ fn render_ts_module() -> String {
         out.push_str(&format!("  {}: {},\n", name, value));
     }
     out.push_str("} as const;\n\n");
+    out.push_str(
+        "/* Facts a host network engine reports over `host_net_readiness`.\n\
+         * The host reports these; the kernel alone decides `revents` from\n\
+         * them (runtime_core::net_readiness::stream_revents). */\n",
+    );
+    out.push_str("export const NET_READINESS = {\n");
+    for (name, value) in net_readiness_facts() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str(&format!(
+        "  ERRNO_SHIFT: {},\n  FLAG_MASK: {},\n",
+        shared::net_readiness::ERRNO_SHIFT,
+        shared::net_readiness::FLAG_MASK,
+    ));
+    out.push_str("} as const;\n\n");
     out.push_str("export const OPEN_FLAGS = {\n");
     for (name, value) in open_flags() {
         out.push_str(&format!("  {}: {},\n", name, value));
@@ -4466,6 +4481,25 @@ fn epoll_events() -> [(&'static str, u32); 4] {
     ]
 }
 
+/// Facts a host network engine reports over `host_net_readiness`.
+///
+/// These cross the host/kernel boundary, so the host's copy is generated from
+/// this one rather than retyped. The readiness *decision* they feed is the
+/// kernel's alone; see `runtime_core::net_readiness`.
+fn net_readiness_facts() -> [(&'static str, u32); 7] {
+    use shared::net_readiness::*;
+
+    [
+        ("RECV_READY", RECV_READY),
+        ("RECV_EOF", RECV_EOF),
+        ("SEND_READY", SEND_READY),
+        ("SEND_CLOSED", SEND_CLOSED),
+        ("HANGUP", HANGUP),
+        ("ERROR", ERROR),
+        ("UNOBSERVABLE", UNOBSERVABLE),
+    ]
+}
+
 fn io_multiplexing() -> Value {
     let poll_events: Vec<Value> = poll_events()
         .into_iter()
@@ -4475,10 +4509,19 @@ fn io_multiplexing() -> Value {
         .into_iter()
         .map(|(name, value)| json!({ "name": name, "value": value }))
         .collect();
+    let net_readiness_facts: Vec<Value> = net_readiness_facts()
+        .into_iter()
+        .map(|(name, value)| json!({ "name": name, "value": value }))
+        .collect();
 
     json!({
         "poll_events": poll_events,
         "epoll_events": epoll_events,
+        "net_readiness": {
+            "facts": net_readiness_facts,
+            "errno_shift": shared::net_readiness::ERRNO_SHIFT,
+            "flag_mask": shared::net_readiness::FLAG_MASK,
+        },
         "select": {
             "fd_setsize": shared::select::FD_SETSIZE,
             "fd_set_bytes": shared::select::FD_SET_BYTES,
@@ -8128,6 +8171,24 @@ mod tests {
                 "select": {
                     "fd_setsize": 1024,
                     "fd_set_bytes": 128,
+                },
+                // The facts a host reports about a socket, from which the
+                // kernel decides readiness. Added when socket readiness moved
+                // out of the four host backends and into the kernel; this
+                // assertion is what makes that metadata's completeness a gate
+                // rather than a hope.
+                "net_readiness": {
+                    "facts": [
+                        { "name": "RECV_READY", "value": 1 },
+                        { "name": "RECV_EOF", "value": 2 },
+                        { "name": "SEND_READY", "value": 4 },
+                        { "name": "SEND_CLOSED", "value": 8 },
+                        { "name": "HANGUP", "value": 16 },
+                        { "name": "ERROR", "value": 32 },
+                        { "name": "UNOBSERVABLE", "value": 64 },
+                    ],
+                    "flag_mask": 65535,
+                    "errno_shift": 16,
                 },
             }),
         );

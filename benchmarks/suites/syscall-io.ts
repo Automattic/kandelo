@@ -8,6 +8,11 @@
  *   file_write_mbps  — Write 1MB to a file
  *   file_read_mbps   — Read 1MB from a file
  *   syscall_latency_us — Average getpid round-trip over 1000 calls
+ *   poll_ready_us_per_op / epoll_ready_us_per_op — A timed wait whose fd is
+ *                      already ready: pays to arm and retire a deadline it
+ *                      never uses
+ *   poll_timeout_us_per_op / select_timeout_us_per_op — A timed wait that
+ *                      runs to expiry, including the timeout itself
  *   lock_many_files_*_us_per_op — Lock operations across many sparse files
  *   lock_dense_file_*_us_per_op — Lock operations across many ranges on one file
  */
@@ -62,6 +67,20 @@ const suite: BenchmarkSuite = {
     });
     if (syscall.exitCode !== 0) throw new Error(`syscall-latency failed: ${syscall.stderr}`);
     Object.assign(results, parseMetrics(syscall.stdout));
+
+    // Timed blocking waits. Nothing above reaches this path: getpid() never
+    // blocks and the throughput programs never arm a timeout, so a change to
+    // how a deadline is armed, re-checked and expired could regress with
+    // every other metric in this suite unchanged.
+    const blocking = await runCentralizedProgram({
+      programPath: resolve(wasmDir, "blocking-wait.wasm"),
+      argv: ["blocking-wait"],
+      timeout: 60_000,
+    });
+    if (blocking.exitCode !== 0) {
+      throw new Error(`blocking-wait failed: ${blocking.stderr}`);
+    }
+    Object.assign(results, parseMetrics(blocking.stdout));
 
     return results;
   },

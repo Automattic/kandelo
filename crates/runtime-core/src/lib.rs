@@ -33,6 +33,7 @@ pub mod memory;
 pub mod mouse;
 pub mod mqueue;
 pub mod msghdr;
+pub mod net_readiness;
 pub mod netif;
 pub mod ofd;
 pub mod path;
@@ -53,6 +54,8 @@ pub mod syscalls;
 pub mod terminal;
 pub mod transfer;
 pub mod unix_socket;
+pub mod wait_queue;
+pub mod wait_shadow;
 pub mod wakeup;
 
 // The engine-agnostic capability contract. `HostCapabilities` is the forward
