@@ -1178,6 +1178,12 @@ cd apps/browser-demos
 VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 ```
 
+An explicit guest `BrowserKernel({ corsProxy })` configuration already directs
+requests to the proxy in `NetworkIO`. Those deliberate requests keep their
+existing route and header policy. The GET/HEAD automatic-wrapping boundary
+applies to unwrapped page and worker requests, including guest fetches from
+an embedder without an explicit backend proxy.
+
 Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
 prefixes receive percent-encoded targets.
 

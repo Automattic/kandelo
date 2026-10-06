@@ -66,7 +66,7 @@ type TestRunnerWindow = Window & {
         allowedRequestHeaderNames: readonly string[];
         allowAnonymousGetHeaderOmission: boolean;
         rangeRequestHeaderAlias?: string;
-      };
+      } | null;
     },
   ): Promise<TestResult>;
 };
@@ -409,7 +409,7 @@ test("service worker relays byte-range reads through the development relay", asy
   const upstreamRoot = await listen(upstream);
 
   try {
-    await page.goto("/pages/test-runner/", { waitUntil: "domcontentloaded" });
+    await page.goto("/pages/test-runner/?minimal=1", { waitUntil: "domcontentloaded" });
     await page.evaluate(async () => {
       await navigator.serviceWorker.register("/service-worker.js", {
         scope: "/",
@@ -624,7 +624,7 @@ test("guest curl reads a range through a production-shaped proxy", async ({
   const targetRoot = proxyRoot.replace("127.0.0.1", "localtest.me");
   try {
     const curlBytes = Array.from(await readFile(curlPath));
-    await page.goto("/pages/test-runner/", { waitUntil: "domcontentloaded" });
+    await page.goto("/pages/test-runner/?minimal=1", { waitUntil: "domcontentloaded" });
     await page.waitForFunction(
       () => (window as unknown as TestRunnerWindow).__testRunnerReady === true,
     );
@@ -710,7 +710,7 @@ test("guest HTTP uses the test runner's same-origin CORS proxy", async ({
     const targetUrl = `http://localhost.:${port}/probe`;
     const wgetBytes = Array.from(await readFile(wgetPath));
 
-    await page.goto("/pages/test-runner/", {
+    await page.goto("/pages/test-runner/?minimal=1", {
       waitUntil: "domcontentloaded",
     });
     await page.waitForFunction(
@@ -760,7 +760,7 @@ test("guest proxy fallback completes real preflight with name-only projection", 
 
   try {
     const curlBytes = Array.from(await readFile(curlPath));
-    await page.goto("/pages/test-runner/", { waitUntil: "domcontentloaded" });
+    await page.goto("/pages/test-runner/?minimal=1", { waitUntil: "domcontentloaded" });
     await page.waitForFunction(
       () => (window as unknown as TestRunnerWindow).__testRunnerReady === true,
     );
@@ -830,7 +830,7 @@ test("guest proxy rejects lossy credentials and state-changing requests", async 
   const targetRoot = proxyRoot.replace("127.0.0.1", "localtest.me");
   try {
     const curlBytes = Array.from(await readFile(curlPath));
-    await page.goto("/pages/test-runner/", { waitUntil: "domcontentloaded" });
+    await page.goto("/pages/test-runner/?minimal=1", { waitUntil: "domcontentloaded" });
     await page.waitForFunction(
       () => (window as unknown as TestRunnerWindow).__testRunnerReady === true,
     );
@@ -893,7 +893,11 @@ test("controlled guest curl POST goes direct and preserves the CORS boundary", a
   const target = corsOpenTargetFixture(directObserved);
   const targetRoot = (await listen(target)).replace("127.0.0.1", "localtest.me");
   const relayedPosts: string[] = [];
+  const serviceWorkerPosts: string[] = [];
   context.on("request", (request) => {
+    if (request.method() === "POST" && request.serviceWorker()) {
+      serviceWorkerPosts.push(request.url());
+    }
     if (request.method() === "POST" && request.url().includes("/?")) {
       relayedPosts.push(request.url());
     }
@@ -911,14 +915,14 @@ test("controlled guest curl POST goes direct and preserves the CORS boundary", a
     await page.waitForFunction(() => navigator.serviceWorker.controller !== null
       && (window as unknown as TestRunnerWindow).__testRunnerReady === true);
     const run = (url: string) => page.evaluate(
-      async ({ bytes, url, proxyRoot, config }) =>
+      async ({ bytes, url }) =>
         (window as unknown as TestRunnerWindow).__runTest(
           new Uint8Array(bytes).buffer,
           ["curl", "-sS", "-X", "POST", "--data-binary", "guest-body", url],
           60_000,
-          { corsProxy: { url: `${proxyRoot}/?`, ...config } },
+          { corsProxy: null },
         ),
-      { bytes, url, proxyRoot, config: EFFECTIVE_PROXY_CONFIG },
+      { bytes, url },
     );
     const open = await run(`${targetRoot}/guest-post`);
     expect(open.exitCode, JSON.stringify(open)).toBe(0);
@@ -932,6 +936,8 @@ test("controlled guest curl POST goes direct and preserves the CORS boundary", a
       { method: "POST", url: "/cors-less", body: "guest-body" },
     ]);
     expect(relayedPosts).toEqual([]);
+    expect(serviceWorkerPosts).toContain(`${targetRoot}/guest-post`);
+    expect(serviceWorkerPosts).toContain(`${proxyRoot.replace("127.0.0.1", "localtest.me")}/cors-less`);
   } finally {
     await Promise.all([close(proxy), close(target)]);
   }
@@ -949,7 +955,7 @@ test("controlled guest git clone preserves the reviewed HTTPS proxy POST", async
     if (request.method() === "POST" && request.url().includes("__kandelo_cors_proxy")
       && request.url().includes("git-upload-pack")) uploadPacks.push(request.url());
   });
-  await page.goto("/pages/test-runner/", { waitUntil: "domcontentloaded" });
+  await page.goto("/pages/test-runner/?minimal=1", { waitUntil: "domcontentloaded" });
   await page.evaluate(async () => {
     await navigator.serviceWorker.register("/service-worker.js", { scope: "/", updateViaCache: "none" });
     await navigator.serviceWorker.ready;
