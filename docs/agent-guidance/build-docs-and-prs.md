@@ -136,7 +136,7 @@ validate." The full sequence (see `validation.md` for detail):
 ```bash
 git submodule update --init --recursive           # musl, libc-test, os-test
 # if libc/musl exists but is a stray partial dir: rm -rf libc/musl && git submodule update --init libc/musl
-scripts/dev-shell.sh ./run.sh setup                # sysroot(s) (~20s, built from scratch here), kernel wasm → local-binaries/, rootfs, host (~1.5min total)
+scripts/dev-shell.sh ./run.sh setup                # Check SDKs; build kernel, all packages, rootfs, and host
 npm ci && (cd host && npm ci)                      # root deps (tsx for conformance runners) + host deps
 scripts/dev-shell.sh bash scripts/build-programs.sh # local-binaries/{programs,test-fixtures}/ that Vitest loads
 ```

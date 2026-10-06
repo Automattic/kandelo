@@ -59,8 +59,10 @@ rustc -vV | awk '/^host/ {print $2}'
 
 ## Waiting on long builds and suites
 
-`./run.sh setup`, `local-build`, full Vitest, and the conformance suites run
-for 10 to 40 minutes. In August and September 2026, agents spent about 12%
+`./run.sh setup`, `local-build`, full Vitest, and the conformance suites can
+run for more than 10 minutes. Full builds include compilation, fork
+instrumentation, and artifact verification; their duration depends on
+package cache reuse. In August and September 2026, agents spent about 12%
 of their input tokens on poll turns and on cache rewrites after long blocking
 calls. They also waited on `pgrep -f` patterns that matched the waiting shell
 itself and never returned, and started second runs that broke the first.
@@ -192,7 +194,7 @@ part of the task. Build or fetch what is missing:
    If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
    build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
    --init libc/musl`.
-2. **Kernel wasm + host + rootfs + musl sysroot** — ~1.5min; `./run.sh setup`
+2. **Kernel wasm + host + rootfs + musl sysroot** — `./run.sh setup`
    checks both musl sysroots, rebuilding missing, stale, or altered core
    outputs and refreshing the graphics archives, then builds the
    kernel, every package, and the rootfs, producing
