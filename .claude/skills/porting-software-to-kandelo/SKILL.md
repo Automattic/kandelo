@@ -53,7 +53,7 @@ When a build fails, fix the first error, not the last: later errors and `BLOCKED
 
 ## Platform facts that make ports go wrong
 
-- **Autoconf link probes always pass.** The SDK links with `-Wl,--allow-undefined`, so `AC_CHECK_FUNCS` says yes to functions musl lacks and `AC_SEARCH_LIBS` says "none required". Seed `ac_cv_func_*` from `wasm32posix-nm sysroot/lib/libc.a | grep ' T <name>'` (rule in `sdk/config.site`), and put required libraries on `LIBS` explicitly.
+- **Executable link probes reject missing symbols.** Since ABI 46, the SDK permits unresolved executable symbols only from its generated host import list; shared-library side modules resolve imports dynamically. Inspect `sdk/config.site` and upstream's actual cache keys before overriding probes: custom macros can need `ac_cv_funclib_*` or `ac_cv_lib_m_*` as well as `ac_cv_func_*`. Verify defined target functions (`T` or `W`, not `U`) with the target `nm`; symbol presence does not prove runtime syscall support. See `docs/porting-guide.md` "Step 1: Cross-compile" for details.
 - **Never define `__linux__`** SDK-wide, and not per package without the maintainer's agreement. Kandelo is not a Linux target (`sdk/config.site` header). Look for a feature macro or cache variable the upstream already checks.
 - **Main-thread stack is 8 MiB; pthreads get 128 KiB.** Deep recursion in a thread overflows silently; see `docs/sdk-guide.md`.
 - **Wasm traces without names** mean `wasm-opt` stripped the name section; keep it for debugging rather than guessing from `wasm-function[N]`.
