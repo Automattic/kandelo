@@ -34,7 +34,8 @@ class FakeChannel extends EventTarget {
 
 class FakeConnection extends EventTarget {
   static instances: FakeConnection[] = [];
-  iceGatheringState = "complete";
+  static gatheringState = "complete";
+  iceGatheringState = FakeConnection.gatheringState;
   connectionState = "new";
   localDescription: RTCSessionDescriptionInit | null = null;
   channels: FakeChannel[] = [];
@@ -72,6 +73,7 @@ const answer = (declaration = network) => encodePeerSignal({ type: "answer", sdp
 
 beforeEach(() => {
   FakeConnection.instances = [];
+  FakeConnection.gatheringState = "complete";
   vi.stubGlobal("RTCPeerConnection", FakeConnection);
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -104,6 +106,21 @@ describe("purpose-checked peer signalling", () => {
 });
 
 describe("peer channel lifecycle", () => {
+  it("emits available candidates after the bounded gathering wait", async () => {
+    vi.useFakeTimers();
+    FakeConnection.gatheringState = "gathering";
+    const pending = createPeerConnectionInvite(network);
+    await vi.advanceTimersByTimeAsync(3000);
+    const invite = await pending;
+    expect(decodePeerSignal(invite.invite, network, "offer").sdp).toBe("v=0\r\n");
+    invite.cancel();
+  });
+  it("reports configured TURN failure without claiming no relay is configured", async () => {
+    const declaration = { ...network, iceServers: [{ urls: "turn:relay.example", username: "u", credential: "p" }] };
+    const join = await answerPeerConnectionInvite(offer(declaration), declaration);
+    FakeConnection.instances[0].fail();
+    await expect(join.connected).rejects.toThrow("configured ICE servers");
+  });
   it("opens declared raw datagram channels and reports close once", async () => {
     const invite = await createPeerConnectionInvite(network);
     const rtc = FakeConnection.instances[0];

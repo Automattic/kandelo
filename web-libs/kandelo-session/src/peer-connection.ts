@@ -167,25 +167,9 @@ function connectionLifecycle(declaration: PeerConnectionDeclaration) {
     if (closed) return;
     closed = true;
     failure = error ?? new Error("the peer connection closed before connecting");
-    // Let SCTP send the channel reset before tearing down the association.
-    // Immediate rtc.close() can otherwise leave the remote channel open until
-    // ICE times out. Failed and unopened connections need no graceful drain.
-    const graceful = !error && [...channels.values()].some((channel) => channel.readyState === "open");
-    if (graceful) {
-      const finish = () => {
-        clearTimeout(timer);
-        for (const channel of channels.values()) channel.removeEventListener("close", check);
-        rtc.close();
-      };
-      const check = () => {
-        if ([...channels.values()].every((channel) => channel.readyState === "closed")) finish();
-      };
-      const timer = setTimeout(finish, 2000);
-      for (const channel of channels.values()) channel.addEventListener("close", check);
-    }
     for (const channel of messages.values()) channel.close();
     for (const channel of channels.values()) channel.close();
-    if (!graceful) rtc.close();
+    rtc.close();
     for (const listener of [...readyListeners]) listener();
     if (error) for (const listener of [...failureListeners]) listener(error);
     for (const listener of [...closeListeners]) listener();

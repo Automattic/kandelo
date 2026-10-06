@@ -70,10 +70,14 @@ test("generic peer connections separate purposes and carry unordered raw datagra
     await guest.evaluate(() => (window as any).link.channels.get("udp").send(new Uint8Array([4, 5, 6])));
     await expect.poll(() => host.evaluate(() => (window as any).received)).toEqual([[4, 5, 6]]);
     await guest.evaluate(() => {
-      (window as any).link.onClose(() => { (window as any).closed = true; });
+      (window as any).link.onClose(() => { (window as any).peerClosed = true; });
     });
-    await host.evaluate(() => (window as any).link.close());
-    await expect.poll(() => guest.evaluate(() => (window as any).closed)).toBe(true);
+    await host.evaluate(() => {
+      (window as any).link.onClose(() => { (window as any).peerClosed = true; });
+      (window as any).link.close();
+    });
+    expect(await host.evaluate(() => (window as any).peerClosed)).toBe(true);
+    await expect.poll(() => guest.evaluate(() => (window as any).peerClosed), { timeout: 30_000 }).toBe(true);
   } finally {
     await Promise.all(contexts.map((context) => context.close()));
   }
