@@ -14,8 +14,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-libiconv.XXXXXX")"
-trap 'rm -rf "$WORK_DIR"' EXIT
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/source"
 STAGE_DIR="$WORK_DIR/stage"
 
@@ -42,13 +43,11 @@ fi
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-echo "==> Downloading GNU libiconv $LIBICONV_VERSION..."
-TARBALL="$WORK_DIR/libiconv.tar.gz"
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "==> Verifying source sha256..."
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR"
-tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+echo "==> Staging verified GNU libiconv $LIBICONV_VERSION..."
+rm -rf "$SRC_DIR" "$STAGE_DIR"
+kandelo_package_stage_verified_source libiconv "$SRC_DIR" \
+    "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+    "$WORK_DIR"
 
 cd "$SRC_DIR"
 

@@ -4,14 +4,21 @@ set -euo pipefail
 # Build bzip2 1.0.8 for wasm32-posix-kernel.
 #
 # Plain Makefile build with CC/AR/RANLIB overrides.
-# Output: packages/registry/bzip2/bin/bzip2.wasm
+# Output: bin/bzip2.wasm under the declared recipe work root.
 # Also installs libbz2.a + bzlib.h to sysroot.
 
-BZIP2_VERSION="${BZIP2_VERSION:-1.0.8}"
+BZIP2_VERSION="${WASM_POSIX_DEP_VERSION:-${BZIP2_VERSION:-1.0.8}}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/bzip2-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+source "$REPO_ROOT/sdk/activate.sh"
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/bzip2-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -27,17 +34,13 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download bzip2 source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading bzip2 $BZIP2_VERSION..."
-    TARBALL="bzip2-${BZIP2_VERSION}.tar.gz"
-    URL="https://sourceware.org/pub/bzip2/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
-fi
+# Rebuild from the resolver's immutable verified input, never old ABI objects.
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://sourceware.org/pub/bzip2/bzip2-${BZIP2_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269}"
+rm -rf "$SRC_DIR"
+kandelo_package_stage_verified_source bzip2 "$SRC_DIR" \
+    "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+    "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 
@@ -81,4 +84,4 @@ echo "Binary: $BIN_DIR/bzip2.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary bzip2 "$SCRIPT_DIR/bin/bzip2.wasm"
+install_local_binary bzip2 "$BIN_DIR/bzip2.wasm"

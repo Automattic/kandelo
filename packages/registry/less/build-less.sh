@@ -4,7 +4,7 @@ set -euo pipefail
 # Build less for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Output: packages/registry/less/bin/less.wasm
+# Output: bin/less.wasm under the declared recipe work root.
 #
 # less requires termcap functions (tgetent, tgetstr, etc.) which musl
 # doesn't provide. Previously this built a stub libtermcap.a whose
@@ -18,11 +18,18 @@ set -euo pipefail
 # MKfallback.sh — no runtime /usr/share/terminfo needed. See
 # packages/registry/vim/build-vim.sh for the same resolve pattern.
 
-LESS_VERSION="${LESS_VERSION:-668}"
+LESS_VERSION="${WASM_POSIX_DEP_VERSION:-${LESS_VERSION:-668}}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/less-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+source "$REPO_ROOT/sdk/activate.sh"
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/less-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -60,37 +67,13 @@ if [ -d "$NCURSES_PREFIX/include/ncursesw" ]; then
     NCURSES_CPPFLAGS="$NCURSES_CPPFLAGS -I$NCURSES_PREFIX/include/ncursesw"
 fi
 
-# --- Download less source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading less $LESS_VERSION..."
-    TARBALL="less-${LESS_VERSION}.tar.gz"
-    DOWNLOAD_URLS=(
-        "https://www.greenwoodsoftware.com/less/${TARBALL}"
-        "https://ftp.gnu.org/gnu/less/${TARBALL}"
-    )
-    for URL in "${DOWNLOAD_URLS[@]}"; do
-        if curl \
-            --connect-timeout 20 \
-            --retry 3 \
-            --retry-delay 5 \
-            --retry-max-time 120 \
-            --retry-all-errors \
-            -fsSL "$URL" \
-            -o "/tmp/$TARBALL"
-        then
-            break
-        fi
-        rm -f "/tmp/$TARBALL"
-    done
-    if [ ! -f "/tmp/$TARBALL" ]; then
-        echo "ERROR: failed to download $TARBALL from all configured mirrors" >&2
-        exit 1
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
-fi
+# Rebuild from the resolver's immutable verified input, never old ABI objects.
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.greenwoodsoftware.com/less/less-${LESS_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-2819f55564d86d542abbecafd82ff61e819a3eec967faa36cd3e68f1596a44b8}"
+rm -rf "$SRC_DIR"
+kandelo_package_stage_verified_source less "$SRC_DIR" \
+    "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+    "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 
@@ -153,4 +136,4 @@ echo "Binary: $BIN_DIR/less.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-[ -f "$SCRIPT_DIR/bin/less.wasm" ] && install_local_binary less "$SCRIPT_DIR/bin/less.wasm" || true
+install_local_binary less "$BIN_DIR/less.wasm"

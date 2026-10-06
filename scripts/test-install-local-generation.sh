@@ -15,6 +15,10 @@ unset WASM_POSIX_DEP_OUT_DIR
 unset WASM_POSIX_DEP_TARGET_ARCH
 unset WASM_POSIX_INSTALL_LOCAL_MIRROR
 unset WASM_POSIX_LOCAL_INSTALL_SESSION
+# The composed relocation scenarios below exercise ordinary dependency
+# resolution against distinct fetched bytes, not a source-only projection.
+unset WASM_POSIX_RESOLUTION_POLICY
+unset WASM_POSIX_SOURCE_ONLY_BINARY_ROOT
 
 work="$(mktemp -d)"
 cleanup() {
@@ -110,13 +114,23 @@ artifact = "share/python-runtime.zip"
 guest_path = "/usr/share/local-python/python-runtime.zip"
 EOF
 
-# Minimal executables export the two normal program entry points. Distinct
-# custom sections make fetched and local bytes observably different while
-# retaining valid Wasm.
-printf '\000asm\001\000\000\000\001\005\001\140\000\001\177\003\002\001\000\007\032\002\015__abi_version\000\000\006_start\000\000\012\006\001\004\000\101\000\013\000\006\005fetch' \
-    >"$fetched/bin/python.wasm"
-printf '\000asm\001\000\000\000\001\005\001\140\000\001\177\003\002\001\000\007\032\002\015__abi_version\000\000\006_start\000\000\012\006\001\004\000\101\000\013\000\006\005local' \
-    >"$source_dir/python.wasm"
+# Fixtures must declare the current ABI; zero is a stale binary, not a
+# relocation test. Distinct markers keep fetched/local bytes distinguishable.
+ABI_VERSION="$(jq -er '.abi_version' "$REPO_ROOT/abi/snapshot.json")"
+write_program_fixture() {
+    local marker="$1" output="$2"
+    cat >"$work/program-$marker.wat" <<EOF
+(module
+  (func \$abi (result i32) i32.const $ABI_VERSION)
+  (func \$entry (result i32) i32.const 0)
+  (export "__abi_version" (func \$abi))
+  (export "_start" (func \$entry))
+  (global (export "$marker") i32 (i32.const 1)))
+EOF
+    wat2wasm "$work/program-$marker.wat" -o "$output"
+}
+write_program_fixture fetched_python "$fetched/bin/python.wasm"
+write_program_fixture local_python "$source_dir/python.wasm"
 printf 'FETCHED-RUNTIME\n' >"$fetched/share/python-runtime.zip"
 printf 'LOCAL-RUNTIME\n' >"$source_dir/python-runtime.zip"
 
@@ -324,18 +338,7 @@ EOF
     chmod +x "$package_root/build-$package.sh"
 }
 
-write_program_wat() {
-    local marker="$1"
-    local output="$2"
-    cat >"$work/program-$marker.wat" <<EOF
-(module
-  (func \$entry (result i32) i32.const 0)
-  (export "__abi_version" (func \$entry))
-  (export "_start" (func \$entry))
-  (global (export "$marker") i32 (i32.const 1)))
-EOF
-    wat2wasm "$work/program-$marker.wat" -o "$output"
-}
+write_program_wat() { write_program_fixture "$@"; }
 
 write_kernel_wat() {
     local marker="$1"
@@ -350,11 +353,16 @@ write_kernel_wat() {
     {
         printf '%s\n' '(module' \
             '  (func $entry (result i32) i32.const 0)'
+        printf '  (func $abi (result i32) i32.const %s)\n' "$ABI_VERSION"
         # WHY: this fixture validates relocation, not an independent adapter
         # protocol. Reading the generated ABI evidence prevents every required
         # export change from creating a second hand-maintained manifest here.
         while IFS= read -r export_name; do
-            printf '  (export "%s" (func $entry))\n' "$export_name"
+            if [ "$export_name" = __abi_version ]; then
+                printf '  (export "%s" (func $abi))\n' "$export_name"
+            else
+                printf '  (export "%s" (func $entry))\n' "$export_name"
+            fi
         done <<<"$required_exports"
         printf '  (global (export "%s") i32 (i32.const 1)))\n' "$marker"
     } >"$work/kernel-$marker.wat"

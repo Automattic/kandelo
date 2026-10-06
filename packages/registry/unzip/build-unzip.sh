@@ -5,13 +5,19 @@ set -euo pipefail
 #
 # Plain Makefile build with CC override.
 # unzip has its own inflate (no zlib needed).
-# Output: packages/registry/unzip/bin/unzip.wasm
+# Output: bin/unzip.wasm under the declared resolver work root.
 
-UNZIP_VERSION="${UNZIP_VERSION:-60}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/unzip-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+source "$REPO_ROOT/sdk/activate.sh"
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/unzip-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -27,17 +33,14 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download unzip source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading unzip $UNZIP_VERSION..."
-    TARBALL="unzip${UNZIP_VERSION}.tar.gz"
-    URL="https://downloads.sourceforge.net/infozip/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL -L "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
-fi
+# Recreate only this recipe's writable source copy so old objects cannot
+# carry a stale ABI into a new build. The resolver's verified input is immutable.
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-http://downloads.sourceforge.net/infozip/unzip60.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-036d96991646d0449ed0aa952e4fbe21b476ce994abc276e49d30e686708bd37}"
+rm -rf "$SRC_DIR"
+kandelo_package_stage_verified_source unzip "$SRC_DIR" \
+    "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+    "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 
@@ -70,4 +73,4 @@ echo "Binary: $BIN_DIR/unzip.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary unzip "$SCRIPT_DIR/bin/unzip.wasm"
+install_local_binary unzip "$BIN_DIR/unzip.wasm"
