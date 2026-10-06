@@ -96,11 +96,11 @@ run used the wrong config and toolchain, and its results are invalid.
 
 - **Waiting:** repeat `agent-job wait <id>` in the foreground until it
   returns the job's status. That is one turn per 9 minutes, never a
-  `sleep`/`tail` poll. An interactive main session may instead run
-  `agent-job wait <id> --timeout 0` with `run_in_background` and end its
-  turn, to be woken by the completion notice. A headless (`claude -p`)
-  session or a subagent must never end its turn to wait: it stops there,
-  and the result is lost.
+  `sleep`/`tail` poll. If an agent client yields a running terminal session,
+  resume that session to collect the result. An interactive main session may
+  instead run `agent-job wait <id> --timeout 0` in the background and use a
+  completion notification. A headless session or subagent must not end its
+  turn while waiting: it stops there, and the result is lost.
 - **Subagents** must not wait on whole-tree builds or full suites. A
   subagent's prompt cache expires after 5 minutes, so every long blocking
   call rewrites its whole context. Build what a subagent needs before

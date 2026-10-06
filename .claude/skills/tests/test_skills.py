@@ -15,6 +15,7 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
 SKILLS = REPO / ".claude" / "skills"
+AGENT_SKILLS = REPO / ".agents" / "skills"
 # Paths that only exist after a build, so a fresh checkout cannot contain them.
 GENERATED = ("sysroot/", "sysroot64/", "local-binaries/", "binaries/", ".context/")
 # Names defined outside this repo (Claude Code tool parameters, autoconf macros).
@@ -78,6 +79,10 @@ def main():
         fail("no skills found under .claude/skills")
     for s in skill_files:
         check_skill(s)
+    porting_skill = SKILLS / "porting-software-to-kandelo"
+    shared = AGENT_SKILLS / porting_skill.name
+    if not shared.is_symlink() or shared.resolve() != porting_skill.resolve():
+        fail(f"{shared.relative_to(REPO)}: must link to {porting_skill.relative_to(REPO)}")
     for f in failures:
         print("FAIL", f)
     print(f"agent skills: {len(skill_files)} skills, {len(failures)} failures")
