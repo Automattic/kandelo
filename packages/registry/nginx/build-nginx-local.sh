@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+NGINX_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -31,19 +34,8 @@ SYSROOT="$REPO_ROOT/sysroot"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # Download nginx source
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading nginx $NGINX_VERSION..."
-    # WHY: a unique archive under the work root; a fixed /tmp name let two
-    # concurrent builds overwrite or delete each other's download.
-    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/nginx-source.XXXXXX")"
-    curl -fsSL "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" -o "$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm -f "$TARBALL"
-fi
+kandelo_package_stage_primary_source nginx "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
-# The auto/* patches and the in-tree configure below edit this private
-# source copy under the work root, never a checkout tree.
 cd "$SRC_DIR"
 
 # =============================================================================

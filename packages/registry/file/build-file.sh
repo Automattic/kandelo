@@ -12,17 +12,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/file-src"
 HOST_BUILD_DIR="$WORK_DIR/file-host-build"
 BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
-FILE_VERSION="${WASM_POSIX_DEP_VERSION:-${FILE_VERSION:-5.45}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://astron.com/pub/file/file-${FILE_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-fc97f51029bb0e2c9f4e3bffefdaf678f0e039ee872b9de5c002a6d09c784d82}"
+FILE_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-file-source"
 

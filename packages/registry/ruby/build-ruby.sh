@@ -17,6 +17,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+RUBY_VERSION="$WASM_POSIX_DEP_VERSION"
 WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
 SRC_DIR="$WORK_DIR/ruby-src"
 SOURCE_MARKER="$SRC_DIR/.kandelo-ruby-version"
@@ -28,11 +32,10 @@ RUNTIME_ZIP="$BIN_DIR/ruby-runtime.zip"
 mkdir -p "$WORK_DIR"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
-RUBY_VERSION="${WASM_POSIX_DEP_VERSION:-${RUBY_VERSION:-4.0.5}}"
+
 RUBY_MAJOR_MINOR="$(echo "$RUBY_VERSION" | cut -d. -f1-2)"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://cache.ruby-lang.org/pub/ruby/${RUBY_MAJOR_MINOR}/ruby-${RUBY_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 PACKAGE_NAME="${WASM_POSIX_DEP_NAME:-ruby}"
 GUEST_PREFIX="${WASM_POSIX_DEP_GUEST_PREFIX-/usr}"
 # Bump this when a source-tree port edit changes. In particular, this keeps a
@@ -118,36 +121,19 @@ if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
 fi
 echo "==> zlib at $ZLIB_PREFIX"
 
-# Build libyaml if not already built (Ruby needs it for psych/YAML)
+# Build libyaml from its declared source dependency (psych/YAML).
 LIBYAML_DIR="$WORK_DIR/libyaml-install"
-if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ]; then
+LIBYAML_SRC="$WORK_DIR/libyaml-src"
+kandelo_package_stage_source_dependency libyaml-source "$LIBYAML_SRC" "$WORK_DIR"
+{
     echo "==> Building libyaml for wasm32..."
-    LIBYAML_VERSION="0.2.5"
-    LIBYAML_SHA256="c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4"
-    LIBYAML_SRC="$WORK_DIR/libyaml-src"
-    if [ ! -d "$LIBYAML_SRC" ]; then
-        # WHY a unique file under the work root: a fixed shared temp name let one
-        # concurrent build delete the tarball while another extracted it.
-        LIBYAML_TARBALL="$(mktemp "$WORK_DIR/yaml-source.XXXXXX")"
-        if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
-                -o "$LIBYAML_TARBALL" ||
-           ! echo "$LIBYAML_SHA256  $LIBYAML_TARBALL" | shasum -a 256 -c -; then
-            rm -f "$LIBYAML_TARBALL"
-            exit 1
-        fi
-        mkdir -p "$LIBYAML_SRC"
-        tar xzf "$LIBYAML_TARBALL" -C "$LIBYAML_SRC" --strip-components=1
-        rm -f "$LIBYAML_TARBALL"
-    fi
     cd "$LIBYAML_SRC"
-    if [ ! -f Makefile ]; then
-        wasm32posix-configure --prefix="$LIBYAML_DIR" --disable-shared --enable-static
-    fi
+    wasm32posix-configure --prefix="$LIBYAML_DIR" --disable-shared --enable-static
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
     make install
     cd "$REPO_ROOT"
     echo "==> libyaml built"
-fi
+}
 
 # Install libyaml into sysroot
 cp "$LIBYAML_DIR/include/yaml.h" "$SYSROOT/include/"
@@ -166,28 +152,9 @@ for lib in libwasi-emulated-signal.a libwasi-emulated-getpid.a libwasi-emulated-
 done
 
 # --- Download Ruby source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading Ruby $RUBY_VERSION..."
-    # A unique file under the work root, not a fixed shared temp name that
-    # concurrent builds would share.
-    TARBALL="$(mktemp "$WORK_DIR/ruby-source.XXXXXX")"
-    if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"; then
-        rm -f "$TARBALL"
-        exit 1
-    fi
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        if ! echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -; then
-            rm -f "$TARBALL"
-            exit 1
-        fi
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm -f "$TARBALL"
-    printf '%s\n' "$EXPECTED_SOURCE_MARKER" > "$SOURCE_MARKER"
-    echo "==> Source extracted to $SRC_DIR"
-fi
+kandelo_package_stage_primary_source ruby "$SRC_DIR" "$WORK_DIR"
+
+printf '%s\n' "$EXPECTED_SOURCE_MARKER" > "$SOURCE_MARKER"
 
 # ─── Source patches for wasm32-posix ──────────────────────────────────
 # thread_none.c: missing thread_sched_atfork stub (called by thread.c unconditionally)
@@ -1195,36 +1162,15 @@ fi
 # feature "sqlite3/sqlite3_native" wants Init_sqlite3_sqlite3_native, while the
 # gem defines Init_sqlite3_native — a tiny alias shim bridges the two.
 # ---------------------------------------------------------------------------
-SQLITE_AMALG_URL="https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
-SQLITE_AMALG_SHA256="6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3"
-SQLITE3_GEM_VERSION="2.9.6"
-SQLITE3_GEM_SHA256="956fe606956420d04ac7157d3ace620c8caba2135b2e05c76e483493da24d08e"
 SQLITE_WORK="$WORK_DIR/sqlite3-ext-src"
 SQLITE_EXT_DIR="$CROSS_BUILD_DIR/ext/sqlite3"
 mkdir -p "$SQLITE_WORK" "$SQLITE_EXT_DIR"
-
-if [ ! -f "$SQLITE_WORK/amalg/sqlite3.c" ]; then
-    echo "==> Fetching SQLite amalgamation for the sqlite3 ext..."
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
-        "$SQLITE_AMALG_URL" -o "$SQLITE_WORK/amalg.zip"
-    echo "$SQLITE_AMALG_SHA256  $SQLITE_WORK/amalg.zip" | shasum -a 256 -c -
-    rm -rf "$SQLITE_WORK/amalg" "$SQLITE_WORK"/sqlite-amalgamation-*
-    unzip -oq "$SQLITE_WORK/amalg.zip" -d "$SQLITE_WORK"
-    mkdir -p "$SQLITE_WORK/amalg"
-    mv "$SQLITE_WORK"/sqlite-amalgamation-*/* "$SQLITE_WORK/amalg/"
-fi
-
-if [ ! -d "$SQLITE_WORK/gem/ext" ]; then
-    echo "==> Fetching sqlite3 gem ${SQLITE3_GEM_VERSION}..."
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
-        "https://rubygems.org/downloads/sqlite3-${SQLITE3_GEM_VERSION}.gem" -o "$SQLITE_WORK/sqlite3.gem"
-    echo "$SQLITE3_GEM_SHA256  $SQLITE_WORK/sqlite3.gem" | shasum -a 256 -c -
-    rm -rf "$SQLITE_WORK/gem"; mkdir -p "$SQLITE_WORK/gem/data"
-    tar -xf "$SQLITE_WORK/sqlite3.gem" -C "$SQLITE_WORK/gem"
-    tar -xzf "$SQLITE_WORK/gem/data.tar.gz" -C "$SQLITE_WORK/gem/data"
-    cp -R "$SQLITE_WORK/gem/data/ext" "$SQLITE_WORK/gem/ext"
-    cp -R "$SQLITE_WORK/gem/data/lib" "$SQLITE_WORK/gem/lib"
-fi
+kandelo_package_stage_source_dependency sqlite-amalgamation-source "$SQLITE_WORK/amalg" "$WORK_DIR"
+kandelo_package_stage_source_dependency sqlite3-ruby-source "$SQLITE_WORK/gem" "$WORK_DIR"
+mkdir -p "$SQLITE_WORK/gem/data"
+tar -xzf "$SQLITE_WORK/gem/data.tar.gz" -C "$SQLITE_WORK/gem/data"
+cp -R "$SQLITE_WORK/gem/data/ext" "$SQLITE_WORK/gem/ext"
+cp -R "$SQLITE_WORK/gem/data/lib" "$SQLITE_WORK/gem/lib"
 
 echo "==> Compiling built-in sqlite3 extension..."
 SQLITE_GEMEXT="$SQLITE_WORK/gem/ext/sqlite3"

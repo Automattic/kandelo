@@ -15,15 +15,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-libdrm.XXXXXX")"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+WORK_DIR="$(kandelo_package_make_work_dir libdrm)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
 
-LIBDRM_VERSION="${WASM_POSIX_DEP_VERSION:-2.4.120}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://dri.freedesktop.org/libdrm/libdrm-${LIBDRM_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-3bf55363f76c7250946441ab51d3a6cc0ae518055c0ff017324ab76cdefb327a}"
+LIBDRM_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:?WASM_POSIX_DEP_OUT_DIR must name the resolver staging directory}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
@@ -47,13 +49,8 @@ SRC_DIR="$WORK_DIR/source"
 BUILD_DIR="$WORK_DIR/build"
 REPRO_FLAGS="-ffile-prefix-map=$WORK_DIR=/usr/src/libdrm -fdebug-prefix-map=$WORK_DIR=/usr/src/libdrm -fmacro-prefix-map=$WORK_DIR=/usr/src/libdrm"
 
-echo "==> Downloading libdrm $LIBDRM_VERSION..."
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-    -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR" "$BUILD_DIR" "$INSTALL_DIR/lib" \
-         "$INSTALL_DIR/include/drm" "$INSTALL_DIR/include/libdrm"
-tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+kandelo_package_stage_primary_source libdrm "$SRC_DIR" "$WORK_DIR"
+mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include/drm" "$INSTALL_DIR/include/libdrm"
 
 # Stage the KMS-side sources into a flat build dir — only the four
 # files SDL2's KMSDRM backend pulls in transitively, plus the UAPI

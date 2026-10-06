@@ -19,11 +19,13 @@ set -euo pipefail
 # MKfallback.sh — no runtime /usr/share/terminfo needed. See
 # packages/registry/vim/build-vim.sh for the same resolve pattern.
 
-LESS_VERSION="${LESS_VERSION:-668}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+LESS_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -76,41 +78,7 @@ if [ -d "$NCURSES_PREFIX/include/ncursesw" ]; then
 fi
 
 # --- Download less source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading less $LESS_VERSION..."
-    TARBALL_NAME="less-${LESS_VERSION}.tar.gz"
-    DOWNLOAD_URLS=(
-        "https://www.greenwoodsoftware.com/less/${TARBALL_NAME}"
-        "https://ftp.gnu.org/gnu/less/${TARBALL_NAME}"
-    )
-    # WHY: a unique archive under the work root; a fixed /tmp name let two
-    # concurrent builds overwrite or delete each other's download.
-    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/less-source.XXXXXX")"
-    DOWNLOADED=0
-    for URL in "${DOWNLOAD_URLS[@]}"; do
-        if curl \
-            --connect-timeout 20 \
-            --retry 3 \
-            --retry-delay 5 \
-            --retry-max-time 120 \
-            --retry-all-errors \
-            -fsSL "$URL" \
-            -o "$TARBALL"
-        then
-            DOWNLOADED=1
-            break
-        fi
-    done
-    if [ "$DOWNLOADED" != 1 ]; then
-        rm -f "$TARBALL"
-        echo "ERROR: failed to download $TARBALL_NAME from all configured mirrors" >&2
-        exit 1
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm -f "$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
-fi
+kandelo_package_stage_primary_source less "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 

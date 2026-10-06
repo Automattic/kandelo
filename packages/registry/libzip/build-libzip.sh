@@ -5,7 +5,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-libzip.XXXXXX")"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+LIBZIP_VERSION="$WASM_POSIX_DEP_VERSION"
+WORK_DIR="$(kandelo_package_make_work_dir libzip)"
 cleanup() {
     status=$?
     trap - EXIT
@@ -18,9 +22,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-LIBZIP_VERSION="${WASM_POSIX_DEP_VERSION:-${LIBZIP_VERSION:-1.11.4}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://libzip.org/download/libzip-${LIBZIP_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-82e9f2f2421f9d7c2466bbc3173cd09595a88ea37db0d559a9d0a2dc60dc722e}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libzip-install}"
 SRC_DIR="$WORK_DIR/source"
@@ -38,7 +41,6 @@ fi
 
 # Use only the worktree-local Kandelo SDK.
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
@@ -96,14 +98,7 @@ for tool in "$CC" "$AR" "$RANLIB" "$NM" "$STRIP"; do
     fi
 done
 
-echo "==> Downloading libzip $LIBZIP_VERSION..."
-TARBALL="$WORK_DIR/libzip.tar.gz"
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-    -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "==> Verifying libzip source sha256..."
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR"
-tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+kandelo_package_stage_primary_source libzip "$SRC_DIR" "$WORK_DIR"
 
 # Kandelo's executable linker deliberately permits unresolved host imports.
 # That makes CMake's link-based check_function_exists probes report every
@@ -316,89 +311,8 @@ fi
     "$ZLIB_PREFIX/lib/libz.a" \
     -o "$SMOKE_WASM"
 
-# llvm-nm does not report final WebAssembly imports as undefined symbols.
-# Inspect the actual import section and admit only the imports libc itself
-# declares. A parser/count mismatch also fails rather than silently blessing a
-# newer wasm-objdump format that this audit did not understand.
-import_dump="$(wasm-objdump -x "$SMOKE_WASM")"
-declared_import_count="$(
-    sed -n 's/^Import\[\([0-9][0-9]*\)\]:$/\1/p' <<<"$import_dump" | head -n 1
-)"
-wasm_imports="$(
-    awk '
-        /^Import\[[0-9]+\]:$/ { inside = 1; next }
-        inside && /^[[:alpha:]_][[:alnum:]_]*\[/ { exit }
-        inside && / <- / { sub(/^.* <- /, ""); print }
-    ' <<<"$import_dump"
-)"
-parsed_import_count="$(
-    sed '/^$/d' <<<"$wasm_imports" | wc -l | tr -d ' '
-)"
-if [ -z "$declared_import_count" ] ||
-   [ "$parsed_import_count" -ne "$declared_import_count" ]; then
-    echo "ERROR: could not account for every Wasm import: declared=${declared_import_count:-<missing>} parsed=$parsed_import_count" >&2
-    exit 1
-fi
-
-# WHY these names: every import below is declared by libc's own objects
-# (the syscall glue, the dlopen glue and process startup), not by this
-# package. The smoke links with --no-gc-sections, so each libc object it
-# pulls in keeps all of its functions and their imports whether or not the
-# smoke calls them. Clang's post-link wasm-opt used to delete the unreachable
-# ones; the SDK now skips that wasm-opt on a link that imports
-# kernel.kernel_fork (its compiler facts must describe the code the fork
-# instrumenter sees), so the audit sees libc's full declared surface. Any
-# import outside this list is one this package's members asked for.
-ALLOWED_WASM_IMPORTS=(
-    env.__channel_base
-    env.__wasm_dlerror
-    env.__wasm_dlopen_main
-    env.__wasm_dlopen_next
-    env.__wasm_dlopen_prepare
-    env.__wasm_dlsym
-    env.memory
-    kernel.kernel_apply_fork_fd_actions
-    kernel.kernel_argv_read
-    kernel.kernel_clear_fork_exec
-    kernel.kernel_environ_count
-    kernel.kernel_environ_get
-    kernel.kernel_execve
-    kernel.kernel_exit
-    kernel.kernel_fork
-    kernel.kernel_get_argc
-    kernel.kernel_get_fork_exec_argc
-    kernel.kernel_get_fork_exec_argv
-    kernel.kernel_get_fork_exec_path
-    kernel.kernel_get_secure_exec
-    kernel.kernel_is_fork_child
-    kernel.kernel_push_argv
-)
-unexpected_imports=()
-while IFS= read -r wasm_import; do
-    [ -n "$wasm_import" ] || continue
-    allowed=0
-    for candidate in "${ALLOWED_WASM_IMPORTS[@]}"; do
-        if [ "$wasm_import" = "$candidate" ]; then
-            allowed=1
-            break
-        fi
-    done
-    if [ "$allowed" -eq 0 ]; then
-        unexpected_imports+=("$wasm_import")
-    fi
-done <<<"$wasm_imports"
-for required_import in env.__channel_base env.memory; do
-    if ! grep -Fxq "$required_import" <<<"$wasm_imports"; then
-        echo "ERROR: libzip smoke Wasm is missing required import: $required_import" >&2
-        exit 1
-    fi
-done
-if [ "${#unexpected_imports[@]}" -ne 0 ]; then
-    echo "ERROR: libzip smoke Wasm has unexpected imports:" >&2
-    printf '%s\n' "${unexpected_imports[@]}" >&2
-    exit 1
-fi
-echo "==> Validated $archive_member_count libzip members and $declared_import_count Wasm imports"
+bash "$REPO_ROOT/scripts/check-package-imports.sh" --require-startup "$SMOKE_WASM"
+echo "==> Validated $archive_member_count libzip members and the shared process import contract"
 
 # The package must be movable between resolver cache roots. Reject producer
 # checkout, temporary-build, dependency-cache, and destination paths in every

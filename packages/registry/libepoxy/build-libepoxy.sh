@@ -26,8 +26,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -35,10 +36,10 @@ source "$REPO_ROOT/scripts/package-build-roots.sh"
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/libepoxy-src"
 
-LIBEPOXY_VERSION="${WASM_POSIX_DEP_VERSION:-1.5.4}"
+LIBEPOXY_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libepoxy-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/anholt/libepoxy/releases/download/${LIBEPOXY_VERSION}/libepoxy-${LIBEPOXY_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-0bd2cc681dfeffdef739cb29913f8c3caa47a88a451fd2bc6e606c02997289d2}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/libepoxy-build"
 

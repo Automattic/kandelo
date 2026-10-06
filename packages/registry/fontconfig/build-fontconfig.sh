@@ -25,16 +25,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR/fontconfig-work" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/fontconfig-src"
 
-FONTCONFIG_VERSION="${WASM_POSIX_DEP_VERSION:-2.15.0}"
+FONTCONFIG_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/fontconfig-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.freedesktop.org/software/fontconfig/release/fontconfig-${FONTCONFIG_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-63a0658d0e06e0fa886106452b58ef04f21f58202ea02a94c39de0d3335d7c0e}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 
 # Under the work root so a concurrent resolve cannot delete this tree.

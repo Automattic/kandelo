@@ -11,8 +11,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
 
 # Force the upstream script to use the version this manifest pins.
-export NGINX_VERSION="${WASM_POSIX_DEP_VERSION:-1.24.0}"
+NGINX_VERSION="$WASM_POSIX_DEP_VERSION"
 
 bash "$REPO_ROOT/packages/registry/nginx/build-nginx-local.sh"

@@ -8,17 +8,18 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$HERE"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$HERE" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC="$WORK_DIR/lhasa-src"
 OUT_BIN="$WORK_DIR/lha.wasm"
 SYSROOT="$REPO_ROOT/sysroot"
 
-LHASA_VERSION="${WASM_POSIX_DEP_VERSION:-0.4.0}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/fragglet/lhasa/releases/download/v${LHASA_VERSION}/lhasa-${LHASA_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-a7fc883c304c508562fb93fa307a4c342b0c886fcc265f28b92dc0c39220c5b3}"
+LHASA_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC/.kandelo-lhasa-source"
 

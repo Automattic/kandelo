@@ -59,8 +59,10 @@ rustc -vV | awk '/^host/ {print $2}'
 
 ## Waiting on long builds and suites
 
-`./run.sh setup`, `local-build`, full Vitest, and the conformance suites run
-for 10 to 40 minutes. In August and September 2026, agents spent about 12%
+`./run.sh setup`, `local-build`, full Vitest, and the conformance suites can
+run for more than 10 minutes. Full builds include compilation, fork
+instrumentation, and artifact verification; their duration depends on
+package cache reuse. In August and September 2026, agents spent about 12%
 of their input tokens on poll turns and on cache rewrites after long blocking
 calls. They also waited on `pgrep -f` patterns that matched the waiting shell
 itself and never returned, and started second runs that broke the first.
@@ -192,21 +194,18 @@ part of the task. Build or fetch what is missing:
    If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
    build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
    --init libc/musl`.
-2. **Kernel wasm + host + rootfs + musl sysroot** — ~1.5min; `./run.sh setup`
-   builds the musl sysroot from scratch on a fresh checkout (or just
-   re-syncs overlay headers and refreshes the sysroot's DRI/GL archives
-   when a sysroot already exists), then the
+2. **Kernel wasm + host + rootfs + musl sysroot** — `./run.sh setup`
+   checks both musl sysroots, rebuilding missing, stale, or altered core
+   outputs and refreshing the graphics archives, then builds the
    kernel, every package, and the rootfs, producing
    `local-binaries/kernel.wasm` (the binary resolver prefers it over
    `binaries/`) and `host/wasm/rootfs.vfs.zst`:
    ```bash
    scripts/dev-shell.sh ./run.sh setup
    ```
-   If a sysroot already exists and you just edited
-   `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, `setup` will
-   not rebuild musl for you — rebuild it explicitly first:
+   To check just the wasm32 core SDK after editing libc inputs:
    ```bash
-   scripts/dev-shell.sh bash scripts/build-musl.sh
+   scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only
    ```
 3. **Node dependencies** — `node_modules` are per-checkout, and both the repo
    root (the conformance runners load `tsx` from root) and `host/` are needed.
@@ -240,11 +239,9 @@ part of the task. Build or fetch what is missing:
    ```
    `./run.sh setup` already builds the wasm64 sysroot (its bootstrap step plan
    runs `sysroot64` unconditionally, alongside the wasm32 `sysroot`). If the
-   wasm64 sysroot is missing (e.g. a partial checkout) or you just edited
-   `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, rebuild it explicitly
-   first:
+   wasm64 sysroot needs checking separately from setup:
    ```bash
-   scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+   scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only --arch wasm64posix
    ```
 
 After that the full suites run. Do **not** report "I can't run Vitest / the
@@ -265,9 +262,9 @@ pre-existing failure as pre-existing, not as your regression.
 
 After editing kernel Rust, rebuild the kernel wasm (`./run.sh setup`) before the
 Vitest/conformance suites — they load `local-binaries/kernel.wasm`, so a stale
-wasm silently runs your OLD kernel code. `./run.sh setup` does not rebuild musl;
-after editing `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, run
-`scripts/build-musl.sh` first. (`bash build.sh` still works as a deprecated
+wasm silently runs your OLD kernel code. Setup also checks musl freshness;
+after editing libc inputs, rebuild linked programs and fixtures through the
+normal setup/program paths. (`bash build.sh` still works as a deprecated
 delegator to `./run.sh setup`.)
 
 The table names primary evidence, not a universal checklist. Choose the suites

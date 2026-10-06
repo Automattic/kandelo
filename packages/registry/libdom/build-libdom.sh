@@ -9,8 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/../../../scripts/netsurf-library-build.sh"
 
-netsurf_library_setup "$SCRIPT_DIR" libdom 0.4.2 \
-    d05e45af16547014c2b0a3aecf3670fa13d419f505b3f5fc7ac8a1491fc30f3c
+netsurf_library_setup "$SCRIPT_DIR" libdom
 netsurf_library_require_dep libparserutils lib/libparserutils.a
 netsurf_library_require_dep libwapcaplet lib/libwapcaplet.a
 netsurf_library_require_dep libhubbub lib/libhubbub.a

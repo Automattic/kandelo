@@ -9,8 +9,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 if [ "$TARGET_ARCH" != "wasm32" ]; then
@@ -49,9 +50,9 @@ if [ ! -f "$NCURSES_DIR/lib/libtinfow.a" ]; then
 fi
 
 # --- Stage OUR source purely for shell.c (matches lib version 3.49.1). ---
-SQLITE_VERSION="${WASM_POSIX_DEP_VERSION:-3.49.1}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3}"
+SQLITE_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/source"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Staging verified SQLite $SQLITE_VERSION source (for shell.c)..."

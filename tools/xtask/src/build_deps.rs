@@ -7191,6 +7191,14 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "scripts/install-local-binary.sh",
     "scripts/wasm-artifact-guards.sh",
     "scripts/build-musl.sh",
+    "scripts/musl-build-state.sh",
+    "scripts/musl-input-hash.mjs",
+    "scripts/musl-output-state.mjs",
+    "scripts/package-build-roots.sh",
+    "scripts/package-source-metadata.py",
+    "scripts/check-package-imports.sh",
+    "tools/xtask/src/package_imports.rs",
+    "tools/xtask/src/program_env_imports.rs",
     "scripts/install-overlay-headers.sh",
     ".github/actions/package-archive-build",
     ".github/actions/package-toolchain",
@@ -12727,21 +12735,15 @@ fn validate_source_only_cache_artifacts_from_receipt(
             }
             for relative in &target.outputs.files {
                 require_source_only_receipt_entry(target, receipt, relative, "files", true)?;
+                validate_source_only_side_file_imports(root, receipt, relative)?;
             }
         }
         ManifestKind::Program => {
             for output in &target.program_outputs {
-                let entry = require_source_only_receipt_entry(
-                    target,
-                    receipt,
-                    &output.wasm,
-                    "wasm",
-                    true,
-                )?;
-                let mut source = StableProjectionSource::open_from_anchored_root(
-                    root,
-                    &output.wasm,
-                )?;
+                let entry =
+                    require_source_only_receipt_entry(target, receipt, &output.wasm, "wasm", true)?;
+                let mut source =
+                    StableProjectionSource::open_from_anchored_root(root, &output.wasm)?;
                 let mut bytes = Vec::new();
                 std::io::Read::read_to_end(&mut source.file, &mut bytes).map_err(|error| {
                     format!(
@@ -12781,9 +12783,51 @@ fn validate_source_only_cache_artifacts_from_receipt(
                     "runtime file",
                     true,
                 )?;
+                validate_source_only_side_file_imports(root, receipt, &runtime_file.artifact)?;
             }
         }
         ManifestKind::Source => {}
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_source_only_side_file_imports(
+    root: &AnchoredDirectory,
+    receipt: &CompleteCacheReceiptV1,
+    relative: &str,
+) -> Result<(), String> {
+    if !relative.ends_with(".wasm") && !relative.ends_with(".so") {
+        return Ok(());
+    }
+    let mut source = StableProjectionSource::open_from_anchored_root(root, relative)?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut source.file, &mut bytes)
+        .map_err(|error| format!("read {relative}: {error}"))?;
+    source.validate()?;
+    let entry = receipt
+        .entries
+        .iter()
+        .find(|entry| entry.path == relative)
+        .ok_or_else(|| format!("missing receipt for {relative}"))?;
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+    if entry.size != Some(bytes.len() as u64)
+        || entry.sha256.as_deref() != Some(hex(&digest).as_str())
+    {
+        return Err(format!(
+            "{relative}: artifact changed after its complete receipt"
+        ));
+    }
+    validate_side_file_import_bytes(&bytes, relative)
+}
+
+fn validate_side_file_import_bytes(bytes: &[u8], relative: &str) -> Result<(), String> {
+    if !is_wasm_bytes(bytes) {
+        return Ok(());
+    }
+    let failures = crate::package_imports::failures(bytes, &crate::repo_root())?;
+    if !failures.is_empty() {
+        return Err(format!("{relative}: {}", failures.join("; ")));
     }
     Ok(())
 }
@@ -15038,6 +15082,16 @@ fn wasm_artifact_policy_failures_for(
         return failures;
     }
 
+    // The kernel is a host-adapter module, not a user process. Every other
+    // executable/side module uses the shared process import audit, including
+    // cache admission and direct installation, before publication.
+    if required_exports != wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS {
+        match crate::package_imports::failures(bytes, &crate::repo_root()) {
+            Ok(import_failures) => failures.extend(import_failures),
+            Err(error) => failures.push(format!("process import audit: {error}")),
+        }
+    }
+
     let missing_required_exports = required_exports
         .iter()
         .copied()
@@ -15480,6 +15534,11 @@ fn validate_declared_artifact(
             label,
             rel
         ));
+    }
+    if metadata.is_file() && label != "wasm" && (rel.ends_with(".wasm") || rel.ends_with(".so")) {
+        let bytes =
+            std::fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+        validate_side_file_import_bytes(&bytes, rel)?;
     }
     if !require_regular_file {
         if metadata.is_file() {
@@ -17057,6 +17116,17 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     )?;
 
     match sub.as_str() {
+        "toolchain-inputs" => {
+            if target.is_some() || extra.is_some() {
+                return Err("build-deps toolchain-inputs: takes no arguments".into());
+            }
+            println!(
+                "{}",
+                serde_json::to_string(GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+                    .map_err(|error| format!("serialize toolchain inputs: {error}"))?
+            );
+            Ok(())
+        }
         "cache-root" => {
             if target.is_some() || extra.is_some() {
                 return Err("build-deps cache-root: takes no arguments".into());
@@ -17142,6 +17212,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 "resolve" => {
                     if extra.is_some() {
                         return Err("build-deps resolve: unexpected extra arg".into());
+                    }
+                    if matches!(manifest.kind, ManifestKind::Library | ManifestKind::Program) {
+                        crate::local_build::ensure_package_sysroot(&repo, arch)?;
                     }
                     cmd_resolve(
                         &manifest,
@@ -32081,7 +32154,24 @@ libs = ["lib/libF3b.a"]
         // duration of both computations.
         let src = crate::repo_root();
         let tmp = tempdir("kernel-cargo-config");
-        copy_dir_recursive(&src, &tmp).expect("copy repo");
+        // Copy inputs, not unrelated mutable build products. In particular,
+        // private musl scratch trees may disappear during SDK publication.
+        let mut inputs = GLOBAL_PACKAGE_TOOLCHAIN_INPUTS.iter()
+            .map(|path| path.to_string()).collect::<BTreeSet<_>>();
+        inputs.extend(crate::cargo_closure::cargo_closure_paths(&src, "kandelo").unwrap());
+        inputs.extend(fork_instrument_tool_input_paths(&src).unwrap());
+        inputs.extend(["Cargo.toml", "Cargo.lock", "crates", "tools/xtask", "packages/registry/kernel"]
+            .into_iter().map(str::to_string));
+        for relative in inputs {
+            let source = src.join(&relative);
+            let destination = tmp.join(&relative);
+            if source.is_dir() {
+                copy_dir_recursive(&source, &destination).expect("copy declared input directory");
+            } else {
+                fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                fs::copy(source, destination).expect("copy declared input file");
+            }
+        }
         let _repo_root = crate::install_repo_root_override(tmp.clone()).unwrap();
 
         let reg = Registry {
@@ -32111,7 +32201,10 @@ libs = ["lib/libF3b.a"]
         )
         .expect("key after");
 
-        assert_ne!(before, after, ".cargo/config.toml must be a kernel cache input");
+        assert_ne!(
+            before, after,
+            ".cargo/config.toml must be a kernel cache input"
+        );
     }
 
     #[cfg(unix)]

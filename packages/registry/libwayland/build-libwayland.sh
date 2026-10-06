@@ -34,20 +34,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
 # Source, build scratch and patched copies live in the resolver-owned work
 # root (or a direct run's private one), never under the reviewed checkout.
 # shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/wayland-src"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$WORK_DIR/.kandelo-libwayland-source"
 
-WL_VERSION="${WASM_POSIX_DEP_VERSION:-1.24.0}"
+WL_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libwayland-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://gitlab.freedesktop.org/wayland/wayland/-/releases/${WL_VERSION}/downloads/wayland-${WL_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-82892487a01ad67b334eca83b54317a7c86a03a89cfadacfef5211f11a5d0536}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 # --- Toolchain + deps ---------------------------------------------------
 for tool in wasm32posix-cc wasm32posix-ar wayland-scanner; do

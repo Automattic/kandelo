@@ -23,8 +23,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -32,10 +33,10 @@ source "$REPO_ROOT/scripts/package-build-roots.sh"
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/cli11-src"
 
-CLI11_VERSION="${WASM_POSIX_DEP_VERSION:-2.5.0}"
+CLI11_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/cli11-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/CLIUtils/CLI11/archive/refs/tags/v${CLI11_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-17e02b4cddc2fa348e5dbdbb582c59a3486fa2b2433e70a0c3bacb871334fd55}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/cli11-build"
 

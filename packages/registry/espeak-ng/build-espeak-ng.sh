@@ -35,8 +35,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$HERE"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -52,13 +53,9 @@ INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$HERE/espeak-ng-install}"
 # --- Upstream source pins ---
 # espeak-ng publishes no source archive as a release asset, so its pin is
 # the tag archive. pcaudiolib publishes one.
-ESPEAK_VERSION="${WASM_POSIX_DEP_VERSION:-1.52.0}"
-ESPEAK_SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/espeak-ng/espeak-ng/archive/refs/tags/${ESPEAK_VERSION}.tar.gz}"
-ESPEAK_SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-bb4338102ff3b49a81423da8a1a158b420124b055b60fa76cfb4b18677130a23}"
-
-PCAUDIO_VERSION="1.3"
-PCAUDIO_SOURCE_URL="https://github.com/espeak-ng/pcaudiolib/releases/download/${PCAUDIO_VERSION}/pcaudiolib-${PCAUDIO_VERSION}.tar.gz"
-PCAUDIO_SOURCE_SHA256="e8bd15f460ea171ccd0769ea432e188532a7fb27fa73ec2d526088a082abaaad"
+ESPEAK_VERSION="$WASM_POSIX_DEP_VERSION"
+ESPEAK_SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+ESPEAK_SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 # Languages to compile. The full upstream list is ~80 languages and
 # bloats the VFS image by ~25 MB. Default to English-only for the demo;
@@ -88,33 +85,10 @@ for tool in cmake curl tar shasum python3; do
     }
 done
 
-# --- Fetch upstream sources --------------------------------------------
-# Both trees are staged under the work root. espeak-ng is the declared
-# source, so a resolver handoff is copied rather than re-downloaded.
-# pcaudiolib is a second pin this script verifies itself.
-fetch_source() {
-    local url="$1" sha256="$2" dest="$3" name="$4"
-    [ -d "$dest" ] && return 0
-    echo "==> Downloading $name..."
-    local tarball="$dest.tar.gz"
-    local staging="$dest.incoming"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$url" -o "$tarball"
-    echo "$sha256  $tarball" | shasum -a 256 -c -
-    rm -rf "$staging"
-    mkdir -p "$staging"
-    tar xzf "$tarball" -C "$staging" --strip-components=1
-    rm -f "$tarball"
-    mv "$staging" "$dest"
-}
-
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified espeak-ng $ESPEAK_VERSION source..."
-    kandelo_package_stage_verified_source espeak-ng "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$ESPEAK_SOURCE_URL" "$ESPEAK_SOURCE_SHA256" \
-        "$WORK_DIR"
-fi
-fetch_source "$PCAUDIO_SOURCE_URL" "$PCAUDIO_SOURCE_SHA256" "$PCAUDIO_SRC_DIR" "pcaudiolib $PCAUDIO_VERSION"
+# Both inputs are verified by the resolver before compilation and copied
+# into this invocation's private work root.
+kandelo_package_stage_primary_source espeak-ng "$SRC_DIR" "$WORK_DIR"
+kandelo_package_stage_source_dependency pcaudiolib-source "$PCAUDIO_SRC_DIR" "$WORK_DIR"
 
 # --- Locate host LLVM (for glue obj compile + native build) ---
 LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"

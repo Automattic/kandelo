@@ -23,8 +23,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -32,11 +33,11 @@ source "$REPO_ROOT/scripts/package-build-roots.sh"
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/pango-src"
 
-PANGO_VERSION="${WASM_POSIX_DEP_VERSION:-1.56.4}"
+PANGO_VERSION="$WASM_POSIX_DEP_VERSION"
 PANGO_SERIES="${PANGO_VERSION%.*}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/pango-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.gnome.org/sources/pango/${PANGO_SERIES}/pango-${PANGO_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-17065e2fcc5f5a5bdbffc884c956bfc7c451a96e8c4fb2f8ad837c6413cb5a01}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/pango-build"
 CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"

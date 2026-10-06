@@ -16,7 +16,7 @@
 #
 # Honors the dep-resolver build-script contract (docs/package-management.md).
 
-# netsurf_library_setup <script-dir> <name> <default-version> <default-sha256>
+# netsurf_library_setup <script-dir> <name>
 #
 # Prepares build roots, the worktree-local SDK, and the variables the other
 # functions use. <name> is the upstream component name with its "lib" prefix
@@ -24,21 +24,20 @@
 netsurf_library_setup() {
     local script_dir="$1"
     NETSURF_LIB_NAME="$2"
-    local default_version="$3"
-    local default_sha256="$4"
 
     NETSURF_REPO_ROOT="$(cd "$script_dir/../../.." && pwd)"
     # shellcheck source=/dev/null
     source "$NETSURF_REPO_ROOT/scripts/package-build-roots.sh"
+    kandelo_package_load_source_metadata "$script_dir" || return
     kandelo_package_prepare_build_roots "$script_dir" wasm32 || return
 
     NETSURF_WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
     NETSURF_SRC_DIR="$NETSURF_WORK_DIR/$NETSURF_LIB_NAME-src"
     NETSURF_STAGE_DIR="$NETSURF_WORK_DIR/$NETSURF_LIB_NAME-stage"
-    NETSURF_LIB_VERSION="${WASM_POSIX_DEP_VERSION:-$default_version}"
+    NETSURF_LIB_VERSION="$WASM_POSIX_DEP_VERSION"
     NETSURF_INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$script_dir/$NETSURF_LIB_NAME-install}"
-    NETSURF_SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.netsurf-browser.org/libs/releases/$NETSURF_LIB_NAME-$NETSURF_LIB_VERSION-src.tar.gz}"
-    NETSURF_SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-$default_sha256}"
+    NETSURF_SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+    NETSURF_SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
     NETSURF_PKG_CONFIG_PATH="${WASM_POSIX_DEP_PKG_CONFIG_PATH:-}"
 
     # Worktree-local SDK on PATH (no global npm link required).

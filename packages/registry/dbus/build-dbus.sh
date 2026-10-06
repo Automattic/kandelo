@@ -26,15 +26,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR/dbus-work" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/dbus-src"
 
-DBUS_VERSION="${WASM_POSIX_DEP_VERSION:-${DBUS_VERSION:-1.14.10}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://dbus.freedesktop.org/releases/dbus/dbus-${DBUS_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-ba1f21d2bd9d339da2d4aa8780c09df32fea87998b73da24f49ab9df1e36a50f}"
+DBUS_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 
 EXPAT_PREFIX="${WASM_POSIX_DEP_EXPAT_DIR:?WASM_POSIX_DEP_EXPAT_DIR not set (must be invoked via cargo xtask build-deps resolve dbus)}"

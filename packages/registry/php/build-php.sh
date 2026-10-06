@@ -17,12 +17,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR/php-work" wasm32
-PHP_VERSION="${WASM_POSIX_DEP_VERSION:-${PHP_VERSION:-8.3.15}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.php.net/distributions/php-${PHP_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-67073c3c9c56c86461e0715d9e1806af5ddffe8e6e2eb9781f7923bbb5bd67fa}"
+PHP_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
     WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"

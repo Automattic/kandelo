@@ -9,11 +9,13 @@ set -euo pipefail
 # script when run standalone).
 # Also installs liblzma.a + headers to sysroot.
 
-XZ_VERSION="${XZ_VERSION:-5.6.4}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+XZ_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -44,22 +46,9 @@ fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # --- Download xz source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading xz $XZ_VERSION..."
-    URL="https://github.com/tukaani-project/xz/releases/download/v${XZ_VERSION}/xz-${XZ_VERSION}.tar.gz"
-    # WHY: a unique archive under the work root; a fixed /tmp name let two
-    # concurrent builds overwrite or delete each other's download.
-    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/xz-source.XXXXXX")"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm -f "$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
+kandelo_package_stage_primary_source xz "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
-    # Patch: xz excludes __wasm__ from sigprocmask path, but our sysroot has it
-    sed -i.bak 's/!defined(__wasm__)/!defined(__wasm_no_signal__)/' "$SRC_DIR/src/common/mythread.h"
-    echo "==> Patched mythread.h for wasm signal support"
-fi
+sed -i.bak 's/!defined(__wasm__)/!defined(__wasm_no_signal__)/' "$SRC_DIR/src/common/mythread.h"
 
 cd "$SRC_DIR"
 
