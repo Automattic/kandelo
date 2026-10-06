@@ -49,8 +49,8 @@ test("bridges the viewer over the shared terminal until its replica runs", async
   test.setTimeout(300_000);
   expect(baseURL).toBeTruthy();
 
-  const sharerContext = await browser.newContext();
-  const viewerContext = await browser.newContext();
+  const sharerContext = await browser.newContext({ permissions: ["microphone"] });
+  const viewerContext = await browser.newContext({ permissions: ["microphone"] });
   const sharer = await sharerContext.newPage();
   const viewer = await viewerContext.newPage();
   // Everything the watching computer asks the network for, from before it
@@ -122,8 +122,8 @@ test("replicates a machine that shares no surface at all", async ({
   test.setTimeout(300_000);
   expect(baseURL).toBeTruthy();
 
-  const sharerContext = await browser.newContext();
-  const viewerContext = await browser.newContext();
+  const sharerContext = await browser.newContext({ permissions: ["microphone"] });
+  const viewerContext = await browser.newContext({ permissions: ["microphone"] });
   const sharer = await sharerContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
@@ -162,8 +162,8 @@ test("bridges a running fbDOOM's pixels until its replica paints its own", async
   test.setTimeout(300_000);
   expect(baseURL).toBeTruthy();
 
-  const sharerContext = await browser.newContext();
-  const viewerContext = await browser.newContext();
+  const sharerContext = await browser.newContext({ permissions: ["microphone"] });
+  const viewerContext = await browser.newContext({ permissions: ["microphone"] });
   const sharer = await sharerContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
@@ -231,8 +231,8 @@ test("moves a running fbDOOM to the computer that was watching it", async ({
   test.setTimeout(420_000);
   expect(baseURL).toBeTruthy();
 
-  const keeperContext = await browser.newContext();
-  const takerContext = await browser.newContext();
+  const keeperContext = await browser.newContext({ permissions: ["microphone"] });
+  const takerContext = await browser.newContext({ permissions: ["microphone"] });
   const keeper = await keeperContext.newPage();
   const taker = await takerContext.newPage();
   try {
@@ -298,8 +298,8 @@ test("carries the machine's files to the computer that takes it", async ({
   test.setTimeout(420_000);
   expect(baseURL).toBeTruthy();
 
-  const keeperContext = await browser.newContext();
-  const takerContext = await browser.newContext();
+  const keeperContext = await browser.newContext({ permissions: ["microphone"] });
+  const takerContext = await browser.newContext({ permissions: ["microphone"] });
   const keeper = await keeperContext.newPage();
   const taker = await takerContext.newPage();
   try {
@@ -389,8 +389,8 @@ test("moves the keyboard with the machine, in both directions", async ({
   test.setTimeout(600_000);
   expect(baseURL).toBeTruthy();
 
-  const firstContext = await browser.newContext();
-  const secondContext = await browser.newContext();
+  const firstContext = await browser.newContext({ permissions: ["microphone"] });
+  const secondContext = await browser.newContext({ permissions: ["microphone"] });
   const first = await firstContext.newPage();
   const second = await secondContext.newPage();
   try {
@@ -477,8 +477,8 @@ test("shows the viewer the page the user's machine is serving", async ({
   test.setTimeout(300_000);
   expect(baseURL).toBeTruthy();
 
-  const sharerContext = await browser.newContext();
-  const viewerContext = await browser.newContext();
+  const sharerContext = await browser.newContext({ permissions: ["microphone"] });
+  const viewerContext = await browser.newContext({ permissions: ["microphone"] });
   const sharer = await sharerContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
@@ -524,8 +524,8 @@ test("a keeper that gave its machine away follows it rather than failing", async
   // sit on a dead page reporting a machine that is running perfectly well on
   // the other computer. fbDOOM cannot show this — it boots its binary directly
   // and has no init to exit.
-  const keeperContext = await browser.newContext();
-  const takerContext = await browser.newContext();
+  const keeperContext = await browser.newContext({ permissions: ["microphone"] });
+  const takerContext = await browser.newContext({ permissions: ["microphone"] });
   const keeper = await keeperContext.newPage();
   const taker = await takerContext.newPage();
   try {

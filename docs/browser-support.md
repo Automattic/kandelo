@@ -1101,6 +1101,40 @@ claim that browser completion is working based on Node-only evidence.
 ### No external raw sockets
 Browser sandboxing prevents Kandelo from listening on real network ports or opening raw TCP/UDP sockets to arbitrary external peers. Local loopback sockets and `LocalVirtualNetwork` listeners are virtual sockets inside the browser session, so Kandelo machines can still communicate with each other using POSIX UDP/TCP. Browser-facing HTTP server demos use a service worker to intercept HTTP requests and inject them as kernel TCP connections via the connection pump.
 
+### Purpose-checked browser peer connections
+
+`web-libs/kandelo-session/src/peer-connection.ts` owns reusable WebRTC
+connection setup. A consumer declares a purpose and named data channels with
+their delivery options. Optional message chunking is available only for
+reliable, ordered channels; raw channels preserve their declared delivery
+semantics. This connection API does not itself connect guest sockets.
+
+Connect codes retain the `kandelo1:` prefix and contain a bounded, UTF-8
+base64 JSON envelope with SDP, offer/answer type, purpose and channel labels.
+Codes are capped at 64 KiB. A different purpose or channel set is rejected
+before creating a connection. Old codes without a purpose must be recreated;
+there is no legacy compatibility path.
+
+ICE gathering waits at most three seconds before emitting the candidates
+available so far. The default servers provide STUN, with no TURN relay;
+failure to find a direct route is reported explicitly. Consumers may supply
+their own ICE servers. Missing channel arrival is bounded to 30 seconds after
+ICE connects; the manual answer exchange has no deadline. Cancellation closes
+pending channels and connections.
+Close and failure subscriptions expose established connection teardown.
+
+Session sharing is the `migration` consumer in
+`apps/browser-demos/lib/peer-link.ts`. Its handover, framebuffer, terminal and
+replication channels remain reliable, ordered and chunked. Framebuffer
+buffer watermarks remain 128 KiB high and 32 KiB low; the other channels retain
+the chunked transport's defaults.
+
+`apps/signalling/piplet.php` and `apps/browser-demos/lib/peer-signalling.ts`
+carry the offer and answer as opaque connect codes. The server does not
+interpret purpose or carry guest traffic. A session name grants access to
+its codes; sessions expire after ten minutes and are bounded to 256 stored
+sessions, with a 64 KiB limit per code.
+
 ### Memory per process
 Each process gets a fresh memory layout whose requested initial pages cover the
 program's imported minimum memory and low syscall control area; it does not
