@@ -21,8 +21,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+LIBPNG_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -31,10 +34,10 @@ kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/libpng-src"
 
 # --- Inputs from resolver, with legacy fallbacks ---
-LIBPNG_VERSION="${WASM_POSIX_DEP_VERSION:-${LIBPNG_VERSION:-1.6.43}}"
+
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libpng-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.sourceforge.net/libpng/libpng-${LIBPNG_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-6a5ca0652392a2d7c9db2ae5b40210843c0bbc081cbd410825ab00cc59f14a6c}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 # autoconf bakes --prefix into the Makefile. A rerun from a different
 # INSTALL_DIR would install into the wrong path, so always build in a
@@ -61,12 +64,7 @@ if [ -z "$ZLIB_PREFIX" ]; then
 fi
 
 # --- Stage verified source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified libpng $LIBPNG_VERSION source..."
-    kandelo_package_stage_verified_source libpng "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-        "$KANDELO_PACKAGE_WORK_DIR"
-fi
+kandelo_package_stage_primary_source libpng "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 # Fresh build + install dir each run. The cache path varies per key
 # and autoconf-generated Makefiles are not portable across prefixes.

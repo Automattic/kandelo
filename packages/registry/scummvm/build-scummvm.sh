@@ -31,8 +31,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -50,9 +51,9 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
 
-SCUMMVM_VERSION="${WASM_POSIX_DEP_VERSION:-2026.3.0}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://downloads.scummvm.org/frs/scummvm/${SCUMMVM_VERSION}/scummvm-${SCUMMVM_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-b863a81e1598df8bc4aa0c33e3d9b1c8bbede1879d94d91568a4f200057677e7}"
+SCUMMVM_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:?WASM_POSIX_DEP_OUT_DIR must name the resolver staging directory}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 SDL2_PREFIX="${WASM_POSIX_DEP_SDL2_DIR:?resolver did not provide the direct sdl2 dependency}"
@@ -128,15 +129,8 @@ DEST_DIR="$WORK_DIR/dest"
 REPRO_FLAGS="-ffile-prefix-map=$SRC_DIR=/usr/src/scummvm -fdebug-prefix-map=$SRC_DIR=/usr/src/scummvm -fmacro-prefix-map=$SRC_DIR=/usr/src/scummvm"
 mkdir -p "$DEST_DIR"
 
-if [ ! -d "$SRC_DIR" ]; then
-    TARBALL="$WORK_DIR/scummvm.tar.xz"
-    echo "==> Downloading ScummVM $SCUMMVM_VERSION..."
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$SOURCE_URL" -o "$TARBALL"
-    echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    mkdir -p "$SRC_DIR"
-    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-
+kandelo_package_stage_primary_source scummvm "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
+if [ -d "$SRC_DIR" ]; then
     echo "==> Applying Kandelo patches..."
     for p in "$SCRIPT_DIR"/patches/*.patch; do
         echo "    $(basename "$p")"

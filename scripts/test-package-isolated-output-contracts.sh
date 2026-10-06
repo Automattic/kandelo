@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
+source "$REPO_ROOT/scripts/package-test-fixtures.sh"
 TEST_ROOT=$(mktemp -d)
 TEST_ROOT=$(cd "$TEST_ROOT" && pwd -P)
 trap 'chmod -R u+rwX "$TEST_ROOT" 2>/dev/null || true; rm -rf "$TEST_ROOT"' EXIT
@@ -57,7 +58,7 @@ grep -F 'WASM_POSIX_DEP_SOURCE_DIR' "$spidermonkey" >/dev/null ||
 grep -F 'source "$REPO_ROOT/scripts/package-build-roots.sh"' \
     "$spidermonkey" >/dev/null ||
     fail "SpiderMonkey does not load the verified-source staging contract"
-grep -F 'kandelo_package_stage_verified_source spidermonkey' \
+grep -F 'kandelo_package_stage_primary_source spidermonkey' \
     "$spidermonkey" >/dev/null ||
     fail "SpiderMonkey patches the resolver-owned source instead of a caller-owned copy"
 grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
@@ -113,7 +114,7 @@ if env \
         2>"$TEST_ROOT/spidermonkey-missing.err"; then
     fail "SpiderMonkey accepted missing SourceOnly source authority"
 fi
-grep -F 'SpiderMonkey SourceOnly resolver source is empty' \
+grep -E 'spidermonkey source-only resolver (archive|source directory) is empty' \
     "$TEST_ROOT/spidermonkey-missing.err" >/dev/null ||
     fail "SpiderMonkey missing SourceOnly authority did not fail at admission"
 [ ! -e "$spidermonkey_curl" ] ||
@@ -203,8 +204,6 @@ env \
     WASM_POSIX_DEP_OUT_DIR="$spidermonkey_valid_out" \
     WASM_POSIX_DEP_SOURCE_DIR="$spidermonkey_valid_source" \
     WASM_POSIX_DEP_SOURCE_ARCHIVE="$spidermonkey_valid_archive" \
-    WASM_POSIX_DEP_SOURCE_URL=https://invalid.example/spidermonkey-source.tar.xz \
-    WASM_POSIX_DEP_SOURCE_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
     WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
     WASM_POSIX_SYSROOT="$spidermonkey_valid_sysroot" \
     WASM_POSIX_DEP_LIBCXX_DIR="$spidermonkey_valid_libcxx" \
@@ -295,10 +294,9 @@ mkdir -p \
     "$perl_valid_repo/packages/registry/perl" "$perl_valid_repo/scripts" \
     "$perl_valid_repo/sdk" "$perl_valid_repo/images/vfs/scripts"
 cp "$perl" "$perl_valid_repo/packages/registry/perl/build-perl.sh"
+package_test_copy_recipe "$REPO_ROOT" "$perl_valid_repo" perl
 cp "$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh" \
     "$perl_valid_repo/images/vfs/scripts/"
-ln -s "$REPO_ROOT/scripts/package-build-roots.sh" \
-    "$perl_valid_repo/scripts/package-build-roots.sh"
 cat >"$perl_valid_repo/sdk/activate.sh" <<'SH'
 #!/usr/bin/env bash
 :
@@ -377,7 +375,7 @@ env \
 
 msmtpd="$REPO_ROOT/packages/registry/msmtpd/build-msmtpd.sh"
 msmtpd_source='https://snapshot.debian.org/archive/debian/20251129T142942Z/pool/main/m/msmtp/msmtp_1.8.32.orig.tar.xz'
-grep -F 'SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-'"$msmtpd_source"'}"' \
+grep -F 'kandelo_package_load_source_metadata "$SCRIPT_DIR"' \
     "$msmtpd" >/dev/null ||
     fail "msmtpd build does not accept its immutable manifest-owned source"
 grep -F 'url = "'"$msmtpd_source"'"' \
@@ -484,10 +482,9 @@ mkdir -p \
     "$mariadb_fake_bin" \
     "$mariadb_fake_llvm/bin"
 cp "$mariadb" "$mariadb_recipe/build-mariadb.sh"
+package_test_copy_recipe "$REPO_ROOT" "$mariadb_repo" mariadb
 cp "$REPO_ROOT/packages/registry/mariadb/wasm32-posix-toolchain.cmake" \
     "$mariadb_recipe/wasm32-posix-toolchain.cmake"
-ln -s "$REPO_ROOT/scripts/package-build-roots.sh" \
-    "$mariadb_repo/scripts/package-build-roots.sh"
 cat >"$mariadb_repo/sdk/activate.sh" <<'SH'
 #!/usr/bin/env bash
 :
@@ -631,7 +628,6 @@ env \
     OBSERVED_MARIADB_SYSROOT="$mariadb_fixture/observed-sysroot" \
     WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
     WASM_POSIX_DEP_NAME=mariadb \
-    WASM_POSIX_DEP_VERSION=10.5.28 \
     WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
     WASM_POSIX_DEP_WORK_DIR="$mariadb_work" \
     WASM_POSIX_DEP_OUT_DIR="$mariadb_out" \
@@ -737,8 +733,7 @@ mkdir -p \
     "$nano_ncurses/lib" \
     "$nano_fake_bin"
 cp "$REPO_ROOT/packages/registry/nano/build-nano.sh" "$nano_recipe/build-nano.sh"
-ln -s "$REPO_ROOT/scripts/package-build-roots.sh" \
-    "$nano_repo/scripts/package-build-roots.sh"
+package_test_copy_recipe "$REPO_ROOT" "$nano_repo" nano
 : >"$nano_repo/sysroot/lib/libc.a"
 : >"$nano_ncurses/lib/libncursesw.a"
 : >"$nano_ncurses/lib/libtinfow.a"
@@ -821,14 +816,11 @@ if ! env \
     KANDELO_UNEXPECTED_TOOL="$nano_fixture/unexpected-tool" \
     WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
     WASM_POSIX_DEP_NAME=nano \
-    WASM_POSIX_DEP_VERSION=8.0 \
     WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
     WASM_POSIX_DEP_WORK_DIR="$nano_work" \
     WASM_POSIX_DEP_OUT_DIR="$nano_out" \
     WASM_POSIX_DEP_SOURCE_ARCHIVE="$nano_fixture/source.tar.xz" \
     WASM_POSIX_DEP_SOURCE_DIR="$nano_source" \
-    WASM_POSIX_DEP_SOURCE_URL=https://invalid.example/nano-8.0.tar.xz \
-    WASM_POSIX_DEP_SOURCE_SHA256=c17f43fc0e37336b33ee50a209c701d5beb808adc2d9f089ca831b40539c9ac4 \
     WASM_POSIX_DEP_NCURSES_DIR="$nano_ncurses" \
     bash "$nano_recipe/build-nano.sh" \
         >"$nano_fixture/stdout" 2>"$nano_fixture/stderr"; then
@@ -867,14 +859,11 @@ env \
     KANDELO_UNEXPECTED_TOOL="$nano_fixture/unexpected-missing-tool" \
     WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
     WASM_POSIX_DEP_NAME=nano \
-    WASM_POSIX_DEP_VERSION=8.0 \
     WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
     WASM_POSIX_DEP_WORK_DIR="$nano_missing_work" \
     WASM_POSIX_DEP_OUT_DIR="$nano_missing_out" \
     WASM_POSIX_DEP_SOURCE_ARCHIVE="$nano_fixture/source.tar.xz" \
     WASM_POSIX_DEP_SOURCE_DIR="$nano_source" \
-    WASM_POSIX_DEP_SOURCE_URL=https://invalid.example/nano-8.0.tar.xz \
-    WASM_POSIX_DEP_SOURCE_SHA256=c17f43fc0e37336b33ee50a209c701d5beb808adc2d9f089ca831b40539c9ac4 \
     bash "$nano_recipe/build-nano.sh" \
         >"$nano_fixture/missing.out" 2>"$nano_fixture/missing.err"
 nano_missing_status=$?
@@ -948,7 +937,6 @@ WASM_POSIX_DEP_WORK_DIR="$ncurses_work" \
 WASM_POSIX_DEP_OUT_DIR="$ncurses_out" \
 WASM_POSIX_DEP_SOURCE_ARCHIVE="$ncurses_archive" \
 WASM_POSIX_DEP_SOURCE_DIR="$ncurses_source" \
-WASM_POSIX_DEP_VERSION=6.5 \
     bash "$REPO_ROOT/packages/registry/ncurses/build-ncurses.sh" \
     >"$ncurses_fixture/stdout" 2>"$ncurses_fixture/stderr"
 ncurses_status=$?
@@ -984,8 +972,7 @@ assert_compressor_sysroot_isolation() {
 
     mkdir -p "$recipe_dir" "$repo/scripts" "$seed/lib" "$seed/include" \
         "$work" "$out" "$fake_bin"
-    cp "$REPO_ROOT/packages/registry/$package/build-$package.sh" "$recipe"
-    cp "$REPO_ROOT/scripts/package-build-roots.sh" "$repo/scripts/"
+    package_test_copy_recipe "$REPO_ROOT" "$repo" "$package"
     cat >"$repo/scripts/install-local-binary.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1032,7 +1019,12 @@ SH
 
     # Resolver builds stage their source under the caller-owned work root;
     # direct invocations retain the separate package-local fixture above.
-    cp -R "$recipe_dir/$package-src" "$work/$package-src"
+    cp -R "$recipe_dir/$package-src" "$fixture/verified-source"
+    package_test_verified_source "$fixture/verified-source" "$fixture/source.archive"
+    if [ "$package" = xz ]; then
+        mkdir -p "$fixture/verified-source/src/common"
+        printf '!defined(__wasm__)\n' > "$fixture/verified-source/src/common/mythread.h"
+    fi
 
     before="$(tree_digest "$seed")"
     if ! env \
@@ -1077,6 +1069,7 @@ SH
 
 assert_compressor_sysroot_isolation bzip2
 assert_compressor_sysroot_isolation xz
+unset WASM_POSIX_DEP_SOURCE_DIR WASM_POSIX_DEP_SOURCE_ARCHIVE
 
 # ICU's C++ toolchain projection must be mutable only below the resolver work
 # root. Stop at its fetch boundary after the projection so this remains a fast
@@ -1107,7 +1100,6 @@ env \
     KANDELO_UNEXPECTED_CURL="$icu_fixture/curl-was-called" \
     WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
     WASM_POSIX_DEP_NAME=icu \
-    WASM_POSIX_DEP_VERSION=74.2 \
     WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
     WASM_POSIX_DEP_WORK_DIR="$icu_work" \
     WASM_POSIX_DEP_OUT_DIR="$icu_out" \
@@ -1294,7 +1286,6 @@ env \
     KANDELO_UNEXPECTED_CURL="$php_fixture/curl-was-called" \
     WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
     WASM_POSIX_DEP_NAME=php \
-    WASM_POSIX_DEP_VERSION=8.3.15 \
     WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
     WASM_POSIX_DEP_WORK_DIR="$php_work" \
     WASM_POSIX_DEP_OUT_DIR="$php_out" \
@@ -1338,6 +1329,7 @@ mkdir -p "$php_direct_repo/packages/registry/php" \
 ln -s "$php_direct_tmp" "$php_direct_tmp_link"
 cp "$REPO_ROOT/packages/registry/php/build-php.sh" \
     "$php_direct_repo/packages/registry/php/build-php.sh"
+package_test_copy_recipe "$REPO_ROOT" "$php_direct_repo" php
 cp "$REPO_ROOT/scripts/package-build-roots.sh" \
     "$php_direct_repo/scripts/package-build-roots.sh"
 cat >"$php_direct_repo/sdk/activate.sh" <<'SH'

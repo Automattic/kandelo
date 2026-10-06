@@ -9,8 +9,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$HERE"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$HERE" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC="$WORK_DIR/ffmpeg-src"
@@ -27,8 +28,8 @@ fi
 source "$REPO_ROOT/sdk/activate.sh"
 export WASM_POSIX_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 # Direct builds ask the resolver for each declared dependency.
 dep_dir() {

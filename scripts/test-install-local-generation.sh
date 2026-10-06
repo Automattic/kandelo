@@ -33,21 +33,14 @@ fail() {
 # or hardcoding a version that breaks at the next platform ABI change.
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+source "$REPO_ROOT/scripts/package-test-fixtures.sh"
 current_abi="$(wasm_current_abi_version "$REPO_ROOT")"
 [[ "$current_abi" =~ ^[0-9]+$ ]] || fail "could not read the current ABI"
 
 write_program_wat() {
     local marker="$1"
     local output="$2"
-    cat >"$work/program-$marker.wat" <<EOF
-(module
-  (func \$abi (result i32) i32.const $current_abi)
-  (func \$start)
-  (export "__abi_version" (func \$abi))
-  (export "_start" (func \$start))
-  (global (export "$marker") i32 (i32.const 1)))
-EOF
-    wat2wasm "$work/program-$marker.wat" -o "$output"
+    package_test_write_program "$REPO_ROOT" "$output" "$marker"
 }
 
 # Every native xtask lookup must pin the declared LLVM archive pair. On Darwin,

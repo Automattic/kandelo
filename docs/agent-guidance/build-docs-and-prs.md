@@ -12,12 +12,12 @@ scripts/dev-shell.sh ./run.sh setup
 scripts/dev-shell.sh bash
 ```
 
-`./run.sh setup` provisions the musl sysroot for you on a fresh
-checkout (see "First build in a fresh checkout or worktree" below); it
-only re-syncs overlay headers — plus the sysroot's DRI/GL archives,
-which carry their own input-digest stamp — if a complete sysroot already
-exists. A sysroot missing the opt-in ucontext archive is incomplete and
-is rebuilt through `scripts/build-musl.sh`.
+`./run.sh setup` checks both musl sysroots against their source and
+toolchain inputs and recorded installed core outputs. It rebuilds missing,
+stale, or altered cores through `scripts/build-musl.sh --ensure`, using
+private source trees. Current cores are reused; the sysroot's DRI/GL
+archives have separate input-digest checks and are refreshed by bootstrap.
+See "First build in a fresh checkout or worktree" below.
 
 Do not use bare `nix develop` for build verification. `scripts/dev-shell.sh`
 uses `nix develop --ignore-environment` with a curated keep-list so undeclared
@@ -114,16 +114,16 @@ directly:
 
 ```bash
 ./run.sh setup                # Provision sysroot(s)/SDK, then build fork-instrument tool, kernel wasm, every package, rootfs, and TypeScript host
-bash scripts/build-musl.sh   # Rebuild the wasm32 musl sysroot after editing libc overlay/glue (setup only re-syncs headers)
+bash scripts/build-musl.sh --ensure  # Check wasm32 musl inputs and installed core outputs
 scripts/build-programs.sh    # Rebuild test/example C programs
 ```
 
-`./run.sh setup` does not refresh a complete musl sysroot when libc sources
-change. After editing `libc/musl-overlay/` or
-`libc/glue/channel_syscall.c`, run `scripts/build-musl.sh` before relying on
-`./run.sh setup`, Vitest, or conformance tests. Otherwise user programs can link
-against a stale `sysroot/lib/libc.a`, hiding or inventing syscall, ABI, and
-libc behavior. (`bash build.sh` still works as a deprecated delegator to
+`./run.sh setup` checks both musl sysroots for changed inputs and altered or
+missing installed core outputs. Package build entry points check core
+freshness before computing cache identities. After editing libc, run setup
+before Vitest or conformance tests so programs and fixtures are rebuilt too;
+a fresh libc alone does not make previously linked programs current.
+(`bash build.sh` still works as a deprecated delegator to
 `./run.sh setup`.)
 
 ### First build in a fresh checkout or worktree

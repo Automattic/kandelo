@@ -2,6 +2,105 @@
 # Shared caller-owned root and verified-source contract for package build
 # scripts. Source this file; do not execute it directly.
 
+# A recipe must not carry a second version/URL/checksum contract. Standalone
+# invocations read the same manifest as the resolver; resolver invocations
+# must agree with it instead of silently selecting a different release.
+kandelo_package_load_source_metadata() {
+    local recipe_dir="$1" metadata value variable index
+    local -a fields
+    metadata="$(mktemp "${WASM_POSIX_DEP_WORK_DIR:-${TMPDIR:-/tmp}}/kandelo-source-metadata.XXXXXX")" || return
+    if ! python3 "$(dirname "${BASH_SOURCE[0]}")/package-source-metadata.py" \
+        "$recipe_dir/package.toml" > "$metadata"; then
+        rm -f "$metadata"
+        return 2
+    fi
+    mapfile -d '' -t fields < "$metadata"
+    rm -f "$metadata"
+    [ "${#fields[@]}" -eq 3 ] || return 2
+    index=0
+    for variable in WASM_POSIX_DEP_VERSION WASM_POSIX_DEP_SOURCE_URL WASM_POSIX_DEP_SOURCE_SHA256; do
+        value="${fields[$index]}"
+        if [ -n "${!variable:-}" ] && [ "${!variable}" != "$value" ]; then
+            echo "ERROR: $variable disagrees with $recipe_dir/package.toml" >&2
+            return 2
+        fi
+        index=$((index + 1))
+    done
+    WASM_POSIX_DEP_VERSION="${fields[0]}"
+    WASM_POSIX_DEP_SOURCE_URL="${fields[1]}"
+    WASM_POSIX_DEP_SOURCE_SHA256="${fields[2]}"
+}
+
+# Allocate disposable scratch beneath the caller root, never an unrelated /tmp
+# root. Recipes may remove this child on exit without removing caller inputs.
+kandelo_package_make_work_dir() {
+    local label="$1" root="${WASM_POSIX_DEP_WORK_DIR:-${TMPDIR:-/tmp}}"
+    root="$(kandelo_package_require_existing_real_dir work "$root")" || return
+    mktemp -d "$root/kandelo-$label.XXXXXX"
+}
+
+# Restage the primary source on every recipe invocation. In particular, a
+# standalone source tree from an older manifest must never override today's
+# verified inputs simply because it already exists.
+kandelo_package_stage_primary_source() {
+    local label="$1" dest="$2" root="$3" source_root
+    root="${WASM_POSIX_DEP_WORK_DIR:-$root}"
+    root="$(kandelo_package_require_existing_real_dir work "$root")" || return
+    dest="$(kandelo_package_require_real_dir destination "$dest")" || return
+    case "$dest/" in
+        "$root/"?*) ;;
+        *) echo "ERROR: primary source must be below work root: $dest" >&2; return 2 ;;
+    esac
+    if [ -n "${WASM_POSIX_DEP_SOURCE_DIR:-}" ]; then
+        source_root="$(kandelo_package_require_existing_real_dir source "$WASM_POSIX_DEP_SOURCE_DIR")" || return
+        kandelo_package_require_disjoint_paths source "$source_root" destination "$dest" || return
+    fi
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        kandelo_package_require_disjoint_paths output "$WASM_POSIX_DEP_OUT_DIR" destination "$dest" || return
+    fi
+    if [ -d "$dest" ]; then
+        echo "==> Replacing private source tree: $dest" >&2
+        kandelo_package_remove_private_tree "$dest" || return
+    fi
+    kandelo_package_stage_verified_source "$label" "$dest" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$WASM_POSIX_DEP_SOURCE_URL" \
+        "$WASM_POSIX_DEP_SOURCE_SHA256" "$root"
+}
+
+# Auxiliary sources are normal direct source-kind dependencies, not network
+# downloads hidden inside compilation. Standalone recipes ask the same resolver.
+kandelo_package_stage_source_dependency() {
+    local package="$1" dest="$2" work="$3" source_root host_target
+    work="$(kandelo_package_require_existing_real_dir work "${WASM_POSIX_DEP_WORK_DIR:-$work}")" || return
+    dest="$(kandelo_package_require_real_dir destination "$dest")" || return
+    case "$dest/" in
+        "$work/"?*) ;;
+        *) echo "ERROR: source dependency must be below work root: $dest" >&2; return 2 ;;
+    esac
+    if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = source-only-v1 ]; then
+        source_root="$(kandelo_package_source_dependency_dir "$package")" || return
+    else
+        source_root="$(kandelo_package_source_dependency_dir "$package" 2>/dev/null || true)"
+        if [ -z "$source_root" ]; then
+            host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+            source_root="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- build-deps resolve "$package")" || return
+        fi
+    fi
+    kandelo_package_require_disjoint_paths source "$source_root" destination "$dest" || return
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        kandelo_package_require_disjoint_paths output "$WASM_POSIX_DEP_OUT_DIR" destination "$dest" || return
+    fi
+    if [ -d "$dest" ]; then
+        kandelo_package_remove_private_tree "$dest" || return
+    fi
+    # Do not pass the primary source-only identity to an auxiliary-source copy.
+    # The resolver already verified and sealed this direct dependency separately.
+    (
+        unset WASM_POSIX_RESOLUTION_POLICY
+        kandelo_package_stage_verified_source "$package" "$dest" "$source_root" "" "" "$work"
+    )
+}
+
 kandelo_package_require_real_dir() {
     local label="$1"
     local candidate="$2"
@@ -491,14 +590,16 @@ kandelo_package_project_requested_vfs_source_role() {
 }
 
 kandelo_package_require_source_disjoint_from_build_roots() {
-    local source_root="$1"
+    local source_root="$1" work_root output_root
     if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+        work_root="$(kandelo_package_require_existing_real_dir work "$WASM_POSIX_DEP_WORK_DIR")" || return
         kandelo_package_require_disjoint_paths WASM_POSIX_DEP_SOURCE_DIR "$source_root" \
-            WASM_POSIX_DEP_WORK_DIR "$KANDELO_PACKAGE_WORK_DIR" || return
+            WASM_POSIX_DEP_WORK_DIR "$work_root" || return
     fi
-    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -n "$KANDELO_PACKAGE_OUT_DIR" ]; then
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        output_root="$(kandelo_package_require_existing_real_dir output "$WASM_POSIX_DEP_OUT_DIR")" || return
         kandelo_package_require_disjoint_paths WASM_POSIX_DEP_SOURCE_DIR "$source_root" \
-            WASM_POSIX_DEP_OUT_DIR "$KANDELO_PACKAGE_OUT_DIR" || return
+            WASM_POSIX_DEP_OUT_DIR "$output_root" || return
     fi
 }
 

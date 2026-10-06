@@ -11,15 +11,16 @@ set -euo pipefail
 # Output: bin/wget.wasm under the resolver work root (beside this script
 # when run standalone).
 
-WGET_VERSION="${WASM_POSIX_DEP_VERSION:-${WGET_VERSION:-1.25.0}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/wget/wget-${WGET_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-766e48423e79359ea31e41db9e5c289675947a7fcf2efdcedb726ac9d0da3784}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
+source "$REPO_ROOT/sdk/activate.sh"
+WGET_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -90,14 +91,7 @@ export OPENSSL_CFLAGS="-I$OPENSSL_DIR/include"
 export OPENSSL_LIBS="-L$OPENSSL_DIR/lib -lssl -lcrypto"
 
 # --- Stage verified wget source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified wget $WGET_VERSION source..."
-    # WHY: the resolver supplies the manifest's verified release; a second
-    # download both depends on mirror uptime and can select another version.
-    kandelo_package_stage_verified_source wget "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-        "$KANDELO_PACKAGE_WORK_DIR"
-fi
+kandelo_package_stage_primary_source wget "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 

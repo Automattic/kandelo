@@ -8,15 +8,16 @@ set -euo pipefail
 # Output: bin/gzip.wasm under the resolver work root (beside this
 # script when run standalone).
 
-GZIP_VERSION="${WASM_POSIX_DEP_VERSION:-${GZIP_VERSION:-1.13}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gzip/gzip-${GZIP_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-7454eb6935db17c6655576c2e1b0fabefd38b4d0936e0f87f48cd062ce91a057}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
+source "$REPO_ROOT/sdk/activate.sh"
+GZIP_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -47,14 +48,7 @@ fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # --- Stage verified gzip source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified gzip $GZIP_VERSION source..."
-    # WHY: use the manifest's resolver-verified release, rather than
-    # redownloading an unverified release from a separate script default.
-    kandelo_package_stage_verified_source gzip "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-        "$KANDELO_PACKAGE_WORK_DIR"
-fi
+kandelo_package_stage_primary_source gzip "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 

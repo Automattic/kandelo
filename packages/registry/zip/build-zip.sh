@@ -8,11 +8,13 @@ set -euo pipefail
 # Output: bin/zip.wasm under the resolver work root (beside this
 # script when run standalone).
 
-ZIP_VERSION="${ZIP_VERSION:-30}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+ZIP_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -47,14 +49,9 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # WASM_POSIX_DEP_SOURCE_DIR (from the resolver's source-archive cache, so a
 # rebuild does not depend on the upstream mirror being up); a direct run
 # downloads the archive and checks its sha256.
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-http://downloads.sourceforge.net/infozip/zip${ZIP_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-f0e8bb1f9b7eb0b01285495a2699df3a4b766784c1765a8f1aeedf63c0806369}"
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging pinned zip $ZIP_VERSION source..."
-    kandelo_package_stage_verified_source zip "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-        "$KANDELO_PACKAGE_WORK_DIR"
-fi
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
+kandelo_package_stage_primary_source zip "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 

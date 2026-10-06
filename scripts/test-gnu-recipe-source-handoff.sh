@@ -45,7 +45,6 @@ for package in libiconv gzip wget; do
         WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
         WASM_POSIX_DEP_SOURCE_ARCHIVE="$test_root/source.archive" \
         WASM_POSIX_DEP_SOURCE_DIR="$test_root/source" \
-        WASM_POSIX_DEP_SOURCE_URL=https://example.invalid/source.tar.xz \
         WASM_POSIX_DEP_WORK_DIR="$test_root/$package-work" \
         WASM_POSIX_DEP_OUT_DIR="$test_root/$package-out" \
         WASM_POSIX_DEP_TARGET_ARCH=wasm32 \

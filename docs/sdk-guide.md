@@ -22,14 +22,19 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
    ```
    The full setup also builds Rust packages, which need the pinned Rust
    libc source under `sdk/rust/libc-upstream`.
-   `./run.sh setup` builds the sysroot from scratch when it is
-   missing or lacks the opt-in ucontext archive. A complete sysroot takes
-   the overlay-header and graphics-library resync path, not a musl rebuild.
-   If you edit `libc/musl-overlay/` or `libc/glue/channel_syscall.c`
-   after the sysroot has already been built, rebuild it explicitly:
+   `./run.sh setup` checks both architecture sysroots against their musl,
+   overlay, glue, build-script, compiler, and compiler-plugin inputs.
+   It also verifies recorded installed bytes and required core outputs.
+   Missing, unstamped, stale, or altered core outputs trigger a rebuild in
+   a private source tree; current outputs are reused. Package builds check
+   core freshness before computing cache identities. For an explicit check:
    ```bash
-   bash scripts/build-musl.sh
+   scripts/dev-shell.sh bash scripts/build-musl.sh --ensure
    ```
+   `--arch wasm64posix` selects the other architecture. `--core-only`
+   omits graphics refresh during dependency resolution to avoid recursion.
+   Without `--ensure`, the command always rebuilds musl. This automation
+   applies to repository builds, not to an installed npm SDK artifact.
 3. **Kernel built**:
    ```bash
    ./run.sh setup

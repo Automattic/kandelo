@@ -27,11 +27,13 @@ set -euo pipefail
 # Output: bin/git.wasm and bin/git-remote-http.wasm under the resolver work
 #         root (beside this script when run standalone).
 
-GIT_VERSION="${GIT_VERSION:-2.47.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+GIT_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
@@ -118,18 +120,7 @@ fi
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 # --- Download Git source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading git $GIT_VERSION..."
-    URL="https://www.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz"
-    # WHY: a unique archive under the work root; a fixed /tmp name let two
-    # concurrent builds overwrite or delete each other's download.
-    TARBALL="$(mktemp "$KANDELO_PACKAGE_WORK_DIR/git-source.XXXXXX")"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm -f "$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
-fi
+kandelo_package_stage_primary_source git "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 

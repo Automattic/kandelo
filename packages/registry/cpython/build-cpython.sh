@@ -10,11 +10,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+PYTHON_VERSION="$WASM_POSIX_DEP_VERSION"
 
-PYTHON_VERSION="${WASM_POSIX_DEP_VERSION:-${PYTHON_VERSION:-3.13.3}}"
 PYTHON_MAJOR_MINOR="$(printf '%s\n' "$PYTHON_VERSION" | awk -F. '{print $1 "." $2}')"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-40f868bcbdeb8149a3149580bb9bfd407b3321cd48f0be631af955ac92c0e041}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 PACKAGE_NAME="${WASM_POSIX_DEP_NAME:-cpython}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
@@ -42,7 +45,6 @@ mkdir -p "$WORK_DIR" "$OUT_DIR" "$DOWNLOAD_DIR"
 
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
 for tool in wasm32posix-cc wasm32posix-ar wasm-opt wasm-objdump; do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -148,20 +150,9 @@ if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$PYT
     rm -rf "$SRC_DIR" "$HOST_BUILD_DIR" "$CROSS_BUILD_DIR" "$RUNTIME_STAGE"
 fi
 
-if [ ! -d "$SRC_DIR" ]; then
-    archive="$DOWNLOAD_DIR/Python-${PYTHON_VERSION}.tar.xz"
-    echo "==> Downloading CPython $PYTHON_VERSION..."
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$SOURCE_URL" -o "$archive"
-    if [ -z "$SOURCE_SHA256" ]; then
-        echo "ERROR: CPython source sha256 is required for a source build" >&2
-        exit 1
-    fi
-    printf '%s  %s\n' "$SOURCE_SHA256" "$archive" | shasum -a 256 -c -
-    mkdir -p "$SRC_DIR"
-    tar xf "$archive" -C "$SRC_DIR" --strip-components=1
-    printf '%s\n' "$PYTHON_VERSION" > "$SOURCE_MARKER"
-fi
+kandelo_package_stage_primary_source cpython "$SRC_DIR" "$WORK_DIR"
+
+printf '%s\n' "$PYTHON_VERSION" > "$SOURCE_MARKER"
 
 BUILD_TRIPLET="$("$SRC_DIR/config.guess")"
 if [ -z "$BUILD_TRIPLET" ]; then

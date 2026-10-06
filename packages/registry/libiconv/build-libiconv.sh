@@ -14,22 +14,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+LIBICONV_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
-WORK_DIR="$(mktemp -d "$KANDELO_PACKAGE_WORK_DIR/kandelo-libiconv.XXXXXX")"
+WORK_DIR="$(kandelo_package_make_work_dir libiconv)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 SRC_DIR="$WORK_DIR/source"
 STAGE_DIR="$WORK_DIR/stage"
 
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
-LIBICONV_VERSION="${WASM_POSIX_DEP_VERSION:-${LIBICONV_VERSION:-1.17}}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libiconv-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.gnu.org/pub/gnu/libiconv/libiconv-${LIBICONV_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
 if [ "$TARGET_ARCH" != "wasm32" ]; then
@@ -48,9 +49,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 echo "==> Staging verified GNU libiconv $LIBICONV_VERSION source..."
 # WHY: the resolver already verifies and supplies this source; downloading
 # it again makes a cached source build depend on upstream availability.
-kandelo_package_stage_verified_source libiconv "$SRC_DIR" \
-    "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-    "$KANDELO_PACKAGE_WORK_DIR"
+kandelo_package_stage_primary_source libiconv "$SRC_DIR" "$WORK_DIR"
 
 cd "$SRC_DIR"
 

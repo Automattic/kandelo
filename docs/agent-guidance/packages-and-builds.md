@@ -53,7 +53,8 @@ shared between them, and one build's `rm -rf` deletes the other's tree
 mid-build. Fixed `/tmp/<name>-<version>.tar.*` download paths collide the
 same way. Derive every write path from `kandelo_package_prepare_build_roots`
 (`$KANDELO_PACKAGE_WORK_DIR`) or `"${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"`,
-stage sources with `kandelo_package_stage_verified_source`, and export
+read primary identity with `kandelo_package_load_source_metadata` and stage
+sources with the shared verified-source helpers, and export
 `WASM_POSIX_INSTALL_LOCAL_MIRROR=0` before `install_local_binary` when the
 resolver owns the roots. Standalone runs may keep package-local defaults.
 The resolver enforces the recipe-directory part of this rule: it records the

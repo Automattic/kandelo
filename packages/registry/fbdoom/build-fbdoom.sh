@@ -11,8 +11,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$HERE"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$HERE" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC="$WORK_DIR/fbdoom-src"
@@ -23,8 +24,8 @@ OUT_BIN="$WORK_DIR/fbdoom.wasm"
 # by the package manifest. fbDOOM removed its
 # OPL/MIDI/MUS sources with SDL; pin chocolate-doom 3.1.0 for those files.
 FBDOOM_COMMIT="17280163bc95e5d954d2efaa0633489b763b4cd1"
-FBDOOM_SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/maximevince/fbDOOM/archive/${FBDOOM_COMMIT}.tar.gz}"
-FBDOOM_SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-77f57cee68fed438dffdba96f6070b8975c16652a63ddf4fb967994e5585a38a}"
+FBDOOM_SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+FBDOOM_SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 FBDOOM_VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 CDOOM_COMMIT="35fb1372d10756ca27eca05665bd8a7cebc71c05"
 CDOOM_SOURCE_URL="${FBDOOM_CHOCOLATE_DOOM_SOURCE_URL:-https://github.com/chocolate-doom/chocolate-doom/archive/${CDOOM_COMMIT}.tar.gz}"

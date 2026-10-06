@@ -25,7 +25,7 @@ use wasm_posix_shared::abi;
 use wasmparser::{Encoding, Parser, Payload};
 
 /// Names a program may import from `env`.
-fn allowed_env_imports() -> BTreeSet<&'static str> {
+pub(crate) fn allowed_env_imports() -> BTreeSet<&'static str> {
     let mut allowed: BTreeSet<&'static str> =
         abi::HOST_ENV_IMPORTS.iter().map(|import| import.name).collect();
     for import in abi::WPK_FORK_REQUIRED_IMPORTS {

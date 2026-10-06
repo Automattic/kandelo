@@ -75,6 +75,7 @@ mod package_archive_limits;
 mod package_matrix;
 mod pkg_manifest;
 mod program_env_imports;
+mod package_imports;
 mod recipe_tree_guard;
 mod remote_fetch;
 mod root_js_deps;
@@ -103,6 +104,7 @@ fn main() -> ExitCode {
     let result = match sub.as_str() {
         "dump-abi" => dump_abi::run(rest),
         "check-program-env-imports" => program_env_imports::run(rest),
+        "check-package-imports" => package_imports::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),

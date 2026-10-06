@@ -3,6 +3,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+bash "$REPO_ROOT/scripts/test-package-source-metadata.sh"
+bash "$REPO_ROOT/scripts/test-musl-build-state.sh"
+bash "$REPO_ROOT/scripts/test-package-import-audit-environment.sh"
 fail() {
     echo "test-package-build-roots.sh: $*" >&2
     exit 1
@@ -1097,6 +1100,7 @@ invalid_ruby_prefixes=(
     $'/opt/ruby\npath'
 )
 for invalid_prefix in "${invalid_ruby_prefixes[@]}"; do
+    mkdir -p "$TMP_ROOT/ruby-invalid-work" "$TMP_ROOT/ruby-invalid-out"
     err="$TMP_ROOT/ruby-guest-prefix.err"
     if WASM_POSIX_DEP_WORK_DIR="$TMP_ROOT/ruby-invalid-work" \
         WASM_POSIX_DEP_OUT_DIR="$TMP_ROOT/ruby-invalid-out" \
@@ -1112,6 +1116,7 @@ done
 # dependency work.
 nethack_work="$TMP_ROOT/nethack-invalid-work"
 nethack_out="$TMP_ROOT/nethack-invalid-out"
+mkdir -p "$nethack_work" "$nethack_out"
 err="$TMP_ROOT/nethack-path.err"
 if WASM_POSIX_DEP_WORK_DIR="$nethack_work" \
     WASM_POSIX_DEP_OUT_DIR="$nethack_out" \
@@ -1126,6 +1131,7 @@ grep -F "NETHACK_HACKDIR must be an absolute guest path" "$err" >/dev/null ||
 
 # Invalid architectures likewise fail before package-specific compilers run.
 for package in bc posix-utils-lite lsof nethack fbdoom modeset; do
+    mkdir -p "$TMP_ROOT/$package-invalid-work" "$TMP_ROOT/$package-invalid-out"
     err="$TMP_ROOT/$package-arch.err"
     if WASM_POSIX_DEP_WORK_DIR="$TMP_ROOT/$package-invalid-work" \
         WASM_POSIX_DEP_OUT_DIR="$TMP_ROOT/$package-invalid-out" \

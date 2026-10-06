@@ -16,20 +16,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
 # Source, build scratch and patched copies live in the resolver-owned work
 # root (or a direct run's private one), never under the reviewed checkout.
 # shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/libevdev-src"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$WORK_DIR/.kandelo-libevdev-source"
 
-LIBEVDEV_VERSION="${WASM_POSIX_DEP_VERSION:-1.13.3}"
+LIBEVDEV_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libevdev-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.freedesktop.org/software/libevdev/libevdev-${LIBEVDEV_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-abf1aace86208eebdd5d3550ffded4c8d73bb405b796d51c389c9d0604cbcfbf}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 # --- Toolchain ----------------------------------------------------------
 for tool in wasm32posix-cc wasm32posix-ar python3; do

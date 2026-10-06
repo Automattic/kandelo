@@ -18,7 +18,7 @@ script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 
 [[host_tools]]
 name = "python3"
-version_constraint = ">=3.10"
+version_constraint = ">=3.11"
 probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
