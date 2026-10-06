@@ -12,11 +12,18 @@
 //! byte-identical post-fork, both processes read the same ID and route
 //! lock/unlock/wait/signal through the kernel.
 //!
-//! Blocking semantics are expressed as `Err(Errno::EAGAIN)` — the host
-//! host retry loop re-invokes the syscall after a short delay
-//! until the operation can succeed. The kernel calls
-//! `kernel_wake_blocked_retries()` from state-changing operations so waiters
-//! are woken promptly rather than through pure timer polling.
+//! Blocking semantics are expressed as `Err(Errno::EAGAIN)` — the host retry
+//! loop re-invokes the syscall after a short delay until the operation can
+//! succeed.
+//!
+//! GAP: this module pushes no wakeup event, so a waiter here really is woken
+//! by pure timer polling; an unlock does not wake a blocked lock promptly.
+//! This doc previously claimed the kernel called `kernel_wake_blocked_retries()`
+//! from state-changing operations to avoid exactly that. No such export has
+//! ever existed anywhere in the repository, and no `wakeup::push` is issued
+//! from this file — the promptness guarantee was never implemented. Closing it
+//! belongs to the K3 scheduler migration, which gives blocked waiters a real
+//! kernel-owned wait queue and a precise wake source.
 
 extern crate alloc;
 

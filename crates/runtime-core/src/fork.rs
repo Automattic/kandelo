@@ -41,11 +41,16 @@ const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // This header version is also shared by the cfg(test) exec-state fixture.
 // v15 preserves complete credentials plus the kernel-owned secure-exec marker.
-// v16 carries each socket's SO_PEERCRED peer credentials and the process's
-// epoll instances (their registrations), which the child inherits. v17 also
-// carries the process's registered pointer width: a forked child runs on a
-// copy of its parent's address space, so it inherits that address space's
-// data model rather than having the host register it again.
+// v16 carries each socket's SO_PEERCRED peer credentials and, then, the
+// process's epoll instances. v17 adds the process's registered pointer
+// width: a forked child runs on a copy of its parent's address space, so it
+// inherits that address space's data model rather than having the host
+// register it again. It no longer carries epoll instances: they are owned by
+// the epoll open file description in `descriptor_backing::with_epolls`, so a
+// fork child's inherited epoll descriptor reaches the parent's live instance
+// (Linux semantics) instead of a copy. The state is produced and consumed by
+// one kernel build, so the version guards against a mismatched kernel, not
+// a persisted format.
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
 const FORK_VERSION: u32 = 17;
@@ -58,8 +63,6 @@ const MAX_ARGV: u32 = 65536;
 const MAX_PATH_LEN: usize = 1048576; // 1 MiB
 const MAX_STRING_LEN: usize = 1048576; // 1 MiB
 const MAX_SOCKET_SLOTS: usize = 65536;
-const MAX_EPOLL_SLOTS: usize = 65536;
-const MAX_EPOLL_INTERESTS: usize = 65536;
 const MAX_SOCKET_OPTIONS: usize = 4096;
 const MAX_SOCKET_STRING_LEN: usize = 256;
 const MAX_IPV4_MULTICAST_MEMBERSHIPS: usize = 4096;
@@ -455,60 +458,6 @@ fn read_ipv4_source_list(r: &mut Reader<'_>) -> Result<Vec<[u8; 4]>, Errno> {
 
 /// Write socket fields that are durable across fork but were added after the
 /// original v4 socket block. Consume-once queues remain intentionally absent.
-fn write_epoll_instances(
-    w: &mut Writer<'_>,
-    epolls: &[Option<crate::process::EpollInstance>],
-) -> Result<(), Errno> {
-    write_bounded_len(w, epolls.len(), MAX_EPOLL_SLOTS)?;
-    for slot in epolls {
-        match slot {
-            None => w.write_u32(0)?,
-            Some(ep) => {
-                w.write_u32(1)?;
-                write_bounded_len(w, ep.interests.len(), MAX_EPOLL_INTERESTS)?;
-                for i in &ep.interests {
-                    w.write_i32(i.fd)?;
-                    w.write_u32(i.events)?;
-                    w.write_u64(i.data)?;
-                    w.write_u64(i.ofd_id.0)?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn read_epoll_instances(
-    r: &mut Reader<'_>,
-) -> Result<Vec<Option<crate::process::EpollInstance>>, Errno> {
-    let slots = read_bounded_count(r, MAX_EPOLL_SLOTS)?;
-    let mut epolls = Vec::with_capacity(slots.min(r.remaining() / 4));
-    for _ in 0..slots {
-        match r.read_u32()? {
-            0 => epolls.push(None),
-            1 => {
-                let count = read_bounded_count(r, MAX_EPOLL_INTERESTS)?;
-                // Each registration is 24 encoded bytes.
-                if r.remaining() < count.checked_mul(24).ok_or(Errno::EINVAL)? {
-                    return Err(Errno::EINVAL);
-                }
-                let mut interests = Vec::with_capacity(count);
-                for _ in 0..count {
-                    interests.push(crate::process::EpollInterest {
-                        fd: r.read_i32()?,
-                        events: r.read_u32()?,
-                        data: r.read_u64()?,
-                        ofd_id: crate::lock::OfdId(r.read_u64()?),
-                    });
-                }
-                epolls.push(Some(crate::process::EpollInstance { interests }));
-            }
-            _ => return Err(Errno::EINVAL),
-        }
-    }
-    Ok(epolls)
-}
-
 fn write_durable_socket_state(
     w: &mut Writer<'_>,
     sock: &crate::socket::SocketInfo,
@@ -1319,17 +1268,6 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         }
     }
 
-    // ── Epoll instances ──
-    // An epoll fd is inherited like any other fd, so its registrations must
-    // be too: without them the child's epoll fd names an instance that no
-    // longer exists and every epoll_ctl/epoll_wait on it fails EBADF. Slot
-    // indices are preserved (the epoll OFD's host_handle encodes the slot).
-    // Registrations name their open file description by ofd_id, which the
-    // fd table above carries unchanged. (Linux shares one instance between
-    // parent and child; here each gets a copy of the registrations as they
-    // stood at fork.)
-    write_epoll_instances(&mut w, &proc.epolls)?;
-
     // ── Patch total_size ──
     let total = u32::try_from(w.pos).map_err(|_| Errno::EOVERFLOW)?;
     w.patch_u32(total_size_offset, total);
@@ -1770,8 +1708,6 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         }
     }
 
-    let epolls = read_epoll_instances(&mut r)?;
-
     if r.remaining() != 0 {
         return Err(Errno::EINVAL);
     }
@@ -1821,7 +1757,11 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.fork_fd_actions = fork_fd_actions;
     child.next_ephemeral_port = 49152;
     child.clear_threads(); // POSIX: child has one task, the process leader.
-    child.epolls = epolls;
+    // Epoll instances are NOT cleared here: an epoll fd names an open file
+    // description, and the child's inherited descriptor refers to the same
+    // instance the parent holds. Ownership lives in
+    // `descriptor_backing::with_epolls`, keyed by the OFD's handle, and
+    // `bump_inherited_resource_refcounts` takes the child's reference.
     child.posix_timers.clear();
     child.alt_stack_sp = 0;
     child.alt_stack_flags = 2; // SS_DISABLE
@@ -2292,7 +2232,10 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.fork_fd_actions.clear();
     process.next_ephemeral_port = 49152;
     process.clear_threads(); // exec resets to the process leader only.
-    process.epolls.clear();
+    // An epoll fd without FD_CLOEXEC survives exec on Linux, interest list
+    // included, because the open file description survives. Ownership is
+    // OFD-keyed in `descriptor_backing`, and CLOEXEC-dropped descriptors
+    // release their reference through `removed_backings_for_exec`.
     process.posix_timers.clear();
     process.alt_stack_sp = 0;
     process.alt_stack_flags = 2; // SS_DISABLE

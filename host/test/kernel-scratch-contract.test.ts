@@ -730,6 +730,21 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#setPointerWidthWithinKernelEntry::kernel-export-direct-use::setPointerWidthFn(pid, pointerWidth)",
   ),
   reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#retireKernelWaitsForProcess::kernel-export-direct-use::retire(pid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#waitRemainingMsForHandle::kernel-export-direct-use::remaining(handle)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.closeWaitDeadline::kernel-export-direct-use::close(handle)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.waitRemainingMs::kernel-export-direct-use::open( channel.pid, this.guestTidForChannel(channel) ?? 0, kind, BigInt(Math.floor(timeoutMs)), )",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::enableKernelWaitQueue::kernel-export-direct-use::fn(1)",
+  ),
+  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#resolveExecListenerFdWithinKernelEntry::kernel-export-direct-use::fdIsOpen(pid, oldFd)",
   ),
   reviewedScalarKernelExportCall(
@@ -888,15 +903,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.releaseAllSysvShmMappingsForProcess::kernel-export-direct-use::kernelShmdtAddr(pid, this.toKernelPtr(addr))",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getAcceptWakeIdx(pid, fd)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getRecvPipe(pid, fd)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::watchedFd(pid, i)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveInheritedListenerFd::kernel-export-direct-use::findListenerFd?.(pid, wakeIdx)",

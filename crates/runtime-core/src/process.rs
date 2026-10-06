@@ -105,7 +105,6 @@ pub trait HostIO {
     ) -> Result<Option<(u64, u32, usize)>, Errno>;
     fn host_closedir(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno>;
-    fn host_nanosleep(&mut self, seconds: i64, nanoseconds: i64) -> Result<(), Errno>;
     fn host_ftruncate(&mut self, handle: i64, length: i64) -> Result<(), Errno>;
     fn host_fsync(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_fchmod(&mut self, handle: i64, mode: u32) -> Result<(), Errno>;
@@ -147,9 +146,22 @@ pub trait HostIO {
         flags: u32,
         buf: &mut [u8],
     ) -> Result<usize, Errno>;
-    fn host_net_poll(&mut self, handle: i32, events: i16) -> Result<i16, Errno> {
+    /// Report what the host engine can observe about a delegated connection.
+    ///
+    /// The return value is a `wasm_posix_shared::net_readiness` fact word, not
+    /// `poll` `revents`: the host reports facts, the kernel decides readiness
+    /// in `crate::net_readiness::stream_revents`. See that module for why the
+    /// decision was pulled back here.
+    ///
+    /// The default is [`UNOBSERVABLE`] — the honest answer for a host with no
+    /// readiness source, and a *named* fallback rather than the old default,
+    /// which returned the caller's own `events` and so told every caller that
+    /// everything it asked about was ready.
+    ///
+    /// [`UNOBSERVABLE`]: wasm_posix_shared::net_readiness::UNOBSERVABLE
+    fn host_net_readiness(&mut self, handle: i32) -> Result<u32, Errno> {
         let _ = handle;
-        Ok(events)
+        Ok(wasm_posix_shared::net_readiness::UNOBSERVABLE)
     }
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno>;
     /// Notify the host that an AF_INET socket is now listening, so the host
@@ -654,21 +666,30 @@ pub struct EventFdState {
 
 /// An entry in an epoll interest list.
 ///
-/// Like Linux, a registration belongs to the pair (fd number, open file
-/// description): `ofd_id` is the description `fd` referred to at
-/// EPOLL_CTL_ADD. The registration lives as long as that description has
-/// an fd in the process -- it survives `close(fd)` while a `dup` keeps the
-/// description open, and disappears once none does -- and a later file that
-/// reuses the fd number is a different registration.
+/// Linux keys an interest on the pair `(struct file *, fd)`: the open file
+/// description the descriptor named at registration, plus the descriptor
+/// number. `ofd_id` is the identity half — machine-wide, never reused, and
+/// preserved by `dup`, `fork`, and `exec` — so a registration follows the
+/// description rather than the number a later `open` may reuse.
 #[derive(Debug, Clone)]
 pub struct EpollInterest {
+    /// Descriptor number used at registration. Part of the key, not the
+    /// identity: `EPOLL_CTL_ADD` of a `dup` at a different number is a
+    /// second interest in the same description, exactly as on Linux.
     pub fd: i32,
+    /// Identity of the registered open file description.
+    pub ofd_id: crate::lock::OfdId,
     pub events: u32,
     pub data: u64,
-    pub ofd_id: crate::lock::OfdId,
 }
 
-/// An epoll instance: a set of monitored file descriptors.
+/// An epoll instance: a set of monitored open file descriptions.
+///
+/// The instance is owned by the open file description its `epoll_create1`
+/// descriptor names, not by a process — see
+/// [`crate::descriptor_backing::with_epolls`]. A `fork` child's duplicated
+/// descriptor therefore reaches the same instance, and `epoll_ctl` through
+/// either descriptor is visible to both processes.
 #[derive(Debug, Clone)]
 pub struct EpollInstance {
     pub interests: Vec<EpollInterest>,
@@ -919,8 +940,6 @@ pub struct Process {
     pub fork_fd_actions: Vec<FdAction>,
     /// Next ephemeral port to assign for bind(port=0).
     pub next_ephemeral_port: u16,
-    /// Epoll instances owned by this process.
-    pub epolls: Vec<Option<EpollInstance>>,
     /// POSIX timers (timer_create / timer_settime).
     pub posix_timers: Vec<Option<PosixTimerState>>,
     /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
@@ -1209,7 +1228,6 @@ impl Process {
             fork_exec_argv: None,
             fork_fd_actions: Vec::new(),
             next_ephemeral_port: 49152,
-            epolls: Vec::new(),
             posix_timers: Vec::new(),
             alt_stack_sp: 0,
             alt_stack_flags: 2, // SS_DISABLE
@@ -2508,9 +2526,6 @@ pub mod test_host {
         fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
             Ok((0, 0))
         }
-        fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> {
-            Ok(())
-        }
         fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> {
             Ok(())
         }
@@ -2744,9 +2759,6 @@ pub mod test_host {
         }
         fn host_close(&mut self, h: i64) -> Result<(), Errno> {
             NoopHost.host_close(h)
-        }
-        fn host_nanosleep(&mut self, s: i64, n: i64) -> Result<(), Errno> {
-            NoopHost.host_nanosleep(s, n)
         }
         fn host_read(&mut self, h: i64, b: &mut [u8]) -> Result<usize, Errno> {
             NoopHost.host_read(h, b)
