@@ -45,80 +45,56 @@ ENTRY_LIST="$TMP_DIR/entries.txt"
 TMP_OUTPUT="$TMP_DIR/archive.zip"
 mkdir -p "$MIRROR_DIR"
 
-has_executable_mode_bit() {
-    # Unlike test -x, this inspects the file's mode rather than the current
-    # user's identity or an ambient ACL. BSD and GNU stat spell the portable
-    # permission-only format differently.
-    local mode
-    mode="$(LC_ALL=C stat -f '%Lp' "$1" 2>/dev/null || true)"
-    if [[ ! "$mode" =~ ^[0-7]+$ ]]; then
-        mode="$(LC_ALL=C stat -c '%a' "$1" 2>/dev/null || true)"
-    fi
-    if [[ ! "$mode" =~ ^[0-7]+$ ]]; then
-        echo "create-deterministic-zip: could not read mode: $1" >&2
-        return 2
-    fi
-    (( (8#$mode & 8#111) != 0 ))
-}
+# Every step below runs a fixed number of processes for the whole tree. Large
+# trees (the Perl, Python, and Ruby standard libraries hold thousands of files)
+# made a per-file loop of stat/cp/chmod/touch processes take over a minute,
+# nearly all of it process startup rather than copying or compression.
+
+# Reject what the ZIP entry list cannot carry before touching the output. A
+# path containing a newline has a component containing one, so matching
+# component names is enough.
+cd "$STAGING_DIR"
+bad_name="$(LC_ALL=C find . -mindepth 1 -name $'*\n*' -print -quit)"
+if [ -n "$bad_name" ]; then
+    echo "create-deterministic-zip: ZIP entry names must not contain newlines: ${bad_name#./}" >&2
+    exit 1
+fi
+special="$(LC_ALL=C find . -mindepth 1 ! -type f ! -type d ! -type l -print -quit)"
+if [ -n "$special" ]; then
+    echo "create-deterministic-zip: unsupported special file: ${special#./}" >&2
+    exit 1
+fi
+
+# Build a private mirror so normalization never mutates the caller's staging
+# tree. -P copies symlinks as links so every valid POSIX target is preserved
+# byte-for-byte. A zero umask gives ZIP one canonical link mode on hosts where
+# symlink creation honors the process umask, and keeps source executable bits
+# visible to the classification below.
+(umask 000; cp -RP "$STAGING_DIR/." "$MIRROR_DIR/")
+
+# Canonical distribution modes preserve file kind and executable intent, rather
+# than arbitrary source permission bits or the caller's umask. -perm tests the
+# file's mode bits, not the current user's identity or an ambient ACL as
+# test -x would.
+cd "$MIRROR_DIR"
+find . -mindepth 1 -type d -exec chmod 0755 {} +
+find . -mindepth 1 -type f \( -perm -100 -o -perm -010 -o -perm -001 \) \
+    -exec chmod 0755 {} +
+find . -mindepth 1 -type f ! -perm -100 ! -perm -010 ! -perm -001 \
+    -exec chmod 0644 {} +
 
 # 2000-01-01 00:00:00 UTC is exactly representable by ZIP's DOS timestamp.
-# Build a private mirror so normalization never mutates the caller's staging
-# tree. Canonical distribution modes preserve file kind and executable intent,
-# rather than arbitrary source permission bits or the caller's umask.
-cd "$STAGING_DIR"
-while IFS= read -r -d '' path; do
-    relative="${path#./}"
-    if [[ "$relative" == *$'\n'* ]]; then
-        echo "create-deterministic-zip: ZIP entry names must not contain newlines: $relative" >&2
-        exit 1
-    fi
-    destination="$MIRROR_DIR/$relative"
-    if [ -L "$path" ]; then
-        mkdir -p "$(dirname "$destination")"
-        # Copy the link itself so every valid POSIX target is preserved
-        # byte-for-byte. A zero umask gives ZIP one canonical link mode on
-        # hosts where symlink creation honors the process umask.
-        (umask 000; cp -P "$path" "$destination")
-    elif [ -d "$path" ]; then
-        mkdir -p "$destination"
-    elif [ -f "$path" ]; then
-        mkdir -p "$(dirname "$destination")"
-        cp "$path" "$destination"
-        if has_executable_mode_bit "$path"; then
-            chmod 0755 "$destination"
-        else
-            mode_status=$?
-            if [ "$mode_status" -eq 1 ]; then
-                chmod 0644 "$destination"
-            else
-                exit "$mode_status"
-            fi
-        fi
-    else
-        echo "create-deterministic-zip: unsupported special file: $relative" >&2
-        exit 1
-    fi
-done < <(LC_ALL=C find . -mindepth 1 -print0 | LC_ALL=C sort -z)
+# Stamp after the mirror is complete: adding children changes directory mtimes,
+# while chmod and touch of existing entries do not. -h stamps symlinks
+# themselves rather than their targets.
+TZ=UTC find . -mindepth 1 -exec touch -h -t 200001010000.00 {} +
 
-# Enumerate the mirror again after it is complete: adding children changes
-# directory mtimes, so all metadata must be normalized in this final pass.
-entry_count=0
-cd "$MIRROR_DIR"
-while IFS= read -r -d '' path; do
-    relative="${path#./}"
-    if [ -L "$path" ]; then
-        TZ=UTC touch -h -t 200001010000.00 "$path"
-    elif [ -d "$path" ]; then
-        chmod 0755 "$path"
-        TZ=UTC touch -t 200001010000.00 "$path"
-    elif [ -f "$path" ]; then
-        TZ=UTC touch -t 200001010000.00 "$path"
-    fi
-    printf '%s\n' "$relative" >> "$ENTRY_LIST"
-    entry_count=$((entry_count + 1))
-done < <(LC_ALL=C find . -mindepth 1 -print0 | LC_ALL=C sort -z)
+# Names cannot contain newlines (checked above), so a bytewise sort of the
+# NUL-separated walk converts losslessly into zip's newline-separated list.
+LC_ALL=C find . -mindepth 1 -print0 | LC_ALL=C sort -z \
+    | LC_ALL=C tr '\0' '\n' | LC_ALL=C sed 's|^\./||' > "$ENTRY_LIST"
 
-if [ "$entry_count" -eq 0 ]; then
+if [ ! -s "$ENTRY_LIST" ]; then
     echo "create-deterministic-zip: staging tree is empty: $STAGING_DIR" >&2
     exit 1
 fi

@@ -428,40 +428,62 @@ describe("declared shell lazy-archive inputs", () => {
     expect(fs.stat("/usr/bin/vim").size).toBe("fixture executable\n".length);
   });
 
-  it("fails loudly when neither stat spelling returns an octal mode", () => {
+  it("treats any execute bit, including group- or other-only, as executable", () => {
     const sourceRoot = tempDir();
     const outputRoot = tempDir();
-    const fakeBin = tempDir();
-    writeDeterministicZipFixture(
-      sourceRoot,
-      false,
-      new Date("2020-01-02T03:04:05Z"),
-    );
-    const fakeStat = join(fakeBin, "stat");
-    writeFileSync(fakeStat, "#!/bin/sh\nprintf 'not-an-octal-mode\\n'\n");
-    chmodSync(fakeStat, 0o755);
+    const output = join(outputRoot, "modes.zip");
+    const modes: Array<[string, number, number]> = [
+      ["group-exec", 0o610, 0o755],
+      ["other-exec", 0o601, 0o755],
+      ["owner-exec", 0o500, 0o755],
+      ["read-only", 0o444, 0o644],
+      ["setuid-no-exec", 0o4600, 0o644],
+    ];
+    for (const [name, mode] of modes) {
+      const path = join(sourceRoot, name);
+      writeFileSync(path, `${name}\n`);
+      chmodSync(path, mode);
+    }
 
     const helper = join(
       repoRoot,
       "images/vfs/scripts/create-deterministic-zip.sh",
     );
-    const result = spawnSync(
-      "bash",
-      [helper, sourceRoot, join(outputRoot, "invalid.zip")],
-      {
-        cwd: repoRoot,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-        },
-      },
-    );
+    execFileSync("bash", [helper, sourceRoot, output], { cwd: repoRoot });
 
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain(
-      "create-deterministic-zip: could not read mode: ./bin/vim",
+    for (const [name, mode] of modes) {
+      expect(lstatSync(join(sourceRoot, name)).mode & 0o7777).toBe(mode);
+    }
+    const entries = parseZipCentralDirectory(
+      new Uint8Array(readFileSync(output)),
     );
+    expect(
+      entries.map((entry) => [entry.fileName, entry.mode & 0o7777]),
+    ).toEqual(modes.map(([name, , expected]) => [name, expected]));
+  });
+
+  it("rejects special files rather than archiving them", () => {
+    const sourceRoot = tempDir();
+    const outputRoot = tempDir();
+    const output = join(outputRoot, "invalid.zip");
+    mkdirSync(join(sourceRoot, "run"));
+    writeFileSync(join(sourceRoot, "run", "regular"), "regular\n");
+    execFileSync("mkfifo", [join(sourceRoot, "run", "fifo")]);
+
+    const helper = join(
+      repoRoot,
+      "images/vfs/scripts/create-deterministic-zip.sh",
+    );
+    const result = spawnSync("bash", [helper, sourceRoot, output], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "create-deterministic-zip: unsupported special file: run/fifo",
+    );
+    expect(existsSync(output)).toBe(false);
   });
 
   it("rejects names that cannot be represented by the ZIP entry list", () => {
