@@ -328,9 +328,11 @@ describe("Rust-owned process wait lifecycle", () => {
       markPending(channel);
       const view = new DataView(memory.buffer, channel.channelOffset);
       view.setUint32(CH_SYSCALL, ABI_SYSCALLS.Wait4, true);
+      // The first bit above the known mask. Bit 3 (8) used to be unknown;
+      // ABI 48 assigned it to REQUEST_FLAG_OPAQUE_RECORD.
       view.setUint32(
         CH_REQUEST_FLAGS,
-        CHANNEL_REQUEST_FLAGS_KNOWN_MASK | 8,
+        CHANNEL_REQUEST_FLAGS_KNOWN_MASK | (CHANNEL_REQUEST_FLAGS_KNOWN_MASK + 1),
         true,
       );
 

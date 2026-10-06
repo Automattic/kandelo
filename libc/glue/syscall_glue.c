@@ -320,9 +320,6 @@
 #define FCNTL_F_SETLK  13
 #define FCNTL_F_SETLKW 14
 
-/* mmap2 page unit — musl divides the byte offset by this before syscall */
-#define MMAP2_UNIT 4096U
-
 /* ------------------------------------------------------------------ */
 /* Helper: compute string length via compiler built-in                 */
 /* ------------------------------------------------------------------ */
@@ -579,18 +576,12 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_CLOSEDIR:
         return (long)kernel_closedir((int32_t)a1);
 
-    /* rewinddir — (dir_handle) */
+    /* rewinddir / telldir / seekdir — the kernel export was removed; the channel transport (channel_syscall.c) serves this syscall.
+     * musl implements all three in userspace over lseek(). */
     case SYS_REWINDDIR:
-        return (long)kernel_rewinddir((int32_t)a1);
-
-    /* telldir — (dir_handle) → i64 truncated to long */
     case SYS_TELLDIR:
-        return (long)kernel_telldir((int32_t)a1);
-
-    /* seekdir — (dir_handle, loc_lo, loc_hi) */
     case SYS_SEEKDIR:
-        return (long)kernel_seekdir((int32_t)a1, (uint32_t)a2,
-                                    (uint32_t)a3);
+        return ENOSYS_NEG;
 
     /* ============================================================== */
     /* Process control                                                 */
@@ -748,20 +739,11 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_USLEEP:
         return (long)kernel_usleep((uint32_t)a1);
 
-    /* gettimeofday — (tv_ptr, tz_ptr)
-     * musl's struct timeval uses (long, long) = (4,4) bytes on wasm32,
-     * but kernel_gettimeofday writes (i64, i64). Adapt the layout. */
-    case SYS_GETTIMEOFDAY: {
-        long *tv = (long *)(uintptr_t)a1;
-        if (!tv) return -14; /* -EFAULT */
-        int64_t sec, usec;
-        int32_t r = kernel_gettimeofday(&sec, &usec);
-        if (r == 0) {
-            tv[0] = (long)sec;
-            tv[1] = (long)usec;
-        }
-        return (long)r;
-    }
+    /* gettimeofday — the kernel export was removed; the channel transport (channel_syscall.c) serves this syscall.
+     * musl's gettimeofday() is a userspace wrapper over
+     * clock_gettime(CLOCK_REALTIME), so this arm is unreachable. */
+    case SYS_GETTIMEOFDAY:
+        return ENOSYS_NEG;
 
     /* ============================================================== */
     /* Terminal / ioctl                                                 */
@@ -824,19 +806,9 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* Memory                                                          */
     /* ============================================================== */
 
-    /* mmap2 — (addr, len, prot, flags, fd, offset_in_pages)
-     * musl divides byte offset by 4096 before passing via SYS_mmap2.
-     * Our kernel expects a byte offset split into (lo, hi).
-     * Multiply back: byte_offset = offset_in_pages * 4096 */
-    case SYS_MMAP: {
-        unsigned long long byte_off =
-            (unsigned long long)(uint32_t)a6 * MMAP2_UNIT;
-        return (long)kernel_mmap((uint32_t)a1, (uint32_t)a2,
-                                 (uint32_t)a3, (uint32_t)a4,
-                                 (int32_t)a5,
-                                 (uint32_t)(byte_off & 0xFFFFFFFF),
-                                 (int32_t)(byte_off >> 32));
-    }
+    /* mmap2 — the kernel export was removed; the channel transport (channel_syscall.c) serves this syscall. */
+    case SYS_MMAP:
+        return ENOSYS_NEG;
 
     /* munmap — (addr, len) */
     case SYS_MUNMAP:
@@ -1221,10 +1193,9 @@ static long __do_syscall(long n, long a1, long a2, long a3,
                                       (uint32_t)a4);
     }
 
-    /* mremap — (old_addr, old_size, new_size, flags) */
+    /* mremap — the kernel export was removed; the channel transport (channel_syscall.c) serves this syscall. */
     case SYS_MREMAP:
-        return (long)kernel_mremap((uint32_t)a1, (uint32_t)a2,
-                                   (uint32_t)a3, (uint32_t)a4);
+        return ENOSYS_NEG;
 
     /* fchdir — (fd) */
     case SYS_FCHDIR:
@@ -1296,17 +1267,18 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* Message-based socket I/O                                        */
     /* ============================================================== */
 
-    /* sendmsg — (fd, msg_ptr, flags) */
+    /* sendmsg — (fd, msg_ptr, flags). The kernel dereferences msg_ptr in this
+     * process's own memory, so pass the address and this process's width. */
     case SYS_SENDMSG:
-        return (long)kernel_sendmsg((int32_t)a1,
-                                    (const uint8_t *)(uintptr_t)a2,
-                                    (uint32_t)a3, (int64_t)0);
+        return (long)kernel_sendmsg((int32_t)a1, (int64_t)(uintptr_t)a2,
+                                    (uint32_t)a3, (uint32_t)sizeof(void *),
+                                    (int64_t)0);
 
     /* recvmsg — (fd, msg_ptr, flags) */
     case SYS_RECVMSG:
-        return (long)kernel_recvmsg((int32_t)a1,
-                                    (uint8_t *)(uintptr_t)a2,
-                                    (uint32_t)a3, (int64_t)0);
+        return (long)kernel_recvmsg((int32_t)a1, (int64_t)(uintptr_t)a2,
+                                    (uint32_t)a3, (uint32_t)sizeof(void *),
+                                    (int64_t)0);
 
     /* getaddrinfo — (name, result_ptr) */
     case SYS_GETADDRINFO: {
@@ -1352,17 +1324,9 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* Process control                                                 */
     /* ============================================================== */
 
-    case SYS_PRCTL: {
-        /* prctl(option, arg2, arg3, arg4, arg5)
-         * For PR_SET_NAME(15): arg2 is pointer to name string
-         * For PR_GET_NAME(16): arg2 is pointer to name buffer
-         * We pass arg2 as buf_ptr for both cases.
-         */
-        uint32_t option = (uint32_t)a1;
-        uint8_t *buf = (uint8_t *)(uintptr_t)a2;
-        uint32_t buf_len = 16; /* thread name is always 16 bytes */
-        return (long)kernel_prctl(option, (uint32_t)a3, buf, buf_len);
-    }
+    /* prctl — the kernel export was removed; the channel transport (channel_syscall.c) serves this syscall. */
+    case SYS_PRCTL:
+        return ENOSYS_NEG;
 
     /* ============================================================== */
     /* Runtime init stubs (single-threaded)                             */
@@ -1509,23 +1473,9 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* rt_sigtimedwait — wait for signal from set                      */
     /* ============================================================== */
 
-    case SYS_RT_SIGTIMEDWAIT: {
-        const uint32_t *set = (const uint32_t *)(uintptr_t)a1;
-        uint32_t mask_lo = set ? set[0] : 0;
-        uint32_t mask_hi = set ? set[1] : 0;
-        const int32_t *ts = (const int32_t *)(uintptr_t)a2;
-        int32_t timeout_ms;
-        if (!ts) {
-            timeout_ms = -1;
-        } else {
-            int32_t sec = ts[0];
-            int32_t nsec = ts[1];
-            timeout_ms = sec * 1000 + nsec / 1000000;
-            if (timeout_ms == 0 && (sec > 0 || nsec > 0))
-                timeout_ms = 1;
-        }
-        return (long)kernel_rt_sigtimedwait(mask_lo, mask_hi, timeout_ms);
-    }
+    /* rt_sigtimedwait — the kernel export was removed; the channel transport (channel_syscall.c) serves this syscall. */
+    case SYS_RT_SIGTIMEDWAIT:
+        return ENOSYS_NEG;
 
     /* rt_sigqueueinfo — send signal with data (simplified: just raise) */
     case SYS_RT_SIGQUEUEINFO:
@@ -1535,11 +1485,9 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_RT_SIGRETURN:
         return 0;
 
-    /* sendfile — (out_fd, in_fd, offset_ptr, count) */
+    /* sendfile — the kernel export was removed; the channel transport (channel_syscall.c) serves this syscall. */
     case SYS_SENDFILE:
-        return (long)kernel_sendfile((int32_t)a1, (int32_t)a2,
-                                     (uint8_t *)(uintptr_t)a3,
-                                     (size_t)a4);
+        return ENOSYS_NEG;
 
     /* ============================================================== */
     /* statx — extended stat                                           */
@@ -1807,8 +1755,9 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         return kernel_ipc_shmget(a1, (int32_t)a2, a3);
     case SYS_SHMAT:
         return kernel_ipc_shmat(a1, (int32_t)a2, a3);
+    /* shmdt — the kernel export was removed; the channel transport (channel_syscall.c) serves this syscall. */
     case SYS_SHMDT:
-        return kernel_ipc_shmdt((int32_t)a1);
+        return ENOSYS_NEG;
     case SYS_SHMCTL:
         return kernel_ipc_shmctl(a1, a2, (int32_t)a3);
 
@@ -1850,8 +1799,8 @@ static long __do_syscall(long n, long a1, long a2, long a3,
             *(long *)a4 = addr;
             return 0;
         }
-        case 22: /* IPCOP_shmdt: (0, 0, 0, addr) */
-            return kernel_ipc_shmdt((int32_t)a5);
+        case 22: /* IPCOP_shmdt — the kernel export was removed; the channel transport (channel_syscall.c) serves this syscall. */
+            return ENOSYS_NEG;
         case 24: /* IPCOP_shmctl: (id, cmd, 0, buf) */
             return kernel_ipc_shmctl(a2, a3, (int32_t)a5);
         default:

@@ -156,6 +156,7 @@ function createGatedLifecycleHarness(options: {
     kernel_remove_process: vi.fn(() => 0),
     kernel_set_current_tid: vi.fn(() => 0),
     kernel_set_max_addr: vi.fn(() => 0),
+    kernel_set_process_pointer_width: vi.fn(() => 0),
     kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     kernel_thread_exit: vi.fn(() => 0),
     kernel_validate_task: vi.fn(() => 0),
@@ -1600,6 +1601,7 @@ describe("CentralizedKernelWorker Process Management", () => {
           kernel_set_current_tid: vi.fn(() => 0),
           kernel_set_max_addr: setMaxAddr,
           kernel_set_mmap_base: vi.fn(() => 0),
+          kernel_set_process_pointer_width: vi.fn(() => 0),
           kernel_validate_task: vi.fn(() => 0),
         },
         kernelExportNames: [
@@ -1611,6 +1613,7 @@ describe("CentralizedKernelWorker Process Management", () => {
           "kernel_set_current_tid",
           "kernel_set_max_addr",
           "kernel_set_mmap_base",
+          "kernel_set_process_pointer_width",
           "kernel_validate_task",
         ],
       },
