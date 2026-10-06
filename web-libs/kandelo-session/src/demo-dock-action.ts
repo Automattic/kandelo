@@ -114,7 +114,7 @@ export async function followShellOutput(
   host: KernelHost,
   onText: (text: string) => void,
 ): Promise<() => void> {
-  const pty = await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+  const pty = await host.attachPty("/dev/pts/0");
   const decoder = new TextDecoder();
   let replayingHistory = true;
   const off = pty.onData((bytes) => {
