@@ -422,7 +422,7 @@ describe("canonical source-rootfs shell", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*36$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*37$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "packages/registry/shell/source-rootfs-shell-demo.json",
@@ -592,6 +592,14 @@ describe("canonical source-rootfs shell", () => {
     for (const spec of SHELL_LAZY_BINARY_SPECS) {
       expect(fs.getLazyEntry(spec.vfsPath), spec.id).not.toBeNull();
     }
+    expect(fs.getLazyEntry("/usr/bin/jq")).toMatchObject({
+      url: "kandelo-lazy:programs/jq.wasm",
+    });
+    expect(fs.stat("/usr/bin/jq").mode & 0o777).toBe(0o755);
+    expect(fs.readlink("/bin/jq")).toBe("/usr/bin/jq");
+    expect(fs.getLazyEntry("/bin/jq")?.ino).toBe(
+      fs.getLazyEntry("/usr/bin/jq")?.ino,
+    );
     // FFmpeg's three programs are lazy files provided by the ffmpeg package.
     for (const id of ["ffmpeg", "ffprobe", "ffplay"]) {
       const spec = SHELL_LAZY_BINARY_SPECS.find((candidate) => candidate.id === id);

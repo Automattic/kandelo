@@ -72,6 +72,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "jq",
+      "version": "1.8.2",
+      "role": "lazy-file"
+    },
+    {
       "name": "gzip",
       "version": "1.13",
       "role": "lazy-file"
