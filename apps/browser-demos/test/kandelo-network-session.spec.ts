@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -16,9 +16,9 @@ import { appUrl, networkButton, openNetworkPopover } from "./support/peer-pair";
  * self-modifying, so the spec serves a throwaway copy, never the repository
  * file.
  *
- * Chromium only: only headless Chromium forms a loopback ICE pair. Skips
- * when no `php` is on the PATH: the signalling server is a PHP file, and its
- * absence is a host boundary.
+ * The Chromium fixture grants microphone permission to expose loopback ICE
+ * candidates; it never captures microphone input. Run with the PHP tools
+ * declared in apps/signalling/tools.nix.
  */
 
 const pipletSource = join(
@@ -49,10 +49,6 @@ test("connects two computers by session name", async ({
     browserName !== "chromium",
     "only headless Chromium can form a loopback ICE pair",
   );
-  test.skip(
-    spawnSync("php", ["--version"]).status !== 0,
-    "the signalling piplet is a PHP file, and no php is on the PATH",
-  );
   test.setTimeout(300_000);
   expect(baseURL).toBeTruthy();
 
@@ -64,8 +60,8 @@ test("connects two computers by session name", async ({
   const server = spawn("php", ["-S", `127.0.0.1:${port}`, copy], {
     stdio: "ignore",
   });
-  const sharerContext = await browser.newContext();
-  const viewerContext = await browser.newContext();
+  const sharerContext = await browser.newContext({ permissions: ["microphone"] });
+  const viewerContext = await browser.newContext({ permissions: ["microphone"] });
   try {
     let ready = false;
     for (let attempt = 0; attempt < 50 && !ready; attempt++) {
@@ -140,17 +136,7 @@ test("connects two computers by session name", async ({
           page.locator(".knetwork-status").innerText(),
         ),
       );
-      // "No direct route" is the ICE boundary, not a transport defect: every
-      // signalling or codec bug fails earlier with its own message.
-      expect(
-        states.some((state) => state.includes("no direct route")),
-        `the link failed outside the ICE boundary: ${states.join(" | ")}`,
-      ).toBe(true);
-      test.skip(
-        true,
-        "no ICE route between two local contexts — on macOS, grant the "
-        + "Playwright browser Local Network permission to run this spec",
-      );
+      expect(linked, `the named connection failed: ${states.join(" | ")}`).toBe(true);
     }
 
     // A name shows only for someone you watch: the viewer's badge names the

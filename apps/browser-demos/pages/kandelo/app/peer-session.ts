@@ -118,7 +118,9 @@ export function usePeerSession(): PeerSession {
         setStatus(`Creating the invite for "${name}"...`);
         pendingInviteRef.current?.cancel();
         pendingInviteRef.current = null;
-        const invite = await createPeerInvite();
+        pendingAnswerRef.current?.();
+        pendingAnswerRef.current = null;
+        const invite = await createMigrationPeerInvite();
         if (attempt !== attemptRef.current) {
           invite.cancel();
           return;
@@ -146,6 +148,8 @@ export function usePeerSession(): PeerSession {
         adopt(connectedLink);
       } catch (error) {
         if (attempt !== attemptRef.current) return;
+        pendingInviteRef.current?.cancel();
+        pendingInviteRef.current = null;
         setStatus(`Hosting failed: ${describeError(error)}`);
       }
     })();
@@ -160,24 +164,33 @@ export function usePeerSession(): PeerSession {
           throw new Error("no signalling server is configured");
         }
         if (!validSessionName(name)) throw new Error(SESSION_NAME_RULE);
+        pendingInviteRef.current?.cancel();
+        pendingInviteRef.current = null;
+        pendingAnswerRef.current?.();
+        pendingAnswerRef.current = null;
         setStatus(`Joining "${name}"...`);
         const { offer } = await readSession(SIGNALLING_SERVER, name);
         if (attempt !== attemptRef.current) return;
-        const { answer, connected } = await answerPeerInvite(offer);
+        const { answer, connected, cancel } = await answerMigrationPeerInvite(offer);
         if (attempt !== attemptRef.current) {
-          void connected.then((stale) => stale.close(), () => {});
+          cancel();
           return;
         }
+        pendingAnswerRef.current = cancel;
         await postSessionAnswer(SIGNALLING_SERVER, name, answer);
+        if (attempt !== attemptRef.current) return;
         setStatus(`Answered "${name}"; the connection completes by itself.`);
         const connectedLink = await connected;
         if (attempt !== attemptRef.current) {
           connectedLink.close();
           return;
         }
+        pendingAnswerRef.current = null;
         adopt(connectedLink);
       } catch (error) {
         if (attempt !== attemptRef.current) return;
+        pendingAnswerRef.current?.();
+        pendingAnswerRef.current = null;
         setStatus(`Joining failed: ${describeError(error)}`);
       }
     })();
