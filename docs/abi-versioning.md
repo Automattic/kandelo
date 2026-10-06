@@ -721,7 +721,8 @@ differs from the kernel Wasm width. The host stages `msgctl`/`shmctl`
 private sixth kernel-dispatch slot. The required
 `kernel_semctl_array_bytes(pid, tid, semid, command)` export performs the
 permission-aware GETALL/SETALL size preflight; the host does not substitute a
-read-only `IPC_STAT` query for a write-only SETALL operation.
+read-only `IPC_STAT` query for a write-only SETALL operation. (ABI 46 moves this marshalling into the kernel and
+removes the sizing exports and the private sixth-slot width; see "ABI 46".)
 
 Generated process-layout descriptors apply the same caller-width rule to
 `stack_t` (12/24 bytes), the kernel-facing four-native-`long` `itimerval`
@@ -744,7 +745,8 @@ Neither `optlen` nor padding bytes may select a data model. The public
 five-argument `kernel_setsockopt` export is structurally unchanged and uses
 the kernel's native width for direct calls; only channel dispatch consumes the
 host-private width. Adding the generated layout constants and correcting this
-interpretation remain part of unpublished ABI 43 and do not create ABI 44.
+interpretation remain part of unpublished ABI 43 and do not create ABI 44. (ABI 46 replaces the private sixth-slot width with
+the process's registered pointer width.)
 
 Signal and timer transport also change incompatibly in ABI 43. The
 `kernel_timer_create` export grows from three arguments to
@@ -1150,6 +1152,118 @@ check rejects ABI 46 programs. As with any bump, the committed resolver bundle
 `scripts/resolve-binary.bundle.mjs` embeds the ABI version and the required
 kernel exports, so it is regenerated (`scripts/build-resolve-binary-bundle.sh`)
 in the same change; a stale bundle rejects the new kernel "by artifact policy".
+
+### ABI 48 opaque transport and kernel-owned marshalling
+
+ABI 48 takes the host out of the syscall data path. The guest marshals its
+own pointer arguments, and the kernel reads the arguments no static rule can
+describe straight out of the caller's memory. Every program must be
+relinked against a rebuilt musl (the syscall glue changed), and every kernel
+and host artifact is rebuilt with it; a binary or host built for ABI 47
+cannot run against an ABI 48 kernel.
+
+Structural changes (recorded in the snapshot):
+
+- **Opaque channel records.** A new request flag,
+  `REQUEST_FLAG_OPAQUE_RECORD` (bit 3 of `request_flags`), says the channel
+  data buffer begins with a self-describing syscall record: record ABI v1 in
+  `crates/shared/src/channel_record.rs` (magic, record ABI, syscall number,
+  span count, the record's total byte length, the six scalar words, then span
+  descriptors with direction and byte range). The host copies exactly
+  `record_len` bytes into kernel scratch and back, and the kernel refuses a
+  length outside `[64, 65480]` or a span ending past it; a record syscall
+  never moves the rest of the 64 KiB data buffer. The guest glue emits one for every non-blocking syscall from
+  the generated `bits/kandelo_syscall_marshal.h`; the kernel decodes it
+  (`crates/runtime-core/src/channel_record_decode.rs`). Host-intercepted and
+  host-retried blocking syscalls stay on the raw-argument path; the
+  authoritative list is `crates/shared/src/host_raw_syscalls.rs`. The host
+  hands a flagged request to the new export `kernel_handle_channel_record`
+  (same channel layout as `kernel_handle_channel`, no retry token), and only
+  that entry point decodes a record: `kernel_handle_channel` never inspects
+  the data buffer for the record magic.
+- **A fifth channel status, `TEARDOWN` = 4.** The host publishes it to unwind a
+  guest thread parked in the channel wait without resuming an image that is
+  being abandoned; the glue traps on observing it. A guest built for ABI 47
+  would read it as an unknown status.
+- **`SyscallArgSize::KernelDereferenced`.** A new argument size kind: the host
+  copies nothing and the kernel reads and writes the caller's memory itself
+  through `host_proc_read_bytes` / `host_proc_write_bytes`. It is declared
+  for `writev`/`readv` (81/82), `sendmsg`/`recvmsg` (333/334),
+  `preadv`/`pwritev`/`preadv2`/`pwritev2` (295–298), `msgsnd`/`msgrcv`/
+  `msgctl` (339/338/340), `semctl` (343), `shmctl` (347), and
+  `mq_timedsend`/`mq_timedreceive` (137/138).
+- **The caller's pointer width is registered per process.** New export
+  `kernel_set_process_pointer_width(pid, width)`; `Process` carries the width,
+  a fork child inherits it, and the host registers it again for the image an
+  exec installs. Channel argument slot 5 is no longer overwritten with the
+  width on any path (three writers in the host, three in the guest glue), so
+  slot 5 of `preadv2`/`pwritev2` is declared a `u32` scalar and carries the
+  caller's `flags`. `PROCESS_POINTER_WIDTH_ARG_INDEX` leaves the generated
+  TypeScript.
+- **The fixed kernel-scratch message wires are retired.** `KernelIovecWire`,
+  `KernelMsghdrWire`, `KernelCmsghdrWire`, and
+  `kernel_message_wire.flattened_iovec_count` leave the snapshot, because
+  nothing stages them any more.
+- **Kernel exports: 332 → 189.** Removed: the five sizing exports the host no
+  longer needs (`kernel_msqid_ds_bytes`, `kernel_semid_ds_bytes`,
+  `kernel_shmid_ds_bytes`, `kernel_semctl_array_bytes`,
+  `kernel_mq_descriptor_msgsize`); 24 exports nothing anywhere called
+  (for example `kernel_get_fork_state`, `kernel_set_fork_exec`,
+  `kernel_tgkill`, `kernel_is_signal_blocked`; the matching dead declarations
+  in `libc/glue/syscall_imports.h` went too, and the matching arms of the
+  legacy `libc/glue/syscall_glue.c`, which no build links, now return
+  `ENOSYS`); and 116 dispatch-only handlers (`kernel_open`, `kernel_close`,
+  `kernel_sendmsg`, `kernel_epoll_ctl`, …) that `kernel_handle_channel`
+  reaches as plain Rust calls, so their export attribute published a symbol
+  with no consumer.
+  Added: `kernel_set_process_pointer_width` and
+  `kernel_handle_channel_record` (which also joins
+  `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS`). `kernel_shmid_ds_bytes` leaves
+  `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS`.
+- **Network-interface ioctls join the ioctl contract.** `SIOCGIFNAME`,
+  `SIOCGIFCONF`, `SIOCGIFADDR`, `SIOCGIFHWADDR`, and `SIOCGIFINDEX` are served
+  by the kernel.
+
+Host imports (not in the structural snapshot, so listed here): the kernel
+imports 83 host functions, down from 85. Removed: `host_sigsuspend_wait`,
+`host_futex_wait`, and `host_call_signal_handler` (none had a live caller,
+and the first two would have blocked the one kernel thread every process
+shares). Added: `host_network_local_address`. `host_proc_read_bytes` and
+`host_proc_write_bytes` change signature: the guest address is now a 64-bit
+value, so a wasm64 pointer above 4 GiB is not truncated. A host built for
+ABI 47 cannot instantiate this kernel.
+
+The kernel fork/exec state record moves from `FORK_VERSION` 16 to 17: it
+carries the registered pointer width.
+
+Semantic changes (not visible to the snapshot):
+
+- **A malformed or contradictory channel request fails only its own
+  syscall.** The request header and record are written by the guest, so they
+  are untrusted input. Each of these completes the one request with `EINVAL`
+  and dispatches nothing: an unknown request-flag bit (as before),
+  `REQUEST_FLAG_OPAQUE_RECORD` on a host-raw syscall (the host previously
+  stopped the whole kernel worker, taking every process with it), the flag
+  with no record in the data buffer (previously the raw arguments ran as if
+  the flag were clear), a record that does not decode, and a record whose
+  syscall number differs from the header's (previously the record's syscall
+  ran). A raw request whose data buffer happens to begin with a record header
+  (a `write` of such bytes, or record bytes left in the reused kernel scratch
+  by an earlier request) is no longer decoded as a record; previously such
+  bytes redirected that request, and later scalar-only requests from any
+  process, to the syscall the bytes named.
+- **`preadv2`/`pwritev2` honour `flags`:** `RWF_NOWAIT` is implemented and
+  every other `RWF_*` bit is refused with `EOPNOTSUPP`.
+- **`sendmsg`/`recvmsg` read the caller's `msghdr`, iovec table and CMSG
+  chain in the kernel,** in the caller's data model; `msg_controllen` above
+  64 KiB is `EINVAL`; `recvmsg` publishes `msg_namelen`, `msg_controllen`,
+  and `msg_flags` only for a delivered message; a blocked `sendmsg` retry
+  keeps the descriptors it already captured.
+- **SysV IPC and POSIX message queues are kernel-marshalled.** A blocked
+  `msgsnd` keeps the payload it copied at entry and never re-reads the
+  caller's buffer; `semctl` `GETALL`/`SETALL` size the array from the set
+  itself under the requested command's permission check, with no `IPC_STAT`
+  probe.
 
 ## The snapshot
 

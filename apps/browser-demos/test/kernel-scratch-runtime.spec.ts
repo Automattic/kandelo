@@ -4,9 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   CH_DATA_SIZE,
   CH_TOTAL_SIZE,
-  KERNEL_IOVEC_WIRE_ALIGN,
   POSIX_IOV_MAX,
-  STRUCT_SIZE_KERNEL_IOVEC_WIRE,
 } from "../../../host/src/generated/abi";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -28,20 +26,20 @@ const programs = [
 ] as const;
 const ptyByte = 0x51;
 const ptyLength = CH_TOTAL_SIZE + 1;
-const readvDataBytes =
-  CH_DATA_SIZE - POSIX_IOV_MAX * STRUCT_SIZE_KERNEL_IOVEC_WIRE;
-const readvBytesPerIovec = readvDataBytes / POSIX_IOV_MAX;
+// The kernel walks the caller's iovec table itself now, so no part of it is
+// staged in the channel and the old
+// `CH_DATA_SIZE - IOV_MAX * STRUCT_SIZE_KERNEL_IOVEC_WIRE` figure names
+// nothing. Keep the widest legal table at the size where the scalar transfer
+// underneath sits exactly on the mailbox capacity edge.
+const readvBytesPerIovec = Math.floor(CH_DATA_SIZE / POSIX_IOV_MAX);
+const readvDataBytes = readvBytesPerIovec * POSIX_IOV_MAX;
 const largeVectorIovecCount = 2;
 const largeVectorBytesPerIovec = Math.floor(CH_DATA_SIZE / 2) + 1;
 const largeVectorBytes =
   largeVectorIovecCount * largeVectorBytesPerIovec;
 
-if (
-  !Number.isInteger(readvBytesPerIovec) ||
-  readvBytesPerIovec <= 0 ||
-  readvBytesPerIovec % KERNEL_IOVEC_WIRE_ALIGN !== 0
-) {
-  throw new Error("generated readv scratch layout cannot form an exact boundary");
+if (!Number.isInteger(readvBytesPerIovec) || readvBytesPerIovec <= 0) {
+  throw new Error("generated readv layout cannot form an exact boundary");
 }
 if (largeVectorBytes <= CH_DATA_SIZE) {
   throw new Error("large vector fixture must exceed ordinary channel scratch");

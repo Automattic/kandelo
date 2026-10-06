@@ -4,7 +4,9 @@
 //! layouts must be selected from the calling process data model rather than
 //! from the kernel crate's own pointer width.
 
+use crate::guest_ptr;
 use crate::ipc::{MsgQueueInfo, SemSetInfo, ShmSegInfo};
+use crate::process::HostIO;
 use core::mem::size_of;
 use wasm_posix_shared::WasmSysvMessageHeader;
 use wasm_posix_shared::Errno;
@@ -324,6 +326,175 @@ pub fn write_shmid_ds(
     write_i32(out, layout.lpid_offset, info.lpid);
     write_ulong(out, layout.nattch_offset, info.nattch, layout.ulong_bytes);
     Ok(layout.size)
+}
+
+// ---------------------------------------------------------------------------
+// Caller-memory entry points
+//
+// These are what the `KernelDereferenced` dispatch arms call. The host stages
+// no bytes for a SysV IPC control argument, because its direction and size
+// depend on `cmd`, so the kernel reads and writes the caller's structure
+// itself. Keeping the cross-memory access here rather than in the dispatch arm
+// keeps every layout decision in the module that owns the layouts, and makes
+// each one reachable from a unit test through `GuestMemoryHost`.
+// ---------------------------------------------------------------------------
+
+/// Read a caller's `struct msqid_ds` for `msgctl(IPC_SET)`.
+pub fn read_msqid_ds_set_fields_from_guest(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    pointer_width: u32,
+) -> Result<MsgctlSetFields, Errno> {
+    let size = msqid_ds_size(pointer_width)?;
+    let input = guest_ptr::read_guest_bytes(host, pid, addr, size, size)?;
+    read_msqid_ds_set_fields(&input, pointer_width)
+}
+
+/// Publish one `struct msqid_ds` into a caller's memory for `msgctl(IPC_STAT)`.
+pub fn write_msqid_ds_to_guest(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    info: &MsgQueueInfo,
+    pointer_width: u32,
+) -> Result<(), Errno> {
+    let size = msqid_ds_size(pointer_width)?;
+    let mut out = guest_ptr::zeroed_staging(size, size)?;
+    write_msqid_ds(&mut out, info, pointer_width)?;
+    guest_ptr::write_guest_bytes(host, pid, addr, &out)
+}
+
+/// Read a caller's `struct shmid_ds` for `shmctl(IPC_SET)`.
+pub fn read_shmid_ds_set_fields_from_guest(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    pointer_width: u32,
+) -> Result<ShmctlSetFields, Errno> {
+    let size = shmid_ds_size(pointer_width)?;
+    let input = guest_ptr::read_guest_bytes(host, pid, addr, size, size)?;
+    read_shmid_ds_set_fields(&input, pointer_width)
+}
+
+/// Publish one `struct shmid_ds` into a caller's memory for `shmctl(IPC_STAT)`.
+pub fn write_shmid_ds_to_guest(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    info: &ShmSegInfo,
+    pointer_width: u32,
+) -> Result<(), Errno> {
+    let size = shmid_ds_size(pointer_width)?;
+    let mut out = guest_ptr::zeroed_staging(size, size)?;
+    write_shmid_ds(&mut out, info, pointer_width)?;
+    guest_ptr::write_guest_bytes(host, pid, addr, &out)
+}
+
+/// Publish one `struct semid_ds` into a caller's memory for `semctl(IPC_STAT)`.
+pub fn write_semid_ds_to_guest(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    info: &SemSetInfo,
+    pointer_width: u32,
+) -> Result<(), Errno> {
+    let size = semid_ds_size(pointer_width)?;
+    let mut out = guest_ptr::zeroed_staging(size, size)?;
+    write_semid_ds(&mut out, info, pointer_width)?;
+    guest_ptr::write_guest_bytes(host, pid, addr, &out)
+}
+
+/// Read `count` `unsigned short` semaphore values for `semctl(SETALL)`.
+///
+/// `count` is the set's own `nsems`, which the kernel holds; the caller
+/// supplies no length for this array at all — that is precisely why `semctl`'s
+/// fourth argument cannot be described by a static size rule.
+pub fn read_sem_values_from_guest(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    count: usize,
+) -> Result<alloc::vec::Vec<u8>, Errno> {
+    let bytes = count
+        .checked_mul(size_of::<u16>())
+        .ok_or(Errno::EOVERFLOW)?;
+    guest_ptr::read_guest_bytes(host, pid, addr, bytes, bytes)
+}
+
+/// Publish semaphore values into a caller's array for `semctl(GETALL)`.
+pub fn write_sem_values_to_guest(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    values: &[u16],
+) -> Result<(), Errno> {
+    let bytes = values
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or(Errno::EOVERFLOW)?;
+    let mut out = guest_ptr::zeroed_staging(bytes, bytes)?;
+    for (chunk, value) in out.chunks_exact_mut(size_of::<u16>()).zip(values.iter()) {
+        chunk.copy_from_slice(&value.to_le_bytes());
+    }
+    guest_ptr::write_guest_bytes(host, pid, addr, &out)
+}
+
+/// Read a caller's `struct msgbuf`: a native `long mtype` followed by
+/// `text_bytes` of message text.
+///
+/// The prefix is four bytes for a wasm32 caller and eight for a wasm64 one.
+/// One kernel instance serves both, so its own compilation target is never
+/// authoritative here.
+pub fn read_sysv_msgbuf_from_guest(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    text_bytes: usize,
+    pointer_width: u32,
+) -> Result<(i64, alloc::vec::Vec<u8>), Errno> {
+    let prefix = native_long_bytes(pointer_width)?;
+    let total = prefix.checked_add(text_bytes).ok_or(Errno::EINVAL)?;
+    // The queue itself refuses anything larger, so this is the widest request
+    // that can ever succeed. Bounding here keeps a caller's `msgsz` from
+    // sizing a kernel allocation before `msgsnd` can report EINVAL.
+    let limit = prefix
+        .checked_add(wasm_posix_shared::platform_limits::SYSV_MSG_MAX_BYTES)
+        .ok_or(Errno::EINVAL)?;
+    let raw = guest_ptr::read_guest_bytes(host, pid, addr, total, limit)?;
+    let mtype = guest_ptr::native_long(&raw, 0, prefix as u8)?;
+    Ok((mtype, raw[prefix..].to_vec()))
+}
+
+/// Publish a received message into a caller's `struct msgbuf`.
+///
+/// A message type that does not fit the caller's `long` is EOVERFLOW. That is
+/// truthful rather than convenient: a wasm32 caller told the message was
+/// delivered would otherwise read a silently different `mtype` from the one
+/// the sender chose.
+pub fn write_sysv_msgbuf_to_guest(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    mtype: i64,
+    text: &[u8],
+    pointer_width: u32,
+) -> Result<(), Errno> {
+    let prefix = native_long_bytes(pointer_width)?;
+    let total = prefix.checked_add(text.len()).ok_or(Errno::EINVAL)?;
+    let mut out = guest_ptr::zeroed_staging(total, total)?;
+    guest_ptr::write_native_long(&mut out, 0, prefix as u8, mtype)?;
+    out[prefix..].copy_from_slice(text);
+    guest_ptr::write_guest_bytes(host, pid, addr, &out)
+}
+
+/// Byte width of the calling process's `long`.
+pub fn native_long_bytes(pointer_width: u32) -> Result<usize, Errno> {
+    match pointer_width {
+        4 => Ok(4),
+        8 => Ok(8),
+        _ => Err(Errno::EINVAL),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
