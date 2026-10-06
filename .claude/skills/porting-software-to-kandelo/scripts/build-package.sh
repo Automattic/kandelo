@@ -4,7 +4,7 @@
 # transcript: full output goes to .context/, the caller sees one status line
 # plus, on failure, the first error lines and the end of the log.
 #
-# Usage: bash .claude/skills/porting-software-to-kandelo/scripts/build-package.sh <package> [wasm32|wasm64]
+# Usage: bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh <package> [wasm32|wasm64]
 set -uo pipefail
 
 pkg="${1:?usage: build-package.sh <package> [wasm32|wasm64]}"

@@ -44,10 +44,10 @@ Read those sections by heading (`grep -n '^#'` then `Read` with offset/limit), n
 ## Build loop
 
 ```bash
-bash .claude/skills/porting-software-to-kandelo/scripts/build-package.sh <pkg> [wasm32|wasm64]
+bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh <pkg> [wasm32|wasm64]
 ```
 
-It prints one status line and, on failure, the first error lines and the end of the log; the full log stays in `.context/build-<pkg>-<arch>.log`. Builds can be long: run it from the main session with `run_in_background` and wait for the completion notification. Do not have a subagent poll it.
+It prints one status line and, on failure, the first error lines and the end of the log; the full log stays in `.context/build-<pkg>-<arch>.log`. For a long build, use `scripts/agent-job start -- bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh <pkg> [wasm32|wasm64]` and wait on its job ID from the main session. Do not have a subagent poll it.
 
 When a build fails, fix the first error, not the last: later errors and `BLOCKED` packages are usually fallout. Search the log (`grep -n`) and read around the hit rather than reading it whole. The resolver deletes the work directory on failure, so `config.log` is gone; to see it, re-run configure by hand in a scratch directory.
 
