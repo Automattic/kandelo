@@ -152,7 +152,6 @@ struct SpawnInheritFromParent {
     fd_table: crate::fd::FdTable,
     ofd_table: crate::ofd::OfdTable,
     sockets: crate::socket::SocketTable,
-    epolls: Vec<Option<crate::process::EpollInstance>>,
 }
 
 /// Return each socket-table slot owned by at least one live OFD, exactly once.
@@ -213,7 +212,7 @@ pub fn bump_inherited_resource_refcounts(
     // fail without requiring rollback of unrelated inherited resources.
     let owned_socket_indices = socket_indices_named_by_live_ofds(child)?;
 
-    // Backings for eventfd/timerfd/signalfd/memfd/procfs are indexed by the
+    // Backings for eventfd/timerfd/signalfd/memfd/epoll/procfs are indexed by the
     // inherited OFD's stable negative handle. Add these fallible references
     // first, rolling them back if a stale handle is encountered, before
     // touching the older infallible global-resource refcounts below.
@@ -661,8 +660,11 @@ impl ProcessTable {
             }
         }
 
-        // Drop kernel-global eventfd/timerfd/signalfd/memfd/procfs backing
-        // references for every OFD the process still owns. Normal exit closes
+        // Drop kernel-global eventfd/timerfd/signalfd/memfd/epoll/procfs
+        // backing references for every OFD the process still owns. A shared
+        // epoll instance therefore outlives a process that exits while a fork
+        // peer still holds a descriptor for the same open file description.
+        // Normal exit closes
         // fds first; this also covers crash removal and spawn rollback.
         for (_ofd_idx, ofd) in proc.ofd_table.iter() {
             crate::descriptor_backing::release_for_ofd(ofd.file_type, ofd.host_handle);
@@ -1257,7 +1259,6 @@ impl ProcessTable {
                 fd_table: parent.fd_table.clone(),
                 ofd_table: parent.ofd_table.clone(),
                 sockets: parent.sockets.clone(),
-                epolls: parent.epolls.clone(),
             }
         };
 
@@ -1287,11 +1288,10 @@ impl ProcessTable {
         child.fd_table = inherit.fd_table;
         child.ofd_table = inherit.ofd_table;
         child.sockets = inherit.sockets;
-        // An inherited epoll fd must keep naming a live instance, as after
-        // fork. Registrations whose descriptions spawn's fd actions or
-        // close-on-exec closed are dropped the first time the child uses the
-        // instance (they no longer reach an open description).
-        child.epolls = inherit.epolls;
+        // An inherited epoll fd keeps naming the parent's live instance: the
+        // instance belongs to the epoll open file description
+        // (`descriptor_backing::with_epolls`), and the inherited-resource
+        // refcount pass below takes the child's reference.
 
         // Retry pins are kernel capabilities owned by the parent task, not
         // descriptors inherited by a new process. Rebuild local OFD counts

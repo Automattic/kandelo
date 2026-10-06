@@ -1143,11 +1143,12 @@ check rejects ABI 46 programs. As with any bump, the committed resolver bundle
 kernel exports, so it is regenerated (`scripts/build-resolve-binary-bundle.sh`)
 in the same change; a stale bundle rejects the new kernel "by artifact policy".
 
-### ABI 48 opaque transport and kernel-owned marshalling
+### ABI 48 opaque transport, kernel-owned marshalling, and kernel-owned readiness
 
 ABI 48 takes the host out of the syscall data path. The guest marshals its
-own pointer arguments, and the kernel reads the arguments no static rule can
-describe straight out of the caller's memory. Every program must be
+own pointer arguments, the kernel reads the arguments no static rule can
+describe straight out of the caller's memory, and readiness, epoll interest
+lists, and blocking-wait deadlines become kernel state. Every program must be
 relinked against a rebuilt musl (the syscall glue changed), and every kernel
 and host artifact is rebuilt with it; a binary or host built for ABI 47
 cannot run against an ABI 48 kernel.
@@ -1181,7 +1182,8 @@ Structural changes (recorded in the snapshot):
   for `writev`/`readv` (81/82), `sendmsg`/`recvmsg` (333/334),
   `preadv`/`pwritev`/`preadv2`/`pwritev2` (295–298), `msgsnd`/`msgrcv`/
   `msgctl` (339/338/340), `semctl` (343), `shmctl` (347), and
-  `mq_timedsend`/`mq_timedreceive` (137/138).
+  `mq_timedsend`/`mq_timedreceive` (137/138). `epoll_ctl` (240) gains a
+  descriptor for its nullable 16-byte input event.
 - **The caller's pointer width is registered per process.** New export
   `kernel_set_process_pointer_width(pid, width)`; `Process` carries the width,
   a fork child inherits it, and the host registers it again for the image an
@@ -1194,7 +1196,7 @@ Structural changes (recorded in the snapshot):
   `KernelMsghdrWire`, `KernelCmsghdrWire`, and
   `kernel_message_wire.flattened_iovec_count` leave the snapshot, because
   nothing stages them any more.
-- **Kernel exports: 332 → 189.** Removed: the five sizing exports the host no
+- **Kernel exports: 332 → 198.** Removed: the five sizing exports the host no
   longer needs (`kernel_msqid_ds_bytes`, `kernel_semid_ds_bytes`,
   `kernel_shmid_ds_bytes`, `kernel_semctl_array_bytes`,
   `kernel_mq_descriptor_msgsize`); 24 exports nothing anywhere called
@@ -1206,25 +1208,36 @@ Structural changes (recorded in the snapshot):
   `kernel_sendmsg`, `kernel_epoll_ctl`, …) that `kernel_handle_channel`
   reaches as plain Rust calls, so their export attribute published a symbol
   with no consumer.
-  Added: `kernel_set_process_pointer_width` and
-  `kernel_handle_channel_record` (which also joins
-  `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS`). `kernel_shmid_ds_bytes` leaves
+  Added: `kernel_set_process_pointer_width`, `kernel_epoll_wake_indices`,
+  `kernel_handle_channel_record` (also added to
+  `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS`), and
+  the wait-deadline family `kernel_set_wait_queue_enabled`,
+  `kernel_wait_deadline_open`, `kernel_wait_deadline_remaining_ns`,
+  `kernel_wait_deadline_close`, `kernel_wait_retire_process`,
+  `kernel_next_wait_deadline_ns`, `kernel_wait_queue_len`, and
+  `kernel_wait_queue_stats`. `kernel_shmid_ds_bytes` leaves
   `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS`.
+- **Network-readiness facts.** `io_multiplexing.net_readiness` defines the
+  fact word a host backend reports (bytes buffered, end of stream, send ready,
+  send closed, hang-up, sticky error, unobservable).
 - **Network-interface ioctls join the ioctl contract.** `SIOCGIFNAME`,
   `SIOCGIFCONF`, `SIOCGIFADDR`, `SIOCGIFHWADDR`, and `SIOCGIFINDEX` are served
   by the kernel.
 
 Host imports (not in the structural snapshot, so listed here): the kernel
-imports 83 host functions, down from 85. Removed: `host_sigsuspend_wait`,
-`host_futex_wait`, and `host_call_signal_handler` (none had a live caller,
-and the first two would have blocked the one kernel thread every process
-shares). Added: `host_network_local_address`. `host_proc_read_bytes` and
+imports 82 host functions, down from 85. Removed: `host_nanosleep`,
+`host_sigsuspend_wait`, `host_futex_wait`, `host_call_signal_handler` (none
+had a live caller, and the first three would have blocked the one kernel
+thread every process shares), and `host_net_poll`. Added: `host_net_readiness`
+(returns the fact word above instead of `poll` `revents`) and
+`host_network_local_address`. `host_proc_read_bytes` and
 `host_proc_write_bytes` change signature: the guest address is now a 64-bit
 value, so a wasm64 pointer above 4 GiB is not truncated. A host built for
 ABI 47 cannot instantiate this kernel.
 
 The kernel fork/exec state record moves from `FORK_VERSION` 16 to 17: it
-carries the registered pointer width.
+carries the registered pointer width, and it no longer serializes per-process
+epoll registrations (see below).
 
 Semantic changes (not visible to the snapshot):
 
@@ -1242,6 +1255,22 @@ Semantic changes (not visible to the snapshot):
   by an earlier request) is no longer decoded as a record; previously such
   bytes redirected that request, and later scalar-only requests from any
   process, to the syscall the bytes named.
+- **epoll instances belong to the open file description.** `dup`, `fork`, and
+  a non-CLOEXEC `exec` reach the same instance, so a fork child's `epoll_ctl`
+  is visible to the parent. Interests are keyed on (registered descriptor
+  number, open file description). `epoll_ctl` with a null event is `EFAULT`
+  for `EPOLL_CTL_ADD`/`EPOLL_CTL_MOD`. The host keeps no copy of any
+  interest list.
+- **The kernel decides socket readiness.** Backends report facts and
+  `runtime_core::net_readiness::stream_revents` maps them to `revents` for
+  every backend on both hosts.
+- **Blocking-wait deadlines are kernel state on `CLOCK_MONOTONIC`.** A
+  wall-clock step no longer moves a pending `poll`, `select`, `epoll_wait`,
+  `sigtimedwait`, or futex timeout. The host refuses to boot a kernel without
+  `kernel_set_wait_queue_enabled` rather than fall back to wall-clock
+  arithmetic.
+- **`usleep` and an `epoll_wait` on an empty interest list no longer sleep the
+  kernel thread.**
 - **`preadv2`/`pwritev2` honour `flags`:** `RWF_NOWAIT` is implemented and
   every other `RWF_*` bit is refused with `EOPNOTSUPP`.
 - **`sendmsg`/`recvmsg` read the caller's `msghdr`, iovec table and CMSG
