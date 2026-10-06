@@ -70,7 +70,7 @@ describe("ordinary guest UDP state in dedicated Node kernel workers", () => {
     } finally { await machine.destroy(); }
   }, 30_000);
 
-  it("selects the owned source on UDP connect and restores wildcard on disconnect", async () => {
+  it("preserves the owned UDP source through fork and restores wildcard on disconnect", async () => {
     let stderr = "";
     const server = new NodeKernelHost({ rootfsImage: await minimalImage(), maxPages: 4096,
       remoteNetwork: { role: "host" },

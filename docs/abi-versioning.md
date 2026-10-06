@@ -25,7 +25,8 @@ the destination octets; the result is a nonzero packed source IPv4 address in
 network byte order, or negative errno. The host derives it from the worker's
 actual NetworkIO interface. UDP bind validation also delegates non-loopback
 address ownership to HostIO. Connected wildcard sockets retain that selected
-source for getsockname and clear it on AF_UNSPEC disconnect. FIONREAD now
+source for getsockname and clear it on AF_UNSPEC disconnect. Fork-state format
+16 preserves that selected source along with the wildcard binding. FIONREAD now
 observes the next queued datagram instead of returning zero for datagram
 sockets. Host EHOSTUNREACH and ENOBUFS also retain their real errno instead
 of being converted to EIO. These socket-semantic changes and the required host

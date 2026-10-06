@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int available(int fd, int expected) {
@@ -96,6 +97,20 @@ int main(int argc, char **argv) {
         if (local.sin_addr.s_addr != expected.s_addr) {
             fprintf(stderr, "connected UDP selected %s, expected %s\n", inet_ntoa(local.sin_addr), argv[3]);
             return 1;
+        }
+        pid_t child = fork();
+        if (child < 0) { perror("fork"); return 1; }
+        if (child == 0) {
+            struct sockaddr_in inherited;
+            socklen_t inherited_len = sizeof(inherited);
+            _exit(getsockname(receiver, (struct sockaddr *)&inherited, &inherited_len) != 0
+                || inherited.sin_addr.s_addr != expected.s_addr
+                || inherited.sin_port != local.sin_port);
+        }
+        int child_status;
+        if (waitpid(child, &child_status, 0) != child || !WIFEXITED(child_status)
+            || WEXITSTATUS(child_status) != 0) {
+            fprintf(stderr, "fork lost the connected UDP source\n"); return 1;
         }
         struct sockaddr disconnect = { .sa_family = AF_UNSPEC };
         if (connect(receiver, &disconnect, sizeof(disconnect)) != 0) { perror("disconnect"); return 1; }

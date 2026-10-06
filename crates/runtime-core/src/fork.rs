@@ -40,10 +40,10 @@ const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 #[cfg(test)]
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // This header version is also shared by the cfg(test) exec-state fixture.
-// v15 preserves complete credentials plus the kernel-owned secure-exec marker.
+// v16 also preserves the selected source of connected wildcard IPv4 UDP.
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
-const FORK_VERSION: u32 = 15;
+const FORK_VERSION: u32 = 16;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -464,6 +464,8 @@ fn write_durable_socket_state(
         write_ipv4_source_list(w, &membership.blocked_sources)?;
         write_ipv4_source_list(w, &membership.included_sources)?;
     }
+    // A selected source is nonzero; zero encodes no UDP association source.
+    w.write_u32(sock.udp_source_addr.map(u32::from_be_bytes).unwrap_or(0))?;
     Ok(())
 }
 
@@ -519,6 +521,8 @@ fn read_durable_socket_state(
         });
     }
     sock.ipv4_multicast_memberships = memberships;
+    let source = r.read_u32()?;
+    sock.udp_source_addr = if source == 0 { None } else { Some(source.to_be_bytes()) };
     Ok(())
 }
 
@@ -2244,7 +2248,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_roundtrips_complete_credentials_in_wire_order() {
+    fn fork_state_roundtrips_complete_credentials_in_wire_order() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 1000,
@@ -2261,7 +2265,7 @@ mod tests {
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
         let child = deserialize_fork_state(&buf[..written], 42).unwrap();
 
-        assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), 15);
+        assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), FORK_VERSION);
         let credential_words: Vec<u32> = buf[16..52]
             .chunks_exact(4)
             .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
@@ -2282,7 +2286,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_roundtrips_zero_and_ngroups_max_groups() {
+    fn fork_state_roundtrips_zero_and_ngroups_max_groups() {
         for groups in [vec![], (0..32).map(|index| 20_000 + index).collect()] {
             let mut proc = Process::new(1);
             proc.install_credentials(Credentials {
@@ -2300,7 +2304,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_rejects_wrong_version_malformed_groups_and_trailing_bytes() {
+    fn fork_state_rejects_wrong_version_malformed_groups_and_trailing_bytes() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 1000,
@@ -2315,7 +2319,7 @@ mod tests {
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
 
-        for version in [14u32, 16] {
+        for version in [FORK_VERSION - 1, FORK_VERSION + 1] {
             let mut malformed = buf[..written].to_vec();
             malformed[4..8].copy_from_slice(&version.to_le_bytes());
             assert!(deserialize_fork_state(&malformed, 42).is_err());
@@ -2338,7 +2342,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_version_15_rejects_truncation_at_every_new_credential_field() {
+    fn fork_state_rejects_truncation_at_every_new_credential_field() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 1000,
@@ -2370,7 +2374,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_version_15_roundtrips_complete_credentials_and_secure_exec() {
+    fn exec_state_roundtrips_complete_credentials_and_secure_exec() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 101,
@@ -2392,7 +2396,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_version_15_rejects_wrong_version_truncation_and_trailing_bytes() {
+    fn exec_state_rejects_wrong_version_truncation_and_trailing_bytes() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 101,
@@ -2407,7 +2411,7 @@ mod tests {
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
 
-        for version in [14u32, 16] {
+        for version in [FORK_VERSION - 1, FORK_VERSION + 1] {
             let mut malformed = buf[..written].to_vec();
             malformed[4..8].copy_from_slice(&version.to_le_bytes());
             assert!(matches!(
@@ -2875,6 +2879,27 @@ mod tests {
         let child = deserialize_fork_state(&buf[..written], 42).unwrap();
 
         assert_eq!(child.memory.get_brk(), 0x02000000);
+    }
+
+    #[test]
+    fn test_fork_roundtrips_connected_wildcard_udp_source() {
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+        let mut proc = Process::new(1);
+        let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 17);
+        socket.state = SocketState::Connected;
+        socket.bind_port = 41000;
+        socket.peer_addr = [10, 89, 0, 2];
+        socket.peer_port = 42000;
+        socket.udp_source_addr = Some([10, 89, 0, 1]);
+        let socket_idx = install_socket_for_fork(&mut proc, socket);
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 42).unwrap();
+        let inherited = child.sockets.get(socket_idx).unwrap();
+        assert_eq!(inherited.bind_addr, [0; 4]);
+        assert_eq!(inherited.udp_source_addr, Some([10, 89, 0, 1]));
+        assert_eq!(inherited.peer_addr, [10, 89, 0, 2]);
+        assert_eq!(inherited.state, SocketState::Connected);
     }
 
     #[test]
