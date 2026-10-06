@@ -118,7 +118,9 @@ import {
   FCNTL_COMMANDS,
   FCNTL_FLOCK_BYTES,
   FILE_MODES,
+  CHANNEL_REQUEST_FLAG_OPAQUE_RECORD,
   HOST_INTERCEPTED_SYSCALLS,
+  HOST_RAW_SYSCALLS,
   OPEN_FLAGS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
@@ -128,22 +130,6 @@ import {
   KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
   KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
   KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
-  KERNEL_CMSGHDR_WIRE_ALIGN,
-  KERNEL_CMSGHDR_WIRE_DATA_OFFSET,
-  KERNEL_CMSGHDR_WIRE_LEN_OFFSET,
-  KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET,
-  KERNEL_CMSGHDR_WIRE_TYPE_OFFSET,
-  KERNEL_IOVEC_WIRE_BASE_OFFSET,
-  KERNEL_IOVEC_WIRE_LEN_OFFSET,
-  KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT,
-  KERNEL_MSGHDR_WIRE_ALIGN,
-  KERNEL_MSGHDR_WIRE_CONTROL_OFFSET,
-  KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-  KERNEL_MSGHDR_WIRE_FLAGS_OFFSET,
-  KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-  KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET,
-  KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-  KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
   KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES,
   KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
   KERNEL_SCRATCH_SOCKET_OPTION_INPUT_MAX_BYTES,
@@ -154,7 +140,6 @@ import {
   PROCESS_STATE_RUNNING,
   PROCESS_STATE_STOPPED,
   POSIX_ARG_MAX_BYTES,
-  POSIX_IOV_MAX,
   POSIX_NAME_MAX_BYTES,
   POSIX_NGROUPS_MAX,
   POSIX_PATH_MAX_BYTES,
@@ -179,41 +164,7 @@ import {
   PROCESS_SNAPSHOT_STATE_OFFSET,
   PROCESS_SNAPSHOT_UID_OFFSET,
   PROCESS_SNAPSHOT_VSIZE_OFFSET,
-  PROCESS_CMSGHDR_WASM32_ALIGN,
   type ProcessForkMode,
-  PROCESS_CMSGHDR_WASM32_DATA_OFFSET,
-  PROCESS_CMSGHDR_WASM32_LEN_OFFSET,
-  PROCESS_CMSGHDR_WASM32_LEVEL_OFFSET,
-  PROCESS_CMSGHDR_WASM32_SIZE,
-  PROCESS_CMSGHDR_WASM32_TYPE_OFFSET,
-  PROCESS_CMSGHDR_WASM64_ALIGN,
-  PROCESS_CMSGHDR_WASM64_DATA_OFFSET,
-  PROCESS_CMSGHDR_WASM64_LEN_OFFSET,
-  PROCESS_CMSGHDR_WASM64_LEVEL_OFFSET,
-  PROCESS_CMSGHDR_WASM64_SIZE,
-  PROCESS_CMSGHDR_WASM64_TYPE_OFFSET,
-  PROCESS_IOVEC_WASM32_BASE_OFFSET,
-  PROCESS_IOVEC_WASM32_LEN_OFFSET,
-  PROCESS_IOVEC_WASM32_SIZE,
-  PROCESS_IOVEC_WASM64_BASE_OFFSET,
-  PROCESS_IOVEC_WASM64_LEN_OFFSET,
-  PROCESS_IOVEC_WASM64_SIZE,
-  PROCESS_MSGHDR_WASM32_CONTROL_OFFSET,
-  PROCESS_MSGHDR_WASM32_CONTROLLEN_OFFSET,
-  PROCESS_MSGHDR_WASM32_FLAGS_OFFSET,
-  PROCESS_MSGHDR_WASM32_IOV_OFFSET,
-  PROCESS_MSGHDR_WASM32_IOVLEN_OFFSET,
-  PROCESS_MSGHDR_WASM32_NAME_OFFSET,
-  PROCESS_MSGHDR_WASM32_NAMELEN_OFFSET,
-  PROCESS_MSGHDR_WASM32_SIZE,
-  PROCESS_MSGHDR_WASM64_CONTROL_OFFSET,
-  PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET,
-  PROCESS_MSGHDR_WASM64_FLAGS_OFFSET,
-  PROCESS_MSGHDR_WASM64_IOV_OFFSET,
-  PROCESS_MSGHDR_WASM64_IOVLEN_OFFSET,
-  PROCESS_MSGHDR_WASM64_NAME_OFFSET,
-  PROCESS_MSGHDR_WASM64_NAMELEN_OFFSET,
-  PROCESS_MSGHDR_WASM64_SIZE,
   PROCESS_SIGINFO_CODE_OFFSET,
   PROCESS_SIGINFO_SIGNO_OFFSET,
   PROCESS_SIGINFO_WASM32_PID_OFFSET,
@@ -224,18 +175,14 @@ import {
   PROCESS_SIGINFO_WASM64_SIZE,
   PROCESS_SIGINFO_WASM64_UID_OFFSET,
   PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
-  PROCESS_POINTER_WIDTH_ARG_INDEX,
   PRCTL_NAME_BYTES,
   PR_GET_NAME,
   PR_SET_NAME,
-  SCM_RIGHTS_FD_BYTES,
   SCHED_AFFINITY_MASK_SIZE,
   SELECT_FD_SET_BYTES,
   SELECT_FD_SETSIZE,
   SIGNAL_ACTION_RESTART,
   SIGNAL_MASK_BYTES,
-  SOCKET_SCM_RIGHTS,
-  SOCKET_SOL_SOCKET,
   SPAWN_MAX_ACTION_COUNT,
   SPAWN_MAX_ARGV_COUNT,
   SPAWN_MAX_ENVP_COUNT,
@@ -246,12 +193,8 @@ import {
   SPAWN_WIRE_HEADER_ENVC_OFFSET,
   SPAWN_WIRE_MAX_BYTES,
   SPAWN_WIRE_STRING_OFFSET_BYTES,
-  STRUCT_SIZE_KERNEL_CMSGHDR_WIRE,
-  STRUCT_SIZE_KERNEL_IOVEC_WIRE,
-  STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   STRUCT_SIZE_WASM_POLL_FD,
-  STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
   STRUCT_SIZE_KERNEL_WAIT_RESULT,
   STRUCT_SIZE_WASM_RUSAGE_WIRE,
   STRUCT_SIZE_WASM_STAT,
@@ -274,6 +217,9 @@ import {
   type SyscallArgDesc,
   KANDELO_CLIPBOARD_ACK_PENDING,
   KANDELO_CLIPBOARD_MAX_TEXT_BYTES,
+  RECORD_HEADER_BYTES,
+  RECORD_INLINE_BUDGET,
+  RECORD_LEN_OFFSET,
 } from "./generated/abi";
 import {
   CLIPBOARD_ACK_POLL_MS,
@@ -950,21 +896,6 @@ const SIGSEGV = 11;
  *  docs/jsc-terminate-atomics-wait-workaround.md. */
 const SIGKILL = 9;
 
-/** Network ioctl request codes */
-const SIOCGIFNAME = 0x8910;
-const SIOCGIFCONF = 0x8912;
-const SIOCGIFHWADDR = 0x8927;
-const SIOCGIFADDR = 0x8915;
-const SIOCGIFINDEX = 0x8933;
-const AF_INET = 2;
-const ARPHRD_ETHER = 1;
-const ARPHRD_LOOPBACK = 772;
-const IF_NAMESIZE = 16;
-const VIRTUAL_INTERFACES = [
-  { name: "lo", index: 1, loopback: true },
-  { name: "eth0", index: 2, loopback: false },
-] as const;
-
 /** Ioctl syscall number */
 const SYS_IOCTL = ABI_SYSCALLS.Ioctl;
 
@@ -1046,14 +977,6 @@ function alignWasmPageLength(len: number): number {
   return Math.ceil(len / WASM_PAGE_SIZE) * WASM_PAGE_SIZE;
 }
 
-/**
- * Reassemble Linux preadv/pwritev's low/high offset words without routing the
- * signed i64 value through JavaScript Number.
- */
-function joinPositionedVectorOffset(low: number, high: number): bigint {
-  return (BigInt(high | 0) << 32n) | BigInt(low >>> 0);
-}
-
 /** Syscall numbers for scatter/gather I/O */
 const SYS_WRITEV = ABI_SYSCALLS.Writev;
 const SYS_READV = ABI_SYSCALLS.Readv;
@@ -1131,7 +1054,7 @@ const WRITE_LIKE_SYSCALLS = new Set<number>([
  * Generic-channel data transfers whose complete request must survive a host
  * EAGAIN park. Vector/message transfers have dedicated snapshot kinds below.
  */
-const GENERIC_BLOCKING_SNAPSHOT_SYSCALLS = new Set<number>([
+export const GENERIC_BLOCKING_SNAPSHOT_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.Open,
   ABI_SYSCALLS.Read,
   ABI_SYSCALLS.Write,
@@ -1154,6 +1077,20 @@ const GENERIC_BLOCKING_SNAPSHOT_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.CopyFileRange,
   ABI_SYSCALLS.Splice,
   ABI_SYSCALLS.Accept4,
+  // Every syscall whose argument is `SyscallArgSize::KernelDereferenced` and
+  // which can block. They reach the kernel through the ordinary descriptor
+  // path, so a blocked one takes an ordinary generic-channel snapshot; without
+  // an entry here it would arrive at `handleBlockingRetry` with no frozen
+  // disposition, and a syscall that names a descriptor treats that as a fatal
+  // protocol error rather than a retry.
+  ABI_SYSCALLS.Writev,
+  ABI_SYSCALLS.Readv,
+  ABI_SYSCALLS.Preadv,
+  ABI_SYSCALLS.Pwritev,
+  ABI_SYSCALLS.Preadv2,
+  ABI_SYSCALLS.Pwritev2,
+  ABI_SYSCALLS.Sendmsg,
+  ABI_SYSCALLS.Recvmsg,
 ]);
 
 /**
@@ -1234,6 +1171,16 @@ function syscallHasMsgDontwait(syscallNr: number, args: number[]): boolean {
   return flags !== undefined && (flags & MSG_DONTWAIT) !== 0;
 }
 
+/**
+ * `preadv2`/`pwritev2` with `RWF_NOWAIT` must not park on a blocking retry.
+ *
+ * Argument 5 is the caller's own `flags` word. The host used to overwrite that
+ * slot with the calling process's pointer width, so this had to read it before
+ * the overwrite; the width is registered per process now, and the slot carries
+ * nothing but what the guest passed. The kernel refuses any RWF_* bit it does
+ * not implement, so a request that reaches here asked only for behaviour that
+ * exists.
+ */
 function vectorRequestForbidsEagainRetry(
   syscallNr: number,
   args: readonly number[],
@@ -1247,66 +1194,16 @@ function vectorRequestForbidsEagainRetry(
  * Same as channel layout but used as the kernel-side buffer. */
 const SCRATCH_SIZE = CH_TOTAL_SIZE;
 
-// The Rust parser reads one flattened iovec record. This literal assignment
-// makes generated-protocol drift fail TypeScript compilation until both sides
-// are deliberately updated.
-const FLATTENED_KERNEL_MESSAGE_IOVEC_COUNT: 1 =
-  KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT;
-
+/**
+ * One caller-owned byte range a large transfer stages through kernel scratch.
+ *
+ * The vector syscalls no longer produce these: the kernel walks the caller's
+ * `struct iovec` table itself. What remains is the single range a large
+ * `write`/`read`/`pwrite`/`pread` presents.
+ */
 interface CheckedProcessIovec {
   base: number;
   len: number;
-}
-
-interface CheckedProcessIovecs {
-  entries: CheckedProcessIovec[];
-  totalData: number;
-}
-
-interface CheckedProcessMessage {
-  pointerWidth: 4 | 8;
-  messagePointer: number;
-  namePresent: boolean;
-  name: { pointer: number; length: number };
-  control: { pointer: number; length: number };
-  iovecs: CheckedProcessIovecs;
-}
-
-interface KernelMessageLayout {
-  footprint: number;
-  nameOffset: number;
-  controlOffset: number;
-  controlCapacity: number;
-  iovecOffset: number;
-  iovecCount: 0 | typeof FLATTENED_KERNEL_MESSAGE_IOVEC_COUNT;
-  iovecBytes: number;
-  dataOffset: number;
-}
-
-interface ProcessIovecLayout {
-  size: number;
-  baseOffset: number;
-  lenOffset: number;
-}
-
-interface ProcessMessageLayout {
-  size: number;
-  nameOffset: number;
-  nameLengthOffset: number;
-  iovecOffset: number;
-  iovecCountOffset: number;
-  controlOffset: number;
-  controlLengthOffset: number;
-  flagsOffset: number;
-}
-
-interface ProcessControlMessageLayout {
-  size: number;
-  alignment: number;
-  lengthOffset: number;
-  levelOffset: number;
-  typeOffset: number;
-  dataOffset: number;
 }
 
 interface PlannedChannelScratchArg {
@@ -2216,52 +2113,11 @@ interface FlattenedBlockingRetrySnapshot extends BlockingRetryDisposition {
   readonly retryToken: bigint;
 }
 
-interface SendmsgBlockingRetrySnapshot extends BlockingRetryDisposition {
-  readonly kind: "sendmsg";
-  readonly syscallNr: typeof SYS_SENDMSG;
-  readonly origArgs: number[];
-  readonly message: CheckedProcessMessage;
-  readonly layout: KernelMessageLayout;
-  readonly totalCapacity: number;
-  readonly name: Uint8Array;
-  readonly control: Uint8Array;
-  readonly payload: Uint8Array;
-  readonly retryToken: bigint;
-}
-
-interface RecvmsgBlockingRetrySnapshot extends BlockingRetryDisposition {
-  readonly kind: "recvmsg";
-  readonly syscallNr: typeof SYS_RECVMSG;
-  readonly origArgs: number[];
-  readonly message: CheckedProcessMessage;
-  readonly layout: KernelMessageLayout;
-  readonly totalCapacity: number;
-  readonly retryToken: bigint;
-}
-
-interface SysvMessageBlockingRetrySnapshot
-  extends FrozenCancellationPointIdentity {
-  readonly kind: "sysv-message";
-  readonly syscallNr: typeof SYS_MSGSND | typeof SYS_MSGRCV;
-  readonly origArgs: number[];
-  readonly pointerWidth: 4 | 8;
-  readonly processPointer: number;
-  readonly messageSize: number;
-  readonly flags: number;
-  readonly input: Uint8Array | null;
-  readonly nativeType: bigint;
-  readonly messageType: bigint;
-  readonly retryToken: bigint;
-}
-
 type BlockingRetrySnapshot =
   | GenericBlockingRetrySnapshot
   | FcntlLockBlockingRetrySnapshot
   | SelectBlockingRetrySnapshot
-  | FlattenedBlockingRetrySnapshot
-  | SendmsgBlockingRetrySnapshot
-  | RecvmsgBlockingRetrySnapshot
-  | SysvMessageBlockingRetrySnapshot;
+  | FlattenedBlockingRetrySnapshot;
 
 interface BlockingRetryWakeTargets {
   readonly readPipeIndex?: number;
@@ -3500,8 +3356,6 @@ export class CentralizedKernelWorker {
   /** PTY output callbacks: ptyIdx → callback */
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
 
-  /** Virtual MAC address for this kernel instance (locally administered, unicast) */
-  private virtualMacAddress: Uint8Array<ArrayBuffer>;
   private networkListenObserver:
     | ((pid: number, fd: number, port: number) => void)
     | undefined;
@@ -3846,18 +3700,6 @@ export class CentralizedKernelWorker {
       this.#failKernelInstance(error);
     });
 
-    // Generate a random virtual MAC address (locally administered, unicast)
-    this.virtualMacAddress = new Uint8Array(6);
-    if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
-      globalThis.crypto.getRandomValues(this.virtualMacAddress);
-    } else {
-      // Fallback for environments without Web Crypto API
-      for (let i = 0; i < 6; i++) {
-        this.virtualMacAddress[i] = Math.floor(Math.random() * 256);
-      }
-    }
-    // Set locally administered bit, clear multicast bit
-    this.virtualMacAddress[0] = (this.virtualMacAddress[0] & 0xFE) | 0x02;
     if (arguments[3] === centralizedKernelWorkerTestCapability) {
       kernelEntryIntrinsicObjectDefineProperty(this, "testAuthority", {
         configurable: false,
@@ -4488,19 +4330,30 @@ export class CentralizedKernelWorker {
             const { channel, pointerWidth } = channelSnapshot;
 
             if (triggerNotification) {
+              // WHY the message byte goes in the CALLER's memory:
+              // `mq_timedsend`'s buffer is declared KernelDereferenced, so
+              // arg 1 is a guest address the kernel reads through the
+              // cross-memory primitives. Staging it in kernel scratch and
+              // passing a scratch offset — which this probe used to do, back
+              // when the host marshalled the message — would now make the
+              // kernel read the guest's memory at that offset instead.
+              //
+              // The channel's own data area is guest memory this host already
+              // owns for this channel, so it is the natural place to put one
+              // byte without inventing an allocation.
+              const messageAddress = channel.channelOffset + CH_DATA;
+              new Uint8Array(channel.memory.buffer)[messageAddress] = 0x51;
               const sent = this.#requireMainScratchRegion().withLease(
                 (lease) => {
                   lease.fill(0, 0, CH_TOTAL_SIZE);
-                  lease.fill(0x51, CH_DATA, 1);
                   const view = lease.dataView(0, CH_TOTAL_SIZE);
                   view.setUint32(CH_STATUS, CH_PENDING, true);
                   view.setUint32(CH_SYSCALL, SYS_MQ_TIMEDSEND, true);
                   view.setBigInt64(CH_ARGS, BigInt(descriptor), true);
-                  lease.writeAddress(
+                  view.setBigInt64(
                     CH_ARGS + CH_ARG_SIZE,
-                    CH_DATA,
-                    1,
-                    "u64-le",
+                    BigInt(messageAddress),
+                    true,
                   );
                   view.setBigInt64(
                     CH_ARGS + 2 * CH_ARG_SIZE,
@@ -5744,6 +5597,38 @@ export class CentralizedKernelWorker {
    * slots keeps signed scalar arguments signed while preventing a wasm64
    * address from being rounded or narrowed to a low wasm32 address.
    */
+  /**
+   * Canonicalize the scatter/gather table pointer a zero count makes
+   * meaningless.
+   *
+   * POSIX does not inspect `iov` when `iovcnt` is zero, so a caller may leave
+   * anything at all in that slot -- including bits no pointer of its data
+   * model could hold. Normalize it to the null the kernel will ignore, before
+   * the generated process-address contract can reject a value that names
+   * nothing. `examples/kernel_scratch_browser_test.c` pins this with
+   * `UINTPTR_MAX - 15` across all six vector syscalls and both caller widths.
+   *
+   * The count itself is deliberately NOT checked here: the kernel owns the
+   * table walk, so `IOV_MAX` is its bound to enforce and its EINVAL to report.
+   */
+  private normalizeIgnoredVectorTablePointer(
+    syscallNr: number,
+    rawArgs: bigint[],
+  ): void {
+    switch (syscallNr) {
+      case SYS_WRITEV:
+      case SYS_READV:
+      case SYS_PREADV:
+      case SYS_PWRITEV:
+      case SYS_PREADV2:
+      case SYS_PWRITEV2:
+        if ((rawArgs[2] ?? 0n) === 0n) rawArgs[1] = 0n;
+        return;
+      default:
+        return;
+    }
+  }
+
   private checkHandwrittenProcessAddressArguments(
     channel: ChannelInfo,
     syscallNr: number,
@@ -5913,31 +5798,10 @@ export class CentralizedKernelWorker {
         }
         return;
       }
-      case SYS_WRITEV:
-      case SYS_PWRITEV:
-      case SYS_PWRITEV2:
-      case SYS_READV:
-      case SYS_PREADV:
-      case SYS_PREADV2: {
-        // POSIX defines a zero-count vector as an empty operation and does
-        // not inspect iov. Validate the complete i64 count before touching
-        // the pointer so wasm64 high bits cannot alias a small JavaScript
-        // number, then canonicalize the ignored pointer.
-        const rawCount = rawArgs[2] ?? 0n;
-        if (rawCount < 0n || rawCount > BigInt(POSIX_IOV_MAX)) {
-          throw new KernelScratchError(
-            `iovec count must be between 0 and ${POSIX_IOV_MAX}`,
-            EINVAL,
-          );
-        }
-        args[2] = Number(rawCount);
-        if (rawCount === 0n) {
-          args[1] = 0;
-          return;
-        }
-        pointer(1, "iovec table pointer");
-        return;
-      }
+      // writev/readv/preadv/pwritev/preadv2/pwritev2 are deliberately absent:
+      // their iovec table is a generated process-address slot now, validated
+      // by `checkGeneratedExactScalarArguments`, and the count is the kernel's
+      // to bound because it owns the table walk.
       case SYS_SENDMSG:
       case SYS_RECVMSG:
         pointer(1, "message header pointer");
@@ -5969,19 +5833,6 @@ export class CentralizedKernelWorker {
           || command === F_OFD_SETLKW
         ) {
           pointer(2, "fcntl flock pointer");
-        }
-        return;
-      }
-      case SYS_IOCTL: {
-        const request = Number(BigInt.asUintN(32, rawArgs[1] ?? 0n));
-        if (
-          request === SIOCGIFCONF
-          || request === SIOCGIFNAME
-          || request === SIOCGIFHWADDR
-          || request === SIOCGIFADDR
-          || request === SIOCGIFINDEX
-        ) {
-          pointer(2, "network ioctl pointer");
         }
         return;
       }
@@ -6429,209 +6280,6 @@ export class CentralizedKernelWorker {
     };
   }
 
-  private checkedProcessIovecs(
-    channel: ChannelInfo,
-    iovPointer: number | bigint,
-    iovCount: number,
-    allowEmpty: boolean,
-    capturedProcessMemory?: Uint8Array,
-  ): CheckedProcessIovecs {
-    if (
-      !Number.isSafeInteger(iovCount) ||
-      iovCount < (allowEmpty ? 0 : 1) ||
-      iovCount > POSIX_IOV_MAX
-    ) {
-      throw new KernelScratchError(
-        `iovec count must be ${allowEmpty ? "between 0" : "between 1"} and ${POSIX_IOV_MAX}`,
-        EINVAL,
-      );
-    }
-    if (iovCount === 0) return { entries: [], totalData: 0 };
-    const pointerWidth = this.getPtrWidth(channel.pid);
-    const layout = this.processIovecLayout(pointerWidth);
-    const tableBytes = iovCount * layout.size;
-    if (!Number.isSafeInteger(tableBytes)) {
-      throw new KernelScratchError("process iovec table size overflows", EINVAL);
-    }
-    const checkRange = (
-      pointer: number | bigint,
-      length: number | bigint,
-      field: string,
-      allowAddressZero = false,
-    ): { pointer: number; length: number; end: number } =>
-      capturedProcessMemory === undefined
-        ? this.checkedProcessRange(
-            channel,
-            pointer,
-            length,
-            field,
-            allowAddressZero,
-          )
-        : checkedProcessMemoryViewRange(
-            capturedProcessMemory,
-            pointer,
-            length,
-            pointerWidth,
-            field,
-            allowAddressZero,
-          );
-    const table = checkRange(
-      iovPointer,
-      tableBytes,
-      "process iovec table",
-      // WHY: zero is an addressable byte in caller process linear memory.
-      // It means allocator failure only for kernel allocator/export results,
-      // so a nonempty caller-owned table at address zero is valid when its
-      // complete native table range fits.
-      true,
-    );
-    const processMemory = capturedProcessMemory
-      ?? new Uint8Array(channel.memory.buffer);
-    const processView = new DataView(
-      processMemory.buffer,
-      processMemory.byteOffset + table.pointer,
-      table.length,
-    );
-    const entries: CheckedProcessIovec[] = [];
-    let totalData = 0;
-    for (let index = 0; index < iovCount; index++) {
-      const offset = index * layout.size;
-      const rawBase = pointerWidth === 8
-        ? processView.getBigUint64(offset + layout.baseOffset, true)
-        : processView.getUint32(offset + layout.baseOffset, true);
-      const rawLength = pointerWidth === 8
-        ? processView.getBigUint64(offset + layout.lenOffset, true)
-        : processView.getUint32(offset + layout.lenOffset, true);
-      // POSIX ignores iov_base when iov_len is zero. In particular, a wasm64
-      // caller may place a value above JavaScript's exact integer range there
-      // without naming any byte. Normalize it to zero only for the empty
-      // entry; every positive-length range is still checked losslessly.
-      const lengthRange = rawLength === 0n || rawLength === 0
-        ? { pointer: 0, length: 0 }
-        : checkRange(
-            rawBase,
-            rawLength,
-            `iovec[${index}] data`,
-            // WHY: like the table itself, positive-length caller data may
-            // begin at linear-memory address zero. The complete range proof,
-            // rather than null-pointer convention, establishes ownership.
-            true,
-          );
-      const len = lengthRange.length;
-      totalData += len;
-      if (
-        !Number.isSafeInteger(totalData)
-        || totalData > MAX_REPORTABLE_TRANSFER_BYTES
-      ) {
-        throw new KernelScratchError(
-          "aggregate iovec length exceeds SSIZE_MAX",
-          EINVAL,
-        );
-      }
-      entries.push({ base: lengthRange.pointer, len });
-    }
-    return { entries, totalData };
-  }
-
-  private processIovecLayout(pointerWidth: 4 | 8): ProcessIovecLayout {
-    return pointerWidth === 8
-      ? {
-          size: PROCESS_IOVEC_WASM64_SIZE,
-          baseOffset: PROCESS_IOVEC_WASM64_BASE_OFFSET,
-          lenOffset: PROCESS_IOVEC_WASM64_LEN_OFFSET,
-        }
-      : {
-          size: PROCESS_IOVEC_WASM32_SIZE,
-          baseOffset: PROCESS_IOVEC_WASM32_BASE_OFFSET,
-          lenOffset: PROCESS_IOVEC_WASM32_LEN_OFFSET,
-        };
-  }
-
-  private processMessageLayout(pointerWidth: 4 | 8): ProcessMessageLayout {
-    return pointerWidth === 8
-      ? {
-          size: PROCESS_MSGHDR_WASM64_SIZE,
-          nameOffset: PROCESS_MSGHDR_WASM64_NAME_OFFSET,
-          nameLengthOffset: PROCESS_MSGHDR_WASM64_NAMELEN_OFFSET,
-          iovecOffset: PROCESS_MSGHDR_WASM64_IOV_OFFSET,
-          iovecCountOffset: PROCESS_MSGHDR_WASM64_IOVLEN_OFFSET,
-          controlOffset: PROCESS_MSGHDR_WASM64_CONTROL_OFFSET,
-          controlLengthOffset: PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET,
-          flagsOffset: PROCESS_MSGHDR_WASM64_FLAGS_OFFSET,
-        }
-      : {
-          size: PROCESS_MSGHDR_WASM32_SIZE,
-          nameOffset: PROCESS_MSGHDR_WASM32_NAME_OFFSET,
-          nameLengthOffset: PROCESS_MSGHDR_WASM32_NAMELEN_OFFSET,
-          iovecOffset: PROCESS_MSGHDR_WASM32_IOV_OFFSET,
-          iovecCountOffset: PROCESS_MSGHDR_WASM32_IOVLEN_OFFSET,
-          controlOffset: PROCESS_MSGHDR_WASM32_CONTROL_OFFSET,
-          controlLengthOffset: PROCESS_MSGHDR_WASM32_CONTROLLEN_OFFSET,
-          flagsOffset: PROCESS_MSGHDR_WASM32_FLAGS_OFFSET,
-        };
-  }
-
-  private processControlMessageLayout(
-    pointerWidth: 4 | 8,
-  ): ProcessControlMessageLayout {
-    return pointerWidth === 8
-      ? {
-          size: PROCESS_CMSGHDR_WASM64_SIZE,
-          alignment: PROCESS_CMSGHDR_WASM64_ALIGN,
-          lengthOffset: PROCESS_CMSGHDR_WASM64_LEN_OFFSET,
-          levelOffset: PROCESS_CMSGHDR_WASM64_LEVEL_OFFSET,
-          typeOffset: PROCESS_CMSGHDR_WASM64_TYPE_OFFSET,
-          dataOffset: PROCESS_CMSGHDR_WASM64_DATA_OFFSET,
-        }
-      : {
-          size: PROCESS_CMSGHDR_WASM32_SIZE,
-          alignment: PROCESS_CMSGHDR_WASM32_ALIGN,
-          lengthOffset: PROCESS_CMSGHDR_WASM32_LEN_OFFSET,
-          levelOffset: PROCESS_CMSGHDR_WASM32_LEVEL_OFFSET,
-          typeOffset: PROCESS_CMSGHDR_WASM32_TYPE_OFFSET,
-          dataOffset: PROCESS_CMSGHDR_WASM32_DATA_OFFSET,
-      };
-  }
-
-  private readProcessUsize(
-    view: DataView,
-    offset: number,
-    pointerWidth: 4 | 8,
-    field: string,
-  ): number {
-    const raw = pointerWidth === 8
-      ? view.getBigUint64(offset, true)
-      : view.getUint32(offset, true);
-    try {
-      return checkedWasmPointer(raw, pointerWidth, field);
-    } catch (error) {
-      throw new KernelScratchError(
-        error instanceof Error ? error.message : `${field} is invalid`,
-        EINVAL,
-      );
-    }
-  }
-
-  private writeProcessUsize(
-    view: DataView,
-    offset: number,
-    value: number,
-    pointerWidth: 4 | 8,
-    field: string,
-  ): void {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new KernelScratchError(`${field} is invalid`, EIO);
-    }
-    if (pointerWidth === 8) {
-      view.setBigUint64(offset, BigInt(value), true);
-    } else {
-      if (value > 0xffff_ffff) {
-        throw new KernelScratchError(`${field} exceeds wasm32 size_t`, EIO);
-      }
-      view.setUint32(offset, value, true);
-    }
-  }
-
   private checkedAlignUp(
     value: number,
     alignment: number,
@@ -6660,388 +6308,6 @@ export class CentralizedKernelWorker {
   ): void {
     const errno = error instanceof KernelScratchError ? error.errno : EFAULT;
     this.completeChannelRawAndRelisten(channel, -1, errno, entry);
-  }
-
-  private checkedProcessMessage(
-    channel: ChannelInfo,
-    messagePointerValue: number | bigint,
-    direction: "send" | "receive",
-    capturedProcessMemory?: Uint8Array,
-  ): CheckedProcessMessage {
-    const pointerWidth = this.getPtrWidth(channel.pid);
-    const layout = this.processMessageLayout(pointerWidth);
-    const checkRange = (
-      pointer: number | bigint,
-      length: number | bigint,
-      field: string,
-    ): { pointer: number; length: number; end: number } =>
-      capturedProcessMemory === undefined
-        ? this.checkedProcessRange(channel, pointer, length, field)
-        : checkedProcessMemoryViewRange(
-            capturedProcessMemory,
-            pointer,
-            length,
-            pointerWidth,
-            field,
-          );
-    const message = checkRange(
-      messagePointerValue,
-      layout.size,
-      "process msghdr",
-    );
-    const processMemory = capturedProcessMemory
-      ?? new Uint8Array(channel.memory.buffer);
-    const view = new DataView(
-      processMemory.buffer,
-      processMemory.byteOffset + message.pointer,
-      message.length,
-    );
-    const rawNamePointer = pointerWidth === 8
-      ? view.getBigUint64(layout.nameOffset, true)
-      : view.getUint32(layout.nameOffset, true);
-    const namePresent = rawNamePointer !== 0 && rawNamePointer !== 0n;
-    const callerNameLength = view.getUint32(layout.nameLengthOffset, true);
-    if (direction === "send" && namePresent) {
-      // WHY: msg_name is a nested socket-address source. It must obey the
-      // same complete sockaddr_storage bound as sendto rather than escaping
-      // the generated descriptor check merely because it lives in msghdr.
-      validateSocketAddressInputSize(callerNameLength);
-    }
-    // A receive buffer can be larger than the complete generic address object
-    // the kernel can produce. Prove and reserve only sockaddr_storage bytes;
-    // validating the unused tail would conflate caller capacity with use. An
-    // absent msg_name makes msg_namelen ignored regardless of its stale value.
-    const nameLength = namePresent
-      ? direction === "receive"
-        ? Math.min(callerNameLength, KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES)
-        : callerNameLength
-      : 0;
-    const rawIovecPointer = pointerWidth === 8
-      ? view.getBigUint64(layout.iovecOffset, true)
-      : view.getUint32(layout.iovecOffset, true);
-    // WHY: musl deliberately keeps both msg_iovlen (`int`) and
-    // msg_controllen (`socklen_t`) 32-bit on wasm64, then adds four bytes of
-    // ABI padding. Reading either as size_t would treat unrelated padding as
-    // the high half of a count and reject or mis-size a valid message.
-    const iovecCount = view.getUint32(layout.iovecCountOffset, true);
-    // Linux rejects msg_iovlen above IOV_MAX with EMSGSIZE — net/socket.c's
-    // __copy_msghdr serves both sendmsg and recvmsg — while readv/writev
-    // keep POSIX's EINVAL for the same overflow.
-    if (iovecCount > POSIX_IOV_MAX) {
-      throw new KernelScratchError(
-        `msg_iovlen must be at most ${POSIX_IOV_MAX}`,
-        EMSGSIZE,
-      );
-    }
-    const rawControlPointer = pointerWidth === 8
-      ? view.getBigUint64(layout.controlOffset, true)
-      : view.getUint32(layout.controlOffset, true);
-    const controlLength = view.getUint32(
-      layout.controlLengthOffset,
-      true,
-    );
-
-    const checkedOptionalRange = (
-      pointer: number | bigint,
-      length: number,
-      field: string,
-    ): { pointer: number; length: number } => {
-      if (length === 0) {
-        // POSIX ignores the paired pointer when the byte count is zero. Do
-        // not even numerically convert it: a wasm64 caller may leave unsafe
-        // high bits there without naming process memory.
-        return { pointer: 0, length: 0 };
-      }
-      return checkRange(pointer, length, field);
-    };
-
-    return {
-      pointerWidth,
-      messagePointer: message.pointer,
-      namePresent,
-      name: checkedOptionalRange(
-        rawNamePointer,
-        nameLength,
-        "msg_name",
-      ),
-      control: checkedOptionalRange(
-        rawControlPointer,
-        controlLength,
-        "msg_control",
-      ),
-      iovecs: this.checkedProcessIovecs(
-        channel,
-        rawIovecPointer,
-        iovecCount,
-        true,
-        capturedProcessMemory,
-      ),
-    };
-  }
-
-  private nativeControlToKernelWire(
-    processMem: Uint8Array,
-    message: CheckedProcessMessage,
-  ): Uint8Array {
-    if (message.control.length === 0) return new Uint8Array(0);
-    const native = this.processControlMessageLayout(message.pointerWidth);
-    const source = new DataView(
-      processMem.buffer,
-      processMem.byteOffset + message.control.pointer,
-      message.control.length,
-    );
-    const records: Array<{
-      level: number;
-      type: number;
-      data: Uint8Array;
-      wireLength: number;
-      wireSpace: number;
-    }> = [];
-    let nativeOffset = 0;
-    let wireBytes = 0;
-    while (nativeOffset + native.size <= message.control.length) {
-      const cmsgLength = this.readProcessUsize(
-        source,
-        nativeOffset + native.lengthOffset,
-        message.pointerWidth,
-        "cmsg_len",
-      );
-      if (cmsgLength < native.dataOffset) {
-        throw new KernelScratchError(
-          "native control message header is malformed",
-          EINVAL,
-        );
-      }
-      const nativeEnd = nativeOffset + cmsgLength;
-      if (
-        !Number.isSafeInteger(nativeEnd) ||
-        nativeEnd > message.control.length
-      ) {
-        throw new KernelScratchError(
-          "native control message exceeds msg_controllen",
-          EINVAL,
-        );
-      }
-      const level = source.getUint32(nativeOffset + native.levelOffset, true);
-      const type = source.getUint32(nativeOffset + native.typeOffset, true);
-      const dataLength = cmsgLength - native.dataOffset;
-      if (
-        level === SOCKET_SOL_SOCKET &&
-        type === SOCKET_SCM_RIGHTS &&
-        dataLength % SCM_RIGHTS_FD_BYTES !== 0
-      ) {
-        throw new KernelScratchError(
-          "SCM_RIGHTS payload is not an array of file descriptors",
-          EINVAL,
-        );
-      }
-      const wireLength = KERNEL_CMSGHDR_WIRE_DATA_OFFSET + dataLength;
-      const wireSpace = this.checkedAlignUp(
-        wireLength,
-        KERNEL_CMSGHDR_WIRE_ALIGN,
-        "kernel control message",
-      );
-      wireBytes += wireSpace;
-      if (!Number.isSafeInteger(wireBytes) || wireBytes > CH_DATA_SIZE) {
-        throw new KernelScratchError(
-          "control messages exceed bounded kernel transport",
-          90,
-        );
-      }
-      records.push({
-        level,
-        type,
-        data: processMem.slice(
-          message.control.pointer + nativeOffset + native.dataOffset,
-          message.control.pointer + nativeEnd,
-        ),
-        wireLength,
-        wireSpace,
-      });
-      nativeOffset = this.checkedAlignUp(
-        nativeEnd,
-        native.alignment,
-        "native control message",
-      );
-    }
-
-    const output = new Uint8Array(wireBytes);
-    const view = new DataView(output.buffer);
-    let wireOffset = 0;
-    for (const record of records) {
-      view.setUint32(
-        wireOffset + KERNEL_CMSGHDR_WIRE_LEN_OFFSET,
-        record.wireLength,
-        true,
-      );
-      view.setUint32(
-        wireOffset + KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET,
-        record.level,
-        true,
-      );
-      view.setUint32(
-        wireOffset + KERNEL_CMSGHDR_WIRE_TYPE_OFFSET,
-        record.type,
-        true,
-      );
-      output.set(
-        record.data,
-        wireOffset + KERNEL_CMSGHDR_WIRE_DATA_OFFSET,
-      );
-      wireOffset += record.wireSpace;
-    }
-    return output;
-  }
-
-  private kernelControlCapacityForRecv(
-    message: CheckedProcessMessage,
-  ): number {
-    const native = this.processControlMessageLayout(message.pointerWidth);
-    if (
-      message.control.length <
-        native.dataOffset + SCM_RIGHTS_FD_BYTES
-    ) {
-      return 0;
-    }
-    const descriptorCapacity = Math.floor(
-      (message.control.length - native.dataOffset) / SCM_RIGHTS_FD_BYTES,
-    );
-    // WHY: Rust emits at most one SCM_RIGHTS record. Bound its fixed-wire FD
-    // capacity by what the wider caller-native header can represent, so it
-    // cannot install descriptors that expansion back to wasm64 would lose.
-    return KERNEL_CMSGHDR_WIRE_DATA_OFFSET
-      + descriptorCapacity * SCM_RIGHTS_FD_BYTES;
-  }
-
-  private kernelControlToNative(
-    wireBytes: Uint8Array,
-    message: CheckedProcessMessage,
-  ): { bytes: Uint8Array; length: number } {
-    if (wireBytes.length === 0) {
-      return { bytes: new Uint8Array(0), length: 0 };
-    }
-    if (wireBytes.length < STRUCT_SIZE_KERNEL_CMSGHDR_WIRE) {
-      throw new KernelScratchError(
-        "kernel returned a partial control message header",
-        EIO,
-      );
-    }
-    const wire = new DataView(
-      wireBytes.buffer,
-      wireBytes.byteOffset,
-      wireBytes.byteLength,
-    );
-    const cmsgLength = wire.getUint32(KERNEL_CMSGHDR_WIRE_LEN_OFFSET, true);
-    if (
-      cmsgLength < KERNEL_CMSGHDR_WIRE_DATA_OFFSET ||
-      cmsgLength > wireBytes.length ||
-      this.checkedAlignUp(
-          cmsgLength,
-          KERNEL_CMSGHDR_WIRE_ALIGN,
-          "returned kernel control message",
-        ) !== wireBytes.length
-    ) {
-      throw new KernelScratchError(
-        "kernel returned a malformed control message",
-        EIO,
-      );
-    }
-    const level = wire.getUint32(KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET, true);
-    const type = wire.getUint32(KERNEL_CMSGHDR_WIRE_TYPE_OFFSET, true);
-    const dataLength = cmsgLength - KERNEL_CMSGHDR_WIRE_DATA_OFFSET;
-    if (
-      level !== SOCKET_SOL_SOCKET ||
-      type !== SOCKET_SCM_RIGHTS ||
-      dataLength === 0 ||
-      dataLength % SCM_RIGHTS_FD_BYTES !== 0
-    ) {
-      throw new KernelScratchError(
-        "kernel returned an unsupported control message",
-        EIO,
-      );
-    }
-
-    const native = this.processControlMessageLayout(message.pointerWidth);
-    const nativeLength = native.dataOffset + dataLength;
-    if (nativeLength > message.control.length) {
-      throw new KernelScratchError(
-        "kernel control message exceeds caller capacity",
-        EIO,
-      );
-    }
-    const reportedLength = Math.min(
-      message.control.length,
-      this.checkedAlignUp(
-        nativeLength,
-        native.alignment,
-        "native returned control message",
-      ),
-    );
-    const output = new Uint8Array(reportedLength);
-    const outputView = new DataView(output.buffer);
-    this.writeProcessUsize(
-      outputView,
-      native.lengthOffset,
-      nativeLength,
-      message.pointerWidth,
-      "returned cmsg_len",
-    );
-    outputView.setUint32(native.levelOffset, level, true);
-    outputView.setUint32(native.typeOffset, type, true);
-    output.set(
-      wireBytes.subarray(
-        KERNEL_CMSGHDR_WIRE_DATA_OFFSET,
-        KERNEL_CMSGHDR_WIRE_DATA_OFFSET + dataLength,
-      ),
-      native.dataOffset,
-    );
-    return { bytes: output, length: reportedLength };
-  }
-
-  private kernelMessageLayout(
-    message: CheckedProcessMessage,
-    controlCapacity: number,
-  ): KernelMessageLayout {
-    let offset: number = STRUCT_SIZE_KERNEL_MSGHDR_WIRE;
-    const append = (length: number): number => {
-      const start = offset;
-      offset += length;
-      if (!Number.isSafeInteger(offset)) {
-        throw new KernelScratchError("kernel msghdr layout overflows", EINVAL);
-      }
-      offset = this.checkedAlignUp(
-        offset,
-        KERNEL_MSGHDR_WIRE_ALIGN,
-        "kernel msghdr layout",
-      );
-      return start;
-    };
-    const nameOffset = message.namePresent
-      ? append(message.name.length)
-      : 0;
-    const controlOffset = controlCapacity > 0
-      ? append(controlCapacity)
-      : 0;
-    const iovecCount = message.iovecs.entries.length > 0
-      ? FLATTENED_KERNEL_MESSAGE_IOVEC_COUNT
-      : 0;
-    const iovecBytes = iovecCount * STRUCT_SIZE_KERNEL_IOVEC_WIRE;
-    const iovecOffset = iovecBytes > 0
-      ? append(iovecBytes)
-      : 0;
-    const dataOffset = message.iovecs.totalData > 0
-      ? append(message.iovecs.totalData)
-      : 0;
-    return {
-      footprint: offset,
-      nameOffset,
-      controlOffset,
-      controlCapacity,
-      iovecOffset,
-      iovecCount,
-      iovecBytes,
-      dataOffset,
-    };
   }
 
   private checkedKernelWirePointer(pointer: number): number {
@@ -7276,6 +6542,19 @@ export class CentralizedKernelWorker {
         ) {
           throw new Error(
             "Kernel export kernel_set_brk_limit is required for legacy low-control layout",
+          );
+        }
+        // The kernel parses caller-native structures for this process, so it
+        // must know the process's data model. The host contributes it here,
+        // at registration, because the host is what read the program's bytes
+        // and instantiated its Memory; it is not re-sent per syscall. An exec
+        // re-registration sends it again: on this host the exec image is
+        // read and instantiated here, so the incoming image's width arrives
+        // with the brk and mmap bases it also replaces.
+        if (!this.#setPointerWidthWithinKernelEntry(pid, ptrWidth, entry)) {
+          throw new Error(
+            "Kernel export kernel_set_process_pointer_width is required to "
+              + "register a process data model",
           );
         }
 
@@ -11068,9 +10347,19 @@ export class CentralizedKernelWorker {
         requestFlags
         & CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
       ) !== 0;
+    // WHY EINVAL here, for one request: the header is written by the guest,
+    // so a bad combination is a malformed request from that one process, not
+    // a host/kernel invariant failure. A host-raw syscall carrying the
+    // opaque-record flag would skip the host work its raw path performs
+    // (interception, memory growth, blocking retry); answer it like any other
+    // contradictory flag set instead of stopping the shared kernel.
     if (
       (requestFlags & ~CHANNEL_REQUEST_FLAGS_KNOWN_MASK) !== 0
       || (cancellationWakeAllowed && !cancellationPoint)
+      || (
+        (requestFlags & CHANNEL_REQUEST_FLAG_OPAQUE_RECORD) !== 0
+        && HOST_RAW_SYSCALLS.has(syscallNr)
+      )
     ) {
       this.completeChannelRawAndRelisten(channel, -1, EINVAL, entry);
       return null;
@@ -11840,6 +11129,7 @@ export class CentralizedKernelWorker {
     // addresses stay bigint in adjustedArgs; ProcessSize is first normalized
     // to the guest width, then projected to Number only after an exact safe-
     // integer proof because planner arithmetic consumes it.
+    this.normalizeIgnoredVectorTablePointer(syscallNr, rawArgs);
     const adjustedArgs = normalizeChannelScalarArguments(syscallNr, rawArgs);
     const origArgs: number[] = adjustedArgs.map((value, index) =>
       typeof value === "number"
@@ -11973,6 +11263,32 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // --- Phase 2 opaque record fast-path (Option A) ---
+    // A non-RAW syscall self-marshalled its pointer arguments into a record at
+    // CH_DATA and set REQUEST_FLAG_OPAQUE_RECORD in the channel header. Transport
+    // that byte region blindly to the kernel and return, bypassing the entire
+    // Tier-A intercept ladder and Tier-B descriptor machinery below. The record
+    // decision is read from the header flag (written fresh every request beside
+    // the syscall number), NOT the data-buffer magic: that magic can be stale in
+    // a fork child or a reused per-thread channel slot, while the header cannot.
+    // #captureChannelRequest already answered a RAW syscall carrying the flag
+    // with EINVAL, so only non-RAW syscalls reach this branch.
+    const channelRequestFlags =
+      this.activeChannelRequests.get(channel)?.requestFlags
+      ?? processView.getUint32(CH_REQUEST_FLAGS, true);
+    if ((channelRequestFlags & CHANNEL_REQUEST_FLAG_OPAQUE_RECORD) !== 0) {
+      if (logging) console.error(logEntry);
+      this.#handleRecordSyscall(
+        channel,
+        syscallNr,
+        origArgs,
+        processMem,
+        logging ? logEntry : "",
+        entry,
+      );
+      return;
+    }
+
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
     // direct kernel dispatch.
@@ -12069,28 +11385,10 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // --- Scatter/gather I/O (writev/readv/pwritev/preadv) ---
-    // These have nested pointers (iov array → base buffers) that can't be
-    // handled by the simple ArgDesc system.
-    if (
-      syscallNr === SYS_WRITEV
-      || syscallNr === SYS_PWRITEV
-      || syscallNr === SYS_PWRITEV2
-    ) {
-      if (logging) console.error(logEntry);
-      this.#handleWritev(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
-
-    if (
-      syscallNr === SYS_READV
-      || syscallNr === SYS_PREADV
-      || syscallNr === SYS_PREADV2
-    ) {
-      if (logging) console.error(logEntry);
-      this.#handleReadv(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
+    // (writev/readv/preadv/pwritev/preadv2/pwritev2 now go through the normal
+    // kernel path. Their `struct iovec` table is declared KernelDereferenced,
+    // so the kernel walks the caller's table and its buffers itself, in the
+    // caller's data model, and gathers or scatters in one operation.)
 
     // --- Large write/pwrite/read/pread: one kernel-owned transfer region ---
     // The ordinary channel has a fixed data capacity. Preserve one POSIX I/O
@@ -12111,43 +11409,10 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // --- sendmsg/recvmsg: decompose msghdr from process memory ---
-    if (syscallNr === SYS_SENDMSG) {
-      this.handleSendmsg(channel, origArgs, processMem, entry);
-      return;
-    }
-    if (syscallNr === SYS_RECVMSG) {
-      this.handleRecvmsg(channel, origArgs, processMem, entry);
-      return;
-    }
-
-    // --- ioctl: intercept network interface ioctls ---
-    // These require host-side handling because:
-    //   SIOCGIFCONF: struct ifconf contains a pointer to a process-memory buffer
-    //   SIOCGIFHWADDR: returns the virtual MAC address for this kernel instance
-    if (syscallNr === SYS_IOCTL) {
-      const request = origArgs[1] >>> 0;
-      if (request === SIOCGIFCONF) {
-        this.handleIoctlIfconf(channel, origArgs, entry);
-        return;
-      }
-      if (request === SIOCGIFNAME) {
-        this.handleIoctlIfname(channel, origArgs, entry);
-        return;
-      }
-      if (request === SIOCGIFHWADDR) {
-        this.handleIoctlIfhwaddr(channel, origArgs, entry);
-        return;
-      }
-      if (request === SIOCGIFADDR) {
-        this.handleIoctlIfaddr(channel, origArgs, entry);
-        return;
-      }
-      if (request === SIOCGIFINDEX) {
-        this.handleIoctlIfindex(channel, origArgs, entry);
-        return;
-      }
-    }
+    // (sendmsg/recvmsg now go through the normal kernel path. `struct
+    // msghdr` is declared KernelDereferenced, so the kernel walks the caller's
+    // header, its iovec table and its CMSG chain itself, in the caller's data
+    // model.)
 
     // --- fcntl with struct flock pointer ---
     // When cmd is a lock operation, arg3 points to the generated flock wire.
@@ -12188,26 +11453,11 @@ export class CentralizedKernelWorker {
       this.handleIpcShmdt(channel, origArgs, rawArgs, entry);
       return;
     }
-    // --- SysV messages: msgbuf starts with native `long`, which differs
-    // between wasm32 and wasm64. Translate it to the fixed kernel wire header
-    // while the caller width is still known. ---
-    if (syscallNr === SYS_MSGSND || syscallNr === SYS_MSGRCV) {
-      this.handleSysvMessage(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
-    // --- SysV IPC: control structures follow the caller's wasm32/wasm64
-    // data model and their pointer direction depends on cmd. ---
-    if (syscallNr === SYS_MSGCTL || syscallNr === SYS_SHMCTL) {
-      this.handleIpcControl(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
-    // --- SysV IPC: semctl has cmd-dependent arg types (scalar vs pointer) ---
-    if (syscallNr === SYS_SEMCTL) {
-      this.handleSemctl(channel, origArgs, rawArgs, entry);
-      return;
-    }
-
-    // (POSIX mqueue syscalls 331-336 now go through the normal kernel path)
+    // (SysV msgsnd/msgrcv/msgctl/shmctl/semctl and the POSIX mqueue syscalls
+    // now go through the normal kernel path. Their caller structures —
+    // `msgbuf`'s native `long` prefix, the cmd-dependent `msqid_ds`/`shmid_ds`
+    // buffer, semctl's `union semun` — are declared KernelDereferenced, so the
+    // kernel reads and writes them itself in the caller's data model.)
 
     // --- pselect6: fd_sets (inout) + timeout/sigmask decoding ---
     if (syscallNr === SYS_PSELECT6) {
@@ -12256,107 +11506,6 @@ export class CentralizedKernelWorker {
 
     // Process pointer args: copy data between process and kernel memory
     const pointerWidth = this.getPtrWidth(channel.pid);
-    if (
-      syscallNr === SYS_MQ_TIMEDSEND
-      || syscallNr === SYS_MQ_TIMEDRECEIVE
-    ) {
-      try {
-        const messageSizeForDescriptor = this.#kernelInstanceForEntry(entry)
-          .exports.kernel_mq_descriptor_msgsize as
-          | ((
-              pid: number,
-              tid: number,
-              descriptor: number,
-            ) => number)
-          | undefined;
-        if (typeof messageSizeForDescriptor !== "function") {
-          throw new KernelScratchError(
-            "kernel mqueue descriptor sizing export is unavailable",
-            EIO,
-          );
-        }
-        const queueMessageSize = messageSizeForDescriptor(
-          channel.pid,
-          this.guestTidForChannel(channel),
-          origArgs[0],
-        );
-        if (queueMessageSize < 0) {
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            undefined,
-            -1,
-            -queueMessageSize,
-            [],
-            undefined,
-            entry,
-          );
-          return;
-        }
-        if (
-          !Number.isSafeInteger(queueMessageSize)
-          || queueMessageSize <= 0
-          || queueMessageSize > MAX_REPORTABLE_TRANSFER_BYTES
-        ) {
-          throw new KernelScratchError(
-            "kernel returned an invalid mqueue descriptor message size",
-            EIO,
-          );
-        }
-        const requestedSize = adjustedArgs[2];
-        const requestedSizeBigInt = typeof requestedSize === "bigint"
-          ? requestedSize
-          : BigInt(requestedSize);
-        if (
-          syscallNr === SYS_MQ_TIMEDSEND
-          && requestedSizeBigInt > BigInt(queueMessageSize)
-        ) {
-          // WHY: POSIX requires EMSGSIZE for a message larger than this
-          // queue's mq_msgsize. Resolve that authoritative limit before a
-          // large kernel reservation can turn the same request into ENOMEM.
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            undefined,
-            -1,
-            EMSGSIZE,
-            [],
-            undefined,
-            entry,
-          );
-          return;
-        }
-        if (
-          syscallNr === SYS_MQ_TIMEDRECEIVE
-          && requestedSizeBigInt < BigInt(queueMessageSize)
-        ) {
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            undefined,
-            -1,
-            EMSGSIZE,
-            [],
-            undefined,
-            entry,
-          );
-          return;
-        }
-        if (syscallNr === SYS_MQ_TIMEDRECEIVE) {
-          // WHY: the caller's size is a capacity, not a demand to allocate it.
-          // Rust proves no complete queue message can exceed mq_msgsize; stage
-          // and range-check exactly that complete-result maximum.
-          adjustedArgs[2] = BigInt(queueMessageSize);
-        }
-      } catch (error) {
-        this.#rethrowKernelEntryFatal(error);
-        this.#rejectScratchTransfer(channel, error, entry);
-        return;
-      }
-    }
     let argDescs = SYSCALL_ARGS[syscallNr];
     if (argDescs) {
       argDescs = applyNullableDereferencePairPresence(
@@ -12364,13 +11513,6 @@ export class CentralizedKernelWorker {
         rawArgs,
         adjustedArgs,
       );
-    }
-    if (syscallNr === ABI_SYSCALLS.Setsockopt) {
-      // WHY: optlen is only the caller's supplied byte extent. It cannot
-      // identify whether embedded sockaddr_storage fields use wasm32 or
-      // wasm64 alignment, so carry the independently known process model in
-      // setsockopt's otherwise-unused private sixth channel slot.
-      adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;
     }
     if (syscallNr === SYS_PRCTL) {
       const option = Number(BigInt.asUintN(32, rawArgs[0]!));
@@ -12398,7 +11540,6 @@ export class CentralizedKernelWorker {
       const contract = resolveIoctlContract(request);
       adjustedArgs[1] = request;
       adjustedArgs[3] = 0;
-      adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;
 
       if (!contract) {
         // WHY: an unknown ioctl must reach the device with no staged process
@@ -12473,11 +11614,39 @@ export class CentralizedKernelWorker {
 
     if (argDescs) {
       this.#scratchBoundaryTestHooks?.afterProcessMemorySnapshot?.(channel);
-      if (argDescs.some((desc) => desc.size.type === "process-layout")) {
-        // WHY: the kernel Wasm target cannot select a native guest structure
-        // layout because one instance may serve both wasm32 and wasm64.
-        adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;
+      // A kernel-dereferenced argument is read and written by the kernel
+      // itself, through the cross-memory primitives. The host stages no bytes
+      // for it and plans no subregion; it publishes the caller's own address,
+      // canonicalized to its full physical bits so a wasm64 pointer above
+      // 4 GiB cannot alias its low word. A null pointer is passed through
+      // unchanged: the correct errno is per-syscall — and, for the IPC
+      // control calls, per-command — so it is the kernel's decision.
+      for (const desc of argDescs) {
+        if (desc.size.type !== "kernel-dereferenced") continue;
+        try {
+          adjustedArgs[desc.argIndex] = canonicalGuestUnsignedScalar(
+            rawArgs[desc.argIndex] ?? 0n,
+            pointerWidth,
+            `syscall ${syscallNr} arg ${desc.argIndex} pointer`,
+          );
+        } catch {
+          this.completeChannel(
+            channel,
+            syscallNr,
+            origArgs,
+            undefined,
+            -1,
+            EFAULT,
+            [],
+            undefined,
+            entry,
+          );
+          return;
+        }
       }
+      argDescs = argDescs.filter(
+        (desc) => desc.size.type !== "kernel-dereferenced",
+      );
 
       // Capture every pointer-derived size before planning any subregion.
       // WHY: descriptor order is generated ABI data and may change. If the
@@ -12845,10 +12014,17 @@ export class CentralizedKernelWorker {
           size = captured.value;
         } else if (desc.size.type === "fixed") {
           size = desc.size.size;
-        } else {
+        } else if (desc.size.type === "process-layout") {
           size = pointerWidth === 8
             ? desc.size.wasm64Size
             : desc.size.wasm32Size;
+        } else {
+          // Every kernel-dereferenced descriptor was filtered out above: the
+          // host stages no bytes for one, so it has no size to compute here.
+          throw new KernelScratchError(
+            `syscall ${syscallNr} arg ${desc.argIndex} has no host-computed size`,
+            EIO,
+          );
         }
 
         if (!Number.isSafeInteger(size) || size < 0) {
@@ -13326,7 +12502,16 @@ export class CentralizedKernelWorker {
           syscallNr,
           adjustedArgs,
           plannedScratchWrites,
-        ) || syscallHasMsgDontwait(syscallNr, origArgs);
+        )
+          || syscallHasMsgDontwait(syscallNr, origArgs)
+          // WHY origArgs and not adjustedArgs: `origArgs` is the guest's own
+          // argument view, captured before the descriptor path rewrites
+          // pointer slots to stage scratch. preadv2/pwritev2's `flags` lives
+          // in the sixth slot, which the host no longer overwrites at all --
+          // the caller's pointer width is registered per process -- so both
+          // views agree on it today. This reads the guest's view regardless,
+          // because that is the one that is defined to carry `flags`.
+          || vectorRequestForbidsEagainRetry(syscallNr, origArgs);
       } catch (error) {
         this.#rejectScratchTransfer(channel, error, entry);
         return;
@@ -14053,6 +13238,170 @@ export class CentralizedKernelWorker {
       }
       throw err;
     }
+  }
+
+  /**
+   * Phase 2 opaque-record blind transport (Option A).
+   *
+   * The guest self-marshalled this non-RAW syscall's pointer arguments into a
+   * `channel_record` at CH_DATA and set REQUEST_FLAG_OPAQUE_RECORD. The host
+   * does not inspect the record: it blind-copies the data region into the
+   * kernel lease, calls kernel_handle_channel_record (which decodes,
+   * validates, dispatches, and writes OUT/InOut results back into the record
+   * at the span offsets, or answers EINVAL for a missing, malformed, or
+   * contradictory record), copies the data region back to process memory,
+   * then delivers any pending signal and completes the channel.
+   *
+   * There are NO plannedScratchWrites and NO plannedChannelScratchArgs: the
+   * record carries every pointer span, so the host performs zero per-syscall
+   * marshalling. Only non-blocking, purely-marshalling syscalls reach here
+   * (every host-involved or blocking syscall is RAW), so the descriptor-path
+   * post-processing (mmap growth, shared-mapping flush, blocking retry, …) does
+   * not apply; the sole shared tail is signal delivery + channel completion.
+   */
+  #handleRecordSyscall(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    processMem: Uint8Array,
+    logEntry: string,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const recordStart = channel.channelOffset + CH_DATA;
+    // Read-once snapshot of the guest-authored record. The record frames
+    // itself: its header states its total length, and that is all the host
+    // reads inside it. Copying the whole 64 KiB data region each way instead
+    // made every record syscall pay four 64 KiB copies (a clock_gettime went
+    // from ~25 to ~40 us). The header is snapshotted first and copied from
+    // that snapshot, so the length the kernel reads is the length copied even
+    // if the guest rewrites its channel meanwhile. An out-of-range length is
+    // clamped only to bound the copy; the kernel refuses the record.
+    const recordHeader = processMem.slice(
+      recordStart,
+      recordStart + RECORD_HEADER_BYTES,
+    );
+    const declaredLength = new DataView(
+      recordHeader.buffer,
+      recordHeader.byteOffset,
+      RECORD_HEADER_BYTES,
+    ).getUint32(RECORD_LEN_OFFSET, true);
+    const recordLength = Math.min(
+      Math.max(declaredLength, RECORD_HEADER_BYTES),
+      RECORD_INLINE_BUDGET,
+    );
+    const recordIn = processMem.slice(recordStart, recordStart + recordLength);
+    recordIn.set(recordHeader, 0);
+
+    let rawRetVal = -1n;
+    let errVal = EIO;
+    let recordOut: Uint8Array | null = null;
+    // Bind before leasing the reusable mailbox, as #executeCapacityOwnedChannel
+    // does: the binding export can invoke synchronous host hooks.
+    this.#bindKernelTidForChannel(channel, entry);
+    this.currentHandlePid = channel.pid;
+    try {
+      recordOut = this.#requireMainScratchRegion().withLease((lease) => {
+        // Stamp the syscall number for the kernel header (the kernel checks
+        // the record names the same syscall) and blind-copy the record data
+        // region into the lease. No arg words or scratch pointers are staged:
+        // the record is authoritative for both scalars and pointer spans.
+        lease.dataView(0, CH_DATA).setUint32(CH_SYSCALL, syscallNr, true);
+        lease.copyFrom(recordIn, CH_DATA, 0, recordLength);
+        // WHY a separate export: the transport choice travels as the entry
+        // point, so the kernel decodes a record only for a request whose
+        // guest set REQUEST_FLAG_OPAQUE_RECORD, and kernel_handle_channel
+        // never mistakes staged or stale data-region bytes for a record. A
+        // missing, malformed, or contradictory record comes back as EINVAL in
+        // the channel header like any other syscall result.
+        this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          "kernel_handle_channel_record",
+          [
+            lease.exportPointer(0, CH_TOTAL_SIZE),
+            CH_TOTAL_SIZE,
+            channel.pid,
+          ],
+        );
+        const view = lease.dataView(0, CH_DATA);
+        rawRetVal = view.getBigInt64(CH_RETURN, true);
+        errVal = view.getUint32(CH_ERRNO, true);
+        // The kernel wrote OUT/InOut results back into the record at their
+        // span offsets, all inside the record; copy the record back so the
+        // guest's __unmarshal_channel_record can deliver them to caller
+        // pointers. Stopping at the record also leaves the guest's signal
+        // area at the end of the data region to #dequeueSignalForDelivery.
+        return lease.copyOut(CH_DATA, recordLength);
+      });
+    } catch (err) {
+      this.#rethrowKernelEntryFatal(err);
+      if (
+        this.#kernelFatalError !== null
+        || err instanceof KernelTransferExecuteTrapError
+        || err instanceof KernelTaskBindingError
+        || err instanceof KernelReentrantEntryError
+      ) {
+        throw err;
+      }
+      const recent = this.dumpLastSyscalls(channel.pid);
+      console.error(
+        (logEntry || `syscall ${syscallNr}`)
+          + " = KERNEL THROW (record path)",
+      );
+      if (recent) {
+        console.error(
+          `[handleRecordSyscall] recent syscalls for pid=${channel.pid}:\n${recent}`,
+        );
+      }
+      console.error(
+        `[handleRecordSyscall] kernel threw for pid=${channel.pid} `
+          + `syscall=${syscallNr}:`,
+        err,
+      );
+      this.completeChannelRawAndRelisten(channel, -5, 5, entry); // -EIO
+      return;
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    // A terminating signal action may have marked the process dead inside the
+    // kernel call; do not post-process an execution that must not resume.
+    if (this.#getProcessExitSignal(channel.pid, entry) > 0) {
+      this.#handleProcessTerminatedWithinKernelEntry(channel, entry);
+      return;
+    }
+
+    if (recordOut !== null) {
+      // Re-fetch the process view: a coherence sync inside the kernel entry
+      // could have replaced Memory.buffer. Record-eligible syscalls never grow
+      // process memory, but this stays correct if that ever changes.
+      new Uint8Array(channel.memory.buffer).set(recordOut, recordStart);
+    }
+
+    const { publicationRetVal, errVal: normErr } =
+      this.normalizeKernelSyscallResult(channel, syscallNr, rawRetVal, errVal);
+
+    // Deliver any pending caught signal into the process channel exactly as the
+    // descriptor path does; the guest invokes the handler after waking.
+    this.#dequeueSignalForDelivery(channel, entry);
+
+    if (logEntry) {
+      console.error(
+        logEntry
+          + this.formatSyscallReturn(syscallNr, publicationRetVal, normErr),
+      );
+    }
+    this.completeChannel(
+      channel,
+      syscallNr,
+      origArgs,
+      undefined,
+      publicationRetVal,
+      normErr,
+      [],
+      undefined,
+      entry,
+    );
   }
 
   /**
@@ -17333,34 +16682,6 @@ export class CentralizedKernelWorker {
           snapshot,
         );
         return;
-      case "sendmsg":
-        this.handleSendmsg(
-          channel,
-          snapshot.origArgs,
-          null,
-          entry,
-          snapshot,
-        );
-        return;
-      case "recvmsg":
-        this.handleRecvmsg(
-          channel,
-          snapshot.origArgs,
-          null,
-          entry,
-          snapshot,
-        );
-        return;
-      case "sysv-message":
-        this.handleSysvMessage(
-          channel,
-          snapshot.syscallNr,
-          snapshot.origArgs,
-          [],
-          entry,
-          snapshot,
-        );
-        return;
     }
   }
 
@@ -20031,325 +19352,19 @@ export class CentralizedKernelWorker {
     });
   }
 
-  // ---- Network interface ioctl host-side handlers ----
-
-  private finishNetworkIoctl(
-    channel: ChannelInfo,
-    entry: KernelWorkerEntryContext,
-    retVal = 0,
-    errno = 0,
-  ): void {
-    this.completeChannelRawAndRelisten(channel, retVal, errno, entry);
-  }
-
-  private checkedNetworkIoctlProcessRange(
-    channel: ChannelInfo,
-    pointer: number | bigint,
-    length: number | bigint,
-    field: string,
-    entry: KernelWorkerEntryContext,
-  ): { pointer: number; length: number; end: number } | null {
-    try {
-      return this.checkedProcessRange(channel, pointer, length, field);
-    } catch (error) {
-      if (!(error instanceof KernelScratchError)) throw error;
-      this.finishNetworkIoctl(channel, entry, -EFAULT, EFAULT);
-      return null;
-    }
-  }
-
-  private interfaceAddress(
-    iface: (typeof VIRTUAL_INTERFACES)[number],
-  ): Uint8Array | null {
-    if (iface.loopback) return new Uint8Array([127, 0, 0, 1]);
-    const address = this.io.network?.localAddress;
-    return address?.length === 4 ? new Uint8Array(address) : null;
-  }
-
-  /**
-   * `struct ifreq` has a 16-byte name followed by a union. The union is 16
-   * bytes under wasm32, but its `struct ifmap` member grows to 24 bytes under
-   * wasm64 because `unsigned long` is pointer-sized.
-   */
-  private ifreqSize(channel: ChannelInfo): number {
-    return this.getPtrWidth(channel.pid) === 8 ? 40 : 32;
-  }
-
-  private readIfreqName(channel: ChannelInfo, ifreqPtr: number): string {
-    const bytes = new Uint8Array(channel.memory.buffer, ifreqPtr, IF_NAMESIZE);
-    let end = 0;
-    while (end < bytes.length && bytes[end] !== 0) end++;
-    return new TextDecoder().decode(new Uint8Array(bytes.subarray(0, end)));
-  }
-
-  private writeIfreqName(
-    processMem: Uint8Array,
-    ifreqPtr: number,
-    name: string,
-  ): void {
-    const nameBytes = new TextEncoder().encode(name);
-    processMem.fill(0, ifreqPtr, ifreqPtr + IF_NAMESIZE);
-    processMem.set(nameBytes.subarray(0, IF_NAMESIZE - 1), ifreqPtr);
-  }
-
-  /**
-   * Handle SIOCGIFCONF: enumerate network interfaces.
-   * struct ifconf { int ifc_len; union { char *ifc_buf; struct ifreq *ifc_req; }; }
-   * The ifc_buf pointer is in process memory, so the kernel can't write to it
-   * directly — we handle the entire ioctl on the host side.
-   */
-  private handleIoctlIfconf(
-    channel: ChannelInfo,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const pw = this.getPtrWidth(channel.pid);
-    const ifconfSize = pw === 8 ? 16 : 8;
-    const ifconfRange = this.checkedNetworkIoctlProcessRange(
-      channel,
-      origArgs[2],
-      ifconfSize,
-      "network ioctl ifconf",
-      entry,
-    );
-    if (!ifconfRange) return;
-    const ifconfPtr = ifconfRange.pointer;
-
-    const processView = new DataView(channel.memory.buffer);
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const ifreqSize = this.ifreqSize(channel);
-    const ifcLen = processView.getInt32(ifconfPtr, true);
-    if (ifcLen < 0) {
-      this.finishNetworkIoctl(channel, entry, -EINVAL, EINVAL);
-      return;
-    }
-    const ifcBufValue = pw === 8
-      ? processView.getBigUint64(ifconfPtr + 8, true)
-      : processView.getUint32(ifconfPtr + 4, true);
-
-    // Linux permits a null nested buffer as a size query. The outer ifconf is
-    // still a required caller-owned structure and was proved above.
-    if (ifcBufValue === 0 || ifcBufValue === 0n) {
-      processView.setInt32(
-        ifconfPtr,
-        VIRTUAL_INTERFACES.length * ifreqSize,
-        true,
-      );
-      this.finishNetworkIoctl(channel, entry);
-      return;
-    }
-
-    if (ifcLen < ifreqSize) {
-      processView.setInt32(ifconfPtr, 0, true);
-      this.finishNetworkIoctl(channel, entry);
-      return;
-    }
-
-    const capacity = Math.floor(ifcLen / ifreqSize);
-    const count = Math.min(capacity, VIRTUAL_INTERFACES.length);
-    const bytesToWrite = count * ifreqSize;
-    // WHY: the nested wasm64 pointer must remain bigint until the complete
-    // caller-owned output range is proved. Converting first could round an
-    // unsafe value or let a high address alias unrelated low process bytes.
-    const ifcBufRange = this.checkedNetworkIoctlProcessRange(
-      channel,
-      ifcBufValue,
-      bytesToWrite,
-      "network ioctl ifconf output",
-      entry,
-    );
-    if (!ifcBufRange) return;
-    const ifcBuf = ifcBufRange.pointer;
-
-    for (let i = 0; i < count; i++) {
-      const iface = VIRTUAL_INTERFACES[i];
-      const entryPtr = ifcBuf + i * ifreqSize;
-      this.writeIfreqName(processMem, entryPtr, iface.name);
-      processMem.fill(0, entryPtr + IF_NAMESIZE, entryPtr + ifreqSize);
-      processView.setUint16(entryPtr + IF_NAMESIZE, AF_INET, true);
-      const address = this.interfaceAddress(iface);
-      if (address) processMem.set(address, entryPtr + IF_NAMESIZE + 4);
-    }
-    processView.setInt32(ifconfPtr, bytesToWrite, true);
-    this.finishNetworkIoctl(channel, entry);
-  }
-
-  /**
-   * Handle SIOCGIFNAME: map an interface index to its name.
-   * struct ifreq at arg[2]: ifr_name[16] + union; ifr_ifindex lives at +16.
-   */
-  private handleIoctlIfname(
-    channel: ChannelInfo,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const ifreqRange = this.checkedNetworkIoctlProcessRange(
-      channel,
-      origArgs[2],
-      this.ifreqSize(channel),
-      "network ioctl ifreq",
-      entry,
-    );
-    if (!ifreqRange) return;
-    const ifreqPtr = ifreqRange.pointer;
-    const processView = new DataView(channel.memory.buffer);
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const ifindex = processView.getInt32(ifreqPtr + 16, true);
-    const iface = VIRTUAL_INTERFACES.find((candidate) => candidate.index === ifindex);
-
-    if (!iface) {
-      this.finishNetworkIoctl(channel, entry, -ENODEV, ENODEV);
-      return;
-    }
-
-    this.writeIfreqName(processMem, ifreqPtr, iface.name);
-    this.finishNetworkIoctl(channel, entry);
-  }
-
-  /**
-   * Handle SIOCGIFHWADDR: get hardware (MAC) address for an interface.
-   * struct ifreq at arg[2]: ifr_name[16] + ifr_hwaddr (struct sockaddr, 16 bytes)
-   * Returns the virtual MAC in ifr_hwaddr.sa_data[0..5].
-   */
-  private handleIoctlIfhwaddr(
-    channel: ChannelInfo,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const ifreqRange = this.checkedNetworkIoctlProcessRange(
-      channel,
-      origArgs[2],
-      this.ifreqSize(channel),
-      "network ioctl ifreq",
-      entry,
-    );
-    if (!ifreqRange) return;
-    const ifreqPtr = ifreqRange.pointer;
-    const name = this.readIfreqName(channel, ifreqPtr);
-    const iface = VIRTUAL_INTERFACES.find((candidate) => candidate.name === name);
-    if (!iface) {
-      this.finishNetworkIoctl(channel, entry, -ENODEV, ENODEV);
-      return;
-    }
-    const processView = new DataView(channel.memory.buffer);
-    const processMem = new Uint8Array(channel.memory.buffer);
-
-    processMem.fill(
-      0,
-      ifreqPtr + IF_NAMESIZE,
-      ifreqPtr + this.ifreqSize(channel),
-    );
-    processView.setUint16(
-      ifreqPtr + IF_NAMESIZE,
-      iface.loopback ? ARPHRD_LOOPBACK : ARPHRD_ETHER,
-      true,
-    );
-    if (!iface.loopback) {
-      processMem.set(this.virtualMacAddress, ifreqPtr + IF_NAMESIZE + 2);
-    }
-
-    this.finishNetworkIoctl(channel, entry);
-  }
-
-  /**
-   * Handle SIOCGIFADDR: get interface address.
-   * struct ifreq at arg[2]: ifr_name[16] + ifr_addr (struct sockaddr, 16 bytes)
-   * Returns the selected virtual interface's assigned IPv4 address.
-   */
-  private handleIoctlIfaddr(
-    channel: ChannelInfo,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const ifreqRange = this.checkedNetworkIoctlProcessRange(
-      channel,
-      origArgs[2],
-      this.ifreqSize(channel),
-      "network ioctl ifreq",
-      entry,
-    );
-    if (!ifreqRange) return;
-    const ifreqPtr = ifreqRange.pointer;
-    const name = this.readIfreqName(channel, ifreqPtr);
-    const iface = VIRTUAL_INTERFACES.find((candidate) => candidate.name === name);
-    if (!iface) {
-      this.finishNetworkIoctl(channel, entry, -ENODEV, ENODEV);
-      return;
-    }
-    const address = this.interfaceAddress(iface);
-    if (!address) {
-      this.finishNetworkIoctl(
-        channel,
-        entry,
-        -EADDRNOTAVAIL,
-        EADDRNOTAVAIL,
-      );
-      return;
-    }
-    const processView = new DataView(channel.memory.buffer);
-    const processMem = new Uint8Array(channel.memory.buffer);
-
-    processMem.fill(
-      0,
-      ifreqPtr + IF_NAMESIZE,
-      ifreqPtr + this.ifreqSize(channel),
-    );
-    processView.setUint16(ifreqPtr + IF_NAMESIZE, AF_INET, true);
-    processMem.set(address, ifreqPtr + IF_NAMESIZE + 4);
-
-    this.finishNetworkIoctl(channel, entry);
-  }
-
-  /**
-   * Handle SIOCGIFINDEX: map an interface name to its index.
-   * struct ifreq at arg[2]: ifr_name[16] + union; ifr_ifindex lives at +16.
-   */
-  private handleIoctlIfindex(
-    channel: ChannelInfo,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const ifreqRange = this.checkedNetworkIoctlProcessRange(
-      channel,
-      origArgs[2],
-      this.ifreqSize(channel),
-      "network ioctl ifreq",
-      entry,
-    );
-    if (!ifreqRange) return;
-    const ifreqPtr = ifreqRange.pointer;
-    const name = this.readIfreqName(channel, ifreqPtr);
-    const iface = VIRTUAL_INTERFACES.find((candidate) => candidate.name === name);
-
-    if (!iface) {
-      this.finishNetworkIoctl(channel, entry, -ENODEV, ENODEV);
-      return;
-    }
-
-    new DataView(channel.memory.buffer).setInt32(
-      ifreqPtr + IF_NAMESIZE,
-      iface.index,
-      true,
-    );
-    this.finishNetworkIoctl(channel, entry);
-  }
-
-  /** Map scalar and vector variants to one contiguous kernel operation. */
+  /** Name the one contiguous kernel operation a large transfer performs. */
   #scalarTransferSyscall(syscallNr: number): number {
+    // Only the scalar transfers reach this path now. The vector syscalls are
+    // dispatched to the kernel under their own numbers, which walks the
+    // caller's iovec table itself.
     switch (syscallNr) {
       case SYS_WRITE:
-      case SYS_WRITEV:
         return SYS_WRITE;
       case SYS_PWRITE:
-      case SYS_PWRITEV:
-      case SYS_PWRITEV2:
         return SYS_PWRITE;
       case SYS_READ:
-      case SYS_READV:
         return SYS_READ;
       case SYS_PREAD:
-      case SYS_PREADV:
-      case SYS_PREADV2:
         return SYS_PREAD;
       default:
         throw new KernelScratchError(
@@ -20357,16 +19372,6 @@ export class CentralizedKernelWorker {
           EINVAL,
         );
     }
-  }
-
-  private checkedVectorCount(rawCount: bigint): number {
-    if (rawCount < 0n || rawCount > BigInt(POSIX_IOV_MAX)) {
-      throw new KernelScratchError(
-        "iovec count must be between 0 and " + String(POSIX_IOV_MAX),
-        EINVAL,
-      );
-    }
-    return Number(rawCount);
   }
 
   #copyFlattenedTransferInput(
@@ -21157,64 +20162,6 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Handle writev/pwritev as one logical contiguous kernel write.
-   *
-   * pwritev2 flags remain ignored, matching the kernel's existing ABI 43
-   * behavior, but the offset and complete caller ranges remain exact.
-   */
-  #handleWritev(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    let checkedIovecs: CheckedProcessIovecs;
-    let offset: bigint | null;
-    try {
-      const iovCount = this.checkedVectorCount(rawArgs[2] ?? 0n);
-      checkedIovecs = this.checkedProcessIovecs(
-        channel,
-        rawArgs[1] ?? 0n,
-        iovCount,
-        true,
-      );
-      offset = syscallNr === SYS_PWRITEV || syscallNr === SYS_PWRITEV2
-        ? joinPositionedVectorOffset(origArgs[3], origArgs[4])
-        : null;
-    } catch (error) {
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    let request: FlattenedTransferRequest;
-    try {
-      request = {
-        fd: origArgs[0],
-        entries: checkedIovecs.entries.slice(),
-        totalData: checkedIovecs.totalData,
-        read: false,
-        offset,
-        inputBytes: this.#snapshotFlattenedTransferInput(
-          channel,
-          checkedIovecs.entries,
-          checkedIovecs.totalData,
-        ),
-      };
-    } catch (error) {
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-    this.#handleFlattenedTransfer(
-      channel,
-      syscallNr,
-      origArgs,
-      request,
-      entry,
-    );
-  }
-
-  /**
    * Handle large write/pwrite as one operation, not channel-sized chunks.
    */
   #handleLargeWrite(
@@ -21313,780 +20260,6 @@ export class CentralizedKernelWorker {
       entry,
     );
   }
-
-  /**
-   * Handle readv/preadv as one logical contiguous kernel read and scatter only
-   * the returned prefix into caller-owned ranges.
-   */
-  #handleReadv(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    let checkedIovecs: CheckedProcessIovecs;
-    let offset: bigint | null;
-    try {
-      const iovCount = this.checkedVectorCount(rawArgs[2] ?? 0n);
-      checkedIovecs = this.checkedProcessIovecs(
-        channel,
-        rawArgs[1] ?? 0n,
-        iovCount,
-        true,
-      );
-      offset = syscallNr === SYS_PREADV || syscallNr === SYS_PREADV2
-        ? joinPositionedVectorOffset(origArgs[3], origArgs[4])
-        : null;
-    } catch (error) {
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    this.#handleFlattenedTransfer(
-      channel,
-      syscallNr,
-      origArgs,
-      {
-        fd: origArgs[0],
-        entries: checkedIovecs.entries.slice(),
-        totalData: checkedIovecs.totalData,
-        read: true,
-        offset,
-      },
-      entry,
-    );
-  }
-
-  /**
-   * Handle sendmsg: decompose msghdr from process memory, flatten data + addr
-   * into kernel scratch, call kernel_sendmsg which dispatches to sendto/send.
-   */
-  private handleSendmsg(
-    channel: ChannelInfo,
-    origArgs: number[],
-    processMem: Uint8Array | null,
-    entry: KernelWorkerEntryContext,
-    retainedSnapshot?: SendmsgBlockingRetrySnapshot,
-  ): void {
-    const fd = origArgs[0];
-    const msgPtr = origArgs[1];
-    const flags = origArgs[2];
-    let snapshot: SendmsgBlockingRetrySnapshot;
-    if (retainedSnapshot) {
-      snapshot = retainedSnapshot;
-    } else {
-      try {
-        if (processMem === null) {
-          throw new KernelScratchError(
-            "sendmsg process snapshot is unavailable",
-            EIO,
-          );
-        }
-        this.#scratchBoundaryTestHooks?.afterProcessMemorySnapshot?.(channel);
-        const message = this.checkedProcessMessage(
-          channel,
-          msgPtr,
-          "send",
-          processMem,
-        );
-        const kernelControl = this.nativeControlToKernelWire(
-          processMem,
-          message,
-        );
-        const layout = this.kernelMessageLayout(
-          message,
-          kernelControl.length,
-        );
-        const totalCapacity = checkedAlignUp(
-          CH_DATA + layout.footprint,
-          8,
-          "sendmsg channel capacity",
-        );
-        snapshot = {
-          ...this.#cancellationPointIdentity(channel),
-          retryForbiddenByCallFlags: false,
-          fdWasNonblocking: false,
-          applicableSocketTimeoutMs: 0,
-          kind: "sendmsg",
-          syscallNr: SYS_SENDMSG,
-          origArgs: origArgs.slice(),
-          message,
-          layout,
-          totalCapacity,
-          name: message.name.length > 0
-            ? processMem.slice(
-                message.name.pointer,
-                message.name.pointer + message.name.length,
-              )
-            : new Uint8Array(0),
-          control: kernelControl,
-          payload: this.#snapshotFlattenedTransferInput(
-            channel,
-            message.iovecs.entries,
-            message.iovecs.totalData,
-          ),
-          retryToken: 0n,
-        };
-      } catch (error) {
-        this.#rejectScratchTransfer(channel, error, entry);
-        return;
-      }
-    }
-    const { message, layout, totalCapacity } = snapshot;
-    const kernelControl = snapshot.control;
-    let result: { retVal: number; errVal: number };
-    try {
-      const dispatched = this.#executeCapacityOwnedChannel(
-        channel,
-        totalCapacity,
-        entry,
-        (lease) => {
-          lease.assertRange(CH_DATA, layout.footprint);
-          const kernelMessage = lease.dataView(
-            CH_DATA,
-            STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
-          );
-
-          if (message.name.length > 0) {
-            lease.copyFrom(
-              snapshot.name,
-              CH_DATA + layout.nameOffset,
-              0,
-              message.name.length,
-            );
-          }
-
-          if (kernelControl.length > 0) {
-            lease.copyFrom(
-              kernelControl,
-              CH_DATA + layout.controlOffset,
-              0,
-              kernelControl.length,
-            );
-          }
-
-          if (layout.iovecCount > 0) {
-            const kernelIovec = lease.dataView(
-              CH_DATA + layout.iovecOffset,
-              layout.iovecBytes,
-            );
-            if (message.iovecs.totalData === 0) {
-              kernelIovec.setUint32(KERNEL_IOVEC_WIRE_BASE_OFFSET, 0, true);
-            } else {
-              lease.writeAddress(
-                CH_DATA
-                  + layout.iovecOffset
-                  + KERNEL_IOVEC_WIRE_BASE_OFFSET,
-                CH_DATA + layout.dataOffset,
-                message.iovecs.totalData,
-                "u32-le",
-              );
-            }
-            kernelIovec.setUint32(
-              KERNEL_IOVEC_WIRE_LEN_OFFSET,
-              message.iovecs.totalData,
-              true,
-            );
-          }
-          if (snapshot.payload.length > 0) {
-            lease.copyFrom(
-              snapshot.payload,
-              CH_DATA + layout.dataOffset,
-              0,
-              snapshot.payload.length,
-            );
-          }
-
-          if (!message.namePresent) {
-            kernelMessage.setUint32(
-              KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-              0,
-              true,
-            );
-          } else {
-            lease.writeAddress(
-              CH_DATA + KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-              CH_DATA + layout.nameOffset,
-              message.name.length,
-              "u32-le",
-            );
-          }
-          kernelMessage.setUint32(
-            KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-            message.name.length,
-            true,
-          );
-          if (layout.iovecOffset === 0) {
-            kernelMessage.setUint32(
-              KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-              0,
-              true,
-            );
-          } else {
-            lease.writeAddress(
-              CH_DATA + KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-              CH_DATA + layout.iovecOffset,
-              layout.iovecBytes,
-              "u32-le",
-            );
-          }
-          kernelMessage.setUint32(
-            KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET,
-            layout.iovecCount,
-            true,
-          );
-          if (layout.controlOffset === 0) {
-            kernelMessage.setUint32(
-              KERNEL_MSGHDR_WIRE_CONTROL_OFFSET,
-              0,
-              true,
-            );
-          } else {
-            lease.writeAddress(
-              CH_DATA + KERNEL_MSGHDR_WIRE_CONTROL_OFFSET,
-              CH_DATA + layout.controlOffset,
-              layout.controlCapacity,
-              "u32-le",
-            );
-          }
-          kernelMessage.setUint32(
-            KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-            kernelControl.length,
-            true,
-          );
-          kernelMessage.setUint32(KERNEL_MSGHDR_WIRE_FLAGS_OFFSET, 0, true);
-
-          const kernelView = lease.dataView(0, CH_DATA);
-          kernelView.setUint32(CH_SYSCALL, SYS_SENDMSG, true);
-          for (let index = 0; index < CH_ARGS_COUNT; index++) {
-            kernelView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
-          }
-          kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-          lease.writeAddress(
-            CH_ARGS + CH_ARG_SIZE,
-            CH_DATA,
-            STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
-            "u32-to-u64-le",
-          );
-          kernelView.setBigInt64(
-            CH_ARGS + 2 * CH_ARG_SIZE,
-            BigInt(flags),
-            true,
-          );
-        },
-        (lease) => {
-          const kernelView = lease.dataView(0, CH_DATA);
-          const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-          const errVal = kernelView.getUint32(CH_ERRNO, true);
-          if (
-            !Number.isSafeInteger(retVal) ||
-            retVal > message.iovecs.totalData
-          ) {
-            return { retVal: -1, errVal: EIO };
-          }
-          return { retVal, errVal };
-        },
-        retainedSnapshot?.retryToken ?? 0n,
-      );
-      result = dispatched.value ?? {
-        retVal: -1,
-        errVal: dispatched.errno,
-      };
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      if (
-        this.#kernelFatalError !== null
-        || error instanceof KernelTransferExecuteTrapError
-        || error instanceof KernelTaskBindingError
-        || error instanceof KernelReentrantEntryError
-      ) {
-        throw error;
-      }
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    const { retVal, errVal } = result;
-    if (
-      !retainedSnapshot
-      && retVal === -1
-      && errVal === EAGAIN
-    ) {
-      // WHY: an ordinary successful message transfer must not pay for a
-      // second Rust export. The first EAGAIN still owns the exact entry and
-      // fd pin, so this is the last safe point to freeze timeout policy
-      // before a retry can overlap close/reuse of the numeric descriptor.
-      snapshot = {
-        ...snapshot,
-        ...this.#captureBlockingRetryDisposition(
-          channel,
-          SYS_SENDMSG,
-          origArgs,
-          entry,
-          syscallHasMsgDontwait(SYS_SENDMSG, origArgs),
-        ),
-      };
-    }
-    const deliveredSignal = this.#dequeueSignalForDelivery(
-      channel,
-      entry,
-      snapshot.applicableSocketTimeoutMs > 0,
-    );
-    if (this.#finishSignalTermination(channel, entry)) return;
-
-    if (retVal === -1 && errVal === EAGAIN) {
-      if (!this.#rememberBlockingRetrySnapshot(channel, snapshot, entry)) {
-        return;
-      }
-      this.handleBlockingRetry(
-        channel,
-        SYS_SENDMSG,
-        origArgs,
-        [],
-        entry,
-        retainedSnapshot !== undefined,
-        deliveredSignal,
-      );
-      return;
-    }
-
-    this.completeChannel(
-      channel,
-      SYS_SENDMSG,
-      origArgs,
-      undefined,
-      retVal,
-      errVal,
-      [],
-      undefined,
-      entry,
-    );
-  }
-
-  /**
-   * Handle recvmsg: decompose msghdr from process memory, set up buffers in
-   * kernel scratch, call kernel_recvmsg, copy results back.
-   */
-  private handleRecvmsg(
-    channel: ChannelInfo,
-    origArgs: number[],
-    processMem: Uint8Array | null,
-    entry: KernelWorkerEntryContext,
-    retainedSnapshot?: RecvmsgBlockingRetrySnapshot,
-  ): void {
-    const fd = origArgs[0];
-    const msgPtr = origArgs[1];
-    const flags = origArgs[2];
-
-    let snapshot: RecvmsgBlockingRetrySnapshot;
-    if (retainedSnapshot) {
-      snapshot = retainedSnapshot;
-    } else {
-      try {
-        if (processMem === null) {
-          throw new KernelScratchError(
-            "recvmsg process snapshot is unavailable",
-            EIO,
-          );
-        }
-        this.#scratchBoundaryTestHooks?.afterProcessMemorySnapshot?.(channel);
-        const message = this.checkedProcessMessage(
-          channel,
-          msgPtr,
-          "receive",
-          processMem,
-        );
-        const layout = this.kernelMessageLayout(
-          message,
-          this.kernelControlCapacityForRecv(message),
-        );
-        const totalCapacity = checkedAlignUp(
-          CH_DATA + layout.footprint,
-          8,
-          "recvmsg channel capacity",
-        );
-        snapshot = {
-          ...this.#cancellationPointIdentity(channel),
-          retryForbiddenByCallFlags: false,
-          fdWasNonblocking: false,
-          applicableSocketTimeoutMs: 0,
-          kind: "recvmsg",
-          syscallNr: SYS_RECVMSG,
-          origArgs: origArgs.slice(),
-          message,
-          layout,
-          totalCapacity,
-          retryToken: 0n,
-        };
-      } catch (error) {
-        this.#rejectScratchTransfer(channel, error, entry);
-        return;
-      }
-    }
-    const { message, layout, totalCapacity } = snapshot;
-    let result: {
-      retVal: number;
-      errVal: number;
-      nameLength: number;
-      controlLength: number;
-      messageFlags: number;
-      payload: Uint8Array;
-      name: Uint8Array;
-      control: Uint8Array;
-    };
-    try {
-      const dispatched = this.#executeCapacityOwnedChannel(
-        channel,
-        totalCapacity,
-        entry,
-        (lease) => {
-          lease.assertRange(CH_DATA, layout.footprint);
-          const kernelMessage = lease.dataView(
-            CH_DATA,
-            STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
-          );
-          if (message.name.length > 0) {
-            lease.fill(0, CH_DATA + layout.nameOffset, message.name.length);
-          }
-          if (layout.controlCapacity > 0) {
-            lease.fill(
-              0,
-              CH_DATA + layout.controlOffset,
-              layout.controlCapacity,
-            );
-          }
-          if (layout.iovecCount > 0) {
-            const kernelIovec = lease.dataView(
-              CH_DATA + layout.iovecOffset,
-              layout.iovecBytes,
-            );
-            if (message.iovecs.totalData === 0) {
-              kernelIovec.setUint32(KERNEL_IOVEC_WIRE_BASE_OFFSET, 0, true);
-            } else {
-              lease.writeAddress(
-                CH_DATA
-                  + layout.iovecOffset
-                  + KERNEL_IOVEC_WIRE_BASE_OFFSET,
-                CH_DATA + layout.dataOffset,
-                message.iovecs.totalData,
-                "u32-le",
-              );
-            }
-            kernelIovec.setUint32(
-              KERNEL_IOVEC_WIRE_LEN_OFFSET,
-              message.iovecs.totalData,
-              true,
-            );
-          }
-          if (message.iovecs.totalData > 0) {
-            lease.fill(
-              0,
-              CH_DATA + layout.dataOffset,
-              message.iovecs.totalData,
-            );
-          }
-          if (!message.namePresent) {
-            kernelMessage.setUint32(
-              KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-              0,
-              true,
-            );
-          } else {
-            lease.writeAddress(
-              CH_DATA + KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-              CH_DATA + layout.nameOffset,
-              message.name.length,
-              "u32-le",
-            );
-          }
-          kernelMessage.setUint32(
-            KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-            message.name.length,
-            true,
-          );
-          if (layout.iovecOffset === 0) {
-            kernelMessage.setUint32(
-              KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-              0,
-              true,
-            );
-          } else {
-            lease.writeAddress(
-              CH_DATA + KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-              CH_DATA + layout.iovecOffset,
-              layout.iovecBytes,
-              "u32-le",
-            );
-          }
-          kernelMessage.setUint32(
-            KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET,
-            layout.iovecCount,
-            true,
-          );
-          if (layout.controlOffset === 0) {
-            kernelMessage.setUint32(
-              KERNEL_MSGHDR_WIRE_CONTROL_OFFSET,
-              0,
-              true,
-            );
-          } else {
-            lease.writeAddress(
-              CH_DATA + KERNEL_MSGHDR_WIRE_CONTROL_OFFSET,
-              CH_DATA + layout.controlOffset,
-              layout.controlCapacity,
-              "u32-le",
-            );
-          }
-          kernelMessage.setUint32(
-            KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-            layout.controlCapacity,
-            true,
-          );
-          kernelMessage.setUint32(KERNEL_MSGHDR_WIRE_FLAGS_OFFSET, 0, true);
-
-          const kernelView = lease.dataView(0, CH_DATA);
-          kernelView.setUint32(CH_SYSCALL, SYS_RECVMSG, true);
-          for (let index = 0; index < CH_ARGS_COUNT; index++) {
-            kernelView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
-          }
-          kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-          lease.writeAddress(
-            CH_ARGS + CH_ARG_SIZE,
-            CH_DATA,
-            STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
-            "u32-to-u64-le",
-          );
-          kernelView.setBigInt64(
-            CH_ARGS + 2 * CH_ARG_SIZE,
-            BigInt(flags),
-            true,
-          );
-        },
-        (lease) => {
-          const kernelView = lease.dataView(0, CH_DATA);
-          const kernelMessage = lease.dataView(
-            CH_DATA,
-            STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
-          );
-          const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-          const errVal = kernelView.getUint32(CH_ERRNO, true);
-          if (retVal < 0) {
-            return {
-              retVal,
-              errVal,
-              nameLength: 0,
-              controlLength: 0,
-              messageFlags: 0,
-              payload: new Uint8Array(0),
-              name: new Uint8Array(0),
-              control: new Uint8Array(0),
-            };
-          }
-          const nameLength = kernelMessage.getUint32(
-            KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-            true,
-          );
-          const kernelControlLength = kernelMessage.getUint32(
-            KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-            true,
-          );
-          const messageFlags = kernelMessage.getUint32(
-            KERNEL_MSGHDR_WIRE_FLAGS_OFFSET,
-            true,
-          );
-          // WHY: MSG_TRUNC deliberately reports the complete datagram length
-          // even though only the bounded iovec prefix exists to copy back.
-          if (
-            !Number.isSafeInteger(retVal) ||
-            (
-              retVal > message.iovecs.totalData &&
-              (flags & SOCKET_MSG_TRUNC) === 0
-            ) ||
-            nameLength > KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES ||
-            kernelControlLength > layout.controlCapacity
-          ) {
-            throw new KernelScratchError(
-              "kernel returned data outside recvmsg capacities",
-              EIO,
-            );
-          }
-          const payloadLength = Math.min(retVal, message.iovecs.totalData);
-          const payload = payloadLength > 0
-            ? lease.copyOut(CH_DATA + layout.dataOffset, payloadLength)
-            : new Uint8Array(0);
-          const name = message.name.length > 0 && nameLength > 0
-            ? lease.copyOut(
-                CH_DATA + layout.nameOffset,
-                Math.min(message.name.length, nameLength),
-              )
-            : new Uint8Array(0);
-          const nativeControl = kernelControlLength > 0
-            ? this.kernelControlToNative(
-                lease.copyOut(
-                  CH_DATA + layout.controlOffset,
-                  kernelControlLength,
-                ),
-                message,
-              )
-            : { bytes: new Uint8Array(0), length: 0 };
-          return {
-            retVal,
-            errVal,
-            nameLength,
-            controlLength: nativeControl.length,
-            messageFlags,
-            payload,
-            name,
-            control: nativeControl.bytes,
-          };
-        },
-        retainedSnapshot?.retryToken ?? 0n,
-      );
-      result = dispatched.value ?? {
-        retVal: -1,
-        errVal: dispatched.errno,
-        nameLength: 0,
-        controlLength: 0,
-        messageFlags: 0,
-        payload: new Uint8Array(0),
-        name: new Uint8Array(0),
-        control: new Uint8Array(0),
-      };
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      if (
-        this.#kernelFatalError !== null
-        || error instanceof KernelTransferExecuteTrapError
-        || error instanceof KernelTaskBindingError
-        || error instanceof KernelReentrantEntryError
-      ) {
-        throw error;
-      }
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    const {
-      retVal,
-      errVal,
-      nameLength,
-      controlLength,
-      messageFlags,
-    } = result;
-    if (
-      !retainedSnapshot
-      && retVal === -1
-      && errVal === EAGAIN
-    ) {
-      // See sendmsg above: freeze the exact-OFD timeout only when a retry is
-      // actually possible, while the first EAGAIN entry still owns it.
-      snapshot = {
-        ...snapshot,
-        ...this.#captureBlockingRetryDisposition(
-          channel,
-          SYS_RECVMSG,
-          origArgs,
-          entry,
-          syscallHasMsgDontwait(SYS_RECVMSG, origArgs),
-        ),
-      };
-    }
-    const deliveredSignal = this.#dequeueSignalForDelivery(
-      channel,
-      entry,
-      snapshot.applicableSocketTimeoutMs > 0,
-    );
-    if (this.#finishSignalTermination(channel, entry)) return;
-
-    if (retVal === -1 && errVal === EAGAIN) {
-      if (!this.#rememberBlockingRetrySnapshot(channel, snapshot, entry)) {
-        return;
-      }
-      this.handleBlockingRetry(
-        channel,
-        SYS_RECVMSG,
-        origArgs,
-        [],
-        entry,
-        retainedSnapshot !== undefined,
-        deliveredSignal,
-      );
-      return;
-    }
-
-    if (retVal >= 0) {
-      const publishMemory = new Uint8Array(channel.memory.buffer);
-      let payloadOffset = 0;
-      for (const iovec of message.iovecs.entries) {
-        if (payloadOffset >= result.payload.length) break;
-        if (iovec.len === 0) continue;
-        const copyLength = Math.min(
-          iovec.len,
-          result.payload.length - payloadOffset,
-        );
-        publishMemory.set(
-          result.payload.subarray(
-            payloadOffset,
-            payloadOffset + copyLength,
-          ),
-          iovec.base,
-        );
-        payloadOffset += copyLength;
-      }
-      if (result.name.length > 0) {
-        publishMemory.set(result.name, message.name.pointer);
-      }
-      if (result.control.length > 0) {
-        publishMemory.set(result.control, message.control.pointer);
-      }
-
-      const processLayout = this.processMessageLayout(message.pointerWidth);
-      const processView = new DataView(
-        channel.memory.buffer,
-        message.messagePointer,
-        processLayout.size,
-      );
-      if (message.namePresent) {
-        // msg_namelen is a value-result field only when msg_name was supplied.
-        // An absent address request must preserve even a stale nonzero value.
-        processView.setUint32(
-          processLayout.nameLengthOffset,
-          nameLength,
-          true,
-        );
-      }
-      // musl's msg_controllen is socklen_t on both data models. On wasm64 the
-      // next four bytes are ABI padding, not the high half of a size_t; retain
-      // them exactly as supplied by the caller.
-      processView.setUint32(
-        processLayout.controlLengthOffset,
-        controlLength,
-        true,
-      );
-      processView.setUint32(
-        processLayout.flagsOffset,
-        messageFlags,
-        true,
-      );
-    }
-
-    this.completeChannel(
-      channel,
-      SYS_RECVMSG,
-      origArgs,
-      undefined,
-      retVal,
-      errVal,
-      [],
-      undefined,
-      entry,
-    );
-  }
-
-  // -----------------------------------------------------------------------
-  // Fork/exec/clone/exit handling
-  // -----------------------------------------------------------------------
 
   #completeForkWithinKernelEntry(
     channel: ChannelInfo,
@@ -30419,6 +28592,20 @@ export class CentralizedKernelWorker {
     return updated;
   }
 
+  #setPointerWidthWithinKernelEntry(
+    pid: number,
+    pointerWidth: 4 | 8,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    const setPointerWidthFn = this.#kernelInstanceForEntry(entry).exports
+      .kernel_set_process_pointer_width as
+      ((pid: number, pointerWidth: number) => number) | undefined;
+    if (!setPointerWidthFn) {
+      return false;
+    }
+    return setPointerWidthFn(pid, pointerWidth) >= 0;
+  }
+
   #setBrkBaseWithinKernelEntry(
     pid: number,
     addr: bigint | number,
@@ -33038,628 +31225,18 @@ export class CentralizedKernelWorker {
   }
 
   // =========================================================================
-  // SysV IPC handlers — shmat/shmdt/semctl need host-side interception
+  // SysV IPC handlers — only shmat/shmdt are still intercepted here
   //
-  // Most IPC syscalls now go through the kernel via SYSCALL_ARGS marshalling.
-  // shmat/shmdt are intercepted because they require process memory management
-  // (mmap address allocation, data transfer between kernel and process memory).
-  // Control syscalls are intercepted because pointer direction and target
-  // structure size depend on cmd and the calling process's pointer width.
+  // They require host-side process memory management: mmap address allocation
+  // and data transfer between kernel and process memory.
+  //
+  // msgsnd/msgrcv, msgctl/shmctl and semctl used to be intercepted too,
+  // because their caller structures are caller-native and, for the control
+  // calls, cmd-dependent in both direction and size. Those arguments are now
+  // declared KernelDereferenced: the kernel reads and writes the caller's
+  // memory itself, so the layout knowledge lives beside the Rust types that
+  // define it rather than in a second copy here.
   // =========================================================================
-
-  /**
-   * Marshal msgsnd/msgrcv without exposing the guest's native `long` layout
-   * to the fixed kernel scratch protocol.
-   *
-   * WHY: wasm32 msgbuf has a four-byte mtype prefix while wasm64 uses eight
-   * bytes. The process range must be proved against that native prefix, but
-   * Rust always receives one generated, fixed-width i64 header. The complete
-   * copy/invoke/snapshot operation stays inside one exclusive scratch lease.
-   */
-  private handleSysvMessage(
-    channel: ChannelInfo,
-    syscallNr: typeof SYS_MSGSND | typeof SYS_MSGRCV,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-    retainedSnapshot?: SysvMessageBlockingRetrySnapshot,
-  ): void {
-    const pointerWidth =
-      retainedSnapshot?.pointerWidth ?? this.getPtrWidth(channel.pid);
-    const rawPointer = rawArgs[1] ?? BigInt(origArgs[1] ?? 0);
-    const rawMessageSize = rawArgs[2] ?? BigInt(origArgs[2] ?? 0);
-    const sending = syscallNr === SYS_MSGSND;
-    const flags = retainedSnapshot?.flags
-      ?? (sending ? origArgs[3] : origArgs[4]);
-
-    try {
-      let snapshot = retainedSnapshot;
-      if (!snapshot) {
-        if (rawPointer === 0n) {
-          throw new KernelScratchError("SysV message pointer is null", EFAULT);
-        }
-        if (
-          rawMessageSize < 0n
-          || rawMessageSize > BigInt(Number.MAX_SAFE_INTEGER)
-        ) {
-          throw new KernelScratchError("invalid SysV message length", EINVAL);
-        }
-        const messageSize = Number(rawMessageSize);
-        const processBytes = pointerWidth + messageSize;
-        const scratchBytes =
-          STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER + messageSize;
-        if (
-          !Number.isSafeInteger(processBytes)
-          || !Number.isSafeInteger(scratchBytes)
-          || scratchBytes > CH_DATA_SIZE
-        ) {
-          throw new KernelScratchError(
-            "SysV message exceeds bounded kernel transport",
-            EINVAL,
-          );
-        }
-
-        const processPointer = this.checkedProcessRange(
-          channel,
-          rawPointer,
-          processBytes,
-          "SysV message caller buffer",
-        ).pointer;
-        const processMemory = new Uint8Array(channel.memory.buffer);
-        const input = sending
-          ? processMemory.slice(processPointer, processPointer + processBytes)
-          : null;
-        const nativeType = input
-          ? (
-              pointerWidth === 8
-                ? new DataView(
-                    input.buffer,
-                    input.byteOffset,
-                    input.byteLength,
-                  ).getBigInt64(0, true)
-                : BigInt(new DataView(
-                    input.buffer,
-                    input.byteOffset,
-                    input.byteLength,
-                  ).getInt32(0, true))
-            )
-          : 0n;
-        const rawMessageType = rawArgs[3] ?? BigInt(origArgs[3] ?? 0);
-        snapshot = {
-          ...this.#cancellationPointIdentity(channel),
-          kind: "sysv-message",
-          syscallNr,
-          origArgs: origArgs.slice(),
-          pointerWidth,
-          processPointer,
-          messageSize,
-          flags,
-          input,
-          nativeType,
-          messageType: rawMessageType,
-          retryToken: 0n,
-        };
-      }
-      const {
-        processPointer,
-        messageSize,
-        input,
-        nativeType,
-        messageType,
-      } = snapshot;
-      const scratchBytes =
-        STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER + messageSize;
-
-      this.#bindKernelTidForChannel(channel, entry);
-      const result = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        lease.fill(0, CH_DATA, scratchBytes);
-        if (input) {
-          lease.dataView(
-            CH_DATA,
-            STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
-          ).setBigInt64(0, nativeType, true);
-          if (messageSize > 0) {
-            lease.copyFrom(
-              input,
-              CH_DATA + STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
-              pointerWidth,
-              messageSize,
-            );
-          }
-        }
-
-        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-        for (let index = 0; index < CH_ARGS_COUNT; index++) {
-          kernelView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
-        }
-        kernelView.setBigInt64(CH_ARGS, BigInt(origArgs[0]), true);
-        lease.writeAddress(
-          CH_ARGS + CH_ARG_SIZE,
-          CH_DATA,
-          scratchBytes,
-          "u64-le",
-        );
-        kernelView.setBigInt64(
-          CH_ARGS + 2 * CH_ARG_SIZE,
-          BigInt(messageSize),
-          true,
-        );
-        if (sending) {
-          kernelView.setBigInt64(
-            CH_ARGS + 3 * CH_ARG_SIZE,
-            BigInt(flags),
-            true,
-          );
-        } else {
-          kernelView.setBigInt64(
-            CH_ARGS + 3 * CH_ARG_SIZE,
-            messageType,
-            true,
-          );
-          kernelView.setBigInt64(
-            CH_ARGS + 4 * CH_ARG_SIZE,
-            BigInt(flags),
-            true,
-          );
-        }
-        // Rust uses this only to reject an unrepresentable mtype before a
-        // mixed-width receive removes the message from the queue.
-        kernelView.setBigInt64(
-          CH_ARGS + 5 * CH_ARG_SIZE,
-          BigInt(pointerWidth),
-          true,
-        );
-
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              snapshot.retryToken,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-
-        let retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-        let errVal = kernelView.getUint32(CH_ERRNO, true);
-        let canonicalOutput: Uint8Array | null = null;
-        if (!sending && retVal >= 0) {
-          if (!Number.isSafeInteger(retVal) || retVal > messageSize) {
-            retVal = -1;
-            errVal = EIO;
-          } else {
-            canonicalOutput = lease.copyOut(
-              CH_DATA,
-              STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER + retVal,
-            );
-          }
-        }
-        return { retVal, errVal, canonicalOutput };
-      });
-
-      const deliveredSignal = this.#dequeueSignalForDelivery(channel, entry);
-      if (this.#finishSignalTermination(channel, entry)) return;
-
-      if (result.retVal === -1 && result.errVal === EAGAIN) {
-        if (!this.#rememberBlockingRetrySnapshot(channel, snapshot, entry)) {
-          return;
-        }
-        if ((flags & IPC_NOWAIT) !== 0) {
-          // Rust retains the exact queue generation before returning EAGAIN.
-          // IPC_NOWAIT forbids a host retry, but it does not waive the one
-          // exact release required before terminal guest publication.
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            undefined,
-            -1,
-            EAGAIN,
-            [],
-            undefined,
-            entry,
-          );
-          return;
-        }
-        this.handleBlockingRetry(
-          channel,
-          syscallNr,
-          origArgs,
-          [],
-          entry,
-          retainedSnapshot !== undefined,
-          deliveredSignal,
-        );
-        return;
-      }
-
-      let outputWrites: ChannelOutputWrite[] | undefined;
-      if (result.canonicalOutput) {
-        const canonical = result.canonicalOutput;
-        const mtype = new DataView(
-          canonical.buffer,
-          canonical.byteOffset,
-          canonical.byteLength,
-        ).getBigInt64(0, true);
-        if (
-          pointerWidth === 4
-          && BigInt.asIntN(32, mtype) !== mtype
-        ) {
-          throw new KernelScratchError(
-            "kernel returned a message type that does not fit caller long",
-            EIO,
-          );
-        }
-        const textBytes =
-          canonical.byteLength - STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER;
-        const output = new Uint8Array(pointerWidth + textBytes);
-        const outputView = new DataView(output.buffer);
-        if (pointerWidth === 8) {
-          outputView.setBigInt64(0, mtype, true);
-        } else {
-          outputView.setInt32(0, Number(mtype), true);
-        }
-        output.set(
-          canonical.subarray(STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER),
-          pointerWidth,
-        );
-        outputWrites = [{ ptr: processPointer, bytes: output }];
-      }
-      this.completeChannel(
-        channel,
-        syscallNr,
-        origArgs,
-        undefined,
-        result.retVal,
-        result.errVal,
-        outputWrites,
-        undefined,
-        entry,
-      );
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-    }
-  }
-
-  private handleIpcControl(
-    channel: ChannelInfo,
-    syscallNr: typeof SYS_MSGCTL | typeof SYS_SHMCTL,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const IPC_RMID = 0;
-    const IPC_SET = 1;
-    const IPC_STAT = 2;
-    const objectId = origArgs[0];
-    const rawCmd = origArgs[1];
-    const cmd = rawCmd & ~IPC_64;
-    // The live syscall path supplies the original i64 values. Keeping the
-    // direct-call fallback as a number lets the checked pointer conversion
-    // reject fractional or unsafe test inputs instead of BigInt coercion
-    // throwing before the syscall can report EFAULT.
-    const rawPointer = rawArgs[2] ?? BigInt(origArgs[2] ?? 0);
-    const pointerWidth = this.getPtrWidth(channel.pid);
-    const pointerCommand = cmd === IPC_SET || cmd === IPC_STAT;
-    const outputCommand = cmd === IPC_STAT;
-
-    try {
-      let transferBytes = 0;
-      let processPointer = 0;
-      if (pointerCommand) {
-        if (rawPointer === 0n) {
-          throw new KernelScratchError("IPC control pointer is null", EFAULT);
-        }
-        const exportName = syscallNr === SYS_MSGCTL
-          ? "kernel_msqid_ds_bytes"
-          : "kernel_shmid_ds_bytes";
-        const structureBytes = this.#kernelInstanceForEntry(entry).exports[exportName] as
-          | ((width: number) => number)
-          | undefined;
-        if (typeof structureBytes !== "function") {
-          throw new KernelScratchError(
-            `${exportName} export is unavailable`,
-            EIO,
-          );
-        }
-        transferBytes = structureBytes(pointerWidth);
-        if (
-          !Number.isSafeInteger(transferBytes)
-          || transferBytes <= 0
-          || transferBytes > CH_DATA_SIZE
-        ) {
-          if (Number.isSafeInteger(transferBytes) && transferBytes < 0) {
-            this.completeChannelRawAndRelisten(
-              channel,
-              -1,
-              -transferBytes,
-              entry,
-            );
-            return;
-          }
-          throw new KernelScratchError(
-            "kernel returned an invalid IPC control transfer size",
-            EIO,
-          );
-        }
-        processPointer = this.checkedProcessRange(
-          channel,
-          rawPointer,
-          transferBytes,
-          "IPC control caller buffer",
-        ).pointer;
-      } else if (cmd !== IPC_RMID) {
-        // Unknown commands still dispatch so Rust owns the errno decision,
-        // but no unchecked process pointer crosses into kernel memory.
-        processPointer = 0;
-      }
-
-      const processMemory = new Uint8Array(channel.memory.buffer);
-      const result = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        if (cmd === IPC_SET) {
-          lease.copyFrom(
-            processMemory,
-            CH_DATA,
-            processPointer,
-            transferBytes,
-          );
-        } else if (outputCommand) {
-          lease.fill(0, CH_DATA, transferBytes);
-        }
-
-        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(objectId), true);
-        kernelView.setBigInt64(
-          CH_ARGS + CH_ARG_SIZE,
-          BigInt(rawCmd),
-          true,
-        );
-        if (pointerCommand) {
-          lease.writeAddress(
-            CH_ARGS + 2 * CH_ARG_SIZE,
-            CH_DATA,
-            transferBytes,
-            "u64-le",
-          );
-        } else {
-          kernelView.setBigInt64(
-            CH_ARGS + 2 * CH_ARG_SIZE,
-            0n,
-            true,
-          );
-        }
-        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, 0n, true);
-        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
-        kernelView.setBigInt64(
-          CH_ARGS + 5 * CH_ARG_SIZE,
-          BigInt(pointerWidth),
-          true,
-        );
-
-        this.#bindKernelTidForChannel(channel, entry);
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              0n,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-
-        const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-        const errVal = kernelView.getUint32(CH_ERRNO, true);
-        const output = retVal >= 0 && outputCommand
-          ? lease.copyOut(CH_DATA, transferBytes)
-          : null;
-        return { retVal, errVal, output };
-      });
-
-      if (result.output) {
-        processMemory.set(result.output, processPointer);
-      }
-      this.completeChannelRawAndRelisten(
-        channel,
-        result.retVal,
-        result.errVal,
-        entry,
-      );
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-    }
-  }
-
-  /** semctl: cmd-dependent arg handling — can't use SYSCALL_ARGS since arg[3]
-   *  is a scalar for some commands and a pointer for others. */
-  private handleSemctl(
-    channel: ChannelInfo,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const [semid, semnum, rawCmd, arg] = origArgs;
-    const rawArg = rawArgs[3] ?? BigInt(arg);
-    const cmd = rawCmd & ~IPC_64;
-    const IPC_STAT = 2;
-    const GETALL = 13;
-    const SETALL = 17;
-    const pointerCommand = cmd === IPC_STAT || cmd === GETALL || cmd === SETALL;
-    const processPointerWidth = this.getPtrWidth(channel.pid);
-    let transferBytes = 0;
-    try {
-      if (pointerCommand) {
-        if (rawArg === 0n) {
-          throw new KernelScratchError("semctl pointer is null", EFAULT);
-        }
-        if (cmd === IPC_STAT) {
-          const statBytes = this.#kernelInstanceForEntry(entry).exports
-            .kernel_semid_ds_bytes as
-            | ((pointerWidth: number) => number)
-            | undefined;
-          if (typeof statBytes !== "function") {
-            throw new KernelScratchError(
-              "kernel semid_ds sizing export is unavailable",
-              EIO,
-            );
-          }
-          const result = statBytes(processPointerWidth);
-          if (result < 0) {
-            this.completeChannelRawAndRelisten(channel, -1, -result, entry);
-            return;
-          }
-          transferBytes = result;
-        } else {
-          const arrayBytes = this.#kernelInstanceForEntry(entry).exports
-            .kernel_semctl_array_bytes as
-            | ((
-                pid: number,
-                tid: number,
-                semid: number,
-                command: number,
-              ) => number)
-            | undefined;
-          if (typeof arrayBytes !== "function") {
-            throw new KernelScratchError(
-              "kernel semctl array sizing export is unavailable",
-              EIO,
-            );
-          }
-          const result = arrayBytes(
-            channel.pid,
-            this.guestTidForChannel(channel),
-            semid,
-            rawCmd,
-          );
-          if (result < 0) {
-            this.completeChannelRawAndRelisten(channel, -1, -result, entry);
-            return;
-          }
-          transferBytes = result;
-        }
-        if (
-          !Number.isSafeInteger(transferBytes)
-          || transferBytes <= 0
-          || transferBytes > CH_DATA_SIZE
-        ) {
-          throw new KernelScratchError(
-            "kernel returned an invalid semctl transfer size",
-            EIO,
-          );
-        }
-        this.checkedProcessRange(
-          channel,
-          rawArg,
-          transferBytes,
-          "semctl caller buffer",
-        );
-      }
-
-      const processMem = new Uint8Array(channel.memory.buffer);
-      const scratch = this.#requireMainScratchRegion();
-      const result = scratch.withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-
-        if (cmd === SETALL) {
-          const processPointer = checkedWasmPointer(
-            rawArg,
-            processPointerWidth,
-            "semctl caller pointer",
-          );
-          lease.copyFrom(processMem, CH_DATA, processPointer, transferBytes);
-        } else if (pointerCommand) {
-          lease.fill(0, CH_DATA, transferBytes);
-        }
-
-        kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
-        kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
-        kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
-        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
-        if (pointerCommand) {
-          lease.writeAddress(
-            CH_ARGS + 3 * CH_ARG_SIZE,
-            CH_DATA,
-            transferBytes,
-            "u64-le",
-          );
-        } else {
-          kernelView.setBigInt64(
-            CH_ARGS + 3 * CH_ARG_SIZE,
-            BigInt(arg),
-            true,
-          );
-        }
-        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
-        // semid_ds follows the calling process data model, which can differ
-        // from the kernel Wasm's pointer width in a mixed-width machine.
-        kernelView.setBigInt64(
-          CH_ARGS + 5 * CH_ARG_SIZE,
-          BigInt(processPointerWidth),
-          true,
-        );
-
-        this.#bindKernelTidForChannel(channel, entry);
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              0n,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-
-        const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-        const errVal = kernelView.getUint32(CH_ERRNO, true);
-        const output = retVal >= 0 && (cmd === IPC_STAT || cmd === GETALL)
-          ? lease.copyOut(CH_DATA, transferBytes)
-          : null;
-        return { retVal, errVal, output };
-      });
-
-      if (result.output) {
-        const processPointer = checkedWasmPointer(
-          rawArg,
-          processPointerWidth,
-          "semctl caller pointer",
-        );
-        processMem.set(result.output, processPointer);
-      }
-      this.completeChannelRawAndRelisten(
-        channel,
-        result.retVal,
-        result.errVal,
-        entry,
-      );
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-    }
-  }
 
   private runSyntheticMemorySyscall(
     channel: ChannelInfo,

@@ -113,10 +113,6 @@ kernel_spawn_scratch_capacity(reservation_token) → reservation_capacity | 0
 kernel_spawn_scratch_retained_capacity() → retained_capacity
 kernel_spawn_scratch_cancel(reservation_token) → 0 | -errno
 kernel_spawn_reserved_process(parent_pid, caller_tid, reservation_token, blob_len) → assigned_child_pid | -errno
-kernel_msqid_ds_bytes(process_pointer_width) → bytes | -errno
-kernel_semctl_array_bytes(pid, tid, semid, command) → bytes | -errno
-kernel_semid_ds_bytes(process_pointer_width) → bytes | -errno
-kernel_shmid_ds_bytes(process_pointer_width) → bytes | -errno
 kernel_get_cwd(pid, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_fd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_dirfd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
@@ -128,8 +124,18 @@ kernel_process_metadata_cancel(pid, transaction_token) → 0 | -errno
 kernel_set_max_addr(pid, addr) → 0
 kernel_set_brk_base(pid, addr) → 0
 kernel_set_mmap_base(pid, addr) → 0
+kernel_set_process_pointer_width(pid, width) → 0 | -errno
 kernel_is_fd_nonblock(pid, fd) → 1 | 0 | -1
 ```
+
+The host-facing export list is deliberately small. Ordinary syscalls are not
+exported one by one: the guest reaches them through `kernel_handle_channel`,
+which dispatches to the Rust handlers as plain function calls. A
+`#[unsafe(no_mangle)] pub extern "C"` on a dispatch-only handler would publish
+a symbol with no consumer, so those handlers carry no export attribute, and
+`abi/snapshot.json` records only the exports something outside the kernel
+actually calls. `docs/abi-versioning.md` ("ABI 48") lists what that cut
+removed.
 
 Normal guest exit closes descriptors before the process becomes reapable.
 When the host instead removes a live process after explicit termination or a
@@ -152,8 +158,17 @@ host_getrandom(buf, len) → bytes
 host_connect(addr, port) → handle
 host_send(handle, buf, len) → bytes_sent
 host_recv(handle, buf, len) → bytes_received
+host_proc_read_bytes(pid, guest_addr_u64, dst, len) → 0 | -errno
+host_proc_write_bytes(pid, guest_addr_u64, src, len) → 0 | -errno
 host_getaddrinfo(host, port, buf, len) → count
 ```
+
+`host_proc_read_bytes` / `host_proc_write_bytes` take a 64-bit guest address,
+so a wasm64 process's pointer above 4 GiB reaches the kernel intact. They are
+how the kernel reads the arguments it dereferences itself (see "Opaque syscall
+records" below). The kernel imports no host signal-wait or futex-wait primitive:
+nothing in the kernel ever called them, and a blocking import would stall the
+single kernel thread that multiplexes every process in the machine.
 
 ### 2. Host Runtime (TypeScript)
 
@@ -338,14 +353,24 @@ limit: pathname consumers still apply the generated `PATH_MAX`, while generic
 C-string consumers may validly use more than `PATH_MAX` when the complete
 string fits channel scratch.
 
-Vector-message syscalls add a width-translation boundary. Musl's native
-`iovec`, `msghdr`, and `cmsghdr` layouts differ between wasm32 and wasm64, so
-their sizes, offsets, and alignments are generated from the shared Rust ABI
-source into TypeScript and a musl contract header. The kernel scratch wire is
-deliberately fixed: an eight-byte `KernelIovecWire`, a 28-byte
-`KernelMsghdrWire`, and a 12-byte-aligned `KernelCmsghdrWire`. These are
-separate contracts; copying a native wasm64 header and hoping the fixed parser
-interprets it is invalid even when the bytes fit in linear memory.
+Vector-message syscalls cross a width boundary. Musl's native `iovec`,
+`msghdr`, and `cmsghdr` layouts differ between wasm32 and wasm64, so their
+sizes, offsets, and alignments are generated from the shared Rust ABI source.
+`msg_iovlen` and `msg_controllen` are the traps worth naming: musl keeps both
+32-bit on wasm64 and pads after each, so reading either as a `size_t` folds
+unrelated padding into the high half of a count.
+
+**The kernel reads those structures in the caller's memory itself.**
+`sendmsg`/`recvmsg` declare their `msghdr` argument
+`SyscallArgSize::KernelDereferenced`, so the host copies nothing and passes
+the raw guest address; the kernel takes the caller's pointer width from the
+process's registration, and `crates/runtime-core/`
+`src/msghdr.rs` walks the header, the `msg_iov` table and the CMSG chain
+through `host_proc_read_bytes` / `host_proc_write_bytes`. The fixed
+kernel-scratch `KernelIovecWire` / `KernelMsghdrWire` / `KernelCmsghdrWire`
+records that the host used to stage are retired and no longer appear in
+`abi/snapshot.json`; the scatter/gather syscalls walk the caller's own iovec
+table the same way.
 Socket-address sizing is likewise generated as two distinct contracts.
 The 128-byte `sockaddr_storage` bounds every generic input and output staging
 region; the 110-byte `sockaddr_un` bounds family-specific AF_UNIX parsing.
@@ -359,29 +384,33 @@ An exact 108-byte non-NUL pathname can make Linux-compatible `getsockname()`
 report 111 bytes after accounting for its appended terminator, which still
 fits the generic 128-byte output region.
 
-For `sendmsg`, the host validates the complete native header and iovec table,
-every nested caller range, `IOV_MAX`, and the complete fixed-wire footprint.
-It translates each ancillary record, flattens all caller iovecs in order into
-one capacity-owned payload, and invokes Rust with a zero-or-one-iovec wire
-inside one synchronous lease. Rust validates the complete aligned ancillary
-stream and the receiver-reconstructibility of every requested `SCM_RIGHTS`
-description before retaining any reference or publishing carrier bytes. Socket
+For `sendmsg`, the kernel decodes the caller's header, enforces `IOV_MAX`
+before reading the table, and gathers every iovec in order into one
+contiguous kernel-owned buffer bounded by `SSIZE_MAX` — a datagram must go
+out in one piece, and the bound is the operation's own limit rather than a
+transport's capacity. It then validates the aligned ancillary stream and the
+receiver-reconstructibility of every requested `SCM_RIGHTS` description
+before retaining any reference or publishing carrier bytes. Socket
 descriptions are not reconstructible from a process-local socket snapshot, so
 an ancillary batch containing one fails atomically with `EOPNOTSUPP`; Kandelo
-does not pretend that a copied socket record is the original endpoint. The
-exact flattened-iovec count is generated from the shared protocol contract,
-and a Rust compile-time guard makes changing that count fail until the fixed
-parser changes with it.
+does not pretend that a copied socket record is the original endpoint.
+
 Nested `sendmsg.msg_name` accepts exactly the same 128-byte input maximum as
-`sendto`; it cannot bypass that check by living inside `msghdr`. For
-`recvmsg`, the host proves and reserves at most 128 name bytes even when the
-caller advertises a larger buffer, derives fixed-wire control capacity from
-the caller-native data capacity,
-snapshots the result, validates the entire returned record, expands it with
-zeroed native padding, and scatters payload bytes across every caller iovec.
-A retry or malformed kernel result publishes none of those detached outputs.
-This flatten/scatter design preserves the public multi-iovec behavior while
-keeping the ordinary transport allocation fixed and cheap.
+`sendto`; it cannot bypass that check by living inside `msghdr`.
+
+For `recvmsg`, the kernel reserves at most 128 name bytes even when the
+caller advertises a larger buffer, derives `SCM_RIGHTS` capacity from the
+CALLER's `cmsghdr` size — 32 control bytes hold five descriptors for a wasm32
+receiver and four for a wasm64 one — receives into one contiguous buffer, and
+scatters the result across the caller's iovecs. It publishes `msg_namelen`,
+`msg_controllen` and `msg_flags` only for a delivered message, including a
+zero-length one: on EAGAIN the host parks a retry and calls again with the
+same header, so zeroing `msg_controllen` would leave that retry with no
+control capacity.
+
+Both retain what a retry must not re-read. A blocked `sendmsg` keeps its
+in-flight descriptors in `BlockingRetryTarget::Sendmsg` and a retry uses
+those, never a control buffer a peer thread may have changed meanwhile.
 
 Guest process memory is a separate owner, not another spelling for kernel
 scratch. `CentralizedKernelWorker.registerProcess` rejects the active kernel
@@ -578,20 +607,34 @@ select musl's target structure from the process pointer width:
 | `semid_ds` | 72 bytes | 88 bytes |
 | `shmid_ds` | 88 bytes | 112 bytes |
 
-The host stages `msgctl`/`shmctl` `IPC_STAT` and `IPC_SET` according to the
-command and passes that process pointer width in the otherwise host-private
-sixth dispatch slot. The kernel Wasm's own width is not a valid substitute
-because one kernel may serve both guest widths.
-`kernel_semctl_array_bytes(pid, tid, semid, command)` separately performs the
-permission-aware GETALL/SETALL size preflight. All four sizing exports are
-required in ABI 43. There is no `IPC_STAT` sizing fallback for semaphore
-arrays: a process may have permission to write a semaphore set without
-permission to read its metadata.
+The kernel reads and writes these structures in the caller's memory itself,
+through `host_proc_read_bytes` / `host_proc_write_bytes`, and takes the caller's
+pointer width from the process's registered width (see "Opaque syscall
+records"). The kernel Wasm's own width is not a valid substitute because one
+kernel may serve both guest widths.
+
+The arguments are declared `SyscallArgSize::KernelDereferenced`, which is what
+makes that possible: the host copies nothing and passes the raw guest address
+through. No static size rule could describe them, because `msgctl`'s buffer is
+an input for `IPC_SET` and an output for `IPC_STAT`, and `semctl`'s fourth
+argument is a `union semun` whose GETALL/SETALL form is an `unsigned short`
+array sized by the set's own `nsems` — a fact that appears nowhere in the
+syscall arguments.
+
+There is still no `IPC_STAT` sizing fallback for semaphore arrays, and the
+reason is unchanged: a process may have permission to write a semaphore set
+without permission to read its metadata, so sizing the array through IPC_STAT
+would impose a read permission POSIX does not require. The kernel
+sizes the array from the set's own `nsems` under the requested command's own
+permission check instead. The four ABI 43 sizing exports
+(`kernel_msqid_ds_bytes`, `kernel_semid_ds_bytes`, `kernel_shmid_ds_bytes`,
+`kernel_semctl_array_bytes`) answered a question the host no longer asks and
+are gone, as is `kernel_mq_descriptor_msgsize`.
 
 Other caller-native records use the generated
-`SyscallArgSize::ProcessLayout` descriptor. Encountering that descriptor makes
-the host select the exact size from the process width and carry the same width
-in the private sixth dispatch slot:
+`SyscallArgSize::ProcessLayout` descriptor. The guest's record encoder copies
+exactly the size its own data model selects from that descriptor, and the
+kernel parses it using the process's registered pointer width:
 
 | Record | wasm32 | wasm64 |
 |---|---:|---:|
@@ -609,16 +652,15 @@ Rust parses or serializes each complete caller-native record into a
 capacity-bounded scratch slice and initializes padding and reserved bytes.
 The kernel Wasm's own pointer width is never used to infer the process layout.
 The generated fixed-size descriptors separately carry `stat` (112 bytes) and
-`sched_param` (48 bytes); those two records do not use width selection or the
-private process-width dispatch slot.
+`sched_param` (48 bytes); those two records do not use width selection.
 
 `setsockopt` carries the same independent caller-width fact for native IPv4
 multicast group records. `group_req` is 132 bytes with its group at offset 4
 on wasm32 and 136 bytes with the group at offset 8 on wasm64.
 `group_source_req` is 260/264 bytes with its source address at offset 132/136.
-The syscall has five public arguments, so the host writes the process width to
-the otherwise private sixth channel slot before dispatch. Rust accepts only 4
-or 8 and selects these generated layouts from that value. `optlen` is merely a
+The kernel selects these generated layouts from the calling process's
+registered pointer width, which is only ever 4 or 8; the sixth channel slot
+is the caller's (always-zero) argument and is not read as a width. `optlen` is merely a
 caller byte extent, and padding is caller data; neither may be used to guess
 the process data model. The public five-argument `kernel_setsockopt` export
 keeps its signature and uses the kernel's native width for direct calls, while
@@ -825,15 +867,35 @@ continuation allocation/cleanup, and staged-loader VFS/memory requests set the
 bit and clear it before returning control to guest code. Libc then uses an
 ordinary side-effect-free `getpid` syscall as the signal-delivery checkpoint
 after the owning import returns. Ordinary guest syscalls clear the flags word.
+Bit 3, `REQUEST_FLAG_OPAQUE_RECORD`, says the data buffer begins with a
+self-describing syscall record (next section) rather than raw scratch.
+
+The flags word is guest-written, so the host validates it as untrusted input.
+An unknown bit, the cancellation-wake bit without the cancellation-point bit,
+or bit 3 on a syscall that must keep raw arguments
+(`crates/shared/src/host_raw_syscalls.rs`) is a malformed request: the host
+completes that one request with `EINVAL` and dispatches nothing. It is never a
+reason to stop the kernel worker, because every process shares it.
 
 ### Status Values
 
 | Value | Name | Meaning |
 |-------|------|---------|
 | 0 | IDLE | Channel is idle |
-| 1 | SYSCALL_READY | Process has written a syscall, kernel should handle it |
-| 2 | RESULT_READY | Kernel has written the result, process can read it |
-| 3 | RETRY | Kernel needs the host to retry (blocking I/O not ready yet) |
+| 1 | PENDING | Process has written a syscall, kernel should handle it |
+| 2 | COMPLETE | Kernel has written the result, process can read it |
+| 3 | ERROR | Kernel has written an error result |
+| 4 | TEARDOWN | The thread's image is being abandoned; the glue traps instead of returning |
+
+`TEARDOWN` is not a syscall outcome. The host publishes it, with an
+`Atomics.notify`, to unwind a guest thread parked in the channel wait without
+letting it resume an image that is being replaced or rolled back (an
+abandoned `execve`, a fork-replay teardown, a `posix_spawn` rollback). The glue
+traps as soon as it observes the value and never reads `return_value` or
+`errno_value`.
+
+A blocked syscall is not a status value either: the kernel answers it with
+`EAGAIN` and the host parks the channel (see "Blocking Syscalls and Retry").
 
 ### Syscall Flow
 
@@ -851,6 +913,9 @@ Process Worker                          Kernel Worker (host)
                                         7. Call kernel_handle_channel(offset,
                                                                       capacity, pid,
                                                                       retry_token=0)
+                                           (kernel_handle_channel_record(offset,
+                                           capacity, pid) for a request with
+                                           REQUEST_FLAG_OPAQUE_RECORD)
                                         8. Kernel reads args from process memory
                                         9. Kernel executes syscall logic
                                        10. Kernel writes return_value + errno
@@ -867,6 +932,75 @@ omits that publication because JavaScript owns its completion and has no
 signal-handler trampoline. The next explicit guest checkpoint performs the
 same delivery only after the host import has returned; this avoids both signal
 loss and a reentrant host-to-Wasm callback.
+
+### Opaque syscall records
+
+The host does not interpret a syscall's pointer arguments. For every
+non-blocking syscall, the guest's own libc glue (`libc/glue/channel_syscall.c`)
+marshals the call into one bounded, self-describing record at the start of the
+data buffer and sets `REQUEST_FLAG_OPAQUE_RECORD`. The record format is defined
+once, in `crates/shared/src/channel_record.rs` (record ABI v1): a fixed header
+(magic, record ABI, syscall number, span count, the record's total length, the
+six scalar argument words) followed by span descriptors, each naming an
+argument index, a direction (in, out, in/out) and a byte range inside the
+record. The length is the one field the host reads: it copies exactly that
+many bytes into kernel scratch and back, because moving the whole 64 KiB data
+buffer each way made every record syscall several times its own cost. The
+kernel decodes only those bytes and validates every rewritten argument against
+the record (plus zeroed fixed `select` slots), never the whole scratch
+allocation, since the bytes past the record belong to earlier requests. The glue learns each
+syscall's pointer layout from `bits/kandelo_syscall_marshal.h`, which
+`cargo xtask dump-abi` generates from
+`wasm_posix_shared::host_abi::SYSCALL_ARG_DESCRIPTORS` and the ioctl contract,
+so C and Rust read one table. Bespoke families whose layout depends on another
+argument (`ioctl` by request, `fcntl` locks, `prctl` names, `epoll_wait`'s
+event array, `select`/`pselect6`) are marshalled by small hand-written cases
+in the same file.
+
+The host hands a flagged request to `kernel_handle_channel_record` instead of
+`kernel_handle_channel`. Both run `handle_owned_channel_allocation`; the entry
+point tells it which transport the guest chose, and only the record transport
+decodes a record, with the bounds-checked decoder in
+`crates/runtime-core/src/channel_record_decode.rs`. It lays each span back
+into the scratch layout the existing validators accept, dispatches, and copies
+out/in-out spans back to the caller's addresses. Nothing falls back to
+guessing: a missing record, a record that does not decode, a record whose
+syscall number differs from the header's, and a record for a host-raw syscall
+each complete the request with `EINVAL` without dispatching anything. The raw
+transport never looks for a record. Its data buffer holds whatever the host
+staged (a `write` payload, a path) or whatever an earlier request left in the
+reused kernel scratch, and either can begin with the record magic; deciding
+from those bytes would let ordinary user data choose which syscall runs.
+
+Two classes of call stay on the raw-argument path, and
+`crates/shared/src/host_raw_syscalls.rs` is the authoritative list:
+syscalls the host itself intercepts (fork, exec, thread creation, and similar
+lifecycle calls) and syscalls that can block and are retried by the host
+(`read`, `poll`, `sigsuspend`, `pause`, `getaddrinfo` while a backend's
+asynchronous DNS lookup is pending, ...), whose retry snapshot is built from
+the raw arguments.
+
+Some arguments cannot be described by a static size rule at all: a
+`struct msghdr` that leads to an iovec table and a CMSG chain, the
+scatter/gather iovec table of `writev`/`readv`/`preadv`/`pwritev`, and the
+SysV IPC and POSIX message-queue buffers whose direction and size depend on
+the command. Those arguments are declared
+`SyscallArgSize::KernelDereferenced`. The record carries only the caller's raw
+guest address in its scalar slot, and the kernel reads and writes the caller's
+memory itself through `host_proc_read_bytes` / `host_proc_write_bytes`
+(`crates/runtime-core/src/guest_ptr.rs`, `msghdr.rs`, `ipc_wire.rs`), in the
+caller's data model.
+
+**The caller's data model is per-process kernel state.** One kernel instance
+serves wasm32 and wasm64 processes at once, so the kernel cannot use its own
+compilation target to size a caller-native structure. `Process` carries
+`pointer_width`. The host sets it with `kernel_set_process_pointer_width`
+whenever it registers an address space it instantiated (process creation and
+the image an `exec` installs), a `fork` child inherits it through the fork
+state record, and the dispatcher reads it once per syscall. No channel
+argument slot carries it: slot 5 belongs to the caller, which is what gives
+`preadv2`/`pwritev2` their `flags` argument (`RWF_NOWAIT` is implemented;
+every other `RWF_*` bit is refused with `EOPNOTSUPP`).
 
 ### Blocking Syscalls and Retry
 

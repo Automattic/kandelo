@@ -2404,6 +2404,7 @@ mod tests {
             pid,
             SYS_MSGSND,
             qid,
+            None,
         )
         .unwrap();
         crate::syscalls::ensure_blocking_retry_sysv_semaphore_binding(

@@ -224,6 +224,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_get_process_state
     kernel_get_socket_timeout_ms
     kernel_handle_channel
+    kernel_handle_channel_record
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
@@ -239,8 +240,6 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_ipc_shmdt_for_task
     kernel_is_fd_nonblock
     kernel_mark_process_signaled
-    kernel_mq_descriptor_msgsize
-    kernel_msqid_ds_bytes
     kernel_pcm_claim_transport
     kernel_pcm_clock_update
     kernel_pcm_reconcile
@@ -258,11 +257,8 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_publish_spawn_child
     kernel_reap_exited_child
     kernel_remove_process
-    kernel_semctl_array_bytes
-    kernel_semid_ds_bytes
     kernel_set_current_tid
     kernel_set_cwd
-    kernel_shmid_ds_bytes
     kernel_spawn_exec_commit
     kernel_spawn_exec_target_prepare
     kernel_spawn_process

@@ -114,8 +114,10 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  *
  * WHY: this is deliberately a narrow lifetime allowlist, not a list of every
  * kernel export. Each Rust implementation was reviewed to consume or copy its
- * borrowed bytes before returning. `kernel_handle_channel` scopes its raw
- * mailbox view to decoding/publishing and clears the active task binding;
+ * borrowed bytes before returning. `kernel_handle_channel` and
+ * `kernel_handle_channel_record` (the same implementation on the record
+ * transport) scope their raw mailbox view to decoding/publishing and clear the
+ * active task binding;
  * `kernel_spawn_process` parses the complete blob into owned Rust values
  * before it enters process-table or host work; and
  * `kernel_process_metadata_stage` copies one complete entry into a token-owned
@@ -141,6 +143,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_getrusage",
   "kernel_getsockopt",
   "kernel_handle_channel",
+  "kernel_handle_channel_record",
   "kernel_inject_datagram",
   "kernel_ioctl",
   "kernel_ipc_shm_read_chunk",
@@ -228,6 +231,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
     case "kernel_handle_channel":
+    case "kernel_handle_channel_record":
     case "kernel_mq_drain_notification":
     case "kernel_poll":
     case "kernel_truncate":
@@ -319,6 +323,7 @@ function isKernelScratchExportName(
     case "kernel_getrusage":
     case "kernel_getsockopt":
     case "kernel_handle_channel":
+    case "kernel_handle_channel_record":
     case "kernel_inject_datagram":
     case "kernel_ioctl":
     case "kernel_ipc_shm_read_chunk":

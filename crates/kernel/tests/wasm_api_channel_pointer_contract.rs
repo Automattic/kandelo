@@ -41,26 +41,27 @@ fn dispatcher_does_not_cast_narrowed_scalar_aliases_as_pointers() {
 }
 
 #[test]
-fn sendmsg_zero_length_null_iovec_never_constructs_a_raw_slice() {
+fn message_exports_never_borrow_a_guest_address_as_kernel_memory() {
+    // `msg` used to be a kernel-scratch pointer, so this pinned the
+    // zero-length guard that kept `slice::from_raw_parts` off a null base. It
+    // is a GUEST address now: the kernel reads and writes the caller's
+    // `msghdr`, iovec table and CMSG chain through the cross-memory
+    // primitives, which bound every range against the target process's own
+    // memory. Borrowing one of those addresses as a raw slice would read or
+    // write the KERNEL's address space at a caller-chosen offset, so what has
+    // to be pinned now is that neither export does it.
     let source = include_str!("../src/wasm_api.rs");
-    let start = source
-        .find("pub extern \"C\" fn kernel_sendmsg(")
-        .expect("kernel_sendmsg start");
-    let end = source[start..]
-        .find("\n/// recvmsg")
-        .expect("kernel_sendmsg end");
-    let sendmsg = &source[start..start + end];
-
-    let empty_guard = sendmsg
-        .find("let buf = if len == 0 {\n        &[]")
-        .expect("zero-length iovec must select a valid empty slice");
-    let raw_slice = sendmsg
-        .find("slice::from_raw_parts(base as *const u8, len)")
-        .expect("positive-length iovec must retain the bounded slice");
-    assert!(
-        empty_guard < raw_slice,
-        "the zero-length guard must precede raw-slice construction"
-    );
+    for name in ["kernel_sendmsg", "kernel_recvmsg"] {
+        let body = item_body(source, &format!("{name}("));
+        assert!(
+            !body.contains("from_raw_parts"),
+            "{name} must not borrow a guest address as kernel memory"
+        );
+        assert!(
+            body.contains("crate::msghdr::read_msghdr("),
+            "{name} must decode the caller's msghdr through the shared reader"
+        );
+    }
 }
 
 #[test]
@@ -114,35 +115,106 @@ fn mqueue_zero_length_message_never_constructs_a_null_raw_slice() {
     let send = &source[send_start..receive_start];
     let receive = &source[receive_start..receive_end];
 
+    // The caller's message buffer is a GUEST address now, not kernel scratch,
+    // so what has to be pinned is the ORDER of two checks. The queue's own
+    // `mq_msgsize` must be resolved before anything is read or reserved for
+    // the caller's bytes: POSIX requires EMSGSIZE for an oversized `msg_len`,
+    // and sizing a buffer from `msg_len` first would report ENOMEM instead.
+    let send_msgsize = send
+        .find("let msgsize = match match pin {")
+        .expect("mq_timedsend must resolve the queue's mq_msgsize");
+    let send_length_check = send
+        .find("if data_len > msgsize {")
+        .expect("mq_timedsend must reject an oversized message with EMSGSIZE");
+    let send_read = send
+        .find("crate::guest_ptr::read_guest_bytes(")
+        .expect("mq_timedsend must read the caller's buffer through the cross-memory helper");
     assert!(
-        send.contains("let data = channel_const_slice!(1, data_len);"),
-        "mq_timedsend must use the checked slice helper with its actual length"
+        send_msgsize < send_length_check && send_length_check < send_read,
+        "mq_timedsend must check msg_len against mq_msgsize before reading caller memory"
+    );
+    assert!(
+        !send.contains("from_raw_parts"),
+        "mq_timedsend must not borrow a guest address as kernel memory"
     );
 
     let receive_empty_guard = receive
         .find("if !result.data.is_empty() {")
         .expect("empty received message must skip destination construction");
-    let receive_raw_slice = receive
-        .find("core::slice::from_raw_parts_mut(")
-        .expect("non-empty received message must retain the bounded slice");
+    let receive_write = receive
+        .find("crate::guest_ptr::write_guest_bytes(")
+        .expect("a non-empty received message must be published through the cross-memory helper");
     assert!(
-        receive_empty_guard < receive_raw_slice,
-        "the empty receive guard must precede raw-slice construction"
+        receive_empty_guard < receive_write,
+        "the empty receive guard must precede the cross-memory write"
     );
+    assert!(
+        !receive.contains("from_raw_parts"),
+        "mq_timedreceive must not borrow a guest address as kernel memory"
+    );
+}
+
+/// Every declaration form a `kernel_*` item can take in `wasm_api.rs`.
+///
+/// Both are accepted because being EXPORTED and being pointer-safe are
+/// unrelated properties. Most `kernel_*` functions are reached only as plain
+/// Rust calls from `dispatch_channel_syscall`, never through the Wasm export
+/// table, so they carry no `#[unsafe(no_mangle)] pub extern "C"` -- and the
+/// guest addresses they dereference are exactly as dangerous either way.
+/// Matching only the exported form would silently stop auditing a function on
+/// the day its vestigial export attribute was dropped.
+const ITEM_FORMS: [&str; 2] = ["pub fn ", "pub extern \"C\" fn "];
+
+/// Slice out one `kernel_*` item's text, from its signature to the start of
+/// the next item.
+///
+/// The boundary is the next item's own signature rather than a neighbouring
+/// doc comment's prose: doc comments belong to whichever item happens to sit
+/// next in the file, so a delimiter like `"\n/// Remap memory."` silently
+/// breaks -- with a confusing "start not found" panic -- the moment that
+/// neighbour is renamed or deleted. Deleting the dead `kernel_mremap` export
+/// in ABI 44 did exactly that.
+fn item_body<'a>(source: &'a str, function: &str) -> &'a str {
+    let (start, signature_len) = ITEM_FORMS
+        .iter()
+        .find_map(|form| {
+            let signature = format!("{form}{function}");
+            source.find(&signature).map(|at| (at, signature.len()))
+        })
+        .unwrap_or_else(|| panic!("{function} start"));
+
+    let after = start + signature_len;
+    let end = ITEM_FORMS
+        .iter()
+        .filter_map(|form| source[after..].find(&format!("\n{form}")))
+        .min()
+        .map_or(source.len(), |offset| after + offset);
+
+    // Walk back over the doc comments and attributes that introduce the NEXT
+    // item. They sit between the two signatures but belong to the neighbour,
+    // and letting a neighbour's prose into this body would let it satisfy --
+    // or trip -- an assertion about this function.
+    let mut body = &source[start..end];
+    loop {
+        let trimmed = body.trim_end();
+        let Some(last_line_start) = trimmed.rfind('\n') else {
+            break;
+        };
+        let last_line = trimmed[last_line_start + 1..].trim_start();
+        if last_line.starts_with("///") || last_line.starts_with("#[") {
+            body = &trimmed[..last_line_start];
+        } else {
+            break;
+        }
+    }
+    body
 }
 
 #[test]
 fn nullable_zero_length_dispatch_paths_never_construct_null_raw_slices() {
     let source = include_str!("../src/wasm_api.rs");
 
-    let utimensat_start = source
-        .find("pub extern \"C\" fn kernel_utimensat(")
-        .expect("kernel_utimensat start");
-    let utimensat_end = source[utimensat_start..]
-        .find("\n/// Remap memory.")
-        .map(|offset| utimensat_start + offset)
-        .expect("kernel_utimensat end");
-    let utimensat = &source[utimensat_start..utimensat_end];
+    let utimensat = item_body(source, "kernel_utimensat(");
     let path_guard = utimensat
         .find("let path = if path_len == 0 {")
         .expect("zero-length utimensat path guard");
@@ -154,18 +226,8 @@ fn nullable_zero_length_dispatch_paths_never_construct_null_raw_slices() {
         .expect("positive-length utimensat path must retain the bounded slice");
     assert!(path_guard < empty_slice && empty_slice < path_raw_slice);
 
-    for (function, next_marker) in [
-        ("kernel_getsockname(", "\n/// getpeername"),
-        ("kernel_getpeername(", "\n/// Resolve a hostname"),
-    ] {
-        let start = source
-            .find(&format!("pub extern \"C\" fn {function}"))
-            .unwrap_or_else(|| panic!("{function} start"));
-        let end = source[start..]
-            .find(next_marker)
-            .map(|offset| start + offset)
-            .unwrap_or_else(|| panic!("{function} end"));
-        let body = &source[start..end];
+    for function in ["kernel_getsockname(", "kernel_getpeername("] {
+        let body = item_body(source, function);
         let empty_guard = body
             .find("let result = if addrlen == 0 {")
             .unwrap_or_else(|| panic!("{function} zero-length guard"));

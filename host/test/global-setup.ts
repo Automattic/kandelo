@@ -149,11 +149,36 @@ const WAT_FIXTURES = [
   "wasi-scalar-abi.wat",
 ];
 
+/**
+ * Toolchain inputs whose change must force every compiled fixture to rebuild.
+ * The syscall glue and the built libc are compiled into (or linked with) every
+ * program, so a glue/libc edit that does not touch the test source would
+ * otherwise leave stale `.wasm` fixtures behind an mtime-only cache.
+ */
+const FIXTURE_TOOLCHAIN_INPUTS = [
+  join(repoRoot, "libc/glue/channel_syscall.c"),
+  join(repoRoot, "sysroot/lib/libc.a"),
+  join(repoRoot, "sysroot64/lib/libc.a"),
+];
+
+function newestToolchainMtimeMs(): number {
+  let newest = 0;
+  for (const input of FIXTURE_TOOLCHAIN_INPUTS) {
+    if (existsSync(input)) {
+      newest = Math.max(newest, statSync(input).mtimeMs);
+    }
+  }
+  return newest;
+}
+
 function needsRebuild(srcFile: string, outFile: string): boolean {
   if (!existsSync(outFile)) return true;
   const srcStat = statSync(srcFile);
   const outStat = statSync(outFile);
-  return srcStat.mtimeMs > outStat.mtimeMs;
+  if (srcStat.mtimeMs > outStat.mtimeMs) return true;
+  // Rebuild when the syscall glue or libc is newer than the artifact: those
+  // are compiled/linked into every program but are not the test source.
+  return newestToolchainMtimeMs() > outStat.mtimeMs;
 }
 
 function compileCTestProgram(

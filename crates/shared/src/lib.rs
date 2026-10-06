@@ -1,7 +1,9 @@
 #![no_std]
 
+pub mod channel_record;
 pub mod channel_scalar;
 pub mod host_abi;
+pub mod host_raw_syscalls;
 pub mod ioctl_contract;
 pub mod process_layout;
 
@@ -171,7 +173,18 @@ pub mod process_layout;
 ///     fork/dup/exec, instead of a host handle answered per pid. The GL
 ///     command stream gains OP_BLEND_FUNC_SEPARATE, OP_BLEND_EQUATION_SEPARATE
 ///     and QOP_FINISH.
-pub const ABI_VERSION: u32 = 47;
+/// 48: opaque channel transport (the guest self-marshals each syscall's
+///     pointer arguments into one bounded record, and `TEARDOWN` joins the
+///     channel status values), kernel-owned syscall argument marshalling
+///     (`sendmsg`/`recvmsg`, the scatter/gather family, SysV IPC and mqueue
+///     arguments are read and written by the kernel in the caller's data
+///     model; the fixed kernel-scratch iovec/msghdr wires and the SysV
+///     sizing exports are gone), a per-process pointer width registered once
+///     instead of carried in channel argument slot 5 (which returns
+///     `preadv2`/`pwritev2` their `flags`), the dispatch-only kernel export
+///     cut, and network-interface ioctls served by the kernel.
+///     docs/abi-versioning.md ("ABI 48") lists each.
+pub const ABI_VERSION: u32 = 48;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -218,6 +231,18 @@ pub mod platform_limits {
     /// u32 byte-length wire used by tokenized scratch reservations.
     pub const MAX_TRANSFER_ALLOCATION_BYTES: usize = u32::MAX as usize;
     pub const IOV_MAX: usize = 1024;
+    /// Largest `msg_controllen` a caller may present to `sendmsg`/`recvmsg`.
+    ///
+    /// Ancillary data is kernel-allocated on the caller's word, so it needs a
+    /// ceiling that is a property of the operation rather than of whatever
+    /// allocation happens to fail first. Linux bounds the same buffer with
+    /// `net.core.optmem_max`, whose default is on this order; the value is
+    /// generous next to the only ancillary payload Kandelo carries — one
+    /// `SCM_RIGHTS` array, which `IOV_MAX`-scale descriptor counts do not
+    /// approach — and a request above it is EINVAL rather than an allocation
+    /// that might or might not succeed depending on unrelated memory
+    /// pressure.
+    pub const SOCKET_CONTROL_MAX_BYTES: usize = 64 * 1024;
 }
 
 /// Host/kernel selectors for one atomic argv/environment replacement.
@@ -846,6 +871,15 @@ pub enum ChannelStatus {
     Pending = 1,
     Complete = 2,
     Error = 3,
+    /// Host-driven thread reclamation sentinel (not a normal syscall
+    /// outcome). The pump publishes this value plus an `atomic_notify` to
+    /// unwind a guest thread parked in the channel wait
+    /// (`memory.atomic.wait32`) without letting it resume the
+    /// superseded/doomed image — execve-abandon, fork-replay teardown, and
+    /// spawn `-ECHILD` rollback. The guest glue traps immediately on
+    /// observing this status instead of reading CH_RETURN/CH_ERRNO. See
+    /// `docs/plans/2026-09-05-native-thread-reclamation-spike.md`.
+    Teardown = 4,
 }
 
 impl ChannelStatus {
@@ -859,6 +893,8 @@ impl ChannelStatus {
             Some(Self::Complete)
         } else if val == Self::Error as u32 {
             Some(Self::Error)
+        } else if val == Self::Teardown as u32 {
+            Some(Self::Teardown)
         } else {
             None
         }
@@ -1031,6 +1067,109 @@ pub mod flags {
     pub const AT_EMPTY_PATH: u32 = 0x1000;
 }
 
+/// Per-call read/write flags (`RWF_*`) carried by `preadv2`/`pwritev2`.
+///
+/// These are the sixth argument of both calls. That slot used to be
+/// unavailable: the host overwrote it with the caller's pointer width, so no
+/// `RWF_*` value ever reached the kernel. The width is now registered per
+/// process, and the slot belongs to the caller again.
+///
+/// Only [`RWF_NOWAIT`] is implemented. Every other bit names behaviour this
+/// kernel does not provide, and [`RWF_SUPPORTED`] is deliberately narrow so an
+/// unimplemented flag is refused rather than silently ignored -- a caller that
+/// asked for `RWF_DSYNC` and got an unsynced write was told a lie.
+pub mod rwf_flags {
+    /// High-priority request hint.
+    pub const RWF_HIPRI: u32 = 0x0000_0001;
+    /// Per-write data synchronization (`O_DSYNC` for this call only).
+    pub const RWF_DSYNC: u32 = 0x0000_0002;
+    /// Per-write file synchronization (`O_SYNC` for this call only).
+    pub const RWF_SYNC: u32 = 0x0000_0004;
+    /// Fail with `EAGAIN` rather than blocking.
+    pub const RWF_NOWAIT: u32 = 0x0000_0008;
+    /// Per-write append (`O_APPEND` for this call only).
+    pub const RWF_APPEND: u32 = 0x0000_0010;
+    /// Per-write suppression of an open file description's `O_APPEND`.
+    pub const RWF_NOAPPEND: u32 = 0x0000_0020;
+    /// Torn-write-prevention request.
+    pub const RWF_ATOMIC: u32 = 0x0000_0040;
+    /// Drop the page cache for the range after the transfer.
+    pub const RWF_DONTCACHE: u32 = 0x0000_0080;
+
+    /// The flags this kernel actually implements.
+    ///
+    /// `RWF_NOWAIT` is the one flag with behaviour behind it here: it
+    /// suppresses the blocking retry a would-block transfer would otherwise
+    /// park on, which is exactly what the flag promises.
+    pub const RWF_SUPPORTED: u32 = RWF_NOWAIT;
+
+    /// Accept a `preadv2`/`pwritev2` `flags` word, or refuse it.
+    ///
+    /// An unimplemented flag is an error, not a no-op. Every bit outside
+    /// [`RWF_SUPPORTED`] names behaviour the caller asked for and would not
+    /// get -- a write that was not synchronized for `RWF_DSYNC`, an offset
+    /// that was not taken from the end of the file for `RWF_APPEND` -- and
+    /// reporting success for it would be a lie the caller cannot detect.
+    /// Linux answers the same way, with `EOPNOTSUPP`.
+    pub fn check_rwf_flags(flags: u32) -> Result<u32, crate::Errno> {
+        if flags & !RWF_SUPPORTED != 0 {
+            return Err(crate::Errno::EOPNOTSUPP);
+        }
+        Ok(flags)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::Errno;
+
+        #[test]
+        fn no_flags_and_rwf_nowait_are_accepted() {
+            assert_eq!(check_rwf_flags(0), Ok(0));
+            assert_eq!(check_rwf_flags(RWF_NOWAIT), Ok(RWF_NOWAIT));
+        }
+
+        #[test]
+        fn every_unimplemented_flag_is_refused_rather_than_ignored() {
+            for flag in [
+                RWF_HIPRI,
+                RWF_DSYNC,
+                RWF_SYNC,
+                RWF_APPEND,
+                RWF_NOAPPEND,
+                RWF_ATOMIC,
+                RWF_DONTCACHE,
+            ] {
+                assert_eq!(
+                    check_rwf_flags(flag),
+                    Err(Errno::EOPNOTSUPP),
+                    "flag {flag:#x} must be refused, not silently dropped",
+                );
+                // Pairing an unimplemented flag with the implemented one does
+                // not launder it.
+                assert_eq!(
+                    check_rwf_flags(flag | RWF_NOWAIT),
+                    Err(Errno::EOPNOTSUPP),
+                );
+            }
+        }
+
+        #[test]
+        fn undefined_high_bits_are_refused_too() {
+            // A bit this kernel has never heard of is not a bit it implements.
+            assert_eq!(check_rwf_flags(0x8000_0000), Err(Errno::EOPNOTSUPP));
+            assert_eq!(check_rwf_flags(u32::MAX), Err(Errno::EOPNOTSUPP));
+        }
+
+        #[test]
+        fn the_supported_set_stays_narrow() {
+            // Widening this set is a claim that the kernel implements another
+            // flag. It must be made deliberately, with the behaviour.
+            assert_eq!(RWF_SUPPORTED, RWF_NOWAIT);
+        }
+    }
+}
+
 /// File descriptor flags (FD_*).
 pub mod fd_flags {
     pub const FD_CLOEXEC: u32 = 1;
@@ -1115,13 +1254,6 @@ pub mod socket {
     pub const SCM_RIGHTS: u32 = 1;
     /// Serialized width of one file descriptor in SCM_RIGHTS payload data.
     pub const SCM_RIGHTS_FD_BYTES: usize = 4;
-    /// Exact iovec-record count in a nonempty flattened kernel message wire.
-    ///
-    /// WHY: public sendmsg/recvmsg still accept IOV_MAX native entries. The
-    /// host flattens or scatters those entries through one canonical scratch
-    /// iovec so Rust never interprets a caller-width table. An empty caller
-    /// list uses zero records; every nonempty list uses exactly this count.
-    pub const KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT: u32 = 1;
     pub const SCM_CREDENTIALS: u32 = 2;
     pub const SO_REUSEADDR: u32 = 2;
     pub const SO_ERROR: u32 = 4;
@@ -1340,10 +1472,27 @@ pub mod channel {
     /// until an explicit guest checkpoint can invoke the handler after the
     /// owning host transition returns.
     pub const REQUEST_FLAG_DEFER_SIGNAL_DELIVERY: u32 = 1 << 2;
+    /// The guest self-marshalled this request's pointer arguments into an opaque
+    /// [`crate::channel_record`] record at [`DATA_OFFSET`] (Phase 2 transport).
+    ///
+    /// WHY a header flag, not a data-region magic: the record magic lives in the
+    /// reusable/inheritable data buffer, so a fork child or a reused per-thread
+    /// channel slot can carry a stale magic from a prior process into a RAW
+    /// syscall. This flag is written fresh in the channel header on every
+    /// request (beside the syscall number), exactly like
+    /// [`REQUEST_FLAG_CANCELLATION_POINT`], so it can never be stale. The host
+    /// keys the record vs raw transport decision on this bit and carries it to
+    /// the kernel as the entry point (`kernel_handle_channel_record` instead of
+    /// `kernel_handle_channel`); the kernel never infers a record from the
+    /// magic. The flag on a host-raw syscall, a missing or malformed record, or
+    /// a record naming a different syscall than the header is `EINVAL` to that
+    /// one request.
+    pub const REQUEST_FLAG_OPAQUE_RECORD: u32 = 1 << 3;
     /// Every request flag understood by this ABI epoch.
     pub const REQUEST_FLAGS_KNOWN_MASK: u32 = REQUEST_FLAG_CANCELLATION_POINT
         | REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
-        | REQUEST_FLAG_DEFER_SIGNAL_DELIVERY;
+        | REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
+        | REQUEST_FLAG_OPAQUE_RECORD;
     /// Total header size before data buffer.
     pub const HEADER_SIZE: usize = REQUEST_FLAGS_OFFSET + REQUEST_FLAGS_SIZE;
     /// Byte offset of the data buffer region.
@@ -1422,7 +1571,8 @@ mod channel_abi_tests {
             channel::REQUEST_FLAGS_KNOWN_MASK,
             channel::REQUEST_FLAG_CANCELLATION_POINT
                 | channel::REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
-                | channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
+                | channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
+                | channel::REQUEST_FLAG_OPAQUE_RECORD,
         );
         assert_eq!(
             channel::SIG_BASE + channel::SIG_AREA_SIZE,
@@ -1439,6 +1589,31 @@ mod channel_abi_tests {
         assert!(channel::SIG_DELIVERY_SIZE <= channel::SIG_AREA_SIZE);
         assert_eq!(channel::SIG_AREA_SIZE - channel::SIG_DELIVERY_SIZE, 0);
         assert_eq!(channel::SIG_BASE % channel::SIG_AREA_ALIGNMENT, 0);
+    }
+
+    #[test]
+    fn teardown_status_is_distinct_from_every_other_channel_status() {
+        use super::ChannelStatus;
+
+        let all = [
+            ChannelStatus::Idle,
+            ChannelStatus::Pending,
+            ChannelStatus::Complete,
+            ChannelStatus::Error,
+            ChannelStatus::Teardown,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i != j {
+                    assert_ne!(*a as u32, *b as u32, "{a:?} collides with {b:?}");
+                }
+            }
+        }
+        assert_eq!(ChannelStatus::Teardown as u32, 4);
+        assert_eq!(
+            ChannelStatus::from_u32(ChannelStatus::Teardown as u32),
+            Some(ChannelStatus::Teardown),
+        );
     }
 }
 
@@ -1780,46 +1955,6 @@ pub struct WasmPollFd {
     pub revents: i16,
 }
 
-/// Fixed u32-pointer iovec used only inside kernel-owned scratch.
-///
-/// Guest wasm64 `struct iovec` is wider. The host validates and translates
-/// caller-native records before Rust receives this width-independent wire.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct KernelIovecWire {
-    pub base: u32,
-    pub len: u32,
-}
-
-/// Fixed u32-pointer `msghdr` used only inside kernel-owned scratch.
-///
-/// The pointed-to name, control, iovec, and data ranges all live within the
-/// same synchronously leased kernel allocation.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct KernelMsghdrWire {
-    pub name: u32,
-    pub name_len: u32,
-    pub iov: u32,
-    pub iov_len: u32,
-    pub control: u32,
-    pub control_len: u32,
-    pub flags: u32,
-}
-
-/// Fixed ancillary-message header used only inside kernel-owned scratch.
-///
-/// This matches the wasm32 C layout by design, but it is not a caller-native
-/// structure. The host translates wasm64 headers and eight-byte CMSG
-/// alignment before and after the synchronous kernel call.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct KernelCmsghdrWire {
-    pub cmsg_len: u32,
-    pub cmsg_level: u32,
-    pub cmsg_type: u32,
-}
-
 /// Canonical `struct epoll_event` layout used by both Kandelo musl targets.
 ///
 /// The C ABI aligns `epoll_data_t` to eight bytes on wasm32 and wasm64, so
@@ -1867,8 +2002,7 @@ pub struct WasmStatfs {
 #[cfg(test)]
 mod native_wire_layout_tests {
     use super::{
-        kernel_scratch_wire, prctl, KernelCmsghdrWire, KernelIovecWire, KernelMsghdrWire,
-        WasmEpollEvent, WasmFlock, WasmSysvMessageHeader,
+        kernel_scratch_wire, prctl, WasmEpollEvent, WasmFlock, WasmSysvMessageHeader,
     };
     use core::mem::{align_of, offset_of, size_of};
 
@@ -1884,30 +2018,6 @@ mod native_wire_layout_tests {
     fn sysv_message_header_is_one_canonical_i64() {
         assert_eq!(size_of::<WasmSysvMessageHeader>(), 8);
         assert_eq!(offset_of!(WasmSysvMessageHeader, mtype), 0);
-    }
-
-    #[test]
-    fn kernel_socket_scratch_wires_use_fixed_u32_fields() {
-        assert_eq!(size_of::<KernelIovecWire>(), 8);
-        assert_eq!(align_of::<KernelIovecWire>(), 4);
-        assert_eq!(offset_of!(KernelIovecWire, base), 0);
-        assert_eq!(offset_of!(KernelIovecWire, len), 4);
-
-        assert_eq!(size_of::<KernelMsghdrWire>(), 28);
-        assert_eq!(align_of::<KernelMsghdrWire>(), 4);
-        assert_eq!(offset_of!(KernelMsghdrWire, name), 0);
-        assert_eq!(offset_of!(KernelMsghdrWire, name_len), 4);
-        assert_eq!(offset_of!(KernelMsghdrWire, iov), 8);
-        assert_eq!(offset_of!(KernelMsghdrWire, iov_len), 12);
-        assert_eq!(offset_of!(KernelMsghdrWire, control), 16);
-        assert_eq!(offset_of!(KernelMsghdrWire, control_len), 20);
-        assert_eq!(offset_of!(KernelMsghdrWire, flags), 24);
-
-        assert_eq!(size_of::<KernelCmsghdrWire>(), 12);
-        assert_eq!(align_of::<KernelCmsghdrWire>(), 4);
-        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_len), 0);
-        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_level), 4);
-        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_type), 8);
     }
 
     #[test]
@@ -3183,6 +3293,7 @@ pub mod abi {
         "kernel_get_process_state",
         "kernel_get_socket_timeout_ms",
         "kernel_handle_channel",
+        "kernel_handle_channel_record",
         "kernel_has_sa_nocldstop",
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",
@@ -3198,8 +3309,6 @@ pub mod abi {
         "kernel_ipc_shmdt_for_task",
         "kernel_is_fd_nonblock",
         "kernel_mark_process_signaled",
-        "kernel_mq_descriptor_msgsize",
-        "kernel_msqid_ds_bytes",
         "kernel_pcm_claim_transport",
         "kernel_pcm_clock_update",
         "kernel_pcm_reconcile",
@@ -3217,11 +3326,8 @@ pub mod abi {
         "kernel_publish_spawn_child",
         "kernel_reap_exited_child",
         "kernel_remove_process",
-        "kernel_semctl_array_bytes",
-        "kernel_semid_ds_bytes",
         "kernel_set_current_tid",
         "kernel_set_cwd",
-        "kernel_shmid_ds_bytes",
         "kernel_spawn_exec_commit",
         "kernel_spawn_exec_target_prepare",
         "kernel_spawn_process",
