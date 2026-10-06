@@ -211,6 +211,15 @@ pipe pair.
   (`apps/browser-demos/pages/kandelo/panes/Shell.tsx`) builds its own
   `Terminal`; `apps/browser-demos/lib/pty-terminal.ts` provides a standalone
   `PtyTerminal` for pages that drive a `BrowserKernel` directly.
+- The PTY window size (`TIOCGWINSZ`) is the size of the terminal displaying
+  it. Only an `attachPty()` call that passes `{ cols, rows }` (the Shell
+  pane's fitted xterm) sets it, sending `SIGWINCH` to the foreground process
+  group when it changes. Programmatic writers that share the PTY without
+  rendering it — boot-link scripts, demo guide and dock actions,
+  `runShellCommand`, `interruptShellForeground` — attach without a size and
+  leave the winsize alone, so a full-screen program they launch (`vim`,
+  `nano`) fills the visible terminal. A PTY started before any terminal
+  reports a size starts at 80×24 until the first sized attach.
 
 #### Clickable links
 

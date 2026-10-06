@@ -67,6 +67,36 @@ test("a #k1= boot link runs its script in the initial shell @slow", async ({ pag
   await text.toContain("runScript");            // manifest content, proves materialization ran
 });
 
+/** The rows and columns the visible xterm (DOM renderer) is drawing. */
+async function visibleTerminalSize(page: Page): Promise<{ rows: number; cols: number }> {
+  return page.evaluate(() => {
+    const rows = document.querySelectorAll(".xterm-rows > div").length;
+    const screen = document.querySelector<HTMLElement>(".xterm-screen");
+    const measure = document.querySelector<HTMLElement>(".xterm-char-measure-element");
+    if (!screen || !measure?.textContent) return { rows, cols: 0 };
+    const cellWidth = measure.getBoundingClientRect().width / measure.textContent.length;
+    return { rows, cols: Math.round(screen.getBoundingClientRect().width / cellWidth) };
+  });
+}
+
+test("a #k1= boot link script sees the visible terminal's size @slow", async ({ page }) => {
+  test.setTimeout(300_000);
+  // A link that opens vim or nano lays the editor out from TIOCGWINSZ. The
+  // runner reaches the PTY without a terminal of its own; it must not shrink
+  // the winsize the visible terminal set, or the editor draws in a corner.
+  const fragment = await scriptFragment('echo "winsize:$(stty size)"\n');
+  await gotoMachine(page, "shell", { hash: fragment });
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({
+    timeout: 180_000,
+  });
+  await expect
+    .poll(() => terminalText(page), { timeout: 120_000 })
+    .toMatch(/winsize:\d+ \d+/);
+  const [, rows, cols] = /winsize:(\d+) (\d+)/.exec(await terminalText(page))!;
+  expect({ rows: Number(rows), cols: Number(cols) })
+    .toEqual(await visibleTerminalSize(page));
+});
+
 test("a malformed #k1= fragment fails loudly instead of booting", async ({ page }) => {
   await gotoMachine(page, "shell", { hash: "k1=!!!not-base64url!!!" });
   await expect(
