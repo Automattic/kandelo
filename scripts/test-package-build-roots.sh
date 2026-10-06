@@ -1042,7 +1042,7 @@ grep -F -- "--with-baseruby=\"\$BASERUBY_COMMAND\"" "$ruby_script" >/dev/null ||
 grep -F "CPPFLAGS=\"-DRUBY_KANDELO_POSIX=1 -I\$ZLIB_PREFIX/include\"" \
     "$ruby_script" >/dev/null ||
     fail "Ruby configure CPPFLAGS reintroduced its private sysroot path"
-grep -F "LDFLAGS=\"-L\$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576\"" \
+grep -F "LDFLAGS=\"-L\$ZLIB_PREFIX/lib\"" \
     "$ruby_script" >/dev/null ||
     fail "Ruby configure LDFLAGS reintroduced its private sysroot path"
 grep -F 'GUEST_PREFIX="${WASM_POSIX_DEP_GUEST_PREFIX-/usr}"' "$ruby_script" >/dev/null ||

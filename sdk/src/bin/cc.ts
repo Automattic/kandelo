@@ -7,7 +7,6 @@ import { resolveLldMajor, resolveToolchain, type Toolchain } from '../lib/toolch
 import {
   calltypesPluginFlags,
   compileFlags,
-  DEFAULT_MAIN_THREAD_STACK_SIZE,
   filterArgs,
   inferThreadSlotDeclaration,
   linkFlags,
@@ -125,6 +124,21 @@ function readLlvmResponseFile(
 export type LinkerPreparation =
   | { kind: 'no-link' }
   | { kind: 'executable-link'; mainThreadStackSizeBytes: number };
+
+// Internal-only third variant, never returned by prepareExecutableLinker()
+// and never accepted by the public buildClangArgs() — by construction in
+// TypeScript (LinkerPreparation, the public type, has no 'measure-only'
+// member), which is a compile-time guarantee here since the SDK runs
+// under --experimental-strip-types rather than through a build step. It
+// drives exactly one caller: prepareExecutableLinker()'s own provisional
+// trace, built solely to discover what the caller actually asked for.
+// That trace must never itself
+// inject a stack-size flag — doing so would plant an SDK-authored `-z
+// stack-size=` occurrence that sits after (and, since wasm-ld and
+// mainThreadStackSize() both resolve repeated occurrences last-one-wins,
+// overrides) any real request forwarded from the caller's own args. See
+// linkFlags()'s `null` handling in sdk/src/lib/flags.ts.
+type InternalLinkerPreparation = LinkerPreparation | { kind: 'measure-only' };
 
 function isPinnedLinker(actualPath: string | undefined, linkerPath: string): boolean {
   if (actualPath === linkerPath) return true;
@@ -313,7 +327,7 @@ function buildClangArgsInternal(
   userArgs: string[],
   toolchain: Toolchain,
   arch: WasmArch = 'wasm32',
-  executableLinker?: LinkerPreparation,
+  executableLinker?: InternalLinkerPreparation,
   reportWarnings = true,
   classifyLink = false,
   glueObjects?: string[],
@@ -400,21 +414,41 @@ function buildClangArgsInternal(
           'wasm-ld version is unresolved; call prepareExecutableLinker() before building executable link arguments',
         );
       }
-      if (!executableLinker || executableLinker.kind !== 'executable-link') {
+      if (
+        !executableLinker ||
+        (executableLinker.kind !== 'executable-link' && executableLinker.kind !== 'measure-only')
+      ) {
         throw new Error(
           'executable linker arguments are unprepared; call prepareExecutableLinker() and pass its result to buildClangArgs()',
         );
       }
-      const preparedStackSize = executableLinker.mainThreadStackSizeBytes;
-      if (
-        !Number.isSafeInteger(preparedStackSize) ||
-        preparedStackSize < DEFAULT_MAIN_THREAD_STACK_SIZE ||
-        preparedStackSize > MAX_EXECUTABLE_MEMORY_SIZE
-      ) {
-        throw new Error(
-          `prepared main-thread stack size must be an integer from ${DEFAULT_MAIN_THREAD_STACK_SIZE} ` +
-          `through ${MAX_EXECUTABLE_MEMORY_SIZE} bytes`,
-        );
+      // `measure-only` is prepareExecutableLinker()'s own provisional trace
+      // (see InternalLinkerPreparation above): pass `null` through to
+      // linkFlags() so it omits the stack-size flag entirely rather than
+      // injecting a value that would contaminate that trace.
+      const preparedStackSize = executableLinker.kind === 'executable-link'
+        ? executableLinker.mainThreadStackSizeBytes
+        : null;
+      if (preparedStackSize !== null) {
+        // The 8 MiB floor is applied by mainThreadStackSize() as a DEFAULT
+        // when no request is present, not enforced again here — an explicit
+        // caller request below the floor is a choice mainThreadStackSize()
+        // already honoured (with its own warning), and re-clamping it here
+        // would silently reinstate the exact bug this floor stopped being
+        // an invariant of. Non-negativity, integer-ness, and the executable
+        // memory ceiling remain structural requirements of the linker
+        // invocation itself (a negative or fractional byte count is not a
+        // floor policy, it is nonsense wasm-ld cannot act on).
+        if (
+          !Number.isSafeInteger(preparedStackSize) ||
+          preparedStackSize < 0 ||
+          preparedStackSize > MAX_EXECUTABLE_MEMORY_SIZE
+        ) {
+          throw new Error(
+            `prepared main-thread stack size must be a non-negative integer ` +
+            `no greater than ${MAX_EXECUTABLE_MEMORY_SIZE} bytes`,
+          );
+        }
       }
       // Executable build: place platform definitions before caller inputs and
       // leave the final libc archive available for everything still
@@ -518,9 +552,14 @@ export async function prepareExecutableLinker(
   if (classifiedLinkerArgs === null) return { kind: 'no-link' };
 
   toolchain.lldMajor = await resolveLldMajor(toolchain.llvmDir);
+  // `measure-only`, not a real `executable-link`: this trace exists only to
+  // discover what the caller actually asked for (with the same crt1.o/glue
+  // shape as the real build, so a cc1 job — and with it a working directory
+  // for response-file resolution — is guaranteed even for an object-only
+  // link). It must carry no SDK-injected stack-size flag of its own; see
+  // InternalLinkerPreparation and linkFlags()'s `null` handling.
   const provisional = buildClangArgsInternal(userArgs, toolchain, arch, {
-    kind: 'executable-link',
-    mainThreadStackSizeBytes: DEFAULT_MAIN_THREAD_STACK_SIZE,
+    kind: 'measure-only',
   }, false);
   const trace = await run(compiler, ['-###', ...provisional]);
   if (trace.exitCode !== 0) {

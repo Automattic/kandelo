@@ -29,6 +29,22 @@ if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]
     export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 fi
 
+# There used to be a standalone-only reuse guard here: if "$OUT" existed,
+# install it and `exit 0`. It was the only one of its kind in the registry,
+# and it skipped the compile AND the fork instrumentation. After the fork
+# instrumenter changed, a standalone run therefore reinstalled the previous
+# artifact byte-for-byte while reporting success; on the branch where this
+# was found, the stale binary died before `_start` because the instrumenter
+# had gained an export the host requires at process start.
+#
+# `bin/` is gitignored, so a fresh clone never had the stale input. That is
+# what made this invisible: it only reproduced in a long-lived checkout that
+# had built msmtpd before.
+#
+# Caching belongs to the resolver and the source-only cache, which key on the
+# build closure. A package script deciding for itself that its own output is
+# still good cannot see that a tool upstream of it changed.
+
 if ! command -v wasm32posix-cc >/dev/null 2>&1; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1

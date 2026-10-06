@@ -98,7 +98,6 @@ echo "==> Linking sqlite3 CLI against libsqlite3.a + readline..."
     -L"$READLINE_DIR/lib" -lreadline -lhistory \
     -L"$NCURSES_DIR/lib" -ltinfow \
     -lm \
-    -Wl,-z,stack-size=1048576 \
     -o "$OUT"
 
 echo "==> Applying fork instrumentation (.shell/.system/.import fork)..."

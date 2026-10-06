@@ -245,10 +245,13 @@ export function expandResponseFiles(
 }
 
 /**
- * Apply the SDK's stack-size floor while retaining explicit larger requests.
- * Callers pass the exact argv emitted for wasm-ld by Clang's `-###` trace. That
- * keeps Clang's option classification and ordering in Clang itself instead of
- * duplicating its driver option table here.
+ * Apply the SDK's stack-size floor when no explicit request is present, and
+ * otherwise honour the caller's explicit request verbatim — even below the
+ * floor — the same way repeated `-z stack-size=` operands resolve in
+ * wasm-ld itself: last one wins. Callers pass the exact argv emitted for
+ * wasm-ld by Clang's `-###` trace. That keeps Clang's option classification
+ * and ordering in Clang itself instead of duplicating its driver option
+ * table here.
  */
 export function mainThreadStackSize(
   linkerArgs: string[],
@@ -263,7 +266,27 @@ export function mainThreadStackSize(
         `stack-size=${value} exceeds the SDK's ${MAX_EXECUTABLE_MEMORY_SIZE}-byte executable memory limit`,
       );
     }
-    if (requested.kind === 'valid' && requested.value > result) result = requested.value;
+    if (requested.kind !== 'valid') return;
+    if (requested.value < DEFAULT_MAIN_THREAD_STACK_SIZE) {
+      // HONOUR IT, LOUDLY. Silently substituting the floor meant the SDK built
+      // something other than what was asked for and did not say so. Absence of
+      // a request still gets the floor (see the initial value of `result`):
+      // that is a default. An explicit smaller request is a CHOICE, and the
+      // only situation that warrants one is a fixture deliberately exercising
+      // a constrained layout.
+      //
+      // The warning is informational, not the safety mechanism. WebAssembly
+      // has no stack guard page, so an overflow writes past `__data_end` into
+      // `.bss` and corrupts the pthread/TLS globals there rather than
+      // trapping. The DEFAULT is the protection.
+      console.warn(
+        `wasm32posix: stack-size=${requested.value} is below the SDK floor of ` +
+          `${DEFAULT_MAIN_THREAD_STACK_SIZE}. Honouring it. WebAssembly has no ` +
+          `stack guard page: an overflow will corrupt .bss silently instead of ` +
+          `trapping.`,
+      );
+    }
+    result = requested.value;
   };
 
   const lldArgs = readResponseFile
@@ -300,7 +323,7 @@ export function hostImportsAllowance(glueDir: string): string {
 export function linkFlags(
   arch: WasmArch,
   hostImportsFile: string,
-  mainThreadStackSizeBytes = DEFAULT_MAIN_THREAD_STACK_SIZE,
+  mainThreadStackSizeBytes: number | null = DEFAULT_MAIN_THREAD_STACK_SIZE,
 ): string[] {
   return [
     '-nostdlib',
@@ -328,12 +351,25 @@ export function linkFlags(
     // real fault. POSIX leaves the default stack size implementation-defined,
     // but 8 MiB is the de-facto Linux/glibc RLIMIT_STACK default that mainstream
     // C software (GTK, etc.) is written and tested against, so matching it
-    // maximizes portability. Treat it as a floor: callers retain explicit larger
-    // requests. This sizes only the main thread; pthreads get their own stacks
+    // maximizes portability. Applied only as a DEFAULT when no explicit
+    // request is present (see mainThreadStackSize() above); an explicit
+    // caller request, larger OR smaller, is honoured verbatim, since a
+    // request that is present is a choice, not an absence to fill in for.
+    // This sizes only the main thread; pthreads get their own stacks
     // from musl's __default_stacksize. Cost: at least ~8 MiB of initial linear
     // memory per process (it raises __heap_base 1:1). Keep in sync with the bash
     // wasm32posix-cc. See docs/sdk-guide.md.
-    `-Wl,-z,stack-size=${mainThreadStackSizeBytes}`,
+    //
+    // `null` omits this flag entirely instead of falling back to the
+    // default. sdk/src/bin/cc.ts's prepareExecutableLinker() uses that to
+    // take an uncontaminated measurement of a caller's own
+    // `-z stack-size=` request: wasm-ld resolves repeated `-z stack-size=`
+    // operands last-one-wins, so injecting even the default value here
+    // would sit after (and so override) a genuine caller request in the
+    // same measurement trace.
+    ...(mainThreadStackSizeBytes === null
+      ? []
+      : [`-Wl,-z,stack-size=${mainThreadStackSizeBytes}`]),
     '-Wl,--global-base=1114112',
     '-Wl,--table-base=3',
     '-Wl,--export-table',

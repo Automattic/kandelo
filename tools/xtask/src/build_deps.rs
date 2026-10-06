@@ -6929,6 +6929,12 @@ fn compute_sha_with_identity_context_for_platform(
     chain.pop();
 
     let build_inputs = build_input_digests_from_repo(target, registry, main_repo_root, policy)?;
+    let build_script_input = match target.kind {
+        ManifestKind::Library | ManifestKind::Program => {
+            build_script_input_digest(target, main_repo_root)?
+        }
+        ManifestKind::Source => None,
+    };
     let global_toolchain_inputs = match target.kind {
         ManifestKind::Library | ManifestKind::Program => match global_toolchain_inputs_override {
             Some(inputs) => inputs.to_vec(),
@@ -7133,6 +7139,13 @@ fn compute_sha_with_identity_context_for_platform(
             h.update(input.digest);
             h.update(b"\n");
         }
+    }
+    if let Some(script) = &build_script_input {
+        h.update(b"build-script:v1\n");
+        h.update(script.label.as_bytes());
+        h.update(b"\n");
+        h.update(script.digest);
+        h.update(b"\n");
     }
     if !global_toolchain_inputs.is_empty() {
         h.update(b"global-toolchain-inputs:\n");
@@ -7731,6 +7744,51 @@ fn build_input_digests(
     registry: &Registry,
 ) -> Result<Vec<BuildInputDigest>, String> {
     build_input_digests_from_repo(target, registry, &repo_root(), ResolvePolicy::Default)
+}
+
+/// The build script the engine will execute for `target`, digested.
+///
+/// WHY THIS IS NOT A `build.toml` INPUT: the script IS the build, so it is the
+/// first member of the build closure, and leaving it to a hand-listed `inputs`
+/// entry let it fall out. On 2026-10-02 seventeen of 91 registry packages did
+/// not list their own script, so editing `build-wget.sh` left wget's key at
+/// `309ce6bf…` and the engine served the artifact the OLD script had built.
+/// This path comes from `DepsManifest::build_script_path`, the same function
+/// `build_into_cache` uses to choose what to run, so the key and the executed
+/// script cannot name different files. A package whose script does not exist
+/// contributes nothing here; `build_into_cache` refuses to build it anyway.
+///
+/// Packages that also list their script in `inputs` hash it twice. That is
+/// harmless, and the explicit entries stay: source-only label validation and
+/// several contract tests read them.
+fn build_script_input_digest(
+    target: &DepsManifest,
+    main_repo_root: &Path,
+) -> Result<Option<BuildInputDigest>, String> {
+    let script = target.build_script_path(main_repo_root);
+    if !script.is_file() {
+        return Ok(None);
+    }
+    // The label must not depend on where a checkout or registry lives, or
+    // byte-identical trees get different keys. An authored `script_path` is
+    // already a portable repo-relative spelling. The fallback script sits in
+    // the package's own directory, which can be under any registry root
+    // (an external `WASM_POSIX_DEPS_REGISTRY` is not below `main_repo_root`),
+    // so it is labelled relative to that directory.
+    let label = match target.build.script_path.as_deref() {
+        Some(authored) => authored.to_owned(),
+        None => format!(
+            "package-dir/{}",
+            script
+                .strip_prefix(&target.dir)
+                .unwrap_or(&script)
+                .to_string_lossy()
+        ),
+    };
+    Ok(Some(BuildInputDigest {
+        label,
+        digest: hash_build_input(&script)?,
+    }))
 }
 
 fn build_input_digests_from_repo(
@@ -13708,6 +13766,167 @@ fn require_current_source_only_cache_key(
     Ok(())
 }
 
+
+/// Labeled digests of everything that feeds a package's OWN contribution to
+/// its cache key, captured before its build script runs.
+///
+/// WHY this exists: when a build mutates one of its own cache-key inputs, the
+/// post-build verification can only say `before <sha>, after <sha>`. Two
+/// opaque shas name the symptom and hide the cause, which is the same shape as
+/// B29 (a stale kernel reported as a broken kernel) and B30 (a killed build
+/// reported as an undeclared artifact). It also reads exactly like a
+/// concurrent-edit race, which invites a retry loop instead of a fix. The
+/// snapshot lets the failure name the file.
+#[derive(Clone, Default)]
+struct CacheKeyInputSnapshot {
+    /// The package's own `build.toml` `inputs`, digested per declared entry.
+    declared: Vec<BuildInputDigest>,
+    /// `GLOBAL_PACKAGE_TOOLCHAIN_INPUTS` as the cache key saw them. This is
+    /// the MEMOIZED view: `global_package_toolchain_digests` caches per repo
+    /// root for the life of the process, so the pre- and post-build cache keys
+    /// necessarily agree about it even if the tree underneath changed. That
+    /// blind spot is precisely why the drift report re-reads these uncached.
+    global_toolchain_memoized: Vec<BuildInputDigest>,
+}
+
+/// Capture the per-input digests behind `target`'s cache key. Best effort:
+/// this is diagnostics, and a capture failure must never displace the real
+/// build error, so errors degrade to an empty side rather than propagating.
+fn capture_cache_key_inputs(
+    target: &DepsManifest,
+    registry: &Registry,
+    repo_root: &Path,
+    policy: ResolvePolicy,
+) -> CacheKeyInputSnapshot {
+    CacheKeyInputSnapshot {
+        declared: build_input_digests_from_repo(target, registry, repo_root, policy)
+            .unwrap_or_default(),
+        global_toolchain_memoized: global_package_toolchain_digests().unwrap_or_default(),
+    }
+}
+
+fn digest_map(digests: &[BuildInputDigest]) -> BTreeMap<String, [u8; 32]> {
+    digests
+        .iter()
+        .map(|entry| (entry.label.clone(), entry.digest))
+        .collect()
+}
+
+/// Compare two labeled digest sets and render the labels that moved.
+fn render_digest_drift(
+    heading: &str,
+    before: &[BuildInputDigest],
+    after: &[BuildInputDigest],
+    lines: &mut Vec<String>,
+) -> bool {
+    let (before, after) = (digest_map(before), digest_map(after));
+    let mut found = false;
+    for (label, before_digest) in &before {
+        match after.get(label) {
+            Some(after_digest) if after_digest == before_digest => {}
+            Some(after_digest) => {
+                found = true;
+                lines.push(format!(
+                    "  {heading} changed: {label} ({} -> {})",
+                    &hex(before_digest)[..16],
+                    &hex(after_digest)[..16]
+                ));
+            }
+            None => {
+                found = true;
+                lines.push(format!("  {heading} disappeared: {label}"));
+            }
+        }
+    }
+    for label in after.keys() {
+        if !before.contains_key(label) {
+            found = true;
+            lines.push(format!("  {heading} appeared: {label}"));
+        }
+    }
+    found
+}
+
+/// Name the cache-key inputs that changed while `target`'s build script ran.
+///
+/// Returns a human-readable block appended to the refusal. It never returns an
+/// error: a diagnostic that can fail would replace a real build failure with
+/// its own.
+fn describe_cache_key_input_drift(
+    before: &CacheKeyInputSnapshot,
+    target: &DepsManifest,
+    registry: &Registry,
+    repo_root: &Path,
+    policy: ResolvePolicy,
+) -> String {
+    let after_declared =
+        build_input_digests_from_repo(target, registry, repo_root, policy).unwrap_or_default();
+    // Re-read the global toolchain inputs UNCACHED. The cache key consulted a
+    // per-process memo, so a global input that changed mid-build is invisible
+    // to the key comparison itself; without this re-read the report would say
+    // "nothing changed" while a shared input had in fact moved underneath.
+    let after_global =
+        global_package_build_input_digests_for(repo_root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+            .unwrap_or_default();
+    describe_cache_key_input_drift_lines(
+        &before.declared,
+        &after_declared,
+        &before.global_toolchain_memoized,
+        &after_global,
+        &target.name,
+    )
+}
+
+/// The pure rendering half of the drift report: given the two before/after
+/// digest sets, produce the block appended to the refusal. Split out so the
+/// wording and the classification are testable without a registry on disk.
+fn describe_cache_key_input_drift_lines(
+    before_declared: &[BuildInputDigest],
+    after_declared: &[BuildInputDigest],
+    before_global: &[BuildInputDigest],
+    after_global: &[BuildInputDigest],
+    target_name: &str,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let declared_moved = render_digest_drift(
+        "declared build input",
+        before_declared,
+        after_declared,
+        &mut lines,
+    );
+    let global_moved = render_digest_drift(
+        "global toolchain input",
+        before_global,
+        after_global,
+        &mut lines,
+    );
+
+    if !declared_moved && !global_moved {
+        return format!(
+            "\n  no declared or global input changed; the difference is in a \
+             dependency's cache key, in {}'s own manifest fields (version, \
+             revision, source.url, source.sha256, declared outputs), or in the \
+             fork-instrument tool inputs",
+            target_name
+        );
+    }
+
+    let mut report = String::from("\n  inputs that changed while the build script ran:\n");
+    report.push_str(&lines.join("\n"));
+    if global_moved {
+        report.push_str(
+            "\n  NOTE: a global toolchain input changed. The cache key could \
+             not see this (it is memoized per process), so the key comparison \
+             understates the drift.",
+        );
+    }
+    report.push_str(
+        "\n  A build must not write into its own cache-key inputs. Either the \
+         path is a build OUTPUT that should not be a key input, or the step \
+         that writes it should run outside the tree.",
+    );
+    report
+}
 fn build_into_cache(
     target: &DepsManifest,
     registry: &Registry,
@@ -13724,6 +13943,7 @@ fn build_into_cache(
     policy: ResolvePolicy,
     force_rebuild: bool,
 ) -> Result<LocalBuildDisposition, String> {
+    let mut pre_build_cache_key_inputs: Option<CacheKeyInputSnapshot> = None;
     let dependency_variables = direct_dependency_variable_names(dep_dirs, policy)
         .map_err(|error| format!("{}: {error}", target.spec()))?;
     let parent = canonical
@@ -13994,6 +14214,12 @@ fn build_into_cache(
             }
         }
         git_inputs.export_to(&mut cmd);
+        // Captured before the build script runs so that, if the post-build
+        // cache-key verification refuses, the refusal can name the input that
+        // moved instead of printing two opaque shas. Diagnostics only: it
+        // feeds no key and gates nothing.
+        pre_build_cache_key_inputs =
+            Some(capture_cache_key_inputs(target, registry, repo_root, policy));
         for (name, variable) in &dependency_variables {
             let path = dependency_paths.get(name).ok_or_else(|| {
                 format!(
@@ -14108,10 +14334,24 @@ fn build_into_cache(
         )?;
         if post_build_key != cache_key_sha {
             return Err(format!(
-                "{}: cache key changed while building {} ({}): before {cache_key_sha}, after {post_build_key}; refusing publication under the pre-build key",
+                "{}: cache key changed while building {} ({}): before {cache_key_sha}, after {post_build_key}; refusing publication under the pre-build key{}",
                 target.spec(),
                 target.name,
-                arch.as_str()
+                arch.as_str(),
+                match &pre_build_cache_key_inputs {
+                    Some(before) => describe_cache_key_input_drift(
+                        before, &refreshed_target, registry, repo_root, policy,
+                    ),
+                    // Reaching here means the pre-build capture did not run on
+                    // a path that then reached the post-build check. Say so
+                    // rather than degrading silently back to two opaque shas:
+                    // a diagnostic that quietly disappears is indistinguishable
+                    // from one that was never added.
+                    None => "\n  (no pre-build input snapshot was captured, so \
+                             the changed input cannot be named here; that is a \
+                             defect in this refusal path, not in the build)"
+                        .to_string(),
+                }
             ));
         }
         git_inputs.cleanup_source_only().map_err(|error| {
@@ -17885,6 +18125,7 @@ fn cmd_install_local_artifact(
         binaries_dir,
         arch,
     )?;
+    let staged = matches!(outcome, LocalArtifactInstall::Staged { .. });
     match outcome {
         LocalArtifactInstall::Staged {
             generation,
@@ -17907,7 +18148,122 @@ fn cmd_install_local_artifact(
             println!("installed {}", mirror.display());
         }
     }
-    Ok(())
+    if staged {
+        // Nothing is published yet, so nothing can be shadowed yet. The
+        // completing member of the same session runs the check below.
+        return Ok(());
+    }
+    report_higher_priority_tier_shadow(manifest, artifact, source, binaries_dir, arch)
+}
+
+/// The higher-priority resolver tier that lives inside a `--binaries-dir`
+/// root. `host/src/binary-resolver.ts`'s `binaryCandidateTiers` orders
+/// `local-binaries/source-only-v1` **before** ambient `local-binaries`, so a
+/// file staged here shadows the same relative path installed by
+/// `install-local-artifact`.
+const SOURCE_ONLY_TIER_DIR: &str = "source-only-v1";
+
+/// Where `install-local-artifact` publishes `declared`, relative to the
+/// `--binaries-dir` root. Pure, so the tier-shadow check and the publisher
+/// cannot drift: it reproduces exactly the `binaries_dir` vs `arch_root`
+/// choice `install_local_artifact` makes from `uses_root_binary_mirror`.
+fn local_artifact_mirror_rel(
+    manifest: &DepsManifest,
+    mirror_relative: &Path,
+    arch: TargetArch,
+) -> PathBuf {
+    if manifest.uses_root_binary_mirror() {
+        mirror_relative.to_path_buf()
+    } else {
+        Path::new("programs").join(arch.as_str()).join(mirror_relative)
+    }
+}
+
+/// Fail loudly when a successful install leaves a HIGHER-priority resolver
+/// tier holding different bytes for the same path.
+///
+/// WHY: the resolver tries `local-binaries/source-only-v1/` before ambient
+/// `local-binaries/` (`binaryCandidateTiers` in `host/src/binary-resolver.ts`).
+/// `./run.sh rebuild kernel` refreshes the first; this command refreshes the
+/// second. Running only this one therefore refreshes the copy the guest tests
+/// do NOT read, and they keep executing the previous kernel while the command
+/// prints `installed ...` and exits 0. That cost one agent two hours, and it is
+/// the same shape as every other silent-success defect this project has found:
+/// a step that did half its job reported success anyway.
+///
+/// WHY A FAILURE RATHER THAN ALSO REFRESHING THE OTHER TIER: the SourceOnlyV1
+/// root is a content-addressed projection with its own manifest of per-member
+/// sizes and digests (`.kandelo/source-only-program-projection-v1.json`, which
+/// the browser resolver validates fetched bytes against). Only the local-build
+/// engine can write it consistently. Copying bytes into it from here would
+/// leave the manifest describing the old member — trading a loud stale tier for
+/// a silent inconsistent one. So this reports the real boundary and names the
+/// command that owns the other tier.
+///
+/// SCOPE: skipped when `WASM_POSIX_DEP_OUT_DIR` is set. That marks a
+/// resolver-driven package build, where the engine is mid-run and will publish
+/// its own projection when the build completes — the two tiers are *expected*
+/// to disagree in that window, and failing there would break every ordinary
+/// `./run.sh setup`. Also skipped when the root carries no SourceOnlyV1 tier at
+/// all (nothing can shadow), and when the higher tier has no entry for this
+/// path (the ambient copy is the only one, so it is the one that resolves).
+fn report_higher_priority_tier_shadow(
+    manifest: &DepsManifest,
+    artifact: &str,
+    source: &Path,
+    binaries_dir: &Path,
+    arch: TargetArch,
+) -> Result<(), String> {
+    if std::env::var_os("WASM_POSIX_DEP_OUT_DIR").is_some() {
+        return Ok(());
+    }
+    let higher_root = binaries_dir.join(SOURCE_ONLY_TIER_DIR);
+    if !higher_root.is_dir() {
+        return Ok(());
+    }
+    let declared = declared_local_artifact(manifest, artifact)?;
+    let mirror_rel = local_artifact_mirror_rel(manifest, &declared.mirror_relative, arch);
+    let shadowing = higher_root.join(&mirror_rel);
+    let shadowing_bytes = match std::fs::read(&shadowing) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "{}: read higher-priority resolver tier entry {}: {error}",
+                manifest.spec(),
+                shadowing.display()
+            ));
+        }
+    };
+    let installed_bytes = std::fs::read(source).map_err(|error| {
+        format!(
+            "{}: re-read installed artifact {} to compare tiers: {error}",
+            manifest.spec(),
+            source.display()
+        )
+    })?;
+    if shadowing_bytes == installed_bytes {
+        return Ok(());
+    }
+    Err(format!(
+        "{}: this install refreshed a LOWER-priority resolver tier and left a \
+         higher-priority one stale, so nothing will actually load the bytes just \
+         installed.\n  \
+         installed (lower priority):  {}\n  \
+         still shadows it (higher):   {}\n\
+         The resolver tries `{}` before ambient `local-binaries` \
+         (`binaryCandidateTiers` in host/src/binary-resolver.ts), so every consumer \
+         keeps resolving the older artifact.\n\
+         Refresh the higher tier through the build engine that owns it -- \
+         `./run.sh rebuild {}` (or `cargo xtask bootstrap {}`) -- then run \
+         `cargo xtask verify-fresh`.",
+        manifest.spec(),
+        binaries_dir.join(&mirror_rel).display(),
+        shadowing.display(),
+        SOURCE_ONLY_TIER_DIR,
+        manifest.name,
+        manifest.name,
+    ))
 }
 
 fn install_local_artifact(
@@ -23470,6 +23826,66 @@ revision    = 2
         );
     }
 
+    /// The executed build script moves the key even when `build.toml` does
+    /// not list it: wget's did not, and editing `build-wget.sh` left its key
+    /// unchanged (see `build_script_input_digest`).
+    #[test]
+    fn cache_key_changes_when_unlisted_build_script_changes() {
+        let root = tempdir("ckcs-unlisted-script");
+        write(&root, "libScript", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let pkg = root.join("libScript");
+        std::fs::write(pkg.join("recipe.txt"), "fixed\n").unwrap();
+        std::fs::write(
+            pkg.join("build.toml"),
+            r#"
+script_path = "libScript/build-libScript.sh"
+inputs = ["libScript/recipe.txt"]
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision    = 1
+"#,
+        )
+        .unwrap();
+        let script = pkg.join("build-libScript.sh");
+        std::fs::write(&script, "#!/bin/sh\necho one\n").unwrap();
+
+        // `root` stands in for the repository root, which is what the engine
+        // resolves `script_path` against (`DepsManifest::build_script_path`).
+        let key = || {
+            let manifest = DepsManifest::load_with_overlay(&pkg).unwrap();
+            assert_eq!(
+                manifest.build_script_path(&root),
+                script,
+                "the fixture must exercise the script the engine would run"
+            );
+            hex(&compute_sha_with_identity_context(
+                &manifest,
+                &reg,
+                TargetArch::Wasm32,
+                TEST_ABI,
+                ResolvePolicy::Default,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+                Some(&[]),
+                &root,
+                None,
+            )
+            .unwrap())
+        };
+
+        let before = key();
+        assert_eq!(before, key(), "the key must be stable for an unchanged tree");
+        std::fs::write(&script, "#!/bin/sh\necho two\n").unwrap();
+        assert_ne!(
+            before,
+            key(),
+            "editing the executed build script must change the cache key even when build.toml does not list it"
+        );
+    }
+
     #[test]
     fn compute_cache_key_sha_uses_build_toml_inputs() {
         let root = tempdir("ckcs-build-inputs");
@@ -26749,6 +27165,73 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         assert_ne!(first_path, second_path);
         assert!(first_path.to_string_lossy().ends_with(&hex(&first)));
         assert!(second_path.to_string_lossy().ends_with(&hex(&second)));
+    }
+
+    /// The tier-shadow check compares the file it just published against the
+    /// same relative path in `source-only-v1`. If this placement ever drifts
+    /// from `install_local_artifact`'s own `uses_root_binary_mirror` branch,
+    /// the check would compare the wrong file and go quiet again -- which is
+    /// the exact failure mode it exists to end.
+    #[test]
+    fn local_artifact_mirror_rel_matches_the_publishers_root_vs_programs_choice() {
+        let dir = Path::new("/registry/kernel");
+        let kernel = DepsManifest::parse(
+            r#"
+kind = "program"
+name = "kernel"
+version = "0.1.0"
+depends_on = []
+
+[source]
+url = "https://example.test/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+
+[[outputs]]
+name = "kernel"
+wasm = "kandelo-kernel.wasm"
+"#,
+            dir.to_path_buf(),
+        )
+        .unwrap();
+        assert!(kernel.uses_root_binary_mirror());
+        assert_eq!(
+            local_artifact_mirror_rel(&kernel, Path::new("kernel.wasm"), TEST_ARCH),
+            PathBuf::from("kernel.wasm"),
+            "the kernel publishes at the binary root, so its higher-tier twin \
+             is `source-only-v1/kernel.wasm`, not one under programs/<arch>/"
+        );
+
+        let ordinary = DepsManifest::parse(
+            r#"
+kind = "program"
+name = "tar"
+version = "1.35"
+depends_on = []
+
+[source]
+url = "https://example.test/tar.tar.xz"
+sha256 = "4d62ff37342ec7aed748535323930c7cf94acf71c3591882b26a7ea50f3edc16"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+
+[[outputs]]
+name = "tar"
+wasm = "tar.wasm"
+"#,
+            dir.to_path_buf(),
+        )
+        .unwrap();
+        assert!(!ordinary.uses_root_binary_mirror());
+        assert_eq!(
+            local_artifact_mirror_rel(&ordinary, Path::new("tar.wasm"), TEST_ARCH),
+            Path::new("programs").join(TEST_ARCH.as_str()).join("tar.wasm")
+        );
     }
 
     fn parse_source_manifest(dir: &Path) -> DepsManifest {
@@ -38828,5 +39311,154 @@ commit = "1111111111111111111111111111111111111111"
             live_before,
             "cache authority changed after staging but the live projection was mutated",
         );
+    }
+}
+
+/// Guards for the cache-key drift report. The report exists so a build that
+/// writes into its own cache-key inputs names the file instead of printing two
+/// opaque shas (B37). A report that named nothing would be worse than none: it
+/// would read as "the key moved for no reason", which is exactly the
+/// concurrent-edit misreading that invites a retry loop.
+#[cfg(test)]
+mod cache_key_drift_report_tests {
+    use super::{BuildInputDigest, describe_cache_key_input_drift_lines, render_digest_drift};
+
+    fn digest(seed: u8) -> [u8; 32] {
+        [seed; 32]
+    }
+
+    fn input(label: &str, seed: u8) -> BuildInputDigest {
+        BuildInputDigest {
+            label: label.to_string(),
+            digest: digest(seed),
+        }
+    }
+
+    #[test]
+    fn a_changed_input_is_named_with_both_digests() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[input("sdk/src", 1), input("libc/glue", 2)],
+            &[input("sdk/src", 9), input("libc/glue", 2)],
+            &mut lines,
+        );
+        assert!(moved, "a changed digest must report drift");
+        assert_eq!(lines.len(), 1, "only the changed input should be named");
+        assert!(lines[0].contains("sdk/src"), "got: {}", lines[0]);
+        assert!(lines[0].contains("changed"), "got: {}", lines[0]);
+        assert!(
+            !lines[0].contains("libc/glue"),
+            "an unchanged input must not be reported: {}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn an_input_that_disappeared_is_named() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[input("sdk/src", 1)],
+            &[],
+            &mut lines,
+        );
+        assert!(moved);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("disappeared"), "got: {}", lines[0]);
+        assert!(lines[0].contains("sdk/src"), "got: {}", lines[0]);
+    }
+
+    #[test]
+    fn an_input_that_appeared_is_named() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[],
+            &[input("sdk/generated", 3)],
+            &mut lines,
+        );
+        assert!(moved);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("appeared"), "got: {}", lines[0]);
+        assert!(lines[0].contains("sdk/generated"), "got: {}", lines[0]);
+    }
+
+    /// An identical set must report NOTHING and must say so. A report that
+    /// emitted noise for an unchanged set would train readers to ignore it.
+    #[test]
+    fn an_unchanged_set_reports_no_drift() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[input("sdk/src", 1), input("libc/glue", 2)],
+            &[input("libc/glue", 2), input("sdk/src", 1)],
+            &mut lines,
+        );
+        assert!(!moved, "an unchanged set must not report drift");
+        assert!(lines.is_empty(), "got: {lines:?}");
+    }
+
+    /// The whole point of the report: when a declared input moved, the block
+    /// must name it, and must say a build may not write into its own inputs.
+    #[test]
+    fn the_rendered_block_names_the_input_and_the_rule() {
+        let report = describe_cache_key_input_drift_lines(
+            &[input("sdk/package-lock.json", 1)],
+            &[input("sdk/package-lock.json", 7)],
+            &[input("libc/musl", 4)],
+            &[input("libc/musl", 4)],
+            "kandelo-sdk",
+        );
+        assert!(
+            report.contains("sdk/package-lock.json"),
+            "the changed input must be named: {report}"
+        );
+        assert!(
+            report.contains("must not write into its own cache-key inputs"),
+            "the rule must be stated: {report}"
+        );
+        assert!(
+            !report.contains("no declared or global input changed"),
+            "a real change must not render the nothing-changed branch: {report}"
+        );
+    }
+
+    /// A global toolchain input that moved is invisible to the cache key
+    /// itself, because `global_package_toolchain_digests` memoizes per
+    /// process. The report re-reads them uncached precisely so that case is
+    /// visible, and it must say that the key understated the drift.
+    #[test]
+    fn a_moved_global_input_is_reported_as_invisible_to_the_key() {
+        let report = describe_cache_key_input_drift_lines(
+            &[input("sdk/src", 1)],
+            &[input("sdk/src", 1)],
+            &[input("libc/musl", 4)],
+            &[input("libc/musl", 8)],
+            "kandelo-sdk",
+        );
+        assert!(report.contains("libc/musl"), "got: {report}");
+        assert!(
+            report.contains("memoized"),
+            "the report must explain why the key could not see this: {report}"
+        );
+    }
+
+    /// When nothing in either set moved, the report must say where else to
+    /// look rather than implying the inputs are the cause.
+    #[test]
+    fn no_drift_points_the_reader_elsewhere() {
+        let report = describe_cache_key_input_drift_lines(
+            &[input("sdk/src", 1)],
+            &[input("sdk/src", 1)],
+            &[input("libc/musl", 4)],
+            &[input("libc/musl", 4)],
+            "kandelo-sdk",
+        );
+        assert!(
+            report.contains("no declared or global input changed"),
+            "got: {report}"
+        );
+        assert!(report.contains("dependency"), "got: {report}");
     }
 }
