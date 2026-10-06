@@ -1437,6 +1437,40 @@
         "value": 16
       }
     ],
+    "net_readiness": {
+      "errno_shift": 16,
+      "facts": [
+        {
+          "name": "RECV_READY",
+          "value": 1
+        },
+        {
+          "name": "RECV_EOF",
+          "value": 2
+        },
+        {
+          "name": "SEND_READY",
+          "value": 4
+        },
+        {
+          "name": "SEND_CLOSED",
+          "value": 8
+        },
+        {
+          "name": "HANGUP",
+          "value": 16
+        },
+        {
+          "name": "ERROR",
+          "value": 32
+        },
+        {
+          "name": "UNOBSERVABLE",
+          "value": 64
+        }
+      ],
+      "flag_mask": 65535
+    },
     "poll_events": [
       {
         "name": "POLLIN",
@@ -2272,6 +2306,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_epoll_wake_indices",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_epoll_watched_fd",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -2637,6 +2676,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_next_wait_deadline_ns",
+      "signature": "() -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_pcm_claim_transport",
       "signature": "(i32) -> (i32)"
     },
@@ -2877,6 +2921,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_set_wait_queue_enabled",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_setegid",
       "signature": "(i32) -> (i32)"
     },
@@ -3074,6 +3123,36 @@
       "kind": "func",
       "name": "kernel_wait_child_poll",
       "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_deadline_close",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_deadline_open",
+      "signature": "(i32,i32,i32,i64) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_deadline_remaining_ns",
+      "signature": "(i64) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_queue_len",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_queue_stats",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_retire_process",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "memory",
@@ -7575,6 +7654,17 @@
           "maxBytes": 4096,
           "tooLongErrno": 36,
           "type": "cstring"
+        }
+      }
+    ],
+    "240": [
+      {
+        "argIndex": 3,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "size": 16,
+          "type": "fixed"
         }
       }
     ],

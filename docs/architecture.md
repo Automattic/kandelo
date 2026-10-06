@@ -126,6 +126,12 @@ kernel_set_brk_base(pid, addr) → 0
 kernel_set_mmap_base(pid, addr) → 0
 kernel_set_process_pointer_width(pid, width) → 0 | -errno
 kernel_is_fd_nonblock(pid, fd) → 1 | 0 | -1
+kernel_epoll_wake_indices(pid, epfd, kind, out_ptr, out_capacity) → count | -errno
+kernel_set_wait_queue_enabled(enabled) → previous | -errno
+kernel_wait_deadline_open(pid, tid, kind, timeout_ms) → wait_handle | -errno
+kernel_wait_deadline_remaining_ns(wait_handle) → nanoseconds | NO_DEADLINE | -errno
+kernel_wait_deadline_close(wait_handle) → 1 | 0 | -errno
+kernel_wait_retire_process(pid) → dropped_waits
 ```
 
 The host-facing export list is deliberately small. Ordinary syscalls are not
@@ -158,6 +164,7 @@ host_getrandom(buf, len) → bytes
 host_connect(addr, port) → handle
 host_send(handle, buf, len) → bytes_sent
 host_recv(handle, buf, len) → bytes_received
+host_net_readiness(handle) → net_readiness fact word
 host_proc_read_bytes(pid, guest_addr_u64, dst, len) → 0 | -errno
 host_proc_write_bytes(pid, guest_addr_u64, src, len) → 0 | -errno
 host_getaddrinfo(host, port, buf, len) → count
@@ -166,9 +173,10 @@ host_getaddrinfo(host, port, buf, len) → count
 `host_proc_read_bytes` / `host_proc_write_bytes` take a 64-bit guest address,
 so a wasm64 process's pointer above 4 GiB reaches the kernel intact. They are
 how the kernel reads the arguments it dereferences itself (see "Opaque syscall
-records" below). The kernel imports no host signal-wait or futex-wait primitive:
-nothing in the kernel ever called them, and a blocking import would stall the
-single kernel thread that multiplexes every process in the machine.
+records" below). The kernel imports no host primitive that blocks its own
+thread: there is no host sleep, signal-wait, or futex-wait import, because the
+single kernel thread multiplexes every process in the machine and a blocking
+import would stall all of them.
 
 ### 2. Host Runtime (TypeScript)
 
@@ -1114,7 +1122,9 @@ A short retry timer remains a scheduling safety net. `ENOLCK` is a completed
 guest-visible failure, not a retry result. Native runtimes can consume the same
 generic wake event without implementing advisory-lock storage.
 
-**Finite-timeout waits persist their deadline across retries.** Each retry re-enters the handler (`handleBlockingRetry`, `handleSelect`, `handlePselect6`, `handleEpollPwait`) from scratch, so a handler that recomputed `deadline = now + timeout` on every wake would never time out on a busy system — broad wakes arrive every ~10 ms and each one used to push the deadline out again. The kernel worker stores the deadline on the waiting channel itself (`ChannelInfo.readinessDeadline`, via `getReadinessDeadline`): it is set once when the wait first blocks, checked on every re-entry, and cleared by `clearReadinessWait` when the call completes or is abandoned.
+**Finite-timeout waits keep one kernel-owned deadline across retries.** Each retry re-enters the handler (`handleBlockingRetry`, `handleSelect`, `handlePselect6`, `handleEpollPwait`) from scratch, so a handler that recomputed `deadline = now + timeout` on every wake would never time out on a busy system — broad wakes arrive every ~10 ms and each one used to push the deadline out again. The deadline is kernel state on `CLOCK_MONOTONIC` (`crates/runtime-core/src/wait_queue.rs`): the first time a call is known to block, the host opens a wait with `kernel_wait_deadline_open(pid, tid, kind, timeout_ms)` and keeps only the returned handle on the channel (`ChannelInfo.waitHandle`); every re-entry asks `kernel_wait_deadline_remaining_ns`, and `clearReadinessWait` closes the handle when the call completes or is abandoned. A handle is an execution generation and is never reused, so a timer armed before an `exec` cannot complete a request issued after it. Because the clock is monotonic, a wall-clock step (an NTP correction, a DST change, a user setting the date) no longer moves pending timeouts. A call that finds its descriptor ready, fails, or is non-blocking never opens a deadline. The host still owns the park itself — the timer and the wake routing — and refuses to boot a kernel that lacks the deadline exports rather than falling back to wall-clock arithmetic.
+
+**epoll interest lists live in the kernel, on the epoll open file description.** An epoll instance is a kernel-global backing keyed by the open file description `epoll_create1` returned, beside eventfd, timerfd and signalfd, so `dup`, `fork` and a non-CLOEXEC `exec` all reach the same instance and either process's `epoll_ctl` is visible to the other. Each interest is keyed on (registered descriptor number, open file description), as Linux keys it on `(struct file *, fd)`. The host keeps no copy of any interest list: `epoll_ctl` travels as an ordinary opaque record, and a parked `epoll_pwait` asks `kernel_epoll_wake_indices(pid, epfd, kind, ...)` for the pipe and accept wake tokens its interests resolve to, so targeted readiness wakeups still reach it.
 
 ## Multi-Process Model
 
@@ -2436,6 +2446,48 @@ Offset   Size   Field
 ## Networking
 
 User-visible networking is POSIX-first. Guest programs call normal AF_UNIX, AF_INET, and partial AF_INET6 socket syscalls (`socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `poll`, and `select`). The Rust kernel owns the socket file descriptors, datagram queues, stream listener state, loopback routing, and errno behavior. Host transports plug in below that layer through `NetworkIO`; they are backends, not the userspace-visible abstraction.
+
+### Readiness is a kernel decision; backends report facts
+
+A `NetworkIO` backend never decides whether a socket is readable or
+writable. It answers `readiness(handle)` with a
+`wasm_posix_shared::net_readiness` fact word — bytes buffered, end of
+stream observed, the engine will accept a write, the write half is gone,
+the connection is torn down, a sticky error and the errno the engine
+observed. `runtime_core::net_readiness::stream_revents` turns those facts
+plus the caller's `events` into `poll` `revents`, in one place, for every
+backend on both hosts.
+
+The split is deliberate: what an engine alone can see (a socket's
+OS-level state, a `fetch` promise's settlement) is a fact; which POLL
+bits follow from it is POSIX policy. The rule previously lived in eight
+places — the kernel, the `HostIO` default method, four backends, and two
+"no `poll` implementation" fallbacks — and the copies disagreed with
+POSIX and each other about whether `POLLHUP` is gated by `events`,
+whether it may accompany `POLLOUT`, and whether end-of-file is
+`POLLIN`.
+
+A backend that cannot observe readiness reports
+`NET_READINESS.UNOBSERVABLE` rather than a readiness claim. The kernel's
+response is wake-every-round: report the requested `POLLIN`/`POLLOUT` and
+let `recv`/`send` answer `EAGAIN`.
+
+The fact vocabulary is generated into `host/src/generated/abi.ts` by
+`cargo xtask dump-abi`, so the two sides share one definition.
+
+Backend failures on `send` and `recv` reach the guest as the errno the
+backend determined — a Node socket error's `code`, or an explicit POSIX
+`errno` — via `negErrno`, with `EIO` for a failure nothing classified.
+The transport does not choose an errno on a backend's behalf.
+
+Known divergence, not yet closed: the kernel's own pipe-backed socket
+path (AF_UNIX and loopback AF_INET) still raises `POLLHUP` when a peer
+closes its write end and never reports end-of-file as `POLLIN`, so
+`POLLHUP` doubles as the reader's EOF wakeup and can accompany
+`POLLOUT`. Linux treats that state as `RCV_SHUTDOWN` —
+`EPOLLIN | EPOLLRDHUP` with `EPOLLOUT` intact — and reserves `EPOLLHUP`
+for both directions down. Correcting it changes wakeups for every
+AF_UNIX and loopback socket and needs conformance-suite validation.
 
 AF_INET and AF_INET6 receive queues are currently bounded at 128 datagrams per
 socket. Once that fixed internal queue is full, a newly arriving UDP datagram

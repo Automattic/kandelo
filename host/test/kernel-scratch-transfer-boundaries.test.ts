@@ -2351,11 +2351,17 @@ describe("kernel scratch transfer capacity regressions", () => {
     ).not.toThrow();
 
     expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EFAULT,
-    );
+    // epoll_ctl is no longer hand-marshalled by the host: it declares a
+    // `SYSCALL_ARG_DESCRIPTORS` entry and is staged by the generic path, which
+    // faults through completeChannel (naming the syscall and its descriptors)
+    // rather than the raw completion the deleted handler used. The errno the
+    // caller observes is unchanged.
+    expect(harness.completeChannelRaw).not.toHaveBeenCalled();
+    expect(
+      harness.completeChannel.mock.calls.map(
+        (call: unknown[]) => [call[1], call[4], call[5]],
+      ),
+    ).toEqual([[ABI_SYSCALLS.EpollCtl, -1, EFAULT]]);
     expectScratchTailUntouched(harness);
   });
 

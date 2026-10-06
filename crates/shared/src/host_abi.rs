@@ -10,8 +10,8 @@ use core::mem::{offset_of, size_of};
 use crate::abi::extended_syscalls as extra_syscalls;
 use crate::process_layout;
 use crate::{
-    kernel_scratch_wire, platform_limits, Syscall, WasmTimespec, SCHED_AFFINITY_MASK_SIZE,
-    WASM_RUSAGE_WIRE_SIZE,
+    kernel_scratch_wire, platform_limits, Syscall, WasmEpollEvent, WasmTimespec,
+    SCHED_AFFINITY_MASK_SIZE, WASM_RUSAGE_WIRE_SIZE,
 };
 
 /// Direction of a marshalled pointer argument.
@@ -870,6 +870,13 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(2, Out, fixed!(SCHED_AFFINITY_MASK_SIZE), required)]
     ),
     entry!(
+        // `EPOLL_CTL_DEL` ignores the event, and musl lets a caller pass null
+        // for it, so the pointer is nullable rather than required. The kernel
+        // (`sys_epoll_ctl`) reads `events`/`data` from the staged bytes.
+        extra_syscalls::SYS_EPOLL_CTL,
+        [desc!(3, In, fixed!(size_of::<WasmEpollEvent>() as u32), nullable)]
+    ),
+    entry!(
         extra_syscalls::SYS_TIMERFD_SETTIME,
         [
             desc!(2, In, fixed!(32), required),
@@ -1379,6 +1386,13 @@ mod tests {
             (extra_syscalls::SYS_MQ_GETSETATTR, 2),
             (extra_syscalls::SYS_ACCEPT4, 1),
             (extra_syscalls::SYS_ACCEPT4, 2),
+            // EPOLL_CTL_DEL ignores the event argument entirely, and musl
+            // passes the caller's pointer through unexamined, so a null there
+            // is an ordinary request to omit it rather than a fault. ADD and
+            // MOD do read it, and `kernel_epoll_ctl` returns EFAULT for a null
+            // under those two operations -- the per-command null policy the
+            // host must not decide.
+            (extra_syscalls::SYS_EPOLL_CTL, 3),
             // Kernel-dereferenced arguments are nullable by construction: the
             // correct errno for a null pointer is per-syscall and, for the
             // IPC control calls, per-command, so the kernel decides it.
