@@ -5,7 +5,9 @@
  * compositor imports and composites a dmabuf-supplied buffer:
  *
  *   1. connect, bind the globals it needs (wl_compositor, zwp_linux_dmabuf_v1,
- *      xdg_wm_base), and confirm the dmabuf advertises XRGB8888 + LINEAR.
+ *      xdg_wm_base), and confirm the dmabuf advertises the buffer's format
+ *      + LINEAR. The format is XRGB8888 ([B,G,R,X] bytes), or XBGR8888
+ *      ([R,G,B,X], what a GL client's buffer holds) when argv[1] is "xbgr".
  *   2. create an xdg_toplevel, ack the compositor's configure.
  *   3. allocate a renderD128 dumb-bo, paint it solid red, and turn its
  *      prime-fd into a wl_buffer via zwp_linux_buffer_params_v1.create_immed
@@ -38,7 +40,8 @@
 #define WL_SOCKET_PATH "/tmp/wayland-0"
 #define WIN_W 200
 #define WIN_H 150
-#define RED   0x00ff0000u   /* XRGB8888: opaque red (X byte ignored) */
+#define RED_XRGB 0x00ff0000u   /* XRGB8888 [B,G,R,X]: opaque red */
+#define RED_XBGR 0x000000ffu   /* XBGR8888 [R,G,B,X]: the same red */
 
 struct client {
     struct wl_compositor *compositor;
@@ -51,7 +54,8 @@ struct client {
 
     int configured;      /* got + acked the initial xdg configure */
     int frame_done;      /* compositor imported + flipped our buffer */
-    int saw_xrgb_linear; /* dmabuf advertised XRGB8888 with LINEAR */
+    uint32_t format;     /* DRM_FORMAT_XRGB8888 or DRM_FORMAT_XBGR8888 */
+    int saw_format_linear; /* dmabuf advertised `format` with LINEAR */
 };
 
 /* ---- zwp_linux_dmabuf_v1: format/modifier advertisement ---------------- */
@@ -62,8 +66,8 @@ static void dmabuf_modifier(void *data, struct zwp_linux_dmabuf_v1 *d,
                             uint32_t format, uint32_t mod_hi, uint32_t mod_lo) {
     struct client *c = data;
     uint64_t mod = ((uint64_t)mod_hi << 32) | mod_lo;
-    if (format == DRM_FORMAT_XRGB8888 && mod == DRM_FORMAT_MOD_LINEAR)
-        c->saw_xrgb_linear = 1;
+    if (format == c->format && mod == DRM_FORMAT_MOD_LINEAR)
+        c->saw_format_linear = 1;
 }
 static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
     .format = dmabuf_format,
@@ -154,7 +158,7 @@ static struct wl_buffer *make_dmabuf_buffer(struct client *c) {
     if (render < 0) { perror("open renderD128"); return NULL; }
     struct gbm_device *gbm = gbm_create_device(render);
     if (!gbm) { fprintf(stderr, "gbm_create_device\n"); return NULL; }
-    struct gbm_bo *bo = gbm_bo_create(gbm, WIN_W, WIN_H, GBM_FORMAT_XRGB8888,
+    struct gbm_bo *bo = gbm_bo_create(gbm, WIN_W, WIN_H, c->format,
                                       GBM_BO_USE_LINEAR | GBM_BO_USE_SCANOUT);
     if (!bo) { fprintf(stderr, "gbm_bo_create\n"); return NULL; }
 
@@ -165,7 +169,8 @@ static struct wl_buffer *make_dmabuf_buffer(struct client *c) {
     uint32_t stride_px = stride / 4;
     for (int y = 0; y < WIN_H; y++)
         for (int x = 0; x < WIN_W; x++)
-            px[y * stride_px + x] = RED;
+            px[y * stride_px + x] =
+                c->format == DRM_FORMAT_XBGR8888 ? RED_XBGR : RED_XRGB;
     gbm_bo_unmap(bo, map_data);
 
     int prime = gbm_bo_get_fd(bo);
@@ -178,7 +183,7 @@ static struct wl_buffer *make_dmabuf_buffer(struct client *c) {
         (uint32_t)(DRM_FORMAT_MOD_LINEAR >> 32),
         (uint32_t)(DRM_FORMAT_MOD_LINEAR & 0xffffffffu));
     struct wl_buffer *buf = zwp_linux_buffer_params_v1_create_immed(
-        params, WIN_W, WIN_H, DRM_FORMAT_XRGB8888, 0);
+        params, WIN_W, WIN_H, c->format, 0);
     zwp_linux_buffer_params_v1_destroy(params);
     close(prime);   /* the compositor dup'd it into its own bo */
     printf("DMABUF_BUFFER stride=%u\n", stride);
@@ -186,9 +191,11 @@ static struct wl_buffer *make_dmabuf_buffer(struct client *c) {
     return buf;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     struct client c;
     memset(&c, 0, sizeof(c));
+    c.format = argc > 1 && strcmp(argv[1], "xbgr") == 0
+        ? DRM_FORMAT_XBGR8888 : DRM_FORMAT_XRGB8888;
 
     int fd = connect_socket();
     if (fd < 0) return 1;
@@ -205,8 +212,9 @@ int main(void) {
                 (void *)c.compositor, (void *)c.dmabuf, (void *)c.wm_base);
         return 1;
     }
-    if (!c.saw_xrgb_linear) {
-        fprintf(stderr, "dmabuf never advertised XRGB8888 + LINEAR\n");
+    if (!c.saw_format_linear) {
+        fprintf(stderr, "dmabuf never advertised format 0x%08x + LINEAR\n",
+                c.format);
         return 1;
     }
     printf("BOUND_ALL\n");

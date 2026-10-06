@@ -96,6 +96,56 @@ async function testsrcBarColours(page: Page, target: Locator): Promise<number> {
   }, png);
 }
 
+/**
+ * Whether testsrc's picture arrived with its red and blue channels in the
+ * right places. A red/blue swap maps testsrc's six bar colours onto the same
+ * six, so the count above cannot see one; the bars' order can. testsrc's top
+ * rows lie outside its moving circle and band and read, left to right,
+ * black, red, ..., blue, yellow, ..., cyan, white, so on the picture's top
+ * row red comes before blue. Returns the first x of each on that row (-1 if
+ * absent), found below whatever letterbox sits above the picture.
+ */
+async function testsrcTopRowRedBlue(
+  page: Page,
+  target: Locator,
+): Promise<{ red: number; blue: number }> {
+  const png = (await target.screenshot()).toString("base64");
+  return page.evaluate(async (b64) => {
+    const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(bitmap, 0, 0);
+    const { width, height } = bitmap;
+    const { data } = ctx.getImageData(0, 0, width, height);
+    const hi = (v: number) => v > 200;
+    const lo = (v: number) => v < 60;
+    const at = (x: number, y: number) => {
+      const i = (y * width + x) * 4;
+      return [data[i], data[i + 1], data[i + 2]];
+    };
+    const saturated = ([r, g, b]: number[]) =>
+      (hi(r) || hi(g) || hi(b)) && (lo(r) || lo(g) || lo(b));
+    // The picture's top row: the first row that is mostly bar colours.
+    let top = -1;
+    for (let y = 0; y < height && top < 0; y++) {
+      let n = 0;
+      for (let x = 0; x < width; x++) if (saturated(at(x, y))) n++;
+      if (n > width / 3) top = y;
+    }
+    if (top < 0) return { red: -1, blue: -1 };
+    const y = Math.min(top + 3, height - 1);  // clear of edge filtering
+    let red = -1;
+    let blue = -1;
+    for (let x = 0; x < width; x++) {
+      const [r, g, b] = at(x, y);
+      if (red < 0 && hi(r) && lo(g) && lo(b)) red = x;
+      if (blue < 0 && lo(r) && lo(g) && hi(b)) blue = x;
+    }
+    return { red, blue };
+  }, png);
+}
+
 async function openSurface(page: Page, label: "Demo" | "Terminal") {
   const view = page
     .getByLabel("Computer views")
@@ -161,6 +211,9 @@ test("ffplay shows video in the KMS pane", async ({ page }) => {
   // it black; only drawn video shows testsrc's colour bars.
   await expect.poll(() => testsrcBarColours(page, canvas),
     { timeout: 240_000, intervals: [1_000, 2_000, 5_000] }).toBe(6);
+  const kmsOrder = await testsrcTopRowRedBlue(page, canvas);
+  expect(kmsOrder.red, JSON.stringify(kmsOrder)).toBeGreaterThanOrEqual(0);
+  expect(kmsOrder.red, JSON.stringify(kmsOrder)).toBeLessThan(kmsOrder.blue);
   await canvas.screenshot({ path: test.info().outputPath("ffplay.png") });
 });
 
@@ -203,6 +256,11 @@ test("ffplay runs as a Wayland client in the Omarchy desktop", async ({ page }) 
   const canvas = displayCanvas(page);
   await expect.poll(() => testsrcBarColours(page, canvas),
     { timeout: 60_000, intervals: [1_000, 2_000, 5_000] }).toBe(6);
+  // ffplay's GL buffer must reach the screen in its own channel order: the
+  // compositor reads it as the format libwayland-egl declares for it.
+  const order = await testsrcTopRowRedBlue(page, canvas);
+  expect(order.red, JSON.stringify(order)).toBeGreaterThanOrEqual(0);
+  expect(order.red, JSON.stringify(order)).toBeLessThan(order.blue);
   await canvas.screenshot({ path: test.info().outputPath("omarchy-ffplay.png") });
 });
 });
