@@ -1,0 +1,357 @@
+import type { NetworkIO, TcpListenTarget, UdpDatagram, UdpReceiveTarget } from "../types";
+import { LocalVirtualNetwork, type VirtualNetworkBackend } from "./virtual-network";
+import { IPV4_UDP_MAX_PAYLOAD } from "./remote-udp-codec";
+
+const MAX_MEMBERS = 16;
+// The largest valid directory fits one 64 KiB reliable control message.
+const MAX_BINDINGS = 32;
+export const MAX_SEGMENT_CONTROL_BYTES = 64 * 1024;
+const EADDRNOTAVAIL = 99;
+const ENETUNREACH = 101;
+const ENOBUFS = 105;
+const ENOTCONN = 107;
+const EOPNOTSUPP = 95;
+const EMSGSIZE = 90;
+
+export interface RemoteSegmentMember {
+  id: number;
+  maxPayload: number;
+}
+export interface RemoteSegmentBinding {
+  owner: number;
+  id: string;
+  addr: number[];
+  port: number;
+}
+export type RemoteSegmentControl =
+  | { version: 1; type: "directory"; self: number; members: RemoteSegmentMember[]; bindings: RemoteSegmentBinding[] }
+  | { version: 1; type: "bind"; id: string; addr: number[]; port: number }
+  | { version: 1; type: "unbind"; id: string };
+
+/** Shared by the browser port bridge and Node transports. Errnos are positive. */
+export interface RemoteSegmentTransport {
+  readonly maxPayload: number;
+  sendControl(message: RemoteSegmentControl): boolean;
+  sendDatagram(datagram: UdpDatagram): number;
+  onControl(listener: (message: unknown) => void): () => void;
+  onDatagram(listener: (datagram: UdpDatagram) => void): () => void;
+  onClose(listener: (reason: string) => void): () => void;
+  close(): void;
+}
+
+export interface RemoteSegmentSnapshot {
+  address: string | null;
+  members: { address: string; hostname: string; maxPayload: number }[];
+  bindings: { address: string; port: number; endpoint: string }[];
+}
+
+const address = (id: number) => new Uint8Array([10, 89, 0, id]);
+const addressKey = (addr: Uint8Array | number[]) => Array.from(addr).join(".");
+const machineName = (id: number) => id === 1 ? "host" : `peer-${id}`;
+const endpointKey = (owner: number, id: string) => `${owner}:${id}`;
+const inSegment = (addr: Uint8Array) => addr.length === 4 && addr[0] === 10 && addr[1] === 89 && addr[2] === 0;
+const validId = (id: unknown): id is number => Number.isInteger(id) && Number(id) >= 1 && Number(id) <= 254;
+const validEndpoint = (id: unknown): id is string => typeof id === "string" && /^[a-zA-Z0-9:._-]{1,64}$/.test(id);
+const validPort = (port: unknown): port is number => Number.isInteger(port) && Number(port) > 0 && Number(port) <= 65535;
+const validLimit = (limit: unknown): limit is number => Number.isInteger(limit) && Number(limit) >= 0 && Number(limit) <= IPV4_UDP_MAX_PAYLOAD;
+const ownedBindAddress = (addr: unknown, owner: number): addr is number[] =>
+  Array.isArray(addr) && addr.length === 4 && addr.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
+  && (addr.every((part) => part === 0) || addressKey(addr) === addressKey(address(owner)));
+
+function parseControl(value: unknown): RemoteSegmentControl {
+  if (new TextEncoder().encode(JSON.stringify(value)).length > MAX_SEGMENT_CONTROL_BYTES) throw new Error("remote segment control exceeds its limit");
+  if (!value || typeof value !== "object" || (value as any).version !== 1) {
+    throw new Error("invalid remote segment control version");
+  }
+  const message = value as RemoteSegmentControl;
+  if (message.type === "bind") {
+    if (!validEndpoint(message.id) || !validPort(message.port)) throw new Error("invalid remote UDP binding");
+  } else if (message.type === "unbind") {
+    if (!validEndpoint(message.id)) throw new Error("invalid remote UDP endpoint");
+  } else if (message.type === "directory") {
+    if (!validId(message.self) || message.self === 1 || !Array.isArray(message.members)
+      || !Array.isArray(message.bindings) || message.members.length < 2 || message.members.length > MAX_MEMBERS
+      || message.bindings.length > MAX_MEMBERS * MAX_BINDINGS) throw new Error("invalid remote segment directory");
+    const ids = new Set<number>();
+    for (const member of message.members) {
+      if (!validId(member?.id) || !validLimit(member.maxPayload) || ids.has(member.id)) throw new Error("invalid remote segment member");
+      ids.add(member.id);
+    }
+    if (!ids.has(1) || !ids.has(message.self)) throw new Error("remote directory lacks host or local ownership");
+    const endpoints = new Set<string>();
+    const counts = new Map<number, number>();
+    for (const binding of message.bindings) {
+      if (!binding || !ids.has(binding.owner) || !validEndpoint(binding.id) || !validPort(binding.port)
+        || !ownedBindAddress(binding.addr, binding.owner)) throw new Error("invalid remote directory binding");
+      const key = endpointKey(binding.owner, binding.id);
+      const count = (counts.get(binding.owner) ?? 0) + 1;
+      if (endpoints.has(key) || count > MAX_BINDINGS) throw new Error("duplicate or excessive remote bindings");
+      endpoints.add(key); counts.set(binding.owner, count);
+    }
+  } else throw new Error("unknown remote segment control type");
+  return message;
+}
+
+/**
+ * A remote extension of LocalVirtualNetwork. All routing and endpoint state
+ * belongs in a kernel worker. Transports carry bytes; they do not run syscalls.
+ */
+export class RemoteVirtualNetwork implements NetworkIO {
+  private readonly network = new LocalVirtualNetwork();
+  private readonly members = new Map<number, RemoteSegmentMember>();
+  private readonly bindings = new Map<string, RemoteSegmentBinding>();
+  private readonly mirroredEndpoints = new Set<string>();
+  private readonly peers = new Map<number, RemoteSegmentTransport>();
+  private readonly subscriptions = new Map<number, (() => void)[]>();
+  private local?: VirtualNetworkBackend;
+  private localId?: number;
+  private closed = false;
+  private readonly connectErrors = new Map<number, number>();
+  private resolveReady!: () => void;
+  private rejectReady!: (error: Error) => void;
+  readonly ready = new Promise<void>((resolve, reject) => {
+    this.resolveReady = resolve; this.rejectReady = reject;
+  });
+
+  constructor(readonly role: "host" | "joiner", private readonly fallback?: NetworkIO) {
+    void this.ready.catch(() => {});
+    if (role === "host") {
+      this.localId = 1;
+      this.members.set(1, { id: 1, maxPayload: IPV4_UDP_MAX_PAYLOAD });
+      this.local = this.attachMember(1);
+      this.resolveReady();
+    }
+  }
+
+  get localAddress(): Uint8Array | undefined { return this.local?.localAddress; }
+
+  attachPeer(transport: RemoteSegmentTransport): number {
+    if (this.closed || !validLimit(transport.maxPayload)) throw new Error("invalid or closed remote segment transport");
+    if (this.role === "joiner") {
+      if (this.peers.size) throw new Error("a joiner has one link to its forwarding host");
+      this.installPeer(1, transport);
+      return 1;
+    }
+    if (this.members.size >= MAX_MEMBERS) throw new Error("the remote segment is full");
+    let id = 2;
+    while (this.members.has(id)) id++;
+    this.members.set(id, { id, maxPayload: transport.maxPayload });
+    this.attachMember(id);
+    this.installPeer(id, transport);
+    this.publishDirectory();
+    return id;
+  }
+
+  private attachMember(id: number): VirtualNetworkBackend {
+    return this.network.attachMachine({ id: machineName(id), address: address(id) });
+  }
+
+  private installPeer(id: number, transport: RemoteSegmentTransport): void {
+    this.peers.set(id, transport);
+    this.subscriptions.set(id, [
+      transport.onControl((value) => {
+        try { this.receiveControl(id, parseControl(value)); }
+        catch (error) { this.dropPeer(id, String(error)); }
+      }),
+      transport.onDatagram((datagram) => {
+        // A star's host authenticates the source on the ingress link. A
+        // joiner receives forwarded sources from any member through the host.
+        if (!this.localId || !inSegment(datagram.srcAddr)
+          || !this.members.has(datagram.srcAddr[3])
+          || (this.role === "host" && datagram.srcAddr[3] !== id)
+          || (this.role === "joiner" && addressKey(datagram.dstAddr) !== addressKey(this.localAddress!))) {
+          this.dropPeer(id, "the remote peer sent a datagram outside its address ownership");
+          return;
+        }
+        this.network.sendDatagram(datagram);
+      }),
+      transport.onClose((reason) => this.dropPeer(id, reason)),
+    ]);
+  }
+
+  private receiveControl(peer: number, message: RemoteSegmentControl): void {
+    if (this.role === "joiner") {
+      if (message.type !== "directory") throw new Error("the forwarding host must send a directory");
+      this.installDirectory(message);
+      return;
+    }
+    if (message.type === "directory") throw new Error("a joiner cannot assign segment addresses");
+    const key = endpointKey(peer, message.id);
+    if (message.type === "unbind") {
+      this.bindings.delete(key);
+      this.network.unbindUdp(`remote:${key}`);
+      this.mirroredEndpoints.delete(key);
+    } else {
+      if (!ownedBindAddress(message.addr, peer)) throw new Error("the joiner tried to bind another member's address");
+      if (!this.bindings.has(key) && this.bindingCount(peer) >= MAX_BINDINGS) throw new Error("the joiner's binding directory is full");
+      const binding = { owner: peer, id: message.id, addr: [...message.addr], port: message.port };
+      this.mirrorBinding(binding);
+      this.bindings.set(key, binding);
+    }
+    this.publishDirectory();
+  }
+
+  private installDirectory(message: Extract<RemoteSegmentControl, { type: "directory" }>): void {
+    if (this.localId !== undefined && this.localId !== message.self) throw new Error("the host changed this machine's address assignment");
+    const transport = this.peers.get(1)!;
+    if (message.members.find((member) => member.id === message.self)!.maxPayload !== transport.maxPayload) {
+      throw new Error("the host's local transport limit differs from negotiation");
+    }
+    this.clearMirroredBindings();
+    const incoming = new Set(message.members.map((member) => member.id));
+    for (const id of this.members.keys()) {
+      if (!incoming.has(id)) { this.network.detachMachine(machineName(id)); this.members.delete(id); }
+    }
+    this.localId = message.self;
+    for (const member of message.members) {
+      if (!this.members.has(member.id)) {
+        const backend = this.attachMember(member.id);
+        if (member.id === this.localId) this.local = backend;
+      }
+      this.members.set(member.id, { ...member });
+    }
+    for (const [key, binding] of this.bindings) if (binding.owner !== this.localId) this.bindings.delete(key);
+    for (const binding of message.bindings) {
+      if (binding.owner === this.localId) continue;
+      this.mirrorBinding(binding);
+      this.bindings.set(endpointKey(binding.owner, binding.id), { ...binding, addr: [...binding.addr] });
+    }
+    this.resolveReady();
+  }
+
+  private mirrorBinding(binding: RemoteSegmentBinding): void {
+    const key = endpointKey(binding.owner, binding.id);
+    const result = this.network.bindUdp(machineName(binding.owner), `remote:${key}`,
+      new Uint8Array(binding.addr), binding.port, {
+        receive: (datagram) => {
+          const transport = this.peers.get(this.role === "host" ? binding.owner : 1);
+          const limit = Math.min(transport?.maxPayload ?? 0, this.members.get(binding.owner)?.maxPayload ?? 0);
+          if (datagram.data.length > limit) return EMSGSIZE;
+          return transport ? transport.sendDatagram(datagram) : ENETUNREACH;
+        },
+      });
+    if (result !== 0) throw new Error(`conflicting remote UDP endpoint (${result})`);
+    this.mirroredEndpoints.add(key);
+  }
+
+  private clearMirroredBindings(): void {
+    for (const key of this.mirroredEndpoints) this.network.unbindUdp(`remote:${key}`);
+    this.mirroredEndpoints.clear();
+  }
+
+  private bindingCount(owner: number): number {
+    let count = 0;
+    for (const binding of this.bindings.values()) if (binding.owner === owner) count++;
+    return count;
+  }
+
+  private publishDirectory(): void {
+    for (const [self, transport] of [...this.peers]) {
+      if (!transport.sendControl({ version: 1, type: "directory", self,
+        members: [...this.members.values()].map((member) => ({ ...member })),
+        bindings: [...this.bindings.values()].map((binding) => ({ ...binding, addr: [...binding.addr] })),
+      })) this.dropPeer(self, "the reliable segment control bridge is full");
+    }
+  }
+
+  private dropPeer(id: number, reason: string): void {
+    const transport = this.peers.get(id);
+    if (!transport) return;
+    this.peers.delete(id);
+    for (const unsubscribe of this.subscriptions.get(id) ?? []) unsubscribe();
+    this.subscriptions.delete(id);
+    transport.close();
+    if (this.role === "joiner") {
+      this.rejectReady(new Error(`remote segment disconnected: ${reason}`));
+      this.clearMirroredBindings();
+      for (const member of [...this.members.keys()]) {
+        if (member !== this.localId) { this.network.detachMachine(machineName(member)); this.members.delete(member); }
+      }
+      for (const [key, binding] of this.bindings) if (binding.owner !== this.localId) this.bindings.delete(key);
+    } else {
+      this.network.detachMachine(machineName(id));
+      this.members.delete(id);
+      for (const [key, binding] of this.bindings) if (binding.owner === id) {
+        this.bindings.delete(key); this.mirroredEndpoints.delete(key);
+      }
+      this.publishDirectory();
+    }
+  }
+
+  bindUdp(id: string, addr: Uint8Array, port: number, target: UdpReceiveTarget): number {
+    if (!this.local || this.closed) return ENETUNREACH;
+    if (!validEndpoint(id) || !validPort(port)) return EADDRNOTAVAIL;
+    const key = endpointKey(this.localId!, id);
+    if (!this.bindings.has(key) && this.bindingCount(this.localId!) >= MAX_BINDINGS) return ENOBUFS;
+    const result = this.local.bindUdp(id, addr, port, target);
+    if (result !== 0) return result;
+    if (this.role === "joiner" && !this.peers.get(1)?.sendControl({ version: 1, type: "bind", id, addr: Array.from(addr), port })) {
+      this.local.unbindUdp(id); return ENETUNREACH;
+    }
+    this.bindings.set(key, { owner: this.localId!, id, addr: Array.from(addr), port });
+    if (this.role === "host") this.publishDirectory();
+    return 0;
+  }
+
+  unbindUdp(id: string): void {
+    this.local?.unbindUdp(id);
+    this.bindings.delete(endpointKey(this.localId!, id));
+    if (this.role === "host") this.publishDirectory();
+    else if (this.peers.get(1) && !this.peers.get(1)!.sendControl({ version: 1, type: "unbind", id })) {
+      this.dropPeer(1, "the reliable segment control bridge is full");
+    }
+  }
+
+  sendDatagram(datagram: UdpDatagram): number {
+    if (!this.local || this.closed) return ENETUNREACH;
+    if (addressKey(datagram.srcAddr) !== "0.0.0.0"
+      && addressKey(datagram.srcAddr) !== addressKey(this.localAddress!)) return EADDRNOTAVAIL;
+    return this.local.sendDatagram(datagram);
+  }
+
+  getaddrinfo(hostname: string): Uint8Array {
+    const result = this.network.resolve(hostname);
+    if (result) return result;
+    if (this.fallback) return this.fallback.getaddrinfo(hostname);
+    throw Object.assign(new Error("ENOENT"), { errno: 2 });
+  }
+
+  // External TCP retains the host's normal backend. Remote TCP awaits the
+  // later stream contract; do not invent success or a remote listener refusal.
+  connect(handle: number, addr: Uint8Array, port: number): void {
+    if (inSegment(addr)) this.connectErrors.set(handle, EOPNOTSUPP);
+    else if (!this.fallback) this.connectErrors.set(handle, ENETUNREACH);
+    else { this.connectErrors.delete(handle); this.fallback.connect(handle, addr, port); }
+  }
+  connectStatus(handle: number): number { return this.connectErrors.get(handle) ?? this.fallback?.connectStatus(handle) ?? ENOTCONN; }
+  send(handle: number, data: Uint8Array, flags: number): number {
+    if (!this.fallback || this.connectErrors.has(handle)) throw Object.assign(new Error("ENOTCONN"), { errno: ENOTCONN });
+    return this.fallback.send(handle, data, flags);
+  }
+  recv(handle: number, maxLen: number, flags: number): Uint8Array {
+    if (!this.fallback || this.connectErrors.has(handle)) throw Object.assign(new Error("ENOTCONN"), { errno: ENOTCONN });
+    return this.fallback.recv(handle, maxLen, flags);
+  }
+  poll(handle: number, events: number): number { return this.fallback?.poll?.(handle, events) ?? 0; }
+  close(handle?: number): void {
+    if (handle !== undefined) { this.connectErrors.delete(handle); this.fallback?.close(handle); return; }
+    if (this.closed) return;
+    this.closed = true;
+    for (const id of [...this.peers.keys()]) this.dropPeer(id, "the local segment closed");
+    for (const id of this.members.keys()) this.network.detachMachine(machineName(id));
+    this.members.clear(); this.bindings.clear(); this.mirroredEndpoints.clear();
+    this.rejectReady(new Error("the local segment closed before assignment"));
+  }
+  listenTcp(id: string, addr: Uint8Array, port: number, target: TcpListenTarget): number {
+    return this.fallback?.listenTcp?.(id, addr, port, target) ?? EOPNOTSUPP;
+  }
+  closeTcpListener(id: string): void { this.fallback?.closeTcpListener?.(id); }
+
+  snapshot(): RemoteSegmentSnapshot {
+    return {
+      address: this.localAddress ? addressKey(this.localAddress) : null,
+      members: [...this.members.values()].map((member) => ({ address: addressKey(address(member.id)), hostname: machineName(member.id), maxPayload: member.maxPayload })),
+      bindings: [...this.bindings.values()].map((binding) => ({ address: addressKey(address(binding.owner)), port: binding.port, endpoint: binding.id })),
+    };
+  }
+}

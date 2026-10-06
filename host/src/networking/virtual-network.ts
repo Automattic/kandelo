@@ -495,7 +495,12 @@ export class VirtualNetworkBackend implements NetworkIO {
   }
 
   sendDatagram(datagram: UdpDatagram): number {
-    return this.network.sendDatagram(datagram);
+    // A socket bound to INADDR_ANY retains that wildcard in getsockname(),
+    // but its outgoing packet needs the address of the selected interface.
+    return this.network.sendDatagram({
+      ...datagram,
+      srcAddr: ipKey(datagram.srcAddr) === ANY ? this.localAddress : datagram.srcAddr,
+    });
   }
 
   resetAllConnections(): void {
