@@ -945,18 +945,18 @@ arguments are present; only the private copy becomes owner-writable. Under the
 Default policy, the helper retains its existing caller-verified-directory
 precedence and URL/SHA download-and-verify fallback.
 
-The `bzip2`, `less`, `libiconv`, `unzip`, and `zip` recipes now consume the
+The `bzip2`, `less`, `libiconv`, `unzip`, `vim`, and `zip` recipes now consume the
 verified source handoff in fresh caller-owned work directories. This prevents
 objects from a previous ABI build from being reused. The common binary
 installer also replaces its caller-owned instrumentation input without a
 terminal prompt when upstream installs it with read-only mode 0555.
 
-Known migration gap: 24 Archive-provider recipes in the current local build
+Known migration gap: 23 Archive-provider recipes in the current local build
 set still use their legacy recipe-owned download path instead of the
 SourceOnlyV1 source handoff. The directed acyclic graph (DAG) and compiled
 artifact cache still apply—a cache hit does not run the recipe—but a cold miss
 for one of these nodes does not reuse the resolver source cache and must not be
-described as a hermetic SourceOnly build. Eleven of the legacy recipes also
+described as a hermetic SourceOnly build. Ten of the legacy recipes also
 retain mutable checkout-local source or build state. Migrating these recipes
 to `kandelo_package_stage_verified_source` and resolver-owned work directories
 is explicit future work after the initial local-build restoration lands.
@@ -964,7 +964,7 @@ is explicit future work after the initial local-build restoration lands.
 The affected recipes are `cpython`, `curl`, `git`, `gzip`, `icu`,
 `libcurl`, `libpng`, `libxml2`, `libzip`, `msmtpd`,
 `netcat`, `nginx`, `openssl`, `redis`, `ruby`, `sdl2`,
-`sdl2-mixer-playwave`, `sdl3`, `tar`, `vim`, `wget`, `xz`,
+`sdl2-mixer-playwave`, `sdl3`, `tar`, `wget`, `xz`,
 `zlib`, and `zstd`. Five legacy script defaults currently disagree with their
 package manifests (`gzip`, `redis`, `wget`, `xz`, and `zstd`); those cold paths
 also require version alignment during the migration.
