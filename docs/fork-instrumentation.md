@@ -779,7 +779,7 @@ A fork-using program goes through Binaryen's `wasm-opt` twice:
    Inlining, dead-function removal and identical-function merging shrink
    the call graph the instrumenter has to cover. Quickshell's raw link has
    108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
-2. **After instrumentation.** The CLI runs `wasm-opt -O2` over its own
+2. **After instrumentation.** The CLI runs `wasm-opt -Os` over its own
    output (`--post-optimize`; `$WASM_OPT`, else `wasm-opt` on PATH). This
    pass simplifies the dispatch and frame code the transform adds, merges
    or removes generated helpers, and drops runtime imports nothing calls.
@@ -824,8 +824,13 @@ Why a pass after instrumentation is safe:
   enables only declared features. The generated code's needs depend on the
   input (atomic guards for shared memories, GC codecs only for GC
   references), so the declaration is derived, not listed.
-- The pass keeps a name section and DWARF (`-g`) when the input had them,
-  and does not run at all when instrumentation left the module unchanged.
+- The pass drops the name section (no `-g`), and does not run at all when
+  instrumentation left the module unchanged. The instrumenter does not carry
+  DWARF through, so `-g` could only keep the names: wasm-ld writes them into
+  every link, the facts need them to bind, and the runtime does not read
+  them. On Quickshell (2026-10-06) the names were 10.3 MB of a 40.6 MB file,
+  and `-Os` saved another 0.4 MB over `-O2`. `--keep-names` keeps the names
+  for debugging, so traps and profiles show function names.
 - A missing or failing `wasm-opt` is an error. `--post-optimize none`
   exists to inspect the transform's raw output; shipped artifacts do not use
   it.
