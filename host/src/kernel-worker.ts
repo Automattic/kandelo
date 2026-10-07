@@ -29410,7 +29410,13 @@ export class CentralizedKernelWorker {
     const processMem = new Uint8Array(process.memory.buffer);
     let success = true;
     for (const [mapAddr, mapping] of pidMap) {
+      // A sole attacher may skip the boundary only if it has already seen the
+      // segment's current version. A departed peer's shmdt/exit publishes its
+      // bytes without a live peer left behind, and an attachment is a view of
+      // the segment, not an attach-time snapshot. This is the same rule as
+      // anonymous MAP_SHARED (`refCount <= 1 && !wasStale`).
       if (!options.force
+          && mapping.seenVersion === (this.shmSegmentVersions.get(mapping.segId) ?? 0)
           && !this.hasPeerSysvShmMapping(process.pid, mapAddr, mapping.segId)) continue;
       if (!this.mergeAndRefreshSysvShmMapping(
         processMem,
