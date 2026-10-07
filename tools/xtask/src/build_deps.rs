@@ -16783,13 +16783,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     if extra.is_some() {
                         return Err("build-deps sha: unexpected extra arg".into());
                     }
-                    cmd_sha(&manifest, &registry, arch)
+                    cmd_sha(&manifest, &registry, arch, resolve_policy)
                 }
                 "path" => {
                     if extra.is_some() {
                         return Err("build-deps path: unexpected extra arg".into());
                     }
-                    cmd_path(&manifest, &registry, arch)
+                    cmd_path(&manifest, &registry, arch, resolve_policy)
                 }
                 "resolve" => {
                     if extra.is_some() {
@@ -16940,33 +16940,48 @@ fn cmd_parse(m: &DepsManifest) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_sha(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(), String> {
-    let mut memo = BTreeMap::new();
-    let mut chain = Vec::new();
-    let sha = compute_sha(
+// Inspect the same policy identity as resolve; these commands never build,
+// fetch, or create the selected cache directories.
+fn inspection_cache_key(
+    m: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    policy: ResolvePolicy,
+) -> Result<[u8; 32], String> {
+    compute_sha_for_policy(
         m,
         registry,
         arch,
         current_abi_version(),
-        &mut memo,
-        &mut chain,
-    )?;
+        policy,
+        &mut BTreeMap::new(),
+        &mut Vec::new(),
+    )
+}
+
+fn cmd_sha(
+    m: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    policy: ResolvePolicy,
+) -> Result<(), String> {
+    let sha = inspection_cache_key(m, registry, arch, policy)?;
     println!("{}", hex(&sha));
     Ok(())
 }
 
-fn cmd_path(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(), String> {
-    let mut memo = BTreeMap::new();
-    let mut chain = Vec::new();
-    let sha = compute_sha(
-        m,
-        registry,
-        arch,
-        current_abi_version(),
-        &mut memo,
-        &mut chain,
-    )?;
-    let path = canonical_path(&default_cache_root(), m, arch, &sha);
+fn cmd_path(
+    m: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    policy: ResolvePolicy,
+) -> Result<(), String> {
+    let root = match policy {
+        ResolvePolicy::Default => default_cache_root(),
+        ResolvePolicy::SourceOnlyV1 => plan_source_only_cache_roots()?.compiled,
+    };
+    let sha = inspection_cache_key(m, registry, arch, policy)?;
+    let path = canonical_path(&root, m, arch, &sha);
     println!("{}", path.display());
     Ok(())
 }
@@ -30715,6 +30730,56 @@ libs = ["lib/libF3b.a"]
             hex(&source_only),
             "9954d4bfe2c4fd86789b9201dab865c7d3ed2c3cf7c9276a06fd11df3c88f48a",
             "this golden binds the exact source-only-v1 provider-domain bytes"
+        );
+    }
+
+    #[test]
+    fn inspection_keys_match_the_selected_resolver_policy_without_building() {
+        let root = tempdir("inspection-selected-policy");
+        prepare_local_rebuild_fixture_repo(&root);
+        std::fs::write(
+            root.join("abi/snapshot.json"),
+            format!("{{\"abi_version\":{}}}", current_abi_version()),
+        )
+        .unwrap();
+        write(&root, "libInspect", "1.0.0", &[]);
+        write_source_only_repository_inputs(&root, "libInspect");
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = registry.load("libInspect").unwrap();
+        let _repo_root = crate::install_repo_root_override(root.clone()).unwrap();
+        let default =
+            inspection_cache_key(&manifest, &registry, TEST_ARCH, ResolvePolicy::Default).unwrap();
+        assert_eq!(
+            default,
+            compute_sha(
+                &manifest,
+                &registry,
+                TEST_ARCH,
+                current_abi_version(),
+                &mut BTreeMap::new(),
+                &mut Vec::new()
+            )
+            .unwrap()
+        );
+        let source =
+            inspection_cache_key(&manifest, &registry, TEST_ARCH, ResolvePolicy::SourceOnlyV1)
+                .unwrap();
+        assert_eq!(
+            hex(&source),
+            source_only_cache_key_sha(&manifest, &registry, TEST_ARCH, current_abi_version())
+                .unwrap()
+        );
+        assert_ne!(default, source);
+        let base = root.join("absent-cache");
+        let planned = plan_canonical_source_only_cache_roots(&base, None).unwrap();
+        let inspected = canonical_path(&planned.compiled, &manifest, TEST_ARCH, &source);
+        assert!(inspected.starts_with(base.join("source-only-v1/compiled/libs")));
+        assert!(!base.exists(), "inspection must not materialize a cache");
+        assert!(
+            !root.join("libInspect/build").exists(),
+            "inspection must not run a recipe"
         );
     }
 
