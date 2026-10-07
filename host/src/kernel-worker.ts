@@ -7974,13 +7974,14 @@ export class CentralizedKernelWorker {
     this.#runOrDeferKernelEntry(
       "PTY output drain",
       (entry) => {
-        if (!this.ptyOutputCallbacks.has(ptyIdx)) return;
-        const data = this.#readPtyMasterWithinKernelEntry(ptyIdx, entry);
         if (wakeSlaveReader) {
           entry.deferProtocolEffect(() => {
+            this.wakeAllBlockedRetries(true);
             this.scheduleWakeBlockedRetries();
           });
         }
+        if (!this.ptyOutputCallbacks.has(ptyIdx)) return;
+        const data = this.#readPtyMasterWithinKernelEntry(ptyIdx, entry);
         if (data === null) return;
         entry.deferObserverEffect(() => {
           const callback = this.ptyOutputCallbacks.get(ptyIdx);
@@ -15879,6 +15880,7 @@ export class CentralizedKernelWorker {
    * PipeBuffer operations, listener backlog changes, and datagram send-state
    * changes such as capacity, association, shutdown, close, or unlink, plus
    * advisory-lock changes that may unblock a parked F_SETLKW request.
+   * A separate coalesced notification covers PTY queues, modes, and hangups.
    */
   private drainAndProcessWakeupEvents(): void {
     this.#runOrDeferKernelEntry(
@@ -15894,6 +15896,27 @@ export class CentralizedKernelWorker {
   #drainAndProcessWakeupEventsWithinKernelEntry(
     entry: KernelWorkerEntryContext,
   ): void {
+    // The kernel retains this coalesced flag until it is consumed. With no
+    // parked waiters, leave it there rather than adding a scoped export call
+    // to every syscall. A new wait checks authoritative readiness before it
+    // parks, and subsequent drains consume the retained notification.
+    let ptyReadinessChanged = false;
+    if (
+      this.pendingPollRetries.size > 0 || this.pendingSelectRetries.size > 0
+      || this.pendingPipeReaders.size > 0 || this.pendingPipeWriters.size > 0
+    ) {
+      const takePtyReadiness = this.#kernelInstanceForEntry(entry).exports
+        .kernel_take_pty_readiness_changed as (() => number) | undefined;
+      ptyReadinessChanged = takePtyReadiness?.() === 1;
+    }
+    if (ptyReadinessChanged) {
+      // Ordinary PTY waits must not sit behind an already scheduled broad
+      // wake or another process's signal grace period. Retry them after this
+      // scope is revoked; masked waits stay on the deferred path below.
+      entry.deferProtocolEffect(() => {
+        this.wakeAllBlockedRetries(true);
+      });
+    }
     const drainFn = this.#kernelInstanceForEntry(entry).exports.kernel_drain_wakeup_events as
       | ((outPtr: KernelPointer, outLen: number, maxEvents: number) => number)
       | undefined;
@@ -15951,7 +15974,7 @@ export class CentralizedKernelWorker {
       }
       if (count < MAX_EVENTS) break;
     }
-    if (events.length === 0) return;
+    if (events.length === 0 && !ptyReadinessChanged) return;
 
     let needBroadWake = false;
     let needDatagramWriterWake = false;
@@ -16094,13 +16117,13 @@ export class CentralizedKernelWorker {
     if (needAdvisoryLockWake) {
       this.wakeBlockedAdvisoryLockRetries();
     }
-    if (needBroadWake) {
+    if (needBroadWake || ptyReadinessChanged) {
       if (
         needSignalSafeDeferredWake
         || this.anyPendingRetryNeedsSignalSafeWake()
       ) {
         this.scheduleWakeBlockedRetriesDeferred(entry);
-      } else {
+      } else if (needBroadWake) {
         this.scheduleWakeBlockedRetries(entry);
       }
     }
@@ -16285,12 +16308,19 @@ export class CentralizedKernelWorker {
    * Wake all blocked poll/pselect6 retries by cancelling their setImmediate
    * timers and immediately re-executing the syscalls.
    */
-  private wakeAllBlockedRetries(): void {
+  private wakeAllBlockedRetries(preserveSignalSafeWaits = false): void {
     // Snapshot and clear — retries may re-add themselves if still not ready
-    const pollEntries = Array.from(this.pendingPollRetries.entries());
-    const selectEntries = Array.from(this.pendingSelectRetries.entries());
-    this.pendingPollRetries.clear();
-    this.pendingSelectRetries.clear();
+    let pollEntries = Array.from(this.pendingPollRetries.entries());
+    let selectEntries = Array.from(this.pendingSelectRetries.entries());
+    if (preserveSignalSafeWaits) {
+      pollEntries = pollEntries.filter(([, retry]) => !retry.needsSignalSafeWake);
+      selectEntries = selectEntries.filter(([, retry]) => !retry.needsSignalSafeWake);
+      for (const [key] of pollEntries) this.pendingPollRetries.delete(key);
+      for (const [key] of selectEntries) this.pendingSelectRetries.delete(key);
+    } else {
+      this.pendingPollRetries.clear();
+      this.pendingSelectRetries.clear();
+    }
 
     for (const [_key, entry] of pollEntries) {
       if (!this.isRegisteredChannel(entry.channel)) continue;

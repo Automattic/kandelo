@@ -4224,6 +4224,9 @@ fn release_ofd_reference_impl(
                 if let Some(pty) = crate::pty::get_pty(pty_idx) {
                     if pty.master_refs > 0 {
                         pty.master_refs -= 1;
+                        if pty.master_refs == 0 {
+                            crate::wakeup::push_pty_readiness();
+                        }
                     }
                     if !pty.is_alive() {
                         crate::pty::free_pty(pty_idx);
@@ -4235,6 +4238,9 @@ fn release_ofd_reference_impl(
                 if let Some(pty) = crate::pty::get_pty(pty_idx) {
                     if pty.slave_refs > 0 {
                         pty.slave_refs -= 1;
+                        if pty.slave_refs == 0 {
+                            crate::wakeup::push_pty_readiness();
+                        }
                     }
                     if !pty.is_alive() {
                         crate::pty::free_pty(pty_idx);
@@ -30553,6 +30559,28 @@ mod tests {
                     assert_eq!(pty.read_slave(8), Ok(b"yz".to_vec()));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_pty_final_close_notifies_blocked_peer() {
+        use crate::wakeup::take_pty_readiness_changed as take;
+        for close_master in [false, true] {
+            let mut fixture = PtyFixture::new();
+            take();
+            let fd = fixture.fd(close_master);
+            let alias = sys_dup(&mut fixture.proc, fd).unwrap();
+            sys_close(&mut fixture.proc, &mut fixture.host, fd).unwrap();
+            assert!(!take(), "a descriptor alias still holds the endpoint");
+            sys_close(&mut fixture.proc, &mut fixture.host, alias).unwrap();
+            assert!(take(), "the last close must wake the peer's wait");
+            let mut fds = [WasmPollFd {
+                fd: fixture.fd(!close_master),
+                events: POLLIN,
+                revents: 0,
+            }];
+            assert_eq!(sys_poll(&mut fixture.proc, &mut fixture.host, &mut fds, 0), Ok(1));
+            assert_ne!(fds[0].revents & wasm_posix_shared::poll::POLLHUP, 0);
         }
     }
 

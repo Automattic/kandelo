@@ -14010,6 +14010,14 @@ pub extern "C" fn kernel_drain_wakeup_events(
     crate::wakeup::drain(out, max_events)
 }
 
+/// Consume the coalesced PTY readiness notification. PTY queues are not pipe
+/// slots; keep their notification separate from the packed pipe wake stream.
+/// Additive export: older hosts retain their existing retry-timer fallback.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_take_pty_readiness_changed() -> u32 {
+    u32::from(crate::wakeup::take_pty_readiness_changed())
+}
+
 // ---------------------------------------------------------------------------
 // DRI / KMS
 // ---------------------------------------------------------------------------

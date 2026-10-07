@@ -79,6 +79,8 @@ impl PtyPair {
     /// Returns an optional signal number if ISIG matched a signal character.
     /// Echo bytes are appended to the output buffer (master read side).
     pub fn process_master_input(&mut self, byte: u8) -> Option<u32> {
+        let was_readable = self.slave_has_data();
+        let had_output = self.master_has_data();
         let opost = self.terminal.c_oflag & crate::terminal::OPOST != 0;
         let onlcr = self.terminal.c_oflag & crate::terminal::ONLCR != 0;
 
@@ -102,6 +104,7 @@ impl PtyPair {
         }
 
         if signal.is_some() {
+            crate::wakeup::push_pty_readiness();
             return signal;
         }
 
@@ -119,6 +122,9 @@ impl PtyPair {
             }
         }
 
+        if (!was_readable && self.slave_has_data()) || (!had_output && self.master_has_data()) {
+            crate::wakeup::push_pty_readiness();
+        }
         None
     }
 
@@ -146,6 +152,9 @@ impl PtyPair {
             while let Some(byte) = self.input_buf.pop_front() {
                 self.terminal.cooked_buffer.push(byte);
             }
+        }
+        if was_canonical != will_be_canonical {
+            crate::wakeup::push_pty_readiness();
         }
     }
 
@@ -196,6 +205,9 @@ impl PtyPair {
     /// Write from the slave side. Does output processing (OPOST) and puts
     /// data into the output buffer for the master to read.
     pub fn slave_write(&mut self, data: &[u8]) -> usize {
+        if !data.is_empty() && !self.master_has_data() {
+            crate::wakeup::push_pty_readiness();
+        }
         let opost = self.terminal.c_oflag & crate::terminal::OPOST != 0;
         let onlcr = self.terminal.c_oflag & crate::terminal::ONLCR != 0;
 
@@ -292,6 +304,42 @@ fn reset_table() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readiness_notifications_follow_input_output_and_mode_transitions() {
+        use crate::wakeup::take_pty_readiness_changed as take;
+        take();
+        let mut pty = PtyPair::new(0, 0);
+        pty.terminal.c_lflag &= !crate::terminal::ECHO;
+        pty.process_master_input(b'a');
+        assert!(!take(), "an incomplete canonical line is not readable");
+        pty.process_master_input(b'\n');
+        assert!(take());
+        assert!(!take(), "taking a notification consumes it");
+        let mut bytes = [0; 32];
+        assert_eq!(pty.slave_read(&mut bytes), 2);
+
+        pty.process_master_input(0x04);
+        assert!(take(), "canonical EOF wakes readers too");
+        assert!(pty.slave_take_eof());
+        pty.process_master_input(b'b');
+        assert!(!take());
+        let next_lflag = pty.terminal.c_lflag & !crate::terminal::ICANON;
+        pty.prepare_termios_change(next_lflag, false);
+        pty.terminal.c_lflag = next_lflag;
+        assert!(take(), "switching to raw exposes the pending line");
+        assert_eq!(pty.slave_read(&mut bytes), 1);
+        pty.process_master_input(b'c');
+        assert!(take(), "raw input wakes a reader immediately");
+
+        assert_eq!(pty.slave_write(b"first"), 5);
+        assert_eq!(pty.slave_write(b"second"), 6);
+        assert!(take(), "output wakes the terminal's master reader");
+        assert!(!take(), "successive writes coalesce");
+        assert_eq!(pty.master_read(&mut bytes), 11);
+        pty.slave_write(b"next repaint");
+        assert!(take(), "drain then write emits a fresh wake");
+    }
 
     #[test]
     fn test_alloc_pty() {
