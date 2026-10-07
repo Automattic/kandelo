@@ -64,6 +64,7 @@ LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?resolver did not provide
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?resolver did not provide the direct zlib dependency}"
 LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?resolver did not provide the direct libpng dependency}"
 FREETYPE_PREFIX="${WASM_POSIX_DEP_FREETYPE_DIR:?resolver did not provide the direct freetype dependency}"
+LIBMAD_PREFIX="${WASM_POSIX_DEP_LIBMAD_DIR:?resolver did not provide the direct libmad dependency}"
 LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:?resolver did not provide the direct libcxx dependency}"
 
 if [ "$TARGET_ARCH" != "wasm32" ]; then
@@ -97,6 +98,8 @@ test -f "$ZLIB_PREFIX/lib/libz.a"
 test -f "$LIBPNG_PREFIX/lib/libpng.a"
 test -f "$FREETYPE_PREFIX/lib/libfreetype.a"
 test -f "$FREETYPE_PREFIX/lib/pkgconfig/freetype2.pc"
+test -f "$LIBMAD_PREFIX/lib/libmad.a"
+test -f "$LIBMAD_PREFIX/include/mad.h"
 test -f "$LIBCXX_PREFIX/lib/libc++.a"
 
 # clang++ resolves -lc++ / -lc++abi and the libc++ header tree through
@@ -216,6 +219,8 @@ echo "==> Configuring ScummVM (engine plugins, GLES2, SDL2 backend)..."
     CXX="$CXX" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
     CXXFLAGS="-O2 -DKANDELO -DUNCACHED_PLUGINS $REPRO_FLAGS" \
     LDFLAGS="-L$SDL2_PREFIX/lib -L$LIBDRM_PREFIX/lib -L$LIBWAYLAND_PREFIX/lib -L$LIBFFI_PREFIX/lib -L$LIBXKBCOMMON_PREFIX/lib -L$ZLIB_PREFIX/lib -L$LIBPNG_PREFIX/lib -L$FREETYPE_PREFIX/lib -L$LIBCXX_PREFIX/lib -L$SYSROOT/lib $SDL_DEP_LIBS" \
+    MAD_CFLAGS="-I$LIBMAD_PREFIX/include" \
+    MAD_LIBS="-L$LIBMAD_PREFIX/lib" \
     PKG_CONFIG_PATH= \
     PKG_CONFIG_LIBDIR="$FREETYPE_PREFIX/lib/pkgconfig:$LIBPNG_PREFIX/lib/pkgconfig:$ZLIB_PREFIX/lib/pkgconfig" \
     ./configure \
@@ -239,7 +244,7 @@ echo "==> Configuring ScummVM (engine plugins, GLES2, SDL2 backend)..."
         --disable-seq-midi \
         --disable-timidity \
         --disable-ogg --disable-vorbis --disable-tremor \
-        --disable-mad --disable-flac \
+        --enable-mad --disable-flac \
         --disable-jpeg --disable-gif \
         --disable-faad --disable-mpeg2 --disable-a52 \
         --disable-theoradec --disable-vpx \
@@ -249,6 +254,7 @@ echo "==> Configuring ScummVM (engine plugins, GLES2, SDL2 backend)..."
         --disable-tts \
         --disable-eventrecorder
 )
+grep -q '^#define USE_MAD' "$SRC_DIR/config.h"
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 scummvm_make() {

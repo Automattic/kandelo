@@ -230,7 +230,7 @@
             {
               "id": "fotaq",
               "label": "Flight of the Amazon Queen",
-              "detail": "113 MB",
+              "detail": "34 MB",
               "restart": "/usr/local/bin/scummvm-play fotaq"
             },
             {

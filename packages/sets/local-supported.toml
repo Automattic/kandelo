@@ -288,6 +288,10 @@ name = "libinput"
 class = "platform"
 
 [[packages]]
+name = "libmad"
+class = "platform"
+
+[[packages]]
 name = "libparserutils"
 class = "platform"
 
