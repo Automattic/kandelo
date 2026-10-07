@@ -60,6 +60,19 @@ const probes: Probe[] = [
     stdout: ["GOMAXPROCS: 2", "parallel M: complete"],
   },
   {
+    name: "concurrent clone handoffs from two scheduler Ms",
+    file: "concurrent-clone.wasm",
+    argv: ["go-concurrent-clone"],
+    stdout: ["parallel clone handoffs: complete"],
+    threadMarkers: 4,
+  },
+  {
+    name: "LockOSThread keeps a goroutine on one M until unlock",
+    file: "locked-thread.wasm",
+    argv: ["go-locked-thread"],
+    stdout: ["locked worker affinity: complete"],
+  },
+  {
     name: "process exit from a worker M",
     file: "exit-worker.wasm",
     argv: ["go-exit-worker"],
