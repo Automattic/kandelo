@@ -791,6 +791,36 @@ paths, not the complete browser demo, full Go runtime conformance, or broad
 POSIX behavior. Concurrent clone contention, individual-M exit/reaping,
 `LockOSThread`, sysmon/preemption, and broader runtime tests remain.
 
+**2026-10-07 — ABI-48 resolver bundle and concurrent clone/affinity slice.**
+The shell resolver rejection was a stale generated
+`scripts/resolve-binary.bundle.mjs`: it still embedded ABI 47 after this
+branch raised the generated ABI to 48. Regenerating it made
+`scripts/test-resolve-binary-bundle.sh` and
+`scripts/resolve-binary.sh kernel.wasm` pass. This artifact must be committed
+with the ABI-48 Go PR, not independently against ABI-47 `main`; the existing
+package-system resolver test already detects bundle drift.
+
+A new concurrent-clone probe forces two scheduler Ms to overlap while each
+requests a no-P M, twice. Node and Chromium both completed four clone
+handoffs with exact child markers and no host diagnostics, exercising the
+atomic handoff lock from separate parents. An initial eight-clone Chromium
+probe hit the declared eight-slot limit before departed no-P workers were
+fully recycled (`active=8`); reducing the contention probe to four clones
+isolates lock behavior without treating slot capacity as solved. Slot reuse
+under sustained thread churn remains separate work.
+
+The fork's `LockOSThread` path still returned early on every Wasm target.
+Fork commit `3fae0fa` exempts Kandelo from that no-thread guard and from
+the template-thread path, because a Kandelo clone starts a fresh Wasm
+instance rather than inheriting the parent's thread-local host state. The
+new locked-thread probe checks that the binding exists, remains on one M
+through 64 scheduler yields, and clears on unlock. It exits 0 with no host
+diagnostics in Node and Chromium; `GOOS=js` and `GOOS=wasip1` standard-library
+builds still pass. All seven focused Chromium milestone probes pass.
+Individual M termination/reaping when a locked goroutine exits without
+unlocking remains unimplemented (`exitThread` still traps), as do sysmon,
+preemption, and broader Go/stdlib conformance.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed

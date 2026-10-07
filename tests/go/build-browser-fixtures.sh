@@ -27,5 +27,7 @@ build_probe second-m second-m
 build_probe clone-handoff clone-handoff
 build_probe scheduler scheduler
 build_probe scheduler exit-worker ./exit-worker
+build_probe scheduler concurrent-clone ./concurrent-clone
+build_probe scheduler locked-thread ./locked-thread
 
 printf 'Go browser fixtures built in %s\n' "$output_dir"
