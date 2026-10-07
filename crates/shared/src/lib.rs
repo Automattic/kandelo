@@ -128,7 +128,7 @@ pub mod process_layout;
 ///     process reaches the post-syscall trampoline at all, and publishes
 ///     `CHECKPOINT_REQUEST_RESTART` alongside `CHECKPOINT_REQUEST_UNWIND` to
 ///     tell the guest to resubmit that syscall once the rewind returns.
-pub const ABI_VERSION: u32 = 45;
+pub const ABI_VERSION: u32 = 48;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -881,11 +881,13 @@ pub enum Errno {
     ENETUNREACH = 101,
     ECONNABORTED = 103,
     ECONNRESET = 104,
+    ENOBUFS = 105,
     ECONNREFUSED = 111,
     EISCONN = 106,
     ENOTCONN = 107,
     ESHUTDOWN = 108,
     ETIMEDOUT = 110,
+    EHOSTUNREACH = 113,
     EALREADY = 114,
     EINPROGRESS = 115,
 }
@@ -952,11 +954,13 @@ impl Errno {
             101 => Some(Errno::ENETUNREACH),
             103 => Some(Errno::ECONNABORTED),
             104 => Some(Errno::ECONNRESET),
+            105 => Some(Errno::ENOBUFS),
             106 => Some(Errno::EISCONN),
             111 => Some(Errno::ECONNREFUSED),
             107 => Some(Errno::ENOTCONN),
             108 => Some(Errno::ESHUTDOWN),
             110 => Some(Errno::ETIMEDOUT),
+            113 => Some(Errno::EHOSTUNREACH),
             114 => Some(Errno::EALREADY),
             115 => Some(Errno::EINPROGRESS),
             _ => None,

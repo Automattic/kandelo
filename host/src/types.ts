@@ -233,6 +233,8 @@ export interface UdpReceiveTarget {
 export interface NetworkIO {
   /** IPv4 address owned by this guest network stack, when known. */
   readonly localAddress?: Uint8Array;
+  /** Select a real routed UDP source; positive errno when no route exists. */
+  udpSourceAddress?(destination: Uint8Array): Uint8Array | number;
   connect(handle: number, addr: Uint8Array, port: number): void;
   /** 0 = connected, positive errno = failed, -11 = still pending (EAGAIN). */
   connectStatus(handle: number): number;

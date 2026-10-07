@@ -183,9 +183,19 @@ pub trait HostIO {
         let _ = (accept_wake_idx, pid);
         true
     }
+    /// Select the real IPv4 source for a non-loopback UDP route. Hosts without
+    /// such an interface fail truthfully; route ownership belongs to the host.
+    fn host_udp_source_address(&mut self, dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
+        let _ = dst;
+        Err(Errno::ENETUNREACH)
+    }
     fn host_udp_bind(&mut self, handle: i32, addr: &[u8; 4], port: u16) -> Result<(), Errno> {
-        let _ = (handle, addr, port);
-        Ok(())
+        let _ = (handle, port);
+        if *addr == [0; 4] {
+            Ok(())
+        } else {
+            Err(Errno::EADDRNOTAVAIL)
+        }
     }
     fn host_udp_unbind(&mut self, handle: i32) -> Result<(), Errno> {
         let _ = handle;

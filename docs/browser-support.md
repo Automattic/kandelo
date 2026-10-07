@@ -378,8 +378,14 @@ download completed. Both views reset when the kernel is replaced; neither is
 persisted as a machine snapshot.
 
 Cross-origin browser fetches are routed through `public/service-worker.js`,
-which defaults to `https://wordpress-playground-cors-proxy.net/?`. Override it
-with `VITE_CORS_PROXY_URL` when testing another proxy:
+which defaults to `https://wordpress-playground-cors-proxy.net/?`. Only GET
+and HEAD requests are wrapped in the proxy: the proxy exists to make
+CORS-less read-only resources readable under COEP, and its only POST
+authority is the reviewed `git-upload-pack` boundary, which targets the proxy
+URL deliberately. A page-level request with any other method goes directly to
+its target, so that server must grant CORS itself — the signalling piplet
+(`apps/signalling/piplet.php`) does. Override the proxy with
+`VITE_CORS_PROXY_URL` when testing another proxy:
 
 ```bash
 cd apps/browser-demos
@@ -1102,6 +1108,33 @@ claim that browser completion is working based on Node-only evidence.
 Browser sandboxing prevents Kandelo from listening on real network ports or opening raw TCP/UDP sockets to arbitrary external peers. Local loopback sockets and `LocalVirtualNetwork` listeners are virtual sockets inside the browser session, so Kandelo machines can still communicate with each other using POSIX UDP/TCP. Browser-facing HTTP server demos use a service worker to intercept HTTP requests and inject them as kernel TCP connections via the connection pump.
 
 ### Purpose-checked browser peer connections
+
+The experimental `/pages/peer-network/` flow connects independent machines with
+`purpose: "network"` and the reusable piplet client. A host owns `10.89.0.1`,
+assigns up to 15 joiners, and forwards traffic between them in its dedicated
+kernel worker. The main thread transfers framed bytes between RTC channels and
+bounded native MessagePorts. Guest programs still call ordinary IPv4 UDP
+sockets. DNS names `host` and `peer-N` resolve through the worker's segment
+membership. Remote TCP and broadcast discovery are not implemented in this
+phase. Node runs the same segment over paired native ports; its built-in runtime
+has no WebRTC API, so creating RTC links remains a browser adapter capability.
+
+UDP uses an unordered channel with zero retransmissions; directory control is
+ordered and reliable. The payload cap is the lesser of 65,507 bytes and the
+negotiated SCTP ceiling minus 16 bytes. Oversized sends return EMSGSIZE and a
+full worker-side bridge returns EAGAIN; admitted UDP can still be lost under RTC
+congestion or remote socket closure. Each bridge direction caps pending storage
+at 128 frames and one MiB. Membership and control messages are bounded, source
+addresses are checked against link ownership, and disconnect removes remote
+bindings and routes. Local Chromium checks demonstrate actual guest Netcat
+messages in both directions and between joiners, plus two-player Doom and
+TyrQuake with both players behind a separate forwarding host. Visible Chromium
+checks used the normal browser launch and real PHP signalling server. These
+runs require the local loopback ICE fixture; default ICE failed to find a direct
+route in the first visible check and reported that boundary. Cross-computer/NAT
+connectivity, long-duration games, and Firefox/WebKit guest runtime behavior
+remain unverified. See the dated
+[design and validation record](plans/2026-10-06-webrtc-guest-udp.md).
 
 `web-libs/kandelo-session/src/peer-connection.ts` owns reusable WebRTC
 connection setup. A consumer declares a purpose and named data channels with

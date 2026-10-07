@@ -1,3 +1,4 @@
+import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
 /**
  * Message protocol for main thread ↔ kernel worker communication.
  *
@@ -66,6 +67,8 @@ export function initializeBrowserCorsProxyForWorker<TLazyFetcher, TTlsBackend>(
 
 export interface InitMessage {
   type: "init";
+  /** Native port ownership passes to this kernel worker during init. */
+  remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
   /**
    * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
@@ -637,8 +640,20 @@ export interface FbReleaseGenerationAckMessage {
   requestId: number;
 }
 
+export interface AttachRemotePeerMessage {
+  type: "remote_network_attach";
+  requestId: number;
+  peer: RemoteSegmentPeer;
+}
+export interface RemoteNetworkSnapshotMessage {
+  type: "remote_network_snapshot";
+  requestId: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
+  | AttachRemotePeerMessage
+  | RemoteNetworkSnapshotMessage
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage

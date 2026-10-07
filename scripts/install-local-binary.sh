@@ -500,7 +500,9 @@ install_local_binary() {
                     rm -f "$instrumented"
                     return 1
                 fi
-                mv "$instrumented" "$src"
+                # Upstream installs may produce mode 0555. This caller-owned
+                # artifact is explicitly being replaced; never prompt on a TTY.
+                mv -f "$instrumented" "$src"
             fi
             wasm_require_fork_instrumentation_if_needed "$src" || return 1
             ;;

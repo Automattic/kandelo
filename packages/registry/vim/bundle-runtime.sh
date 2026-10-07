@@ -29,8 +29,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/vim-src"
-RUNTIME_SRC="$SRC_DIR/runtime"
-RUNTIME_OUT="$SCRIPT_DIR/runtime"
+RUNTIME_SRC="${1:-$SRC_DIR/runtime}"
+RUNTIME_OUT="${2:-$SCRIPT_DIR/runtime}"
 
 if [ ! -d "$RUNTIME_SRC" ]; then
     echo "ERROR: Vim source not found. Run build-vim.sh first." >&2

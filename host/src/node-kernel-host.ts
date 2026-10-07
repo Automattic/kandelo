@@ -1,3 +1,5 @@
+import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
+import type { RemoteSegmentSnapshot } from "./networking/remote-segment";
 /**
  * NodeKernelHost — Main-thread proxy that communicates with a dedicated
  * kernel worker_thread via messages. The kernel worker owns the Wasm
@@ -76,6 +78,8 @@ const DEFAULT_SSL_ENV = [
 ] as const;
 
 export interface NodeKernelHostOptions {
+  /** Worker-owned remote UDP segment; a joiner transfers its native peer port. */
+  remoteNetwork?: RemoteSegmentInit;
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
@@ -441,6 +445,7 @@ export class NodeKernelHost {
           ?? maxWorkers * maxPages * WASM_PAGE_SIZE;
         const initMsg: MainToKernelMessage = {
           type: "init",
+          remoteNetwork: this.options.remoteNetwork,
           kernelWasmBytes: wasmBytes,
           config: {
             maxWorkers,
@@ -465,7 +470,10 @@ export class NodeKernelHost {
           sessionSeedTrees,
           enableTcpNetwork: this.options.enableTcpNetwork,
         };
-        const transfer = [
+        const transfer: Transferable[] = [
+          ...(this.options.remoteNetwork?.role === "joiner"
+            ? [this.options.remoteNetwork.peer.port as import("node:worker_threads").MessagePort]
+            : []),
           ...(rootfsLazyAssets ?? []).map(
             (asset) => asset.bytes.buffer as ArrayBuffer,
           ),
@@ -1239,6 +1247,23 @@ export class NodeKernelHost {
   }
 
   /** Destroy the kernel and release all resources */
+  /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
+  async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> {
+    const requestId = this._nextRequestId++;
+    try {
+      return await this.request(requestId, { type: "remote_network_attach", requestId, peer }, [peer.port as import("node:worker_threads").MessagePort]);
+    } catch (error) {
+      this.pendingRequests.delete(requestId);
+      throw error;
+    }
+  }
+
+  /** Inspect actual worker-owned membership and UDP bindings. */
+  remoteNetworkSnapshot(): Promise<RemoteSegmentSnapshot> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, { type: "remote_network_snapshot", requestId });
+  }
+
   async destroy(): Promise<void> {
     this.attachedInputSource?.stop();
     this.attachedInputSource = null;

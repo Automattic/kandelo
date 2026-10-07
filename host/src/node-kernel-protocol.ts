@@ -1,3 +1,4 @@
+import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
 /**
  * Message protocol for Node.js main thread ↔ kernel worker_thread communication.
  *
@@ -32,6 +33,8 @@ export type { HostDiagnostic } from "./host-diagnostic";
 
 export interface InitMessage {
   type: "init";
+  /** Native port ownership passes to this kernel worker during init. */
+  remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
   config: {
     maxWorkers: number;
@@ -532,8 +535,20 @@ export interface SetInputCanvasDimsMessage {
   height: number;
 }
 
+export interface AttachRemotePeerMessage {
+  type: "remote_network_attach";
+  requestId: number;
+  peer: RemoteSegmentPeer;
+}
+export interface RemoteNetworkSnapshotMessage {
+  type: "remote_network_snapshot";
+  requestId: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
+  | AttachRemotePeerMessage
+  | RemoteNetworkSnapshotMessage
   | SpawnMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage

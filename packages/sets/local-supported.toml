@@ -452,3 +452,11 @@ reason = "dormant browser product"
 [[exclusions]]
 name = "redis-vfs"
 reason = "dormant browser product"
+
+[[packages]]
+name = "lhasa"
+class = "user-software"
+
+[[packages]]
+name = "tyrquake"
+class = "user-software"

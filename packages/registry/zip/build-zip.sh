@@ -5,13 +5,20 @@ set -euo pipefail
 #
 # Plain Makefile build with CC override.
 # zip has its own deflate (no zlib needed).
-# Output: packages/registry/zip/bin/zip.wasm
+# Output: bin/zip.wasm under the declared recipe work root.
 
 ZIP_VERSION="${ZIP_VERSION:-30}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/zip-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+source "$REPO_ROOT/sdk/activate.sh"
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/zip-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -27,17 +34,13 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download zip source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading zip $ZIP_VERSION..."
-    TARBALL="zip${ZIP_VERSION}.tar.gz"
-    URL="https://downloads.sourceforge.net/infozip/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL -L "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
-fi
+# Rebuild from the resolver's immutable verified input, never old ABI objects.
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://downloads.sourceforge.net/infozip/zip30.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-f0e8bb1f9b7eb0b01285495a2699df3a4b766784c1765a8f1aeedf63c0806369}"
+rm -rf "$SRC_DIR"
+kandelo_package_stage_verified_source zip "$SRC_DIR" \
+    "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+    "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 
@@ -70,4 +73,4 @@ echo "Binary: $BIN_DIR/zip.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary zip "$SCRIPT_DIR/bin/zip.wasm"
+install_local_binary zip "$BIN_DIR/zip.wasm"

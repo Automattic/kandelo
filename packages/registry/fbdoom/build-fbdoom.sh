@@ -71,7 +71,10 @@ patch_set_sha256="$(shasum -a 256 "$HERE"/patches/*.patch | shasum -a 256 | awk 
 source_marker="$SRC/.kandelo-fbdoom-source"
 expected_source_marker="$(printf '%s\n%s\n%s\n%s' \
     "$FBDOOM_COMMIT" "$FBDOOM_SOURCE_URL" "$FBDOOM_SOURCE_SHA256" "$patch_set_sha256")"
-if [ -d "$SRC" ] && [ "$(cat "$source_marker" 2>/dev/null || true)" != "$expected_source_marker" ]; then
+# Recreate the writable primary copy on every invocation. A partial earlier
+# series must never turn a rejected patch into an "already applied" success.
+# The resolver's sealed source remains read-only and is copied normally.
+if [ -d "$SRC" ]; then
     rm -rf "$SRC" "$OUT_BIN"
 fi
 if [ ! -d "$SRC" ]; then
@@ -112,13 +115,7 @@ if [ ! -d "$CDOOM_SRC" ]; then
     printf '%s\n' "$expected_cdoom_marker" > "$cdoom_marker"
 fi
 
-# Sentinel: last file added by patches/0005-add-music-support.patch. If it is
-# present, the source tree is already fully vendored and patched. Re-vendoring
-# would clobber the earlier patch's edits to these imported sources.
-SENTINEL="$SRC/fbdoom/opl/opl_kernel.c"
-
 apply_patches() {
-    local mode="${1:-strict}"
     local name patch_file
     echo "==> Applying patches..."
     for patch_file in "$HERE/patches/"*.patch; do
@@ -128,8 +125,6 @@ apply_patches() {
             >/dev/null 2>&1; then
             echo "    $name"
             kandelo_package_git_apply_patch "$SRC" "$patch_file"
-        elif [ "$mode" = "lenient" ]; then
-            echo "    $name (already applied or superseded)"
         else
             echo "ERROR: patch $name does not apply cleanly" >&2
             exit 1
@@ -137,21 +132,27 @@ apply_patches() {
     done
 }
 
-if [ -e "$SENTINEL" ]; then
-    echo "==> Source tree already vendored (sentinel present); checking patches."
-    apply_patches lenient
-else
-    echo "==> Vendoring OPL/MIDI/MUS sources from chocolate-doom..."
-    mkdir -p "$SRC/fbdoom/opl"
-    for file in opl.c opl.h opl3.c opl3.h opl_internal.h opl_queue.c opl_queue.h; do
-        cp "$CDOOM_SRC/opl/$file" "$SRC/fbdoom/opl/$file"
-    done
-    for file in mus2mid.c mus2mid.h midifile.c midifile.h; do
-        cp "$CDOOM_SRC/src/$file" "$SRC/fbdoom/$file"
-    done
+echo "==> Vendoring OPL/MIDI/MUS and multiplayer sources from chocolate-doom..."
+mkdir -p "$SRC/fbdoom/opl"
+for file in opl.c opl.h opl3.c opl3.h opl_internal.h opl_queue.c opl_queue.h; do
+    cp "$CDOOM_SRC/opl/$file" "$SRC/fbdoom/opl/$file"
+done
+for file in mus2mid.c mus2mid.h midifile.c midifile.h; do
+    cp "$CDOOM_SRC/src/$file" "$SRC/fbdoom/$file"
+done
 
-    apply_patches strict
-fi
+# fbDOOM's NOSDL fork omitted SDL_net and the multiplayer sources.
+# Restore the pinned upstream protocol; 0007 supplies a POSIX transport
+# and a non-textscreen launch UI at that upstream frontend boundary.
+for file in aes_prng.c aes_prng.h d_loop.h \
+    net_client.c net_client.h net_common.c net_common.h net_defs.h \
+    net_io.c net_io.h net_loop.c net_loop.h net_packet.c net_packet.h \
+    net_petname.c net_petname.h net_query.c net_query.h net_sdl.h \
+    net_server.c net_server.h net_structrw.c net_structrw.h; do
+    cp "$CDOOM_SRC/src/$file" "$SRC/fbdoom/$file"
+done
+
+apply_patches
 
 # Use this worktree's SDK and sysroot rather than a global npm link, which may
 # point at a sibling worktree without Kandelo's linux/fb.h overlay.
