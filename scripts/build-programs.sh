@@ -5,11 +5,22 @@ set -euo pipefail
 # The resolver (host/src/binary-resolver.ts) prefers local-binaries/
 # over binaries/, so locally-built binaries automatically override
 # whatever the fetcher placed under `binaries/`.
-# Uses the same toolchain and flags as libc-test builds.
+# Compiles and links through this checkout's SDK drivers (sdk/bin/), the
+# same way the conformance runners and user software build.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# WHY: the SDK resolves the sysroot and glue dir by walking up from the
+# current directory -- findSysroot and findGlueDir, both through
+# projectRootOrSdk/findProjectRoot in sdk/src/lib/toolchain.ts -- not from
+# this script's location. Invoked with a cwd inside a different Kandelo
+# checkout, it would silently compile against THAT checkout's sysroot while
+# the prerequisite check below validated this one. Pin the cwd so both agree.
+#
+# Do not "fix" this by exporting WASM_POSIX_SYSROOT instead: findSysroot()
+# returns that value before its arch-aware lookup, which would hand the
+# wasm64 build the wasm32 sysroot.
+cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/libc/glue"
 BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
 BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
 # shellcheck source=/dev/null
@@ -138,8 +149,29 @@ find_llvm_bin() {
     exit 1
 }
 
+# LLVM_BIN still serves the in-tree static-library builds below (libwpkdraw,
+# libkwl), whose build.sh scripts take a raw CC/AR pair.
 LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
+
+# The SDK owns the link contract. This script used to carry its own copy in
+# LINK_PRE_LIBS/LINK_POST_LIBS, which drifted from sdk/src/lib/flags.ts: it
+# lacked --export=__heap_base and --global-base, so every program it built
+# was laid out differently from SDK-built software, and the host had to
+# guess each program's heap base. CLAUDE.md requires build scripts to use
+# the worktree-local SDK; one copy of a rule cannot disagree with itself.
+#
+# Absolute paths, never bare names: a bare `wasm32posix-c++` resolves through
+# PATH and can pick up a different worktree's SDK.
+#
+# Deliberately NOT named CC/CXX. Those names are already exported in the dev
+# shell, and bash keeps the export attribute when you assign to an exported
+# name -- so `CC=.../wasm32posix-cc` would reach every child process,
+# including the host `cargo run -p xtask` calls below, whose cc-rs build
+# scripts would then try to compile host objects with a wasm cross-compiler.
+WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
+WASM64_CC="$REPO_ROOT/sdk/bin/wasm64posix-cc"
+WASM32_CXX="$REPO_ROOT/sdk/bin/wasm32posix-c++"
+WASM64_CXX="$REPO_ROOT/sdk/bin/wasm64posix-c++"
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 
 # Verify prerequisites
@@ -148,15 +180,18 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
+# Everything the SDK already supplies is deliberately absent here. Its
+# compileFlags() (sdk/src/lib/flags.ts) owns --target, -matomics,
+# -mbulk-memory, -mexception-handling, -fno-trapping-math and the -mllvm SjLj
+# / modern-EH pair; cc.ts adds --sysroot from the resolved toolchain; its
+# executable link injects the syscall glue (channel_syscall.c, compiler_rt.c,
+# cxxrt.c), crt1.o, the sysroot libc.a and linkFlags(). Per-program archives
+# passed after the sources still land BEFORE libc.a: the SDK forwards caller
+# inputs verbatim, in order, and appends libc.a after them, so the stubs'
+# internal references (mmap, ioctl, calloc, ...) resolve in a single linker
+# pass.
 CFLAGS=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib
     -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
     # Upstream libdrm installs public headers under `include/libdrm/`
     # (matches the `--cflags` pkg-config flag). Programs `#include
     # <xf86drm.h>` from there. `include/drm/` is the UAPI dir that
@@ -165,36 +200,6 @@ CFLAGS=(
     # fan-out doesn't resolve. Harmless when the dirs are absent.
     -I"$SYSROOT/include/libdrm"
     -I"$SYSROOT/include/drm"
-)
-
-LINK_PRE_LIBS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$SYSROOT/lib/crt1.o"
-)
-
-# libc.a + linker flags. Per-program extra archives (libdrm.a, libgbm.a,
-# libEGL.a, libGLESv2.a) are spliced BEFORE libc.a so the stubs'
-# internal references (mmap, ioctl, calloc, …) resolve in a single
-# linker pass.
-LINK_POST_LIBS=(
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,-z,stack-size=8388608
-    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--growable-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
 )
 
 # Fork support comes from wasm-fork-instrument. The tool auto-discovers
@@ -259,10 +264,8 @@ build_program() {
     # Bash 3.2 (macOS system bash) under `set -u` treats expansion of
     # an empty array as unbound; the `${arr[@]+...}` guard suppresses
     # that when extra_libs is empty.
-    "$CC" "${CFLAGS[@]}" "$src" \
-        "${LINK_PRE_LIBS[@]}" \
+    "$WASM32_CC" "${CFLAGS[@]}" "$src" \
         ${extra_libs[@]+"${extra_libs[@]}"} \
-        "${LINK_POST_LIBS[@]}" \
         -o "$raw_wasm"
 
     # Apply fork instrumentation if the program can participate in fork. The
@@ -298,7 +301,7 @@ build_cpp_program() {
     # whole exception-propagation chain (libunwind + libc++abi) never
     # runs.
     # shellcheck disable=SC2046
-    wasm32posix-c++ \
+    "$WASM32_CXX" \
         -O2 \
         -fwasm-exceptions \
         $(libcxx_flags "$LIBCXX_PREFIX_32") \
@@ -311,7 +314,7 @@ build_cpp_program() {
     if [ "$name" = "sjlj_noexcept_boundary" ]; then
         mkdir -p "$TEST_FIXTURE_DIR/wasm32"
         # shellcheck disable=SC2046
-        wasm32posix-c++ \
+        "$WASM32_CXX" \
             -O2 \
             -fwasm-exceptions \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \
@@ -376,7 +379,7 @@ resolve_libcxx_prefix() {
 WPKDRAW_DIR="$REPO_ROOT/examples/libs/wpkdraw"
 if [ -d "$WPKDRAW_DIR/src" ]; then
     echo "==> Building libwpkdraw (CPU rasterizer)..."
-    CC="$CC" AR="$LLVM_BIN/llvm-ar" bash "$WPKDRAW_DIR/build.sh" "$SYSROOT"
+    CC="$LLVM_BIN/clang" AR="$LLVM_BIN/llvm-ar" bash "$WPKDRAW_DIR/build.sh" "$SYSROOT"
 fi
 
 # Compile and link flags that take libc++ from a resolved libcxx directory:
@@ -947,7 +950,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # shows up where it belongs: these fixtures must FAIL to link on
             # exactly those symbols. If one ever links, revisit the boundary.
             local_log="$(mktemp)"
-            if "$CC" "${CFLAGS[@]}" "${LINK_PRE_LIBS[@]}" "$src" "${LINK_POST_LIBS[@]}" \
+            if "$WASM32_CC" "${CFLAGS[@]}" "$src" \
                     -o "$(mktemp -d)/ucontext.wasm" >"$local_log" 2>&1; then
                 echo "Error: $(basename "$src") linked, but ucontext is documented as unsupported" >&2
                 rm -f "$local_log"; exit 1
@@ -963,7 +966,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # Keep the fixture's pthread capacity small so its timer-helper
             # churn test proves detached helpers are actually reclaimed.
             build_program "$src" "$OUT_DIR_32" \
-                -DWASM_POSIX_THREAD_SLOT_DECL=8
+                --kandelo-thread-slots 8
             ;;
         *)
             build_program "$src" "$OUT_DIR_32"
@@ -978,14 +981,12 @@ done
 if [ -n "$LIBINPUT_REAL_PREFIX" ] && [ -f "$REPO_ROOT/programs/libinput_smoke.c" ]; then
     libinput_wasm="$OUT_DIR_32/libinput_smoke.wasm"
     echo "  Compiling libinput_smoke (real libinput 1.25.0)..."
-    "$CC" "${CFLAGS[@]}" "-I$LIBINPUT_REAL_PREFIX/include" \
+    "$WASM32_CC" "${CFLAGS[@]}" "-I$LIBINPUT_REAL_PREFIX/include" \
         "$REPO_ROOT/programs/libinput_smoke.c" \
-        "${LINK_PRE_LIBS[@]}" \
         "$LIBINPUT_REAL_PREFIX/lib/libinput.a" \
         "$LIBINPUT_LIBEVDEV_PREFIX/lib/libevdev.a" \
         "$LIBINPUT_LIBUDEV_PREFIX/lib/libudev.a" \
         "$LIBINPUT_MTDEV_PREFIX/lib/libmtdev.a" \
-        "${LINK_POST_LIBS[@]}" \
         -o "$libinput_wasm"
     "$FORK_INSTRUMENT" "$libinput_wasm" -o "$libinput_wasm.instr"
     mv "$libinput_wasm.instr" "$libinput_wasm"
@@ -1125,7 +1126,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     else
         comp_wasm="$OUT_DIR_32/wlcompositor.wasm"
         echo "  Compiling wlcompositor (server)..."
-        "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
+        "$WASM32_CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
             "$REPO_ROOT/programs/wlcompositor/wlcompositor.c" \
             "$WLC_GEN/xdg-shell-protocol.c" \
             "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
@@ -1137,7 +1138,6 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             "$WLC_GEN/fractional-scale-v1-protocol.c" \
             "$WLC_GEN/wlr-data-control-v1-protocol.c" \
             "$WLC_GEN/ext-data-control-v1-protocol.c" \
-            "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libwayland-server.a" \
             "$SYSROOT/lib/libwpkdraw.a" \
             "$SYSROOT/lib/libxkbcommon.a" \
@@ -1148,7 +1148,6 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
             "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
             "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
             "$SYSROOT/lib/libffi.a" \
-            "${LINK_POST_LIBS[@]}" \
             -o "$comp_wasm"
         "$FORK_INSTRUMENT" "$comp_wasm" -o "$comp_wasm.instr"
         mv "$comp_wasm.instr" "$comp_wasm"
@@ -1158,7 +1157,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # Client.
     client_wasm="$OUT_DIR_32/wlclient-test.wasm"
     echo "  Compiling wlclient-test (client)..."
-    "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+    "$WASM32_CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
         "$REPO_ROOT/programs/wlcompositor/wlclient-test.c" \
         "$WLC_GEN/xdg-shell-protocol.c" \
         "$WLC_GEN/xdg-decoration-v1-protocol.c" \
@@ -1166,12 +1165,10 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         "$WLC_GEN/xdg-output-v1-protocol.c" \
         "$WLC_GEN/viewporter-protocol.c" \
         "$WLC_GEN/fractional-scale-v1-protocol.c" \
-        "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-client.a" \
         "$SYSROOT/lib/libxkbcommon.a" \
         "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
         "$SYSROOT/lib/libffi.a" \
-        "${LINK_POST_LIBS[@]}" \
         -o "$client_wasm"
     "$FORK_INSTRUMENT" "$client_wasm" -o "$client_wasm.instr"
     mv "$client_wasm.instr" "$client_wasm"
@@ -1182,10 +1179,8 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     if [ -f "$REPO_ROOT/programs/wlcompositor/kwlctl.c" ]; then
         kwlctl_wasm="$OUT_DIR_32/kwlctl.wasm"
         echo "  Compiling kwlctl (control CLI)..."
-        "$CC" "${CFLAGS[@]}" \
+        "$WASM32_CC" "${CFLAGS[@]}" \
             "$REPO_ROOT/programs/wlcompositor/kwlctl.c" \
-            "${LINK_PRE_LIBS[@]}" \
-            "${LINK_POST_LIBS[@]}" \
             -o "$kwlctl_wasm"
         "$FORK_INSTRUMENT" "$kwlctl_wasm" -o "$kwlctl_wasm.instr"
         mv "$kwlctl_wasm.instr" "$kwlctl_wasm"
@@ -1198,16 +1193,14 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     if [ -f "$REPO_ROOT/programs/wlcompositor/wlclip-test.c" ]; then
         clip_wasm="$OUT_DIR_32/wlclip-test.wasm"
         echo "  Compiling wlclip-test (clipboard client)..."
-        "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+        "$WASM32_CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
             "$REPO_ROOT/programs/wlcompositor/wlclip-test.c" \
             "$WLC_GEN/xdg-shell-protocol.c" \
             "$WLC_GEN/wlr-data-control-v1-protocol.c" \
-            "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libwayland-client.a" \
             "$SYSROOT/lib/libxkbcommon.a" \
             "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
             "$SYSROOT/lib/libffi.a" \
-            "${LINK_POST_LIBS[@]}" \
             -o "$clip_wasm"
         "$FORK_INSTRUMENT" "$clip_wasm" -o "$clip_wasm.instr"
         mv "$clip_wasm.instr" "$clip_wasm"
@@ -1220,15 +1213,13 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     if [ -f "$REPO_ROOT/programs/wlcompositor/wldmabuf-test.c" ]; then
         dmabuf_wasm="$OUT_DIR_32/wldmabuf-test.wasm"
         echo "  Compiling wldmabuf-test (dmabuf client)..."
-        "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+        "$WASM32_CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
             "$REPO_ROOT/programs/wlcompositor/wldmabuf-test.c" \
             "$WLC_GEN/xdg-shell-protocol.c" \
             "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
-            "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libwayland-client.a" \
             "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
             "$SYSROOT/lib/libffi.a" \
-            "${LINK_POST_LIBS[@]}" \
             -o "$dmabuf_wasm"
         "$FORK_INSTRUMENT" "$dmabuf_wasm" -o "$dmabuf_wasm.instr"
         mv "$dmabuf_wasm.instr" "$dmabuf_wasm"
@@ -1254,7 +1245,7 @@ if [ -d "$LIBKWL_DIR/src" ]; then
         exit 1
     fi
     echo "==> Building libkwl (Wayland toolkit)..."
-    CC="$CC" AR="$LLVM_BIN/llvm-ar" XDG_SHELL_INCLUDE="$KWL_GEN" \
+    CC="$LLVM_BIN/clang" AR="$LLVM_BIN/llvm-ar" XDG_SHELL_INCLUDE="$KWL_GEN" \
         bash "$LIBKWL_DIR/build.sh" "$SYSROOT"
 
     # libkwl clients: kwldemo (PR7 Phase 2 gate), wlclock (animated analog
@@ -1268,19 +1259,17 @@ if [ -d "$LIBKWL_DIR/src" ]; then
         package_owns_program_output wasm32 "$kwl_app.wasm" && continue
         kwl_app_wasm="$OUT_DIR_32/$kwl_app.wasm"
         echo "  Compiling $kwl_app (libkwl client)..."
-        "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
+        "$WASM32_CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
             "$REPO_ROOT/programs/$kwl_app.c" \
             "$KWL_GEN/xdg-shell-protocol.c" \
             "$KWL_GEN/xdg-decoration-v1-protocol.c" \
             "$KWL_GEN/wlr-layer-shell-v1-protocol.c" \
-            "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libkwl.a" \
             "$SYSROOT/lib/libwpkdraw.a" \
             "$SYSROOT/lib/libwayland-client.a" \
             "$SYSROOT/lib/libxkbcommon.a" \
             "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
             "$SYSROOT/lib/libffi.a" \
-            "${LINK_POST_LIBS[@]}" \
             -o "$kwl_app_wasm"
         "$FORK_INSTRUMENT" "$kwl_app_wasm" -o "$kwl_app_wasm.instr"
         mv "$kwl_app_wasm.instr" "$kwl_app_wasm"
@@ -1303,20 +1292,18 @@ if ls "$REPO_ROOT"/programs/wlterm/*.c >/dev/null 2>&1 &&
     fi
     echo "==> Building wlterm (libkwl terminal + VT100 + forkpty)..."
     wlterm_wasm="$OUT_DIR_32/wlterm.wasm"
-    "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
+    "$WASM32_CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
         "$REPO_ROOT/programs/wlterm/wlterm.c" \
         "$REPO_ROOT/programs/wlterm/vt100.c" \
         "$KWL_GEN/xdg-shell-protocol.c" \
         "$KWL_GEN/xdg-decoration-v1-protocol.c" \
         "$KWL_GEN/wlr-layer-shell-v1-protocol.c" \
-        "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libkwl.a" \
         "$SYSROOT/lib/libwpkdraw.a" \
         "$SYSROOT/lib/libwayland-client.a" \
         "$SYSROOT/lib/libxkbcommon.a" \
         "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
         "$SYSROOT/lib/libffi.a" \
-        "${LINK_POST_LIBS[@]}" \
         -o "$wlterm_wasm"
     # forkpty() forks — instrumentation is required, not optional.
     "$FORK_INSTRUMENT" "$wlterm_wasm" -o "$wlterm_wasm.instr"
@@ -1330,9 +1317,9 @@ for src in "$REPO_ROOT/programs/"*.cpp; do
 done
 
 # SDL2 playground app — every .c under programs/sdl2/ links into the
-# single sdl2.wasm binary. Multi-source clang invocation: clang accepts
-# the sources together with the libc/glue prelude and the full SDL2 +
-# dependency archive set, then we run fork-instrument on the result.
+# single sdl2.wasm binary. Multi-source SDK invocation: the driver accepts
+# the sources together with the full SDL2 + dependency archive set and adds
+# its own glue, CRT and libc, then we run fork-instrument on the result.
 # libEGL / libGLESv2 are named explicitly: the SDL_opengles2 header
 # bundle transitively pulls <GLES2/gl2.h>, but the per-file grep in
 # build_program only catches direct top-level EGL/GLES includes.
@@ -1383,8 +1370,7 @@ PY
         echo "  Skipping sdl2: package resolver owns wasm32/sdl2.wasm"
     else
         echo "  Compiling sdl2 (multi-source: ${#sdl2_sources[@]} file(s))..."
-        "$CC" "${CFLAGS[@]}" -I"$REPO_ROOT/third_party" "${sdl2_sources[@]}" \
-            "${LINK_PRE_LIBS[@]}" \
+        "$WASM32_CC" "${CFLAGS[@]}" -I"$REPO_ROOT/third_party" "${sdl2_sources[@]}" \
             "$SYSROOT/lib/libSDL2.a" \
             "$SYSROOT/lib/libwayland-client.a" \
             "$SYSROOT/lib/libwayland-egl.a" \
@@ -1393,7 +1379,6 @@ PY
             "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
             "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
             "$SYSROOT/lib/libffi.a" \
-            "${LINK_POST_LIBS[@]}" \
             -o "$sdl2_wasm"
         "$FORK_INSTRUMENT" "$sdl2_wasm" -o "$sdl2_wasm.instr"
         mv "$sdl2_wasm.instr" "$sdl2_wasm"
@@ -1420,38 +1405,10 @@ SYSROOT64="$REPO_ROOT/sysroot64"
 if [ -f "$SYSROOT64/lib/libc.a" ]; then
     echo "Building wasm64 programs..."
 
+    # Same contract as the wasm32 side above: the wasm64 SDK driver owns the
+    # target, the sysroot64 path, the glue, crt1.o, libc.a and every -Wl flag.
     CFLAGS64=(
-        --target=wasm64-unknown-unknown
-        --sysroot="$SYSROOT64"
-        -nostdlib
         -O2
-        -matomics -mbulk-memory
-        -fno-trapping-math
-        -mllvm -wasm-enable-sjlj
-        -mllvm -wasm-use-legacy-eh=false
-    )
-
-    LINK_FLAGS64=(
-        "$GLUE_DIR/channel_syscall.c"
-        "$GLUE_DIR/compiler_rt.c"
-        "$SYSROOT64/lib/crt1.o"
-        "$SYSROOT64/lib/libc.a"
-        -Wl,--no-entry
-        -Wl,--export=_start
-        -Wl,--import-memory
-        -Wl,--shared-memory
-        -Wl,--max-memory=1073741824
-        -Wl,-z,stack-size=8388608
-        -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
-        -Wl,--table-base=3
-        -Wl,--export-table
-        -Wl,--growable-table
-        -Wl,--export=__wasm_init_tls
-        -Wl,--export=__tls_base
-        -Wl,--export=__tls_size
-        -Wl,--export=__tls_align
-        -Wl,--export=__stack_pointer
-        -Wl,--export=__wasm_thread_init
     )
 
     for src in \
@@ -1467,10 +1424,10 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         echo "  Compiling $local_name (wasm64)..."
         extra_flags=()
         if [ "$local_name" = "posix-timer-thread" ]; then
-            extra_flags=(-DWASM_POSIX_THREAD_SLOT_DECL=8)
+            extra_flags=(--kandelo-thread-slots 8)
         fi
         # Keep empty optional flags safe under Bash 3.2 with `set -u`.
-        "$CC" "${CFLAGS64[@]}" ${extra_flags[@]+"${extra_flags[@]}"} "$src" "${LINK_FLAGS64[@]}" \
+        "$WASM64_CC" "${CFLAGS64[@]}" ${extra_flags[@]+"${extra_flags[@]}"} "$src" \
             -o "$OUT_DIR_64/${local_name}.wasm"
         record_built_program_output "$OUT_DIR_64/${local_name}.wasm"
     done
@@ -1486,7 +1443,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         source_path="$REPO_ROOT/$source_rel"
         output_path="$REPO_ROOT/${source_rel%.c}.wasm64.wasm"
         echo "  Compiling $(basename "$source_rel" .c) (wasm64)..."
-        "$CC" "${CFLAGS64[@]}" "$source_path" "${LINK_FLAGS64[@]}" \
+        "$WASM64_CC" "${CFLAGS64[@]}" "$source_path" \
             -o "$output_path"
         record_built_program_output "$output_path"
     done <<< "$memory64_example_sources"
@@ -1501,7 +1458,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         mkdir -p "$TEST_FIXTURE_DIR/wasm64"
         echo "  Compiling sjlj_noexcept_boundary (raw wasm64 test fixture)..."
         # shellcheck disable=SC2046
-        wasm64posix-c++ \
+        "$WASM64_CXX" \
             -O2 \
             -fwasm-exceptions \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \

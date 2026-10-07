@@ -22,8 +22,13 @@ set -euo pipefail
 #   scripts/run-sortix-tests.sh --report              # run all + write report
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# WHY: the SDK driver finds its sysroot and glue dir by walking up from the
+# current directory (findProjectRoot in sdk/src/lib/toolchain.ts), not from
+# this script's location. Run from inside another Kandelo checkout, it would
+# compile against THAT checkout's sysroot while the prerequisite check below
+# validated this one. Pin the cwd so both agree.
+cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/libc/glue"
 OS_TEST="$REPO_ROOT/tests/sortix/os-test"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
 BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
@@ -171,65 +176,66 @@ find_llvm_bin() {
 }
 
 LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
+
+# ── Toolchain: the SDK owns the target/link contract ──
+#
+# Conformance binaries must be built the way user software is built.
+# `sdk/src/lib/flags.ts` is the single authority for the wasm32posix
+# target triple, the guest syscall glue, crt1/libc ordering, the pinned
+# wasm-ld, the host-imports allowance file that bounds what may stay
+# undefined, and the process memory layout (8 MiB main-thread shadow
+# stack, `--global-base`, `__heap_base` export).
+#
+# This runner used to hand-maintain its own copy of that contract. The
+# copy drifted: its binaries exported no `__heap_base` and had no
+# `--global-base`, and it omitted the SDK's `cxxrt.c` glue, its pinned
+# `-fuse-ld`, and its thread-slot declaration. The suite therefore
+# measured a memory layout no real Kandelo program runs under. Driving
+# `wasm32posix-cc` keeps one authority. See docs/sdk-guide.md.
+#
+# Deliberately NOT named CC. That name is already exported in the dev
+# shell, and bash keeps the export attribute when you assign to an
+# exported name, so `CC=.../wasm32posix-cc` would reach every child this
+# script starts -- including the `cargo build -p xtask` that
+# abi_contract_stamp_prepare runs, whose cc-rs build scripts would then
+# compile host objects with a wasm cross-compiler. The parallel build
+# workers below need the compiler across a `bash -c` boundary, so it is
+# exported under this safe name instead.
+WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 
 # ── Compile flags ──
+#
+# Only test-specific flags belong here. The SDK supplies the target,
+# sysroot, `-nostdlib`, atomics/bulk-memory/exception-handling, the SjLj
+# and wasm-EH lowering choices, and `-fno-trapping-math`.
 
 CFLAGS_BASE=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib
     -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
     # Tell Sortix tests this platform lacks SIGSTOP/SIGCONT and getifaddrs,
     # so they use race-based timing or skip those features instead.
     -D__sortix__
 )
 
+# The SDK driver contributes the whole executable link line: syscall
+# glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag. `-ldl`
+# is how the SDK spells the `libc/glue/dlopen.c` input this list used to
+# name directly (parseArgs/linkDl in sdk/src/bin/cc.ts); the suite's
+# dlfcn tests need it.
 LINK_FLAGS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$GLUE_DIR/dlopen.c"
-    "$SYSROOT/lib/crt1.o"
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,-z,stack-size=8388608
-    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--growable-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
+    -ldl
 )
 
-# Flags for building shared libraries (.so) for dlopen tests
+# Flags for building shared libraries (.so) for dlopen tests. `-shared`
+# selects the SDK's shared-library link contract (SHARED_LINK_FLAGS in
+# sdk/src/lib/flags.ts): no CRT, no libc, no syscall glue, plus
+# --experimental-pic/--shared/--shared-memory/--export-all.
 SO_CFLAGS=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
     -fPIC
     -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
     -DSHARED
 )
 SO_LINK_FLAGS=(
-    -nostdlib
-    -Wl,--experimental-pic
-    -Wl,--shared
-    -Wl,--shared-memory
-    -Wl,--export-all
-    -Wl,--allow-undefined # side-module: dynamic linking resolves at dlopen
+    -shared
 )
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
@@ -384,21 +390,21 @@ build_include_one() {
         -I"$OS_TEST")
 
     # Try _POSIX_C_SOURCE=202405L first (POSIX.1-2024)
-    if "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
+    if "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
         "$src" "${LINK_FLAGS[@]}" -o "$wasm" 2>/dev/null; then
         echo "good" > "$result_file"
         rm -f "$wasm"
         return 0
     fi
     # Try _POSIX_C_SOURCE=200809L (POSIX.1-2008)
-    if "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=200809L \
+    if "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=200809L \
         "$src" "${LINK_FLAGS[@]}" -o "$wasm" 2>/dev/null; then
         echo "previous_posix" > "$result_file"
         rm -f "$wasm"
         return 0
     fi
     # Try GNU/BSD extensions
-    if "$CC" "${cflags[@]}" -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE \
+    if "$WASM32_CC" "${cflags[@]}" -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE \
         "$src" "${LINK_FLAGS[@]}" -o "$wasm" 2>/dev/null; then
         echo "extension" > "$result_file"
         rm -f "$wasm"
@@ -407,7 +413,7 @@ build_include_one() {
 
     # Classify the failure
     local err_file="$BUILD_DIR/include/${test_name}.err"
-    "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
+    "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
         "$src" "${LINK_FLAGS[@]}" -o "$wasm" 2>"$err_file" || true
 
     if grep -q '/\*optional\*/' "$src" 2>/dev/null; then
@@ -449,7 +455,7 @@ build_runtime_test() {
             ;;
     esac
 
-    "$CC" "${cflags[@]}" \
+    "$WASM32_CC" "${cflags[@]}" \
         "$src" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/sortix-build-err-$$.txt
     instrument_wasm "$wasm"
@@ -457,7 +463,7 @@ build_runtime_test() {
     # If source has #ifdef SHARED, also build as a shared library (.so)
     if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
         local so="$BUILD_DIR/$suite/${test_name}.so"
-        "$CC" "${SO_CFLAGS[@]}" \
+        "$WASM32_CC" "${SO_CFLAGS[@]}" \
             "$src" "${SO_LINK_FLAGS[@]}" \
             -o "$so" 2>/dev/null || true
     fi
@@ -573,7 +579,7 @@ run_include_suite() {
     echo "  Compiling in parallel ($(nproc 2>/dev/null || sysctl -n hw.logicalcpu) jobs)..."
 
     # Export variables needed by build_include_one
-    export OS_TEST CC BUILD_DIR SYSROOT GLUE_DIR
+    export OS_TEST WASM32_CC BUILD_DIR SYSROOT
     export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
     export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
 
@@ -592,21 +598,21 @@ run_include_suite() {
         # shellcheck disable=SC2086
         local -a link_flags=($LINK_FLAGS_STR)
 
-        if "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
+        if "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
             "$src" "${link_flags[@]}" -o "$wasm" 2>/dev/null; then
             echo "good" > "$result_file"; rm -f "$wasm"; return
         fi
-        if "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=200809L \
+        if "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=200809L \
             "$src" "${link_flags[@]}" -o "$wasm" 2>/dev/null; then
             echo "previous_posix" > "$result_file"; rm -f "$wasm"; return
         fi
-        if "$CC" "${cflags[@]}" -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE \
+        if "$WASM32_CC" "${cflags[@]}" -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE \
             "$src" "${link_flags[@]}" -o "$wasm" 2>/dev/null; then
             echo "extension" > "$result_file"; rm -f "$wasm"; return
         fi
 
         local err_file="$BUILD_DIR/include/${test_name}.err"
-        "$CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
+        "$WASM32_CC" "${cflags[@]}" -D_POSIX_C_SOURCE=202405L \
             "$src" "${link_flags[@]}" -o "$wasm" 2>"$err_file" || true
 
         if grep -q '/\*optional\*/' "$src" 2>/dev/null; then
@@ -1088,8 +1094,8 @@ run_suite() {
 
         echo "  Building $count tests ($PARALLEL parallel)..."
         # Build in parallel using a wrapper that reconstructs arrays
-        export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT GLUE_DIR
-        export CC FORK_INSTRUMENT
+        export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT
+        export WASM32_CC FORK_INSTRUMENT
         export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
         export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
         export SO_CFLAGS_STR="${SO_CFLAGS[*]}"
@@ -1116,7 +1122,7 @@ run_suite() {
                     ;;
             esac
             # shellcheck disable=SC2086
-            "$CC" "${cflags[@]}" \
+            "$WASM32_CC" "${cflags[@]}" \
                 "$src" $LINK_FLAGS_STR \
                 -o "$wasm" 2>/dev/null || return 1
             "$FORK_INSTRUMENT" "$wasm" -o "$wasm" || return 1
@@ -1125,7 +1131,7 @@ run_suite() {
             if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
                 local so="$BUILD_DIR/$suite/${test_name}.so"
                 # shellcheck disable=SC2086
-                "$CC" $SO_CFLAGS_STR \
+                "$WASM32_CC" $SO_CFLAGS_STR \
                     "$src" $SO_LINK_FLAGS_STR \
                     -o "$so" 2>/dev/null || true
             fi
@@ -1138,7 +1144,7 @@ run_suite() {
         echo "  Running $count tests ($PARALLEL parallel)..."
 
         # Export everything needed by the worker function
-        export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT GLUE_DIR TEST_TIMEOUT XFAIL_TIMEOUT
+        export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT TEST_TIMEOUT XFAIL_TIMEOUT
         export -f _run_runtime_test_worker _run_runtime_test_with_private_fixture
         export -f _check_xfail_serialized run_with_timeout not_applicable_reason xfail_expected_reason
 

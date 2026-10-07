@@ -28,8 +28,17 @@ if [ ! -f "$SRC" ] || [ -L "$SRC" ]; then
     exit 1
 fi
 
-# Match scripts/build-programs.sh CC + flags so the resulting wasm is
-# binary-compatible with everything else in the release.
+# NOT the SDK's link contract. This recipe still carries its own copy of the
+# compiler selection and link flags (find_llvm_bin/CC/CFLAGS/LINK_FLAGS
+# below). scripts/build-programs.sh used to carry a matching copy and now
+# builds through sdk/bin/wasm32posix-cc instead, so this one has drifted
+# from sdk/src/lib/flags.ts: lsof.wasm is linked without
+# --export=__heap_base and --global-base, so the host falls back to a
+# guessed brk base for it (PROCESS_MEMORY_FALLBACK_BRK_BASE).
+#
+# Converting this recipe to the SDK driver is pending (it changes a shipped
+# package artifact, so it goes with the package build fixes); do not add
+# flags here to "catch up" by hand, which is how the drift happened.
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 

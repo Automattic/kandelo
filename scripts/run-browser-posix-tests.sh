@@ -11,8 +11,14 @@ set -euo pipefail
 #   scripts/run-browser-posix-tests.sh signal raise kill    # run specific interfaces
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# WHY: the SDK driver finds its sysroot and glue dir by walking up from the
+# current directory (findProjectRoot in sdk/src/lib/toolchain.ts), not from
+# this script's location. Run from inside another Kandelo checkout, it would
+# compile against THAT checkout's sysroot while the prerequisite check below
+# validated this one. Pin the cwd so both agree. (The browser runner below
+# also needs this cwd; it used to set it just before the npx call.)
+cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/libc/glue"
 POSIX_TEST="$REPO_ROOT/tests/posix/open-posix-testsuite"
 IFACE_DIR="$POSIX_TEST/conformance/interfaces"
 BUILD_DIR="$POSIX_TEST/build"
@@ -62,44 +68,41 @@ find_llvm_bin() {
 }
 
 LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
+
+# ── Toolchain: the SDK owns the target/link contract ──
+#
+# Identical to scripts/run-posix-tests.sh, the Node.js runner for this same
+# suite. Conformance binaries must be built the way user software is built.
+# `sdk/src/lib/flags.ts` is the single authority for the wasm32posix target
+# triple, the guest syscall glue, crt1/libc ordering, the pinned wasm-ld, the
+# host-imports allowance file that bounds what may stay undefined, and the
+# process memory layout (8 MiB main-thread shadow stack, `--global-base`,
+# `__heap_base` export). This runner used to hand-maintain a
+# copy of that contract which had drifted (no `__heap_base` export, no
+# `--global-base`), so the browser suite measured a memory layout no real
+# Kandelo program runs under. See docs/sdk-guide.md.
+#
+# Deliberately NOT named CC. That name is already exported in the dev shell,
+# and bash keeps the export attribute when you assign to an exported name, so
+# `CC=.../wasm32posix-cc` would reach every child process this script starts,
+# including any `cargo build -p xtask`, whose cc-rs build scripts would then
+# compile host objects with a wasm cross-compiler.
+WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 
 # ── Compile flags ─────────────────────────────────────────
 
+#
+# Only test-specific flags belong here; the SDK supplies the target,
+# sysroot, `-nostdlib`, and the codegen/lowering flags. The SDK driver also
+# contributes the whole executable link line: syscall glue, compiler-rt
+# shims, crt1.o, libc.a, and every `-Wl,` flag.
+
 CFLAGS=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
+    -O2
     -D_GNU_SOURCE
     -D_POSIX_C_SOURCE=200112L
     -I"$POSIX_TEST/include"
     -Wno-format
-)
-
-LINK_FLAGS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$SYSROOT/lib/crt1.o"
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,-z,stack-size=8388608
-    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
 )
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
@@ -218,7 +221,7 @@ for iface in "${INTERFACES[@]}"; do
         wasm="$BUILD_DIR/$iface/${test_name}.wasm"
         mkdir -p "$BUILD_DIR/$iface"
 
-        if ! "$CC" "${CFLAGS[@]}" "$src" "${LINK_FLAGS[@]}" -o "$wasm" 2>/tmp/posix-test-build-err.txt; then
+        if ! "$WASM32_CC" "${CFLAGS[@]}" "$src" -o "$wasm" 2>/tmp/posix-test-build-err.txt; then
             if is_expected_fail "$local_test_id"; then
                 echo "XFAIL $local_test_id (expected — build failure)"
                 RESULTS+=("XFAIL $local_test_id")
@@ -246,7 +249,6 @@ if [ ${#WASM_FILES[@]} -gt 0 ]; then
     RESULT_FILE=$(mktemp)
     trap "rm -f '$RESULT_FILE'" EXIT
 
-    cd "$REPO_ROOT"
     npx tsx scripts/browser-test-runner.ts --json --timeout "$TEST_TIMEOUT" \
         "${WASM_FILES[@]}" > "$RESULT_FILE" 2>/dev/null || true
 

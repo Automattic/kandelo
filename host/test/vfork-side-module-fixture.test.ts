@@ -36,7 +36,7 @@ describe("vfork side-module fixture lifecycle", () => {
     withOutputRoot((outputRoot) => {
       expect(() => buildVforkSideModuleFixture({
         outputRoot,
-        clangDriver: join(outputRoot, "missing-clang"),
+        ccDriver: join(outputRoot, "missing-cc"),
       })).toThrow();
       expect(readdirSync(outputRoot)).toEqual([]);
     });
