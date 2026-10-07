@@ -1,0 +1,13 @@
+diff --git a/objects/ConsoleLine.lua b/objects/ConsoleLine.lua
+--- a/objects/ConsoleLine.lua
++++ b/objects/ConsoleLine.lua
+@@ -105,7 +105,9 @@ function ConsoleLine:setGlitch()
+             if love.math.random(1, 10) <= 2 then self.foreground_colors[i] = table.random(all_colors)
+             else self.foreground_colors[i] = nil end
+ 
++            local characters = self.characters
+             self.timer:after(0.1, function()
++                if self.characters ~= characters or not characters[i] then return end
+                 self.characters[i].c = (self.base_characters[i] and self.base_characters[i].c) or ''
+                 self.background_colors[i] = nil
+                 self.foreground_colors[i] = nil

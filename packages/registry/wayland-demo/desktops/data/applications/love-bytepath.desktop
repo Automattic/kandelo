@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=BYTEPATH
+Exec=/usr/local/bin/love /usr/share/love/examples/bytepath

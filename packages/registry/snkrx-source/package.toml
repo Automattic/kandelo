@@ -1,0 +1,12 @@
+kind = "source"
+name = "snkrx-source"
+version = "6b93a64d"
+
+[source]
+provider = "archive"
+url = "https://github.com/a327ex/SNKRX/archive/6b93a64d694d59472375467648868ae4521d6706.tar.gz"
+sha256 = "f58a7960dd275ee9991d694969a7691a9cdc61a80f9301d780baace856962c13"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/a327ex/SNKRX/blob/6b93a64d694d59472375467648868ae4521d6706/LICENSE"

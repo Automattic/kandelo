@@ -401,6 +401,7 @@ Located in `apps/browser-demos/pages/`:
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package as a lazy file in the image, fetched when the profile first runs it; its shader presets are baked into the image. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
 | modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
+| love | Native LÖVE 11.5 games | dinit | KMS/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. Audio output is currently unavailable; Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The image itself is 1.8 MB compressed. |
 
@@ -1201,6 +1202,16 @@ directory. The archive and its contents must fit the machine's filesystem
 Safari); one that does not fails with `ENOSPC`. The pointer is a real absolute device (`/dev/input/event1`
 reports `EV_ABS` positions), and the browser hides its own cursor over the
 display because ScummVM draws one.
+
+The Omarchy application launcher also offers Pong, Snake, Breakout,
+Asteroids, BYTEPATH, and SNKRX. These run as native LÖVE OpenGL windows
+through SDL2's Wayland/EGL backend. The compositor retains DRM master and
+physical input ownership; the games receive surface-local pointer and
+keyboard events, output-scale-aware drawable sizes, focus, resize, and close
+events. The four core examples letterbox their playfield, and BYTEPATH and
+SNKRX update their canvas/pointer scales on resize. Game files download
+lazily when launched. Audio playback remains unavailable in this LÖVE port.
+See `packages/registry/love/README.md` for its compatibility boundaries.
 
 The same wrapper runs ScummVM on the Omarchy desktop, from the launcher or
 as `scummvm` in a terminal. When a compositor socket exists

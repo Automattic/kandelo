@@ -384,6 +384,76 @@
         "maxBytes": 536870912,
         "label": "Load game data"
       }
+    },
+    "love": {
+      "identity": {
+        "title": "LÖVE games",
+        "summary": "Play Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX. Choose a game from the Games menu. Audio and Steam features are unavailable in this port.",
+        "accent": "#ec75b8",
+        "glyph": "L",
+        "packages": [
+          "love@11.5-kandelo-kms"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/love /usr/share/love/examples/pong"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "hostPointer": true
+      },
+      "dockActions": [
+        {
+          "id": "games",
+          "label": "Games",
+          "description": "Start the selected game. Audio is unavailable in this port.",
+          "menu": [
+            {
+              "id": "pong",
+              "label": "Pong",
+              "restart": "/usr/local/bin/love /usr/share/love/examples/pong"
+            },
+            {
+              "id": "snake",
+              "label": "Snake",
+              "restart": "/usr/local/bin/love /usr/share/love/examples/snake"
+            },
+            {
+              "id": "breakout",
+              "label": "Breakout",
+              "restart": "/usr/local/bin/love /usr/share/love/examples/breakout"
+            },
+            {
+              "id": "asteroids",
+              "label": "Asteroids",
+              "restart": "/usr/local/bin/love /usr/share/love/examples/asteroids"
+            },
+            {
+              "id": "bytepath",
+              "label": "BYTEPATH",
+              "restart": "/usr/local/bin/love /usr/share/love/examples/bytepath"
+            },
+            {
+              "id": "snkrx",
+              "label": "SNKRX",
+              "restart": "/usr/local/bin/love /usr/share/love/examples/snkrx"
+            }
+          ]
+        }
+      ]
     }
   }
 }

@@ -152,6 +152,24 @@ function setupBinding(gl: RecordingGl, capacity = 4096) {
   return { reg, b };
 }
 
+it("preserves legacy extension queries and gates new capabilities by table version", () => {
+  const { b } = setupBinding(new RecordingGl());
+  const input = new Uint8Array(8);
+  const view = new DataView(input.buffer);
+  view.setUint32(0, 0x1F03 /* GL_EXTENSIONS */, true);
+  const out = new Uint8Array(4096);
+  expect(runGlQuery(b, O.QOP_GET_STRING, input.subarray(0, 4), out)).toBe(4);
+  expect(new DataView(out.buffer).getUint32(0, true)).toBe(0);
+  view.setUint32(4, 2, true);
+  const size = runGlQuery(b, O.QOP_GET_STRING, input, out);
+  expect(size).toBeGreaterThan(4);
+  expect(new TextDecoder().decode(out.subarray(4, size))).toContain("GL_EXT_texture_rg");
+  for (const version of [0, O.OP_VERSION + 1]) {
+    view.setUint32(4, version, true);
+    expect(runGlQuery(b, O.QOP_GET_STRING, input, out)).toBe(-22);
+  }
+});
+
 /** TLV writer helper. Returns the final length (header + payload). */
 class Tlv {
   view: DataView;
@@ -540,5 +558,58 @@ describe("query handler", () => {
   it("returns -EINVAL for an unknown query op", () => {
     const { b } = setup();
     expect(runGlQuery(b, 0xfe, input([]), out(4))).toBe(-22);
+  });
+});
+
+
+describe("GLES texture upload marshalling", () => {
+  for (const [type, View, values] of [
+    [0x1406, Float32Array, [0.25, 0.5, 0.75, 1]],
+    [0x8d61, Uint16Array, [0x3c00, 0x3800, 0, 0x3c00]],
+    [0x8033, Uint16Array, [0xffff]],
+  ] as const) {
+    it(`copies unaligned shared texture bytes into a typed view for ${type.toString(16)}`, () => {
+      const gl = new RecordingGl();
+      const { b } = setupBinding(gl);
+      const input = new View(values);
+      const buffer = new SharedArrayBuffer(256);
+      // Prior TLV records can put the next texture record at a nonaligned offset.
+      b.cmdbufView = new Uint8Array(buffer, 1);
+      const t = new Tlv(buffer);
+      t.p = 1;
+      const h = t.op(O.OP_TEX_IMAGE_2D, 36 + input.byteLength);
+      [0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, type, input.byteLength]
+        .forEach((n, i) => t.view.setUint32(h.p + i * 4, n, true));
+      new Uint8Array(buffer, h.p + 36, input.byteLength).set(new Uint8Array(input.buffer));
+      expect(decodeAndDispatch(b, 0, t.p - 1)).toBe(0);
+      const args = gl.log.find(row => row[0] === "texImage2D")![1];
+      const uploaded = args[8] as Float32Array | Uint16Array;
+      expect(uploaded).toBeInstanceOf(View);
+      expect(uploaded.buffer).toBeInstanceOf(ArrayBuffer);
+      expect([...uploaded]).toEqual([...values]);
+      expect(args[7]).toBe(type === 0x8d61 ? 0x140b : type);
+      expect(args[2]).toBe(type === 0x1406 ? 0x8814 : type === 0x8d61 ? 0x881a : 0x1908);
+    });
+  }
+
+  it("translates GLES2 allocation formats while preserving sized requests", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    for (const [internal, format, type, expected] of [
+      [0x1903, 0x1903, 0x1401, 0x8229], // RED byte -> R8
+      [0x8227, 0x8227, 0x1406, 0x8230], // RG float -> RG32F
+      [0x1902, 0x1902, 0x1403, 0x81a5], // depth short -> depth16
+      [0x84f9, 0x84f9, 0x84fa, 0x88f0], // packed depth/stencil
+      [0x8058, 0x1908, 0x1401, 0x8058], // explicit RGBA8
+    ]) {
+      const t = new Tlv(b.cmdbufView!.buffer);
+      const h = t.op(O.OP_TEX_IMAGE_2D, 36);
+      [0x0de1, 0, internal, 4, 4, 0, format, type, 0]
+        .forEach((n, i) => t.view.setUint32(h.p + i * 4, n, true));
+      expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+      const args = gl.log.at(-1)![1];
+      expect(args[2]).toBe(expected);
+      expect(args[8]).toBeNull();
+    }
   });
 });

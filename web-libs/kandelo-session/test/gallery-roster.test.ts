@@ -134,6 +134,7 @@ describe("parseGalleryRoster", () => {
       "modeset",
       "sdl2",
       "scummvm",
+      "love",
       "omarchy",
     ]);
     // The floating Wayland desktop left the gallery when Omarchy joined it;

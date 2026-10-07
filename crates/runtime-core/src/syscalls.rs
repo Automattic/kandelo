@@ -1466,7 +1466,7 @@ fn handle_dri_ioctl(
                 return Err(Errno::EINVAL);
             }
             let client_version = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-            if client_version != gl::OP_VERSION {
+            if client_version == 0 || client_version > gl::OP_VERSION {
                 return Err(Errno::ENOSYS);
             }
             let dri = dri_state_mut(proc, ofd_idx)?;
@@ -44676,20 +44676,46 @@ mod tests {
         // A bumped op-table version from a user binary built against a
         // newer kernel must be caught at first contact, not later as a
         // silent decode error.
-        let bad_version: u32 = gl::OP_VERSION + 1;
-        let mut buf = [0u8; 4];
-        buf.copy_from_slice(&bad_version.to_le_bytes());
-        let err = sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err();
-        assert_eq!(err, Errno::ENOSYS);
-        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-        assert!(proc
-            .ofd_table
-            .get(ofd_idx)
-            .unwrap()
-            .dri()
-            .unwrap()
-            .gl
-            .is_none());
+        for bad_version in [0u32, gl::OP_VERSION + 1] {
+            let mut buf = bad_version.to_le_bytes();
+            let err = sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err();
+            assert_eq!(err, Errno::ENOSYS);
+            let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            assert!(
+                proc.ofd_table
+                    .get(ofd_idx)
+                    .unwrap()
+                    .dri()
+                    .unwrap()
+                    .gl
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn glio_init_accepts_earlier_compatible_operation_tables() {
+        use wasm_posix_shared::gl;
+        assert!(gl::OP_VERSION > 1);
+        for version in 1..gl::OP_VERSION {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let mut buf = version.to_le_bytes();
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap();
+            let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            assert!(
+                proc.ofd_table
+                    .get(ofd_idx)
+                    .unwrap()
+                    .dri()
+                    .unwrap()
+                    .gl
+                    .as_ref()
+                    .unwrap()
+                    .initialized
+            );
+        }
     }
 
     #[test]

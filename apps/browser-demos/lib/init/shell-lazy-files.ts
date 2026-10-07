@@ -44,6 +44,7 @@ import footWasmUrl from "@binaries/programs/wasm32/foot.wasm?url";
 import dbusDaemonWasmUrl from "@binaries/programs/wasm32/dbus/dbus-daemon.wasm?url";
 import qtgalleryWasmUrl from "@binaries/programs/wasm32/qtgallery.wasm?url";
 import quickshellWasmUrl from "@binaries/programs/wasm32/quickshell.wasm?url";
+import loveWasmUrl from "@binaries/programs/wasm32/love/love.wasm?url";
 import scummvmWasmUrl from "@binaries/programs/wasm32/scummvm/scummvm.wasm?url";
 import scummvmRemasteredUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/scummremastered.zip?url";
 import scummvmModernUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/scummmodern.zip?url";
@@ -121,6 +122,7 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/dbus/dbus-daemon.wasm": dbusDaemonWasmUrl,
   "programs/qtgallery.wasm": qtgalleryWasmUrl,
   "programs/quickshell.wasm": quickshellWasmUrl,
+  "programs/love/love.wasm": loveWasmUrl,
   "programs/scummvm/scummvm.wasm": scummvmWasmUrl,
   "programs/scummvm/share/scummvm/scummremastered.zip": scummvmRemasteredUrl,
   "programs/scummvm/share/scummvm/scummmodern.zip": scummvmModernUrl,
