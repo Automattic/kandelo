@@ -483,6 +483,27 @@ describe("SysV SHM coherence and lifecycle", () => {
     expect(h.shmdt).not.toHaveBeenCalled();
   });
 
+  it("refreshes a sole parent after its child publishes and detaches", () => {
+    const h = sysvHarness();
+    (h.kw as any).shmMappings.delete(h.pids[1]);
+    h.kw.inheritProcessSharedMappings(h.pids[0], h.pids[2]);
+
+    const child = new Uint8Array(h.memories.get(h.pids[2])!.buffer);
+    child[h.mapAddr + 23] = 0x5a;
+    (h.kw as any).releaseAllSharedMemoryForProcess(h.pids[2]);
+    expect(h.segment[23]).toBe(0x5a);
+    expect((h.kw as any).shmMappings.has(h.pids[2])).toBe(false);
+
+    // The parent is now the segment's only attacher, but its view predates
+    // the child's publish, so the next boundary must import it.
+    const parent = new Uint8Array(h.memories.get(h.pids[0])!.buffer);
+    expect(parent[h.mapAddr + 23]).toBe(0);
+    (h.kw as any).syncSysvShmMappingsFromProcess(
+      (h.kw as any).processes.get(h.pids[0]),
+    );
+    expect(parent[h.mapAddr + 23]).toBe(0x5a);
+  });
+
   it("retains the byte mirror when Rust cannot prove lifecycle detach", () => {
     const h = sysvHarness();
     h.shmdtAddrForProcess.mockReturnValue(-5);
