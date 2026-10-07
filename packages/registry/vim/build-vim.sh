@@ -119,6 +119,10 @@ fi
 # --- Download Vim source ---
 kandelo_package_stage_primary_source vim "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
+# Upstream timing defect: an elapsed zero/finite input check must not become
+# an indefinite wait. Apply only to the caller-owned, freshly staged source.
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0001-clamp-expired-input-check.patch"
+
 cd "$SRC_DIR"
 
 # --- Configure ---

@@ -253,6 +253,7 @@ host/test/pthread-shared-memory-growth.test.ts	prepared-product
 host/test/pthread-trap-semantics.test.ts	prepared-product
 host/test/pthread.test.ts	prepared-product
 host/test/pty-ownership.test.ts	prepared-product
+host/test/pty-readiness.test.ts	prepared-product
 host/test/putenv.test.ts	prepared-product
 host/test/qt-gui-smoke.test.ts	source-only
 host/test/qt-qml-smoke.test.ts	source-only
@@ -341,6 +342,7 @@ host/test/vfs/memfs-uid-gid-image.test.ts	source-only
 host/test/vfs/rootfs-overlay.test.ts	source-only
 host/test/vfs/sharedfs-positioned-io.test.ts	source-only
 host/test/vfs/sharedfs-uid-gid.test.ts	source-only
+host/test/vim-input-repaint.test.ts	prepared-product
 host/test/virtual-network-e2e.test.ts	prepared-product
 host/test/virtual-network.test.ts	source-only
 host/test/vm-interrupt-timer.test.ts	source-only

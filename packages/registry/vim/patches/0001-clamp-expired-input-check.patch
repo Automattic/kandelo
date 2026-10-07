@@ -1,0 +1,27 @@
+Vim 9.1.0900: keep expired input checks nonblocking
+
+inchar_loop() subtracts elapsed wall time before its first input check.
+When a zero or finite timeout expires during that setup, the negative
+result reaches RealWaitForChar(), which interprets it as an infinite
+wait. On a preempted or slower host this stalls startup and insert-mode
+redraw until another key arrives. This is an upstream timing defect,
+not a Kandelo readiness or clock workaround. Clamp calculated expired
+waits while retaining the explicit indefinite-wait branch.
+
+Upstream source: https://github.com/vim/vim/blob/v9.1.0900/src/ui.c
+
+--- a/src/ui.c
++++ b/src/ui.c
+@@ -355,6 +355,12 @@
+ 		before_blocking();
+ 		continue;
+ 	    }
++
++	    // The first availability check must still run after its deadline.
++	    // A negative elapsed timeout means "expired", not "wait forever".
++	    // The deliberate infinite wait above bypasses this calculation.
++	    if (wait_time < 0)
++		wait_time = 0;
+ 	}
+ 
+ #ifdef FEAT_JOB_CHANNEL
