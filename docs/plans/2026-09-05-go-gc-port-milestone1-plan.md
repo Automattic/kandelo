@@ -770,6 +770,27 @@ per-M exit/reaping (`exitThread` is still a Wasm trap), `LockOSThread`,
 sysmon/preemption behavior, and broader runtime tests remain. No Kandelo
 ABI or host source changed in this slice.
 
+**2026-10-06 — Chromium browser milestone probes.** Added a small Go
+stdlib/startup/file-syscall probe and `tests/go/build-browser-fixtures.sh` to
+compile it alongside the existing second-M, five-clone, parallel-scheduler,
+and worker-exit probes. `apps/browser-demos/test/go-port.spec.ts` runs all
+five as real browser process workers through `BrowserKernel`, using a VFS
+image assembled in the Playwright Node process and the ABI-48 kernel selected
+by the source binary resolver. It asserts exit 0, output markers, exact
+clone-marker counts, no host diagnostics, and no page or console errors.
+
+The dedicated Chromium run passed all five tests in 30.5 seconds with one
+Playwright worker. The suite is opt-in (`KANDELO_GO_BROWSER_TESTS=1`) because
+the external Go fork is not part of default browser-test provisioning; see
+`tests/go/README.md` for the exact commands. The normal browser test-runner
+page was not used: this checkout lacks its rootfs artifact, and its bundled
+`scripts/resolve-binary.sh` still rejects the freshly built kernel although
+the source resolver accepts it. The focused browser tests therefore supply
+source-resolved kernel bytes explicitly. This proves these five browser-host
+paths, not the complete browser demo, full Go runtime conformance, or broad
+POSIX behavior. Concurrent clone contention, individual-M exit/reaping,
+`LockOSThread`, sysmon/preemption, and broader runtime tests remain.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
