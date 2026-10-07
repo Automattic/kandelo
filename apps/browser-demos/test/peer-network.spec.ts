@@ -77,6 +77,9 @@ test("two browsers exchange actual guest nc UDP datagrams through a named piplet
     await expect.poll(() => host.evaluate((pid) => (window as any).__peerNetwork.processes()[pid]?.exit, replyReceiver)).toBe(0);
     await host.screenshot({ path: "../../.context/phase2-guest-udp-host.png", fullPage: true });
     await joiner.screenshot({ path: "../../.context/phase2-guest-udp-joiner.png", fullPage: true });
+    await joiner.click("#disconnect");
+    await expect.poll(() => host.evaluate(() => (window as any).__peerNetwork.snapshot()?.members.length), { timeout: 15_000 }).toBe(1);
+    await expect.poll(() => host.evaluate(() => (window as any).__peerNetwork.snapshot()?.bindings.length)).toBe(0);
   } finally { try { await diagnostics([host, joiner], "nc"); } finally { await close(); } }
 });
 
@@ -145,6 +148,8 @@ test("two browser guests play TyrQuake through a separate forwarding host", asyn
   try {
     await host.click("#quake-host");
     await expect.poll(() => host.evaluate(() => (window as any).__peerNetwork.gamePid()), { timeout: 120_000 }).toBeGreaterThan(0);
+    // UDP_Init binds before the map loads; wait for the actual server to run.
+    await expect.poll(() => gameOutput(host), { timeout: 120_000 }).toContain("CL_SignonReply: 4");
     await binding(joiner, 26000);
     await joiner.click("#quake-join");
     await expect.poll(() => gameOutput(host), { timeout: 120_000 }).toMatch(/client 10\.89\.0\.3.*connected/i);

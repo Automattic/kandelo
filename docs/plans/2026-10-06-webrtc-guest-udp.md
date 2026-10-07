@@ -1,6 +1,6 @@
 # WebRTC remote segments for guest POSIX UDP
 
-Date: 2026-10-06. Status: design draft; implementation and end-to-end evidence pending.
+Date: 2026-10-06. Status: implemented UDP experiment with bounded Node and local Chromium evidence. TCP is deferred.
 
 ## Why
 
@@ -94,6 +94,11 @@ remote UDP bind/unbind events over the control channel, and register the
 remote endpoints with transport-backed receive targets. Locally unknown
 addresses return `EHOSTUNREACH`; a known address with no announced matching
 UDP endpoint returns `ECONNREFUSED`, matching the local virtual backend.
+These are backend errors, not remote delivery acknowledgements. The kernel
+admits an unconnected UDP send before host delivery and may discard it. On a
+connected UDP socket, an admitted refused send records `ECONNREFUSED` as its
+pending socket error, observable through `SO_ERROR`. The real guest errno
+probe checks that path instead of expecting immediate refusal from sendto.
 Duplicate bindings and foreign local-address binds retain `EADDRINUSE` and
 `EADDRNOTAVAIL`. Receive delivery still enters the kernel's normal datagram
 queue through the registered `UdpReceiveTarget`.
@@ -118,16 +123,20 @@ WebRTC implementation; the supplied WebRTC adapter is browser-only. State
 that boundary in architecture and browser support docs without claiming
 Node WebRTC support or changing ordinary Node TCP behavior.
 
-Real guest probes exposed two kernel gaps: UDP connect rejected destinations
+Real guest probes exposed kernel gaps: UDP connect rejected destinations
 outside its hard-coded 10.88 subnet, and FIONREAD ignored datagram queues.
 The kernel now delegates non-loopback UDP source selection and local-address
 binding validation to the host adapter. A connected wildcard UDP socket records
 the actual selected source for getsockname; AF_UNSPEC disconnect restores its
 wildcard binding. FIONREAD observes the first queued datagram without consuming
-it, including empty datagrams. This changes socket semantics and adds a kernel
-host import, so ABI 48 and a regenerated snapshot are required. All programs and
-images used for evidence must be rebuilt through the normal ABI-bound package
-path. The obsolete application-specific Doom relay remains superseded.
+it, including empty datagrams. Preserve host EHOSTUNREACH and ENOBUFS instead
+of converting either to EIO at the host-to-kernel boundary. This changes socket
+semantics and adds a kernel host import, so ABI 48 and a regenerated snapshot
+are required. The kernel fork snapshot format advances from 15 to 16 to
+preserve the selected UDP source address across fork; older snapshots are
+rejected. All programs and images used for evidence must be rebuilt through
+the normal ABI-bound package path. The obsolete application-specific Doom
+relay remains superseded.
 
 ## Packages and evidence
 
@@ -146,13 +155,80 @@ path; a missing interface or ioctl contract is platform feedback, not a reason
 to patch Quake to report success. Do not claim that a Quake port is available
 on the base merely because main has it.
 
-Required evidence: segment host tests including forwarding and errno cases;
-the Sortix UDP suite; two-context Playwright datagrams through guest `nc -u`
-and a throwaway piplet; real two-player Doom and, if the driver's socket path
-is compatible, Quake runs; and a manual `./run.sh browser` check with screenshots
-under `.context/`. Report evidence separately for Node and browsers, including
-launch or ICE failures. A simulated transport unit test does not prove WebRTC
-or guest sockets work.
+The pinned TyrQuake sender has an independent upstream retransmission defect:
+`ReSendMessage` calls the same sequence-incrementing helper as a new packet.
+After a lost or delayed acknowledgement, retries relabel the same reliable
+fragment and invalidate earlier acknowledgements. The observed browser trace
+shows repeated first fragments with advancing sequence numbers and stale ACKs.
+A scoped package patch preserves the outstanding sequence on retries, matching
+[the original Quake implementation](https://github.com/id-Software/Quake/blob/master/WinQuake/net_dgrm.c).
+The native source-function probe reproduces the failure before the patch and
+checks byte-identical retries and a single advance for the following fragment.
+This correction belongs to the upstream protocol boundary; it changes no
+Kandelo socket behavior and adds no transport retries to the UDP channel.
+
+A second pinned upstream defect is in
+[Cmd_StuffCmds_f](https://github.com/sezero/tyrquake/blob/52c707768f7e9b118b1517476c65a7c87a929602/common/cmd.c):
+it treats every hyphen in a `+command` argument as an option delimiter.
+Consequently `+connect peer-2` becomes `connect peer` before DNS resolution,
+and no datagram enters the segment. A separate scoped package patch recognizes
+plus/minus prefixes only at word boundaries. A native probe of the actual
+source function fails before and passes after, preserving hyphenated names,
+embedded plus signs, and following options and commands. The assigned network
+hostnames and ordinary guest resolver remain authoritative.
+
+## Validation evidence and limits
+
+All builds and verification ran under `scripts/dev-shell.sh`, using the
+worktree SDK, source-only resolution, and normal package recipes. The normal
+`./run.sh browser --host 127.0.0.1 --port 5522 --strictPort` path completed
+106/106 build nodes and 8/8 products. Both musl architectures and current ABI
+program/image artifacts were built. After the final Quake parser correction,
+the full graph completed again with 105 cache hits and one rebuilt package.
+
+| Check | Observed result |
+|---|---|
+| Native Rust workspace, including xtask | 2,717 unfiltered tests passed; zero failures or ignored cases |
+| ABI snapshot check | Passed for ABI 48 and fork-state format 16 |
+| Node segment, virtual-network, guest UDP, and packaged Netcat checks | Four files; 35 passed, six existing developer-fixture skips |
+| Sortix UDP, actual dedicated-worker guest runs | 199 passed, 13 existing expected failures, zero unexpected outcomes; 212 total |
+| Chromium named-piplet networking scenarios | Four passed: bidirectional guest Netcat, joiner-to-joiner forwarding, two-player Doom, and two-player TyrQuake |
+| Browser assets and explicit peer-network resolution | 94 imports, seven memory64 fixtures, publication-size check, and all seven required source-only artifacts passed |
+| Production peer-network Vite bundle | Passed after the final Quake package revision |
+| Strict segment TypeScript | Five implementation files passed |
+| Full app and host TypeScript | Still fail with the same baseline 88 and 37 diagnostics respectively |
+
+The game tests place both player machines at `.2` and `.3`, with a separate
+`.1` forwarding host. They assert actual guest game startup and participant
+sign-on, live frames, running processes, and changed frames after keyboard
+input. Screenshots and raw guest diagnostics are saved under `.context/`.
+Doom uses two participants; Quake's client reaches sign-on stage four and its
+server records the remote client's real address.
+
+Visible Chromium checks used the normal `./run.sh browser` server and real
+PHP rendezvous server: guest Netcat exchanged messages both ways; Doom showed
+both player roles; TyrQuake completed sign-on. The final rebuilt Quake check
+hosts the game at `.2` and connects from `.1` using `peer-2`, preserving the
+hyphenated hostname through the actual guest command parser and resolver.
+Screenshots show live games and input was sent through the ordinary keyboard
+adapter. An idle manual Netcat receiver expired its declared three-second
+timeout before the first send; immediate subsequent exchanges exited zero.
+
+The default browser ICE policy failed to find a direct local route in the
+first visible run and displayed the real no-route/no-TURN error. The passing
+local Chromium runs use loopback ICE candidates and a microphone permission
+grant to expose candidates; no capture is requested. They do not establish
+cross-computer or NAT connectivity. Newly created channel transfer probes are
+separate evidence from guest runtime behavior.
+
+The direct SDK test fixture builder emits its existing missing ABI-contract
+stamp warning; packaged game and Netcat browser artifacts use the normal
+stamped package path. Six Node cases skip unregistered developer-only fixtures
+under source-only resolution; the packaged TCP and UDP Netcat cases pass.
+Full host/browser suites, libc-test, Open POSIX, complete Sortix, Firefox and
+WebKit guest runtime runs, long-duration gameplay, cross-computer/NAT tests,
+and benchmarks were not run. Performance was not measured. This is bounded
+UDP evidence for a draft change, not a general merge-readiness claim.
 
 ## External-route conformance boundary
 
@@ -160,7 +236,7 @@ The Sortix `udp/connect-loopback-reconnect-wan-getsockname` case expects a
 public Internet UDP route to 8.8.8.8. A clean session-migration kernel at
 9d34e6e9c, with its ABI 45 SDK and an actual guest run in a dedicated Node
 worker, returns ENETUNREACH from its second connect. The test already accepts the
-empty stdout produced by that truthful failure as a cross-platform alternative;
+ENETUNREACH failure as a cross-platform alternative;
 it needs no additional expected-failure marker. External UDP remains unavailable.
 The new route-selection path must still query the host after an earlier
 loopback auto-bind; reusing that binding must not invent external connectivity.

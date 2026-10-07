@@ -68,8 +68,17 @@ int main(int argc, char **argv) {
             fprintf(stderr, "unknown UDP destination: expected EHOSTUNREACH, got %d\n", errno); return 1;
         }
         inet_pton(AF_INET, "10.89.0.1", &remote.sin_addr);
-        if (sendto(receiver, "x", 1, 0, (struct sockaddr *)&remote, sizeof(remote)) != -1 || errno != ECONNREFUSED) {
-            fprintf(stderr, "unbound UDP destination: expected ECONNREFUSED, got %d\n", errno); return 1;
+        /* UDP admission is not a delivery acknowledgement. The kernel defers
+           a routed refusal on a connected socket to its pending socket error. */
+        if (connect(receiver, (struct sockaddr *)&remote, sizeof(remote)) != 0
+            || send(receiver, "x", 1, 0) != 1) {
+            perror("connected UDP admission"); return 1;
+        }
+        int socket_error = 0;
+        socklen_t error_len = sizeof(socket_error);
+        if (getsockopt(receiver, SOL_SOCKET, SO_ERROR, &socket_error, &error_len) != 0
+            || socket_error != ECONNREFUSED) {
+            fprintf(stderr, "unbound UDP destination: expected pending ECONNREFUSED, got %d\n", socket_error); return 1;
         }
         int sockets[32];
         for (int i = 0; i < 32; i++) {

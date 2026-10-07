@@ -1126,9 +1126,15 @@ full worker-side bridge returns EAGAIN; admitted UDP can still be lost under RTC
 congestion or remote socket closure. Each bridge direction caps pending storage
 at 128 frames and one MiB. Membership and control messages are bounded, source
 addresses are checked against link ownership, and disconnect removes remote
-bindings and routes. The experiment needs real browser and game evidence before
-it can support an end-to-end completion claim; see the dated
-[design and validation plan](plans/2026-10-06-webrtc-guest-udp.md).
+bindings and routes. Local Chromium checks demonstrate actual guest Netcat
+messages in both directions and between joiners, plus two-player Doom and
+TyrQuake with both players behind a separate forwarding host. Visible Chromium
+checks used the normal browser launch and real PHP signalling server. These
+runs require the local loopback ICE fixture; default ICE failed to find a direct
+route in the first visible check and reported that boundary. Cross-computer/NAT
+connectivity, long-duration games, and Firefox/WebKit guest runtime behavior
+remain unverified. See the dated
+[design and validation record](plans/2026-10-06-webrtc-guest-udp.md).
 
 `web-libs/kandelo-session/src/peer-connection.ts` owns reusable WebRTC
 connection setup. A consumer declares a purpose and named data channels with
