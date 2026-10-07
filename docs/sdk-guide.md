@@ -813,7 +813,9 @@ code, separate from the guest linear-memory budget. The browser test records
 this exact failure as a boundary and separately tests fresh-session C++.
 The cache currently retains only 16 MiB of modules briefly; the LLVM tools
 are larger, so sharing/reclamation for repeated large tool launches remains
-follow-up work. See [Firefox executable-code limit](browser-support.md#firefox-executable-code-limit). The bundled WebKit engine passes the C cases and small C++ programs,
+follow-up work. See [Firefox executable-code limit](browser-support.md#firefox-executable-code-limit).
+
+The bundled WebKit engine passes the C cases and small C++ programs,
 but reports native Wasm call-stack exhaustion while Clang instantiates
 the templates used by `<random>`. Compilation then exits with SIGSEGV;
 the worker diagnostic says `Maximum call stack size exceeded` inside
