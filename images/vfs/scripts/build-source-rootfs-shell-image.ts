@@ -523,8 +523,10 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
  * fetch a catalog game, verify it, unpack it, and start it. `--list` prints
  * the catalog, so the same games are a command away in the terminal.
  *
- * - The download runs in the background so the script can report a
- *   percentage against the catalog's size, and the trap stops it on Ctrl+C:
+ * - Archives larger than the proxy's 100 MiB response limit are fetched in
+ *   50 MiB ranges. The download runs in the background so the script can
+ *   report cumulative progress against the catalog's size, including the
+ *   active range, and the trap stops it on Ctrl+C:
  *   a background job in a non-interactive shell ignores SIGINT, so the
  *   dock's interrupt would otherwise leave curl running.
  * - The SHA-256 makes a changed or truncated download a loud failure instead
@@ -540,12 +542,40 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
  * Every step announces itself as a `scummvm-play: ` line and the download
  * as a `#### N%` line: the dock shows both while the display is dark.
  */
-const SCUMMVM_PLAY_SCRIPT = `#!/bin/sh
+export const SCUMMVM_PLAY_SCRIPT = `#!/bin/sh
 set -e
 CATALOG=${SCUMMVM_PLAY_CATALOG}
 GAMES=/usr/share/scummvm-games
 TAB=$(printf '\\t')
+RANGE_LIMIT=$((100 * 1024 * 1024))
+RANGE_SIZE=$((50 * 1024 * 1024))
 say() { echo "scummvm-play: $*" >&2; }
+download() {
+    expected_status=$1
+    shift
+    rm -f "$ZIP.status"
+    if [ "$expected_status" = 206 ]; then
+        curl -fsSL -o - -w '%{stderr}%{http_code}' "$@" "$URL" >> "$ZIP" 2> "$ZIP.status" &
+    else
+        curl -fsSL -o "$ZIP" -w '%{http_code}' "$@" "$URL" > "$ZIP.status" &
+    fi
+    fetch=$!
+    trap 'kill "$fetch" 2>/dev/null; rm -f "$ZIP" "$ZIP.status"; exit 130' INT TERM
+    while kill -0 "$fetch" 2>/dev/null; do
+        got=0
+        if [ -f "$ZIP" ]; then got=$(wc -c < "$ZIP"); fi
+        percent=$((got * 100 / BYTES))
+        if [ "$percent" -gt 99 ]; then percent=99; fi
+        printf '#### %d%%\\r' "$percent" >&2
+        sleep 1
+    done
+    status=0
+    wait "$fetch" || status=$?
+    trap - INT TERM
+    if [ "$status" -ne 0 ] || [ "$(cat "$ZIP.status")" != "$expected_status" ]; then
+        return 1
+    fi
+}
 if [ "\${1:-}" = "--list" ]; then
     cut -f1,3,6 "$CATALOG"
     exit 0
@@ -568,24 +598,28 @@ DIR="$GAMES/$ID"
 ZIP="$GAMES/$ID.zip"
 if [ ! -f "$DIR/.targets" ]; then
     say "Downloading $TITLE ($SIZE) from downloads.scummvm.org..."
-    rm -f "$ZIP"
-    curl -fsSL -o "$ZIP" "$URL" &
-    fetch=$!
-    trap 'kill "$fetch" 2>/dev/null; rm -f "$ZIP"; exit 130' INT TERM
-    while kill -0 "$fetch" 2>/dev/null; do
-        got=0
-        if [ -f "$ZIP" ]; then got=$(wc -c < "$ZIP"); fi
-        printf '#### %d%%\\r' $((got * 100 / BYTES)) >&2
-        sleep 1
-    done
-    status=0
-    wait "$fetch" || status=$?
-    trap - INT TERM
-    if [ "$status" -ne 0 ]; then
-        rm -f "$ZIP"
+    rm -f "$ZIP" "$ZIP.status"
+    if [ "$BYTES" -gt "$RANGE_LIMIT" ]; then
+        : > "$ZIP"
+        offset=0
+        while [ "$offset" -lt "$BYTES" ]; do
+            end=$((offset + RANGE_SIZE - 1))
+            if [ "$end" -ge "$BYTES" ]; then end=$((BYTES - 1)); fi
+            before=$(wc -c < "$ZIP")
+            if ! download 206 -r "$offset-$end" ||
+               [ "$(($(wc -c < "$ZIP") - before))" -ne "$((end - offset + 1))" ]; then
+                rm -f "$ZIP" "$ZIP.status"
+                say "Download failed"
+                exit 1
+            fi
+            offset=$((end + 1))
+        done
+    elif ! download 200; then
+        rm -f "$ZIP" "$ZIP.status"
         say "Download failed"
         exit 1
     fi
+    rm -f "$ZIP.status"
     printf '#### 100%%\\n' >&2
     say "Verifying the download (SHA-256)..."
     if ! echo "$SHA256  $ZIP" | sha256sum -c - >/dev/null 2>&1; then
