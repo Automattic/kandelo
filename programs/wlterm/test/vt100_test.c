@@ -330,7 +330,78 @@ static void el_ends_pending_wrap(void) {
     vt100_destroy(t);
 }
 
+static struct vt100 *scroll_fixture(void) {
+    struct vt100 *t = fresh();
+    FEED(t, "HEAD\x1b[2;1HA\x1b[3;1HB\x1b[4;1HC\x1b[5;1HSTATUS");
+    return t;
+}
+
+static void scroll_region_preserves_status(void) {
+    struct vt100 *t = scroll_fixture();
+    FEED(t, "\x1b[2;"); FEED(t, "4r\x1b[4;1H\nN");
+    expect_ascii_row("scroll header", t, 0, "HEAD");
+    expect_ascii_row("scroll row1", t, 1, "B");
+    expect_ascii_row("scroll row2", t, 2, "C");
+    expect_ascii_row("scroll row3", t, 3, "N");
+    expect_ascii_row("scroll status", t, 4, "STATUS");
+    FEED(t, "\x1b[5;1H\n");
+    expect_ascii_row("outside region status", t, 4, "STATUS");
+    expect_cursor("outside region stays on screen", t, 4, 0);
+    vt100_destroy(t);
+}
+
+/* The incremental scroll emitted by stock Vim under TERM=vt100: park at
+ * the bottom of the editing region, scroll with CR/LF, then restore margins.
+ * Scale its 24-row screen to this five-row fixture, retaining a status row. */
+static void editor_incremental_scroll(void) {
+    struct vt100 *t = scroll_fixture();
+    FEED(t, "\x1b[1;4r\x1b[4;1H\r\n\r\n\r\n\x1b[1;5r");
+    expect_ascii_row("editor scrolled three rows", t, 0, "C");
+    expect_ascii_row("editor status preserved", t, 4, "STATUS");
+    expect_cursor("editor margin restore", t, 0, 0);
+    vt100_destroy(t);
+}
+
+static void scroll_region_wrap_and_indices(void) {
+    struct vt100 *t = scroll_fixture();
+    FEED(t, "\x1b[2;4r\x1b[4;1H01234567890123456789X");
+    expect_ascii_row("wrap header", t, 0, "HEAD");
+    expect_ascii_row("wrap shifted row", t, 2, "01234567890123456789");
+    expect_ascii_row("wrap bottom", t, 3, "X");
+    expect_ascii_row("wrap status", t, 4, "STATUS");
+    FEED(t, "\x1b[2;3H\x1b"); FEED(t, "M");
+    expect_ascii_row("reverse index blank", t, 1, "");
+    expect_ascii_row("reverse index shifted", t, 2, "B");
+    expect_cursor("reverse index column", t, 1, 2);
+    FEED(t, "\x1b[4;3H\x1b" "D");
+    expect_cursor("index column", t, 3, 2);
+    FEED(t, "\x1b" "E");
+    expect_cursor("next line column", t, 3, 0);
+    expect_ascii_row("indices status", t, 4, "STATUS");
+    vt100_destroy(t);
+}
+
+static void scroll_region_bounds_and_resize(void) {
+    struct vt100 *t = scroll_fixture();
+    FEED(t, "\x1b[2;4r");
+    expect_cursor("region homes cursor", t, 0, 0);
+    FEED(t, "\x1b[3;7H\x1b[4;2r\x1b[2;2r\x1b[1;999999999999999r");
+    expect_cursor("invalid region preserves cursor", t, 2, 6);
+    FEED(t, "\x1b[4;1H\n");
+    expect_ascii_row("invalid region preserves margins", t, 4, "STATUS");
+    vt100_resize(t, COLS, 4);
+    FEED(t, "\x1b[4;1H\n");
+    expect_ascii_row("resize restores full region", t, 0, "B");
+    FEED(t, "\x1b[2;3r\x1b[r\x1b[4;1H\n");
+    expect_ascii_row("default region scrolls full screen", t, 0, "C");
+    vt100_destroy(t);
+}
+
 int main(void) {
+    scroll_region_preserves_status();
+    editor_incremental_scroll();
+    scroll_region_wrap_and_indices();
+    scroll_region_bounds_and_resize();
     utf8_whole();
     utf8_truncated_inline();
     utf8_split_1_2();

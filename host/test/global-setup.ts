@@ -95,6 +95,7 @@ const TEST_PROGRAMS = [
   "pathconf_test.c",
   "getdents_boundary_test.c",
   "terminal_attributes_api_test.c",
+  "pty_readiness_test.c",
   "rlimit_fsize_test.c",
   "rlimit_as_test.c",
   "kernel_scratch_browser_test.c",
@@ -133,6 +134,7 @@ const TEST_PROGRAMS = [
 const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c", "int128_division_test.c"];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
+  "pty_readiness_test.c",
   "environment_lifecycle_test.c",
   "pthread_channel_reuse_test.c",
   "unix_listener_exec_test.c",

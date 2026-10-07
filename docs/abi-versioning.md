@@ -298,6 +298,16 @@ rescheduling its platform-owned retry queues. This metadata adds no extra
 host-to-kernel call; it makes the already-observable stream explicit in the
 ABI snapshot.
 
+`kernel_take_pty_readiness_changed() -> u32` is an additive kernel export.
+It returns 1 once for coalesced PTY queue/mode/hangup readiness changes, then
+0 until another change occurs. It adds no fields or reason bits to the packed
+wake stream and changes no guest syscall signatures or layouts. Existing
+hosts retain their readiness retry timers; updated hosts consume the
+notification under the same entry gate as the packed stream. The existing
+ABI version is retained because guest calling conventions remain compatible.
+The strict snapshot-digest gate still requires artifacts stamped against the
+previous snapshot to be rebuilt through the normal package/fixture path.
+
 The pending ABI 43 contract additionally makes the Rust `Process` authoritative
 for each System V shared-memory attachment's process address, segment id, and
 size. After the host has materialized an attachment and its byte-coherence

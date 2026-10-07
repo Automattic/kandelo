@@ -60,6 +60,10 @@ function signatures(
       parameters: [pointer, i32, i32],
       result: i32,
     },
+    kernel_take_pty_readiness_changed: {
+      parameters: [],
+      result: i32,
+    },
     kernel_enum_procs: {
       parameters: [pointer, i32],
       result: i32,
@@ -671,6 +675,11 @@ export function createKernelScratchTestInstance(
         return allocator(Number(args[0]));
       }
       const implementation = resolveExports()[name];
+      // Structural fixtures without terminal mutations have no coalesced
+      // readiness to consume. Explicit mocks still support fault injection.
+      if (name === "kernel_take_pty_readiness_changed" && implementation === undefined) {
+        return 0;
+      }
       if (typeof implementation !== "function") {
         throw new Error(`missing test implementation for ${name}`);
       }

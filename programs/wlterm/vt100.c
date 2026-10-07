@@ -23,6 +23,7 @@ struct vt100 {
     int cols, rows;
     struct cell *grid;    /* cols × rows */
     int cx, cy;           /* cursor */
+    int scroll_top, scroll_bottom; /* inclusive scrolling margins */
     uint8_t fg, bg, flags;
     uint8_t *dirty;       /* one bit per row */
     enum { GROUND, ESCAPE, CSI } state;
@@ -60,6 +61,8 @@ struct vt100 *vt100_create(int cols, int rows) {
     if (!t) return NULL;
     t->cols = cols;
     t->rows = rows;
+    t->scroll_top = 0;
+    t->scroll_bottom = rows - 1;
     t->grid = calloc((size_t)cols * rows, sizeof(struct cell));
     t->dirty = calloc((rows + 7) / 8, 1);
     if (!t->grid || !t->dirty) {
@@ -101,22 +104,35 @@ int vt100_resize(struct vt100 *t, int cols, int rows) {
     t->dirty = dirty;
     t->cols = cols;
     t->rows = rows;
+    t->scroll_top = 0;
+    t->scroll_bottom = rows - 1;
     if (t->cx >= cols) t->cx = cols - 1;
     if (t->cy >= rows) t->cy = rows - 1;
     vt100_mark_dirty_all(t);
     return 1;
 }
 
-static void scroll_up(struct vt100 *t) {
-    memmove(&t->grid[0], &t->grid[t->cols],
-            (size_t)(t->rows - 1) * t->cols * sizeof(struct cell));
-    memset(&t->grid[(t->rows - 1) * t->cols], 0,
-           (size_t)t->cols * sizeof(struct cell));
+/* Move only the scrolling region; fixed rows (such as editor status lines)
+ * retain both their cells and their dirty state. */
+static void scroll_region(struct vt100 *t, int down) {
+    int top = t->scroll_top, bottom = t->scroll_bottom;
+    size_t count = (size_t)(bottom - top) * t->cols * sizeof(struct cell);
+    if (down)
+        memmove(&t->grid[(top + 1) * t->cols], &t->grid[top * t->cols], count);
+    else
+        memmove(&t->grid[top * t->cols], &t->grid[(top + 1) * t->cols], count);
+    int blank = down ? top : bottom;
+    memset(&t->grid[blank * t->cols], 0, (size_t)t->cols * sizeof(struct cell));
     for (int x = 0; x < t->cols; x++) {
-        t->grid[(t->rows - 1) * t->cols + x].fg = t->fg;
-        t->grid[(t->rows - 1) * t->cols + x].bg = t->bg;
+        t->grid[blank * t->cols + x].fg = t->fg;
+        t->grid[blank * t->cols + x].bg = t->bg;
     }
-    vt100_mark_dirty_all(t);
+    for (int row = top; row <= bottom; row++) mark_dirty(t, row);
+}
+
+static void index_down(struct vt100 *t) {
+    if (t->cy == t->scroll_bottom) scroll_region(t, 0);
+    else if (t->cy < t->rows - 1) t->cy++;
 }
 
 /* ---- parser ------------------------------------------------------------ */
@@ -124,7 +140,7 @@ static void scroll_up(struct vt100 *t) {
 static void put_char(struct vt100 *t, uint32_t codepoint) {
     if (t->cx >= t->cols) {
         t->cx = 0;
-        if (++t->cy >= t->rows) { scroll_up(t); t->cy = t->rows - 1; }
+        index_down(t);
     }
     struct cell *c = &t->grid[t->cy * t->cols + t->cx];
     c->codepoint = codepoint;
@@ -139,7 +155,7 @@ static void put_char(struct vt100 *t, uint32_t codepoint) {
 #define CSI_PARAM_MAX 65535
 
 /* Blank cells [from, to) of the grid, in row-major order, with the current
- * colours (as scroll_up fills the new bottom row), and mark their rows. */
+ * colours (as scrolling fills the exposed row), and mark their rows. */
 static void erase_cells(struct vt100 *t, int from, int to) {
     for (int i = from; i < to; i++) {
         t->grid[i].codepoint = 0;
@@ -197,6 +213,16 @@ static void apply_csi(struct vt100 *t, char final) {
         else if (params[0] == 2) erase_cells(t, row, row + t->cols);
         clamp_cursor(t);
         break;
+    case 'r': { /* DECSTBM: defaults to the full screen; invalid bounds do nothing. */
+        int top = params[0] ? params[0] : 1;
+        int bottom = n_params > 1 && params[1] ? params[1] : t->rows;
+        if (top < bottom && bottom <= t->rows) {
+            t->scroll_top = top - 1;
+            t->scroll_bottom = bottom - 1;
+            t->cx = t->cy = 0;
+        }
+        break;
+    }
     case 'm': {
         if (n_params == 0) { t->fg = 7; t->bg = 16; t->flags = 0; break; }
         for (int i = 0; i < n_params; i++) {
@@ -273,7 +299,7 @@ static void exec_c0(struct vt100 *t, unsigned char b) {
     else if (b == '\n') {
         /* inline-fix #7: treat LF as CR+LF (cooked-ish output). */
         t->cx = 0;
-        if (++t->cy >= t->rows) { scroll_up(t); t->cy = t->rows - 1; }
+        index_down(t);
     }
     else if (b == '\b') { if (t->cx > 0) t->cx--; }
     else if (b == '\t') { t->cx = (t->cx + 8) & ~7; if (t->cx > t->cols - 1) t->cx = t->cols - 1; }
@@ -348,7 +374,18 @@ void vt100_feed(struct vt100 *t, const char *bytes, size_t len) {
                 t->csi_n = 0;
                 t->csi_ignore = 0;
             }
-            else t->state = GROUND;  /* unknown 2-byte escape — drop */
+            else {
+                if (b == 'D' || b == 'E') { /* IND / NEL */
+                    clamp_cursor(t);
+                    if (b == 'E') t->cx = 0;
+                    index_down(t);
+                } else if (b == 'M') { /* RI */
+                    clamp_cursor(t);
+                    if (t->cy == t->scroll_top) scroll_region(t, 1);
+                    else if (t->cy > 0) t->cy--;
+                }
+                t->state = GROUND;  /* other 2-byte escapes are ignored */
+            }
             i++;
             break;
         case CSI:

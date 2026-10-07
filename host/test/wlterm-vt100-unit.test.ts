@@ -1,6 +1,6 @@
 /*
  * Native unit test for the VT100 core in programs/wlterm/vt100.c: UTF-8
- * carried across reads, CSI parameter parsing, and the erase modes. The
+ * carried across reads, CSI parameter parsing, erasure, and scrolling regions. The
  * core depends on wpkdraw only for vt100_render, which
  * programs/wlterm/test/vt100_test.c stubs, so it compiles for the host
  * and runs here — no wasm/kernel/compositor needed. The wasm smoke

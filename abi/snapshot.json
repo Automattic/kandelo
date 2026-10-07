@@ -3470,6 +3470,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_take_pty_readiness_changed",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_tcgetattr",
       "signature": "(i32,i32,i32) -> (i32)"
     },

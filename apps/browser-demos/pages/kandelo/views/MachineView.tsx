@@ -202,6 +202,12 @@ export const MachineView: React.FC<MachineViewProps> = ({
     followDemoSurface,
     chooseView,
   } = surface;
+  const terminalActive = activePrimary === "terminal" && canUseTerminal;
+  const [terminalVisited, setTerminalVisited] = React.useState(false);
+  React.useEffect(() => {
+    if (!canUseTerminal) setTerminalVisited(false);
+    else if (terminalActive) setTerminalVisited(true);
+  }, [canUseTerminal, terminalActive]);
 
   const runWebAction = React.useCallback(async (action: DemoActionConfig): Promise<string | void> => {
     if (action.kind === "web.wordpressLogin") {
@@ -264,9 +270,9 @@ export const MachineView: React.FC<MachineViewProps> = ({
               />
             </PrimarySurfaceSlot>
           )}
-          {activePrimary === "terminal" && canUseTerminal && (
-            <PrimarySurfaceSlot active>
-              <Shell autoFocus {...shellProps} />
+          {canUseTerminal && (terminalActive || terminalVisited) && (
+            <PrimarySurfaceSlot active={terminalActive}>
+              <Shell visible={terminalActive} autoFocus={terminalActive} {...shellProps} />
             </PrimarySurfaceSlot>
           )}
           {activePrimary === "syslog" && (

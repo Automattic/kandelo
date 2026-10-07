@@ -1311,6 +1311,22 @@ describe("kernel scratch transfer capacity regressions", () => {
     }
   });
 
+  it("wakes PTY readers without an attached output observer", () => {
+    const harness = makeScratchHarness();
+    const wake = vi.fn();
+    harness.kernelExports.kernel_pty_master_write = vi.fn(
+      (_ptyIdx: number, _pointer: number, length: number) => length,
+    );
+    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
+      scheduleWakeBlockedRetries: wake,
+    });
+
+    harness.worker.ptyMasterWrite(3, new Uint8Array([0x61]));
+
+    expect(wake).toHaveBeenCalledOnce();
+    expectScratchTailUntouched(harness);
+  });
+
   it("does not lend stale PTY scratch bytes when input spoofs its length", () => {
     const harness = makeScratchHarness();
     const input = hostileBytes(1, 4);
