@@ -108,3 +108,12 @@ passed all eight cases (67 total with its then-current transport inventory).
 Workspace Rust tests passed; normal ABI 49 musl, packages, fixtures, guest TCP,
 TCP conformance, HTTP/curl browser proof, and visible browser checks remain
 pending. Do not read this checkpoint as a completed browser or POSIX claim.
+
+The accepted-stream bridge now retains a nonreused connection token, minted
+with its pipe pair. Reset checks that token against each still-owned half;
+a pipe index freed by half-close cannot authorize a replacement allocation.
+The workspace run passed 2,094 tests (including documentation tests), and the
+updated transport/Node-backend/authority run passed 71 cases. Public resolver
+CLI checks also cover policy-specific keys and read-only cache paths: musl's
+DRI dependency setup had used a default-cache inspection path after a
+source-only resolve. The normal artifact rebuild remains pending.

@@ -613,13 +613,16 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_tcp_connection_id as ( recv: number, send: number, ) => number )(recvPipeIdx, recvPipeIdx + 1)",
+  ),
+  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#cancelLiveTaskKernelWait::kernel-export-direct-use::cancelHostOwnedWait( channel.pid, this.guestTidForChannel(channel), )",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#discardReplicaAudioBacklog::kernel-export-direct-use::clockUpdate(0)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#startIncomingVirtualTcpConnectionPump.pumpHostPhase::kernel-export-direct-use::reset(recvPipeIdx, sendPipeIdx)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#startIncomingVirtualTcpConnectionPump.pumpHostPhase::kernel-export-direct-use::reset(recvPipeIdx, sendPipeIdx, connectionId)",
   ),
   reviewedScalarKernelExportCall(
     "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_create_process()",

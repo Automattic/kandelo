@@ -32903,6 +32903,13 @@ export class CentralizedKernelWorker {
           result = -recvPipeIdx;
           return;
         }
+        const connectionId = (
+          this.#kernelInstanceForEntry(entry).exports.kernel_tcp_connection_id as (
+            recv: number,
+            send: number,
+          ) => number
+        )(recvPipeIdx, recvPipeIdx + 1);
+        if (!connectionId) throw new Error("TCP injection did not mint its backing identity");
         result = 0;
         entry.deferProtocolEffect(() => {
           this.wakeTargetPollNow(pid);
@@ -32911,6 +32918,7 @@ export class CentralizedKernelWorker {
             pid,
             recvPipeIdx,
             peer,
+            connectionId,
           );
           return undefined;
         });
@@ -32953,6 +32961,7 @@ export class CentralizedKernelWorker {
     targetPid: number,
     recvPipeIdx: number,
     peer: TcpConnectionPeer,
+    connectionId: number,
   ): void {
     const sendPipeIdx = recvPipeIdx + 1;
     let cleaned = false;
@@ -33139,8 +33148,8 @@ export class CentralizedKernelWorker {
           }
 
           if (abortRequested) {
-            const reset = this.#kernelInstanceForEntry(entry).exports.kernel_reset_tcp_connection as (recv: number, send: number) => number;
-            if (reset(recvPipeIdx, sendPipeIdx) !== 0) throw new Error("TCP bridge lost its owned socket backing during reset");
+            const reset = this.#kernelInstanceForEntry(entry).exports.kernel_reset_tcp_connection as (recv: number, send: number, token: number) => number;
+            if (reset(recvPipeIdx, sendPipeIdx, connectionId) !== 0) throw new Error("TCP bridge lost its owned socket backing during reset");
           }
           if (abortRequested || closePeer) {
             if (recvPipeWriteOpen) {

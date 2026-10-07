@@ -1141,6 +1141,7 @@
       "kernel_spawn_scratch_pointer",
       "kernel_spawn_scratch_retained_capacity",
       "kernel_take_process_timer_cleanup",
+      "kernel_tcp_connection_id",
       "kernel_thread_exit",
       "kernel_thread_has_deliverable",
       "kernel_transfer_channel_execute",
@@ -3005,7 +3006,7 @@
     {
       "kind": "func",
       "name": "kernel_reset_tcp_connection",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3326,6 +3327,11 @@
       "kind": "func",
       "name": "kernel_tcgetattr",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_tcp_connection_id",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",

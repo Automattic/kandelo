@@ -13255,8 +13255,10 @@ pub extern "C" fn kernel_inject_connection(
     // sendPipeIdx as recvPipeIdx + 1), so use alloc_pair which preserves
     // that invariant even when the free list is in play.
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-    let (recv_pipe_idx, send_pipe_idx) =
-        pipe_table.alloc_pair(PipeBuffer::new(65536), PipeBuffer::new(65536));
+    let (recv_pipe_idx, send_pipe_idx) = match pipe_table.alloc_tcp_pair(65536) {
+        Ok(pair) => pair,
+        Err(error) => return -(error as i32),
+    };
 
     let pc = PendingConnection {
         local_addr: local_addr.to_be_bytes(),
@@ -13289,26 +13291,39 @@ pub extern "C" fn kernel_inject_connection(
     recv_pipe_idx as i32
 }
 
-/// Preserve an actual host stream reset in the shared socket backing. The
-/// bridge owns both pipe indexes until this call and its endpoint closes.
+/// Return the identity minted with this pair while the injection still owns
+/// both slots. The host retains it alongside its copied pipe indexes.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_reset_tcp_connection(recv_pipe_idx: u32, send_pipe_idx: u32) -> i32 {
-    if recv_pipe_idx.checked_add(1) != Some(send_pipe_idx) {
-        return -(Errno::EINVAL as i32);
+pub extern "C" fn kernel_tcp_connection_id(recv: u32, send: u32) -> u32 {
+    if recv.checked_add(1) != Some(send) {
+        return 0;
     }
     let table = unsafe { crate::pipe::global_pipe_table() };
-    if table.get(recv_pipe_idx as usize).is_none() || table.get(send_pipe_idx as usize).is_none() {
-        return -(Errno::EBADF as i32);
+    let token = table
+        .get(recv as usize)
+        .map(|pipe| pipe.tcp_connection_id())
+        .unwrap_or(0);
+    if table
+        .get(send as usize)
+        .is_some_and(|pipe| pipe.tcp_connection_id() == token)
+    {
+        token
+    } else {
+        0
     }
-    table
-        .get_mut(recv_pipe_idx as usize)
-        .unwrap()
-        .reset_stream(Errno::ECONNRESET);
-    table
-        .get_mut(send_pipe_idx as usize)
-        .unwrap()
-        .reset_stream(Errno::ECONNRESET);
-    0
+}
+/// Reset only backing still carrying this connection's identity. A half-close
+/// may have released one pipe; its index must not authorize its replacement.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_reset_tcp_connection(recv: u32, send: u32, token: u32) -> i32 {
+    match unsafe { crate::pipe::global_pipe_table() }.reset_tcp_connection(
+        recv as usize,
+        send as usize,
+        token,
+    ) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
 }
 
 /// Inject a UDP datagram into the kernel's AF_INET SOCK_DGRAM receive path.
