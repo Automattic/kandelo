@@ -5,8 +5,8 @@
  * half of the pre-pivot libwpkterm pseudocode in
  * docs/plans/2026-07-20-wpk-shell-plan.md (Phase A) — cell grid,
  * GROUND/ESCAPE/CSI parser, SGR 16-colour palette, cursor motion, ED/EL
- * erase, UTF-8 decode, dirty-line render via libwpkdraw, and a
- * keysym→bytes input mapper. NO scrollback, NO alt-screen, NO mouse,
+ * erase, scrolling regions and index/reverse index, UTF-8 decode,
+ * dirty-line render via libwpkdraw, and a keysym→bytes input mapper. NO scrollback, NO alt-screen, NO mouse,
  * NO 256-colour.
  */
 #ifndef WLTERM_VT100_H
@@ -33,8 +33,9 @@ void vt100_destroy(struct vt100 *t);
 
 /* Resize the grid to cols × rows (a tiling compositor changed the window).
  * The overlapping top-left cells are preserved; the cursor is clamped into
- * the new bounds. A no-op (returns 0) if the size is unchanged or out of the
- * vt100_create() bounds; returns 1 if the grid was rebuilt. */
+ * the new bounds and scrolling margins reset to the full grid. A no-op
+ * (returns 0) if the size is unchanged or out of the vt100_create() bounds;
+ * returns 1 if the grid was rebuilt. */
 int vt100_resize(struct vt100 *t, int cols, int rows);
 
 /* Feed raw bytes from the child's stdout; advances the cursor and mutates

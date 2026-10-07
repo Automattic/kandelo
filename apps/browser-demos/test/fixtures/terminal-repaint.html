@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Terminal repaint fixture</title>
+    <style>
+      .kshell-surface { display: flex; flex-direction: column; width: 800px; height: 500px; }
+      .kshell-host { flex: 1; min-height: 0; }
+      .kshell-terminal-slot { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+      .kshell-terminal-slot[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./terminal-repaint.tsx"></script>
+  </body>
+</html>

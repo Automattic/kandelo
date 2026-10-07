@@ -3126,6 +3126,17 @@
   background: var(--k-shell-bg);
 }
 
+.kshell-terminal-slot {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.kshell-terminal-slot[hidden] {
+  display: none;
+}
+
 .kshell-host {
   flex: 1;
   min-height: 0;

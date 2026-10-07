@@ -23,6 +23,8 @@ interface PendingPollRetry {
 
 interface MutableWorkerState {
   pendingPollRetries: Map<TestChannel, PendingPollRetry>;
+  pendingSelectRetries: Map<TestChannel, PendingPollRetry>;
+  wakeScheduled: boolean;
 }
 
 function mutableState(worker: TestWorker): MutableWorkerState {
@@ -43,9 +45,11 @@ function createWakeHarness(
   wakeIdx: number,
   wakeType: number,
   pids: readonly number[],
+  ptyReadinessChanged = false,
 ): {
   channels: TestChannel[];
   retrySyscall: ReturnType<typeof vi.fn>;
+  takePtyReadiness: ReturnType<typeof vi.fn>;
   scheduleWakeBlockedRetries: ReturnType<typeof vi.fn>;
   state: MutableWorkerState;
   worker: TestWorker;
@@ -71,9 +75,12 @@ function createWakeHarness(
     return 1;
   });
   const worker = createCentralizedKernelWorkerTestDouble();
+  const takePtyReadiness = vi.fn(() => Number(ptyReadinessChanged));
   installKernelWorkerTestScratch(worker, kernelMemory, 128, 4, {
     kernelExports: {
       kernel_drain_wakeup_events: drainWakeupEvents,
+      kernel_take_pty_readiness_changed: takePtyReadiness,
+      kernel_pty_master_write: (_idx: number, _pointer: number, length: number) => length,
     },
   });
   const channels = pids.map((pid) => {
@@ -94,6 +101,7 @@ function createWakeHarness(
   return {
     channels,
     retrySyscall,
+    takePtyReadiness,
     scheduleWakeBlockedRetries,
     state: mutableState(worker),
     worker,
@@ -105,6 +113,94 @@ afterEach(() => {
 });
 
 describe("readiness wakeup targeting", () => {
+  it("retains coalesced PTY readiness until a retry queue has a waiter", () => {
+    const harness = createWakeHarness(0, 0, [11], true);
+    harness.worker.testAuthority.drainWakeupEventsForTest();
+    expect(harness.takePtyReadiness).not.toHaveBeenCalled();
+    const [channel] = harness.channels;
+    harness.state.pendingPollRetries.set(channel!, {
+      timer: null, channel: channel!, pipeIndices: [],
+    });
+
+    harness.worker.testAuthority.drainWakeupEventsForTest();
+
+    expect(harness.takePtyReadiness).toHaveBeenCalledOnce();
+    expect(harness.retrySyscall).toHaveBeenCalledWith(channel);
+  });
+  it("retries guest PTYs without a pipe event or output callback", () => {
+    const harness = createWakeHarness(0, 0, [11], true);
+    const [channel] = harness.channels;
+    harness.state.pendingPollRetries.set(channel!, {
+      timer: null,
+      channel: channel!,
+      pipeIndices: [],
+    });
+
+    harness.worker.testAuthority.drainWakeupEventsForTest();
+
+    expect(harness.retrySyscall).toHaveBeenCalledWith(channel);
+  });
+
+  it("does not park PTY input behind an already scheduled broad wake", () => {
+    const harness = createWakeHarness(0, 0, [11], true);
+    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
+      retrySyscall: harness.retrySyscall,
+    });
+    const [channel] = harness.channels;
+    harness.state.wakeScheduled = true;
+    harness.state.pendingPollRetries.set(channel!, {
+      timer: null, channel: channel!, pipeIndices: [],
+    });
+
+    harness.worker.testAuthority.drainWakeupEventsForTest();
+
+    expect(harness.retrySyscall).toHaveBeenCalledOnce();
+    expect(harness.retrySyscall).toHaveBeenCalledWith(channel);
+    expect(harness.state.pendingPollRetries.has(channel!)).toBe(false);
+  });
+
+  it("wakes host keyboard input without an observer despite a scheduled broad wake", () => {
+    const harness = createWakeHarness(0, 0, [11]);
+    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
+      retrySyscall: harness.retrySyscall,
+    });
+    const [channel] = harness.channels;
+    harness.state.wakeScheduled = true;
+    harness.state.pendingPollRetries.set(channel!, {
+      timer: null, channel: channel!, pipeIndices: [],
+    });
+
+    harness.worker.ptyMasterWrite(3, new Uint8Array([0x61]));
+
+    expect(harness.retrySyscall).toHaveBeenCalledOnce();
+    expect(harness.retrySyscall).toHaveBeenCalledWith(channel);
+    expect(harness.state.pendingPollRetries.has(channel!)).toBe(false);
+  });
+
+  it.each([
+    ["pendingPollRetries", "pendingPollRetries"],
+    ["pendingPollRetries", "pendingSelectRetries"],
+    ["pendingSelectRetries", "pendingPollRetries"],
+    ["pendingSelectRetries", "pendingSelectRetries"],
+  ] as const)("wakes ordinary PTY %s before masked %s's grace period", (terminalQueue, maskedQueue) => {
+    vi.useFakeTimers();
+    const harness = createWakeHarness(0, 0, [11, 12], true);
+    const [terminal, masked] = harness.channels;
+    harness.state[terminalQueue].set(terminal!, {
+      timer: null, channel: terminal!, pipeIndices: [],
+    });
+    const maskedEntry: PendingPollRetry = {
+      timer: null, channel: masked!, pipeIndices: [], needsSignalSafeWake: true,
+    };
+    harness.state[maskedQueue].set(masked!, maskedEntry);
+
+    harness.worker.testAuthority.drainWakeupEventsForTest();
+
+    expect(harness.retrySyscall).toHaveBeenCalledOnce();
+    expect(harness.retrySyscall).toHaveBeenCalledWith(terminal);
+    expect(harness.state[maskedQueue].get(masked!)).toBe(maskedEntry);
+    expect(harness.scheduleWakeBlockedRetries).not.toHaveBeenCalled();
+  });
   it("retries only poll waiters that watch the kernel-woken pipe", () => {
     const harness = createWakeHarness(
       7,

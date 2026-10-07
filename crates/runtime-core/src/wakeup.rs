@@ -41,6 +41,8 @@ struct WakeupBuffer {
     #[cfg(not(test))]
     events: UnsafeCell<Vec<WakeupEvent>>,
     next_accept_idx: UnsafeCell<u32>,
+    #[cfg(not(test))]
+    pty_readiness_changed: UnsafeCell<bool>,
 }
 
 unsafe impl Sync for WakeupBuffer {}
@@ -49,6 +51,8 @@ static WAKEUP_BUFFER: WakeupBuffer = WakeupBuffer {
     #[cfg(not(test))]
     events: UnsafeCell::new(Vec::new()),
     next_accept_idx: UnsafeCell::new(1),
+    #[cfg(not(test))]
+    pty_readiness_changed: UnsafeCell::new(false),
 };
 
 // Kernel Wasm execution is serialized, but native unit tests run in parallel.
@@ -57,6 +61,29 @@ static WAKEUP_BUFFER: WakeupBuffer = WakeupBuffer {
 std::thread_local! {
     static TEST_WAKEUP_EVENTS: core::cell::RefCell<Vec<WakeupEvent>> =
         core::cell::RefCell::new(Vec::new());
+    static TEST_PTY_READINESS_CHANGED: core::cell::Cell<bool> =
+        const { core::cell::Cell::new(false) };
+}
+
+/// PTYs have separate master/slave queues, rather than pipe identities. Retain
+/// one coalesced readiness notification until the host takes it. This covers
+/// guest-created pairs as well as the host's terminal, including hangups.
+pub fn push_pty_readiness() {
+    #[cfg(test)]
+    TEST_PTY_READINESS_CHANGED.with(|changed| changed.set(true));
+    #[cfg(not(test))]
+    unsafe {
+        *WAKEUP_BUFFER.pty_readiness_changed.get() = true;
+    }
+}
+
+pub fn take_pty_readiness_changed() -> bool {
+    #[cfg(test)]
+    return TEST_PTY_READINESS_CHANGED.with(|changed| changed.replace(false));
+    #[cfg(not(test))]
+    unsafe {
+        core::mem::replace(&mut *WAKEUP_BUFFER.pty_readiness_changed.get(), false)
+    }
 }
 
 /// Allocate a host-visible readiness token for a listening socket.

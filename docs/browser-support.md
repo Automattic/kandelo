@@ -211,6 +211,17 @@ pipe pair.
   (`apps/browser-demos/pages/kandelo/panes/Shell.tsx`) builds its own
   `Terminal`; `apps/browser-demos/lib/pty-terminal.ts` provides a standalone
   `PtyTerminal` for pages that drive a `BrowserKernel` directly.
+- Each visited terminal tab retains its xterm renderer and keeps parsing PTY
+  output while hidden, including when the primary view shows syslog or another
+  demo surface. Revealing a tab fits and refreshes the retained screen;
+  it does not reconstruct a full-screen application from the bounded session
+  byte-history tail. Only the active tab receives focus or updates its PTY
+  dimensions. Removing a tab disposes its renderer and listeners.
+- Guest-created PTYs notify the shared Node/browser runtime when input,
+  output, a terminal mode transition, or final endpoint closure changes
+  readiness. Poll/select/epoll and blocked reads are rescheduled through the
+  runtime's existing retry queues; terminal input wakes readers even before
+  an output observer attaches.
 - The PTY window size (`TIOCGWINSZ`) is the size of the terminal displaying
   it. Only an `attachPty()` call that passes `{ cols, rows }` (the Shell
   pane's fitted xterm) sets it, sending `SIGWINCH` to the foreground process

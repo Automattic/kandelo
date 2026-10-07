@@ -21,6 +21,7 @@ export interface ShellProps {
   onMaximize?: () => void;
   isMax?: boolean;
   autoFocus?: boolean;
+  visible?: boolean;
   terminals?: ShellTerminal[];
   activeTerminalId?: string;
   onActiveTerminalId?: (id: string) => void;
@@ -43,12 +44,14 @@ export function createShellTerminal(index: number): ShellTerminal {
 
 export const Shell: React.FC<ShellProps> = ({
   autoFocus = false,
+  visible = true,
   terminals: controlledTerminals,
   activeTerminalId: controlledActiveTerminalId,
   onActiveTerminalId,
 }) => {
   const [localTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [localActiveTerminalId, setLocalActiveTerminalId] = React.useState("tty-1");
+  const [visitedTerminalIds, setVisitedTerminalIds] = React.useState<Set<string>>(() => new Set());
 
   const terminals = controlledTerminals ?? localTerminals;
   const activeTerminalId = controlledActiveTerminalId ?? localActiveTerminalId;
@@ -67,6 +70,16 @@ export const Shell: React.FC<ShellProps> = ({
     if (!activeTerminal && terminals[0]) setActiveTerminal(terminals[0].id);
   }, [activeTerminal, setActiveTerminal, terminals]);
 
+  React.useEffect(() => {
+    setVisitedTerminalIds((previous) => {
+      const next = new Set(terminals.filter((item) =>
+        item.id === activeTerminal?.id || previous.has(item.id),
+      ).map((item) => item.id));
+      if (next.size === previous.size && [...next].every((id) => previous.has(id))) return previous;
+      return next;
+    });
+  }, [activeTerminal?.id, terminals]);
+
   return (
     <div
       className="kshell-surface"
@@ -74,37 +87,43 @@ export const Shell: React.FC<ShellProps> = ({
         focusTerminalRef.current?.();
       }}
     >
-      {activeTerminal && (
+      {terminals.filter((item) => item.id === activeTerminal?.id || visitedTerminalIds.has(item.id)).map((item) => (
         <ShellTerminalHost
-          key={activeTerminal.id}
-          terminal={activeTerminal}
+          key={item.id}
+          terminal={item}
+          active={visible && item.id === activeTerminal?.id}
           autoFocus={autoFocus}
           onFocusTerminalChange={setFocusTerminal}
         />
-      )}
+      ))}
     </div>
   );
 };
 
 const ShellTerminalHost: React.FC<{
   terminal: ShellTerminal;
+  active: boolean;
   autoFocus: boolean;
   onFocusTerminalChange: (focusTerminal: (() => void) | null) => void;
-}> = ({ terminal, autoFocus, onFocusTerminalChange }) => {
+}> = ({ terminal, active, autoFocus, onFocusTerminalChange }) => {
   const host = useKernelHost();
   const status = useStatus();
   const containerRef = React.useRef<HTMLDivElement>(null);
   const terminalRef = React.useRef<Terminal | null>(null);
   const ptyRef = React.useRef<PtyHandle | null>(null);
+  const fitTerminalRef = React.useRef<(() => void) | null>(null);
+  const viewRef = React.useRef({ active, autoFocus });
+  viewRef.current = { active, autoFocus };
   const [attached, setAttached] = React.useState(false);
   const [attachError, setAttachError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
+    if (!active) return;
     onFocusTerminalChange(() => {
       terminalRef.current?.focus();
     });
     return () => onFocusTerminalChange(null);
-  }, [onFocusTerminalChange]);
+  }, [active, onFocusTerminalChange]);
 
   React.useEffect(() => {
     // Don't open the PTY until the kernel is running. The chassis-driven
@@ -159,21 +178,25 @@ const ShellTerminalHost: React.FC<{
     // without this the size stays wrong until the user physically resizes the
     // window. safeFit() is retried after layout settles (see resettle below).
     const safeFit = () => {
-      if (disposed || !containerRef.current) return;
+      if (disposed || !viewRef.current.active || !containerRef.current) return;
+      if (containerRef.current.clientWidth === 0 || containerRef.current.clientHeight === 0) return;
       try {
         fit.fit();
       } catch {
         /* xterm can throw if measured before layout; a later pass retries */
       }
     };
+    fitTerminalRef.current = safeFit;
     safeFit();
     const focusTerminal = () => {
+      if (disposed || !viewRef.current.active) return;
       term.focus();
       window.requestAnimationFrame(() => {
-        if (!disposed) term.focus();
+        if (!disposed && viewRef.current.active) term.focus();
       });
     };
     const onDocumentPointerDown = (event: PointerEvent) => {
+      if (!viewRef.current.active) return;
       const surface = containerRef.current?.closest(".kshell-surface");
       if (!(surface instanceof HTMLElement)) return;
       if (shouldIgnoreTerminalFocusTarget(event.target)) return;
@@ -193,10 +216,10 @@ const ShellTerminalHost: React.FC<{
       const container = containerRef.current;
       if (!container) return;
       requestTerminalAutoFocus({
-        autoFocus,
+        autoFocus: viewRef.current.autoFocus && viewRef.current.active,
         container,
         focusTerminal: () => term.focus(),
-        isDisposed: () => disposed,
+        isDisposed: () => disposed || !viewRef.current.active,
       });
     };
     focusTerm();
@@ -215,7 +238,9 @@ const ShellTerminalHost: React.FC<{
         ptyRef.current = pty;
         unsubData = pty.onData((bytes) => term.write(bytes));
         const onInput = term.onData((data) => pty.write(data));
-        const onResize = term.onResize(({ cols, rows }) => pty.resize(cols, rows));
+        const onResize = term.onResize(({ cols, rows }) => {
+          if (viewRef.current.active) pty.resize(cols, rows);
+        });
         const ro = new ResizeObserver(() => {
           safeFit();
         });
@@ -234,7 +259,7 @@ const ShellTerminalHost: React.FC<{
         let rafId = 0;
         const resettle = () => {
           safeFit();
-          if (!disposed) pty.resize(term.cols, term.rows);
+          if (!disposed && viewRef.current.active) pty.resize(term.cols, term.rows);
         };
         rafId = window.requestAnimationFrame(() => {
           rafId = window.requestAnimationFrame(resettle);
@@ -269,12 +294,31 @@ const ShellTerminalHost: React.FC<{
       links.dispose();
       term.dispose();
       terminalRef.current = null;
+      fitTerminalRef.current = null;
       setAttached(false);
     };
-  }, [autoFocus, host, status, terminal.path]);
+  }, [host, status, terminal.path]);
+
+  React.useEffect(() => {
+    if (!active) return;
+    // A terminal keeps parsing output while hidden. On reveal, fit to the
+    // current container and repaint its retained screen, including alternate
+    // screen and parser state that cannot be recovered from a byte-history tail.
+    const frame = requestAnimationFrame(() => {
+      fitTerminalRef.current?.();
+      const term = terminalRef.current;
+      const container = containerRef.current;
+      if (!term || !container) return;
+      term.refresh(0, term.rows - 1);
+      requestTerminalAutoFocus({ autoFocus, container,
+        focusTerminal: () => term.focus(),
+        isDisposed: () => terminalRef.current !== term || !viewRef.current.active });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [active, autoFocus, status]);
 
   return (
-    <>
+    <div className="kshell-terminal-slot" hidden={!active} aria-hidden={!active}>
       {status === "running" ? (
         <div className="kshell-host" ref={containerRef} />
       ) : (
@@ -288,7 +332,7 @@ const ShellTerminalHost: React.FC<{
       {/* attached is used purely to keep the effect's value in sync with
           React's reconciler; intentionally not rendered. */}
       <span style={{ display: "none" }}>{attached ? "attached" : "idle"}</span>
-    </>
+    </div>
   );
 };
 
