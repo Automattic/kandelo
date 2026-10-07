@@ -93,6 +93,11 @@ export type {
   ClipboardOfferResult,
   GuestClipboardResult,
 } from "./clipboard";
+export type {
+  BluetoothPushResult,
+  BluetoothRequest,
+  BluetoothRequestResult,
+} from "./bluetooth";
 export type { HostDiagnostic } from "./host-diagnostic";
 export type {
   MainToKernelMessage,

@@ -746,6 +746,10 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
 ] as const;
 
 export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
+  "kernel_bluetooth_has_agent",
+  "kernel_bluetooth_push",
+  "kernel_bluetooth_request_pending",
+  "kernel_bluetooth_request_take",
   "kernel_clipboard_ack",
   "kernel_clipboard_guest_generation",
   "kernel_clipboard_guest_read",
@@ -1003,6 +1007,17 @@ export const KANDELO_CLIPBOARD_ACK_PENDING = 1 as const;
 export const KANDELO_CLIPBOARD_ACK_SUPERSEDED = -125 as const;
 export const KANDELO_CLIPBOARD_ACK_NO_AGENT = -6 as const;
 export const KANDELO_CLIPBOARD_ACK_UNKNOWN_SEQ = -2 as const;
+
+export const KANDELO_BLUETOOTH_DEVICE_PATH = "/dev/kandelo/bluetooth" as const;
+export const KANDELO_BLUETOOTH_RECORD_VERSION = 1 as const;
+export const KANDELO_BLUETOOTH_KIND_REQUEST = 1 as const;
+export const KANDELO_BLUETOOTH_KIND_RESPONSE = 2 as const;
+export const KANDELO_BLUETOOTH_KIND_NOTIFY = 3 as const;
+export const KANDELO_BLUETOOTH_KIND_STATUS = 4 as const;
+export const KANDELO_BLUETOOTH_MAX_PAYLOAD_BYTES = 4096 as const;
+export const KANDELO_BLUETOOTH_MAX_QUEUED_RECORDS = 64 as const;
+export const KANDELO_BLUETOOTH_MAX_PENDING_REQUESTS = 16 as const;
+export const KANDELO_BLUETOOTH_RECORD_HEADER_SIZE = 16 as const;
 
 export const HOST_ADAPTER_MANIFEST_FIELDS = {
   magic: { offset: 0, size: 4 },

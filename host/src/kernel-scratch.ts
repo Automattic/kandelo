@@ -127,6 +127,8 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  */
 /** @internal Exported only for the Rust/host semantic-role drift contract. */
 export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
+  "kernel_bluetooth_push",
+  "kernel_bluetooth_request_take",
   "kernel_clipboard_guest_read",
   "kernel_clipboard_stage",
   "kernel_dequeue_signal",
@@ -222,6 +224,7 @@ export function kernelScratchRequiredPointerArguments(
   name: KernelScratchExportName,
 ): readonly number[] {
   switch (name) {
+    case "kernel_bluetooth_request_take":
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
     case "kernel_drain_audio":
@@ -245,6 +248,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_take_process_timer_cleanup":
     case "kernel_tcgetattr":
       return REQUIRED_POINTER_1;
+    case "kernel_bluetooth_push":
     case "kernel_dequeue_signal":
     case "kernel_get_dirfd_path":
     case "kernel_get_fd_path":
@@ -305,6 +309,8 @@ function isKernelScratchExportName(
   value: string,
 ): value is KernelScratchExportName {
   switch (value) {
+    case "kernel_bluetooth_push":
+    case "kernel_bluetooth_request_take":
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
     case "kernel_dequeue_signal":

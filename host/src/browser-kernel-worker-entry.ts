@@ -3908,6 +3908,40 @@ async function handleClipboardOffer(
   }
 }
 
+async function handleBluetoothPush(
+  msg: Extract<MainToKernelMessage, { type: "bluetooth_push" }>,
+) {
+  if (!initReady) {
+    respondError(msg.requestId, "bluetooth push requires an initialized kernel");
+    return;
+  }
+  try {
+    respond(
+      msg.requestId,
+      await kernelWorker.pushBluetoothRecord(msg.kind, msg.seq, msg.payload),
+    );
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleBluetoothRequestWait(
+  msg: Extract<MainToKernelMessage, { type: "bluetooth_request_wait" }>,
+) {
+  if (!initReady) {
+    respondError(msg.requestId, "bluetooth request wait requires an initialized kernel");
+    return;
+  }
+  try {
+    respond(
+      msg.requestId,
+      await kernelWorker.waitForBluetoothRequest({ timeoutMs: msg.timeoutMs }),
+    );
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleExportRootfsImage(
   msg: Extract<MainToKernelMessage, { type: "export_rootfs_image" }>,
 ) {
@@ -4543,6 +4577,8 @@ sw.onmessage = (e: MessageEvent) => {
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
     case "clipboard_offer": void handleClipboardOffer(msg); break;
     case "clipboard_guest_wait": void handleClipboardGuestWait(msg); break;
+    case "bluetooth_push": void handleBluetoothPush(msg); break;
+    case "bluetooth_request_wait": void handleBluetoothRequestWait(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;
     case "set_stdin_data": kernelWorker.setStdinData(msg.pid, msg.data); break;
     case "pty_write": handlePtyWrite(msg); break;

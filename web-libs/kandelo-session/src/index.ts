@@ -5,6 +5,7 @@ export type { TerminalProgram, TerminalSessionPolicy } from "./kernel-host";
 export * from "./lazy-download";
 export * from "./demo-config";
 export * from "./clipboard-paste";
+export * from "./bluetooth-broker";
 export * from "./gallery-roster";
 export * from "./demo-config-vfs";
 export * from "./dinit-boot-targets";

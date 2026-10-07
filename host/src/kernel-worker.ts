@@ -284,6 +284,14 @@ import {
   type ClipboardOfferResult,
   type GuestClipboardResult,
 } from "./clipboard";
+import {
+  BLUETOOTH_REQUEST_POLL_MS,
+  BLUETOOTH_REQUEST_TIMEOUT_MS,
+  bluetoothPushFailure,
+  decodeBluetoothRequest,
+  type BluetoothPushResult,
+  type BluetoothRequestResult,
+} from "./bluetooth";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
 import {
   ABI_CONTRACT_SECTION,
@@ -30931,6 +30939,108 @@ export class CentralizedKernelWorker {
         return undefined;
       });
     }, CLIPBOARD_ACK_POLL_MS);
+  }
+
+  /**
+   * `/dev/kandelo/bluetooth`: queue one host -> guest record (a response to
+   * request `seq`, a notification, or a status line) and wake parked
+   * readers. `payload` is UTF-8 within the device cap (see
+   * `encodeBluetoothPayload`).
+   */
+  pushBluetoothRecord(
+    kind: number,
+    seq: number,
+    payload: Uint8Array,
+  ): Promise<BluetoothPushResult> {
+    const bytes = payload.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("bluetooth push and wake", (entry) => {
+        if (typeof entry.instance.exports.kernel_bluetooth_push !== "function") {
+          resolve({ ok: false, reason: "unsupported" });
+          return undefined;
+        }
+        const scratch = this.#requireMainScratchRegion();
+        if (bytes.byteLength > scratch.capacity) {
+          resolve({ ok: false, reason: "too-large" });
+          return undefined;
+        }
+        let status = 0;
+        scratch.withLease((lease) => {
+          if (bytes.byteLength > 0) lease.copyFrom(bytes, 0, 0, bytes.byteLength);
+          status = this.#invokeEntryScratchExport(
+            entry,
+            lease,
+            "kernel_bluetooth_push",
+            [kind, seq, lease.exportPointer(0, bytes.byteLength), bytes.byteLength],
+          );
+        });
+        if (status !== 0) {
+          resolve(bluetoothPushFailure(status));
+          return undefined;
+        }
+        // Wake the guest parked in read() or poll() on the device.
+        this.scheduleWakeBlockedRetries(entry);
+        resolve({ ok: true });
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * `/dev/kandelo/bluetooth`: resolve with the next request the guest
+   * writes, `no-agent` once no guest holds the device, or `timeout`. Polled
+   * on a timer only while a page broker is waiting, like the clipboard's
+   * copy-out; nothing is added to the syscall path.
+   */
+  waitForBluetoothRequest(
+    options: { timeoutMs?: number } = {},
+  ): Promise<BluetoothRequestResult> {
+    const deadline = Date.now() + (options.timeoutMs ?? BLUETOOTH_REQUEST_TIMEOUT_MS);
+    return new Promise((resolve) => this.#pollBluetoothRequest(deadline, resolve, 0));
+  }
+
+  #pollBluetoothRequest(
+    deadline: number,
+    resolve: (result: BluetoothRequestResult) => void,
+    delayMs: number,
+  ): void {
+    setTimeout(() => {
+      this.#runOrDeferKernelEntry("bluetooth request poll", (entry) => {
+        const exports = entry.instance.exports;
+        const hasAgent = exports.kernel_bluetooth_has_agent as (() => number) | undefined;
+        const pending = exports.kernel_bluetooth_request_pending as (() => number) | undefined;
+        if (
+          typeof hasAgent !== "function"
+          || typeof pending !== "function"
+          || typeof exports.kernel_bluetooth_request_take !== "function"
+        ) {
+          resolve({ ok: false, reason: "unsupported" });
+          return undefined;
+        }
+        if (pending() <= 0) {
+          if (hasAgent() === 0) resolve({ ok: false, reason: "no-agent" });
+          else if (Date.now() >= deadline) resolve({ ok: false, reason: "timeout" });
+          else this.#pollBluetoothRequest(deadline, resolve, BLUETOOTH_REQUEST_POLL_MS);
+          return undefined;
+        }
+        const scratch = this.#requireMainScratchRegion();
+        let record: Uint8Array | null = null;
+        scratch.withLease((lease) => {
+          const n = this.#invokeEntryScratchExport(
+            entry,
+            lease,
+            "kernel_bluetooth_request_take",
+            [lease.exportPointer(0, scratch.capacity), scratch.capacity],
+          );
+          if (Number.isSafeInteger(n) && n > 0 && n <= scratch.capacity) {
+            record = lease.copyOut(0, n);
+          }
+        });
+        const request = record ? decodeBluetoothRequest(record) : null;
+        resolve(request ? { ok: true, request } : { ok: false, reason: "invalid-request" });
+        return undefined;
+      });
+    }, delayMs);
   }
 
   /**

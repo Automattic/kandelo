@@ -14,6 +14,7 @@ pub mod audio;
 pub mod blocked_retry;
 pub mod channel_result;
 pub mod channel_scratch;
+pub mod bluetooth;
 pub mod clipboard;
 pub mod credentials;
 pub mod descriptor_backing;

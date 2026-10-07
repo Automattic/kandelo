@@ -166,6 +166,9 @@ pub enum VirtualDevice {
     /// `/dev/kandelo/clipboard` — host clipboard text for the guest's
     /// clipboard agent (see `crate::clipboard`). host_handle -12.
     Clipboard,
+    /// `/dev/kandelo/bluetooth` — a Web Bluetooth device the page paired,
+    /// brokered to one guest (see `crate::bluetooth`). host_handle -13.
+    Bluetooth,
 }
 
 impl VirtualDevice {
@@ -183,6 +186,7 @@ impl VirtualDevice {
             VirtualDevice::DriCard0 => -9,
             VirtualDevice::InputEvent { device } => -10 - device as i64,
             VirtualDevice::Clipboard => -12,
+            VirtualDevice::Bluetooth => -13,
         }
     }
 
@@ -201,6 +205,7 @@ impl VirtualDevice {
             -10 => Some(VirtualDevice::InputEvent { device: 0 }),
             -11 => Some(VirtualDevice::InputEvent { device: 1 }),
             -12 => Some(VirtualDevice::Clipboard),
+            -13 => Some(VirtualDevice::Bluetooth),
             _ => None,
         }
     }
@@ -219,6 +224,7 @@ impl VirtualDevice {
             VirtualDevice::DriCard0 => 9,
             VirtualDevice::InputEvent { device } => 10 + device as u64,
             VirtualDevice::Clipboard => 12,
+            VirtualDevice::Bluetooth => 13,
         }
     }
 
@@ -237,6 +243,7 @@ impl VirtualDevice {
         match self {
             VirtualDevice::InputEvent { device } => makedev(13, 64 + device as u32),
             VirtualDevice::Clipboard => makedev(10, 250),
+            VirtualDevice::Bluetooth => makedev(10, 251),
             _ => 0,
         }
     }
@@ -273,6 +280,7 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/input/event0" => Some(VirtualDevice::InputEvent { device: 0 }),
         b"/dev/input/event1" => Some(VirtualDevice::InputEvent { device: 1 }),
         b"/dev/kandelo/clipboard" => Some(VirtualDevice::Clipboard),
+        b"/dev/kandelo/bluetooth" => Some(VirtualDevice::Bluetooth),
         _ => None,
     }
 }
@@ -3411,6 +3419,9 @@ pub fn sys_open(
         if dev == VirtualDevice::Clipboard {
             crate::clipboard::acquire_or_busy(proc.pid)?;
         }
+        if dev == VirtualDevice::Bluetooth {
+            crate::bluetooth::acquire_or_busy(proc.pid)?;
+        }
         let status_flags = oflags & !CREATION_FLAGS;
         if dev == VirtualDevice::Dsp {
             // /dev/dsp is playback-only, but the standard OSS open (pcaudiolib,
@@ -4306,6 +4317,15 @@ fn release_ofd_reference_impl(
         crate::clipboard::release(proc.pid);
     }
 
+    // /dev/kandelo/bluetooth ownership: the same rule as the clipboard.
+    if freed
+        && file_type == FileType::CharDevice
+        && VirtualDevice::from_host_handle(host_handle) == Some(VirtualDevice::Bluetooth)
+        && !proc_has_virtual_device_fd(proc, VirtualDevice::Bluetooth)
+    {
+        crate::bluetooth::release(proc.pid);
+    }
+
     Ok(())
 }
 
@@ -5089,6 +5109,9 @@ pub fn sys_read(
                         // character devices block. (Not evdev's Ok(0): a 0
                         // return would read as end-of-file.)
                         VirtualDevice::Clipboard => crate::clipboard::read_into(buf)?,
+                        // Same EAGAIN contract: responses, notifications and
+                        // status records the host pushed.
+                        VirtualDevice::Bluetooth => crate::bluetooth::read_into(buf)?,
                     };
                     return Ok(n);
                 }
@@ -5458,6 +5481,8 @@ pub fn sys_write(
                         // The agent's acknowledgement of an offer, or its
                         // report of the desktop's new selection.
                         VirtualDevice::Clipboard => crate::clipboard::write_from_agent(buf),
+                        // One GATT request record for the page to run.
+                        VirtualDevice::Bluetooth => crate::bluetooth::write_from_agent(buf),
                         _ => Ok(buf.len()), // Null, Zero, Urandom, Mice: discard
                     };
                 }
@@ -14222,6 +14247,21 @@ fn poll_check_depth(
                         revents |= POLLOUT;
                     }
                 } else if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle)
+                        == Some(VirtualDevice::Bluetooth)
+                {
+                    // Readable while a host record waits; a request write
+                    // is accepted until the request queue is full.
+                    if pollfd.events & POLLIN != 0 && crate::bluetooth::has_data() {
+                        revents |= POLLIN;
+                    }
+                    if pollfd.events & POLLOUT != 0
+                        && crate::bluetooth::request_pending()
+                            < wasm_posix_shared::bluetooth::MAX_PENDING_REQUESTS as usize
+                    {
+                        revents |= POLLOUT;
+                    }
+                } else if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Dsp)
                 {
                     // /dev/dsp is write-only. POLLOUT is always ready —
@@ -14632,6 +14672,9 @@ pub fn sys_openat(
         }
         if dev == VirtualDevice::Clipboard {
             crate::clipboard::acquire_or_busy(proc.pid)?;
+        }
+        if dev == VirtualDevice::Bluetooth {
+            crate::bluetooth::acquire_or_busy(proc.pid)?;
         }
         let status_flags = oflags & !CREATION_FLAGS;
         if dev == VirtualDevice::Dsp {

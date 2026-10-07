@@ -1740,6 +1740,8 @@ fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessR
     // /dev/kandelo/clipboard: drop ownership and any text the agent had not
     // read, so it does not outlive its reader.
     crate::clipboard::release(pid);
+    // /dev/kandelo/bluetooth: the same, for queued records and requests.
+    crate::bluetooth::release(pid);
 }
 
 fn remove_process_and_cleanup(pid: u32) -> i32 {
@@ -14113,6 +14115,68 @@ pub extern "C" fn kernel_clipboard_guest_read(
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_clipboard_ack(seq: u32) -> i32 {
     crate::clipboard::ack_status(seq)
+}
+
+// ---------------------------------------------------------------------------
+// /dev/kandelo/bluetooth — a Web Bluetooth device brokered to one guest
+// ---------------------------------------------------------------------------
+
+/// 1 while a guest holds `/dev/kandelo/bluetooth` open, else 0. The page
+/// polls for guest requests only while this is 1.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_bluetooth_has_agent() -> i32 {
+    crate::bluetooth::has_agent() as i32
+}
+
+/// Number of guest requests waiting for the host to take.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_bluetooth_request_pending() -> i32 {
+    crate::bluetooth::request_pending() as i32
+}
+
+/// Move the oldest guest request record (header + payload) to kernel
+/// address `out_ptr` (a scratch lease the host reads back). Returns its
+/// length, `-EAGAIN` when there is none, or `-EMSGSIZE` when it does not fit
+/// (it stays queued).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_bluetooth_request_take(out_ptr: *mut u8, out_capacity: u32) -> i32 {
+    if out_ptr.is_null() && out_capacity != 0 {
+        return -(Errno::EFAULT as i32);
+    }
+    let out: &mut [u8] = if out_capacity == 0 {
+        &mut []
+    } else {
+        // SAFETY: the host passes a range inside a kernel scratch
+        // allocation it leased for this call.
+        unsafe { slice::from_raw_parts_mut(out_ptr, out_capacity as usize) }
+    };
+    match crate::bluetooth::take_request(out) {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Queue a host -> guest record of `kind` (`KIND_RESPONSE`, `KIND_NOTIFY`
+/// or `KIND_STATUS`) with request id `seq` and `len` payload bytes at
+/// kernel address `payload_ptr` (a scratch lease the host filled). Returns
+/// 0 or a negative errno (see `crate::bluetooth::push`). The host wakes
+/// parked readers afterwards.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_bluetooth_push(kind: u32, seq: u32, payload_ptr: *const u8, len: u32) -> i32 {
+    if payload_ptr.is_null() && len != 0 {
+        return -(Errno::EFAULT as i32);
+    }
+    let payload = if len == 0 {
+        &[][..]
+    } else {
+        // SAFETY: the host passes a range inside a kernel scratch
+        // allocation it leased and filled for this call.
+        unsafe { slice::from_raw_parts(payload_ptr, len as usize) }
+    };
+    match crate::bluetooth::push(kind, seq, payload) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
 }
 
 /// Fan one translated DOM input event out to every open OFD bound to

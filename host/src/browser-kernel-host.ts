@@ -55,6 +55,11 @@ import {
   type ClipboardOfferResult,
   type GuestClipboardResult,
 } from "./clipboard";
+import {
+  encodeBluetoothPayload,
+  type BluetoothPushResult,
+  type BluetoothRequestResult,
+} from "./bluetooth";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
 import { pcmControlWords } from "./audio/pcm-transport";
@@ -1518,6 +1523,44 @@ export class BrowserKernel {
       timeoutMs: options.timeoutMs,
     });
     return result as GuestClipboardResult;
+  }
+
+  /**
+   * `/dev/kandelo/bluetooth`: queue one record for the guest — a response
+   * to its request `seq` (`ok ...` / `err ...`), a notification, or a status
+   * line. `kind` is one of the `KANDELO_BLUETOOTH_KIND_*` host kinds.
+   */
+  async pushBluetoothRecord(
+    kind: number,
+    seq: number,
+    text: string,
+  ): Promise<BluetoothPushResult> {
+    const payload = encodeBluetoothPayload(text);
+    if (payload === null) return { ok: false, reason: "too-large" };
+    const requestId = this.nextRequestId++;
+    const result = await this.request(
+      requestId,
+      { type: "bluetooth_push", requestId, kind, seq, payload },
+      [payload.buffer as ArrayBuffer],
+    );
+    return result as BluetoothPushResult;
+  }
+
+  /**
+   * `/dev/kandelo/bluetooth`: resolve with the next request the guest
+   * writes, `no-agent` once no guest holds the device, or `timeout`. A
+   * page-side GATT broker calls this in a loop while a device is paired.
+   */
+  async waitForBluetoothRequest(
+    options: { timeoutMs?: number } = {},
+  ): Promise<BluetoothRequestResult> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "bluetooth_request_wait",
+      requestId,
+      timeoutMs: options.timeoutMs,
+    });
+    return result as BluetoothRequestResult;
   }
 
   /**

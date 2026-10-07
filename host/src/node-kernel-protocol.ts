@@ -413,6 +413,29 @@ export interface ClipboardGuestWaitMessage {
   timeoutMs?: number;
 }
 
+/**
+ * `/dev/kandelo/bluetooth`: queue one host -> guest record (response,
+ * notification or status). Answered with a `BluetoothPushResult`.
+ */
+export interface BluetoothPushMessage {
+  type: "bluetooth_push";
+  requestId: number;
+  kind: number;
+  seq: number;
+  /** UTF-8 within the device cap (`encodeBluetoothPayload`). */
+  payload: Uint8Array;
+}
+
+/**
+ * `/dev/kandelo/bluetooth`: answer with the next request the guest writes
+ * (a `BluetoothRequestResult`), `no-agent`, or `timeout`.
+ */
+export interface BluetoothRequestWaitMessage {
+  type: "bluetooth_request_wait";
+  requestId: number;
+  timeoutMs?: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -434,6 +457,8 @@ export type MainToKernelMessage =
   | ExportRootfsImageMessage
   | ClipboardOfferMessage
   | ClipboardGuestWaitMessage
+  | BluetoothPushMessage
+  | BluetoothRequestWaitMessage
   | ReadVfsFileMessage
   | WriteVfsFileMessage
   | GetForkCountRequestMessage

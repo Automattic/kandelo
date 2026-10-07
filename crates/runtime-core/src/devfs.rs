@@ -178,6 +178,13 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
                 DT_CHR,
                 devfs_ino(b"/dev/kandelo/clipboard"),
             ));
+            // /dev/kandelo/bluetooth — a Web Bluetooth device the page
+            // paired, brokered to one guest (crate::bluetooth).
+            entries.push((
+                b"bluetooth".into(),
+                DT_CHR,
+                devfs_ino(b"/dev/kandelo/bluetooth"),
+            ));
         }
         DevfsEntry::InputDir => {
             // /dev/input/mice — Linux-compatible PS/2 mouse stream.
@@ -385,14 +392,15 @@ mod tests {
     }
 
     #[test]
-    fn kandelo_dir_lists_the_clipboard_device() {
+    fn kandelo_dir_lists_the_clipboard_and_bluetooth_devices() {
         let proc = crate::process::Process::new(1);
         let root = dir_entries(&proc, &DevfsEntry::Root);
         assert!(root.iter().any(|(n, t, _)| n.as_slice() == b"kandelo" && *t == DT_DIR));
         let entries = dir_entries(&proc, &DevfsEntry::KandeloDir);
         let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
-        assert_eq!(names, [b"clipboard".as_slice()]);
+        assert_eq!(names, [b"clipboard".as_slice(), b"bluetooth".as_slice()]);
         assert_eq!(entries[0].1, DT_CHR);
+        assert_eq!(entries[1].1, DT_CHR);
         let st = match_devfs_stat(b"/dev/kandelo", 0, 0).unwrap();
         assert_eq!(st.st_mode & 0o170000, S_IFDIR);
     }
