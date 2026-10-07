@@ -745,7 +745,10 @@ commit     = "<exact 40-character lowercase commit>"
 ```
 
 - `script_path` typically equals `package.toml`'s `[build].script_path`;
-  a project that monkey-patches a recipe sets its own override.
+  a project that monkey-patches a recipe sets its own override. The engine
+  folds the script it will execute into every library and program cache key
+  itself, located by the same lookup that chooses what to run, so editing the
+  script always moves the key whether or not `inputs` lists it.
 - `inputs` declares the complete repository-local source closure that can
   affect the built artifact. For JavaScript and TypeScript image builders,
   include every transitive runtime import from the declared source roots; the

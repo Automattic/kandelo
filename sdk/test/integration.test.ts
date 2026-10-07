@@ -317,6 +317,75 @@ describe('integration: compile C program', () => {
     }
   }, 30_000);
 
+  it('honours an explicit sub-floor stack through the real wasm32posix-cc path, and warns', async () => {
+    // This is the end-to-end level for the defect that changing
+    // mainThreadStackSize()'s resolution surfaced: prepareExecutableLinker()
+    // (sdk/src/bin/cc.ts) used to build its own provisional Clang trace with
+    // a placeholder `-z stack-size=<default>` appended AFTER the caller's
+    // forwarded args, to discover what the caller asked for. Under
+    // mainThreadStackSize()'s last-wins resolution (matching wasm-ld's own
+    // behaviour for repeated `-z stack-size=` operands), that placeholder
+    // always won, silently overriding every explicit request — larger or
+    // smaller — back down to the default. A unit test on
+    // mainThreadStackSize() alone cannot see this: the contamination is
+    // introduced one layer up, in how cc.ts assembles the trace it measures.
+    // This test drives the real prepareExecutableLinker()/buildClangArgs()
+    // path and links a real binary, so it fails the same way a real build
+    // would if the contamination came back.
+    const toolchain = await resolveToolchain();
+    mkdirSync(TMP_DIR, { recursive: true });
+    const source = join(TMP_DIR, 'stack-sub-floor.c');
+    const floorOutput = join(TMP_DIR, 'stack-sub-floor-default.wasm');
+    const subFloorOutput = join(TMP_DIR, 'stack-sub-floor-explicit.wasm');
+    const subFloorArgs = [source, '-Wl,-z,stack-size=65536', '-o', subFloorOutput];
+    writeFileSync(source, 'int main(void) { return 0; }\n');
+
+    const stackPointer = (path: string): number => {
+      const dump = execFileSync('wasm-objdump', ['-x', path], { encoding: 'utf8' });
+      const match = dump.match(/<__stack_pointer> - init i32=(\d+)/);
+      expect(match, dump).not.toBeNull();
+      return Number(match?.[1]);
+    };
+    const link = async (userArgs: string[]): Promise<void> => {
+      const executableLinker = await prepareExecutableLinker(userArgs, toolchain);
+      const args = buildClangArgs(userArgs, toolchain, 'wasm32', executableLinker ?? undefined);
+      const result = await run(toolchain.cc, args);
+      expect(result.exitCode, result.stderr).toBe(0);
+    };
+
+    try {
+      await link([source, '-o', floorOutput]);
+
+      const warnings: string[] = [];
+      const restoreWarn = console.warn;
+      console.warn = (msg: string) => warnings.push(String(msg));
+      let explicitLinker;
+      try {
+        explicitLinker = await prepareExecutableLinker(subFloorArgs, toolchain);
+      } finally {
+        console.warn = restoreWarn;
+      }
+      expect(explicitLinker?.kind).toBe('executable-link');
+      if (explicitLinker?.kind === 'executable-link') {
+        expect(explicitLinker.mainThreadStackSizeBytes).toBe(65536);
+      }
+      expect(warnings.join('\n')).toMatch(/stack-size=65536/);
+      expect(warnings.join('\n')).toMatch(/\.bss|guard page|corrupt/i);
+
+      const args = buildClangArgs(subFloorArgs, toolchain, 'wasm32', explicitLinker ?? undefined);
+      const result = await run(toolchain.cc, args);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const floorStackPointer = stackPointer(floorOutput);
+      const subFloorStackPointer = stackPointer(subFloorOutput);
+      expect(floorStackPointer - subFloorStackPointer).toBe(8 * 1024 * 1024 - 65536);
+    } finally {
+      for (const path of [source, floorOutput, subFloorOutput]) {
+        try { unlinkSync(path); } catch {}
+      }
+    }
+  }, 30_000);
+
   it('compiles a hello world program to .wasm', async () => {
     const toolchain = await resolveToolchain();
     mkdirSync(TMP_DIR, { recursive: true });

@@ -27,7 +27,11 @@
 # workflow context, not tools: `./run.sh local-build` re-enters this
 # shell, so without these keeps an isolated-cache or no-auto-GC
 # request would be silently dropped and the build would run against
-# the machine-wide shared cache. `KANDELO_PLAYWRIGHT_PORT` is kept for
+# the machine-wide shared cache. `WASM_POSIX_BINARY_CACHE_ROOT` is the
+# other half of the same cache override: `run.sh` reads it outside this
+# shell and xtask reads it inside, so stripping it does not disable the
+# override, it makes it silently ineffective while the caller believes
+# its package cache is isolated. `KANDELO_PLAYWRIGHT_PORT` is kept for
 # the same reason and with a sharper failure mode: dropping it sends
 # Playwright to the shared default port, and on a machine running more
 # than one checkout that port already belongs to somebody else's dev
@@ -35,7 +39,12 @@
 # `WASM_POSIX_RESOLUTION_POLICY` and `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT`
 # select which binary tier the browser app resolves against; dropping
 # them silently falls back to the default tier, which is the same class
-# of wrong-artifact bug. PATH is intentionally NOT kept — Nix
+# of wrong-artifact bug. `WASM_POSIX_LOCAL_INSTALL_SOURCE` and
+# `WASM_POSIX_LOCAL_INSTALL_SESSION` name the bytes and session for
+# `build-deps install-local-artifact`; dropped, an install routed through
+# this shell silently installs nothing. `WASM_POSIX_LOCAL_BUILD_JOBS` caps
+# local-build concurrency and is likewise inert unless it crosses here.
+# PATH is intentionally NOT kept — Nix
 # rebuilds it from the flake so anything that needs to leak from
 # the host raises a "command not found" instead of building wrong.
 #
@@ -128,6 +137,7 @@ nix_develop=(
     --keep GITHUB_EVENT_PATH \
     --keep KANDELO_NIX_BIN \
     --keep KANDELO_SOURCE_CACHE_ROOT \
+    --keep WASM_POSIX_BINARY_CACHE_ROOT \
     --keep KANDELO_CACHE_GC_AUTO \
     --keep KANDELO_PLAYWRIGHT_PORT \
     --keep WASM_POSIX_RESOLUTION_POLICY \
@@ -149,6 +159,9 @@ nix_develop=(
     --keep WASM_POSIX_FETCH_SKIP_PKGS \
     --keep WASM_POSIX_SYSROOT \
     --keep WASM_POSIX_LLVM_DIR \
+    --keep WASM_POSIX_LOCAL_BUILD_JOBS \
+    --keep WASM_POSIX_LOCAL_INSTALL_SOURCE \
+    --keep WASM_POSIX_LOCAL_INSTALL_SESSION \
     --accept-flake-config
 )
 

@@ -327,6 +327,53 @@ describe("cmdbuf decoder — TLV walker", () => {
     expect(recordedMat).toEqual(mat);
   });
 
+  it("float uniforms after an odd-length record are applied, not rejected", () => {
+    // Records are packed back to back with no padding, so one whose
+    // payload is not a multiple of 4 bytes leaves every later record
+    // unaligned. SDL's YUV upload of a 350-pixel-wide frame is one: its
+    // 175-pixel chroma rows make a 175-byte texSubImage2D. Rejecting the
+    // unaligned matrix that follows dropped the rest of the submit, and
+    // SDL, which caches the projection it believes it uploaded, drew every
+    // later frame with the stale one.
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
+    const mat: number[] = [];
+    for (let i = 0; i < 16; i++) mat.push(i * 0.25);
+    const vec = [0.5, -1, 2, 8];
+
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const rowBytes = 175;
+    const tex = t.op(O.OP_TEX_SUB_IMAGE_2D, 36 + rowBytes);
+    t.view.setUint32(tex.p, 0x0DE1, true); // TEXTURE_2D
+    t.view.setInt32(tex.p + 16, rowBytes, true); // width
+    t.view.setInt32(tex.p + 20, 1, true); // height
+    t.view.setUint32(tex.p + 24, 0x1909, true); // LUMINANCE
+    t.view.setUint32(tex.p + 28, 0x1401, true); // UNSIGNED_BYTE
+    t.view.setUint32(tex.p + 32, rowBytes, true);
+    const m = t.op(O.OP_UNIFORM_MATRIX4FV, 12 + 16 * 4);
+    expect((b.cmdbufView!.byteOffset + m.p + 12) % 4).not.toBe(0);
+    t.view.setInt32(m.p, 1, true);
+    t.view.setUint32(m.p + 4, 1, true);
+    t.view.setUint32(m.p + 8, 0, true);
+    for (let i = 0; i < 16; i++) t.view.setFloat32(m.p + 12 + i * 4, mat[i], true);
+    const u = t.op(O.OP_UNIFORM4FV, 8 + 4 * 4);
+    t.view.setInt32(u.p, 1, true);
+    t.view.setUint32(u.p + 4, 1, true);
+    for (let i = 0; i < 4; i++) t.view.setFloat32(u.p + 8 + i * 4, vec[i], true);
+    const d = t.op(O.OP_DRAW_ARRAYS, 12);
+    t.view.setUint32(d.p, 4, true);
+    t.view.setInt32(d.p + 4, 0, true);
+    t.view.setInt32(d.p + 8, 4, true);
+
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+    expect(gl.log.map((r) => r[0])).toEqual([
+      "texSubImage2D", "uniformMatrix4fv", "uniform4fv", "drawArrays",
+    ]);
+    expect((gl.log[1][1] as unknown[])[2]).toEqual(mat);
+    expect((gl.log[2][1] as unknown[])[1]).toEqual(vec);
+  });
+
   it("DrawArrays(GL_TRIANGLES, 0, 3) decodes correctly", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);

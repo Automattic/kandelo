@@ -147,9 +147,13 @@ static int alloc_buffer(struct wpk_wlegl *w, struct wl_egl_window *win,
 
     /* GPU tier: RENDERING only (no CPU-facing usage) so gbm issues
      * WPK_CREATE_GPU_BO — a host WebGLTexture+FBO we render into and sample
-     * zero-copy. Degrades to a CPU dumb bo on hosts without a shared GL ctx. */
+     * zero-copy. Degrades to a CPU dumb bo on hosts without a shared GL ctx.
+     * The format is XBGR8888 because that is what the bo holds: GL writes a
+     * WebGL RGBA texture as [R,G,B,A] bytes, which DRM calls XBGR8888.
+     * XRGB8888 would mean [B,G,R,X], and a compositor honouring it would
+     * show the client with red and blue swapped. */
     w->bo = gbm_bo_create(w->gbm, (uint32_t)width, (uint32_t)height,
-                          GBM_FORMAT_XRGB8888, GBM_BO_USE_RENDERING);
+                          GBM_FORMAT_XBGR8888, GBM_BO_USE_RENDERING);
     if (!w->bo) return -1;
     w->bo_handle = gbm_bo_get_handle(w->bo).u32;
 
@@ -168,7 +172,7 @@ static int alloc_buffer(struct wpk_wlegl *w, struct wl_egl_window *win,
      * (Mesa's Wayland EGL platform renders flipped instead; the flag is the
      * protocol's way to say the same thing). */
     w->buffer = zwp_linux_buffer_params_v1_create_immed(
-        params, width, height, DRM_FORMAT_XRGB8888,
+        params, width, height, DRM_FORMAT_XBGR8888,
         ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_Y_INVERT);
     zwp_linux_buffer_params_v1_destroy(params);
     close(prime);   /* the compositor dup'd it into its own bo */
