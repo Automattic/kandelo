@@ -118,10 +118,16 @@ WebRTC implementation; the supplied WebRTC adapter is browser-only. State
 that boundary in architecture and browser support docs without claiming
 Node WebRTC support or changing ordinary Node TCP behavior.
 
-No guest syscall, channel layout, Wasm export, libc contract, or ABI version
-change is expected. If implementation exposes a need to change an existing
-ABI contract, stop treating it as a host-only change and follow the ABI bump
-and snapshot policy. Do not revive the obsolete Doom kernel relay.
+Real guest probes exposed two kernel gaps: UDP connect rejected destinations
+outside its hard-coded 10.88 subnet, and FIONREAD ignored datagram queues.
+The kernel now delegates non-loopback UDP source selection and local-address
+binding validation to the host adapter. A connected wildcard UDP socket records
+the actual selected source for getsockname; AF_UNSPEC disconnect restores its
+wildcard binding. FIONREAD observes the first queued datagram without consuming
+it, including empty datagrams. This changes socket semantics and adds a kernel
+host import, so ABI 48 and a regenerated snapshot are required. All programs and
+images used for evidence must be rebuilt through the normal ABI-bound package
+path. The obsolete application-specific Doom relay remains superseded.
 
 ## Packages and evidence
 
@@ -147,6 +153,18 @@ is compatible, Quake runs; and a manual `./run.sh browser` check with screenshot
 under `.context/`. Report evidence separately for Node and browsers, including
 launch or ICE failures. A simulated transport unit test does not prove WebRTC
 or guest sockets work.
+
+## External-route conformance boundary
+
+The Sortix `udp/connect-loopback-reconnect-wan-getsockname` case expects a
+public Internet UDP route to 8.8.8.8. A clean session-migration kernel at
+9d34e6e9c, with its ABI 45 SDK and an actual guest run in a dedicated Node
+worker, returns ENETUNREACH from its second connect. The test already accepts the
+empty stdout produced by that truthful failure as a cross-platform alternative;
+it needs no additional expected-failure marker. External UDP remains unavailable.
+The new route-selection path must still query the host after an earlier
+loopback auto-bind; reusing that binding must not invent external connectivity.
+A Rust regression checks the failure and preserves the preceding association.
 
 ## TCP is a later decision
 

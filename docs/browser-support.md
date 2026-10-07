@@ -1109,6 +1109,27 @@ Browser sandboxing prevents Kandelo from listening on real network ports or open
 
 ### Purpose-checked browser peer connections
 
+The experimental `/pages/peer-network/` flow connects independent machines with
+`purpose: "network"` and the reusable piplet client. A host owns `10.89.0.1`,
+assigns up to 15 joiners, and forwards traffic between them in its dedicated
+kernel worker. The main thread transfers framed bytes between RTC channels and
+bounded native MessagePorts. Guest programs still call ordinary IPv4 UDP
+sockets. DNS names `host` and `peer-N` resolve through the worker's segment
+membership. Remote TCP and broadcast discovery are not implemented in this
+phase. Node runs the same segment over paired native ports; its built-in runtime
+has no WebRTC API, so creating RTC links remains a browser adapter capability.
+
+UDP uses an unordered channel with zero retransmissions; directory control is
+ordered and reliable. The payload cap is the lesser of 65,507 bytes and the
+negotiated SCTP ceiling minus 16 bytes. Oversized sends return EMSGSIZE and a
+full worker-side bridge returns EAGAIN; admitted UDP can still be lost under RTC
+congestion or remote socket closure. Each bridge direction caps pending storage
+at 128 frames and one MiB. Membership and control messages are bounded, source
+addresses are checked against link ownership, and disconnect removes remote
+bindings and routes. The experiment needs real browser and game evidence before
+it can support an end-to-end completion claim; see the dated
+[design and validation plan](plans/2026-10-06-webrtc-guest-udp.md).
+
 `web-libs/kandelo-session/src/peer-connection.ts` owns reusable WebRTC
 connection setup. A consumer declares a purpose and named data channels with
 their delivery options. Optional message chunking is available only for
