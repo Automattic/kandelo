@@ -1086,6 +1086,9 @@ script downloads the archive with the machine's own `curl` — in the browser
 that goes through the CORS proxy described below, because the site grants
 no CORS — reporting a percentage against the catalog size (the guest
 receives downloads as chunked responses, so `curl` never learns the total),
+uses 32 MiB ranges for archives above the proxy's 100 MiB response limit,
+and retries a failed request up to two more times. Completed ranges stay
+downloaded; an incomplete attempt is discarded before retrying. The script
 checks the SHA-256, unzips into `/usr/share/scummvm-games/<game>`, and
 deletes the archive. ScummVM's own `--add --recursive` then finds the game
 and records it as a launcher target, and the script starts that target; a
