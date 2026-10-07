@@ -105,6 +105,7 @@ const TEST_PROGRAMS = [
   "process_native_layout_test.c",
   "timerfd_signalfd_scratch_test.c",
   "sysv_ipc_test.c",
+  "sysv_shm_departed_peer_test.c",
   "wasm_trap_test.c",
   "oob_trap_test.c",
   "divzero_trap_test.c",
@@ -133,6 +134,7 @@ const TEST_PROGRAMS = [
 const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c", "int128_division_test.c"];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
+  "sysv_shm_departed_peer_test.c",
   "environment_lifecycle_test.c",
   "pthread_channel_reuse_test.c",
   "unix_listener_exec_test.c",
