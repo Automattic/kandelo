@@ -55,6 +55,10 @@
     },
     {
       "product": "browser-main-shell",
+      "profile": "love"
+    },
+    {
+      "product": "browser-main-shell",
       "profile": "omarchy"
     }
   ]

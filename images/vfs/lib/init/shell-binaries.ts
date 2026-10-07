@@ -141,6 +141,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // The Omarchy desktop's terminal. Large, so it stays lazy: no other
   // machine sharing this image pays to fetch it.
   { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/local/bin/foot", symlinks: [] },
+  { id: "love", resolverPath: "programs/love/love.wasm", vfsPath: "/usr/local/bin/love", symlinks: [] },
   // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
   // (the package's declared runtime_files). /usr/local/bin/scummvm is the
   // image's launch wrapper, which execs this engine.

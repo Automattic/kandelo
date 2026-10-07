@@ -1,0 +1,12 @@
+kind = "source"
+name = "bytepath-source"
+version = "51ee3086"
+
+[source]
+provider = "archive"
+url = "https://github.com/a327ex/BYTEPATH/archive/51ee3086ae3369a2c80e4e47d4b62d480af4fe89.tar.gz"
+sha256 = "8ae603c0801f013543a8aa989c6f73656dce7e867365d4dd209f7ac4cbca5b75"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/a327ex/BYTEPATH/blob/51ee3086ae3369a2c80e4e47d4b62d480af4fe89/LICENSE"

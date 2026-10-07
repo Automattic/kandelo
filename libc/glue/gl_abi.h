@@ -4,15 +4,15 @@
 /*
  * Mirrors `wasm_posix_shared::gl::*` (crates/shared/src/lib.rs). Drift
  * is caught at first contact: the kernel's `GLIO_INIT` handler rejects
- * a client `OP_VERSION` that doesn't match the kernel's compile-time
- * value with `ENOSYS`. Bumping `OP_VERSION` here without a matching
+ * zero or a client `OP_VERSION` newer than the kernel's compile-time
+ * value with `ENOSYS`; earlier tables remain compatible. Bumping `OP_VERSION` here without a matching
  * bump on the Rust side will surface as init failure on every gltri
  * run, not as silent decode corruption.
  */
 
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 1u
+#define WPK_GL_OP_VERSION 2u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -102,6 +102,43 @@
 #define OP_RENDERBUFFER_STORAGE        0x0705u
 #define OP_FRAMEBUFFER_RENDERBUFFER    0x0706u
 #define OP_DELETE_FRAMEBUFFERS         0x0707u
+
+#define OP_BLEND_EQUATION 0x000Fu
+#define OP_BLEND_COLOR 0x0010u
+#define OP_CLEAR_DEPTHF 0x0011u
+#define OP_CLEAR_STENCIL 0x0012u
+#define OP_COLOR_MASK 0x0013u
+#define OP_DEPTH_MASK 0x0014u
+#define OP_STENCIL_FUNC 0x0015u
+#define OP_STENCIL_FUNC_SEPARATE 0x0016u
+#define OP_STENCIL_MASK 0x0017u
+#define OP_STENCIL_MASK_SEPARATE 0x0018u
+#define OP_STENCIL_OP 0x0019u
+#define OP_STENCIL_OP_SEPARATE 0x001Au
+#define OP_POLYGON_OFFSET 0x001Bu
+#define OP_DEPTH_RANGEF 0x001Cu
+#define OP_SAMPLE_COVERAGE 0x001Du
+#define OP_TEX_PARAMETERF 0x0208u
+#define OP_COMPRESSED_TEX_IMAGE_2D 0x0209u
+#define OP_COMPRESSED_TEX_SUB_IMAGE_2D 0x020Au
+#define OP_COPY_TEX_IMAGE_2D 0x020Bu
+#define OP_COPY_TEX_SUB_IMAGE_2D 0x020Cu
+#define OP_UNIFORM1FV 0x0407u
+#define OP_UNIFORM2FV 0x0408u
+#define OP_UNIFORM3FV 0x0409u
+#define OP_UNIFORM1IV 0x040Au
+#define OP_UNIFORM2IV 0x040Bu
+#define OP_UNIFORM3IV 0x040Cu
+#define OP_UNIFORM4IV 0x040Du
+#define OP_UNIFORM_MATRIX2FV 0x040Eu
+#define OP_UNIFORM_MATRIX3FV 0x040Fu
+#define OP_DELETE_RENDERBUFFERS 0x0708u
+#define OP_DRAW_BUFFER 0x0709u
+#define OP_DRAW_BUFFERS 0x070Au
+#define OP_READ_BUFFER 0x070Bu
+#define QOP_GET_ACTIVE_UNIFORM 0x000Fu
+#define QOP_GET_UNIFORMFV 0x0010u
+#define QOP_GET_UNIFORMIV 0x0011u
 
 /* Sync-query op tags. */
 #define QOP_GET_ERROR             0x01u

@@ -294,8 +294,14 @@ function fixturePaths(root: string) {
     writeFileSync(artifact, `${spec.id} fixture`);
   }
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
+    const prefix = `programs/${spec.dependency}/`;
+    const artifact = join(dependencyRoots.get(spec.dependency)!,
+      spec.resolverPath.startsWith(prefix)
+        ? spec.resolverPath.slice(prefix.length)
+        : spec.archiveUrl);
+    mkdirSync(dirname(artifact), { recursive: true });
     writeFileSync(
-      join(dependencyRoots.get(spec.dependency)!, spec.archiveUrl),
+      artifact,
       zipSync({
         [spec.requiredMember]: new TextEncoder().encode(
           `${spec.id} executable`,
@@ -812,6 +818,26 @@ describe("canonical source-rootfs shell", () => {
         mode: 0o644,
       },
     ]);
+    expect(resolveDemoInit(demo!, "love")).toEqual({
+      shellCommand: "/usr/local/bin/love /usr/share/love/examples/pong",
+    });
+    const loveProfile = demo!.profiles!.love;
+    expect(loveProfile.runtime?.features).toEqual(["kms", "evdev-input"]);
+    expect(loveProfile.presentation?.hostPointer).toBe(true);
+    expect(loveProfile.dockActions).toEqual([{
+      id: "games", label: "Games",
+      description: "Start the selected game. Audio is unavailable in this port.",
+      menu: [
+        ["pong", "Pong"], ["snake", "Snake"], ["breakout", "Breakout"],
+        ["asteroids", "Asteroids"], ["bytepath", "BYTEPATH"], ["snkrx", "SNKRX"],
+      ].map(([id, label]) => ({id, label, restart: `/usr/local/bin/love /usr/share/love/examples/${id}`})),
+    }]);
+    expect(fs.getLazyEntry("/usr/local/bin/love")?.url)
+      .toContain("programs/love/love.wasm");
+    expect(fs.exportLazyArchiveEntries()).toContainEqual(expect.objectContaining({
+      url: "love-examples.zip", mountPrefix: "/usr",
+    }));
+
     expect(resolveDemoInit(demo!, "quake")).toEqual({
       shellCommand: "/usr/local/bin/quake",
     });
@@ -1112,7 +1138,7 @@ describe("canonical source-rootfs shell", () => {
         sourceDateEpoch: "0",
       }),
     ).rejects.toThrow(
-      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffplay, modeset, quake, scummvm",
+      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffplay, love, modeset, quake, scummvm",
     );
   });
 

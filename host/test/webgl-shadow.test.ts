@@ -18,6 +18,21 @@ import {
 } from "../src/webgl/shadow.js";
 
 class StubGl {
+  colorMask(...a: boolean[]) {  }
+  depthMask(...a: boolean[]) {  }
+  stencilFuncSeparate(...a: number[]) {  }
+  stencilMaskSeparate(...a: number[]) {  }
+  stencilOpSeparate(...a: number[]) {  }
+  blendColor(...a: number[]) {  }
+  clearDepth(...a: number[]) {  }
+  clearStencil(...a: number[]) {  }
+  depthRange(...a: number[]) {  }
+  polygonOffset(...a: number[]) {  }
+  sampleCoverage(...a: unknown[]) {  }
+  lineWidth(...a: number[]) {  }
+  bindBuffer(...a: unknown[]) {  }
+  bindRenderbuffer(...a: unknown[]) {  }
+  vertexAttrib4f(...a: number[]) {  }
   clearColor() {}
   viewport() {}
   scissor() {}

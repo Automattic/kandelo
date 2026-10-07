@@ -47,9 +47,16 @@ export function ensurePresentTarget(b: GlBinding): boolean {
   const prevRead = gl.getParameter(GL_READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
   const prevDraw = gl.getParameter(GL_DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
 
+  const prevRbo = gl.getParameter(gl.RENDERBUFFER_BINDING) as WebGLRenderbuffer | null;
+  const depthStencil = existing?.depthStencil ?? gl.createRenderbuffer();
   const tex = existing?.tex ?? gl.createTexture();
   const fbo = existing?.fbo ?? gl.createFramebuffer();
-  if (!tex || !fbo) return false;
+  if (!tex || !fbo || !depthStencil) {
+    if (tex && !existing) gl.deleteTexture(tex);
+    if (fbo && !existing) gl.deleteFramebuffer(fbo);
+    if (depthStencil && !existing) gl.deleteRenderbuffer(depthStencil);
+    return false;
+  }
 
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(
@@ -63,23 +70,35 @@ export function ensurePresentTarget(b: GlBinding): boolean {
   gl.framebufferTexture2D(
     GL_DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0,
   );
+  // EGL's window config provides 24-bit depth and 8-bit stencil, including
+  // when default framebuffer 0 is redirected to this double-buffer target.
+  gl.bindRenderbuffer(gl.RENDERBUFFER, depthStencil);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, w, h);
+  gl.framebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, depthStencil);
   const complete =
     gl.checkFramebufferStatus(GL_DRAW_FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
 
+  gl.bindRenderbuffer(gl.RENDERBUFFER, prevRbo);
   gl.bindTexture(gl.TEXTURE_2D, prevTex);
   gl.bindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
   gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
 
   if (!complete) {
+    // A failed resize destroys the old target too. Do not retain a deleted
+    // framebuffer in either the default-target redirect or context replay.
+    if (b.renderTargetFbo === fbo) b.renderTargetFbo = null;
+    if (b.shadow.fbo === fbo) b.shadow.fbo = null;
+    if (prevRead === fbo) gl.bindFramebuffer(GL_READ_FRAMEBUFFER, null);
+    if (prevDraw === fbo) gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, null);
     gl.deleteFramebuffer(fbo);
     gl.deleteTexture(tex);
+    gl.deleteRenderbuffer(depthStencil);
     b.presentTarget = null;
-    // Leave renderTargetFbo alone: without a target the guest keeps
-    // rendering straight to the canvas, which flickers but still draws.
+    // Without a target the guest renders to the canvas's native framebuffer.
     return false;
   }
 
-  b.presentTarget = { fbo, tex, w, h };
+  b.presentTarget = { fbo, tex, depthStencil, w, h };
   b.renderTargetFbo = fbo;
   b.shadow.fbo = fbo;
   return true;

@@ -114,6 +114,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     if (!slot) return;
     const display = host.kmsDisplayCanvas(crtcId, { width: MODESET_FB_W, height: MODESET_FB_H });
     display.classList.add("kmodeset-canvas");
+    display.tabIndex = 0;
     if (display.parentNode !== slot) slot.replaceChildren(display);
     setCanvas(display);
   }, [host, status, crtcId]);
@@ -263,6 +264,9 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
       const bit = buttonBit(e.button);
       if (bit === 0) return;
       e.preventDefault();
+      // Return keyboard focus from dock controls to the guest surface.
+      // The image-declared evdev source scopes capture to this surface.
+      canvas.focus();
       canvas.setPointerCapture(e.pointerId);
       if (e.pointerType === "touch") {
         // A finger moves and presses in one event; move the cursor to

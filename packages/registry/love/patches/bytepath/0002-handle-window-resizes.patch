@@ -1,0 +1,15 @@
+diff --git a/main.lua b/main.lua
+--- a/main.lua
++++ b/main.lua
+@@ -203,5 +203,11 @@
+ end
+ 
++-- A tiling Wayland compositor can resize even a fixed-size window. Keep
++-- the existing canvas and pointer scales in sync with the actual surface.
++function love.resize(width, height)
++    if gw and gh then sx, sy = width/gw, height/gh end
++end
++
+ function resize(x, y, fs)
+     local y = y or x
+     fullscreen = fs

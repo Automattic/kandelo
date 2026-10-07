@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Snake
+Exec=/usr/local/bin/love /usr/share/love/examples/snake

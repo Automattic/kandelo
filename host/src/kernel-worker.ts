@@ -34805,8 +34805,8 @@ export class CentralizedKernelWorker {
       const gl = canvas.getContext("webgl2", {
         antialias: false,
         premultipliedAlpha: false,
-        depth: false,
-        stencil: false,
+        depth: true,
+        stencil: true,
         // The context outlives the presenter: a program GL session that
         // later claims this canvas (markKmsCanvasGlOwned — the GPU
         // compositor path) inherits THIS context, and its cross-task

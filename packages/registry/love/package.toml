@@ -1,0 +1,42 @@
+kind = "program"
+name = "love"
+version = "11.5-kandelo-kms"
+kernel_abi = 47
+arches = ["wasm32"]
+depends_on = [
+  "libcxx@21.1.7", "libdrm@2.4.120", "lua@5.2.4", "freetype@2.13.3", "zlib@1.3.1",
+  "bytepath-source@51ee3086", "snkrx-source@6b93a64d",
+  "sdl2@2.32.10", "libwayland@1.24.0", "libxkbcommon@1.7.0", "libffi@0.1.0",
+]
+
+[source]
+provider = "archive"
+url = "https://github.com/love2d/love/archive/6eb8d546736d5915a8b5af30b2cf33456dfdcb1a.tar.gz"
+sha256 = "508334a4b118199415bd34f64709d04797e1a4f86caa9be5dba07f90cfa37abb"
+
+[license]
+spdx = "Zlib"
+url = "https://github.com/love2d/love/blob/11.5/license.txt"
+
+[build]
+script_path = "packages/registry/love/build-love.sh"
+
+[[outputs]]
+name = "love"
+wasm = "love.wasm"
+
+[[runtime_files]]
+artifact = "share/love-examples.zip"
+guest_path = "/usr/share/love-examples.zip"
+
+[[host_tools]]
+name = "zip"
+version_constraint = ">=3.0"
+probe = { args = ["-v"], version_regex = "Zip (\\d+\\.\\d+)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "perl"
+version_constraint = ">=5.0.0"
+probe = { args = ["-e", "print $^V"], version_regex = "v(\\d+\\.\\d+\\.\\d+)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

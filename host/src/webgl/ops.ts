@@ -6,7 +6,7 @@
  * unchanged; this table is the host bridge's decode side, paired with
  * Phase C's `glue/libglesv2_stub.c` encode side. Drift between the three
  * is caught at first contact: the kernel's `GLIO_INIT` rejects a client
- * `OP_VERSION` mismatch with `ENOSYS`.
+ * `OP_VERSION` newer than its supported table with `ENOSYS`.
  */
 
 // --- cmdbuf opcodes (TLV: u16 op, u16 payload_len, payload) ----------------
@@ -105,5 +105,43 @@ export const QOP_GET_SHADER_PRECISION_FORMAT = 0x0D;
 export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
- *  `GLIO_INIT` handler rejects mismatching values with `ENOSYS`. */
-export const OP_VERSION = 1;
+ *  `GLIO_INIT` accepts versions 1 through this value. */
+export const OP_VERSION = 2;
+
+// Additive GLES entry points used by native renderers; existing tags stay stable.
+export const OP_BLEND_EQUATION = 0x000F;
+export const OP_BLEND_COLOR = 0x0010;
+export const OP_CLEAR_DEPTHF = 0x0011;
+export const OP_CLEAR_STENCIL = 0x0012;
+export const OP_COLOR_MASK = 0x0013;
+export const OP_DEPTH_MASK = 0x0014;
+export const OP_STENCIL_FUNC = 0x0015;
+export const OP_STENCIL_FUNC_SEPARATE = 0x0016;
+export const OP_STENCIL_MASK = 0x0017;
+export const OP_STENCIL_MASK_SEPARATE = 0x0018;
+export const OP_STENCIL_OP = 0x0019;
+export const OP_STENCIL_OP_SEPARATE = 0x001A;
+export const OP_POLYGON_OFFSET = 0x001B;
+export const OP_DEPTH_RANGEF = 0x001C;
+export const OP_SAMPLE_COVERAGE = 0x001D;
+export const OP_TEX_PARAMETERF = 0x0208;
+export const OP_COMPRESSED_TEX_IMAGE_2D = 0x0209;
+export const OP_COMPRESSED_TEX_SUB_IMAGE_2D = 0x020A;
+export const OP_COPY_TEX_IMAGE_2D = 0x020B;
+export const OP_COPY_TEX_SUB_IMAGE_2D = 0x020C;
+export const OP_UNIFORM1FV = 0x0407;
+export const OP_UNIFORM2FV = 0x0408;
+export const OP_UNIFORM3FV = 0x0409;
+export const OP_UNIFORM1IV = 0x040A;
+export const OP_UNIFORM2IV = 0x040B;
+export const OP_UNIFORM3IV = 0x040C;
+export const OP_UNIFORM4IV = 0x040D;
+export const OP_UNIFORM_MATRIX2FV = 0x040E;
+export const OP_UNIFORM_MATRIX3FV = 0x040F;
+export const OP_DELETE_RENDERBUFFERS = 0x0708;
+export const OP_DRAW_BUFFER = 0x0709;
+export const OP_DRAW_BUFFERS = 0x070A;
+export const OP_READ_BUFFER = 0x070B;
+export const QOP_GET_ACTIVE_UNIFORM = 0x000F;
+export const QOP_GET_UNIFORMFV = 0x0010;
+export const QOP_GET_UNIFORMIV = 0x0011;

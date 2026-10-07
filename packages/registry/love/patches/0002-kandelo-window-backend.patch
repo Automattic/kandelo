@@ -1,0 +1,29 @@
+diff --git a/src/modules/window/wrap_Window.cpp b/src/modules/window/wrap_Window.cpp
+index bc0a8c3..8923ea5 100644
+--- a/src/modules/window/wrap_Window.cpp
++++ b/src/modules/window/wrap_Window.cpp
+@@ -19,7 +19,10 @@
+  **/
+ 
+ #include "wrap_Window.h"
++#include "Window.h"
++#ifndef LOVE_KANDELO
+ #include "sdl/Window.h"
++#endif
+ 
+ namespace love
+ {
+@@ -657,7 +660,13 @@ extern "C" int luaopen_love_window(lua_State *L)
+ {
+ 	Window *instance = instance();
+ 	if (instance == nullptr)
++	{
++#ifdef LOVE_KANDELO
++		return luaL_error(L, "love.window backend is not installed.");
++#else
+ 		luax_catchexcept(L, [&](){ instance = new love::window::sdl::Window(); });
++#endif
++	}
+ 	else
+ 		instance->retain();
+ 
