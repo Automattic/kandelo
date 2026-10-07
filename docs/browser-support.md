@@ -1086,10 +1086,13 @@ script downloads the archive with the machine's own `curl` — in the browser
 that goes through the CORS proxy described below, because the site grants
 no CORS — reporting a percentage against the catalog size (the guest
 receives downloads as chunked responses, so `curl` never learns the total),
-uses 32 MiB ranges for archives above the proxy's 100 MiB response limit,
-and retries a failed request up to two more times. Completed ranges stay
-downloaded; an incomplete attempt is discarded before retrying. The script
-checks the SHA-256, unzips into `/usr/share/scummvm-games/<game>`, and
+starts with one request for smaller archives or 32 MiB ranges above the
+proxy's 100 MiB response limit. If any request fails, it switches to
+16 MiB ranges with up to three attempts per range. Completed ranges stay
+downloaded; an incomplete attempt is discarded before retrying. If the
+server ignores ranges on a smaller archive, it retries the full request.
+It then checks the SHA-256, unzips into
+`/usr/share/scummvm-games/<game>`, and
 deletes the archive. ScummVM's own `--add --recursive` then finds the game
 and records it as a launcher target, and the script starts that target; a
 collection (the WAGE games) opens the launcher instead. A failed download

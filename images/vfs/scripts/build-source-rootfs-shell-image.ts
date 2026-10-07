@@ -523,11 +523,12 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
  * fetch a catalog game, verify it, unpack it, and start it. `--list` prints
  * the catalog, so the same games are a command away in the terminal.
  *
- * - Archives larger than the proxy's 100 MiB response limit are fetched in
- *   32 MiB ranges. Failed requests retry from the last complete range, not
- *   from the start of the archive. The download runs in the background so
- *   the script can report progress against the catalog's size, including
- *   the active attempt, and the trap stops it on Ctrl+C:
+ * - Archives larger than the proxy's 100 MiB response limit start with
+ *   32 MiB ranges; smaller archives start with one request. On failure both
+ *   switch to 16 MiB ranges and keep every complete range. The download
+ *   runs in the background so the script can report progress against the
+ *   catalog's size, including the active attempt, and the trap stops it on
+ *   Ctrl+C:
  *   a background job in a non-interactive shell ignores SIGINT, so the
  *   dock's interrupt would otherwise leave curl running.
  * - The SHA-256 makes a changed or truncated download a loud failure instead
@@ -550,14 +551,16 @@ GAMES=/usr/share/scummvm-games
 TAB=$(printf '\\t')
 RANGE_LIMIT=$((100 * 1024 * 1024))
 RANGE_SIZE=$((32 * 1024 * 1024))
+FALLBACK_SIZE=$((16 * 1024 * 1024))
 MAX_ATTEMPTS=3
 say() { echo "scummvm-play: $*" >&2; }
 download() {
     expected_status=$1
     expected_bytes=$2
-    shift 2
+    max_attempts=$3
+    shift 3
     attempt=1
-    while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+    while [ "$attempt" -le "$max_attempts" ]; do
         rm -f "$ZIP.part" "$ZIP.status"
         curl -fsSL -o "$ZIP.part" -w '%{http_code}' "$@" "$URL" > "$ZIP.status" &
         fetch=$!
@@ -588,14 +591,36 @@ download() {
             return 0
         fi
         rm -f "$ZIP.part" "$ZIP.status"
-        if { [ "$expected_status" = 206 ] && [ "$response" = 200 ]; } ||
-           [ "$attempt" -eq "$MAX_ATTEMPTS" ]; then break; fi
+        if [ "$expected_status" = 206 ] && [ "$response" = 200 ]; then
+            trap - INT TERM
+            return 2
+        fi
+        if [ "$attempt" -eq "$max_attempts" ]; then break; fi
         attempt=$((attempt + 1))
-        say "Retrying download (attempt $attempt/$MAX_ATTEMPTS)..."
+        say "Retrying download (attempt $attempt/$max_attempts)..."
         sleep "$((attempt - 1))"
     done
     trap - INT TERM
     return 1
+}
+download_ranges() {
+    chunk_size=$1
+    attempts=$2
+    : > "$ZIP"
+    offset=0
+    while [ "$offset" -lt "$BYTES" ]; do
+        end=$((offset + chunk_size - 1))
+        if [ "$end" -ge "$BYTES" ]; then end=$((BYTES - 1)); fi
+        if download 206 "$((end - offset + 1))" "$attempts" -r "$offset-$end"; then
+            offset=$((end + 1))
+        else
+            range_status=$?
+            if [ "$chunk_size" -eq "$FALLBACK_SIZE" ]; then return "$range_status"; fi
+            say "Retrying in 16 MiB ranges..."
+            chunk_size=$FALLBACK_SIZE
+            attempts=$MAX_ATTEMPTS
+        fi
+    done
 }
 if [ "\${1:-}" = "--list" ]; then
     cut -f1,3,6 "$CATALOG"
@@ -620,20 +645,22 @@ ZIP="$GAMES/$ID.zip"
 if [ ! -f "$DIR/.targets" ]; then
     say "Downloading $TITLE ($SIZE) from downloads.scummvm.org..."
     rm -f "$ZIP" "$ZIP.part" "$ZIP.status"
+    downloaded=0
     if [ "$BYTES" -gt "$RANGE_LIMIT" ]; then
-        : > "$ZIP"
-        offset=0
-        while [ "$offset" -lt "$BYTES" ]; do
-            end=$((offset + RANGE_SIZE - 1))
-            if [ "$end" -ge "$BYTES" ]; then end=$((BYTES - 1)); fi
-            if ! download 206 "$((end - offset + 1))" -r "$offset-$end"; then
-                rm -f "$ZIP" "$ZIP.part" "$ZIP.status"
-                say "Download failed"
-                exit 1
-            fi
-            offset=$((end + 1))
-        done
-    elif ! download 200 "$BYTES"; then
+        if download_ranges "$RANGE_SIZE" 1; then downloaded=1; fi
+    elif download 200 "$BYTES" 1; then
+        downloaded=1
+    else
+        say "Retrying in 16 MiB ranges..."
+        if download_ranges "$FALLBACK_SIZE" "$MAX_ATTEMPTS"; then
+            downloaded=1
+        elif [ "$?" -eq 2 ]; then
+            say "Range requests unavailable; retrying the full download..."
+            rm -f "$ZIP"
+            if download 200 "$BYTES" "$((MAX_ATTEMPTS - 1))"; then downloaded=1; fi
+        fi
+    fi
+    if [ "$downloaded" -eq 0 ]; then
         rm -f "$ZIP" "$ZIP.part" "$ZIP.status"
         say "Download failed"
         exit 1

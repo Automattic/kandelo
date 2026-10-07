@@ -15,8 +15,9 @@ function runDownload(options: {
   ignoredRange?: boolean;
   ranged?: boolean;
   failRangeOnce?: string;
-  failRangeAlways?: string;
+  failRangeAlwaysStart?: number;
   failSingleOnce?: boolean;
+  shortSingleOnce?: boolean;
   shortRangeOnce?: string;
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "kandelo-scummvm-download-"));
@@ -58,7 +59,7 @@ if [ -n "\${range:-}" ]; then
     else
         first=\${range%-*}
         last=\${range#*-}
-        if [ "$FAIL_RANGE_ALWAYS" = "$range" ] ||
+        if [ "$FAIL_RANGE_ALWAYS_START" = "$first" ] ||
            { [ "$FAIL_RANGE_ONCE" = "$range" ] && [ ! -e "$FAILED_MARKER" ]; }; then
             : > "$FAILED_MARKER"
             dd if="$SOURCE" of="$output" bs=1 skip="$first" count=5 2>/dev/null
@@ -81,6 +82,12 @@ else
         printf 200
         exit 18
     fi
+    if [ "$SHORT_SINGLE_ONCE" = 1 ] && [ ! -e "$FAILED_MARKER" ]; then
+        : > "$FAILED_MARKER"
+        dd if="$SOURCE" of="$output" bs=1 count=5 2>/dev/null
+        printf 200
+        exit 0
+    fi
     cp "$SOURCE" "$output"
     printf 200
 fi
@@ -101,7 +108,8 @@ exit 1
     .replace("/usr/local/share/scummvm-play/games.tsv", catalog)
     .replace("/usr/share/scummvm-games", games)
     .replace("RANGE_LIMIT=$((100 * 1024 * 1024))", `RANGE_LIMIT=${options.ranged === false ? 128 : 64}`)
-    .replace("RANGE_SIZE=$((32 * 1024 * 1024))", "RANGE_SIZE=16"));
+    .replace("RANGE_SIZE=$((32 * 1024 * 1024))", "RANGE_SIZE=16")
+    .replace("FALLBACK_SIZE=$((16 * 1024 * 1024))", "FALLBACK_SIZE=8"));
   chmodSync(script, 0o755);
   let output = "";
   try {
@@ -115,8 +123,9 @@ exit 1
         CAPTURED: captured,
         IGNORE_RANGE: options.ignoredRange ? "1" : "0",
         FAIL_RANGE_ONCE: options.failRangeOnce ?? "",
-        FAIL_RANGE_ALWAYS: options.failRangeAlways ?? "",
+        FAIL_RANGE_ALWAYS_START: String(options.failRangeAlwaysStart ?? -1),
         FAIL_SINGLE_ONCE: options.failSingleOnce ? "1" : "0",
+        SHORT_SINGLE_ONCE: options.shortSingleOnce ? "1" : "0",
         SHORT_RANGE_ONCE: options.shortRangeOnce ?? "",
         FAILED_MARKER: failedMarker,
         REQUESTS: requests,
@@ -152,7 +161,8 @@ it("assembles bounded ranges and reports progress for the whole archive", () => 
 
 it("rejects a server that ignores a requested range", () => {
   const result = runDownload({ ignoredRange: true });
-  expect(readFileSync(result.requests, "utf8").trim().split("\n")).toEqual(["0-15"]);
+  expect(readFileSync(result.requests, "utf8").trim().split("\n"))
+    .toEqual(["0-15", "0-7"]);
   expect(result.output).toContain("Download failed");
   expect(result.output).not.toContain("#### 100%");
   expect(() => readFileSync(result.captured)).toThrow();
@@ -161,23 +171,33 @@ it("rejects a server that ignores a requested range", () => {
 it("retries a failed range without duplicating its partial bytes", () => {
   const result = runDownload({ failRangeOnce: "16-31" });
   expect(readFileSync(result.requests, "utf8").trim().split("\n"))
-    .toEqual(["0-15", "16-31", "16-31", "32-47", "48-63", "64-79", "80-80"]);
+    .toEqual([
+      "0-15", "16-31", "16-23", "24-31", "32-39", "40-47",
+      "48-55", "56-63", "64-71", "72-79", "80-80",
+    ]);
   expect(readFileSync(result.captured)).toEqual(result.bytes);
-  expect(result.output).toContain("Retrying download (attempt 2/3)");
+  expect(result.output).toContain("Retrying in 16 MiB ranges");
   expect(result.output).toContain("#### 100%");
+});
+
+it("steps down immediately when the first large range fails", () => {
+  const result = runDownload({ failRangeOnce: "0-15" });
+  expect(readFileSync(result.requests, "utf8").trim().split("\n").slice(0, 3))
+    .toEqual(["0-15", "0-7", "8-15"]);
+  expect(readFileSync(result.captured)).toEqual(result.bytes);
 });
 
 it("retries a short range response even when curl reports success", () => {
   const result = runDownload({ shortRangeOnce: "16-31" });
-  expect(readFileSync(result.requests, "utf8").trim().split("\n"))
-    .toEqual(["0-15", "16-31", "16-31", "32-47", "48-63", "64-79", "80-80"]);
+  expect(readFileSync(result.requests, "utf8").trim().split("\n").slice(0, 4))
+    .toEqual(["0-15", "16-31", "16-23", "24-31"]);
   expect(readFileSync(result.captured)).toEqual(result.bytes);
 });
 
 it("stops after three failed attempts and removes partial output", () => {
-  const result = runDownload({ failRangeAlways: "16-31" });
+  const result = runDownload({ failRangeAlwaysStart: 16 });
   expect(readFileSync(result.requests, "utf8").trim().split("\n"))
-    .toEqual(["0-15", "16-31", "16-31", "16-31"]);
+    .toEqual(["0-15", "16-31", "16-23", "16-23", "16-23"]);
   expect(result.output).toContain("Download failed");
   expect(result.output).not.toContain("#### 100%");
   expect(existsSync(join(result.games, "fixture.zip"))).toBe(false);
@@ -193,9 +213,33 @@ it("uses a single request for archives below the range threshold", () => {
   expect(result.output).not.toContain("Download failed");
 });
 
-it("retries a failed small-file request from the beginning", () => {
+it("retries a failed small-file request in ranges", () => {
   const result = runDownload({ ranged: false, failSingleOnce: true });
-  expect(readFileSync(result.requests, "utf8").trim().split("\n")).toEqual(["full", "full"]);
+  const requests = readFileSync(result.requests, "utf8").trim().split("\n");
+  expect(requests.slice(0, 3)).toEqual(["full", "0-7", "8-15"]);
+  expect(requests.at(-1)).toBe("80-80");
   expect(readFileSync(result.captured)).toEqual(result.bytes);
-  expect(result.output).toContain("Retrying download (attempt 2/3)");
+  expect(result.output).toContain("Retrying in 16 MiB ranges");
+});
+
+it("retries a short small-file response in ranges", () => {
+  const result = runDownload({ ranged: false, shortSingleOnce: true });
+  expect(readFileSync(result.requests, "utf8").trim().split("\n").slice(0, 3))
+    .toEqual(["full", "0-7", "8-15"]);
+  expect(readFileSync(result.captured)).toEqual(result.bytes);
+});
+
+it("retries a failed small-file request whole when the server ignores ranges", () => {
+  const result = runDownload({ ranged: false, failSingleOnce: true, ignoredRange: true });
+  expect(readFileSync(result.requests, "utf8").trim().split("\n"))
+    .toEqual(["full", "0-7", "full"]);
+  expect(readFileSync(result.captured)).toEqual(result.bytes);
+});
+
+it("bounds small-file range retries and removes partial output", () => {
+  const result = runDownload({ ranged: false, failSingleOnce: true, failRangeAlwaysStart: 0 });
+  expect(readFileSync(result.requests, "utf8").trim().split("\n"))
+    .toEqual(["full", "0-7", "0-7", "0-7"]);
+  expect(result.output).toContain("Download failed");
+  expect(existsSync(join(result.games, "fixture.zip"))).toBe(false);
 });
