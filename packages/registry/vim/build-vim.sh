@@ -24,6 +24,7 @@ BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 RUNTIME_DIR="$KANDELO_PACKAGE_WORK_DIR/runtime"
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 fi
 # Explicit env wins; else the in-tree sysroot. Keeps neighbour-worktree
 # invocations viable (WASM_POSIX_SYSROOT=<other>/sysroot). Same shape as
