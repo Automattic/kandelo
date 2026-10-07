@@ -1,6 +1,6 @@
 ---
 name: porting-software-to-kandelo
-description: Use when porting a program or library to Kandelo, adding or changing a package under packages/registry, or writing a package.toml, build.toml, or build-<name>.sh.
+description: Use when porting a program or library to Kandelo, adding or changing a package under packages/registry, or writing package.toml, build.toml, or package build scripts.
 ---
 
 # Porting Software to Kandelo
@@ -36,10 +36,12 @@ The current shape: `source scripts/package-build-roots.sh`, `kandelo_package_pre
 | `kernel_abi` value | Current `ABI_VERSION` in `crates/shared/src/lib.rs`. Required with `[build]`; recorded as a floor but not yet enforced, so neighbouring manifests and doc examples carry stale values. Do not copy them. |
 | C++ programs | `depends_on` libcxx plus `kandelo_package_prepare_private_sysroot`, as in `packages/registry/dinit/` |
 | Fork-using programs | `docs/fork-instrumentation.md` |
+| Large compiler builds or engine resource failures | `docs/porting-guide.md` "Large compiler builds and runtime limits"; `docs/browser-support.md` "Firefox executable-code limit" |
 | Include it in `./run.sh setup` / `local-build` | Add a `[[packages]]` entry to `packages/sets/local-supported.toml` (the local-build set; an unlisted package is never built there) |
 | Output paths | `cargo xtask build-deps output-path <pkg> <wasm>`, never hardcoded |
 
-Read those sections by heading (`grep -n '^#'` then `Read` with offset/limit), not whole files.
+Read those sections by heading (`rg -n '^#'` then read the relevant
+lines), not whole files.
 
 ## Build loop
 
@@ -47,15 +49,40 @@ Read those sections by heading (`grep -n '^#'` then `Read` with offset/limit), n
 bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh <pkg> [wasm32|wasm64]
 ```
 
-It prints one status line and, on failure, the first error lines and the end of the log; the full log stays in `.context/build-<pkg>-<arch>.log`. For a long build, use `scripts/agent-job start -- bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh <pkg> [wasm32|wasm64]` and wait on its job ID from the main session. Do not have a subagent poll it.
+It uses the declared dev-shell tool PATH without a login shell. It prints
+one status line and, on failure, the first error lines and the end of the
+log; the full log stays in `.context/build-<pkg>-<arch>.log`.
 
-When a build fails, fix the first error, not the last: later errors and `BLOCKED` packages are usually fallout. Search the log (`grep -n`) and read around the hit rather than reading it whole. The resolver deletes the work directory on failure, so `config.log` is gone; to see it, re-run configure by hand in a scratch directory.
+For a long build, use:
+
+```bash
+scripts/agent-job start -- bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh <pkg> [wasm32|wasm64]
+scripts/agent-job wait <id>
+```
+
+Wait from the main session. See `docs/agent-guidance/validation.md`
+"Waiting on long builds and suites"; do not have a subagent poll it.
+
+When a build fails, fix the first error, not the last: later errors and `BLOCKED` packages are usually fallout. Search the log (`rg -n`) and read around the hit rather than reading it whole. The resolver deletes the work directory on failure, so `config.log` is gone; to see it, re-run configure by hand in a scratch directory.
 
 ## Platform facts that make ports go wrong
 
-- **Autoconf link probes always pass.** The SDK links with `-Wl,--allow-undefined`, so `AC_CHECK_FUNCS` says yes to functions musl lacks and `AC_SEARCH_LIBS` says "none required". Seed `ac_cv_func_*` from `wasm32posix-nm sysroot/lib/libc.a | grep ' T <name>'` (rule in `sdk/config.site`), and put required libraries on `LIBS` explicitly.
+- **Executable link probes reject unknown symbols.** The SDK permits only
+  its declared host imports to remain undefined; side modules use a
+  separate dynamic-linking policy. See `docs/sdk-guide.md` "Linker flags
+  injected automatically". Seed cross-run probes from verified target
+  facts in `sdk/config.site`, and put required libraries on `LIBS`
+  explicitly. A linkable symbol alone does not prove its runtime
+  semantics; check `docs/posix-status.md` before claiming support.
 - **Never define `__linux__`** SDK-wide, and not per package without the maintainer's agreement. Kandelo is not a Linux target (`sdk/config.site` header). Look for a feature macro or cache variable the upstream already checks.
-- **Main-thread stack is 8 MiB; pthreads get 128 KiB.** Deep recursion in a thread overflows silently; see `docs/sdk-guide.md`.
+- **Main-thread shadow stack defaults to 8 MiB; pthreads default to
+  128 KiB.** The SDK honors explicit main-stack requests, including
+  smaller ones, with the last linker operand winning. Pthread attributes
+  can change thread stacks. A shadow-stack overflow can silently corrupt
+  linear memory. The browser's native Wasm call stack and executable-code
+  arena are separate resources; see `docs/sdk-guide.md` "Why an 8 MiB
+  main-thread stack" and the large-compiler section of
+  `docs/porting-guide.md`.
 - **Wasm traces without names** mean `wasm-opt` stripped the name section; keep it for debugging rather than guessing from `wasm-function[N]`.
 - **A missing POSIX API is a platform gap**, not a package patch. Stub honestly or implement it in the kernel/libc.
 
