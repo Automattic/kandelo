@@ -105,8 +105,12 @@ export const App: React.FC = () => {
         broker.device.addEventListener("gattserverdisconnected", () => setBluetoothDevice(null), { once: true });
       })
       .catch((error: unknown) => {
-        // NotFoundError: the user cancelled the chooser.
+        // NotFoundError: the user cancelled the chooser — not worth a label.
         console.warn("bluetooth pairing:", error);
+        if (error instanceof Error && error.name !== "NotFoundError") {
+          setBluetoothDevice("failed");
+          setTimeout(() => setBluetoothDevice((d) => (d === "failed" ? null : d)), 6_000);
+        }
       });
   }, [host]);
   React.useEffect(() => () => bluetoothBrokerRef.current?.stop(), []);

@@ -90,6 +90,7 @@ export interface BluetoothBroker {
 }
 
 const NO_AGENT_RETRY_MS = 500;
+const CONNECT_TIMEOUT_MS = 15_000;
 
 function uuidArg(text: string | undefined): string | number {
   if (!text) throw new Error("missing service/characteristic");
@@ -122,8 +123,27 @@ export async function startBluetoothBroker(
 ): Promise<BluetoothBroker> {
   const gatt = device.gatt;
   if (!gatt) throw new Error("device has no GATT server");
-  const server = await gatt.connect();
   const name = device.name || "unnamed";
+  // A busy device (already connected to another central, e.g. a phone) can
+  // leave connect() pending indefinitely, and on macOS a pending attempt
+  // blocks the next requestDevice() scan until the page unloads. Bound it,
+  // and cancel the attempt on failure so the next scan works.
+  let server: GattServer;
+  try {
+    server = await new Promise<GattServer>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`timed out connecting to ${name} after ${CONNECT_TIMEOUT_MS / 1000}s (is it connected to another device?)`)),
+        CONNECT_TIMEOUT_MS,
+      );
+      gatt.connect().then(
+        (s) => { clearTimeout(timer); resolve(s); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
+  } catch (error) {
+    try { gatt.disconnect(); } catch { /* nothing to cancel */ }
+    throw error;
+  }
   let stopped = false;
   const subscriptions = new Map<string, { chr: GattCharacteristic; listener: EventListener }>();
 
