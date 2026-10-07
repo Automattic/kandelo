@@ -1128,6 +1128,9 @@ their own ICE servers. Missing channel arrival is bounded to 30 seconds after
 ICE connects; the manual answer exchange has no deadline. Cancellation closes
 pending channels and connections.
 Close and failure subscriptions expose established connection teardown.
+Late failure subscribers receive the recorded connection error once, so an
+ICE failure during an asynchronous consumer handoff is not lost. An orderly
+close does not report a connection failure.
 
 Session sharing is the `migration` consumer in
 `apps/browser-demos/lib/peer-link.ts`. Its handover, framebuffer, terminal and

@@ -163,9 +163,11 @@ function connectionLifecycle(declaration: PeerConnectionDeclaration) {
   const readyListeners = new Set<() => void>();
   let closed = false;
   let failure: Error | null = null;
+  let connectionFailure: Error | null = null;
   const close = (error?: Error) => {
     if (closed) return;
     closed = true;
+    connectionFailure = error ?? null;
     failure = error ?? new Error("the peer connection closed before connecting");
     for (const channel of messages.values()) channel.close();
     for (const channel of channels.values()) channel.close();
@@ -183,7 +185,10 @@ function connectionLifecycle(declaration: PeerConnectionDeclaration) {
       return () => { closeListeners.delete(listener); };
     },
     onFailure: (listener) => {
-      failureListeners.add(listener);
+      // Setup awaits can finish after ICE fails; retain the real failure for
+      // consumers that subscribe after that handoff, as onClose already does.
+      if (connectionFailure) listener(connectionFailure);
+      else if (!closed) failureListeners.add(listener);
       return () => { failureListeners.delete(listener); };
     },
     close: () => close(),
