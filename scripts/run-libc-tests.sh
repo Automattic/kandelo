@@ -382,6 +382,7 @@ run_test() {
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM= \
         KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_BUILTINS=explicit \
         TIMEOUT="$((TEST_TIMEOUT * 1000))" \
         timeout "$((TEST_TIMEOUT + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
@@ -506,8 +507,10 @@ fi
 
 # WHY: posix_spawnp() must prove a PATH candidate exists with access(X_OK)
 # before asking the host to launch it. The host-only exec map is intentionally
-# not visible to VFS access(), and the canonical rootfs contains deferred
-# package stubs whose payloads are outside this isolated conformance run.
+# not visible to VFS access(). The runner binds the canonical rootfs's lazy
+# files to local package artifacts; this freshly compiled fixture is separate.
+# Implicit convenience-program lookup is disabled: the image supplies the
+# actual tool closure, so stale unrelated packages cannot fail a libc case.
 # Snapshot the freshly built helper into owned guest scratch so the libc test
 # exercises the real POSIX PATH lookup and the normal VFS-backed spawn path.
 mkdir -p "$RUNNER_FIXTURE_ROOT/bin" "$RUNNER_FIXTURE_ROOT/work"
@@ -727,6 +730,6 @@ if $REPORT_MODE; then
 fi
 
 # Exit with error if any unexpected failures
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi

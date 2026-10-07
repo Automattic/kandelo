@@ -198,7 +198,7 @@ describe("run-example exec resolver", () => {
     }
   });
 
-  it("keeps explicit isolated exec mappings ahead of lazy rootfs stubs", () => {
+  it("materializes a rootfs executable without host exec mappings", () => {
     const result = spawnSync(
       process.execPath,
       [
@@ -213,6 +213,7 @@ describe("run-example exec resolver", () => {
         env: {
           ...process.env,
           KANDELO_RUNNER_VFS: "isolated",
+          KANDELO_RUNNER_BUILTINS: "explicit",
           TIMEOUT: "30000",
         },
         encoding: "utf8",
