@@ -173,6 +173,31 @@ describe("peer channel lifecycle", () => {
     expect(failed).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("no direct route") }));
     expect(channel.readyState).toBe("closed");
   });
+  it("replays a real failure to a consumer subscribing after the setup handoff", async () => {
+    const join = await answerPeerConnectionInvite(offer(), network);
+    const rtc = FakeConnection.instances[0];
+    const channel = new FakeChannel("udp", network.channels[0].options);
+    rtc.arrive(channel); channel.open();
+    const link = await join.connected;
+    rtc.fail();
+    const failed = vi.fn();
+    link.onFailure(failed);
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("no direct route") }));
+    rtc.fail();
+    expect(failed).toHaveBeenCalledTimes(1);
+  });
+  it("does not turn an orderly close into a replayed connection failure", async () => {
+    const join = await answerPeerConnectionInvite(offer(), network);
+    const rtc = FakeConnection.instances[0];
+    const channel = new FakeChannel("udp", network.channels[0].options);
+    rtc.arrive(channel); channel.open();
+    const link = await join.connected;
+    link.close();
+    const failed = vi.fn();
+    link.onFailure(failed);
+    expect(failed).not.toHaveBeenCalled();
+  });
   it("bounds absent channel arrival after ICE connects", async () => {
     vi.useFakeTimers();
     const join = await answerPeerConnectionInvite(offer(), network);
