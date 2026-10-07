@@ -466,6 +466,10 @@ pub struct PipeBuffer {
     /// TCP's simplex FIN without inventing a fixed number of successful writes
     /// after EOF.
     orphaned_read: bool,
+    /// Sticky transport failure shared by inherited socket pipe endpoints.
+    stream_error: u32,
+    tcp_connection_id: u32,
+    stream_error_pending: bool,
     /// Index of this pipe in the PipeTable (for wakeup events).
     pipe_idx: u32,
     /// True if this pipe backs a named FIFO (see `crate::fifo`). FIFO pipes
@@ -504,6 +508,37 @@ pub struct PipeBuffer {
 }
 
 impl PipeBuffer {
+    /// Reset stream data without releasing endpoint references. Ordinary pipes
+    /// never set this state; the host invokes it for an actual socket reset.
+    pub fn reset_stream(&mut self, error: Errno) {
+        if self.stream_error != 0 {
+            return;
+        }
+        self.stream_error = error as u32;
+        self.stream_error_pending = true;
+        self.head = 0;
+        self.tail = 0;
+        self.len = 0;
+        self.ancillary_fds.clear();
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
+    }
+    pub fn tcp_connection_id(&self) -> u32 {
+        self.tcp_connection_id
+    }
+    pub fn stream_error(&self) -> Option<Errno> {
+        Errno::from_u32(self.stream_error)
+    }
+    pub fn take_stream_error(&mut self) -> u32 {
+        let error = if self.stream_error_pending {
+            self.stream_error
+        } else {
+            0
+        };
+        self.stream_error_pending = false;
+        error
+    }
+
     /// Create a new pipe buffer with the given capacity.
     pub fn new(capacity: usize) -> Self {
         let mut buf = Vec::new();
@@ -519,6 +554,9 @@ impl PipeBuffer {
             in_flight_read_count: 0,
             in_flight_write_count: 0,
             orphaned_read: false,
+            stream_error: 0,
+            tcp_connection_id: 0,
+            stream_error_pending: false,
             pipe_idx: 0,
             is_fifo: false,
             fifo_read_only_count: 0,
@@ -1304,6 +1342,37 @@ impl PipeTable {
         i
     }
 
+    /// Mint an identity that survives closing either endpoint but never
+    /// follows a freed index into an unrelated pipe allocation.
+    pub fn alloc_tcp_pair(&mut self, capacity: usize) -> Result<(usize, usize), Errno> {
+        let token = crate::socket::allocate_host_net_handle()? as u32;
+        let mut recv = PipeBuffer::new(capacity);
+        let mut send = PipeBuffer::new(capacity);
+        recv.tcp_connection_id = token;
+        send.tcp_connection_id = token;
+        Ok(self.alloc_pair(recv, send))
+    }
+    pub fn reset_tcp_connection(
+        &mut self,
+        recv: usize,
+        send: usize,
+        token: u32,
+    ) -> Result<(), Errno> {
+        if recv.checked_add(1) != Some(send) || token == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let mut found = false;
+        for index in [recv, send] {
+            if let Some(pipe) = self.get_mut(index) {
+                if pipe.tcp_connection_id == token {
+                    pipe.reset_stream(Errno::ECONNRESET);
+                    found = true;
+                }
+            }
+        }
+        if found { Ok(()) } else { Err(Errno::ENOTCONN) }
+    }
+
     /// Allocate two pipe buffers with adjacent indices (`second_idx == first_idx + 1`).
     /// The host TCP-bridge code assumes the recv and send pipes for an injected
     /// connection are consecutive (`sendPipeIdx = recvPipeIdx + 1`); this helper
@@ -1655,6 +1724,32 @@ mod tests {
             st_ctime_nsec: 0,
             _pad: 0,
         }
+    }
+
+    #[test]
+    fn tcp_reset_does_not_target_a_reused_receive_pipe() {
+        let mut table = PipeTable::new();
+        let (recv, send) = table.alloc_tcp_pair(8).unwrap();
+        let token = table.get(recv).unwrap().tcp_connection_id();
+        table.get_mut(recv).unwrap().close_read_end();
+        table.get_mut(recv).unwrap().close_write_end();
+        table.free_if_closed(recv);
+        let replacement = table.alloc(PipeBuffer::new(8));
+        assert_eq!(replacement, recv);
+        table.get_mut(replacement).unwrap().write(b"new");
+        table.reset_tcp_connection(recv, send, token).unwrap();
+        assert_eq!(
+            table.get(send).unwrap().stream_error(),
+            Some(Errno::ECONNRESET)
+        );
+        assert_eq!(table.get(replacement).unwrap().stream_error(), None);
+        let mut bytes = [0; 3];
+        assert_eq!(table.get_mut(replacement).unwrap().read(&mut bytes), 3);
+        assert_eq!(&bytes, b"new");
+        assert_eq!(
+            table.reset_tcp_connection(recv, send, token + 1),
+            Err(Errno::ENOTCONN)
+        );
     }
 
     #[test]

@@ -1624,6 +1624,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             sock.send_buf_idx = send_buf_idx;
             sock.shut_rd = shut_rd;
             sock.shut_wr = shut_wr;
+            if let Some(handle) = host_net_handle { crate::socket::reserve_host_net_handle(handle); }
             sock.host_net_handle = host_net_handle;
             sock.options = options;
             sock.bind_addr = bind_addr;

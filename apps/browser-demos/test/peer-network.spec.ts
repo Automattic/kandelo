@@ -168,3 +168,25 @@ test("two browser guests play TyrQuake through a separate forwarding host", asyn
     await joiner.locator("#screen").screenshot({ path: "../../.context/phase2-quake-game.png" });
   } finally { try { await diagnostics([host, joiner, router], "quake"); } finally { await close(); } }
 });
+
+
+test("one browser guest serves HTTP and another fetches it with packaged curl", async ({browser,baseURL,browserName}) => {
+  test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
+  test.setTimeout(180_000);
+  const {host,joiner,close} = await pair(browser,baseURL!);
+  try {
+    const serverPid = await host.evaluate(() => (window as any).__peerNetwork.startHttp(18085));
+    await expect.poll(() => joiner.evaluate(() => (window as any).__peerNetwork.snapshot()?.tcpListeners.some((l:any)=>l.address==="10.89.0.1"&&l.port===18085)),{timeout:60000}).toBe(true);
+    const result = await joiner.evaluate(() => (window as any).__peerNetwork.fetchHttp("http://host:18085/"));
+    expect(result.exit).toBe(0);
+    expect(await joiner.evaluate(pid=>(window as any).__peerNetwork.processes()[pid].stdout,result.pid)).toBe("HTTP from Kandelo; client=10.89.0.2\n");
+    expect(await host.evaluate(pid=>(window as any).__peerNetwork.processes()[pid].exit,serverPid)).toBeNull();
+    await expect.poll(() => host.evaluate(pid=>(window as any).__peerNetwork.processes()[pid].stderr,serverPid)).toContain("[200]");
+    await host.screenshot({path:"../../.context/phase3-http-server.png",fullPage:true});
+    await joiner.screenshot({path:"../../.context/phase3-http-curl.png",fullPage:true});
+    await host.evaluate(() => (window as any).__peerNetwork.stopHttp());
+    await expect.poll(() => joiner.evaluate(() => (window as any).__peerNetwork.snapshot()?.tcpListeners.length)).toBe(0);
+    const refused = await joiner.evaluate(() => (window as any).__peerNetwork.fetchHttp("http://host:18085/"));
+    expect(refused.exit).toBe(7);
+  } finally {await close();}
+});

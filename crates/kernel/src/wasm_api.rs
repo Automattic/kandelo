@@ -135,10 +135,20 @@ unsafe extern "C" {
     ) -> i32;
     fn host_waitpid(pid: i32, options: u32, status_ptr: *mut i32) -> i32;
     fn host_net_connect(handle: i32, addr_ptr: *const u8, addr_len: u32, port: u32) -> i32;
+    fn host_net_connect_from(
+        handle: i32,
+        addr_ptr: *const u8,
+        addr_len: u32,
+        port: u32,
+        source: u32,
+        source_port: u32,
+    ) -> i32;
     fn host_net_connect_status(handle: i32) -> i32;
     fn host_net_send(handle: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_recv(handle: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_poll(handle: i32, events: u32) -> i32;
+    fn host_net_local_endpoint(handle: i32) -> i64;
+    fn host_net_shutdown(handle: i32, how: u32) -> i32;
     fn host_net_close(handle: i32) -> i32;
     fn host_net_listen(
         fd: i32,
@@ -772,6 +782,25 @@ impl HostIO for WasmHostIO {
         i32_to_result(result)
     }
 
+    fn host_net_connect_from(
+        &mut self,
+        handle: i32,
+        addr: &[u8],
+        port: u16,
+        source: [u8; 4],
+        source_port: u16,
+    ) -> Result<(), Errno> {
+        i32_to_result(unsafe {
+            host_net_connect_from(
+                handle,
+                addr.as_ptr(),
+                addr.len() as u32,
+                port as u32,
+                u32::from_be_bytes(source),
+                source_port as u32,
+            )
+        })
+    }
     fn host_net_connect_status(&mut self, handle: i32) -> Result<(), Errno> {
         let result = unsafe { host_net_connect_status(handle) };
         i32_to_result(result)
@@ -819,6 +848,17 @@ impl HostIO for WasmHostIO {
         }
     }
 
+    fn host_net_local_endpoint(&mut self, handle: i32) -> Result<([u8; 4], u16), Errno> {
+        let result = unsafe { host_net_local_endpoint(handle) };
+        if result < 0 {
+            return Err(Errno::from_u32((-result) as u32).unwrap_or(Errno::EIO));
+        }
+        let value = result as u64;
+        Ok((((value >> 16) as u32).to_be_bytes(), value as u16))
+    }
+    fn host_net_shutdown(&mut self, handle: i32, how: u32) -> Result<(), Errno> {
+        i32_to_result(unsafe { host_net_shutdown(handle, how) })
+    }
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno> {
         let result = unsafe { host_net_close(handle) };
         i32_to_result(result)
@@ -10001,6 +10041,7 @@ fn cross_process_loopback_connect(
     let accept_wake_idx = listener_sock.accept_wake_idx;
 
     let pc = crate::socket::PendingConnection {
+        local_addr: [127,0,0,1],
         peer_addr: client_addr,
         peer_addr6: [0; 16],
         peer_is_ipv6: false,
@@ -10125,6 +10166,7 @@ fn cross_process_loopback_connect6(
         .ok_or(Errno::ECONNREFUSED)?;
     let accept_wake_idx = listener_sock.accept_wake_idx;
     let pending = crate::socket::PendingConnection {
+        local_addr: [0;4],
         peer_addr: [0; 4],
         peer_addr6: client_addr6,
         peer_is_ipv6: true,
@@ -10228,6 +10270,7 @@ fn cross_process_unix_connect(
     let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
 
     let pending = crate::socket::PendingConnection {
+        local_addr: [0;4],
         peer_addr: [0; 4],
         peer_addr6: [0; 16],
         peer_is_ipv6: false,
@@ -13164,6 +13207,7 @@ pub extern "C" fn kernel_inject_connection(
     peer_addr_c: u32,
     peer_addr_d: u32,
     peer_port: u32,
+    local_addr: u32,
 ) -> i32 {
     use crate::ofd::FileType;
     use crate::pipe::PipeBuffer;
@@ -13211,10 +13255,13 @@ pub extern "C" fn kernel_inject_connection(
     // sendPipeIdx as recvPipeIdx + 1), so use alloc_pair which preserves
     // that invariant even when the free list is in play.
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-    let (recv_pipe_idx, send_pipe_idx) =
-        pipe_table.alloc_pair(PipeBuffer::new(65536), PipeBuffer::new(65536));
+    let (recv_pipe_idx, send_pipe_idx) = match pipe_table.alloc_tcp_pair(65536) {
+        Ok(pair) => pair,
+        Err(error) => return -(error as i32),
+    };
 
     let pc = PendingConnection {
+        local_addr: local_addr.to_be_bytes(),
         peer_addr: [
             peer_addr_a as u8,
             peer_addr_b as u8,
@@ -13242,6 +13289,41 @@ pub extern "C" fn kernel_inject_connection(
     }
 
     recv_pipe_idx as i32
+}
+
+/// Return the identity minted with this pair while the injection still owns
+/// both slots. The host retains it alongside its copied pipe indexes.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_tcp_connection_id(recv: u32, send: u32) -> u32 {
+    if recv.checked_add(1) != Some(send) {
+        return 0;
+    }
+    let table = unsafe { crate::pipe::global_pipe_table() };
+    let token = table
+        .get(recv as usize)
+        .map(|pipe| pipe.tcp_connection_id())
+        .unwrap_or(0);
+    if table
+        .get(send as usize)
+        .is_some_and(|pipe| pipe.tcp_connection_id() == token)
+    {
+        token
+    } else {
+        0
+    }
+}
+/// Reset only backing still carrying this connection's identity. A half-close
+/// may have released one pipe; its index must not authorize its replacement.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_reset_tcp_connection(recv: u32, send: u32, token: u32) -> i32 {
+    match unsafe { crate::pipe::global_pipe_table() }.reset_tcp_connection(
+        recv as usize,
+        send as usize,
+        token,
+    ) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
 }
 
 /// Inject a UDP datagram into the kernel's AF_INET SOCK_DGRAM receive path.

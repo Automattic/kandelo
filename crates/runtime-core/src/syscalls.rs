@@ -4575,6 +4575,7 @@ pub fn sys_read(
                             let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
                                     .ok_or(Errno::EBADF)?;
+                            if let Some(error) = pipe.stream_error() { return Err(error); }
                             let n = pipe.read(buf);
                             if n > 0 {
                                 return Ok(n);
@@ -5061,6 +5062,7 @@ pub fn sys_write(
                             let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(send_buf_idx) }
                                     .ok_or(Errno::EBADF)?;
+                            if let Some(error) = pipe.stream_error() { return Err(error); }
                             if !pipe.is_read_end_open() {
                                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                                 return Err(Errno::EPIPE);
@@ -11597,8 +11599,8 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
 
 /// Shut down part of a full-duplex socket connection.
 ///
-/// For AF_INET/AF_INET6 sockets with SHUT_RDWR, also releases this process's
-/// reference to the host network handle.
+/// Host-backed streams retain their handle until close: shutdown changes
+/// directions on the shared connection without releasing descriptor ownership.
 pub fn sys_shutdown(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -11615,11 +11617,24 @@ pub fn sys_shutdown(
     }
 
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    if !matches!(how, SHUT_RD | SHUT_WR | SHUT_RDWR) {
+        return Err(Errno::EINVAL);
+    }
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if let Some(handle) = sock.host_net_handle {
+        let changes_read = matches!(how, SHUT_RD | SHUT_RDWR) && !sock.shut_rd;
+        let changes_write = matches!(how, SHUT_WR | SHUT_RDWR) && !sock.shut_wr;
+        if changes_read || changes_write {
+            // Apply host shutdown before changing kernel flags. An unsupported
+            // adapter must not masquerade as a successful half-close.
+            host.host_net_shutdown(handle, how)?;
+        }
+    }
     // Taking the resource indexes makes shutdown idempotent and prevents a
     // later close, process exit, fork, or SCM_RIGHTS transfer from dropping or
     // resurrecting the same pipe reference. Explicit SHUT_RD is a hard receive
     // refusal; only normal close uses TCP's orderly orphaned-receive state.
-    let (send_idx, recv_idx, net_handle, datagram_send_state_changed) = {
+    let (send_idx, recv_idx, datagram_send_state_changed) = {
         let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
         let is_unix_dgram = sock.domain == crate::socket::SocketDomain::Unix
             && sock.sock_type == crate::socket::SocketType::Dgram;
@@ -11638,7 +11653,6 @@ pub fn sys_shutdown(
                 (
                     None,
                     sock.recv_buf_idx.take(),
-                    None,
                     is_unix_dgram && !was_shut_rd,
                 )
             }
@@ -11646,7 +11660,6 @@ pub fn sys_shutdown(
                 sock.shut_wr = true;
                 (
                     sock.send_buf_idx.take(),
-                    None,
                     None,
                     is_unix_dgram && !was_shut_wr,
                 )
@@ -11657,7 +11670,6 @@ pub fn sys_shutdown(
                 (
                     sock.send_buf_idx.take(),
                     sock.recv_buf_idx.take(),
-                    sock.host_net_handle.take(),
                     is_unix_dgram && (!was_shut_rd || !was_shut_wr),
                 )
             }
@@ -11681,11 +11693,6 @@ pub fn sys_shutdown(
             crate::wakeup::push(recv_idx as u32, crate::wakeup::WAKE_READABLE);
         }
         pipe_table.free_if_closed(recv_idx);
-    }
-    if let Some(net_handle) = net_handle {
-        if crate::socket::host_net_handle_close_ref(net_handle) {
-            let _ = host.host_net_close(net_handle);
-        }
     }
     // AF_UNIX datagram writers and readiness waiters are not backed by a
     // targetable pipe. A read-side or write-side shutdown changes whether the
@@ -11890,6 +11897,7 @@ pub fn sys_recv(
             loop {
                 let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
                     .ok_or(Errno::EBADF)?;
+                if let Some(error) = pipe.stream_error() { return Err(error); }
                 if waitall {
                     let remaining = buf.len().saturating_sub(total);
                     if pipe.available() < remaining
@@ -11940,13 +11948,19 @@ pub fn sys_getsockopt(proc: &mut Process, fd: i32, level: u32, optname: u32) -> 
             }),
             // Linux semantics: return cached errno and clear it.
             SO_ERROR => {
+                let mut stream_error = 0;
+                for index in [sock.recv_buf_idx, sock.send_buf_idx].into_iter().flatten() {
+                    if let Some(pipe) = unsafe {crate::pipe::global_pipe_table().get_mut(index)} {
+                        stream_error = stream_error.max(pipe.take_stream_error());
+                    }
+                }
                 let err = sock.connect_error;
                 if err != 0 {
                     if let Some(s) = proc.sockets.get_mut(sock_idx) {
                         s.connect_error = 0;
                     }
                 }
-                Ok(err)
+                Ok(if err != 0 {err} else {stream_error})
             }
             SO_ACCEPTCONN => Ok(if sock.state == SocketState::Listening {
                 1
@@ -12772,7 +12786,7 @@ pub fn sys_accept(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<
             accepted.bind_port = bind_port;
             match domain {
                 SocketDomain::Inet => {
-                    accepted.bind_addr = bind_addr;
+                    accepted.bind_addr = if pc.local_addr == [0;4] {bind_addr} else {pc.local_addr};
                     accepted.peer_addr = pc.peer_addr;
                 }
                 SocketDomain::Inet6 => {
@@ -13222,10 +13236,12 @@ pub fn sys_connect(
                 // while it is pending rather than leaking HostIO's internal
                 // EAGAIN retry sentinel. AF_UNIX and local/virtual routes do not
                 // enter this branch.
-                let net_handle = sock_idx as i32;
+                let net_handle = if let Some(handle) = sock.host_net_handle { handle } else { crate::socket::allocate_host_net_handle()? };
                 let was_connecting = sock.state == SocketState::Connecting;
                 if !was_connecting {
-                    host.host_net_connect(net_handle, &ip, port)?;
+                    if sock.bind_port != 0 || sock.bind_addr != [0;4] {
+                        host.host_net_connect_from(net_handle,&ip,port,sock.bind_addr,sock.bind_port)?;
+                    } else {host.host_net_connect(net_handle, &ip, port)?;}
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.state = SocketState::Connecting;
                     sock.host_net_handle = Some(net_handle);
@@ -13234,6 +13250,7 @@ pub fn sys_connect(
                     Ok(()) => {
                         let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                         sock.state = SocketState::Connected;
+                        if let Ok((addr,port)) = host.host_net_local_endpoint(net_handle) { sock.bind_addr=addr; sock.bind_port=port; }
                         Ok(())
                     }
                     Err(Errno::EAGAIN) => Err(if was_connecting {
@@ -13372,6 +13389,7 @@ pub fn sys_connect(
 
             if let Some(shared_idx) = shared_idx {
                 let pending = crate::socket::PendingConnection {
+                    local_addr: [0;4],
                     peer_addr: [0; 4],
                     peer_addr6: [0; 16],
                     peer_is_ipv6: false,
@@ -14048,7 +14066,8 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     if let Some(recv_idx) = sock.recv_buf_idx {
                         let pipe_ref = unsafe { crate::pipe::global_pipe_table().get(recv_idx) };
                         if let Some(pipe) = pipe_ref {
-                            if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
+                            if pipe.stream_error().is_some() { revents |= POLLERR; }
+                            if pollfd.events & POLLIN != 0 && (pipe.available() > 0 || !pipe.is_write_end_open()) {
                                 revents |= POLLIN;
                             }
                             if !pipe.is_write_end_open() {
@@ -14060,7 +14079,8 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     if let Some(send_idx) = sock.send_buf_idx {
                         let pipe_ref = unsafe { crate::pipe::global_pipe_table().get(send_idx) };
                         if let Some(pipe) = pipe_ref {
-                            if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
+                            if pipe.stream_error().is_some() { revents |= POLLERR; }
+                            if pollfd.events & POLLOUT != 0 && pipe.stream_error().is_none() && pipe.is_read_end_open() && pipe.free_space() > 0 {
                                 revents |= POLLOUT;
                             }
                         }
@@ -14098,6 +14118,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                                     Ok(()) => {
                                         if let Some(s) = proc.sockets.get_mut(sock_idx) {
                                             s.state = SocketState::Connected;
+                                                if let Ok((addr,port)) = host.host_net_local_endpoint(net_handle) {s.bind_addr=addr;s.bind_port=port;}
                                         }
                                         match host.host_net_poll(net_handle, pollfd.events) {
                                             Ok(host_revents) => {
@@ -18100,6 +18121,8 @@ mod tests {
         gl_submit_rc: i32,
         net_connect_result: Result<(), Errno>,
         net_connect_status_result: Result<(), Errno>,
+        net_shutdown_calls: Vec<(i32,u32)>,
+        net_shutdown_result: Result<(),Errno>,
         net_send_result: Result<usize, Errno>,
         net_connect_calls: Vec<(i32, Vec<u8>, u16)>,
         udp_source_result: Result<[u8; 4], Errno>,
@@ -18188,6 +18211,8 @@ mod tests {
                 gl_submit_rc: 0,
                 net_connect_result: Err(Errno::ECONNREFUSED),
                 net_connect_status_result: Err(Errno::ECONNREFUSED),
+                net_shutdown_calls: Vec::new(),
+                net_shutdown_result: Ok(()),
                 net_send_result: Err(Errno::ENOTCONN),
                 net_connect_calls: Vec::new(),
                 udp_source_result: Err(Errno::ENETUNREACH),
@@ -18900,6 +18925,10 @@ mod tests {
             _buf: &mut [u8],
         ) -> Result<usize, Errno> {
             Err(Errno::ENOTCONN)
+        }
+        fn host_net_shutdown(&mut self, handle: i32, how: u32) -> Result<(), Errno> {
+            self.net_shutdown_calls.push((handle, how));
+            self.net_shutdown_result
         }
         fn host_net_close(&mut self, _handle: i32) -> Result<(), Errno> {
             Ok(())
@@ -27967,6 +27996,136 @@ mod tests {
         use wasm_posix_shared::socket::*;
         let result = sys_socketpair(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0);
         assert_eq!(result, Err(Errno::EAFNOSUPPORT));
+    }
+
+    #[test]
+    fn host_tcp_shutdown_sends_fin_and_preserves_the_handle() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let addr = [2, 0, 0, 80, 10, 89, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
+        let handle = host.net_connect_calls[0].0;
+        sys_shutdown(&mut proc, &mut host, fd, SHUT_WR).unwrap();
+        sys_shutdown(&mut proc, &mut host, fd, SHUT_WR).unwrap();
+        assert_eq!(host.net_shutdown_calls, vec![(handle, SHUT_WR)]);
+        sys_shutdown(&mut proc, &mut host, fd, SHUT_RDWR).unwrap();
+        let ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+            .unwrap();
+        assert_eq!(
+            proc.sockets
+                .get((-(ofd.host_handle + 1)) as usize)
+                .unwrap()
+                .host_net_handle,
+            Some(handle)
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn unsupported_host_shutdown_does_not_change_kernel_flags() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        host.net_shutdown_result = Err(Errno::EOPNOTSUPP);
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_connect(
+            &mut proc,
+            &mut host,
+            fd,
+            &[2, 0, 0, 80, 10, 89, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+        )
+        .unwrap();
+        assert_eq!(
+            sys_shutdown(&mut proc, &mut host, fd, SHUT_WR),
+            Err(Errno::EOPNOTSUPP)
+        );
+        let ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+            .unwrap();
+        assert!(
+            !proc
+                .sockets
+                .get((-(ofd.host_handle + 1)) as usize)
+                .unwrap()
+                .shut_wr
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn unrelated_process_socket_slots_have_distinct_host_connections() {
+        use wasm_posix_shared::socket::*;
+        let mut first = Process::new(1);
+        let mut second = Process::new(2);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        let a = sys_socket(&mut first, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let b = sys_socket(&mut second, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let addr = [2, 0, 0, 80, 10, 89, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_connect(&mut first, &mut host, a, &addr).unwrap();
+        sys_connect(&mut second, &mut host, b, &addr).unwrap();
+        assert_ne!(host.net_connect_calls[0].0, host.net_connect_calls[1].0);
+        sys_close(&mut first, &mut host, a).unwrap();
+        sys_close(&mut second, &mut host, b).unwrap();
+    }
+
+    #[test]
+    fn accepted_tcp_reset_is_observable_after_dup_and_clears_only_so_error() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let listener = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let addr = [2, 0, 0x46, 0xa5, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_bind(&mut proc, &mut host, listener, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, listener, 4).unwrap();
+        let client = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client, &addr).unwrap();
+        let accepted = sys_accept(&mut proc, &mut host, listener).unwrap();
+        let alias = sys_dup(&mut proc, accepted).unwrap();
+        let ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(accepted).unwrap().ofd_ref.0)
+            .unwrap();
+        let sock = proc.sockets.get((-(ofd.host_handle + 1)) as usize).unwrap();
+        let indexes = [sock.recv_buf_idx.unwrap(), sock.send_buf_idx.unwrap()];
+        sys_send(&mut proc, &mut host, client, b"discard", 0).unwrap();
+        for index in indexes {
+            unsafe { crate::pipe::global_pipe_table().get_mut(index).unwrap() }
+                .reset_stream(Errno::ECONNRESET);
+        }
+        assert_eq!(
+            sys_recv(&mut proc, &mut host, alias, &mut [0; 16], 0),
+            Err(Errno::ECONNRESET)
+        );
+        assert_eq!(
+            sys_write(&mut proc, &mut host, accepted, b"reply"),
+            Err(Errno::ECONNRESET)
+        );
+        assert_eq!(
+            sys_getsockopt(&mut proc, alias, SOL_SOCKET, SO_ERROR),
+            Ok(104)
+        );
+        assert_eq!(
+            sys_getsockopt(&mut proc, accepted, SOL_SOCKET, SO_ERROR),
+            Ok(0)
+        );
+        assert_eq!(
+            sys_read(&mut proc, &mut host, accepted, &mut [0; 16]),
+            Err(Errno::ECONNRESET)
+        );
+        for fd in [alias, accepted, client, listener] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
     }
 
     #[test]

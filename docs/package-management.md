@@ -836,6 +836,12 @@ cargo xtask build-deps parse   zlib   # → normalized dump of package.toml
 cargo xtask build-deps resolve zlib   # → build-if-needed, then print the path
 ```
 
+`sha` and `path` use the active resolution policy. With
+`WASM_POSIX_RESOLUTION_POLICY=source-only-v1`, they report the source-only
+key and compiled-cache location used by `resolve`, rather than the default
+binary cache. Both are read-only: `path` can name an artifact that has not
+been built yet and does not create cache directories.
+
 ## Resolution order
 
 `resolve <name>` walks the dep graph depth-first. For each library

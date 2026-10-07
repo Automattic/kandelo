@@ -55,6 +55,7 @@ interface Connection {
   recvBuf: Buffer;
   closed: boolean;
   readEnded: boolean;
+  readShutdown: boolean;
   /** True once net.Socket has emitted 'connect' (TCP handshake done). */
   connected: boolean;
   error: Error | null;
@@ -69,7 +70,7 @@ export class TcpNetworkBackend implements NetworkIO {
   private connections = new Map<number, Connection>();
   private dns = new Map<string, DnsEntry>();
 
-  connect(handle: number, addr: Uint8Array, port: number): void {
+  connect(handle: number, addr: Uint8Array, port: number, source?: import("../types").NetworkAddress): void {
     const ip = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`;
     const socket = new net.Socket({ allowHalfOpen: true });
     const conn: Connection = {
@@ -77,6 +78,7 @@ export class TcpNetworkBackend implements NetworkIO {
       recvBuf: Buffer.alloc(0),
       closed: false,
       readEnded: false,
+      readShutdown: false,
       connected: false,
       error: null,
     };
@@ -85,7 +87,7 @@ export class TcpNetworkBackend implements NetworkIO {
       conn.connected = true;
     });
     socket.on("data", (data: Buffer) => {
-      conn.recvBuf = Buffer.concat([conn.recvBuf, data]);
+      if (!conn.readShutdown) conn.recvBuf = Buffer.concat([conn.recvBuf, data]);
     });
     socket.on("end", () => {
       conn.readEnded = true;
@@ -98,7 +100,7 @@ export class TcpNetworkBackend implements NetworkIO {
       conn.readEnded = true;
     });
 
-    socket.connect(port, ip);
+    socket.connect({port,host:ip,...(source ? {localAddress:Array.from(source.addr).join("."),localPort:source.port} : {})});
     this.connections.set(handle, conn);
   }
 
@@ -122,7 +124,7 @@ export class TcpNetworkBackend implements NetworkIO {
   send(handle: number, data: Uint8Array, _flags: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
-    if (conn.error) throw conn.error;
+    if (conn.error) throw Object.assign(conn.error,{errno:mapNetErrnoCode((conn.error as NodeJS.ErrnoException).code)});
     if (
       conn.closed ||
       conn.socket.destroyed ||
@@ -142,7 +144,7 @@ export class TcpNetworkBackend implements NetworkIO {
   recv(handle: number, maxLen: number, flags: number): Uint8Array {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
-    if (conn.error) throw conn.error;
+    if (conn.error) throw Object.assign(conn.error,{errno:mapNetErrnoCode((conn.error as NodeJS.ErrnoException).code)});
 
     if (conn.recvBuf.length > 0) {
       const len = Math.min(maxLen, conn.recvBuf.length);
@@ -186,6 +188,20 @@ export class TcpNetworkBackend implements NetworkIO {
       revents |= POLLOUT;
     }
     return revents;
+  }
+
+  localEndpoint(handle: number): import('../types').NetworkAddress {
+    const value = this.connections.get(handle)?.socket.address();
+    if (!value || typeof value === "string" || !("family" in value) || value.family !== "IPv4") throw Object.assign(new Error("ENOTCONN"),{errno:107});
+    return {addr:new Uint8Array(value.address.split('.').map(Number)),port:value.port};
+  }
+
+  shutdown(handle: number, how: number): void {
+    const conn = this.connections.get(handle);
+    if (!conn) throw Object.assign(new Error("ENOTCONN"), {errno:107});
+    if (!Number.isInteger(how) || how < 0 || how > 2) throw Object.assign(new Error("EINVAL"),{errno:22});
+    if (how === 0 || how === 2) {conn.readShutdown=true; conn.readEnded=true; conn.recvBuf=Buffer.alloc(0);}
+    if ((how === 1 || how === 2) && !conn.socket.writableEnded) conn.socket.end();
   }
 
   close(handle: number): void {

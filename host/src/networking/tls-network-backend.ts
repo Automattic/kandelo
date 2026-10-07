@@ -385,7 +385,8 @@ export class TlsNetworkBackend implements NetworkIO {
     return ip;
   }
 
-  connect(handle: number, addr: Uint8Array, port: number): void {
+  connect(handle: number, addr: Uint8Array, port: number, source?: import("../types").NetworkAddress): void {
+    if (source) throw Object.assign(new Error("bound raw TCP is unavailable through fetch"), {errno:95});
     const ipStr = this.ipKey(addr);
     const hostname = this.hostnameMap.get(ipStr) || ipStr;
 

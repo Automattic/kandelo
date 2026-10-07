@@ -18,6 +18,31 @@ use wasm_posix_shared::Errno;
 // Mirrors the `host_handle_fork_ref` / `host_handle_close_ref` pattern in
 // `crates/kernel/src/ofd.rs` for plain-file host handles.
 
+// Process-local socket indexes cannot identify connections in a shared host
+// backend: unrelated processes routinely both own socket slot zero.
+static NEXT_HOST_NET_HANDLE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+pub fn allocate_host_net_handle() -> Result<i32, Errno> {
+    NEXT_HOST_NET_HANDLE
+        .fetch_update(
+            core::sync::atomic::Ordering::Relaxed,
+            core::sync::atomic::Ordering::Relaxed,
+            |next| {
+                if next < i32::MAX as u32 {
+                    Some(next + 1)
+                } else {
+                    None
+                }
+            },
+        )
+        .map(|value| value as i32)
+        .map_err(|_| Errno::ENOBUFS)
+}
+pub fn reserve_host_net_handle(handle: i32) {
+    if handle >= 0 {
+        NEXT_HOST_NET_HANDLE.fetch_max(handle as u32 + 1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 struct HostNetRefs(UnsafeCell<Option<BTreeMap<i32, u32>>>);
 unsafe impl Sync for HostNetRefs {}
 
@@ -32,6 +57,7 @@ fn get_host_net_refs() -> &'static mut BTreeMap<i32, u32> {
 /// (fork or spawn child). If the handle is being inherited for the first
 /// time, sets the count to 2 (parent + child). Otherwise increments by 1.
 pub fn host_net_handle_fork_ref(h: i32) {
+    reserve_host_net_handle(h);
     let refs = get_host_net_refs();
     let count = refs.entry(h).or_insert(1); // 1 = the parent already has it
     *count += 1; // +1 for the child
@@ -927,6 +953,8 @@ impl SocketTable {
 
 /// A pending stream connection waiting in a shared accept queue.
 pub struct PendingConnection {
+    /// Actual destination IPv4 address selected by the routing backend.
+    pub local_addr: [u8;4],
     pub peer_addr: [u8; 4],
     pub peer_addr6: [u8; 16],
     /// True when `peer_addr6` is a native IPv6 source. For an IPv4 peer
