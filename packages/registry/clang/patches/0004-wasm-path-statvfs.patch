@@ -1,11 +1,11 @@
-# Kandelo compatibility boundary: statvfs semantics on the Kandelo VFS
+# LLVM portability boundary: POSIX statvfs has no mount locality flag
 #
-# llvm::sys::fs::is_local() probes filesystem-specific statvfs flags to
-# decide whether a path is on local vs. remote storage. Kandelo exposes a
-# single local virtual filesystem to guest programs and does not implement
-# BSD-style statvfs flags, so this probe is meaningless on the target. This
-# patch adds a __wasm__ branch that always reports local storage, matching
-# Kandelo's actual (single, local) VFS semantics.
+# LLVM's fallback assumes BSD MNT_LOCAL, which musl/POSIX do not expose.
+# A wasm target can have memory, host, OPFS, and fetched archive mounts;
+# statvfs does not distinguish their locality. Use LLVM's conservative
+# "nonlocal" answer, as on Haiku/Cygwin, rather than inventing MNT_LOCAL
+# or claiming every mount is local. LLVM then uses its normal buffered
+# file-output path. This does not replace mmap/msync/munmap semantics.
 #
 # Upstream: llvm-project, tag llvmorg-21.1.7 (LLVM 21.1.7).
 --- a/llvm/lib/Support/Unix/Path.inc	2025-12-01 07:58:50
@@ -15,8 +15,8 @@
    // vmount entry not found; "remote" is the conservative answer.
    return false;
 +#elif defined(__wasm__)
-+  // Kandelo exposes a local virtual filesystem and does not provide BSD statvfs flags.
-+  return true;
++  // POSIX statvfs has no locality flag; report unknown conservatively.
++  return false;
  #elif defined(__MVS__)
    // The file system can have an arbitrary structure on z/OS; must go with the
    // conservative answer.

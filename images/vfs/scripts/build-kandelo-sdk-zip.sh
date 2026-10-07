@@ -76,7 +76,7 @@ if [ -z "$HOST_CLANG_RESOURCE_DIR" ]; then
     echo "build-kandelo-sdk-zip: clang --print-resource-dir returned an empty path" >&2
     exit 1
 fi
-require_dir "Clang resource headers" "$HOST_CLANG_RESOURCE_DIR"
+require_dir "Clang resource headers" "$HOST_CLANG_RESOURCE_DIR/include"
 
 OUTPUT_DIR="$(dirname "$OUTPUT_FILE")"
 mkdir -p "$OUTPUT_DIR"
@@ -116,7 +116,9 @@ ln -s clang "$STAGING/lib/llvm/bin/clang++"
 
 # --- lib/llvm/lib/clang/21 — Clang resource headers ---
 mkdir -p "$STAGING/lib/llvm/lib/clang/21"
-cp -RL "$HOST_CLANG_RESOURCE_DIR/." "$STAGING/lib/llvm/lib/clang/21/"
+# Only target-independent headers belong in the guest resource tree. Host
+# compiler-rt libraries (e.g. Darwin Mach-O archives) are not guest libraries.
+cp -RL "$HOST_CLANG_RESOURCE_DIR/include" "$STAGING/lib/llvm/lib/clang/21/"
 
 # --- wasm32posix/sysroot — musl + libc++ ---
 mkdir -p "$STAGING/wasm32posix/sysroot"
@@ -134,7 +136,7 @@ cp -RL "$LIBCXX_DIR/include/c++/v1" "$STAGING/wasm32posix/sysroot/include/c++/v1
 # ship alongside the .c files — matching the canonical SDK image, which
 # copies the whole glue directory.
 mkdir -p "$STAGING/wasm32posix/glue"
-cp "$REPO_ROOT/libc/glue/"* "$STAGING/wasm32posix/glue/"
+cp -RL "$REPO_ROOT/libc/glue/." "$STAGING/wasm32posix/glue/"
 
 # --- wasm32posix/glue-objects — precompiled glue objects ---
 mkdir -p "$STAGING/wasm32posix/glue-objects"

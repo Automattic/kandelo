@@ -1073,6 +1073,17 @@ if wasm_require_no_fork_instrumentation "$work/inert-fork.wasm" >/dev/null 2>&1;
     exit 1
 fi
 
+cat >"$work/dylink-string-executable.wat" <<'WAT'
+(module
+  (memory 1)
+  (data (i32.const 0) "dylink.0")
+  (func $initialize)
+  (start $initialize)
+  (func (export "_start")))
+WAT
+wat2wasm "$work/dylink-string-executable.wat" -o "$work/dylink-string-executable.wasm"
+wasm_require_fork_instrumentation_if_needed "$work/dylink-string-executable.wasm"
+
 if wasm_require_fork_instrumentation_if_needed \
     "$work/structural-side.wasm" >/dev/null 2>&1; then
     echo "ERROR: side module without side-boundary capability was accepted" >&2

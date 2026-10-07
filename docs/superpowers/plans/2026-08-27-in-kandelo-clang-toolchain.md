@@ -1,5 +1,12 @@
 # In-Kandelo Clang Toolchain Implementation Plan
 
+> Historical design/plan. The delivery decision was superseded by the
+> single `kandelo-sdk.zip` lazy archive in the **base shell**. The current
+> contract is [Compile inside the base shell](../../sdk-guide.md#compile-inside-the-base-shell).
+> The older split archives, SDK-image integration, ABI values, and patch
+> descriptions below are not implementation instructions. The saved native
+> SDK and guest fork-instrumentation work items remain future work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
 > superpowers:executing-plans to implement this plan task-by-task. Steps

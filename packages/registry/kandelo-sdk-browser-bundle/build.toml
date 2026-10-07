@@ -4,6 +4,7 @@ inputs = [
   "images/vfs/scripts/build-kandelo-sdk-zip.sh",
   "images/vfs/scripts/create-deterministic-zip.sh",
   "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
   "sdk/activate.sh",
   "sdk/kandelo/bin",
   "sdk/config.site",
@@ -12,4 +13,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 2
+revision    = 3

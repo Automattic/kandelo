@@ -17,7 +17,7 @@
 //    one integer parameter has a known value. The AST half
 //    (KandeloFnCasts.cpp, same dylib and process) appends its lines.
 //
-// Output: the text below becomes the contents of a Wasm custom section named
+// Output: the text below is carried by a Wasm custom section named
 // `kandelo.calltypes` in the object file (through the WebAssembly backend's
 // `wasm.custom_sections` named metadata). WHY a section and not a side file:
 // the facts must travel with the object through static archives, copies and
@@ -27,6 +27,10 @@
 // holds only the header and M line, so a missing unit is distinguishable
 // from an empty one. `-mllvm -kandelo-calltypes-out=<path>` also writes the
 // same text to a file (debugging only).
+// Chunks at least 1 MiB are stored losslessly as zlib frames: magic
+// KCTZ\0\0\0\1, little-endian uint64 decoded and encoded sizes, then the
+// compressed bytes. The instrumenter decodes each frame before reading the
+// unchanged format-5 records; wasm-ld concatenates plain/framed chunks alike.
 //
 // Format (TSV, demangled names matching the wasm name section):
 //   #kandelo-calltypes	5
@@ -74,6 +78,8 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Compression.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -924,10 +930,28 @@ struct EmitPass : PassInfoMixin<EmitPass> {
     localTypeIds().clear();
     kandeloModuleId().clear();
     kandeloOtherSanitizers() = true;
+    // LLVM-sized programs can accumulate more than wasm-ld's 32-bit section
+    // limit in these repetitive names/flow records. Preserve every fact in
+    // a length-framed zlib chunk; the instrumenter decodes each chunk before
+    // parsing the unchanged format-5 text. Small chunks retain their format.
+    std::string stored;
+    if (text.size() >= 1024 * 1024) {
+      if (!compression::zlib::isAvailable())
+        report_fatal_error("kandelo-calltypes: LLVM requires zlib support for large compiler-facts chunks");
+      SmallVector<uint8_t, 0> compressed;
+      compression::zlib::compress(
+          ArrayRef<uint8_t>(reinterpret_cast<const uint8_t *>(text.data()), text.size()),
+          compressed);
+      stored.assign("KCTZ\0\0\0\1", 8);
+      stored.resize(24);
+      support::endian::write64le(stored.data() + 8, text.size());
+      support::endian::write64le(stored.data() + 16, compressed.size());
+      stored.append(reinterpret_cast<const char *>(compressed.data()), compressed.size());
+    } else stored = text;
     // The object's `kandelo.calltypes` custom section (see the header).
     LLVMContext &Ctx = M.getContext();
     M.getOrInsertNamedMetadata("wasm.custom_sections")
-        ->addOperand(MDNode::get(Ctx, {MDString::get(Ctx, kSectionName), MDString::get(Ctx, text)}));
+        ->addOperand(MDNode::get(Ctx, {MDString::get(Ctx, kSectionName), MDString::get(Ctx, stored)}));
     if (!OutPath.empty()) {
       std::error_code EC;
       raw_fd_ostream file(OutPath, EC, sys::fs::OF_Text);

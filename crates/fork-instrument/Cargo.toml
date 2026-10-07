@@ -32,6 +32,7 @@ walrus = "0.26.4"
 # anyhow — ergonomic error chaining for a CLI / build tool.
 anyhow = "1"
 sha2 = "0.10"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 # clap — argument parsing. `derive` feature for #[derive(Parser)].
 clap = { version = "4", features = ["derive"] }

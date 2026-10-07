@@ -1,5 +1,12 @@
 # In-Kandelo Clang Toolchain: Package + SDK Integration Slice
 
+> Historical design/plan. The delivery decision was superseded by the
+> single `kandelo-sdk.zip` lazy archive in the **base shell**. The current
+> contract is [Compile inside the base shell](../../sdk-guide.md#compile-inside-the-base-shell).
+> The older split archives, SDK-image integration, ABI values, and patch
+> descriptions below are not implementation instructions. The saved native
+> SDK and guest fork-instrumentation work items remain future work.
+
 Date: 2026-08-26
 Status: Design approved in brainstorming; pending written-spec review
 Branch context: adapting the exploration work in
@@ -327,11 +334,11 @@ event.
    `scripts/run-wasm-fork-instrument.sh` to run inside Kandelo, so
    forking programs compiled in-guest become runnable and the clang
    driver can self-link without a host round-trip.
-3. **Browser preset + demo delivery (part (b)).** Port the exploration
-   branch's C-development preset, its prebaked C-dev image (base shell +
-   SDK sysroot/wrapper + the clang lazy archive), and browser acceptance
-   tests onto the current session/host code, and verify with
-   `./run.sh browser`. This is where Node/browser demo parity lands.
+3. **Base shell delivery (implemented in this branch).** The earlier
+   separate C-development image was superseded: the base shell registers
+   one SDK archive with lazy references to compiler binaries, headers,
+   libraries, and wrappers. Node and browser acceptance use the same guest
+   programs. Current usage and validation commands belong in `docs/sdk-guide.md`.
 4. **`package-layer` materializer (URL-shareable toolchain layer).** The
    descriptor schema already defines a `package-layer` mount source that
    composes up to 8 overlays at `/`, but no host/browser code materializes

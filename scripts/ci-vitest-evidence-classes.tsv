@@ -28,6 +28,7 @@ host/test/channel-listener-reclamation.test.ts	source-only
 host/test/channel-listener-scheduling.test.ts	source-only
 host/test/channel-scalar-contract.test.ts	source-only
 host/test/chown-sentinel.test.ts	prepared-product
+host/test/clang-in-guest.test.ts	prepared-product
 host/test/clock-id-validation.test.ts	prepared-product
 host/test/clone-tid-authority.test.ts	source-only
 host/test/closed-lazy-assets.test.ts	source-only

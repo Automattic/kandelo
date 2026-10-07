@@ -23,24 +23,22 @@ fail() {
     exit 2
 }
 
-require_real_directory() {
-    local label="$1"
-    local path="$2"
-    case "$path" in
-        /*) ;;
-        *) fail "$label must be an absolute resolver-owned directory: $path" ;;
-    esac
-    if [ ! -d "$path" ] || [ -L "$path" ]; then
-        fail "$label must be a real directory: $path"
-    fi
-}
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 
 [ "${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}" = wasm32 ] ||
     fail "only wasm32 supported (got ${WASM_POSIX_DEP_TARGET_ARCH:-})"
-require_real_directory WASM_POSIX_DEP_OUT_DIR "$OUT_DIR"
-require_real_directory WASM_POSIX_DEP_WORK_DIR "$WORK_DIR"
-require_real_directory WASM_POSIX_DEP_CLANG_DIR "$CLANG_DIR"
-require_real_directory WASM_POSIX_DEP_LIBCXX_DIR "$LIBCXX_DIR"
+for variable in WASM_POSIX_DEP_OUT_DIR WASM_POSIX_DEP_WORK_DIR WASM_POSIX_DEP_CLANG_DIR WASM_POSIX_DEP_LIBCXX_DIR; do
+    root="$(kandelo_package_require_existing_real_dir "$variable" "${!variable:-}")"
+    [ "$root" = "${!variable}" ] || fail "$variable must use its canonical path"
+done
+for dependency_root in "$CLANG_DIR" "$LIBCXX_DIR"; do
+    kandelo_package_require_regular_input_tree dependency "$dependency_root"
+    kandelo_package_require_disjoint_paths dependency "$dependency_root" work "$WORK_DIR"
+    kandelo_package_require_disjoint_paths dependency "$dependency_root" output "$OUT_DIR"
+done
+kandelo_package_require_disjoint_paths clang "$CLANG_DIR" libcxx "$LIBCXX_DIR"
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"

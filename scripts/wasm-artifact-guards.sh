@@ -1705,6 +1705,14 @@ wasm_require_fork_instrumentation_if_needed() {
         return 1
     fi
 
+    # A byte match is only a prefilter: linkers and object tools contain the
+    # literal "dylink.0" in data without being side modules. The decoded role
+    # is authoritative; clean executables need no continuation contract.
+    [ "$artifact_role" != side-module ] &&
+        [ "$imports_fork" = 0 ] && [ "$frame_imports" = 000 ] &&
+        [ "$linked_descriptor" = 0 ] && [ "$fork_capability" = 0 ] &&
+        [ "$exports" = 0000000 ] && return 0
+
     local missing=()
     local duplicates=()
     [ "$abort_begin" -ge 1 ] || missing+=(wpk_fork_abort_begin)

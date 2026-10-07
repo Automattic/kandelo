@@ -99,6 +99,36 @@ fn facts_narrow_the_instrumented_set() {
 }
 
 #[test]
+fn compressed_facts_preserve_the_same_fork_plan() {
+    use flate2::{Compression, write::ZlibEncoder};
+    use std::io::Write;
+    let (plain, with_plain) = linked(TYPED_DISPATCH, FACTS, None);
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(FACTS.as_bytes()).unwrap();
+    let payload = encoder.finish().unwrap();
+    let mut frame = b"KCTZ\0\0\0\x01".to_vec();
+    frame.extend_from_slice(&(FACTS.len() as u64).to_le_bytes());
+    frame.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    frame.extend(payload);
+    let mut packed = plain.clone();
+    custom_section(&mut packed, SECTION, &frame);
+    custom_section(&mut packed, CODE_HASH_SECTION, &code_sha256(&plain).unwrap());
+    let expected = sink_report(&with_plain, &Options::default()).unwrap();
+    let actual = sink_report(&packed, &Options::default()).unwrap();
+    assert_eq!(actual.source, PlanSource::Facts, "{:?}", actual.facts_error);
+    assert_eq!(actual.instrumented, expected.instrumented);
+    let actual_facts = actual.facts.unwrap();
+    let expected_facts = expected.facts.unwrap();
+    assert_eq!(
+        (actual_facts.chunks, actual_facts.defined, actual_facts.bound),
+        (expected_facts.chunks, expected_facts.defined, expected_facts.bound),
+    );
+    let transformed = instrument(&packed, &Options::default()).unwrap();
+    assert!(!has_section(&transformed, SECTION));
+    assert!(!has_section(&transformed, CODE_HASH_SECTION));
+}
+
+#[test]
 fn instrumented_output_carries_no_facts() {
     let (_, with) = linked(TYPED_DISPATCH, FACTS, None);
     let out = instrument(&with, &Options::default()).unwrap();

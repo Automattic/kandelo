@@ -1,7 +1,7 @@
 kind = "program"
 name = "clang"
 version = "21.1.7"
-kernel_abi = 43
+kernel_abi = 47
 depends_on = ["libcxx@21.1.7"]
 arches = ["wasm32"]
 
