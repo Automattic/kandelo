@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork]
-//!                      [--post-optimize O2|O1|O3|Os|Oz|none]
+//!                      [--post-optimize Os|O1|O2|O3|Oz|none] [--keep-names]
 //! ```
 //!
 //! After instrumenting, the CLI runs Binaryen's `wasm-opt` over the result
@@ -91,11 +91,16 @@ struct Cli {
     /// wasm-opt level to run over an instrumented output, or `none`.
     ///
     /// Runs only when instrumentation changed the module; a module outside
-    /// any fork transaction is written back byte-for-byte. Names and DWARF
-    /// are kept (`wasm-opt -g`) when the input carried them. `none` exists
-    /// for inspecting the instrumenter's raw output, not for shipping.
-    #[arg(long, default_value = "O2", value_parser = ["O1", "O2", "O3", "Os", "Oz", "none"])]
+    /// any fork transaction is written back byte-for-byte. The name section
+    /// is dropped unless `--keep-names` is given. `none` exists for
+    /// inspecting the instrumenter's raw output, not for shipping.
+    #[arg(long, default_value = "Os", value_parser = ["O1", "O2", "O3", "Os", "Oz", "none"])]
     post_optimize: String,
+
+    /// Debugging: keep the name section through the post-optimize pass
+    /// (`wasm-opt -g`), so traps and profiles show function names.
+    #[arg(long)]
+    keep_names: bool,
 
     /// Analyze the module and print the discovered fork-path function
     /// set as JSON to stdout. Skips instrumentation and output emission.
@@ -275,24 +280,11 @@ fn main() -> Result<()> {
     let untransformed = output == input
         || fork_instrument::facts::strip_section(&input)?.is_some_and(|stripped| stripped == output);
     if cli.post_optimize != "none" && !untransformed {
-        post_optimize(output_path, &cli.post_optimize, has_debug_info(&input)?)?;
+        post_optimize(output_path, &cli.post_optimize, cli.keep_names)?;
     }
     preserve_input_mode(input_mode, output_path)?;
 
     Ok(())
-}
-
-/// Whether the module carries a name section or DWARF the caller chose to
-/// keep. wasm-opt drops both unless run with `-g`.
-fn has_debug_info(bytes: &[u8]) -> Result<bool> {
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        if let wasmparser::Payload::CustomSection(section) = payload? {
-            if section.name() == "name" || section.name().starts_with(".debug_") {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
 }
 
 /// Optimize the instrumented module in place.
@@ -303,11 +295,16 @@ fn has_debug_info(bytes: &[u8]) -> Result<bool> {
 /// so wasm-opt may remove unused imports and renumber functions, globals and
 /// tables. A missing wasm-opt is an error, not a skipped step: the artifact
 /// would differ from what every other build of the same sources produces.
-fn post_optimize(path: &Path, level: &str, keep_debug_info: bool) -> Result<()> {
+///
+/// WHY `-g` only on request: the instrumenter does not carry DWARF through,
+/// so `-g` could only keep the name section. wasm-ld writes one into every
+/// link, the facts need it to bind (`facts/bind.rs`), and the runtime does
+/// not read it. Keeping it cost Quickshell 10 MB.
+fn post_optimize(path: &Path, level: &str, keep_names: bool) -> Result<()> {
     let wasm_opt = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
     let mut command = Command::new(&wasm_opt);
     command.arg(path).arg(format!("-{level}"));
-    if keep_debug_info {
+    if keep_names {
         command.arg("-g");
     }
     command.arg("-o").arg(path);

@@ -135,15 +135,48 @@ fn instrumented_output_is_optimized_and_valid() {
     assert!(!has_custom_section(&optimized, "name"));
 }
 
+#[cfg(unix)]
 #[test]
-fn names_survive_when_the_input_kept_them() {
+fn the_default_level_is_os() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new("default");
+    let input = dir.join("input.wasm");
+    fs::write(&input, wat::parse_str(FORK_WAT).unwrap()).unwrap();
+    let arguments = dir.join("arguments.txt");
+    let wasm_opt = dir.join("wasm-opt");
+    fs::write(&wasm_opt, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", arguments.display())).unwrap();
+    fs::set_permissions(&wasm_opt, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = dir.join("output.wasm");
+    let result = instrument(&input, &output, &[], wasm_opt.to_str());
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(fs::read_to_string(arguments).unwrap().lines().nth(1), Some("-Os"));
+}
+
+#[test]
+fn names_and_dwarf_are_dropped() {
     let dir = TempDir::new("names");
     let input = dir.join("input.wasm");
-    let bytes = wat::parse_str(FORK_WAT).unwrap();
+    let wat = FORK_WAT.replacen("(module", "(module (@custom \".debug_str\" \"foo\")", 1);
+    let bytes = wat::parse_str(wat).unwrap();
     assert!(has_custom_section(&bytes, "name"));
+    assert!(has_custom_section(&bytes, ".debug_str"));
     fs::write(&input, bytes).unwrap();
     let output = dir.join("output.wasm");
     let result = instrument(&input, &output, &[], None);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let output = fs::read(output).unwrap();
+    assert!(!has_custom_section(&output, "name"));
+    assert!(!has_custom_section(&output, ".debug_str"));
+}
+
+#[test]
+fn names_survive_with_keep_names() {
+    let dir = TempDir::new("keep-names");
+    let input = dir.join("input.wasm");
+    fs::write(&input, wat::parse_str(FORK_WAT).unwrap()).unwrap();
+    let output = dir.join("output.wasm");
+    let result = instrument(&input, &output, &["--keep-names"], None);
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     assert!(has_custom_section(&fs::read(output).unwrap(), "name"));
 }
