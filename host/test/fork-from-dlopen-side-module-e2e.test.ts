@@ -55,7 +55,13 @@ if (process.env.KANDELO_REQUIRE_SIDE_MODULE_FORK_E2E === "1" && !hasPrerequisite
 function instrumentInPlace(wasmPath: string, entry?: string): void {
   const output = `${wasmPath}.instrumented`;
   const args = [wasmPath, "-o", output];
-  if (entry) args.push("--entry", entry);
+  if (entry) {
+    args.push("--entry", entry);
+  } else {
+    // These executables deliberately load arbitrary fork-returning plugins.
+    // The default traced-entries contract correctly refuses such imports.
+    args.push("--side-modules", "assume-all-entries-fork-returning");
+  }
   execFileSync(instrument, args, { stdio: "pipe" });
   renameSync(output, wasmPath);
 }
