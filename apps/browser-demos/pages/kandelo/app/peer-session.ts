@@ -9,8 +9,8 @@
 // replace the copy-paste with the same two strings and nothing else changes.
 import * as React from "react";
 import {
-  answerPeerInvite,
-  createPeerInvite,
+  answerMigrationPeerInvite,
+  createMigrationPeerInvite,
   type PeerInvite,
   type PeerLink,
 } from "../../../lib/peer-link";
@@ -41,6 +41,7 @@ export function usePeerSession(): PeerSession {
   const [status, setStatus] = React.useState("");
   const [link, setLink] = React.useState<PeerLink | null>(null);
   const pendingInviteRef = React.useRef<PeerInvite | null>(null);
+  const pendingAnswerRef = React.useRef<(() => void) | null>(null);
   // Every attempt supersedes the one before it. Without this, a superseded
   // attempt's late failure — or worse, its late-connecting link — lands on
   // top of the attempt the user is actually waiting for.
@@ -63,6 +64,7 @@ export function usePeerSession(): PeerSession {
   React.useEffect(() => () => {
     attemptRef.current += 1;
     pendingInviteRef.current?.cancel();
+    pendingAnswerRef.current?.();
     linkRef.current?.close();
   }, []);
 
@@ -73,7 +75,9 @@ export function usePeerSession(): PeerSession {
         setStatus("Creating the invite code...");
         pendingInviteRef.current?.cancel();
         pendingInviteRef.current = null;
-        const invite = await createPeerInvite();
+        pendingAnswerRef.current?.();
+        pendingAnswerRef.current = null;
+        const invite = await createMigrationPeerInvite();
         if (attempt !== attemptRef.current) {
           invite.cancel();
           return;
@@ -93,11 +97,16 @@ export function usePeerSession(): PeerSession {
       const attempt = ++attemptRef.current;
       try {
         setStatus("Answering the invite...");
-        const { answer, connected } = await answerPeerInvite(remoteCode);
+        pendingInviteRef.current?.cancel();
+        pendingInviteRef.current = null;
+        pendingAnswerRef.current?.();
+        pendingAnswerRef.current = null;
+        const { answer, connected, cancel } = await answerMigrationPeerInvite(remoteCode);
         if (attempt !== attemptRef.current) {
-          void connected.then((stale) => stale.close(), () => {});
+          cancel();
           return;
         }
+        pendingAnswerRef.current = cancel;
         setLocalCode(answer);
         setStatus("Send this answer back; the connection completes by itself.");
         const connectedLink = await connected;
@@ -105,9 +114,11 @@ export function usePeerSession(): PeerSession {
           connectedLink.close();
           return;
         }
+        pendingAnswerRef.current = null;
         adopt(connectedLink);
       } catch (error) {
         if (attempt !== attemptRef.current) return;
+        pendingAnswerRef.current = null;
         setStatus(`Answer failed: ${describeError(error)}`);
       }
     })();
@@ -138,6 +149,8 @@ export function usePeerSession(): PeerSession {
     attemptRef.current += 1;
     pendingInviteRef.current?.cancel();
     pendingInviteRef.current = null;
+    pendingAnswerRef.current?.();
+    pendingAnswerRef.current = null;
     linkRef.current?.close();
     linkRef.current = null;
     setLink(null);

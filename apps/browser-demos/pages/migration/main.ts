@@ -30,8 +30,8 @@ import type { MachineCheckpoint } from "@host/migration/checkpoint";
 import { LocalFramebufferMirror } from "@host/migration/mirror-local";
 import { LocalCheckpointHandover } from "@host/migration/transport-local";
 import {
-  answerPeerInvite,
-  createPeerInvite,
+  answerMigrationPeerInvite,
+  createMigrationPeerInvite,
   type PeerInvite,
   type PeerLink,
 } from "../../lib/peer-link";
@@ -89,6 +89,7 @@ let link: PeerLink | null = null;
 let remoteHandover: LocalCheckpointHandover | null = null;
 let remoteMirror: LocalFramebufferMirror | null = null;
 let pendingInvite: PeerInvite | null = null;
+let cancelPendingAnswer: (() => void) | null = null;
 let linkAttempt = 0;
 const handover = new LocalCheckpointHandover();
 const mirror = new LocalFramebufferMirror();
@@ -344,7 +345,9 @@ inviteCreateButton.addEventListener("click", () => {
       setLinkStatus("Creating the invite code...");
       pendingInvite?.cancel();
       pendingInvite = null;
-      const invite = await createPeerInvite();
+      cancelPendingAnswer?.();
+      cancelPendingAnswer = null;
+      const invite = await createMigrationPeerInvite();
       if (attempt !== linkAttempt) {
         invite.cancel();
         return;
@@ -366,11 +369,16 @@ inviteAnswerButton.addEventListener("click", () => {
     const attempt = ++linkAttempt;
     try {
       setLinkStatus("Answering the invite...");
-      const { answer, connected } = await answerPeerInvite(remoteSignal.value);
+      pendingInvite?.cancel();
+      pendingInvite = null;
+      cancelPendingAnswer?.();
+      cancelPendingAnswer = null;
+      const { answer, connected, cancel } = await answerMigrationPeerInvite(remoteSignal.value);
       if (attempt !== linkAttempt) {
-        void connected.then((stale) => stale.close(), () => {});
+        cancel();
         return;
       }
+      cancelPendingAnswer = cancel;
       localSignal.value = answer;
       setLinkStatus(
         "Answer created — send your code back; the connection completes by itself.",
@@ -380,9 +388,11 @@ inviteAnswerButton.addEventListener("click", () => {
         connectedLink.close();
         return;
       }
+      cancelPendingAnswer = null;
       adoptLink(connectedLink);
     } catch (error) {
       if (attempt !== linkAttempt) return;
+      cancelPendingAnswer = null;
       setLinkStatus(`Answer failed: ${describeError(error)}`);
     }
   })();

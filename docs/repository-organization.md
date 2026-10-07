@@ -41,6 +41,14 @@ Node.js and browser hosts are peers and live beside each other under `host/src/`
 
 `apps/browser-demos/` imports the browser host runtime; it does not maintain it. Demo-only clients, terminal widgets, service-worker setup helpers, and UI components stay in the app tree.
 
+Reusable browser peer connection setup lives in
+`web-libs/kandelo-session/src/peer-connection.ts`: purpose-checked signal
+codes, declared channels, ICE and connection lifecycle. The migration
+channel declaration stays in `apps/browser-demos/lib/peer-link.ts` beside
+its app consumers. The purpose-independent rendezvous client is
+`apps/browser-demos/lib/peer-signalling.ts`; its PHP server and server tests
+are under `apps/signalling/`.
+
 ## Package Layout
 
 Each package is self-contained under `packages/registry/<name>/`:

@@ -11,3 +11,4 @@ export * from "./demo-ingest";
 export * from "./deployment-scope";
 export * from "./vfs-asset-group";
 export { normalizeImageOwnedLazyReference } from "./vfs-asset-group-reference";
+export * from "./peer-connection";

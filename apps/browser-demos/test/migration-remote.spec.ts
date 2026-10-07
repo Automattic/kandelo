@@ -39,8 +39,8 @@ test("hands a running fbDOOM machine between two isolated contexts over WebRTC",
     return;
   }
 
-  const keeperContext = await browser.newContext();
-  const watcherContext = await browser.newContext();
+  const keeperContext = await browser.newContext({ permissions: ["microphone"] });
+  const watcherContext = await browser.newContext({ permissions: ["microphone"] });
   const keeper = await keeperContext.newPage();
   const watcher = await watcherContext.newPage();
   try {

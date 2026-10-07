@@ -173,6 +173,9 @@ export default defineConfig({
           args: [
             ...(launchOptions.args ?? []),
             "--disable-features=WebRtcHideLocalIpsWithMdns",
+            // Include real loopback ICE candidates for two-context tests.
+            // This avoids relying on macOS LAN access or router hairpinning.
+            "--allow-loopback-in-peer-connection",
           ],
         },
       },

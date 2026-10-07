@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { resolveBinary } from "../../../host/src/binary-resolver";
@@ -45,20 +46,20 @@ async function runMigrationRestore(
     finishMarker?: string;
   },
 ): Promise<MigrationRestoreResult> {
-  const programUrl = new URL(`/@fs/${programPath}`, baseURL).href;
+  // Package resolution returns verified canonical cache paths. Vite serves
+  // only explicitly imported cache members, so carry these fixture bytes
+  // through the normal programBytes launch API instead of fetching /@fs.
+  const programBase64 = readFileSync(programPath).toString("base64");
   return page.evaluate(
-    async ({ programUrl, argv, options }) => {
-      const response = await fetch(programUrl);
-      if (!response.ok) {
-        throw new Error(`program fetch failed: ${response.status}`);
-      }
+    async ({ programBase64, argv, options }) => {
+      const bytes = Uint8Array.from(atob(programBase64), (character) => character.charCodeAt(0));
       return (window as any).__runMigrationRestoreTest(
-        await response.arrayBuffer(),
+        bytes.buffer,
         argv,
         options,
       );
     },
-    { programUrl, argv, options },
+    { programBase64, argv, options },
   );
 }
 
