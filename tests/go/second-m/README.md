@@ -6,7 +6,7 @@ marker. It does not exercise Go's scheduler on that thread.
 
 Build the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port)
-at commit `bad577d` with Go 1.25.6 as `GOROOT_BOOTSTRAP`. Keep its checkout
+at commit `973fd0a` with Go 1.25.6 as `GOROOT_BOOTSTRAP`. Keep its checkout
 next to this Kandelo checkout as `../go-kandelo`.
 
 From the Kandelo repository root:
@@ -35,3 +35,6 @@ is reused. Build it from `tests/go/clone-handoff` with the same command,
 choosing `.context/go-m2/multi.wasm` as output, then run the same Node
 runner with `5` as its final argument. It asserts five child markers;
 this is not a parallel goroutine or full-scheduler test.
+
+The `../scheduler/` fixtures exercise parallel goroutines and process exit
+from a worker M separately.

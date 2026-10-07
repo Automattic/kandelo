@@ -740,6 +740,36 @@ proves repeated handoff reuse, not concurrent spawns from different Ms:
 `lock_kandelo.go` still lacks a cross-thread atomic mutex, and the
 child still exits without running `mstart`. Both remain Phase-4 work.
 
+**2026-10-06 — Parallel scheduler slice (fork `973fd0a`).** Replaced the
+single-M runtime mutex and note stubs with Wasm atomic compare/exchange,
+`memory.atomic.wait32`, and `memory.atomic.notify`; a user-G note wait now
+releases its P through `entersyscallblock`. `GOMAXPROCS(2)` is no longer
+clamped on Kandelo. A cloned M with a P enters `mstart`, and its trampoline
+continues through `wasm_pc_f_loop` after a goroutine switch. The previous
+trampoline returned to the host on the first switch, so the M could reach
+`execute` but never run the selected G. The no-P clone marker remains as a
+separate mechanics path.
+
+The first parallel probe intermittently printed completion but never
+exited. Tracing showed `runtime.main` can finish on a worker M, where the
+host's `kernel_exit` import issues thread-only `SYS_EXIT`. Go now commits
+`SYS_EXIT_GROUP` before that non-returning import. Clock syscall output was
+also moved from one shared package buffer to per-M scratch, avoiding
+cross-M writes. A minimal `osyield` return replaces the Wasm trap on the
+Kandelo build.
+
+The checked-in `tests/go/scheduler/` probe forces two goroutines to overlap
+without cooperative yields; five consecutive Node runs exited 0 with
+`GOMAXPROCS: 2`, `parallel M: complete`, and no host diagnostics. Its
+`exit-worker/` companion keeps M0 busy while another M calls `os.Exit(0)`;
+five consecutive Node runs exited 0 with its worker marker and no host
+diagnostics. The existing five-clone handoff probe still exits 0 with five
+markers and no diagnostics. These are focused Node proofs, not full Go
+scheduler conformance. Browser execution, concurrent clone contention,
+per-M exit/reaping (`exitThread` is still a Wasm trap), `LockOSThread`,
+sysmon/preemption behavior, and broader runtime tests remain. No Kandelo
+ABI or host source changed in this slice.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
