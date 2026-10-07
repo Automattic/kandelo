@@ -292,6 +292,71 @@ test("Beneath a Steel Sky from the freeware menu fetches the game and starts it 
   }, { timeout: 180_000, intervals: [2_000, 5_000] }).toBeGreaterThan(50);
 });
 
+test("Flight of the Amazon Queen runs from its single MP3 talkie ZIP @slow", async ({ page }) => {
+  test.setTimeout(600_000);
+  await page.addInitScript(() => {
+    const connect = AudioWorkletNode.prototype.connect;
+    Object.defineProperty(AudioWorkletNode.prototype, "connect", {
+      configurable: true,
+      value: function (this: AudioWorkletNode, ...args: unknown[]) {
+        const result = Reflect.apply(connect, this, args);
+        if (args[0] instanceof AudioDestinationNode) {
+          const analyser = this.context.createAnalyser();
+          const mute = this.context.createGain();
+          mute.gain.value = 0;
+          this.connect(analyser);
+          analyser.connect(mute);
+          mute.connect(this.context.destination);
+          const samples = new Float32Array(analyser.fftSize);
+          window.setInterval(() => {
+            analyser.getFloatTimeDomainData(samples);
+            if (samples.some((sample) => Math.abs(sample) > 0.001)) {
+              (window as Window & { queenAudioSawSignal?: boolean }).queenAudioSawSignal = true;
+            }
+          }, 50);
+        }
+        return result;
+      },
+    });
+  });
+  await bootScummvm(page);
+
+  await openSurface(page, "Demo");
+  await page.getByTestId("kms-dock-action-freeware").click();
+  await page.evaluate(() => {
+    (window as Window & { queenAudioSawSignal?: boolean }).queenAudioSawSignal = false;
+  });
+  await page.getByTestId("kms-dock-menu-entry-fotaq").click();
+  await expect(page.getByTestId("kms-dock-action-status"))
+    .toHaveText(/Downloading Flight of the Amazon Queen.* \d+%/, { timeout: 120_000 });
+  await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);
+
+  await openSurface(page, "Terminal");
+  await expect.poll(() => terminalText(page), { timeout: 300_000 })
+    .toMatch(/scummvm-play: Starting Flight of the Amazon Queen|Illegal instruction/);
+  const launchText = await terminalText(page);
+  expect(launchText).toMatch(/scummvm-play: Starting Flight of the Amazon Queen/);
+  expect(launchText).not.toContain("Illegal instruction");
+  await runInShell(page, `test -s /usr/share/scummvm-games/fotaq/queen.1c && test ! -e /usr/share/scummvm-games/fotaq/queen.tbl && ${marker("QUEEN_DATA", "PRESENT")}`);
+  await expect.poll(() => terminalText(page), { timeout: 60_000 })
+    .toContain("QUEEN_DATA_PRESENT");
+
+  await openSurface(page, "Demo");
+  await expect(page.locator("[data-audio-state]").first()).toHaveAttribute(
+    "data-audio-state",
+    "running",
+    { timeout: 30_000 },
+  );
+  await expect.poll(() => page.evaluate(() =>
+    (window as Window & { queenAudioSawSignal?: boolean }).queenAudioSawSignal ?? false
+  ), { timeout: 90_000 }).toBe(true);
+  const badge = page.locator(".kdemo-surface-badge").first();
+  await expect.poll(async () => {
+    const flips = /(\d+) flips/i.exec(await badge.innerText());
+    return flips ? Number(flips[1]) : 0;
+  }, { timeout: 180_000, intervals: [2_000, 5_000] }).toBeGreaterThan(50);
+});
+
 // The freeware menu lists the image's catalog: every game the machine can
 // fetch, plus the ones this build cannot run, disabled with the reason.
 test("the freeware menu lists the catalog and marks unrunnable games", async ({ page }) => {

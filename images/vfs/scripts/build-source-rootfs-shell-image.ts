@@ -523,8 +523,12 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
  * fetch a catalog game, verify it, unpack it, and start it. `--list` prints
  * the catalog, so the same games are a command away in the terminal.
  *
- * - The download runs in the background so the script can report a
- *   percentage against the catalog's size, and the trap stops it on Ctrl+C:
+ * - Archives larger than the proxy's 100 MiB response limit start with
+ *   32 MiB ranges; smaller archives start with one request. On failure both
+ *   switch to 16 MiB ranges and keep every complete range. The download
+ *   runs in the background so the script can report progress against the
+ *   catalog's size, including the active attempt, and the trap stops it on
+ *   Ctrl+C:
  *   a background job in a non-interactive shell ignores SIGINT, so the
  *   dock's interrupt would otherwise leave curl running.
  * - The SHA-256 makes a changed or truncated download a loud failure instead
@@ -540,12 +544,84 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
  * Every step announces itself as a `scummvm-play: ` line and the download
  * as a `#### N%` line: the dock shows both while the display is dark.
  */
-const SCUMMVM_PLAY_SCRIPT = `#!/bin/sh
+export const SCUMMVM_PLAY_SCRIPT = `#!/bin/sh
 set -e
 CATALOG=${SCUMMVM_PLAY_CATALOG}
 GAMES=/usr/share/scummvm-games
 TAB=$(printf '\\t')
+RANGE_LIMIT=$((100 * 1024 * 1024))
+RANGE_SIZE=$((32 * 1024 * 1024))
+FALLBACK_SIZE=$((16 * 1024 * 1024))
+MAX_ATTEMPTS=3
 say() { echo "scummvm-play: $*" >&2; }
+download() {
+    expected_status=$1
+    expected_bytes=$2
+    max_attempts=$3
+    shift 3
+    attempt=1
+    while [ "$attempt" -le "$max_attempts" ]; do
+        rm -f "$ZIP.part" "$ZIP.status"
+        curl -fsSL -o "$ZIP.part" -w '%{http_code}' "$@" "$URL" > "$ZIP.status" &
+        fetch=$!
+        trap 'kill "$fetch" 2>/dev/null; rm -f "$ZIP" "$ZIP.part" "$ZIP.status"; exit 130' INT TERM
+        while kill -0 "$fetch" 2>/dev/null; do
+            got=0
+            if [ -f "$ZIP" ]; then got=$(wc -c < "$ZIP"); fi
+            if [ -f "$ZIP.part" ]; then got=$((got + $(wc -c < "$ZIP.part"))); fi
+            percent=$((got * 100 / BYTES))
+            if [ "$percent" -gt 99 ]; then percent=99; fi
+            printf '#### %d%%\\r' "$percent" >&2
+            sleep 1
+        done
+        status=0
+        wait "$fetch" || status=$?
+        response=$(cat "$ZIP.status" 2>/dev/null || true)
+        received=0
+        if [ -f "$ZIP.part" ]; then received=$(wc -c < "$ZIP.part"); fi
+        if [ "$status" -eq 0 ] && [ "$response" = "$expected_status" ] &&
+           [ "$received" -eq "$expected_bytes" ]; then
+            if [ "$expected_status" = 206 ]; then
+                if ! cat "$ZIP.part" >> "$ZIP"; then return 1; fi
+            elif ! mv "$ZIP.part" "$ZIP"; then
+                return 1
+            fi
+            rm -f "$ZIP.part" "$ZIP.status"
+            trap - INT TERM
+            return 0
+        fi
+        rm -f "$ZIP.part" "$ZIP.status"
+        if [ "$expected_status" = 206 ] && [ "$response" = 200 ]; then
+            trap - INT TERM
+            return 2
+        fi
+        if [ "$attempt" -eq "$max_attempts" ]; then break; fi
+        attempt=$((attempt + 1))
+        say "Retrying download (attempt $attempt/$max_attempts)..."
+        sleep "$((attempt - 1))"
+    done
+    trap - INT TERM
+    return 1
+}
+download_ranges() {
+    chunk_size=$1
+    attempts=$2
+    : > "$ZIP"
+    offset=0
+    while [ "$offset" -lt "$BYTES" ]; do
+        end=$((offset + chunk_size - 1))
+        if [ "$end" -ge "$BYTES" ]; then end=$((BYTES - 1)); fi
+        if download 206 "$((end - offset + 1))" "$attempts" -r "$offset-$end"; then
+            offset=$((end + 1))
+        else
+            range_status=$?
+            if [ "$chunk_size" -eq "$FALLBACK_SIZE" ]; then return "$range_status"; fi
+            say "Retrying in 16 MiB ranges..."
+            chunk_size=$FALLBACK_SIZE
+            attempts=$MAX_ATTEMPTS
+        fi
+    done
+}
 if [ "\${1:-}" = "--list" ]; then
     cut -f1,3,6 "$CATALOG"
     exit 0
@@ -568,24 +644,28 @@ DIR="$GAMES/$ID"
 ZIP="$GAMES/$ID.zip"
 if [ ! -f "$DIR/.targets" ]; then
     say "Downloading $TITLE ($SIZE) from downloads.scummvm.org..."
-    rm -f "$ZIP"
-    curl -fsSL -o "$ZIP" "$URL" &
-    fetch=$!
-    trap 'kill "$fetch" 2>/dev/null; rm -f "$ZIP"; exit 130' INT TERM
-    while kill -0 "$fetch" 2>/dev/null; do
-        got=0
-        if [ -f "$ZIP" ]; then got=$(wc -c < "$ZIP"); fi
-        printf '#### %d%%\\r' $((got * 100 / BYTES)) >&2
-        sleep 1
-    done
-    status=0
-    wait "$fetch" || status=$?
-    trap - INT TERM
-    if [ "$status" -ne 0 ]; then
-        rm -f "$ZIP"
+    rm -f "$ZIP" "$ZIP.part" "$ZIP.status"
+    downloaded=0
+    if [ "$BYTES" -gt "$RANGE_LIMIT" ]; then
+        if download_ranges "$RANGE_SIZE" 1; then downloaded=1; fi
+    elif download 200 "$BYTES" 1; then
+        downloaded=1
+    else
+        say "Retrying in 16 MiB ranges..."
+        if download_ranges "$FALLBACK_SIZE" "$MAX_ATTEMPTS"; then
+            downloaded=1
+        elif [ "$?" -eq 2 ]; then
+            say "Range requests unavailable; retrying the full download..."
+            rm -f "$ZIP"
+            if download 200 "$BYTES" "$((MAX_ATTEMPTS - 1))"; then downloaded=1; fi
+        fi
+    fi
+    if [ "$downloaded" -eq 0 ]; then
+        rm -f "$ZIP" "$ZIP.part" "$ZIP.status"
         say "Download failed"
         exit 1
     fi
+    rm -f "$ZIP.status"
     printf '#### 100%%\\n' >&2
     say "Verifying the download (SHA-256)..."
     if ! echo "$SHA256  $ZIP" | sha256sum -c - >/dev/null 2>&1; then
