@@ -39,6 +39,12 @@ inputs = [
   "packages/registry/wayland-demo/desktops/data/apps/qtgallery.conf",
   "packages/registry/wayland-demo/desktops/data/apps/quickshell.conf",
   "packages/registry/wayland-demo/desktops/data/apps/scummvm.conf",
+  "packages/registry/wayland-demo/desktops/data/apps/love-pong.conf",
+  "packages/registry/wayland-demo/desktops/data/apps/love-snake.conf",
+  "packages/registry/wayland-demo/desktops/data/apps/love-breakout.conf",
+  "packages/registry/wayland-demo/desktops/data/apps/love-asteroids.conf",
+  "packages/registry/wayland-demo/desktops/data/apps/love-bytepath.conf",
+  "packages/registry/wayland-demo/desktops/data/apps/love-snkrx.conf",
   "packages/registry/wayland-demo/desktops/data/apps/terminal.conf",
   "packages/registry/wayland-demo/desktops/data/apps/vim.conf",
   "packages/registry/wayland-demo/desktops/data/dbus/session.conf",
@@ -72,4 +78,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = ""
-revision    = 2
+revision    = 3

@@ -3,7 +3,7 @@
 # Build the native Kandelo LÖVE runtime.
 #
 # This intentionally does not use Emscripten. The result is a POSIX/Wasm
-# program linked by wasm32posix-c++ that prefers /dev/dri/card0 KMS/EGL/GLES
+# program linked by wasm32posix-c++ with Wayland/EGL and standalone KMS/EGL
 # presentation. The runtime fails explicitly if native rendering is unavailable.
 
 set -euo pipefail
@@ -27,6 +27,10 @@ LIBDRM_PREFIX="${WASM_POSIX_DEP_LIBDRM_DIR:?missing libdrm dependency}"
 LUA_PREFIX="${WASM_POSIX_DEP_LUA_DIR:?missing lua dependency}"
 FREETYPE_PREFIX="${WASM_POSIX_DEP_FREETYPE_DIR:?missing freetype dependency}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?missing zlib dependency}"
+SDL2_PREFIX="${WASM_POSIX_DEP_SDL2_DIR:?missing sdl2 dependency}"
+WAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?missing libwayland dependency}"
+XKB_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?missing libxkbcommon dependency}"
+FFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?missing libffi dependency}"
 export WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot love "$SDK_SYSROOT" libcxx)"
 # Lua exposes os.execute, so let the normal installer detect/instrument
 # the linked fork-call closure instead of disabling it for these games.
@@ -68,6 +72,7 @@ CFLAGS_NATIVE+=(
     -I"$ZLIB_PREFIX/include"
 )
 CXXFLAGS_NATIVE+=(
+    -I"$SDL2_PREFIX/include/SDL2"
     -I"$LIBDRM_PREFIX/include"
     -I"$LIBDRM_PREFIX/include/libdrm"
     -I"$LIBDRM_PREFIX/include/drm"
@@ -102,6 +107,10 @@ for patch in "$HERE"/patches/bytepath/*.patch; do
     (cd "$BYTEPATH_SRC" && git apply "$patch")
 done
 kandelo_package_stage_source_dependency snkrx-source "$SNKRX_SRC" "$WORK"
+for patch in "$HERE"/patches/snkrx/*.patch; do
+    echo "==> Applying SNKRX $(basename "$patch")..."
+    (cd "$SNKRX_SRC" && git apply "$patch")
+done
 
 obj_for() {
     local rel="${1#$SRC/}"
@@ -302,6 +311,12 @@ echo "==> Linking love.wasm..."
     "$LUA_PREFIX/lib/liblua.a" \
     "$FREETYPE_PREFIX/lib/libfreetype.a" \
     "$ZLIB_PREFIX/lib/libz.a" \
+    "$SDL2_PREFIX/lib/libSDL2.a" \
+    "$WAYLAND_PREFIX/lib/libwayland-client.a" \
+    "$WAYLAND_PREFIX/lib/libwayland-cursor.a" \
+    "$WAYLAND_PREFIX/lib/libwayland-egl.a" \
+    "$XKB_PREFIX/lib/libxkbcommon.a" \
+    "$FFI_PREFIX/lib/libffi.a" \
     "${DRI_LIBS[@]}" \
     "$LIBCXX_PREFIX/lib/libc++.a" \
     "$LIBCXX_PREFIX/lib/libc++abi.a" \

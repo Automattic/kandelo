@@ -5,6 +5,23 @@ local selected = 1
 local games = {}
 local active = nil
 
+-- Keep the playfield stable while a desktop compositor resizes its tile.
+-- Drawing and pointer coordinates must use the same letterboxed transform.
+local function viewport()
+  local width, height = love.graphics.getDimensions()
+  local scale = math.min(width / W, height / H)
+  return scale, (width - W * scale) / 2, (height - H * scale) / 2
+end
+
+local function gameMouse(x, y)
+  local scale, ox, oy = viewport()
+  return (x - ox) / scale, (y - oy) / scale
+end
+
+local function mouseX()
+  return gameMouse(love.mouse.getPosition())
+end
+
 local palette = {
   bg = {0.035, 0.045, 0.055},
   panel = {0.075, 0.095, 0.12},
@@ -51,6 +68,7 @@ local function dist2(ax, ay, bx, by)
 end
 
 local function goMenu()
+  love.window.setTitle("LÖVE Game Gallery")
   screen = "menu"
   active = nil
   love.mouse.setVisible(true)
@@ -59,6 +77,7 @@ end
 local function startGame(i)
   selected = i
   active = games[i]
+  love.window.setTitle(active.title)
   active.reset()
   screen = "game"
   love.mouse.setVisible(false)
@@ -174,14 +193,14 @@ function breakout.reset()
   breakout.px = W / 2 - 70
   breakout.bx, breakout.by = W / 2, H - 150
   breakout.bvx, breakout.bvy = 270, -320
-  breakout.lastMouseX = love.mouse.getX()
+  breakout.lastMouseX = mouseX()
   breakout.bricks = {}
   for r = 1, 5 do
     for c = 1, 10 do table.insert(breakout.bricks, {x = 110 + (c - 1) * 76, y = 130 + r * 26, alive = true, row = r}) end
   end
 end
 function breakout.update(dt)
-  local mx = love.mouse.getX()
+  local mx = mouseX()
   if mx ~= breakout.lastMouseX then
     breakout.px = clamp(mx - 70, 52, W - 192)
     breakout.lastMouseX = mx
@@ -274,7 +293,7 @@ games = {
 }
 
 function love.load()
-  W, H = love.graphics.getWidth(), love.graphics.getHeight()
+  W, H = 960, 540
   fonts.title = love.graphics.newFont(36)
   fonts.big = love.graphics.newFont(32)
   fonts.body = love.graphics.newFont(20)
@@ -292,7 +311,7 @@ end
 
 local function drawMenu()
   text(fonts.title, "LOVE GAME GALLERY", 42, 34, palette.ink)
-  text(fonts.body, "Native wasm32posix runtime rendering through KMS/EGL/GLES", 48, 88, palette.dim)
+  text(fonts.body, "Native wasm32posix runtime rendering through EGL/GLES", 48, 88, palette.dim)
   text(fonts.small, "Arrow keys select, Enter starts, mouse click starts", 50, 122, palette.dim)
   local x, y, w, h = 72, 172, W - 144, 72
   for i, g in ipairs(games) do
@@ -306,12 +325,17 @@ local function drawMenu()
 end
 
 function love.draw()
+  local scale, x, y = viewport()
+  love.graphics.push()
+  love.graphics.translate(x, y)
+  love.graphics.scale(scale)
   love.graphics.setLineWidth(1)
   if screen == "menu" then
     drawMenu()
   elseif active then
     active.draw()
   end
+  love.graphics.pop()
 end
 
 function love.keypressed(k)
@@ -327,6 +351,7 @@ function love.keypressed(k)
 end
 
 function love.mousepressed(x, y, button)
+  x, y = gameMouse(x, y)
   if screen ~= "menu" or button ~= 1 then return end
   for i = 1, #games do
     local yy = 172 + (i - 1) * 88
@@ -338,6 +363,7 @@ function love.mousepressed(x, y, button)
 end
 
 function love.mousemoved(x, y)
+  x, y = gameMouse(x, y)
   if screen ~= "menu" then return end
   for i = 1, #games do
     local yy = 172 + (i - 1) * 88

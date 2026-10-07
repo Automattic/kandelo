@@ -1,9 +1,9 @@
 // Kandelo native runtime for LÖVE-style Lua demos.
 //
 // This is a native POSIX/Wasm executable. It does not use Emscripten or a
-// browser canvas API directly: rendering prefers /dev/dri/card0 with
-// KMS/EGL/GLES page flips, with Linux evdev keyboard and absolute pointer
-// input on /dev/input/event0 and /dev/input/event1.
+// browser canvas API directly: rendering uses SDL2 Wayland/EGL within a
+// desktop session, or /dev/dri/card0 KMS/EGL/GLES page flips with evdev
+// keyboard and pointer input on a standalone display.
 //
 // The upstream LÖVE 11.x graphics path is OpenGL/SDL-oriented. For Kandelo's
 // native surface this file provides a compact Lua compatibility layer and
@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -53,6 +54,9 @@ extern "C" {
 #include "lodepng.h"
 #include "common/Exception.h"
 #include "common/runtime.h"
+#include "common/Module.h"
+#include "modules/window/Window.h"
+#include "native_window.h"
 
 #if LUA_VERSION_NUM >= 502
 #define lua_objlen lua_rawlen
@@ -75,6 +79,7 @@ enum class Presenter {
   None,
   Framebuffer,
   KmsGl,
+  WaylandGl,
 };
 
 struct Color {
@@ -197,6 +202,7 @@ struct KeyEvent {
   std::string key;
   std::string text;
   bool pressed = false;
+  bool repeat = false;
 };
 
 struct MouseButtonEvent {
@@ -236,6 +242,8 @@ struct Transform {
 struct Runtime {
   std::string root;
   Presenter presenter = Presenter::None;
+  SDL_Window *window = nullptr;
+  SDL_GLContext windowContext = nullptr;
   int fbFd = -1;
   int pointerFd = -1;
   int keyboardFd = -1;
@@ -305,6 +313,8 @@ struct Runtime {
   double audioUy = 1.0;
   double audioUz = 0.0;
   bool textInputEnabled = true;
+  bool keyRepeat = false;
+  std::string windowTitle = "LÖVE";
   bool fullscreen = false;
   bool nativeRenderer = false;
   bool legacyColorRange = false;
@@ -1698,6 +1708,52 @@ int openFramebuffer() {
 }
 
 int openPresenter() {
+  // A desktop client must leave DRM master and physical input to its
+  // compositor. Explicit Wayland requests fail if the session is broken.
+  const char *driver = getenv("SDL_VIDEODRIVER");
+  const char *display = getenv("WAYLAND_DISPLAY");
+  const char *runtimeDir = getenv("XDG_RUNTIME_DIR");
+  std::string socket = display && display[0] == '/' ? display
+      : std::string(runtimeDir ? runtimeDir : "/tmp") + "/" +
+        (display && *display ? display : "wayland-0");
+  struct stat st{};
+  bool wayland = driver ? std::string(driver) == "wayland"
+      : (display && *display) || (stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode));
+  if (wayland) {
+    SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland");
+    SDL_SetHint(SDL_HINT_APP_NAME, "LÖVE");
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+      fprintf(stderr, "love: Wayland initialization failed: %s\n", SDL_GetError());
+      return 1;
+    }
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+    G.window = SDL_CreateWindow(G.windowTitle.c_str(), SDL_WINDOWPOS_UNDEFINED,
+        SDL_WINDOWPOS_UNDEFINED, G.windowW, G.windowH,
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (G.window) G.windowContext = SDL_GL_CreateContext(G.window);
+    if (!G.window || !G.windowContext) {
+      fprintf(stderr, "love: Wayland EGL window failed: %s\n", SDL_GetError());
+      if (G.window) SDL_DestroyWindow(G.window);
+      G.window = nullptr;
+      SDL_Quit();
+      return 1;
+    }
+    SDL_DisplayMode mode{};
+    if (SDL_GetDesktopDisplayMode(0, &mode) == 0) {
+      G.desktopW = mode.w;
+      G.desktopH = mode.h;
+    }
+    SDL_GetWindowSize(G.window, &G.windowW, &G.windowH);
+    SDL_StartTextInput();
+    G.mouseVisible = SDL_ShowCursor(SDL_QUERY) == SDL_ENABLE;
+    G.presenter = Presenter::WaylandGl;
+    fprintf(stderr, "love: using SDL2 Wayland/EGL presenter\n");
+    return 0;
+  }
   if (setupKmsGl() == 0) return 0;
   fprintf(stderr, "love: falling back to /dev/fb0 presenter\n");
   return openFramebuffer();
@@ -1709,6 +1765,16 @@ void presentFrame() {
 }
 
 bool nativeSwapBuffers() {
+  if (G.presenter == Presenter::WaylandGl) {
+    SDL_ClearError();
+    SDL_GL_SwapWindow(G.window);
+    if (*SDL_GetError()) {
+      fprintf(stderr, "love: Wayland swap failed: %s\n", SDL_GetError());
+      gRunning = 0;
+      return false;
+    }
+    return true;
+  }
   if (G.presenter != Presenter::KmsGl) return false;
   if (!eglSwapBuffers(G.eglDisplay, G.eglSurface)) {
     fprintf(stderr, "love: eglSwapBuffers failed: 0x%x\n", unsigned(eglGetError()));
@@ -1723,6 +1789,11 @@ bool nativeSwapBuffers() {
 }
 
 void cleanupPresenter() {
+  if (G.windowContext) SDL_GL_DeleteContext(G.windowContext);
+  if (G.window) SDL_DestroyWindow(G.window);
+  if (G.presenter == Presenter::WaylandGl) SDL_Quit();
+  G.windowContext = nullptr;
+  G.window = nullptr;
   if (G.presenter == Presenter::KmsGl) cleanupKmsGl();
   if (G.fb) {
     munmap(G.fb, G.fbLen);
@@ -1795,6 +1866,143 @@ std::string textForKeyCode(int code, bool shifted) {
   return std::string(1, shifted ? it->second.second : it->second.first);
 }
 
+EventArg stringArg(const std::string &value);
+EventArg numberArg(double value);
+EventArg booleanArg(bool value);
+
+std::string sdlKeyName(SDL_Keycode key) {
+  static const std::map<SDL_Keycode, std::string> names = {
+    {SDLK_ESCAPE, "escape"}, {SDLK_RETURN, "return"}, {SDLK_KP_ENTER, "kpenter"},
+    {SDLK_SPACE, "space"}, {SDLK_BACKSPACE, "backspace"}, {SDLK_TAB, "tab"},
+    {SDLK_UP, "up"}, {SDLK_DOWN, "down"}, {SDLK_LEFT, "left"}, {SDLK_RIGHT, "right"},
+    {SDLK_LCTRL, "lctrl"}, {SDLK_RCTRL, "rctrl"},
+    {SDLK_LSHIFT, "lshift"}, {SDLK_RSHIFT, "rshift"},
+    {SDLK_LALT, "lalt"}, {SDLK_RALT, "ralt"},
+    {SDLK_LGUI, "lgui"}, {SDLK_RGUI, "rgui"},
+    {SDLK_DELETE, "delete"}, {SDLK_INSERT, "insert"},
+    {SDLK_HOME, "home"}, {SDLK_END, "end"},
+    {SDLK_PAGEUP, "pageup"}, {SDLK_PAGEDOWN, "pagedown"},
+  };
+  auto found = names.find(key);
+  if (found != names.end()) return found->second;
+  if (key >= 33 && key <= 126) return std::string(1, char(key));
+  std::string name = SDL_GetKeyName(key);
+  std::transform(name.begin(), name.end(), name.begin(),
+                 [](unsigned char c) { return char(std::tolower(c)); });
+  return name;
+}
+
+std::string sdlScancodeName(SDL_Scancode scancode) {
+  std::string name = SDL_GetScancodeName(scancode);
+  std::transform(name.begin(), name.end(), name.begin(),
+                 [](unsigned char c) { return char(std::tolower(c)); });
+  static const std::map<std::string, std::string> aliases = {
+    {"left ctrl", "lctrl"}, {"right ctrl", "rctrl"},
+    {"left shift", "lshift"}, {"right shift", "rshift"},
+    {"left alt", "lalt"}, {"right alt", "ralt"},
+    {"left gui", "lgui"}, {"right gui", "rgui"},
+  };
+  auto alias = aliases.find(name);
+  if (alias != aliases.end()) return alias->second;
+  if (name.compare(0, 7, "keypad ") == 0) name.replace(0, 7, "kp");
+  name.erase(std::remove(name.begin(), name.end(), ' '), name.end());
+  return name;
+}
+
+void pollWaylandInput() {
+  SDL_Event event;
+  while (SDL_PollEvent(&event)) {
+    switch (event.type) {
+      case SDL_QUIT:
+        G.queuedEvents.push_back({"quit", {}});
+        break;
+      case SDL_KEYDOWN:
+      case SDL_KEYUP: {
+        std::string key = sdlKeyName(event.key.keysym.sym);
+        bool pressed = event.type == SDL_KEYDOWN;
+        if (pressed) G.keys.insert(key);
+        else G.keys.erase(key);
+        if (pressed && event.key.repeat && !G.keyRepeat) break;
+        LoveEvent input{pressed ? "keypressed" : "keyreleased",
+                        {stringArg(key), stringArg(sdlScancodeName(event.key.keysym.scancode))}};
+        if (pressed) input.args.push_back(booleanArg(event.key.repeat != 0));
+        G.queuedEvents.push_back(std::move(input));
+        break;
+      }
+      case SDL_TEXTINPUT:
+        if (G.textInputEnabled)
+          G.queuedEvents.push_back({"textinput", {stringArg(event.text.text)}});
+        break;
+      case SDL_MOUSEMOTION:
+        G.mouseX = event.motion.x;
+        G.mouseY = event.motion.y;
+        G.mouseDx += event.motion.xrel;
+        G.mouseDy += event.motion.yrel;
+        G.queuedEvents.push_back({"mousemoved", {numberArg(G.mouseX), numberArg(G.mouseY),
+            numberArg(event.motion.xrel), numberArg(event.motion.yrel), booleanArg(false)}});
+        break;
+      case SDL_MOUSEBUTTONDOWN:
+      case SDL_MOUSEBUTTONUP: {
+        int button = event.button.button == SDL_BUTTON_RIGHT ? 2
+            : event.button.button == SDL_BUTTON_MIDDLE ? 3 : event.button.button;
+        bool pressed = event.type == SDL_MOUSEBUTTONDOWN;
+        if (button < 1 || button > 8) break;
+        int bit = 1 << (button - 1);
+        if (pressed) G.mouseButtons |= bit;
+        else G.mouseButtons &= ~bit;
+        G.mouseX = event.button.x;
+        G.mouseY = event.button.y;
+        LoveEvent input{pressed ? "mousepressed" : "mousereleased",
+                       {numberArg(G.mouseX), numberArg(G.mouseY), numberArg(button), booleanArg(false)}};
+        if (pressed) input.args.push_back(numberArg(event.button.clicks));
+        G.queuedEvents.push_back(std::move(input));
+        break;
+      }
+      case SDL_MOUSEWHEEL: {
+        int direction = event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1;
+        G.queuedEvents.push_back({"wheelmoved", {numberArg(direction * event.wheel.x),
+                                               numberArg(direction * event.wheel.y)}});
+        break;
+      }
+      case SDL_WINDOWEVENT: {
+        auto *window = love::Module::getInstance<love::window::Window>(love::Module::M_WINDOW);
+        switch (event.window.event) {
+          case SDL_WINDOWEVENT_SIZE_CHANGED:
+            G.windowW = event.window.data1;
+            G.windowH = event.window.data2;
+            if (window) window->onSizeChanged(G.windowW, G.windowH);
+            G.queuedEvents.push_back({"resize", {numberArg(G.windowW), numberArg(G.windowH)}});
+            break;
+          case SDL_WINDOWEVENT_FOCUS_LOST:
+            // Wayland need not deliver releases after leaving this surface.
+            // Clear held state so returning to a game cannot leave movement stuck.
+            for (const auto &key : G.keys)
+              G.queuedEvents.push_back({"keyreleased", {stringArg(key), stringArg(key)}});
+            G.keys.clear();
+            for (int button = 1; button <= 8; ++button)
+              if (G.mouseButtons & (1 << (button - 1)))
+                G.queuedEvents.push_back({"mousereleased", {numberArg(G.mouseX),
+                    numberArg(G.mouseY), numberArg(button), booleanArg(false)}});
+            G.mouseButtons = 0;
+            G.queuedEvents.push_back({"focus", {booleanArg(false)}});
+            break;
+          case SDL_WINDOWEVENT_FOCUS_GAINED:
+            G.queuedEvents.push_back({"focus", {booleanArg(true)}});
+            break;
+          case SDL_WINDOWEVENT_ENTER:
+          case SDL_WINDOWEVENT_LEAVE:
+            G.queuedEvents.push_back({"mousefocus", {booleanArg(event.window.event == SDL_WINDOWEVENT_ENTER)}});
+            break;
+          case SDL_WINDOWEVENT_CLOSE:
+            G.queuedEvents.push_back({"quit", {}});
+            break;
+        }
+        break;
+      }
+    }
+  }
+}
+
 void pollInput() {
   G.keyEvents.clear();
   G.mouseEvents.clear();
@@ -1808,6 +2016,10 @@ void pollInput() {
     quit.name = "quit";
     G.queuedEvents.push_back(std::move(quit));
     gQuitRequested = 0;
+  }
+  if (G.presenter == Presenter::WaylandGl) {
+    pollWaylandInput();
+    return;
   }
 
   input_event events[32];
@@ -1823,7 +2035,12 @@ void pollInput() {
       if (pressed) G.keys.insert(key);
       else G.keys.erase(key);
       std::string text = pressed && G.textInputEnabled ? textForKeyCode(code, shiftDown()) : "";
-      G.keyEvents.push_back({key, text, pressed});
+      bool repeat = events[i].value == 2;
+      if (repeat && !G.keyRepeat) {
+        if (!text.empty()) G.queuedEvents.push_back({"textinput", {stringArg(text)}});
+        continue;
+      }
+      G.keyEvents.push_back({key, text, pressed, repeat});
     }
   }
 
@@ -1893,6 +2110,9 @@ void pushEventArg(lua_State *L, const EventArg &arg) {
 }
 
 void queueNativeInputEvents() {
+  // SDL events already carry their ordered key/text/mouse sequence. Folding
+  // them into the evdev frame aggregates would reorder console text input.
+  if (G.presenter == Presenter::WaylandGl) return;
   if (G.wheelX || G.wheelY) {
     LoveEvent wheel;
     wheel.name = "wheelmoved";
@@ -1905,7 +2125,7 @@ void queueNativeInputEvents() {
     ev.name = e.pressed ? "keypressed" : "keyreleased";
     ev.args.push_back(stringArg(e.key));
     ev.args.push_back(stringArg(e.key));
-    if (e.pressed) ev.args.push_back(booleanArg(false));
+    if (e.pressed) ev.args.push_back(booleanArg(e.repeat));
     G.queuedEvents.push_back(std::move(ev));
 
     if (e.pressed && !e.text.empty()) {
@@ -2901,9 +3121,14 @@ int l_key_isDown(lua_State *L) {
   lua_pushboolean(L, 0);
   return 1;
 }
-int l_key_setKeyRepeat(lua_State *) { return 0; }
+int l_key_setKeyRepeat(lua_State *L) { G.keyRepeat = lua_toboolean(L, 1); return 0; }
+int l_key_hasKeyRepeat(lua_State *L) { lua_pushboolean(L, G.keyRepeat); return 1; }
 int l_key_setTextInput(lua_State *L) {
   G.textInputEnabled = lua_toboolean(L, 1) != 0;
+  if (G.window) {
+    if (G.textInputEnabled) SDL_StartTextInput();
+    else SDL_StopTextInput();
+  }
   return 0;
 }
 int l_key_hasTextInput(lua_State *L) {
@@ -2929,9 +3154,19 @@ int l_mouse_isDown(lua_State *L) {
   lua_pushboolean(L, (G.mouseButtons & (1 << bit)) != 0);
   return 1;
 }
-int l_mouse_setVisible(lua_State *L) { G.mouseVisible = lua_toboolean(L, 1); return 0; }
+int l_mouse_setVisible(lua_State *L) {
+  G.mouseVisible = lua_toboolean(L, 1);
+  if (G.window) SDL_ShowCursor(G.mouseVisible ? SDL_ENABLE : SDL_DISABLE);
+  return 0;
+}
 int l_mouse_isVisible(lua_State *L) { lua_pushboolean(L, G.mouseVisible); return 1; }
-int l_mouse_setRelativeMode(lua_State *L) { G.mouseRelativeMode = lua_toboolean(L, 1) != 0; return 0; }
+int l_mouse_setRelativeMode(lua_State *L) {
+  bool enabled = lua_toboolean(L, 1) != 0;
+  bool ok = !G.window || SDL_SetRelativeMouseMode(enabled ? SDL_TRUE : SDL_FALSE) == 0;
+  if (ok) G.mouseRelativeMode = enabled;
+  lua_pushboolean(L, ok);
+  return 1;
+}
 int l_mouse_getRelativeMode(lua_State *L) { lua_pushboolean(L, G.mouseRelativeMode); return 1; }
 int l_mouse_newCursor(lua_State *L) { lua_newtable(L); return 1; }
 int l_mouse_setCursor(lua_State *) { return 0; }
@@ -3617,7 +3852,7 @@ void registerLove(lua_State *L) {
   };
   const luaL_Reg imageMod[] = {{"newImageData", l_image_newImageData}, {nullptr, nullptr}};
   const luaL_Reg keyboard[] = {
-    {"isDown", l_key_isDown}, {"setKeyRepeat", l_key_setKeyRepeat},
+    {"isDown", l_key_isDown}, {"setKeyRepeat", l_key_setKeyRepeat}, {"hasKeyRepeat", l_key_hasKeyRepeat},
     {"setTextInput", l_key_setTextInput}, {"hasTextInput", l_key_hasTextInput},
     {"hasScreenKeyboard", l_key_hasScreenKeyboard},
     {nullptr, nullptr},
@@ -3787,6 +4022,10 @@ void dispatchQueuedEvents(lua_State *L) {
 }
 
 void dispatchInput(lua_State *L) {
+  if (G.presenter == Presenter::WaylandGl) {
+    dispatchQueuedEvents(L);
+    return;
+  }
   if (G.wheelX || G.wheelY) {
     lua_pushinteger(L, G.wheelX);
     lua_pushinteger(L, G.wheelY);
@@ -3796,7 +4035,7 @@ void dispatchInput(lua_State *L) {
     lua_pushstring(L, e.key.c_str());
     lua_pushstring(L, e.key.c_str());
     if (e.pressed) {
-      lua_pushboolean(L, 0);
+      lua_pushboolean(L, e.repeat);
       callLove(L, "keypressed", 3);
       if (!e.text.empty()) {
         lua_pushlstring(L, e.text.data(), e.text.size());
@@ -3891,6 +4130,9 @@ void maybeRunConf(lua_State *L) {
 
   lua_getfield(L, configIdx, "window");
   if (lua_istable(L, -1)) {
+    lua_getfield(L, -1, "title");
+    if (lua_isstring(L, -1)) G.windowTitle = lua_tostring(L, -1);
+    lua_pop(L, 1);
     lua_getfield(L, -1, "width");
     if (lua_isnumber(L, -1)) G.windowW = std::max(1, int(lua_tointeger(L, -1)));
     lua_pop(L, 1);
@@ -3961,19 +4203,31 @@ int runLove(lua_State *L) {
   maybeRunConf(L);
   resizeSoftwareScreen(G.windowW, G.windowH);
   if (openPresenter() != 0) return 1;
-  if (G.presenter != Presenter::KmsGl) {
-    fprintf(stderr, "love: native KMS/EGL rendering is required by this port\n");
+  if (G.presenter != Presenter::KmsGl && G.presenter != Presenter::WaylandGl) {
+    fprintf(stderr, "love: native EGL rendering is required by this port\n");
     return 1;
   }
-  if (G.presenter == Presenter::KmsGl) {
+  if (G.presenter == Presenter::KmsGl || G.presenter == Presenter::WaylandGl) {
+    int pixelW = G.windowW, pixelH = G.windowH;
+    if (G.window) SDL_GL_GetDrawableSize(G.window, &pixelW, &pixelH);
     G.nativeRenderer = kandelo_love_register_native_renderer(
-        L, G.root.c_str(), G.windowW, G.windowH, scanoutWidth(), scanoutHeight(),
+        L, G.root.c_str(), G.windowW, G.windowH, pixelW, pixelH,
         G.desktopW, G.desktopH,
         nativeSwapBuffers);
     if (G.nativeRenderer) {
-      fprintf(stderr, "love: using upstream LÖVE OpenGL renderer on Kandelo KMS/EGL\n");
+      fprintf(stderr, "love: using upstream LÖVE OpenGL renderer on Kandelo %s/EGL\n",
+              G.window ? "Wayland" : "KMS");
     } else {
       fprintf(stderr, "love: upstream renderer unavailable on Kandelo KMS/EGL\n");
+      return 1;
+    }
+  }
+
+  if (!G.window) {
+    G.keyboardFd = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
+    G.pointerFd = open("/dev/input/event1", O_RDONLY | O_NONBLOCK);
+    if (G.keyboardFd < 0 || G.pointerFd < 0) {
+      perror("love: open physical input devices");
       return 1;
     }
   }
@@ -4050,6 +4304,8 @@ int runLove(lua_State *L) {
 
 }  // namespace
 
+SDL_Window *kandelo_love_sdl_window() { return G.window; }
+
 extern "C" bool kandelo_love_uses_legacy_color_range() {
   return G.legacyColorRange;
 }
@@ -4082,17 +4338,6 @@ int main(int argc, char **argv) {
 
   signal(SIGTERM, signalHandler);
   signal(SIGINT, signalHandler);
-  G.keyboardFd = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
-  if (G.keyboardFd < 0) {
-    perror("love: open keyboard /dev/input/event0");
-    return 1;
-  }
-  G.pointerFd = open("/dev/input/event1", O_RDONLY | O_NONBLOCK);
-  if (G.pointerFd < 0) {
-    perror("love: open pointer /dev/input/event1");
-    close(G.keyboardFd);
-    return 1;
-  }
 
   lua_State *L = luaL_newstate();
   lua_atpanic(L, luaPanic);

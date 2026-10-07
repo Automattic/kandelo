@@ -75,6 +75,23 @@ async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
   await expect.poll(() => terminalText(page), { timeout }).toMatch(pattern);
 }
 
+/** A theme reload can scroll its initiating command off screen before the
+ * terminal view mounts. Read it through the terminal's ordinary scrollback. */
+async function expectTerminalHistory(page: Page, pattern: RegExp) {
+  await openSurface(page, "Terminal");
+  await expect.poll(() => terminalText(page)).not.toBe("");
+  await page.locator(".xterm-screen").hover();
+  let text = "";
+  for (let i = 0; i < 12 && !pattern.test(text); i++) {
+    text = await terminalText(page);
+    if (pattern.test(text)) break;
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(100);
+  }
+  expect(text).toMatch(pattern);
+  await page.mouse.wheel(0, 10_000);
+}
+
 /** Press a CTRL combo on the desktop. A browser reserves SUPER (Cmd/Win), so
  *  the demo binds every action on CTRL too — the path users actually press.
  *  Focus off the canvas placeholder first (BrowserInputSource listens on
@@ -238,13 +255,12 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // filter its list instead of being typed into the shell.
   await pressCtrl(page, "Space");
   await expectTerminal(page, /LAYER ns=launcher layer=3 /, 60_000);
-  await expectTerminal(page, /KLAUNCHER_READY n=9/, 60_000);
+  await expectTerminal(page, /KLAUNCHER_READY n=15/, 60_000);
 
-  // "te" narrows the nine entries (Clock, Nano, NetHack, Paint, Quickshell,
-  // ScummVM, Terminal, Theme Gallery, Vim) to Terminal alone — "t" alone
-  // still matches Paint.
-  await pressKeys(page, ["KeyT", "KeyE"]);
-  await expectTerminal(page, /KLAUNCHER_FILTER q=te n=1/, 60_000);
+  // "term" narrows the desktop applications and six games to Terminal.
+  // "te" also matches Asteroids and BYTEPATH.
+  await pressKeys(page, ["KeyT", "KeyE", "KeyR", "KeyM"]);
+  await expectTerminal(page, /KLAUNCHER_FILTER q=term n=1/, 60_000);
 
   // Enter launches the one match (Terminal) through the compositor's kwlctl
   // socket and dismisses the launcher. The entry runs an unmodified upstream
@@ -351,7 +367,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await pressKeys(page, ["ArrowDown", "Enter"]);
   await expectTerminal(page, /KLAUNCHER_LEVEL themes/, 60_000);
   await pressKeys(page, ["Enter"]);
-  await expectTerminal(page, /KLAUNCHER_THEME name=[a-z-]+/, 60_000);
+  await expectTerminalHistory(page, /KLAUNCHER_THEME name=[a-z-]+/);
 
   // Gate 7: the bar tracks the desktop. CTRL+2 switches workspace, and the
   // bar's hyprland/workspaces module reads the switch off the Hyprland IPC
@@ -438,8 +454,7 @@ test("Kandelo omarchy survives a rapid 8-window launch storm without SCM_RIGHTS 
 });
 
 /**
- * ScummVM as a Wayland client. It is the desktop's one GL client that is not
- * written for Kandelo: upstream ScummVM on upstream SDL2's Wayland backend,
+ * ScummVM as a Wayland client: upstream ScummVM on upstream SDL2's Wayland backend,
  * presenting through the libwayland-egl stand-in. Three platform pieces have
  * to agree for it to fill its tile, and each failed silently before:
  *
@@ -497,6 +512,111 @@ test("Kandelo omarchy runs ScummVM as a GL window that takes its tile's size", a
 
   expect(await terminalText(page), "a client failed while ScummVM ran")
     .not.toMatch(CLIENT_FAILURE);
+});
+
+test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow", async ({ page }) => {
+  test.setTimeout(600_000);
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  page.on("console", message => {
+    if (/GL_INVALID_|GL_OUT_OF_MEMORY|WebGL: INVALID_|\[webgl\].*failed/.test(message.text()))
+      errors.push(message.text());
+  });
+  await launchOmarchy(page);
+  await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
+
+  async function expectGameBuffer(windowCount: number) {
+    await openSurface(page, "Terminal");
+    await expect.poll(async () => {
+      const text = await terminalText(page);
+      const tiles = [...text.matchAll(/TILE n=(\d+) i=(\d+) x=\d+ y=\d+ w=(\d+) h=(\d+)/g)];
+      if (Number(tiles.at(-1)?.[1]) !== windowCount) return false;
+      const tile = tiles.filter(t => Number(t[1]) === windowCount && t[2] === "0").at(-1);
+      const buffer = [...text.matchAll(/GLBUFFER app=SDL_App bw=(\d+) bh=(\d+)/g)].at(-1);
+      if (!tile || !buffer) return false;
+      const scale = Number(buffer[1]) / Number(tile[3]);
+      return Number.isInteger(scale) && scale >= 1
+        && Number(buffer[2]) === Number(tile[4]) * scale;
+    }, { timeout: 60_000 }).toBe(true);
+  }
+
+  for (const game of ["pong", "snake", "breakout", "asteroids", "bytepath", "snkrx"]) {
+    await pressCtrl(page, "Space");
+    await expectTerminal(page, OPEN_LAUNCHER, 60_000);
+    await pressKeys(page, []);
+    await page.keyboard.type(game, { delay: 80 });
+    await page.keyboard.press("Enter", { delay: 120 });
+    const launched = `KLAUNCHER_EXEC cmd=/usr/local/bin/love /usr/share/love/examples/${game}`;
+    await expectTerminal(page, new RegExp(launched), 60_000);
+    await expectTerminal(page, new RegExp(`${launched}[\\s\\S]*love: using upstream LÖVE OpenGL renderer on Kandelo Wayland/EGL`), 180_000);
+    await expectTerminal(page, new RegExp(`${launched}[\\s\\S]*GLDRAW app_id=SDL_App`), 60_000);
+    await expectGameBuffer(1);
+    expect(await terminalText(page), game).not.toMatch(/lovefb:.*(?:error|main\.lua:)|Wayland.*failed/);
+
+    // A second window makes the compositor resize the running game. Close
+    // the clock, then close the game through xdg-shell, including the games
+    // with their own love.run loops. The desktop must remain alive throughout.
+    if (game === "pong" || game === "bytepath" || game === "snkrx") {
+      await pressCtrl(page, "KeyK");
+      await expectTerminal(page, /TILE n=2 i=1 /, 60_000);
+      await expectGameBuffer(2);
+      if (game === "snkrx") {
+        // SNKRX's custom loop must dispatch resize, and its local pointer
+        // scale must follow the smaller tile. Clicking the resized menu
+        // opens colored shop cards in a region that was empty in the menu.
+        const tile = [...(await terminalText(page)).matchAll(
+          /TILE n=2 i=0 x=(\d+) y=(\d+) w=(\d+) h=(\d+)/g,
+        )].at(-1)!;
+        const buffer = [...(await terminalText(page)).matchAll(
+          /GLBUFFER app=SDL_App bw=(\d+) bh=(\d+)/g,
+        )].at(-1)!;
+        const outputScale = Number(buffer[1]) / Number(tile[3]);
+        await openSurface(page, "Demo");
+        const canvas = canvasLocator(page);
+        // The pane fits the display after it becomes visible. Await its
+        // first captured frame before converting guest coordinates to CSS.
+        await canvas.screenshot();
+        const box = (await canvas.boundingBox())!;
+        const pixels = await canvas.evaluate(c => ({
+          w: (c as HTMLCanvasElement).width,
+          h: (c as HTMLCanvasElement).height,
+        }));
+        const screenX = box.width * outputScale / pixels.w;
+        const screenY = box.height * outputScale / pixels.h;
+        const x = (gx: number) => box.x + (Number(tile[1]) + gx * Number(tile[3]) / 480) * screenX;
+        const y = (gy: number) => box.y + (Number(tile[2]) + gy * Number(tile[4]) / 270) * screenY;
+        const clip = { x: x(20), y: y(25), width: x(240) - x(20), height: y(70) - y(25) };
+        console.info("SNKRX resized controls", { tile: tile[0], buffer: buffer[0], box, pixels, click: [x(55), y(125)] });
+        const menuBytes = (await page.screenshot({ clip })).byteLength;
+        await page.mouse.move(x(55), y(125));
+        await page.waitForTimeout(250); // upstream button hover state
+        await page.mouse.click(x(55), y(125), { delay: 120 });
+        await expect.poll(async () => (await page.screenshot({ clip })).byteLength, {
+          timeout: 15_000,
+        }).toBeGreaterThan(menuBytes + 1_000);
+        await pressCtrl(page, "KeyJ"); // focus the clock again before closing it
+      }
+      await pressCtrl(page, "KeyW");
+      await expectGameBuffer(1);
+    }
+    if (game === "bytepath") {
+      await pressKeys(page, []);
+      await page.waitForTimeout(30_000); // upstream animated introduction
+      await page.keyboard.press("ArrowDown", { delay: 120 });
+      await page.keyboard.press("Enter", { delay: 120 });
+      await page.waitForTimeout(2_000);
+    }
+    await pressCtrl(page, "KeyW");
+    await pressCtrl(page, "KeyK");
+    await expectTerminal(page, /KBD_FOCUS app_id=wlclock/, 60_000);
+    await expect.poll(async () => {
+      const tiles = [...(await terminalText(page)).matchAll(/TILE n=(\d+) i=\d+ /g)];
+      return Number(tiles.at(-1)?.[1] ?? 0);
+    }, { timeout: 60_000 }).toBe(1);
+    await pressCtrl(page, "KeyW");
+    expect(await terminalText(page), game).not.toMatch(CLIENT_FAILURE);
+  }
+  expect(errors).toEqual([]);
 });
 
 /**

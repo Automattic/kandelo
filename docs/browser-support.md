@@ -1110,6 +1110,16 @@ Safari); one that does not fails with `ENOSPC`. The pointer is a real absolute d
 reports `EV_ABS` positions), and the browser hides its own cursor over the
 display because ScummVM draws one.
 
+The Omarchy application launcher also offers Pong, Snake, Breakout,
+Asteroids, BYTEPATH, and SNKRX. These run as native LÖVE OpenGL windows
+through SDL2's Wayland/EGL backend. The compositor retains DRM master and
+physical input ownership; the games receive surface-local pointer and
+keyboard events, output-scale-aware drawable sizes, focus, resize, and close
+events. The four core examples letterbox their playfield, and BYTEPATH and
+SNKRX update their canvas/pointer scales on resize. Game files download
+lazily when launched. Audio playback remains unavailable in this LÖVE port.
+See `packages/registry/love/README.md` for its compatibility boundaries.
+
 The same wrapper runs ScummVM on the Omarchy desktop, from the launcher or
 as `scummvm` in a terminal. When a compositor socket exists
 (`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`) the wrapper leaves SDL to pick its

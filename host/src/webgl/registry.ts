@@ -153,6 +153,7 @@ export type GpuBo = {
   gl: WebGL2RenderingContext;
   tex: WebGLTexture;
   fbo: WebGLFramebuffer;
+  depthStencil: WebGLRenderbuffer;
   texId: number;
   w: number;
   h: number;
@@ -348,13 +349,17 @@ export class GlContextRegistry {
     if (existing) return existing.texId;
     const tex = gl.createTexture();
     const fbo = gl.createFramebuffer();
-    if (!tex || !fbo) {
+    const depthStencil = gl.createRenderbuffer();
+    if (!tex || !fbo || !depthStencil) {
       if (tex) gl.deleteTexture(tex);
       if (fbo) gl.deleteFramebuffer(fbo);
+      if (depthStencil) gl.deleteRenderbuffer(depthStencil);
       return null;
     }
     const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
-    const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    const prevDraw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    const prevRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    const prevRbo = gl.getParameter(gl.RENDERBUFFER_BINDING) as WebGLRenderbuffer | null;
     gl.bindTexture(gl.TEXTURE_2D, tex);
     // `null` data → allocate storage without an upload; the producer
     // fills it by rendering into the FBO.
@@ -370,10 +375,26 @@ export class GlContextRegistry {
     gl.framebufferTexture2D(
       gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0,
     );
+    // A Wayland EGL window is a default framebuffer just like scanout.
+    // Color-only storage made stencil clipping silently draw unmasked.
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depthStencil);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, w, h);
+    gl.framebufferRenderbuffer(
+      gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, depthStencil,
+    );
+    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
     gl.bindTexture(gl.TEXTURE_2D, prevTex);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, prevRbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, prevDraw);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, prevRead);
+    if (!complete) {
+      gl.deleteRenderbuffer(depthStencil);
+      gl.deleteFramebuffer(fbo);
+      gl.deleteTexture(tex);
+      return null;
+    }
     const texId = this.nextGpuBoTexId++;
-    this.gpuBos.set(bo_id, { gl, tex, fbo, texId, w, h });
+    this.gpuBos.set(bo_id, { gl, tex, fbo, depthStencil, texId, w, h });
     return texId;
   }
 
@@ -415,6 +436,7 @@ export class GlContextRegistry {
     if (!entry) return;
     this.gpuBos.delete(bo_id);
     entry.gl.deleteFramebuffer(entry.fbo);
+    entry.gl.deleteRenderbuffer(entry.depthStencil);
     entry.gl.deleteTexture(entry.tex);
   }
 

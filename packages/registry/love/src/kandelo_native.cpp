@@ -1,8 +1,8 @@
 // Kandelo platform backends for upstream LÖVE modules.
 //
 // These classes provide the small native pieces the upstream renderer expects
-// without using SDL: a window object backed by Kandelo's KMS/EGL surface, and
-// a filesystem object backed by the package's mounted POSIX directory.
+// a window object backed by SDL2 Wayland/EGL or Kandelo's KMS/EGL surface,
+// and a filesystem object backed by the package's mounted POSIX directory.
 
 #include <algorithm>
 #include <cerrno>
@@ -23,7 +23,7 @@ extern "C" {
 #include "lauxlib.h"
 }
 
-extern "C" void kandelo_love_set_native_window_size(int width, int height);
+#include "native_window.h"
 
 #include "common/Exception.h"
 #include "common/Module.h"
@@ -376,6 +376,7 @@ public:
       : width(width), height(height), pixelWidth(pixelWidth), pixelHeight(pixelHeight),
         desktopWidth(desktopWidth), desktopHeight(desktopHeight) {
     settings.refreshrate = 60.0;
+    if (auto *window = kandelo_love_sdl_window()) title = SDL_GetWindowTitle(window);
   }
 
   const char *getName() const override { return "love.window.kandelo"; }
@@ -389,6 +390,14 @@ public:
     pixelHeight = this->height;
     if (settings != nullptr) this->settings = *settings;
     if (this->settings.refreshrate <= 0.0) this->settings.refreshrate = 60.0;
+    if (auto *window = kandelo_love_sdl_window()) {
+      SDL_SetWindowResizable(window, this->settings.resizable ? SDL_TRUE : SDL_FALSE);
+      SDL_SetWindowMinimumSize(window, this->settings.minwidth, this->settings.minheight);
+      SDL_SetWindowSize(window, this->width, this->height);
+      if (!setFullscreen(this->settings.fullscreen, this->settings.fstype)) return false;
+      SDL_GetWindowSize(window, &this->width, &this->height);
+      SDL_GL_GetDrawableSize(window, &pixelWidth, &pixelHeight);
+    }
     kandelo_love_set_native_window_size(this->width, this->height);
     open = true;
     if (graphics != nullptr) {
@@ -409,20 +418,27 @@ public:
 
   void close() override { open = false; }
   bool setFullscreen(bool fullscreen, FullscreenType fstype) override {
+    if (auto *window = kandelo_love_sdl_window()) {
+      // Wayland fullscreen is a compositor request; it never takes DRM master.
+      if (SDL_SetWindowFullscreen(window, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) != 0)
+        return false;
+    }
     settings.fullscreen = fullscreen;
     settings.fstype = fstype;
     return true;
   }
   bool setFullscreen(bool fullscreen) override {
-    settings.fullscreen = fullscreen;
-    return true;
+    return setFullscreen(fullscreen, settings.fstype);
   }
   bool onSizeChanged(int width, int height) override {
     this->width = width;
     this->height = height;
     pixelWidth = this->width;
     pixelHeight = this->height;
+    if (auto *window = kandelo_love_sdl_window())
+      SDL_GL_GetDrawableSize(window, &pixelWidth, &pixelHeight);
     kandelo_love_set_native_window_size(this->width, this->height);
+    if (graphics) graphics->setViewportSize(this->width, this->height, pixelWidth, pixelHeight);
     return true;
   }
 
@@ -448,7 +464,10 @@ public:
   }
   love::Rect getSafeArea() const override { return {0, 0, width, height}; }
   bool isOpen() const override { return open; }
-  void setWindowTitle(const std::string &title) override { this->title = title; }
+  void setWindowTitle(const std::string &title) override {
+    this->title = title;
+    if (auto *window = kandelo_love_sdl_window()) SDL_SetWindowTitle(window, title.c_str());
+  }
   const std::string &getWindowTitle() const override { return title; }
   bool setIcon(love::image::ImageData *imgd) override {
     icon.set(imgd);
@@ -459,21 +478,51 @@ public:
   int getVSync() const override { return settings.vsync; }
   void setDisplaySleepEnabled(bool enable) override { displaySleep = enable; }
   bool isDisplaySleepEnabled() const override { return displaySleep; }
-  void minimize() override { minimized = true; }
-  void maximize() override { maximized = true; minimized = false; }
-  void restore() override { minimized = false; maximized = false; }
-  bool isMaximized() const override { return maximized; }
-  bool isMinimized() const override { return minimized; }
+  void minimize() override {
+    if (auto *window = kandelo_love_sdl_window()) SDL_MinimizeWindow(window);
+    else minimized = true;
+  }
+  void maximize() override {
+    if (auto *window = kandelo_love_sdl_window()) SDL_MaximizeWindow(window);
+    else { maximized = true; minimized = false; }
+  }
+  void restore() override {
+    if (auto *window = kandelo_love_sdl_window()) SDL_RestoreWindow(window);
+    else { minimized = false; maximized = false; }
+  }
+  bool isMaximized() const override {
+    auto *window = kandelo_love_sdl_window();
+    return window ? (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0 : maximized;
+  }
+  bool isMinimized() const override {
+    auto *window = kandelo_love_sdl_window();
+    return window ? (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) != 0 : minimized;
+  }
 
   void swapBuffers() override {
     if (gNative.swap != nullptr) gNative.swap();
   }
 
-  bool hasFocus() const override { return true; }
-  bool hasMouseFocus() const override { return true; }
-  bool isVisible() const override { return true; }
-  void setMouseGrab(bool grab) override { mouseGrab = grab; }
-  bool isMouseGrabbed() const override { return mouseGrab; }
+  bool hasFocus() const override {
+    auto *window = kandelo_love_sdl_window();
+    return window ? (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0 : true;
+  }
+  bool hasMouseFocus() const override {
+    auto *window = kandelo_love_sdl_window();
+    return window ? (SDL_GetWindowFlags(window) & SDL_WINDOW_MOUSE_FOCUS) != 0 : true;
+  }
+  bool isVisible() const override {
+    auto *window = kandelo_love_sdl_window();
+    return window ? (SDL_GetWindowFlags(window) & SDL_WINDOW_SHOWN) != 0 : true;
+  }
+  void setMouseGrab(bool grab) override {
+    mouseGrab = grab;
+    if (auto *window = kandelo_love_sdl_window()) SDL_SetWindowGrab(window, grab ? SDL_TRUE : SDL_FALSE);
+  }
+  bool isMouseGrabbed() const override {
+    auto *window = kandelo_love_sdl_window();
+    return window ? SDL_GetWindowGrab(window) == SDL_TRUE : mouseGrab;
+  }
   int getWidth() const override { return width; }
   int getHeight() const override { return height; }
   int getPixelWidth() const override { return pixelWidth; }
@@ -498,7 +547,7 @@ public:
     wx = fromPixels(px);
     wy = fromPixels(py);
   }
-  const void *getHandle() const override { return nullptr; }
+  const void *getHandle() const override { return kandelo_love_sdl_window(); }
   bool showMessageBox(const std::string &title, const std::string &message,
                       MessageBoxType, bool) override {
     std::fprintf(stderr, "love: %s: %s\n", title.c_str(), message.c_str());

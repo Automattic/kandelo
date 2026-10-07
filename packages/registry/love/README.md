@@ -4,6 +4,10 @@ The port from `emdash/love-target-resolution-upscale` builds with the current
 Kandelo SDK and links the upstream LÖVE OpenGL renderer and Box2D physics.
 The Kandelo window/filesystem backends use POSIX files, KMS/EGL/GLES on
 `/dev/dri/card0` and evdev keyboard/pointer input on `/dev/input/event{0,1}`.
+Inside a Wayland session, the same executable instead creates an SDL2 EGL
+window and receives keyboard, text, pointer, wheel, focus and close events
+from the compositor. It leaves physical input and DRM master to the desktop.
+SDL2 supplies the actual drawable size, including output scale, to LÖVE.
 Lua 5.2 is a separate registry library; FreeType and zlib use main's recipes.
 
 The browser gallery's **LÖVE games** machine starts Pong. Its **Games** menu
@@ -11,6 +15,20 @@ launches Pong, Snake, Breakout, Asteroids, BYTEPATH or SNKRX.
 The executable and game archive are lazy package files: other shell profiles
 do not download them at boot. The game archive mounts at `/usr/` and supplies
 `/usr/share/love/examples`.
+
+On the **Omarchy-style desktop**, press Ctrl+Space and select a game by name
+in the application launcher. The six entries use the same executable and
+lazy game archive. The runtime detects `WAYLAND_DISPLAY` or a compositor
+socket in `XDG_RUNTIME_DIR` (default `/tmp`); `SDL_VIDEODRIVER=wayland`
+explicitly requests this backend and initialization failures are reported.
+Outside a desktop session, the standalone KMS backend remains available.
+Ctrl+W closes the focused game through Wayland's ordinary window-close event.
+
+The core examples scale a stable playfield and convert pointer coordinates
+through the same letterboxed transform. BYTEPATH and SNKRX receive small
+upstream portability patches adding resize callbacks: their existing logical
+canvas and pointer scales follow a compositor's tiled configure, including
+when it changes a window that the game requested as fixed-size.
 
 Run a game from a Kandelo shell with, for example:
 
