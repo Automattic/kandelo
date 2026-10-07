@@ -123,7 +123,7 @@ export type GlBinding = GlBindingInput & {
    *  COMPLETE frame. Owned by this binding; freed on unbind. Null for
    *  GPU-tier producers, which already render into a bo FBO. */
   presentTarget:
-    | { fbo: WebGLFramebuffer; tex: WebGLTexture; w: number; h: number }
+    | { fbo: WebGLFramebuffer; tex: WebGLTexture; depthStencil: WebGLRenderbuffer; w: number; h: number }
     | null;
 
   /** Target GPU bo_id captured at `GLIO_CREATE_SURFACE` but not yet
@@ -230,6 +230,7 @@ export class GlContextRegistry {
     if (b.presentTarget) {
       b.gl?.deleteFramebuffer(b.presentTarget.fbo);
       b.gl?.deleteTexture(b.presentTarget.tex);
+      b.gl?.deleteRenderbuffer(b.presentTarget.depthStencil);
       b.presentTarget = null;
     }
     this.bindings.delete(pid);

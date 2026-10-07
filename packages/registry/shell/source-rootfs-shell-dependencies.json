@@ -162,6 +162,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "love",
+      "version": "11.5-kandelo-kms",
+      "role": "lazy-archive"
+    },
+    {
       "name": "elinks",
       "version": "0.20.0",
       "role": "lazy-file"

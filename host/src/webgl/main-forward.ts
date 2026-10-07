@@ -30,6 +30,8 @@ export function setupMainForward(
         const gl = canvas.getContext("webgl2", {
           antialias: false,
           premultipliedAlpha: false,
+          depth: true,
+          stencil: true,
           preserveDrawingBuffer: true,
         }) as WebGL2RenderingContext | null;
         if (gl) {

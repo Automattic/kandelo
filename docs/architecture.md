@@ -2982,6 +2982,28 @@ TLV commands, the kernel validates the submitted range, and the host decodes
 the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
+The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
+adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
+accepts versions 1 and 2, and rejects zero or newer versions with `ENOSYS`.
+Its version and extension strings describe that API. Extension queries carry
+an optional operation-table version: legacy requests retain their empty list,
+while version 2 advertises bridged capabilities. Optional float rendering and
+filtering extensions appear only when the host enables them. Uniform
+reflection, vector/matrix uploads, indexed draws, texture updates and
+depth/stencil operations use the same command/query path as other programs.
+Texture uploads copy shared and
+possibly unaligned guest bytes into the typed views WebGL requires. GLES2's
+unsized float, red/green and depth formats map to equivalent sized WebGL2
+formats. New opcodes occupy unused slots; existing opcode numbers and record layouts are
+preserved. Buffer allocation also accepts a data-free record carrying its size.
+
+Canvas-backed default framebuffers render into an offscreen color buffer with
+24-bit depth and 8-bit stencil, then blit the color buffer at presentation.
+The multiplexer restores masks, stencil operations, clear values, constant
+vertex attributes and texture bindings when switching guest contexts. Node
+hosts without WebGL2 cannot render these sessions; no software simulation
+stands in for the native LÖVE renderer.
+
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package
 into `sysroot/lib/libdrm.a`, and builds `libgbm.a`, `libEGL.a`, and

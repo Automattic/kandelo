@@ -1,6 +1,8 @@
 schema = 1
 policy = "source-only-v1"
 dependency_only = [
+  "bytepath-source",
+  "snkrx-source",
   "libyaml-source",
   "netsurf-buildsystem-source",
   "pcaudiolib-source",
@@ -632,6 +634,14 @@ class = "platform"
 [[packages]]
 name = "zstd"
 class = "user-software"
+
+[[packages]]
+name = "love"
+class = "user-software"
+
+[[packages]]
+name = "lua"
+class = "platform"
 
 [[products]]
 id = "platform-rootfs"

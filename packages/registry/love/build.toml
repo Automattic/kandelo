@@ -1,0 +1,12 @@
+script_path = "packages/registry/love/build-love.sh"
+inputs = [
+  "packages/registry/love/build-love.sh",
+  "scripts/package-build-roots.sh",
+  "packages/registry/love/src",
+  "packages/registry/love/patches",
+  "packages/registry/love/game-demos",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 8
+publication_state = "pending"

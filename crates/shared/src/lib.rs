@@ -4638,16 +4638,14 @@ pub mod gl {
 
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
-    /// at compile time and the kernel refuses GLIO_INIT on mismatch.
-    pub const OP_VERSION: u32 = 1;
+    /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
+    pub const OP_VERSION: u32 = 2;
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
-    // GLIO_INIT takes a pointer to a `u32` carrying the client's compile-time
-    // `OP_VERSION`. The kernel rejects mismatches with `ENOSYS` so a process
-    // built against an older op-table can't talk to a newer kernel (and vice
-    // versa) without the divergence being caught at first contact rather than
-    // surfacing later as a silent decode error. See A6's GLIO_INIT handler.
+    // GLIO_INIT takes a pointer to a `u32` carrying the client's required
+    // op-table version. Additions preserve all earlier tags and payloads,
+    // so older clients remain valid. Zero and newer versions fail ENOSYS.
     pub const GLIO_INIT: u32 = 0x40;
     pub const GLIO_TERMINATE: u32 = 0x41;
     pub const GLIO_CREATE_CONTEXT: u32 = 0x42;
@@ -4782,6 +4780,43 @@ pub mod gl {
     /// `glFinish`: no input, no output. The reply is sent only after the host
     /// has executed every earlier command and `finish()`ed the context.
     pub const QOP_FINISH: u32 = 0x0E;
+
+    pub const OP_BLEND_EQUATION: u16 = 0x000F;
+    pub const OP_BLEND_COLOR: u16 = 0x0010;
+    pub const OP_CLEAR_DEPTHF: u16 = 0x0011;
+    pub const OP_CLEAR_STENCIL: u16 = 0x0012;
+    pub const OP_COLOR_MASK: u16 = 0x0013;
+    pub const OP_DEPTH_MASK: u16 = 0x0014;
+    pub const OP_STENCIL_FUNC: u16 = 0x0015;
+    pub const OP_STENCIL_FUNC_SEPARATE: u16 = 0x0016;
+    pub const OP_STENCIL_MASK: u16 = 0x0017;
+    pub const OP_STENCIL_MASK_SEPARATE: u16 = 0x0018;
+    pub const OP_STENCIL_OP: u16 = 0x0019;
+    pub const OP_STENCIL_OP_SEPARATE: u16 = 0x001A;
+    pub const OP_POLYGON_OFFSET: u16 = 0x001B;
+    pub const OP_DEPTH_RANGEF: u16 = 0x001C;
+    pub const OP_SAMPLE_COVERAGE: u16 = 0x001D;
+    pub const OP_TEX_PARAMETERF: u16 = 0x0208;
+    pub const OP_COMPRESSED_TEX_IMAGE_2D: u16 = 0x0209;
+    pub const OP_COMPRESSED_TEX_SUB_IMAGE_2D: u16 = 0x020A;
+    pub const OP_COPY_TEX_IMAGE_2D: u16 = 0x020B;
+    pub const OP_COPY_TEX_SUB_IMAGE_2D: u16 = 0x020C;
+    pub const OP_UNIFORM1FV: u16 = 0x0407;
+    pub const OP_UNIFORM2FV: u16 = 0x0408;
+    pub const OP_UNIFORM3FV: u16 = 0x0409;
+    pub const OP_UNIFORM1IV: u16 = 0x040A;
+    pub const OP_UNIFORM2IV: u16 = 0x040B;
+    pub const OP_UNIFORM3IV: u16 = 0x040C;
+    pub const OP_UNIFORM4IV: u16 = 0x040D;
+    pub const OP_UNIFORM_MATRIX2FV: u16 = 0x040E;
+    pub const OP_UNIFORM_MATRIX3FV: u16 = 0x040F;
+    pub const OP_DELETE_RENDERBUFFERS: u16 = 0x0708;
+    pub const OP_DRAW_BUFFER: u16 = 0x0709;
+    pub const OP_DRAW_BUFFERS: u16 = 0x070A;
+    pub const OP_READ_BUFFER: u16 = 0x070B;
+    pub const QOP_GET_ACTIVE_UNIFORM: u32 = 0x000F;
+    pub const QOP_GET_UNIFORMFV: u32 = 0x0010;
+    pub const QOP_GET_UNIFORMIV: u32 = 0x0011;
 
     // --- marshalled ioctl argument structs ---------------------------------
 

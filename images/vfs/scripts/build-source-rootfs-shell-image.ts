@@ -229,6 +229,10 @@ function loadDemoConfig(path: string, label: string): KandeloDemoConfig {
 }
 
 const SOURCE_ROOTFS_DEMO_COMMANDS = {
+  love: {
+    executable: "/usr/local/bin/love",
+    command: "/usr/local/bin/love /usr/share/love/examples/pong",
+  },
   doom: {
     executable: "/usr/local/bin/fbdoom",
     command: "/usr/local/bin/fbdoom -iwad /doom1.wad",

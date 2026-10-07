@@ -30,6 +30,14 @@ export interface ShellLazyArchiveSpec {
 
 export const SHELL_LAZY_ARCHIVE_SPECS = [
   {
+    id: "love-examples",
+    dependency: "love",
+    resolverPath: "programs/love/share/love-examples.zip",
+    archiveUrl: "love-examples.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/love/examples/main.lua",
+  },
+  {
     id: "vim",
     dependency: "vim-browser-bundle",
     resolverPath: "programs/wasm32/vim.zip",

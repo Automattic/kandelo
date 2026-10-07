@@ -21,7 +21,11 @@
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
 import {
+  GL_BACK,
+  GL_FRONT,
+  GL_FRONT_AND_BACK,
   setCap,
+  type GlStencilFaceState,
   GL_PACK_ALIGNMENT,
   GL_READ_FRAMEBUFFER,
   GL_TEXTURE0,
@@ -31,6 +35,39 @@ import {
 export const GL_SUBMIT_OK = 0;
 export const GL_SUBMIT_EIO = -5;
 export const GL_SUBMIT_EINVAL = -22;
+
+const GL_ARRAY_BUFFER = 0x8892;
+const GL_ELEMENT_ARRAY_BUFFER = 0x8893;
+const GL_STREAM_DRAW = 0x88E0;
+const GL_BYTE = 0x1400;
+const GL_UNSIGNED_BYTE = 0x1401;
+const GL_SHORT = 0x1402;
+const GL_UNSIGNED_SHORT = 0x1403;
+const GL_INT = 0x1404;
+const GL_UNSIGNED_INT = 0x1405;
+const GL_FLOAT = 0x1406;
+const GL_HALF_FLOAT = 0x140B;
+const GL_HALF_FLOAT_OES = 0x8D61;
+const GL_FIXED = 0x140C;
+const GL_INT_2_10_10_10_REV = 0x8D9F;
+const GL_UNSIGNED_INT_2_10_10_10_REV = 0x8368;
+
+function updateStencilFaces(
+  shadow: GlBinding["shadow"],
+  face: number,
+  update: (state: GlStencilFaceState) => void,
+): void {
+  if (face === GL_FRONT || face === GL_FRONT_AND_BACK) update(shadow.stencil.front);
+  if (face === GL_BACK || face === GL_FRONT_AND_BACK) update(shadow.stencil.back);
+}
+
+let glBridgeFailureLogs = 0;
+function logGlBridgeFailure(phase: string, op: number, err: unknown): void {
+  if (glBridgeFailureLogs >= 20) return;
+  glBridgeFailureLogs += 1;
+  const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  console.warn(`[webgl] ${phase} failed op=0x${op.toString(16)} ${detail}`);
+}
 
 export function decodeAndDispatch(
   b: GlBinding,
@@ -42,7 +79,8 @@ export function decodeAndDispatch(
     try {
       dispatch(b.gl!, b, payload, 0, op);
       return GL_SUBMIT_OK;
-    } catch {
+    } catch (err) {
+      logGlBridgeFailure("submit", op, err);
       return GL_SUBMIT_EIO;
     }
   });
@@ -77,7 +115,14 @@ function walkCommandBuffer(
       view.byteOffset + payloadStart,
       payloadLen,
     );
-    if (!validPayload(op, payload)) return GL_SUBMIT_EINVAL;
+    if (!validPayload(op, payload)) {
+      logGlBridgeFailure(
+        "invalid-payload",
+        op,
+        `payloadLen=${payloadLen} commandOffset=${p}`,
+      );
+      return GL_SUBMIT_EINVAL;
+    }
     const rc = visit(payload, op);
     if (rc !== GL_SUBMIT_OK) return rc;
     p = payloadEnd;
@@ -122,6 +167,12 @@ function floatsAt(v: DataView, at: number, n: number): Float32Array {
   return out;
 }
 
+function bufferDataPayload(v: DataView): boolean {
+  if (v.byteLength < 12) return false;
+  const byteLength = v.getUint32(4, true);
+  return v.byteLength === 12 || v.byteLength === 12 + byteLength;
+}
+
 function countedFloatPayload(
   v: DataView,
   headerLen: number,
@@ -131,6 +182,90 @@ function countedFloatPayload(
   if (v.byteLength < countOffset + 4) return false;
   const count = v.getUint32(countOffset, true);
   return v.byteLength === headerLen + count * floatsPerCount * 4;
+}
+
+function countedIntPayload(
+  v: DataView,
+  headerLen: number,
+  countOffset: number,
+  intsPerCount: number,
+): boolean {
+  if (v.byteLength < countOffset + 4) return false;
+  const count = v.getUint32(countOffset, true);
+  return v.byteLength === headerLen + count * intsPerCount * 4;
+}
+
+function copyBytes(v: DataView, offset: number, length: number): Uint8Array {
+  const out = new Uint8Array(length);
+  out.set(new Uint8Array(v.buffer, v.byteOffset + offset, length));
+  return out;
+}
+
+function copyFloat32Array(v: DataView, offset: number, count: number): Float32Array {
+  const bytes = copyBytes(v, offset, count * 4);
+  return new Float32Array(bytes.buffer, bytes.byteOffset, count);
+}
+
+function copyInt32Array(v: DataView, offset: number, count: number): Int32Array {
+  const bytes = copyBytes(v, offset, count * 4);
+  return new Int32Array(bytes.buffer, bytes.byteOffset, count);
+}
+
+/** WebGL requires non-shared, correctly typed upload views. TLV data can be
+ * unaligned, so copy before constructing the view (also for float textures). */
+function copyPixels(v: DataView, offset: number, length: number, type: number) {
+  const bytes = copyBytes(v, offset, length);
+  switch (type) {
+    case GL_FLOAT: return new Float32Array(bytes.buffer);
+    case GL_HALF_FLOAT: case GL_UNSIGNED_SHORT:
+    case 0x8363: case 0x8033: case 0x8034:
+      return new Uint16Array(bytes.buffer);
+    case GL_UNSIGNED_INT: case 0x84fa: case 0x8368: case 0x8c3b:
+      return new Uint32Array(bytes.buffer);
+    default: return bytes;
+  }
+}
+
+function normalizeTextureType(type: number): number {
+  // GLES2's OES_texture_half_float extension uses GL_HALF_FLOAT_OES, while
+  // WebGL2 accepts the core GL_HALF_FLOAT token. Native renderers such as LOVE
+  // pick the OES token when GL_OES_texture_half_float is advertised.
+  return type === GL_HALF_FLOAT_OES ? GL_HALF_FLOAT : type;
+}
+
+function normalizeTextureInternalFormat(internal: number, format: number, type: number): number {
+  // GLES2 extensions use unsized RED/RG and floating-point formats. WebGL2
+  // requires their sized GLES3 equivalents; preserve explicit sized formats.
+  if (internal !== format) return internal;
+  switch (format) {
+    case 0x1903 /* RED */:
+      if (type === GL_UNSIGNED_BYTE) return 0x8229; // R8
+      if (type === GL_HALF_FLOAT) return 0x822D; // R16F
+      if (type === GL_FLOAT) return 0x822E; // R32F
+      break;
+    case 0x8227 /* RG */:
+      if (type === GL_UNSIGNED_BYTE) return 0x822B; // RG8
+      if (type === GL_HALF_FLOAT) return 0x822F; // RG16F
+      if (type === GL_FLOAT) return 0x8230; // RG32F
+      break;
+    case 0x1907 /* RGB */:
+      if (type === GL_HALF_FLOAT) return 0x881B; // RGB16F
+      if (type === GL_FLOAT) return 0x8815; // RGB32F
+      break;
+    case 0x1908 /* RGBA */:
+      if (type === GL_HALF_FLOAT) return 0x881A; // RGBA16F
+      if (type === GL_FLOAT) return 0x8814; // RGBA32F
+      break;
+    case 0x1902 /* DEPTH_COMPONENT */:
+      if (type === GL_UNSIGNED_SHORT) return 0x81A5; // DEPTH_COMPONENT16
+      if (type === GL_UNSIGNED_INT) return 0x81A6; // DEPTH_COMPONENT24
+      if (type === GL_FLOAT) return 0x8CAC; // DEPTH_COMPONENT32F
+      break;
+    case 0x84F9 /* DEPTH_STENCIL */:
+      if (type === 0x84FA /* UNSIGNED_INT_24_8 */) return 0x88F0; // DEPTH24_STENCIL8
+      break;
+  }
+  return internal;
 }
 
 function validPayload(op: number, v: DataView): boolean {
@@ -153,6 +288,13 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY:
     case O.OP_DISABLE_VERTEX_ATTRIB_ARRAY:
     case O.OP_BIND_VERTEX_ARRAY:
+    case O.OP_DRAW_BUFFER:
+    case O.OP_READ_BUFFER:
+    case O.OP_BLEND_EQUATION:
+    case O.OP_CLEAR_DEPTHF:
+    case O.OP_CLEAR_STENCIL:
+    case O.OP_DEPTH_MASK:
+    case O.OP_STENCIL_MASK:
       return exact(v, 4);
 
     case O.OP_BLEND_FUNC:
@@ -167,13 +309,21 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_UNIFORM1F:
     case O.OP_BIND_FRAMEBUFFER:
     case O.OP_BIND_RENDERBUFFER:
+    case O.OP_STENCIL_MASK_SEPARATE:
+    case O.OP_DEPTH_RANGEF:
+    case O.OP_SAMPLE_COVERAGE:
       return exact(v, 8);
 
     case O.OP_TEX_PARAMETERI:
+    case O.OP_TEX_PARAMETERF:
     case O.OP_UNIFORM2F:
     case O.OP_DRAW_ARRAYS:
+    case O.OP_STENCIL_FUNC:
+    case O.OP_STENCIL_OP:
       return exact(v, 12);
 
+    case O.OP_STENCIL_FUNC_SEPARATE:
+    case O.OP_STENCIL_OP_SEPARATE:
     case O.OP_CLEAR_COLOR:
     case O.OP_VIEWPORT:
     case O.OP_SCISSOR:
@@ -181,8 +331,13 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_DRAW_ELEMENTS:
     case O.OP_RENDERBUFFER_STORAGE:
     case O.OP_FRAMEBUFFER_RENDERBUFFER:
+    case O.OP_BLEND_COLOR:
     case O.OP_BLEND_FUNC_SEPARATE:
+    case O.OP_COLOR_MASK:
       return exact(v, 16);
+
+    case O.OP_POLYGON_OFFSET:
+      return exact(v, 8);
 
     case O.OP_UNIFORM4F:
     case O.OP_FRAMEBUFFER_TEXTURE_2D:
@@ -201,24 +356,53 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_GEN_FRAMEBUFFERS:
     case O.OP_DELETE_FRAMEBUFFERS:
     case O.OP_GEN_RENDERBUFFERS:
+    case O.OP_DELETE_RENDERBUFFERS:
+      return u32ArrayPayload(v);
+    case O.OP_DRAW_BUFFERS:
       return u32ArrayPayload(v);
 
-    case O.OP_BUFFER_DATA:
-      return tailBytesPayload(v, 12, 4);
     case O.OP_BUFFER_SUB_DATA:
       return tailBytesPayload(v, 12, 8);
     case O.OP_TEX_IMAGE_2D:
     case O.OP_TEX_SUB_IMAGE_2D:
       return tailBytesPayload(v, 36, 32);
+    case O.OP_COMPRESSED_TEX_IMAGE_2D:
+      return tailBytesPayload(v, 28, 24);
+    case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D:
+      return tailBytesPayload(v, 32, 28);
     case O.OP_SHADER_SOURCE:
       return tailBytesPayload(v, 8, 4);
     case O.OP_BIND_ATTRIB_LOCATION:
       return tailBytesPayload(v, 12, 8);
 
+    case O.OP_BUFFER_DATA:
+      return bufferDataPayload(v);
     case O.OP_UNIFORM_MATRIX4FV:
       return countedFloatPayload(v, 12, 4, 16);
     case O.OP_UNIFORM4FV:
       return countedFloatPayload(v, 8, 4, 4);
+    case O.OP_UNIFORM1FV:
+      return countedFloatPayload(v, 8, 4, 1);
+    case O.OP_UNIFORM2FV:
+      return countedFloatPayload(v, 8, 4, 2);
+    case O.OP_UNIFORM3FV:
+      return countedFloatPayload(v, 8, 4, 3);
+    case O.OP_UNIFORM1IV:
+      return countedIntPayload(v, 8, 4, 1);
+    case O.OP_UNIFORM2IV:
+      return countedIntPayload(v, 8, 4, 2);
+    case O.OP_UNIFORM3IV:
+      return countedIntPayload(v, 8, 4, 3);
+    case O.OP_UNIFORM4IV:
+      return countedIntPayload(v, 8, 4, 4);
+    case O.OP_UNIFORM_MATRIX2FV:
+      return countedFloatPayload(v, 12, 4, 4);
+    case O.OP_UNIFORM_MATRIX3FV:
+      return countedFloatPayload(v, 12, 4, 9);
+    case O.OP_COPY_TEX_IMAGE_2D:
+      return exact(v, 32);
+    case O.OP_COPY_TEX_SUB_IMAGE_2D:
+      return exact(v, 32);
 
     default:
       return false;
@@ -285,12 +469,49 @@ function dispatch(
       b.shadow.blendFunc = { srcRGB, dstRGB, srcA, dstA };
       return;
     }
-    case O.OP_BLEND_EQUATION_SEPARATE: {
-      const rgb = v.getUint32(p, true), alpha = v.getUint32(p + 4, true);
-      gl.blendEquationSeparate(rgb, alpha);
-      b.shadow.blendEquation = { rgb, alpha };
+    case O.OP_BLEND_EQUATION: {
+      const mode = v.getUint32(p, true);
+      gl.blendEquation(mode);
+      b.shadow.blendEquation = { rgb: mode, alpha: mode };
       return;
     }
+    case O.OP_BLEND_EQUATION_SEPARATE: {
+      const modeRGB = v.getUint32(p, true);
+      const modeA = v.getUint32(p + 4, true);
+      gl.blendEquationSeparate(modeRGB, modeA);
+      b.shadow.blendEquation = { rgb: modeRGB, alpha: modeA };
+      return;
+    }
+    case O.OP_BLEND_COLOR:
+      b.shadow.blendColor = [
+        v.getFloat32(p, true),
+        v.getFloat32(p + 4, true),
+        v.getFloat32(p + 8, true),
+        v.getFloat32(p + 12, true),
+      ];
+      gl.blendColor(...b.shadow.blendColor);
+      return;
+    case O.OP_CLEAR_DEPTHF:
+      b.shadow.clearDepth = Math.min(1, Math.max(0, v.getFloat32(p, true)));
+      gl.clearDepth(b.shadow.clearDepth);
+      return;
+    case O.OP_CLEAR_STENCIL:
+      b.shadow.clearStencil = v.getInt32(p, true);
+      gl.clearStencil(b.shadow.clearStencil);
+      return;
+    case O.OP_COLOR_MASK:
+      b.shadow.colorMask = [
+        v.getUint32(p, true) !== 0,
+        v.getUint32(p + 4, true) !== 0,
+        v.getUint32(p + 8, true) !== 0,
+        v.getUint32(p + 12, true) !== 0,
+      ];
+      gl.colorMask(...b.shadow.colorMask);
+      return;
+    case O.OP_DEPTH_MASK:
+      b.shadow.depthMask = v.getUint32(p, true) !== 0;
+      gl.depthMask(b.shadow.depthMask);
+      return;
     case O.OP_DEPTH_FUNC:
       b.shadow.depthFunc = v.getUint32(p, true);
       gl.depthFunc(b.shadow.depthFunc);
@@ -304,7 +525,88 @@ function dispatch(
       gl.frontFace(b.shadow.frontFace);
       return;
     case O.OP_LINE_WIDTH:
-      gl.lineWidth(v.getFloat32(p, true));
+      b.shadow.lineWidth = v.getFloat32(p, true);
+      gl.lineWidth(b.shadow.lineWidth);
+      return;
+    case O.OP_STENCIL_FUNC: {
+      const func = v.getUint32(p, true);
+      const ref = v.getInt32(p + 4, true);
+      const mask = v.getUint32(p + 8, true);
+      b.shadow.stencil.front.func = func;
+      b.shadow.stencil.front.ref = ref;
+      b.shadow.stencil.front.valueMask = mask;
+      b.shadow.stencil.back.func = func;
+      b.shadow.stencil.back.ref = ref;
+      b.shadow.stencil.back.valueMask = mask;
+      gl.stencilFunc(func, ref, mask);
+      return;
+    }
+    case O.OP_STENCIL_FUNC_SEPARATE: {
+      const face = v.getUint32(p, true);
+      const func = v.getUint32(p + 4, true);
+      const ref = v.getInt32(p + 8, true);
+      const mask = v.getUint32(p + 12, true);
+      updateStencilFaces(b.shadow, face, (state) => {
+        state.func = func;
+        state.ref = ref;
+        state.valueMask = mask;
+      });
+      gl.stencilFuncSeparate(face, func, ref, mask);
+      return;
+    }
+    case O.OP_STENCIL_MASK: {
+      const mask = v.getUint32(p, true);
+      b.shadow.stencil.front.writeMask = mask;
+      b.shadow.stencil.back.writeMask = mask;
+      gl.stencilMask(mask);
+      return;
+    }
+    case O.OP_STENCIL_MASK_SEPARATE: {
+      const face = v.getUint32(p, true);
+      const mask = v.getUint32(p + 4, true);
+      updateStencilFaces(b.shadow, face, (state) => {
+        state.writeMask = mask;
+      });
+      gl.stencilMaskSeparate(face, mask);
+      return;
+    }
+    case O.OP_STENCIL_OP: {
+      const fail = v.getUint32(p, true);
+      const zfail = v.getUint32(p + 4, true);
+      const zpass = v.getUint32(p + 8, true);
+      b.shadow.stencil.front.fail = fail;
+      b.shadow.stencil.front.zfail = zfail;
+      b.shadow.stencil.front.zpass = zpass;
+      b.shadow.stencil.back.fail = fail;
+      b.shadow.stencil.back.zfail = zfail;
+      b.shadow.stencil.back.zpass = zpass;
+      gl.stencilOp(fail, zfail, zpass);
+      return;
+    }
+    case O.OP_STENCIL_OP_SEPARATE: {
+      const face = v.getUint32(p, true);
+      const fail = v.getUint32(p + 4, true);
+      const zfail = v.getUint32(p + 8, true);
+      const zpass = v.getUint32(p + 12, true);
+      updateStencilFaces(b.shadow, face, (state) => {
+        state.fail = fail;
+        state.zfail = zfail;
+        state.zpass = zpass;
+      });
+      gl.stencilOpSeparate(face, fail, zfail, zpass);
+      return;
+    }
+    case O.OP_POLYGON_OFFSET:
+      b.shadow.polygonOffset = [v.getFloat32(p, true), v.getFloat32(p + 4, true)];
+      gl.polygonOffset(...b.shadow.polygonOffset);
+      return;
+    case O.OP_DEPTH_RANGEF:
+      b.shadow.depthRange = [v.getFloat32(p, true), v.getFloat32(p + 4, true)].map(x => Math.min(1, Math.max(0, x))) as [number, number];
+      gl.depthRange(...b.shadow.depthRange);
+      return;
+    case O.OP_SAMPLE_COVERAGE:
+      b.shadow.sampleCoverage = [Math.min(1, Math.max(0, v.getFloat32(p, true))), v.getUint32(p + 4, true) !== 0];
+      gl.sampleCoverage(...b.shadow.sampleCoverage);
       return;
     case O.OP_PIXEL_STOREI: {
       const pname = v.getUint32(p, true);
@@ -332,25 +634,28 @@ function dispatch(
         const name = v.getUint32(p + 4 + i * 4, true);
         const obj = b.buffers.get(name);
         if (obj) gl.deleteBuffer(obj);
+        if (obj === b.shadow.arrayBuffer) b.shadow.arrayBuffer = null;
         b.buffers.delete(name);
       }
       return;
     }
-    case O.OP_BIND_BUFFER:
-      gl.bindBuffer(
-        v.getUint32(p, true),
-        b.buffers.get(v.getUint32(p + 4, true)) ?? null,
-      );
+    case O.OP_BIND_BUFFER: {
+      const target = v.getUint32(p, true);
+      const buffer = b.buffers.get(v.getUint32(p + 4, true)) ?? null;
+      gl.bindBuffer(target, buffer);
+      if (target === GL_ARRAY_BUFFER) b.shadow.arrayBuffer = buffer;
       return;
+    }
     // Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage
     case O.OP_BUFFER_DATA: {
       const target = v.getUint32(p, true);
-      const dataLen = v.getUint32(p + 4, true);
-      const usage = v.getUint32(p + 8 + dataLen, true);
-      if (dataLen === 0) {
-        gl.bufferData(target, 0, usage);
+      const byteLength = v.getUint32(p + 4, true);
+      if (v.byteLength === 12) {
+        const usage = v.getUint32(p + 8, true);
+        gl.bufferData(target, byteLength, usage);
       } else {
-        const data = new Uint8Array(v.buffer, v.byteOffset + p + 8, dataLen);
+        const usage = v.getUint32(p + 8 + byteLength, true);
+        const data = copyBytes(v, p + 8, byteLength);
         gl.bufferData(target, data, usage);
       }
       return;
@@ -360,7 +665,7 @@ function dispatch(
       const target = v.getUint32(p, true);
       const dstOff = v.getInt32(p + 4, true);
       const dataLen = v.getUint32(p + 8, true);
-      const data = new Uint8Array(v.buffer, v.byteOffset + p + 12, dataLen);
+      const data = copyBytes(v, p + 12, dataLen);
       gl.bufferSubData(target, dstOff, data);
       return;
     }
@@ -381,13 +686,16 @@ function dispatch(
         const name = v.getUint32(p + 4 + i * 4, true);
         const obj = b.textures.get(name);
         if (obj) gl.deleteTexture(obj);
+        b.shadow.textureUnits = b.shadow.textureUnits.map(tex => tex === obj ? null : tex);
         b.textures.delete(name);
       }
       return;
     }
     case O.OP_BIND_TEXTURE: {
-      const tex = b.textures.get(v.getUint32(p + 4, true)) ?? null;
-      gl.bindTexture(v.getUint32(p, true), tex);
+      const target = v.getUint32(p, true);
+      const texName = v.getUint32(p + 4, true);
+      const tex = b.textures.get(texName) ?? null;
+      gl.bindTexture(target, tex);
       const unit = b.shadow.activeTexture;
       if (unit >= 0 && unit < b.shadow.textureUnits.length) {
         b.shadow.textureUnits[unit] = tex;
@@ -405,13 +713,13 @@ function dispatch(
       const height = v.getInt32(p + 16, true);
       const border = v.getInt32(p + 20, true);
       const format = v.getUint32(p + 24, true);
-      const type = v.getUint32(p + 28, true);
+      const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
       const data = dataLen === 0
         ? null
-        : new Uint8Array(v.buffer, v.byteOffset + p + 36, dataLen);
+        : copyPixels(v, p + 36, dataLen, type);
       gl.texImage2D(
-        target, level, internalFormat, width, height, border,
+        target, level, normalizeTextureInternalFormat(internalFormat, format, type), width, height, border,
         format, type, data,
       );
       return;
@@ -427,9 +735,9 @@ function dispatch(
       const width = v.getInt32(p + 16, true);
       const height = v.getInt32(p + 20, true);
       const format = v.getUint32(p + 24, true);
-      const type = v.getUint32(p + 28, true);
+      const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
-      const data = new Uint8Array(v.buffer, v.byteOffset + p + 36, dataLen);
+      const data = copyPixels(v, p + 36, dataLen, type);
       gl.texSubImage2D(
         target, level, xoff, yoff, width, height, format, type, data,
       );
@@ -442,6 +750,13 @@ function dispatch(
         v.getInt32(p + 8, true),
       );
       return;
+    case O.OP_TEX_PARAMETERF:
+      gl.texParameterf(
+        v.getUint32(p, true),
+        v.getUint32(p + 4, true),
+        v.getFloat32(p + 8, true),
+      );
+      return;
     case O.OP_ACTIVE_TEXTURE: {
       const unit = v.getUint32(p, true);
       gl.activeTexture(unit);
@@ -450,6 +765,59 @@ function dispatch(
     }
     case O.OP_GENERATE_MIPMAP:
       gl.generateMipmap(v.getUint32(p, true));
+      return;
+    case O.OP_COMPRESSED_TEX_IMAGE_2D: {
+      const dataLen = v.getUint32(p + 24, true);
+      const data = copyBytes(v, p + 28, dataLen);
+      gl.compressedTexImage2D(
+        v.getUint32(p, true),
+        v.getInt32(p + 4, true),
+        v.getUint32(p + 8, true),
+        v.getInt32(p + 12, true),
+        v.getInt32(p + 16, true),
+        v.getInt32(p + 20, true),
+        data,
+      );
+      return;
+    }
+    case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D: {
+      const dataLen = v.getUint32(p + 28, true);
+      const data = copyBytes(v, p + 32, dataLen);
+      gl.compressedTexSubImage2D(
+        v.getUint32(p, true),
+        v.getInt32(p + 4, true),
+        v.getInt32(p + 8, true),
+        v.getInt32(p + 12, true),
+        v.getInt32(p + 16, true),
+        v.getInt32(p + 20, true),
+        v.getUint32(p + 24, true),
+        data,
+      );
+      return;
+    }
+    case O.OP_COPY_TEX_IMAGE_2D:
+      gl.copyTexImage2D(
+        v.getUint32(p, true),
+        v.getInt32(p + 4, true),
+        v.getUint32(p + 8, true),
+        v.getInt32(p + 12, true),
+        v.getInt32(p + 16, true),
+        v.getInt32(p + 20, true),
+        v.getInt32(p + 24, true),
+        v.getInt32(p + 28, true),
+      );
+      return;
+    case O.OP_COPY_TEX_SUB_IMAGE_2D:
+      gl.copyTexSubImage2D(
+        v.getUint32(p, true),
+        v.getInt32(p + 4, true),
+        v.getInt32(p + 8, true),
+        v.getInt32(p + 12, true),
+        v.getInt32(p + 16, true),
+        v.getInt32(p + 20, true),
+        v.getInt32(p + 24, true),
+        v.getInt32(p + 28, true),
+      );
       return;
 
     // ----- shaders / programs --------------------------------------------
@@ -593,6 +961,64 @@ function dispatch(
       gl.uniform4fv(loc, floatsAt(v, p + 8, count * 4));
       return;
     }
+    case O.OP_UNIFORM1FV: {
+      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const count = v.getUint32(p + 4, true);
+      gl.uniform1fv(loc, copyFloat32Array(v, p + 8, count));
+      return;
+    }
+    case O.OP_UNIFORM2FV: {
+      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const count = v.getUint32(p + 4, true);
+      gl.uniform2fv(loc, copyFloat32Array(v, p + 8, count * 2));
+      return;
+    }
+    case O.OP_UNIFORM3FV: {
+      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const count = v.getUint32(p + 4, true);
+      gl.uniform3fv(loc, copyFloat32Array(v, p + 8, count * 3));
+      return;
+    }
+    case O.OP_UNIFORM1IV: {
+      const locIndex = v.getInt32(p, true);
+      const loc = b.uniformLocations.get(locIndex) ?? null;
+      const count = v.getUint32(p + 4, true);
+      const values = copyInt32Array(v, p + 8, count);
+      gl.uniform1iv(loc, values);
+      return;
+    }
+    case O.OP_UNIFORM2IV: {
+      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const count = v.getUint32(p + 4, true);
+      gl.uniform2iv(loc, copyInt32Array(v, p + 8, count * 2));
+      return;
+    }
+    case O.OP_UNIFORM3IV: {
+      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const count = v.getUint32(p + 4, true);
+      gl.uniform3iv(loc, copyInt32Array(v, p + 8, count * 3));
+      return;
+    }
+    case O.OP_UNIFORM4IV: {
+      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const count = v.getUint32(p + 4, true);
+      gl.uniform4iv(loc, copyInt32Array(v, p + 8, count * 4));
+      return;
+    }
+    case O.OP_UNIFORM_MATRIX2FV: {
+      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const count = v.getUint32(p + 4, true);
+      const transpose = v.getUint32(p + 8, true) !== 0;
+      gl.uniformMatrix2fv(loc, transpose, copyFloat32Array(v, p + 12, count * 4));
+      return;
+    }
+    case O.OP_UNIFORM_MATRIX3FV: {
+      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const count = v.getUint32(p + 4, true);
+      const transpose = v.getUint32(p + 8, true) !== 0;
+      gl.uniformMatrix3fv(loc, transpose, copyFloat32Array(v, p + 12, count * 9));
+      return;
+    }
 
     // ----- vertex attribs / draws -----------------------------------------
     case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY:
@@ -630,6 +1056,10 @@ function dispatch(
       return;
     // Payload: u32 index, f32 x, f32 y, f32 z, f32 w
     case O.OP_VERTEX_ATTRIB_4FV:
+      b.shadow.vertexAttribValues.set(v.getUint32(p, true), [
+        v.getFloat32(p + 4, true), v.getFloat32(p + 8, true),
+        v.getFloat32(p + 12, true), v.getFloat32(p + 16, true),
+      ]);
       gl.vertexAttrib4f(
         v.getUint32(p, true),
         v.getFloat32(p + 4, true),
@@ -677,6 +1107,16 @@ function dispatch(
       }
       return;
     }
+    case O.OP_DELETE_FRAMEBUFFERS: {
+      const n = v.getUint32(p, true);
+      for (let i = 0; i < n; i++) {
+        const name = v.getUint32(p + 4 + i * 4, true);
+        const obj = b.fbos.get(name);
+        if (obj) gl.deleteFramebuffer(obj);
+        b.fbos.delete(name);
+      }
+      return;
+    }
     case O.OP_BIND_FRAMEBUFFER: {
       const target = v.getUint32(p, true);
       const name = v.getUint32(p + 4, true);
@@ -704,16 +1144,6 @@ function dispatch(
       gl.framebufferTexture2D(target, attachment, textarget, tex, level);
       return;
     }
-    case O.OP_DELETE_FRAMEBUFFERS: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.fbos.get(name);
-        if (obj) gl.deleteFramebuffer(obj);
-        b.fbos.delete(name);
-      }
-      return;
-    }
     case O.OP_GEN_RENDERBUFFERS: {
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
@@ -723,11 +1153,20 @@ function dispatch(
       }
       return;
     }
+    case O.OP_DELETE_RENDERBUFFERS: {
+      const n = v.getUint32(p, true);
+      for (let i = 0; i < n; i++) {
+        const name = v.getUint32(p + 4 + i * 4, true);
+        const obj = b.rbos.get(name);
+        if (obj) gl.deleteRenderbuffer(obj);
+        if (obj === b.shadow.renderbuffer) b.shadow.renderbuffer = null;
+        b.rbos.delete(name);
+      }
+      return;
+    }
     case O.OP_BIND_RENDERBUFFER:
-      gl.bindRenderbuffer(
-        v.getUint32(p, true),
-        b.rbos.get(v.getUint32(p + 4, true)) ?? null,
-      );
+      b.shadow.renderbuffer = b.rbos.get(v.getUint32(p + 4, true)) ?? null;
+      gl.bindRenderbuffer(v.getUint32(p, true), b.shadow.renderbuffer);
       return;
     // Payload: u32 target, u32 internalformat, i32 width, i32 height
     case O.OP_RENDERBUFFER_STORAGE:
@@ -745,6 +1184,21 @@ function dispatch(
       const rbtarget = v.getUint32(p + 8, true);
       const rbo = b.rbos.get(v.getUint32(p + 12, true)) ?? null;
       gl.framebufferRenderbuffer(target, attachment, rbtarget, rbo);
+      return;
+    }
+    case O.OP_DRAW_BUFFER: {
+      gl.drawBuffers([v.getUint32(p, true)]);
+      return;
+    }
+    case O.OP_DRAW_BUFFERS: {
+      const n = v.getUint32(p, true);
+      const buffers: number[] = [];
+      for (let i = 0; i < n; i++) buffers.push(v.getUint32(p + 4 + i * 4, true));
+      gl.drawBuffers(buffers);
+      return;
+    }
+    case O.OP_READ_BUFFER: {
+      gl.readBuffer(v.getUint32(p, true));
       return;
     }
 
