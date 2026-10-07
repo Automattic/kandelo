@@ -466,6 +466,9 @@ pub struct PipeBuffer {
     /// TCP's simplex FIN without inventing a fixed number of successful writes
     /// after EOF.
     orphaned_read: bool,
+    /// Sticky transport failure shared by inherited socket pipe endpoints.
+    stream_error: u32,
+    stream_error_pending: bool,
     /// Index of this pipe in the PipeTable (for wakeup events).
     pipe_idx: u32,
     /// True if this pipe backs a named FIFO (see `crate::fifo`). FIFO pipes
@@ -504,6 +507,34 @@ pub struct PipeBuffer {
 }
 
 impl PipeBuffer {
+    /// Reset stream data without releasing endpoint references. Ordinary pipes
+    /// never set this state; the host invokes it for an actual socket reset.
+    pub fn reset_stream(&mut self, error: Errno) {
+        if self.stream_error != 0 {
+            return;
+        }
+        self.stream_error = error as u32;
+        self.stream_error_pending = true;
+        self.head = 0;
+        self.tail = 0;
+        self.len = 0;
+        self.ancillary_fds.clear();
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
+    }
+    pub fn stream_error(&self) -> Option<Errno> {
+        Errno::from_u32(self.stream_error)
+    }
+    pub fn take_stream_error(&mut self) -> u32 {
+        let error = if self.stream_error_pending {
+            self.stream_error
+        } else {
+            0
+        };
+        self.stream_error_pending = false;
+        error
+    }
+
     /// Create a new pipe buffer with the given capacity.
     pub fn new(capacity: usize) -> Self {
         let mut buf = Vec::new();
@@ -519,6 +550,8 @@ impl PipeBuffer {
             in_flight_read_count: 0,
             in_flight_write_count: 0,
             orphaned_read: false,
+            stream_error: 0,
+            stream_error_pending: false,
             pipe_idx: 0,
             is_fifo: false,
             fifo_read_only_count: 0,

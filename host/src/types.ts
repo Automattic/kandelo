@@ -235,13 +235,17 @@ export interface NetworkIO {
   readonly localAddress?: Uint8Array;
   /** Select a real routed UDP source; positive errno when no route exists. */
   udpSourceAddress?(destination: Uint8Array): Uint8Array | number;
-  connect(handle: number, addr: Uint8Array, port: number): void;
+  connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void;
   /** 0 = connected, positive errno = failed, -11 = still pending (EAGAIN). */
   connectStatus(handle: number): number;
   send(handle: number, data: Uint8Array, flags: number): number;
   recv(handle: number, maxLen: number, flags: number): Uint8Array;
   /** Return POSIX poll revents bits for this connection handle. */
   poll?(handle: number, events: number): number;
+  /** Actual local endpoint of a connected stream, when the host exposes it. */
+  localEndpoint?(handle: number): NetworkAddress;
+  /** Disable stream directions while preserving the connection handle. */
+  shutdown?(handle: number, how: number): void;
   close(handle: number): void;
   getaddrinfo(hostname: string): Uint8Array; // Returns 4-byte IPv4
   listenTcp?(listenerId: string, addr: Uint8Array, port: number, target: TcpListenTarget): number;

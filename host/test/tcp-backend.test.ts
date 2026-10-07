@@ -219,3 +219,18 @@ describe("TcpNetworkBackend", () => {
     backend.close(9);
   });
 });
+
+describe('Node TCP host shutdown',()=>{
+ it('sends FIN while preserving reads and exposes the actual local endpoint',async()=>{
+  const server=net.createServer({allowHalfOpen:true},socket=>{socket.on('data',()=>{});socket.on('end',()=>socket.end('reply'));});
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const backend=new TcpNetworkBackend();
+  try {
+   backend.connect(41,LOOPBACK,(server.address() as net.AddressInfo).port);await waitForConnected(backend,41);
+   expect(backend.localEndpoint(41).addr).toEqual(LOOPBACK);expect(backend.localEndpoint(41).port).toBeGreaterThan(0);
+   backend.send(41,new TextEncoder().encode('request'),0);backend.shutdown(41,1);await waitForReadable(backend,41);
+   expect(new TextDecoder().decode(backend.recv(41,99,0))).toBe('reply');
+   expect(()=>backend.send(41,new Uint8Array([1]),0)).toThrowError(expect.objectContaining({errno:32}));
+  }finally{backend.close(41);await new Promise<void>(resolve=>server.close(()=>resolve()));}
+ });
+});

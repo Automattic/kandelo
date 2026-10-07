@@ -148,6 +148,19 @@ pub trait HostIO {
     ) -> Result<(), Errno>;
     fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno>;
     fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno>;
+    fn host_net_connect_from(
+        &mut self,
+        handle: i32,
+        addr: &[u8],
+        port: u16,
+        source: [u8; 4],
+        source_port: u16,
+    ) -> Result<(), Errno> {
+        if source != [0; 4] || source_port != 0 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        self.host_net_connect(handle, addr, port)
+    }
     /// Query the status of a host-delegated connect that was previously
     /// kicked off via `host_net_connect`. Returns `Ok(())` once the TCP
     /// handshake completed successfully, `Err(EAGAIN)` while still pending,
@@ -164,6 +177,14 @@ pub trait HostIO {
     fn host_net_poll(&mut self, handle: i32, events: i16) -> Result<i16, Errno> {
         let _ = handle;
         Ok(events)
+    }
+    fn host_net_local_endpoint(&mut self, handle: i32) -> Result<([u8; 4], u16), Errno> {
+        let _ = handle;
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn host_net_shutdown(&mut self, handle: i32, how: u32) -> Result<(), Errno> {
+        let _ = (handle, how);
+        Err(Errno::EOPNOTSUPP)
     }
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno>;
     /// Notify the host that an AF_INET socket is now listening, so the host

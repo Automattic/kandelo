@@ -2060,8 +2060,27 @@ export class WasmPosixKernel {
         host_net_poll: (handle: number, events: number): number => {
           return this.#hostNetPoll(handle, events);
         },
+        host_net_connect_from: (handle: number, addrPtr: KernelPointer, addrLen: number, port: number, source: number, sourcePort: number): number => {
+          return this.#hostNetConnect(handle,addrPtr,addrLen,port,{addr:new Uint8Array([source >>> 24,(source >>> 16)&255,(source >>> 8)&255,source&255]),port:sourcePort});
+        },
         host_net_connect_status: (handle: number): number => {
           return this.#hostNetConnectStatus(handle);
+        },
+        host_net_local_endpoint: (handle: number): bigint => {
+          try {
+            const value = this.io.network?.localEndpoint?.(handle);
+            if (!value) return -95n;
+            if (!(value.addr instanceof Uint8Array) || value.addr.length !== 4 || !Number.isInteger(value.port) || value.port < 1 || value.port > 65535) return -5n;
+            let packed = 0n;
+            for (const byte of value.addr) packed = (packed << 8n) | BigInt(byte);
+            return (packed << 16n) | BigInt(value.port);
+          } catch (error: any) { return Number.isInteger(error?.errno) && error.errno > 0 && error.errno <= 4095 ? -BigInt(error.errno) : -5n; }
+        },
+        host_net_shutdown: (handle: number, how: number): number => {
+          try {
+            if (!this.io.network?.shutdown) return -95;
+            this.io.network.shutdown(handle, how); return 0;
+          } catch (error: any) { return Number.isInteger(error?.errno) && error.errno > 0 && error.errno <= 4095 ? -error.errno : -5; }
         },
         host_net_close: (handle: number): number => {
           return this.#hostNetClose(handle);
@@ -4614,6 +4633,7 @@ export class WasmPosixKernel {
     addrPtr: KernelPointer,
     addrLen: number,
     port: number,
+    source?: import("./types").NetworkAddress,
   ): number {
     if (!this.io.network) return -111; // -ECONNREFUSED
     let addr: Uint8Array;
@@ -4623,9 +4643,10 @@ export class WasmPosixKernel {
       return -14; // EFAULT
     }
     try {
-      this.io.network.connect(handle, addr, port);
+      this.io.network.connect(handle, addr, port, source);
       return 0;
-    } catch {
+    } catch (error: any) {
+      if (Number.isInteger(error?.errno) && error.errno > 0 && error.errno <= 4095) return -error.errno;
       return -111; // -ECONNREFUSED
     }
   }
@@ -4663,7 +4684,7 @@ export class WasmPosixKernel {
         ? sent
         : -5;
     } catch (e: any) {
-      if (e?.errno === 11) return -11; // -EAGAIN
+      if (Number.isInteger(e?.errno) && e.errno > 0 && e.errno <= 4095) return -e.errno;
       return -32; // -EPIPE
     }
   }
@@ -4700,7 +4721,7 @@ export class WasmPosixKernel {
       }
       return dataLength;
     } catch (e: any) {
-      if (e?.errno === 11) return -11; // -EAGAIN
+      if (Number.isInteger(e?.errno) && e.errno > 0 && e.errno <= 4095) return -e.errno;
       return -104; // -ECONNRESET
     }
   }

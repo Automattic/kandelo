@@ -53,7 +53,8 @@ export class FetchNetworkBackend implements NetworkIO {
       : new BrowserCorsProxy(corsProxyConfig, options?.onCorsProxyDiagnostic);
   }
 
-  connect(handle: number, addr: Uint8Array, port: number): void {
+  connect(handle: number, addr: Uint8Array, port: number, source?: import("../types").NetworkAddress): void {
+    if (source) throw Object.assign(new Error("bound raw TCP is unavailable through fetch"), {errno:95});
     const ipStr = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`;
     const hostname = this.hostnameMap.get(ipStr) || ipStr;
     this.connections.set(handle, {

@@ -185,3 +185,45 @@ describe("bounded native-port bridge", () => {
     expect(sender.send("udp", frame)).toBe(false);
   });
 });
+
+describe('remote TCP across native worker ports', () => {
+  it('forwards asynchronous connections and FIN between two joiners', async () => {
+    const router=host(); const first=await join(router); const second=await join(router);
+    await vi.waitFor(() => expect(first.peer.snapshot().members).toHaveLength(3));
+    let accepted!: import('../src/types').TcpConnectionPeer;
+    expect(second.peer.listenTcp('http',any,18085,{accept:p=>{accepted=p;return 0;}})).toBe(0);
+    await vi.waitFor(() => expect(first.peer.snapshot().tcpListeners).toHaveLength(1));
+    first.peer.connect(91,ip(3),18085); expect(first.peer.connectStatus(91)).toBe(-11);
+    await vi.waitFor(() => expect(first.peer.connectStatus(91)).toBe(0));
+    expect(first.peer.send(91,new Uint8Array([1,2]),0)).toBe(2);
+    first.peer.shutdown(91,1);
+    await vi.waitFor(() => expect(accepted.poll!(1)&16).toBe(16));
+    expect(accepted.recv(99,0)).toEqual(new Uint8Array([1,2])); expect(accepted.recv(99,0)).toHaveLength(0);
+    accepted.send(new Uint8Array([3]),0); accepted.close();
+    await vi.waitFor(() => expect(first.peer.poll(91,1)&16).toBe(16));
+    expect(first.peer.recv(91,99,0)).toEqual(new Uint8Array([3])); first.peer.close(91);
+    second.peer.closeTcpListener('http'); await vi.waitFor(() => expect(first.peer.snapshot().tcpListeners).toHaveLength(0));
+  });
+  it('accepts a local-interface connection outside the host import entry', async()=>{
+    const router=host();let accepted=false;
+    router.listenTcp('local',any,18088,{accept:()=>{accepted=true;return 0;}});
+    router.connect(10,ip(1),18088);expect(router.connectStatus(10)).toBe(-11);expect(accepted).toBe(false);
+    await vi.waitFor(()=>expect(router.connectStatus(10)).toBe(0));expect(accepted).toBe(true);
+  });
+  it('reports real listener refusal and unknown destination, then resets when a peer disappears', async () => {
+    const router=host(); const first=await join(router);
+    first.peer.connect(1,ip(1),18086); await vi.waitFor(() => expect(first.peer.connectStatus(1)).toBe(111)); first.peer.close(1);
+    first.peer.connect(2,ip(99),18086); expect(first.peer.connectStatus(2)).toBe(113); first.peer.close(2);
+    router.listenTcp('server',any,18086,{accept:()=>0}); first.peer.connect(3,ip(1),18086);
+    await vi.waitFor(() => expect(first.peer.connectStatus(3)).toBe(0)); router.close();
+    await vi.waitFor(() => expect(first.peer.poll(3,5)&8).toBe(8));
+    expect(() => first.peer.recv(3,1,0)).toThrowError(expect.objectContaining({errno:104}));
+  });
+  it('rejects TCP source spoofing and closes its ingress route', async () => {
+    const router=host(); const first=await join(router); const second=await join(router);
+    first.second.sendTcp({kind:1,origin:3,serial:1,source:{addr:ip(3),port:49152},destination:{addr:ip(1),port:8080},value:65536,data:new Uint8Array()});
+    await vi.waitFor(() => expect(router.snapshot().members).toHaveLength(2));
+    expect(router.snapshot().members.map(m=>m.address)).toEqual(['10.89.0.1','10.89.0.3']);
+    expect(second.peer.localAddress).toEqual(ip(3));
+  });
+});

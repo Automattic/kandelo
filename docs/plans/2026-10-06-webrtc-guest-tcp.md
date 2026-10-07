@@ -38,8 +38,11 @@ are partial when only some credit is available and return EAGAIN when no
 credit or port admission remains. Read shutdown refuses further writes; normal
 close retains an orphaned receive sink that discards received bytes and returns
 credit, matching VirtualTcpPeer rather than inventing a finite successful-write
-count. Bound active and orphaned streams, total credit, bridge frames/bytes,
-connect deadlines, and retired connection identifiers. Existing native bridge
+count. Bound active, failed, and orphaned local stream slots to 64, total receive credit
+to 4 MiB, bridge frames/bytes to 128/1 MiB per direction, and connect deadlines
+to 10 seconds. Keep numeric retired-identifier high-water marks instead of an
+unbounded set; do not reuse machine addresses during one segment lifetime
+(the IPv4 assignment space has 254 addresses). Existing native bridge
 limits remain additional bounds, not application delivery acknowledgements.
 
 ## Connection and lifecycle semantics
@@ -86,3 +89,22 @@ extraction (#1488). Named sharing (#1489) and independent guest UDP (#1496) are
 separate consumers of that extraction. TCP follows the UDP transport. Preserve
 all contributor authorship and use additive commits/merges on these draft
 branches; leave the original signalling branch and PR #1374 untouched.
+
+## Implementation checkpoint
+
+The branch stages ABI 49 for explicit source-bound connect, actual local
+endpoints, host shutdown, and accepted-stream reset. The existing socket fields
+and shared pipe references carry this state through descriptor duplication and
+fork; no new serialized fork-state field is required. FIN and orderly CLOSE
+are distinct wire messages so a half-closed live worker disappearing still
+causes reset, while a normally closed peer's queued bytes survive teardown.
+The network declaration uses `network-control-v2`; stale UDP-only channel sets
+fail during generic signal validation instead of silently negotiating an
+incompatible stream protocol.
+
+Focused pre-artifact evidence: 63 transport/Node-backend cases passed after the
+local-interface asynchronous accept repair. The preceding authority-audit run
+passed all eight cases (67 total with its then-current transport inventory).
+Workspace Rust tests passed; normal ABI 49 musl, packages, fixtures, guest TCP,
+TCP conformance, HTTP/curl browser proof, and visible browser checks remain
+pending. Do not read this checkpoint as a completed browser or POSIX claim.

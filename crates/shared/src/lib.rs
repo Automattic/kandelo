@@ -128,7 +128,7 @@ pub mod process_layout;
 ///     process reaches the post-syscall trampoline at all, and publishes
 ///     `CHECKPOINT_REQUEST_RESTART` alongside `CHECKPOINT_REQUEST_UNWIND` to
 ///     tell the guest to resubmit that syscall once the rewind returns.
-pub const ABI_VERSION: u32 = 48;
+pub const ABI_VERSION: u32 = 49;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -3124,6 +3124,7 @@ pub mod abi {
         "kernel_publish_spawn_child",
         "kernel_reap_exited_child",
         "kernel_remove_process",
+        "kernel_reset_tcp_connection",
         "kernel_semctl_array_bytes",
         "kernel_semid_ds_bytes",
         "kernel_set_current_tid",

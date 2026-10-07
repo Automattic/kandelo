@@ -11,6 +11,8 @@ import ncUrl from "@binaries/programs/wasm32/nc.wasm?url";
 import doomUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 import quakeUrl from "@binaries/programs/wasm32/quake.wasm?url";
 import unzipUrl from "@binaries/programs/wasm32/unzip.wasm?url";
+import phpUrl from "@binaries/programs/wasm32/php.wasm?url";
+import curlUrl from "@binaries/programs/wasm32/curl.wasm?url";
 import lhaUrl from "@binaries/programs/wasm32/lha.wasm?url";
 
 const DOOM_ASSET = { url: "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad", sha256: "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771" };
@@ -25,6 +27,7 @@ let attempt = 0;
 let cancelPending: (() => void) | undefined;
 let role: "host" | "joiner" | undefined;
 let gamePid = 0;
+let httpPid = 0;
 let detachScreen: (() => void) | undefined;
 let detachKeyboard: (() => void) | undefined;
 const links = new Set<PeerConnection>();
@@ -67,7 +70,7 @@ async function boot(config: RemoteSegmentInit) {
   const currentAttempt = attempt;
   const [kernelWasm, nc] = await Promise.all([fetchBytes(kernelUrl), fetchBytes(ncUrl)]);
   const fs = await createBuildFsWithEtc(128 * 1024 * 1024);
-  for (const dir of ["/bin", "/root", "/games", "/games/id1"]) fs.mkdir(dir, 0o755);
+  for (const dir of ["/bin", "/root", "/games", "/games/id1", "/www"]) fs.mkdir(dir, 0o755);
   fs.createFileWithOwner("/bin/nc", 0o755, 0, 0, new Uint8Array(nc));
   const image = await finalizeKernelOwnedImage(fs);
   const next = new BrowserKernel({ remoteNetwork: config, kernelOwnedFs: true,
@@ -139,7 +142,7 @@ async function disconnect() {
   clearInterval(directoryTimer); directoryTimer = undefined;
   detachScreen?.(); detachKeyboard?.(); detachScreen = detachKeyboard = undefined;
   for (const bridge of bridges) bridge.close(); bridges.clear(); links.clear();
-  const old = machine; machine = undefined; role = undefined; gamePid = 0; latest = undefined;
+  const old = machine; machine = undefined; role = undefined; gamePid = 0; httpPid = 0; latest = undefined;
   if (old) await old.destroy();
   document.getElementById("members")!.textContent = ""; status.textContent = "Disconnected";
 }
@@ -161,6 +164,20 @@ async function send(destination = input("destination").value, port = portValue()
   return child.exit;
 }
 async function install(path: string, url: string) { await requireMachine().writeFileToVfs(path, new Uint8Array(await fetchBytes(url)), 0o755); }
+async function startHttp(port = Number(input("http-port").value)) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Port must be between 1 and 65535");
+  if (httpPid && processes.get(httpPid)?.exit === null) throw new Error("Stop the running HTTP server first");
+  await install("/bin/php", phpUrl);
+  await requireMachine().writeFileToVfs("/www/index.php", new TextEncoder().encode('<?php header("Content-Type: text/plain"); echo "HTTP from Kandelo; client=" . $_SERVER["REMOTE_ADDR"] . "\\n";'));
+  const child = await spawn("/bin/php", ["php", "-n", "-S", `0.0.0.0:${port}`, "-t", "/www"], {stdin:new Uint8Array()});
+  httpPid = child.pid; return child.pid;
+}
+async function fetchHttp(url = input("http-url").value) {
+  await install("/bin/curl", curlUrl);
+  const child = await spawn("/bin/curl", ["curl", "-fsS", "--max-time", "15", url], {stdin:new Uint8Array()});
+  return {pid:child.pid,exit:await child.exit};
+}
+async function stopHttp() { if (httpPid && processes.get(httpPid)?.exit === null) await requireMachine().signalProcess(httpPid,15); httpPid=0; }
 async function stopGame() { if (gamePid) await requireMachine().signalProcess(gamePid, 15); detachScreen?.(); detachKeyboard?.(); gamePid = 0; }
 function screen(pid: number) {
   gamePid = pid; const kernel = requireMachine();
@@ -192,13 +209,13 @@ async function startGame(game: "doom" | "quake", host: boolean) {
   const exit = processes.get(gamePid)?.exit;
   status.textContent = exit === null ? `Running ${game} (guest process ${gamePid})` : `Guest game exited ${exit ?? "with an unknown status"}`;
 }
-for (const [id, action] of Object.entries({ host: () => connect("host"), join: () => connect("joiner"), disconnect, listen: () => listen(), send: () => send(), "doom-host": () => startGame("doom", true), "doom-join": () => startGame("doom", false), "quake-host": () => startGame("quake", true), "quake-join": () => startGame("quake", false), "stop-game": stopGame })) {
+for (const [id, action] of Object.entries({ host: () => connect("host"), join: () => connect("joiner"), disconnect, listen: () => listen(), send: () => send(), "doom-host": () => startGame("doom", true), "doom-join": () => startGame("doom", false), "quake-host": () => startGame("quake", true), "quake-join": () => startGame("quake", false), "http-start": () => startHttp(), "http-fetch": () => fetchHttp(), "http-stop": stopHttp, "stop-game": stopGame })) {
   document.getElementById(id)!.addEventListener("click", () => { void action().catch(fail); });
 }
 input("server").value = new URL(location.href).searchParams.get("signalling") ?? "";
 window.addEventListener("pagehide", () => { void disconnect(); });
 // Observability exposes actual worker state and guest output for browser tests.
-Object.assign(window, { __peerNetwork: { snapshot: () => latest, processes: () => Object.fromEntries(processes), listen, send, startGame, disconnect,
+Object.assign(window, { __peerNetwork: { snapshot: () => latest, processes: () => Object.fromEntries(processes), listen, send, startGame, startHttp, fetchHttp, stopHttp, disconnect,
   gamePid: () => gamePid, signal: (pid: number, value: number) => requireMachine().signalProcess(pid, value),
   screen: () => { const ctx = canvas.getContext("2d"); return ctx ? [...ctx.getImageData(0, 0, canvas.width, canvas.height).data].reduce((sum, byte, index) => sum + (index % 4 === 3 ? 0 : byte), 0) : 0; },
 } });

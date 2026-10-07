@@ -1,5 +1,5 @@
 {
-  "abi_version": 48,
+  "abi_version": 49,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -993,7 +993,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 48,
+      "abi_version": 49,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1125,6 +1125,7 @@
       "kernel_publish_spawn_child",
       "kernel_reap_exited_child",
       "kernel_remove_process",
+      "kernel_reset_tcp_connection",
       "kernel_semctl_array_bytes",
       "kernel_semid_ds_bytes",
       "kernel_set_current_tid",
@@ -2494,7 +2495,7 @@
     {
       "kind": "func",
       "name": "kernel_inject_connection",
-      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3000,6 +3001,11 @@
       "kind": "func",
       "name": "kernel_reserve_host_region_at",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_reset_tcp_connection",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
