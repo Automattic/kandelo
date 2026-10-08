@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { KernelHost, VfsChangeEvent } from "../kernel-host";
+import type { KernelHost, KernelOwnedJobRead, VfsChangeEvent } from "../kernel-host";
 import type { ModelContext, ModelContextTool } from "./model-context";
+import { setWebMcpSession } from "./runtime.ts";
 import { changedToolName, loadVfsTool, loadVfsTools, registerVfsTools, runVfsTool } from "./vfs-tool-registration.ts";
 import { VFS_TOOLS_DIRS } from "./vfs-tools.ts";
 
 const [STATIC, DYNAMIC] = VFS_TOOLS_DIRS as [string, string];
+const TERMINAL = "/dev/pts/0";
+const encoder = new TextEncoder();
 
 const foo = {
   description: "Echo one argument",
@@ -20,11 +23,29 @@ const baz = {
   command: "qux",
 };
 
+const completed: KernelOwnedJobRead = {
+  expired: false,
+  pid: 7,
+  status: "completed",
+  exitCode: 0,
+  terminationObserved: true,
+  chunks: [{ stream: "stdout", bytes: encoder.encode("3.14\n") }],
+  next: 5,
+  hasMore: false,
+  truncated: false,
+};
+
 function fakeHost(files: Record<string, string>, listError: Error | null = null) {
   const runs: unknown[] = [];
+  const announced: Array<[string, string]> = [];
   const watches: Array<{ prefix: string; callback: (event: VfsChangeEvent) => void }> = [];
   let unsubscribed = 0;
   const host = {
+    getStatus: () => "running",
+    subscribeStatus: () => () => {},
+    readVfsFile: async (path: string) =>
+      path === "/etc/passwd" ? encoder.encode("maker:x:1000:1000::/home/maker:/bin/bash\n") : null,
+    readVfsDir: async (path: string) => (path === "/bin" ? [{ name: "bash" }] : null),
     readDir: async (path: string) => {
       if (listError && path === STATIC) throw listError;
       if (!VFS_TOOLS_DIRS.includes(path)) throw new Error(`ENOENT: ${path}`);
@@ -36,21 +57,27 @@ function fakeHost(files: Record<string, string>, listError: Error | null = null)
       if (!(path in files)) throw new Error(`ENOENT: ${path}`);
       return files[path];
     },
-    runShellCommand: async (command: string, options: unknown) => {
-      runs.push([command, options]);
-      return "3.14\n";
+    startOwnedJob: async (_id: string, program: string, argv: string[], options: unknown) => {
+      runs.push([program, argv, options]);
+    },
+    readOwnedJob: async () => completed,
+    releaseOwnedJob: async () => {},
+    injectPtyOutput: (path: string, text: string) => {
+      announced.push([path, text]);
+      return true;
     },
     subscribeVfsChanges: (prefix: string, callback: (event: VfsChangeEvent) => void) => {
       watches.push({ prefix, callback });
       return () => { unsubscribed += 1; };
     },
   } as unknown as KernelHost;
+  setWebMcpSession(host, { uid: 1000, gid: 1000, env: ["PATH=/bin"] });
   const change = (kind: VfsChangeEvent["kind"], path: string) => {
     for (const watch of watches) {
       if (path.startsWith(`${watch.prefix}/`)) watch.callback({ kind, path, t: 1 });
     }
   };
-  return { host, runs, watches, change, unsubscribed: () => unsubscribed };
+  return { host, runs, announced, watches, change, unsubscribed: () => unsubscribed };
 }
 
 function fakeContext() {
@@ -149,7 +176,7 @@ test("registers every tool with its own signal and watches both tool directories
   const { context, registered } = fakeContext();
   const controller = new AbortController();
 
-  await registerVfsTools(host, context, controller.signal);
+  await registerVfsTools(host, context, controller.signal, () => TERMINAL);
 
   assert.equal(registered.length, 1);
   assert.equal(registered[0]!.tool.name, "foo");
@@ -166,7 +193,7 @@ test("registers nothing when the signal aborts while loading", async () => {
   const controller = new AbortController();
   controller.abort();
 
-  await registerVfsTools(host, context, controller.signal);
+  await registerVfsTools(host, context, controller.signal, () => TERMINAL);
 
   assert.equal(registered.length, 0);
 });
@@ -176,7 +203,7 @@ test("registers a tool when its file is written and unregisters it when deleted"
   const { host, change } = fakeHost(files);
   const { context, active } = fakeContext();
   const controller = new AbortController();
-  await registerVfsTools(host, context, controller.signal);
+  await registerVfsTools(host, context, controller.signal, () => TERMINAL);
   assert.deepEqual(active(), []);
 
   files[`${DYNAMIC}/baz.json`] = JSON.stringify(baz);
@@ -194,7 +221,7 @@ test("replaces a tool's registration when its file changes", async () => {
   const files: Record<string, string> = { [`${DYNAMIC}/foo.json`]: JSON.stringify(foo) };
   const { host, change } = fakeHost(files);
   const { context, registered, active } = fakeContext();
-  await registerVfsTools(host, context, new AbortController().signal);
+  await registerVfsTools(host, context, new AbortController().signal, () => TERMINAL);
 
   files[`${DYNAMIC}/foo.json`] = JSON.stringify({ ...foo, description: "Echo one argument, the maker's way" });
   change("modify", `${DYNAMIC}/foo.json`);
@@ -213,7 +240,7 @@ test("falls back to the static tool when the maker's override is deleted", async
   };
   const { host, change } = fakeHost(files);
   const { context, active } = fakeContext();
-  await registerVfsTools(host, context, new AbortController().signal);
+  await registerVfsTools(host, context, new AbortController().signal, () => TERMINAL);
   assert.deepEqual(active().map(({ description }) => description), ["Echo one argument, the maker's way"]);
 
   delete files[`${DYNAMIC}/foo.json`];
@@ -227,7 +254,7 @@ test("unregisters a tool whose file stops parsing and logs the error", async () 
   const files: Record<string, string> = { [`${DYNAMIC}/foo.json`]: JSON.stringify(foo) };
   const { host, change } = fakeHost(files);
   const { context, active } = fakeContext();
-  await registerVfsTools(host, context, new AbortController().signal);
+  await registerVfsTools(host, context, new AbortController().signal, () => TERMINAL);
 
   const { errors } = await capturingErrors(async () => {
     files[`${DYNAMIC}/foo.json`] = "{ not json";
@@ -244,7 +271,7 @@ test("ignores changes to files that are not tools", async () => {
   const files: Record<string, string> = {};
   const { host, change } = fakeHost(files);
   const { context, registered } = fakeContext();
-  await registerVfsTools(host, context, new AbortController().signal);
+  await registerVfsTools(host, context, new AbortController().signal, () => TERMINAL);
 
   files[`${DYNAMIC}/notes.txt`] = "ignored";
   change("modify", `${DYNAMIC}/notes.txt`);
@@ -257,7 +284,7 @@ test("aborting the registration stops watching and unregisters every tool", asyn
   const { host, unsubscribed } = fakeHost({ [`${STATIC}/foo.json`]: JSON.stringify(foo) });
   const { context, registered, active } = fakeContext();
   const controller = new AbortController();
-  await registerVfsTools(host, context, controller.signal);
+  await registerVfsTools(host, context, controller.signal, () => TERMINAL);
   assert.deepEqual(active().map(({ name }) => name), ["foo"]);
 
   controller.abort();
@@ -267,28 +294,29 @@ test("aborting the registration stops watching and unregisters every tool", asyn
   assert.deepEqual(active(), []);
 });
 
-test("types the substituted command into the shell with the call's signal", async () => {
-  const { host, runs } = fakeHost({});
-  const signal = new AbortController().signal;
+test("runs the substituted command as an owned job of the agent and announces it on the terminal", async () => {
+  const { host, runs, announced } = fakeHost({});
 
-  const result = await runVfsTool(host, { name: "foo", ...foo }, { bar: "echo hi" }, signal);
+  const result = await runVfsTool(host, { name: "foo", ...foo }, { bar: "echo hi" }, TERMINAL);
 
-  assert.deepEqual(result, { output: "3.14\n" });
-  assert.deepEqual(runs, [["echo hi", { signal }]]);
+  assert.deepEqual(result, { stdout: "3.14\n", stderr: "", exitCode: 0, status: "completed", terminationObserved: true, truncated: false });
+  assert.deepEqual(runs, [["/bin/bash", ["bash", "-c", "echo hi"], { cwd: "/home/maker", env: ["PATH=/bin", "HOME=/home/maker"], uid: 1000, gid: 1000, timeoutMs: 30_000 }]]);
+  assert.deepEqual(announced, [[TERMINAL, "\r\n\x1b[2m[agent] echo hi\x1b[0m\r\n"]]);
 });
 
 test("a registered image tool answers through the shared envelope and annotations", async () => {
-  const { host } = fakeHost({ [`${STATIC}/foo.json`]: JSON.stringify(foo) });
+  const { host, announced } = fakeHost({ [`${STATIC}/foo.json`]: JSON.stringify(foo) });
   const { context, active } = fakeContext();
 
-  await registerVfsTools(host, context, new AbortController().signal);
+  await registerVfsTools(host, context, new AbortController().signal, () => "/dev/pts/2");
   await settled();
 
   const [tool] = active();
   assert.deepEqual(tool!.annotations, { readOnlyHint: false, untrustedContentHint: true });
 
   const result = await tool!.execute({ bar: "echo hi" }, { signal: new AbortController().signal });
-  assert.deepEqual(JSON.parse(result), { ok: true, output: "3.14\n" });
+  assert.deepEqual(JSON.parse(result), { ok: true, stdout: "3.14\n", stderr: "", exitCode: 0, status: "completed", terminationObserved: true, truncated: false });
+  assert.deepEqual(announced.map(([path]) => path), ["/dev/pts/2"]);
 });
 
 test("a tool file under the reserved prefix is refused without losing the others", async () => {
@@ -299,7 +327,7 @@ test("a tool file under the reserved prefix is refused without losing the others
   const { context, active } = fakeContext();
 
   const { errors } = await capturingErrors(async () => {
-    await registerVfsTools(host, context, new AbortController().signal);
+    await registerVfsTools(host, context, new AbortController().signal, () => TERMINAL);
     await settled();
   });
 
@@ -312,7 +340,7 @@ test("a reserved name written while the machine runs is refused without disturbi
   const { host, change } = fakeHost(files);
   const { context, active } = fakeContext();
 
-  await registerVfsTools(host, context, new AbortController().signal);
+  await registerVfsTools(host, context, new AbortController().signal, () => TERMINAL);
   await settled();
 
   const { errors } = await capturingErrors(async () => {

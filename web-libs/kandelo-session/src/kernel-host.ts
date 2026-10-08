@@ -421,6 +421,11 @@ export interface KernelLike {
     limit?: number,
     cancel?: boolean,
   ): Promise<KernelOwnedJobRead>;
+  /**
+   * Forget a finished job's record. Rejects while any member of the family is
+   * still live.
+   */
+  releaseOwnedJob?(jobId: string): Promise<void>;
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
   ptyWrite(pid: number, data: Uint8Array): void;
   ptyResize(pid: number, rows: number, cols: number): void;
@@ -900,11 +905,6 @@ export interface GalleryQuery {
 
 // ── The interface ──────────────────────────────────────────────────────────
 
-export interface ShellCommandOptions {
-  /** Sends Ctrl-C to the shell when aborted. */
-  signal?: AbortSignal;
-}
-
 export interface KernelHost {
   // status
   getStatus(): MachineStatus;
@@ -956,11 +956,13 @@ export interface KernelHost {
   removePty(path: string): void;
   /** Resolve after a command has been written, without waiting for a prompt. */
   dispatchShellCommand(command: string): Promise<void>;
+  runShellCommand(command: string): Promise<void>;
   /**
-   * Write a command into the persistent PTY-backed shell, wait for the next
-   * prompt, and resolve with what the terminal printed in between.
+   * Show `text` on the terminal attached at `path` without sending anything
+   * to the guest: the bytes reach the terminal's output listeners and its
+   * replay history only. Returns false when no terminal is attached there.
    */
-  runShellCommand(command: string, options?: ShellCommandOptions): Promise<string>;
+  injectPtyOutput(path: string, text: string): boolean;
   /**
    * Type the terminal's interrupt character (Ctrl+C) into the machine's
    * shell PTY and resolve once the shell prints its next prompt, i.e. once
@@ -1020,6 +1022,13 @@ export interface KernelHost {
     limit?: number,
     cancel?: boolean,
   ): Promise<KernelOwnedJobRead>;
+  /**
+   * Forget a finished job's record and free the slot it holds. A kernel holds
+   * a bounded number of job records, so a caller that runs many commands
+   * releases the ones it has finished reading. Rejects while the family is
+   * still live, and a released job reads back as an unknown job.
+   */
+  releaseOwnedJob(id: string): Promise<void>;
 
   // process control
   /**
@@ -1144,15 +1153,10 @@ function clampPendingRequestCount(count: number): number {
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
 }
 
-function plainPtyText(buffer: string): string {
-  return buffer
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "");
-}
-
 function ptyBufferEndsWithPrompt(buffer: string, prompt: string | null = null): boolean {
-  const plain = plainPtyText(buffer);
+  const plain = buffer
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "\n");
   if (prompt) return plain.endsWith(prompt);
   // Do not treat the shell continuation prompt (`> `) as ready. The demo
   // guide sends heredocs through this path, and PS2 appears before the command
@@ -1165,34 +1169,13 @@ function shellPrompt(shell: NonNullable<LiveKernelHostOptions["shell"]>): string
   return ps1 ? ps1.slice("PS1=".length) : null;
 }
 
-/**
- * The text a command produced between its echoed input and the next prompt.
- * Without a known prompt the whole last line is the prompt.
- */
-function shellCommandOutput(buffer: string, command: string, prompt: string | null): string {
-  const lines = plainPtyText(buffer).split("\n");
-  const echoedLines = command.replace(/\n$/, "").split("\n").length;
-  const output = lines.slice(echoedLines);
-  if (output.length === 0) return "";
-  const last = output[output.length - 1]!;
-  output[output.length - 1] = prompt && last.endsWith(prompt) ? last.slice(0, -prompt.length) : "";
-  return output.join("\n");
-}
-
-/**
- * With `afterInput`, a prompt counts only once an input line has been echoed
- * back: a shell redraws its prompt on a resize without running anything.
- */
 function waitForPtyReadiness(
   pty: PtyHandle,
-  opts: { includeHistory?: boolean; afterInput?: boolean; timeoutMs?: number; prompt?: string | null } = {},
-): Promise<string> {
+  opts: { includeHistory?: boolean; timeoutMs?: number; prompt?: string | null } = {},
+): Promise<void> {
   const includeHistory = opts.includeHistory ?? true;
-  const afterInput = opts.afterInput ?? false;
   const timeoutMs = opts.timeoutMs ?? 1200;
   const prompt = opts.prompt ?? null;
-  const ready = (text: string) =>
-    (!afterInput || plainPtyText(text).includes("\n")) && ptyBufferEndsWithPrompt(text, prompt);
   return new Promise((resolve, reject) => {
     let done = false;
     let buffer = "";
@@ -1202,7 +1185,7 @@ function waitForPtyReadiness(
       done = true;
       clearTimeout(timer);
       off();
-      resolve(buffer);
+      resolve();
     };
     const fail = () => {
       if (done) return;
@@ -1216,10 +1199,10 @@ function waitForPtyReadiness(
     off = pty.onData((bytes) => {
       if (!includeHistory && replayingHistory) return;
       buffer += decoder.decode(bytes, { stream: true });
-      if (ready(buffer)) finish();
+      if (ptyBufferEndsWithPrompt(buffer, prompt)) finish();
     });
     replayingHistory = false;
-    if (includeHistory && ready(buffer)) finish();
+    if (includeHistory && ptyBufferEndsWithPrompt(buffer, prompt)) finish();
   });
 }
 
@@ -1405,7 +1388,7 @@ export class LiveKernelHost implements KernelHost {
   private terminalSessions?: TerminalSessionPolicy;
   private ptySessions = new Map<string, LivePtySession>();
   private ptyAttachPromises = new Map<string, Promise<LivePtySession>>();
-  private ptyCommandQueues = new Map<string, Promise<unknown>>();
+  private ptyCommandQueues = new Map<string, Promise<void>>();
   /**
    * Active PTY shell pids keyed by pid. Used by attachFramebuffer to route
    * input through the PTY master so a framebuffer-bound process forked from
@@ -1617,14 +1600,13 @@ export class LiveKernelHost implements KernelHost {
 
   private async startShellCommand(
     command: string,
-    signal?: AbortSignal,
-  ): Promise<{ completion: Promise<string> }> {
+  ): Promise<{ completion: Promise<void> }> {
     const sessionKey = "/dev/pts/0";
     const previousCommandDone =
       this.ptyCommandQueues.get(sessionKey) ?? Promise.resolve();
-    let resolveCommandDone!: (output: string) => void;
+    let resolveCommandDone!: () => void;
     let rejectCommandDone!: (err: unknown) => void;
-    const commandDone = new Promise<string>((resolve, reject) => {
+    const commandDone = new Promise<void>((resolve, reject) => {
       resolveCommandDone = resolve;
       rejectCommandDone = reject;
     });
@@ -1648,16 +1630,11 @@ export class LiveKernelHost implements KernelHost {
       }).catch(() => {});
       const completion = waitForPtyReadiness(pty, {
         includeHistory: false,
-        afterInput: true,
         timeoutMs: 300_000,
         prompt,
-      }).then((buffer) => shellCommandOutput(buffer, command, prompt));
+      });
       void completion.then(resolveCommandDone, rejectCommandDone);
-      const interrupt = () => pty.write("\x03");
-      signal?.addEventListener("abort", interrupt, { once: true });
-      void completion.finally(() => signal?.removeEventListener("abort", interrupt)).catch(() => {});
       pty.write(command.endsWith("\n") ? command : `${command}\n`);
-      if (signal?.aborted) interrupt();
       return { completion: commandDone };
     } catch (err) {
       rejectCommandDone(err);
@@ -1675,9 +1652,16 @@ export class LiveKernelHost implements KernelHost {
   }
 
   /** Write a command and wait until the shell presents its next prompt. */
-  async runShellCommand(command: string, options: ShellCommandOptions = {}): Promise<string> {
-    const { completion } = await this.startShellCommand(command, options.signal);
-    return completion;
+  async runShellCommand(command: string): Promise<void> {
+    const { completion } = await this.startShellCommand(command);
+    await completion;
+  }
+
+  injectPtyOutput(path: string, text: string): boolean {
+    const session = this.ptySessions.get(path || "/dev/pts/0");
+    if (!session || session.closed) return false;
+    this.emitPtyData(session, new TextEncoder().encode(text));
+    return true;
   }
 
   /**
@@ -2525,6 +2509,15 @@ export class LiveKernelHost implements KernelHost {
       );
     }
     return this.kernel.readOwnedJob(id, offset, limit, cancel);
+  }
+
+  async releaseOwnedJob(id: string): Promise<void> {
+    if (!this.kernel?.releaseOwnedJob) {
+      throw new Error(
+        "LiveKernelHost.releaseOwnedJob: the attached kernel cannot own a command family.",
+      );
+    }
+    await this.kernel.releaseOwnedJob(id);
   }
 
   // ── KernelHost: process control ─────────────────────────────────────────

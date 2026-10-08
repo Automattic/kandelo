@@ -1,5 +1,5 @@
 import { resetPreviewProgress } from "../panes/preview-progress";
-import type { KernelHost } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { KernelHost, KernelOwnedJobRead } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { DIRENT_TYPES } from "@host/generated/abi";
 import { guestPath, ToolError } from "./contract";
 
@@ -25,15 +25,24 @@ interface Account {
 
 const FALLBACK_ACCOUNT: Account = { home: "/", shell: "/bin/sh" };
 
-// Identity this session holds. The session object exists so a machine that
-// changed under an in-flight operation is reported rather than silently
-// retried.
+// Identity and the job records this session holds. The identity exists so a
+// machine that changed under an in-flight operation is reported rather than
+// silently retried.
 type Session = {
   unsubscribe: () => void;
+  jobs: string[];
   identity: WebMcpIdentity;
   account: Promise<Account> | null;
 };
 const sessions = new WeakMap<KernelHost, Session>();
+
+// A kernel holds 64 job records at once, and a record outlives its command so
+// its output stays readable. Keeping fewer than that per session leaves room
+// for families still running, so an agent's session is bounded by the commands
+// it runs at once rather than by the commands it has ever run.
+const RETAINED_JOBS = 32;
+
+const SCRIPT_RESULT_BYTES = 256 * 1024;
 
 const decoder = new TextDecoder();
 
@@ -42,7 +51,7 @@ export function setWebMcpSession(host: KernelHost, identity: WebMcpIdentity | nu
   sessions.get(host)?.unsubscribe();
   sessions.delete(host);
   if (!identity) return;
-  const session: Session = { unsubscribe: () => {}, identity, account: null };
+  const session: Session = { unsubscribe: () => {}, jobs: [], identity, account: null };
   sessions.set(host, session);
   session.unsubscribe = host.subscribeStatus(status => {
     if (status === "halted" && sessions.get(host) === session) setWebMcpSession(host, null);
@@ -170,6 +179,23 @@ function jobEnv(baseline: string[], home: string, overrides: Record<string, stri
   return [...env].map(([name, value]) => `${name}=${value}`);
 }
 
+/**
+ * Forget the finished jobs of this session outside its newest ones. A job
+ * that is still live refuses release and stays, without holding back the
+ * finished jobs around it. A parallel call can release the same job first,
+ * so a job leaves the list by its id.
+ */
+async function releaseFinishedJobs(host: KernelHost, session: Session): Promise<void> {
+  for (const id of session.jobs.slice(0, -RETAINED_JOBS)) {
+    try {
+      await host.releaseOwnedJob(id);
+    } catch (error) {
+      if (!String(error).includes("UNKNOWN_JOB")) continue;
+    }
+    session.jobs = session.jobs.filter(job => job !== id);
+  }
+}
+
 export async function startGuestJob(host: KernelHost, id: string, args: { script: string; cwd?: string; env?: Record<string, string>; timeoutMs?: number }) {
   const session = requireSession(host);
   for (const [name, value] of Object.entries(args.env ?? {})) {
@@ -177,6 +203,8 @@ export async function startGuestJob(host: KernelHost, id: string, args: { script
   }
   if (args.script.includes("\0")) throw new ToolError("INVALID_ARGUMENT", "Script must not contain NUL");
   const account = await sessionAccount(host, session);
+  assertCurrent(host, session);
+  await releaseFinishedJobs(host, session);
   assertCurrent(host, session);
   const { uid, gid, env } = session.identity;
   await host.startOwnedJob(id, account.shell, [account.shell.slice(account.shell.lastIndexOf("/") + 1), "-c", args.script], {
@@ -186,6 +214,7 @@ export async function startGuestJob(host: KernelHost, id: string, args: { script
     gid,
     timeoutMs: args.timeoutMs ?? 30000,
   });
+  session.jobs.push(id);
   assertCurrent(host, session);
 }
 
@@ -194,4 +223,82 @@ export async function readGuestJob(host: KernelHost, id: string, offset?: number
   const result = await host.readOwnedJob(id, offset, limit, cancel);
   assertCurrent(host, session);
   return result;
+}
+
+type JobChunks = Extract<KernelOwnedJobRead, { expired: false }>["chunks"];
+
+/** The two streams of a job read, each decoded on its own. */
+export function jobStreams(chunks: JobChunks): { stdout: string; stderr: string } {
+  const decode = (stream: "stdout" | "stderr") => {
+    const parts = chunks.filter(chunk => chunk.stream === stream);
+    const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.bytes.length, 0));
+    let index = 0;
+    for (const part of parts) { bytes.set(part.bytes, index); index += part.bytes.length; }
+    return decoder.decode(bytes);
+  };
+  return { stdout: decode("stdout"), stderr: decode("stderr") };
+}
+
+export type GuestScriptResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  status: Extract<KernelOwnedJobRead, { expired: false }>["status"];
+  terminationObserved: boolean;
+  /** True when output was dropped: by the kernel before it was read, or past the last 256 KiB. */
+  truncated: boolean;
+};
+
+/**
+ * Run `script` as an owned job and collect its last 256 KiB of output.
+ * Resolves once every member of the family has terminated, or once the job's
+ * own timeout has passed without that observation; the record is released
+ * either way, so this job never counts against the session's retained jobs.
+ */
+export async function runGuestScript(
+  host: KernelHost,
+  script: string,
+  options: { timeoutMs: number; signal?: AbortSignal },
+): Promise<GuestScriptResult> {
+  const id = `job-${crypto.randomUUID()}`;
+  await startGuestJob(host, id, { script, timeoutMs: options.timeoutMs });
+  const deadline = performance.now() + options.timeoutMs + 5000;
+  const chunks: JobChunks = [];
+  let cursor: number | undefined;
+  let cancelled = false;
+  let kept = 0;
+  let truncated = false;
+  let last: Extract<KernelOwnedJobRead, { expired: false }>;
+  try {
+    for (;;) {
+      const cancel: boolean = Boolean(options.signal?.aborted) && !cancelled;
+      cancelled ||= cancel;
+      const read = await readGuestJob(host, id, cursor, 65536, cancel);
+      if (read.expired) { cursor = read.oldest; truncated = true; continue; }
+      last = read;
+      chunks.push(...read.chunks);
+      kept += read.chunks.reduce((sum, chunk) => sum + chunk.bytes.length, 0);
+      let dropped = 0;
+      while (kept > SCRIPT_RESULT_BYTES) kept -= chunks[dropped++].bytes.length;
+      if (dropped > 0) { chunks.splice(0, dropped); truncated = true; }
+      cursor = read.next;
+      truncated ||= read.truncated;
+      if (read.hasMore) continue;
+      if (read.terminationObserved || performance.now() > deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  } finally {
+    const session = sessions.get(host);
+    if (session) session.jobs = session.jobs.filter(job => job !== id);
+    await host.releaseOwnedJob(id).catch(() => {});
+  }
+  return { ...jobStreams(chunks), exitCode: last.exitCode, status: last.status, terminationObserved: last.terminationObserved, truncated };
+}
+
+/** Show the first line of a script the agent runs on the terminal the user is looking at. */
+export function announceGuestScript(host: KernelHost, terminalPath: string | null, script: string): void {
+  if (terminalPath === null) return;
+  const [first, ...rest] = script.replace(/\n$/, "").split("\n");
+  const line = rest.length === 0 ? first : `${first} ...`;
+  host.injectPtyOutput(terminalPath, `\r\n\x1b[2m[agent] ${line}\x1b[0m\r\n`);
 }
