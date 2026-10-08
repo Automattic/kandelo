@@ -821,6 +821,32 @@ Individual M termination/reaping when a locked goroutine exits without
 unlocking remains unimplemented (`exitThread` still traps), as do sysmon,
 preemption, and broader Go/stdlib conformance.
 
+**2026-10-08 — Locked-M exit and paced thread-slot recycling.** A focused
+Node probe first reproduced a locked goroutine's natural return as an
+`exitThread` unreachable trap, killing its thread worker with status 132.
+The fork now calls a Kandelo-specific `kernel_thread_exit` import from
+`exitThread` (fork commit `8be9c5a`). The shared Node/browser host import
+reads the Go runtime's
+`freeWait` pointer while its g0 stack is still live, atomically marks the
+stack reclaimable, then sends only `SYS_EXIT` for that M and traps out of
+the disposable Worker. The existing `kernel_exit` path still handles
+process-wide exit; no `EXIT_GROUP` is sent for an individual M. This host
+handoff is necessary because a Go-generated Wasm import wrapper rereads
+the stack after an assembly-side `freeWait` clear; the initial direct-call
+prototype was discarded after disassembly showed that use-after-free risk.
+
+The probe then ran twelve sequential locked-M exits with a 100 ms drain
+interval between rounds, exceeding the eight-slot thread arena. Node and
+Chromium both exited 0 with no host diagnostics, showing individual M
+reaping and paced slot reuse on both hosts. All eight focused Chromium Go
+probes pass. The host TypeScript check, focused startup-import Vitest tests,
+ABI snapshot check, and `GOOS=js`/`GOOS=wasip1` standard-library builds also
+pass. The new import is additive within this unreleased ABI-48 branch and
+does not alter an existing import's signature or the ABI snapshot. This
+does not prove unpaced burst churn, a larger thread arena, sysmon/preemption,
+or full Go/runtime/POSIX conformance; the concurrent eight-slot boundary
+observed on 2026-10-07 remains.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
