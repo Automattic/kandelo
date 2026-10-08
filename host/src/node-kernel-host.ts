@@ -34,6 +34,7 @@ import type {
   ResolveExecRequestMessage,
   DestroyProgressEvent,
 } from "./node-kernel-protocol";
+import type { OwnedJobRead } from "./owned-jobs";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
@@ -210,6 +211,8 @@ export interface NodeKernelHostOptions {
 }
 
 export interface SpawnOptions {
+  /** Own this process and its descendants as one cancellable command family. */
+  ownedJob?: { id: string; timeoutMs: number };
   env?: string[];
   cwd?: string;
   /** Initial real/effective user ID for the process. */
@@ -513,6 +516,7 @@ export class NodeKernelHost {
 
     const pid = await this.request(requestId, {
       type: "spawn",
+      ownedJob: options?.ownedJob,
       requestId,
       ...program,
       // Avoid forwarding externally compiled WebAssembly.Module objects through
@@ -1074,6 +1078,33 @@ export class NodeKernelHost {
       path,
     });
     return (result as VfsPathStat | null) ?? null;
+  }
+
+  /** Read bounded output and observed termination of a worker-owned command family. */
+  async readOwnedJob(
+    jobId: string,
+    offset?: number,
+    limit?: number,
+    cancel = false,
+  ): Promise<OwnedJobRead> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: cancel ? "cancel_owned_job" : "read_owned_job",
+      requestId,
+      jobId,
+      offset,
+      limit,
+    }) as OwnedJobRead;
+  }
+
+  /** Forget a finished job's record and free its slot. Rejects while the family is live. */
+  async releaseOwnedJob(jobId: string): Promise<void> {
+    const requestId = this._nextRequestId++;
+    await this.request(requestId, {
+      type: "release_owned_job",
+      requestId,
+      jobId,
+    });
   }
 
   /**
