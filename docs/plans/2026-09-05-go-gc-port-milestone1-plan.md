@@ -868,6 +868,41 @@ not asynchronous interruption of a call-free Wasm loop:
 The eight-slot capacity, unpaced thread churn, broader Go runtime tests,
 and full POSIX conformance remain open.
 
+**2026-10-08 — Upstream Go package tests and honest I/O boundary (fork
+`2aa3c9e`).** The fork now compiles Go's `internal/runtime/atomic` and
+`sync` test binaries
+for Kandelo: it corrects the Wasm atomic-wait assembly signature, adds
+Kandelo's `crypto/internal/sysrand` reader over `getrandom` (including
+short-read and `EINTR` handling), and makes the existing Unix path,
+signal, and test-environment helpers available to this target. The
+`getrandom` path is exercised by the browser basic probe. The syscall
+backend no longer reports success for unsupported nonblocking-flag changes;
+`fd_fdstat_set_flags` returns `ENOSYS` until it and a real poller exist.
+
+The upstream atomic package's short suite and selected `sync` tests
+(`TestMutex`, `TestWaitGroup`, and `TestCondSignal`) pass through the real
+Kandelo kernel in Node. They also have opt-in Chromium browser-host tests
+alongside the nine existing milestone probes. The final eleven-probe
+Chromium run passed in 1.1 minutes with exit 0 and no host diagnostics.
+A wider short `sync` run
+passes when subprocess-dependent `TestMutexMisuse` and examples are
+excluded. The complete short suite does **not** pass: `TestMutexMisuse`
+needs `os.Executable`/subprocess support, and `ExamplePool` needs a pipe.
+An experimental `pipe2` bridge created the pipe but hung example capture:
+the fork's existing fd-flags stub claimed nonblocking success without
+changing kernel state, and the runtime still has a fake netpoller. That
+bridge was removed rather than masking the missing scheduler/I/O contract.
+The `runtime` test binary itself still cannot build because `net` lacks
+Kandelo's `netFD`; networking/netpoll belongs to milestone 4. Full
+runtime conformance, unpaced thread churn, a policy for CPU-count reporting
+(Kandelo's current `sysconf` also reports one), and later networking,
+subprocess, and package milestones remain open.
+An unpaced 64-round locked-M experiment succeeded three times in Node but
+exhausted the declared eight pthread slots in Chromium while exited Ms were
+still live. The checked-in paced probe remains the supported claim; its
+main goroutine now pins its M so a preemptive migration cannot invalidate
+the worker-M identity check.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
