@@ -3859,10 +3859,9 @@ function describeVfsDirEntry(
   const path = dir.endsWith("/") ? dir + entry.name : `${dir}/${entry.name}`;
   let stat;
   try {
-    stat = io.stat(path);
+    stat = io.lstat(path);
   } catch {
-    // A dangling symlink or an entry unlinked mid-listing is not an error for
-    // the whole directory.
+    // An entry unlinked mid-listing is not an error for the whole directory.
     return null;
   }
   let target: string | undefined;
