@@ -762,6 +762,58 @@ p.write_text(s.replace(marker, guard, 1))
 PY
 fi
 
+# Upstream reproducibility defect (not a Kandelo gap): opcache's file-cache
+# writer copies the in-memory `zend_persistent_script` verbatim, including
+# `dynamic_members`, the shared-memory bookkeeping a cache FILE never uses.
+# With opcache.validate_timestamps=1 the compiler sets
+# `dynamic_members.revalidate = request_time + revalidate_freq`, so every
+# .bin carries the wall-clock second it was written: two compiles of the same
+# source produce different bytes (and a different checksum). Kandelo images
+# ship build-time file caches (images/vfs/scripts/opcache-prewarm.ts), so this
+# made the nginx-php-vfs image non-reproducible. The file-cache loader never
+# reads these fields in file_cache_only mode; when a file is loaded into SHM,
+# `last_used` is re-stamped on load and a zero `revalidate` only means the
+# first use re-checks the source timestamp. Clear the time-derived members in
+# the serialized copy, and zero the on-stack header so its struct padding
+# does not carry whatever the stack held. php-src master has the same code
+# (its msan note in zend_file_cache_script_store calls the uninitialized
+# regions out as a reproducibility problem it has not fixed).
+if [ -f ext/opcache/zend_file_cache.c ] \
+   && ! grep -q "kandelo-opcache-reproducible-file-cache" ext/opcache/zend_file_cache.c; then
+    python3 - <<'PY'
+from pathlib import Path
+
+p = Path("ext/opcache/zend_file_cache.c")
+s = p.read_text()
+
+serialize_tail = "\tzend_file_cache_serialize_early_bindings(new_script, info, buf);\n\n\tnew_script->mem = NULL;\n}\n"
+serialize_fix = (
+    "\tzend_file_cache_serialize_early_bindings(new_script, info, buf);\n\n"
+    "\tnew_script->mem = NULL;\n"
+    "\t/* kandelo-opcache-reproducible-file-cache: SHM-only, time-derived. */\n"
+    "\tnew_script->dynamic_members.last_used = 0;\n"
+    "\tnew_script->dynamic_members.revalidate = 0;\n"
+    "}\n"
+)
+if s.count(serialize_tail) != 1:
+    raise SystemExit("opcache reproducible file cache: serialize tail not found")
+s = s.replace(serialize_tail, serialize_fix, 1)
+
+store_decl = (
+    "int zend_file_cache_script_store(zend_persistent_script *script, bool in_shm)\n"
+    "{\n"
+    "\tint fd;\n"
+    "\tchar *filename;\n"
+    "\tzend_file_cache_metainfo info;\n"
+    "\tvoid *mem, *buf;\n"
+)
+if s.count(store_decl) != 1:
+    raise SystemExit("opcache reproducible file cache: store header decl not found")
+s = s.replace(store_decl, store_decl + "\tmemset(&info, 0, sizeof(info));\n", 1)
+p.write_text(s)
+PY
+fi
+
 # PHP's configure enables Zend max-execution timers only on Linux hosts even
 # when --enable-zend-max-execution-timers is explicitly requested. Allow Wasm
 # through that compile-time gate because the target-specific implementation

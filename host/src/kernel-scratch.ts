@@ -160,6 +160,13 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_pty_master_write",
   "kernel_read_proc_maps",
   "kernel_recv",
+  "kernel_rootfs_export_container_read",
+  "kernel_rootfs_mkdir_parents",
+  "kernel_rootfs_read_file",
+  "kernel_rootfs_set_foreign_mount_roots",
+  "kernel_rootfs_stat_mode",
+  "kernel_rootfs_unlink_file",
+  "kernel_rootfs_write_file",
   "kernel_select",
   "kernel_send",
   "kernel_set_cwd",
@@ -216,6 +223,7 @@ const REQUIRED_POINTER_1 = intrinsicObjectFreeze([1] as const);
 const REQUIRED_POINTER_2 = intrinsicObjectFreeze([2] as const);
 const REQUIRED_POINTER_3 = intrinsicObjectFreeze([3] as const);
 const REQUIRED_POINTER_3_5 = intrinsicObjectFreeze([3, 5] as const);
+const REQUIRED_POINTER_0_4 = intrinsicObjectFreeze([0, 4] as const);
 const REQUIRED_POINTER_4 = intrinsicObjectFreeze([4] as const);
 const REQUIRED_POINTER_5 = intrinsicObjectFreeze([5] as const);
 const REQUIRED_POINTER_11 = intrinsicObjectFreeze([11] as const);
@@ -235,6 +243,10 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_handle_channel_record":
     case "kernel_mq_drain_notification":
     case "kernel_poll":
+    case "kernel_rootfs_mkdir_parents":
+    case "kernel_rootfs_set_foreign_mount_roots":
+    case "kernel_rootfs_stat_mode":
+    case "kernel_rootfs_unlink_file":
     case "kernel_truncate":
     case "kernel_uname":
       return REQUIRED_POINTER_0;
@@ -259,6 +271,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_pipe_read":
     case "kernel_pipe_write":
     case "kernel_pick_tcp_listener_target":
+    case "kernel_rootfs_export_container_read":
     case "kernel_spawn_exec_target_prepare":
     case "kernel_spawn_process":
     case "kernel_tcsetattr":
@@ -271,6 +284,10 @@ export function kernelScratchRequiredPointerArguments(
       return REQUIRED_POINTER_3;
     case "kernel_exec_target_read":
       return REQUIRED_POINTER_4;
+    case "kernel_rootfs_read_file":
+    case "kernel_rootfs_write_file":
+      // path bytes at arg 0, data buffer at arg 4.
+      return REQUIRED_POINTER_0_4;
     case "kernel_getsockopt":
       return REQUIRED_POINTER_3_5;
     case "kernel_wait_child_poll":
@@ -342,6 +359,13 @@ function isKernelScratchExportName(
     case "kernel_pty_master_write":
     case "kernel_read_proc_maps":
     case "kernel_recv":
+    case "kernel_rootfs_export_container_read":
+    case "kernel_rootfs_mkdir_parents":
+    case "kernel_rootfs_read_file":
+    case "kernel_rootfs_set_foreign_mount_roots":
+    case "kernel_rootfs_stat_mode":
+    case "kernel_rootfs_unlink_file":
+    case "kernel_rootfs_write_file":
     case "kernel_select":
     case "kernel_send":
     case "kernel_set_cwd":

@@ -6,9 +6,7 @@ import { tryResolveBinary } from "../src/binary-resolver";
 // tests/package-system/source-rootfs-shell-bridge.test.ts.
 import { registerShellProfileScripts } from "../../images/vfs/scripts/shell-lazy-archives";
 import { ensureDirRecursive } from "../src/vfs/image-helpers";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { NodeTimeProvider } from "../src/vfs/time";
-import { VirtualPlatformIO } from "../src/vfs/vfs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 // The profile script runs under bash, because bash is what every Kandelo
@@ -32,7 +30,7 @@ const PROFILE_SCRIPT_PATH = "/etc/profile.d/00-kandelo-shell.sh";
 
 describe.skipIf(!SHELL_WASM)("Demo shell identity profile", () => {
   it("sets the maker interactive shell identity after login", async () => {
-    const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    const rootfs = KandeloImageFs.create();
     ensureDirRecursive(rootfs, "/home/maker");
     registerShellProfileScripts(rootfs);
 
@@ -56,10 +54,9 @@ printf '%s\\n' \
       uid: 1000,
       gid: 1000,
       env: ["HOME=/home/maker", "USER=maker", "LOGNAME=maker"],
-      io: new VirtualPlatformIO(
-        [{ mountPoint: "/", backend: rootfs }],
-        new NodeTimeProvider(),
-      ),
+      // The kernel owns `/`: the image these scripts were written into is
+      // what it boots, rather than a host filesystem mounted beside it.
+      rootfsImage: await rootfs.saveImage(),
       onKernelReady: (kernel, pid) => kernel.setCwd(pid, "/home/maker"),
       timeout: 20_000,
     });
@@ -77,7 +74,7 @@ printf '%s\\n' \
   });
 
   it("exports npm's image-wide settings from the node profile script", async () => {
-    const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    const rootfs = KandeloImageFs.create();
     ensureDirRecursive(rootfs, "/home/maker");
     registerShellProfileScripts(rootfs);
 
@@ -104,10 +101,9 @@ printf '%s\\n' \
       uid: 1000,
       gid: 1000,
       env: ["HOME=/home/maker", "USER=maker", "LOGNAME=maker"],
-      io: new VirtualPlatformIO(
-        [{ mountPoint: "/", backend: rootfs }],
-        new NodeTimeProvider(),
-      ),
+      // The kernel owns `/`: the image these scripts were written into is
+      // what it boots, rather than a host filesystem mounted beside it.
+      rootfsImage: await rootfs.saveImage(),
       onKernelReady: (kernel, pid) => kernel.setCwd(pid, "/home/maker"),
       timeout: 20_000,
     });
@@ -140,7 +136,7 @@ printf '%s\\n' \
   });
 
   it("does nothing for a non-maker HOME", async () => {
-    const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    const rootfs = KandeloImageFs.create();
     ensureDirRecursive(rootfs, "/root");
     registerShellProfileScripts(rootfs);
 
@@ -173,10 +169,9 @@ printf 'before=%s\\nafter=%s\\n' "$before" "$after"`,
       uid: 0,
       gid: 0,
       env: ["HOME=/root", "USER=root", "LOGNAME=root"],
-      io: new VirtualPlatformIO(
-        [{ mountPoint: "/", backend: rootfs }],
-        new NodeTimeProvider(),
-      ),
+      // The kernel owns `/`: the image these scripts were written into is
+      // what it boots, rather than a host filesystem mounted beside it.
+      rootfsImage: await rootfs.saveImage(),
       onKernelReady: (kernel, pid) => kernel.setCwd(pid, "/root"),
       timeout: 20_000,
     });
@@ -191,7 +186,7 @@ printf 'before=%s\\nafter=%s\\n' "$before" "$after"`,
   });
 });
 
-function readVfsText(fs: MemoryFileSystem, path: string): string {
+function readVfsText(fs: KandeloImageFs, path: string): string {
   const stat = fs.stat(path);
   const handle = fs.open(path, 0, 0);
   try {

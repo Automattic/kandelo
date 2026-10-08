@@ -7,7 +7,7 @@ import {
   type VfsWasmArtifactPolicy,
 } from "../../images/vfs/scripts/vfs-image-helpers";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { ABI_VERSION } from "../src/generated/abi";
 
 const NODE_PATH = "/usr/bin/node";
@@ -181,8 +181,13 @@ describe("VFS image path-scoped Wasm artifact policy", () => {
   });
 });
 
-function imageFs(): MemoryFileSystem {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+/**
+ * The image this policy judges is written by the module every builder uses:
+ * the policy walks an image's executables, so the fixture must have the shape
+ * a product image has.
+ */
+function imageFs(): KandeloImageFs {
+  const fs = KandeloImageFs.create();
   ensureDirRecursive(fs, "/usr/bin");
   return fs;
 }

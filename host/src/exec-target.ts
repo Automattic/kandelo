@@ -7,12 +7,31 @@ import {
   CH_DATA_SIZE,
   MAX_REPORTABLE_TRANSFER_BYTES,
 } from "./generated/abi";
+import { waitForDeferredFetch } from "./vfs/rootfs-lazy-archives";
 
+const EAGAIN = 11;
 const EFBIG = 27;
 const EIO = 5;
 const ENOEXEC = 8;
 const ENOMEM = 12;
 const EOVERFLOW = 75;
+const ETIMEDOUT = 110;
+
+// An exec target the image only names (a lazy file, or a lazy-archive member)
+// is fetched by the host on first read through `host_fetch_deferred`, and the
+// kernel's read returns EAGAIN until that fetch settles, then either bytes or
+// a terminal error. So EAGAIN here is transient and retrying is safe: the
+// kernel's exec-target read records nothing before it fails, making a
+// same-offset retry idempotent. The retry waits for the fetch to settle
+// (`waitForDeferredFetch`), which also yields the worker's event loop so the
+// in-flight fetch can run; waiting a fixed timer instead added the rest of a
+// timer period to every first exec of a lazy file. Only an EAGAIN with no
+// fetch in flight falls back to this plain delay between retries.
+const EXEC_TARGET_EAGAIN_RETRY_DELAY_MS = 10;
+// Backstop only: a fetch normally settles long before this. It exists so a
+// stuck fetch fails exec with a truthful timeout instead of hanging it.
+const EXEC_TARGET_EAGAIN_MAX_WAIT_MS = 30_000;
+
 const MAX_SHEBANG_LINE_BYTES = 4096;
 
 export interface PreparedExecKernel {
@@ -24,6 +43,10 @@ export interface PreparedExecKernel {
     destination: Uint8Array,
   ): number;
   execTargetCancel(ownerPid: number, target: number): number;
+  /** The next settlement of a deferred fetch in flight, or `null` when none
+   *  is; see `CentralizedKernelWorker.deferredFetchSettled`. Optional: a
+   *  kernel without a deferred pipe never returns EAGAIN for one. */
+  deferredFetchSettled?(): Promise<void> | null;
 }
 
 export class PreparedExecTargetError extends Error {
@@ -112,6 +135,7 @@ export async function readPreparedExecTarget(
     }
 
     let offset = 0n;
+    let eagainSince: number | undefined;
     while (offset < size) {
       const start = Number(offset);
       const capacity = Math.min(
@@ -125,6 +149,28 @@ export async function readPreparedExecTarget(
         offset,
         destination,
       );
+      if (read === -EAGAIN) {
+        // The deferred bytes are still being fetched: retry the same offset
+        // once the fetch has settled.
+        eagainSince ??= Date.now();
+        const eagainWaitedMs = Date.now() - eagainSince;
+        if (eagainWaitedMs >= EXEC_TARGET_EAGAIN_MAX_WAIT_MS) {
+          throw new PreparedExecTargetError(
+            "prepared exec target read did not become available after "
+              + `${EXEC_TARGET_EAGAIN_MAX_WAIT_MS}ms of retrying a transient `
+              + "EAGAIN",
+            ETIMEDOUT,
+          );
+        }
+        const inFlight = kernel.deferredFetchSettled?.() ?? null;
+        await waitForDeferredFetch(
+          inFlight,
+          inFlight === null
+            ? EXEC_TARGET_EAGAIN_RETRY_DELAY_MS
+            : EXEC_TARGET_EAGAIN_MAX_WAIT_MS - eagainWaitedMs,
+        );
+        continue;
+      }
       if (read < 0) {
         throw new PreparedExecTargetError(
           "prepared exec target read failed",

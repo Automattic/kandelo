@@ -14,13 +14,12 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MemoryFileSystem } from "../../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { HostFileSystem } from "../../src/vfs/host-fs";
 import {
   DEFAULT_MOUNT_SPEC,
-  ensureMountParentDirectories,
-  IMAGE_MEMFS_MAX_BYTES,
-  imageMemfsReservationBytes,
+  filterMountSpecForKernelTmpfs,
+  KERNEL_TMPFS_OWNED_PREFIXES,
   resolveForBrowser,
   type MountSpec,
 } from "../../src/vfs/default-mounts";
@@ -29,11 +28,6 @@ import {
   resolveForNodeKernelSession,
 } from "../../src/vfs/default-mounts-node";
 import { restoreBrowserKernelInitMounts } from "../../src/browser-kernel-vfs-init";
-import {
-  addSealedLazyAtomicTestTree,
-  forgeLazyAtomicSeal,
-  type LazyAtomicSealForgery,
-} from "../lazy-atomic-seal-fixture";
 import { ST_NOSUID } from "../../src/vfs/types";
 import { VirtualPlatformIO } from "../../src/vfs/vfs";
 import { NodeTimeProvider } from "../../src/vfs/time";
@@ -48,44 +42,31 @@ const FILE_TYPE_MASK = 0xf000;
 const DIRECTORY_MODE = 0x4000;
 
 async function buildFixtureImage(): Promise<Uint8Array> {
-  const sab = new SharedArrayBuffer(2 * 1024 * 1024);
-  const mfs = MemoryFileSystem.create(sab);
+  // Built by the producer that writes every shipped image: these cases are
+  // about what the MOUNT RESOLVERS do with a `/` image, and an image from a
+  // writer no product uses can differ in exactly the way they would not
+  // notice.
+  const mfs = KandeloImageFs.create();
   mfs.mkdir("/etc", 0o755);
-  const passwd = new TextEncoder().encode("root:x:0:0:root:/root:/bin/sh\n");
-  const fd = mfs.open("/etc/passwd", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-  mfs.write(fd, passwd, null, passwd.length);
-  mfs.close(fd);
+  mfs.writeFile(
+    "/etc/passwd",
+    new TextEncoder().encode("root:x:0:0:root:/root:/bin/sh\n"),
+    0o644,
+  );
   return await mfs.saveImage();
 }
 
 async function buildLegacyDinitImage(): Promise<Uint8Array> {
-  const sab = new SharedArrayBuffer(2 * 1024 * 1024);
-  const mfs = MemoryFileSystem.create(sab);
+  const mfs = KandeloImageFs.create();
   mfs.mkdir("/etc", 0o755);
-  const group = new TextEncoder().encode("root:x:0:\nnogroup:x:65534:\n");
-  const fd = mfs.open("/etc/group", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-  mfs.write(fd, group, null, group.length);
-  mfs.close(fd);
+  mfs.writeFile(
+    "/etc/group",
+    new TextEncoder().encode("root:x:0:\nnogroup:x:65534:\n"),
+    0o644,
+  );
   return await mfs.saveImage();
 }
 
-async function buildForgedLegacyDinitImage(
-  forgery: LazyAtomicSealForgery,
-): Promise<Uint8Array> {
-  const sab = new SharedArrayBuffer(2 * 1024 * 1024);
-  const mfs = MemoryFileSystem.create(sab);
-  mfs.mkdir("/etc", 0o755);
-  const group = new TextEncoder().encode("root:x:0:\nnogroup:x:65534:\n");
-  const fd = mfs.open("/etc/group", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-  mfs.write(fd, group, null, group.length);
-  mfs.close(fd);
-  await addSealedLazyAtomicTestTree(mfs, {
-    groupId: `default-mounts:${forgery}`,
-    member: forgery,
-    root: `/sealed-${forgery}`,
-  });
-  return forgeLazyAtomicSeal(await mfs.saveImage(), forgery);
-}
 
 function readMountFile(backend: any, path: string): Uint8Array {
   const st = backend.stat(path);
@@ -157,6 +138,31 @@ describe("DEFAULT_MOUNT_SPEC", () => {
   });
 });
 
+// The in-kernel tmpfs is the unconditional authority for its scratch prefixes,
+// so `resolveForNode`/`resolveForBrowser` always drop the tmpfs-owned scratch
+// mounts (`/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`,
+// `/srv`, `/dev/shm`). Node still materialises host scratch backends for any
+// *non*-tmpfs scratch mount, so these suites exercise
+// that surviving machinery through a spec of non-tmpfs scratch paths that mirror
+// the canonical mode/uid/gid variety.
+const HOST_SCRATCH_MOUNT_SPEC: MountSpec[] = [
+  { path: "/", source: "image", readonly: false },
+  { path: "/run", source: "scratch", mode: 0o1777, ephemeral: true, nosuid: true },
+  { path: "/var/spool", source: "scratch", mode: 0o1777, nosuid: true },
+  { path: "/var/cache", source: "scratch", mode: 0o755, nosuid: true },
+  { path: "/opt/run", source: "scratch", mode: 0o755, ephemeral: true, nosuid: true },
+  {
+    path: "/home/dev",
+    source: "scratch",
+    mode: 0o755,
+    uid: 1000,
+    gid: 1000,
+    nosuid: true,
+  },
+  { path: "/opt/admin", source: "scratch", mode: 0o700, uid: 0, gid: 0, nosuid: true },
+  { path: "/opt/srv", source: "scratch", mode: 0o755, nosuid: true },
+];
+
 describe("resolveForNode", () => {
   let image: Uint8Array;
   let sessionDir: string;
@@ -170,59 +176,58 @@ describe("resolveForNode", () => {
     rmSync(sessionDir, { recursive: true, force: true });
   });
 
-  it("produces a MountConfig per spec entry", async () => {
-    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
-    expect(mounts).toHaveLength(DEFAULT_MOUNT_SPEC.length);
+  it("produces a MountConfig per HOST-BACKED spec entry, and none for the image", async () => {
+    const mounts = await resolveForNode(HOST_SCRATCH_MOUNT_SPEC, image, sessionDir);
+    // An image mount gets no backend and therefore no mount: the kernel serves
+    // `/` itself, and the filesystem the resolver used to build for it was
+    // dropped from the guest mounts unread.
+    const hostBacked = HOST_SCRATCH_MOUNT_SPEC.filter((m) => m.source !== "image");
+    expect(mounts.map((m) => m.mountPoint).sort())
+      .toEqual(hostBacked.map((m) => m.path).sort());
     const io = new VirtualPlatformIO(mounts, new NodeTimeProvider());
     for (const m of mounts) {
       expect(typeof m.mountPoint).toBe("string");
       expect(m.backend).toBeDefined();
-      expect(io.statfs(m.mountPoint).flags & ST_NOSUID).toBe(
-        m.mountPoint === "/" ? 0 : ST_NOSUID,
-      );
+      expect(io.statfs(m.mountPoint).flags & ST_NOSUID).toBe(ST_NOSUID);
     }
   });
 
-  it("/ mount is a MemoryFileSystem loaded from the supplied image", async () => {
+  it("emits no `/` mount at all, because the kernel is its authority", async () => {
+    // The kernel is the sole `/` authority and parses the image itself, so the
+    // host must not materialize `/` as a mount of its own.
     const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
-    const root = mounts.find((m) => m.mountPoint === "/");
-    expect(root).toBeDefined();
-    expect(root!.backend).toBeInstanceOf(MemoryFileSystem);
-    expect(root!.readonly).toBe(false);
-
-    const passwd = readMountFile(root!.backend, "/etc/passwd");
-    expect(new TextDecoder().decode(passwd)).toContain("root:x:0:0");
+    expect(mounts.find((m) => m.mountPoint === "/")).toBeUndefined();
   });
 
-  it("/tmp mount is a HostFileSystem rooted under sessionDir", async () => {
-    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
-    const tmp = mounts.find((m) => m.mountPoint === "/tmp");
-    expect(tmp).toBeDefined();
-    expect(tmp!.backend).toBeInstanceOf(HostFileSystem);
+  it("a host-scratch mount is a HostFileSystem rooted under sessionDir", async () => {
+    const mounts = await resolveForNode(HOST_SCRATCH_MOUNT_SPEC, image, sessionDir);
+    const run = mounts.find((m) => m.mountPoint === "/run");
+    expect(run).toBeDefined();
+    expect(run!.backend).toBeInstanceOf(HostFileSystem);
 
     const data = new TextEncoder().encode("hello via host fs");
-    const fd = tmp!.backend.open("/note.txt", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-    tmp!.backend.write(fd, data, null, data.length);
-    tmp!.backend.close(fd);
+    const fd = run!.backend.open("/note.txt", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    run!.backend.write(fd, data, null, data.length);
+    run!.backend.close(fd);
 
-    const onDisk = readFileSync(join(sessionDir, "tmp", "note.txt"));
+    const onDisk = readFileSync(join(sessionDir, "run", "note.txt"));
     expect(new TextDecoder().decode(onDisk)).toBe("hello via host fs");
   });
 
-  it("keeps the canonical maker profile on a writable Node scratch mount", async () => {
-    const makerSessionDir = mkdtempSync(
-      join(tmpdir(), "wasm-posix-maker-profile-"),
+  it("keeps a uid/gid-owned profile on a writable Node scratch mount", async () => {
+    const profileSessionDir = mkdtempSync(
+      join(tmpdir(), "wasm-posix-scratch-profile-"),
     );
     const mounts = await resolveForNode(
-      DEFAULT_MOUNT_SPEC,
+      HOST_SCRATCH_MOUNT_SPEC,
       image,
-      makerSessionDir,
+      profileSessionDir,
     );
-    const home = mounts.find((m) => m.mountPoint === "/home/maker");
+    const home = mounts.find((m) => m.mountPoint === "/home/dev");
 
     try {
       expect(home).toBeDefined();
-      const data = new TextEncoder().encode("maker node profile");
+      const data = new TextEncoder().encode("dev node profile");
       const fd = home!.backend.open(
         "/profile.txt",
         O_WRONLY | O_CREAT | O_TRUNC,
@@ -232,18 +237,18 @@ describe("resolveForNode", () => {
       home!.backend.close(fd);
       expect(
         readFileSync(
-          join(makerSessionDir, "home", "maker", "profile.txt"),
+          join(profileSessionDir, "home", "dev", "profile.txt"),
           "utf8",
         ),
-      ).toBe("maker node profile");
+      ).toBe("dev node profile");
     } finally {
-      rmSync(makerSessionDir, { recursive: true, force: true });
+      rmSync(profileSessionDir, { recursive: true, force: true });
     }
   });
 
   it("pre-creates every scratch directory under sessionDir", async () => {
-    await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
-    for (const spec of DEFAULT_MOUNT_SPEC) {
+    await resolveForNode(HOST_SCRATCH_MOUNT_SPEC, image, sessionDir);
+    for (const spec of HOST_SCRATCH_MOUNT_SPEC) {
       if (spec.source !== "scratch") continue;
       const expected = join(sessionDir, spec.path);
       expect(existsSync(expected), `expected ${expected} to exist`).toBe(true);
@@ -254,158 +259,38 @@ describe("resolveForNode", () => {
   it("applies declared scratch directory modes natively on creation and virtually", async () => {
     const modeSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-default-mount-modes-"));
     const mounts = await withUmask(0, () =>
-      resolveForNode(DEFAULT_MOUNT_SPEC, image, modeSessionDir)
+      resolveForNode(HOST_SCRATCH_MOUNT_SPEC, image, modeSessionDir)
     );
-    const tmp = mounts.find((m) => m.mountPoint === "/tmp")!;
-    const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!;
-    const home = mounts.find((m) => m.mountPoint === "/home/maker")!;
-    const root = mounts.find((m) => m.mountPoint === "/root")!;
+    const sticky = mounts.find((m) => m.mountPoint === "/run")!;
+    const varSpool = mounts.find((m) => m.mountPoint === "/var/spool")!;
+    const home = mounts.find((m) => m.mountPoint === "/home/dev")!;
+    const admin = mounts.find((m) => m.mountPoint === "/opt/admin")!;
 
     try {
-      expect(tmp.backend.stat("/").mode & 0o7777).toBe(0o1777);
-      expect(varTmp.backend.stat("/").mode & 0o7777).toBe(0o1777);
+      expect(sticky.backend.stat("/").mode & 0o7777).toBe(0o1777);
+      expect(varSpool.backend.stat("/").mode & 0o7777).toBe(0o1777);
       expect(home.backend.stat("/").uid).toBe(1000);
       expect(home.backend.stat("/").gid).toBe(1000);
-      expect(root.backend.stat("/").mode & 0o7777).toBe(0o700);
-      expect(root.backend.stat("/").uid).toBe(0);
-      expect(root.backend.stat("/").gid).toBe(0);
-      expect(statSync(join(modeSessionDir, "tmp")).mode & PERMISSION_MASK).toBe(0o777);
-      expect(statSync(join(modeSessionDir, "var", "tmp")).mode & PERMISSION_MASK).toBe(0o777);
-      expect(statSync(join(modeSessionDir, "root")).mode & 0o7777).toBe(0o700);
+      expect(admin.backend.stat("/").mode & 0o7777).toBe(0o700);
+      expect(admin.backend.stat("/").uid).toBe(0);
+      expect(admin.backend.stat("/").gid).toBe(0);
+      expect(statSync(join(modeSessionDir, "run")).mode & PERMISSION_MASK).toBe(0o777);
+      expect(statSync(join(modeSessionDir, "var", "spool")).mode & PERMISSION_MASK).toBe(0o777);
+      expect(statSync(join(modeSessionDir, "opt", "admin")).mode & 0o7777).toBe(0o700);
     } finally {
       rmSync(modeSessionDir, { recursive: true, force: true });
     }
   });
 
-  it("adds the nobody group to legacy dinit images", async () => {
-    const legacyImage = await buildLegacyDinitImage();
-    const mounts = await resolveForNode(
-      DEFAULT_MOUNT_SPEC,
-      legacyImage,
-      sessionDir,
-    );
-    const root = mounts.find((m) => m.mountPoint === "/")!;
-    const group = new TextDecoder().decode(readMountFile(root.backend, "/etc/group"));
-    expect(group).toContain("nogroup:x:65534:");
-    expect(group).toContain("nobody:x:65534:");
-  });
+  // The host does not amend the image (for example `/etc/group`): the kernel
+  // builds its tree from the image bytes. That an image's bytes survive being
+  // read belongs to the loader — `runtime-core`'s
+  // `a_load_leaves_the_image_it_was_handed_byte_for_byte_unchanged` — and
+  // `rootfs-etc-overlay.test.ts` asserts the `/etc` content path end to end
+  // through the image module.
 
-  it.each(["member", "cohort"] as const)(
-    "rejects a forged %s seal before Node scratch directories are created",
-    async (forgery) => {
-      const forgedImage = await buildForgedLegacyDinitImage(forgery);
-      const isolatedSessionDir = mkdtempSync(
-        join(tmpdir(), "wasm-posix-forged-default-mounts-"),
-      );
-      const scratchFirst: MountSpec[] = [
-        { path: "/tmp", source: "scratch" },
-        { path: "/", source: "image" },
-      ];
-      try {
-        await expect(
-          resolveForNode(scratchFirst, forgedImage, isolatedSessionDir),
-        ).rejects.toThrow(/activation (member|group)/);
-        // Arbitrary specs may put scratch first. Two-phase resolution must
-        // still authenticate every image before touching the host filesystem.
-        expect(existsSync(join(isolatedSessionDir, "tmp"))).toBe(false);
-      } finally {
-        rmSync(isolatedSessionDir, { recursive: true, force: true });
-      }
-    },
-  );
 
-  it("creates missing rootfs ancestors for nested runtime mount points", async () => {
-    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
-    const root = mounts.find((m) => m.mountPoint === "/")!.backend as MemoryFileSystem;
 
-    expect(() => root.stat("/usr/local")).toThrow();
-    ensureMountParentDirectories(root, ["/usr/local/lib/kandelo"]);
-
-    for (const path of ["/usr", "/usr/local", "/usr/local/lib"]) {
-      expect(root.stat(path).mode & FILE_TYPE_MASK).toBe(DIRECTORY_MODE);
-    }
-    expect(() => root.stat("/usr/local/lib/kandelo")).toThrow();
-  });
-
-  it("does not hide non-directory rootfs ancestors", async () => {
-    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
-    const root = mounts.find((m) => m.mountPoint === "/")!.backend as MemoryFileSystem;
-    const fd = root.open("/usr", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-    root.close(fd);
-
-    ensureMountParentDirectories(root, ["/usr/local/lib/kandelo"]);
-
-    expect(root.stat("/usr").mode & FILE_TYPE_MASK).not.toBe(DIRECTORY_MODE);
-    expect(() => root.stat("/usr/local")).toThrow();
-  });
-
-  it("throws on duplicate mount paths", () => {
-    const dup: MountSpec[] = [
-      { path: "/", source: "image" },
-      { path: "/tmp", source: "scratch" },
-      { path: "/tmp", source: "scratch" },
-    ];
-    expect(() => resolveForNode(dup, image, sessionDir)).toThrow(/duplicate/i);
-  });
-
-  it("throws on a non-absolute mount path", () => {
-    const bad: MountSpec[] = [{ path: "tmp", source: "scratch" }];
-    expect(() => resolveForNode(bad, image, sessionDir)).toThrow(/absolute/i);
-  });
-
-  it("rejects mount paths with . or .. segments", () => {
-    const dotSpec: MountSpec[] = [{ path: "/foo/./bar", source: "scratch" }];
-    expect(() => resolveForNode(dotSpec, image, sessionDir)).toThrow();
-
-    const dotDotSpec: MountSpec[] = [{ path: "/foo/../bar", source: "scratch" }];
-    expect(() => resolveForNode(dotDotSpec, image, sessionDir)).toThrow();
-  });
-
-  it("rejects trailing slash on non-root mount paths", () => {
-    const bad: MountSpec[] = [{ path: "/tmp/", source: "scratch" }];
-    expect(() => resolveForNode(bad, image, sessionDir)).toThrow();
-  });
-});
-
-describe("Node worker session seed trees", () => {
-  it("keeps exact native append branding limited to the private-session resolver", () => {
-    const sourceRoot = fileURLToPath(new URL("../../src/", import.meta.url));
-    const token = "createSessionOwnedHostFileSystem";
-    const uses = typeScriptSources(sourceRoot)
-      .map((path) => ({
-        count: readFileSync(path, "utf8").split(token).length - 1,
-        file: relative(sourceRoot, path).replaceAll("\\", "/"),
-      }))
-      .filter(({ count }) => count > 0)
-      .sort((left, right) => left.file.localeCompare(right.file));
-
-    expect(uses).toEqual([
-      { count: 2, file: "vfs/default-mounts-node.ts" },
-      { count: 1, file: "vfs/host-fs.ts" },
-    ]);
-  });
-
-  it("authenticates the root image before inspecting or staging seeds", async () => {
-    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-auth-"));
-    const forgedImage = await buildForgedLegacyDinitImage("member");
-    try {
-      await expect(
-        resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
-          forgedImage,
-          sessionRoot,
-          [{
-            sourcePath: join(sessionRoot, "does-not-exist"),
-            destinationPath: "/tmp/kandelo-run",
-          }],
-        ),
-      ).rejects.toThrow(/activation member/i);
-      expect(existsSync(join(sessionRoot, "tmp"))).toBe(false);
-      expect(existsSync(join(sessionRoot, ".seed-staging-0"))).toBe(false);
-    } finally {
-      rmSync(sessionRoot, { recursive: true, force: true });
-    }
-  });
 
   it("breaks external hardlink aliases before granting exact append authority", async () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-snapshot-source-"));
@@ -419,15 +304,15 @@ describe("Node worker session seed trees", () => {
       linkSync(outside, staged);
 
       const mounts = await resolveForNodeKernelSession(
-        DEFAULT_MOUNT_SPEC,
+        HOST_SCRATCH_MOUNT_SPEC,
         await buildFixtureImage(),
         sessionRoot,
         [{
           sourcePath: source,
-          destinationPath: "/tmp/kandelo-run",
+          destinationPath: "/run/kandelo-run",
         }],
       );
-      const mount = mounts.find((entry) => entry.mountPoint === "/tmp")!;
+      const mount = mounts.find((entry) => entry.mountPoint === "/run")!;
 
       // The source entry still aliases the external file. Mutating it after
       // initialization must not replace bytes inside the worker-owned copy.
@@ -470,7 +355,7 @@ describe("Node worker session seed trees", () => {
     try {
       await expect(
         resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
+          HOST_SCRATCH_MOUNT_SPEC,
           await buildFixtureImage(),
           nestedSession,
           [{ sourcePath: source, destinationPath: "/etc/fixtures" }],
@@ -479,12 +364,12 @@ describe("Node worker session seed trees", () => {
 
       await expect(
         resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
+          HOST_SCRATCH_MOUNT_SPEC,
           await buildFixtureImage(),
           nestedSession,
           [{
             sourcePath: source,
-            destinationPath: "/tmp/kandelo-run",
+            destinationPath: "/run/kandelo-run",
           }],
         )
       ).rejects.toThrow(/contains the private session/i);
@@ -503,12 +388,12 @@ describe("Node worker session seed trees", () => {
     try {
       await expect(
         resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
+          HOST_SCRATCH_MOUNT_SPEC,
           await buildFixtureImage(),
           sessionRoot,
           [{
             sourcePath: source,
-            destinationPath: "/tmp/kandelo-run",
+            destinationPath: "/run/kandelo-run",
           }],
         ),
       ).rejects.toThrow(/symlink or unsupported special entry/i);
@@ -531,17 +416,17 @@ describe("Node worker session seed trees", () => {
     try {
       await expect(
         resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
+          HOST_SCRATCH_MOUNT_SPEC,
           await buildFixtureImage(),
           sessionRoot,
           [
-            { sourcePath: valid, destinationPath: "/tmp/first" },
-            { sourcePath: invalid, destinationPath: "/tmp/second" },
+            { sourcePath: valid, destinationPath: "/run/first" },
+            { sourcePath: invalid, destinationPath: "/run/second" },
           ],
         ),
       ).rejects.toThrow(/symlink or unsupported special entry/i);
-      expect(existsSync(join(sessionRoot, "tmp", "first"))).toBe(false);
-      expect(existsSync(join(sessionRoot, "tmp", "second"))).toBe(false);
+      expect(existsSync(join(sessionRoot, "run", "first"))).toBe(false);
+      expect(existsSync(join(sessionRoot, "run", "second"))).toBe(false);
     } finally {
       rmSync(sessionRoot, { recursive: true, force: true });
       rmSync(fixtureRoot, { recursive: true, force: true });
@@ -592,30 +477,30 @@ describe("Node worker session seed trees", () => {
     try {
       await expect(
         resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
+          HOST_SCRATCH_MOUNT_SPEC,
           image,
           sessionRoot,
           [
-            { sourcePath: first, destinationPath: "/tmp/fixtures" },
-            { sourcePath: second, destinationPath: "/tmp/fixtures/nested" },
+            { sourcePath: first, destinationPath: "/run/fixtures" },
+            { sourcePath: second, destinationPath: "/run/fixtures/nested" },
           ],
         ),
       ).rejects.toThrow(/destinations overlap/i);
 
       await expect(
         resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
+          HOST_SCRATCH_MOUNT_SPEC,
           image,
           sessionRoot,
-          [{ sourcePath: first, destinationPath: "/tmp/extra/fixtures" }],
-          ["/tmp/extra"],
+          [{ sourcePath: first, destinationPath: "/run/extra/fixtures" }],
+          ["/run/extra"],
         ),
       ).rejects.toThrow(/overlaps another mount/i);
 
       const nestedImageSpec: MountSpec[] = [
         { path: "/", source: "image", readonly: true },
-        { path: "/tmp", source: "scratch" },
-        { path: "/tmp/shadow", source: "image", readonly: true },
+        { path: "/run", source: "scratch" },
+        { path: "/run/shadow", source: "image", readonly: true },
       ];
       await expect(
         resolveForNodeKernelSession(
@@ -624,62 +509,65 @@ describe("Node worker session seed trees", () => {
           sessionRoot,
           [{
             sourcePath: first,
-            destinationPath: "/tmp/shadow/fixtures",
+            destinationPath: "/run/shadow/fixtures",
           }],
         ),
-      ).rejects.toThrow(/routed through a scratch mount/i);
+        // A nested image mount is refused before any seed tree is considered:
+        // the kernel builds only `/` from the image, so no seed can be
+        // shadowed by one.
+      ).rejects.toThrow(/image mount at \/run\/shadow is not supported/i);
 
       const nestedScratchSpec: MountSpec[] = [
         { path: "/", source: "image", readonly: true },
-        { path: "/tmp", source: "scratch" },
-        { path: "/tmp/fixtures/nested", source: "scratch" },
+        { path: "/run", source: "scratch" },
+        { path: "/run/fixtures/nested", source: "scratch" },
       ];
       await expect(
         resolveForNodeKernelSession(
           nestedScratchSpec,
           image,
           sessionRoot,
-          [{ sourcePath: first, destinationPath: "/tmp/fixtures" }],
+          [{ sourcePath: first, destinationPath: "/run/fixtures" }],
         ),
       ).rejects.toThrow(/overlaps another declared mount/i);
 
       await expect(
         resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
+          HOST_SCRATCH_MOUNT_SPEC,
           image,
           sessionRoot,
-          [{ sourcePath: first, destinationPath: "/tmp" }],
+          [{ sourcePath: first, destinationPath: "/run" }],
         ),
       ).rejects.toThrow(/below a scratch mount/i);
 
       await expect(
         resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
+          HOST_SCRATCH_MOUNT_SPEC,
           image,
           sessionRoot,
           [
-            { sourcePath: first, destinationPath: "/tmp/fixtures" },
-            { sourcePath: second, destinationPath: "/tmp//fixtures" },
+            { sourcePath: first, destinationPath: "/run/fixtures" },
+            { sourcePath: second, destinationPath: "/run//fixtures" },
           ],
         ),
       ).rejects.toThrow(/canonical POSIX path/i);
 
       await expect(
         resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
+          HOST_SCRATCH_MOUNT_SPEC,
           image,
           sessionRoot,
-          [{ sourcePath: first, destinationPath: "/tmp/extra/fixtures" }],
-          ["/tmp//extra"],
+          [{ sourcePath: first, destinationPath: "/run/extra/fixtures" }],
+          ["/run//extra"],
         ),
       ).rejects.toThrow(/canonical POSIX path/i);
 
       await expect(
         resolveForNodeKernelSession(
-          DEFAULT_MOUNT_SPEC,
+          HOST_SCRATCH_MOUNT_SPEC,
           image,
           sessionRoot,
-          [{ sourcePath: "relative", destinationPath: "/tmp/relative" }],
+          [{ sourcePath: "relative", destinationPath: "/run/relative" }],
         ),
       ).rejects.toThrow(/source path must be absolute/i);
     } finally {
@@ -691,162 +579,52 @@ describe("Node worker session seed trees", () => {
 
 describe("resolveForBrowser", () => {
   let image: Uint8Array;
-  // Shrink scratch SABs so the 7 scratch mounts × default 16 MiB don't
-  // OOM the test runner (`mkfs` zero-fills every SAB up front). The
-  // production default lives in `BROWSER_SCRATCH_SAB_BYTES`.
-  const tinyScratch = Object.fromEntries(
-    DEFAULT_MOUNT_SPEC.filter((m) => m.source === "scratch").map((m) => [
-      m.path,
-      256 * 1024,
-    ]),
-  );
 
   beforeAll(async () => {
     image = await buildFixtureImage();
   });
 
-  it("produces image-backed and memfs-scratch backends only", async () => {
-    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
-      scratchSabBytes: tinyScratch,
-    });
-    expect(mounts).toHaveLength(DEFAULT_MOUNT_SPEC.length);
+  // The browser resolver backs no scratch mount: the prefixes the in-kernel
+  // tmpfs owns are filtered out before it looks, and the browser host has no
+  // filesystem of its own to mount anywhere else, so it refuses one.
+  //
+  // THE ASYMMETRY WITH NODE IS DELIBERATE and is not a parity gap. Node backs a
+  // non-tmpfs scratch mount with a `HostFileSystem` over a real session
+  // directory, because session seed trees must land below a surviving scratch
+  // mount — `materializeSessionSeedTrees` insists on it. The browser protocol
+  // carries no `sessionSeedTrees` field, so the facility that justifies Node's
+  // branch cannot reach the browser's.
 
-    const io = new VirtualPlatformIO(mounts, new NodeTimeProvider());
-    for (const m of mounts) {
-      expect(m.backend).toBeInstanceOf(MemoryFileSystem);
-      expect(m.backend).not.toBeInstanceOf(HostFileSystem);
-      expect(io.statfs(m.mountPoint).flags & ST_NOSUID).toBe(
-        m.mountPoint === "/" ? 0 : ST_NOSUID,
-      );
-    }
+  it("refuses a browser scratch mount the kernel does not serve", async () => {
+    await expect(
+      resolveForBrowser(
+        [
+          { path: "/", source: "image" },
+          { path: "/run", source: "scratch", mode: 0o755 },
+        ],
+        image,
+      ),
+    ).rejects.toThrow(/browser scratch mount \/run has no backend/);
   });
 
-  it("restores the exact caller mount spec without adding default overlays", async () => {
-    const productSpec: MountSpec[] = [
-      { path: "/", source: "image", readonly: false },
-      {
-        path: "/tmp",
-        source: "scratch",
-        mode: 0o1777,
-        uid: 0,
-        gid: 0,
-        ephemeral: true,
-      },
-    ];
-    const mounts = await restoreBrowserKernelInitMounts(image, productSpec);
-    expect(mounts.map((mount) => mount.mountPoint)).toEqual(["/", "/tmp"]);
-    expect(mounts[0]!.readonly).toBe(false);
+  it("resolves the canonical spec to no mounts at all", async () => {
+    // Every scratch path in `DEFAULT_MOUNT_SPEC` is one the in-kernel tmpfs
+    // owns, and `/` is the kernel's too, so the browser host mounts nothing.
+    // Pinning the empty result is what makes the removal visible: a future
+    // change that reintroduced a host backend would show up here rather than
+    // as a second authority the kernel never consults.
+    expect(await resolveForBrowser(DEFAULT_MOUNT_SPEC, image)).toEqual([]);
   });
 
-  it("/ mount is image-backed and reads /etc/passwd from the image", async () => {
-    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
-      scratchSabBytes: tinyScratch,
-    });
-    const root = mounts.find((m) => m.mountPoint === "/");
-    expect(root).toBeDefined();
-    const passwd = readMountFile(root!.backend, "/etc/passwd");
-    expect(new TextDecoder().decode(passwd)).toContain("root:x:0:0");
+  it("emits no `/` mount in the browser either", async () => {
+    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image);
+    expect(mounts.find((m) => m.mountPoint === "/")).toBeUndefined();
   });
 
-  it("keeps the maker profile on an independent writable browser scratch mount", async () => {
-    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
-      scratchSabBytes: tinyScratch,
-    });
-    const tmp = mounts.find((m) => m.mountPoint === "/tmp");
-    const home = mounts.find((m) => m.mountPoint === "/home/maker");
-    expect(tmp).toBeDefined();
-    expect(home).toBeDefined();
-    expect(tmp!.backend).not.toBe(home!.backend);
-
-    const tmpData = new TextEncoder().encode("tmp scratch");
-    const tmpFd = tmp!.backend.open(
-      "/x.txt",
-      O_WRONLY | O_CREAT | O_TRUNC,
-      0o644,
-    );
-    tmp!.backend.write(tmpFd, tmpData, null, tmpData.length);
-    tmp!.backend.close(tmpFd);
-    expect(new TextDecoder().decode(readMountFile(tmp!.backend, "/x.txt"))).toBe(
-      "tmp scratch",
-    );
-
-    const homeData = new TextEncoder().encode("profile scratch");
-    const homeFd = home!.backend.open(
-      "/profile.txt",
-      O_WRONLY | O_CREAT | O_TRUNC,
-      0o644,
-    );
-    home!.backend.write(homeFd, homeData, null, homeData.length);
-    home!.backend.close(homeFd);
-    expect(
-      new TextDecoder().decode(readMountFile(home!.backend, "/profile.txt")),
-    ).toBe("profile scratch");
-    expect(() => tmp!.backend.stat("/profile.txt")).toThrow();
-  });
-
-  it("applies declared scratch root modes", async () => {
-    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
-      scratchSabBytes: tinyScratch,
-    });
-    const tmp = mounts.find((m) => m.mountPoint === "/tmp")!.backend as MemoryFileSystem;
-    const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!.backend as MemoryFileSystem;
-    const home = mounts.find((m) => m.mountPoint === "/home/maker")!.backend as MemoryFileSystem;
-    const root = mounts.find((m) => m.mountPoint === "/root")!.backend as MemoryFileSystem;
-    expect(tmp.stat("/").mode & 0o7777).toBe(0o1777);
-    expect(varTmp.stat("/").mode & 0o7777).toBe(0o1777);
-    expect(home.stat("/").uid).toBe(1000);
-    expect(home.stat("/").gid).toBe(1000);
-    expect(root.stat("/").mode & 0o7777).toBe(0o700);
-    expect(root.stat("/").uid).toBe(0);
-    expect(root.stat("/").gid).toBe(0);
-  });
-
-  it("adds the nobody group to legacy dinit images", async () => {
-    const legacyImage = await buildLegacyDinitImage();
-    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, legacyImage, {
-      scratchSabBytes: tinyScratch,
-    });
-    const root = mounts.find((m) => m.mountPoint === "/")!;
-    const group = new TextDecoder().decode(readMountFile(root.backend, "/etc/group"));
-    expect(group).toContain("nogroup:x:65534:");
-    expect(group).toContain("nobody:x:65534:");
-  });
-
-  it.each(["member", "cohort"] as const)(
-    "rejects a forged %s seal before browser scratch filesystems are allocated",
-    async (forgery) => {
-      const forgedImage = await buildForgedLegacyDinitImage(forgery);
-      const createSpy = vi.spyOn(MemoryFileSystem, "create");
-      const scratchFirst: MountSpec[] = [
-        { path: "/tmp", source: "scratch" },
-        { path: "/", source: "image" },
-      ];
-      try {
-        await expect(
-          resolveForBrowser(scratchFirst, forgedImage, {
-            scratchSabBytes: tinyScratch,
-          }),
-        ).rejects.toThrow(/activation (member|group)/);
-        expect(createSpy).not.toHaveBeenCalled();
-      } finally {
-        createSpy.mockRestore();
-      }
-    },
-  );
-
-  it("scratchSabBytes overrides apply per mount", async () => {
-    const explicit = {
-      "/tmp": 4 * 1024 * 1024,
-      "/var/log": 256 * 1024,
-    };
-    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
-      scratchSabBytes: { ...tinyScratch, ...explicit },
-    });
-    const tmp = mounts.find((m) => m.mountPoint === "/tmp")!.backend as MemoryFileSystem;
-    const log = mounts.find((m) => m.mountPoint === "/var/log")!.backend as MemoryFileSystem;
-    expect(tmp.sharedBuffer.byteLength).toBe(4 * 1024 * 1024);
-    expect(log.sharedBuffer.byteLength).toBe(256 * 1024);
-  });
+  // The resolvers do not authenticate or restore the image: the kernel serves
+  // `/` and authenticates the image when it loads it. That a refused image
+  // leaves no half-built machine behind is asserted in
+  // `node-kernel-init-refused-image.test.ts`.
 
   it("throws on duplicate mount paths", () => {
     const dup: MountSpec[] = [
@@ -858,76 +636,33 @@ describe("resolveForBrowser", () => {
   });
 });
 
-describe("image-backed rootfs reservation", () => {
-  let image: Uint8Array;
-  const tinyScratch = Object.fromEntries(
-    DEFAULT_MOUNT_SPEC.filter((m) => m.source === "scratch").map((m) => [
-      m.path,
-      256 * 1024,
-    ]),
-  );
+describe("filterMountSpecForKernelTmpfs", () => {
+  const spec: MountSpec[] = [
+    { path: "/", source: "image" },
+    ...KERNEL_TMPFS_OWNED_PREFIXES.map((path) => ({
+      path,
+      source: "scratch" as const,
+    })),
+    { path: "/run", source: "scratch" }, // host-owned; tmpfs never claims it
+  ];
 
-  beforeAll(async () => {
-    image = await buildFixtureImage();
+  it("unconditionally drops only the tmpfs-owned scratch mounts", () => {
+    // The in-kernel tmpfs is the unconditional authority for its scratch
+    // prefixes, so the resolver always drops them. The image root and the
+    // non-tmpfs `/run` scratch mount survive; every prefix the kernel serves is
+    // gone so the host materialises no backend that could shadow it.
+    const kept = filterMountSpecForKernelTmpfs(spec);
+    expect(kept.map((m) => m.path)).toEqual(["/", "/run"]);
+    for (const prefix of KERNEL_TMPFS_OWNED_PREFIXES) {
+      expect(kept.some((m) => m.path === prefix)).toBe(false);
+    }
   });
 
-  it("reserves the capacity the image records, not the host budget", () => {
-    // A SharedFS cannot grow past SB_MAX_SIZE_BLOCKS, so reserving the full
-    // 1 GiB budget for a small image buys no filesystem space at all — and on
-    // WebKit that unused ceiling is charged against a shared pool.
-    const capacity = MemoryFileSystem.readImageCapacity(image);
-    expect(capacity.maxByteLength).toBeLessThan(IMAGE_MEMFS_MAX_BYTES);
-    expect(imageMemfsReservationBytes(image, IMAGE_MEMFS_MAX_BYTES)).toBe(
-      capacity.maxByteLength,
-    );
-  });
-
-  it("clamps to the host budget when an image records more", () => {
-    const capacity = MemoryFileSystem.readImageCapacity(image);
-    const budget = Math.max(capacity.byteLength, capacity.maxByteLength - 4096);
-    expect(imageMemfsReservationBytes(image, budget)).toBe(budget);
-  });
-
-  it("never reserves below the bytes the image already occupies", () => {
-    const capacity = MemoryFileSystem.readImageCapacity(image);
-    expect(imageMemfsReservationBytes(image, 4096)).toBe(capacity.byteLength);
-  });
-
-  it("rejects a nonsense budget rather than reserving something arbitrary", () => {
-    expect(() => imageMemfsReservationBytes(image, 0)).toThrow(
-      /invalid image filesystem reservation budget/,
-    );
-    expect(() => imageMemfsReservationBytes(image, -1)).toThrow(
-      /invalid image filesystem reservation budget/,
-    );
-  });
-
-  it("gives the restored root mount exactly that reservation", async () => {
-    const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
-      scratchSabBytes: tinyScratch,
-    });
-    const root = mounts.find((m) => m.mountPoint === "/")!
-      .backend as MemoryFileSystem;
-    const buffer = root.sharedBuffer as SharedArrayBuffer & {
-      maxByteLength?: number;
-    };
-    expect(buffer.maxByteLength).toBe(
-      imageMemfsReservationBytes(image, IMAGE_MEMFS_MAX_BYTES),
-    );
-  });
-
-  it("honours a smaller budget threaded from the kernel worker config", async () => {
-    const capacity = MemoryFileSystem.readImageCapacity(image);
-    const budget = Math.max(capacity.byteLength, capacity.maxByteLength - 8192);
-    const mounts = await restoreBrowserKernelInitMounts(
-      image,
-      [{ path: "/", source: "image", readonly: false }],
-      budget,
-    );
-    const root = mounts[0]!.backend as MemoryFileSystem;
-    const buffer = root.sharedBuffer as SharedArrayBuffer & {
-      maxByteLength?: number;
-    };
-    expect(buffer.maxByteLength).toBe(budget);
+  it("preserves an image mount and a non-tmpfs scratch mount", () => {
+    const preserved: MountSpec[] = [
+      { path: "/", source: "image" },
+      { path: "/run", source: "scratch" },
+    ];
+    expect(filterMountSpecForKernelTmpfs(preserved)).toEqual(preserved);
   });
 });

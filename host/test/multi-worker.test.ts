@@ -3,13 +3,12 @@
 // Tests CentralizedKernelWorker process management and fork flow.
 import { describe, it, expect, vi } from "vitest";
 import {
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 import {
   type CentralizedKernelCallbacks,
   createCentralizedKernelWorkerTestDouble,
@@ -2026,9 +2025,10 @@ describe("CentralizedKernelWorker Process Management", () => {
   });
 
   it("releases a retained mmap handle before forced descriptor teardown", async () => {
-    const tempDirectory = mkdtempSync(
-      join(tmpdir(), "kandelo-mmap-teardown-"),
-    );
+    // The in-kernel tmpfs owns the scratch prefixes, and `os.tmpdir()` can
+    // resolve under `/tmp`, so stage the host-backed file outside every
+    // scratch prefix to map a real host file through NodePlatformIO.
+    const tempDirectory = makeHostScratchTempRoot("kandelo-mmap-teardown-");
     const filePath = join(tempDirectory, "mapped.bin");
     writeFileSync(filePath, new Uint8Array(4096).fill(0x41));
     const io = new NodePlatformIO();

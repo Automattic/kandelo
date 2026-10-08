@@ -3,18 +3,19 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "../../../../host/test/centralized-test-helper";
 
 /*
  * rsvg-convert, librsvg's command-line converter (a Rust program), turns
@@ -65,7 +66,7 @@ beforeAll(() => {
   programPath = join(resolved.trim().split("\n").pop()!, "rsvg-convert.wasm");
   expect(existsSync(programPath), programPath).toBe(true);
 
-  workDir = mkdtempSync(join(tmpdir(), "rsvg-convert-"));
+  workDir = makeHostScratchTempRoot("rsvg-convert-");
   const fontDir = join(workDir, "fonts");
   mkdirSync(fontDir);
   mkdirSync(join(workDir, "cache"));

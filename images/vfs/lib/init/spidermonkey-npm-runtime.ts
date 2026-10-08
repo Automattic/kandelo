@@ -1,4 +1,4 @@
-import type { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDirRecursive,
   symlink,
@@ -103,7 +103,7 @@ function isCidrV6(value) {
 module.exports = { v4: isCidrV4, v6: isCidrV6 };
 `;
 
-export function stageSpiderMonkeyNpmRuntime(fs: MemoryFileSystem): void {
+export function stageSpiderMonkeyNpmRuntime(fs: VfsImageFilesystem): void {
   ensureDirRecursive(fs, "/bin");
   ensureDirRecursive(fs, "/usr/bin");
   ensureDirRecursive(fs, "/usr/local/bin");
@@ -122,7 +122,7 @@ export function stageSpiderMonkeyNpmRuntime(fs: MemoryFileSystem): void {
   symlink(fs, "/usr/bin/npx", "/usr/local/bin/npx");
 }
 
-export function patchNpmForSpiderMonkey(fs: MemoryFileSystem): void {
+export function patchNpmForSpiderMonkey(fs: VfsImageFilesystem): void {
   patchVfsText(fs, "/usr/local/lib/npm/lib/utils/display.js", [
     [
       `const [{ Chalk }, { createSupportsColor }] = await Promise.all([
@@ -155,7 +155,7 @@ export function patchNpmForSpiderMonkey(fs: MemoryFileSystem): void {
 }
 
 function patchVfsText(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: string,
   replacements: Array<[from: string, to: string, probe: string]>,
 ): void {
@@ -172,7 +172,7 @@ function patchVfsText(
   if (changed) writeVfsFile(fs, path, source, 0o644);
 }
 
-function readVfsText(fs: MemoryFileSystem, path: string): string {
+function readVfsText(fs: VfsImageFilesystem, path: string): string {
   const stat = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 import { devServerAssetUrl } from "./support/dev-server-assets";
@@ -11,7 +12,8 @@ import {
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const modulePaths = {
   browserKernel: resolve(repoRoot, "host/src/browser-kernel-host.ts"),
-  memoryFs: resolve(repoRoot, "host/src/vfs/memory-fs.ts"),
+  imageFsModule: resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts"),
+  imageModuleWasm: resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm"),
   experimentalTerminalSession: resolve(
     repoRoot,
     "web-libs/kandelo-session/src/experimental-terminal-session.ts",
@@ -61,7 +63,8 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       experimentalTerminalSessionUrl,
       kernelUrl,
       loginUrl,
-      memoryFsUrl,
+      imageFsModuleUrl,
+      imageModuleBytes,
       password,
       passwordHash,
       sessionHostUrl,
@@ -72,8 +75,8 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const {
         experimentalTerminalSessionPolicy,
@@ -93,9 +96,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         fetchBytes(loginUrl),
         fetchBytes(credentialsUrl),
       ]);
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(16 * 1024 * 1024),
-      );
+      const fs = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
       for (const path of [
         "/etc",
         "/bin",
@@ -378,7 +379,8 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       ),
       kernelUrl: await devServerAssetUrl(page, "@kernel-wasm"),
       loginUrl: asViteFsUrl(loginWasm),
-      memoryFsUrl: asViteFsUrl(modulePaths.memoryFs),
+      imageFsModuleUrl: asViteFsUrl(modulePaths.imageFsModule),
+      imageModuleBytes: Array.from(readFileSync(modulePaths.imageModuleWasm)),
       password: DEMO_LOGIN_PASSWORD,
       passwordHash: DEMO_LOGIN_PASSWORD_HASH,
       sessionHostUrl: asViteFsUrl(modulePaths.sessionHost),

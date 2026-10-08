@@ -4,7 +4,7 @@ import { ABI_VERSION } from "../../../../host/src/generated/abi";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import type { HostDiagnostic } from "../../../../host/src/host-diagnostic";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -22,9 +22,10 @@ async function createScriptedServiceImage(
   createdBy: string,
   malformedRestart = false,
 ): Promise<Uint8Array> {
-  const maxBytes = 32 * 1024 * 1024;
-  const sab = new SharedArrayBuffer(maxBytes, { maxByteLength: maxBytes });
-  const fs = MemoryFileSystem.create(sab, maxBytes);
+  // The producer that writes every shipped image. A service image this test
+  // boots a kernel from should be the kind of image a kernel meets.
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(32 * 1024 * 1024);
   for (const dir of ["/bin", "/var", "/home", "/root", "/srv"]) {
     ensureDirRecursive(fs, dir);
   }

@@ -1,4 +1,4 @@
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import { findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   loadTrackedDemoConfig,
@@ -21,6 +21,6 @@ export function loadMainShellDemoConfig(
   return loadTrackedDemoConfig(MAIN_SHELL_DEMO_CONFIG_SOURCE, repoRoot);
 }
 
-export function writeMainShellDemoConfig(fs: MemoryFileSystem): void {
+export function writeMainShellDemoConfig(fs: VfsImageFilesystem): void {
   writeTrackedDemoConfig(fs, MAIN_SHELL_DEMO_CONFIG_SOURCE);
 }

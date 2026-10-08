@@ -3,11 +3,12 @@ import { installBrowserSetImmediatePolyfill } from "@host/browser-immediate-poly
 import { BrowserWorkerAdapter } from "@host/worker-adapter-browser";
 import { detectPtrWidth, extractHeapBase } from "@host/constants";
 import { LocalVirtualNetwork } from "@host/networking/virtual-network";
-import { DeviceFileSystem } from "@host/vfs/device-fs";
-import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { BrowserTimeProvider } from "@host/vfs/time";
 import { DEFAULT_MOUNT_SPEC, resolveForBrowser } from "@host/vfs/default-mounts";
 import { VirtualPlatformIO } from "@host/vfs/vfs";
+import { configureRootfsOverlayFromImage } from "@host/process-lifecycle";
+import { imageReadFromContainer } from "@host/vfs/rootfs-lazy-archives";
+import { maybeDecompressImage } from "@host/vfs/vfs-image-transport";
 import type { PlatformIO } from "@host/types";
 import type { CentralizedWorkerInitMessage, WorkerToHostMessage } from "@host/worker-protocol";
 import type { WorkerHandle } from "@host/worker-adapter";
@@ -16,7 +17,6 @@ import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "@host/worker-entry-browser.ts?worker&url";
 import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
 import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
-import { bindImageOwnedRuntimeUrls } from "../../lib/init/image-owned-runtime-urls";
 import {
   createPagesVfsProductLoader,
   type PagesVfsProductEntry,
@@ -120,12 +120,12 @@ async function loadActivatedRootfs(): Promise<ArrayBuffer> {
   const activation = await CANONICAL_PAGES_VFS_LOADER!.activate(
     "platform-rootfs",
   );
-  const fs = MemoryFileSystem.fromImage(new Uint8Array(activation.imageBytes));
-  // The network worker mounts image bytes directly, so it must consume the
-  // same authenticated activation authority as the main image assembler.
-  bindImageOwnedRuntimeUrls(fs, activation.lazyAssets);
-  const image = await fs.saveImage();
-  return image.slice().buffer;
+  // The activation's bytes, unchanged: the image's lazy addresses are never
+  // rewritten host-side, so its deferred entries reach the kernel exactly as
+  // the image writer sealed them. The other branch of `loadArtifacts` fetches
+  // `rootfsVfsUrl` and hands it over as written, so both branches have the
+  // same shape.
+  return activation.imageBytes.slice(0) as ArrayBuffer;
 }
 
 function createProcessMemory(ptrWidth: 4 | 8, initialPages = 17): WebAssembly.Memory {
@@ -160,15 +160,11 @@ async function createMachineIO(
   machineId: MachineId,
   address: [number, number, number, number],
 ): Promise<PlatformIO> {
-  const mounts = [
-    {
-      mountPoint: "/dev/shm",
-      backend: MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024)),
-      nosuid: true,
-    },
-    { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
-    ...await resolveForBrowser(DEFAULT_MOUNT_SPEC, rootfs),
-  ];
+  // NO HOST `/dev/shm` or `/dev`. The in-kernel tmpfs serves `/dev/shm` (POSIX
+  // shared memory) along with every other scratch prefix, and the kernel's
+  // devfs owns `/dev`, so a host backend at either would be a SECOND AUTHORITY
+  // the kernel never consults.
+  const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, rootfs);
   const io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
   io.network = network.attachMachine({ id: machineId, address, hostnames: [machineId] });
   return io;
@@ -242,6 +238,20 @@ async function runProgram(
     },
   });
 
+  // The kernel owns `/`: hand it the rootfs image (decoded, since zstd is a
+  // host-side transport codec) and the byte pipe for the deferred files the
+  // image only names, before `init` loads them. This is the same handoff the
+  // browser kernel worker makes for BrowserKernel machines. Relative lazy
+  // addresses resolve against the deployment base at fetch time.
+  const rootfsImage = maybeDecompressImage(artifacts.rootfs);
+  configureRootfsOverlayFromImage(kernelWorker, {
+    imageRead: imageReadFromContainer(rootfsImage),
+    imageBytes: rootfsImage,
+    foreignPrefixes: [],
+    nosuid: false,
+    lazyFetcher: (url) => fetch(url),
+    lazyUrlBase: import.meta.env.BASE_URL,
+  });
   await kernelWorker.init(artifacts.kernel);
 
   const memory = createProcessMemory(ptrWidth);

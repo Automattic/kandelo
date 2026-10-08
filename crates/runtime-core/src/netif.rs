@@ -192,54 +192,6 @@ mod tests {
     }
 
     impl HostIO for FakeHost {
-        fn host_open(&mut self, _: &[u8], _: u32, _: u32) -> Result<i64, wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_stat(&mut self, _: &[u8]) -> Result<wasm_posix_shared::WasmStat, wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_lstat(&mut self, _: &[u8]) -> Result<wasm_posix_shared::WasmStat, wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_mkdir(&mut self, _: &[u8], _: u32) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_rmdir(&mut self, _: &[u8]) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_unlink(&mut self, _: &[u8]) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_rename(&mut self, _: &[u8], _: &[u8]) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_link(&mut self, _: &[u8], _: &[u8]) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_symlink(&mut self, _: &[u8], _: &[u8]) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_readlink(&mut self, _: &[u8], _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_chmod(&mut self, _: &[u8], _: u32) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_chown(&mut self, _: &[u8], _: u32, _: u32) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_access(&mut self, _: &[u8], _: u32) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_opendir(&mut self, _: &[u8]) -> Result<i64, wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_closedir(&mut self, _: i64) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_utimensat(&mut self, _: &[u8], _: i64, _: i64, _: i64, _: i64) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
         fn host_close(&mut self, _: i64) -> Result<(), wasm_posix_shared::Errno> {
             unimplemented!()
         }

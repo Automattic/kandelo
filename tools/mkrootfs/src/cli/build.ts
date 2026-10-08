@@ -30,7 +30,8 @@ Options:
   --help                 print this message
 
 Environment:
-  SOURCE_DATE_EPOCH      canonical inode timestamp in whole Unix seconds (default: 0)
+  SOURCE_DATE_EPOCH      canonical inode timestamp in whole Unix seconds
+                         (default: Kandelo's reference instant, 1772944691)
 `;
 
 interface ParsedArgs {
@@ -277,7 +278,7 @@ export async function runBuild(args: string[]): Promise<number> {
   // /vfs-image-helpers.ts, which requires that suffix). Honouring it here lets
   // the canonical rootfs ship compressed like its peers instead of being the
   // one product published raw. Level 19 costs build time only — decompression
-  // speed does not vary with level — and `MemoryFileSystem.fromImage()`
+  // speed does not vary with level — and `KandeloImageFs.loadImage()`
   // detects the zstd frame magic, so no consumer needs to know which it got.
   const encoded = parsed.output.endsWith(".zst")
     ? zstdCompressSync(image, {

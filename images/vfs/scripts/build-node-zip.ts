@@ -12,7 +12,7 @@
  * rewritten to CommonJS shims — a documented compatibility workaround at that
  * platform boundary, tracked for removal once the embedding grows real ESM
  * resolution). Rather than duplicate that fragile glue, this reuses the shared
- * `walkAndWrite` + `stageSpiderMonkeyNpmRuntime` on a MemoryFileSystem and
+ * `walkAndWrite` + `stageSpiderMonkeyNpmRuntime` on a `KandeloImageFs` and
  * then exports the /usr subtree to a deterministic zip.
  *
  *   build-node-zip.ts <node.wasm> <npm-source-dir> <output.zip>
@@ -29,7 +29,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { FILE_MODES, OPEN_FLAGS } from "../../../host/src/generated/abi";
 import { walkAndWrite, writeVfsBinary } from "./vfs-image-helpers";
 import { ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
@@ -46,7 +46,11 @@ if (!nodeWasmPath || !npmSourceDir || !outputZip) {
 }
 
 // A memfs large enough for node.wasm (~29 MB) plus the npm dist (~15 MB).
-const fs = MemoryFileSystem.create(new SharedArrayBuffer(160 * 1024 * 1024));
+const fs = KandeloImageFs.create();
+// The declared capacity the product's publication gate checks the artifact
+// against. The SharedArrayBuffer it used to come from was never anything but
+// the old constructor's first argument.
+fs.setImageCapacity(160 * 1024 * 1024);
 ensureDirRecursive(fs, "/usr/bin");
 ensureDirRecursive(fs, "/usr/local/lib");
 // The browser kernel worker writes the MITM CA cert here on init; npm reads it

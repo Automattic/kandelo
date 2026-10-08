@@ -70,6 +70,17 @@ const RESOLVED_PROGRAM_FIXTURES = [
     ),
   },
   {
+    // Recompiled from source so the no-grow and close-after-mmap writeback
+    // checks of the kernel-owned-file fd-writeback bridge always run against
+    // the current source, not a stale prebuilt binary.
+    arch: "wasm32",
+    src: join(repoRoot, "programs/mmap_shared_test.c"),
+    out: join(
+      repoRoot,
+      "local-binaries/programs/wasm32/mmap_shared_test.wasm",
+    ),
+  },
+  {
     arch: "wasm64",
     src: join(repoRoot, "programs/scm-rights-semantics.c"),
     out: join(

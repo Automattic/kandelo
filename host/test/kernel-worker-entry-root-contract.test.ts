@@ -40,6 +40,18 @@ const FORBIDDEN_WORKER_MEMBERS = new Set([
   "tcpScratchRegion",
 ]);
 
+// Shared helpers an entry may hand `kernelWorker` to. Each is declared in
+// `process-lifecycle.ts` (so both entries share one implementation) and takes
+// the worker as a `CentralizedKernelWorker` parameter it uses only through
+// public ingress: `configureRootfsOverlayFromImage` calls
+// `configureRootfsOverlay`, and `readRootfsFileWithRetry` calls
+// `rootfsReadFile`. The last test below pins the declarations, so a helper
+// cannot join this list without living where both entries share it.
+const REVIEWED_KERNEL_WORKER_HELPERS = new Set([
+  "configureRootfsOverlayFromImage",
+  "readRootfsFileWithRetry",
+]);
+
 type Finding = {
   readonly line: number;
   readonly message: string;
@@ -149,6 +161,10 @@ function auditEntrySource(sourceText: string, fileName: string): Finding[] {
     if (
       ts.isCallExpression(node)
       && node.arguments.some((argument) => isKernelWorker(argument))
+      && !(
+        ts.isIdentifier(node.expression)
+        && REVIEWED_KERNEL_WORKER_HELPERS.has(node.expression.text)
+      )
     ) {
       report(
         node,
@@ -240,5 +256,37 @@ describe("kernel worker entry-root authority contract", () => {
 
     expect(callbackSets[0]).toEqual([...REQUIRED_KERNEL_CALLBACKS]);
     expect(callbackSets[1]).toEqual(callbackSets[0]);
+  });
+
+  it("declares every reviewed kernelWorker helper in the shared lifecycle", () => {
+    const url = new URL("../src/process-lifecycle.ts", import.meta.url);
+    const source = ts.createSourceFile(
+      url.pathname,
+      readFileSync(url, "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const declared = new Map<string, string | undefined>();
+    for (const statement of source.statements) {
+      if (
+        ts.isFunctionDeclaration(statement)
+        && statement.name !== undefined
+        && statement.modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+        )
+      ) {
+        declared.set(
+          statement.name.text,
+          statement.parameters[0]?.type?.getText(source),
+        );
+      }
+    }
+    for (const helper of REVIEWED_KERNEL_WORKER_HELPERS) {
+      expect(
+        declared.get(helper),
+        `${helper} must be exported from process-lifecycle.ts and take a CentralizedKernelWorker`,
+      ).toBe("CentralizedKernelWorker");
+    }
   });
 });
