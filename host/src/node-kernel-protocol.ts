@@ -88,9 +88,20 @@ export interface InitMessage {
   enableTcpNetwork?: boolean;
 }
 
+/** Read, cancel or release one worker-owned command family. */
+export interface OwnedJobMessage {
+  type: "read_owned_job" | "cancel_owned_job" | "release_owned_job";
+  requestId: number;
+  jobId: string;
+  offset?: number;
+  limit?: number;
+}
+
 export interface SpawnMessage {
   type: "spawn";
   requestId: number;
+  /** Own this process and its descendants as one cancellable command family. */
+  ownedJob?: { id: string; timeoutMs: number };
   /**
    * Supply exactly one program source. `programPath` resolves inside the
    * worker-owned VFS and is the Node peer of BrowserKernel.spawnFromVfs().
@@ -223,6 +234,25 @@ export interface ExportRootfsImageMessage {
 /** Read one regular file through the worker-owned VFS. */
 export interface ReadVfsFileMessage {
   type: "read_vfs_file";
+  requestId: number;
+  path: string;
+}
+
+export interface VfsDirEntry {
+  name: string;
+  /** Linux `d_type` of the entry as the backing store reported it. */
+  type: number;
+  mode: number;
+  size: number;
+  uid: number;
+  gid: number;
+  /** Link target when the entry is a symlink. */
+  target?: string;
+}
+
+/** List one directory through the worker-owned VFS. */
+export interface ReadVfsDirMessage {
+  type: "read_vfs_dir";
   requestId: number;
   path: string;
 }
@@ -445,7 +475,9 @@ export type MainToKernelMessage =
   | ClipboardOfferMessage
   | ClipboardGuestWaitMessage
   | ReadVfsFileMessage
+  | ReadVfsDirMessage
   | WriteVfsFileMessage
+  | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | GetWasmModuleCacheStatsRequestMessage

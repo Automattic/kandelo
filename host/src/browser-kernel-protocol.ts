@@ -113,7 +113,7 @@ export interface InitMessage {
 }
 
 export interface OwnedJobMessage {
-  type: "read_owned_job" | "cancel_owned_job";
+  type: "read_owned_job" | "cancel_owned_job" | "release_owned_job";
   requestId: number;
   jobId: string;
   offset?: number;

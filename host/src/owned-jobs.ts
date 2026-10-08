@@ -1,3 +1,22 @@
+import { KernelReentrantEntryError } from './kernel-entry-gate';
+
+type OwnedJobStatus = 'running' | 'cancelling' | 'cancelled' | 'timed_out' | 'completed';
+
+/** One read of a job. A cursor older than the retained tail has expired. */
+export type OwnedJobRead =
+  | { expired: true; oldest: number }
+  | {
+      expired: false;
+      pid: number;
+      status: OwnedJobStatus;
+      exitCode: number | null;
+      terminationObserved: boolean;
+      chunks: Array<{ stream: 'stdout' | 'stderr'; bytes: Uint8Array }>;
+      next: number;
+      hasMore: boolean;
+      truncated: boolean;
+    };
+
 /** Worker-owned command families. Ownership survives exec, reparenting and setsid. */
 export class OwnedJobs {
   private jobs = new Map<string, {
@@ -7,7 +26,7 @@ export class OwnedJobs {
     start: number; end: number; timer: ReturnType<typeof setTimeout>;
   }>();
   private owners = new Map<number, string>();
-  constructor(private kill: (pid: number) => void, private retainedBytes = 256 * 1024, private reap: (pids: ReadonlySet<number>) => void = () => {}) {}
+  constructor(private kill: (pid: number) => void, private retainedBytes = 256 * 1024, private reap: (pids: ReadonlySet<number>) => void = () => {}, private fail: (error: unknown) => void = () => {}) {}
 
   create(id: string, pid: number, timeoutMs: number) {
     if (this.jobs.has(id)) throw new Error('Job ID already exists');
@@ -28,6 +47,7 @@ export class OwnedJobs {
     const id = this.owners.get(pid);
     if (!id) return;
     const job = this.jobs.get(id)!;
+    if (!job.members.has(pid)) return;
     if (pid === job.root) job.exitCode = status;
     job.members.delete(pid);
     if (!job.members.size) clearTimeout(job.timer);
@@ -48,12 +68,17 @@ export class OwnedJobs {
       // No live parent can still need waitpid's exit status. Keep the complete
       // family until here, including children that exited before their parent.
       this.reap(job.family);
-      job.cleaned = true;
-      for (const pid of job.family) this.owners.delete(pid);
-    } catch {
-      // Kernel entry contention must not turn signal delivery into completion.
-      job.timer = setTimeout(() => this.cleanup(id), 10);
+    } catch (error) {
+      if (error instanceof KernelReentrantEntryError) {
+        // Kernel entry contention must not turn signal delivery into completion.
+        job.timer = setTimeout(() => this.cleanup(id), 10);
+        return;
+      }
+      // Every member has exited and detached; only the kernel's process entries remain.
+      this.fail(error);
     }
+    job.cleaned = true;
+    for (const pid of job.family) this.owners.delete(pid);
   }
   output(pid: number, stream: 'stdout' | 'stderr', bytes: Uint8Array) {
     const id = this.owners.get(pid);
@@ -87,10 +112,10 @@ export class OwnedJobs {
     };
     drain();
   }
-  read(id: string, offset?: number, limit = 4096) {
+  read(id: string, offset?: number, limit = 4096): OwnedJobRead {
     const job = this.require(id);
     const cursor = offset ?? job.start;
-    if (cursor < job.start) return { expired: true as const, oldest: job.start };
+    if (cursor < job.start) return { expired: true, oldest: job.start };
     if (!Number.isSafeInteger(cursor) || cursor > job.end) throw new Error('INVALID_CURSOR');
     const chunks: Array<{ stream: 'stdout' | 'stderr'; bytes: Uint8Array }> = [];
     let pos = job.start, remaining = limit;
@@ -102,7 +127,22 @@ export class OwnedJobs {
       if (!remaining) break;
     }
     const next = cursor + limit - remaining;
-    return { expired: false as const, pid: job.root, status: !job.cleaned ? (job.reason ? 'cancelling' : 'running') : job.reason ?? 'completed', exitCode: job.exitCode, terminationObserved: job.cleaned, chunks, next, hasMore: next < job.end, truncated: offset === undefined && job.start > 0 };
+    return { expired: false, pid: job.root, status: !job.cleaned ? (job.reason ? 'cancelling' : 'running') : job.reason ?? 'completed', exitCode: job.exitCode, terminationObserved: job.cleaned, chunks, next, hasMore: next < job.end, truncated: offset === undefined && job.start > 0 };
+  }
+  /** Forget a finished job's record and free its slot. Throws while the family is live. */
+  release(id: string) {
+    const job = this.require(id);
+    if (!job.cleaned) throw new Error('JOB_RUNNING');
+    clearTimeout(job.timer);
+    this.jobs.delete(id);
+  }
+  /** Forget the job whose root never launched. No member ran, so the refused start keeps no slot. */
+  abandon(root: number) {
+    const id = this.owners.get(root);
+    if (!id || this.jobs.get(id)!.root !== root) return;
+    clearTimeout(this.jobs.get(id)!.timer);
+    this.jobs.delete(id);
+    this.owners.delete(root);
   }
   private require(id: string) {
     const job = this.jobs.get(id);
