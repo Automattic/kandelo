@@ -1,16 +1,15 @@
 import { expect, it } from 'vitest';
-import type { BrowserKernel } from '../src/browser-kernel-host';
 import type { VfsDirEntry } from '../src/browser-kernel-protocol';
 import type { KernelHost } from '../../web-libs/kandelo-session/src/kernel-host';
-import { listGuestDirectory, setWebMcpRuntime } from '../../apps/browser-demos/pages/kandelo/webmcp/runtime';
+import { listGuestDirectory, setWebMcpSession } from '../../apps/browser-demos/pages/kandelo/webmcp/runtime';
 
 function runningHost(entries: VfsDirEntry[] | null) {
   const host = {
     getStatus: () => 'running',
     subscribeStatus: () => () => {},
+    readVfsDir: async () => entries,
   } as unknown as KernelHost;
-  const kernel = { readDirFromVfs: async () => entries } as unknown as BrowserKernel;
-  setWebMcpRuntime(host, kernel);
+  setWebMcpSession(host, { uid: 1000, gid: 1000, env: [] });
   return host;
 }
 
