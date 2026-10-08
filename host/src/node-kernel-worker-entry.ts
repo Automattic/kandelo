@@ -74,6 +74,7 @@ import {
 } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
+  DIRENT_TYPES,
   FILE_MODES,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
@@ -148,6 +149,7 @@ import type {
   TerminateProcessMessage,
   HttpRequestMessage,
 } from "./node-kernel-protocol";
+import { OwnedJobs } from "./owned-jobs";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import { createDestroyProgressReporter } from "./destroy-progress-reporter";
 import {
@@ -660,7 +662,18 @@ function finalizeUnexpectedWorkerError(
   void finalizeProcessWorker(pid, worker, exitStatus, signum);
 }
 
+const ownedJobs = new OwnedJobs(pid => {
+  // A committed child can still be awaiting its Worker; let launch settle first.
+  if (processes.has(pid)) kernelWorker.signalProcess(pid, 9);
+}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => reportHostDiagnostic({
+  pid: 0,
+  source: "owned job reap",
+  message: `[node-kernel-worker] failed to reap an exited owned job family: ${error instanceof Error ? error.message : String(error)}`,
+}));
+
 function post(msg: KernelToMainMessage) {
+  if (msg.type === "stdout" || msg.type === "stderr") ownedJobs.output(msg.pid, msg.type, msg.data);
+  if (msg.type === "exit") ownedJobs.exited(msg.pid, msg.status);
   port.postMessage(msg);
 }
 
@@ -1050,6 +1063,7 @@ async function handleInit(msg: InitMessage) {
         continuation,
         borrowedReplay,
       }) => {
+        ownedJobs.inherit(parentPid, childPid);
         const launch = (releaseCreatorAdmission?: () => void) => {
           // Notify the main thread of every kernel-side process event so
           // Inspector-style UIs (Kandelo) can refresh their process table
@@ -1070,7 +1084,7 @@ async function handleInit(msg: InitMessage) {
             releaseCreatorAdmission,
           );
         };
-        return mode === PROCESS_FORK_MODE_VFORK
+        return (mode === PROCESS_FORK_MODE_VFORK
           ? processMemoryCreators.runUntilCommitted(
               "a vfork process Worker",
               (commit) => launch(commit),
@@ -1078,7 +1092,7 @@ async function handleInit(msg: InitMessage) {
           : processMemoryCreators.run(
               "a fork process Worker",
               () => launch(),
-            );
+            )).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
       },
       onExec: async (request) => {
         const creatorAdmission = processMemoryCreators.acquire(
@@ -1160,11 +1174,13 @@ async function handleInit(msg: InitMessage) {
         }
       },
       onResolveSpawn: handlePosixSpawnResolve,
-      onSpawn: (parentPid, childPid, program, envp) =>
-        processMemoryCreators.run(
+      onSpawn: (parentPid, childPid, program, envp) => {
+        ownedJobs.inherit(parentPid, childPid);
+        return processMemoryCreators.run(
           "a posix_spawn process Worker",
           () => handlePosixSpawn(parentPid, childPid, program, envp),
-        ),
+        ).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
+      },
       onClone: (attachment) => processMemoryCreators.run(
         "a pthread Worker",
         () => handleClone(attachment),
@@ -1299,6 +1315,7 @@ async function handleSpawn(msg: SpawnMessage) {
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     );
     createdPid = pid;
+    if (msg.ownedJob) ownedJobs.create(msg.ownedJob.id, pid, msg.ownedJob.timeoutMs);
     const ptrWidth = detectPtrWidth(programBytes);
     const {
       memory,
@@ -1468,6 +1485,7 @@ async function handleSpawn(msg: SpawnMessage) {
         }
       }
     }
+    if (createdPid !== undefined && !processes.has(createdPid)) ownedJobs.abandon(createdPid);
     respondError(msg.requestId, String(e));
   } finally {
     releaseMutation?.();
@@ -3299,6 +3317,8 @@ async function finishProcessExit(
           (error instanceof Error ? error.message : String(error)),
       });
     }
+    // Exit was published earlier; completion also requires exact detachment.
+    ownedJobs.detached(pid);
   })();
   processTeardowns.set(expectedWorker, teardown);
 
@@ -3379,6 +3399,11 @@ async function handleTerminate(msg: TerminateProcessMessage) {
         `failed to detach exact process generation for pid ${pid}`,
       );
       return;
+    }
+    // A forced terminate posts no exit. A superseded pid belongs to its exec successor.
+    if (detachResult.detachDisposition === "removed-or-absent") {
+      ownedJobs.exited(pid, msg.status);
+      ownedJobs.detached(pid);
     }
   } else {
     try {
@@ -3935,6 +3960,29 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "write_vfs_file":
       handleWriteVfsFile(msg);
+      break;
+    case "read_owned_job":
+    case "cancel_owned_job":
+      try {
+        if (msg.type === "cancel_owned_job") ownedJobs.cancel(msg.jobId);
+        respond(msg.requestId, ownedJobs.read(msg.jobId, msg.offset, msg.limit));
+      } catch (error) {
+        respondError(
+          msg.requestId,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      break;
+    case "release_owned_job":
+      try {
+        ownedJobs.release(msg.jobId);
+        respond(msg.requestId, true);
+      } catch (error) {
+        respondError(
+          msg.requestId,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
       break;
     case "signal_process": {
       try {

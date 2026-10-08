@@ -172,9 +172,20 @@ export interface InitMessage {
   enableTcpNetwork?: boolean;
 }
 
+/** Read, cancel or release one worker-owned command family. */
+export interface OwnedJobMessage {
+  type: "read_owned_job" | "cancel_owned_job" | "release_owned_job";
+  requestId: number;
+  jobId: string;
+  offset?: number;
+  limit?: number;
+}
+
 export interface SpawnMessage {
   type: "spawn";
   requestId: number;
+  /** Own this process and its descendants as one cancellable command family. */
+  ownedJob?: { id: string; timeoutMs: number };
   /**
    * Supply exactly one program source. `programPath` resolves inside the
    * worker-owned VFS and is the Node peer of BrowserKernel.spawnFromVfs().
@@ -325,6 +336,7 @@ export type MainToKernelMessage =
   | ReadVfsDirMessage
   | StatVfsPathMessage
   | WriteVfsFileMessage
+  | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
