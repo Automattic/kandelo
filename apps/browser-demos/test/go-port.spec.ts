@@ -73,6 +73,12 @@ const probes: Probe[] = [
     stdout: ["locked worker affinity: complete"],
   },
   {
+    name: "locked M exits and reuses thread slots across twelve rounds",
+    file: "locked-exit.wasm",
+    argv: ["go-locked-exit"],
+    stdout: ["locked worker exit and slot reuse: complete"],
+  },
+  {
     name: "process exit from a worker M",
     file: "exit-worker.wasm",
     argv: ["go-exit-worker"],

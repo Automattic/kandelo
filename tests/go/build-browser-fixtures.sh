@@ -29,5 +29,6 @@ build_probe scheduler scheduler
 build_probe scheduler exit-worker ./exit-worker
 build_probe scheduler concurrent-clone ./concurrent-clone
 build_probe scheduler locked-thread ./locked-thread
+build_probe scheduler locked-exit ./locked-exit
 
 printf 'Go browser fixtures built in %s\n' "$output_dir"
