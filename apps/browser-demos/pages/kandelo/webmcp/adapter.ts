@@ -1,11 +1,9 @@
 import { getPreviewProgress } from "../panes/preview-progress";
 import type { DmesgLine, GalleryItem, KernelHost, PtyHandle } from '../../../../../web-libs/kandelo-session/src/kernel-host';
 import type { ShellTerminal } from '../panes/Shell';
-import { descriptorFromGalleryItem } from '../gallery-descriptor';
 import { galleryItemUrl } from '../url-state';
-import { encodeBootDescriptor, HARD_CAPS } from '../../../../../web-libs/kandelo-session/src/boot-descriptor';
-import { createInlineBootInput } from '../../../../../web-libs/kandelo-session/src/boot-inputs';
 import { contracts, guestPath, ToolError, type Schema } from './contract';
+import { buildLaunchLink } from './launch-link';
 import { modelContextOf } from './model-context';
 import { builtInTool, objectSchema, registerTool } from './registry';
 import { getWebMcpRuntimeCapabilities, listGuestDirectory, startGuestJob, readGuestJob, readGuestFile, writeGuestFile } from './runtime';
@@ -324,18 +322,9 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
       }
       case 'create_launch_link': {
         const item = args.profileId === undefined ? undefined : await resolvedProfile(args.profileId as string);
-        let descriptor = item ? descriptorFromGalleryItem(item, host.getBootDescriptor()) : host.getBootDescriptor();
-        if (item) descriptor = { ...descriptor, boot: { ...descriptor.boot, inputs: undefined, parameters: undefined } };
-        const url = new URL(item ? galleryItemUrl(item) : location.href);
-        if (args.startupScript !== undefined) {
-          const script = args.startupScript as string;
-          const bytes = encoder.encode(script.endsWith('\n') ? script : `${script}\n`);
-          if (bytes.length > HARD_CAPS.maxInlineInflatedInputBytes) throw new ToolError('LIMIT_EXCEEDED', 'Startup script exceeds inline inflated input limit');
-          descriptor = { ...descriptor, boot: { ...descriptor.boot, inputs: [await createInlineBootInput({ id: 'script', filename: 'kandelo-link.sh', bytes, compression: 'gzip' })], parameters: { runScript: 'script', runScriptShell: 'bash' } } };
-        }
-        url.hash = (await encodeBootDescriptor(descriptor)).fragment;
+        const link = await buildLaunchLink(host.getBootDescriptor(), item, item ? galleryItemUrl(item) : location.href, args.startupScript as string | undefined);
         checkSignal(signal); sameGeneration(current);
-        return { url: url.href, sizeBytes: encoder.encode(url.href).length, reproduces: 'Boot configuration and encoded startup inputs only; no modified files, processes or terminal state.' };
+        return link;
       }
       default: throw new ToolError('UNKNOWN_TOOL', name);
     }
