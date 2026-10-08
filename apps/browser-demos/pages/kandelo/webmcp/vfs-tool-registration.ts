@@ -1,6 +1,7 @@
 import type { KernelHost, VfsChangeEvent, VfsDirent } from "../kernel-host";
 import type { ModelContext } from "./model-context";
 import { imageTool, registerTool } from "./registry";
+import { announceGuestScript, runGuestScript, type GuestScriptResult } from "./runtime";
 import {
   VFS_TOOLS_DIRS,
   parseVfsTool,
@@ -9,16 +10,21 @@ import {
   type VfsTool,
 } from "./vfs-tools";
 
+/** Every image-declared command is cancelled after this long; the worker enforces it. */
+const VFS_TOOL_TIMEOUT_MS = 30_000;
+
 /**
  * Register every tool file under {@link VFS_TOOLS_DIRS}, then keep the
  * registrations in step with those directories until `signal` aborts. Changes
  * are applied one at a time in the order the VFS reported them; a tool whose
- * file no longer parses is unregistered and the error is logged.
+ * file no longer parses is unregistered and the error is logged. `terminal`
+ * names the PTY path a tool call is announced on, or null for none.
  */
 export async function registerVfsTools(
   host: KernelHost,
   context: ModelContext,
   signal: AbortSignal,
+  terminal: () => string | null,
 ): Promise<void> {
   const registrations = new Map<string, AbortController>();
   let queue: Promise<void> = Promise.resolve();
@@ -36,7 +42,7 @@ export async function registerVfsTools(
       tool.name,
       tool.description,
       tool.inputSchema,
-      (args, callSignal) => runVfsTool(host, tool, args, callSignal),
+      (args, callSignal) => runVfsTool(host, tool, args, terminal(), callSignal),
     );
     await registerTool(context, definition, controller.signal);
   };
@@ -100,10 +106,12 @@ export async function runVfsTool(
   host: KernelHost,
   tool: VfsTool,
   args: Record<string, unknown>,
+  terminal: string | null,
   signal?: AbortSignal,
-): Promise<{ output: string }> {
-  const output = await host.runShellCommand(substituteCommand(tool.command, args), { signal });
-  return { output };
+): Promise<GuestScriptResult> {
+  const script = substituteCommand(tool.command, args);
+  announceGuestScript(host, terminal, script);
+  return runGuestScript(host, script, { timeoutMs: VFS_TOOL_TIMEOUT_MS, signal });
 }
 
 /** The tool a changed path belongs to, or `null` for anything but a tool file directly in a tool directory. */
