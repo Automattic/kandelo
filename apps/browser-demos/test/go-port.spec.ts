@@ -79,6 +79,12 @@ const probes: Probe[] = [
     stdout: ["locked worker exit and slot reuse: complete"],
   },
   {
+    name: "sysmon preempts a CPU-bound goroutine for a timer",
+    file: "sysmon.wasm",
+    argv: ["go-sysmon"],
+    stdout: ["sysmon cooperative preemption: complete"],
+  },
+  {
     name: "process exit from a worker M",
     file: "exit-worker.wasm",
     argv: ["go-exit-worker"],

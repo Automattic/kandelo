@@ -847,6 +847,27 @@ does not prove unpaced burst churn, a larger thread arena, sysmon/preemption,
 or full Go/runtime/POSIX conformance; the concurrent eight-slot boundary
 observed on 2026-10-07 remains.
 
+**2026-10-08 — Kandelo sysmon and cooperative preemption.** A new
+`GOMAXPROCS=1` probe showed the prior runtime delayed a 100 ms timer until a
+two-second busy goroutine finished. Fork commit `022ee37` enables Go's
+sysmon thread, uses Wasm atomic timed wait for `usleep` rather than returning
+immediately,
+and sends no-P Ms with an `mstartfn` (including sysmon) through `mstart`
+instead of the clone-mechanics probe path. The probe checks that the timer
+fires while the busy goroutine is still active, with a primarily arithmetic
+loop containing Go call safe points. The existing locked-M exit probe now
+retries when sysmon preempts main and the goroutine initially lands on M0.
+
+Six focused Node scheduler probes and all nine Chromium probes exited 0
+without host diagnostics. After tightening the busy loop, the sysmon probe
+passed three further Node runs; the final nine-probe Chromium suite passed
+again. `GOOS=js` and `GOOS=wasip1` standard-library builds and the ABI
+snapshot check passed. This is cooperative preemption at Go safe points,
+not asynchronous interruption of a call-free Wasm loop:
+`preemptMSupported` remains false.
+The eight-slot capacity, unpaced thread churn, broader Go runtime tests,
+and full POSIX conformance remain open.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
@@ -931,3 +952,17 @@ milestones 3–6 in the design doc.
 - **`unix` build-tag fallout (Task 3)** may pull stdlib files that
   assume real syscalls; be prepared to narrow `UnixOS` membership or
   add `kandelo`-specific overrides.
+
+---
+
+## Follow-up work item: Go-runtime-specific agent guidance
+
+Add a focused guide for extending the `GOOS=kandelo` Go runtime port. Route
+agents to it from `CLAUDE.md` and distinguish it from the registry-package
+porting skill. Cover the adjacent Go fork and its bootstrap/build commands;
+the shared-memory, thread-slot, per-M channel, and Wasm import contracts;
+Node and browser probe workflows; ABI/version decisions; and how to record
+fork commits and validation in this progress log and the Kandelo PR. Include
+the `exitThread` stack-reclamation ordering pitfall as a concrete example.
+Done when an agent can reproduce a Go runtime probe, identify which repo owns
+the fix, and report exact Node/browser evidence without relying on prior chat.
