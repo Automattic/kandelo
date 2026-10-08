@@ -14150,6 +14150,14 @@ pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
     crate::input::set_canvas_dims(width, height);
 }
 
+/// Set the `/dev/fb0` display mode. The host pushes the booted image's
+/// declared geometry before pid 1 runs; without this the device reports
+/// the 640×400 default.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_fb_geometry(width: u32, height: u32) {
+    crate::framebuffer::set_geometry(width, height);
+}
+
 /// Number of successful page-flip commits on the given crtc.
 ///
 /// Useful for the host-side stats UI ("how many frames has the

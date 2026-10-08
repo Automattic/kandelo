@@ -170,7 +170,8 @@ pub mod process_layout;
 ///     kernel pipe on fd 0 (`kernel_install_host_stdin_pipe`), shared across
 ///     fork/dup/exec, instead of a host handle answered per pid. The GL
 ///     command stream gains OP_BLEND_FUNC_SEPARATE, OP_BLEND_EQUATION_SEPARATE
-///     and QOP_FINISH.
+///     and QOP_FINISH. `kernel_set_fb_geometry` is an additive export within
+///     47 ("Additive changes within an ABI epoch" there).
 pub const ABI_VERSION: u32 = 47;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.

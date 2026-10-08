@@ -1185,6 +1185,17 @@ export class BrowserKernel {
   }
 
   /**
+   * Set the `/dev/fb0` display mode this machine boots with, in pixels.
+   * The kernel reports it through FBIOGET_VSCREENINFO / FBIOGET_FSCREENINFO
+   * and sizes the canvas binding from it. Call once at boot, before the
+   * first process runs; a program that has already read the geometry keeps
+   * the mode it was told. Mirrors `NodeKernelHost.setFbGeometry`.
+   */
+  setFbGeometry(width: number, height: number): void {
+    this.sendToKernel({ type: "set_fb_geometry", width, height });
+  }
+
+  /**
    * Wire an `InputSource` into the kernel: sets canvas dims, then
    * starts the source with a dispatch callback that funnels each
    * emitted record through `injectInputEvent`. Mirrors

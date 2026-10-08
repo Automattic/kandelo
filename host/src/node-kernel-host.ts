@@ -733,6 +733,14 @@ export class NodeKernelHost {
   }
 
   /**
+   * Set the `/dev/fb0` display mode this machine boots with, in pixels.
+   * Mirrors `BrowserKernel.setFbGeometry`.
+   */
+  setFbGeometry(width: number, height: number): void {
+    this.sendToWorker({ type: "set_fb_geometry", width, height });
+  }
+
+  /**
    * Wire an `InputSource` into the kernel: sets canvas dims, then
    * starts the source with a dispatch callback that funnels each
    * emitted record through `injectInputEvent`. Mirrors
