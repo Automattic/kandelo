@@ -20,12 +20,13 @@ const baz = {
   command: "qux",
 };
 
-function fakeHost(files: Record<string, string>) {
+function fakeHost(files: Record<string, string>, listError: Error | null = null) {
   const runs: unknown[] = [];
   const watches: Array<{ prefix: string; callback: (event: VfsChangeEvent) => void }> = [];
   let unsubscribed = 0;
   const host = {
     readDir: async (path: string) => {
+      if (listError && path === STATIC) throw listError;
       if (!VFS_TOOLS_DIRS.includes(path)) throw new Error(`ENOENT: ${path}`);
       return Object.keys(files)
         .filter((file) => file.startsWith(`${path}/`))
@@ -65,6 +66,17 @@ function fakeContext() {
 
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+async function capturingErrors<T>(run: () => Promise<T>): Promise<{ result: T; errors: unknown[][] }> {
+  const errors: unknown[][] = [];
+  const consoleError = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args); };
+  try {
+    return { result: await run(), errors };
+  } finally {
+    console.error = consoleError;
+  }
+}
+
 test("loads one tool per json file and skips other entries", async () => {
   const { host } = fakeHost({
     [`${STATIC}/foo.json`]: JSON.stringify(foo),
@@ -86,11 +98,30 @@ test("loads both directories, the maker's file winning on a name clash", async (
   ]);
 });
 
-test("loads no tools when the image has no tool directory", async () => {
-  const host = {
-    readDir: async (path: string) => { throw new Error(`ENOENT: ${path}`); },
-  } as unknown as KernelHost;
-  assert.deepEqual(await loadVfsTools(host), []);
+test("loads no tools, silently, when the image has no tool directory", async () => {
+  const { host } = fakeHost({});
+  const { result, errors } = await capturingErrors(() => loadVfsTools(host));
+  assert.deepEqual(result, []);
+  assert.deepEqual(errors, []);
+});
+
+test("logs a tool directory that fails to list for another reason and still loads the other one", async () => {
+  const { host } = fakeHost({ [`${DYNAMIC}/baz.json`]: JSON.stringify(baz) }, new Error("EACCES: /etc/mcp"));
+  const { result, errors } = await capturingErrors(() => loadVfsTools(host));
+  assert.deepEqual(result, [{ name: "baz", ...baz }]);
+  assert.equal(errors.length, 1);
+  assert.match(String(errors[0]![0]), /listing \/etc\/mcp failed/);
+});
+
+test("logs a tool file that does not parse and still loads the others", async () => {
+  const { host } = fakeHost({
+    [`${STATIC}/bad.json`]: "{ not json",
+    [`${STATIC}/baz.json`]: JSON.stringify(baz),
+  });
+  const { result, errors } = await capturingErrors(() => loadVfsTools(host));
+  assert.deepEqual(result, [{ name: "baz", ...baz }]);
+  assert.equal(errors.length, 1);
+  assert.match(String(errors[0]![1]), /not valid JSON/);
 });
 
 test("loads one tool by name from the maker's directory first and resolves null once no file is left", async () => {
@@ -197,21 +228,16 @@ test("unregisters a tool whose file stops parsing and logs the error", async () 
   const { host, change } = fakeHost(files);
   const { context, active } = fakeContext();
   await registerVfsTools(host, context, new AbortController().signal);
-  const errors: unknown[] = [];
-  const consoleError = console.error;
-  console.error = (...args: unknown[]) => { errors.push(args); };
 
-  try {
+  const { errors } = await capturingErrors(async () => {
     files[`${DYNAMIC}/foo.json`] = "{ not json";
     change("modify", `${DYNAMIC}/foo.json`);
     await settled();
-  } finally {
-    console.error = consoleError;
-  }
+  });
 
   assert.deepEqual(active(), []);
   assert.equal(errors.length, 1);
-  assert.match(String((errors[0] as unknown[])[1]), /not valid JSON/);
+  assert.match(String(errors[0]![1]), /not valid JSON/);
 });
 
 test("ignores changes to files that are not tools", async () => {
@@ -249,4 +275,52 @@ test("types the substituted command into the shell with the call's signal", asyn
 
   assert.deepEqual(result, { output: "3.14\n" });
   assert.deepEqual(runs, [["echo hi", { signal }]]);
+});
+
+test("a registered image tool answers through the shared envelope and annotations", async () => {
+  const { host } = fakeHost({ [`${STATIC}/foo.json`]: JSON.stringify(foo) });
+  const { context, active } = fakeContext();
+
+  await registerVfsTools(host, context, new AbortController().signal);
+  await settled();
+
+  const [tool] = active();
+  assert.deepEqual(tool!.annotations, { readOnlyHint: false, untrustedContentHint: true });
+
+  const result = await tool!.execute({ bar: "echo hi" }, { signal: new AbortController().signal });
+  assert.deepEqual(JSON.parse(result), { ok: true, output: "3.14\n" });
+});
+
+test("a tool file under the reserved prefix is refused without losing the others", async () => {
+  const { host } = fakeHost({
+    [`${STATIC}/kandelo_run_command.json`]: JSON.stringify(foo),
+    [`${STATIC}/baz.json`]: JSON.stringify(baz),
+  });
+  const { context, active } = fakeContext();
+
+  const { errors } = await capturingErrors(async () => {
+    await registerVfsTools(host, context, new AbortController().signal);
+    await settled();
+  });
+
+  assert.deepEqual(active().map(({ name }) => name), ["baz"]);
+  assert.equal(errors.length, 1);
+});
+
+test("a reserved name written while the machine runs is refused without disturbing the rest", async () => {
+  const files: Record<string, string> = { [`${STATIC}/baz.json`]: JSON.stringify(baz) };
+  const { host, change } = fakeHost(files);
+  const { context, active } = fakeContext();
+
+  await registerVfsTools(host, context, new AbortController().signal);
+  await settled();
+
+  const { errors } = await capturingErrors(async () => {
+    files[`${DYNAMIC}/kandelo_write_file.json`] = JSON.stringify(foo);
+    change("modify", `${DYNAMIC}/kandelo_write_file.json`);
+    await settled();
+  });
+
+  assert.deepEqual(active().map(({ name }) => name), ["baz"]);
+  assert.equal(errors.length, 1);
 });

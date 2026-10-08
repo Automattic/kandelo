@@ -42,6 +42,8 @@ export function validate(value: unknown, schema: Schema, name = 'arguments'): vo
       if (!child) throw new ToolError('INVALID_ARGUMENT', `Unknown argument ${name}.${key}`);
       validate(item, child, `${name}.${key}`);
     }
+  } else if (schema.type === 'array') {
+    if (!Array.isArray(value)) throw new ToolError('INVALID_ARGUMENT', `${name} must be an array`);
   } else if (schema.type === 'integer') {
     if (!Number.isSafeInteger(value) || (value as number) < (schema.minimum ?? 0) || (value as number) > (schema.maximum ?? Number.MAX_SAFE_INTEGER)) throw new ToolError('INVALID_ARGUMENT', `${name} is outside its integer range`);
   } else if (typeof value !== schema.type || (typeof value === 'string' && ((schema.maxLength !== undefined && value.length > schema.maxLength) || (schema.enum && !schema.enum.includes(value))))) {
