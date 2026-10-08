@@ -79,6 +79,80 @@ Supported terminal keys: `enter`, `ctrl_c`, `ctrl_d`, `ctrl_z`, `tab`, `escape`,
 it. `ready:true` means a PTY is attached, not that login is complete or a shell
 prompt is visible. Read output to determine the current interactive state.
 
+## Image-declared tools
+
+The 17 tools above ship with the app. A booted image declares tools of its own,
+so an image can say what an agent may do with it without anyone building a page
+per image.
+
+One JSON file per tool, named after the tool, in either of two directories.
+`/etc/mcp` holds the tools an image ships. `/home/maker/mcp` holds tools the
+maker writes while the machine runs; it is a scratch mount, so a guest creates
+it with `mkdir -p` first. On a name clash the maker's file wins, and deleting
+that file falls back to the shipped one. Both directories are watched: writing,
+replacing or deleting a file registers or unregisters its tool without a reload.
+
+```json
+{
+  "description": "Evaluate an arithmetic expression",
+  "inputSchema": { "type": "object", "properties": { "expression": { "type": "string" } }, "required": ["expression"] },
+  "command": "echo {expression:q} | bc -l"
+}
+```
+
+`command` is typed into the machine's visible shell, and the call resolves with
+what the terminal printed before the next prompt, as `{ok:true,output}`.
+Aborting the call sends Ctrl-C to the shell.
+
+A placeholder is filled from the call arguments: a string verbatim, any other
+value JSON-encoded. Two spellings decide how the shell then reads it.
+
+- `{param}` substitutes the value as written. The shell parses whatever comes
+  out, so a value may carry several words, a redirection or a pipeline. Use it
+  for a parameter that is a command fragment.
+- `{param:q}` substitutes the value as one POSIX single-quoted word. Spaces,
+  quotes, `$`, `;` and newlines survive as literal characters. Use it for a
+  parameter that is a value: a path, a pattern, a name.
+
+Write `{param:q}` unless the parameter is meant to be shell syntax. Hand-quoting
+a bare placeholder does not work: `'{pattern}'` breaks as soon as the value
+contains a single quote, which is exactly what `{pattern:q}` handles.
+
+An unrecognised name is left in place, so `{param}` with no matching argument
+reaches the shell literally.
+
+An image-declared tool goes through the same registration as a built-in one, so
+it gets the same argument validation against its own `inputSchema` and the same
+`{ok:true,...}` / `{ok:false,error:{code,message}}` result envelope.
+
+That validator enforces a subset of JSON Schema, and a tool file may use only
+that subset; a file that uses anything else is refused and logged, so a tool
+never registers a promise its arguments are not checked against. `inputSchema`
+must be `{ "type": "object", ... }`. Every schema may carry `type` and
+`description`; `type` is one of `string`, `integer`, `number`, `boolean`,
+`array` or `object`, never a list. A `string` may carry `enum` (strings) and
+`maxLength`; an `integer` may carry `minimum` and `maximum`; an `object` may
+carry `properties`, `required` (names from `properties`) and
+`additionalProperties`, which is `false` or a schema. Unknown arguments are
+rejected unless `additionalProperties` names their schema. `items`, `default`,
+`pattern`, `oneOf`, `$ref` and every other keyword are refused.
+
+Two rules separate the two sources.
+
+- **`kandelo_` is reserved.** An image that declares a tool under that prefix is
+  refused and the refusal is logged; the other tools in the directory still
+  register. A VFS image arrives from a URL a share link names, so an image-
+  declared tool carrying the built-in prefix would let untrusted input
+  impersonate a platform tool.
+- **No image-declared tool is annotated read-only.** The image decides both the
+  description and the command, and neither the app nor the agent can tell a read
+  from a write, so `readOnlyHint` is always `false` and
+  `untrustedContentHint` is always `true`.
+
+A file that is not valid JSON, or that is missing `description`, `inputSchema` or
+`command`, unregisters its tool and logs the parse error. A reboot or a machine
+replacement unregisters everything and registers the next image's tools afresh.
+
 ## Limits and lifecycle
 
 - Terminal output retains at most 256 KiB per observed terminal, at most 32

@@ -5,7 +5,9 @@ import { descriptorFromGalleryItem } from '../gallery-descriptor';
 import { galleryItemUrl } from '../url-state';
 import { encodeBootDescriptor, HARD_CAPS } from '../../../../../web-libs/kandelo-session/src/boot-descriptor';
 import { createInlineBootInput } from '../../../../../web-libs/kandelo-session/src/boot-inputs';
-import { contracts, guestPath, ToolError, validate, type Schema } from './contract';
+import { contracts, guestPath, ToolError, type Schema } from './contract';
+import { modelContextOf } from './model-context';
+import { builtInTool, objectSchema, registerTool } from './registry';
 import { getWebMcpRuntimeCapabilities, listGuestDirectory, startGuestJob, readGuestJob, readGuestFile, writeGuestFile } from './runtime';
 
 export interface AppBindings {
@@ -16,9 +18,6 @@ export interface AppBindings {
   selectTerminal(id: string): void;
   launch(item: GalleryItem): Promise<void>;
   navigatePreview(path: string): boolean;
-}
-interface ModelContext {
-  registerTool(tool: { name: string; description: string; inputSchema: Schema; annotations: { readOnlyHint: boolean; untrustedContentHint: boolean }; execute(args: Record<string, unknown>, options: { signal: AbortSignal }): Promise<string> }, options: { signal: AbortSignal }): Promise<void>;
 }
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -47,8 +46,8 @@ interface TerminalRecord { terminal: ShellTerminal; output: OutputBuffer; pty?: 
 
 /** One adapter per mounted app; no tools or capabilities are installed in preview frames. */
 export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: () => void } {
-  const context = (document as Document & { modelContext?: ModelContext }).modelContext;
-  if (!context?.registerTool) return () => {};
+  const context = modelContextOf(document);
+  if (!context) return () => {};
   const controller = new AbortController();
   const host = get().host;
   let generationId = crypto.randomUUID();
@@ -360,18 +359,9 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
   registration = registration.catch(() => {}).then(async () => {
     for (const [name, description, readOnlyHint, properties, required] of contracts) {
       if (controller.signal.aborted) break;
-      const inputSchema: Schema = { type: 'object', properties: properties as Record<string, Schema>, required: [...required], additionalProperties: false };
-      await context.registerTool({ name: `kandelo_${name}`, description, inputSchema, annotations: { readOnlyHint, untrustedContentHint: true }, execute: async (args, options) => {
-        try {
-          validate(args, inputSchema);
-          const result = await invoke(name, args, options?.signal);
-          return JSON.stringify({ ok: true, ...result });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const code = error instanceof ToolError ? error.code : /no synchronous VFS surface|no writeFileToVfs/.test(message) ? 'UNSUPPORTED_CAPABILITY' : /ENOENT/.test(message) ? 'FILE_NOT_FOUND' : 'OPERATION_FAILED';
-          return JSON.stringify({ ok: false, error: { code, message, ...(error instanceof ToolError ? error.details : {}) } });
-        }
-      } }, { signal: controller.signal });
+      const schema = objectSchema(properties as Record<string, Schema>, required);
+      const tool = builtInTool(name, description, readOnlyHint, schema, (args, signal) => invoke(name, args, signal));
+      await registerTool(context, tool, controller.signal);
     }
   }).catch(error => { if (!controller.signal.aborted) console.warn('WebMCP registration failed', error); });
   sync();

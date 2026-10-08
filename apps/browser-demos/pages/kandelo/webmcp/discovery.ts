@@ -5,7 +5,7 @@ export function compactToolCatalog(
 ) {
   return {
     documents: [{ id: document.generationId, title: document.title, url: document.url }],
-    tools: tools.filter(tool => tool.name.startsWith('kandelo_')).map(tool => ({
+    tools: tools.map(tool => ({
       documentId: document.generationId,
       name: tool.name,
       description: tool.description,
