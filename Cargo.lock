@@ -608,6 +608,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kandelo-image-module"
+version = "0.1.0"
+dependencies = [
+ "dlmalloc",
+ "runtime-core",
+ "sha2",
+ "wasm-posix-shared",
+]
+
+[[package]]
 name = "leb128"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -817,7 +827,10 @@ dependencies = [
 name = "runtime-core"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide",
+ "sha2",
  "spin",
+ "wasm-artifact",
  "wasm-posix-shared",
 ]
 
@@ -1234,6 +1247,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-artifact"
+version = "0.1.0"
+dependencies = [
+ "wasm-posix-shared",
+ "wasmparser 0.247.0",
+ "wat",
+]
+
+[[package]]
 name = "wasm-encoder"
 version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1604,6 +1626,7 @@ dependencies = [
  "flate2",
  "fork-instrument",
  "regex",
+ "runtime-core",
  "rustix",
  "serde",
  "serde_json",
