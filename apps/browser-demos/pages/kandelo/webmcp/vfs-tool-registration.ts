@@ -1,5 +1,6 @@
 import type { KernelHost, VfsChangeEvent, VfsDirent } from "../kernel-host";
 import type { ModelContext } from "./model-context";
+import { imageTool, registerTool } from "./registry";
 import {
   VFS_TOOLS_DIRS,
   parseVfsTool,
@@ -31,12 +32,13 @@ export async function registerVfsTools(
     if (signal.aborted) return;
     const controller = new AbortController();
     registrations.set(tool.name, controller);
-    await context.registerTool({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-      execute: (args, options) => runVfsTool(host, tool, args, options.signal),
-    }, { signal: controller.signal });
+    const definition = imageTool(
+      tool.name,
+      tool.description,
+      tool.inputSchema,
+      (args, callSignal) => runVfsTool(host, tool, args, callSignal),
+    );
+    await registerTool(context, definition, controller.signal);
   };
   const reload = async (name: string) => {
     unregister(name);
@@ -60,17 +62,26 @@ export async function registerVfsTools(
   }, { once: true });
 
   await enqueue(async () => {
-    for (const tool of await loadVfsTools(host)) await register(tool);
+    for (const tool of await loadVfsTools(host)) {
+      await register(tool).catch((error) => {
+        console.error(`WebMCP: registering ${tool.name} failed`, error);
+      });
+    }
   });
 }
 
+/** Every tool file that parses; a file that does not is logged and skipped. */
 export async function loadVfsTools(host: KernelHost): Promise<VfsTool[]> {
   const tools = new Map<string, VfsTool>();
   for (const dir of VFS_TOOLS_DIRS) {
     for (const entry of await toolEntries(host, dir)) {
       const name = vfsToolName(entry.name);
       if (!name) continue;
-      tools.set(name, await readVfsTool(host, `${dir}/${entry.name}`));
+      try {
+        tools.set(name, await readVfsTool(host, `${dir}/${entry.name}`));
+      } catch (error) {
+        console.error(`WebMCP: loading ${dir}/${entry.name} failed`, error);
+      }
     }
   }
   return [...tools.values()];
@@ -89,7 +100,7 @@ export async function runVfsTool(
   host: KernelHost,
   tool: VfsTool,
   args: Record<string, unknown>,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<{ output: string }> {
   const output = await host.runShellCommand(substituteCommand(tool.command, args), { signal });
   return { output };
@@ -109,7 +120,14 @@ async function readVfsTool(host: KernelHost, file: string): Promise<VfsTool> {
   return parseVfsTool(file, await host.readFileText(file));
 }
 
+/** The regular files of a tool directory. A directory that is not there is empty; any other failure is logged. */
 async function toolEntries(host: KernelHost, dir: string): Promise<VfsDirent[]> {
-  const entries = await host.readDir(dir).catch(() => []);
+  let entries: VfsDirent[];
+  try {
+    entries = await host.readDir(dir);
+  } catch (error) {
+    if (!/ENOENT/.test(String(error))) console.error(`WebMCP: listing ${dir} failed`, error);
+    return [];
+  }
   return entries.filter((entry) => entry.kind === "f");
 }

@@ -1,11 +1,17 @@
 // Minimal typing for Chrome's imperative WebMCP API. The document exposes
 // `modelContext` only behind a flag; every other browser gets `null` here.
 
+export interface ToolAnnotations {
+  readOnlyHint: boolean;
+  untrustedContentHint: boolean;
+}
+
 export interface ModelContextTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  execute(args: Record<string, unknown>, options: { signal: AbortSignal }): Promise<unknown>;
+  annotations: ToolAnnotations;
+  execute(args: Record<string, unknown>, options: { signal: AbortSignal }): Promise<string>;
 }
 
 export interface ModelContext {

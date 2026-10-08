@@ -24,8 +24,10 @@ it('does not let late HTTP, load or paint observations complete a newer navigati
 
 it('serializes a long document URL once and omits browser-owned per-tool metadata', () => {
   const url = `https://example.test/#${'encoded'.repeat(1000)}`;
-  const tools = [1, 2].map(id => ({ name: `kandelo_${id}`, description: 'A tool', inputSchema: {}, url, window: {} }));
-  const serialized = JSON.stringify(compactToolCatalog({ generationId: 'generation', title: 'Kandelo', url }, tools));
+  const tools = ['kandelo_1', 'kandelo_2', 'pi'].map(name => ({ name, description: 'A tool', inputSchema: {}, url, window: {} }));
+  const catalog = compactToolCatalog({ generationId: 'generation', title: 'Kandelo', url }, tools);
+  const serialized = JSON.stringify(catalog);
   expect(serialized.split(url)).toHaveLength(2);
   expect(serialized).not.toContain('"window"');
+  expect(catalog.tools.map(tool => tool.name)).toEqual(['kandelo_1', 'kandelo_2', 'pi']);
 });
