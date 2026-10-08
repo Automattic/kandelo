@@ -620,7 +620,7 @@ describe("kernel task-ID authority", () => {
     // generated standalone resolver. Check that boundary and inspect the
     // executable bundle instead of requiring a second hard-coded export list.
     expect(resolverWrapper).toContain(
-      'exec node "$script_dir/resolve-binary.bundle.mjs" "$1"',
+      'exec node "$script_dir/resolve-binary.bundle.mjs" "$@"',
     );
 
     const artifactGuards = [

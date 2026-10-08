@@ -20,7 +20,7 @@
  * a mechanical merge.
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
-import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 
 export type { HttpRequest, HttpResponse };
 

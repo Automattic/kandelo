@@ -1,8 +1,10 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build a fully-bootable VFS image for the WordPress browser demo. The image
  * starts from shell.vfs.zst, then dinit, the first user process, brings up:
  *
  *   wp-config-init (internal) + smtp-capture (process)
+ *     + wordpress-secrets (scripted; this machine's keys, on first boot)
  *       → php-fpm (process) → nginx (process)
  *
  * The browser host overwrites wp-config.php with the page-supplied
@@ -14,7 +16,6 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   writeVfsFile,
@@ -34,6 +35,11 @@ import {
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
 import {
+  WORDPRESS_SECRETS_SERVICE,
+  populateWordPressFirstBootSecrets,
+  wordpressFirstBootSecretsService,
+} from "./wordpress-first-boot";
+import {
   loadShellBaseFileSystem,
   loadShellBaseFileSystemFromImage,
   saveShellDerivedVfsImage,
@@ -43,6 +49,8 @@ import {
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
+  WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN,
+  WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN_PATH,
   renderWordPressConfig,
   wordpressConfigTemplate,
 } from "../../../apps/browser-demos/lib/init/wordpress-runtime-config";
@@ -66,13 +74,13 @@ const WORDPRESS_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 
 // --- Service configs (reuse logic from init modules) ---
 
-function ensureWritableByPhpFpm(fs: MemoryFileSystem, path: string): void {
+function ensureWritableByPhpFpm(fs: VfsImageFilesystem, path: string): void {
   ensureDirRecursive(fs, path);
   fs.chown(path, PHP_FPM_UID, PHP_FPM_GID);
   fs.chmod(path, 0o775);
 }
 
-function populateNginxConfig(fs: MemoryFileSystem): void {
+function populateNginxConfig(fs: VfsImageFilesystem): void {
   const dirs = [
     "/etc/nginx", "/var/www/html", "/var/log/nginx",
     "/tmp/nginx_client_temp", "/tmp/nginx-wasm/logs",
@@ -171,7 +179,7 @@ ${extraLocations}
 }
 
 function populatePhpFpmConfig(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   opcache: Uint8Array,
 ): void {
   ensureDirRecursive(fs, "/etc/php-fpm.d");
@@ -303,6 +311,7 @@ function buildServices(): DinitService[] {
       restart: false,
     },
     smtpCaptureService(),
+    wordpressFirstBootSecretsService(),
     {
       name: "php-fpm",
       type: "process",
@@ -311,7 +320,7 @@ function buildServices(): DinitService[] {
       // the default /usr/local/lib/php/php.ini-development lookup, which
       // trips unsupported-config errors on our wasm port.
       command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /etc/php.ini --nodaemonize",
-      dependsOn: ["wp-config-init", "smtp-capture"],
+      dependsOn: ["wp-config-init", "smtp-capture", WORDPRESS_SECRETS_SERVICE],
       logfile: "/var/log/php-fpm.log",
       restart: false,
     },
@@ -359,6 +368,7 @@ export async function buildWordPressVfsImage(
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs, inputs.opcache);
   populateSmtpCaptureConfig(fs);
+  populateWordPressFirstBootSecrets(fs);
 
   console.log("Writing nginx + php-fpm + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
@@ -383,6 +393,11 @@ export async function buildWordPressVfsImage(
     fs,
     "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",
     wordpressSmtpCaptureMuPlugin(),
+  );
+  writeVfsFile(
+    fs,
+    WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN_PATH,
+    WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN,
   );
 
   // WordPress core files

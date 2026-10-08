@@ -3063,6 +3063,78 @@ where
     }
 }
 
+/// Make `[offset, offset + len)` of an open rootfs file readable without
+/// waiting: fetch a URL-backed file's window, decode a lazy-archive member, or
+/// materialize a file whose image declared a digest. An `EAGAIN` from the byte
+/// source (the bytes are still in flight) is returned as-is, so the caller's
+/// syscall parks and retries through the ordinary blocking path.
+///
+/// WHY: `mmap` of a file populates the mapping only after the kernel has
+/// committed the interval, from a context that cannot park. Fetching first,
+/// while the syscall can still be retried, is what keeps a mapping of a lazy
+/// file from being populated with zeros where the bytes had not arrived yet.
+/// An image file or an overlay copy is already readable and costs nothing
+/// here.
+pub fn prefetch_range<F>(
+    handle: i64,
+    offset: i64,
+    len: usize,
+    mut byte_source: F,
+) -> Result<(), Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    let idx = file_handle_to_inode(handle)?;
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
+    if declares_digest(idx) {
+        return ensure_materialized(idx, &mut byte_source);
+    }
+    enum Plan {
+        Ready,
+        Deferred(Vec<u8>, u64),
+        Lazy(u32, Vec<u8>),
+    }
+    let plan = ROOTFS.with(|state| {
+        let inode = state.get(idx).ok_or(Errno::EBADF)?;
+        Ok::<Plan, Errno>(match &inode.kind {
+            InodeKind::BaseRegular {
+                size,
+                source: BaseSource::Host,
+                ..
+            } => Plan::Deferred(inode.deferred_uri.clone(), *size),
+            InodeKind::LazyMember {
+                archive_id,
+                source_path,
+                ..
+            } => Plan::Lazy(*archive_id, source_path.clone()),
+            _ => Plan::Ready,
+        })
+    })?;
+    match plan {
+        Plan::Ready => Ok(()),
+        Plan::Lazy(archive_id, source_path) => {
+            ensure_archive_member(archive_id, &source_path, &mut byte_source).map(|_| ())
+        }
+        Plan::Deferred(uri, size) => {
+            let start = offset as u64;
+            let end = start.saturating_add(len as u64).min(size);
+            let mut scratch = alloc::vec![0u8; 64 * 1024];
+            let mut at = start;
+            while at < end {
+                let want = core::cmp::min(scratch.len() as u64, end - at) as usize;
+                let got = fetch_at(&mut byte_source, &uri, at, &mut scratch[..want])?;
+                if got == 0 {
+                    return Err(Errno::EIO);
+                }
+                at += got as u64;
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Whether the image declared a digest for `idx`'s bytes.
 ///
 /// Deliberately ONLY that. It began life also asking whether the bytes were

@@ -18,7 +18,6 @@ inputs = [
   "host/src/constants.ts",
   "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
-  "host/src/vfs/materialization-plan.ts",
   "host/src/pathconf.ts",
   "host/src/shell-runtime-layout.ts",
   "host/src/statfs.ts",
@@ -28,7 +27,15 @@ inputs = [
   "web-libs/kandelo-session/src/demo-config.ts",
   "web-libs/kandelo-session/src/experimental-terminal-session.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",
+  "images/vfs/scripts/shell-runtime-layout.ts",
+  "images/vfs/lib/kandelo-image-fs.ts",
+  # The image writer these builders drive (images/vfs/lib/kandelo-image-fs.ts
+  # loads local-binaries/kandelo_image_module32.wasm): its cargo closure and
+  # recipe, so a writer change invalidates the images it wrote.
+  "cargo:kandelo-image-module",
+  "cargo:runtime-core",
+  "crates/kandelo-image-module/build-wasm.sh",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 8
+revision = 9

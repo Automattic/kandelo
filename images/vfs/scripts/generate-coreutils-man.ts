@@ -17,10 +17,12 @@
  * skipped — a missing page is an honest gap, never a fabricated one.
  *
  * Usage: tsx generate-coreutils-man.ts <coreutils.wasm> <capture-dir>
+ *        <kernel.wasm> <rootfs.vfs.zst>
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+import { maybeDecompressImage } from "../../../host/src/vfs/vfs-image-transport";
 
 // The GNU coreutils 9.6 tool set, minus the tools this build disables via
 // --enable-no-install-program=stdbuf,pinky,who,users,uptime (see
@@ -74,7 +76,9 @@ async function main() {
     process.exit(2);
   }
   const kernelWasmBytes = readFileSync(kernelPath);
-  const rootfsImage = readFileSync(rootfsPath);
+  // The rootfs ships zstd-compressed (`rootfs.vfs.zst`), and the kernel's image
+  // reader takes decoded bytes: zstd is a host-side transport codec.
+  const rootfsImage = maybeDecompressImage(new Uint8Array(readFileSync(rootfsPath)));
   mkdirSync(outDir, { recursive: true });
   const uniq = Array.from(new Set(TOOLS)).sort();
   const skipped: string[] = [];

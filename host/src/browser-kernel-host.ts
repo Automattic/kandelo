@@ -7,11 +7,8 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import type { WasmModuleCacheStats } from "./wasm-module-cache";
-import {
-  MemoryFileSystem,
-  type LazyDownloadEvent,
-} from "./vfs/memory-fs";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
@@ -51,6 +48,7 @@ import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
+import { maybeDecompressImage } from "./vfs/vfs-image-transport";
 import {
   encodeClipboardText,
   type ClipboardOfferResult,
@@ -141,7 +139,7 @@ export interface BrowserKernelOptions {
   /** The kernel worker always owns the VFS exclusively: the main thread holds
    *  no VFS SharedArrayBuffer, so it is reclaimed by `Worker.terminate()` and
    *  never accumulates across image switches (Safari OOM fix). Demos build a
-   *  VFS image with {@link MemoryFileSystem} + `saveImage()` and pass it to
+   *  VFS image with `KandeloImageFs` + `saveImage()` and pass it to
    *  {@link BrowserKernel.boot} / {@link BrowserKernel.initFromImage}. Accepted
    *  for backward compatibility; the value is ignored (there is no other mode). */
   kernelOwnedFs?: boolean;
@@ -166,7 +164,7 @@ export interface BrowserKernelBootOptions {
   /** Kernel wasm bytes; if omitted, fetched from the bundled URL. */
   kernelWasm?: ArrayBuffer;
   /**
-   * Pre-built VFS image bytes from {@link MemoryFileSystem.saveImage}, OR
+   * Pre-built VFS image bytes from `KandeloImageFs.saveImage()`, OR
    * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs.zst`
    * shipped with the worker entry. The worker takes ownership; the main
    * thread no longer has FS access.
@@ -261,13 +259,33 @@ async function fetchDefaultRootfsVfsImage(): Promise<ArrayBuffer> {
   return response.arrayBuffer();
 }
 
+/**
+ * Decode a zstd-compressed VFS image (`rootfs.vfs.zst`, `*.vfs.zst`) into one
+ * whole ordinary ArrayBuffer view; return any other image unchanged.
+ *
+ * The kernel's image reader takes decoded bytes — zstd is a host-side
+ * transport codec — so the host decodes before the worker sees the image,
+ * whichever entry point the caller used.
+ */
+function decodeVfsImage(image: Uint8Array): Uint8Array {
+  const decoded = maybeDecompressImage(image);
+  if (decoded === image) return image;
+  if (
+    decoded.buffer instanceof ArrayBuffer &&
+    decoded.byteOffset === 0 &&
+    decoded.byteLength === decoded.buffer.byteLength
+  ) {
+    return decoded;
+  }
+  const whole = new Uint8Array(new ArrayBuffer(decoded.byteLength));
+  whole.set(decoded);
+  return whole;
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
   private initialized = false;
-  /** POSIX shared-memory / semaphore SAB shared with the kernel worker. Small
-   *  and fixed (1 MiB); the live VFS is owned by the worker, not here. */
-  private shmSab: SharedArrayBuffer;
   private maxPages: number;
   private readonly memoryProfile: RuntimeMemoryProfile;
   /** Set when a caller asked for more per-process pages than the budget allows. */
@@ -355,11 +373,10 @@ export class BrowserKernel {
       corsProxy,
     };
 
-    // The kernel worker owns the VFS. The main thread allocates only the
-    // small shared-memory SAB (POSIX shm/semaphores), never a VFS buffer, so
-    // nothing large accumulates on the main thread across image switches.
-    this.shmSab = new SharedArrayBuffer(1024 * 1024);
-    MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
+    // The kernel worker owns the machine's filesystem, POSIX shared memory
+    // included (the in-kernel tmpfs serves `/dev/shm`). The main thread holds
+    // no filesystem buffer at all, so nothing accumulates on it across image
+    // switches.
   }
 
   /**
@@ -376,8 +393,7 @@ export class BrowserKernel {
       notes.push(
         `memory profile "${this.memoryProfile.id}": ` +
           `${this.memoryProfile.processMaxPages} pages per process, ` +
-          `${this.memoryProfile.kernelMaxPages} kernel pages, ` +
-          `${Math.round(this.memoryProfile.imageMemfsMaxBytes / (1024 * 1024))} MiB rootfs budget`,
+          `${this.memoryProfile.kernelMaxPages} kernel pages (kernel heap and filesystem)`,
       );
     }
     if (this.clampedProcessMaxPagesFrom !== undefined) {
@@ -404,9 +420,10 @@ export class BrowserKernel {
    * The worker takes ownership of the FS; the main thread no longer has FS
    * access. Returns the first process's exit code.
    *
-   * Demos build the VFS image on the main thread using MemoryFileSystem +
-   * the helpers in `host/src/vfs/image-helpers`, call `saveImage()` for
-   * bytes, then pass them here.
+   * Demos build the VFS image with `KandeloImageFs` (the Rust image writer)
+   * and the helpers in `host/src/vfs/image-helpers`, call `saveImage()` for
+   * bytes, then pass them here; `apps/browser-demos/lib/kernel-owned-boot.ts`
+   * does this in a disposable worker.
    */
   async boot(options: BrowserKernelBootOptions): Promise<{ pid: number; exit: Promise<number> }> {
     await this.initFromImage(options);
@@ -429,8 +446,8 @@ export class BrowserKernel {
 
   /**
    * Load a pre-built VFS image into the kernel worker WITHOUT spawning a
-   * first process. The worker builds and takes ownership of the FS; the main
-   * thread holds no FS SharedArrayBuffer, so the whole VFS is reclaimed when
+   * first process. The kernel parses the image and owns the filesystem; the
+   * main thread keeps no filesystem state, so the whole VFS is reclaimed when
    * the kernel worker is terminated (no dependence on main-thread GC — the
    * fix for the Safari image-switch OOM). Spawn processes afterward with
    * {@link spawnFromVfs}, or call {@link boot} to load + spawn a first process
@@ -440,6 +457,8 @@ export class BrowserKernel {
     kernelWasm?: ArrayBuffer;
     vfsImage: Uint8Array | "default";
     lazyUrlBase?: string;
+    /** See `lazyUrlMap` on the init message: the image is never rewritten. */
+    lazyUrlMap?: Readonly<Record<string, string>>;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
   }): Promise<void> {
@@ -448,14 +467,15 @@ export class BrowserKernel {
         ? Promise.resolve(options.kernelWasm)
         : fetchDefaultBrowserKernelArtifact("kernelWasm"),
       options.vfsImage === "default"
-        ? fetchDefaultRootfsVfsImage().then((b) => new Uint8Array(b))
-        : Promise.resolve(options.vfsImage),
+        ? fetchDefaultRootfsVfsImage().then((b) => decodeVfsImage(new Uint8Array(b)))
+        : Promise.resolve(decodeVfsImage(options.vfsImage)),
     ]);
 
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
       vfsImage,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
+      lazyUrlMap: options.lazyUrlMap,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       takeVfsImageOwnership: false,
@@ -482,7 +502,9 @@ export class BrowserKernel {
       : await fetchDefaultBrowserKernelArtifact("kernelWasm");
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
-      vfsImage: new Uint8Array(options.vfsImage),
+      // A compressed image decodes into a fresh whole buffer this kernel owns,
+      // so the ownership contract holds either way.
+      vfsImage: decodeVfsImage(new Uint8Array(options.vfsImage)),
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
@@ -498,6 +520,7 @@ export class BrowserKernel {
     kernelWasmBytes: ArrayBuffer;
     vfsImage: Uint8Array;
     lazyUrlBase?: string;
+    lazyUrlMap?: Readonly<Record<string, string>>;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
@@ -594,17 +617,18 @@ export class BrowserKernel {
           kernelWasmBytes: transferBuf,
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
+          lazyUrlMap: opts.lazyUrlMap === undefined
+            ? undefined
+            : { ...opts.lazyUrlMap },
           closedLazyAssets,
           rootfsMountSpec: opts.rootfsMountSpec === undefined
             ? undefined
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
-          shmSab: this.shmSab,
           workerEntryUrl,
           config: {
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
             kernelMaxPages: this.memoryProfile.kernelMaxPages,
-            imageMemfsMaxBytes: this.memoryProfile.imageMemfsMaxBytes,
             memoryProfileId: this.memoryProfile.id,
             maxProcessMemoryBytes:
               this.options.maxProcessMemoryBytes
@@ -622,7 +646,7 @@ export class BrowserKernel {
           // WHY: this API is used at durable reboot boundaries where the main
           // thread has already hashed the image and will not reuse it. Transfer
           // prevents a second 512 MiB structured-clone allocation while the
-          // worker restores its own kernel-owned filesystem.
+          // worker hands the image to its kernel.
           transfer.push(opts.vfsImage.buffer as ArrayBuffer);
         }
         for (const asset of closedLazyAssets ?? []) {
@@ -763,7 +787,7 @@ export class BrowserKernel {
    * Returns the kernel-allocated pid + an exit promise.
    *
    * This does not transfer any `programBytes` across the worker boundary —
-   * the kernel reads the binary out of its own memfs at `programPath`. Use
+   * the kernel reads the binary out of its own filesystem at `programPath`. Use
    * this in `kernelOwnedFs: true` mode (or whenever the binary is already in
    * the VFS) to avoid re-shipping multi-megabyte binaries the kernel already
    * has.

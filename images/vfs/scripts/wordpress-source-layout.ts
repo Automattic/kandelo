@@ -1,4 +1,4 @@
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import { ensureSourceExtract } from "./source-extract-helper";
 import { walkAndWrite } from "./vfs-image-helpers";
 
@@ -56,7 +56,7 @@ export function isExcludedWordPressCoreSourceEntry(
 
 /** Copy verified WordPress core without local setup or mutable database state. */
 export function copyWordPressCoreSource(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   sourceDir: string,
 ): number {
   return walkAndWrite(fs, sourceDir, WORDPRESS_CORE_GUEST_PATH, {
@@ -70,7 +70,7 @@ export function copyWordPressCoreSource(
  * host-only alias through the WordPress core tree.
  */
 export function materializeWordPressSqlitePlugin(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   sourceDir: string,
 ): number {
   return walkAndWrite(

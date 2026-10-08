@@ -39,7 +39,7 @@ test("browser preserves descendant wait/reap and reuses a kernel without retaine
       const { createEmptyBuildFs, finalizeKernelOwnedImage } = await import(
         /* @vite-ignore */ bootHelpersUrl
       );
-      const buildFs = createEmptyBuildFs();
+      const buildFs = await createEmptyBuildFs();
       buildFs.mkdir("/usr", 0o755);
       buildFs.mkdir("/usr/bin", 0o755);
       buildFs.createFileWithOwner(

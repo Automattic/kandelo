@@ -15,11 +15,11 @@
  * Skips if the binaries aren't built (bare checkout).
  */
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
@@ -201,7 +201,7 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
       const kwlctlBytes = loadBytes(kwlctlBin!);
 
       // A two-entry registry: typing "t" must narrow it to one.
-      const appsDir = mkdtempSync(join(tmpdir(), "kandelo-apps-"));
+      const appsDir = makeHostScratchTempRoot("kandelo-apps-");
       mkdirSync(appsDir, { recursive: true });
       writeFileSync(join(appsDir, "terminal.conf"),
         "name = Terminal\nexec = /usr/local/bin/wlterm\n");
@@ -281,7 +281,7 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
       const clientBytes = loadBytes(clientBin!);
       const klauncherBytes = loadBytes(klauncherBin!);
 
-      const appsDir = mkdtempSync(join(tmpdir(), "kandelo-apps-"));
+      const appsDir = makeHostScratchTempRoot("kandelo-apps-");
       mkdirSync(appsDir, { recursive: true });
       writeFileSync(join(appsDir, "terminal.conf"),
         "name = Terminal\nexec = /usr/local/bin/wlterm\n");

@@ -1,0 +1,33 @@
+{
+  // Type-check the VFS image builders. Nothing else covers `images/`, so
+  // without this a broken import or a signature drift in a recipe surfaces
+  // only when the builder is RUN, which needs a full sysroot and a kernel.
+  //
+  // Run from host/ (where the TypeScript toolchain is installed):
+  //   cd host && ./node_modules/.bin/tsc -p ../images/tsconfig.typecheck.json
+  // and require that the errors under `images/` are exactly ZERO.
+  //
+  // NOT WIRED AS A BLOCKING GATE: the program also pulls in files outside
+  // `images/` that have errors of their own. In particular
+  // `images/vfs/scripts/generate-coreutils-man.ts` imports
+  // `runCentralizedProgram` from `host/test/centralized-test-helper.ts` — a
+  // production build script depending on test scaffolding — so that helper's
+  // errors land in this program too.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "ignoreDeprecations": "6.0",
+    "skipLibCheck": true,
+    "noEmit": true,
+    "lib": ["ES2024", "ES2024.SharedMemory", "DOM"],
+    // Resolved from host/, which is where this repository installs its
+    // TypeScript toolchain; there is no node_modules under images/.
+    "typeRoots": ["../host/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": ["vfs/**/*.ts", "rootfs/**/*.ts"]
+}

@@ -4,13 +4,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 
-# Reproducible product-manifest mode (staged inputs), mirroring the other
-# product builders.
-if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
-  exec node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
-    "$SCRIPT_DIR/staged-product-inputs.ts" browser-ruby-todo "$@"
-fi
-
 echo "==> Building Ruby todo VFS image..."
 
 # Under the local-build engine the declared output must land in the package

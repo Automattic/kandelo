@@ -10,7 +10,7 @@ import coreutilsDocsZipUrl from "@binaries/programs/coreutils-docs.zip?url";
 import lsofDocsZipUrl from "@binaries/programs/lsof-docs.zip?url";
 import kandeloSdkZipUrl from "@binaries/programs/kandelo-sdk.zip?url";
 
-const SHELL_LAZY_ARCHIVES: Record<string, string> = {
+export const SHELL_LAZY_ARCHIVES: Record<string, string> = {
   "love-examples.zip": loveExamplesZipUrl,
   "vim.zip": vimZipUrl,
   "kandelo-sdk.zip": kandeloSdkZipUrl,

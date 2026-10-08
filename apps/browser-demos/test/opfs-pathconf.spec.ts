@@ -14,7 +14,7 @@ const clientWorkerPath = resolve(
   "fixtures/opfs-pathconf-client-worker.ts",
 );
 
-test("OPFS reports path configuration from live paths and handles", async ({
+test("OPFS answers only its own path configuration, from live paths and handles", async ({
   playwright,
   browserName,
   baseURL,
@@ -98,9 +98,9 @@ test("OPFS reports path configuration from live paths and handles", async ({
 
             const pending = receive<{
               type: "result";
-              nameMax: number;
-              pathMax: number;
-              asyncIo: number;
+              nameMax: string | null;
+              pathMax: string | null;
+              asyncIo: string | null;
               symlinks: null;
               timestampResolution: null;
               closedHandleError: string;
@@ -121,9 +121,9 @@ test("OPFS reports path configuration from live paths and handles", async ({
 
       expect(result).toEqual({
         type: "result",
-        nameMax: 255,
-        pathMax: 4096,
-        asyncIo: 1,
+        nameMax: "ENOSYS: pathconf name 3 is not a value this host can source",
+        pathMax: "ENOSYS: pathconf name 4 is not a value this host can source",
+        asyncIo: "ENOSYS: pathconf name 10 is not a value this host can source",
         symlinks: null,
         timestampResolution: null,
         closedHandleError: "EBADF",

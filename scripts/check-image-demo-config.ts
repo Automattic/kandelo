@@ -6,7 +6,7 @@
  * This file also implements the BAKED-EQUALS-TRACKED comparison: for every
  * single-source image, the `/etc/kandelo/demo.json` baked into the built
  * `.vfs`/`.vfs.zst` artifact must be byte-for-byte identical to its tracked
- * source. That needs `MemoryFileSystem.fromImage` from host/src/vfs, which is
+ * source. That needs `KandeloImageFs.loadImage` from images/vfs/lib, which is
  * TypeScript — this file used to be a plain `.mjs` invoked with bare `node`
  * specifically so it could not import TypeScript, which is why the
  * comparison was deferred (see git history and
@@ -38,7 +38,7 @@ import {
   sourceOnlyBinaryRoot,
   tryResolveBinary,
 } from "../host/src/binary-resolver.ts";
-import { MemoryFileSystem } from "../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
 import { KANDELO_DEMO_CONFIG_PATH } from "../web-libs/kandelo-session/src/demo-config.ts";
 import {
   parseTrackedSourcePaths,
@@ -187,7 +187,7 @@ const O_RDONLY = 0;
  *  sequence web-libs/kandelo-session/src/demo-config-vfs.ts uses, except this
  *  returns the untouched bytes instead of a parsed config: byte-identity
  *  needs the bytes, not a re-serialization of them. */
-function readRawVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
+function readRawVfsFile(fs: KandeloImageFs, path: string): Uint8Array {
   const stat = fs.lstat(path);
   const bytes = new Uint8Array(stat.size);
   const handle = fs.open(path, O_RDONLY, 0);
@@ -292,7 +292,10 @@ export function checkBakedEqualsTracked(
       report.skippedNotBuilt.push(relPath);
       continue;
     }
-    const fs = MemoryFileSystem.fromImage(imageBytes);
+    // `loadImage` decodes a `.vfs.zst` itself and authenticates the image's
+    // cohort seals before any read, like the reader the builders use.
+    const fs = KandeloImageFs.create();
+    fs.loadImage(imageBytes);
     const baked = readRawVfsFile(fs, KANDELO_DEMO_CONFIG_PATH);
     const tracked = readFileSync(join(repoRoot, relPath));
     if (!bytesEqual(baked, tracked)) {

@@ -53,6 +53,15 @@ import type {
 } from "./vfork-lifetime";
 import type { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import { PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
+import type { CentralizedKernelWorker } from "./kernel-worker";
+import { retryKernelEntryResult } from "./kernel-entry-retry";
+import type { LazyFetch } from "./vfs/lazy-download-event";
+import { resolveLazyUrl } from "./vfs/lazy-url";
+import {
+  buildRootfsLazyWiring,
+  waitForDeferredFetch,
+  type DeferredProgress,
+} from "./vfs/rootfs-lazy-archives";
 
 /** Bytes one pthread slot (TLS, stack and channel pages) occupies. */
 const THREAD_SLOT_BYTES = PAGES_PER_THREAD * WASM_PAGE_SIZE;
@@ -143,7 +152,14 @@ export function signalFromExitStatus(exitStatus: number): number | null {
 export function isMissingPathError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const code = (err as { code?: unknown }).code;
-  return code === -2 || code === "ENOENT";
+  if (code === -2 || code === "ENOENT") return true;
+  // The kernel owns `/`, so the host mount table holds only the host-backed
+  // mounts beneath it. A path none of them covers reaches `VirtualPlatformIO`
+  // with no mount ("ENOENT: no mount for path: ..."), which is a missing path,
+  // not a hard failure.
+  const message = (err as { message?: unknown }).message;
+  return typeof message === "string" &&
+    message.startsWith("ENOENT: no mount for path");
 }
 
 /**
@@ -306,3 +322,185 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
 
 export type ProcessLifecycle<Info extends ProcessLifecycleInfo> =
   ReturnType<typeof createProcessLifecycle<Info>>;
+
+
+// ── Kernel-owned root filesystem ────────────────────────────────────────────
+//
+// The kernel owns `/` and the scratch mounts. What a worker entry still does
+// for them is the same on both hosts: hand the kernel the boot image and a
+// byte pipe for what the image does not carry, and read or write `/` files on
+// the main thread's behalf through the kernel. These helpers are that common
+// part; where the two entries differ is only in where the image bytes and the
+// lazy transport come from, and those are the parameters.
+
+/**
+ * Hand the boot image's `/` tree to the in-kernel rootfs.
+ *
+ * Installs the deferred-resource provider the kernel uses for files the image
+ * names but does not carry (URL-backed lazy files and lazy archives), and the
+ * image byte window the kernel reads image-backed file content through. The
+ * kernel parses the image itself; the host supplies bytes, not a tree.
+ *
+ * `lazyUrlMap` maps an address the image records to the URL this deployment
+ * serves it at, and `lazyUrlBase` resolves any other relative address against
+ * the deployment, as the TypeScript filesystem's URL rewriting did before the
+ * kernel owned `/`. The image is not rewritten: the address is resolved at
+ * fetch time, so a closed-asset fetcher keyed by resolved URLs still finds its
+ * bytes.
+ */
+export function configureRootfsOverlayFromImage(
+  kernel: CentralizedKernelWorker,
+  options: {
+    /** Read the image at a CONTAINER offset; `0` at or past the end. */
+    imageRead: (at: number, dest: Uint8Array) => number;
+    imageBytes: Uint8Array;
+    /** Report lazy transfer progress. The fetch is the host's, so its progress is too. */
+    onLazyProgress?: DeferredProgress;
+    foreignPrefixes: string[];
+    nosuid: boolean;
+    lazyFetcher?: LazyFetch;
+    lazyUrlBase?: string;
+    /** Where the deployment serves an address the image records; consulted
+     *  before `lazyUrlBase`. See `lazyUrlMap` in `browser-kernel-protocol.ts`. */
+    lazyUrlMap?: Readonly<Record<string, string>>;
+  },
+): void {
+  const installedLazyFetcher = options.lazyFetcher;
+  const lazyUrlBase = options.lazyUrlBase;
+  const lazyUrlMap = options.lazyUrlMap;
+  const resolveAddress = (url: string): string => {
+    if (
+      lazyUrlMap !== undefined
+      && Object.prototype.hasOwnProperty.call(lazyUrlMap, url)
+    ) {
+      return lazyUrlMap[url]!;
+    }
+    return lazyUrlBase ? resolveLazyUrl(lazyUrlBase, url) : url;
+  };
+  const fetchUrlBytes: (url: string) => Promise<Uint8Array> =
+    installedLazyFetcher
+      ? async (url) => {
+        const resolved = resolveAddress(url);
+        const response = await installedLazyFetcher(resolved);
+        if (!response.ok) {
+          throw new Error(`lazy fetch of ${resolved} failed: HTTP ${response.status}`);
+        }
+        return new Uint8Array(await response.arrayBuffer());
+      }
+      : async () => {
+        // With no transport installed a lazy read genuinely cannot succeed;
+        // the kernel reports EIO to the guest rather than hanging.
+        throw new Error("no lazy transport configured");
+      };
+  const { deferredProvider, whenFetchSettles } = buildRootfsLazyWiring(
+    fetchUrlBytes,
+    options.onLazyProgress,
+  );
+  kernel.configureRootfsOverlay(
+    deferredProvider,
+    options.foreignPrefixes,
+    options.nosuid,
+    options.imageBytes,
+    options.imageRead,
+    whenFetchSettles,
+  );
+}
+
+const ROOTFS_EAGAIN_ERRNO = 11;
+const ROOTFS_ENOENT_ERRNO = 2;
+const ROOTFS_ENOTDIR_ERRNO = 20;
+const ROOTFS_EISDIR_ERRNO = 21;
+const ROOTFS_ETIMEDOUT_ERRNO = 110;
+/**
+ * A lazy file under `/` whose bytes have not arrived reads as EAGAIN; the
+ * fetch runs on this worker's event loop, so a retry waits for it to settle
+ * (`waitForDeferredFetch`) rather than spinning on microtasks. Only an EAGAIN
+ * with no fetch in flight — which this pipe does not produce — falls back to
+ * this plain timer between retries. Matches `readPreparedExecTarget` in
+ * `host/src/exec-target.ts`.
+ */
+const ROOTFS_RETRY_DELAY_MS = 10;
+/**
+ * Defensive backstop only: a fetch normally resolves to bytes or a terminal
+ * errno well before this. It exists so a stuck fetch fails with a truthful
+ * timeout instead of hanging a spawn forever.
+ */
+const ROOTFS_RETRY_MAX_WAIT_MS = 30_000;
+
+/** A `/` read that waited past {@link ROOTFS_RETRY_MAX_WAIT_MS} for lazy bytes. */
+export class RootfsReadTimeoutError extends Error {
+  readonly errno = ROOTFS_ETIMEDOUT_ERRNO;
+  constructor(path: string, waitedMs: number) {
+    super(
+      `rootfs read of ${path} timed out after ${waitedMs}ms waiting for a ` +
+        "lazy file fetch to complete",
+    );
+    this.name = "RootfsReadTimeoutError";
+  }
+}
+
+function rootfsErrno(error: unknown): number | undefined {
+  const errno = (error as { errno?: unknown }).errno;
+  return typeof errno === "number" ? errno : undefined;
+}
+
+/**
+ * Read a `/` file through the kernel, for a host-side caller that needs the
+ * bytes (the spawn preflight resolving what a launch would run).
+ *
+ * ENOENT/ENOTDIR/EISDIR mean "not a readable regular file here" and return
+ * null so the caller can fall through to its other sources. A lazy file whose
+ * bytes are still arriving is retried until they land; any other errno is a
+ * real failure and is thrown.
+ *
+ * `rootfsReadFile` is an immediate kernel entry. A caller running inside a
+ * protocol transaction (the SYS_SPAWN preflight) can find the entry gate busy;
+ * `retryKernelEntryResult` retries that on a later host turn, which is safe
+ * because the gate rejects the read before touching kernel state.
+ */
+export async function readRootfsFileWithRetry(
+  kernel: CentralizedKernelWorker,
+  path: string,
+): Promise<Uint8Array | null> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      return await retryKernelEntryResult(() => kernel.rootfsReadFile(path));
+    } catch (error) {
+      const errno = rootfsErrno(error);
+      if (
+        errno === ROOTFS_ENOENT_ERRNO ||
+        errno === ROOTFS_ENOTDIR_ERRNO ||
+        errno === ROOTFS_EISDIR_ERRNO
+      ) {
+        return null;
+      }
+      if (errno !== ROOTFS_EAGAIN_ERRNO) throw error;
+      const waited = Date.now() - start;
+      if (waited >= ROOTFS_RETRY_MAX_WAIT_MS) {
+        throw new RootfsReadTimeoutError(path, waited);
+      }
+      // WHY not a fixed timer: the bytes usually land well inside one timer
+      // period, and every first read of a lazy file (the spawn preflight of a
+      // lazy program) paid the rest of that period on top of the fetch.
+      const inFlight = kernel.deferredFetchSettled();
+      await waitForDeferredFetch(
+        inFlight,
+        inFlight === null
+          ? ROOTFS_RETRY_DELAY_MS
+          : ROOTFS_RETRY_MAX_WAIT_MS - waited,
+      );
+    }
+  }
+}
+
+/**
+ * Whether a kernel rootfs read failure means "no readable regular file at
+ * that path" rather than a real error, for the main thread's `read_vfs_file`.
+ */
+export function isRootfsMissingFileError(error: unknown): boolean {
+  const errno = rootfsErrno(error);
+  return errno === ROOTFS_ENOENT_ERRNO ||
+    errno === ROOTFS_ENOTDIR_ERRNO ||
+    errno === ROOTFS_EISDIR_ERRNO;
+}

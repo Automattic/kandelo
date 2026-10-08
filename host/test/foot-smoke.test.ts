@@ -25,14 +25,18 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -86,7 +90,7 @@ describe("foot — upstream terminal on wlcompositor + the ported font stack", (
       const compositorBytes = loadBytes(compositorBin!);
       const footBytes = loadBytes(footBin!);
 
-      const root = mkdtempSync(join(tmpdir(), "kandelo-foot-"));
+      const root = makeHostScratchTempRoot("kandelo-foot-");
       const fontDir = join(root, "fonts");
       mkdirSync(fontDir);
       copyFileSync(INCONSOLATA, join(fontDir, "Inconsolata-Regular.ttf"));

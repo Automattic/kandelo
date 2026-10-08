@@ -25,7 +25,7 @@ export type {
   StatfsResult,
 } from "./types";
 export { PATHCONF_NAMES } from "./generated/abi";
-export { filesystemPathconf } from "./pathconf";
+export { backendPathconf } from "./pathconf";
 export type { PathconfProfile } from "./pathconf";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -46,29 +46,3 @@ export type {
   CentralizedWorkerInitMessage,
 } from "./worker-protocol";
 export { VirtualPlatformIO } from "./vfs/vfs";
-export {
-  MemoryFileSystem,
-  resolveMountSetIdCapability,
-} from "./vfs/memory-fs";
-export {
-  loadVfsImage,
-  restoreVerifiedVfsImage,
-  restoreVerifiedVfsImagePreservingCapacity,
-} from "./vfs/load-image";
-export type {
-  LazyDownloadEvent,
-  LazyDownloadKind,
-  LazyDownloadListener,
-  LazyDownloadStatus,
-  LazyAtomicGroupMembership,
-  LazyFileEntry,
-  LazyFetcherOptions,
-  LazyTreeActivation,
-  LazyTreeContent,
-  LazyTreeDecoder,
-  LazyTreeGroup,
-  LazyTreeRegistrationEntry,
-  SerializedLazyTree,
-  VfsImageCapacity,
-  VfsImageRestoreOptions,
-} from "./vfs/memory-fs";

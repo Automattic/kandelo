@@ -607,16 +607,19 @@ describe("WasmPosixKernel public API scratch ownership", () => {
 
 describe("Rust-owned host import ranges", () => {
   it("rejects a truncated kernel source instead of invoking the backend", () => {
-    const open = vi.fn(() => 7);
+    // `host_openat` takes a directory handle plus ONE path component; the
+    // component's bytes are the kernel-owned source that must be range-checked
+    // before the backend is reached.
+    const openat = vi.fn(() => 7);
     const { kernel, memory } = kernelHarness({});
-    Object.assign(kernel, { io: { open } });
+    Object.assign(kernel, { io: { openat } });
     const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
     const pointer = memory.buffer.byteLength - 2;
 
-    expect(imports.env.host_open(pointer, 4, 0, 0)).toBe(-14n);
-    expect(open).not.toHaveBeenCalled();
+    expect(imports.env.host_openat(0n, pointer, 4, 0, 0)).toBe(-14n);
+    expect(openat).not.toHaveBeenCalled();
   });
 
   it("accepts an exact-end source and rejects capacity plus one", () => {

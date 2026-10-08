@@ -10,10 +10,12 @@ const KERNEL_CONFIG = {
 
 function createKernelBridge(entries: Array<{ name: string; type: number; ino: number }>) {
   let index = 0;
+  // A directory is opened through `openat` — one component relative to a
+  // directory handle — and released through the same `close` a file uses.
   const io = {
-    opendir: vi.fn(() => 7),
+    openat: vi.fn(() => 7),
     readdir: vi.fn(() => entries[index++] ?? null),
-    closedir: vi.fn(),
+    close: vi.fn(() => 0),
   };
   const memory = new WebAssembly.Memory({ initial: 1 });
   const kernel = createWasmPosixKernelTestHarness({
@@ -106,10 +108,10 @@ describe("host readdir retry atomicity", () => {
     const bridge = kernel.testAuthority;
 
     expect(bridge.hostReaddir(7n, 16, 128, 64)).toBeLessThan(0);
-    expect(bridge.hostClosedir(7n)).toBe(0);
+    expect(bridge.hostClose(7n)).toBe(0);
     expect(bridge.hostReaddir(7n, 16, 128, 64)).toBe(1);
 
-    expect(io.closedir).toHaveBeenCalledWith(7);
+    expect(io.close).toHaveBeenCalledWith(7);
     expect(io.readdir).toHaveBeenCalledTimes(2);
     expect(
       new TextDecoder().decode(
@@ -133,15 +135,15 @@ describe("host readdir retry atomicity", () => {
         ino: 1,
       },
     ]);
-    io.closedir.mockImplementationOnce(() => {
+    io.close.mockImplementationOnce(() => {
       throw new Error("injected close failure");
     });
     const bridge = kernel.testAuthority;
 
     expect(bridge.hostReaddir(7n, 16, 128, 64)).toBeLessThan(0);
-    expect(bridge.hostClosedir(7n)).toBeLessThan(0);
+    expect(bridge.hostClose(7n)).toBeLessThan(0);
     expect(bridge.hostReaddir(7n, 16, 128, 64)).toBe(0);
-    expect(io.closedir).toHaveBeenCalledWith(7);
+    expect(io.close).toHaveBeenCalledWith(7);
     expect(io.readdir).toHaveBeenCalledTimes(2);
   });
 
@@ -165,13 +167,14 @@ describe("host readdir retry atomicity", () => {
 
     expect(bridge.hostReaddir(7n, 16, 128, 64)).toBeLessThan(0);
 
-    new Uint8Array(memory.buffer, 256, 4).set(
-      new TextEncoder().encode("/tmp"),
-    );
-    expect(bridge.hostOpendir(256, 4)).toBe(7n);
+    // The kernel never sends a path: one component, relative to a directory
+    // handle this host issued.
+    const O_DIRECTORY = 0o200000;
+    new Uint8Array(memory.buffer, 256, 3).set(new TextEncoder().encode("tmp"));
+    expect(bridge.hostOpenat(0n, 256, 3, O_DIRECTORY, 0)).toBe(7n);
     expect(bridge.hostReaddir(7n, 16, 128, 64)).toBe(1);
 
-    expect(io.opendir).toHaveBeenCalledWith("/tmp");
+    expect(io.openat).toHaveBeenCalledWith(0, "tmp", O_DIRECTORY, 0);
     expect(io.readdir).toHaveBeenCalledTimes(2);
     expect(
       new TextDecoder().decode(

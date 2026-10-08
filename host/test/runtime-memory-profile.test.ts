@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   CONSTRAINED_MEMORY_PROFILE,
-  clampImageMemfsMaxBytes,
   clampProcessMaxPages,
   declaredMachineReservationBytes,
   DESKTOP_MEMORY_PROFILE,
@@ -36,7 +35,6 @@ describe("detectRuntimeMemoryProfile", () => {
     expect(DESKTOP_MEMORY_PROFILE.kernelMaxPages).toBe(
       DEFAULT_KERNEL_MAX_PAGES,
     );
-    expect(DESKTOP_MEMORY_PROFILE.imageMemfsMaxBytes).toBe(1024 * 1024 * 1024);
     // The value php-fpm.conf carried before it was budgeted per host.
     expect(DESKTOP_MEMORY_PROFILE.preforkServiceProcesses).toBe(6);
   });
@@ -173,23 +171,12 @@ describe("clampProcessMaxPages", () => {
   });
 });
 
-describe("clampImageMemfsMaxBytes", () => {
-  it("keeps every shipped image's recorded capacity within budget", () => {
-    // The largest image Kandelo ships (wordpress, lamp) records 768 MiB.
-    const shipped = 768 * 1024 * 1024;
-    expect(
-      clampImageMemfsMaxBytes(shipped, CONSTRAINED_MEMORY_PROFILE),
-    ).toEqual({ bytes: shipped });
-  });
-
-  it("reports a clamp instead of silently shrinking the filesystem", () => {
-    const oversized = 2 * 1024 * 1024 * 1024;
-    expect(
-      clampImageMemfsMaxBytes(oversized, CONSTRAINED_MEMORY_PROFILE),
-    ).toEqual({
-      bytes: CONSTRAINED_MEMORY_PROFILE.imageMemfsMaxBytes,
-      clampedFrom: oversized,
-    });
+describe("kernel memory holds the filesystem", () => {
+  it("keeps the largest shipped image's recorded capacity within budget", () => {
+    // The largest images Kandelo ships (wordpress, lamp) record 768 MiB; the
+    // kernel now holds that writable state, so its ceiling must reach it.
+    expect(CONSTRAINED_MEMORY_PROFILE.kernelMaxPages * 65536)
+      .toBeGreaterThanOrEqual(768 * 1024 * 1024);
   });
 });
 
@@ -201,7 +188,7 @@ describe("declaredMachineReservationBytes", () => {
     // ceilings share a ~6 GiB pool. A two-process machine must leave room for
     // at least one more generation during a boot/destroy/boot cycle.
     const perMachine = declaredMachineReservationBytes(
-      { ...CONSTRAINED_MEMORY_PROFILE, imageMemfsMaxBytes: 256 * MiB },
+      CONSTRAINED_MEMORY_PROFILE,
       2,
     );
     expect(perMachine).toBeLessThan(1.5 * 1024 * MiB);
@@ -213,10 +200,10 @@ describe("declaredMachineReservationBytes", () => {
       DESKTOP_MEMORY_PROFILE,
       2,
     );
-    // 1 GiB rootfs + 1 GiB kernel + 2 x 1 GiB process = exactly 4 GiB, so a
-    // second generation cannot fit alongside the first in a ~6 GiB pool.
-    expect(perMachine).toBe(4 * 1024 * MiB);
-    expect(perMachine * 2).toBeGreaterThan(6 * 1024 * MiB);
+    // 1 GiB kernel (heap and filesystem) + 2 x 1 GiB process = 3 GiB, so a
+    // second generation alongside the first fills a ~6 GiB pool completely.
+    expect(perMachine).toBe(3 * 1024 * MiB);
+    expect(perMachine * 2).toBeGreaterThanOrEqual(6 * 1024 * MiB);
   });
 
   it("keeps a constrained machine's pre-forked pool inside the pool", () => {

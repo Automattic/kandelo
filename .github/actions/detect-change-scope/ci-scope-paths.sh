@@ -74,7 +74,6 @@ binary_materialization_changed_files() {
     -e '^scripts/(activate-local-shell-build-override|fetch-binaries|install-local-binary|install-local-shell-artifact|materialize-ci-canonical-package-index|materialize-ci-publication-blockers|materialize-pr-overlays|materialize-resolver-binaries|pack-ci-test-workspace|resolve-binary|stage-portable-resolver-binaries|test-wasm-artifact-guards|validate-publication-blocker-report|wasm-artifact-guards)\.sh$' \
     -e '^scripts/(build-resolve-binary-bundle|test-resolve-binary-bundle)\.sh$' \
     -e '^scripts/resolve-binary\.(ts|bundle\.mjs|bundle\.LICENSES\.txt)$' \
-    -e '^scripts/vfs-has-stale-abi\.mjs$' \
     -e '^host/src/binary-resolver\.ts$' \
     -e '^tests/package-system/' \
     || true
@@ -84,7 +83,7 @@ kernel_runtime_changed_files() {
   grep -E \
     -e '^(crates|libc|tests/libc|tests/posix|tests/sortix|host|programs|abi)/' \
     -e '^images/vfs/products/' \
-    -e '^images/vfs/scripts/(build-abi-staging-mini-vfs|vfs-product-builder-contract)\.ts$' \
+    -e '^images/vfs/scripts/build-abi-staging-mini-vfs\.ts$' \
     -e '^apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-(products\.(toml|generated\.json)|product-gallery\.json)$' \
     -e '^tests/vfs-products\.(toml|generated\.json)$' \
     -e '^tools/xtask/src/abi_staging/' \
@@ -92,7 +91,7 @@ kernel_runtime_changed_files() {
     -e '^scripts/browser-memory64-example-fixtures\.(sh|txt)$' \
     -e '^scripts/check-browser-memory64-example-fixtures\.ts$' \
     -e '^scripts/(build-musl|build-libcxx|build-programs|check-abi-version|check-libcxx-toolchain-version|ci-check-browser-assets|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests)\.sh$' \
-    -e '^scripts/(abi-staging-pages-(producer(-fixture)?|readiness)(\.test)?\.ts|abi-staging-product-(browser|node)-evidence(\.test)?\.ts|abi-staging-product-input-sources\.ts|check-pages-vfs-product-registry(\.test)?\.mjs|run-vfs-product-builder(\.test)?\.ts|test-abi-staging-(mini-lifecycle|pages-atomic|product-authority)\.sh|vfs-product-catalog(\.test)?\.mjs)$' \
+    -e '^scripts/(abi-staging-pages-(producer(-fixture)?|readiness)(\.test)?\.ts|abi-staging-product-(browser|node)-evidence(\.test)?\.ts|abi-staging-product-input-sources\.ts|check-pages-vfs-product-registry(\.test)?\.mjs|test-abi-staging-(mini-lifecycle|pages-atomic|product-authority)\.sh|vfs-product-catalog(\.test)?\.mjs)$' \
     -e '^examples/run-example\.ts$' \
     || true
 }

@@ -22,13 +22,16 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync,
+  copyFileSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -67,7 +70,7 @@ describe("gtk3 — unmodified GTK 3.24 wayland client on wlcompositor", () => {
       const compositorBytes = loadBytes(compositorBin!);
       const gtkBytes = loadBytes(gtkSmokeBin!);
 
-      const root = mkdtempSync(join(tmpdir(), "kandelo-gtk3-"));
+      const root = makeHostScratchTempRoot("kandelo-gtk3-");
       const fontDir = join(root, "fonts");
       const cacheDir = join(root, "cache");
       mkdirSync(fontDir);

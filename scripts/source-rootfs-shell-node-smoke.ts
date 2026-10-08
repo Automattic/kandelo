@@ -4,10 +4,8 @@ import { lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { ABI_VERSION } from "../host/src/generated/abi";
-import {
-  MemoryFileSystem,
-  type LazyDownloadEvent,
-} from "../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs";
+import type { LazyDownloadEvent } from "../host/src/vfs/lazy-download-event";
 import {
   KANDELO_DEMO_CONFIG_PATH,
 } from "../web-libs/kandelo-session/src/demo-config";
@@ -49,8 +47,13 @@ const kernelBytes = new Uint8Array(readFileSync(kernelPath));
 if (!WebAssembly.validate(kernelBytes)) {
   throw new Error(`source-rootfs shell kernel is not valid Wasm: ${kernelPath}`);
 }
-const metadata = MemoryFileSystem.readImageMetadata(imageBytes);
-const capacity = MemoryFileSystem.readImageCapacity(imageBytes);
+const metadata = KandeloImageFs.readImageMetadata(imageBytes);
+// `byteLength` is the image as read; `maxByteLength` is the ceiling it
+// DECLARES it may grow to (the image module records no separate live size).
+const capacity = {
+  byteLength: imageBytes.byteLength,
+  ...KandeloImageFs.readImageCapacity(imageBytes),
+};
 assertVfsImageFitsProfile(
   capacity,
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
@@ -63,9 +66,14 @@ if (metadata?.kernelAbi !== ABI_VERSION) {
   );
 }
 
-const fs = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
-// WHY: the acceptance assertions below trust deferred-tree metadata.
-await fs.verifyImportedLazyAtomicGroupSeals();
+// READ through the module that writes these images. `loadImage` restores the
+// declared capacity and authenticates the deferred-tree seals the assertions
+// below trust, as part of the load rather than as a separate step a caller
+// could drop. It is also the reader that sees the image's in-body `SDEF`
+// section, so this smoke test and the image's producer agree on what the
+// artifact says.
+const fs = KandeloImageFs.create();
+fs.loadImage(imageBytes);
 const terminalSessionConfigBytes = readVfsFile(
   fs,
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
@@ -235,7 +243,7 @@ function usage(): never {
   );
 }
 
-function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsFile(fs: KandeloImageFs, path: string): Uint8Array {
   const stat = fs.stat(path);
   if ((stat.mode & 0xf000) !== 0x8000) {
     throw new Error(`${path} is not a regular file`);
