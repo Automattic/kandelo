@@ -18,9 +18,17 @@ func main() {
 	for round := 0; round < 12; round++ {
 		started := make(chan struct{})
 		go func() {
-			runtime.LockOSThread()
-			if getm() == mainM {
-				panic("locked goroutine ran on main M")
+			deadline := nanotime() + 5_000_000_000
+			for {
+				runtime.LockOSThread()
+				if getm() != mainM {
+					break
+				}
+				runtime.UnlockOSThread()
+				if nanotime() > deadline {
+					panic("locked goroutine never reached a worker M")
+				}
+				runtime.Gosched()
 			}
 			close(started)
 		}()

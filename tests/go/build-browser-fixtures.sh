@@ -30,5 +30,6 @@ build_probe scheduler exit-worker ./exit-worker
 build_probe scheduler concurrent-clone ./concurrent-clone
 build_probe scheduler locked-thread ./locked-thread
 build_probe scheduler locked-exit ./locked-exit
+build_probe scheduler sysmon ./sysmon
 
 printf 'Go browser fixtures built in %s\n' "$output_dir"
