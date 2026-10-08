@@ -188,7 +188,6 @@ export interface WriteVfsFileMessage {
   path: string;
   data: Uint8Array;
   mode: number;
-  exclusive?: boolean;
 }
 
 export interface UnlinkVfsFileMessage {

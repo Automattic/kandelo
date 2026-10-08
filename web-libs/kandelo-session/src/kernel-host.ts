@@ -227,6 +227,8 @@ export interface KernelOwnedJobOptions {
   cwd?: string;
   uid?: number;
   gid?: number;
+  /** Bytes the root reads on stdin. Without them it reads EOF at once. */
+  stdin?: Uint8Array;
 }
 
 export interface KernelLike {
@@ -251,13 +253,7 @@ export interface KernelLike {
    * exist. The kernel worker owns the filesystem, so this is an async
    * round-trip (unlike the deprecated synchronous {@link fs}).
    */
-  writeFileToVfs?(
-    path: string,
-    bytes: Uint8Array,
-    mode?: number,
-    /** Fail with EEXIST rather than replace an existing path. */
-    exclusive?: boolean,
-  ): Promise<void>;
+  writeFileToVfs?(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
   /**
    * Read a regular file through the VFS-owning worker. Resolves `null` when
    * the path is absent or not a regular file.
@@ -989,19 +985,13 @@ export interface KernelHost {
    */
   subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void;
 
-  // Raw peers of readFile/readDir/writeFile. These report the values the VFS
+  // Raw peers of readFile/readDir. These report the values the VFS
   // holds rather than the strings the Inspector renders, and a path that is
   // not there resolves null instead of throwing. Callers that present a
   // listing to a person want readFile/readDir; callers that hand bytes and
   // numbers to a program want these.
   readVfsFile(path: string): Promise<Uint8Array | null>;
   readVfsDir(path: string): Promise<KernelDirEntry[] | null>;
-  writeVfsFile(
-    path: string,
-    bytes: Uint8Array,
-    mode?: number,
-    exclusive?: boolean,
-  ): Promise<void>;
 
   // owned jobs
   /**
@@ -2455,21 +2445,6 @@ export class LiveKernelHost implements KernelHost {
     return this.kernel.readDirFromVfs(path);
   }
 
-  async writeVfsFile(
-    path: string,
-    bytes: Uint8Array,
-    mode = 0o644,
-    exclusive = false,
-  ): Promise<void> {
-    if (!this.kernel?.writeFileToVfs) {
-      throw new Error(
-        `LiveKernelHost.writeVfsFile(${path}): the attached kernel cannot write ` +
-        `to the VFS (no writeFileToVfs).`,
-      );
-    }
-    await this.kernel.writeFileToVfs(path, bytes, mode, exclusive);
-  }
-
   // ── KernelHost: owned jobs ──────────────────────────────────────────────
 
   async startOwnedJob(
@@ -2489,8 +2464,8 @@ export class LiveKernelHost implements KernelHost {
       env: options.env,
       uid: options.uid,
       gid: options.gid,
-      // An owned job has no interactive input; empty stdin reads EOF at once.
-      stdin: new Uint8Array(0),
+      // An owned job has no interactive input: it reads the bytes it is given, then EOF.
+      stdin: options.stdin ?? new Uint8Array(0),
     });
     // The job record carries lifecycle and output. Consume the separate root
     // exit so destroying the machine mid-command cannot reject unhandled.

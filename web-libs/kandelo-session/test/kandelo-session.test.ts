@@ -423,23 +423,11 @@ describe("LiveKernelHost: raw VFS surface", () => {
     expect(await host.readVfsDir("/absent")).toBeNull();
   });
 
-  it("forwards the mode and the exclusive flag to the worker write", async () => {
-    const writeFileToVfs = vi.fn(async () => {});
-    const host = new LiveKernelHost({ kernel: { writeFileToVfs } as any });
-
-    await host.writeVfsFile("/tmp/foo", new Uint8Array([1]), 0o600, true);
-    expect(writeFileToVfs).toHaveBeenCalledWith("/tmp/foo", new Uint8Array([1]), 0o600, true);
-
-    await host.writeVfsFile("/tmp/foo", new Uint8Array([1]));
-    expect(writeFileToVfs).toHaveBeenLastCalledWith("/tmp/foo", new Uint8Array([1]), 0o644, false);
-  });
-
   it("rejects raw operations when the kernel has no worker VFS surface", async () => {
     const host = new LiveKernelHost();
     host.attachKernel({} as any);
     await expect(host.readVfsFile("/etc/passwd")).rejects.toThrow("no VFS surface");
     await expect(host.readVfsDir("/etc")).rejects.toThrow("no VFS surface");
-    await expect(host.writeVfsFile("/etc/passwd", new Uint8Array())).rejects.toThrow("no writeFileToVfs");
   });
 });
 
@@ -471,6 +459,16 @@ describe("LiveKernelHost: owned jobs", () => {
       gid: 1000,
       stdin: new Uint8Array(0),
     });
+  });
+
+  it("hands the family the stdin bytes it is given", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+    const stdin = new Uint8Array([1, 2]);
+
+    await host.startOwnedJob("job-1", "/bin/sh", ["sh", "-c", "cat > /tmp/foo"], { timeoutMs: 1234, stdin });
+
+    expect(kernel.spawnFromVfs).toHaveBeenCalledWith("/bin/sh", ["sh", "-c", "cat > /tmp/foo"], expect.objectContaining({ stdin }));
   });
 
   it("consumes the root exit so a destroyed machine cannot reject unhandled", async () => {

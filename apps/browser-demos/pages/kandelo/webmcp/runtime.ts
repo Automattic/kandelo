@@ -2,6 +2,7 @@ import { resetPreviewProgress } from "../panes/preview-progress";
 import type { KernelHost, KernelOwnedJobRead } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { DIRENT_TYPES } from "@host/generated/abi";
 import { guestPath, ToolError } from "./contract";
+import { shellQuote } from "./vfs-tools";
 
 const DIRENT_TYPE_NAMES: Record<number, string> = {
   [DIRENT_TYPES.DT_DIR]: "directory",
@@ -101,21 +102,38 @@ export async function readGuestFile(host: KernelHost, path: string): Promise<Uin
   return bytes;
 }
 
+const WRITE_REFUSALS: Record<number, [code: string, message: string]> = {
+  3: ["FILE_NOT_FOUND", "The parent guest directory must already exist."],
+  4: ["FILE_EXISTS", "The guest path already exists; no bytes were written."],
+};
+
+/**
+ * Write `bytes` to `path` from a guest process that runs as the agent's
+ * account, so the kernel applies that account's permissions and follows
+ * symlinks as `open` does. A new file belongs to the account; a replaced file
+ * keeps its owner and mode. Without `overwrite` the shell's noclobber option
+ * makes the create exclusive.
+ */
 export async function writeGuestFile(host: KernelHost, path: string, bytes: Uint8Array, overwrite: boolean): Promise<void> {
   guestPath(path);
-  const session = requireSession(host);
+  requireSession(host);
   if (bytes.byteLength > 65536) throw new ToolError("INVALID_ARGUMENT", "Guest writes are limited to 65536 decoded bytes.");
-  try {
-    await host.writeVfsFile(path, bytes, 0o644, !overwrite);
-  } catch (error) {
-    assertCurrent(host, session);
-    if (/EEXIST|already exists|file exists/i.test(String(error))) throw new ToolError("FILE_EXISTS", "The guest path already exists; no bytes were written.", { path });
-    if (/ENOENT|no such file|not found/i.test(String(error))) {
-      throw new ToolError("FILE_NOT_FOUND", "The parent guest directory must already exist.", { path });
-    }
-    throw error;
+  const target = shellQuote(path);
+  const parent = shellQuote(path.slice(0, path.lastIndexOf("/")) || "/");
+  const script = [
+    `[ -d ${parent} ] || exit 3`,
+    ...(overwrite ? [] : [`if [ -e ${target} ] || [ -h ${target} ]; then exit 4; fi`, "set -C"]),
+    `cat > ${target}`,
+  ].join("\n");
+  const result = await runGuestScript(host, script, { timeoutMs: 30000, stdin: bytes });
+  if (result.exitCode === 0) return;
+  const refusal = WRITE_REFUSALS[result.exitCode ?? -1];
+  if (refusal) throw new ToolError(refusal[0], refusal[1], { path });
+  if (/File exists|cannot overwrite existing file/.test(result.stderr)) throw new ToolError(...WRITE_REFUSALS[4], { path });
+  if (/Permission denied|Operation not permitted|Read-only file system/.test(result.stderr)) {
+    throw new ToolError("PERMISSION_DENIED", "The agent's account may not write this guest path.", { path, stderr: result.stderr });
   }
-  assertCurrent(host, session);
+  throw new ToolError("OPERATION_FAILED", "The guest write did not complete.", { path, exitCode: result.exitCode, stderr: result.stderr });
 }
 
 export async function listGuestDirectory(host: KernelHost, path: string) {
@@ -196,7 +214,7 @@ async function releaseFinishedJobs(host: KernelHost, session: Session): Promise<
   }
 }
 
-export async function startGuestJob(host: KernelHost, id: string, args: { script: string; cwd?: string; env?: Record<string, string>; timeoutMs?: number }) {
+export async function startGuestJob(host: KernelHost, id: string, args: { script: string; cwd?: string; env?: Record<string, string>; timeoutMs?: number; stdin?: Uint8Array }) {
   const session = requireSession(host);
   for (const [name, value] of Object.entries(args.env ?? {})) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || value.includes("\0")) throw new ToolError("INVALID_ARGUMENT", "Invalid environment name or NUL in value");
@@ -213,6 +231,7 @@ export async function startGuestJob(host: KernelHost, id: string, args: { script
     uid,
     gid,
     timeoutMs: args.timeoutMs ?? 30000,
+    ...(args.stdin && { stdin: args.stdin }),
   });
   session.jobs.push(id);
   assertCurrent(host, session);
@@ -258,10 +277,10 @@ export type GuestScriptResult = {
 export async function runGuestScript(
   host: KernelHost,
   script: string,
-  options: { timeoutMs: number; signal?: AbortSignal },
+  options: { timeoutMs: number; signal?: AbortSignal; stdin?: Uint8Array },
 ): Promise<GuestScriptResult> {
   const id = `job-${crypto.randomUUID()}`;
-  await startGuestJob(host, id, { script, timeoutMs: options.timeoutMs });
+  await startGuestJob(host, id, { script, timeoutMs: options.timeoutMs, stdin: options.stdin });
   const deadline = performance.now() + options.timeoutMs + 5000;
   const chunks: JobChunks = [];
   let cursor: number | undefined;

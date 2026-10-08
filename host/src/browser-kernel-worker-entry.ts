@@ -3923,7 +3923,7 @@ function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs
     releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
     fd = io.open(
       msg.path,
-      msg.exclusive ? OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_EXCL : O_WRONLY_CREAT_TRUNC,
+      O_WRONLY_CREAT_TRUNC,
       msg.mode & FILE_MODES.S_MODE_BITS,
     );
     let offset = 0;

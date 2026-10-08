@@ -331,3 +331,16 @@ test("exclusive creation rejects symlinks and concurrent creators cannot clobber
   expect((await call(page, "write_file", { path: "/tmp/exclusive-link", content: "clobber", overwrite: false })).error.code).toBe("FILE_EXISTS");
   expect((await call(page, "read_file", { path: "/tmp/exclusive-race" })).content).toBe(winner);
 });
+
+test("a write runs with the agent account's permissions", async ({ page }) => {
+  await open(page);
+  const passwd = (await call(page, "read_file", { path: "/etc/passwd" })).content;
+  expect((await call(page, "write_file", { path: "/etc/passwd", content: "foo", overwrite: true })).error.code).toBe("PERMISSION_DENIED");
+  const linked = await call(page, "run_command", { script: "ln -s /etc/passwd /tmp/passwd-link", waitMs: 10000 });
+  expect(linked.exitCode).toBe(0);
+  expect((await call(page, "write_file", { path: "/tmp/passwd-link", content: "foo", overwrite: true })).error.code).toBe("PERMISSION_DENIED");
+  expect((await call(page, "read_file", { path: "/etc/passwd" })).content).toBe(passwd);
+  expect((await call(page, "list_files", { path: "/etc" })).entries.find((entry: any) => entry.name === "passwd").uid).toBe(0);
+  expect((await call(page, "write_file", { path: "/tmp/agent-owned", content: "foo", overwrite: true })).ok).toBe(true);
+  expect((await call(page, "list_files", { path: "/tmp" })).entries.find((entry: any) => entry.name === "agent-owned").uid).toBe(1000);
+});

@@ -82,7 +82,7 @@ export function registerTool(
 function toolErrorOf(error: unknown): Record<string, unknown> {
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof ToolError) return { code: error.code, message, ...error.details };
-  const code = /no synchronous VFS surface|no writeFileToVfs/.test(message)
+  const code = /no synchronous VFS surface/.test(message)
     ? "UNSUPPORTED_CAPABILITY"
     : /ENOENT/.test(message)
       ? "FILE_NOT_FOUND"

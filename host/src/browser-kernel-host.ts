@@ -1504,13 +1504,11 @@ export class BrowserKernel {
     path: string,
     data: Uint8Array,
     mode = 0o644,
-    exclusive = false,
   ): Promise<void> {
     const requestId = this.nextRequestId++;
     const owned = data.slice();
     await this.request(requestId, {
       type: "write_vfs_file",
-      exclusive,
       requestId,
       path,
       data: owned,
