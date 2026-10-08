@@ -18,7 +18,6 @@ import {
 
 type Calls = {
   reads: string[];
-  writes: Array<[string, Uint8Array, number | undefined, unknown]>;
   jobs: Array<[string, string, string[], unknown]>;
   jobReads: Array<[string, number | undefined, number | undefined, boolean | undefined]>;
   jobReleases: string[];
@@ -43,7 +42,7 @@ const completed: KernelOwnedJobRead = {
 };
 
 function fakeHost(overrides: Partial<KernelHost> = {}) {
-  const calls: Calls = { reads: [], writes: [], jobs: [], jobReads: [], jobReleases: [], announced: [] };
+  const calls: Calls = { reads: [], jobs: [], jobReads: [], jobReleases: [], announced: [] };
   const listeners: Array<(status: MachineStatus) => void> = [];
   let status: MachineStatus = "running";
   const host = {
@@ -58,9 +57,6 @@ function fakeHost(overrides: Partial<KernelHost> = {}) {
       return encoder.encode("foo\n");
     },
     readVfsDir: async (path: string) => (path === "/bin" ? [{ name: "bash" }, { name: "sh" }] : null),
-    writeVfsFile: async (path: string, bytes: Uint8Array, mode?: number, exclusive?: boolean) => {
-      calls.writes.push([path, bytes, mode, exclusive]);
-    },
     startOwnedJob: async (id: string, program: string, argv: string[], options: unknown) => {
       calls.jobs.push([id, program, argv, options]);
     },
@@ -121,15 +117,10 @@ test("halting the machine detaches the session", () => {
   assert.equal(getWebMcpRuntimeCapabilities(host).readFile, false);
 });
 
-test("reads and writes go through the raw VFS surface", async () => {
+test("reads go through the raw VFS surface", async () => {
   const { host, calls } = attached();
   assert.deepEqual(await readGuestFile(host, "/tmp/foo"), encoder.encode("foo\n"));
   assert.deepEqual(calls.reads, ["/tmp/foo"]);
-
-  await writeGuestFile(host, "/tmp/bar", new Uint8Array([1]), false);
-  assert.deepEqual(calls.writes[0]?.slice(2), [0o644, true]);
-  await writeGuestFile(host, "/tmp/bar", new Uint8Array([1]), true);
-  assert.deepEqual(calls.writes[1]?.slice(2), [0o644, false]);
 });
 
 test("a missing guest file reports FILE_NOT_FOUND", async () => {
@@ -137,15 +128,54 @@ test("a missing guest file reports FILE_NOT_FOUND", async () => {
   await assert.rejects(readGuestFile(host, "/tmp/foo"), (error: ToolError) => error.code === "FILE_NOT_FOUND");
 });
 
-test("an exclusive write onto an existing path reports FILE_EXISTS", async () => {
-  const { host } = attached({
-    writeVfsFile: async () => { throw new Error("EEXIST: /tmp/foo"); },
+test("a write runs as the agent's account and hands the bytes to the guest on stdin", async () => {
+  const { host, calls } = attached();
+  const bytes = new Uint8Array([1, 2]);
+
+  await writeGuestFile(host, "/tmp/it's", bytes, true);
+
+  const [, program, argv, options] = calls.jobs[0]!;
+  assert.equal(program, "/bin/bash");
+  assert.deepEqual(argv, ["bash", "-c", "[ -d '/tmp' ] || exit 3\ncat > '/tmp/it'\\''s'"]);
+  assert.deepEqual(options, {
+    cwd: "/home/maker",
+    env: ["PATH=/bin", "TERM=xterm", "HOME=/home/maker"],
+    uid: 1000,
+    gid: 1000,
+    timeoutMs: 30000,
+    stdin: bytes,
   });
-  await assert.rejects(
-    writeGuestFile(host, "/tmp/foo", new Uint8Array([1]), false),
-    (error: ToolError) => error.code === "FILE_EXISTS",
-  );
+  assert.deepEqual(calls.jobReleases, [calls.jobs[0]![0]]);
 });
+
+test("a write without overwrite refuses any existing path and creates with noclobber", async () => {
+  const { host, calls } = attached();
+  await writeGuestFile(host, "/foo", new Uint8Array(), false);
+  assert.deepEqual(calls.jobs[0]![2][2].split("\n"), [
+    "[ -d '/' ] || exit 3",
+    "if [ -e '/foo' ] || [ -h '/foo' ]; then exit 4; fi",
+    "set -C",
+    "cat > '/foo'",
+  ]);
+});
+
+for (const [exitCode, stderr, code] of [
+  [3, "", "FILE_NOT_FOUND"],
+  [4, "", "FILE_EXISTS"],
+  [1, "bash: /tmp/foo: cannot overwrite existing file\n", "FILE_EXISTS"],
+  [1, "bash: /etc/passwd: Permission denied\n", "PERMISSION_DENIED"],
+  [127, "bash: cat: command not found\n", "OPERATION_FAILED"],
+] as const) {
+  test(`a write that exits ${exitCode} with ${JSON.stringify(stderr)} reports ${code}`, async () => {
+    const { host } = attached({
+      readOwnedJob: async () => ({ ...completed, exitCode, chunks: [{ stream: "stderr", bytes: encoder.encode(stderr) }] }),
+    });
+    await assert.rejects(
+      writeGuestFile(host, "/tmp/foo", new Uint8Array([1]), true),
+      (error: ToolError) => error.code === code,
+    );
+  });
+}
 
 test("passwdAccount reads the home and login shell of one uid", () => {
   assert.deepEqual(passwdAccount(PASSWD, 1000), { home: "/home/maker", shell: "/bin/bash" });
@@ -186,7 +216,7 @@ test("an image that lists no account for the agent gets /bin/sh at /", async () 
 });
 
 test("a login shell the image does not hold falls back to /bin/sh at the account's home", async () => {
-  const { host, calls } = attached({ readVfsDir: async () => [{ name: "sh" }] } as Partial<KernelHost>);
+  const { host, calls } = attached({ readVfsDir: async () => [{ name: "sh" }] } as unknown as Partial<KernelHost>);
   await startGuestJob(host, "job-1", { script: "true" });
   assert.equal(calls.jobs[0]?.[1], "/bin/sh");
   assert.deepEqual(calls.jobs[0]?.[2], ["sh", "-c", "true"]);

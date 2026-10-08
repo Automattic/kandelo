@@ -69,7 +69,7 @@ parameter bounds and required fields. Unknown fields and invalid types are rejec
 | `read_terminal_output` | `terminalId`, `cursor?`, `byteLimit?` | `output`, bytesRead, nextCursor, truncated, hasMore. ANSI sequences and merged streams remain intact. |
 | `list_files` | absolute `path`, `offset?`, `limit?` | Sorted directory entries (name, type, mode, size, uid, gid, and `target` on a symlink), nextOffset, hasMore. Each call is a fresh listing. |
 | `read_file` | absolute `path`, `encoding?`, `offset?`, `byteLimit?` | UTF-8 or base64 `content`, bytesRead, nextOffset, eof, truncated. |
-| `write_file` | absolute `path`, `content`, `encoding?`, explicit `overwrite` | `overwrite:true` creates or replaces; returns bytesWritten. `false` uses atomic O_EXCL creation and returns `FILE_EXISTS` without altering an existing path. Parent must exist. The write runs as the kernel worker, so the file belongs to root. |
+| `write_file` | absolute `path`, `content`, `encoding?`, explicit `overwrite` | `overwrite:true` creates or replaces; returns bytesWritten. `false` creates with the shell's noclobber option (O_EXCL) and returns `FILE_EXISTS` without altering an existing path or symlink. Parent must exist. The write is a guest process of the agent's account, so it needs that account's permissions and follows symlinks as `open` does; a refusal returns `PERMISSION_DENIED`. |
 | `navigate_preview` | guest URL `path` | Reveals and requests navigation within the existing guest bridge; returns requestedPath, preview and previewProgress. Poll status for HTTP/load/render observations. |
 | `read_logs` | `cursor?`, `limit?`, `level?` | Timestamped entries, nextCursor, truncated, hasMore. Levels: info, warn, err, ok, debug. |
 | `create_launch_link` | `profileId?`, `startupScript?` | Encoded URL, sizeBytes, explanation of what it reproduces. Does not open, publish or execute it. |
@@ -217,8 +217,9 @@ replacement unregisters everything and registers the next image's tools afresh.
 
 Other stable errors include `NOT_READY`, `UNKNOWN_PROFILE`, `UNKNOWN_TERMINAL`,
 `STALE_SESSION`, `UNSUPPORTED_CAPABILITY`, `FILE_NOT_FOUND`, `INVALID_ARGUMENT`,
-`ABORTED`, and `OPERATION_FAILED`. A missing or nonregular file is reported as
-`FILE_NOT_FOUND` because the existing regular-file read API returns null for both.
+`PERMISSION_DENIED`, `ABORTED`, and `OPERATION_FAILED`. A missing or nonregular
+file is reported as `FILE_NOT_FOUND` because the existing regular-file read API
+returns null for both.
 
 ## Example agent workflows
 
@@ -295,17 +296,18 @@ forgotten. Starting a command when the computer already holds 64 job records
 fails with `LIMIT_EXCEEDED`, because 64 records is the kernel's real limit.
 
 Every job runs as the agent's guest account: the `maker` account (uid 1000)
-the terminal logs into, so the agent's scripts and the user own the same files. The
+the terminal logs into, so the agent and the user own the same files. The
 account's home directory and login shell come from the image's own
 `/etc/passwd`; an image that lists no account for that uid gets `/bin/sh` at
 `/`, and a listed shell that the image does not hold is replaced by `/bin/sh`.
 The script runs as `<shell> -c script` with `cwd` defaulting to the home
 directory and an environment made of the host's POSIX baseline (`PATH`, `HOME`,
 `USER`, `LOGNAME`, `TMPDIR`, `TERM`, the SSL certificate paths), then the
-call's own `env` entries, which override it. `kandelo_write_file` still writes
-through the raw worker VFS, so it checks no permission and the files it
-creates belong to root. Every script the agent runs is announced on the active
-terminal as a dim `[agent] <first line>` output line.
+call's own `env` entries, which override it. `kandelo_write_file` runs
+`cat` as the same account with the content on its stdin, so the kernel applies
+that account's permissions; the files it creates belong to that account, and a
+replaced file keeps its owner and mode. Every script the agent runs is announced
+on the active terminal as a dim `[agent] <first line>` output line.
 
 The owned family is a host primitive, not a WebMCP feature. The Node and browser
 kernel workers both implement it, and `NodeKernelHost` exposes the same
