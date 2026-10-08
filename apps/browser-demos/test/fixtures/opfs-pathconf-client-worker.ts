@@ -28,9 +28,15 @@ self.onmessage = (
       // Keep the synchronous access handle open while pathname queries run:
       // Chromium permits FileSystemFileHandle.getFile() here, but rejects a
       // second createSyncAccessHandle() for the same file.
-      nameMax: fs.pathconf(path, PATHCONF_NAMES.NAME_MAX),
-      pathMax: fs.fpathconf(fd, PATHCONF_NAMES.PATH_MAX),
-      asyncIo: fs.fpathconf(fd, PATHCONF_NAMES.ASYNC_IO),
+      //
+      // Namespace and file-type names (_PC_NAME_MAX, _PC_PATH_MAX,
+      // _PC_ASYNC_IO, ...) are the kernel's to answer, from its own table, so
+      // the backend refuses them with ENOSYS (`backendPathconf`). It answers
+      // only what OPFS itself decides: symlink support and timestamp
+      // resolution.
+      nameMax: errorName(() => fs.pathconf(path, PATHCONF_NAMES.NAME_MAX)),
+      pathMax: errorName(() => fs.fpathconf(fd, PATHCONF_NAMES.PATH_MAX)),
+      asyncIo: errorName(() => fs.fpathconf(fd, PATHCONF_NAMES.ASYNC_IO)),
       symlinks: fs.pathconf(path, PATHCONF_NAMES.POSIX2_SYMLINKS),
       timestampResolution: fs.pathconf(
         path,

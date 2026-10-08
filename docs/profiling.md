@@ -173,8 +173,10 @@ manager operations. The lock workload uses OFD locks so an independently opened
 descriptor can perform a real conflicting lookup without including a fork in
 the timed region. One shape holds one to three separated records on each of 64
 files (127 total records); the other holds 256 separated ranges on one file.
-The 64-file shape retains 128 OFDs, below the browser SharedFS backend's
-160-handle ceiling while still exercising file-index selection at scale.
+The 64-file shape retains 128 OFDs, which still exercises file-index
+selection at scale. (The counts were chosen to fit the former browser
+filesystem's 160-handle ceiling; the in-kernel filesystems that replaced it
+have no fixed handle table.)
 These counts fit both sides of a before/after comparison with the former fixed
 table. They are performance workloads, not substitutes for the 4096-record
 capacity tests.

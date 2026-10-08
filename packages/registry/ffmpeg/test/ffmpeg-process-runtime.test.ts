@@ -1,10 +1,18 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  existsSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
-import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "../../../../host/test/centralized-test-helper";
 import { ffmpegProgram, fixture, run } from "./ffmpeg-support";
 
 // Native n9.0 behaviors measured in fixtures/README.md ("Native behaviors").
@@ -20,7 +28,7 @@ const scratch: string[] = [];
 afterAll(() => scratch.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 function tmp(): string {
-  const d = mkdtempSync(join(tmpdir(), "kandelo-ffmpeg-"));
+  const d = makeHostScratchTempRoot("kandelo-ffmpeg-");
   scratch.push(d);
   return d;
 }

@@ -19,7 +19,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { MemoryFileSystem } from "../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
 import { validateVfsAssetGroupManifest } from "../web-libs/kandelo-session/src/vfs-asset-group.ts";
 import {
   buildLocalVfsAssetGroup,
@@ -797,7 +797,11 @@ async function createFixture(
 
   const images = new Map<string, Buffer>();
   for (const [id, _load, sourceName] of PRODUCTS) {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    // The producer that writes every shipped image. These fixtures stand in
+    // for product images the Pages closure stages, so they must be the kind of
+    // image it will actually meet: the closure reads them through the module
+    // rather than through host-side JSON sections.
+    const fs = KandeloImageFs.create();
     if (id === "browser-main-shell") {
       const registeredLazyFileCount = options.collidingImageMember
         ? lazyFileCount - 1
@@ -816,27 +820,24 @@ async function createFixture(
       }
       for (const name of ["vim.zip", "nethack.zip"] as const) {
         const body = assetBodies.get(name)!;
-        fs.registerLazyTree(
-          {
-            bytes: body.byteLength,
-            decoder: "zip-v1",
-            expandedBytes: 1,
-            mediaType: "application/zip",
-            sha256: sha256(body),
-            sourceEntryCount: 1,
-            transports: [name],
-          },
-          [
-            {
-              inodeGroup: name,
-              mode: 0o755,
-              size: 1,
-              sourcePath: `bin/${name}`,
-              type: "file",
-              vfsPath: `/opt/${name}`,
-            },
-          ],
-        );
+        fs.registerLazyArchive({
+          url: name,
+          entries: [{
+            fileName: `bin/${name}`,
+            fileNameBytes: new TextEncoder().encode(`bin/${name}`),
+            compressedSize: 1,
+            uncompressedSize: 1,
+            compressionMethod: 0,
+            localHeaderOffset: 0,
+            mode: 0o755,
+            isDirectory: false,
+            isSymlink: false,
+            externalAttrs: 0,
+            creatorOS: 3,
+          }],
+          mountPrefix: "/opt",
+          integrity: { sha256: sha256(body), bytes: body.byteLength },
+        });
       }
     } else if (id === "browser-nginx" && options.collidingImageMember) {
       const body = images.get("browser-lamp")!;

@@ -85,6 +85,7 @@
       "binary": "programs/wasm32/mmap_shared_test.wasm",
       "resolver_path": "programs/mmap_shared_test.wasm",
       "consumers": [
+        "host/test/global-setup.ts",
         "host/test/mmap-shared.test.ts"
       ]
     },

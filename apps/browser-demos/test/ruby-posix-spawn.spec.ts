@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { ensureDirRecursive, writeVfsBinary } from "../../../host/src/vfs/image-helpers";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import {
@@ -84,9 +84,7 @@ async function runRubyCases(
   // Build the fixture image in the test runner. The browser receives only
   // transferable image bytes; its kernel worker owns the live VFS buffer.
   const maxImageBytes = 8 * 1024 * 1024;
-  const imageOwner = MemoryFileSystem.create(
-    new SharedArrayBuffer(2 * 1024 * 1024), maxImageBytes,
-  );
+  const imageOwner = KandeloImageFs.create();
   ensureDirRecursive(imageOwner, "/tmp");
   ensureDirRecursive(imageOwner, "/bin");
   writeVfsBinary(imageOwner, RUBY_VFORK_EXECUTABLE,

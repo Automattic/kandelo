@@ -83,25 +83,46 @@ application benchmarks on both hosts.
 
 ### Close the remaining regular-file `MAP_SHARED` gaps
 
-The mapping cache deliberately rejects objects it cannot identify or keep
-alive safely. Node, mounted VFS backends, and supported OPFS browsers now
-provide exact live-handle identity; OPFS uses session-scoped inode tokens and
-preserves an open object across rename and unlink. Initial mappings retain the
-descriptor's live handle rather than reopening its remembered pathname.
-In-kernel memfds still return `ENOTSUP` because they do not expose the host
-handle used by the file page cache, and any backend unable to prove exact,
-stable identity remains an explicit unsupported boundary.
+Two kinds of regular file are mapped differently, and each has gaps.
 
-Further gaps are observable VM semantics rather than cache bookkeeping. Stores
-beyond the current file size are zero-filled or discarded on refresh/writeback
-instead of raising Linux `SIGBUS`, and writers outside Kandelo's direct file
-syscall paths do not invalidate cached pages. Complete support needs a
-kernel-owned memfd mapping bridge, external invalidation (or a documented
-ownership boundary), and a Wasm mechanism or instrumentation for faulting
-beyond EOF.
+**Files on a host-mounted directory** (Node `extraMounts`, session seeds, a
+host-backed scratch mount; OPFS where a host mounts it) go through the host
+page cache, which deliberately rejects objects it cannot identify or keep
+alive safely. Node and supported OPFS browsers provide exact live-handle
+identity; OPFS uses session-scoped inode tokens and preserves an open object
+across rename and unlink. Initial mappings retain the descriptor's live
+handle rather than reopening its remembered pathname, and separate mappings
+of one file converge at syscall boundaries.
+
+**Files the kernel owns** (everything under `/` and the scratch mounts,
+including `/tmp` and `/dev/shm`, and memfds) have no host handle. A writable
+`MAP_SHARED` mapping of one writes its changed bytes back through a
+close-on-exec duplicate of the guest's descriptor at `msync`, `munmap`,
+`exec` and exit (`registerFdWritebackSharedMmap` and
+`flushFdWritebackMapping` in `host/src/kernel-worker.ts`). That keeps the
+file correct, but separate mappings of one kernel-owned file do not
+converge: a forked child's mapping, or a second process that opens and maps
+the same file, sees the file as it was when it mapped it plus its own
+writes. Before the kernel owned `/`, files under `/tmp`, `/dev/shm` and the
+image were host-backed and did converge, so POSIX shared memory through
+`shm_open` (and any program sharing a mapped scratch file across processes)
+lost that behaviour. Closing it needs one page cache per kernel file
+identity that every mapping of the file publishes to and refreshes from at
+syscall boundaries, as the host page cache does, with the kernel keeping
+the inode alive while a mapping exists. The duplicate descriptor is also
+guest-visible: a guest `closefrom`/`dup2` over its number makes writeback
+fail (loudly: it is refused and reported, never redirected to another file)
+rather than survive as POSIX requires; a kernel-held descriptor would fix
+that.
+
+Both kinds share the observable VM gaps: stores beyond the current file
+size are zero-filled or discarded instead of raising Linux `SIGBUS`, and
+writers outside Kandelo's direct file syscall paths do not invalidate
+cached pages.
 
 **Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs-worker.ts`,
-`host/src/vfs/vfs.ts`, `crates/kernel/src/descriptor_backing.rs`
+`host/src/vfs/vfs.ts`, `crates/runtime-core/src/rootfs.rs`,
+`crates/runtime-core/src/tmpfs.rs`
 
 ### Re-evaluate the Linux-specificity of the VT keyboard input path
 
@@ -274,6 +295,77 @@ unpublished generation exists.
 
 **Files:** `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`,
 package-source publication workflows, `docs/package-sources.md`
+
+### MariaDB's bootstrap is not reproducible
+
+The `wordpress` image is byte-reproducible: its build-time installer runs
+in deterministic image-build mode and each machine rotates its secrets on
+first boot ("Reproducible VFS image packages" in
+`docs/package-management.md`, which describes this gap in full). The
+`lamp` image is not. Two builds under one key still differ in between 2
+and about 76 files under `/data` (the count varies from pair to pair), all
+from the MariaDB bootstrap, and all from the order in which the server's
+threads run:
+
+- The InnoDB redo log and system tablespace, in every pair: after bootstrap
+  the log sequence number was 43931 or 43943 across builds, and even with
+  equal sequence numbers about 970 bytes of `ib_logfile0` and 12 bytes of
+  two `ibdata1` pages differ -- the order in which the background threads'
+  mini-transactions land.
+- One byte of a time-based UUID, in some pairs: the Aria server UUID in
+  `aria_log_control` and every `.MAI` header, and the `.frm` table version
+  of the system tables the bootstrap creates. MariaDB builds these from its
+  monotonic clock; in deterministic mode that is the bootstrap thread's
+  logical clock, which counts the thread's own reads, and how many reads it
+  makes depends on how often it waits for the background threads.
+
+A deterministic clock and entropy source cannot remove a difference in
+thread order. Fewer InnoDB purge and I/O threads did not either.
+
+**Chosen direction: serialized build-time scheduling.** A
+build-time kernel runs guest threads one at a time in a fixed order: a run
+token granted by the kernel at syscall boundaries, the kernel choosing
+which runnable thread proceeds, virtual time advancing only when every
+thread is blocked, new threads and forked children held until granted the
+token, and a build-time watchdog that fails the build loudly if a thread
+spins without making syscalls. Same security boundary as the deterministic
+mode: no syscall, set once before any task, Node image builders only.
+
+**It waits on moving blocking waits into Rust.** The scheduler needs the
+kernel to know which threads are blocked and to decide every wakeup, and
+today it does not: `futex` wait/wake is handled entirely in
+`host/src/kernel-worker.ts` (`Atomics.waitAsync` on guest memory; the Rust
+`kernel_futex` is bypassed), and sleeps, `waitpid`, `rt_sigtimedwait` and
+the poll/select/accept/advisory-lock retries are parked in host lists and
+resumed by host timers, several polling every 10, 50 or 500 ms of real
+time. A scheduler layered on those would still order threads by host
+timing, and writing it in TypeScript would put kernel scheduling policy in
+the host. Moving futex, sleep, timed-wait and `waitpid` parking into the
+Rust wait queue (`crates/runtime-core/src/wait_queue.rs`, which already
+owns the deadlines) comes first; the scheduler follows it. The rejected alternatives: a pinned,
+content-addressed pre-bootstrapped `/data` as a build input (fixes one
+package, and hides a still non-reproducible step behind a checked-in
+artifact), or accepting `lamp` as non-reproducible.
+
+**Files:** `images/vfs/scripts/wordpress-preinstall.ts`,
+`crates/runtime-core/src/image_build_determinism.rs`,
+`crates/runtime-core/src/wait_queue.rs`, `host/src/kernel-worker.ts`
+
+### `check-determinism run` cannot fetch sources under its fake clock
+
+`xtask check-determinism run` gives each of its two builds a fresh source
+cache and, when `faketime` is on `PATH` (the Nix dev shell provides it),
+runs them at fixed wall clocks in 2001 and 2029. Source downloads then
+fail TLS verification ("certificate not valid yet: verification time
+981191313") after eight attempts, so on a cold source cache the first
+build fails dozens of packages and blocks what depends on them (observed
+2026-09-26 with `--product browser-nginx-php`: 61 FAILED, shell and
+nginx-php-vfs BLOCKED). The clock the check varies should reach the build
+steps, not the source fetcher: fetch outside `faketime` (or seed both
+variations from one verified source cache, which the source digests
+already pin) and apply the fake clock only to the builds.
+
+**Files:** `tools/xtask/src/determinism_check.rs`
 
 ### Define compatibility for restored lazy VFS images
 

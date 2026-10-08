@@ -24,9 +24,16 @@ const browserKernelModulePath = resolve(
   __dirname,
   "../../../host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(
+// The Rust image writer. Its wasm is handed in as bytes from Node, the same
+// shape the program fixtures already use -- the bridge stopped importing node
+// builtins, so a page can transform it like any other module.
+const imageFsModulePath = resolve(
   __dirname,
-  "../../../host/src/vfs/memory-fs.ts",
+  "../../../images/vfs/lib/kandelo-image-fs.ts",
+);
+const imageModuleWasmPath = resolve(
+  __dirname,
+  "../../../local-binaries/kandelo_image_module32.wasm",
 );
 const lifecycleProgramPath = buildProgramsFixture("programs/wasm32/vfork-lifecycle.wasm");
 const threadProgramPath = buildProgramsFixture("programs/wasm32/vfork-from-thread.wasm");
@@ -115,7 +122,8 @@ async function runBrowserVforkFixture(
   return page.evaluate(
     async ({
       browserKernelModuleUrl,
-      memoryFsModuleUrl,
+      imageFsModuleUrl,
+      imageModuleBytes,
       fixtureUrl,
       execChildFixtureUrl,
       sideModuleFixtureUrl,
@@ -129,8 +137,8 @@ async function runBrowserVforkFixture(
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsModuleUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -170,9 +178,7 @@ async function runBrowserVforkFixture(
       let initialized = false;
 
       try {
-        const imageOwner = MemoryFileSystem.create(
-          new SharedArrayBuffer(2 * 1024 * 1024),
-        );
+        const imageOwner = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
         imageOwner.mkdir("/tmp", 0o755);
         if (execChildFixtureUrl) {
           const childResponse = await fetch(execChildFixtureUrl);
@@ -234,7 +240,8 @@ async function runBrowserVforkFixture(
     },
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
-      memoryFsModuleUrl: asViteFsUrl(memoryFsModulePath),
+      imageFsModuleUrl: asViteFsUrl(imageFsModulePath),
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       fixtureUrl: asViteFsUrl(fixturePath),
       execChildFixtureUrl: execChildFixturePath
         ? asViteFsUrl(execChildFixturePath)

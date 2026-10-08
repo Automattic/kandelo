@@ -27,14 +27,17 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -98,7 +101,7 @@ describe("mako — upstream notification daemon on wlcompositor + dbus", () => {
       const compositorBytes = loadBytes(compositorBin!);
       const dashBytes = loadBytes(dashBin!);
 
-      const root = mkdtempSync(join(tmpdir(), "kandelo-mako-"));
+      const root = makeHostScratchTempRoot("kandelo-mako-");
       const fontDir = join(root, "fonts");
       mkdirSync(fontDir);
       copyFileSync(INCONSOLATA, join(fontDir, "Inconsolata-Regular.ttf"));

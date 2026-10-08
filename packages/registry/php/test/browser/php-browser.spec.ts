@@ -1,8 +1,8 @@
 /**
  * Playwright test — runs PHP CLI in a real Chromium browser via kandelo.
  *
- * This verifies the browser code path: VirtualPlatformIO + MemoryFileSystem +
- * BrowserTimeProvider + SharedArrayBuffer, which differs significantly from the
+ * This verifies the browser code path: a kernel-owned image built with
+ * KandeloImageFs + BrowserTimeProvider + SharedArrayBuffer, which differs from the
  * Node.js path tested in packages/registry/php/test/php-hello.test.ts.
  *
  * The browser harness runs multiple PHP tests (inline, file-based, extensions)

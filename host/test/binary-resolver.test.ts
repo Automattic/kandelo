@@ -17,7 +17,6 @@ import {
 import { execFileSync } from "node:child_process";
 import { basename, dirname, join, relative } from "node:path";
 import { tmpdir } from "node:os";
-import { zstdCompressSync } from "node:zlib";
 import {
   binariesDir,
   binaryProgramCacheRoot,
@@ -42,10 +41,6 @@ import {
   ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
 } from "../src/generated/abi";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../src/vfs/memory-fs";
 import {
   resolvePolicyBoundVfsWasmArtifact,
   tryResolveVfsArtifact,
@@ -250,17 +245,6 @@ function kernelWasmWithExports(
   ]));
 
   return new Uint8Array(bytes);
-}
-
-async function vfsImage(
-  metadata: VfsImageMetadata | null | undefined,
-  compressed: boolean,
-): Promise<Uint8Array> {
-  const mfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-  const image = await mfs.saveImage(
-    metadata === undefined ? undefined : { metadata },
-  );
-  return compressed ? new Uint8Array(zstdCompressSync(image)) : image;
 }
 
 function fixtureClosureRelPaths(names: readonly string[]): string[] {
@@ -1356,69 +1340,11 @@ describe("binary resolver artifact policy", () => {
     expect(findRepoRoot(installedModule)).toBe(consumer);
   });
 
-  it("skips a stale local .vfs.zst when a fetched ABI-matching candidate exists", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const staleLocal = await vfsImage(
-      { version: 1, kernelAbi: ABI_VERSION - 1 },
-      true,
-    );
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    writeCandidate(localBinariesDir(), relPath, staleLocal);
-    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(fetchedPath);
-  });
-
-  it("skips a stale local .vfs when a fetched ABI-matching candidate exists", async () => {
-    const relPath = fixtureRelPath(".vfs");
-    const staleLocal = await vfsImage(
-      { version: 1, kernelAbi: ABI_VERSION - 1 },
-      false,
-    );
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, false);
-
-    writeCandidate(localBinariesDir(), relPath, staleLocal);
-    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(fetchedPath);
-  });
-
-  it("selects a matching local .vfs.zst before the fetched candidate", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const local = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    const localPath = writeCandidate(localBinariesDir(), relPath, local);
-    writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(localPath);
-  });
-
-  it("accepts a VFS image with metadata but no kernelAbi declaration", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const local = await vfsImage({ version: 1 }, true);
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    const localPath = writeCandidate(localBinariesDir(), relPath, local);
-    writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(localPath);
-  });
-
-  it("skips an uninspectable local VFS image for a valid fetched candidate", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    writeCandidate(
-      localBinariesDir(),
-      relPath,
-      new TextEncoder().encode("not a VFS image"),
-    );
-    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(fetchedPath);
-  });
+  // No `.vfs`/`.vfs.zst` tier-choice cases: the resolver no longer reads an
+  // image's declared kernel ABI. The kernel refuses an image built for another
+  // ABI when it loads it (`image_policy::check_declared_abi`, reached from
+  // `rootfs::load_image`), which is the layer that owns that contract. Wasm
+  // artifact policy is still the resolver's, so the `.wasm` cases stay.
 
   it("keeps skipping a stale local .wasm when a fetched ABI-matching candidate exists", () => {
     const relPath = fixtureRelPath(".wasm");

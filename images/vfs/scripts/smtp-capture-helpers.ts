@@ -1,11 +1,11 @@
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import { writeVfsFile, ensureDirRecursive } from "./vfs-image-helpers";
 import type { DinitService } from "./dinit-image-helpers";
 
 export const SMTP_CAPTURE_DIR = "/var/mail/smtp-capture";
 export const SMTP_CAPTURE_PORT = 1025;
 
-export function populateSmtpCaptureConfig(fs: MemoryFileSystem): void {
+export function populateSmtpCaptureConfig(fs: VfsImageFilesystem): void {
   ensureDirRecursive(fs, "/usr/local/bin");
   ensureDirRecursive(fs, SMTP_CAPTURE_DIR);
   ensureDirRecursive(fs, `${SMTP_CAPTURE_DIR}/tmp`);

@@ -1,12 +1,12 @@
 /**
  * TeX Live distribution bundle loader.
  * Loads a pre-built bundle (JSON manifest + file data) into
- * the kernel's MemoryFileSystem.
+ * the image filesystem a demo is assembling.
  *
  * Bundle format: { files: Array<{ path: string, data: string }> }
  * where data is base64-encoded file contents.
  */
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 
 interface BundleEntry {
   path: string;
@@ -38,10 +38,10 @@ function base64Decode(str: string): Uint8Array {
 }
 
 /**
- * Load a TeX Live distribution bundle into the given MemoryFileSystem.
+ * Load a TeX Live distribution bundle into the given image filesystem.
  */
 export async function loadTexliveBundle(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   bundleUrl: string,
   onProgress?: (current: number, total: number) => void,
 ): Promise<number> {

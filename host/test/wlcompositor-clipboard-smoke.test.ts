@@ -23,11 +23,11 @@
  * Skips if the binaries aren't built.
  */
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const clipBin = tryResolveBinary("programs/wlclip-test.wasm");
@@ -187,7 +187,7 @@ describe("wlcompositor — clipboard selection", () => {
       // ships (packages/registry/wayland-demo/desktops/data/omarchy/
       // wlcompositor.conf), standalone so this gate does not depend on the
       // rest of that file.
-      const dir = mkdtempSync(join(tmpdir(), "wlc-clip-"));
+      const dir = makeHostScratchTempRoot("wlc-clip-");
       const confPath = join(dir, "wlcompositor.conf");
       writeFileSync(confPath, [
         "windowrule = tag +terminal, class:(Alacritty|kitty|com.mitchellh.ghostty|foot|org\\.codeberg\\.dnkl\\.foot|wezterm|org\\.omarchy\\..*|TUI\\..*)",

@@ -46,9 +46,7 @@ disabled_software_vitest_excludes=(
     "--exclude=../**/*tap*"
     "--exclude=test/abi-staging-mini-vfs.test.ts"
     "--exclude=test/abi-staging-product-builders.test.ts"
-    "--exclude=test/privileged-projection.test.ts"
     "--exclude=test/shell-vfs-build.test.ts"
-    "--exclude=test/vfs-product-builder-contract.test.ts"
 )
 disabled_software_cargo_test_args=(
     "--skip" "formula"
@@ -898,7 +896,6 @@ case "$suite" in
                 npx playwright test \
                     test/boot-current-boundary.spec.ts \
                     test/coi.spec.ts \
-                    test/package-deferred-tree-browser.spec.ts \
                     test/vfs-import-seal-boundary.spec.ts \
                     test/wasm-gc-reference-transport.spec.ts \
                     test/wasm-trap-signal.spec.ts \

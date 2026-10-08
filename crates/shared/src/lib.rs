@@ -187,7 +187,15 @@ pub mod process_layout;
 ///     description, socket readiness is decided by the kernel from facts the
 ///     host reports, and blocking waits carry monotonic deadlines.
 ///     docs/abi-versioning.md ("ABI 48") lists each.
-pub const ABI_VERSION: u32 = 48;
+/// 49: the kernel owns the root filesystem. `/` and the scratch mounts are
+///     in-kernel filesystems built from the VFS image (new `kernel_rootfs_*`
+///     and `kernel_set_*` exports, `env.host_image_read` and
+///     `env.host_fetch_deferred` imports, the KLZY image section), and the
+///     remaining host filesystem imports follow a handle-only contract (one
+///     path component relative to a directory handle; the path-taking
+///     `host_open`/`host_stat`/... family is gone). docs/abi-versioning.md
+///     ("ABI 49") lists each.
+pub const ABI_VERSION: u32 = 49;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///

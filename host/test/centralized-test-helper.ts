@@ -5,7 +5,7 @@
  * for optimal performance. Falls back to main-thread mode when a custom
  * PlatformIO is provided (PlatformIO can't be serialized across threads).
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
@@ -24,7 +24,11 @@ import {
   NodeKernelHost,
   resolveRootfsArtifact,
 } from "../src/node-kernel-host";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
+import { configureRootfsOverlayFromImage } from "../src/process-lifecycle";
+import { imageReadFromContainer } from "../src/vfs/rootfs-lazy-archives";
+import { maybeDecompressImage } from "../src/vfs/vfs-image-transport";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -44,6 +48,25 @@ import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, Worker
 import type { PlatformIO } from "../src/types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Create a fresh host temp directory that the in-kernel tmpfs never claims.
+ *
+ * The in-kernel tmpfs is the unconditional authority for its scratch prefixes
+ * (`/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`,
+ * `/dev/shm`). `os.tmpdir()` frequently resolves under `/tmp` (the nix dev
+ * shell sets `TMPDIR=/tmp/nix-shell.*`, and Linux defaults to `/tmp`), so a
+ * kernel-routed guest open of a path there is served by the empty in-kernel
+ * tmpfs, not the host directory. Tests that need the guest to reach a real host
+ * file through `NodePlatformIO` must therefore stage it outside every scratch
+ * prefix. `<repoRoot>/target` is git-ignored and never a scratch prefix, so it
+ * gives raw host-filesystem coverage on every platform. Callers own cleanup.
+ */
+export function makeHostScratchTempRoot(prefix: string): string {
+  const base = join(__dirname, "../..", "target", "host-fs-test-scratch");
+  mkdirSync(base, { recursive: true });
+  return mkdtempSync(join(base, prefix));
+}
 
 const MAX_PAGES = 16384;
 const SIGSEGV = 11;
@@ -186,6 +209,16 @@ export interface RunProgramOptions {
   /** Exact VFS image for tests that stage package runtime files. Overrides
    * `useDefaultRootfs`; omitted means the canonical image. */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /**
+   * Whether the `/` image mount is declared `nosuid` (worker-thread mode).
+   * Omitted keeps `DEFAULT_MOUNT_SPEC`'s declaration.
+   *
+   * The kernel owns `/`, so this declaration travels with the boot as a
+   * `rootfsMountSpec` rather than as a `VirtualPlatformIO` mount passed via
+   * `io:` (which would also force main-thread mode). A test asserting set-ID
+   * behaviour can therefore run where the product runs it.
+   */
+  rootfsNosuid?: boolean;
   /** Exact kernel wasm to boot (worker-thread mode). Omitted resolves the
    * kernel through the normal binary resolver. A caller that already holds
    * the kernel artifact — e.g. a build-time step that cannot rely on the
@@ -281,6 +314,13 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
     execPrograms,
     rootfsImage,
+    rootfsMountSpec: options.rootfsNosuid === undefined
+      ? undefined
+      : DEFAULT_MOUNT_SPEC.map((mount) =>
+        mount.path === "/" && mount.source === "image"
+          ? { ...mount, nosuid: options.rootfsNosuid }
+          : mount
+      ),
     enableTcpNetwork: options.enableTcpNetwork,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
@@ -406,7 +446,9 @@ async function prepareExecTargetTestRootfs(
     return configured;
   }
 
-  let rootfs: MemoryFileSystem;
+  // Built by the Rust image writer every image builder uses, so the image the
+  // kernel parses here has the same shape as a shipped one.
+  let rootfs: KandeloImageFs;
   if (configured === undefined) {
     let programBytes = 0;
     for (const hostPath of options.execPrograms.values()) {
@@ -420,14 +462,18 @@ async function prepareExecTargetTestRootfs(
     if (!Number.isSafeInteger(capacity)) {
       throw new Error("test exec target rootfs capacity overflows");
     }
-    rootfs = MemoryFileSystem.create(new SharedArrayBuffer(capacity));
+    rootfs = KandeloImageFs.create();
+    rootfs.setImageCapacity(capacity);
   } else {
     const image = configured === "default"
       ? new Uint8Array(readFileSync(resolveRootfsArtifact().selectedPath))
       : configured instanceof Uint8Array
         ? configured
         : new Uint8Array(configured);
-    rootfs = MemoryFileSystem.fromImagePreservingCapacity(image);
+    // `loadImage` restores the image's declared capacity ceiling, so the
+    // re-saved image keeps the headroom the original declared.
+    rootfs = KandeloImageFs.create();
+    rootfs.loadImage(image);
   }
 
   for (const [path, hostPath] of options.execPrograms) {
@@ -1144,6 +1190,24 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     },
   });
 
+  // An explicit root image boots the kernel-owned `/` in this mode too, the
+  // same way the Node worker entry does; without one, `/` stays the raw host
+  // filesystem of the `io` this mode was given.
+  if (options.rootfsImage !== undefined) {
+    const container = maybeDecompressImage(
+      options.rootfsImage === "default"
+        ? new Uint8Array(readFileSync(resolveRootfsArtifact().selectedPath))
+        : options.rootfsImage instanceof Uint8Array
+          ? options.rootfsImage
+          : new Uint8Array(options.rootfsImage),
+    );
+    configureRootfsOverlayFromImage(kernelWorker, {
+      imageRead: imageReadFromContainer(container),
+      imageBytes: container,
+      foreignPrefixes: [],
+      nosuid: options.rootfsNosuid ?? false,
+    });
+  }
   await kernelWorker.init(kernelWasmBytes);
   pid = kernelWorker.createProcess(CAPTURED_STDIO);
 

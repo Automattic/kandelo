@@ -1294,6 +1294,121 @@ Semantic changes (not visible to the snapshot):
   itself under the requested command's permission check, with no `IPC_STAT`
   probe.
 
+### ABI 49 the kernel owns the root filesystem
+
+ABI 49 moves the machine's filesystem into the kernel. `/` is an in-kernel
+filesystem the kernel builds by parsing the VFS image itself
+(`crates/runtime-core/src/rootfs.rs`, reading the image through
+`kandelo_image_fs.rs`), and the scratch mounts (`/tmp`, `/var/tmp`,
+`/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`, and `/dev/shm`) are
+an in-kernel tmpfs (`tmpfs.rs`). The host stops being a filesystem: it serves
+positioned reads of the image it holds, fetches the bytes of files the image
+only names, and keeps a handle-only interface for host directories mounted
+beneath `/`. The TypeScript filesystem (`MemoryFileSystem` and the vendored
+SharedFS) is deleted. The guest syscall ABI and the libc glue are unchanged,
+but `__abi_version` equality is exact, so every program, package archive and
+VFS image is rebuilt for 49; a kernel or host built for ABI 48 cannot run
+against the other.
+
+Structural changes (recorded in the snapshot):
+
+- **Kernel exports: 198 → 214.** Added, all optional for the host-adapter
+  manifest (a host that boots without a `/` image calls none of them):
+  - `kernel_rootfs_load_image(len_lo, len_hi)`: parse the boot image through
+    `host_image_read` and install it as `/`. Refuses an image without the
+    `KLZY` section (`EINVAL`) and an image whose metadata declares a
+    different `kernelAbi` (`EPROTO`).
+  - `kernel_set_rootfs_enabled`, `kernel_set_tmpfs_enabled`: hand `/` and
+    the scratch prefixes to the in-kernel filesystems.
+  - `kernel_set_rootfs_nosuid`: publish whether `/` was mounted `nosuid`.
+  - `kernel_set_rootfs_now(sec_lo, sec_hi, nsec)`: the wall clock the base
+    tree is stamped with.
+  - `kernel_rootfs_set_foreign_prefixes(ptr, len)` and
+    `kernel_rootfs_set_foreign_mount_roots(ptr, len)`: the host-mounted
+    directories beneath `/` that the rootfs must not claim, and the
+    directory handle that anchors each one.
+  - `kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
+    `kernel_rootfs_stat_mode`, `kernel_rootfs_unlink_file`,
+    `kernel_rootfs_mkdir_parents`: the host's own access to kernel-owned
+    files (the main thread's `read_vfs_file`/`write_vfs_file`/
+    `unlink_vfs_file`, the spawn preflight's program reads, and the browser's
+    per-session TLS root certificate). A path under a scratch mount reaches
+    tmpfs; any other path reaches the rootfs.
+  - `kernel_rootfs_export_container_read(off_lo, off_hi, buf, len)`: stream
+    the finished image of the live `/`, which replaces the host rebuilding
+    one (`export_rootfs_image`).
+  - `kernel_rootfs_load_manifest` and `kernel_rootfs_export_tree`: an
+    alternative loader for a pre-walked tree and a metadata dump of the live
+    tree, kept as entry points for tests and tools.
+  - `kernel_set_image_build_determinism(seed_lo, seed_hi, epoch_lo,
+    epoch_hi)`: boot a kernel whose realtime clock counts up from a fixed
+    epoch and whose entropy is a seeded stream, for image builders only
+    (`crates/runtime-core/src/image_build_determinism.rs`). The host refuses
+    to boot a determinism-requesting builder on a kernel without it.
+- **New errno values** `EDOM` (33), `EPROTO` (71), and `ENOEXEC` (8) join
+  `wasm_posix_shared::Errno`, and `host/src/generated/abi.ts` gains a
+  generated `ERRNO` table and `KANDELO_REFERENCE_EPOCH_SECONDS`.
+
+Host imports (not in the structural snapshot, so listed here): the kernel
+imports 76 host functions, down from 82.
+
+- Removed, the path-taking filesystem family: `host_open`, `host_stat`,
+  `host_lstat`, `host_statfs`, `host_pathconf`, `host_mkdir`, `host_rmdir`,
+  `host_unlink`, `host_rename`, `host_link`, `host_symlink`, `host_readlink`,
+  `host_chmod`, `host_chown`, `host_lchown`, `host_access`, `host_opendir`,
+  `host_closedir`.
+- Added, the handle-only family, each naming exactly one path component
+  relative to a directory handle the host issued: `host_openat`,
+  `host_fstatat`, `host_mkdirat`, `host_unlinkat`, `host_renameat`,
+  `host_linkat`, `host_symlinkat`, `host_readlinkat`, `host_fchmodat`,
+  `host_fchownat`. A directory is an ordinary handle (`host_openat` with
+  `O_DIRECTORY`), iterated by `host_readdir` and released by `host_close`.
+  The whole family is reached only under a host mount whose root handle the
+  host published; a host with none (the browser) never sees a call.
+- Changed: `host_utimensat` takes `(dir, name_ptr, name_len, atime_sec,
+  atime_nsec, mtime_sec, mtime_nsec, flags)`.
+- Added, the byte pipe for the kernel-owned `/`: `host_image_read(buf, len,
+  off_lo, off_hi)`, a positioned read of the boot image, and
+  `host_fetch_deferred(uri_ptr, uri_len, buf, len, off_lo, off_hi)`, a
+  positioned read of a resource the image names by URI but does not carry
+  (a URL-backed lazy file or a lazy archive). The kernel relays the image's
+  URI unread; the host fetches it and answers `EAGAIN` while the fetch is in
+  flight.
+
+VFS image binding (not in the structural snapshot):
+
+- An image must carry the kernel lazy-linkage section `KLZY` (container flag
+  bit 4, `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY`; layout in `crates/shared/src/lib.rs`)
+  so the kernel can learn every lazy file's real size and archive membership
+  without parsing the host-side JSON sections. Images written before ABI 49
+  have none and are refused; rebuild them.
+- The image metadata's `kernelAbi` is checked by the kernel at load
+  (`image_policy::check_declared_abi`). The TypeScript binary resolver no
+  longer opens VFS images to make that check.
+- Images are written by the Rust writer (`crates/runtime-core/src/kandelo_image_write.rs`,
+  reached from TypeScript builders through `crates/kandelo-image-module`).
+  The filesystem body's superblock magic is `KIFS`, and `statfs(2)` on the
+  image reports that `f_type`.
+
+Semantic changes (not visible to the snapshot):
+
+- **`/` and the scratch mounts are kernel state on both hosts.** Their
+  metadata, permissions and contents live in the kernel's linear memory;
+  only unmodified image content stays in the host's copy of the image.
+  `fsync` on their files and directories succeeds without host work.
+- **`_PC_PIPE_BUF` always has a value** (4096), including on the kernel's own
+  filesystems and on captured stdio; the host pathconf table is gone and a
+  host without `fpathconf(3)` defers to the kernel's.
+- **A writable `MAP_SHARED` mapping of a kernel-owned file** (anything under
+  `/` or a scratch mount, and memfds) writes back through a close-on-exec
+  duplicate of its descriptor at `msync`, `munmap`, `exec` and exit, never
+  past EOF. Separate mappings of one kernel-owned file do not converge with
+  each other (`docs/posix-status.md`, `mmap()`).
+- **`/dev/shm` is tmpfs on both hosts**, not a host mount; the browser host no
+  longer allocates a POSIX-shared-memory SharedArrayBuffer.
+- **`mount(2)` is still `ENOSYS`.** The in-kernel filesystems are configured
+  by the host at boot, not by the guest.
+
 ## The snapshot
 
 `abi/snapshot.json` is generated by `cargo xtask dump-abi` from the

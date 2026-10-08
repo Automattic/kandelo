@@ -23,20 +23,20 @@ import {
   sep,
 } from "node:path";
 import type { MountConfig } from "./types";
-import { MemoryFileSystem } from "./memory-fs";
 import {
   createSessionOwnedHostFileSystem,
   HostFileSystem,
 } from "./host-fs";
 import {
-  restoreVerifiedImageMounts,
+  filterMountSpecForKernelTmpfs,
   validateSpec,
   type MountSpec,
 } from "./default-mounts";
 
 /**
- * Materialise `spec` for the Node host. Image mounts get a fresh,
- * cryptographically verified `MemoryFileSystem`; scratch mounts get a
+ * Materialise `spec` for the Node host. Image mounts get no host backend (the
+ * kernel parses the image and serves `/` itself), and neither do scratch mounts
+ * at the prefixes the in-kernel tmpfs owns; any other scratch mount gets a
  * `HostFileSystem` rooted at `<sessionDir><spec.path>` (the directory is
  * created with `mkdirSync({recursive:true})` so `safePath` is happy on first
  * access).
@@ -62,15 +62,15 @@ async function resolveValidatedForNode(
   sessionSeedTrees: readonly NodeSessionSeedTree[] = [],
   shadowingMountPoints: readonly string[] = [],
 ): Promise<MountConfig[]> {
-  const imageMounts = await restoreVerifiedImageMounts(spec, rootfsImage);
-  for (const m of spec) {
+  const effective = filterMountSpecForKernelTmpfs(spec);
+  for (const m of effective) {
     if (m.source !== "scratch") continue;
     const hostDir = join(sessionDir, m.path);
     mkdirSync(hostDir, { recursive: true, mode: m.mode });
   }
   if (sessionOwned) {
     materializeSessionSeedTrees(
-      spec,
+      effective,
       sessionDir,
       sessionSeedTrees,
       shadowingMountPoints,
@@ -80,18 +80,12 @@ async function resolveValidatedForNode(
   }
 
   const out: MountConfig[] = [];
-  for (const m of spec) {
+  for (const m of effective) {
     if (m.source === "image") {
-      const backend = imageMounts.get(m);
-      if (backend === undefined) {
-        throw new Error(`verified image mount is missing: ${m.path}`);
-      }
-      out.push({
-        mountPoint: m.path,
-        backend,
-        readonly: m.readonly,
-        nosuid: m.nosuid,
-      });
+      // No backend, and therefore no mount: the kernel serves `/` itself.
+      // `assertOnlyRootImageMount` (default-mounts.ts) has already refused an
+      // image mount anywhere else.
+      continue;
     } else {
       const hostDir = join(sessionDir, m.path);
       const backend = sessionOwned
@@ -120,7 +114,7 @@ async function resolveValidatedForNode(
  * entry point prevents a caller-selected path from acquiring exact native
  * append authority.
  */
-export function resolveForNodeKernelSession(
+export async function resolveForNodeKernelSession(
   spec: MountSpec[],
   rootfsImage: Uint8Array,
   sessionDir: string,

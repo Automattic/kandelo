@@ -14,13 +14,15 @@
  * font-stack packages and links their archives). Absent the binary the
  * test skips, matching the other program smoke tests.
  */
-import { mkdtempSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, it, expect } from "vitest";
-import { runCentralizedProgram } from "./centralized-test-helper";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
 import { tryResolveBinary } from "../src/binary-resolver";
 
@@ -38,7 +40,7 @@ describe("font stack — fontconfig resolve + fcft rasterization on the kernel",
   it.skipIf(!hasBinary)(
     "resolves monospace via fonts.conf and rasterizes a glyph with ink",
     async () => {
-      const root = mkdtempSync(join(tmpdir(), "kandelo-fonts-"));
+      const root = makeHostScratchTempRoot("kandelo-fonts-");
       const fontDir = join(root, "fonts");
       const cacheDir = join(root, "cache");
       mkdirSync(fontDir);

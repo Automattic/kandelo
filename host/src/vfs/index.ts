@@ -1,3 +1,8 @@
+// This barrel does not re-export a filesystem implementation. The kernel owns
+// `/` and the scratch mounts, so the TypeScript filesystem it once exported
+// (`MemoryFileSystem`, `resolveMountSetIdCapability`, the materialization-plan
+// verbs and their types) is deleted; nothing outside this file imported those
+// names through the barrel when they were removed.
 export {
   listPreparedPlatformDirectory,
   readPreparedPlatformFile,
@@ -12,31 +17,11 @@ export type {
 } from "./vfs";
 export { HostFileSystem } from "./host-fs";
 export {
-  MemoryFileSystem,
-  resolveMountSetIdCapability,
-} from "./memory-fs";
-export {
   assertVfsDeferredTreeCollectionUsage,
   VFS_DEFERRED_TREE_COLLECTION_LIMITS,
   VFS_DEFERRED_TREE_LIMITS,
 } from "./deferred-tree-limits";
 export type { VfsDeferredTreeUsage } from "./deferred-tree-limits";
-export {
-  applyLazyTreeByteTransformRecipe,
-  decodeMaterializationBytes,
-  encodeMaterializationBytes,
-  validateLazyTreeMaterializationPlan,
-} from "./materialization-plan";
-export type {
-  LazyTreeByteIdentity,
-  LazyTreeByteReplacement,
-  LazyTreeByteTransform,
-  LazyTreeByteTransformRecipe,
-  LazyTreeMaterializationPlan,
-  LazyTreeMaterializationSourceEntry,
-  LazyTreeMaterializationSourceInventory,
-  LazyTreeSourceAssertion,
-} from "./materialization-plan";
 export {
   createClosedLazyAssetFetcher,
   loadClosedLazyAssetSources,
@@ -48,32 +33,6 @@ export type {
   ClosedLazyAsset,
   ClosedLazyAssetSource,
 } from "./closed-lazy-assets";
-export type {
-  LazyDownloadEvent,
-  LazyDownloadKind,
-  LazyDownloadListener,
-  LazyDownloadStatus,
-  LazyAtomicGroupMembership,
-  LazyFileEntry,
-  LazyFetcherOptions,
-  LazyTreeActivation,
-  LazyTreeContent,
-  LazyTreeDecoder,
-  LazyTreeGroup,
-  LazyTreeRegistrationEntry,
-  LazyTreeSourceEntry,
-  LazyTreeSourceInventory,
-  SerializedLazyTree,
-  VfsImageCapacity,
-  VfsImageMetadata,
-  VfsImageOptions,
-  VfsImageRestoreOptions,
-} from "./memory-fs";
-export {
-  loadVfsImage,
-  restoreVerifiedVfsImage,
-  restoreVerifiedVfsImagePreservingCapacity,
-} from "./load-image";
 export {
   DEFAULT_TAR_GZIP_LIMITS,
   TarParseError,
@@ -88,7 +47,6 @@ export type {
   TarHardlinkEntry,
   TarSymlinkEntry,
 } from "./tar";
-export { DeviceFileSystem } from "./device-fs";
 export { OpfsFileSystem } from "./opfs";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";
 export { NodeTimeProvider, BrowserTimeProvider } from "./time";
@@ -101,14 +59,9 @@ export type {
   DirEntry,
 } from "./types";
 export { PATHCONF_NAMES } from "../generated/abi";
-export { filesystemPathconf } from "../pathconf";
+export { backendPathconf } from "../pathconf";
 export type { PathconfProfile } from "../pathconf";
 export type { PathconfValue } from "../types";
-export {
-  DEFAULT_MOUNT_SPEC,
-  ensureMountParentDirectories,
-  resolveForBrowser,
-} from "./default-mounts";
-export type { MountSpec, BrowserResolverOptions } from "./default-mounts";
+export { DEFAULT_MOUNT_SPEC, resolveForBrowser } from "./default-mounts";
+export type { MountSpec } from "./default-mounts";
 export { resolveForNode } from "./default-mounts-node";
-export { overlayEtcFromRootfs } from "./rootfs-overlay";

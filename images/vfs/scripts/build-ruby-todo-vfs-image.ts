@@ -26,7 +26,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -63,7 +63,6 @@ const OUT_FILE = join(
 );
 const APP_SRC = join(REPO_ROOT, "images", "vfs", "ruby-todo-app");
 const RUBY_VFS_PATH = "/usr/bin/ruby";
-const IMAGE_INITIAL_BYTES = 64 * 1024 * 1024;
 const IMAGE_MAX_BYTES = 256 * 1024 * 1024;
 const RUBY_WASM_ARTIFACT_POLICY = {
   path: RUBY_VFS_PATH,
@@ -84,10 +83,10 @@ export interface RubyTodoVfsImageBuildInputs {
 export async function buildRubyTodoVfsImage(
   inputs: RubyTodoVfsImageBuildInputs,
 ): Promise<void> {
-  const sab = new SharedArrayBuffer(IMAGE_INITIAL_BYTES, {
-    maxByteLength: IMAGE_MAX_BYTES,
-  });
-  const fs = MemoryFileSystem.create(sab, IMAGE_MAX_BYTES);
+  const fs = KandeloImageFs.create();
+  // The growth ceiling the image declares. The kernel's export sizes the body
+  // to the tree, so this is a recorded number, not reserved bytes.
+  fs.setImageCapacity(IMAGE_MAX_BYTES);
 
   for (const dir of ["/tmp", "/home", "/dev", "/etc", "/run", "/var", "/var/lib"]) {
     ensureDir(fs, dir);

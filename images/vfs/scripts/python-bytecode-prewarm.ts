@@ -31,14 +31,14 @@
  * host python is 3.14 and would write wrong-magic `.pyc`) under the kernel
  * to (1) `compileall` the roots and (2) dump every produced `__pycache__/
  * *.pyc` back over stdout, then fold those bytes into the build's
- * MemoryFileSystem at the same VFS path the kernel saw.
+ * image filesystem at the same VFS path the kernel saw.
  *
  * Set `KANDELO_NO_PYTHON_PREWARM=1` to skip. Failures are reported but do
  * not fail the image build unless `KANDELO_PYTHON_PREWARM_STRICT=1`.
  */
 import { dirname } from "node:path";
 import { NodeKernelHost } from "../../../host/src/node-kernel-host";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import { writeVfsBinary, ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
 
 export interface PythonPrewarmOptions {
@@ -69,7 +69,7 @@ const PY_ENV = ["PYTHONHOME=/usr", "HOME=/tmp", "TMPDIR=/tmp", "LANG=C.UTF-8"];
  * worker stack, the exact gap this closes).
  */
 export async function prewarmPythonBytecode(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   options: PythonPrewarmOptions,
 ): Promise<number> {
   if (process.env.KANDELO_NO_PYTHON_PREWARM === "1") {
@@ -232,7 +232,7 @@ function concatChunks(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
-function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
+function ingestDump(buf: Uint8Array, fs: VfsImageFilesystem): number {
   const text = new TextDecoder("utf-8").decode(buf);
   const beginAt = text.indexOf(DUMP_BEGIN);
   if (beginAt < 0) {

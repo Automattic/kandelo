@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
 #
-# Resolve one repository artifact through the same TypeScript resolver used by
+# Resolve repository artifacts through the same TypeScript resolver used by
 # Node and browser build tooling. The Rust-generated program package projection
 # therefore governs shell, TypeScript, external registries, and installed host
-# packages without a second manifest parser.
+# packages without a second manifest parser. Several paths may be given; each
+# answer is printed on its own line, in request order.
 #
 # Usage:
 #   scripts/resolve-binary.sh kernel.wasm
 #   scripts/resolve-binary.sh programs/dash.wasm
 #   scripts/resolve-binary.sh programs/cpython/python.wasm
+#   scripts/resolve-binary.sh programs/dash.wasm programs/bash.wasm
 
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-if [ $# -ne 1 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    sed -n '3,12p' "$0"
+if [ $# -eq 0 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    sed -n '3,13p' "$0"
     exit 0
 fi
+wants_program=0
+for rel_path in "$@"; do
+    case "$rel_path" in
+        programs/*) wants_program=1 ;;
+    esac
+done
 
 repo_root="$(cd "$script_dir/.." && pwd)"
 cd "$repo_root"
@@ -28,7 +36,7 @@ cd "$repo_root"
 # tree and continue to use their pack-time-verified bundled projection.
 checker_root="${WASM_POSIX_BINARY_RESOLVER_REPO_ROOT:-$repo_root}"
 if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" != "source-only-v1" ] &&
-    [[ "$1" == programs/* ]] &&
+    [ "$wants_program" = 1 ] &&
     [ -z "${WASM_POSIX_XTASK_BIN:-}" ] &&
     [ -f "$checker_root/tools/xtask/Cargo.toml" ] &&
     [ -f "$checker_root/scripts/dev-shell.sh" ]; then
@@ -62,4 +70,4 @@ if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" != "source-only-v1" ] &&
     export WASM_POSIX_XTASK_BIN
 fi
 
-exec node "$script_dir/resolve-binary.bundle.mjs" "$1"
+exec node "$script_dir/resolve-binary.bundle.mjs" "$@"
