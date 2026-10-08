@@ -1559,8 +1559,12 @@ never a path. Exec and spawn read the target's current bytes from the kernel
 for every launch, so a file rewritten in place hashes differently at its next
 exec and can never run a module compiled from older contents. The thread
 variant is keyed on the *program's* digest; `patchWasmForThread` is a pure
-function of those bytes. When the patch leaves the bytes unchanged (a module
-without a start section), the thread module is the program module itself.
+function of those bytes. LLVM shared-memory modules lose the Start section
+and constructor body in the thread variant. Modules with no Start section
+and only active data segments, including Kandelo Go binaries, lose the
+active data section instead: a thread's new Wasm instance must not replay
+static initializers over the running process's shared globals. When neither
+patch applies, the thread module is the program module itself.
 
 **Admission is never skipped.** The cache replaces only the compile step.
 The ABI marker and artifact-policy checks still run on every launch's bytes

@@ -4742,9 +4742,14 @@ function sendForkSyscall(
  *   they would clobber shared global state (e.g. resetting LOGGER::file_log_handler
  *   to NULL in MariaDB).
  *
+ * Go's Kandelo modules instead have no Start section and use active data
+ * segments. Thread instances must omit those segments rather than replaying
+ * them over the already-running process memory.
+ *
  * This function:
- * 1. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
- * 2. Finds the constructor function by scanning the known LLVM helper exports
+ * 1. Removes all-active data sections from modules without a Start section.
+ * 2. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
+ * 3. Finds the constructor function by scanning the known LLVM helper exports
  *    for their common call target and replaces that function body with a no-op.
  */
 export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
@@ -4802,6 +4807,38 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     });
     if (sectionId === 8) hasStartSection = true;
     offset += totalSize;
+  }
+
+  if (!hasStartSection) {
+    const dataSection = sections.find((section) => section.id === 11);
+    const dataCountSection = sections.find((section) => section.id === 12);
+    if (dataSection && !dataCountSection) {
+      let position = dataSection.contentOffset;
+      const dataEnd = position + dataSection.contentSize;
+      const [segmentCount, countSize] = readLEB128(src, position);
+      position += countSize;
+      let activeDataOnly = true;
+      for (let index = 0; index < segmentCount && activeDataOnly; index++) {
+        if (src[position++] !== 0 || src[position++] !== 0x41) {
+          activeDataOnly = false;
+          break;
+        }
+        position += readLEB128(src, position)[1];
+        if (src[position++] !== 0x0b) {
+          activeDataOnly = false;
+          break;
+        }
+        const [dataLength, lengthSize] = readLEB128(src, position);
+        position += lengthSize + dataLength;
+        if (position > dataEnd) activeDataOnly = false;
+      }
+      if (activeDataOnly && position === dataEnd) {
+        const patched = new Uint8Array(src.length - dataSection.totalSize);
+        patched.set(src.subarray(0, dataSection.offset));
+        patched.set(src.subarray(dataSection.offset + dataSection.totalSize), dataSection.offset);
+        return patched.buffer;
+      }
+    }
   }
 
   if (!hasStartSection) return bytes;

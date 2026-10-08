@@ -84,6 +84,35 @@ const VOID = { params: [], results: [] };
 const I32_RESULT = { params: [], results: [0x7f] };
 
 describe("patchWasmForThread", () => {
+  it("keeps process memory intact when a thread instantiates an active-data module", async () => {
+    const original = new Uint8Array([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+      ...section(2, [0x01, ...name("env"), ...name("memory"), 0x02, 0x03, 0x01, 0x01]),
+      ...section(11, [0x01, 0x00, 0x41, 0x00, 0x0b, 0x01, 0x07]),
+    ]).buffer;
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    await WebAssembly.instantiate(original, { env: { memory } });
+    const data = new Uint8Array(memory.buffer);
+    expect(data[0]).toBe(7);
+    data[0] = 99;
+
+    const patched = patchWasmForThread(original);
+    expect(patched.byteLength).toBeLessThan(original.byteLength);
+    expect(WebAssembly.validate(patched)).toBe(true);
+    await WebAssembly.instantiate(patched, { env: { memory } });
+    expect(data[0]).toBe(99);
+  });
+
+  it("preserves passive data segments when there is no start section", () => {
+    const original = new Uint8Array([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+      ...section(11, [0x01, 0x01, 0x01, 0x07]),
+    ]).buffer;
+
+    expect(WebAssembly.validate(original)).toBe(true);
+    expect(patchWasmForThread(original)).toBe(original);
+  });
+
   it("does not rewrite an unrelated exported call target when no constructors exist", async () => {
     const original = moduleBytes({
       types: [VOID, I32_RESULT],
