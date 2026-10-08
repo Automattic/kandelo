@@ -18,7 +18,7 @@ build_probe() {
   local package="${3:-.}"
   (
     cd "$repo_root/tests/go/$source_dir"
-    GOOS=kandelo GOARCH=wasm "$go_bin" build -o "$output_dir/$output_name.wasm" "$package"
+    GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" build -o "$output_dir/$output_name.wasm" "$package"
   )
 }
 
@@ -33,8 +33,10 @@ build_probe scheduler locked-exit ./locked-exit
 build_probe scheduler sysmon ./sysmon
 build_probe socket-basic socket-basic
 build_probe netpoll-basic netpoll-basic
+build_probe net-basic net-basic
+build_probe http-basic http-basic
 
-GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/atomic-test.wasm" internal/runtime/atomic
-GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/sync-test.wasm" sync
+GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/atomic-test.wasm" internal/runtime/atomic
+GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/sync-test.wasm" sync
 
 printf 'Go browser fixtures built in %s\n' "$output_dir"

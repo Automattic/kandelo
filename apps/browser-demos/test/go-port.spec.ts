@@ -103,6 +103,18 @@ const probes: Probe[] = [
     stdout: ["GO NETPOLL PASS"],
   },
   {
+    name: "Go net TCP dial and listener on IPv4 and IPv6",
+    file: "net-basic.wasm",
+    argv: ["go-net-basic"],
+    stdout: ["GO NET PASS"],
+  },
+  {
+    name: "Go HTTP request and response on IPv4 and IPv6",
+    file: "http-basic.wasm",
+    argv: ["go-http-basic"],
+    stdout: ["GO HTTP PASS"],
+  },
+  {
     name: "process exit from a worker M",
     file: "exit-worker.wasm",
     argv: ["go-exit-worker"],

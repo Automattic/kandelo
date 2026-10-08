@@ -960,6 +960,27 @@ This proves the focused socket/poller path, not full Go `net` support.
 `GOOS=kandelo go build net` still fails at the missing `netFD`; next, add
 that package backend and prove `net.Dial` and `net.Listen` on both hosts.
 
+**2026-10-08 — Go `net` and loopback HTTP (fork `a4b548a`).** Enabled
+the upstream POSIX `netFD`, address, resolver, TCP, and socket-option paths
+for Kandelo, adding the missing syscall socket options and truthful
+`ENOSYS` interface enumeration. `GOOS=kandelo go build net` and
+`net/http` now succeed. Checked-in probes perform IPv4 and IPv6
+`net.Listen`/`net.DialTimeout` exchanges and serve a real HTTP response to
+Go's default client. Each passed three Node runs with exit 0 and no host
+diagnostics; all sixteen dedicated Chromium probes passed. The HTTP probe
+first failed with duplicate `runtime.forcegchelper` goroutines: each new
+Wasm thread instance replayed Go's active data segments over shared memory,
+resetting package-initialization state. The shared host thread-module
+patch now removes an all-active data section from no-Start modules, so only
+the process-main instance initializes data. Seven focused host tests and
+host typecheck pass; `GOOS=js` and `GOOS=wasip1` standard-library builds
+pass. `GOOS=kandelo go build std` still fails in `net/internal/socktest`
+and `os/user`. This meets the milestone-4 focused TCP/HTTP checks, not full
+Go networking or runtime conformance: datagram/message syscalls and broader
+DNS/TLS coverage remain. Next milestone: implement `syscall.StartProcess`
+through Kandelo `SYS_SPAWN`, then package integration; finish the recorded
+Go-runtime guidance work item at the end.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
