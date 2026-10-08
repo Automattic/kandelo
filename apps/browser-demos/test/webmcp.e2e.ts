@@ -283,7 +283,7 @@ test("owned jobs isolate env/cwd, retry safely, cancel descendants and time out"
   expect(timeout.ok).toBe(true);
   await expect.poll(async () => (await call(page, "read_job", { jobId: timeout.jobId })).status).toBe("timed_out");
   const next = await call(page, "run_command", { script: 'printf "%s:%s" "$PWD" "${JOB_VALUE-unset}"', waitMs: 10000 });
-  expect(next.stdout).toBe("/:unset");
+  expect(next.stdout).toBe("/home/maker:unset");
   await expect.poll(async () => (await call(page, "read_job", { jobId: unrelated.jobId })).status).toBe("completed");
   expect((await call(page, "read_job", { jobId: unrelated.jobId })).stdout).toBe("unrelated");
   const orphaned = await call(page, "run_command", { script: "sleep 60 & exit 7", waitMs: 1000 });

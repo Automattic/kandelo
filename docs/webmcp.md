@@ -59,7 +59,7 @@ parameter bounds and required fields. Unknown fields and invalid types are rejec
 | `list_profiles` | `search?` | Dynamic `profiles` with `profileId`, name, description, availability. `resolved_on_launch` means asset resolution has not yet been attempted. |
 | `launch_computer` | `profileId`, `requestId?` | Replaces the computer in place; `initiated`, `destinationUrl`. |
 | `get_computer_status` | none | `generationId`, profile, status, bootError, capabilities, activeTerminalId, preview, previewProgress and shared document metadata. |
-| `run_command` | `script`, `cwd?`, `env?`, `waitMs?`, `timeoutMs?`, `requestId?` | `jobId`, separate stdout/stderr, exitCode, status, terminationObserved, nextCursor. Runs Bash with independent cwd/env; timeout owns the entire descendant family. |
+| `run_command` | `script`, `cwd?`, `env?`, `waitMs?`, `timeoutMs?`, `requestId?` | `jobId`, separate stdout/stderr, exitCode, status, terminationObserved, nextCursor. Runs the agent account's login shell with independent cwd/env; timeout owns the entire descendant family. |
 | `read_job` | `jobId`, `cursor?`, `byteLimit?` | Incremental stdout/stderr and observed lifecycle. Old generation → `STALE_SESSION`; current unknown ID → `UNKNOWN_JOB`. |
 | `cancel_job` | `jobId` | Requests termination of the owned family. May return `cancelling`; poll until `terminationObserved:true`. Never signals unrelated processes. |
 | `list_terminals` | none | `terminals`: terminalId, label, ready, active, error. |
@@ -69,7 +69,7 @@ parameter bounds and required fields. Unknown fields and invalid types are rejec
 | `read_terminal_output` | `terminalId`, `cursor?`, `byteLimit?` | `output`, bytesRead, nextCursor, truncated, hasMore. ANSI sequences and merged streams remain intact. |
 | `list_files` | absolute `path`, `offset?`, `limit?` | Sorted directory entries (name, type, mode, size, uid, gid, and `target` on a symlink), nextOffset, hasMore. Each call is a fresh listing. |
 | `read_file` | absolute `path`, `encoding?`, `offset?`, `byteLimit?` | UTF-8 or base64 `content`, bytesRead, nextOffset, eof, truncated. |
-| `write_file` | absolute `path`, `content`, `encoding?`, explicit `overwrite` | `overwrite:true` creates or replaces; returns bytesWritten. `false` uses atomic O_EXCL creation and returns `FILE_EXISTS` without altering an existing path. Parent must exist. |
+| `write_file` | absolute `path`, `content`, `encoding?`, explicit `overwrite` | `overwrite:true` creates or replaces; returns bytesWritten. `false` uses atomic O_EXCL creation and returns `FILE_EXISTS` without altering an existing path. Parent must exist. The write runs as the kernel worker, so the file belongs to root. |
 | `navigate_preview` | guest URL `path` | Reveals and requests navigation within the existing guest bridge; returns requestedPath, preview and previewProgress. Poll status for HTTP/load/render observations. |
 | `read_logs` | `cursor?`, `limit?`, `level?` | Timestamped entries, nextCursor, truncated, hasMore. Levels: info, warn, err, ok, debug. |
 | `create_launch_link` | `profileId?`, `startupScript?` | Encoded URL, sizeBytes, explanation of what it reproduces. Does not open, publish or execute it. |
@@ -91,6 +91,11 @@ maker writes while the machine runs; it is a scratch mount, so a guest creates
 it with `mkdir -p` first. On a name clash the maker's file wins, and deleting
 that file falls back to the shipped one. Both directories are watched: writing,
 replacing or deleting a file registers or unregisters its tool without a reload.
+
+`/home/maker/mcp` is a trust boundary. Every program that runs as `maker` can
+write to it, and the agent runs as `maker` too. A tool there is as trustworthy
+as the guest itself: any guest program, or the agent, can add or replace one,
+and its description reaches the agent as untrusted text.
 
 ```json
 {
@@ -266,6 +271,24 @@ is not cancellation of an accepted job; use `kandelo_cancel_job` or its timeout.
 Jobs retain 256 KiB of combined stdout/stderr and at most 64 job records per
 computer. Read cursors advance across both streams and report overflow explicitly.
 Output is UTF-8 text; byte limits can split multibyte sequences as with terminals.
+
+Every job runs as the agent's guest account: the `maker` account (uid 1000)
+the terminal logs into, so the agent's scripts and the user own the same files. The
+account's home directory and login shell come from the image's own
+`/etc/passwd`; an image that lists no account for that uid gets `/bin/sh` at
+`/`, and a listed shell that the image does not hold is replaced by `/bin/sh`.
+The script runs as `<shell> -c script` with `cwd` defaulting to the home
+directory and an environment made of the host's POSIX baseline (`PATH`, `HOME`,
+`USER`, `LOGNAME`, `TMPDIR`, `TERM`, the SSL certificate paths), then the
+call's own `env` entries, which override it. `kandelo_write_file` still writes
+through the raw worker VFS, so it checks no permission and the files it
+creates belong to root.
+
+The owned family is a host primitive, not a WebMCP feature. The Node and browser
+kernel workers both implement it, and `NodeKernelHost` exposes the same
+`spawnFromVfs(..., { ownedJob })` and `readOwnedJob()` calls as `BrowserKernel`.
+`docs/architecture.md` describes the primitive under "Owned command families
+(jobs)".
 
 ## Preview observations
 
