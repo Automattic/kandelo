@@ -12,7 +12,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDirRecursive,
   writeVfsFile,
@@ -138,7 +138,7 @@ http {
 // developer's local `__pycache__` from running the app's tests doesn't leak
 // into the shipped image. Returns the file count.
 function copyTreeSorted(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   hostDir: string,
   vfsDir: string,
 ): number {

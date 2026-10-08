@@ -9,7 +9,8 @@
 // alphabetically before output, so diffs across builds are stable.
 
 import { readFileSync } from "node:fs";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs.ts";
+import { describeImageLoadFailure } from "./image-load-failure.ts";
 
 const SUBCOMMAND_USAGE = `Usage: mkrootfs inspect <image> [options]
 
@@ -110,7 +111,7 @@ export interface InspectEntry {
   target?: string;
 }
 
-function collectEntries(mfs: MemoryFileSystem): InspectEntry[] {
+function collectEntries(mfs: KandeloImageFs): InspectEntry[] {
   const out: InspectEntry[] = [];
 
   function visit(path: string): void {
@@ -211,14 +212,18 @@ export async function runInspect(args: string[]): Promise<number> {
     return 1;
   }
 
-  let mfs: MemoryFileSystem;
+  let mfs: KandeloImageFs;
   try {
-    mfs = MemoryFileSystem.fromImage(bytes);
-    // WHY: stdout must never expose namespace claims from an unauthenticated image.
-    await mfs.verifyImportedLazyAtomicGroupSeals();
+    // Read with the kernel's own image reader, which sees the `SDEF` section
+    // the builder writes, so a deferred file never prints as a zero-length
+    // ordinary one. `rootfs::load_image` authenticates cohort seals itself, so
+    // stdout never exposes namespace claims from an unauthenticated image.
+    mfs = KandeloImageFs.create();
+    mfs.loadImage(bytes);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`mkrootfs inspect: not a valid VFS image (${parsed.image}): ${msg}\n`);
+    process.stderr.write(
+      `mkrootfs inspect: ${describeImageLoadFailure(e, parsed.image)}\n`,
+    );
     return 1;
   }
 

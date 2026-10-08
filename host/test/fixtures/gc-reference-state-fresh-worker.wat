@@ -24,7 +24,7 @@
 
   ;; Must equal ABI_VERSION (crates/shared/src/lib.rs); bump with it.
   (func (export "__abi_version") (result i32)
-    i32.const 48)
+    i32.const 49)
 
   (func $wait_child (param $pid i32) (result i32)
     (local $base i32)

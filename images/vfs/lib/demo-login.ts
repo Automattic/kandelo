@@ -1,4 +1,4 @@
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 
 export const DEMO_LOGIN_USERNAME = "maker";
 export const DEMO_LOGIN_HOME = "/home/maker";
@@ -31,7 +31,7 @@ export interface DemoLoginOptions {
  * libc and the guest programs.
  */
 export function configureDemoLogin(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   options: DemoLoginOptions = {},
 ): void {
   const home = options.home ?? DEMO_LOGIN_HOME;
@@ -66,14 +66,26 @@ export function configureDemoLogin(
 }
 
 /**
+ * "Are this path's bytes in the image?", asked completely.
+ *
+ * `isPathDeferred` and `getLazyEntry` are the two halves of that question on
+ * `VfsImageFilesystem` (see its documentation): one covers archive- and
+ * tree-backed files, the other a URL-backed single lazy file. Asking only one
+ * half would let a deferred login program pass as eager.
+ */
+function isDeferredEitherWay(fs: VfsImageFilesystem, path: string): boolean {
+  return fs.isPathDeferred(path) || fs.getLazyEntry(path) !== null;
+}
+
+/**
  * True when the final staged filesystem contains one exact canonical account,
  * password, wheel policy, credential message, and root-owned set-ID login
  * entry. Privileged-product publication separately proves the executable
  * bytes and trusted mount provenance before the browser grants session policy.
  */
 export function hasConfiguredDemoLogin(
-  fs: MemoryFileSystem,
-  privilegedProgramFs: Pick<MemoryFileSystem, "stat"> = fs,
+  fs: VfsImageFilesystem,
+  privilegedProgramFs: Pick<VfsImageFilesystem, "stat"> = fs,
 ): boolean {
   try {
     const login = privilegedProgramFs.stat(DEMO_LOGIN_PROGRAM_PATH);
@@ -81,7 +93,7 @@ export function hasConfiguredDemoLogin(
     // tree. Only the ordinary MemoryFS path can carry a deferred entry.
     const loginIsEager =
       privilegedProgramFs === fs
-        ? fs.getLazyEntry(DEMO_LOGIN_PROGRAM_PATH) === null
+        ? !isDeferredEitherWay(fs, DEMO_LOGIN_PROGRAM_PATH)
         : true;
     const loginIsStaged =
       (login.mode & 0o170000) === 0o100000 &&
@@ -146,9 +158,38 @@ export function hasConfiguredDemoLogin(
       sudoers === DEMO_SUDOERS &&
       autologinMotd === DEMO_AUTOLOGIN_MOTD
     );
-  } catch {
-    return false;
+  } catch (error) {
+    // "Not there" is the ANSWER; anything else is a failure to ask.
+    //
+    // An image without `/etc/shadow` is genuinely not configured for login,
+    // and `stat` throwing ENOENT is how this function learns that. Every other
+    // error is different in kind: a missing method on an unfamiliar
+    // filesystem, a permission refusal, a corrupt read. Returning `false` for
+    // those reports a CONFIGURED image as unconfigured, and does it in a shape
+    // no caller can tell from the real answer.
+    if (isNotFound(error)) return false;
+    throw error;
   }
+}
+
+/**
+ * ENOENT from either filesystem, read structurally rather than by class.
+ *
+ * The two number errnos with OPPOSITE SIGNS — `host/src/vfs/vfs-errors.ts`
+ * uses `-2` because its error carries a returned code, and the image bridge
+ * raises `2` because it negates at its boundary — and comparing one convention
+ * against the other is silently always-false. Both are accepted here for that
+ * reason.
+ *
+ * Structural rather than `instanceof` because this module is in `images/` and
+ * may be handed either filesystem; importing one side's error class to
+ * recognise the other's would be the coupling, not the fix.
+ */
+function isNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { errno, code } = error as { errno?: unknown; code?: unknown };
+  if (errno === 2 || code === -2) return true;
+  return typeof code === "string" && code === "ENOENT";
 }
 
 function recordsNamed(content: string, name: string): string[][] {
@@ -202,7 +243,7 @@ function addGroupMember(
   return `${lines.join("\n")}\n`;
 }
 
-function readVfsText(fs: MemoryFileSystem, path: string): string {
+function readVfsText(fs: VfsImageFilesystem, path: string): string {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -225,7 +266,7 @@ function readVfsText(fs: MemoryFileSystem, path: string): string {
 }
 
 function writeRootFile(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: string,
   content: string,
   mode: number,

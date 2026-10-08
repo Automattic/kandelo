@@ -1,12 +1,13 @@
 /**
  * Assemble a demo's VFS image.
  *
- * WHY THIS IS NOT ON THE MAIN THREAD — composition needs a live
- * `MemoryFileSystem`, which means a `SharedArrayBuffer`. On WebKit only
- * `Worker.terminate()` reclaims shared memory deterministically: a buffer the
- * persistent main thread has merely dropped waits for a garbage collection
- * that reserved shared memory rarely provokes, so every boot's staging buffer
- * accumulates until Safari throws `Out of memory`. Running composition inside
+ * WHY THIS IS NOT ON THE MAIN THREAD — composition instantiates the image
+ * writer (`KandeloImageFs`), a Wasm module whose memory grows with the staged
+ * tree. On WebKit only `Worker.terminate()` reclaims such memory
+ * deterministically: memory the persistent main thread has merely dropped
+ * waits for a garbage collection that reserved Wasm memory rarely provokes,
+ * so every boot's staging memory accumulates until Safari throws
+ * `Out of memory`. Running composition inside
  * a disposable worker makes the staging filesystem die with its realm, and
  * hands the main thread nothing but plain transferable bytes. (This replaced
  * the `trackTransientImageBuffer`/`settleWebKitReclaim` GC nudge, which was
@@ -20,16 +21,13 @@
  * as plain data on {@link ComposeImageJob}.
  */
 
-import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../../../images/vfs/lib/kandelo-image-fs";
+import { ensureImageWriterInstalled } from "../../../lib/kernel-owned-boot";
 import {
   ensureDirRecursive,
   writeVfsBinary,
   writeVfsFile,
 } from "../../../../../host/src/vfs/image-helpers";
-import {
-  bindImageOwnedRuntimeUrls,
-  type ImageOwnedRuntimeLazyAssets,
-} from "../../../lib/init/image-owned-runtime-urls";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   WORDPRESS_URL_MU_PLUGIN,
@@ -78,9 +76,8 @@ import {
   assertVfsImageFitsProfile,
   declaredVfsMaxByteLength,
 } from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
-import { ABI_VERSION } from "../../../../../host/src/generated/abi";
+import { ABI_VERSION, ERRNO } from "../../../../../host/src/generated/abi";
 import { stageConfiguredAssets } from "./configured-assets";
-import { verifyImportedSealsForCurrentBoot } from "./boot-current-boundary";
 
 const ROOT_UID = 0;
 const ROOT_GID = 0;
@@ -147,8 +144,6 @@ export interface ComposeImageJob {
   hasCandidateEvidence: boolean;
   /** Untrusted boot descriptor; only its declared inputs are materialized. */
   descriptor: BootDescriptor;
-  /** Absent when the image declares no grouped lazy assets. */
-  lazyAssets?: ImageOwnedRuntimeLazyAssets;
   /** Absolute app path baked into the WordPress runtime config. */
   appPath: string;
   /** "http" or "https", from the composing page's origin. */
@@ -216,29 +211,49 @@ export async function composeKandeloImage(
   job: ComposeImageJob,
   tick: (message: string) => void,
 ): Promise<ComposeImageResult> {
-  const vfsMetadata = MemoryFileSystem.readImageMetadata(job.imageBytes);
+  // BEFORE the first use of the bridge, not before the first WRITE to it:
+  // `readImageMetadata` and `readImageCapacity` instantiate the module to read
+  // the image, because the module is what knows the layout.
+  await ensureImageWriterInstalled();
+  // THE ABI CHECK IS THIS READ. `readImageMetadata` loads the image to read
+  // it, and the loader refuses an image declaring an ABI it does not speak
+  // (EPROTO), so a separate assert after it could never fire.
+  let vfsMetadata: ReturnType<typeof KandeloImageFs.readImageMetadata>;
+  try {
+    vfsMetadata = KandeloImageFs.readImageMetadata(job.imageBytes);
+  } catch (error) {
+    if ((error as { errno?: number } | null)?.errno === ERRNO.EPROTO) {
+      throw new Error(
+        `${job.imageLabel} was built for a different kernel ABI than this `
+          + `build runs (ABI ${ABI_VERSION}). Rebuild the demo images.`,
+      );
+    }
+    throw error;
+  }
   assertVfsImageFitsProfile(
-    MemoryFileSystem.readImageCapacity(job.imageBytes),
+    // `byteLength` is the image as fetched; `maxByteLength` is what it
+    // DECLARES it may grow to.
+    {
+      byteLength: job.imageBytes.byteLength,
+      ...KandeloImageFs.readImageCapacity(job.imageBytes),
+    },
     job.maxVfsByteLength,
     declaredVfsMaxByteLength(vfsMetadata),
     job.imageLabel,
   );
-  MemoryFileSystem.assertImageKernelAbi(
-    job.imageBytes,
-    ABI_VERSION,
-    job.imageLabel,
-  );
-  // Assemble the demo image in a TRANSIENT build-time filesystem. Its
-  // SharedArrayBuffer never becomes the machine's live VFS — after
+  // Assemble the demo image in a TRANSIENT build-time filesystem, read and
+  // written by the same module the image was BUILT with, so its SDEF section
+  // (deferred/lazy entries) survives the round trip unchanged. After
   // `saveImage()` the serialized bytes are transferred out and this whole
-  // realm is terminated, and the kernel worker rebuilds+owns the live FS
-  // from the bytes (kernelOwnedFs).
-  const buildFs = MemoryFileSystem.fromImage(job.imageBytes, {
-    maxByteLength: job.maxVfsByteLength,
-  });
-  // Reject forged imported seals before URL rewriting or asset registration
-  // can trust their lazy metadata.
-  await verifyImportedSealsForCurrentBoot(buildFs);
+  // realm is terminated; the kernel worker rebuilds+owns the live FS from the
+  // bytes (kernelOwnedFs).
+  //
+  // Seals are verified by the load itself: `loadImage` runs
+  // `seal::verify_cohorts` and unloads the image if it fails, so an
+  // unverified loaded image is unrepresentable.
+  const buildFs = KandeloImageFs.create();
+  buildFs.loadImage(job.imageBytes);
+  buildFs.setImageCapacity(job.maxVfsByteLength);
   const terminalSession = readImageExperimentalTerminalSession(buildFs);
   if (!job.hasCandidateEvidence) {
     // Keyed on what the image ACTUALLY CONTAINS, never on a machine id: an
@@ -317,14 +332,12 @@ export async function composeKandeloImage(
     });
   }
 
-  // WHY here: this is the final image mutation. Binding before any later
-  // staging could leave newly-added lazy metadata outside the manifest
-  // authority copied from the authenticated product activation.
-  bindImageOwnedRuntimeUrls(buildFs, job.lazyAssets);
+  // The image's lazy URLs are NOT rewritten here: the image keeps its
+  // canonical addresses and the page hands the deployment's URL table to the
+  // kernel worker beside the image (see `imageOwnedRuntimeUrlTable`).
   tick("assembling kernel-owned VFS image...");
-  // `saveImage()` emits raw (uncompressed) plain bytes that
-  // `MemoryFileSystem.fromImage` restores directly in the kernel worker;
-  // buildFs and its SharedArrayBuffer die with this realm.
+  // `saveImage()` emits plain bytes the kernel worker restores directly;
+  // buildFs and its module memory die with this realm.
   const imageBytes = await buildFs.saveImage();
   return {
     imageBytes,
@@ -386,7 +399,7 @@ const MAX_DINIT_SERVICE_CLOSURE = 256;
  * never become ready is a defect, not something to wait out.
  */
 function dinitServiceClosure(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   target: string,
 ): string[] {
   const seen = new Set<string>();
@@ -410,7 +423,7 @@ function dinitServiceClosure(
 }
 
 function readImageExperimentalTerminalSession(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
 ): ExperimentalTerminalSession {
   let stat;
   try {
@@ -441,7 +454,7 @@ function readImageExperimentalTerminalSession(
 }
 
 function assertImageTerminalProgram(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   program: ExperimentalTerminalProgram,
 ): void {
   const path = program.path;
@@ -459,18 +472,18 @@ function assertImageTerminalProgram(
   }
 }
 
-function readImageConfig(fs: MemoryFileSystem): KandeloDemoConfig | null {
+function readImageConfig(fs: KandeloImageFs): KandeloDemoConfig | null {
   return readKandeloDemoConfigFromVfs(fs);
 }
 
-function ensureDemoHomes(fs: MemoryFileSystem): void {
+function ensureDemoHomes(fs: KandeloImageFs): void {
   ensureDirRecursive(fs, "/home");
   ensureOwnedDir(fs, DEMO_HOME, 0o755, DEMO_UID, DEMO_GID);
   ensureOwnedDir(fs, ROOT_HOME, 0o700, ROOT_UID, ROOT_GID);
 }
 
 function ensureOwnedDir(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   path: string,
   mode: number,
   uid: number,
@@ -482,7 +495,7 @@ function ensureOwnedDir(
 }
 
 function patchWordPressRuntimeConfig(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   kind: WordPressDatabaseKind,
   appPath: string,
   proto: string,
@@ -525,7 +538,7 @@ function patchWordPressRuntimeConfig(
   );
 }
 
-function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
+function patchMariaDbUnixSocketConfig(fs: KandeloImageFs): void {
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
   ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
@@ -564,7 +577,7 @@ function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
   patchPhpFpmMariaDbDependency(fs);
 }
 
-function ensureMariaDbReadyService(fs: MemoryFileSystem): void {
+function ensureMariaDbReadyService(fs: KandeloImageFs): void {
   ensureDirRecursive(fs, dirname(MARIADB_READY_SCRIPT_PATH));
   writeVfsFile(
     fs,
@@ -597,7 +610,7 @@ restart = false
   );
 }
 
-function patchPhpFpmMariaDbDependency(fs: MemoryFileSystem): void {
+function patchPhpFpmMariaDbDependency(fs: KandeloImageFs): void {
   const phpFpmServicePath = "/etc/dinit.d/php-fpm";
   const phpFpmService = readOptionalVfsText(fs, phpFpmServicePath);
   if (phpFpmService === null) return;
@@ -623,7 +636,7 @@ function patchPhpFpmMariaDbDependency(fs: MemoryFileSystem): void {
   }
 }
 
-function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
+function patchWordPressPersistentMysqli(fs: KandeloImageFs): void {
   for (const path of [
     "/var/www/html/wp-includes/class-wpdb.php",
     "/var/www/html/wp-includes/wp-db.php",
@@ -636,7 +649,7 @@ function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
 }
 
 function readOptionalVfsText(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   path: string,
 ): string | null {
   const bytes = readOptionalVfsFile(fs, path);
@@ -646,7 +659,7 @@ function readOptionalVfsText(
 }
 
 function readOptionalVfsFile(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   path: string,
 ): ArrayBuffer | null {
   try {
@@ -659,7 +672,7 @@ function readOptionalVfsFile(
 
 /** Does this image actually contain that path? The host's staging patches
  *  key off what the image CONTAINS, never off a machine id. */
-function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
+function vfsPathExists(fs: KandeloImageFs, path: string): boolean {
   try {
     fs.stat(path);
     return true;
@@ -679,7 +692,7 @@ function isMissingVfsPath(err: unknown): boolean {
   return message.includes("No such file or directory");
 }
 
-function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
+function readVfsFile(fs: KandeloImageFs, path: string): ArrayBuffer {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {

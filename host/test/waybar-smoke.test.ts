@@ -30,14 +30,17 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -58,17 +61,16 @@ const hasBinaries =
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
 
-// Unique per run: the kernel's /tmp is host-backed and persists across
-// hosts, so a failed run's leftover socket node would EADDRINUSE the
-// next daemon.
+// The kernel's /tmp is its own tmpfs, so each boot starts with no leftover
+// socket node; the pid suffix only keeps concurrent runs readable in logs.
 const BUS_SOCKET = `/tmp/dbus-waybar-${process.pid}.socket`;
 
 // The script blocks on this until the test has seen the bar's layer
-// surface. Sequencing on a compositor socket instead would be satisfied
-// by a leftover node from an earlier run — /tmp is host-backed and
-// outlives the host — and the workspace switch plus SIGINT would then
-// land before waybar had even connected.
-const GO_FILE = `/tmp/waybar-go-${process.pid}`;
+// surface, so the workspace switch plus SIGINT cannot land before waybar has
+// connected. The test creates it from the host, so it lives in a host
+// directory the guest reaches through the Node host mount: the guest's /tmp
+// is the kernel's tmpfs, which the host does not write.
+const GO_FILE = join(makeHostScratchTempRoot("waybar-go-"), "go");
 
 const SESSION_CONF = `<busconfig>
   <type>session</type>
@@ -125,7 +127,7 @@ describe("waybar — upstream status bar on wlcompositor's Hyprland IPC", () => 
       const compositorBytes = loadBytes(compositorBin!);
       const dashBytes = loadBytes(dashBin!);
 
-      const root = mkdtempSync(join(tmpdir(), "kandelo-waybar-"));
+      const root = makeHostScratchTempRoot("kandelo-waybar-");
       const fontDir = join(root, "fonts");
       mkdirSync(fontDir);
       // GTK builds its keymap through xkb_context_new() with default

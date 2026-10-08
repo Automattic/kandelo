@@ -11,8 +11,26 @@ import {
 import { posix as guestPath } from "node:path";
 
 import type { NodeSessionSeedTree } from "../host/src/vfs/default-mounts-node";
+import {
+  DEFAULT_MOUNT_SPEC,
+  type MountSpec,
+} from "../host/src/vfs/default-mounts";
 
-const ISOLATED_FIXTURE_DESTINATION = "/tmp/kandelo-run";
+// The isolated conformance fixture is seeded under `/run`, which the in-kernel
+// tmpfs deliberately does NOT claim, unlike `/tmp` and the other scratch
+// prefixes it owns (KERNEL_TMPFS_OWNED_PREFIXES). A host-seeded tree under an
+// owned prefix is invisible to the guest: the kernel serves that prefix from
+// its own tmpfs, so a spawned child's `chdir` into the fixture would ENOENT.
+// `/run` stays a host-backed scratch mount, so the fixture is visible.
+const ISOLATED_FIXTURE_DESTINATION = "/run/kandelo-run";
+
+/** Host-backed mount that carries the isolated fixture, outside tmpfs's reach. */
+const ISOLATED_FIXTURE_MOUNT: MountSpec = {
+  path: "/run",
+  source: "scratch",
+  mode: 0o755,
+  nosuid: true,
+};
 const ISOLATED_PATH_ENV = new Set([
   "GIT_SSL_CAINFO",
   "HOME",
@@ -34,6 +52,8 @@ export interface RunExampleFilesystem {
   guestCwd: string;
   guestProgram?: string;
   rootfsImage?: "default";
+  /** Overrides `DEFAULT_MOUNT_SPEC` when the boot needs an extra fixture mount. */
+  rootfsMountSpec?: readonly MountSpec[];
   sessionSeedTrees?: readonly NodeSessionSeedTree[];
 }
 
@@ -197,6 +217,7 @@ export function resolveRunExampleFilesystem(
     ...(guestProgram === undefined ? {} : { guestProgram }),
     isolated: true,
     rootfsImage: "default",
+    rootfsMountSpec: [...DEFAULT_MOUNT_SPEC, ISOLATED_FIXTURE_MOUNT],
     sessionSeedTrees: [{
       destinationPath: ISOLATED_FIXTURE_DESTINATION,
       sourcePath: sourceRoot,

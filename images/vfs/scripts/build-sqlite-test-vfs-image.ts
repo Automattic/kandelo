@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -53,10 +53,11 @@ export async function buildSqliteTestVfsImage(
     if (bytes.byteLength === 0) throw new Error(`SQLite staged ${label} is empty`);
   }
 
-  const fs = MemoryFileSystem.create(
-    new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 512 * 1024 * 1024 }),
-    512 * 1024 * 1024,
-  );
+  const fs = KandeloImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. The SharedArrayBuffer it used to come from was never anything but
+  // the old constructor's first argument.
+  fs.setImageCapacity(512 * 1024 * 1024);
   for (const dir of [
     "/tmp", "/home", "/root", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
     "/usr/lib", "/sqlite",

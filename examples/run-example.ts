@@ -515,9 +515,12 @@ async function main() {
             : {};
         host = new NodeKernelHost({
             maxWorkers: 4,
-            // Exec authority stays in the image; local bytes only supply its
-            // declared lazy transport. Host exec maps cannot override it.
-            ...rootfs,
+            // Exec authority stays in the image; local bytes only supply
+            // its declared lazy transport.
+            rootfsImage: runnerFilesystem.rootfsImage,
+            ...(runnerFilesystem.rootfsMountSpec === undefined
+                ? {}
+                : { rootfsMountSpec: runnerFilesystem.rootfsMountSpec }),
             sessionSeedTrees: runnerFilesystem.sessionSeedTrees,
             // These maps are spawn-preflight inputs only. VFS-backed exec
             // materializes the image's own executable through lazy transport.

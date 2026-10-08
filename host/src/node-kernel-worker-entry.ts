@@ -40,14 +40,14 @@ import {
   VirtualPlatformIO,
   NodeTimeProvider,
   DEFAULT_MOUNT_SPEC,
-  DeviceFileSystem,
-  ensureMountParentDirectories,
   HostFileSystem,
-  MemoryFileSystem,
   listPreparedPlatformDirectory,
   readPreparedPlatformFile,
   statPreparedPlatformPath,
 } from "./vfs";
+import * as rootImage from "./vfs/root-image-facts";
+import type { LazyFetch } from "./vfs/lazy-download-event";
+import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { MountConfig } from "./vfs/types";
 import type { MountSpec } from "./vfs/default-mounts";
@@ -55,7 +55,6 @@ import {
   createClosedLazyAssetFetcherFromOwnedAssets,
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
-import { resolveLazyUrl } from "./vfs/lazy-url";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { NodeLazyAssetResolver } from "./node-lazy-asset-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -77,7 +76,6 @@ import {
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
   FILE_MODES,
-  OPEN_FLAGS,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
 } from "./generated/abi";
@@ -154,9 +152,12 @@ import type {
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import { createDestroyProgressReporter } from "./destroy-progress-reporter";
 import {
+  configureRootfsOverlayFromImage,
   createProcessLifecycle,
   handleThreadExit,
   isMissingPathError,
+  isRootfsMissingFileError,
+  readRootfsFileWithRetry,
   signalFromExitStatus,
   type ProcessGenerationOwnership,
   type VforkWorkspaceOwnership,
@@ -168,8 +169,6 @@ if (!parentPort) {
 }
 
 const port = parentPort;
-const O_WRONLY_CREAT_TRUNC =
-  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 
 // --- State ---
 
@@ -209,7 +208,15 @@ const processMemoryRetirementPressureHook =
 let execPrograms: Record<string, string> = {};
 let execProgramBytes: Record<string, ArrayBuffer> = {};
 let vfsExecIO: PlatformIO | null = null;
-let rootfsMemfs: MemoryFileSystem | null = null;
+/** The transport this boot resolves the `/` image's deferred addresses
+ *  through: a closed-asset bundle, a closed-asset source, or the dev fallback
+ *  in `buildVirtualPlatformIO`. Handed to the kernel's rootfs in `handleInit`
+ *  as the fetcher behind `host_fetch_deferred`. */
+let rootfsLazyFetcher: LazyFetch | undefined;
+/** Canonical mount points of the host filesystems mounted beneath the
+ *  kernel-owned `/` (session-seed trees, extra host mounts). Handed to the
+ *  kernel's rootfs so it does not claim their paths. */
+let rootfsForeignPrefixes: string[] = [];
 let initReady = false;
 let kernelFatalReported = false;
 let injectedExecWorkerConstructionFailure = false;
@@ -782,6 +789,13 @@ function resolveExecLocal(path: string): ArrayBuffer | null {
 }
 
 async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
+  // The kernel owns `/`, so it is the source of exec bytes for every path it
+  // serves. A path it does not own (a host mount beneath `/`) falls through to
+  // the host mount table.
+  if (rootImage.has()) {
+    const fromRootfs = await readRootfsFileWithRetry(kernelWorker, path);
+    if (fromRootfs) return bufferToArrayBuffer(fromRootfs);
+  }
   const io = vfsExecIO;
   if (!io) return null;
   try {
@@ -857,10 +871,6 @@ async function resolveExecutableForLaunch(
 
 // --- Init ---
 
-function collectRelativeLazyAssetUrls(memfs: MemoryFileSystem): string[] {
-  return memfs.lazyAssetUrls().filter((url) => !/^[a-z][a-z0-9+.-]*:/i.test(url));
-}
-
 /**
  * Serve the image's lazy assets from repository trees. Every image URL is
  * resolved in one checkpoint started on the first lazy read in a separate
@@ -868,14 +878,19 @@ function collectRelativeLazyAssetUrls(memfs: MemoryFileSystem): string[] {
  * a lazy read awaits its pinned path before reading bytes.
  * A failed URL rethrows only when fetched, so latent bad assets do not abort boot.
  */
-function createRepoLazyAssetFetcher(
-  memfs: MemoryFileSystem,
-): (url: string) => Promise<Response> {
-  const resolver = new NodeLazyAssetResolver(collectRelativeLazyAssetUrls(memfs));
-  repoLazyAssetResolver = resolver;
+function createRepoLazyAssetFetcher(): (url: string) => Promise<Response> {
   return async (url: string) => {
     if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
-    const path = url.startsWith("file://") ? fileURLToPath(url) : await resolver.resolve(url);
+    // The kernel has loaded and validated the image before its first read.
+    // Inspect its URL cohort once; all freshness checks stay off this worker.
+    repoLazyAssetResolver ??= new NodeLazyAssetResolver(
+      kernelWorker.rootfsLazyAssetUrls().filter(
+        (member) => !/^[a-z][a-z0-9+.-]*:/i.test(member),
+      ),
+    );
+    const path = url.startsWith("file://")
+      ? fileURLToPath(url)
+      : await repoLazyAssetResolver.resolve(url);
     if (!existsSync(path)) return new Response(null, { status: 404 });
     const bytes = new Uint8Array(readFileSync(path));
     return new Response(bytes, {
@@ -903,7 +918,6 @@ async function buildVirtualPlatformIO(
     gid?: number;
   }>,
   sessionSeedTrees?: InitMessage["sessionSeedTrees"],
-  rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
   rootfsLazyAssetSources?: InitMessage["rootfsLazyAssetSources"],
 ): Promise<VirtualPlatformIO> {
@@ -925,9 +939,6 @@ async function buildVirtualPlatformIO(
     cleanupSessionDir();
     throw error;
   }
-  const shmSab = new SharedArrayBuffer(16 * 1024 * 1024);
-  const shmfs = MemoryFileSystem.create(shmSab);
-  shmfs.chmod("/", 0o1777);
   const extras: MountConfig[] = (extraMounts ?? []).map((m) => ({
     mountPoint: m.mountPoint,
     backend: new HostFileSystem(m.hostPath, m.mountPoint, {
@@ -937,32 +948,26 @@ async function buildVirtualPlatformIO(
     }),
     readonly: m.readonly,
   }));
+  // `/dev/shm` and `/dev` are not host mounts any more: POSIX shared memory is
+  // served by the in-kernel tmpfs, and the kernel's devfs owns `/dev`. A host
+  // backend for either would be a second authority the kernel never consults.
+  // `/` is the kernel's too: `resolveForNodeKernelSession` emits no mount for
+  // an image, so every mount left here sits beneath the kernel-owned `/`.
   const mounts = [
-    { mountPoint: "/dev/shm", backend: shmfs, nosuid: true },
-    { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
     ...specMounts,
     ...extras,
   ];
-  const rootMount = mounts.find((m) => m.mountPoint === "/");
-  rootfsMemfs = rootMount?.backend instanceof MemoryFileSystem
-    ? rootMount.backend
-    : null;
-  if (rootfsMemfs) {
-    ensureMountParentDirectories(rootfsMemfs, extras.map((m) => m.mountPoint));
-    if (rootfsLazyUrlBase !== undefined) {
-      rootfsMemfs.rewriteLazyFileUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
-      rootfsMemfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
-    }
-    rootfsMemfs.subscribeLazyDownloads((event) => {
-      post({ type: "lazy_download", event });
-    });
-    const lazyFetcher = rootfsLazyAssets !== undefined
+  if (rootImage.record(rootfsMountSpec ?? DEFAULT_MOUNT_SPEC)) {
+    rootfsLazyFetcher = rootfsLazyAssets !== undefined
       ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
       : rootfsLazyAssetSources !== undefined
       ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
-      : createRepoLazyAssetFetcher(rootfsMemfs);
-    rootfsMemfs.setLazyFetcher(lazyFetcher);
+      : createRepoLazyAssetFetcher();
   }
+  // The host mounts are exactly the sibling filesystems the kernel's rootfs
+  // must not claim; hand their prefixes over so they keep resolving through
+  // their own backend. (The kernel excludes its own tmpfs prefixes itself.)
+  rootfsForeignPrefixes = mounts.map((m) => m.mountPoint);
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
 
@@ -983,7 +988,9 @@ function cleanupSessionDir(): void {
   }
   sessionDir = null;
   vfsExecIO = null;
-  rootfsMemfs = null;
+  rootImage.forget();
+  rootfsLazyFetcher = undefined;
+  rootfsForeignPrefixes = [];
 }
 
 async function handleInit(msg: InitMessage) {
@@ -1016,7 +1023,6 @@ async function handleInit(msg: InitMessage) {
       msg.rootfsMountSpec,
       msg.extraMounts,
       msg.sessionSeedTrees,
-      msg.rootfsLazyUrlBase,
       msg.rootfsLazyAssets,
       msg.rootfsLazyAssetSources,
     )
@@ -1189,6 +1195,21 @@ async function handleInit(msg: InitMessage) {
       });
     },
   });
+
+  // The kernel owns `/`: hand it the boot image and the byte pipe for what the
+  // image does not carry before `init` loads them.
+  if (rootImage.has()) {
+    const rootfsContainer = new Uint8Array(msg.rootfsImage!);
+    configureRootfsOverlayFromImage(kernelWorker, {
+      imageRead: imageReadFromContainer(rootfsContainer),
+      imageBytes: rootfsContainer,
+      onLazyProgress: (event) => post({ type: "lazy_download", event }),
+      foreignPrefixes: rootfsForeignPrefixes,
+      nosuid: rootImage.nosuid(),
+      lazyFetcher: rootfsLazyFetcher,
+      lazyUrlBase: msg.rootfsLazyUrlBase,
+    });
+  }
 
   await kernelWorker.init(msg.kernelWasmBytes);
 
@@ -3651,7 +3672,7 @@ async function handleClipboardOffer(
 async function handleExportRootfsImage(
   msg: Extract<MainToKernelMessage, { type: "export_rootfs_image" }>,
 ) {
-  if (!rootfsMemfs) {
+  if (!rootImage.has()) {
     respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
     return;
   }
@@ -3666,7 +3687,9 @@ async function handleExportRootfsImage(
           "rootfs export requires a quiescent kernel with no live or tearing-down processes",
         );
       }
-      return rootfsMemfs!.saveImage();
+      // The kernel exports the image it owns: the base tree with every guest
+      // change reconciled into it (`kernel_rootfs_export_container_read`).
+      return kernelWorker.rootfsExportContainerRead();
     });
     respondTransferredBytes(msg.requestId, image);
   } catch (error) {
@@ -3680,26 +3703,27 @@ async function handleExportRootfsImage(
 async function handleReadVfsFile(
   msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
 ) {
-  const io = vfsExecIO;
-  if (!io) {
+  if (!rootImage.has()) {
     respond(msg.requestId, null);
     return;
   }
   let releaseMutation: (() => void) | undefined;
   try {
-    // A read can materialize a deferred file/tree, so it participates in the
-    // same exclusion contract as process launches and rootfs snapshots.
+    // A read can materialize a deferred file, so it participates in the same
+    // exclusion contract as process launches and rootfs snapshots.
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "read or materialize a rootfs file",
     );
-    const { data, stat } = await readPreparedPlatformFile(io, msg.path);
-    if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
+    // The kernel owns `/`, including guest copy-on-writes; a missing path or a
+    // non-regular file answers null, as before.
+    const data = await readRootfsFileWithRetry(kernelWorker, msg.path);
+    if (data === null) {
       respond(msg.requestId, null);
       return;
     }
     respondTransferredBytes(msg.requestId, data);
   } catch (error) {
-    if (isMissingPathError(error)) respond(msg.requestId, null);
+    if (isRootfsMissingFileError(error)) respond(msg.requestId, null);
     else {
       respondError(
         msg.requestId,
@@ -3756,49 +3780,24 @@ async function handleStatVfsPath(
 function handleWriteVfsFile(
   msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>,
 ) {
-  const io = vfsExecIO;
-  if (!io) {
+  if (!rootImage.has()) {
     respondError(msg.requestId, "VFS is not initialized");
     return;
   }
   let releaseMutation: (() => void) | undefined;
-  let fd: number | null = null;
   try {
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "write a rootfs file",
     );
-    fd = io.open(
+    // Written through the kernel so live guests see it. The kernel creates or
+    // replaces the file and applies the requested mode either way.
+    kernelWorker.rootfsWriteFile(
       msg.path,
-      O_WRONLY_CREAT_TRUNC,
+      msg.data,
       msg.mode & FILE_MODES.S_MODE_BITS,
     );
-    let offset = 0;
-    while (offset < msg.data.byteLength) {
-      const written = io.write(
-        fd,
-        msg.data.subarray(offset),
-        null,
-        msg.data.byteLength - offset,
-      );
-      if (written <= 0) {
-        throw new Error(`Short write while staging ${msg.path}`);
-      }
-      offset += written;
-    }
-    io.close(fd);
-    fd = null;
-    // open(O_CREAT) preserves an existing file's mode. Apply the caller's
-    // requested mode explicitly so replacement and creation behave alike.
-    io.chmod(msg.path, msg.mode & FILE_MODES.S_MODE_BITS);
     respond(msg.requestId, true);
   } catch (error) {
-    if (fd !== null) {
-      try {
-        io.close(fd);
-      } catch {
-        // Preserve the write failure as the useful error.
-      }
-    }
     respondError(
       msg.requestId,
       error instanceof Error ? error.message : String(error),

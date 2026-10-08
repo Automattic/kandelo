@@ -580,8 +580,9 @@ depend on `msync` for WAL-index coherence. That makes the observed
 `busy2.test`, `wal3.test`, and `walsetlk.test` failures kernel/filesystem
 correctness failures to fix before treating full SQLite numbers as meaningful.
 
-Other known blockers are the browser `SharedFS` 64-FD cap reducing
-`manydb.test`, a SQLite testfixture build mismatch around
+Other known blockers were recorded before the kernel took over the browser
+filesystem: the former browser filesystem's 64-FD cap reduced `manydb.test`
+(that filesystem is gone; the run has not been repeated since), a SQLite testfixture build mismatch around
 `SQLITE_ENABLE_UPDATE_DELETE_LIMIT`, and a browser artifact bug where the
 timeboxed full run exported a valid 1024-byte SQLite DB with no `jobs` table.
 

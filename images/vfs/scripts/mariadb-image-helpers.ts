@@ -1,4 +1,4 @@
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import { ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
 
 export const MARIADB_UID = 101;
@@ -17,7 +17,7 @@ export const MARIADB_DATA_DIRS = [
  * ownership contract explicit without making database state world-writable;
  * /tmp retains ordinary POSIX sticky-directory semantics.
  */
-export function prepareMariadbWritableDirectories(fs: MemoryFileSystem): void {
+export function prepareMariadbWritableDirectories(fs: VfsImageFilesystem): void {
   for (const dir of MARIADB_DATA_DIRS) {
     ensureDirRecursive(fs, dir);
     fs.chown(dir, MARIADB_UID, MARIADB_GID);
