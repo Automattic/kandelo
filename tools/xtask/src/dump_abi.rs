@@ -1484,6 +1484,18 @@ fn render_ts_module() -> String {
         shared::abi::ABI_KERNEL_EXPORT
     ));
 
+    // Not an ABI value: the one fixed instant image builders use when a fixed
+    // time is needed (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). It
+    // lives in this generated module so the TypeScript builders read the same
+    // number the Rust image writer does rather than a second literal.
+    out.push_str(&format!(
+        "/* Kandelo's reference instant: the first Kandelo commit's time. Stamped\n\
+         * on image files when no time is supplied; never 0, which software\n\
+         * reads as \"no timestamp\" (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). */\n\
+         export const KANDELO_REFERENCE_EPOCH_SECONDS = {} as const;\n\n",
+        shared::KANDELO_REFERENCE_EPOCH_SECONDS,
+    ));
+
     // Phase 2 (Option A) RAW syscall set, projected from
     // wasm_posix_shared::host_raw_syscalls. These syscalls keep raw i64 args and
     // are never carried as an opaque record. The blind record fast-path in
@@ -3803,6 +3815,26 @@ fn render_ts_module() -> String {
     out.push_str("export const PATHCONF_NAMES = {\n");
     for (name, number) in shared::pathconf::ABI_NAMES {
         out.push_str(&format!("  {name}: {number},\n"));
+    }
+    out.push_str("} as const;\n\n");
+
+    // Errno values, POSITIVE as POSIX and `shared::Errno` define them.
+    //
+    // These had no generator while their neighbours (open flags, mode bits,
+    // syscall names) had one, so the TypeScript filesystem and
+    // `host/src/exec-target.ts` each hand-wrote the subset they needed.
+    //
+    // Consumers that follow the negated-errno convention must negate
+    // explicitly; see `host/src/vfs/vfs-errors.ts`. Emitting the POSIX sign
+    // and negating at one visible place beats baking a second convention into
+    // the generated table.
+    out.push_str("export const ERRNO = {\n");
+    for value in 1u32..=256 {
+        if let Some(errno) = shared::Errno::from_u32(value) {
+            // `Debug` is the variant name; ENOTSUP aliases EOPNOTSUPP, so the
+            // canonical name for a shared value appears once.
+            out.push_str(&format!("  {:?}: {value},\n", errno));
+        }
     }
     out.push_str("} as const;\n\n");
 

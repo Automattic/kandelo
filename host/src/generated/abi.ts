@@ -5,6 +5,11 @@ export const ABI_VERSION = 48 as const;
 export const ABI_CUSTOM_SECTION = "wasm-posix-abi" as const;
 export const ABI_KERNEL_EXPORT = "__abi_version" as const;
 
+/* Kandelo's reference instant: the first Kandelo commit's time. Stamped
+* on image files when no time is supplied; never 0, which software
+* reads as "no timestamp" (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). */
+export const KANDELO_REFERENCE_EPOCH_SECONDS = 1772944691 as const;
+
 /* Opaque channel-record sentinel (wasm_posix_shared::channel_record). */
 export const RECORD_MAGIC = 0x3152434B as const;
 /* The record frames itself: the host copies RECORD_LEN_OFFSET's u32
@@ -1595,6 +1600,74 @@ export const PATHCONF_NAMES = {
   FALLOC: 21,
   TEXTDOMAIN_MAX: 22,
   TIMESTAMP_RESOLUTION: 23,
+} as const;
+
+export const ERRNO = {
+  EPERM: 1,
+  ENOENT: 2,
+  ESRCH: 3,
+  EINTR: 4,
+  EIO: 5,
+  ENXIO: 6,
+  E2BIG: 7,
+  ENOEXEC: 8,
+  EBADF: 9,
+  ECHILD: 10,
+  EAGAIN: 11,
+  ENOMEM: 12,
+  EACCES: 13,
+  EFAULT: 14,
+  EBUSY: 16,
+  EEXIST: 17,
+  EXDEV: 18,
+  ENODEV: 19,
+  ENOTDIR: 20,
+  EISDIR: 21,
+  EINVAL: 22,
+  ENFILE: 23,
+  EMFILE: 24,
+  ENOTTY: 25,
+  ETXTBSY: 26,
+  EFBIG: 27,
+  ENOSPC: 28,
+  ESPIPE: 29,
+  EROFS: 30,
+  EMLINK: 31,
+  EPIPE: 32,
+  EDOM: 33,
+  ERANGE: 34,
+  EDEADLK: 35,
+  ENAMETOOLONG: 36,
+  ENOLCK: 37,
+  ENOSYS: 38,
+  ENOTEMPTY: 39,
+  ELOOP: 40,
+  ENOMSG: 42,
+  EIDRM: 43,
+  ENODATA: 61,
+  EPROTO: 71,
+  EOVERFLOW: 75,
+  EBADFD: 77,
+  ENOTSOCK: 88,
+  EDESTADDRREQ: 89,
+  EMSGSIZE: 90,
+  EPROTOTYPE: 91,
+  ENOPROTOOPT: 92,
+  EPROTONOSUPPORT: 93,
+  EOPNOTSUPP: 95,
+  EAFNOSUPPORT: 97,
+  EADDRINUSE: 98,
+  EADDRNOTAVAIL: 99,
+  ENETUNREACH: 101,
+  ECONNABORTED: 103,
+  ECONNRESET: 104,
+  EISCONN: 106,
+  ENOTCONN: 107,
+  ESHUTDOWN: 108,
+  ETIMEDOUT: 110,
+  ECONNREFUSED: 111,
+  EALREADY: 114,
+  EINPROGRESS: 115,
 } as const;
 
 export const ABI_SYSCALL_NAMES: Record<number, string> = {

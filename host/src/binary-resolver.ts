@@ -1783,7 +1783,33 @@ function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
       && packageName === "kernel"
       && members.length === 1
       && !members[0]!.mirrorPath.includes("/");
-    if (!isExactProgramNode && !isRootMirrorNode) {
+    // Modules the local-build engine projects at the root but the package
+    // resolver does not model: today only the standalone VFS image writer,
+    // which `crates/kandelo-image-module/build-wasm.sh` builds out-of-band and
+    // which carries no `packages/registry/<name>/build.toml`, so it never
+    // appears in the v2 `projection.packages` map. Admit it as its own
+    // single root-level member node so every host resolves it through the
+    // same pinned projection as `kernel.wasm`.
+    //
+    // This must list every module in `CORESIDENT_SIDE_MODULES`
+    // (`tools/xtask/src/local_build.rs`; a cargo test checks the two agree).
+    // A module the engine projects but this table omits makes the WHOLE
+    // manifest unreadable, because the parse throws before any binary
+    // resolves.
+    //
+    // An explicit allowlist rather than "any single root-level member": this
+    // check is what stops an arbitrary node in an untrusted projection from
+    // claiming a root path, so it must enumerate what is permitted.
+    const standaloneModuleArtifacts: Record<string, readonly string[]> = {
+      "kandelo-image-module": ["kandelo_image_module32.wasm"],
+    };
+    const isStandaloneModuleNode =
+      !projection.packages.has(packageName)
+      && members.length === 1
+      && (standaloneModuleArtifacts[packageName]?.includes(
+        members[0]!.mirrorPath,
+      ) ?? false);
+    if (!isExactProgramNode && !isRootMirrorNode && !isStandaloneModuleNode) {
       throw sourceOnlyProjectionError(
         projectionPath,
         `node ${JSON.stringify(packageName)} (${targetArch}) is neither an exact v2 program node nor a root-mirror package`,
