@@ -21,11 +21,13 @@ use core::mem::size_of;
 use core::slice;
 
 use wasm_posix_shared::{
+    abi,
     abi::extended_syscalls as syscall_numbers,
     channel_scalar::{self, ChannelResultKind},
     process_snapshot_wire, Errno, KernelWaitResult, WasmDirent, WasmStat,
     WasmStatfs, WasmTimespec,
 };
+
 
 use crate::channel_result::{checked_mmap_byte_offset, ChannelDispatchOutcome};
 use crate::channel_scratch::{
@@ -53,7 +55,17 @@ use crate::syscalls;
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn host_debug_log(ptr: *const u8, len: u32);
-    fn host_open(path_ptr: *const u8, path_len: u32, flags: u32, mode: u32) -> i64;
+    // The handle-only filesystem contract. Every one of these resolves exactly
+    // one path component relative to a directory handle the host previously
+    // issued; the kernel owns namespace resolution, mount routing, `..`, and
+    // symlink chains. See `crates/runtime-core/src/hostdir.rs`.
+    fn host_openat(
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
+        flags: u32,
+        mode: u32,
+    ) -> i64;
     fn host_close(handle: i64) -> i32;
     fn host_read(handle: i64, buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_write(handle: i64, buf_ptr: *const u8, buf_len: u32) -> i32;
@@ -72,6 +84,43 @@ unsafe extern "C" {
         offset_lo: u32,
         offset_hi: i32,
     ) -> i32;
+    // Positioned read of a DEFERRED resource: something the `/` image does not
+    // carry, which the host fetches from its own transport and serves bytes of,
+    // reporting `-EAGAIN` while the fetch is in flight.
+    //
+    // The resource is named by the URI its image recorded — bytes in THIS
+    // module's memory, passed through unread. It used to be named by a `kind`
+    // discriminator plus an id from one of two namespaces, which the host could
+    // only resolve by keeping its own table mapping ids back to addresses. That
+    // table was a second author for where a file's bytes live, and the image
+    // was the first. A URI is a complete address by construction, so the table
+    // has nothing to hold and the discriminator has nothing to discriminate:
+    // a base file's blob and a lazy archive's raw bytes are the same request.
+    //
+    // The kernel does not parse the URI, and carrying it authorises nothing —
+    // whoever fetches decides whether that address may be fetched at all.
+    //
+    // An image-backed file is NOT deferred and never reaches here: the kernel
+    // reads its bytes out of the image through its own KIFS reader.
+    //
+    // `offset` is a 64-bit value split into 32-bit words for the JS boundary,
+    // matching the host_pread offset convention.
+    fn host_fetch_deferred(
+        uri_ptr: *const u8,
+        uri_len: u32,
+        buf_ptr: *mut u8,
+        buf_len: u32,
+        offset_lo: u32,
+        offset_hi: u32,
+    ) -> i32;
+    // Positioned read of the VFS image's own container bytes, so the kernel can
+    // parse the image it booted from instead of consuming a tree the host
+    // walked for it (`rootfs::load_image`). There is exactly one image per
+    // kernel, so no id is carried; only `offset` splits into 32-bit words for
+    // the JS boundary. Every host supplies this import; a host with no image
+    // source installed answers `-ENOSYS`, which is what keeps the image path
+    // dormant until it is wired.
+    fn host_image_read(buf_ptr: *mut u8, buf_len: u32, offset_lo: u32, offset_hi: u32) -> i32;
     fn host_pwrite(
         handle: i64,
         buf_ptr: *const u8,
@@ -81,31 +130,58 @@ unsafe extern "C" {
     ) -> i32;
     fn host_seek(handle: i64, offset_lo: u32, offset_hi: i32, whence: u32) -> i64;
     fn host_fstat(handle: i64, stat_ptr: *mut u8) -> i32;
-    fn host_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
-    fn host_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
-    fn host_statfs(path_ptr: *const u8, path_len: u32, statfs_ptr: *mut u8) -> i32;
-    fn host_fstatfs(handle: i64, statfs_ptr: *mut u8) -> i32;
-    fn host_pathconf(path_ptr: *const u8, path_len: u32, name: i32, value_ptr: *mut i64) -> i32;
-    fn host_fpathconf(handle: i64, name: i32, value_ptr: *mut i64) -> i32;
-    fn host_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
-    fn host_rmdir(path_ptr: *const u8, path_len: u32) -> i32;
-    fn host_unlink(path_ptr: *const u8, path_len: u32) -> i32;
-    fn host_rename(old_ptr: *const u8, old_len: u32, new_ptr: *const u8, new_len: u32) -> i32;
-    fn host_link(old_ptr: *const u8, old_len: u32, new_ptr: *const u8, new_len: u32) -> i32;
-    fn host_symlink(
+    fn host_fstatat(
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
+        flags: u32,
+        stat_ptr: *mut u8,
+    ) -> i32;
+    fn host_mkdirat(dir: i64, name_ptr: *const u8, name_len: u32, mode: u32) -> i32;
+    fn host_unlinkat(dir: i64, name_ptr: *const u8, name_len: u32, flags: u32) -> i32;
+    fn host_renameat(
+        old_dir: i64,
+        old_ptr: *const u8,
+        old_len: u32,
+        new_dir: i64,
+        new_ptr: *const u8,
+        new_len: u32,
+    ) -> i32;
+    fn host_linkat(
+        old_dir: i64,
+        old_ptr: *const u8,
+        old_len: u32,
+        new_dir: i64,
+        new_ptr: *const u8,
+        new_len: u32,
+        flags: u32,
+    ) -> i32;
+    fn host_symlinkat(
         target_ptr: *const u8,
         target_len: u32,
-        link_ptr: *const u8,
-        link_len: u32,
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
     ) -> i32;
-    fn host_readlink(path_ptr: *const u8, path_len: u32, buf_ptr: *mut u8, buf_len: u32) -> i32;
-    fn host_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
-    fn host_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
-    fn host_lchown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
-    fn host_access(path_ptr: *const u8, path_len: u32, amode: u32) -> i32;
-    fn host_opendir(path_ptr: *const u8, path_len: u32) -> i64;
+    fn host_readlinkat(
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
+        buf_ptr: *mut u8,
+        buf_len: u32,
+    ) -> i32;
+    fn host_fchmodat(dir: i64, name_ptr: *const u8, name_len: u32, mode: u32) -> i32;
+    fn host_fchownat(
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
+        uid: u32,
+        gid: u32,
+        flags: u32,
+    ) -> i32;
+    fn host_fstatfs(handle: i64, statfs_ptr: *mut u8) -> i32;
+    fn host_fpathconf(handle: i64, name: i32, value_ptr: *mut i64) -> i32;
     fn host_readdir(dir_handle: i64, dirent_ptr: *mut u8, name_ptr: *mut u8, name_len: u32) -> i32;
-    fn host_closedir(dir_handle: i64) -> i32;
     fn host_clock_gettime(clock_id: u32, sec_ptr: *mut i64, nsec_ptr: *mut i64) -> i32;
     fn host_ftruncate(handle: i64, length: i64) -> i32;
     fn host_fsync(handle: i64) -> i32;
@@ -122,12 +198,14 @@ unsafe extern "C" {
     ) -> i32;
     fn host_getrandom(buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_utimensat(
-        path_ptr: *const u8,
-        path_len: u32,
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
         atime_sec: i64,
         atime_nsec: i64,
         mtime_sec: i64,
         mtime_nsec: i64,
+        flags: u32,
     ) -> i32;
     fn host_waitpid(pid: i32, options: u32, status_ptr: *mut i32) -> i32;
     fn host_net_connect(handle: i32, addr_ptr: *const u8, addr_len: u32, port: u32) -> i32;
@@ -287,6 +365,28 @@ fn checked_host_transfer_result(result: i32, capacity: usize) -> Result<usize, E
     Ok(transferred)
 }
 
+/// One positioned read of a deferred resource, named by its URI.
+///
+/// An address-less resource never reaches here: `rootfs::fetch_at` refuses one
+/// before any request is made, because the filesystem is the layer that knows
+/// an image described a file and said nothing about where its bytes are. A
+/// second check here would be a guard that cannot fail.
+fn fetch_deferred_uri(uri: &[u8], buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+    let capacity = checked_host_buffer_len(buf.len())?;
+    let uri_len = u32::try_from(uri.len()).map_err(|_| Errno::EIO)?;
+    let result = unsafe {
+        host_fetch_deferred(
+            uri.as_ptr(),
+            uri_len,
+            buf.as_mut_ptr(),
+            capacity,
+            offset as u32,
+            (offset >> 32) as u32,
+        )
+    };
+    checked_host_transfer_result(result, buf.len())
+}
+
 fn checked_host_i64_result(result: i64) -> Result<i64, Errno> {
     if result >= 0 {
         return Ok(result);
@@ -302,12 +402,29 @@ fn split_i64_words(value: i64) -> (u32, i32) {
     (value as u32, (value >> 32) as i32)
 }
 
-impl HostIO for WasmHostIO {
-    fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno> {
-        let result = unsafe { host_open(path.as_ptr(), path.len() as u32, flags, mode) };
-        checked_host_i64_result(result)
+/// A `WasmStat` with every field cleared, for the host stat calls that fill it
+/// in place.
+fn zeroed_wasm_stat() -> WasmStat {
+    WasmStat {
+        st_dev: 0,
+        st_ino: 0,
+        st_mode: 0,
+        st_nlink: 0,
+        st_uid: 0,
+        st_gid: 0,
+        st_size: 0,
+        st_atime_sec: 0,
+        st_atime_nsec: 0,
+        st_mtime_sec: 0,
+        st_mtime_nsec: 0,
+        st_ctime_sec: 0,
+        st_ctime_nsec: 0,
+        _pad: 0,
+        st_rdev: 0,
     }
+}
 
+impl HostIO for WasmHostIO {
     fn host_close(&mut self, handle: i64) -> Result<(), Errno> {
         let result = unsafe { host_close(handle) };
         i32_to_result(result)
@@ -360,6 +477,23 @@ impl HostIO for WasmHostIO {
         checked_host_transfer_result(result, buf.len())
     }
 
+    fn fetch_deferred(&mut self, uri: &[u8], buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+        fetch_deferred_uri(uri, buf, offset)
+    }
+
+    fn image_read(&mut self, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let result = unsafe {
+            host_image_read(
+                buf.as_mut_ptr(),
+                capacity,
+                offset as u32,
+                (offset >> 32) as u32,
+            )
+        };
+        checked_host_transfer_result(result, buf.len())
+    }
+
     fn host_pwrite(&mut self, handle: i64, buf: &[u8], offset: i64) -> Result<usize, Errno> {
         let capacity = checked_host_buffer_len(buf.len())?;
         let (offset_lo, offset_hi) = split_i64_words(offset);
@@ -374,97 +508,164 @@ impl HostIO for WasmHostIO {
     }
 
     fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno> {
-        let mut stat = WasmStat {
-            st_dev: 0,
-            st_ino: 0,
-            st_mode: 0,
-            st_nlink: 0,
-            st_uid: 0,
-            st_gid: 0,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-            st_rdev: 0,
-        };
+        let mut stat = zeroed_wasm_stat();
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_fstat(handle, stat_ptr) };
         i32_to_result(result)?;
         Ok(stat)
     }
 
-    fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
-        let mut stat = WasmStat {
-            st_dev: 0,
-            st_ino: 0,
-            st_mode: 0,
-            st_nlink: 0,
-            st_uid: 0,
-            st_gid: 0,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-            st_rdev: 0,
-        };
+    fn host_openat(
+        &mut self,
+        dir: i64,
+        name: &[u8],
+        flags: u32,
+        mode: u32,
+    ) -> Result<i64, Errno> {
+        let result =
+            unsafe { host_openat(dir, name.as_ptr(), name.len() as u32, flags, mode) };
+        checked_host_i64_result(result)
+    }
+
+    fn host_fstatat(&mut self, dir: i64, name: &[u8], flags: u32) -> Result<WasmStat, Errno> {
+        let mut stat = zeroed_wasm_stat();
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
-        let result = unsafe { host_stat(path.as_ptr(), path.len() as u32, stat_ptr) };
+        let result = unsafe {
+            host_fstatat(dir, name.as_ptr(), name.len() as u32, flags, stat_ptr)
+        };
         i32_to_result(result)?;
         Ok(stat)
     }
 
-    fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
-        let mut stat = WasmStat {
-            st_dev: 0,
-            st_ino: 0,
-            st_mode: 0,
-            st_nlink: 0,
-            st_uid: 0,
-            st_gid: 0,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-            st_rdev: 0,
-        };
-        let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
-        let result = unsafe { host_lstat(path.as_ptr(), path.len() as u32, stat_ptr) };
-        i32_to_result(result)?;
-        Ok(stat)
+    fn host_mkdirat(&mut self, dir: i64, name: &[u8], mode: u32) -> Result<(), Errno> {
+        let result = unsafe { host_mkdirat(dir, name.as_ptr(), name.len() as u32, mode) };
+        i32_to_result(result)
     }
 
-    fn host_statfs(&mut self, path: &[u8]) -> Result<WasmStatfs, Errno> {
-        let mut statfs = WasmStatfs {
-            f_type: 0,
-            f_bsize: 0,
-            f_blocks: 0,
-            f_bfree: 0,
-            f_bavail: 0,
-            f_files: 0,
-            f_ffree: 0,
-            f_fsid: 0,
-            f_namelen: 0,
-            f_frsize: 0,
-            f_flags: 0,
-            _pad: 0,
-        };
-        let statfs_ptr = &mut statfs as *mut WasmStatfs as *mut u8;
-        let result = unsafe { host_statfs(path.as_ptr(), path.len() as u32, statfs_ptr) };
-        i32_to_result(result)?;
-        Ok(statfs)
+    fn host_unlinkat(&mut self, dir: i64, name: &[u8], flags: u32) -> Result<(), Errno> {
+        let result = unsafe { host_unlinkat(dir, name.as_ptr(), name.len() as u32, flags) };
+        i32_to_result(result)
     }
+
+    fn host_renameat(
+        &mut self,
+        old_dir: i64,
+        old_name: &[u8],
+        new_dir: i64,
+        new_name: &[u8],
+    ) -> Result<(), Errno> {
+        let result = unsafe {
+            host_renameat(
+                old_dir,
+                old_name.as_ptr(),
+                old_name.len() as u32,
+                new_dir,
+                new_name.as_ptr(),
+                new_name.len() as u32,
+            )
+        };
+        i32_to_result(result)
+    }
+
+    fn host_linkat(
+        &mut self,
+        old_dir: i64,
+        old_name: &[u8],
+        new_dir: i64,
+        new_name: &[u8],
+        flags: u32,
+    ) -> Result<(), Errno> {
+        let result = unsafe {
+            host_linkat(
+                old_dir,
+                old_name.as_ptr(),
+                old_name.len() as u32,
+                new_dir,
+                new_name.as_ptr(),
+                new_name.len() as u32,
+                flags,
+            )
+        };
+        i32_to_result(result)
+    }
+
+    fn host_symlinkat(&mut self, target: &[u8], dir: i64, name: &[u8]) -> Result<(), Errno> {
+        let result = unsafe {
+            host_symlinkat(
+                target.as_ptr(),
+                target.len() as u32,
+                dir,
+                name.as_ptr(),
+                name.len() as u32,
+            )
+        };
+        i32_to_result(result)
+    }
+
+    fn host_readlinkat(
+        &mut self,
+        dir: i64,
+        name: &[u8],
+        buf: &mut [u8],
+    ) -> Result<usize, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let result = unsafe {
+            host_readlinkat(
+                dir,
+                name.as_ptr(),
+                name.len() as u32,
+                buf.as_mut_ptr(),
+                capacity,
+            )
+        };
+        checked_host_transfer_result(result, buf.len())
+    }
+
+    fn host_fchmodat(&mut self, dir: i64, name: &[u8], mode: u32) -> Result<(), Errno> {
+        let result = unsafe { host_fchmodat(dir, name.as_ptr(), name.len() as u32, mode) };
+        i32_to_result(result)
+    }
+
+    fn host_fchownat(
+        &mut self,
+        dir: i64,
+        name: &[u8],
+        uid: u32,
+        gid: u32,
+        flags: u32,
+    ) -> Result<(), Errno> {
+        let result = unsafe {
+            host_fchownat(dir, name.as_ptr(), name.len() as u32, uid, gid, flags)
+        };
+        i32_to_result(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn host_utimensat(
+        &mut self,
+        dir: i64,
+        name: &[u8],
+        atime_sec: i64,
+        atime_nsec: i64,
+        mtime_sec: i64,
+        mtime_nsec: i64,
+        flags: u32,
+    ) -> Result<(), Errno> {
+        let result = unsafe {
+            host_utimensat(
+                dir,
+                name.as_ptr(),
+                name.len() as u32,
+                atime_sec,
+                atime_nsec,
+                mtime_sec,
+                mtime_nsec,
+                flags,
+            )
+        };
+        i32_to_result(result)
+    }
+
 
     fn host_fstatfs(&mut self, handle: i64) -> Result<WasmStatfs, Errno> {
         let mut statfs = WasmStatfs {
@@ -487,127 +688,11 @@ impl HostIO for WasmHostIO {
         Ok(statfs)
     }
 
-    fn host_pathconf(&mut self, path: &[u8], name: i32) -> Result<Option<i64>, Errno> {
-        let mut value = -1i64;
-        let result = unsafe {
-            host_pathconf(
-                path.as_ptr(),
-                path.len() as u32,
-                name,
-                &mut value as *mut i64,
-            )
-        };
-        i32_to_result(result)?;
-        Ok((value != -1).then_some(value))
-    }
-
     fn host_fpathconf(&mut self, handle: i64, name: i32) -> Result<Option<i64>, Errno> {
         let mut value = -1i64;
         let result = unsafe { host_fpathconf(handle, name, &mut value as *mut i64) };
         i32_to_result(result)?;
         Ok((value != -1).then_some(value))
-    }
-
-    fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
-        let result = unsafe { host_mkdir(path.as_ptr(), path.len() as u32, mode) };
-        i32_to_result(result)
-    }
-
-    fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno> {
-        let result = unsafe { host_rmdir(path.as_ptr(), path.len() as u32) };
-        i32_to_result(result)
-    }
-
-    fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno> {
-        let result = unsafe { host_unlink(path.as_ptr(), path.len() as u32) };
-        i32_to_result(result)
-    }
-
-    fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
-        let result = unsafe {
-            host_rename(
-                oldpath.as_ptr(),
-                oldpath.len() as u32,
-                newpath.as_ptr(),
-                newpath.len() as u32,
-            )
-        };
-        i32_to_result(result)
-    }
-
-    fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
-        let result = unsafe {
-            host_link(
-                oldpath.as_ptr(),
-                oldpath.len() as u32,
-                newpath.as_ptr(),
-                newpath.len() as u32,
-            )
-        };
-        i32_to_result(result)
-    }
-
-    fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
-        let result = unsafe {
-            host_symlink(
-                target.as_ptr(),
-                target.len() as u32,
-                linkpath.as_ptr(),
-                linkpath.len() as u32,
-            )
-        };
-        i32_to_result(result)
-    }
-
-    fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
-        let result = unsafe {
-            host_readlink(
-                path.as_ptr(),
-                path.len() as u32,
-                buf.as_mut_ptr(),
-                buf.len() as u32,
-            )
-        };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result as usize)
-        }
-    }
-
-    fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
-        let result = unsafe { host_chmod(path.as_ptr(), path.len() as u32, mode) };
-        i32_to_result(result)
-    }
-
-    fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
-        let result = unsafe { host_chown(path.as_ptr(), path.len() as u32, uid, gid) };
-        i32_to_result(result)
-    }
-
-    fn host_lchown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
-        let result = unsafe { host_lchown(path.as_ptr(), path.len() as u32, uid, gid) };
-        i32_to_result(result)
-    }
-
-    fn host_access(&mut self, path: &[u8], amode: u32) -> Result<(), Errno> {
-        let result = unsafe { host_access(path.as_ptr(), path.len() as u32, amode) };
-        i32_to_result(result)
-    }
-
-    fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno> {
-        let result = unsafe { host_opendir(path.as_ptr(), path.len() as u32) };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result)
-        }
     }
 
     fn host_readdir(
@@ -645,11 +730,6 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_closedir(&mut self, handle: i64) -> Result<(), Errno> {
-        let result = unsafe { host_closedir(handle) };
-        i32_to_result(result)
-    }
-
     fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno> {
         // An image-build kernel answers the wall clock from the build's epoch;
         // monotonic and CPU clocks stay real (`image_build_determinism`).
@@ -665,6 +745,7 @@ impl HostIO for WasmHostIO {
         i32_to_result(result)?;
         Ok((sec, nsec))
     }
+
 
     fn host_ftruncate(&mut self, handle: i64, length: i64) -> Result<(), Errno> {
         let result = unsafe { host_ftruncate(handle, length) };
@@ -728,26 +809,6 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_utimensat(
-        &mut self,
-        path: &[u8],
-        atime_sec: i64,
-        atime_nsec: i64,
-        mtime_sec: i64,
-        mtime_nsec: i64,
-    ) -> Result<(), Errno> {
-        let result = unsafe {
-            host_utimensat(
-                path.as_ptr(),
-                path.len() as u32,
-                atime_sec,
-                atime_nsec,
-                mtime_sec,
-                mtime_nsec,
-            )
-        };
-        i32_to_result(result)
-    }
     fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno> {
         let mut status: i32 = 0;
         gkl_release();
@@ -1371,6 +1432,133 @@ pub extern "C" fn kernel_spawn_scratch_pointer(token: i64) -> usize {
     crate::spawn::spawn_scratch_pointer(token).unwrap_or(0)
 }
 
+/// Writable byte capacity of exactly the SYS_SPAWN reservation named by
+/// `token`, or zero for a stale token or lock contention.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_scratch_capacity(token: i64) -> usize {
+    crate::spawn::spawn_scratch_capacity(token).unwrap_or(0)
+}
+
+/// Retained allocation capacity for diagnostics. This export reveals no
+/// pointer and grants no authority to modify an active reservation.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_scratch_retained_capacity() -> usize {
+    crate::spawn::spawn_scratch_retained_capacity().unwrap_or(0)
+}
+
+/// Cancel exactly the current SYS_SPAWN reservation.
+///
+/// Cancellation waits for the reservation mutex instead of returning a
+/// transient EBUSY. The guarded Rust path performs no host imports, so the
+/// matching token cannot be stranded by contention.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_scratch_cancel(token: i64) -> i32 {
+    match crate::spawn::cancel_spawn_scratch(token) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Read the approximate Wasm stack pointer for debugging.
+/// Returns the address of a stack variable, which is close to the current SP.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_stack_pointer() -> usize {
+    let sentinel: u32 = 0xDEAD;
+    &sentinel as *const u32 as usize
+}
+
+/// Return the current Wasm memory size in pages using the `memory.size` instruction.
+/// This is the true internal page count — may differ from what JS reports for shared memory.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_memory_pages() -> u32 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        core::arch::wasm32::memory_size(0) as u32
+    }
+    #[cfg(target_arch = "wasm64")]
+    {
+        core::arch::wasm64::memory_size(0) as u32
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+    {
+        0
+    }
+}
+
+/// Create a new process in the process table with captured pipe stdio.
+/// Returns the kernel-allocated pid on success or a negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_create_process() -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.create_process() {
+        Ok(pid) => pid as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Create a new process with explicit stdio wiring.
+///
+/// Stdio kind values are per-fd:
+/// - 0: host-backed pipe semantics (`isatty` false, FIFO stat mode)
+/// - 1: host-backed terminal/char-device semantics
+///
+/// Returns the kernel-allocated pid on success, -EINVAL for an unknown stdio
+/// kind, or another negative errno on allocation failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_create_process_with_stdio(
+    stdin_kind: u32,
+    stdout_kind: u32,
+    stderr_kind: u32,
+) -> i32 {
+    let stdio = match (
+        StdioKind::from_abi(stdin_kind),
+        StdioKind::from_abi(stdout_kind),
+        StdioKind::from_abi(stderr_kind),
+    ) {
+        (Some(stdin), Some(stdout), Some(stderr)) => StdioConfig {
+            stdin,
+            stdout,
+            stderr,
+        },
+        _ => return -(Errno::EINVAL as i32),
+    };
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.create_process_with_stdio(stdio) {
+        Ok(pid) => pid as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Make fd 0 of `pid` the read end of a new kernel pipe for host-supplied
+/// stdin and return the pipe index, or a negative errno (`-ESRCH` for an
+/// unknown pid).
+///
+/// The host holds the pipe's write end: it writes stdin bytes with
+/// `kernel_pipe_write` as the pipe has space and releases the write end with
+/// `kernel_pipe_close_write`, after which readers see end-of-file. fd 0 is an
+/// ordinary open file description, so it is shared across fork, dup, and
+/// exec with one read position (see
+/// `runtime_core::process_table::ProcessTable::install_host_stdin_pipe`).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_install_host_stdin_pipe(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    match table.install_host_stdin_pipe(pid, &mut host) {
+        Ok(pipe_idx) => pipe_idx as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Enable (nonzero) or disable (zero) in-kernel tmpfs authority over the scratch
+/// mounts (`/tmp`, `/var/*`, `/root`, `/srv`, ...). The host calls this at boot
+/// once it hands scratch-mount ownership to the kernel and stops mounting its
+/// own scratch backends. Returns the previous state (0/1).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_tmpfs_enabled(enabled: i32) -> i32 {
+    crate::tmpfs::set_enabled(enabled != 0) as i32
+}
+
 // ---- Kernel-owned wait deadlines (K3) ----
 //
 // The host still owns the parks -- the timers and the wake routing -- but the
@@ -1577,127 +1765,444 @@ pub extern "C" fn kernel_wait_queue_stats(out_ptr: *mut u8, len: u32) -> i32 {
     BYTES as i32
 }
 
-/// Writable byte capacity of exactly the SYS_SPAWN reservation named by
-/// `token`, or zero for a stale token or lock contention.
+/// Load the in-kernel rootfs overlay's base tree from an RTFS manifest buffer in
+/// kernel Wasm memory: a whole tree handed over in a single crossing. Not the
+/// boot path — hosts boot through `kernel_rootfs_load_image` — this remains for
+/// tests that place small trees directly. Returns the number of entries loaded
+/// (>=0) or a negative errno. See `rootfs::load_manifest`.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_capacity(token: i64) -> usize {
-    crate::spawn::spawn_scratch_capacity(token).unwrap_or(0)
+pub extern "C" fn kernel_rootfs_load_manifest(ptr: *const u8, len: u32) -> i32 {
+    let buf = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+    match crate::rootfs::load_manifest(buf) {
+        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Err(error) => -(error as i32),
+    }
 }
 
-/// Retained allocation capacity for diagnostics. This export reveals no
-/// pointer and grants no authority to modify an active reservation.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_retained_capacity() -> usize {
-    crate::spawn::spawn_scratch_retained_capacity().unwrap_or(0)
-}
-
-/// Cancel exactly the current SYS_SPAWN reservation.
+/// Load the in-kernel rootfs overlay's base tree by parsing the `/` VFS image
+/// itself, instead of consuming a tree the host walked and re-encoded.
 ///
-/// Cancellation waits for the reservation mutex instead of returning a
-/// transient EBUSY. The guarded Rust path performs no host imports, so the
-/// matching token cannot be stranded by contention.
+/// `image_len` is the byte length of the whole VFSI container; the kernel pulls
+/// the bytes it needs through `env.host_image_read` as it walks. It reads far
+/// less than the whole image (a superblock, the inode-table blocks it touches,
+/// directory data blocks, indirect blocks, and the `KLZY` section), so a large
+/// image is never made resident in kernel memory.
+///
+/// This is the boot path both hosts use, and the image-authoritative
+/// alternative to `kernel_rootfs_load_manifest`. Returns the number of entries loaded
+/// (>=0) or a negative errno — in particular `-ENOSYS` when the host has not
+/// installed an image source, which is what keeps the path dormant. See
+/// `rootfs::load_image`.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_cancel(token: i64) -> i32 {
-    match crate::spawn::cancel_spawn_scratch(token) {
+pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32) -> i32 {
+    let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
+    let mut host = WasmHostIO;
+    match crate::rootfs::load_image(image_len, |req, b| match req {
+        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
+    }) {
+        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Enable (nonzero) or disable (zero) in-kernel rootfs authority over `/`. The
+/// host calls this at boot after the kernel has loaded the image
+/// (`kernel_rootfs_load_image`); from then on the host only serves image and
+/// deferred bytes. Returns the previous state (0/1).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_rootfs_enabled(enabled: i32) -> i32 {
+    crate::rootfs::set_enabled(enabled != 0) as i32
+}
+
+/// Publish whether the overlay's `/` mount is `nosuid` (nonzero) or set-ID
+/// honoring (zero). The host calls this at boot, after loading the image and
+/// before enabling rootfs authority, with the resolved `/` mount-spec flag.
+/// Defaults set-ID honoring, so a setuid/setgid binary staged in the overlay
+/// (for example `/usr/bin/login`) elevates through exec exactly as on the host
+/// `/` mount; an explicitly `nosuid` mount drops the bits. Returns the previous
+/// state (0/1). See `rootfs::set_nosuid`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_rootfs_nosuid(nosuid: i32) -> i32 {
+    crate::rootfs::set_nosuid(nosuid != 0) as i32
+}
+
+/// Register the set of *foreign* mount prefixes still mounted under `/` after
+/// the host hands `/` ownership to the overlay (for example `/run/kandelo-run`
+/// session-seed host mounts and extra `HostFileSystem` mounts). `ptr..len` is a NUL-separated list of canonical absolute mount
+/// points in kernel Wasm memory. The overlay must not claim paths at or under
+/// these prefixes — they belong to a sibling filesystem and must fall through
+/// to the host mount. The host calls this once at boot, after loading the
+/// image and before enabling rootfs authority. Returns the number of
+/// prefixes registered (>=0). See `rootfs::set_foreign_prefixes`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_set_foreign_prefixes(ptr: *const u8, len: u32) -> i32 {
+    let buf: &[u8] = if len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(ptr, len as usize) }
+    };
+    i32::try_from(crate::rootfs::set_foreign_prefixes(buf)).unwrap_or(i32::MAX)
+}
+
+/// Attach a host directory handle to each registered foreign mount, naming that
+/// mount's root directory.
+///
+/// This is the anchor of the handle-only host filesystem contract. Every host
+/// file operation under a foreign mount starts from that mount's root handle and
+/// steps one path component at a time through `host_openat`, so the host resolves
+/// at most a single component and never receives a guest path, a mount prefix, a
+/// `..`, or a symlink chain.
+///
+/// `ptr..len` is a sequence of self-describing records in kernel Wasm memory,
+/// each an 8-byte little-endian `i64` root handle followed by the mount's
+/// canonical prefix bytes and a NUL terminator. Records bind by prefix name
+/// rather than by position: the host's own mount table and the prefix list it
+/// published through `kernel_rootfs_set_foreign_prefixes` are not guaranteed to
+/// share an ordering, so a positional payload would bind two orderings that can
+/// differ.
+///
+/// This is a separate export rather than an extension of
+/// `kernel_rootfs_set_foreign_prefixes` so that the host component which owns
+/// the directory-handle table is also the component that publishes the handles,
+/// and so that the change is visible to the ABI snapshot as a new signature
+/// rather than as a silent reinterpretation of an existing export's payload.
+///
+/// The host calls this after registering prefixes and before enabling rootfs
+/// authority. Returns the number of records that attached to a registered mount
+/// (>=0). A foreign mount left without a root handle has no host directory
+/// capability; operations under it fail with `ENOSYS` rather than falling back
+/// to name resolution. See `rootfs::set_foreign_mount_roots`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_set_foreign_mount_roots(
+    roots_ptr: *const u8,
+    roots_len: u32,
+) -> i32 {
+    let buf: &[u8] = if roots_len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(roots_ptr, roots_len as usize) }
+    };
+    i32::try_from(crate::rootfs::set_foreign_mount_roots(buf)).unwrap_or(i32::MAX)
+}
+
+/// Create the missing ancestor directories of the path bytes
+/// `path_ptr..path_len`, so that path itself becomes creatable. The final
+/// component is never created — it is the file the caller is about to write.
+///
+/// Host-facing because a host that must place genuine per-session runtime data
+/// into the kernel-owned `/` cannot assume the image carries the directories
+/// leading to it. The browser's TLS-MITM CA certificate is the live case: it
+/// lands at `/etc/ssl/certs/ca-certificates.crt`, can never be baked into an
+/// image, and a demo image need not carry `/etc/ssl/certs`.
+///
+/// This is deliberately NOT folded into `kernel_rootfs_write_file`. That export
+/// opens with `O_CREAT`, which returns `ENOENT` on a missing parent exactly as
+/// POSIX requires, and giving it implicit `mkdir -p` would silently change the
+/// live `write_vfs_file` contract for every existing caller.
+///
+/// Returns the number of directories created (>=0). It cannot fail: a component
+/// that is an existing non-directory stops the walk, and the caller's own
+/// operation then reports the real error against the real path. See
+/// `rootfs::mkdir_parents`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_mkdir_parents(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    i32::try_from(crate::rootfs::mkdir_parents(path, mode & 0o7777, 0, 0)).unwrap_or(i32::MAX)
+}
+
+/// Publish the wall-clock time the rootfs overlay stamps onto metadata
+/// mutations and onto base entries that carry no time of their own. The host
+/// calls this once at boot before loading the image (so such entries are not
+/// epoch-stamped), and the syscall layer refreshes it before each mutating rootfs op.
+///
+/// `sec` is split into two 32-bit words (like the `host_pread` offset) so no
+/// 64-bit value crosses the JS boundary — the host convention never passes i64
+/// parameters to kernel exports.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_rootfs_now(sec_lo: u32, sec_hi: u32, nsec: u32) -> i32 {
+    // An image-build kernel's wall clock is the build's epoch, whatever the
+    // host's clock says (`image_build_determinism`).
+    if let Some(epoch) = crate::image_build_determinism::epoch_sec() {
+        crate::rootfs::set_now(epoch, 0);
+        return 0;
+    }
+    let sec = ((sec_hi as u64) << 32) | (sec_lo as u64);
+    crate::rootfs::set_now(sec, nsec);
+    0
+}
+
+/// Put this kernel in deterministic image-build mode: `CLOCK_REALTIME` reads
+/// count up from `epoch` and every entropy read draws from a stream seeded by
+/// the 64-bit `seed` (see `runtime_core::image_build_determinism` for the
+/// design and the security boundary). Both are split into 32-bit words, like
+/// `kernel_set_rootfs_now`, so no kernel memory is borrowed.
+///
+/// Only an image builder calls this, through the Node host's
+/// `imageBuildDeterminism` option; no syscall reaches it. It must be the
+/// first thing that happens to a kernel: it is refused with `EBUSY` once any
+/// user process exists or when the mode is already set, so a kernel that has
+/// run a guest on real entropy is never switched, and a seeded kernel is
+/// never switched back. `EINVAL` for an epoch beyond `i64::MAX` seconds.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_image_build_determinism(
+    seed_lo: u32,
+    seed_hi: u32,
+    epoch_lo: u32,
+    epoch_hi: u32,
+) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if table.has_allocated_user_tasks() {
+        return -(Errno::EBUSY as i32);
+    }
+    let seed = (((seed_hi as u64) << 32) | (seed_lo as u64)).to_le_bytes();
+    let epoch = ((epoch_hi as u64) << 32) | (epoch_lo as u64);
+    match crate::image_build_determinism::enable(&seed, epoch) {
         Ok(()) => 0,
         Err(error) => -(error as i32),
     }
 }
 
-/// Read the approximate Wasm stack pointer for debugging.
-/// Returns the address of a stack variable, which is close to the current SP.
+/// Read up to `buf_len` bytes at `offset` from the rootfs file named by the path
+/// bytes `path_ptr..path_len`, into kernel memory `buf_ptr..buf_len`. Host-facing
+/// because the kernel owns `/`: the host reads current `/` bytes through the
+/// overlay (copy-on-written bytes directly; an unmodified base file's bytes
+/// from the image via `host_image_read`, or a deferred file's via
+/// `host_fetch_deferred`). `offset` is split into lo/hi
+/// words (host convention: no i64 crosses the boundary). Returns bytes read (>=0,
+/// 0 at EOF) or a negative errno. See `rootfs::read_file_at`.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_get_stack_pointer() -> usize {
-    let sentinel: u32 = 0xDEAD;
-    &sentinel as *const u32 as usize
-}
-
-/// Return the current Wasm memory size in pages using the `memory.size` instruction.
-/// This is the true internal page count — may differ from what JS reports for shared memory.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_get_memory_pages() -> u32 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        core::arch::wasm32::memory_size(0) as u32
-    }
-    #[cfg(target_arch = "wasm64")]
-    {
-        core::arch::wasm64::memory_size(0) as u32
-    }
-    #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-    {
-        0
-    }
-}
-
-/// Create a new process in the process table with captured pipe stdio.
-/// Returns the kernel-allocated pid on success or a negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_create_process() -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.create_process() {
-        Ok(pid) => pid as i32,
-        Err(e) => -(e as i32),
-    }
-}
-
-/// Create a new process with explicit stdio wiring.
-///
-/// Stdio kind values are per-fd:
-/// - 0: host-backed pipe semantics (`isatty` false, FIFO stat mode)
-/// - 1: host-backed terminal/char-device semantics
-///
-/// Returns the kernel-allocated pid on success, -EINVAL for an unknown stdio
-/// kind, or another negative errno on allocation failure.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_create_process_with_stdio(
-    stdin_kind: u32,
-    stdout_kind: u32,
-    stderr_kind: u32,
+pub extern "C" fn kernel_rootfs_read_file(
+    path_ptr: *const u8,
+    path_len: u32,
+    offset_lo: u32,
+    offset_hi: i32,
+    buf_ptr: usize,
+    buf_len: usize,
 ) -> i32 {
-    let stdio = match (
-        StdioKind::from_abi(stdin_kind),
-        StdioKind::from_abi(stdout_kind),
-        StdioKind::from_abi(stderr_kind),
-    ) {
-        (Some(stdin), Some(stdout), Some(stderr)) => StdioConfig {
-            stdin,
-            stdout,
-            stderr,
-        },
-        _ => return -(Errno::EINVAL as i32),
+    if buf_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buf_len != 0 && (buf_ptr == 0 || buf_ptr.checked_add(buf_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    let buf: &mut [u8] = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) }
     };
-
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.create_process_with_stdio(stdio) {
-        Ok(pid) => pid as i32,
-        Err(e) => -(e as i32),
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    // The kernel owns the scratch mounts as well as `/`: a host read of a
+    // scratch path is answered by tmpfs, not by whatever the image carries
+    // under the same name.
+    if crate::tmpfs::claims_path(path) {
+        return match crate::tmpfs::read_file_at(path, offset, buf) {
+            Ok(read) => read as i32,
+            Err(error) => -(error as i32),
+        };
     }
-}
-
-/// Make fd 0 of `pid` the read end of a new kernel pipe for host-supplied
-/// stdin and return the pipe index, or a negative errno (`-ESRCH` for an
-/// unknown pid).
-///
-/// The host holds the pipe's write end: it writes stdin bytes with
-/// `kernel_pipe_write` as the pipe has space and releases the write end with
-/// `kernel_pipe_close_write`, after which readers see end-of-file. fd 0 is an
-/// ordinary open file description, so it is shared across fork, dup, and
-/// exec with one read position (see
-/// `runtime_core::process_table::ProcessTable::install_host_stdin_pipe`).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_install_host_stdin_pipe(pid: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let mut host = WasmHostIO;
-    match table.install_host_stdin_pipe(pid, &mut host) {
-        Ok(pipe_idx) => pipe_idx as i32,
-        Err(e) => -(e as i32),
+    match crate::rootfs::read_file_at(path, offset, buf, |req, b| match req {
+        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
+    }) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
     }
 }
 
-/// Set the program's initial brk to the value of its `__heap_base` export.
-/// Called by the host once per process — between process creation
-/// (or post-exec re-init) and the first syscall from the new program — so
+/// Write `buf_len` bytes at `offset` from kernel memory `buf_ptr..buf_len` to the
+/// rootfs file named by `path_ptr..path_len`, creating it if absent. When
+/// `truncate` is nonzero the file is emptied first and its mode set to `mode`
+/// (the host "replace this whole file" contract); otherwise the bytes land at
+/// `offset` and an existing file's mode is preserved (chunked continuation).
+/// Host-facing so the host's `/` writes land in the authoritative overlay and are
+/// visible to live guests. Returns bytes written (>=0) or a negative errno. See
+/// `rootfs::write_file_at`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_write_file(
+    path_ptr: *const u8,
+    path_len: u32,
+    offset_lo: u32,
+    offset_hi: i32,
+    buf_ptr: usize,
+    buf_len: usize,
+    mode: u32,
+    truncate: i32,
+) -> i32 {
+    if buf_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buf_len != 0 && (buf_ptr == 0 || buf_ptr.checked_add(buf_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    let buf: &[u8] = if buf_len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len) }
+    };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    // Scratch paths are tmpfs's; see `kernel_rootfs_read_file`.
+    if crate::tmpfs::claims_path(path) {
+        return match crate::tmpfs::write_file_at(path, offset, buf, mode, truncate != 0) {
+            Ok(written) => written as i32,
+            Err(error) => -(error as i32),
+        };
+    }
+    let mut host = WasmHostIO;
+    match crate::rootfs::write_file_at(
+        path,
+        offset,
+        buf,
+        mode,
+        truncate != 0,
+        |req, b| match req {
+            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
+        },
+    ) {
+        Ok(written) => written as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Remove the non-directory rootfs entry named by `path_ptr..path_len`.
+/// Returns 0 or a negative errno (`ENOENT` when nothing is there, `EISDIR` for
+/// a directory). Host-facing so a host that stages files into the kernel-owned
+/// `/` between process spawns (the browser's `unlinkFileFromVfs`) can remove
+/// them again through the authority that owns them; the host has no `/` mount
+/// of its own to unlink from. See `rootfs::unlink`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_unlink_file(path_ptr: *const u8, path_len: u32) -> i32 {
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    // Scratch paths are tmpfs's; see `kernel_rootfs_read_file`.
+    let removed = if crate::tmpfs::claims_path(path) {
+        crate::tmpfs::unlink(path)
+    } else {
+        crate::rootfs::unlink(path)
+    };
+    match removed {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Return the mode bits (type + permissions, `st_mode & 0xffff`) of the rootfs
+/// entry named by `path_ptr..path_len`, or a negative errno. Host-facing so the
+/// `read_vfs_file` includeMode variant reports the authoritative overlay mode
+/// rather than a stale base-image mode. No symlink follow
+/// (the includeMode consumers stage plain regular files).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_stat_mode(path_ptr: *const u8, path_len: u32) -> i32 {
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    // Scratch paths are tmpfs's; see `kernel_rootfs_read_file`.
+    let stat = if crate::tmpfs::claims_path(path) {
+        crate::tmpfs::lstat(path)
+    } else {
+        crate::rootfs::lstat(path)
+    };
+    match stat {
+        Ok(stat) => (stat.st_mode & 0xffff) as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Copy up to `buf_len` bytes of the overlay tree export (RXPT metadata buffer,
+/// see `rootfs::export_tree`) at byte `offset` into kernel memory
+/// `buf_ptr..buf_len`. Returns bytes copied (>=0, 0 at end of buffer) or a
+/// negative errno. A metadata-only view of the authoritative overlay tree; its
+/// caller is the host test suite (the image a host saves comes from
+/// `kernel_rootfs_export_container_read`). The caller reads the buffer in scratch-region-sized chunks; the kernel
+/// serializes once on the `offset == 0` chunk (the overlay is quiescent during
+/// export) and serves the rest from a cache.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_export_tree(
+    offset_lo: u32,
+    offset_hi: i32,
+    buf_ptr: usize,
+    buf_len: usize,
+) -> i32 {
+    if buf_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buf_len != 0 && (buf_ptr == 0 || buf_ptr.checked_add(buf_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let buf: &mut [u8] = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) }
+    };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    match crate::rootfs::export_tree_read(offset, buf) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Stream the FINISHED `/` image the overlay would export, CONTAINER AND ALL.
+///
+/// # Why this exists, and what it deletes
+///
+/// The host used to build this image itself: take the frozen base the kernel
+/// booted from, clone it into a writable TypeScript filesystem, replay the
+/// overlay's tree onto that clone -- deletions, copy-on-writes, runtime
+/// creates, owners, modes and times -- and serialise the result. That was a
+/// second implementation of a reconciliation the kernel can do from the
+/// authoritative side, against a tree the host had to ask for in pieces, and
+/// it is deleted.
+///
+/// `rootfs::export_container_read` already did the whole job; only a way to
+/// call it was missing. It is that function and NOT `export_image_read`,
+/// which yields the bare KIFS body: a body is not an image, it has no
+/// container header, and nothing can find the filesystem inside it. Wiring
+/// this to the body first produced exactly that -- `Bad VFS image magic:
+/// 0x5346494b (expected 0x56465349)`, KIFS where VFSI belonged. `build_export_image` walks the overlay itself, so the
+/// deletions-before-parents ordering, the metadata replay and the capacity
+/// arithmetic all live where the tree does.
+///
+/// # Shape
+///
+/// Offset-addressable and streamed, exactly like [`kernel_rootfs_export_tree`]
+/// above and for the same reason: `lamp.vfs` is 249 MiB and neither side can
+/// hold it whole. An `offset` of 0 BUILDS the image and starts the stream; a
+/// later offset serves from the plan that build produced. A returned 0 is the
+/// end of the image, not an error.
+///
+/// Base-file content comes through the same `ByteReq` pair every other rootfs
+/// entry point uses, so a deferred file's bytes are fetched by URI and an
+/// image-backed file's are read out of the loaded container.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_export_container_read(
+    offset_lo: u32,
+    offset_hi: i32,
+    buf_ptr: usize,
+    buf_len: usize,
+) -> i32 {
+    if buf_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buf_len != 0 && (buf_ptr == 0 || buf_ptr.checked_add(buf_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let buf: &mut [u8] = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) }
+    };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    let mut host = WasmHostIO;
+    match crate::rootfs::export_container_read(offset, buf, &mut |req, b| match req {
+        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
+    }) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
@@ -1945,11 +2450,16 @@ fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessR
 
     // A process removed without reaching sys_exit (worker crash or explicit
     // host termination) can still own host-side VFS handles. Close directory
-    // iterators before their backing file handles,
-    // matching sys_close/process-exit ordering. Normal exited zombies already
-    // have empty OFD and directory-stream tables, so reaping is a no-op here.
+    // iterators before their backing file handles, matching
+    // sys_close/process-exit ordering. Normal exited zombies already have empty
+    // OFD and directory-stream tables, so reaping is a no-op here.
+    //
+    // A directory handle is an ordinary host handle under the handle-only
+    // contract — `host_openat(..., O_DIRECTORY)` issues it and `host_close`
+    // releases it — so both loops call the same import. The ordering still
+    // matters, and the two lists stay separate to preserve it.
     for dir_handle in result.host_dir_closes {
-        unsafe { host_closedir(dir_handle) };
+        unsafe { host_close(dir_handle) };
     }
     for handle in result.host_closes {
         unsafe { host_close(handle) };
@@ -14204,36 +14714,3 @@ pub extern "C" fn kernel_kms_commit_count(crtc_id: u32) -> u64 {
 pub extern "C" fn kernel_kms_last_frame_us(crtc_id: u32) -> u64 {
     crate::dri::kms_last_frame_us(crtc_id)
 }
-
-/// Put this kernel in deterministic image-build mode: `CLOCK_REALTIME` reads
-/// count up from `epoch` and every entropy read draws from a stream seeded by
-/// the 64-bit `seed` (see `runtime_core::image_build_determinism` for the
-/// design and the security boundary). Both are split into 32-bit words, like
-/// the kernel's other 64-bit export arguments, so no kernel memory is
-/// borrowed.
-///
-/// Only an image builder calls this, through the Node host's
-/// `imageBuildDeterminism` option; no syscall reaches it. It must be the
-/// first thing that happens to a kernel: it is refused with `EBUSY` once any
-/// user process exists or when the mode is already set, so a kernel that has
-/// run a guest on real entropy is never switched, and a seeded kernel is
-/// never switched back. `EINVAL` for an epoch beyond `i64::MAX` seconds.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_image_build_determinism(
-    seed_lo: u32,
-    seed_hi: u32,
-    epoch_lo: u32,
-    epoch_hi: u32,
-) -> i32 {
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    if table.has_allocated_user_tasks() {
-        return -(Errno::EBUSY as i32);
-    }
-    let seed = (((seed_hi as u64) << 32) | (seed_lo as u64)).to_le_bytes();
-    let epoch = ((epoch_hi as u64) << 32) | (epoch_lo as u64);
-    match crate::image_build_determinism::enable(&seed, epoch) {
-        Ok(()) => 0,
-        Err(error) => -(error as i32),
-    }
-}
-

@@ -21,7 +21,7 @@ import {
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   WASM_EPOLL_EVENT_DATA_OFFSET,
 } from "../../../host/src/generated/abi.ts";
-import { VirtualPlatformIO, MemoryFileSystem, DeviceFileSystem } from "../../../host/src/vfs/index.ts";
+import { VirtualPlatformIO } from "../../../host/src/vfs/index.ts";
 import { BrowserTimeProvider } from "../../../host/src/vfs/time.ts";
 import { readFileSync } from "fs";
 
@@ -43,17 +43,10 @@ interface EpollEventPreparation {
 async function main() {
   const kernelWasm = readFileSync(resolveBinary("kernel.wasm"));
 
-  const memfs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
-  const devfs = new DeviceFileSystem();
-  const io = new VirtualPlatformIO([
-    { mountPoint: "/dev", backend: devfs },
-    { mountPoint: "/", backend: memfs },
-  ], new BrowserTimeProvider());
-
-  // Create dirs
-  for (const d of ["/tmp", "/etc", "/var", "/proc"]) {
-    try { memfs.mkdir(d, 0o755); } catch {}
-  }
+  // No host mounts: the repro exercises epoll over kernel objects and touches
+  // no files. The kernel owns `/` (its rootfs, tmpfs scratch mounts and devfs)
+  // without any host backend.
+  const io = new VirtualPlatformIO([], new BrowserTimeProvider());
 
   const kw = createCentralizedKernelWorkerTestDouble({
     config: {

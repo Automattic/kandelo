@@ -1,4 +1,4 @@
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDirRecursive,
   symlink,
@@ -12,7 +12,7 @@ import {
  * retaining the strict shared symlink helper for collisions and real errors.
  */
 export function symlinkWithParentDirectories(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   target: string,
   path: string,
 ): void {

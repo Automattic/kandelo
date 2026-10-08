@@ -44,10 +44,17 @@ export interface RuntimeMemoryProfile {
   readonly id: "desktop" | "constrained";
   /** Per-process wasm address-space ceiling, in 64 KiB pages. */
   readonly processMaxPages: number;
-  /** Kernel wasm address-space ceiling, in 64 KiB pages. */
+  /**
+   * Kernel wasm address-space ceiling, in 64 KiB pages.
+   *
+   * This is also the filesystem budget: the kernel owns `/` and the tmpfs
+   * scratch mounts, so every byte a guest writes, every lazy archive the host
+   * fetches (kept whole, with the members extracted from it, for the life of
+   * the machine) and the kernel's own heap share this one memory. The boot
+   * image's own file bodies are not copied in; the kernel reads them from the
+   * host through `host_image_read` until a guest modifies them.
+   */
   readonly kernelMaxPages: number;
-  /** Growth ceiling for an image-backed root filesystem, in bytes. */
-  readonly imageMemfsMaxBytes: number;
   /**
    * How many worker processes a pre-forking service should start.
    *
@@ -68,7 +75,6 @@ export const DESKTOP_MEMORY_PROFILE: RuntimeMemoryProfile = {
   id: "desktop",
   processMaxPages: DEFAULT_MAX_PAGES,
   kernelMaxPages: DEFAULT_KERNEL_MAX_PAGES,
-  imageMemfsMaxBytes: 1 * 1024 * 1024 * 1024,
   preforkServiceProcesses: 6,
 };
 
@@ -77,18 +83,20 @@ export const DESKTOP_MEMORY_PROFILE: RuntimeMemoryProfile = {
  * Safari once any shared wasm memory exists).
  *
  * 256 MiB per process is the ceiling several browser demo profiles already
- * select by hand for WebKit, and 256 MiB for the kernel is far above its
- * observed heap (the kernel Wasm declares 24 initial pages). The filesystem
- * budget stays at 768 MiB so every shipped image can still be restored at the
- * capacity its own superblock records — the large saving there comes from
- * reserving that recorded capacity instead of a flat 1 GiB, not from
- * squeezing the ceiling.
+ * select by hand for WebKit. The kernel gets 768 MiB because it holds the
+ * filesystem's writable state as well as its heap (see `kernelMaxPages`):
+ * that is the growth ceiling the largest shipped images (wordpress, lamp)
+ * record, and it was the separate filesystem budget when the filesystem lived
+ * in its own shared buffer beside a 256 MiB kernel. Folding the two keeps the
+ * capacity and lowers the declared total from 1 GiB to 768 MiB. Checked on
+ * the iOS 27 Simulator (iPhone 16 Pro, 2026-10-08) with the kernel-owned
+ * filesystem: the lamp, nginx-php, wordpress-sqlite and quake machines each
+ * booted in turn in one Safari session.
  */
 export const CONSTRAINED_MEMORY_PROFILE: RuntimeMemoryProfile = {
   id: "constrained",
   processMaxPages: 4096,
-  kernelMaxPages: 4096,
-  imageMemfsMaxBytes: 768 * 1024 * 1024,
+  kernelMaxPages: 12288,
   // Measured on the iOS 27 Simulator with the nginx-php demo: six php-fpm
   // children reproducibly kill the pool (the master SIGTERMs its children
   // while forking the sixth and exits, and dinit follows it down), while four
@@ -116,7 +124,6 @@ export function declaredMachineReservationBytes(
     throw new Error(`invalid live process count: ${liveProcesses}`);
   }
   return (
-    profile.imageMemfsMaxBytes +
     profile.kernelMaxPages * WASM_PAGE_SIZE +
     liveProcesses * profile.processMaxPages * WASM_PAGE_SIZE
   );
@@ -215,17 +222,4 @@ export function clampProcessMaxPages(
   }
   if (requested <= profile.processMaxPages) return { pages: requested };
   return { pages: profile.processMaxPages, clampedFrom: requested };
-}
-
-/** Byte peer of {@link clampProcessMaxPages} for root filesystem ceilings. */
-export function clampImageMemfsMaxBytes(
-  requested: number | undefined,
-  profile: RuntimeMemoryProfile,
-): { bytes: number; clampedFrom?: number } {
-  if (requested === undefined) return { bytes: profile.imageMemfsMaxBytes };
-  if (!Number.isSafeInteger(requested) || requested <= 0) {
-    throw new Error(`invalid image filesystem maximum bytes: ${requested}`);
-  }
-  if (requested <= profile.imageMemfsMaxBytes) return { bytes: requested };
-  return { bytes: profile.imageMemfsMaxBytes, clampedFrom: requested };
 }

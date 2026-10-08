@@ -15,13 +15,16 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
@@ -120,7 +123,7 @@ async function waitFor(
 
 // A theme root holding both palettes, plus the compositor config selecting one.
 function stageThemes(): { themeDir: string; confPath: string } {
-  const root = mkdtempSync(join(tmpdir(), "kandelo-themes-"));
+  const root = makeHostScratchTempRoot("kandelo-themes-");
   for (const [name, t] of Object.entries(THEMES)) {
     mkdirSync(join(root, name), { recursive: true });
     writeFileSync(join(root, name, "theme.conf"),
@@ -275,7 +278,7 @@ describe("wlcompositor — theme system", () => {
 
       // Three themes: an image wallpaper, a plain gradient, and a wallpaper
       // key pointing at a file that does not exist.
-      const root = mkdtempSync(join(tmpdir(), "kandelo-wallpaper-"));
+      const root = makeHostScratchTempRoot("kandelo-wallpaper-");
       const kwlp = Buffer.alloc(12 + 16 * 16 * 4);
       kwlp.write("KWLP", 0, "ascii");
       kwlp.writeUInt32LE(16, 4);
@@ -348,7 +351,7 @@ describe("wlcompositor — theme system", () => {
       const kwlctlBytes = loadBytes(kwlctlBin!);
 
       const gapsOut = [8, 9, 10, 11];
-      const root = mkdtempSync(join(tmpdir(), "kandelo-smallgap-"));
+      const root = makeHostScratchTempRoot("kandelo-smallgap-");
       for (const out_ of gapsOut) {
         mkdirSync(join(root, `g${out_}`), { recursive: true });
         writeFileSync(join(root, `g${out_}`, "theme.conf"),

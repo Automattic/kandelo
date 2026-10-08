@@ -60,7 +60,8 @@ export interface ArchiveExtractionPlan {
  * manifest line numbers in every diagnostic.
  */
 export function validateManifestEntries(entries: ManifestEntry[]): void {
-  // SharedFS resolves repeated separators plus "." and ".." components.
+  // Filesystem path resolution collapses repeated separators plus "." and
+  // ".." components.
   // Reject aliases here rather than letting validation reason about a raw
   // spelling while later writes operate on a different canonical inode.
   for (const entry of entries) {

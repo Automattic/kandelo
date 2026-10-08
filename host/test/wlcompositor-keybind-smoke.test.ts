@@ -15,11 +15,11 @@
  * Skips if the binaries aren't built.
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync, writeFileSync, mkdtempSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
@@ -155,7 +155,7 @@ describe("wlcompositor — config-file keybind engine", () => {
       const clientBytes = loadBytes(clientBin!);
       const kwlctlBytes = loadBytes(kwlctlBin!);
 
-      const dir = mkdtempSync(join(tmpdir(), "wlc-conf-"));
+      const dir = makeHostScratchTempRoot("wlc-conf-");
       const confPath = join(dir, "wlcompositor.conf");
       // SUPER+5 -> workspace 7 (the default would be workspace 5).
       writeFileSync(confPath,
@@ -223,7 +223,7 @@ describe("wlcompositor — config-file keybind engine", () => {
       const clientBytes = loadBytes(clientBin!);
       const kwlctlBytes = loadBytes(kwlctlBin!);
 
-      const dir = mkdtempSync(join(tmpdir(), "wlc-conf-"));
+      const dir = makeHostScratchTempRoot("wlc-conf-");
       const confPath = join(dir, "wlcompositor.conf");
       writeFileSync(confPath, "bind = CTRL, W, workspace, 4\n");
 
@@ -283,7 +283,7 @@ describe("wlcompositor — config-file keybind engine", () => {
       const clientBytes = loadBytes(clientBin!);
       const kwlctlBytes = loadBytes(kwlctlBin!);
 
-      const dir = mkdtempSync(join(tmpdir(), "wlc-conf-"));
+      const dir = makeHostScratchTempRoot("wlc-conf-");
       const confPath = join(dir, "wlcompositor.conf");
       writeFileSync(confPath,
         "bind = CTRL, 2, workspace, 3\nbind = CTRL ALT, 2, workspace, 6\n");
@@ -352,9 +352,9 @@ describe("wlcompositor — config-file keybind engine", () => {
       const compositorBytes = loadBytes(compositorBin!);
       const clientBytes = loadBytes(clientBin!);
 
-      const dir = mkdtempSync(join(tmpdir(), "wlc-conf-"));
+      const dir = makeHostScratchTempRoot("wlc-conf-");
       const confPath = join(dir, "wlcompositor.conf");
-      const execTarget = join(mkdtempSync("/tmp/wlc-bind-"), "client.wasm");
+      const execTarget = join(makeHostScratchTempRoot("wlc-bind-"), "client.wasm");
       symlinkSync(clientBin!, execTarget);
       // Mirror HYPRLAND_WLCOMPOSITOR_CONF's launch bind shape (exec an
       // absolute path); point CTRL+K (the clock bind) at wlclient-test.

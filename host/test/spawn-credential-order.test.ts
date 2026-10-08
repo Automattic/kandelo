@@ -198,6 +198,13 @@ describe("posix_spawn credential/action/target order", () => {
       "relative-script",
       ["relative-script", "argument"],
     );
+    // This path compiles the interpreter's divergent bytes with the host's
+    // asynchronous Wasm compiler, so how many event-loop turns it needs
+    // depends on the machine's load. Wait for the launch it ends in, then
+    // settle the transaction, instead of counting turns.
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalled(), {
+      timeout: 10_000,
+    });
     await drainSpawnTransaction();
 
     expect(prepareTarget).toHaveBeenCalledTimes(2);

@@ -9,9 +9,16 @@ const browserKernelModulePath = resolve(
   repoRoot,
   "host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(
+// The Rust image writer. Its wasm arrives as bytes from Node, the shape the
+// program fixtures already use; the bridge no longer imports node builtins,
+// so a page can transform it like any other module.
+const imageFsModulePath = resolve(
   repoRoot,
-  "host/src/vfs/memory-fs.ts",
+  "images/vfs/lib/kandelo-image-fs.ts",
+);
+const imageModuleWasmPath = resolve(
+  repoRoot,
+  "local-binaries/kandelo_image_module32.wasm",
 );
 const forkExecWasmPath = resolve(
   repoRoot,
@@ -45,15 +52,16 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
     async ({
       churnIterations,
       browserKernelUrl,
-      memoryFsUrl,
+      imageFsModuleUrl,
+      imageModuleBytes,
       forkExecBytes,
       execChildBytes,
     }) => {
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -80,9 +88,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
       });
 
       try {
-        const imageOwner = MemoryFileSystem.create(
-          new SharedArrayBuffer(2 * 1024 * 1024),
-        );
+        const imageOwner = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
         imageOwner.mkdir("/bin", 0o755);
         imageOwner.createFileWithOwner(
           "/bin/exec-child",
@@ -113,7 +119,8 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
         `/@fs/${browserKernelModulePath}`,
         baseURL,
       ).href,
-      memoryFsUrl: new URL(`/@fs/${memoryFsModulePath}`, baseURL).href,
+      imageFsModuleUrl: new URL(`/@fs/${imageFsModulePath}`, baseURL).href,
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       forkExecBytes: Array.from(readFileSync(forkExecWasmPath)),
       execChildBytes: Array.from(readFileSync(execChildWasmPath)),
     },

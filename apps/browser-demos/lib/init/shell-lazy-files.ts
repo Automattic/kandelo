@@ -1,15 +1,7 @@
-import type {
-  LazyFileEntry,
-  MemoryFileSystem,
-} from "../../../../host/src/vfs/memory-fs";
 import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
 } from "../../../../images/vfs/lib/init/shell-binaries";
-import {
-  isRootfsLazyFileUrl,
-  rewriteRootfsLazyFileUrls,
-} from "./rootfs-lazy-files";
 
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
@@ -77,10 +69,6 @@ import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 import modesetWasmUrl from "@binaries/programs/wasm32/modeset.wasm?url";
 import espeakNgWasmUrl from "@binaries/programs/wasm32/espeak-ng/espeak-ng.wasm?url";
 import elinksWasmUrl from "@binaries/programs/wasm32/elinks.wasm?url";
-
-export {
-  assertShellLazyUrlsResolved,
-} from "./shell-lazy-url-contract";
 
 // Keyed by each spec's resolverPath -- the artifact the URL serves -- not by
 // its id, so this artifact table cannot read as a table of machine profiles
@@ -157,25 +145,15 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/elinks.wasm": elinksWasmUrl,
 };
 
-const SHELL_LAZY_PLACEHOLDER_URLS = new Map(
+export const SHELL_LAZY_PLACEHOLDER_URLS = new Map(
   SHELL_LAZY_BINARY_SPECS.map((spec) => [
     shellLazyPlaceholderUrl(spec),
     SHELL_LAZY_ASSET_URLS[spec.resolverPath],
   ]),
 );
 
-const SHELL_LAZY_SOURCE_URL_SET = new Set(SHELL_LAZY_PLACEHOLDER_URLS.keys());
-const SHELL_LAZY_ASSET_URL_SET = new Set(SHELL_LAZY_PLACEHOLDER_URLS.values());
-
-export function rewriteShellLazyFileUrls(fs: MemoryFileSystem): void {
-  rewriteRootfsLazyFileUrls(fs);
-  fs.rewriteLazyFileUrls((url) => SHELL_LAZY_PLACEHOLDER_URLS.get(url) ?? url);
-}
-
-export function shellLazyFileEntries(fs: MemoryFileSystem): LazyFileEntry[] {
-  return fs.exportLazyEntries().filter((entry) => {
-    if (isRootfsLazyFileUrl(entry.url)) return true;
-    if (SHELL_LAZY_SOURCE_URL_SET.has(entry.url)) return true;
-    return SHELL_LAZY_ASSET_URL_SET.has(entry.url);
-  });
-}
+// `SHELL_LAZY_PLACEHOLDER_URLS` is the whole of what this module contributes:
+// a table from the placeholder URL an image records to the asset URL this
+// build serves. The image is never rewritten with it; the deployment applies
+// it when the kernel worker fetches deferred bytes
+// (`imageOwnedRuntimeUrlTable`).

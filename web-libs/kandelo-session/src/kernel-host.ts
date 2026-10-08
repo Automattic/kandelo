@@ -31,7 +31,8 @@ import { advanceLazyDownloadSummary } from "./lazy-download";
 
 /**
  * Synchronous VFS subset LiveKernelHost reaches into for inspector + readDir.
- * Matches MemoryFileSystem (host/src/vfs/memory-fs.ts).
+ * Structural: any synchronous filesystem view with these methods satisfies
+ * it; the session library names no concrete filesystem.
  */
 export interface FileSystemLike {
   /** Throws on missing path. */
@@ -3073,7 +3074,7 @@ function readFileSync(fs: FileSystemLike, path: string): Uint8Array {
   }
 }
 
-// d_type values from MemoryFileSystem.readdir: DT_REG=8, DT_DIR=4, DT_LNK=10.
+// POSIX d_type values a readdir entry carries: DT_REG=8, DT_DIR=4, DT_LNK=10.
 function direntKind(dtype: number, mode: number): "d" | "f" | "l" | "b" | "c" | "p" | "s" {
   if (dtype === 4 || (mode & 0xf000) === 0x4000) return "d";
   if (dtype === 10 || (mode & 0xf000) === 0xa000) return "l";

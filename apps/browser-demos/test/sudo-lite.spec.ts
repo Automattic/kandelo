@@ -15,7 +15,11 @@ const browserKernelModulePath = resolve(
   repoRoot,
   "host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(repoRoot, "host/src/vfs/memory-fs.ts");
+// The Rust image writer. Its wasm arrives as bytes from Node, the shape the
+// program fixtures already use; the bridge no longer imports node builtins,
+// so a page can transform it like any other module.
+const imageFsModulePath = resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts");
+const imageModuleWasmPath = resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm");
 const shellWasm = resolve(repoRoot, "local-binaries/programs/wasm32/sh.wasm");
 const loginWasm = resolve(
   repoRoot,
@@ -65,7 +69,8 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
   const result = await page.evaluate(
     async ({
       browserKernelModuleUrl,
-      memoryFsModuleUrl,
+      imageFsModuleUrl,
+      imageModuleBytes,
       kernelWasmUrl,
       shellWasmUrl,
       loginWasmUrl,
@@ -78,8 +83,8 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsModuleUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const fetchBytes = async (url: string): Promise<Uint8Array> => {
         const response = await fetch(url);
@@ -93,9 +98,7 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
         fetchBytes(sudoWasmUrl),
         fetchBytes(credentialsWasmUrl),
       ]);
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(16 * 1024 * 1024),
-      );
+      const fs = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
       for (const path of [
         "/etc",
         "/bin",
@@ -272,7 +275,8 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
     },
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
-      memoryFsModuleUrl: asViteFsUrl(memoryFsModulePath),
+      imageFsModuleUrl: asViteFsUrl(imageFsModulePath),
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       kernelWasmUrl: await devServerAssetUrl(page, "@kernel-wasm"),
       shellWasmUrl: asViteFsUrl(shellWasm),
       loginWasmUrl: asViteFsUrl(loginWasm),

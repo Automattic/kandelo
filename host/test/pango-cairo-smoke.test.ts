@@ -16,13 +16,15 @@
  * render-stack packages and links their archives). Absent the binary
  * the test skips, matching the other program smoke tests.
  */
-import { mkdtempSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, it, expect } from "vitest";
-import { runCentralizedProgram } from "./centralized-test-helper";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
 import { tryResolveBinary } from "../src/binary-resolver";
 
@@ -42,7 +44,7 @@ describe("render stack — pango layout + cairo rasterization on the kernel", ()
   it.skipIf(!hasBinary)(
     "lays out monospace text and renders it with a stable pixel hash",
     async () => {
-      const root = mkdtempSync(join(tmpdir(), "kandelo-pango-"));
+      const root = makeHostScratchTempRoot("kandelo-pango-");
       const fontDir = join(root, "fonts");
       const cacheDir = join(root, "cache");
       mkdirSync(fontDir);

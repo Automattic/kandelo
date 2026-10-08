@@ -1,5 +1,3 @@
-import type { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-
 // Keep this module limited to the canonical rootfs package dependency closure.
 // Focused consumers such as the PHP PHPT runner must not need every optional
 // utility in the interactive shell catalog just to resolve the rootfs entries
@@ -70,7 +68,7 @@ import posixYaccWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/yacc.wa
 import sudoLiteWasmUrl from "@binaries/programs/wasm32/sudo-lite.wasm?url";
 import sudoWasmUrl from "@binaries/programs/wasm32/sudo/sudo.wasm?url";
 
-const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
+export const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/dash.wasm", dashWasmUrl],
   ["binaries/programs/wasm32/bash.wasm", bashWasmUrl],
   ["binaries/programs/wasm32/coreutils.wasm", coreutilsWasmUrl],
@@ -138,13 +136,8 @@ const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/sudo/sudo.wasm", sudoWasmUrl],
 ]);
 
-const ROOTFS_LAZY_SOURCE_URL_SET = new Set(ROOTFS_LAZY_ASSET_URLS.keys());
-const ROOTFS_LAZY_ASSET_URL_SET = new Set(ROOTFS_LAZY_ASSET_URLS.values());
-
-export function isRootfsLazyFileUrl(url: string): boolean {
-  return ROOTFS_LAZY_SOURCE_URL_SET.has(url) || ROOTFS_LAZY_ASSET_URL_SET.has(url);
-}
-
-export function rewriteRootfsLazyFileUrls(fs: MemoryFileSystem): void {
-  fs.rewriteLazyFileUrls((url) => ROOTFS_LAZY_ASSET_URLS.get(url) ?? url);
-}
+// Nothing here rewrites an image. The image keeps the canonical addresses it
+// was built with, and the deployment maps them to the URLs above when the
+// kernel worker fetches deferred bytes (`imageOwnedRuntimeUrlTable`). Mapping
+// at fetch time leaves the image's deferred entries exactly as the image
+// writer sealed them.

@@ -145,6 +145,9 @@ apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts
 apps/browser-demos/public/service-worker.js
 ```
 
-## Legacy Main-Thread VFS
+## Transient Programs
 
-Older demos restore `MemoryFileSystem` on the main thread and call `kernel.spawn(...)`. That path is still used by some browser labs, but new apps should prefer `kernelOwnedFs: true` and `kernel.boot({ vfsImage })`.
+Every machine boots from a VFS image that the kernel owns; there is no
+main-thread filesystem. Labs that load arbitrary binaries at runtime (test
+runners, REPLs) boot an image and then call `kernel.spawn(programBytes, argv)`
+for each program, or write files between spawns with `writeFileToVfs()`.

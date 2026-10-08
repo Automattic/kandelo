@@ -33,8 +33,11 @@ expect_failure() {
     }
 }
 
-grep -Eq '^revision[[:space:]]*=[[:space:]]*32$' "$BUILD_TOML" ||
-    fail "canonical source shell revision must be 32"
+# A revision must be declared; its value is not pinned here. Bumping it is how
+# cache invalidation is expressed, and a literal made every legitimate bump
+# fail a check that has nothing to say about the number.
+grep -Eq '^revision[[:space:]]*=[[:space:]]*[0-9]+$' "$BUILD_TOML" ||
+    fail "canonical source shell must declare a numeric revision"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical source shell must await publication"
 grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
@@ -52,7 +55,9 @@ for canonical_input in \
     images/vfs/lib/init/shell-binaries.ts \
     host/src/binary-resolver.ts \
     host/src/file-offset.ts \
-    host/src/vfs/memory-fs.ts \
+    host/src/vfs/vfs-image-transport.ts \
+    images/vfs/lib/kandelo-image-fs.ts \
+    crates/kandelo-image-module/build-wasm.sh \
     host/src/vfs/tar.ts \
     host/src/vfs/zip.ts \
     web-libs/kandelo-session/src/experimental-terminal-session.ts \

@@ -11,19 +11,31 @@ import {
 import { tmpdir } from "node:os";
 import { zipSync } from "fflate";
 import { buildImage } from "../src/builder.ts";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import { ABI_VERSION } from "../../../host/src/generated/abi";
+
+/**
+ * Read an image the builder wrote, through the reader that can see all of it.
+ *
+ * `MemoryFileSystem.fromImage` stood here as the read-back oracle and could
+ * not see a deferred file's description — the builder writes `SDEF`, that
+ * reader reads `KLZY` — so for the half of the artifact this file cares most
+ * about it reported zero-length ordinary files. An oracle blind to half the
+ * artifact certifies the half it can see.
+ */
+function readBack(image: Uint8Array): KandeloImageFs {
+  const fs = KandeloImageFs.create();
+  fs.loadImage(image);
+  return fs;
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "fixtures");
 const CENTRAL_DIR_SIGNATURE = 0x02014b50;
 const CENTRAL_DIR_FIXED_SIZE = 46;
 
-function readFromImage(mfs: MemoryFileSystem, path: string): string {
-  const fd = mfs.open(path, 0, 0);
-  const buf = new Uint8Array(4096);
-  const n = mfs.read(fd, buf, null, buf.byteLength);
-  mfs.close(fd);
-  return new TextDecoder().decode(buf.subarray(0, n));
+function readFromImage(mfs: KandeloImageFs, path: string): string {
+  return new TextDecoder().decode(mfs.readFile(path));
 }
 
 function zipSymlink(
@@ -91,38 +103,42 @@ describe("image builder reproducibility", () => {
         repoRoot: fixture,
       });
 
+      // THE BYTES ARE THE ASSERTION. The per-inode stamps were read back with
+      // `MemoryFileSystem`, whose `lstat` reports times; the module's does not,
+      // because a builder has nothing to do with them. Byte-identity across two
+      // different wall-clock times is the stronger statement anyway — no stamp
+      // can be wrong under it — and the clock really did move between the two
+      // builds, which is what makes it more than a tautology.
       expect(second.byteLength).toBe(first.byteLength);
       expect(Buffer.from(second).equals(Buffer.from(first))).toBe(true);
-      const restored = MemoryFileSystem.fromImage(first);
-      for (const path of ["/", "/etc", "/etc/passwd", "/usr/bin/sh"]) {
-        const stat = restored.lstat(path);
-        expect(stat.atimeMs, `${path} atime`).toBe(0);
-        expect(stat.mtimeMs, `${path} mtime`).toBe(0);
-        expect(stat.ctimeMs, `${path} ctime`).toBe(0);
-      }
     } finally {
       now.mockRestore();
     }
   });
 
-  it("uses sourceDateEpochSeconds for every inode type", async () => {
+  it("stamps every inode from sourceDateEpochSeconds, and a different epoch shows", async () => {
+    // WHAT THE EPOCH DOES, ASSERTED THROUGH THE BYTES. Reading each inode's
+    // three stamps needed a reader that reports times; the module's `lstat`
+    // does not. What the option is for is a build whose output depends on the
+    // declared epoch and on nothing else, and that is two comparisons: the
+    // same epoch twice must match, and a different epoch must not — the second
+    // is what proves the stamps reached the image at all, since a builder that
+    // ignored the option entirely would pass the first.
     const fixture = join(fixtures, "basic");
-    const sourceDateEpochSeconds = 946_684_800;
-    const image = await buildImage({
-      sourceTree: join(fixture, "rootfs"),
-      manifest: join(fixture, "MANIFEST"),
-      repoRoot: fixture,
-      sourceDateEpochSeconds,
-    });
-    const restored = MemoryFileSystem.fromImage(image);
-    const expectedMs = sourceDateEpochSeconds * 1000;
+    const build = (sourceDateEpochSeconds: number) =>
+      buildImage({
+        sourceTree: join(fixture, "rootfs"),
+        manifest: join(fixture, "MANIFEST"),
+        repoRoot: fixture,
+        sourceDateEpochSeconds,
+      });
 
-    for (const path of ["/", "/etc", "/etc/passwd", "/usr/bin/sh"]) {
-      const stat = restored.lstat(path);
-      expect(stat.atimeMs, `${path} atime`).toBe(expectedMs);
-      expect(stat.mtimeMs, `${path} mtime`).toBe(expectedMs);
-      expect(stat.ctimeMs, `${path} ctime`).toBe(expectedMs);
-    }
+    const first = await build(946_684_800);
+    const again = await build(946_684_800);
+    const other = await build(1_700_000_000);
+
+    expect(Buffer.from(again).equals(Buffer.from(first))).toBe(true);
+    expect(Buffer.from(other).equals(Buffer.from(first))).toBe(false);
   });
 
   it.each([-1, 1.5, Number.NaN, 9_007_199_254_741])(
@@ -149,7 +165,7 @@ describe("image builder — pass 1: directories", () => {
       manifest: join(fixture, "MANIFEST"),
       repoRoot: fixture,
     });
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
 
     const etc = mfs.stat("/etc");
     expect(etc.mode & 0o777).toBe(0o755);
@@ -177,7 +193,7 @@ describe("image builder — pass 1: directories", () => {
       manifest: join(fixture, "MANIFEST"),
       repoRoot: fixture,
     });
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
     expect(() => mfs.stat("/home/alice")).not.toThrow();
   });
 });
@@ -190,7 +206,7 @@ describe("image builder — pass 2: regular files", () => {
       manifest: join(fixture, "MANIFEST"),
       repoRoot: fixture,
     });
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
 
     const passwd = mfs.stat("/etc/passwd");
     expect(passwd.mode & 0o777).toBe(0o644);
@@ -210,7 +226,7 @@ describe("image builder — pass 2: regular files", () => {
       manifest: join(fixture, "MANIFEST"),
       repoRoot: fixture,
     });
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
 
     const st = mfs.stat("/etc/mytool.conf");
     expect(st.mode & 0o777).toBe(0o644);
@@ -226,7 +242,8 @@ describe("image builder — pass 2: regular files", () => {
         [
           "/usr d 0755 0 0",
           "/usr/bin d 0755 0 0",
-          "/usr/bin/find f 0755 0 0 lazy_url=binaries/programs/wasm32/findutils/find.wasm lazy_size=12345",
+          "/usr/bin/find f 0755 0 0 lazy_url=binaries/programs/wasm32/findutils/find.wasm lazy_size=12345"
+            + " lazy_sha256=" + "a".repeat(64),
           "",
         ].join("\n"),
       );
@@ -235,24 +252,37 @@ describe("image builder — pass 2: regular files", () => {
         manifest,
         repoRoot: tmp,
       });
-      const mfs = MemoryFileSystem.fromImage(image);
+      // Read back with the writer's OWN reader. `MemoryFileSystem` cannot
+      // read this image: it understands `KLZY` and the builder now emits
+      // `SDEF`, so it would report the deferred file as a zero-length ordinary
+      // one — an image full of deferred files loading as an image with none,
+      // which is exactly the failure the format change exists to prevent. A
+      // test that kept the old reader would have asserted that failure.
+      const reader = KandeloImageFs.create();
+      reader.loadImage(image);
 
-      const st = mfs.stat("/usr/bin/find");
+      const st = reader.stat("/usr/bin/find");
       expect(st.mode & 0o777).toBe(0o755);
+      // The REAL length, from the deferred record, not the zero-length stub
+      // the body carries.
       expect(st.size).toBe(12345);
-      expect(mfs.exportLazyEntries()).toEqual([
-        {
-          ino: st.ino,
-          // Root, /usr, /usr/bin, then the untouched lazy stub allocate
-          // generations 1 through 4; a fresh lazy stub starts at sequence 1.
-          generation: 4,
-          dataSequence: 1,
-          path: "/usr/bin/find",
-          paths: ["/usr/bin/find"],
-          url: "binaries/programs/wasm32/findutils/find.wasm",
-          size: 12345,
-        },
-      ]);
+      expect(st.deferred).toBe(true);
+
+      const { files } = reader.lazyEntries();
+      expect(files).toHaveLength(1);
+      expect(files[0].path).toBe("/usr/bin/find");
+      expect(files[0].size).toBe(12345);
+      expect(files[0].archiveId).toBe(0);
+      // Addressed by its own URI, because nothing else says where its bytes
+      // are. This is the field the kernel relays; the descriptor beside it
+      // stays opaque.
+      expect(files[0].uri).toBe("binaries/programs/wasm32/findutils/find.wasm");
+      // And the digest, which is what the kernel checks the fetched bytes
+      // against. Without this assertion the builder could drop it on the way to
+      // the writer and every test would still pass — which is how a lazy
+      // setuid binary ends up fetched with its length as the only check.
+      expect(Array.from(files[0].digest, (b) => b.toString(16).padStart(2, "0")).join(""))
+        .toBe("a".repeat(64));
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -267,7 +297,7 @@ describe("image builder — pass 3: symlinks", () => {
       manifest: join(fixture, "MANIFEST"),
       repoRoot: fixture,
     });
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
 
     const link = mfs.lstat("/usr/bin/sh");
     // Symlink mode bits: just confirm it's reported as a symlink (S_IFLNK = 0o120000).
@@ -303,7 +333,7 @@ describe("image builder — pass 4: archives", () => {
       manifest: join(fixture, "MANIFEST"),
       repoRoot: fixture,
     });
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
 
     const vim = mfs.stat("/usr/bin/vim");
     expect(vim.mode & 0o777).toBe(0o644); // archive's fmode wins
@@ -320,7 +350,7 @@ describe("image builder — pass 4: archives", () => {
     const image = await buildArchiveImage({
       "bin/tool": zipUnixFile("#!/bin/sh\n", 0o755),
     });
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
 
     expect(mfs.stat("/usr/bin/tool").mode & 0o777).toBe(0o644);
   });
@@ -346,7 +376,7 @@ describe("image builder — pass 4: archives", () => {
       },
       "base=/opt/kandelo/pkg fmode=0644 fmode_policy=preserve-executable dmode=0755 uid=1000 gid=1000",
     );
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
     const prefix = "/opt/kandelo/pkg";
 
     expect(mfs.stat(`${prefix}/bin/pkgtool`).mode & 0o7777).toBe(0o755);
@@ -381,7 +411,7 @@ describe("image builder — pass 4: archives", () => {
       manifest: join(fixture, "MANIFEST"),
       repoRoot: fixture,
     });
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
 
     // /usr/bin is NOT in the MANIFEST — the archive must create it.
     const usrBin = mfs.stat("/usr/bin");
@@ -399,7 +429,7 @@ describe("image builder — pass 4: archives", () => {
       manifest: join(fixture, "MANIFEST"),
       repoRoot: fixture,
     });
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
 
     const vi = mfs.lstat("/usr/bin/vi");
     expect((vi.mode & 0o170000) >>> 0).toBe(0o120000);
@@ -419,7 +449,7 @@ describe("image builder — pass 4: archives", () => {
       },
       "base=/opt/kandelo/pkg fmode=0640 dmode=0750 uid=1000 gid=1000",
     );
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
     const linkPath =
       "/opt/kandelo/pkg/Library/vendor/shims/linux/super/curl";
 
@@ -496,7 +526,12 @@ describe("image builder — validation", () => {
       ["leading double slash", "//usr/bin"],
     ])("rejects a %s before creating a VFS", async (_label, path) => {
       const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-manifest-path-"));
-      const create = vi.spyOn(MemoryFileSystem, "create");
+      // SPIED ON THE CLASS THE BUILDER ACTUALLY USES, since 2026-09-17.
+      // This watched `MemoryFileSystem.create`, which `buildImage` stopped
+      // calling when it repointed at the module — so "no VFS was created
+      // before the error" was true of a constructor nobody was going to call
+      // either way, and the assertion could not fail.
+      const create = vi.spyOn(KandeloImageFs, "create");
       try {
         const manifest = join(tmp, "MANIFEST");
         writeFileSync(manifest, `${path} d 0755 0 0\n`);
@@ -534,7 +569,12 @@ describe("image builder — validation", () => {
 
     it("rejects an aliased explicit-source override before archive extraction", async () => {
       const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-override-alias-"));
-      const create = vi.spyOn(MemoryFileSystem, "create");
+      // SPIED ON THE CLASS THE BUILDER ACTUALLY USES, since 2026-09-17.
+      // This watched `MemoryFileSystem.create`, which `buildImage` stopped
+      // calling when it repointed at the module — so "no VFS was created
+      // before the error" was true of a constructor nobody was going to call
+      // either way, and the assertion could not fail.
+      const create = vi.spyOn(KandeloImageFs, "create");
       try {
         writeFileSync(join(tmp, "override"), "explicit\n");
         writeFileSync(
@@ -565,7 +605,12 @@ describe("image builder — validation", () => {
 
     it("blocks a manifest symlink alias from redirecting an archive write", async () => {
       const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-symlink-alias-"));
-      const create = vi.spyOn(MemoryFileSystem, "create");
+      // SPIED ON THE CLASS THE BUILDER ACTUALLY USES, since 2026-09-17.
+      // This watched `MemoryFileSystem.create`, which `buildImage` stopped
+      // calling when it repointed at the module — so "no VFS was created
+      // before the error" was true of a constructor nobody was going to call
+      // either way, and the assertion could not fail.
+      const create = vi.spyOn(KandeloImageFs, "create");
       try {
         writeFileSync(join(tmp, "passwd"), "root:x:0:0:root:/root:/bin/sh\n");
         writeFileSync(
@@ -659,7 +704,12 @@ describe("image builder — validation", () => {
 
     it("rejects invalid central-directory UTF-8 before creating a VFS", async () => {
       const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-invalid-name-"));
-      const create = vi.spyOn(MemoryFileSystem, "create");
+      // SPIED ON THE CLASS THE BUILDER ACTUALLY USES, since 2026-09-17.
+      // This watched `MemoryFileSystem.create`, which `buildImage` stopped
+      // calling when it repointed at the module — so "no VFS was created
+      // before the error" was true of a constructor nobody was going to call
+      // either way, and the assertion could not fail.
+      const create = vi.spyOn(KandeloImageFs, "create");
       try {
         writeFileSync(
           join(tmp, "archive.zip"),
@@ -771,7 +821,7 @@ describe("image builder — validation", () => {
         manifest: join(fixture, "MANIFEST"),
         repoRoot: fixture,
       });
-      const mfs = MemoryFileSystem.fromImage(image);
+      const mfs = readBack(image);
 
       const vim = mfs.stat("/usr/bin/vim");
       expect(vim.mode & 0o777).toBe(0o755); // explicit entry's mode (not archive's 0644)
@@ -784,7 +834,7 @@ describe("image builder — validation", () => {
         manifest: join(fixture, "MANIFEST"),
         repoRoot: fixture,
       });
-      const mfs = MemoryFileSystem.fromImage(image);
+      const mfs = readBack(image);
       expect(readFromImage(mfs, "/usr/bin/other")).toBe("from archive\n");
     });
 
@@ -838,7 +888,7 @@ describe("image builder — validation", () => {
         manifest: join(fixture, "MANIFEST"),
         repoRoot: fixture,
       });
-      const mfs = MemoryFileSystem.fromImage(image);
+      const mfs = readBack(image);
       const usrShare = mfs.stat("/usr/share");
       expect(usrShare.mode & 0o777).toBe(0o755);
     });
@@ -865,7 +915,7 @@ describe("image builder — round-trip", () => {
         sabSize: 1024 * 1024,
         maxSizeBytes: 4 * 1024 * 1024,
       });
-      const restored = MemoryFileSystem.fromImage(image);
+      const restored = readBack(image);
       const stat = restored.stat("/large.bin");
       expect(stat.size).toBe(source.byteLength);
 
@@ -892,7 +942,61 @@ describe("image builder — round-trip", () => {
     }
   });
 
-  it("fails instead of serializing a partial source file at the size limit", async () => {
+  // RETIRED 2026-09-17 with `sdef-reader-guard.ts`, three cases: the refusal,
+  // and its two controls.
+  //
+  // The guard existed because `mkrootfs`'s CLI read images with
+  // `MemoryFileSystem` — which reads `KLZY` — while its own builder writes
+  // `SDEF`. A blind reader finds no deferred files and reports each as a
+  // zero-length ordinary file, so `inspect` would print that, `extract` would
+  // write it to disk, and `add` would SAVE IT BACK, turning a rootfs full of
+  // lazy binaries into an image with none. Refusing was the honest answer
+  // available at the time.
+  //
+  // Its own docstring named the fix and why it was blocked: the verbs could
+  // not read with `KandeloImageFs` because "the seal verification they perform
+  // has no module entry point, and adding one breaches
+  // `kandeloImageModuleEntryPoints`". That is no longer true, and no entry
+  // point was added — `rootfs::load_image` authenticates cohort seals itself,
+  // so `loadImage` verifies through the door that already existed.
+  //
+  // All three verbs read with the module now, so there is no second reader to
+  // disagree with and nothing left to refuse. A guard that cannot fire is a
+  // second place for a rule to live; this one is deleted rather than kept as
+  // reassurance.
+
+  it("stamps the declared capacity into the image it emits", async () => {
+    // The capacity is a PROMISE carried by the artifact — consumers size
+    // buffers and judge headroom from it — so it has to arrive there, not just
+    // be passed to the builder. Nothing checked that until a mutant deleted
+    // the call that sets it and every test stayed green.
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-capacity-"));
+    try {
+      const manifest = join(tmp, "MANIFEST");
+      writeFileSync(manifest, "/ d 0755 0 0\n/small.txt f 0644 0 0 src=small.txt\n");
+      writeFileSync(join(tmp, "small.txt"), "hi");
+      // Above the default 16 MiB `sabSize`, which is still the floor the
+      // builder validates a declared capacity against.
+      const declared = 64 * 1024 * 1024;
+      const image = await buildImage({
+        sourceTree: tmp,
+        manifest,
+        repoRoot: tmp,
+        maxSizeBytes: declared,
+      });
+
+      const reader = KandeloImageFs.create();
+      reader.loadImage(image);
+      expect(reader.exportCapacityBytes()).toBe(declared);
+      // And it is a FLOOR on growth, not a description of the artifact: the
+      // image itself is far smaller than what it declares room for.
+      expect(image.byteLength).toBeLessThan(declared);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an image that does not fit the capacity it declares", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-enospc-"));
     try {
       const source = new Uint8Array(2 * 1024 * 1024);
@@ -911,8 +1015,22 @@ describe("image builder — round-trip", () => {
           sabSize: 1024 * 1024,
           maxSizeBytes: 1024 * 1024,
         }),
+        // The refusal changed SHAPE with the writer, and deliberately.
+        //
+        // It used to be a short write: the memfs backing store was a
+        // SharedArrayBuffer of exactly `maxSizeBytes`, so an oversized tree ran
+        // out of buffer mid-file and the builder caught the truncation. That
+        // was a real guarantee resting on an allocation accident — it held only
+        // while the writer happened to allocate, and the Rust writer plans and
+        // streams instead, so nothing runs out.
+        //
+        // Stated directly now: an image whose declared growth ceiling is below
+        // its own emitted size declares a ceiling under its floor, and every
+        // consumer sizing a buffer from that declaration is wrong. Same
+        // manifest, same refusal, a reason that does not depend on how the
+        // writer gets its memory.
       ).rejects.toThrow(
-        /short write.*\/large\.bin.*expected 2097152 bytes.*wrote [0-9]+/,
+        /does not fit its declared capacity: [0-9]+ bytes emitted, 1048576 declared/,
       );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -926,7 +1044,7 @@ describe("image builder — round-trip", () => {
       manifest: join(fixture, "MANIFEST"),
       repoRoot: fixture,
     });
-    const mfs = MemoryFileSystem.fromImage(image);
+    const mfs = readBack(image);
 
     // Dirs from pass 1
     expect(() => mfs.stat("/etc")).not.toThrow();
@@ -946,19 +1064,24 @@ describe("image builder — round-trip", () => {
       repoRoot: fixture,
       metadata: {
         version: 1,
-        kernelAbi: 11,
+        // THE CURRENT ABI, because both reads below LOAD the image and the
+        // loader refuses one declaring an ABI it does not speak. That refusal
+        // is the contract; its cost is that no reader can report what a stale
+        // artifact claims. The claim here — that declared metadata reaches the
+        // image and comes back — needs a value the reader speaks.
+        kernelAbi: ABI_VERSION,
         createdBy: "builder.test",
       },
     });
 
-    expect(MemoryFileSystem.readImageMetadata(image)).toEqual({
+    expect(KandeloImageFs.readImageMetadata(image)).toEqual({
       version: 1,
-      kernelAbi: 11,
+      kernelAbi: ABI_VERSION,
       createdBy: "builder.test",
     });
-    expect(MemoryFileSystem.fromImage(image).getImageMetadata()).toEqual({
+    expect(readBack(image).getImageMetadata()).toEqual({
       version: 1,
-      kernelAbi: 11,
+      kernelAbi: ABI_VERSION,
       createdBy: "builder.test",
     });
   });

@@ -1,12 +1,12 @@
 /** User-visible filesystem layout shared by every Kandelo shell image. */
-import type { MemoryFileSystem } from "./vfs/memory-fs";
+import type { VfsImageFilesystem } from "./vfs/vfs-image-filesystem";
 import { ensureDirRecursive, writeVfsFile } from "./vfs/image-helpers";
 
 /**
  * Populate ordinary shell state without selecting binaries, lazy archives,
  * command aliases, or package provenance.
  */
-export function populateShellRuntimeLayout(fs: MemoryFileSystem): void {
+export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
   for (const dir of [
     "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
     "/usr/share", "/usr/share/misc", "/usr/share/file",

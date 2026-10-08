@@ -64,37 +64,102 @@ if [ -n "${ROOTFS_ABI_SNAPSHOT_SHA256:-}" ] &&
     exit 2
 fi
 
-# The exact input set for host/wasm/rootfs.vfs.zst. The engine's per-package
-# projection file carries a content hash (`cacheKeys`) of the fully resolved
-# binary set the image bundles, so hashing it stands in for hashing every
-# resolved package artifact directly; the projection is guaranteed current
-# here because this step always runs after the engine step in
-# `bootstrap_step_plan` (see tools/xtask/src/local_build.rs). Do NOT swap
-# this for the engine's `authority_sha256` — that only folds `package.toml`
-# shas and misses build-script/patch/source edits within a package.
+PKG_MANIFEST="${ROOTFS_PACKAGE_MANIFEST:-target/rootfs-packages.MANIFEST}"
+ROOTFS_SAB_SIZE="${ROOTFS_SAB_SIZE:-16777216}"
+ROOTFS_MAX_SIZE="${ROOTFS_MAX_SIZE:-536870912}"
+ROOTFS_PACKAGES="${ROOTFS_PACKAGES_CONFIG:-images/rootfs/PACKAGES.toml}"
+ROOTFS_BUILD_REPO_ROOT="${ROOTFS_REPO_ROOT:-$REPO_ROOT}"
+
+generator_args=(
+    --packages "$ROOTFS_PACKAGES"
+    --out "$PKG_MANIFEST"
+)
+if [ -n "$rootfs_default_install" ]; then
+    generator_args+=(--default-install "$rootfs_default_install")
+fi
+# With none of these, the generator asks the repository's binary resolver for
+# every output -- the resolver the hosts serve lazy outputs from. These three
+# are the package system's sealed inputs (see packages/registry/rootfs).
+resolver_mode=1
+if [ "${ROOTFS_STAGE_RESOLVER_BINARIES:-0}" = "1" ]; then
+    [ -n "${ROOTFS_BINARIES_DIR:-}" ] || {
+        echo "build-rootfs: ROOTFS_BINARIES_DIR is required for resolver staging" >&2
+        exit 2
+    }
+    generator_args+=(--stage-resolver-binaries "$ROOTFS_BINARIES_DIR")
+    resolver_mode=0
+elif [ -n "${ROOTFS_BINARIES_DIR:-}" ]; then
+    generator_args+=(--binaries-dir "$ROOTFS_BINARIES_DIR")
+    resolver_mode=0
+elif [ -n "${ROOTFS_RESOLVED_OUTPUT_MAP:-}" ]; then
+    generator_args+=(--resolved-output-map "$ROOTFS_RESOLVED_OUTPUT_MAP")
+    resolver_mode=0
+fi
+
+generate_package_fragment() {
+    node scripts/generate-rootfs-package-manifest.mjs "${generator_args[@]}"
+}
+
+# The exact input set for host/wasm/rootfs.vfs.zst.
+#
+# The package binaries enter through the generated fragment ($PKG_MANIFEST):
+# it records a SHA-256 for every output it resolved (`lazy_sha256=` on a lazy
+# line, a `# <path> sha256=` line above an eager one), so hashing the fragment
+# hashes exactly the bytes the image is built from, wherever the resolver found
+# them. This replaced hashing the local build's projection file as a stand-in:
+# that covered one tier only, so a binary the image took from any other tier,
+# or a leftover file that shadowed the local build, could change without the
+# stamp noticing. The fragment also carries the package mapping and the
+# `--default-install` choice, which the old input list omitted.
 #
 # `crates/shared/src/lib.rs` is hashed directly too (harmless
 # over-inclusion) even though only its `ABI_VERSION` line matters here — the
 # `literal:ABI_VERSION=...` entry is what actually captures the RESOLVED ABI
 # value the build below uses, including an `ROOTFS_ABI_VERSION` override
 # that never touches `lib.rs`.
-ROOTFS_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
-    local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json \
-    "$ROOTFS_MANIFEST_PATH" \
-    "$ROOTFS_SOURCE_TREE_PATH" \
-    tools/mkrootfs/src \
-    host/src/vfs/memory-fs.ts \
-    host/src/vfs/zip.ts \
-    scripts/build-rootfs.sh \
-    scripts/generate-rootfs-package-manifest.mjs \
-    scripts/build-step-input-hash.sh \
-    crates/shared/src/lib.rs \
-    "literal:ABI_VERSION=$ABI_VERSION")"
+#
+# mkrootfs writes the image through the Rust image writer
+# (images/vfs/lib/kandelo-image-fs.ts over the kandelo-image-module wasm, which
+# embeds runtime-core's image format code), so the writer's sources are inputs:
+# a writer change must make the image stale.
+#
+# The fragment is an ordinary path argument: the shared helper hashes it like
+# any other input (an absolute path, as the package build passes, works too).
+rootfs_input_hash() {
+    repo_input_hash "$REPO_ROOT" \
+        "$PKG_MANIFEST" \
+        "$ROOTFS_MANIFEST_PATH" \
+        "$ROOTFS_SOURCE_TREE_PATH" \
+        tools/mkrootfs/src \
+        images/vfs/lib/kandelo-image-fs.ts \
+        crates/kandelo-image-module \
+        crates/runtime-core/Cargo.toml \
+        crates/runtime-core/src \
+        crates/shared/src \
+        host/src/vfs/zip.ts \
+        scripts/build-rootfs.sh \
+        scripts/generate-rootfs-package-manifest.mjs \
+        scripts/build-step-input-hash.sh \
+        crates/shared/src/lib.rs \
+        "literal:ABI_VERSION=$ABI_VERSION"
+}
 
-if [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != "1" ] &&
-   build_step_is_current "$OUT" "$STAMP" "$ROOTFS_INPUT_HASH"; then
-    echo "==> rootfs.vfs.zst up to date ($ROOTFS_INPUT_HASH)"
-    exit 0
+# Up-to-date check. Resolution is cheap (one resolver call) and is the only way
+# to learn which bytes an image built NOW would contain, so it runs first; the
+# package provisioning below (about 20 s even when every package is cached)
+# runs only when the image must be rebuilt. If resolution fails here (a package
+# not built yet), the image is simply not current: provisioning follows, and
+# the generator runs again and reports the failure loudly if it persists. The
+# sealed package modes are one-shot builds into fresh directories, so they
+# skip this.
+if [ "$resolver_mode" = 1 ] &&
+   [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != "1" ] &&
+   generate_package_fragment >/dev/null 2>&1; then
+    ROOTFS_INPUT_HASH="$(rootfs_input_hash)"
+    if build_step_is_current "$OUT" "$STAMP" "$ROOTFS_INPUT_HASH"; then
+        echo "==> rootfs.vfs.zst up to date ($ROOTFS_INPUT_HASH)"
+        exit 0
+    fi
 fi
 
 # Resolver-owned package builds must be read-only with respect to the source
@@ -122,13 +187,13 @@ else
     fi
 fi
 
-PKG_MANIFEST="${ROOTFS_PACKAGE_MANIFEST:-target/rootfs-packages.MANIFEST}"
-ROOTFS_SAB_SIZE="${ROOTFS_SAB_SIZE:-16777216}"
-ROOTFS_MAX_SIZE="${ROOTFS_MAX_SIZE:-536870912}"
-ROOTFS_PACKAGES="${ROOTFS_PACKAGES_CONFIG:-images/rootfs/PACKAGES.toml}"
-ROOTFS_BUILD_REPO_ROOT="${ROOTFS_REPO_ROOT:-$REPO_ROOT}"
 mkdir -p "$(dirname "$OUT")"
 
+# Provisioning, not lookup: this materializes the `binaries/` tier (a checkout
+# that fetched release archives has nothing else). Which copy of a package the
+# image then records is the resolver's decision alone, made by the generator
+# below; a local build's tier outranks `binaries/` there, exactly as it does
+# when the hosts serve the bytes.
 if [ "${ROOTFS_SKIP_PACKAGE_RESOLVE:-0}" != "1" ]; then
     for tool in cargo rustc; do
         command -v "$tool" >/dev/null 2>&1 || {
@@ -163,25 +228,8 @@ else
 fi
 
 echo "==> Generating rootfs package manifest from $ROOTFS_PACKAGES..."
-generator_args=(
-    --packages "$ROOTFS_PACKAGES"
-    --out "$PKG_MANIFEST"
-)
-if [ -n "$rootfs_default_install" ]; then
-    generator_args+=(--default-install "$rootfs_default_install")
-fi
-if [ "${ROOTFS_STAGE_RESOLVER_BINARIES:-0}" = "1" ]; then
-    [ -n "${ROOTFS_BINARIES_DIR:-}" ] || {
-        echo "build-rootfs: ROOTFS_BINARIES_DIR is required for resolver staging" >&2
-        exit 2
-    }
-    generator_args+=(--stage-resolver-binaries "$ROOTFS_BINARIES_DIR")
-elif [ -n "${ROOTFS_BINARIES_DIR:-}" ]; then
-    generator_args+=(--binaries-dir "$ROOTFS_BINARIES_DIR")
-elif [ -n "${ROOTFS_RESOLVED_OUTPUT_MAP:-}" ]; then
-    generator_args+=(--resolved-output-map "$ROOTFS_RESOLVED_OUTPUT_MAP")
-fi
-node scripts/generate-rootfs-package-manifest.mjs "${generator_args[@]}"
+generate_package_fragment
+ROOTFS_INPUT_HASH="$(rootfs_input_hash)"
 
 echo "==> Building rootfs.vfs.zst from MANIFEST + images/rootfs/ + packages..."
 if [ "${ROOTFS_SEALED_BUILD:-0}" = "1" ]; then

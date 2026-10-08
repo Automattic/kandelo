@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import { zipSync } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
 import { ABI_VERSION } from "../../host/src/generated/abi";
-import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -115,10 +115,9 @@ async function writeRootfs(
   terminalProgramPath = "/usr/bin/login",
 ) {
   const maxByteLength = 16 * MiB;
-  const fs = MemoryFileSystem.create(
-    new SharedArrayBuffer(4 * MiB, { maxByteLength }),
-    maxByteLength,
-  );
+  // The producer that writes the source images this bridge composes from.
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(maxByteLength);
   fs.registerLazyFile(
     "/usr/bin/bash",
     "binaries/programs/wasm32/bash.wasm",
@@ -181,11 +180,16 @@ async function writeRootfs(
     externalAttrs: 0,
     creatorOS: 3,
   };
-  fs.registerLazyArchiveFromEntries(
-    "https://example.invalid/base-runtime.zip",
-    [lazyTreeEntry],
-    "/",
-  );
+  // The module's own archive call. The legacy entries form took a mount prefix
+  // and a separate integrity pair; this one takes them together, and it
+  // requires the declared length an archive must carry for a reader to check
+  // what came back.
+  fs.registerLazyArchive({
+    url: "https://example.invalid/base-runtime.zip",
+    entries: [lazyTreeEntry],
+    mountPrefix: "/",
+    integrity: { sha256: "e".repeat(64), bytes: 4_096 },
+  });
   const image = await fs.saveImage({
     metadata: {
       version: 1,
@@ -198,7 +202,7 @@ async function writeRootfs(
   return { image, maxByteLength };
 }
 
-function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsFile(fs: KandeloImageFs, path: string): Uint8Array {
   const size = fs.stat(path).size;
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, 0, 0);
@@ -422,7 +426,13 @@ describe("canonical source-rootfs shell", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*36$/m);
+    // The revision must be declared, not pinned to a literal here. What this
+    // test is about is a closed build graph -- an unpublished commit and no
+    // Git inputs, asserted above and below. A revision bump is ordinary,
+    // correct maintenance (it is how cache invalidation is expressed), and
+    // pinning the number made every legitimate bump fail a test that has
+    // nothing to say about the number.
+    expect(buildToml).toMatch(/^revision\s*=\s*\d+$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "packages/registry/shell/source-rootfs-shell-demo.json",
@@ -523,9 +533,10 @@ describe("canonical source-rootfs shell", () => {
       outFile: join(root, "profile-d.vfs.zst"),
       sourceDateEpoch: "0",
     });
-    const fs = MemoryFileSystem.fromImagePreservingCapacity(image);
+    const fs = KandeloImageFs.create();
+    fs.loadImage(image);
 
-    const expectedFs = MemoryFileSystem.create(new SharedArrayBuffer(MiB));
+    const expectedFs = KandeloImageFs.create();
     registerShellProfileScripts(expectedFs);
     expect(SHELL_PROFILE_SCRIPT_PATHS).toContain(
       "/etc/profile.d/00-kandelo-shell.sh",
@@ -547,11 +558,18 @@ describe("canonical source-rootfs shell", () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
     const source = await writeRootfs(paths.rootfsPath);
-    const sourceFs = MemoryFileSystem.fromImagePreservingCapacity(source.image);
-    const sourceLazy = sourceFs
-      .exportLazyEntries()
-      .filter((entry) => !entry.paths?.includes("/usr/bin/bash"));
-    const sourceLazyTrees = sourceFs.exportLazyArchiveEntries();
+    // READ THROUGH THE MODULE, which describes a deferred file by its ADDRESS
+    // rather than by a host-side inode identity. `exportLazyEntries` reported
+    // `paths`, `generation` and `dataSequence` — the multi-instance identity
+    // model — and what this case checks is that the composed image still names
+    // the same bodies the source did.
+    const sourceFs = KandeloImageFs.create();
+    sourceFs.loadImage(source.image);
+    const sourceEntries = sourceFs.lazyEntries();
+    const sourceLazy = sourceEntries.files
+      .filter((file) => file.archiveId === 0 && file.path !== "/usr/bin/bash")
+      .map((file) => ({ path: file.path, uri: file.uri, size: file.size }));
+    const sourceArchives = sourceEntries.archives.map((archive) => archive.uri);
     const firstOut = join(root, "first.vfs.zst");
     const secondOut = join(root, "second.vfs.zst");
 
@@ -568,7 +586,7 @@ describe("canonical source-rootfs shell", () => {
 
     expect(first).toEqual(second);
     expect(new Uint8Array(readFileSync(firstOut))).toEqual(first);
-    expect(MemoryFileSystem.readImageMetadata(first)).toMatchObject({
+    expect(KandeloImageFs.readImageMetadata(first)).toMatchObject({
       version: 1,
       kernelAbi: ABI_VERSION,
       createdBy: "build-source-rootfs-shell-image",
@@ -578,16 +596,21 @@ describe("canonical source-rootfs shell", () => {
       },
     });
     expect(() => assertSourceRootfsShellImage(firstOut)).not.toThrow();
-    expect(MemoryFileSystem.readImageCapacity(first).maxByteLength).toBe(
+    expect(KandeloImageFs.readImageCapacity(first).maxByteLength).toBe(
       source.maxByteLength,
     );
 
-    const fs = MemoryFileSystem.fromImagePreservingCapacity(first);
+    const fs = KandeloImageFs.create();
+    fs.loadImage(first);
+    const composed = fs.lazyEntries();
+    const composedFiles = composed.files.map((file) =>
+      ({ path: file.path, uri: file.uri, size: file.size })
+    );
     for (const entry of sourceLazy) {
-      expect(fs.exportLazyEntries()).toContainEqual(entry);
+      expect(composedFiles).toContainEqual(entry);
     }
-    for (const entry of sourceLazyTrees) {
-      expect(fs.exportLazyArchiveEntries()).toContainEqual(entry);
+    for (const uri of sourceArchives) {
+      expect(composed.archives.map((archive) => archive.uri)).toContain(uri);
     }
     for (const spec of SHELL_LAZY_BINARY_SPECS) {
       expect(fs.getLazyEntry(spec.vfsPath), spec.id).not.toBeNull();
@@ -603,14 +626,10 @@ describe("canonical source-rootfs shell", () => {
     }
     for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
       expect(
-        fs
-          .exportLazyArchiveEntries()
-          .some((entry) => entry.url === spec.archiveUrl),
+        composed.archives.some((archive) => archive.uri === spec.archiveUrl),
         spec.id,
       ).toBe(true);
     }
-    expect(fs.getLazyEntry("/bin/bash")).toBeNull();
-    expect(fs.getLazyEntry("/usr/bin/bash")).toBeNull();
     expect(fs.isPathDeferred("/bin/bash")).toBe(false);
     expect(fs.isPathDeferred("/usr/bin/bash")).toBe(false);
     expect(fs.stat("/bin/bash").ino).toBe(fs.stat("/usr/bin/bash").ino);
@@ -621,8 +640,10 @@ describe("canonical source-rootfs shell", () => {
     expect(readVfsFile(fs, "/usr/bin/bash")).toEqual(
       new Uint8Array(readFileSync(paths.bashPath)),
     );
-    expect(fs.getLazyEntry("/usr/bin/grep")).toMatchObject({
-      url: "binaries/programs/wasm32/grep.wasm",
+    expect(
+      composed.files.find((file) => file.path === "/usr/bin/grep"),
+    ).toMatchObject({
+      uri: "binaries/programs/wasm32/grep.wasm",
       size: 412_000,
     });
     // WHY: every program the shell adds is a lazy file the image itself
@@ -653,10 +674,15 @@ describe("canonical source-rootfs shell", () => {
     ]) {
       const spec = SHELL_LAZY_BINARY_SPECS.find((entry) => entry.vfsPath === guest);
       expect(spec, guest).toBeDefined();
+      // `getLazyEntry` answers only "is this a URL-backed lazy file"; the
+      // address the image records comes from the writer's own inventory.
       expect(fs.getLazyEntry(guest), guest).toMatchObject({
-        url,
         size: `${spec!.id} fixture`.length,
       });
+      expect(
+        fs.lazyEntries().files.find((file) => file.path === guest),
+        guest,
+      ).toMatchObject({ uri: url, size: `${spec!.id} fixture`.length });
       expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
     }
     // PATH_ESPEAK_DATA is compiled into the binary as /usr/share, so the

@@ -5,8 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { addSealedLazyAtomicTestTree } from "../../../../host/test/lazy-atomic-seal-fixture";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -28,13 +27,12 @@ const phpBinaryPath =
   icuRuntime?.closureHostPaths.get("php/php.wasm") ??
   join(__dirname, "../php-src/sapi/cli/php");
 const intlSoPath = icuRuntime?.closureHostPaths.get("php/intl.so");
+// The default rootfs ships compressed; `loadImage` below decodes either form.
 const rootfsPath =
-  tryResolveBinary("rootfs.vfs") ??
-  tryResolveBinary("programs/rootfs.vfs") ??
-  join(__dirname, "../../../../host/wasm/rootfs.vfs");
+  tryResolveBinary("rootfs.vfs.zst") ??
+  tryResolveBinary("programs/rootfs.vfs.zst");
 const INTL_GUEST_PATH = "/usr/lib/php/extensions/intl.so";
 const PHP_INTL_VFS_MAX_BYTES = 256 * 1024 * 1024;
-const O_RDONLY = 0;
 
 if (intlSoPath && !icuRuntime) {
   throw new Error(
@@ -44,65 +42,30 @@ if (intlSoPath && !icuRuntime) {
 
 const READY = existsSync(phpBinaryPath)
   && intlSoPath != null
-  && existsSync(rootfsPath);
+  && rootfsPath !== null;
 let intlRootfsImage: Uint8Array;
 
-function readVfsBinary(fs: MemoryFileSystem, path: string): Uint8Array {
-  const size = fs.stat(path).size;
-  const bytes = new Uint8Array(size);
-  const fd = fs.open(path, O_RDONLY, 0);
-  let offset = 0;
-  try {
-    while (offset < bytes.length) {
-      const read = fs.read(
-        fd,
-        bytes.subarray(offset),
-        null,
-        bytes.length - offset,
-      );
-      if (read <= 0) {
-        throw new Error(
-          `short VFS read for ${path}: ${offset} of ${bytes.length}`,
-        );
-      }
-      offset += read;
-    }
-  } finally {
-    fs.close(fd);
-  }
-  return bytes;
+function readVfsBinary(fs: KandeloImageFs, path: string): Uint8Array {
+  return fs.readFile(path);
 }
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-describe("PHP intl VFS restore boundary", () => {
-  it("authenticates an imported v3 rootfs before rebasing", async () => {
-    const source = MemoryFileSystem.create(
-      new SharedArrayBuffer(8 * 1024 * 1024),
-    );
-    await addSealedLazyAtomicTestTree(source, {
-      groupId: "test:php-intl-rootfs",
-      member: "rootfs",
-      root: "/php-intl-rootfs",
-    });
-    const restored = MemoryFileSystem.fromImage(await source.saveImage());
-    await restored.verifyImportedLazyAtomicGroupSeals();
-    expect(
-      restored.rebaseToNewFileSystem(16 * 1024 * 1024)
-        .exportLazyArchiveEntries(),
-    ).toHaveLength(1);
-  });
-});
+// No separate seal-authentication case here. The rootfs is loaded through
+// `KandeloImageFs.loadImage`, which authenticates every sealed cohort the image
+// carries before it returns, so an image that reaches the staging below has
+// already passed that check; the refusal itself is covered by the kernel's
+// image-loader unit tests.
 
 describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
   beforeAll(async () => {
-    const restored = MemoryFileSystem.fromImage(
-      new Uint8Array(readFileSync(rootfsPath)),
-    );
-    await restored.verifyImportedLazyAtomicGroupSeals();
-    const fs = restored.rebaseToNewFileSystem(PHP_INTL_VFS_MAX_BYTES);
+    // The load authenticates the image's sealed cohorts. The capacity is the
+    // ceiling the saved image declares, not a buffer reserved up front.
+    const fs = KandeloImageFs.create();
+    fs.loadImage(new Uint8Array(readFileSync(rootfsPath!)));
+    fs.setImageCapacity(PHP_INTL_VFS_MAX_BYTES);
     ensureDirRecursive(fs, dirname(INTL_GUEST_PATH));
     ensureDirRecursive(fs, dirname(icuRuntime!.guestPath));
     writeVfsBinary(

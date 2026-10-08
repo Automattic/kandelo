@@ -86,10 +86,7 @@ import type {
  * lifecycle. The main thread is a thin UI proxy that sends messages here.
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
-import type {
-  LazyDownloadEvent,
-  SerializedLazyArchiveEntry,
-} from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
@@ -146,20 +143,33 @@ export interface InitMessage {
   type: "init";
   kernelWasmBytes: ArrayBuffer;
   /**
-   * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
-   * restores and authenticates an owned memfs through the verified image-mount
-   * resolver — no VFS SAB is shared with the main thread. Demos that need
-   * `/etc/{passwd,group,hosts,services}` bake it into the image (see
-   * apps/browser-demos/lib/kernel-owned-boot.ts::overlayEtcFromRootfs).
+   * Decoded VFS image bytes (a `KandeloImageFs.saveImage()` result, or a
+   * zstd-decoded `.vfs.zst`). The kernel worker hands them to the kernel,
+   * which parses the image and owns `/`; an imported image's seal is checked
+   * by the verified image-mount resolver first. No VFS buffer is shared with
+   * the main thread. Demos that need `/etc/{passwd,group,hosts,services}` bake
+   * them into the image.
    */
   vfsImage: Uint8Array;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
+  /**
+   * Where this deployment serves addresses the image records, for a
+   * deployment that serves those bytes somewhere other than where the image
+   * names them (hashed production asset names, or an image-owned scheme such
+   * as the shell image's `kandelo-lazy:`). Consulted before `lazyUrlBase`.
+   *
+   * The image's address is canonical and nothing rewrites it; this is
+   * transport policy, so it travels as data. A table rather than a resolver,
+   * because the deployment knows every asset it serves without asking the
+   * image what it contains. An address the table does not carry is resolved
+   * against `lazyUrlBase`, or fetched as written.
+   */
+  lazyUrlMap?: Readonly<Record<string, string>>;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
   closedLazyAssets?: ClosedLazyAsset[];
-  shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;
   config: {
@@ -167,8 +177,6 @@ export interface InitMessage {
     maxMemoryPages: number;
     /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */
     kernelMaxPages: number;
-    /** Upper bound on the image-backed rootfs reservation, in bytes. */
-    imageMemfsMaxBytes: number;
     /** Identifier of the runtime memory profile these budgets came from. */
     memoryProfileId: string;
     /**
@@ -244,12 +252,6 @@ export interface RegisterPtyOutputMessage {
   pid: number;
 }
 
-export interface RegisterLazyFilesMessage {
-  type: "register_lazy_files";
-  requestId?: number;
-  entries: Array<{ ino: number; path: string; url: string; size: number }>;
-}
-
 /**
  * Main-thread → kernel-worker mouse injection. The main thread captures
  * canvas mouse events and forwards them here; the worker calls
@@ -317,12 +319,6 @@ export interface AudioDrainMessage {
   type: "audio_drain";
   requestId: number;
   maxBytes: number;
-}
-
-export interface RegisterLazyArchivesMessage {
-  type: "register_lazy_archives";
-  requestId?: number;
-  entries: SerializedLazyArchiveEntry[];
 }
 
 /**
@@ -400,8 +396,6 @@ export type MainToKernelMessage =
   | PickListenerTargetMessage
   | DestroyMessage
   | RegisterPtyOutputMessage
-  | RegisterLazyFilesMessage
-  | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | GetWasmModuleCacheStatsRequestMessage

@@ -18,15 +18,18 @@ install the bin shim with `npm install` and invoke `mkrootfs ...`.
 
 `mkrootfs build` produces byte-reproducible inode timestamps. It sets every
 allocated inode's atime, mtime, and ctime in the serialized image to
-`SOURCE_DATE_EPOCH` (whole Unix seconds), or to Unix epoch zero when the
-variable is unset. This normalization affects only the image snapshot; it does
-not change the live `MemoryFileSystem` clock or ordinary runtime snapshots.
+`SOURCE_DATE_EPOCH` (whole Unix seconds), or to Kandelo's reference instant
+(`KANDELO_REFERENCE_EPOCH_SECONDS` in `crates/shared/src/lib.rs`, 1772944691:
+the first Kandelo commit's time) when the variable is unset. Not epoch zero:
+software reads a timestamp of 0 as "no timestamp". This normalization affects
+only the image snapshot; it does not change the running kernel's clock or
+ordinary runtime snapshots.
 
 ## ZIP archive ingestion
 
 Every manifest node path must be a canonical absolute POSIX path. `mkrootfs`
 rejects repeated separators plus `.` and `..` components instead of allowing
-SharedFS to resolve a spelling that validation did not inspect.
+the image writer to resolve a spelling that validation did not inspect.
 
 `archive` manifest entries accept canonical relative POSIX member paths. The
 builder rejects absolute paths, backslashes, NUL bytes, empty components, and

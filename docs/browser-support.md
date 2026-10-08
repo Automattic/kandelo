@@ -24,7 +24,7 @@ The kernel runs in a dedicated web worker, freeing the main thread for UI render
 ```
 Main Thread (BrowserKernel)              Kernel Worker
 ├── UI / rendering                       ├── CentralizedKernelWorker
-├── Page API (boot, stdin, network)      ├── MemoryFileSystem (kernel-owned)
+├── Page API (boot, stdin, network)      ├── Boot image bytes (the kernel owns /)
 ├── PTY terminal ──pty events──>         ├── Kernel Wasm instance
 ├── HTTP bridge / TCP injection          ├── Syscall dispatch (Atomics.waitAsync)
 ├── Local virtual network                ├── POSIX socket routing
@@ -51,19 +51,20 @@ Service Worker ──MessagePort──> Kernel Worker       │
 ### Key Design Decisions
 
 - **Kernel in dedicated worker**: Browser syscall notification remains event-driven through `Atomics.waitAsync`; it does not poll channels. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue, allowing syscall handling and worker messages to keep progressing together under multi-process bridge load. Node.js keeps its native/default batching unchanged.
-- **Kernel-owned VFS** (preferred path, `kernelOwnedFs: true` + `kernel.boot()`): the kernel worker restores a pre-built VFS image and exec()s `argv[0]` as the first user process. The main thread never instantiates a `MemoryFileSystem` and is not in the FS hot path. Service-supervised demos run dinit under the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. Single-program demos exec the language interpreter directly.
+- **The kernel owns the filesystem** (`kernel.boot()`): the page hands `BrowserKernel` a pre-built VFS image, the main thread zstd-decodes it and transfers the bytes to the kernel worker, and the kernel parses it and serves `/` itself (`docs/architecture.md`, "Filesystem"); the scratch mounts and `/dev/shm` are an in-kernel tmpfs. The worker then exec()s `argv[0]` as the first user process. The main thread holds no filesystem and is not in the FS hot path. Service-supervised demos run dinit under the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. Single-program demos exec the language interpreter directly.
   Browser harnesses that must stage a transient file between process spawns use
   `BrowserKernel`'s worker RPC methods (`readFileSnapshotFromVfs`,
   `writeFileToVfs`, and `unlinkFileFromVfs`). The owning worker performs those
-  mutations through the mounted VFS; the main thread never receives the live
-  VFS `SharedArrayBuffer`.
+  through kernel exports (`kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
+  `kernel_rootfs_unlink_file`), so live guests see the change and the main
+  thread never touches filesystem state.
   A quiescent machine can return durable root-image bytes through
   `BrowserKernel.exportRootfsImage()`. The worker rejects export while a guest
   process or teardown is live, serializes it against the same staging and lazy
-  materialization RPCs, and transfers only the `/` image backend. Scratch,
-  device, and shared-memory mounts are boot-local and are recreated when those
-  bytes start another machine.
-- **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). The main thread transfers each program's bytes, but the Rust `ProcessTable` allocates the PID and the worker returns it. Top-level creation, guest fork/spawn, and thread clone all draw from that one authoritative task-ID sequence; no browser or host-side allocator exists.
+  materialization RPCs, and returns the image the kernel streams of its live
+  `/` (`kernel_rootfs_export_container_read`). Scratch mounts and `/dev/shm`
+  are boot-local and are recreated when those bytes start another machine.
+- **Transient programs** (`kernel.spawn(programBytes, argv)`): pages that fetch binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites) transfer each program's bytes to the worker; the Rust `ProcessTable` allocates the PID and the worker returns it. Top-level creation, guest fork/spawn, and thread clone all draw from that one authoritative task-ID sequence; no browser or host-side allocator exists. There is no main-thread filesystem option: the former `memfs:` constructor option is gone, and every machine boots from an image.
 - **Exact module reflection**: each process worker binds a compiled module to
   the exact Wasm bytes that passed artifact admission. Import and export names,
   kinds, and declaration order come from Kandelo's binary contract parser.
@@ -80,7 +81,7 @@ Service Worker ──MessagePort──> Kernel Worker       │
   rather than a skipped or simulated wasm64 success. Browser injection waits
   on guest-published atomic gates in the real process memory, so acceptance
   does not depend on a fixed event-loop delay.
-- **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
+- **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel's filesystem. Programs are baked into the VFS image at build time, or are lazy files the image names and the host fetches on first exec. Symlinks are used for multicall binaries (e.g., coreutils).
 - **dinit for service supervision**: Multi-process demos (nginx, redis,
   mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and
   per-service files under `/etc/dinit.d/` into the VFS image via
@@ -177,7 +178,7 @@ pipe pair.
 - nginx serves static files and proxies to PHP-FPM via loopback TCP
 
 ### Filesystem
-- `MemoryFileSystem` — SharedArrayBuffer-based VFS shared between main thread and kernel worker
+- The in-kernel root filesystem and tmpfs hold `/`, the scratch mounts and `/dev/shm`; the browser host mounts no filesystem of its own beneath them (`resolveForBrowser` refuses a scratch mount the tmpfs does not serve).
 - `OpfsFileSystem` — Origin Private File System for browser persistence. Its
   worker assigns session-scoped inode tokens to regular files and uses
   `FileSystemHandle.isSameEntry()` to unify simultaneous opens. Tokens remain
@@ -387,7 +388,7 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
 - **dinit** — `kernelOwnedFs: true`, exec dinit as the first user process (PID 100), which brings up the per-demo service tree; PID 1 remains synthetic.
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
-- **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary, and the Rust kernel allocates the PID before the worker launches it.
+- **spawn** — the page calls `kernel.spawn(programBytes, argv)` for each binary on a booted machine, and the Rust kernel allocates the PID before the worker launches it.
 
 ### Wayland desktop demo
 
@@ -1103,9 +1104,10 @@ SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
 launch wrapper stays alive beside the engine, notices the archive (it polls,
 since `inotify` is unimplemented), unzips it in place and deletes it; the
 terminal shows when it is done. ScummVM's "Add Game" browser opens in that
-directory. The archive and its contents must fit the machine's filesystem
-(1 GiB on desktop browsers, 768 MiB on constrained ones such as iOS
-Safari); one that does not fails with `ENOSPC`. The pointer is a real absolute device (`/dev/input/event1`
+directory. The archive and its contents must fit the machine's filesystem,
+which lives in kernel memory beside everything else guests have written (a
+1 GiB kernel ceiling on desktop browsers, 768 MiB on constrained ones such as
+iOS Safari); a write that does not fit fails with `ENOSPC`. The pointer is a real absolute device (`/dev/input/event1`
 reports `EV_ABS` positions), and the browser hides its own cursor over the
 display because ScummVM draws one.
 
@@ -1496,25 +1498,36 @@ build map remains browser authority. This is bounded fixture evidence, not a
 claim about hosted candidate publication, a real pull request, canonical
 promotion, or production Pages deployment.
 
-Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFileSystem` containing all runtime files, directory structure, configs, and symlinks needed by a demo. At runtime, restoring a VFS image is a single buffer copy, replacing what would otherwise be hundreds or thousands of individual file creation operations.
+Browser demos use pre-built **VFS images** — binary snapshots of a filesystem tree containing all runtime files, directory structure, configs, and symlinks needed by a demo. At runtime the kernel parses the image in place and serves it as `/`, replacing what would otherwise be hundreds or thousands of individual file creation operations. The format (a `VFSI` container holding a KIFS tree plus `SDEF`/`KLZY` sections describing deferred files) is read and written only by Rust: the kernel reads it (`crates/runtime-core/src/rootfs.rs`) and the image writer (`crates/runtime-core/src/kandelo_image_write.rs`) produces it.
 
 ### How it works
 
-1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download. If the image should grow or report a larger `df` capacity at runtime, build it with `MemoryFileSystem.create(sab, permittedMaxBytes)` so the filesystem metadata is sized for that capacity.
-2. **Runtime**: The demo page fetches the `.vfs.zst` file and awaits
-   `restoreVerifiedVfsImage(imageBytes, { maxByteLength })`. The helper
-   auto-detects zstd magic, restores the filesystem, and authenticates every
-   imported atomic lazy-tree seal before returning. Only then may the consumer
-   inspect, mutate, rewrite, or pass the filesystem to `BrowserKernel({
-   memfs })`. `maxByteLength` makes the restored `SharedArrayBuffer` growable;
-   it does not raise the filesystem maximum beyond the image's superblock
-   limit.
+1. **Build time**: A TypeScript build script creates a `KandeloImageFs`
+   (`images/vfs/lib/kandelo-image-fs.ts`), writes files/dirs/symlinks into
+   it, and calls `saveImage()` (the `vfs-image-helpers.ts` wrapper) to
+   produce a zstd-compressed `.vfs.zst` file. `KandeloImageFs` is a thin
+   wrapper over `crates/kandelo-image-module`, a Wasm module with no imports
+   (`local-binaries/kandelo_image_module32.wasm`, built by `./run.sh setup`)
+   that runs the same Rust writer the kernel uses for export. The exported
+   body is sized to the tree; the growth ceiling the machine may use at
+   runtime is recorded as a number (`setImageCapacity`), so capacity never
+   ships as download bytes.
+2. **Runtime**: The page fetches the `.vfs.zst` file and passes it to
+   `BrowserKernel.boot()` / `initFromImage()` (or the ownership-taking
+   `bootFromOwnedImage()` / `initFromOwnedImage()`). The main thread
+   zstd-decodes it and transfers the bytes to the kernel worker; the kernel
+   loads it with `kernel_rootfs_load_image`, refusing an image whose ABI,
+   seals or deferred-file sections it cannot verify. Files the image only
+   names (lazy files and lazy archives) are fetched by the host on first
+   read through `host_fetch_deferred`; relative URLs resolve against
+   `lazyUrlBase`, and `lazyUrlMap` replaces individual URLs without
+   rewriting the image.
 
 The canonical package shell has a 512 MiB filesystem ceiling. Products that
 copy that shell and add their own application tree use a separate 768 MiB
-profile: SharedFS derives its fixed inode-table size from the declared byte
-ceiling, so merely having free data blocks does not guarantee that another
-file can be created. `saveShellDerivedVfsImage()` rejects a product build
+profile: the image writer accounts free data bytes and free inodes
+separately against the declared ceiling, so merely having free data space
+does not guarantee that another file can be created. `saveShellDerivedVfsImage()` rejects a product build
 unless at least 64 MiB of data blocks and 8,192 inode slots remain after its
 immutable contents are written. This makes runtime allocation space a checked
 artifact contract instead of allowing an image to build successfully and then
@@ -1531,7 +1544,7 @@ profile. Host-tree copies fail the build on any read or VFS write error.
 Intentional omissions are declared through the copy helper's `exclude` option,
 and every unexcluded symlink must be preserved explicitly or the build fails.
 
-`saveImage()` also walks every materialized Wasm file and rejects stale ABI or
+`saveImage()` also walks every resident Wasm file and rejects stale ABI or
 fork-instrumentation state. A package that intentionally disables fork
 instrumentation may narrow that check only with an exact canonical VFS path in
 `wasmArtifactPolicies`; the builder's declaration must agree with the selected
@@ -1608,19 +1621,19 @@ accent, glyph — still comes from the named product's own tracked demo config.
 
 ```typescript
 // Typical demo pattern
-import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
-
 const [kernelBuf, vfsImageBuf] = await Promise.all([
   fetch(kernelUrl).then(r => r.arrayBuffer()),
   fetch(vfsImageUrl).then(r => r.arrayBuffer()),
 ]);
 
-const memfs = await restoreVerifiedVfsImage(
-  new Uint8Array(vfsImageBuf),
-  { maxByteLength: 512 * 1024 * 1024 },
-);
-
-const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
+const kernel = new BrowserKernel({ onStdout, onStderr });
+// The image is decoded on the main thread and handed to the kernel, which
+// owns `/` from here on; the page keeps no filesystem.
+const { exit } = await kernel.boot({
+  kernelWasm: kernelBuf,
+  vfsImage: new Uint8Array(vfsImageBuf),
+  argv: ["/bin/sh", "-l"],
+});
 ```
 
 ### Script-carrying share links
@@ -2068,7 +2081,8 @@ lazy formats do not gain compatibility shims.
    `images/vfs/scripts/tracked-demo-config.ts`
 4. If the image is consumed by the Kandelo UI, expose it through a gallery
    manifest, preset, or direct `vfs` URL so the UI can fetch the `.vfs.zst`
-   image and await `restoreVerifiedVfsImage()` before inspecting or booting it
+   image and boot it; the UI reads presentation metadata from the image with
+   the image writer module (`KandeloImageFs`) before booting it
 5. Add a build target in `run.sh`
 
 The shared helpers in `vfs-image-helpers.ts` provide:
@@ -2076,7 +2090,7 @@ The shared helpers in `vfs-image-helpers.ts` provide:
 - `ensureDirRecursive(fs, path)` — create directory trees
 - `symlink(fs, target, path)` — create symlinks
 - `walkAndWrite(fs, hostDir, mountPrefix, opts?)` — recursively walk a host directory into the VFS
-- `saveImage(fs, outFile)` — save and write the image to disk
+- `saveImage(fs, outFile)` — export through the Rust writer, check headroom, capacity and Wasm artifacts, compress, and write the image to disk
 
 ## Vite Configuration
 

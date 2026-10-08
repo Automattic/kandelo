@@ -2,10 +2,11 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
+import type {
+  VfsImageFilesystem,
+  VfsImageMetadata,
+} from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   programWasmArtifactPolicy,
   resolveBinary,
@@ -108,7 +109,7 @@ export function resolvePolicyBoundVfsWasmArtifact(
 
 export async function loadShellBaseFileSystem(
   maxByteLength: number,
-): Promise<MemoryFileSystem> {
+): Promise<KandeloImageFs> {
   const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
   return loadShellBaseFileSystemFromImage(
     new Uint8Array(readFileSync(shellImagePath)),
@@ -119,9 +120,12 @@ export async function loadShellBaseFileSystem(
 export async function loadShellBaseFileSystemFromImage(
   shellImage: Uint8Array,
   maxByteLength: number,
-): Promise<MemoryFileSystem> {
-  const fs = MemoryFileSystem.fromImagePreservingCapacity(shellImage);
-  await fs.verifyImportedLazyAtomicGroupSeals();
+): Promise<KandeloImageFs> {
+  // The load AUTHENTICATES, inside the module's `sm_load_image`. There is no
+  // window between importing the base and checking its activation cohorts, and
+  // no second call for a caller to forget.
+  const fs = KandeloImageFs.create();
+  fs.loadImage(shellImage);
   const metadata = fs.getImageMetadata();
   const kernelAbi = metadata?.kernelAbi;
   if (
@@ -142,28 +146,34 @@ export async function loadShellBaseFileSystemFromImage(
       kernelAbi,
     },
   });
-  const stats = fs.statfs("/");
-  const effectiveMaxByteLength = stats.blocks * stats.bsize;
-  if (effectiveMaxByteLength === maxByteLength) return fs;
-
-  console.log(
-    `Rebasing package shell VFS capacity from ` +
-      `${Math.round(effectiveMaxByteLength / 1024 / 1024)} MiB to ` +
-      `${Math.round(maxByteLength / 1024 / 1024)} MiB...`,
-  );
-  return fs.rebaseToNewFileSystem(maxByteLength);
+  // A capacity REQUEST the export reads, not a tree poured into a new
+  // filesystem. An image of capacity X costs what its CONTENTS cost until it is
+  // actually that full.
+  const effectiveMaxByteLength = fs.exportCapacityBytes();
+  if (effectiveMaxByteLength !== maxByteLength) {
+    console.log(
+      `Setting package shell VFS capacity from ` +
+        `${Math.round(effectiveMaxByteLength / 1024 / 1024)} MiB to ` +
+        `${Math.round(maxByteLength / 1024 / 1024)} MiB...`,
+    );
+    fs.setImageCapacity(maxByteLength);
+  }
+  return fs;
 }
 
 /** Serialize a transient package-shell guest used by a derived-image build. */
 export function saveShellDerivedBuildGuestSnapshot(
-  fs: MemoryFileSystem,
+  // The interface, not the concrete writer: this function calls only
+  // `getImageMetadata` and `saveImage`, and `wordpress-preinstall.ts` passes
+  // its interface-typed filesystem here.
+  fs: VfsImageFilesystem,
 ): Promise<Uint8Array> {
   requirePackageShellMetadata(fs.getImageMetadata(), "build guest");
   return fs.saveImage();
 }
 
 export function saveShellDerivedVfsImage(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   outFile: string,
   options: Omit<
     SaveImageOptions,
@@ -288,7 +298,7 @@ function isExactPackageShellComposition(value: unknown): boolean {
   );
 }
 
-function validateExperimentalTerminalSession(fs: MemoryFileSystem): void {
+function validateExperimentalTerminalSession(fs: KandeloImageFs): void {
   const stat = fs.lstat(EXPERIMENTAL_TERMINAL_SESSION_PATH);
   if ((stat.mode & 0o170000) !== 0o100000) {
     throw new Error(
@@ -308,7 +318,7 @@ function validateExperimentalTerminalSession(fs: MemoryFileSystem): void {
   );
 }
 
-function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsBytes(fs: KandeloImageFs, path: string): Uint8Array {
   const bytes = new Uint8Array(fs.stat(path).size);
   const fd = fs.open(path, 0, 0);
   try {

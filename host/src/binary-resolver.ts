@@ -44,7 +44,6 @@ import {
   ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
 } from "./generated/abi";
-import { MemoryFileSystem } from "./vfs/memory-fs";
 
 const EXECUTABLE_PROGRAM_REQUIRED_EXPORTS = ["__abi_version", "_start"] as const;
 
@@ -2968,35 +2967,15 @@ function hasWasmArtifactPolicyFailuresForBytes(
   }
 }
 
-function hasVfsArtifactPolicyFailures(path: string, relPath = path): boolean {
-  if (!relPath.endsWith(".vfs") && !relPath.endsWith(".vfs.zst")) {
-    return false;
-  }
-  try {
-    return hasVfsArtifactPolicyFailuresForBytes(readFileSync(path), relPath);
-  } catch {
-    return true;
-  }
-}
-
-function hasVfsArtifactPolicyFailuresForBytes(
-  bytes: Uint8Array,
-  relPath: string,
-): boolean {
-  if (!relPath.endsWith(".vfs") && !relPath.endsWith(".vfs.zst")) {
-    return false;
-  }
-  try {
-    const metadata = MemoryFileSystem.readImageMetadata(bytes);
-    const declaredAbi = metadata?.kernelAbi;
-    return declaredAbi !== undefined && declaredAbi !== ABI_VERSION;
-  } catch {
-    // A path declared as a VFS image must remain fail-closed when its header,
-    // compression, or metadata cannot be inspected. This also keeps the
-    // TypeScript and shell resolvers aligned.
-    return true;
-  }
-}
+// An image's declared kernel ABI is not judged here. This resolver chooses
+// files; it used to parse a VFS image header to refuse a mismatched
+// `kernelAbi`, which needed a filesystem implementation on the host. The
+// kernel now performs that refusal when it loads the image
+// (`image_policy::check_declared_abi`, reached from `rootfs::load_image`) and
+// answers `EPROTO`, because the image is not malformed: it speaks a different
+// version of the contract. What the resolver gives up is choosing a different
+// tier's image when a local one is stale; no image is published to a second
+// tier today, so that choice has nothing to choose between.
 
 function hasBinaryArtifactPolicyFailures(
   path: string,
@@ -3007,8 +2986,7 @@ function hasBinaryArtifactPolicyFailures(
     path,
     relPath,
     capturedForkInstrumentation,
-  ) ||
-    hasVfsArtifactPolicyFailures(path, relPath);
+  );
 }
 
 function hasBinaryArtifactPolicyFailuresForBytes(
@@ -3020,7 +2998,7 @@ function hasBinaryArtifactPolicyFailuresForBytes(
     bytes,
     relPath,
     capturedForkInstrumentation,
-  ) || hasVfsArtifactPolicyFailuresForBytes(bytes, relPath);
+  );
 }
 
 function chooseBinaryCandidate(

@@ -987,6 +987,13 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel.ts::WasmPosixKernel.umask::kernel-export-direct-use::fn(mask)",
   ),
+  // Reviewed: `kernel_rootfs_load_image` takes only the two halves of the
+  // image byte length. The kernel pulls the image bytes itself through the
+  // `env.host_image_read` provider window installed immediately above the
+  // call, so no host-staged kernel-memory borrow crosses this boundary.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::loadImage(imageLenLo, imageLenHi)",
+  ),
   // Reviewed: `kernel_set_image_build_determinism` takes the image-build
   // seed and epoch as four 32-bit scalar words, once at boot before any
   // process exists; it borrows no kernel memory.
@@ -1142,6 +1149,12 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "The memory32 branch creates one allocator-owned process generation and immediately records its exact ownership and byte charge.",
+  },
+  {
+    key: "images/vfs/lib/kandelo-image-fs.ts::KandeloImageFs.create::wasm-instance-authority::new WebAssembly.Instance( new WebAssembly.Module( moduleBytes.buffer.slice( moduleBytes.byteOffset, moduleBytes.byteOffset + moduleBytes.byteLength, ) as ArrayBuffer, ), )",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The image-builder bridge instantiates `kandelo_image_module32.wasm`, a no_std module whose import object is ABSENT -- the second argument is not passed at all, so it declares no imports and receives none. It owns its own linear memory, holds the image tree being BUILT, and is addressed only through its `sm_*` exports; it runs in whatever context builds an image (a build script, a test, or a browser page) and reaches neither kernel memory nor any guest's. The bytes it instantiates come from `installModuleBytes`, which exists because the browser cannot read the module off disk the way Node can.",
   },
   {
     key: "host/src/dylink.ts::instantiateSharedLibrarySteps::wasm-instance-authority::new WebAssembly.Instance(module, instanceImports)",
@@ -1451,19 +1464,11 @@ const auditAllowances: AuditAllowance[] = [
     why: "The host_fstat import binds its exact pointer formal to the generated fixed stat capacity before the backend consumes the handle.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statPtr, WASM_STAT_SIZE, "host_stat destination", )',
+    // The path-based stat imports are gone: the kernel resolves the path and
+    // asks for one component relative to a directory handle.
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statPtr, WASM_STAT_SIZE, "host_fstatat destination", )',
     disposition: "rust-lent",
-    why: "The host_stat import binds its exact pointer formal to the generated fixed stat capacity before path/backend work.",
-  },
-  {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statPtr, WASM_STAT_SIZE, "host_lstat destination", )',
-    disposition: "rust-lent",
-    why: "The host_lstat import binds its exact pointer formal to the generated fixed stat capacity before path/backend work.",
-  },
-  {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statfsPtr, WASM_STATFS_SIZE, "host_statfs destination", )',
-    disposition: "rust-lent",
-    why: "The host_statfs import binds its exact pointer formal to the generated fixed filesystem-stat capacity before backend work.",
+    why: "The host_fstatat import binds its exact pointer formal to the generated fixed stat capacity before any directory-handle or name resolution runs.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statfsPtr, WASM_STATFS_SIZE, "host_fstatfs destination", )',
@@ -1471,19 +1476,24 @@ const auditAllowances: AuditAllowance[] = [
     why: "The exact-handle host_fstatfs import binds its pointer formal to the generated fixed filesystem-stat capacity before retained-route policy lookup.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( valuePtr, 8, "host_pathconf destination", )',
-    disposition: "rust-lent",
-    why: "The host_pathconf import binds its exact pointer formal to the fixed eight-byte result capacity before backend work.",
-  },
-  {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( valuePtr, 8, "host_fpathconf destination", )',
     disposition: "rust-lent",
     why: "The host_fpathconf import binds its exact pointer formal to the fixed eight-byte result capacity before backend work.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_readlink destination", )',
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_readlinkat destination", )',
     disposition: "rust-lent",
-    why: "The host_readlink import binds the untouched Rust pointer and capacity formals before resolving the link.",
+    why: "The host_readlinkat import binds the untouched Rust pointer and capacity formals before resolving the link, exactly as the path-relative form it replaced.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_image_read destination", )',
+    disposition: "rust-lent",
+    why: "The host_image_read import binds the untouched Rust pointer and capacity formals before the VFS image provider is consulted; the read is bounded by that capacity and never by the image length.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_fetch_deferred destination", )',
+    disposition: "rust-lent",
+    why: "The host_fetch_deferred Wasm import binds the untouched Rust pointer and capacity formals before invoking the deferred-resource byte producer.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( direntPtr, WASM_DIRENT_SIZE, "host_readdir dirent destination", )',
@@ -1594,6 +1604,54 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/kernel.ts::WasmPosixKernel.ioctl::kernel-pointer-export-bypass::fn( fd, request, this.toKernelPtr(scalarArgument), bufLen, 4, )",
     disposition: "kernel-control",
     why: "This exact non-pointer ioctl branch passes a scalar command argument with zero buffer length; pointer ioctl requests use the scratch lease branch above.",
+  },
+  // Rootfs/tmpfs boot path. `#maybeLoadKernelRootfs` stages host-authored
+  // trusted boot config (the NUL-separated foreign mount prefixes) into a
+  // kernel-owned scratch region that the kernel's own `kernel_alloc_scratch`
+  // allocated, then hands the kernel-authored pointer plus its exact byte
+  // length to `kernel_rootfs_set_foreign_prefixes`. Every destination pointer
+  // originates from the kernel allocator, every source is trusted boot
+  // config, and no guest-controlled pointer or length reaches kernel memory.
+  // The remaining calls, and `enableKernelTmpfs`, pass control scalars only.
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::scratch-allocator-call::alloc(encoded.byteLength)",
+    disposition: "scratch-core",
+    why: "The rootfs boot path allocates a kernel-owned scratch region sized to the NUL-separated foreign-prefix bytes through the kernel's own scratch allocator; the returned pointer is kernel-authored and stays private to this synchronous foreign-prefix publish.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-view::new Uint8Array(memory.buffer, fptrValue, encoded.byteLength)",
+    disposition: "kernel-control",
+    why: "This fixed-size view over the kernel-allocated scratch pointer stages the host-authored NUL-separated foreign mount prefixes into kernel memory; the pointer is kernel-authored, no guest-controlled pointer or length is involved, and the view is written once and discarded.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-write::new Uint8Array(memory.buffer, fptrValue, encoded.byteLength).set(encoded)",
+    disposition: "kernel-control",
+    why: "Copies the trusted host-authored foreign-prefix bytes into the kernel-allocated scratch region sized to that exact byte length; the destination is a kernel-authored pointer and the source is trusted boot config, so no guest pointer reaches kernel memory.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::setNow(rootfsNowSecLo, rootfsNowSecHi, rootfsNowNsec)",
+    disposition: "kernel-control",
+    why: "kernel_set_rootfs_now receives only host clock control scalars (seconds high/low and nanoseconds); it borrows no kernel-memory pointer.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::setForeign(fptr, encoded.byteLength)",
+    disposition: "kernel-control",
+    why: "kernel_rootfs_set_foreign_prefixes reads the trusted NUL-separated mount prefixes from the kernel-authored scratch pointer staged above and its exact byte length; the pointer originates from the kernel's own allocator, not from any guest input.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::setNosuid(this.#rootfsNosuid ? 1 : 0)",
+    disposition: "kernel-control",
+    why: "kernel_set_rootfs_nosuid receives a single 0/1 set-ID policy control scalar; it borrows no kernel-memory pointer.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::enable(1)",
+    disposition: "kernel-control",
+    why: "kernel_set_rootfs_enabled receives a single enable control scalar to publish the rootfs as the `/` authority; it borrows no kernel-memory pointer.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::enableKernelTmpfs::kernel-export-direct-use::fn(1)",
+    disposition: "kernel-control",
+    why: "kernel_set_tmpfs_enabled receives a single enable control scalar that makes the in-kernel tmpfs serve its scratch prefixes; it borrows no kernel-memory pointer.",
   },
 ];
 

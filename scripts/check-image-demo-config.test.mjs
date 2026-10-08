@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { findRepoRoot } from "../host/src/binary-resolver.ts";
 import { ensureDirRecursive, writeVfsBinary } from "../host/src/vfs/image-helpers.ts";
-import { MemoryFileSystem } from "../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
 import { KANDELO_DEMO_CONFIG_PATH } from "../web-libs/kandelo-session/src/demo-config.ts";
 import {
   assertValidDemoConfig,
@@ -18,10 +18,10 @@ import {
 
 /** Build a real, restorable VFS image whose only content is the given bytes
  *  at /etc/kandelo/demo.json, so tests can exercise the real image-reading
- *  path (MemoryFileSystem.fromImage + lstat/open/read/close) without
+ *  path (KandeloImageFs.loadImage + lstat/open/read/close) without
  *  needing an actual built product artifact on disk. */
 async function buildImageWithDemoJson(bytes) {
-  const fs = MemoryFileSystem.createFresh(4 * 1024 * 1024);
+  const fs = KandeloImageFs.create();
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, bytes, 0o644);
   return fs.saveImage();

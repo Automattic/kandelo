@@ -24,6 +24,7 @@ import {
   type Transferable,
 } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
+import { maybeDecompressImage } from "./vfs/vfs-image-transport";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -33,7 +34,7 @@ import type {
 } from "./node-kernel-protocol";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
-import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
 import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import {
@@ -155,14 +156,15 @@ export interface NodeKernelHostOptions {
    *
    *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs.zst`, falling back
    *     to the resolver-managed `programs/rootfs.vfs.zst` artifact, and apply
-   *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The worker constructs
-   *     a `VirtualPlatformIO` (rootfs at `/`, host-fs scratch dirs at
-   *     `/tmp` etc.).
+   *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The kernel parses the
+   *     image and serves `/` and the scratch mounts (`/tmp` etc.) itself;
+   *     the worker's `VirtualPlatformIO` holds only host-backed mounts
+   *     beneath `/`, if any.
    *   - `ArrayBuffer | Uint8Array` — use the supplied image bytes
    *     instead of reading from disk. Same mount spec applied.
    *   - `undefined` (default) — use raw `NodePlatformIO` (every host
-   *     path reachable). Preserves the pre-cutover behaviour for the
-   *     direct-host-fs callers (demos, scripts) that haven't migrated
+   *     path reachable). Preserves the behaviour from before mount-based
+   *     VFS for the direct-host-fs callers (demos, scripts) that haven't migrated
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
@@ -1397,19 +1399,22 @@ function resolveRootfsImage(
   override: "default" | ArrayBuffer | Uint8Array | undefined,
 ): ArrayBuffer | null {
   if (override === undefined) return null;
-  if (override === "default") {
-    const artifact = resolveRootfsArtifact();
-    const buf = readFileSync(artifact.selectedPath);
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  }
-  if (override instanceof Uint8Array) {
-    // Copy into a fresh ArrayBuffer — the source might live in a
-    // SharedArrayBuffer, which the worker init protocol doesn't accept.
-    const out = new ArrayBuffer(override.byteLength);
-    new Uint8Array(out).set(override);
-    return out;
-  }
-  return override;
+  // Shipped images are zstd-compressed (`rootfs.vfs.zst`, `*.vfs.zst`), and
+  // the kernel's image reader takes decoded bytes: zstd is a host-side
+  // transport codec. Decode here, once, for every way a caller can hand an
+  // image over, so no caller has to know which encoding it read.
+  const bytes = override === "default"
+    ? new Uint8Array(readFileSync(resolveRootfsArtifact().selectedPath))
+    : override instanceof Uint8Array
+      ? override
+      : new Uint8Array(override);
+  const decoded = maybeDecompressImage(bytes);
+  if (decoded === bytes && override instanceof ArrayBuffer) return override;
+  // Copy into a fresh ArrayBuffer — the source might live in a
+  // SharedArrayBuffer, which the worker init protocol doesn't accept.
+  const out = new ArrayBuffer(decoded.byteLength);
+  new Uint8Array(out).set(decoded);
+  return out;
 }
 
 export interface ResolvedRootfsArtifact {

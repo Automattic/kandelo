@@ -11,8 +11,9 @@ import {
 } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import type { MemoryFileSystem as MemoryFileSystemType } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
+import { KANDELO_REFERENCE_EPOCH_SECONDS } from "../../../host/src/generated/abi";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -45,10 +46,12 @@ const PYTHON_STDLIB = "python3.13";
 // Keep enough allocator headroom for downstream images to layer additional
 // executables onto the complete interpreter and standard library.
 const VFS_BYTES = 256 * 1024 * 1024;
-const REPRODUCIBLE_TIMESTAMP_MS = 1_700_000_000_000;
+// Kandelo's one fixed instant, so this image's timestamps agree with every
+// other reproducible artifact rather than with an arbitrary local literal.
+const REPRODUCIBLE_TIMESTAMP_MS = KANDELO_REFERENCE_EPOCH_SECONDS * 1000;
 
 function copyTreeSorted(
-  fs: MemoryFileSystemType,
+  fs: VfsImageFilesystem,
   hostRoot: string,
   guestRoot: string,
 ): number {
@@ -103,7 +106,11 @@ export async function buildPythonVfsImage(
     if (!existsSync(required)) throw new Error(`required CPython VFS input missing: ${required}`);
   }
 
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(VFS_BYTES));
+  const fs = KandeloImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. The SharedArrayBuffer it used to come from was never anything but
+  // the old constructor's first argument.
+  fs.setImageCapacity(VFS_BYTES);
   ensureDir(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
   ensureDirRecursive(fs, "/home");

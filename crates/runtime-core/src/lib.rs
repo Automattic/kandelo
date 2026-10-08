@@ -25,6 +25,7 @@ pub mod fd;
 pub mod fifo;
 pub mod fork;
 pub mod guest_ptr;
+pub mod hostdir;
 pub mod image_build_determinism;
 pub mod image_policy;
 pub mod input;

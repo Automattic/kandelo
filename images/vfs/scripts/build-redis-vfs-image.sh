@@ -3,10 +3,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
-if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
-  exec node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
-    "$SCRIPT_DIR/staged-product-inputs.ts" browser-redis "$@"
-fi
 echo "==> Building Redis VFS image..."
 # A resolver build writes the image under its own work root so the
 # checkout stays untouched; a standalone run writes the browser demo copy.

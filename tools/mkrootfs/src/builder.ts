@@ -18,10 +18,9 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
+import { KANDELO_REFERENCE_EPOCH_SECONDS } from "../../../host/src/generated/abi";
 import {
   parseZipCentralDirectory,
   extractZipEntry,
@@ -41,7 +40,9 @@ import {
 } from "./validate.ts";
 
 const DEFAULT_SAB_SIZE = 16 * 1024 * 1024;
-const DEFAULT_SOURCE_DATE_EPOCH_SECONDS = 0;
+// Kandelo's reference instant, not 0: 0 is reproducible too, but software
+// reads it as "no timestamp" (PHP's opcache will not cache such a file).
+const DEFAULT_SOURCE_DATE_EPOCH_SECONDS = KANDELO_REFERENCE_EPOCH_SECONDS;
 const MAX_SOURCE_DATE_EPOCH_SECONDS = Math.floor(
   Number.MAX_SAFE_INTEGER / 1000,
 );
@@ -62,15 +63,16 @@ export interface BuildOptions {
   manifestFragments?: string[];
   /** Root used to resolve explicit `src=` paths and `archive` URLs. */
   repoRoot: string;
-  /** Backing SharedArrayBuffer size in bytes; defaults to 16 MiB. */
+  /** Base size in bytes the default capacity is derived from; defaults to 16 MiB. */
   sabSize?: number;
-  /** Maximum growable filesystem size in bytes; defaults to SharedFS's 4x initial cap. */
+  /** Declared maximum filesystem size in bytes; defaults to 4x `sabSize`. */
   maxSizeBytes?: number;
   /** Optional image-level declarations, such as the required kernel ABI. */
   metadata?: VfsImageMetadata;
   /**
    * Canonical inode timestamp in whole seconds since the Unix epoch. Defaults
-   * to zero so identical inputs produce byte-identical images.
+   * to Kandelo's reference instant (`KANDELO_REFERENCE_EPOCH_SECONDS`) so
+   * identical inputs produce byte-identical images.
    */
   sourceDateEpochSeconds?: number;
   /** Optional sink for non-fatal audit messages (archive overrides, etc.). */
@@ -106,27 +108,47 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
     throw new Error("maxSizeBytes must be greater than or equal to sabSize");
   }
 
+  // `maxSizeBytes` is a DECLARED capacity on the artifact, not an allocation:
+  // the Rust writer builds a plan and streams it, so there is no live
+  // filesystem to reserve memory for. `sabSize` is only the floor this default
+  // is computed from.
   const maxSizeBytes = opts.maxSizeBytes ?? sabSize * 4;
-  const SharedArrayBufferCtor = SharedArrayBuffer as new (
-    byteLength: number,
-    options?: { maxByteLength?: number },
-  ) => SharedArrayBuffer;
-  const sab = new SharedArrayBufferCtor(sabSize, { maxByteLength: maxSizeBytes });
-  const mfs = MemoryFileSystem.create(sab, maxSizeBytes);
+  const mfs = KandeloImageFs.create();
+  mfs.setImageCapacity(maxSizeBytes);
 
   buildDirectories(mfs, entries);
   buildFiles(mfs, entries, opts);
   buildSymlinks(mfs, entries);
   buildArchives(mfs, archiveBundles, plan);
 
-  return await mfs.saveImage({
+  // The declared capacity is a PROMISE about the artifact, so it is checked
+  // before the artifact exists rather than discovered while writing it.
+  //
+  // The Rust writer plans and streams, so nothing runs out of space while
+  // writing; without this check an oversized manifest would produce, say, a
+  // 2.4 MB image declaring a 1 MB capacity, silently.
+  //
+  // The check is against the EMITTED artifact, because that is what the
+  // promise is about: an image whose declared growth ceiling is below its own
+  // size declares a ceiling under its floor, and every consumer that sizes a
+  // buffer from that declaration is then wrong. The message carries both
+  // numbers, because a caller told only "too big" cannot tell whether to raise
+  // the cap or shrink the tree.
+  // `--sab-size` states the capacity a machine may grow into, not the size of
+  // the image it boots from. The kernel's export (`build_export_image` in
+  // crates/runtime-core/src/rootfs.rs) already sizes the body to the tree and
+  // records the ceiling as a number, so no free tail becomes download bytes.
+  const image = await mfs.saveImage({
     metadata: opts.metadata,
     normalizeTimestampsMs: sourceDateEpochSeconds * 1000,
-    // WHY: `build` writes a product artifact, so the allocator's unused tail
-    // must not become download bytes. `--sab-size` states the capacity a
-    // machine may grow into, not the size of the image it boots from.
-    trimFreeCapacity: true,
   });
+  if (image.byteLength > maxSizeBytes) {
+    throw new Error(
+      `image does not fit its declared capacity: ${image.byteLength} bytes emitted, `
+        + `${maxSizeBytes} declared (maxSizeBytes)`,
+    );
+  }
+  return image;
 }
 
 function loadManifestEntries(opts: BuildOptions): ManifestEntry[] {
@@ -138,7 +160,7 @@ function loadManifestEntries(opts: BuildOptions): ManifestEntry[] {
   });
 }
 
-function buildDirectories(mfs: MemoryFileSystem, entries: ManifestEntry[]): void {
+function buildDirectories(mfs: KandeloImageFs, entries: ManifestEntry[]): void {
   const dirs = entries.filter(
     (e): e is ManifestNode => e.kind === "node" && e.type === "d",
   );
@@ -150,7 +172,7 @@ function buildDirectories(mfs: MemoryFileSystem, entries: ManifestEntry[]): void
 }
 
 function buildFiles(
-  mfs: MemoryFileSystem,
+  mfs: KandeloImageFs,
   entries: ManifestEntry[],
   opts: BuildOptions,
 ): void {
@@ -159,7 +181,7 @@ function buildFiles(
   );
   for (const f of files) {
     if (f.lazyUrl !== undefined) {
-      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode);
+      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode, f.lazyDigest);
       mfs.chown(f.path, f.uid, f.gid);
       mfs.chmod(f.path, f.mode);
       continue;
@@ -178,18 +200,18 @@ function buildFiles(
       }
       throw e;
     }
-    createFileExactWithOwner(mfs, f.path, f.mode, f.uid, f.gid, content);
+    mfs.createFileWithOwner(f.path, f.mode, f.uid, f.gid, content);
   }
 }
 
-function buildSymlinks(mfs: MemoryFileSystem, entries: ManifestEntry[]): void {
+function buildSymlinks(mfs: KandeloImageFs, entries: ManifestEntry[]): void {
   const symlinks = entries.filter(
     (e): e is ManifestNode => e.kind === "node" && e.type === "l",
   );
   for (const l of symlinks) {
     // The parser guarantees target is set for type=l; assert for typing.
     if (!l.target) throw new Error(`internal: symlink ${l.path} missing target`);
-    mfs.symlinkWithOwner(l.target, l.path, l.uid, l.gid);
+    mfs.symlink(l.target, l.path, l.uid, l.gid);
   }
 }
 
@@ -225,7 +247,7 @@ function loadArchives(
 }
 
 function buildArchives(
-  mfs: MemoryFileSystem,
+  mfs: KandeloImageFs,
   archives: LoadedArchive[],
   plan: ArchiveExtractionPlan,
 ): void {
@@ -242,7 +264,7 @@ function buildArchives(
 }
 
 function extractArchive(
-  mfs: MemoryFileSystem,
+  mfs: KandeloImageFs,
   zipBytes: Uint8Array,
   members: PlannedArchiveMember[],
   a: ManifestArchive,
@@ -269,14 +291,7 @@ function extractArchive(
     if (skipPaths.has(member.vfsPath)) continue;
     ensureParentDirs(mfs, member.vfsPath, a);
     const content = extractZipEntry(zipBytes, member.entry);
-    createFileExactWithOwner(
-      mfs,
-      member.vfsPath,
-      member.fileMode,
-      a.uid,
-      a.gid,
-      content,
-    );
+    mfs.createFileWithOwner(member.vfsPath, member.fileMode, a.uid, a.gid, content);
   }
 
   for (const member of symlinks) {
@@ -284,24 +299,7 @@ function extractArchive(
     ensureParentDirs(mfs, member.vfsPath, a);
     const targetBytes = extractZipEntry(zipBytes, member.entry);
     const target = decodeSymlinkTarget(targetBytes, member);
-    mfs.symlinkWithOwner(target, member.vfsPath, a.uid, a.gid);
-  }
-}
-
-function createFileExactWithOwner(
-  mfs: MemoryFileSystem,
-  path: string,
-  mode: number,
-  uid: number,
-  gid: number,
-  content: Uint8Array,
-): void {
-  mfs.createFileWithOwner(path, mode, uid, gid, content);
-  const actualBytes = mfs.stat(path).size;
-  if (actualBytes !== content.byteLength) {
-    throw new Error(
-      `short write while building ${JSON.stringify(path)}: expected ${content.byteLength} bytes, wrote ${actualBytes}`,
-    );
+    mfs.symlink(target, member.vfsPath, a.uid, a.gid);
   }
 }
 
@@ -340,7 +338,7 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 function ensureParentDirs(
-  mfs: MemoryFileSystem,
+  mfs: KandeloImageFs,
   filePath: string,
   a: ManifestArchive,
 ): void {
@@ -358,7 +356,7 @@ function ensureParentDirs(
 }
 
 function requireDirectory(
-  mfs: MemoryFileSystem,
+  mfs: KandeloImageFs,
   path: string,
   a: ManifestArchive,
 ): void {
@@ -370,7 +368,7 @@ function requireDirectory(
   }
 }
 
-function existsAt(mfs: MemoryFileSystem, path: string): boolean {
+function existsAt(mfs: KandeloImageFs, path: string): boolean {
   try {
     mfs.lstat(path);
     return true;

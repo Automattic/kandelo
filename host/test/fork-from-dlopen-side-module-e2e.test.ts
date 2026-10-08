@@ -7,7 +7,6 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodePlatformIO } from "../src/platform/node";
@@ -18,8 +17,11 @@ import {
   parseDylinkSection,
   readForkInstrumentCapabilities,
 } from "../src/dylink";
-import { runCentralizedProgram } from "./centralized-test-helper";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "./centralized-test-helper";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -28,7 +30,12 @@ const sysroot = join(repoRoot, "sysroot");
 const glueDir = join(repoRoot, "libc", "glue");
 const clangDriver = process.env.CLANG ?? "clang";
 const instrument = join(repoRoot, "scripts", "run-wasm-fork-instrument.sh");
-const buildDir = join(tmpdir(), "kandelo-fork-from-side-module");
+// Stage the built `.so` under `<repoRoot>/target` (never an in-kernel tmpfs
+// scratch prefix) so the guest reaches the real host file through
+// NodePlatformIO. `os.tmpdir()` can resolve under `/tmp` (the nix dev shell on
+// Linux sets `TMPDIR=/tmp/nix-shell.*`), where the in-kernel tmpfs would serve
+// the path instead and the guest dlopen would fail with "cannot stat library".
+const buildDir = makeHostScratchTempRoot("kandelo-fork-from-side-module-");
 const hasPrerequisites =
   existsSync(join(sysroot, "lib", "libc.a"))
   && (
@@ -221,9 +228,7 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     const fixture = buildVforkSideModuleFixture();
     try {
       const libraryBytes = new Uint8Array(readFileSync(fixture.libraryPath));
-      const imageOwner = MemoryFileSystem.create(
-        new SharedArrayBuffer(Math.max(2 * 1024 * 1024, libraryBytes.length * 4)),
-      );
+      const imageOwner = KandeloImageFs.create();
       imageOwner.mkdir("/lib", 0o755);
       imageOwner.createFileWithOwner(
         "/lib/libvforkinside.so",

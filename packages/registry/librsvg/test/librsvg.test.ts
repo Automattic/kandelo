@@ -3,17 +3,18 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "../../../../host/test/centralized-test-helper";
 
 /*
  * librsvg (a C API over a Rust core) renders SVG on the kernel: shapes
@@ -48,7 +49,7 @@ afterAll(() => {
 
 describe.skipIf(!canBuild)("librsvg — SVG rendering on the kernel", () => {
   it("renders shapes, text and a pixbuf", async () => {
-    workDir = mkdtempSync(join(tmpdir(), "librsvg-render-"));
+    workDir = makeHostScratchTempRoot("librsvg-render-");
     const fontDir = join(workDir, "fonts");
     const cacheDir = join(workDir, "cache");
     mkdirSync(fontDir);

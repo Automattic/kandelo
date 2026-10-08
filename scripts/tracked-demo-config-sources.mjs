@@ -2,7 +2,7 @@
 /**
  * Parse the tracked demo-config source list out of
  * images/vfs/scripts/tracked-demo-config.ts, without importing that file
- * (which is fine on its own, but pulls in MemoryFileSystem/binary-resolver
+ * (which is fine on its own, but pulls in the image writer/binary-resolver
  * transitively through sibling image-builder modules in some import graphs).
  *
  * This is pure text parsing over plain JSON/regex — no TypeScript-specific

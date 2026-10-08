@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -117,7 +117,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
  * terminal type, and TLS trust anchors. Adding a script here reaches both
  * images by construction; there is no second list to keep in step.
  */
-export function registerShellProfileScripts(fs: MemoryFileSystem): void {
+export function registerShellProfileScripts(fs: VfsImageFilesystem): void {
   for (const script of SHELL_PROFILE_SCRIPTS) script.register(fs);
 }
 
@@ -136,7 +136,7 @@ const SHELL_PROFILE_SCRIPTS = [
   { path: "/etc/profile.d/man.sh", register: registerManShellProfile },
 ] as const satisfies ReadonlyArray<{
   path: string;
-  register: (fs: MemoryFileSystem) => void;
+  register: (fs: VfsImageFilesystem) => void;
 }>;
 
 /** Guest paths of every script `registerShellProfileScripts` writes. */
@@ -154,7 +154,7 @@ export const SHELL_PROFILE_SCRIPT_PATHS: readonly string[] =
 // interactive shell. Named with a "00-" prefix so it runs before any other
 // profile.d script that wants to override a piece of this baseline (e.g.
 // the node image's PS1) for its own derived identity.
-export function registerDemoShellProfile(fs: MemoryFileSystem): void {
+export function registerDemoShellProfile(fs: VfsImageFilesystem): void {
   ensureDirRecursive(fs, "/etc/profile.d");
   writeVfsFile(
     fs,
@@ -183,7 +183,7 @@ export function registerDemoShellProfile(fs: MemoryFileSystem): void {
 // the interpreter stops probing and the REPL starts cleanly. This mirrors the
 // dedicated python VFS product, which sets the same value in its boot env.
 // Sourced by /etc/profile for interactive login shells.
-export function registerPythonShellProfile(fs: MemoryFileSystem): void {
+export function registerPythonShellProfile(fs: VfsImageFilesystem): void {
   ensureDirRecursive(fs, "/etc/profile.d");
   writeVfsFile(
     fs,
@@ -216,7 +216,7 @@ export function registerPythonShellProfile(fs: MemoryFileSystem): void {
  * `/etc/kandelo/demo.json`, and a bare-shell user must not find a stray
  * `package.json` in their home directory.
  */
-export function registerNodeShellProfile(fs: MemoryFileSystem): void {
+export function registerNodeShellProfile(fs: VfsImageFilesystem): void {
   ensureDirRecursive(fs, "/etc/profile.d");
   writeVfsFile(
     fs,
@@ -246,7 +246,7 @@ export function registerNodeShellProfile(fs: MemoryFileSystem): void {
 // is a shipped shell lazy-archive dependency and lazy-loads on first use,
 // same as coreutils' cat. /etc/man.conf gives the manpath root the docs
 // archives fill.
-export function registerManShellProfile(fs: MemoryFileSystem): void {
+export function registerManShellProfile(fs: VfsImageFilesystem): void {
   ensureDirRecursive(fs, "/etc/profile.d");
   writeVfsFile(
     fs,
@@ -272,7 +272,7 @@ export function registerManShellProfile(fs: MemoryFileSystem): void {
  * to /usr/bin/man (not a separate inode), so it needs no separate removal:
  * it keeps resolving to whatever now lives at /usr/bin/man.
  */
-export function displacePosixUtilsLiteManApplet(fs: MemoryFileSystem): void {
+export function displacePosixUtilsLiteManApplet(fs: VfsImageFilesystem): void {
   try {
     fs.lstat("/usr/bin/man");
   } catch {
@@ -395,21 +395,30 @@ export function loadDeclaredShellLazyArchive(
 
 /** Register one package-owned archive without rebuilding or rereading it. */
 export function registerDeclaredShellLazyArchive(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   spec: ShellLazyArchiveSpec,
   resolveArtifact: ShellLazyArchiveResolver,
 ): DeclaredShellLazyArchive {
   const archive = loadDeclaredShellLazyArchive(spec, resolveArtifact);
-  fs.registerLazyArchiveFromEntries(
-    spec.archiveUrl,
-    archive.entries,
-    spec.mountPrefix,
-    archive.symlinkTargets,
-    {
-      sha256: archive.integrity.sha256,
-      bytes: archive.integrity.compressedBytes,
-    },
-  );
+  const integrity = {
+    sha256: archive.integrity.sha256,
+    bytes: archive.integrity.compressedBytes,
+  };
+  // The image writer takes the whole archive in one call. The method is
+  // optional on the interface, so a filesystem without it must fail loudly
+  // here rather than register nothing quietly.
+  if (!fs.registerLazyArchive) {
+    throw new Error(
+      `${spec.archiveUrl}: filesystem cannot register a lazy archive`,
+    );
+  }
+  fs.registerLazyArchive({
+    url: spec.archiveUrl,
+    entries: archive.entries,
+    mountPrefix: spec.mountPrefix,
+    symlinkTargets: archive.symlinkTargets,
+    integrity,
+  });
   return archive;
 }
 
@@ -439,7 +448,7 @@ export const NCURSES_TERMINFO_RUNTIME_FILE = {
  * exact declared bytes.
  */
 export function populateTerminfoDatabase(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const sourcePath = resolveArtifact(

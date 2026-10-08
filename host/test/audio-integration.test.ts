@@ -4,8 +4,7 @@
  * shared-clock transport is claimed before the guest starts, and descriptor
  * close cannot complete until the null sink's wall clock consumes the tail.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { NodePcmDriver } from "../src/audio/node-pcm-driver";
@@ -21,7 +20,10 @@ import { NodePlatformIO } from "../src/platform/node";
 import { resolveBinary } from "../src/binary-resolver";
 import type { CentralizedKernelWorker } from "../src/kernel-worker";
 import { ABI_SYSCALLS } from "../src/generated/abi";
-import { runCentralizedProgram } from "./centralized-test-helper";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "./centralized-test-helper";
 import { ensureSdlDspFixtures } from "./sdl-dsp-fixtures";
 
 const SNDCTL_DSP_SPEED = 0xc004_5002;
@@ -424,7 +426,7 @@ describe("audio integration", () => {
     it(
       `plays upstream SDL_mixer playwave's ${playwave.name} WAV exactly`,
       async () => {
-        const tempDir = mkdtempSync(join(tmpdir(), "kandelo-playwave-"));
+        const tempDir = makeHostScratchTempRoot("kandelo-playwave-");
         const wavePath = join(tempDir, "deterministic.wav");
         writeFileSync(wavePath, playwave.fixture.bytes);
 
