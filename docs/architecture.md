@@ -2089,6 +2089,15 @@ attempt to remove the complete session tree; abrupt process termination
 cannot run that best-effort hook, so cleanup is not the ownership proof. New
 private inodes and publication-before-`ready` establish ownership.
 
+`imageBuildDeterminism: { seed, epochSeconds }` boots a kernel for an image
+builder: `CLOCK_REALTIME` counts up from `epochSeconds`, the guest-visible
+monotonic clocks are per-task logical clocks, and `getrandom` and
+`/dev/urandom` draw from a stream seeded by `seed`
+(`crates/runtime-core/src/image_build_determinism.rs`). Software an image
+builder runs then writes the same bytes every time. Seeded entropy is public,
+so an image built this way must replace every secret on each machine's first
+boot. The browser host has no way to set it.
+
 `execPrograms` and `execProgramBytes` are spawn-preflight inputs only. They
 cannot authorize `execve` or `execveat`, whose executable bytes and metadata
 come exclusively from the exact retained target prepared through the calling

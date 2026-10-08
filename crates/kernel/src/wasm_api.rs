@@ -651,6 +651,13 @@ impl HostIO for WasmHostIO {
     }
 
     fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno> {
+        // An image-build kernel answers the wall clock from the build's epoch;
+        // monotonic and CPU clocks stay real (`image_build_determinism`).
+        if crate::image_build_determinism::is_realtime_clock(clock_id) {
+            if let Some(reading) = crate::image_build_determinism::realtime_for_current_task() {
+                return Ok(reading);
+            }
+        }
         let mut sec: i64 = 0;
         let mut nsec: i64 = 0;
         let result =
@@ -705,6 +712,11 @@ impl HostIO for WasmHostIO {
     }
 
     fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
+        // An image-build kernel draws from the build's seeded stream instead
+        // of the host's entropy source (`image_build_determinism`).
+        if crate::image_build_determinism::fill_random_for_current_task(buf) {
+            return Ok(buf.len());
+        }
         let result = unsafe { host_getrandom(buf.as_mut_ptr(), buf.len() as u32) };
         if result < 0 {
             match Errno::from_u32((-result) as u32) {
@@ -1456,7 +1468,19 @@ pub extern "C" fn kernel_wait_deadline_open(
         }
     };
     match crate::wait_queue::global::open_deadline(pid, tid, kind, now_ns, timeout_ns) {
-        Ok(channel) => i64::try_from(channel.0).unwrap_or(i64::MAX),
+        Ok(channel) => {
+            // An image-build kernel's realtime clock advances by a timed
+            // wait's timeout if the wait reaches it (`image_build_determinism`).
+            if let Some(ns) = timeout_ns {
+                crate::image_build_determinism::timed_wait_opened(
+                    channel.0,
+                    pid,
+                    tid,
+                    u64::try_from(ns).unwrap_or(0),
+                );
+            }
+            i64::try_from(channel.0).unwrap_or(i64::MAX)
+        }
         Err(error) => -(error as i64),
     }
 }
@@ -1475,6 +1499,10 @@ pub extern "C" fn kernel_wait_deadline_remaining_ns(handle: i64) -> i64 {
     };
     let channel = crate::wait_queue::ChannelGeneration(handle as u64);
     match crate::wait_queue::global::remaining_ns(channel, now_ns) {
+        Ok(Some(0)) => {
+            crate::image_build_determinism::timed_wait_expired(channel.0);
+            0
+        }
         Ok(Some(remaining)) => remaining,
         Ok(None) => WAIT_NO_DEADLINE,
         Err(error) => -(error as i64),
@@ -1489,6 +1517,7 @@ pub extern "C" fn kernel_wait_deadline_close(handle: i64) -> i32 {
         return -(Errno::EINVAL as i32);
     }
     let channel = crate::wait_queue::ChannelGeneration(handle as u64);
+    crate::image_build_determinism::timed_wait_closed(channel.0);
     crate::wait_queue::global::close(channel) as i32
 }
 
@@ -14183,3 +14212,36 @@ pub extern "C" fn kernel_kms_commit_count(crtc_id: u32) -> u64 {
 pub extern "C" fn kernel_kms_last_frame_us(crtc_id: u32) -> u64 {
     crate::dri::kms_last_frame_us(crtc_id)
 }
+
+/// Put this kernel in deterministic image-build mode: `CLOCK_REALTIME` reads
+/// count up from `epoch` and every entropy read draws from a stream seeded by
+/// the 64-bit `seed` (see `runtime_core::image_build_determinism` for the
+/// design and the security boundary). Both are split into 32-bit words, like
+/// the kernel's other 64-bit export arguments, so no kernel memory is
+/// borrowed.
+///
+/// Only an image builder calls this, through the Node host's
+/// `imageBuildDeterminism` option; no syscall reaches it. It must be the
+/// first thing that happens to a kernel: it is refused with `EBUSY` once any
+/// user process exists or when the mode is already set, so a kernel that has
+/// run a guest on real entropy is never switched, and a seeded kernel is
+/// never switched back. `EINVAL` for an epoch beyond `i64::MAX` seconds.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_image_build_determinism(
+    seed_lo: u32,
+    seed_hi: u32,
+    epoch_lo: u32,
+    epoch_hi: u32,
+) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if table.has_allocated_user_tasks() {
+        return -(Errno::EBUSY as i32);
+    }
+    let seed = (((seed_hi as u64) << 32) | (seed_lo as u64)).to_le_bytes();
+    let epoch = ((epoch_hi as u64) << 32) | (epoch_lo as u64);
+    match crate::image_build_determinism::enable(&seed, epoch) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
