@@ -196,6 +196,13 @@ struct Inode {
     nlink: u32,
     /// Live open descriptions (for handle validity / future unlink-while-open).
     open_count: u32,
+    /// Shared-mapping references (see [`pin_mapping`]). Like `open_count`, they
+    /// keep an unlinked inode alive, but they are counted apart from it on
+    /// purpose: the last *descriptor* close is the moment POSIX releases the
+    /// description's locks, and a live mapping must not postpone that.
+    map_pins: u32,
+    /// Bumped by every content mutation (see [`content_generation`]).
+    content_gen: u64,
     ino: u64,
     atime_sec: u64,
     atime_nsec: u32,
@@ -219,6 +226,8 @@ impl Inode {
             gid,
             nlink,
             open_count: 0,
+            map_pins: 0,
+            content_gen: 0,
             ino,
             atime_sec: sec,
             atime_nsec: nsec,
@@ -271,8 +280,10 @@ impl Inode {
         matches!(self.kind, InodeKind::Dir(_))
     }
 
-    /// Stamp mtime and ctime (a content mutation: write, truncate).
+    /// Stamp mtime and ctime (a content mutation: write, truncate), and advance
+    /// the content generation.
     fn touch_modified(&mut self) {
+        self.content_gen = self.content_gen.wrapping_add(1);
         let (sec, nsec) = now();
         self.mtime_sec = sec;
         self.mtime_nsec = nsec;
@@ -527,7 +538,7 @@ impl RootfsState {
     fn maybe_free(&mut self, idx: u32) {
         let drop_it = self
             .get(idx)
-            .map(|inode| inode.nlink == 0 && inode.open_count == 0)
+            .map(|inode| inode.nlink == 0 && inode.open_count == 0 && inode.map_pins == 0)
             .unwrap_or(false);
         if drop_it {
             self.inodes[idx as usize] = None;
@@ -3356,6 +3367,45 @@ pub fn release_handle(handle: i64) -> bool {
         state.maybe_free(idx);
         was_last
     })
+}
+
+/// Take a shared-mapping reference on the file behind `handle`.
+///
+/// POSIX: `mmap` adds a reference to the file that a later `close` of the
+/// descriptor does not remove, so the inode must outlive every descriptor and
+/// every name while a mapping of it exists.
+pub fn pin_mapping(handle: i64) -> Result<(), Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        if inode.is_dir() {
+            return Err(Errno::EBADF);
+        }
+        inode.map_pins = inode.map_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok(())
+    })
+}
+
+/// Drop a reference [`pin_mapping`] took, freeing an inode that has no name,
+/// descriptor or other mapping left.
+pub fn unpin_mapping(handle: i64) {
+    let Ok(idx) = file_handle_to_inode(handle) else {
+        return;
+    };
+    ROOTFS.with(|state| {
+        if let Some(inode) = state.get_mut(idx) {
+            inode.map_pins = inode.map_pins.saturating_sub(1);
+        }
+        state.maybe_free(idx);
+    });
+}
+
+/// A counter that changes on every write, truncation or `O_TRUNC` open of the
+/// file behind `handle`. The shared-mapping layer compares it to learn that
+/// descriptor I/O changed a mapped file.
+pub fn content_generation(handle: i64) -> Result<u64, Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    ROOTFS.with(|state| Ok(state.get(idx).ok_or(Errno::EBADF)?.content_gen))
 }
 
 /// Whether a rootfs handle still names a live backing (trust-boundary check).

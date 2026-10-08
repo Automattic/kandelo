@@ -243,6 +243,49 @@ function signatures(
       parameters: [i32, i32, pointer],
       result: i64,
     },
+    // Kernel-owned shared mappings (SysV attachments and kernel-file
+    // MAP_SHARED). The table is Rust-owned; these are the host's entry points.
+    kernel_shared_mapping_process_count: { parameters: [i32], result: i32 },
+    kernel_shared_mapping_sync_process: { parameters: [i32, i32], result: i32 },
+    kernel_shared_mapping_release_process: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_inherit: { parameters: [i32, i32, i64], result: i32 },
+    kernel_shared_mapping_sysv_drop_mapping: {
+      parameters: [i32, pointer, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_publish_mapping: {
+      parameters: [i32, pointer, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_sync_segment: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_track: {
+      parameters: [i32, pointer, i32, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_file_track: {
+      parameters: [i32, i64, i32, i64, i64, i32, i64],
+      result: i32,
+    },
+    kernel_shared_mapping_flush: { parameters: [i32, i64, i64], result: i32 },
+    kernel_shared_mapping_unmap: { parameters: [i32, i64, i64], result: i32 },
+    kernel_shared_mapping_remap: {
+      parameters: [i32, i64, i64, i64],
+      result: i32,
+    },
+    kernel_shared_mapping_prepare_write: {
+      parameters: [i32, i64, i64],
+      result: i32,
+    },
+    kernel_shared_mapping_protect: {
+      parameters: [i32, i64, i64, i32],
+      result: i32,
+    },
     kernel_ipc_shm_record_mapping_for_process: {
       parameters: [i32, pointer, i32, i32],
       result: i32,
