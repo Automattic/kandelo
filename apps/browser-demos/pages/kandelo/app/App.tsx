@@ -129,6 +129,7 @@ export const App: React.FC = () => {
     peer.link,
     replication.replicating,
     replication.promote,
+    replication.joining,
   );
   const names = usePeerNickname(peer.link);
   const persistent = usePersistentMachines();

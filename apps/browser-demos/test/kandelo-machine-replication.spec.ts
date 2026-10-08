@@ -635,3 +635,120 @@ test("gives the machine to the viewer, and a replica back to the user", async ({
     await userContext.close();
   }
 });
+
+test("hands a taken machine back to the computer it came from on disconnect", async ({
+  browser,
+  baseURL,
+  browserName,
+}) => {
+  test.skip(
+    browserName !== "chromium",
+    "only headless Chromium can form a loopback ICE pair",
+  );
+  test.setTimeout(600_000);
+  expect(baseURL).toBeTruthy();
+
+  const userContext = await browser.newContext();
+  const viewerContext = await browser.newContext();
+  const user = await userContext.newPage();
+  const viewer = await viewerContext.newPage();
+  try {
+    await gotoMachine(user, "shell");
+    await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
+    await openShell(user);
+    await connectPeers(user, viewer, (reason) => test.skip(true, reason));
+    await expectReplica(viewer);
+    await openNetworkPopover(viewer);
+    await takeButton(viewer).click();
+    await closeDockPopovers([user, viewer]);
+    await expect(viewer.locator(".kdock-status-text"))
+      .toHaveAttribute("data-status", "running", { timeout: 300_000 });
+    await typeIntoTerminal(viewer, ".kshell-host", "echo foo");
+    await expectReplica(user);
+
+    // The person who took the machine leaves, and the machine does not leave
+    // with them: the computer it came from takes it back before the link
+    // closes, so it runs its own machine again instead of a copy of nothing.
+    await openNetworkPopover(viewer);
+    await viewer.getByRole("button", { name: "Disconnect" }).click();
+    await expect(networkButton(viewer))
+      .not.toHaveClass(/is-connected/, { timeout: 60_000 });
+    await expect(user.locator(".kdock-status-text"))
+      .toHaveAttribute("data-status", "running", { timeout: 60_000 });
+    await expect(user.locator(".kdock-status")).not.toHaveAttribute("data-role");
+    await expect(viewer.locator(".kdock-status-text"))
+      .not.toHaveAttribute("data-status", "running");
+
+    // The held screen of the handover is gone, and the shell takes a click
+    // and keystrokes like any machine of its own: the arithmetic proves the
+    // shell ran the line rather than the screen echoing it.
+    await closeDockPopovers([user]);
+    await expect(user.locator(".kshared-terminal-host")).toHaveCount(0);
+    await user.locator(".kshell-host .xterm-screen").first().click();
+    await user.keyboard.type("echo bar-$((40+2))");
+    await user.keyboard.press("Enter");
+    await expect(user.locator(".kshell-host .xterm-rows").first())
+      .toContainText("bar-42");
+  } finally {
+    await viewerContext.close();
+    await userContext.close();
+  }
+});
+
+test("keeps a machine the other computer cannot take back on the computer that disconnects", async ({
+  browser,
+  baseURL,
+  browserName,
+}) => {
+  test.skip(
+    browserName !== "chromium",
+    "only headless Chromium can form a loopback ICE pair",
+  );
+  test.setTimeout(600_000);
+  expect(baseURL).toBeTruthy();
+
+  const userContext = await browser.newContext();
+  const viewerContext = await browser.newContext();
+  const user = await userContext.newPage();
+  const viewer = await viewerContext.newPage();
+  try {
+    await gotoMachine(user, "shell");
+    await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
+    await openShell(user);
+    await connectPeers(user, viewer, (reason) => test.skip(true, reason));
+    await expectReplica(viewer);
+    await openNetworkPopover(viewer);
+    await takeButton(viewer).click();
+    await closeDockPopovers([user, viewer]);
+    await expect(viewer.locator(".kdock-status-text"))
+      .toHaveAttribute("data-status", "running", { timeout: 300_000 });
+
+    // The computer the machine came from runs a machine of its own now, so it
+    // does not take the other one back.
+    await user.getByRole("button", { name: "New", exact: true }).click();
+    await user.getByRole("row", { name: "Launch Node.js" })
+      .getByRole("button", { name: "Launch" }).click();
+    await expect(user.locator(".kdock-status"))
+      .toHaveAttribute("data-role", "user", { timeout: 300_000 });
+
+    // The hand back waits, says it was refused, and keeps the link. The second
+    // Disconnect is the person choosing to keep the machine here.
+    await openNetworkPopover(viewer);
+    const disconnect = viewer.getByRole("button", {
+      name: /^(Disconnect|Handing it back\.\.\.)$/,
+    });
+    await disconnect.click();
+    await expect(disconnect).toHaveText("Handing it back...");
+    await expect(viewer.locator(".knetwork-take-note"))
+      .toContainText("did not take the machine back", { timeout: 60_000 });
+    await expect(networkButton(viewer)).toHaveClass(/is-connected/);
+    await viewer.getByRole("button", { name: "Disconnect" }).click();
+    await expect(networkButton(viewer))
+      .not.toHaveClass(/is-connected/, { timeout: 30_000 });
+    await expect(viewer.locator(".kdock-status-text"))
+      .toHaveAttribute("data-status", "running");
+  } finally {
+    await viewerContext.close();
+    await userContext.close();
+  }
+});

@@ -221,6 +221,14 @@ export interface MachineReplication {
    * then takes by checkpoint, which still works after a seal.
    */
   readonly promote: () => Promise<boolean>;
+  /**
+   * Mark the next loss of the link as the person's choice.
+   *
+   * A dropped link parks a live replica for one resume window, so a link
+   * that comes back continues the log. A person who clicks Disconnect is not
+   * coming back, so the replica is let go at once instead.
+   */
+  readonly disconnecting: () => void;
 }
 
 const IDLE: MachineReplication = {
@@ -231,6 +239,7 @@ const IDLE: MachineReplication = {
   grant: "join",
   setGrant: () => {},
   promote: async () => false,
+  disconnecting: () => {},
   navigation: { publish: () => {}, viewerPath: null },
   cursor: { publish: () => {}, viewerCursor: null },
   scroll: { publish: () => {}, viewerScroll: null },
@@ -280,6 +289,10 @@ export function useMachineReplication(
     () => promoteRef.current?.() ?? Promise.resolve(false),
     [],
   );
+  const disconnectingRef = React.useRef(false);
+  const disconnecting = React.useCallback(() => {
+    disconnectingRef.current = true;
+  }, []);
   // The two halves of a dropped link, each kept for one resume window. The
   // effect below tears down per link, so what must outlive the link lives
   // here: the user's side keeps its recording — ring and digest chain — and
@@ -314,6 +327,7 @@ export function useMachineReplication(
     setViewerPath(null);
     setViewerCursor(null);
     setViewerScroll(null);
+    disconnectingRef.current = false;
     if (!link) return;
     // The transport wraps the link's channel; the link owns and closes it, so
     // dropping a transport here must not close the channel underneath it.
@@ -326,6 +340,7 @@ export function useMachineReplication(
     // is the one status change that must not be read as a change of role.
     let bootingReplica = false;
     let gone = false;
+    let parks = true;
 
     const becomeUser = () => {
       role = "user";
@@ -519,7 +534,7 @@ export function useMachineReplication(
       leaveRole = () => {
         left = true;
         setJoining(false);
-        if (gone && replica && live !== null) {
+        if (gone && parks && replica && live !== null) {
           // The link died under a live replica. The machine stays, parked on
           // its queue, for one resume window: the next link continues the
           // log from this position instead of restoring another checkpoint.
@@ -862,6 +877,7 @@ export function useMachineReplication(
     decide(host.getStatus());
     return () => {
       gone = true;
+      parks = !disconnectingRef.current;
       stopStatus();
       leave();
       if (wireRef.current === wire) wireRef.current = null;
@@ -872,7 +888,7 @@ export function useMachineReplication(
   // person completing a connection sets it before the link exists. So does
   // `replicating`: a parked replica is still the other computer's machine,
   // and a page that reported otherwise would offer it as this person's own.
-  if (!link) return { ...IDLE, replicating, grant, setGrant };
+  if (!link) return { ...IDLE, replicating, grant, setGrant, disconnecting };
   return {
     publishing,
     joining,
@@ -881,6 +897,7 @@ export function useMachineReplication(
     grant,
     setGrant,
     promote,
+    disconnecting,
     navigation: { publish: publishNavigation, viewerPath },
     cursor: { publish: publishCursor, viewerCursor },
     scroll: { publish: publishScroll, viewerScroll },
