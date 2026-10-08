@@ -1756,6 +1756,8 @@ const fs = (() => {
         // truncateSync above) — honest throwing stubs, not silent no-ops.
         fsyncSync: _notImpl('fs', 'fsyncSync'),
         ftruncateSync: _notImpl('fs', 'ftruncateSync'),
+        // No statfs primitive either; mirrors fs/promises.statfs (honest stub).
+        statfsSync: _notImpl('fs', 'statfsSync'),
         FileHandle,
         mkdtempSync,
 
@@ -1789,6 +1791,9 @@ const fs = (() => {
         fchmod: _callbackify(fchmodSync),
         fchown: _callbackify(fchownSync),
         futimes: _callbackify(futimesSync),
+        // Callbackified over fsyncSync (looked up lazily on `mod`), so while
+        // fsyncSync is a throwing stub the same error reaches the callback.
+        fsync: _callbackify((...a) => mod.fsyncSync(...a)),
         read(fd, buffer, offset, length, position, cb) {
             try {
                 const n = readSync(fd, buffer, offset, length, position);
@@ -2101,6 +2106,17 @@ const util = (() => {
         isWeakSet(v) { return v instanceof WeakSet; },
         isDataView(v) { return v instanceof DataView; },
         isUint8Array(v) { return v instanceof Uint8Array; },
+        isArgumentsObject(v) { return Object.prototype.toString.call(v) === '[object Arguments]'; },
+        isBigIntObject(v) { return typeof v === 'object' && Object.prototype.toString.call(v) === '[object BigInt]'; },
+        isBooleanObject(v) { return Object.prototype.toString.call(v) === '[object Boolean]' && typeof v === 'object'; },
+        isGeneratorObject(v) { return Object.prototype.toString.call(v) === '[object Generator]'; },
+        isMapIterator(v) { return Object.prototype.toString.call(v) === '[object Map Iterator]'; },
+        isModuleNamespaceObject(v) { return v != null && typeof v === 'object' && v[Symbol.toStringTag] === 'Module'; },
+        isNumberObject(v) { return Object.prototype.toString.call(v) === '[object Number]' && typeof v === 'object'; },
+        isSetIterator(v) { return Object.prototype.toString.call(v) === '[object Set Iterator]'; },
+        isSharedArrayBuffer(v) { return typeof SharedArrayBuffer !== 'undefined' && Object.prototype.toString.call(v) === '[object SharedArrayBuffer]'; },
+        isStringObject(v) { return Object.prototype.toString.call(v) === '[object String]' && typeof v === 'object'; },
+        isSymbolObject(v) { return Object.prototype.toString.call(v) === '[object Symbol]' && typeof v === 'object'; },
     };
 
     // Node's util.formatWithOptions(opts, ...args). Our inspect() ignores
@@ -2739,6 +2755,11 @@ const timers = (() => {
 // race against the connect promise. AbortSignal handling isn't needed for that.
 const timersPromises = {
     setTimeout: (delay, value) => new Promise(r => os.setTimeout(() => r(value), delay || 0)),
+    // Options (signal/ref) are ignored, same as setTimeout above.
+    setImmediate: (value, _options) => new Promise(r => {
+        if (typeof setImmediate === 'function') setImmediate(() => r(value));
+        else queueMicrotask(() => r(value));
+    }),
 };
 
 // ============================================================
@@ -4106,7 +4127,11 @@ const https = makeHttpModule({
 const _builtinModules = {
     'path': path,
     'events': events,
-    'buffer': { Buffer },
+    'buffer': {
+        Buffer,
+        // Node's buffer.constants (64-bit values).
+        constants: { MAX_LENGTH: 0x7fffffff, MAX_STRING_LENGTH: 0x1fffffe8 },
+    },
     'fs': fs,
     'fs/promises': fs.promises,
     'os': nodeOs,
@@ -4422,6 +4447,9 @@ const _builtinModules = {
         getHeapStatistics() {
             return { heap_size_limit: 256 * 1024 * 1024 };
         },
+        // approximation: SpiderMonkey exposes no V8 heap spaces; empty array is
+        // honest (no spaces reported)
+        getHeapSpaceStatistics() { return []; },
     },
     'vm': (() => {
         const N = _nodeNative;
@@ -4621,7 +4649,28 @@ _builtinModules['zlib'].inflate = function (buf, opts, cb) {
         queueMicrotask(() => cb(null, out));
     } catch (e) { queueMicrotask(() => cb(e)); }
 };
+// Callbackify a zlib *Sync form Node-style: (buf, [opts], cb) -> cb(err, out).
+// Errors (including the honest not-impl throws) reach the callback.
+function _zlibAsync(name, takesOpts) {
+    return function (buf, opts, cb) {
+        if (typeof opts === 'function') { cb = opts; opts = undefined; }
+        try {
+            const out = takesOpts
+                ? _builtinModules['zlib'][name + 'Sync'](buf, opts)
+                : _builtinModules['zlib'][name + 'Sync'](buf);
+            queueMicrotask(() => cb(null, out));
+        } catch (e) { queueMicrotask(() => cb(e)); }
+    };
+}
+_builtinModules['zlib'].gzip = _zlibAsync('gzip', true);
+_builtinModules['zlib'].gunzip = _zlibAsync('gunzip', false);
+// Raw (headerless) deflate: the native seam has no raw/windowBits flag
+// (inflateRawSync was already an honest stub), so the whole raw family stays
+// fail-loud; the async forms deliver the same error to their callback.
 _builtinModules['zlib'].inflateRawSync = _notImpl('zlib', 'inflateRawSync');
+_builtinModules['zlib'].deflateRawSync = _notImpl('zlib', 'deflateRawSync');
+_builtinModules['zlib'].deflateRaw = _zlibAsync('deflateRaw', true);
+_builtinModules['zlib'].inflateRaw = _zlibAsync('inflateRaw', false);
 // zstd DECOMPRESSION: real, backed by the native __kandeloZstdDecompress seam
 // (a decompress-only libzstd linked into node.wasm). Fail-loud on a corrupt
 // frame — the native seam throws "zstd decompression failed: ...".
