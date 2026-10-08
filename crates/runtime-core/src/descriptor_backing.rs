@@ -22,6 +22,10 @@ use crate::process::{EpollInstance, EventFdState, Process, SignalFdState, TimerF
 #[derive(Debug)]
 struct SharedBacking<T> {
     refs: u32,
+    /// Shared-mapping references (see [`SharedBackingTable::pin`]). Counted
+    /// apart from `refs`, which is one per owning OFD and whose last release
+    /// is the end of the description's lifetime.
+    pins: u32,
     value: T,
     #[cfg(test)]
     generation: u64,
@@ -50,12 +54,13 @@ impl<T> SharedBackingTable<T> {
             self.next_generation = self.next_generation.wrapping_add(1).max(1);
             SharedBacking {
                 refs: 1,
+                pins: 0,
                 value,
                 generation,
             }
         };
         #[cfg(not(test))]
-        let entry = SharedBacking { refs: 1, value };
+        let entry = SharedBacking { refs: 1, pins: 0, value };
 
         if let Some((idx, slot)) = self
             .entries
@@ -91,12 +96,15 @@ impl<T> SharedBackingTable<T> {
             .entries
             .get_mut(idx)
             .and_then(Option::as_mut)
+            .filter(|entry| entry.refs > 0)
             .ok_or(Errno::EBADF)?;
         entry.refs = entry.refs.checked_add(1).ok_or(Errno::EOVERFLOW)?;
         Ok(())
     }
 
-    /// Drop one owning OFD reference. Returns true when the backing was freed.
+    /// Drop one owning OFD reference. Returns true when that was the last
+    /// one: the descriptions' lifetime is over. The value itself is freed
+    /// then too, unless a shared mapping still pins it (see [`Self::pin`]).
     pub fn release(&mut self, idx: usize) -> bool {
         let Some(slot) = self.entries.get_mut(idx) else {
             return false;
@@ -104,12 +112,57 @@ impl<T> SharedBackingTable<T> {
         let Some(entry) = slot.as_mut() else {
             return false;
         };
+        if entry.refs == 0 {
+            return false;
+        }
         if entry.refs > 1 {
             entry.refs -= 1;
             return false;
         }
-        *slot = None;
+        entry.refs = 0;
+        if entry.pins == 0 {
+            *slot = None;
+        }
         true
+    }
+
+    /// Keep a value alive for a shared mapping after its descriptors close.
+    ///
+    /// POSIX: `mmap` adds a reference to the file that a later `close` of the
+    /// descriptor does not remove. Only a value some OFD still owns can be
+    /// pinned; a pinned value no OFD owns is reachable only through the pin.
+    pub fn pin(&mut self, idx: usize) -> Result<(), Errno> {
+        let entry = self
+            .entries
+            .get_mut(idx)
+            .and_then(Option::as_mut)
+            .filter(|entry| entry.refs > 0)
+            .ok_or(Errno::EBADF)?;
+        entry.pins = entry.pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok(())
+    }
+
+    /// Drop a [`Self::pin`], freeing the value once no OFD and no other
+    /// mapping holds it.
+    pub fn unpin(&mut self, idx: usize) {
+        let Some(slot) = self.entries.get_mut(idx) else {
+            return;
+        };
+        let Some(entry) = slot.as_mut() else {
+            return;
+        };
+        entry.pins = entry.pins.saturating_sub(1);
+        if entry.pins == 0 && entry.refs == 0 {
+            *slot = None;
+        }
+    }
+
+    /// Whether some OFD still owns the value, as opposed to only a mapping.
+    pub fn is_owned(&self, idx: usize) -> bool {
+        self.entries
+            .get(idx)
+            .and_then(Option::as_ref)
+            .is_some_and(|entry| entry.refs > 0)
     }
 
     pub fn ref_count(&self, idx: usize) -> Option<u32> {
@@ -133,6 +186,10 @@ impl<T> SharedBackingTable<T> {
 pub struct MemFdBacking {
     pub data: Vec<u8>,
     pub offset: i64,
+    /// Advanced by every mutation of `data` (write, pwrite, ftruncate, a
+    /// shared-mapping writeback). The shared-mapping layer compares it to
+    /// learn that descriptor I/O changed a mapped memfd.
+    pub content_gen: u64,
 }
 
 impl MemFdBacking {
@@ -140,7 +197,13 @@ impl MemFdBacking {
         Self {
             data: Vec::new(),
             offset: 0,
+            content_gen: 0,
         }
+    }
+
+    /// Record a mutation of `data`.
+    pub fn touch_modified(&mut self) {
+        self.content_gen = self.content_gen.wrapping_add(1);
     }
 }
 
@@ -340,8 +403,9 @@ pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
             .is_ok_and(|idx| with_timerfds(|table| table.get(idx).is_some())),
         FileType::SignalFd => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_signalfds(|table| table.get(idx).is_some())),
+        // A memfd only a shared mapping still pins has no description left.
         FileType::MemFd => negative_handle_idx(host_handle)
-            .is_ok_and(|idx| with_memfds(|table| table.get(idx).is_some())),
+            .is_ok_and(|idx| with_memfds(|table| table.is_owned(idx))),
         FileType::PcmPlayback => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_pcm_streams(|table| table.get(idx).is_some())),
         FileType::Epoll => negative_handle_idx(host_handle)

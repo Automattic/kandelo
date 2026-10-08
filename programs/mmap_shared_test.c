@@ -69,8 +69,8 @@ int main(void) {
     /* H1: a whole-page MAP_SHARED of a short file must never grow the file.
      * The tmpfs file is 100 bytes but the mapping covers a full page; writing
      * within EOF must persist, a write past EOF must be dropped, and the file
-     * size must stay 100. Regression for the fd-writeback bridge growing the
-     * file to the full mapping length. */
+     * size must stay 100. Regression for kernel-owned file writeback growing
+     * the file to the full mapping length. */
     {
         const char *h1 = "/tmp/mmap_shared_h1";
         int fd1 = open(h1, O_CREAT | O_RDWR | O_TRUNC, 0644);
@@ -102,8 +102,9 @@ int main(void) {
     }
 
     /* M2: writeback must survive close(fd) after mmap. POSIX keeps the mapping
-     * valid after the descriptor is closed. Regression for storing the guest
-     * fd number (which becomes EBADF on close) instead of a stable dup. */
+     * valid after the descriptor is closed. Regression for writing back
+     * through the guest fd number (which becomes EBADF on close) instead of a
+     * reference the mapping holds itself. */
     {
         const char *m2p = "/tmp/mmap_shared_m2";
         int fd2 = open(m2p, O_CREAT | O_RDWR | O_TRUNC, 0644);
