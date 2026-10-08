@@ -91,6 +91,12 @@ const probes: Probe[] = [
     stdout: ["sysmon cooperative preemption: complete"],
   },
   {
+    name: "Go syscall TCP loopback socket",
+    file: "socket-basic.wasm",
+    argv: ["go-socket-basic"],
+    stdout: ["GO SOCKET PASS"],
+  },
+  {
     name: "process exit from a worker M",
     file: "exit-worker.wasm",
     argv: ["go-exit-worker"],

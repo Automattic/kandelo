@@ -923,6 +923,22 @@ Ms must choose a larger count and budget its control memory. The runtime
 test binary remains blocked on the missing `netFD`, and CPU-count reporting
 still follows Kandelo's current `sysconf` value of one.
 
+**2026-10-08 — First real Go socket syscalls (fork `ee860d3`).** Removed
+Kandelo from Go's fake socket constant table and added Kandelo's actual
+IPv4/IPv6 address layouts, socket constants, and channel-backed stream
+operations in `syscall`. The new checked-in Go probe runs IPv4 and IPv6
+TCP loopback using `Socket`, `SetsockoptInt`/`GetsockoptInt`, `Bind`,
+`Listen`, `Getsockname`, `Connect`, `Accept`, `Getpeername`, and stream
+`Write`/`Read`. It exits 0 with `GO SOCKET PASS` and no host diagnostics
+in Node and Chromium. The full thirteen-probe Chromium suite passed; the
+`GOOS=js` and `GOOS=wasip1` standard-library builds passed. An initial
+browser attempt on the default Playwright port failed loading a Vite module;
+the fresh-port focused and full runs passed. This is a syscall-level
+networking slice, not `net.Dial`: the Kandelo `netFD` and runtime netpoller
+are still absent, as are datagram/message syscalls and deadlines. Next,
+wire the Go `net` package and poller to Kandelo's socket/epoll contract,
+then prove `net.Dial` and a listener through both hosts before HTTP.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
