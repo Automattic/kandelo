@@ -95,6 +95,7 @@ import type {
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { HostDiagnosticMessage } from "./host-diagnostic";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { ImageBuildDeterminism } from "./types";
 import type {
   ClosedLazyAsset,
   ClosedLazyAssetSource,
@@ -123,6 +124,8 @@ export interface InitMessage {
     defaultThreadSlots?: number;
     dataBufferSize?: number;
     useSharedMemory?: boolean;
+    /** See `NodeKernelHostOptions.imageBuildDeterminism`. */
+    imageBuildDeterminism?: ImageBuildDeterminism;
   };
   /**
    * Virtual path → immutable host file for spawn-only preflight. Exec never

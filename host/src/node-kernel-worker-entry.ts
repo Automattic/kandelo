@@ -1010,6 +1010,7 @@ async function handleInit(msg: InitMessage) {
       useSharedMemory: msg.config.useSharedMemory ?? true,
       defaultThreadSlots,
       enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG,
+      imageBuildDeterminism: msg.config.imageBuildDeterminism,
     },
     io,
     {
