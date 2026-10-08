@@ -79,6 +79,12 @@ const probes: Probe[] = [
     stdout: ["locked worker exit and slot reuse: complete"],
   },
   {
+    name: "locked M burst churn exceeds the former eight-slot arena",
+    file: "locked-exit.wasm",
+    argv: ["go-locked-exit", "--burst"],
+    stdout: ["locked worker burst exit and slot reuse: complete"],
+  },
+  {
     name: "sysmon preempts a CPU-bound goroutine for a timer",
     file: "sysmon.wasm",
     argv: ["go-sysmon"],

@@ -903,6 +903,26 @@ still live. The checked-in paced probe remains the supported claim; its
 main goroutine now pins its M so a preemptive migration cannot invalidate
 the worker-M identity check.
 
+**2026-10-08 — Configurable Go pthread arena and burst churn (fork
+`e27c900`).** The Go
+linker's hardcoded eight-slot declaration was the immediate reason a
+64-round locked-M burst exhausted the browser arena. The fork now defaults
+to 32 preallocated slots (8 MiB of control pages) and accepts
+`-ldflags='-kandelothreadslots=N'` for 1–1024 slots. The linker rejects
+out-of-range counts; the host's source resolver reads both the default 32
+and an explicit four-slot build correctly. No host layout or ABI changed.
+The checked-in burst mode starts 64 locked worker Ms without pacing their
+exits, alongside the existing twelve-round paced mode. The burst passed
+three Node runs with exit 0 and no host diagnostics; the twelve-probe
+Chromium suite also passed, including the burst; three further Chromium
+burst repeats passed concurrently. `GOOS=js` and `GOOS=wasip1` standard
+library builds and the ABI snapshot check passed. This proves slot reuse
+under this workload with the larger declared arena, not unbounded Go thread
+creation or complete runtime conformance. Programs demanding more concurrent
+Ms must choose a larger count and budget its control memory. The runtime
+test binary remains blocked on the missing `netFD`, and CPU-count reporting
+still follows Kandelo's current `sysconf` value of one.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
