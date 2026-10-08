@@ -1,5 +1,4 @@
 import { resetPreviewProgress } from "../panes/preview-progress";
-import type { BrowserKernel } from "@host/browser-kernel-host";
 import type { KernelHost } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { DIRENT_TYPES } from "@host/generated/abi";
 import { guestPath, ToolError } from "./contract";
@@ -10,24 +9,48 @@ const DIRENT_TYPE_NAMES: Record<number, string> = {
   [DIRENT_TYPES.DT_LNK]: "symlink",
 };
 
-// References only: lifecycle and process ownership remain with the existing host.
-type Runtime = { kernel: BrowserKernel; unsubscribe: () => void };
-const runtimes = new WeakMap<KernelHost, Runtime>();
+/** The guest account every command and file write of the agent runs as. */
+export interface WebMcpIdentity {
+  uid: number;
+  gid: number;
+  /** The baseline environment a non-interactive shell needs; the agent's own entries override it. */
+  env: string[];
+}
 
-export function setWebMcpRuntime(host: KernelHost, kernel: BrowserKernel | null): void {
+/** What `/etc/passwd` says about the identity: where it lives and which shell runs its scripts. */
+interface Account {
+  home: string;
+  shell: string;
+}
+
+const FALLBACK_ACCOUNT: Account = { home: "/", shell: "/bin/sh" };
+
+// Identity this session holds. The session object exists so a machine that
+// changed under an in-flight operation is reported rather than silently
+// retried.
+type Session = {
+  unsubscribe: () => void;
+  identity: WebMcpIdentity;
+  account: Promise<Account> | null;
+};
+const sessions = new WeakMap<KernelHost, Session>();
+
+const decoder = new TextDecoder();
+
+export function setWebMcpSession(host: KernelHost, identity: WebMcpIdentity | null): void {
   resetPreviewProgress(host);
-  runtimes.get(host)?.unsubscribe();
-  runtimes.delete(host);
-  if (!kernel) return;
-  const runtime: Runtime = { kernel, unsubscribe: () => {} };
-  runtimes.set(host, runtime);
-  runtime.unsubscribe = host.subscribeStatus(status => {
-    if (status === "halted" && runtimes.get(host) === runtime) setWebMcpRuntime(host, null);
+  sessions.get(host)?.unsubscribe();
+  sessions.delete(host);
+  if (!identity) return;
+  const session: Session = { unsubscribe: () => {}, identity, account: null };
+  sessions.set(host, session);
+  session.unsubscribe = host.subscribeStatus(status => {
+    if (status === "halted" && sessions.get(host) === session) setWebMcpSession(host, null);
   });
 }
 
 export function getWebMcpRuntimeCapabilities(host: KernelHost) {
-  const available = runtimes.has(host) && host.getStatus() === "running";
+  const available = sessions.has(host) && host.getStatus() === "running";
   return {
     readFile: available,
     writeFile: available,
@@ -38,31 +61,31 @@ export function getWebMcpRuntimeCapabilities(host: KernelHost) {
   };
 }
 
-function requireRuntime(host: KernelHost): Runtime {
-  const runtime = runtimes.get(host);
-  if (!runtime || host.getStatus() !== "running") {
+function requireSession(host: KernelHost): Session {
+  const session = sessions.get(host);
+  if (!session || host.getStatus() !== "running") {
     throw new ToolError("NOT_READY", "The live computer is not running.");
   }
-  return runtime;
+  return session;
 }
 
-function assertCurrent(host: KernelHost, runtime: Runtime): void {
-  if (runtimes.get(host) !== runtime || host.getStatus() !== "running") {
+function assertCurrent(host: KernelHost, session: Session): void {
+  if (sessions.get(host) !== session || host.getStatus() !== "running") {
     throw new ToolError("STALE_SESSION", "The computer changed during the guest operation. Do not automatically retry a mutation.");
   }
 }
 
 export async function readGuestFile(host: KernelHost, path: string): Promise<Uint8Array> {
   guestPath(path);
-  const runtime = requireRuntime(host);
+  const session = requireSession(host);
   let bytes: Uint8Array | null;
   try {
-    bytes = await runtime.kernel.readFileFromVfs(path);
+    bytes = await host.readVfsFile(path);
   } catch (error) {
-    assertCurrent(host, runtime);
+    assertCurrent(host, session);
     throw error;
   }
-  assertCurrent(host, runtime);
+  assertCurrent(host, session);
   if (bytes === null) {
     throw new ToolError("FILE_NOT_FOUND", "The path does not identify a readable regular guest file.", { path });
   }
@@ -71,26 +94,26 @@ export async function readGuestFile(host: KernelHost, path: string): Promise<Uin
 
 export async function writeGuestFile(host: KernelHost, path: string, bytes: Uint8Array, overwrite: boolean): Promise<void> {
   guestPath(path);
-  const runtime = requireRuntime(host);
+  const session = requireSession(host);
   if (bytes.byteLength > 65536) throw new ToolError("INVALID_ARGUMENT", "Guest writes are limited to 65536 decoded bytes.");
   try {
-    await runtime.kernel.writeFileToVfs(path, bytes, 0o644, !overwrite);
+    await host.writeVfsFile(path, bytes, 0o644, !overwrite);
   } catch (error) {
-    assertCurrent(host, runtime);
+    assertCurrent(host, session);
     if (/EEXIST|already exists|file exists/i.test(String(error))) throw new ToolError("FILE_EXISTS", "The guest path already exists; no bytes were written.", { path });
     if (/ENOENT|no such file|not found/i.test(String(error))) {
       throw new ToolError("FILE_NOT_FOUND", "The parent guest directory must already exist.", { path });
     }
     throw error;
   }
-  assertCurrent(host, runtime);
+  assertCurrent(host, session);
 }
 
 export async function listGuestDirectory(host: KernelHost, path: string) {
   guestPath(path);
-  const runtime = requireRuntime(host);
-  const entries = await runtime.kernel.readDirFromVfs(path);
-  assertCurrent(host, runtime);
+  const session = requireSession(host);
+  const entries = await host.readVfsDir(path);
+  assertCurrent(host, session);
   if (entries === null) {
     throw new ToolError("FILE_NOT_FOUND", "The path does not identify a readable guest directory.", { path });
   }
@@ -108,24 +131,67 @@ export async function listGuestDirectory(host: KernelHost, path: string) {
   }));
 }
 
+/**
+ * The identity's home and login shell, read once per session from the
+ * image's own `/etc/passwd`. An image that does not list the account gets
+ * the POSIX fallback, `/bin/sh` at `/`, and a listed shell the image does
+ * not hold is replaced by `/bin/sh`.
+ */
+function sessionAccount(host: KernelHost, session: Session): Promise<Account> {
+  session.account ??= host.readVfsFile("/etc/passwd")
+    .then(bytes => (bytes ? passwdAccount(decoder.decode(bytes), session.identity.uid) : null))
+    .then(account => (account ? withInstalledShell(host, account) : null))
+    .catch(() => null)
+    .then(account => account ?? FALLBACK_ACCOUNT);
+  return session.account;
+}
+
+async function withInstalledShell(host: KernelHost, account: Account): Promise<Account> {
+  const slash = account.shell.lastIndexOf("/");
+  const entries = await host.readVfsDir(account.shell.slice(0, slash) || "/");
+  if (entries?.some(entry => entry.name === account.shell.slice(slash + 1))) return account;
+  return { ...account, shell: FALLBACK_ACCOUNT.shell };
+}
+
+export function passwdAccount(passwd: string, uid: number): Account | null {
+  for (const line of passwd.split("\n")) {
+    const fields = line.split(":");
+    if (fields.length < 7 || Number(fields[2]) !== uid) continue;
+    return { home: fields[5] || FALLBACK_ACCOUNT.home, shell: fields[6] || FALLBACK_ACCOUNT.shell };
+  }
+  return null;
+}
+
+/** The baseline, then the account's home when the baseline names none, then the caller's entries. */
+function jobEnv(baseline: string[], home: string, overrides: Record<string, string>): string[] {
+  const env = new Map(baseline.map(entry => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)]));
+  if (!env.has("HOME")) env.set("HOME", home);
+  for (const [name, value] of Object.entries(overrides)) env.set(name, value);
+  return [...env].map(([name, value]) => `${name}=${value}`);
+}
+
 export async function startGuestJob(host: KernelHost, id: string, args: { script: string; cwd?: string; env?: Record<string, string>; timeoutMs?: number }) {
-  const runtime = requireRuntime(host);
+  const session = requireSession(host);
   for (const [name, value] of Object.entries(args.env ?? {})) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || value.includes("\0")) throw new ToolError("INVALID_ARGUMENT", "Invalid environment name or NUL in value");
   }
   if (args.script.includes("\0")) throw new ToolError("INVALID_ARGUMENT", "Script must not contain NUL");
-  const process = await runtime.kernel.spawnFromVfs("/bin/bash", ["bash", "--noprofile", "--norc", "-c", args.script], {
-    cwd: args.cwd ?? "/", env: Object.entries(args.env ?? {}).map(([key, value]) => `${key}=${value}`),
-    stdin: new Uint8Array(0), ownedJob: { id, timeoutMs: args.timeoutMs ?? 30000 },
+  const account = await sessionAccount(host, session);
+  assertCurrent(host, session);
+  const { uid, gid, env } = session.identity;
+  await host.startOwnedJob(id, account.shell, [account.shell.slice(account.shell.lastIndexOf("/") + 1), "-c", args.script], {
+    cwd: args.cwd ?? account.home,
+    env: jobEnv(env, account.home, args.env ?? {}),
+    uid,
+    gid,
+    timeoutMs: args.timeoutMs ?? 30000,
   });
-  // Lifecycle/output are read from the worker-owned job record. Consume the
-  // separate root-exit rejection when a computer is destroyed mid-command.
-  void process.exit.catch(() => {});
-  assertCurrent(host, runtime);
+  assertCurrent(host, session);
 }
+
 export async function readGuestJob(host: KernelHost, id: string, offset?: number, limit?: number, cancel = false) {
-  const runtime = requireRuntime(host);
-  const result = await runtime.kernel.readOwnedJob(id, offset, limit, cancel);
-  assertCurrent(host, runtime);
+  const session = requireSession(host);
+  const result = await host.readOwnedJob(id, offset, limit, cancel);
+  assertCurrent(host, session);
   return result;
 }

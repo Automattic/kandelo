@@ -410,6 +410,96 @@ describe("LiveKernelHost: worker-owned VFS", () => {
   });
 });
 
+describe("LiveKernelHost: raw VFS surface", () => {
+  it("reports a missing path as null rather than an error", async () => {
+    const host = new LiveKernelHost({
+      kernel: {
+        readFileFromVfs: async () => null,
+        readDirFromVfs: async () => null,
+      } as any,
+    });
+
+    expect(await host.readVfsFile("/absent")).toBeNull();
+    expect(await host.readVfsDir("/absent")).toBeNull();
+  });
+
+  it("forwards the mode and the exclusive flag to the worker write", async () => {
+    const writeFileToVfs = vi.fn(async () => {});
+    const host = new LiveKernelHost({ kernel: { writeFileToVfs } as any });
+
+    await host.writeVfsFile("/tmp/foo", new Uint8Array([1]), 0o600, true);
+    expect(writeFileToVfs).toHaveBeenCalledWith("/tmp/foo", new Uint8Array([1]), 0o600, true);
+
+    await host.writeVfsFile("/tmp/foo", new Uint8Array([1]));
+    expect(writeFileToVfs).toHaveBeenLastCalledWith("/tmp/foo", new Uint8Array([1]), 0o644, false);
+  });
+
+  it("rejects raw operations when the kernel has no worker VFS surface", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({} as any);
+    await expect(host.readVfsFile("/etc/passwd")).rejects.toThrow("no VFS surface");
+    await expect(host.readVfsDir("/etc")).rejects.toThrow("no VFS surface");
+    await expect(host.writeVfsFile("/etc/passwd", new Uint8Array())).rejects.toThrow("no writeFileToVfs");
+  });
+});
+
+describe("LiveKernelHost: owned jobs", () => {
+  const ownedJobKernel = (exit: Promise<number>) => {
+    const spawnFromVfs = vi.fn(async () => ({ pid: 7, exit }));
+    const readOwnedJob = vi.fn(async () => ({ expired: true as const, oldest: 0 }));
+    return { spawnFromVfs, readOwnedJob };
+  };
+
+  it("names the family, bounds it and gives it an immediate stdin EOF", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.startOwnedJob("job-1", "/bin/bash", ["bash", "-c", "true"], {
+      timeoutMs: 1234,
+      cwd: "/home/maker",
+      env: ["FOO=bar"],
+      uid: 1000,
+      gid: 1000,
+    });
+
+    expect(kernel.spawnFromVfs).toHaveBeenCalledWith("/bin/bash", ["bash", "-c", "true"], {
+      ownedJob: { id: "job-1", timeoutMs: 1234 },
+      cwd: "/home/maker",
+      env: ["FOO=bar"],
+      uid: 1000,
+      gid: 1000,
+      stdin: new Uint8Array(0),
+    });
+  });
+
+  it("consumes the root exit so a destroyed machine cannot reject unhandled", async () => {
+    const kernel = ownedJobKernel(Promise.reject(new Error("computer destroyed")));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.startOwnedJob("job-1", "/bin/bash", ["bash"], { timeoutMs: 1 });
+    // An unconsumed rejection surfaces within this tick and fails the file.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("forwards the cursor and the cancel flag to the worker", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.readOwnedJob("job-1", 16, 64, true);
+
+    expect(kernel.readOwnedJob).toHaveBeenCalledWith("job-1", 16, 64, true);
+  });
+
+  it("rejects when the attached kernel cannot own a command family", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({ spawnFromVfs: async () => ({ pid: 1, exit: Promise.resolve(0) }) } as any);
+    await expect(
+      host.startOwnedJob("job-1", "/bin/bash", ["bash"], { timeoutMs: 1 }),
+    ).rejects.toThrow("cannot own a command family");
+    await expect(host.readOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
+  });
+});
+
 describe("LiveKernelHost: VFS change events", () => {
   it("delegates prefix subscriptions to the attached kernel", () => {
     const offKernel = vi.fn();
