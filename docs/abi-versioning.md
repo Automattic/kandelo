@@ -1302,8 +1302,10 @@ against the other.
 
 Structural changes (recorded in the snapshot):
 
-- **Kernel exports: 198 → 214.** Added, all optional for the host-adapter
-  manifest (a host that boots without a `/` image calls none of them):
+- **Kernel exports: 198 → 228.** Added, all optional for the host-adapter
+  manifest (a host that boots without a `/` image calls none of the rootfs
+  ones, and a process that holds no kernel-owned shared mapping none of the
+  shared-mapping ones):
   - `kernel_rootfs_load_image(len_lo, len_hi)`: parse the boot image through
     `host_image_read` and install it as `/`. Refuses an image without the
     `KLZY` section (`EINVAL`) and an image whose metadata declares a
@@ -1335,6 +1337,30 @@ Structural changes (recorded in the snapshot):
     epoch and whose entropy is a seeded stream, for image builders only
     (`crates/runtime-core/src/image_build_determinism.rs`). The host refuses
     to boot a determinism-requesting builder on a kernel without it.
+  - The kernel's shared-mapping table (`SharedMappingTable` in
+    `crates/runtime-core/src/memory.rs`), which keeps SysV attachments and
+    `MAP_SHARED` mappings of kernel-owned files coherent and replaces the
+    host's TypeScript SysV mirror (`shmMappings` / `shmSegmentVersions`).
+    The host calls them at the points it already published its own
+    shared mappings:
+    - `kernel_shared_mapping_process_count(pid)`: how many such mappings a
+      process holds; the host caches "any" per pid for its syscall-boundary
+      early-out.
+    - `kernel_shared_mapping_sync_process(pid, force)`: publish and refresh
+      at a syscall boundary (`force` at fork, the exec preflight and
+      teardown).
+    - `kernel_shared_mapping_release_process(pid, publish, detach)` and
+      `kernel_shared_mapping_inherit(parent, child, child_memory_len)`:
+      teardown/exec, and fork as one transaction covering the SysV
+      attachment records too.
+    - `kernel_shared_mapping_file_track(pid, addr, fd, len, file_offset,
+      writable, memory_len)`: after `mmap` of a kernel-owned file; the
+      kernel populates the range. `kernel_shared_mapping_flush`,
+      `_unmap`, `_remap`, `_prepare_write` and `_protect` follow `msync`,
+      `munmap`, `mremap` and `mprotect`. Process addresses and lengths are
+      `u64`, so a wasm64 process can map above 4 GiB.
+    - `kernel_shared_mapping_sysv_track`, `_sysv_sync_segment`,
+      `_sysv_publish_mapping`, `_sysv_drop_mapping`: `shmat` and `shmdt`.
 - **New errno values** `EDOM` (33), `EPROTO` (71), and `ENOEXEC` (8) join
   `wasm_posix_shared::Errno`, and `host/src/generated/abi.ts` gains a
   generated `ERRNO` table and `KANDELO_REFERENCE_EPOCH_SECONDS`.
@@ -1389,11 +1415,20 @@ Semantic changes (not visible to the snapshot):
 - **`_PC_PIPE_BUF` always has a value** (4096), including on the kernel's own
   filesystems and on captured stdio; the host pathconf table is gone and a
   host without `fpathconf(3)` defers to the kernel's.
-- **A writable `MAP_SHARED` mapping of a kernel-owned file** (anything under
-  `/` or a scratch mount, and memfds) writes back through a close-on-exec
-  duplicate of its descriptor at `msync`, `munmap`, `exec` and exit, never
-  past EOF. Separate mappings of one kernel-owned file do not converge with
-  each other (`docs/posix-status.md`, `mmap()`).
+- **`MAP_SHARED` mappings of a kernel-owned file** (anything under `/` or a
+  scratch mount, including `/dev/shm`, and memfds) are kept coherent by the
+  kernel: separate mappings, across `fork` and across independent opens,
+  converge at syscall boundaries, read-only ones included; a publication is
+  written into the file at once, so `read(2)` sees it; `write(2)`,
+  `ftruncate(2)` and `O_TRUNC` show through existing mappings at the next
+  boundary; writeback never grows a file past EOF; and the file stays alive
+  for its mappings after its descriptors close or it is unlinked. A memfd
+  `MAP_SHARED`, which ABI 48 populated once and never wrote back, is
+  included. A writeback the file refuses is recorded at
+  `/proc/kandelo/writeback_losses`, a new procfs file.
+- **The SysV attachment mirror is kernel state.** Unchanged for a guest,
+  including that a sole surviving attachment imports a departed peer's
+  writes.
 - **`/dev/shm` is tmpfs on both hosts**, not a host mount; the browser host no
   longer allocates a POSIX-shared-memory SharedArrayBuffer.
 - **`mount(2)` is still `ENOSYS`.** The in-kernel filesystems are configured

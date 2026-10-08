@@ -60,12 +60,13 @@ When `host_call_signal_handler` fails (invalid function table index, handler thr
 
 ### Make cross-process shared memory immediate and futex-addressable
 
-Anonymous `MAP_SHARED` inherits one host-owned backing across fork; SysV SHM
-and stable-identity regular-file mappings share backings across separately
-attached or mapped processes. Because each PID still owns a different
-WebAssembly `Memory`, coherence happens only when a process crosses a syscall
-boundary: the host merges bytes changed relative to that process's snapshot and
-then imports peer changes. A direct store does not immediately change another
+Anonymous `MAP_SHARED` inherits one host-owned backing across fork; SysV SHM,
+mappings of files the kernel owns, and stable-identity host-file mappings
+share backings across separately attached or mapped processes. Because each
+PID still owns a different WebAssembly `Memory`, coherence happens only when a
+process crosses a syscall boundary: the host (for the objects whose bytes it
+owns) or the kernel (`SharedMappingTable`) merges bytes changed relative to
+that process's snapshot and then imports peer changes. A direct store does not immediately change another
 PID's memory, and futex WAIT/WAKE cannot target the peer's separate
 `SharedArrayBuffer`.
 
@@ -79,11 +80,12 @@ application benchmarks on both hosts.
 
 **Files:** `host/src/kernel-worker.ts`, `host/src/worker-main.ts`,
 `host/src/browser-kernel-worker-entry.ts`,
-`host/src/node-kernel-worker-entry.ts`
+`host/src/node-kernel-worker-entry.ts`, `crates/runtime-core/src/memory.rs`
 
 ### Close the remaining regular-file `MAP_SHARED` gaps
 
-Two kinds of regular file are mapped differently, and each has gaps.
+Two kinds of regular file are mapped differently, by whoever owns their
+bytes, and each has gaps.
 
 **Files on a host-mounted directory** (Node `extraMounts`, session seeds, a
 host-backed scratch mount; OPFS where a host mounts it) go through the host
@@ -95,25 +97,17 @@ handle rather than reopening its remembered pathname, and separate mappings
 of one file converge at syscall boundaries.
 
 **Files the kernel owns** (everything under `/` and the scratch mounts,
-including `/tmp` and `/dev/shm`, and memfds) have no host handle. A writable
-`MAP_SHARED` mapping of one writes its changed bytes back through a
-close-on-exec duplicate of the guest's descriptor at `msync`, `munmap`,
-`exec` and exit (`registerFdWritebackSharedMmap` and
-`flushFdWritebackMapping` in `host/src/kernel-worker.ts`). That keeps the
-file correct, but separate mappings of one kernel-owned file do not
-converge: a forked child's mapping, or a second process that opens and maps
-the same file, sees the file as it was when it mapped it plus its own
-writes. Before the kernel owned `/`, files under `/tmp`, `/dev/shm` and the
-image were host-backed and did converge, so POSIX shared memory through
-`shm_open` (and any program sharing a mapped scratch file across processes)
-lost that behaviour. Closing it needs one page cache per kernel file
-identity that every mapping of the file publishes to and refreshes from at
-syscall boundaries, as the host page cache does, with the kernel keeping
-the inode alive while a mapping exists. The duplicate descriptor is also
-guest-visible: a guest `closefrom`/`dup2` over its number makes writeback
-fail (loudly: it is refused and reported, never redirected to another file)
-rather than survive as POSIX requires; a kernel-held descriptor would fix
-that.
+including `/tmp` and `/dev/shm`, and memfds) are kept coherent by the
+kernel's shared-mapping table (`SharedMappingTable` in
+`crates/runtime-core/src/memory.rs`), which pins the file for its mappings
+and sees descriptor writes through a per-file content generation. Its own
+gap: a sole writer with no live peer publishes only at `msync`, `munmap`,
+`exec`, exit or when another mapping joins, so a descriptor `read` of the
+file does not see a fresh store before then, where Linux's unified page
+cache would. The host kind closes this by publishing every observer before
+a descriptor syscall touches the file's bytes
+(`flushSharedMappingsBeforeFileSyscall`); the kernel has no such
+pre-syscall publication yet.
 
 Both kinds share the observable VM gaps: stores beyond the current file
 size are zero-filled or discarded instead of raising Linux `SIGBUS`, and
@@ -121,8 +115,8 @@ writers outside Kandelo's direct file syscall paths do not invalidate
 cached pages.
 
 **Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs-worker.ts`,
-`host/src/vfs/vfs.ts`, `crates/runtime-core/src/rootfs.rs`,
-`crates/runtime-core/src/tmpfs.rs`
+`host/src/vfs/vfs.ts`, `crates/runtime-core/src/memory.rs`,
+`crates/runtime-core/src/kernel_file_mapping.rs`
 
 ### Re-evaluate the Linux-specificity of the VT keyboard input path
 

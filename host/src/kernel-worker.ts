@@ -421,6 +421,10 @@ const ENAMETOOLONG = 36;
 const ENOENT = 2;
 const ENOSYS = 38;
 const ENOTSUP = 95;
+/** A kernel built without the shared-mapping entry points cannot serve this
+ *  host: the kernel half of MAP_SHARED has no host fallback. */
+const MISSING_SHARED_MAPPING_EXPORT =
+  "Kernel lacks the shared-mapping exports";
 const ETIMEDOUT = 110;
 const EHOSTUNREACH = 113;
 const EALREADY = 114;
@@ -1780,35 +1784,6 @@ interface SharedMmapMapping {
   backingKey?: string;
   snapshot?: Uint8Array;
   seenVersion?: number;
-  /**
-   * Writable MAP_SHARED of a kernel-owned regular file (in-kernel rootfs,
-   * tmpfs or memfd, `hostHandle === null`): true marks the fd-writeback bridge. Such a
-   * mapping has no host byte-store backing; writeback rides `writebackFd`.
-   */
-  fdWriteback?: boolean;
-  /**
-   * Stable, independent kernel descriptor (a `F_DUPFD_CLOEXEC` dup of the
-   * guest fd taken at mmap time) used for all writeback pread/pwrite/fstat.
-   * Holding an independent dup means writeback survives a guest `close(fd)`
-   * after the mapping is established, as POSIX requires. Falls back to `fd`
-   * when the dup could not be taken (e.g. the process is at RLIMIT_NOFILE).
-   */
-  writebackFd?: number;
-  /**
-   * Last observed size of the kernel-owned file. Writeback is clamped so a
-   * whole-page mapping never grows the file past its real EOF; the live size
-   * is re-fstat'd at flush when the descriptor is still open.
-   */
-  fileSize?: number;
-  /**
-   * The kernel file identity (dev/ino) the writeback descriptor must still
-   * refer to at flush time. Because `writebackFd` is a guest-visible fd
-   * number, a guest `closefrom`/`dup2` can close or repoint it; verifying the
-   * identity before pwrite prevents writing this mapping's bytes into a
-   * different file the number was rebound to.
-   */
-  expectedDev?: bigint;
-  expectedIno?: bigint;
 }
 
 interface SharedMmapFdStat {
@@ -1851,26 +1826,23 @@ interface PreparedFileSharedMmap {
 }
 
 /**
- * A writable MAP_SHARED of a kernel-owned regular file (in-kernel tmpfs, rootfs
- * or memfd) has no persistent host handle, so it cannot use the host-owned
- * byte-store backing. It instead flows writes back to the file through the
- * guest's own kernel fd via pread (initial load) and pwrite (msync/munmap/exec/
- * teardown flush) — the bare fd-tracked writeback path.
+ * A MAP_SHARED of a regular file the kernel owns (in-kernel rootfs, tmpfs or
+ * memfd) has no host handle, so it cannot use the host-owned byte-store
+ * backing. The kernel keeps it coherent instead (`SharedMappingTable` in
+ * `crates/runtime-core/src/memory.rs`), reading and writing the file directly
+ * and holding it alive for the mapping's lifetime.
  */
-interface FdWritebackSharedMmap {
+interface KernelFileSharedMmap {
   fd: number;
   fileOffset: number;
   len: number;
-  /** File size at mmap time; writeback is clamped to the live size, never past it. */
-  fileSize: number;
-  /** Kernel file identity the writeback dup must still refer to at flush time. */
-  dev: bigint;
-  ino: bigint;
+  /** The mapping's PROT_WRITE. */
+  writable: boolean;
 }
 
 type FileSharedMmapPreparationResult =
   | { kind: "prepared"; context: PreparedFileSharedMmap }
-  | { kind: "fd-writeback"; context: FdWritebackSharedMmap }
+  | { kind: "kernel-file"; context: KernelFileSharedMmap }
   | { kind: "unsupported" }
   | { kind: "error"; errno: number };
 
@@ -1881,13 +1853,6 @@ interface AnonymousSharedMmapBacking {
   version: number;
 }
 
-interface SysvShmMapping {
-  segId: number;
-  size: number;
-  readOnly: boolean;
-  snapshot: Uint8Array;
-  seenVersion: number;
-}
 
 interface PreparedInheritedSharedMapping {
   readonly mapAddr: number;
@@ -1899,27 +1864,6 @@ interface PreparedInheritedSharedMapping {
   readonly latest: Uint8Array;
 }
 
-interface PreparedInheritedSysvMapping {
-  readonly mapAddr: number;
-  readonly source: SysvShmMapping;
-  readonly segId: number;
-  readonly size: number;
-  readonly readOnly: boolean;
-}
-
-/**
- * A writable fd-writeback (kernel-owned rootfs/tmpfs/memfd) mapping inherited across
- * fork. It has no host byte-store backing: the child's memory is already a
- * full copy of the parent's (so no backing read is needed), and fork copies
- * the fd table, so the child inherits the same stable writeback descriptor
- * number. Only a child `sharedMappings` entry must be registered so the
- * child's own msync/munmap/exit flush its writes back to the file.
- */
-interface PreparedInheritedFdWritebackMapping {
-  readonly mapAddr: number;
-  readonly source: SharedMmapMapping;
-  readonly inherited: SharedMmapMapping;
-}
 
 interface PreparedSharedMappingInheritance {
   readonly parentPid: number;
@@ -1929,23 +1873,7 @@ interface PreparedSharedMappingInheritance {
   readonly parentSharedMap: Map<number, SharedMmapMapping> | undefined;
   readonly parentSharedEntries:
     readonly (readonly [number, SharedMmapMapping])[];
-  readonly parentSysvMap: Map<number, SysvShmMapping> | undefined;
-  readonly parentSysvEntries:
-    readonly (readonly [number, SysvShmMapping])[];
   readonly sharedMappings: readonly PreparedInheritedSharedMapping[];
-  readonly sysvMappings: readonly PreparedInheritedSysvMapping[];
-  readonly fdWritebackMappings: readonly PreparedInheritedFdWritebackMapping[];
-}
-
-interface MaterializedInheritedSysvMapping
-  extends PreparedInheritedSysvMapping {
-  readonly latest: Uint8Array;
-  readonly seenVersion: number;
-}
-
-interface MaterializedSharedMappingInheritance {
-  readonly prepared: PreparedSharedMappingInheritance;
-  readonly sysvMappings: readonly MaterializedInheritedSysvMapping[];
 }
 
 interface RegisterProcessOptions {
@@ -2552,8 +2480,6 @@ interface ScratchBoundaryTestHooks {
     channel: Pick<ChannelInfo, "pid" | "memory" | "channelOffset">,
     fd: number,
   ) => SharedMmapHostResult<number>;
-  readonly dupWritebackFd?: (pid: number, fd: number) => number | null;
-  readonly closeWritebackFd?: (pid: number, writebackFd: number) => void;
   readonly pwriteFromProcessMemory?: (
     pid: number,
     fd: number,
@@ -3633,16 +3559,6 @@ export class CentralizedKernelWorker {
   >();
   /** Per-process MAP_SHARED mappings: pid → Map<addr, info>. */
   private sharedMappings = new Map<number, Map<number, SharedMmapMapping>>();
-  /**
-   * Refcount of stable fd-writeback dups: pid → (writebackFd → count). A single
-   * mmap owns one dup; a middle-split creates a second sub-mapping that shares
-   * it, so the dup is closed only once every sub-mapping referencing it is
-   * released. Guest-fd fallbacks (writebackFd === guest fd) are never counted
-   * or closed. Dropped wholesale on process teardown (the fd table is gone).
-   */
-  private fdWritebackFdRefs = new Map<number, Map<number, number>>();
-  /** Bounded counter so refused fd-writeback flushes stay observable without flooding. */
-  #fdWritebackFlushLossReports = 0;
   /** Host-owned byte stores for anonymous MAP_SHARED mappings. */
   private anonymousSharedBackings = new Map<
     string,
@@ -3664,15 +3580,34 @@ export class CentralizedKernelWorker {
   /** Process fd → resolved backing identity, including negative lookups. */
   private sharedMmapFdCache = new Map<string, { backingKey: string | null }>();
   /**
-   * Byte-coherence mirrors for Rust-owned SysV shared-memory attachments.
+   * Pids holding kernel-owned shared mappings: SysV attachments, and
+   * `MAP_SHARED` mappings of files the kernel owns (rootfs, tmpfs including
+   * `/dev/shm`, memfd).
    *
-   * WHY: separate WebAssembly memories cannot directly share segment bytes.
-   * Rust owns attachment identity and lifetime; the shared host still needs
-   * snapshots and versions to reconcile bytes across those memories.
+   * Those mappings are Rust-owned: `SharedMappingTable` in
+   * `crates/runtime-core/src/memory.rs` holds every snapshot and version, and
+   * the kernel reads its own segment and file bytes.
+   *
+   * WHY THIS SET EXISTS. `synchronizeSharedMemoryForBoundary` runs on every
+   * syscall boundary and has to answer "does this process hold kernel-owned
+   * shared mappings" without paying for the answer. Asking the kernel once
+   * per boundary would put a new call on the syscall hot path for every
+   * process, including the ones that never map such a file. So the host
+   * caches the answer per pid and refreshes it from the kernel at every site
+   * that can change it: mmap, munmap (and every other unmap), shmat, shmdt,
+   * fork inheritance, exec, teardown.
+   *
+   * It is a cached predicate refreshed from the authority, never a second
+   * authority. Nothing here adds or removes a pid independently, so it cannot
+   * drift from the kernel's table.
+   *
+   * Starting empty is not an assumption about the kernel: a kernel instance
+   * boots with an empty mapping table, and this worker is constructed with it.
+   *
+   * Declared `private` rather than `#private` so tests can seed and observe
+   * the predicate without a kernel that actually holds mappings.
    */
-  private shmMappings = new Map<number, Map<number, SysvShmMapping>>();
-  /** Authoritative segment version, incremented after each merged publication. */
-  private shmSegmentVersions = new Map<number, number>();
+  private kernelSharedMappingPids = new Set<number>();
 
   /** PTY index → pid mapping (for draining output after syscalls) */
   private ptyIndexByPid = new Map<number, number>();
@@ -4109,10 +4044,6 @@ export class CentralizedKernelWorker {
           getFdAccessModeForSharedMapping:
             options.getFdAccessModeForSharedMapping
               ?? previous?.getFdAccessModeForSharedMapping,
-          dupWritebackFd:
-            options.dupWritebackFd ?? previous?.dupWritebackFd,
-          closeWritebackFd:
-            options.closeWritebackFd ?? previous?.closeWritebackFd,
           pwriteFromProcessMemory:
             options.pwriteFromProcessMemory
               ?? previous?.pwriteFromProcessMemory,
@@ -9835,8 +9766,8 @@ export class CentralizedKernelWorker {
     const channel = registration?.channels[0];
     if (!channel) {
       const hasShared = (this.sharedMappings.get(pid)?.size ?? 0) > 0;
-      const hasSysv = (this.shmMappings.get(pid)?.size ?? 0) > 0;
-      return hasShared || hasSysv ? -EIO : 0;
+      const hasKernelShared = this.#processOwnsKernelSharedMappings(pid);
+      return hasShared || hasKernelShared ? -EIO : 0;
     }
 
     try {
@@ -9861,17 +9792,6 @@ export class CentralizedKernelWorker {
             continue;
           }
           if (mapping.backingKey) continue;
-          if (mapping.fdWriteback) {
-            if (!this.flushFdWritebackMapping(
-              channel,
-              addr,
-              mapping,
-              addr,
-              mapping.len,
-              entry,
-            )) return -EIO;
-            continue;
-          }
           if (!this.pwriteFromProcessMemory(
             channel,
             mapping.fd,
@@ -9882,11 +9802,8 @@ export class CentralizedKernelWorker {
           )) return -EIO;
         }
       }
-      return this.syncSysvShmMappingsFromProcess(
-        channel,
-        { force: true },
-        entry,
-      )
+      if (!this.#processOwnsKernelSharedMappings(pid)) return 0;
+      return this.#syncKernelSharedMappingsForProcess(pid, true, entry)
         ? 0
         : -EIO;
     } catch (error) {
@@ -9926,17 +9843,19 @@ export class CentralizedKernelWorker {
       }
       this.sharedMappings.delete(pid);
     }
-    // exec closed every F_DUPFD_CLOEXEC writeback dup (they are close-on-exec),
-    // so the per-pid refcount entries are now stale. Drop them without issuing
-    // closes, exactly as process teardown does — otherwise the stale counts
-    // would leak and a post-exec fd-number reuse could prevent a later close.
-    this.fdWritebackFdRefs.delete(pid);
     this.invalidateSharedMmapFdCacheForPid(pid);
 
     // kernelExecCommit is the irreversible Rust commit. It has already drained
     // the authoritative attachment records and decremented nattch; repeating
-    // detach here would release a different same-segment attachment.
-    this.shmMappings.delete(pid);
+    // detach here would release a different same-segment attachment. The
+    // preflight above already published every kernel-file mapping.
+    if (this.#processOwnsKernelSharedMappings(pid)) {
+      this.#releaseKernelSharedMappingsForProcess(
+        pid,
+        { publish: false, detach: false },
+        entry,
+      );
+    }
     return 0;
   }
 
@@ -12259,6 +12178,7 @@ export class CentralizedKernelWorker {
         channel.pid,
         origArgs[0],
         alignWasmPageLength(origArgs[1]),
+        entry,
       );
       if (protectionError !== 0) {
         this.completeChannel(
@@ -13803,13 +13723,11 @@ export class CentralizedKernelWorker {
                     fileSharedMmapPreparation.context,
                     entry,
                   )
-                : fileSharedMmapPreparation?.kind === "fd-writeback"
-                  ? this.registerFdWritebackSharedMmap(
+                : fileSharedMmapPreparation?.kind === "kernel-file"
+                  ? this.registerKernelFileSharedMmap(
                       channel,
                       retVal,
                       fileSharedMmapPreparation.context,
-                      origArgs,
-                      rawArgs[5] ?? 0n,
                       entry,
                     )
                   : fileSharedMmapPreparation?.kind === "unsupported"
@@ -13924,6 +13842,7 @@ export class CentralizedKernelWorker {
           origArgs[0],
           alignWasmPageLength(origArgs[1]),
           (origArgs[2] & PROT_WRITE) !== 0,
+          entry,
         );
       }
 
@@ -21456,11 +21375,8 @@ export class CentralizedKernelWorker {
       entry,
     );
     if (
-      !this.syncSysvShmMappingsFromProcess(
-        channel,
-        { force: true },
-        entry,
-      )
+      this.#processOwnsKernelSharedMappings(parentPid)
+      && !this.#syncKernelSharedMappingsForProcess(parentPid, true, entry)
     ) {
       this.#completeForkWithinKernelEntry(
         channel, _origArgs, -1, EIO, entry,
@@ -26192,6 +26108,390 @@ export class CentralizedKernelWorker {
     });
   }
 
+  /**
+   * Whether a process holds kernel-owned shared mappings: SysV attachments,
+   * or `MAP_SHARED` mappings of files the kernel owns (rootfs, tmpfs including
+   * `/dev/shm`, memfd).
+   *
+   * Every host path into the kernel's `SharedMappingTable` is gated on this,
+   * not just the syscall boundary. When it is false the table holds nothing
+   * for the process, so the call would be a proven no-op, and a process that
+   * never maps such a file or attaches a segment pays nothing for the
+   * subsystem at any boundary, fork, exec or teardown.
+   *
+   * The predicate can only be false when the kernel genuinely holds nothing
+   * for the pid, because it is re-read from the kernel at every site that can
+   * change it.
+   */
+  #processOwnsKernelSharedMappings(pid: number): boolean {
+    return this.kernelSharedMappingPids.has(pid);
+  }
+
+  // The kernel's shared-mapping entry points, one method per export, each
+  // resolving its export by literal name with its exact signature.
+  //
+  // WHY NOT ONE GENERIC `require(name)` HELPER. A helper indexing
+  // `exports[name]` with a computed string and casting the result cannot be
+  // checked: it erases which export is being called and what its arguments
+  // mean, so a `KernelPointer` parameter could be handed a plain `number` and
+  // silently truncate for a wasm64 process. `host/test/kernel-scratch-contract`
+  // enforces that as `kernel-pointer-export-bypass`, and it is right to. Nor do
+  // these return the resolved functions: an export resolved for one kernel
+  // entry must not escape it (`context-return` in the entry-context audit).
+  // Process addresses and lengths of kernel-file mappings travel as `bigint`
+  // (`u64`), because a wasm64 process can map above 4 GiB.
+  //
+  // A missing export is a kernel/host ABI mismatch, not a runtime condition:
+  // this half of `MAP_SHARED` has no host-side implementation to fall back
+  // to, so failing loudly is the only truthful outcome.
+  /** Call `kernel_shared_mapping_process_count`. */
+  #ksmProcessCount(
+    pid: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const processCount = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_process_count as
+      | ((pid: number) => number)
+      | undefined;
+    if (!processCount) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return processCount(pid);
+  }
+
+  /** Call `kernel_shared_mapping_sync_process`. */
+  #ksmSyncProcess(
+    pid: number,
+    force: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const syncProcess = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_sync_process as
+      | ((pid: number, force: number) => number)
+      | undefined;
+    if (!syncProcess) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return syncProcess(pid, force);
+  }
+
+  /** Call `kernel_shared_mapping_release_process`. */
+  #ksmReleaseProcess(
+    pid: number,
+    publish: number,
+    detach: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const releaseProcess = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_release_process as
+      | ((pid: number, publish: number, detach: number) => number)
+      | undefined;
+    if (!releaseProcess) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return releaseProcess(pid, publish, detach);
+  }
+
+  /** Call `kernel_shared_mapping_inherit`. */
+  #ksmInherit(
+    parentPid: number,
+    childPid: number,
+    childMemoryLen: bigint,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const inherit = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_inherit as
+      | ((parentPid: number, childPid: number, childMemoryLen: bigint) => number)
+      | undefined;
+    if (!inherit) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return inherit(parentPid, childPid, childMemoryLen);
+  }
+
+  /** Call `kernel_shared_mapping_sysv_track`. */
+  #ksmSysvTrack(
+    pid: number,
+    addr: KernelPointer,
+    segId: number,
+    size: number,
+    readOnly: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const sysvTrack = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_sysv_track as
+      | ((pid: number, addr: KernelPointer, segId: number, size: number, readOnly: number) => number)
+      | undefined;
+    if (!sysvTrack) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return sysvTrack(pid, addr, segId, size, readOnly);
+  }
+
+  /** Call `kernel_shared_mapping_sysv_sync_segment`. */
+  #ksmSysvSyncSegment(
+    segId: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const sysvSyncSegment = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_sysv_sync_segment as
+      | ((segId: number) => number)
+      | undefined;
+    if (!sysvSyncSegment) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return sysvSyncSegment(segId);
+  }
+
+  /** Call `kernel_shared_mapping_sysv_publish_mapping`. */
+  #ksmSysvPublishMapping(
+    pid: number,
+    addr: KernelPointer,
+    segId: number,
+    size: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const sysvPublishMapping = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_sysv_publish_mapping as
+      | ((pid: number, addr: KernelPointer, segId: number, size: number) => number)
+      | undefined;
+    if (!sysvPublishMapping) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return sysvPublishMapping(pid, addr, segId, size);
+  }
+
+  /** Call `kernel_shared_mapping_sysv_drop_mapping`. */
+  #ksmSysvDropMapping(
+    pid: number,
+    addr: KernelPointer,
+    segId: number,
+    size: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const sysvDropMapping = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_sysv_drop_mapping as
+      | ((pid: number, addr: KernelPointer, segId: number, size: number) => number)
+      | undefined;
+    if (!sysvDropMapping) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return sysvDropMapping(pid, addr, segId, size);
+  }
+
+  /** Call `kernel_shared_mapping_file_track`. */
+  #ksmFileTrack(
+    pid: number,
+    addr: bigint,
+    fd: number,
+    len: bigint,
+    fileOffset: bigint,
+    writable: number,
+    memoryLen: bigint,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const fileTrack = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_file_track as
+      | ((pid: number, addr: bigint, fd: number, len: bigint, fileOffset: bigint, writable: number, memoryLen: bigint) => number)
+      | undefined;
+    if (!fileTrack) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return fileTrack(pid, addr, fd, len, fileOffset, writable, memoryLen);
+  }
+
+  /** Call `kernel_shared_mapping_flush`. */
+  #ksmFlush(
+    pid: number,
+    addr: bigint,
+    len: bigint,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const flush = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_flush as
+      | ((pid: number, addr: bigint, len: bigint) => number)
+      | undefined;
+    if (!flush) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return flush(pid, addr, len);
+  }
+
+  /** Call `kernel_shared_mapping_unmap`. */
+  #ksmUnmap(
+    pid: number,
+    addr: bigint,
+    len: bigint,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const unmap = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_unmap as
+      | ((pid: number, addr: bigint, len: bigint) => number)
+      | undefined;
+    if (!unmap) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return unmap(pid, addr, len);
+  }
+
+  /** Call `kernel_shared_mapping_remap`. */
+  #ksmRemap(
+    pid: number,
+    oldAddr: bigint,
+    newAddr: bigint,
+    newLen: bigint,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const remap = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_remap as
+      | ((pid: number, oldAddr: bigint, newAddr: bigint, newLen: bigint) => number)
+      | undefined;
+    if (!remap) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return remap(pid, oldAddr, newAddr, newLen);
+  }
+
+  /** Call `kernel_shared_mapping_prepare_write`. */
+  #ksmPrepareWrite(
+    pid: number,
+    addr: bigint,
+    len: bigint,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const prepareWrite = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_prepare_write as
+      | ((pid: number, addr: bigint, len: bigint) => number)
+      | undefined;
+    if (!prepareWrite) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return prepareWrite(pid, addr, len);
+  }
+
+  /** Call `kernel_shared_mapping_protect`. */
+  #ksmProtect(
+    pid: number,
+    addr: bigint,
+    len: bigint,
+    writable: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const protect = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_protect as
+      | ((pid: number, addr: bigint, len: bigint, writable: number) => number)
+      | undefined;
+    if (!protect) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    return protect(pid, addr, len, writable);
+  }
+
+  /**
+   * Re-read from the kernel whether one process holds kernel-owned shared
+   * mappings. Every site that can change it calls this; see
+   * `kernelSharedMappingPids`.
+   */
+  #refreshKernelSharedMappingPid(
+    pid: number,
+    entry?: KernelWorkerEntryContext,
+  ): void {
+    const count = this.#ksmProcessCount(pid, entry);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(
+        `Invalid shared-mapping count from the kernel for pid=${pid}: ${count}`,
+      );
+    }
+    if (count > 0) this.kernelSharedMappingPids.add(pid);
+    else this.kernelSharedMappingPids.delete(pid);
+  }
+
+  /** Validate a 0-or-negative-errno result from a shared-mapping export. */
+  #kernelSharedMappingResult(op: string, result: number): number {
+    if (!Number.isSafeInteger(result) || result > 0) {
+      throw new Error(
+        `Invalid shared-mapping ${op} result from the kernel: ${result}`,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Reconcile one process's kernel-owned shared mappings against the segments
+   * and files behind them.
+   *
+   * `force` bypasses the kernel's sole-observer skip, for the publication
+   * points that must become current with no live peer: fork, the exec
+   * address-space preflight, and teardown.
+   */
+  #syncKernelSharedMappingsForProcess(
+    pid: number,
+    force: boolean,
+    entry?: KernelWorkerEntryContext,
+  ): boolean {
+    const result = this.#ksmSyncProcess(
+      pid,
+      force ? 1 : 0,
+      entry,
+    );
+    return this.#kernelSharedMappingResult("sync", result) === 0;
+  }
+
+  /**
+   * Publish one attachment's writes, or stop mirroring it, checked against the
+   * kernel attachment record the caller already resolved.
+   *
+   * Returns 0 or a negative errno. shmdt publishes, detaches, and only then
+   * drops, so a failed detach leaves a mirrored attachment rather than an
+   * attachment nobody reconciles.
+   */
+  #sysvMirrorMappingOp(
+    op: "publish" | "drop",
+    pid: number,
+    kernelAddr: KernelPointer,
+    segId: number,
+    size: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const result = op === "publish"
+      ? this.#ksmSysvPublishMapping(pid, kernelAddr, segId, size, entry)
+      : this.#ksmSysvDropMapping(pid, kernelAddr, segId, size, entry);
+    if (op === "drop") this.#refreshKernelSharedMappingPid(pid, entry);
+    return this.#kernelSharedMappingResult(`SysV ${op}`, result);
+  }
+
+  /**
+   * Drop every kernel-owned shared mapping a process holds.
+   *
+   * `detach` also releases the kernel's own SysV attachment records, which is
+   * what ordinary teardown wants. exec passes false because its commit
+   * already drained them, and repeating the detach would release a different
+   * same-segment attachment.
+   */
+  #releaseKernelSharedMappingsForProcess(
+    pid: number,
+    options: { publish: boolean; detach: boolean },
+    entry?: KernelWorkerEntryContext,
+  ): void {
+    const result = this.#ksmReleaseProcess(
+      pid,
+      options.publish ? 1 : 0,
+      options.detach ? 1 : 0,
+      entry,
+    );
+    this.#refreshKernelSharedMappingPid(pid, entry);
+    if (this.#kernelSharedMappingResult("release", result) < 0) {
+      throw new Error(
+        `Cannot release kernel shared mappings for pid=${pid}: errno ${-result}`,
+      );
+    }
+  }
+
+  /**
+   * Start keeping a `MAP_SHARED` mapping of a kernel-owned regular file
+   * coherent, after the kernel's `mmap` returned `mapAddr` and the process's
+   * memory was grown to cover it. The kernel populates the range from the
+   * file's latest shared state.
+   */
+  private registerKernelFileSharedMmap(
+    channel: ChannelInfo,
+    mapAddr: number,
+    context: KernelFileSharedMmap,
+    entry?: KernelWorkerEntryContext,
+  ): FileSharedMmapResult {
+    const result = this.#ksmFileTrack(
+      channel.pid,
+      BigInt(mapAddr),
+      context.fd,
+      BigInt(context.len),
+      BigInt(context.fileOffset),
+      context.writable ? 1 : 0,
+      BigInt(channel.memory.buffer.byteLength),
+      entry,
+    );
+    this.#refreshKernelSharedMappingPid(channel.pid, entry);
+    const errno = -this.#kernelSharedMappingResult("track", result);
+    if (errno === 0) return { kind: "mapped" };
+    // ENOTSUP: a kernel-owned regular file the table cannot keep (a procfs
+    // snapshot, a synthetic regular file). It is populated once, like
+    // MAP_PRIVATE, which is what main does for every file without a host
+    // handle; see the `mmap()` row of docs/posix-status.md.
+    if (errno === ENOTSUP) return { kind: "unsupported" };
+    return { kind: "error", errno };
+  }
+
   private synchronizeSharedMemoryForBoundary(
     process: Pick<ChannelInfo, "pid" | "memory">,
     entry?: KernelWorkerEntryContext,
@@ -26205,13 +26505,21 @@ export class CentralizedKernelWorker {
     const registration = this.processes?.get(process.pid);
     if (registration && registration.memory !== process.memory) return;
     if (this.processes && !registration) return;
+    const ownsKernelSharedMappings =
+      this.#processOwnsKernelSharedMappings(process.pid);
     if (
       (this.sharedMappings?.size ?? 0) === 0
-      && (this.shmMappings?.size ?? 0) === 0
+      && !ownsKernelSharedMappings
     ) return;
     this.syncAnonymousSharedMappingsFromProcess(process);
     this.syncFileSharedMappingsFromProcess(process, {}, entry);
-    this.syncSysvShmMappingsFromProcess(process, {}, entry);
+    // Cross into the kernel only for a process that holds kernel-owned shared
+    // mappings. The kernel returns immediately for one that holds none, but
+    // the call itself would otherwise be paid at every boundary of every
+    // process.
+    if (ownsKernelSharedMappings) {
+      this.#syncKernelSharedMappingsForProcess(process.pid, false, entry);
+    }
   }
 
   /**
@@ -26290,13 +26598,11 @@ export class CentralizedKernelWorker {
       rawPageOffset,
       entry,
     );
-    if (preparation.kind === "fd-writeback") {
-      return this.registerFdWritebackSharedMmap(
+    if (preparation.kind === "kernel-file") {
+      return this.registerKernelFileSharedMmap(
         channel,
         mapAddr,
         preparation.context,
-        origArgs,
-        rawPageOffset,
         entry,
       );
     }
@@ -26337,64 +26643,32 @@ export class CentralizedKernelWorker {
       return { kind: "unsupported" };
     }
     if (stat.hostHandle === null) {
-      // Kernel-owned regular files (the in-kernel rootfs and tmpfs, memfd,
-      // synthetic regulars) complete fstat inside the kernel, so there is no
-      // persistent host handle to anchor the host-owned byte-store backing
-      // that ordinary (host-file) MAP_SHARED mappings use.
+      // A regular file the kernel owns (the in-kernel rootfs and tmpfs,
+      // including /dev/shm, and memfd) has no host handle to anchor the
+      // host-owned byte store, and needs none: the kernel holds the bytes, so
+      // it keeps every MAP_SHARED mapping of the file coherent itself
+      // (`registerKernelFileSharedMmap`), read-only mappings included, because
+      // a read-only shared mapping must still see other writers.
       //
-      // A read-only request needs no writeback bridge at all: nothing can ever
-      // write through it, so there is nothing to keep coherent with the
-      // backing store beyond the same one-time content snapshot a MAP_PRIVATE
-      // mapping already gets. Treat it exactly like the MAP_PRIVATE path
-      // ("unsupported" falls through to `populateMmapFromFile`'s fd-pread
-      // population) — otherwise every read-only MAP_SHARED mmap of a
-      // kernel-owned regular file (e.g. musl's `__map_file`, used by
-      // locale/timezone/message-catalog loading) fails with ENOTSUP purely
-      // because the file is kernel-owned. Any file mapping still
-      // requires a *readable* descriptor (POSIX), so an O_WRONLY fd is EACCES
-      // rather than a silently zero-filled "success".
+      // POSIX: any file mapping needs a readable descriptor, and a writable
+      // shared one needs O_RDWR. Both are refused here, before the kernel
+      // reserves the interval; the kernel checks them again when it tracks
+      // the mapping, because it is the authority for the descriptor.
       const kernelAccess = this.getFdAccessModeForSharedMapping(
         channel,
         fd,
         entry,
       );
       if (kernelAccess.kind === "error") return kernelAccess;
-      if (!writable) {
-        if (kernelAccess.value === O_WRONLY) {
-          return { kind: "error", errno: EACCES };
-        }
-        return { kind: "unsupported" };
+      if (kernelAccess.value === O_WRONLY) {
+        return { kind: "error", errno: EACCES };
       }
-
-      // A *writable* mapping still needs its writes to reach the kernel-owned
-      // file. It does so through the guest's own kernel fd: pread for the
-      // initial load and pwrite at every explicit publication point
-      // (msync/munmap/exec/teardown). This is the bare fd-tracked writeback
-      // path, which is already wired into `flushSharedMappings`,
-      // `prepareAddressSpaceForExec`, and `releaseSharedMemoryForProcess`.
-      //
-      // POSIX requires a shared writable file mapping to be backed by a
-      // readable+writable descriptor. The file is already known to be a
-      // regular file (S_IFMT check above); requiring O_RDWR is the remaining
-      // guarantee that a `pwrite` through this fd is accepted.
-      //
-      // The kernel's `fd_supports_mmap_writeback` capability is deliberately
-      // NOT consulted here: it answers "does a host `pwrite` reach persistent
-      // *host* storage", which is false for every kernel-owned file precisely
-      // because those files have no host handle. This path does not write to
-      // host storage — it writes back to the kernel-owned file through the
-      // guest's own fd, so the file itself is the backing store.
-      if (kernelAccess.value !== O_RDWR) return { kind: "error", errno: EACCES };
+      if (writable && kernelAccess.value !== O_RDWR) {
+        return { kind: "error", errno: EACCES };
+      }
       return {
-        kind: "fd-writeback",
-        context: {
-          fd,
-          fileOffset,
-          len,
-          fileSize: stat.size,
-          dev: stat.dev,
-          ino: stat.ino,
-        },
+        kind: "kernel-file",
+        context: { fd, fileOffset, len, writable },
       };
     }
     const accessResult = this.getFdAccessModeForSharedMapping(
@@ -26518,346 +26792,6 @@ export class CentralizedKernelWorker {
       this.releasePreparedSharedMmap(context, entry);
       return { kind: "error", errno: this.sharedMmapErrno(err) };
     }
-  }
-
-  /**
-   * Install an fd-writeback MAP_SHARED mapping of a kernel-owned (rootfs/tmpfs/memfd)
-   * file after a successful kernel mmap. The region is populated from the file
-   * through the guest's kernel fd (pread) and registered without a host
-   * byte-store backing. Writeback rides an independent dup of the guest fd:
-   *
-   *  - A `F_DUPFD_CLOEXEC` dup gives a stable descriptor so writeback survives
-   *    a later `close(fd)` (POSIX: the mapping stays valid after close), and is
-   *    inherited across `fork` (child writeback works) yet closed across `exec`
-   *    (the address space is torn down and flushed first).
-   *  - The initial snapshot lets each publication point flush only the bytes
-   *    this mapping actually changed, so concurrent mappings of the same file
-   *    do not clobber each other's disjoint writes.
-   *  - The file size is carried so writeback never grows the file past EOF.
-   */
-  private registerFdWritebackSharedMmap(
-    channel: ChannelInfo,
-    mapAddr: number,
-    context: FdWritebackSharedMmap,
-    origArgs: number[],
-    rawPageOffset: bigint,
-    entry?: KernelWorkerEntryContext,
-  ): FileSharedMmapResult {
-    const processMem = new Uint8Array(channel.memory.buffer);
-    if (mapAddr + context.len > processMem.length) {
-      return { kind: "error", errno: EIO };
-    }
-    // Initial content load through the guest's kernel fd, identical to the
-    // read-only fall-through for kernel-owned files, so the mapping observes
-    // the file's current bytes before any write.
-    this.populateMmapFromFile(channel, mapAddr, origArgs, rawPageOffset, entry);
-    if (this.hostReaped?.has(channel.pid)) return { kind: "mapped" };
-    // Take the stable writeback descriptor AFTER the only failure point
-    // (the bounds check above) so an early return never leaks a dup. If the
-    // dup fails (e.g. RLIMIT_NOFILE), fall back to the guest fd: writeback
-    // still works while the fd is open, only close-after-mmap is not covered.
-    //
-    // BOUNDARY (no host handle for kernel-owned files): this dup lives in the
-    // GUEST fd table (F_DUPFD_CLOEXEC against the guest pid), so it is a
-    // guest-visible descriptor number. It survives a close() of the *original*
-    // fd, but a guest `closefrom`/`close_fds` (Python subprocess default) or a
-    // `dup2` onto this number can still close or repoint it. Writeback then
-    // fails truthfully rather than silently: flushFdWritebackMapping re-fstats
-    // and refuses to pwrite unless the descriptor still refers to the same
-    // (dev, ino), so a repointed number can never corrupt an unrelated file,
-    // and the failure surfaces as EIO/diagnostic. Full robustness (a
-    // guest-invisible kernel-held writeback handle) requires a kernel change
-    // and ABI bump — out of scope for this host-only bridge.
-    const writebackFd = this.dupWritebackFd(channel, context.fd, entry)
-      ?? context.fd;
-    const snapshot = processMem.slice(mapAddr, mapAddr + context.len);
-    let pidMap = this.sharedMappings.get(channel.pid);
-    if (!pidMap) {
-      pidMap = new Map();
-      this.sharedMappings.set(channel.pid, pidMap);
-    }
-    const mapping: SharedMmapMapping = {
-      fd: context.fd,
-      fileOffset: context.fileOffset,
-      len: context.len,
-      writable: true,
-      fdWriteback: true,
-      writebackFd,
-      fileSize: context.fileSize,
-      expectedDev: context.dev,
-      expectedIno: context.ino,
-      snapshot,
-    };
-    pidMap.set(mapAddr, mapping);
-    this.retainFdWritebackFd(channel.pid, mapping);
-    return { kind: "mapped" };
-  }
-
-  /**
-   * Dup a guest fd into an independent, close-on-exec kernel descriptor via
-   * `F_DUPFD_CLOEXEC`, returning the new descriptor or null on failure. The
-   * dup shares the open-file description (offset/status) with the original but
-   * is a distinct table entry, so closing the guest fd does not invalidate it.
-   */
-  private dupWritebackFd(
-    channel: ChannelInfo,
-    fd: number,
-    entry?: KernelWorkerEntryContext,
-  ): number | null {
-    const testHook = this.#scratchBoundaryTestHooks?.dupWritebackFd;
-    if (testHook) return testHook(channel.pid, fd);
-    const previousPid = this.currentHandlePid;
-    try {
-      this.#bindKernelTidForChannel(channel, entry);
-      this.currentHandlePid = channel.pid;
-      const result = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-        kernelView.setBigInt64(
-          CH_ARGS + CH_ARG_SIZE,
-          BigInt(F_DUPFD_CLOEXEC),
-          true,
-        );
-        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 0n, true);
-        for (let i = 3; i < CH_ARGS_COUNT; i++) {
-          kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-        }
-        this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_handle_channel",
-          [
-            lease.exportPointer(0, CH_TOTAL_SIZE),
-            CH_TOTAL_SIZE,
-            channel.pid,
-            0n,
-          ],
-        );
-        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        return {
-          value: Number(resultView.getBigInt64(CH_RETURN, true)),
-          errno: resultView.getUint32(CH_ERRNO, true),
-        };
-      });
-      if (!Number.isSafeInteger(result.value) || result.value < 0
-        || result.errno !== 0) {
-        return null;
-      }
-      return result.value;
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      return null;
-    } finally {
-      this.currentHandlePid = previousPid;
-    }
-  }
-
-  /**
-   * Close a stable writeback descriptor previously taken by `dupWritebackFd`.
-   * Best-effort: a failed close (already-torn-down fd table, EBADF) must not
-   * abort mapping teardown.
-   */
-  private closeWritebackFd(
-    pid: number,
-    writebackFd: number,
-    entry?: KernelWorkerEntryContext,
-  ): void {
-    const testHook = this.#scratchBoundaryTestHooks?.closeWritebackFd;
-    if (testHook) { testHook(pid, writebackFd); return; }
-    const registration = this.processes.get(pid);
-    const channel = registration?.channels?.[0];
-    if (!channel) return;
-    const previousPid = this.currentHandlePid;
-    try {
-      this.#bindKernelTidForChannel(channel, entry);
-      this.currentHandlePid = pid;
-      this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        kernelView.setUint32(CH_SYSCALL, SYS_CLOSE, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(writebackFd), true);
-        for (let i = 1; i < CH_ARGS_COUNT; i++) {
-          kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-        }
-        this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_handle_channel",
-          [
-            lease.exportPointer(0, CH_TOTAL_SIZE),
-            CH_TOTAL_SIZE,
-            pid,
-            0n,
-          ],
-        );
-      });
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-    } finally {
-      this.currentHandlePid = previousPid;
-    }
-  }
-
-  /**
-   * Emit a truthful diagnostic when an fd-writeback flush is refused because
-   * the guest-visible writeback dup was closed or repointed. Bounded so a
-   * pathological guest cannot flood the log, but never silent (that would be
-   * the "convenient illusion" the platform contract forbids).
-   */
-  private reportFdWritebackFlushLoss(
-    pid: number,
-    mapAddr: number,
-    reason: string,
-  ): void {
-    if (this.#fdWritebackFlushLossReports >= 50) return;
-    this.#fdWritebackFlushLossReports++;
-    const suffix = this.#fdWritebackFlushLossReports === 50
-      ? " (further fd-writeback loss reports suppressed)"
-      : "";
-    console.error(
-      `[MAP_SHARED writeback lost] pid=${pid} mapping@0x${mapAddr.toString(16)}: `
-      + `${reason}; the guest closed or repointed the writeback descriptor `
-      + `(e.g. closefrom/close_fds/dup2), so dirty bytes could not be flushed `
-      + `to the kernel-owned file.${suffix}`,
-    );
-  }
-
-  /** Record one more reference to a mapping's owned writeback dup. */
-  private retainFdWritebackFd(pid: number, mapping: SharedMmapMapping): void {
-    if (!mapping.fdWriteback) return;
-    const wf = mapping.writebackFd;
-    if (wf == null || wf === mapping.fd) return; // guest-fd fallback: not owned
-    let perPid = this.fdWritebackFdRefs.get(pid);
-    if (!perPid) {
-      perPid = new Map();
-      this.fdWritebackFdRefs.set(pid, perPid);
-    }
-    perPid.set(wf, (perPid.get(wf) ?? 0) + 1);
-  }
-
-  /** Release one reference; close the owned writeback dup when it hits zero. */
-  private releaseFdWritebackFd(
-    pid: number,
-    mapping: SharedMmapMapping,
-    entry?: KernelWorkerEntryContext,
-  ): void {
-    if (!mapping.fdWriteback) return;
-    const wf = mapping.writebackFd;
-    if (wf == null || wf === mapping.fd) return;
-    const perPid = this.fdWritebackFdRefs.get(pid);
-    if (!perPid) return;
-    const next = (perPid.get(wf) ?? 0) - 1;
-    if (next > 0) {
-      perPid.set(wf, next);
-      return;
-    }
-    perPid.delete(wf);
-    if (perPid.size === 0) this.fdWritebackFdRefs.delete(pid);
-    this.closeWritebackFd(pid, wf, entry);
-  }
-
-  /**
-   * Flush the dirty bytes of an fd-writeback mapping back to its kernel-owned
-   * file, clamped to the file's live size so a whole-page mapping never grows
-   * the file past EOF. Only byte runs that differ from the mapping's snapshot
-   * are written, so concurrent mappings of the same file preserve each other's
-   * disjoint updates; the snapshot is then advanced to the flushed content.
-   *
-   * Returns false when the write cannot be performed safely — a real pwrite
-   * failure, or (the guest-visible-dup boundary) the writeback descriptor no
-   * longer refers to the mapping's file because the guest closed it
-   * (`closefrom`/`close_fds`) or repointed the number (`dup2`). In the latter
-   * cases the flush is REFUSED rather than blindly pwriting: writing to a
-   * closed number is pointless and writing to a dup2-repointed number would
-   * corrupt an unrelated file. Callers surface EIO where observable
-   * (msync/exec) and a diagnostic is emitted so the loss is never silent.
-   */
-  private flushFdWritebackMapping(
-    channel: ChannelInfo,
-    mapAddr: number,
-    mapping: SharedMmapMapping,
-    flushStart: number,
-    flushLen: number,
-    entry?: KernelWorkerEntryContext,
-  ): boolean {
-    const writebackFd = mapping.writebackFd ?? mapping.fd;
-    // Consult the live descriptor for both the current size (so a legitimate
-    // post-mmap ftruncate-larger is honored) AND its identity. Because the dup
-    // is a guest-visible fd number, verify it still refers to this mapping's
-    // file before any pwrite.
-    const liveStat = this.getFdStatForSharedMapping(channel, writebackFd, entry);
-    if (liveStat.kind !== "ok") {
-      // The descriptor is gone (guest closed it, e.g. closefrom). Refuse the
-      // flush truthfully instead of pwriting to a possibly-reused number.
-      this.reportFdWritebackFlushLoss(channel.pid, mapAddr, "descriptor closed");
-      return false;
-    }
-    if (
-      (mapping.expectedDev !== undefined
-        && liveStat.value.dev !== mapping.expectedDev)
-      || (mapping.expectedIno !== undefined
-        && liveStat.value.ino !== mapping.expectedIno)
-    ) {
-      // The number was repointed (dup2) onto a different file. pwriting here
-      // would corrupt that unrelated file — refuse and report.
-      this.reportFdWritebackFlushLoss(
-        channel.pid,
-        mapAddr,
-        "descriptor repointed to a different file",
-      );
-      return false;
-    }
-    const liveSize = liveStat.value.size;
-    mapping.fileSize = liveSize;
-    const mappingOffset = flushStart - mapAddr;
-    const fileOffsetBase = mapping.fileOffset + mappingOffset;
-    if (fileOffsetBase >= liveSize) return true; // entirely past EOF; drop.
-    const writableLen = Math.min(flushLen, liveSize - fileOffsetBase);
-    if (writableLen <= 0) return true;
-
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const snapshot = mapping.snapshot;
-    let success = true;
-    let i = 0;
-    while (i < writableLen) {
-      // Skip bytes this mapping has not changed since its last flush.
-      if (snapshot
-        && processMem[flushStart + i] === snapshot[mappingOffset + i]) {
-        i++;
-        continue;
-      }
-      const runStart = i;
-      do { i++; } while (
-        i < writableLen
-        && !(snapshot
-          && processMem[flushStart + i] === snapshot[mappingOffset + i])
-      );
-      const runLen = i - runStart;
-      if (!this.pwriteFromProcessMemory(
-        channel,
-        writebackFd,
-        flushStart + runStart,
-        runLen,
-        fileOffsetBase + runStart,
-        entry,
-      )) {
-        // A real write failure. Report it so the loss is never silent even on
-        // the exit/teardown path (where the caller drops the boolean); msync/
-        // exec additionally surface EIO from the returned false.
-        this.reportFdWritebackFlushLoss(channel.pid, mapAddr, "write failed");
-        success = false;
-        break;
-      }
-    }
-    // Advance the snapshot to the bytes just published so a later flush only
-    // sends new changes (and cannot re-clobber a peer's writes).
-    if (success && snapshot) {
-      snapshot.set(
-        processMem.subarray(flushStart, flushStart + writableLen),
-        mappingOffset,
-      );
-    }
-    return success;
   }
 
   /** Resolve a backend-qualified identity from the live handle, never its path. */
@@ -28373,10 +28307,7 @@ export class CentralizedKernelWorker {
     // Capture the allocation whose bounds were checked and never redirect the
     // prepared transaction to a later memory object.
     const childMemory = child.memory;
-    if (
-      this.sharedMappings.has(childPid)
-      || this.shmMappings.has(childPid)
-    ) {
+    if (this.sharedMappings.has(childPid)) {
       throw new Error(
         `Process ${childPid} already owns inherited shared mappings`,
       );
@@ -28386,40 +28317,9 @@ export class CentralizedKernelWorker {
     const parentSharedEntries = parentSharedMap
       ? Array.from(parentSharedMap.entries())
       : [];
-    const parentSysvMap = this.shmMappings.get(parentPid);
-    const parentSysvEntries = parentSysvMap
-      ? Array.from(parentSysvMap.entries())
-      : [];
     const childBytes = childMemory.buffer.byteLength;
     const sharedMappings: PreparedInheritedSharedMapping[] = [];
-    const fdWritebackMappings: PreparedInheritedFdWritebackMapping[] = [];
     for (const [mapAddr, mapping] of parentSharedEntries) {
-      // Bare fd-writeback (kernel-owned file) mappings carry no backing.
-      // The child's memory is already a full fork copy and its fd table
-      // inherits the same stable writeback descriptor, so it only needs a
-      // registered child mapping entry to flush its own writes.
-      if (!mapping.backingKey && mapping.fdWriteback) {
-        if (
-          !Number.isSafeInteger(mapAddr)
-          || mapAddr < 0
-          || !Number.isSafeInteger(mapping.fileOffset)
-          || mapping.fileOffset < 0
-          || !Number.isSafeInteger(mapping.len)
-          || mapping.len < 0
-          || !Number.isSafeInteger(mapAddr + mapping.len)
-          || mapAddr + mapping.len > childBytes
-        ) {
-          throw new Error(
-            `Cannot inherit fd-writeback mapping at 0x${mapAddr.toString(16)}`,
-          );
-        }
-        fdWritebackMappings.push({
-          mapAddr,
-          source: mapping,
-          inherited: { ...mapping },
-        });
-        continue;
-      }
       if (!mapping.backingKey) continue;
       if (
         !Number.isSafeInteger(mapAddr)
@@ -28483,34 +28383,6 @@ export class CentralizedKernelWorker {
       });
     }
 
-    const sysvMappings: PreparedInheritedSysvMapping[] = [];
-    for (const [mapAddr, mapping] of parentSysvEntries) {
-      if (
-        !Number.isSafeInteger(mapAddr)
-        || mapAddr < 0
-        || mapAddr > 0xffff_ffff
-        || !Number.isSafeInteger(mapping.segId)
-        || mapping.segId < 0
-        || mapping.segId > 0x7fff_ffff
-        || !Number.isSafeInteger(mapping.size)
-        || mapping.size <= 0
-        || mapping.size > 0x7fff_ffff
-        || !Number.isSafeInteger(mapAddr + mapping.size)
-        || mapAddr + mapping.size > childBytes
-      ) {
-        throw new Error(
-          `Cannot inherit SysV mapping at 0x${mapAddr.toString(16)}`,
-        );
-      }
-      sysvMappings.push({
-        mapAddr,
-        source: mapping,
-        segId: mapping.segId,
-        size: mapping.size,
-        readOnly: mapping.readOnly,
-      });
-    }
-
     return {
       parentPid,
       childPid,
@@ -28518,11 +28390,7 @@ export class CentralizedKernelWorker {
       childMemory,
       parentSharedMap,
       parentSharedEntries,
-      parentSysvMap,
-      parentSysvEntries,
       sharedMappings,
-      sysvMappings,
-      fdWritebackMappings,
     };
   }
 
@@ -28536,7 +28404,6 @@ export class CentralizedKernelWorker {
       this.processes.get(prepared.childPid) !== prepared.child
       || prepared.child.memory !== prepared.childMemory
       || this.sharedMappings.has(prepared.childPid)
-      || this.shmMappings.has(prepared.childPid)
     ) {
       return new Error(
         `Process ${prepared.childPid} changed during shared mapping inheritance`,
@@ -28547,9 +28414,6 @@ export class CentralizedKernelWorker {
         !== prepared.parentSharedMap
       || (prepared.parentSharedMap?.size ?? 0)
         !== prepared.parentSharedEntries.length
-      || this.shmMappings.get(prepared.parentPid) !== prepared.parentSysvMap
-      || (prepared.parentSysvMap?.size ?? 0)
-        !== prepared.parentSysvEntries.length
     ) {
       return new Error(
         `Process ${prepared.parentPid} changed during shared mapping inheritance`,
@@ -28559,13 +28423,6 @@ export class CentralizedKernelWorker {
       if (prepared.parentSharedMap?.get(mapAddr) !== source) {
         return new Error(
           `Process ${prepared.parentPid} changed shared mapping 0x${mapAddr.toString(16)}`,
-        );
-      }
-    }
-    for (const [mapAddr, source] of prepared.parentSysvEntries) {
-      if (prepared.parentSysvMap?.get(mapAddr) !== source) {
-        return new Error(
-          `Process ${prepared.parentPid} changed SysV mapping 0x${mapAddr.toString(16)}`,
         );
       }
     }
@@ -28589,32 +28446,6 @@ export class CentralizedKernelWorker {
         );
       }
     }
-    for (const mapping of prepared.sysvMappings) {
-      if (
-        mapping.source.segId !== mapping.segId
-        || mapping.source.size !== mapping.size
-        || mapping.source.readOnly !== mapping.readOnly
-      ) {
-        return new Error(
-          `SysV mapping changed during inheritance at 0x${mapping.mapAddr.toString(16)}`,
-        );
-      }
-    }
-    for (const mapping of prepared.fdWritebackMappings) {
-      if (
-        mapping.source.fd !== mapping.inherited.fd
-        || mapping.source.writebackFd !== mapping.inherited.writebackFd
-        || mapping.source.fileOffset !== mapping.inherited.fileOffset
-        || mapping.source.len !== mapping.inherited.len
-        || mapping.source.writable !== mapping.inherited.writable
-        || mapping.source.fdWriteback !== mapping.inherited.fdWriteback
-        || mapping.source.backingKey !== undefined
-      ) {
-        return new Error(
-          `fd-writeback mapping changed during inheritance at 0x${mapping.mapAddr.toString(16)}`,
-        );
-      }
-    }
     const childBytes = prepared.childMemory.buffer.byteLength;
     for (const mapping of prepared.sharedMappings) {
       if (mapping.mapAddr + mapping.inherited.len > childBytes) {
@@ -28623,20 +28454,12 @@ export class CentralizedKernelWorker {
         );
       }
     }
-    for (const mapping of prepared.fdWritebackMappings) {
-      if (mapping.mapAddr + mapping.inherited.len > childBytes) {
-        return new Error(
-          `Child memory changed during fd-writeback mapping inheritance`,
-        );
-      }
-    }
-    for (const mapping of prepared.sysvMappings) {
-      if (mapping.mapAddr + mapping.size > childBytes) {
-        return new Error(
-          `Child memory changed during SysV mapping inheritance`,
-        );
-      }
-    }
+    // Kernel-owned shared mappings (SysV attachments and kernel-file
+    // MAP_SHARED) are not revalidated here: the kernel owns them, resolves the
+    // parent's set at call time rather than from a host snapshot, and bounds
+    // every address against the child memory length it is handed. There is no
+    // host-held state of theirs for a callback to invalidate between prepare
+    // and commit.
     return null;
   }
 
@@ -28779,11 +28602,22 @@ export class CentralizedKernelWorker {
       || syncLen < 0
       || !Number.isSafeInteger(syncAddr + syncLen)
     ) return false;
+    let success = true;
+    // Mappings of files the kernel owns are published and persisted by the
+    // kernel, at the same point as the host's own.
+    if (this.#processOwnsKernelSharedMappings(channel.pid)) {
+      const result = this.#ksmFlush(
+        channel.pid,
+        BigInt(syncAddr),
+        BigInt(syncLen),
+        entry,
+      );
+      if (this.#kernelSharedMappingResult("flush", result) < 0) success = false;
+    }
     const pidMap = this.sharedMappings.get(channel.pid);
-    if (!pidMap || pidMap.size === 0) return true;
+    if (!pidMap || pidMap.size === 0) return success;
 
     const syncEnd = syncAddr + syncLen;
-    let success = true;
 
     for (const [mapAddr, mapping] of pidMap) {
       const mapEnd = mapAddr + mapping.len;
@@ -28811,20 +28645,6 @@ export class CentralizedKernelWorker {
       }
       if (!mapping.writable) continue;
       if (mapping.backingKey) continue;
-
-      if (mapping.fdWriteback) {
-        // Kernel-owned (rootfs/tmpfs/memfd) file: clamp to live size, flush only the
-        // dirty runs through the stable writeback descriptor.
-        if (!this.flushFdWritebackMapping(
-          channel,
-          mapAddr,
-          mapping,
-          flushStart,
-          flushLen,
-          entry,
-        )) success = false;
-        continue;
-      }
 
       // Compatibility for pre-page-cache tracking in focused exec harnesses.
       if (!this.pwriteFromProcessMemory(
@@ -28945,6 +28765,18 @@ export class CentralizedKernelWorker {
     len: number,
     entry?: KernelWorkerEntryContext,
   ): void {
+    if (this.#processOwnsKernelSharedMappings(pid)) {
+      this.#kernelSharedMappingResult(
+        "unmap",
+        this.#ksmUnmap(
+          pid,
+          BigInt(addr),
+          BigInt(len),
+          entry,
+        ),
+      );
+      this.#refreshKernelSharedMappingPid(pid, entry);
+    }
     const pidMap = this.sharedMappings.get(pid);
     if (!pidMap) return;
 
@@ -28957,7 +28789,6 @@ export class CentralizedKernelWorker {
 
       if (overlapStart <= mapAddr && overlapEnd >= mapEnd) {
         this.releaseSharedMapping(mapping, entry);
-        this.releaseFdWritebackFd(pid, mapping, entry);
         pidMap.delete(mapAddr);
         continue;
       }
@@ -28969,10 +28800,7 @@ export class CentralizedKernelWorker {
         mapping.len = mapEnd - overlapEnd;
         if (mapping.snapshot) mapping.snapshot = mapping.snapshot.slice(trim);
         if (mapping.len > 0) pidMap.set(overlapEnd, mapping);
-        else {
-          this.releaseSharedMapping(mapping, entry);
-          this.releaseFdWritebackFd(pid, mapping, entry);
-        }
+        else this.releaseSharedMapping(mapping, entry);
         continue;
       }
 
@@ -28998,9 +28826,6 @@ export class CentralizedKernelWorker {
           : this.anonymousSharedBackings.get(mapping.backingKey);
         if (backing) backing.refCount++;
       }
-      // The split sub-mapping shares the same writeback dup; refcount it so the
-      // descriptor is closed only after both sub-mappings are released.
-      this.retainFdWritebackFd(pid, rightMapping);
       pidMap.set(overlapEnd, rightMapping);
     }
 
@@ -29047,6 +28872,18 @@ export class CentralizedKernelWorker {
     newLen: number,
     entry?: KernelWorkerEntryContext,
   ): void {
+    if (this.#processOwnsKernelSharedMappings(pid)) {
+      this.#kernelSharedMappingResult(
+        "remap",
+        this.#ksmRemap(
+          pid,
+          BigInt(oldAddr),
+          BigInt(newAddr),
+          BigInt(newLen),
+          entry,
+        ),
+      );
+    }
     const pidMap = this.sharedMappings.get(pid);
     const mapping = pidMap?.get(oldAddr);
     if (!pidMap || !mapping) return;
@@ -29117,7 +28954,20 @@ export class CentralizedKernelWorker {
     pid: number,
     addr: number,
     len: number,
+    entry?: KernelWorkerEntryContext,
   ): number {
+    if (this.#processOwnsKernelSharedMappings(pid) && len !== 0) {
+      const result = this.#kernelSharedMappingResult(
+        "prepare-write",
+        this.#ksmPrepareWrite(
+          pid,
+          BigInt(addr),
+          BigInt(len),
+          entry,
+        ),
+      );
+      if (result < 0) return -result;
+    }
     const pidMap = this.sharedMappings.get(pid);
     if (!pidMap || len === 0) return 0;
     const protectEnd = addr + len;
@@ -29141,7 +28991,20 @@ export class CentralizedKernelWorker {
     addr: number,
     len: number,
     writable: boolean,
+    entry?: KernelWorkerEntryContext,
   ): void {
+    if (this.#processOwnsKernelSharedMappings(pid) && writable && len !== 0) {
+      this.#kernelSharedMappingResult(
+        "protect",
+        this.#ksmProtect(
+          pid,
+          BigInt(addr),
+          BigInt(len),
+          1,
+          entry,
+        ),
+      );
+    }
     const pidMap = this.sharedMappings.get(pid);
     // Writeback eligibility is monotonic: bytes dirtied while writable still
     // need flushing after a later read-only downgrade. Track this at mapping
@@ -29156,254 +29019,14 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private hasPeerSysvShmMapping(pid: number, mapAddr: number, segId: number): boolean {
-    for (const [otherPid, mappings] of this.shmMappings) {
-      for (const [otherAddr, mapping] of mappings) {
-        if (mapping.segId !== segId) continue;
-        if (otherPid === pid && otherAddr === mapAddr) continue;
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private syncSysvShmMappingsFromProcess(
-    process: Pick<ChannelInfo, "pid" | "memory">,
-    options: { force?: boolean } = {},
-    entry?: KernelWorkerEntryContext,
-  ): boolean {
-    const pidMap = this.shmMappings?.get(process.pid);
-    if (!pidMap) return true;
-    const processMem = new Uint8Array(process.memory.buffer);
-    let success = true;
-    for (const [mapAddr, mapping] of pidMap) {
-      // A sole attacher may skip the boundary only if it has already seen the
-      // segment's current version. A departed peer's shmdt/exit publishes its
-      // bytes without a live peer left behind, and an attachment is a view of
-      // the segment, not an attach-time snapshot. This is the same rule as
-      // anonymous MAP_SHARED (`refCount <= 1 && !wasStale`).
-      if (!options.force
-          && mapping.seenVersion === (this.shmSegmentVersions.get(mapping.segId) ?? 0)
-          && !this.hasPeerSysvShmMapping(process.pid, mapAddr, mapping.segId)) continue;
-      if (!this.mergeAndRefreshSysvShmMapping(
-        processMem,
-        mapAddr,
-        mapping,
-        entry,
-      )) success = false;
-    }
-    return success;
-  }
-
-  /** Publish all current attachments before a new observer joins a segment. */
-  private syncSysvShmSegmentFromMappedProcesses(
-    segId: number,
-    entry?: KernelWorkerEntryContext,
-  ): void {
-    for (const [pid, mappings] of this.shmMappings) {
-      const registration = this.processes.get(pid);
-      if (!registration) continue;
-      const processMem = new Uint8Array(registration.memory.buffer);
-      for (const [mapAddr, mapping] of mappings) {
-        if (mapping.segId === segId) {
-          this.mergeAndRefreshSysvShmMapping(
-            processMem,
-            mapAddr,
-            mapping,
-            entry,
-          );
-        }
-      }
-    }
-  }
-
-  private mappingDiffersFromSnapshot(
-    processMem: Uint8Array,
-    mapAddr: number,
-    snapshot: Uint8Array,
-    len: number,
-  ): boolean {
-    for (let offset = 0; offset < len; offset += 4096) {
-      const chunkLen = Math.min(4096, len - offset);
-      if (this.rangeDiffersFromSnapshot(
-        processMem,
-        mapAddr + offset,
-        snapshot,
-        offset,
-        chunkLen,
-      )) return true;
-    }
-    return false;
-  }
-
-  private mergeAndRefreshSysvShmMapping(
-    processMem: Uint8Array,
-    mapAddr: number,
-    mapping: SysvShmMapping,
-    entry?: KernelWorkerEntryContext,
-  ): boolean {
-    if (mapAddr + mapping.size > processMem.length) return false;
-    const currentVersion = this.shmSegmentVersions.get(mapping.segId) ?? 0;
-    const locallyChanged = !mapping.readOnly && this.mappingDiffersFromSnapshot(
-      processMem,
-      mapAddr,
-      mapping.snapshot,
-      mapping.size,
-    );
-    if (!locallyChanged && mapping.seenVersion === currentVersion) return true;
-
-    const authoritative = this.readSysvShmRange(
-      mapping.segId,
-      0,
-      mapping.size,
-      entry,
-    );
-    if (!authoritative) return false;
-    let published = false;
-    let success = true;
-    if (locallyChanged) {
-      for (let offset = 0; offset < mapping.size; offset += 4096) {
-        const chunkLen = Math.min(4096, mapping.size - offset);
-        if (!this.rangeDiffersFromSnapshot(
-          processMem,
-          mapAddr + offset,
-          mapping.snapshot,
-          offset,
-          chunkLen,
-        )) continue;
-        let i = 0;
-        while (i < chunkLen) {
-          while (
-            i < chunkLen
-            && processMem[mapAddr + offset + i] === mapping.snapshot[offset + i]
-          ) i++;
-          if (i >= chunkLen) break;
-          const start = i;
-          do { i++; } while (
-            i < chunkLen
-            && processMem[mapAddr + offset + i] !== mapping.snapshot[offset + i]
-          );
-          const bytes = processMem.subarray(
-            mapAddr + offset + start,
-            mapAddr + offset + i,
-          );
-          if (!this.writeSysvShmRange(
-            mapping.segId,
-            offset + start,
-            bytes,
-            entry,
-          )) {
-            success = false;
-            break;
-          }
-          authoritative.set(bytes, offset + start);
-          published = true;
-        }
-        if (!success) break;
-      }
-    }
-
-    if (published) {
-      this.shmSegmentVersions.set(mapping.segId, currentVersion + 1);
-    }
-    processMem.set(authoritative, mapAddr);
-    mapping.snapshot = authoritative;
-    mapping.seenVersion = this.shmSegmentVersions.get(mapping.segId) ?? currentVersion;
-    return success;
-  }
-
-  private readSysvShmRange(
-    segId: number,
-    offset: number,
-    len: number,
-    entry?: KernelWorkerEntryContext,
-  ): Uint8Array | null {
-    const readChunk = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shm_read_chunk as
-      ((shmid: number, offset: number, outPtr: KernelPointer, maxLen: number) => number) | undefined;
-    if (!readChunk) return null;
-    const result = new Uint8Array(len);
-    const scratch = this.#requireMainScratchRegion();
-    let transferred = 0;
-    while (transferred < len) {
-      const toRead = Math.min(CH_DATA_SIZE, len - transferred);
-      const attempt = scratch.withLease((lease) => {
-        const nRead = this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_ipc_shm_read_chunk",
-          [
-            segId,
-            offset + transferred,
-            lease.exportPointer(CH_DATA, toRead),
-            toRead,
-          ],
-        );
-        if (
-          !Number.isSafeInteger(nRead)
-          || nRead < 0
-          || nRead > toRead
-        ) {
-          return { nRead, bytes: null };
-        }
-        return {
-          nRead,
-          bytes: nRead > 0 ? lease.copyOut(CH_DATA, nRead) : null,
-        };
-      });
-      if (attempt.nRead < 0 || attempt.nRead > toRead || !attempt.bytes) {
-        if (attempt.nRead === 0) break;
-        return null;
-      }
-      result.set(attempt.bytes, transferred);
-      transferred += attempt.nRead;
-    }
-    return transferred === len ? result : null;
-  }
-
-  private writeSysvShmRange(
-    segId: number,
-    offset: number,
-    bytes: Uint8Array,
-    entry?: KernelWorkerEntryContext,
-  ): boolean {
-    const writeChunk = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shm_write_chunk as
-      ((shmid: number, offset: number, dataPtr: KernelPointer, dataLen: number) => number) | undefined;
-    if (!writeChunk) return false;
-    const exactBytes = intrinsicUint8ArrayView(
-      bytes,
-      "System V shared-memory input",
-    );
-    const scratch = this.#requireMainScratchRegion();
-    let transferred = 0;
-    while (transferred < exactBytes.byteLength) {
-      const toWrite = Math.min(
-        CH_DATA_SIZE,
-        exactBytes.byteLength - transferred,
-      );
-      const written = scratch.withLease((lease) => {
-        lease.copyFrom(exactBytes, CH_DATA, transferred, toWrite);
-        return this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_ipc_shm_write_chunk",
-          [
-            segId,
-            offset + transferred,
-            lease.exportPointer(CH_DATA, toWrite),
-            toWrite,
-          ],
-        );
-      });
-      if (!Number.isSafeInteger(written) || written <= 0 || written > toWrite) {
-        return false;
-      }
-      transferred += written;
-    }
-    return true;
-  }
-
   /**
-   * Attach and snapshot every SysV segment under one exact entry.
+   * Give a forked child its parent's shared mappings under one exact entry.
+   *
+   * SysV inheritance is a single kernel transaction: the attachment records
+   * (`nattch` and `Process::shm_mappings`) and the byte mirror commit or roll
+   * back together, inside the authority that owns both. The host used to
+   * interleave `shmat`, `record_mapping` and a segment read per attachment and
+   * unwind them itself; it no longer holds the attachment list to drive that.
    *
    * Expected errno-style failures are rolled back before the scope releases;
    * a thrown export traps the generation and is handled by the gate's fatal
@@ -29417,200 +29040,65 @@ export class CentralizedKernelWorker {
       this.#validatePreparedSharedMappingInheritance(prepared);
     if (validationError !== null) return validationError;
 
-    const kernelShmat = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmat_for_process as
-      ((pid: number, shmid: number, shmaddr: number, flags: number) => number)
-      | undefined;
-    const kernelShmdt = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmdt_for_process as
-      ((pid: number, shmid: number) => number) | undefined;
-    const recordMapping = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shm_record_mapping_for_process as
-      ((
-        pid: number,
-        addr: KernelPointer,
-        shmid: number,
-        size: number,
-      ) => number) | undefined;
-    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmdt_addr_for_process as
-      ((pid: number, addr: KernelPointer) => number) | undefined;
-    if (
-      prepared.sysvMappings.length > 0
-      && (!kernelShmat || !kernelShmdt || !recordMapping || !kernelShmdtAddr)
-    ) {
-      return new Error("Kernel lacks SysV SHM inheritance exports");
-    }
-
-    let kernelMapAddrs: KernelPointer[];
-    try {
-      // Validate the complete child set before the first shmat. A mixed-model
-      // guest address that the kernel usize cannot represent must not acquire
-      // an attachment that Rust is then unable to identify for rollback.
-      kernelMapAddrs = prepared.sysvMappings.map((mapping) =>
-        this.toKernelPtr(mapping.mapAddr));
-    } catch (cause) {
-      return new Error(
-        "Cannot represent inherited SysV mapping in the kernel address model",
-        { cause },
-      );
-    }
-
-    const attachedMappings: Array<{ mapAddr: number; segId: number }> = [];
-    const materializedSysv: MaterializedInheritedSysvMapping[] = [];
-    for (const [mappingIndex, mapping] of prepared.sysvMappings.entries()) {
-      const result = kernelShmat!(
+    // Nothing to inherit when the parent holds no kernel-owned shared
+    // mappings; the kernel's table has nothing for it, so the transaction
+    // would be a proven no-op.
+    const parentOwnsKernelShared =
+      this.#processOwnsKernelSharedMappings(prepared.parentPid);
+    const inheritResult = parentOwnsKernelShared
+      ? this.#ksmInherit(
+        prepared.parentPid,
         prepared.childPid,
-        mapping.segId,
-        mapping.mapAddr,
-        mapping.readOnly ? SHM_RDONLY : 0,
-      );
-      if (
-        !Number.isSafeInteger(result)
-        || result < 0
-        || result !== mapping.size
-      ) {
-        // Every nonnegative shmat result already incremented nattch, even when
-        // an incompatible kernel reports an unexpected size. It has no Rust
-        // address record yet, so release this one by segment identity.
-        if (Number.isSafeInteger(result) && result >= 0) {
-          const detachResult = kernelShmdt!(
-            prepared.childPid,
-            mapping.segId,
-          );
-          if (!Number.isSafeInteger(detachResult) || detachResult !== 0) {
-            throw new Error(
-              `SysV shmdt rollback failed for segment ${mapping.segId}`,
-            );
-          }
-        }
-        this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
-          prepared.childPid,
-          attachedMappings,
-          entry,
-        );
-        return new Error(
-          `SysV shmat inheritance failed for segment ${mapping.segId}`,
-        );
-      }
-      const recordResult = recordMapping!(
-        prepared.childPid,
-        kernelMapAddrs[mappingIndex]!,
-        mapping.segId,
-        mapping.size,
-      );
-      if (!Number.isSafeInteger(recordResult) || recordResult !== 0) {
-        if (Number.isSafeInteger(recordResult) && recordResult < 0) {
-          const detachResult = kernelShmdt!(
-            prepared.childPid,
-            mapping.segId,
-          );
-          if (!Number.isSafeInteger(detachResult) || detachResult !== 0) {
-            throw new Error(
-              `SysV shmdt rollback failed for segment ${mapping.segId}`,
-            );
-          }
-          this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
-            prepared.childPid,
-            attachedMappings,
-            entry,
-          );
-          return new Error(
-            `Cannot record inherited SysV segment ${mapping.segId}`,
-          );
-        }
-        // A positive or imprecise response violates the additive ABI's
-        // 0/-errno contract, so attachment state is no longer provable.
-        throw new Error(
-          `Invalid SysV mapping record result for segment ${mapping.segId}`,
-        );
-      }
-      attachedMappings.push({
-        mapAddr: mapping.mapAddr,
-        segId: mapping.segId,
-      });
-      const latest = this.readSysvShmRange(
-        mapping.segId,
-        0,
-        mapping.size,
+        BigInt(prepared.childMemory.buffer.byteLength),
         entry,
+      )
+      : 0;
+    if (parentOwnsKernelShared) {
+      this.#refreshKernelSharedMappingPid(prepared.childPid, entry);
+    }
+    if (!Number.isSafeInteger(inheritResult) || inheritResult > 0) {
+      // A positive or imprecise response violates the 0/-errno contract, so
+      // attachment and mapping state is no longer provable.
+      throw new Error(
+        `Invalid shared-mapping inheritance result from the kernel: ${inheritResult}`,
       );
-      if (!latest) {
-        this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
-          prepared.childPid,
-          attachedMappings,
-          entry,
-        );
-        return new Error(
-          `Cannot read inherited SysV segment ${mapping.segId}`,
-        );
-      }
-      materializedSysv.push({
-        ...mapping,
-        latest,
-        seenVersion:
-          this.shmSegmentVersions.get(mapping.segId)
-          ?? mapping.source.seenVersion,
-      });
+    }
+    if (inheritResult < 0) {
+      return new Error(
+        `Kernel shared-mapping inheritance failed for pid=${prepared.childPid}`
+        + `: errno ${-inheritResult}`,
+      );
     }
 
     const postExportValidation =
       this.#validatePreparedSharedMappingInheritance(prepared);
     if (postExportValidation !== null) {
-      this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
-        prepared.childPid,
-        attachedMappings,
-        entry,
-      );
+      if (this.#processOwnsKernelSharedMappings(prepared.childPid)) {
+        this.#releaseKernelSharedMappingsForProcess(
+          prepared.childPid,
+          { publish: false, detach: true },
+          entry,
+        );
+      }
       return postExportValidation;
     }
 
-    const materialized: MaterializedSharedMappingInheritance = {
-      prepared,
-      sysvMappings: materializedSysv,
-    };
     entry.deferProtocolEffect(() => {
       // WHY: child bytes, mapping ownership, and backing references become
       // visible together only after every Rust attachment succeeded and the
       // exact entry token was revoked.
-      this.#publishSharedMappingInheritance(materialized);
+      this.#publishSharedMappingInheritance(prepared);
       return undefined;
     });
     return null;
-  }
-
-  #rollbackInheritedSysvAttachmentsWithinKernelEntry(
-    childPid: number,
-    attachedMappings: readonly { mapAddr: number; segId: number }[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmdt_addr_for_process as
-      ((pid: number, addr: KernelPointer) => number) | undefined;
-    if (!kernelShmdtAddr) {
-      throw new Error("Kernel lost required SysV SHM rollback export");
-    }
-    for (let index = attachedMappings.length - 1; index >= 0; index--) {
-      const mapping = attachedMappings[index]!;
-      const result = kernelShmdtAddr(
-        childPid,
-        this.toKernelPtr(mapping.mapAddr),
-      );
-      if (!Number.isSafeInteger(result) || result < 0) {
-        throw new Error(
-          `SysV shmdt rollback failed for inherited segment ${mapping.segId}`,
-        );
-      }
-    }
   }
 
   /**
    * Publish the prepared child state without invoking host or kernel callbacks.
    */
   #publishSharedMappingInheritance(
-    materialized: MaterializedSharedMappingInheritance,
+    prepared: PreparedSharedMappingInheritance,
   ): void {
-    const { prepared } = materialized;
     const validationError =
       this.#validatePreparedSharedMappingInheritance(prepared);
     if (validationError !== null) throw validationError;
@@ -29629,16 +29117,6 @@ export class CentralizedKernelWorker {
         ),
       });
     }
-    for (const mapping of materialized.sysvMappings) {
-      originals.push({
-        mapAddr: mapping.mapAddr,
-        bytes: childMem.slice(
-          mapping.mapAddr,
-          mapping.mapAddr + mapping.size,
-        ),
-      });
-    }
-
     const childSharedMap = new Map<number, SharedMmapMapping>();
     for (const mapping of prepared.sharedMappings) {
       childSharedMap.set(mapping.mapAddr, {
@@ -29647,42 +29125,11 @@ export class CentralizedKernelWorker {
         seenVersion: mapping.backingVersion,
       });
     }
-    // fd-writeback (kernel-owned) mappings need no backing read: the child's
-    // memory is already a full fork copy. Register a child entry whose snapshot
-    // is the fork-time content so the child's later writes flush as dirty runs
-    // through its inherited writeback descriptor.
-    const childFdWritebackMappings: SharedMmapMapping[] = [];
-    for (const mapping of prepared.fdWritebackMappings) {
-      const childMapping: SharedMmapMapping = {
-        ...mapping.inherited,
-        snapshot: childMem.slice(
-          mapping.mapAddr,
-          mapping.mapAddr + mapping.inherited.len,
-        ),
-      };
-      childSharedMap.set(mapping.mapAddr, childMapping);
-      childFdWritebackMappings.push(childMapping);
-    }
-    const childSysvMap = new Map<number, SysvShmMapping>();
-    for (const mapping of materialized.sysvMappings) {
-      childSysvMap.set(mapping.mapAddr, {
-        segId: mapping.segId,
-        size: mapping.size,
-        readOnly: mapping.readOnly,
-        snapshot: mapping.latest,
-        seenVersion: mapping.seenVersion,
-      });
-    }
-
     const retainedBackings:
       Array<AnonymousSharedMmapBacking | SharedMmapBacking> = [];
     let sharedPublished = false;
-    let sysvPublished = false;
     try {
       for (const mapping of prepared.sharedMappings) {
-        childMem.set(mapping.latest, mapping.mapAddr);
-      }
-      for (const mapping of materialized.sysvMappings) {
         childMem.set(mapping.latest, mapping.mapAddr);
       }
       for (const mapping of prepared.sharedMappings) {
@@ -29697,16 +29144,6 @@ export class CentralizedKernelWorker {
       if (childSharedMap.size > 0) {
         this.sharedMappings.set(prepared.childPid, childSharedMap);
         sharedPublished = true;
-        // The child's inherited writeback descriptors are independent fd-table
-        // entries; count them under the child pid so they are closed on the
-        // child's own munmap (and dropped wholesale on child teardown).
-        for (const childMapping of childFdWritebackMappings) {
-          this.retainFdWritebackFd(prepared.childPid, childMapping);
-        }
-      }
-      if (childSysvMap.size > 0) {
-        this.shmMappings.set(prepared.childPid, childSysvMap);
-        sysvPublished = true;
       }
     } catch (cause) {
       if (
@@ -29714,15 +29151,6 @@ export class CentralizedKernelWorker {
         && this.sharedMappings.get(prepared.childPid) === childSharedMap
       ) {
         this.sharedMappings.delete(prepared.childPid);
-        // Undo the writeback-dup refcounts taken for this child; nothing was
-        // dup'd here (fork already copied the fd table) so no close is needed.
-        this.fdWritebackFdRefs.delete(prepared.childPid);
-      }
-      if (
-        sysvPublished
-        && this.shmMappings.get(prepared.childPid) === childSysvMap
-      ) {
-        this.shmMappings.delete(prepared.childPid);
       }
       for (let index = retainedBackings.length - 1; index >= 0; index--) {
         retainedBackings[index]!.refCount--;
@@ -29734,37 +29162,6 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private releaseAllSysvShmMappingsForProcess(
-    pid: number,
-    publish: boolean = true,
-    entry?: KernelWorkerEntryContext,
-  ): void {
-    const pidMap = this.shmMappings?.get(pid);
-    if (!pidMap) return;
-    const registration = this.processes.get(pid);
-    if (publish && registration) {
-      this.syncSysvShmMappingsFromProcess(
-        registration,
-        { force: true },
-        entry,
-      );
-    }
-    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmdt_addr_for_process as
-      ((pid: number, addr: KernelPointer) => number) | undefined;
-    if (!kernelShmdtAddr) {
-      throw new Error("Kernel lacks address-owned SysV SHM teardown export");
-    }
-    for (const [addr, mapping] of pidMap) {
-      const result = kernelShmdtAddr(pid, this.toKernelPtr(addr));
-      if (!Number.isSafeInteger(result) || result !== 0) {
-        throw new Error(
-          `Cannot detach SysV segment ${mapping.segId} at ${addr} for pid=${pid}`,
-        );
-      }
-    }
-    this.shmMappings.delete(pid);
-  }
 
   private releaseAllSharedMemoryForProcess(
     pid: number,
@@ -29794,11 +29191,9 @@ export class CentralizedKernelWorker {
           this.#rethrowKernelEntryFatal(error);
         }
         try {
-          this.syncSysvShmMappingsFromProcess(
-            registration,
-            { force: true },
-            entry,
-          );
+          if (this.#processOwnsKernelSharedMappings(pid)) {
+            this.#syncKernelSharedMappingsForProcess(pid, true, entry);
+          }
         } catch (error) {
           this.#rethrowKernelEntryFatal(error);
         }
@@ -29818,17 +29213,6 @@ export class CentralizedKernelWorker {
                 continue;
               }
               if (mapping.backingKey) continue;
-              if (mapping.fdWriteback) {
-                this.flushFdWritebackMapping(
-                  channel,
-                  addr,
-                  mapping,
-                  addr,
-                  mapping.len,
-                  entry,
-                );
-                continue;
-              }
               this.pwriteFromProcessMemory(
                 channel,
                 mapping.fd,
@@ -29849,12 +29233,13 @@ export class CentralizedKernelWorker {
         }
         this.sharedMappings?.delete(pid);
       }
-      // The kernel destroys the whole fd table on teardown, so the writeback
-      // dups vanish with it; drop their bookkeeping without issuing closes.
-      this.fdWritebackFdRefs.delete(pid);
       this.invalidateSharedMmapFdCacheForPid(pid);
-      if (this.shmMappings) {
-        this.releaseAllSysvShmMappingsForProcess(pid, false, entry);
+      if (this.#processOwnsKernelSharedMappings(pid)) {
+        this.#releaseKernelSharedMappingsForProcess(
+          pid,
+          { publish: false, detach: true },
+          entry,
+        );
       }
     } finally {
       releasing.delete(pid);
@@ -33004,7 +32389,7 @@ export class CentralizedKernelWorker {
 
     // A previously sole observer may not have published at ordinary boundaries.
     // Force it current before this new attachment reads the segment.
-    this.syncSysvShmSegmentFromMappedProcesses(shmid, entry);
+    this.#ksmSysvSyncSegment(shmid, entry);
 
     const kernelShmat = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shmat_for_task as
       (pid: number, tid: number, shmid: number, shmaddr: number, flags: number) => number;
@@ -33088,8 +32473,6 @@ export class CentralizedKernelWorker {
         [checkedShmaddr, size, prot, 0x22, -1, 0],
         entry,
       );
-      const snapshot = this.readSysvShmRange(shmid, 0, size, entry);
-      const processMem = new Uint8Array(channel.memory.buffer);
       let mappedRangeValid = false;
       try {
         this.checkedProcessRange(
@@ -33100,7 +32483,7 @@ export class CentralizedKernelWorker {
         );
         mappedRangeValid = true;
       } catch {}
-      if (!snapshot || !mappedRangeValid) {
+      if (!mappedRangeValid) {
         this.#rollbackIpcShmatWithinKernelEntry(
           channel,
           shmid,
@@ -33112,14 +32495,25 @@ export class CentralizedKernelWorker {
         this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
         return;
       }
-      processMem.set(snapshot, allocatedAddr);
 
-      let pidMappings = this.shmMappings.get(channel.pid);
-      if (!pidMappings) {
-        pidMappings = new Map();
-        this.shmMappings.set(channel.pid, pidMappings);
+      // The kernel reads its own segment bytes and seeds the process's mapped
+      // range from them, so the snapshot no longer travels back to the host
+      // through chunked `kernel_ipc_shm_read_chunk` scratch round trips.
+      const trackResult = this.#ksmSysvTrack(
+        channel.pid,
+        kernelAllocatedAddr,
+        shmid,
+        size,
+        readOnly ? 1 : 0,
+        entry,
+      );
+      this.#refreshKernelSharedMappingPid(channel.pid, entry);
+      if (!Number.isSafeInteger(trackResult) || trackResult > 0) {
+        throw new Error(
+          `Invalid SysV mirror registration result from the kernel: ${trackResult}`,
+        );
       }
-      if (pidMappings.has(allocatedAddr)) {
+      if (trackResult < 0) {
         this.#rollbackIpcShmatWithinKernelEntry(
           channel,
           shmid,
@@ -33131,13 +32525,6 @@ export class CentralizedKernelWorker {
         this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
         return;
       }
-      pidMappings.set(allocatedAddr, {
-        segId: shmid,
-        size,
-        readOnly,
-        snapshot,
-        seenVersion: this.shmSegmentVersions.get(shmid) ?? 0,
-      });
       const recordMapping = this.#kernelInstanceForEntry(entry).exports
         .kernel_ipc_shm_record_mapping_for_task as
         ((
@@ -33157,8 +32544,16 @@ export class CentralizedKernelWorker {
         )
         : -EIO;
       if (!Number.isSafeInteger(recordResult) || recordResult !== 0) {
-        pidMappings.delete(allocatedAddr);
-        if (pidMappings.size === 0) this.shmMappings.delete(channel.pid);
+        // Unwind the mirror without publishing: these bytes are the segment's
+        // own, and the attachment they belong to is about to be released.
+        this.#sysvMirrorMappingOp(
+          "drop",
+          channel.pid,
+          kernelAllocatedAddr,
+          shmid,
+          size,
+          entry,
+        );
         this.#rollbackIpcShmatWithinKernelEntry(
           channel,
           shmid,
@@ -33246,34 +32641,25 @@ export class CentralizedKernelWorker {
       segId: Number(BigInt.asIntN(32, packed)),
       size: Number((packed >> 32n) & 0xffff_ffffn),
     };
-    const pidMappings = this.shmMappings.get(channel.pid);
-    if (!pidMappings) {
+    if (kernelMapping.segId < 0 || kernelMapping.size <= 0) {
       this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
       return;
     }
-    const mapping = pidMappings.get(addr);
-    // Rust is authoritative. A missing or divergent byte mirror means the
-    // host cannot publish the attachment safely, so retain the Rust record
-    // for teardown and report the internal coherence failure truthfully.
+    // Publish this attachment's writes before detaching. The kernel checks its
+    // byte mirror against the attachment record just resolved: a missing or
+    // divergent mirror means the two in-kernel authorities disagree, so the
+    // attachment record is retained for teardown and the internal coherence
+    // failure is reported truthfully rather than papered over.
     if (
-      !mapping
-      || kernelMapping.segId < 0
-      || kernelMapping.size <= 0
-      || mapping.segId !== kernelMapping.segId
-      || mapping.size !== kernelMapping.size
+      this.#sysvMirrorMappingOp(
+        "publish",
+        channel.pid,
+        kernelAddr,
+        kernelMapping.segId,
+        kernelMapping.size,
+        entry,
+      ) !== 0
     ) {
-      this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
-      return;
-    }
-
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const synced = this.mergeAndRefreshSysvShmMapping(
-      processMem,
-      addr,
-      mapping,
-      entry,
-    );
-    if (!synced) {
       this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
       return;
     }
@@ -33288,14 +32674,22 @@ export class CentralizedKernelWorker {
     if (result < 0) {
       this.completeChannelRawAndRelisten(channel, result, -result, entry);
     } else {
-      pidMappings.delete(addr);
-      if (pidMappings.size === 0) this.shmMappings.delete(channel.pid);
+      // Forget the mirror only after the detach succeeded, so a failed detach
+      // leaves a mirrored attachment rather than one nobody reconciles.
+      this.#sysvMirrorMappingOp(
+        "drop",
+        channel.pid,
+        kernelAddr,
+        kernelMapping.segId,
+        kernelMapping.size,
+        entry,
+      );
       let unmapFailed = false;
       try {
         const unmap = this.runSyntheticMemorySyscall(
           channel,
           SYS_MUNMAP,
-          [addr, mapping.size],
+          [addr, kernelMapping.size],
           entry,
         );
         if (this.hostReaped?.has(channel.pid)) return;

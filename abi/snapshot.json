@@ -3041,6 +3041,76 @@
     },
     {
       "kind": "func",
+      "name": "kernel_shared_mapping_file_track",
+      "signature": "(i32,i64,i32,i64,i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_flush",
+      "signature": "(i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_inherit",
+      "signature": "(i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_prepare_write",
+      "signature": "(i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_process_count",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_protect",
+      "signature": "(i32,i64,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_release_process",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_remap",
+      "signature": "(i32,i64,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sync_process",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_drop_mapping",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_publish_mapping",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_sync_segment",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_track",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_unmap",
+      "signature": "(i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_shutdown",
       "signature": "(i32,i32) -> (i32)"
     },

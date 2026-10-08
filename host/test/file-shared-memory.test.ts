@@ -17,6 +17,10 @@ import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import {
+  createKernelSharedMappingStub,
+  SYSV_MIRROR_EXPORT_NAMES,
+} from "./support/kernel-shared-mapping-stub";
 
 const MAP_SHARED = 1;
 const MAP_PRIVATE = 2;
@@ -152,10 +156,9 @@ function createFileHarness() {
         : { kind: "error" as const, errno: 9 };
     },
   );
-  // Kernel-owned (tmpfs/memfd) fd-writeback bridge: dup the guest fd into a
-  // stable descriptor (deterministic fd+1000 here) and record closes.
-  const dupWritebackFd = vi.fn((_pid: number, fd: number) => fd + 1000);
-  const closeWritebackFd = vi.fn();
+  // Kernel-owned (rootfs/tmpfs/memfd) files are kept coherent by the
+  // kernel's shared-mapping table; this stands in for its entry points.
+  const kernelShared = createKernelSharedMappingStub();
   const getFdPathForSharedMapping = vi.fn(
     (_channel: unknown, fd: number) =>
       fdIdentity.has(fd)
@@ -173,8 +176,6 @@ function createFileHarness() {
     anonymousSharedBackings: new Map(),
     sharedMmapBackings: new Map(),
     sharedMmapFdCache: new Map(),
-    shmMappings: new Map(),
-    shmSegmentVersions: new Map(),
   });
   kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
   kw.testAuthority.configureScratchBoundaryHooksForTest({
@@ -182,15 +183,16 @@ function createFileHarness() {
     getFdAccessModeForSharedMapping,
     getFdStatForSharedMapping,
     getFdPathForSharedMapping,
-    dupWritebackFd,
-    closeWritebackFd,
   });
   installKernelWorkerTestScratch(
     kw as unknown as Record<string, unknown>,
     new WebAssembly.Memory({ initial: 2, maximum: 2 }),
     128,
     4,
-    { kernelExportNames: [] },
+    {
+      kernelExports: kernelShared.exports,
+      kernelExportNames: [...SYSV_MIRROR_EXPORT_NAMES],
+    },
   );
 
   const mapResult = (
@@ -217,8 +219,7 @@ function createFileHarness() {
   return {
     channels,
     close,
-    dupWritebackFd,
-    closeWritebackFd,
+    kernelShared,
     fdHostHandles,
     fdIdentity,
     fdSupportsMmapWriteback,
@@ -1394,40 +1395,45 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(backing.sizeValid).toBe(true);
   });
 
-  it("maps a writable kernel-owned regular file through the fd-writeback bridge", () => {
+  it("hands a writable kernel-owned MAP_SHARED to the kernel's table", () => {
     const h = createFileHarness();
-    // hostHandle === null models a kernel-owned regular file (in-kernel tmpfs
-    // or memfd): fstat completes inside the kernel, so there is no persistent
-    // host handle to anchor a host byte-store backing. A writable MAP_SHARED of
-    // such a file maps through the fd-writeback bridge: the region is populated
-    // through the guest fd (pread) and its writes flush back to the same
-    // kernel-owned file through a dup of that fd (pwrite) at
-    // msync/munmap/exec/teardown. The kernel-owned file itself is the shared
-    // backing store, so no host handle is retained.
+    const pid = h.pids[0];
+    // hostHandle === null models a regular file the kernel owns (in-kernel
+    // rootfs, tmpfs including /dev/shm, or memfd): there is no host handle to
+    // anchor a host byte store, and none is needed. The kernel keeps every
+    // mapping of the file coherent and populates the new one itself.
     asKernelOwnedFile(h, h.logicalSize());
-    expect(h.mapResult(h.pids[0], 4, 0x1000)).toEqual({ kind: "mapped" });
+    expect(h.mapResult(pid, 4, 0x1000)).toEqual({ kind: "mapped" });
     expect(h.retainHostFileHandle).not.toHaveBeenCalled();
-    const pidMap = (h.kw as any).sharedMappings.get(h.pids[0]);
-    expect(pidMap?.size).toBe(1);
-    const mapping = pidMap.get(0x1000);
-    expect(mapping.writable).toBe(true);
-    expect(mapping.fd).toBe(4);
-    // A bare fd-tracked mapping: no host byte-store backing key.
-    expect(mapping.backingKey).toBeUndefined();
+    expect((h.kw as any).sharedMappings.size).toBe(0);
+    const memoryLen = BigInt(h.memories.get(pid)!.buffer.byteLength);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_file_track")).toEqual([{
+      name: "kernel_shared_mapping_file_track",
+      args: [pid, 0x1000n, 4, 4096n, 0n, 1, memoryLen],
+    }]);
+    // The boundary predicate now names the pid, so its syscalls sync it.
+    expect((h.kw as any).kernelSharedMappingPids.has(pid)).toBe(true);
   });
 
-  it("read-only MAP_SHARED of a kernel-owned file takes the populate-only fallback", () => {
+  it("hands a read-only kernel-owned MAP_SHARED to the kernel too", () => {
     const h = createFileHarness();
-    // Nothing can write through a read-only mapping, so it needs no writeback
-    // bridge: it falls through to the fd-pread population MAP_PRIVATE uses,
-    // untracked. musl's `__map_file` (locale, timezone, message catalogs) and
-    // libwayland-cursor's memfd theme pool depend on this mapping.
+    // A read-only shared mapping must still observe other writers, so it is
+    // kept coherent like any other rather than populated once.
     asKernelOwnedFile(h, h.logicalSize());
     expect(h.mapResult(h.pids[0], 4, 0x1000, 4096, PROT_READ))
+      .toEqual({ kind: "mapped" });
+    const [call] = h.kernelShared.callsTo("kernel_shared_mapping_file_track");
+    expect(call!.args[5]).toBe(0);
+  });
+
+  it("populates once a kernel-owned file the kernel's table cannot keep", () => {
+    const h = createFileHarness();
+    asKernelOwnedFile(h, h.logicalSize());
+    // ENOTSUP: a procfs snapshot or synthetic regular file. It is populated
+    // like MAP_PRIVATE, as main does for every file without a host handle.
+    h.kernelShared.exports.kernel_shared_mapping_file_track = () => -95;
+    expect(h.mapResult(h.pids[0], 4, 0x1000, 4096, PROT_READ))
       .toEqual({ kind: "unsupported" });
-    expect(h.retainHostFileHandle).not.toHaveBeenCalled();
-    expect(h.dupWritebackFd).not.toHaveBeenCalled();
-    expect((h.kw as any).sharedMappings.size).toBe(0);
   });
 
   it("still rejects a writable kernel-owned mapping without an O_RDWR fd", () => {
@@ -1436,7 +1442,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     asKernelOwnedFile(h, h.logicalSize(), 0);
     expect(h.mapResult(h.pids[0], 4, 0x1000))
       .toEqual({ kind: "error", errno: 13 });
-    expect((h.kw as any).sharedMappings.size).toBe(0);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_file_track")).toEqual([]);
   });
 
   it("read-only MAP_SHARED of a kernel-owned file rejects an O_WRONLY fd", () => {
@@ -1447,155 +1453,80 @@ describe("file/POSIX MAP_SHARED page cache", () => {
       .toEqual({ kind: "error", errno: 13 });
   });
 
-  it("fd-writeback rides a stable dup so it survives close(fd)", () => {
+  it("drives msync, munmap, mremap and mprotect of kernel-owned mappings through the kernel", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
     const addr = 0x1000;
     asKernelOwnedFile(h, 4096);
     expect(h.map(pid, 4, addr)).toBe(true);
-    const mapping = (h.kw as any).sharedMappings.get(pid).get(addr);
-    expect(mapping.fdWriteback).toBe(true);
-    // The dup (fd+1000) is an independent descriptor, not the guest fd, so a
-    // later close(fd) cannot invalidate writeback.
-    expect(mapping.writebackFd).toBe(1004);
-    expect(h.dupWritebackFd).toHaveBeenCalledWith(pid, 4);
 
-    const pwrite = vi.fn(() => true);
-    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
-      pwriteFromProcessMemory: pwrite,
-    });
-    new Uint8Array(h.memories.get(pid)!.buffer)[addr + 5] = 0xab;
     expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096]))
       .toBe(true);
-    expect(pwrite).toHaveBeenCalled();
-    for (const call of pwrite.mock.calls as unknown as number[][]) {
-      expect(call[1]).toBe(1004);
-    }
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_flush")).toEqual([{
+      name: "kernel_shared_mapping_flush",
+      args: [pid, BigInt(addr), 4096n],
+    }]);
 
-    // munmap closes the owned dup exactly once.
-    (h.kw as any).cleanupSharedMappings(pid, addr, 4096);
-    expect(h.closeWritebackFd).toHaveBeenCalledWith(pid, 1004);
-    expect(h.closeWritebackFd).toHaveBeenCalledTimes(1);
+    expect((h.kw as any).prepareFileSharedMappingsForWrite(pid, addr, 4096))
+      .toBe(0);
+    (h.kw as any).updateSharedMappingProtection(pid, addr, 4096, true);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_protect")).toHaveLength(1);
+
+    (h.kw as any).remapSharedMapping(pid, addr, 0x3000, 8192);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_remap")).toEqual([{
+      name: "kernel_shared_mapping_remap",
+      args: [pid, BigInt(addr), 0x3000n, 8192n],
+    }]);
+
+    (h.kw as any).cleanupSharedMappings(pid, 0x3000, 8192);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_unmap")).toEqual([{
+      name: "kernel_shared_mapping_unmap",
+      args: [pid, 0x3000n, 8192n],
+    }]);
+    // The last mapping went, so the pid stops paying for boundary syncs.
+    expect((h.kw as any).kernelSharedMappingPids.has(pid)).toBe(false);
   });
 
-  it("fd-writeback never writes past the file's live EOF", () => {
+  it("refuses an mprotect write upgrade the kernel refuses", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
-    const addr = 0x1000;
-    // The file is only 100 bytes though the mapping covers a whole 4096 page;
-    // writeback must not grow it.
-    asKernelOwnedFile(h, 100);
-    expect(h.map(pid, 4, addr, 4096)).toBe(true);
-    const pwrite = vi.fn(() => true);
-    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
-      pwriteFromProcessMemory: pwrite,
-    });
-    const mem = new Uint8Array(h.memories.get(pid)!.buffer);
-    mem[addr + 0] = 0x41; // within EOF
-    mem[addr + 200] = 0x42; // past EOF: must never be written back
-    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096]))
-      .toBe(true);
-    expect(pwrite).toHaveBeenCalled();
-    for (const call of pwrite.mock.calls as unknown as number[][]) {
-      const len = call[3]!;
-      const fileOffset = call[4]!;
-      expect(fileOffset + len).toBeLessThanOrEqual(100);
-    }
-  });
-
-  it("fd-writeback flushes only the bytes this mapping changed", () => {
-    const h = createFileHarness();
-    const pid = h.pids[0];
-    const addr = 0x1000;
     asKernelOwnedFile(h, 4096);
-    expect(h.map(pid, 4, addr, 4096)).toBe(true);
-    const pwrite = vi.fn(() => true);
-    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
-      pwriteFromProcessMemory: pwrite,
-    });
-    new Uint8Array(h.memories.get(pid)!.buffer)[addr + 10] = 0x55;
-    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096]))
-      .toBe(true);
-    // Exactly one dirty run of length 1 at file offset 10, so a stale peer's
-    // whole-mapping flush cannot clobber another mapping's bytes.
-    const calls = pwrite.mock.calls as unknown as number[][];
-    expect(calls).toHaveLength(1);
-    expect(calls[0]![3]).toBe(1);
-    expect(calls[0]![4]).toBe(10);
+    expect(h.mapResult(pid, 4, 0x1000, 4096, PROT_READ))
+      .toEqual({ kind: "mapped" });
+    h.kernelShared.exports.kernel_shared_mapping_prepare_write = () => -13;
+    expect((h.kw as any).prepareFileSharedMappingsForWrite(pid, 0x1000, 4096))
+      .toBe(13);
   });
 
-  it("a writable fd-writeback mapping is inherited across fork", () => {
+  it("gives a forked child the parent's kernel-owned mappings in one kernel call", () => {
     const h = createFileHarness();
     const [parentPid, , childPid] = h.pids;
-    const addr = 0x1800;
     asKernelOwnedFile(h, 4096);
-    expect(h.map(parentPid, 4, addr)).toBe(true);
+    expect(h.map(parentPid, 4, 0x1800)).toBe(true);
     h.kw.inheritProcessSharedMappings(parentPid, childPid);
-    const childMap = (h.kw as any).sharedMappings.get(childPid);
-    expect(childMap.size).toBe(1);
-    const childMapping = childMap.get(addr);
-    expect(childMapping.fdWriteback).toBe(true);
-    // fork copies the fd table: the child inherits the same writeback fd.
-    expect(childMapping.writebackFd).toBe(1004);
-    expect(childMapping.snapshot).toBeInstanceOf(Uint8Array);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_inherit")).toEqual([{
+      name: "kernel_shared_mapping_inherit",
+      args: [
+        parentPid,
+        childPid,
+        BigInt(h.memories.get(childPid)!.buffer.byteLength),
+      ],
+    }]);
+    expect((h.kw as any).kernelSharedMappingPids.has(childPid)).toBe(true);
   });
 
-  it("exec drops the pid's writeback refcount map without closing dups", () => {
+  it("exec forgets kernel-owned mappings after the preflight published them", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
-    const addr = 0x1000;
     asKernelOwnedFile(h, 4096);
-    expect(h.map(pid, 4, addr)).toBe(true);
-    expect((h.kw as any).fdWritebackFdRefs.has(pid)).toBe(true);
-    // exec preserves the pid but the close-on-exec dups are gone, so the stale
-    // refcount map is dropped and nothing is closed by number.
+    expect(h.map(pid, 4, 0x1000)).toBe(true);
     (h.kw as any).finalizeAddressSpaceForExec(pid);
-    expect((h.kw as any).fdWritebackFdRefs.has(pid)).toBe(false);
-    expect((h.kw as any).sharedMappings.has(pid)).toBe(false);
-    expect(h.closeWritebackFd).not.toHaveBeenCalled();
-  });
-
-  it("refuses fd-writeback flush when the dup was closed (closefrom)", () => {
-    const h = createFileHarness();
-    const pid = h.pids[0];
-    const addr = 0x1000;
-    asKernelOwnedFile(h, 4096);
-    expect(h.map(pid, 4, addr)).toBe(true);
-    const pwrite = vi.fn(() => true);
-    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
-      pwriteFromProcessMemory: pwrite,
-    });
-    new Uint8Array(h.memories.get(pid)!.buffer)[addr + 5] = 0xab;
-    // The guest closed the (guest-visible) writeback dup: fstat now fails.
-    h.getFdStatForSharedMapping.mockReturnValue({ kind: "error", errno: 9 });
-    // The flush is refused and never pwrites to a possibly-reused number.
-    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096]))
-      .toBe(false);
-    expect(pwrite).not.toHaveBeenCalled();
-  });
-
-  it("refuses fd-writeback flush when the dup was repointed (dup2)", () => {
-    const h = createFileHarness();
-    const pid = h.pids[0];
-    const addr = 0x1000;
-    asKernelOwnedFile(h, 4096);
-    expect(h.map(pid, 4, addr)).toBe(true);
-    const pwrite = vi.fn(() => true);
-    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
-      pwriteFromProcessMemory: pwrite,
-    });
-    new Uint8Array(h.memories.get(pid)!.buffer)[addr + 5] = 0xab;
-    // dup2 rebound the number onto a different file (different ino).
-    h.getFdStatForSharedMapping.mockReturnValue({
-      kind: "ok",
-      value: {
-        dev: 0n, ino: 999n, size: 4096, mode: REGULAR_MODE, hostHandle: null,
-      },
-    });
-    // Refused: pwriting here would corrupt the unrelated file.
-    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096]))
-      .toBe(false);
-    expect(pwrite).not.toHaveBeenCalled();
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_release_process"))
+      .toEqual([{
+        name: "kernel_shared_mapping_release_process",
+        args: [pid, 0, 0],
+      }]);
+    expect((h.kw as any).kernelSharedMappingPids.has(pid)).toBe(false);
   });
 
   it("rejects a backend that cannot promise stable file identity", () => {

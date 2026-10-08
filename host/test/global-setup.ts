@@ -71,8 +71,8 @@ const RESOLVED_PROGRAM_FIXTURES = [
   },
   {
     // Recompiled from source so the no-grow and close-after-mmap writeback
-    // checks of the kernel-owned-file fd-writeback bridge always run against
-    // the current source, not a stale prebuilt binary.
+    // checks of kernel-owned file mappings always run against the current
+    // source, not a stale prebuilt binary.
     arch: "wasm32",
     src: join(repoRoot, "programs/mmap_shared_test.c"),
     out: join(
@@ -117,6 +117,7 @@ const TEST_PROGRAMS = [
   "timerfd_signalfd_scratch_test.c",
   "sysv_ipc_test.c",
   "sysv_shm_departed_peer_test.c",
+  "shm_mapping_coherence_test.c",
   "wasm_trap_test.c",
   "oob_trap_test.c",
   "divzero_trap_test.c",
@@ -146,6 +147,7 @@ const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c", "int128_division_test.c"];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "sysv_shm_departed_peer_test.c",
+  "shm_mapping_coherence_test.c",
   "environment_lifecycle_test.c",
   "pthread_channel_reuse_test.c",
   "unix_listener_exec_test.c",

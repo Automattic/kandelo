@@ -6130,6 +6130,7 @@ pub fn sys_write(
                         backing.data.resize(end, 0);
                     }
                     backing.data[offset..end].copy_from_slice(&buf[..writable_len]);
+                    backing.touch_modified();
                     backing.offset = backing
                         .offset
                         .checked_add(i64::try_from(writable_len).map_err(|_| Errno::EOVERFLOW)?)
@@ -7006,6 +7007,7 @@ pub fn sys_pwrite(
                 backing.data.resize(end, 0);
             }
             backing.data[start..end].copy_from_slice(&buf[..writable_len]);
+            backing.touch_modified();
             Ok(writable_len)
         });
     }
@@ -18363,6 +18365,7 @@ pub fn sys_ftruncate(
         crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
             backing.data.resize(new_len, 0);
+            backing.touch_modified();
             Ok(())
         })?;
         return Ok(());

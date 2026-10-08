@@ -1157,6 +1157,207 @@ impl HostIO for WasmHostIO {
 }
 
 // ---------------------------------------------------------------------------
+// 2b. WasmSharedMappingIo -- the kernel environment of SharedMappingTable
+// ---------------------------------------------------------------------------
+
+/// Production environment for [`crate::memory::SharedMappingTable`].
+///
+/// The table owns two kinds of shared state here: SysV attachments, whose
+/// segments live in [`crate::ipc::IpcTable`], and `MAP_SHARED` mappings of
+/// files the kernel owns (rootfs, tmpfs, memfd), whose bytes live in the
+/// kernel's own filesystem. Mappings of files on a host-mounted directory and
+/// anonymous `MAP_SHARED` regions are kept coherent by the host
+/// (`host/src/kernel-worker.ts`) and never reach this table, so a host handle
+/// is refused here rather than half-served.
+///
+/// Only two operations cross to the host, both existing imports:
+/// `host_proc_read_bytes` / `host_proc_write_bytes`, because each process owns
+/// a separate linear memory the kernel cannot address.
+struct WasmSharedMappingIo {
+    /// pid → committed linear-memory length, for the pids an entry point was
+    /// handed a length for. See [`Self::process_memory_len`] for the rest.
+    memory_lens: alloc::collections::BTreeMap<u32, u64>,
+}
+
+impl WasmSharedMappingIo {
+    fn new() -> Self {
+        Self {
+            memory_lens: alloc::collections::BTreeMap::new(),
+        }
+    }
+
+    /// An environment that knows a lower bound on every live process the
+    /// table can reach: the larger of its committed floor and the end of its
+    /// highest mapping here (`SharedMappingTable::mapped_extents`).
+    ///
+    /// The table's own extent is what keeps a publication at `munmap` working:
+    /// by the time the host drives it, the kernel's address-space record has
+    /// already dropped the region, so the floor alone could fall below the
+    /// very mapping being published and the table would skip it as gone.
+    fn for_table(table: &crate::memory::SharedMappingTable) -> Self {
+        let mut io = Self::new();
+        let processes = unsafe { &*PROCESS_TABLE.0.get() };
+        for (pid, extent) in table.mapped_extents() {
+            if let Some(proc) = processes.get(pid) {
+                io.set_process_memory_len(pid, extent.max(committed_memory_floor(proc)));
+            }
+        }
+        io
+    }
+
+    fn set_process_memory_len(&mut self, pid: u32, len: u64) {
+        self.memory_lens.insert(pid, len);
+    }
+}
+
+/// A lower bound on a live process's committed linear memory, from state the
+/// kernel owns.
+///
+/// The host grows a process's memory to cover every region the kernel hands
+/// out (the program break, each mapping, each SysV attachment) before the
+/// process can touch it, and a `WebAssembly.Memory` never shrinks. So the end
+/// of the highest such region is memory the process certainly has. That is
+/// exactly the question the table asks — "is this tracked mapping still inside
+/// the process?" — and a tracked mapping is one of those regions.
+fn committed_memory_floor(proc: &Process) -> u64 {
+    let mut floor = proc.memory.get_brk() as u64;
+    for region in proc.memory.mappings() {
+        floor = floor.max((region.addr as u64).saturating_add(region.len as u64));
+    }
+    for attachment in &proc.shm_mappings {
+        floor = floor.max((attachment.addr as u64).saturating_add(attachment.size as u64));
+    }
+    floor
+}
+
+impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
+    fn read_process(&mut self, pid: u32, addr: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        if dst.is_empty() {
+            return Ok(());
+        }
+        let len = checked_host_buffer_len(dst.len())?;
+        let result =
+            unsafe { host_proc_read_bytes(pid as i32, addr, dst.as_mut_ptr(), len) };
+        i32_to_result(result)
+    }
+
+    fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno> {
+        if src.is_empty() {
+            return Ok(());
+        }
+        let len = checked_host_buffer_len(src.len())?;
+        let result = unsafe { host_proc_write_bytes(pid as i32, addr, src.as_ptr(), len) };
+        i32_to_result(result)
+    }
+
+    fn process_memory_len(&mut self, pid: u32) -> Option<u64> {
+        // A length the caller supplied is exact. Otherwise a live process
+        // answers its committed floor (see `committed_memory_floor`), and a
+        // process that is gone answers `None`, which the table reads as "skip
+        // this process". A peer reached through a backing (one process's
+        // mmap publishing every other observer first) is answered the second
+        // way, so it is never skipped while it lives.
+        //
+        // CONTRACT: this borrows the global process table for the length of
+        // the call, so an entry point driving `SharedMappingTable` must not
+        // hold a `&mut Process` across a `SharedMappingIo` call. Every export
+        // below touches only `global_shared_mapping_table()` while the table
+        // runs.
+        let seeded = self.memory_lens.get(&pid).copied().or_else(|| {
+            let table = unsafe { &*PROCESS_TABLE.0.get() };
+            table.get(pid).map(committed_memory_floor)
+        });
+        let process_is_live = {
+            let table = unsafe { &*PROCESS_TABLE.0.get() };
+            table.get(pid).is_some()
+        };
+        let log = unsafe {
+            &mut *runtime_core::writeback_loss::GLOBAL_WRITEBACK_LOSS_LOG
+                .0
+                .get()
+        };
+        runtime_core::writeback_loss::resolve_process_memory_len(log, seeded, process_is_live)
+    }
+
+    fn pread(&mut self, handle: i64, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
+        runtime_core::kernel_file_mapping::pread(handle, offset, dst, &mut WasmHostIO)
+    }
+
+    fn pwrite(&mut self, handle: i64, offset: u64, src: &[u8]) -> Result<usize, Errno> {
+        runtime_core::kernel_file_mapping::pwrite(handle, offset, src, &mut WasmHostIO)
+    }
+
+    fn fstat_handle(&mut self, handle: i64) -> Result<crate::memory::SharedMappingStat, Errno> {
+        let (size, mode) = runtime_core::kernel_file_mapping::size_and_mode(handle)?;
+        Ok(crate::memory::SharedMappingStat {
+            dev: 0,
+            ino: 0,
+            size,
+            mode,
+            host_handle: Some(handle),
+        })
+    }
+
+    fn handle_identity(
+        &mut self,
+        handle: i64,
+        _dev: u64,
+        _ino: u64,
+    ) -> Option<alloc::string::String> {
+        // A kernel mapping handle names one live object for as long as a
+        // backing pins it, so it is the identity; see `kernel_file_mapping`.
+        runtime_core::kernel_file_mapping::identity_key(handle)
+    }
+
+    fn content_generation(&mut self, handle: i64) -> Option<u64> {
+        runtime_core::kernel_file_mapping::content_generation(handle)
+    }
+
+    fn retain_handle(&mut self, handle: i64) -> Result<(), Errno> {
+        runtime_core::kernel_file_mapping::pin(handle)
+    }
+
+    fn release_handle(&mut self, handle: i64) {
+        runtime_core::kernel_file_mapping::unpin(handle);
+    }
+
+    fn shm_read(&mut self, seg_id: i32, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        if dst.is_empty() {
+            return Ok(());
+        }
+        let offset = u32::try_from(offset).map_err(|_| Errno::EINVAL)?;
+        let ipc = unsafe { crate::ipc::global_ipc_table() };
+        let read = ipc.shm_read_chunk(seg_id, offset, dst)?;
+        // A short read means the request ran past the segment. Zero-filling the
+        // remainder would manufacture bytes no writer produced.
+        if read as usize != dst.len() {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    }
+
+    fn shm_write(&mut self, seg_id: i32, offset: u64, src: &[u8]) -> Result<(), Errno> {
+        if src.is_empty() {
+            return Ok(());
+        }
+        let offset = u32::try_from(offset).map_err(|_| Errno::EINVAL)?;
+        let ipc = unsafe { crate::ipc::global_ipc_table() };
+        let written = ipc.shm_write_chunk(seg_id, offset, src)?;
+        if written as usize != src.len() {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    }
+
+    fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str) {
+        // Recorded as kernel state, readable through the ordinary `read(2)`
+        // path at `/proc/kandelo/writeback_losses`, rather than written to a
+        // host console where it would scroll away and could not be counted.
+        runtime_core::writeback_loss::record_writeback_loss(pid, map_addr, reason);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 3. Global kernel state
 // ---------------------------------------------------------------------------
 
@@ -7397,6 +7598,472 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Kernel-owned shared mappings -- SysV attachments and kernel-file MAP_SHARED
+// ---------------------------------------------------------------------------
+//
+// Each process owns a separate linear memory, so `MAP_SHARED` coherence is a
+// publish/refresh protocol run at syscall boundaries
+// ([`crate::memory::SharedMappingTable`]). The kernel owns that protocol for
+// the shared objects whose bytes it owns: SysV segments
+// ([`crate::ipc::IpcTable`]) and regular files in its own filesystem (rootfs,
+// the tmpfs scratch mounts including `/dev/shm`, and memfds). The host keeps
+// the halves whose bytes it owns -- anonymous `MAP_SHARED` regions and files
+// on a host-mounted directory -- and drives this half through these entry
+// points at the same points it drives its own: after `mmap`, at `msync`,
+// `munmap`, `mremap` and `mprotect`, at every syscall boundary, across `fork`,
+// and at `exec` and teardown.
+//
+// The entry points that touch a calling process's memory are host-driven
+// rather than run inside the kernel's own `mmap` and boundary dispatch for
+// two reasons. The host grows a process's memory only after the kernel
+// returns from `mmap`, so the new mapping cannot be populated from inside it.
+// And the boundary sync must run before *every* syscall, including the ones
+// the host completes without entering the kernel.
+//
+// No new `env.host_*` import is required: reading and writing a process's
+// memory are the existing `host_proc_read_bytes` / `host_proc_write_bytes`.
+
+/// `SHM_RDONLY`. `crate::ipc`'s copy is private, and fork inheritance is the
+/// only other site that must reproduce a guest's attach flags.
+const SHM_RDONLY_FLAG: i32 = 0o10000;
+
+fn shared_mapping_errno(result: Result<(), Errno>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Number of kernel-owned shared mappings (SysV attachments plus kernel-file
+/// `MAP_SHARED` mappings) one process holds.
+///
+/// The host caches "does this process hold any" per pid to keep its
+/// syscall-boundary early-out, and refreshes it from here at every site that
+/// can change it -- mmap, munmap, shmat, shmdt, fork, exec, teardown -- so the
+/// cache is a predicate derived from this authority, never a second one.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_process_count(pid: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    let count = table.sysv_mapping_count_for(pid) + table.mappings_for(pid).count();
+    i32::try_from(count).unwrap_or(i32::MAX)
+}
+
+/// Reconcile every kernel-owned shared mapping of one process at a syscall
+/// boundary.
+///
+/// `force` bypasses the sole-observer skip, for the publication points where a
+/// process must become current even with no live peer: `fork`, the `exec`
+/// address-space preflight, and teardown. A forced sync also persists every
+/// dirty kernel-file page.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sync_process(pid: u32, force: i32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    let has_files = table.mappings_for(pid).next().is_some();
+    if table.sysv_mapping_count_for(pid) == 0 && !has_files {
+        return 0;
+    }
+    let mut io = WasmSharedMappingIo::for_table(table);
+    let mut ok = true;
+    if has_files {
+        if force != 0 {
+            ok &= table.flush_mappings(pid, 0, u64::MAX, &mut io);
+        } else {
+            ok &= table.sync_file_from_process(pid, false, &mut io).is_ok();
+        }
+    }
+    ok &= table.sync_sysv_from_process(pid, force != 0, &mut io);
+    if ok {
+        0
+    } else {
+        -(Errno::EIO as i32)
+    }
+}
+
+/// Start keeping a fresh `MAP_SHARED` mapping of a kernel-owned regular file
+/// coherent, and populate it.
+///
+/// The host calls this after the kernel's `mmap` returned `addr` and after it
+/// grew the process's memory to `memory_len`. Every existing observer of the
+/// file publishes first, so the new mapping starts from the latest shared
+/// state rather than from bytes a peer has not published yet. `writable` is
+/// the mapping's `PROT_WRITE`; whether a later `mprotect` may add it is the
+/// descriptor's access mode, recorded here because POSIX keeps the mapping
+/// valid after the descriptor closes.
+///
+/// Returns 0 or a negative errno: `ENOTSUP` for a descriptor that is not a
+/// kernel-owned regular file (the host owns those mappings), `EACCES` for an
+/// access mode the mapping is not allowed, `EEXIST` if a mapping is already
+/// tracked at `addr`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_file_track(
+    pid: u32,
+    addr: u64,
+    fd: i32,
+    len: u64,
+    file_offset: u64,
+    writable: i32,
+    memory_len: u64,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let (handle, write_allowed) = {
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        let Some(proc) = table.get(pid) else {
+            return -(Errno::ESRCH as i32);
+        };
+        let Ok(entry) = proc.fd_table.get(fd) else {
+            return -(Errno::EBADF as i32);
+        };
+        let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) else {
+            return -(Errno::EBADF as i32);
+        };
+        let Some(handle) =
+            runtime_core::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle)
+        else {
+            return -(Errno::ENOTSUP as i32);
+        };
+        let access = ofd.status_flags() & wasm_posix_shared::flags::O_ACCMODE;
+        if access == wasm_posix_shared::flags::O_WRONLY {
+            return -(Errno::EACCES as i32);
+        }
+        (handle, access == wasm_posix_shared::flags::O_RDWR)
+    };
+    if writable != 0 && !write_allowed {
+        return -(Errno::EACCES as i32);
+    }
+    let Ok(len) = usize::try_from(len) else {
+        return -(Errno::EINVAL as i32);
+    };
+    if len == 0 || addr.checked_add(len as u64).is_none_or(|end| end > memory_len) {
+        return -(Errno::EINVAL as i32);
+    }
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if table.mapping(pid, addr).is_some() {
+        return -(Errno::EEXIST as i32);
+    }
+    let Some(key) = runtime_core::kernel_file_mapping::identity_key(handle) else {
+        return -(Errno::ENOTSUP as i32);
+    };
+    let mut io = WasmSharedMappingIo::for_table(table);
+    io.set_process_memory_len(pid, memory_len);
+    shared_mapping_errno(table.track_kernel_file_mapping(
+        pid,
+        addr,
+        fd,
+        &key,
+        handle,
+        file_offset,
+        len,
+        writable != 0,
+        write_allowed,
+        &mut io,
+    ))
+}
+
+/// Publish the calling process's kernel-file mappings and persist the bytes
+/// overlapping `[addr, addr + len)`: `msync`, and the publication that must
+/// precede `munmap`, `mremap` and a `MAP_FIXED` replacement.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_flush(pid: u32, addr: u64, len: u64) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if table.mappings_for(pid).next().is_none() {
+        return 0;
+    }
+    let mut io = WasmSharedMappingIo::for_table(table);
+    if table.flush_mappings(pid, addr, len, &mut io) {
+        0
+    } else {
+        -(Errno::EIO as i32)
+    }
+}
+
+/// Stop tracking (or trim) every kernel-file mapping overlapping an unmapped
+/// interval: `munmap`, a `MAP_FIXED` replacement, or a failed `mmap` rolled
+/// back. A file whose last mapping goes is persisted and unpinned.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_unmap(pid: u32, addr: u64, len: u64) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if table.mappings_for(pid).next().is_none() {
+        return 0;
+    }
+    let mut io = WasmSharedMappingIo::for_table(table);
+    table.cleanup_mappings(pid, addr, len, &mut io);
+    0
+}
+
+/// Move a kernel-file mapping for a successful `mremap`, re-seeding the new
+/// interval from the file.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_remap(
+    pid: u32,
+    old_addr: u64,
+    new_addr: u64,
+    new_len: u64,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if table.mapping(pid, old_addr).is_none() {
+        return 0;
+    }
+    let Ok(new_len) = usize::try_from(new_len) else {
+        return -(Errno::EINVAL as i32);
+    };
+    let mut io = WasmSharedMappingIo::for_table(table);
+    shared_mapping_errno(table.remap_mapping(pid, old_addr, new_addr, new_len, &mut io))
+}
+
+/// Check that an `mprotect` adding `PROT_WRITE` over `[addr, addr + len)` is
+/// allowed for every kernel-file mapping it covers: the descriptor that
+/// created each one must have been opened `O_RDWR`. Returns 0 or `-EACCES`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_prepare_write(pid: u32, addr: u64, len: u64) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    shared_mapping_errno(table.prepare_file_mappings_for_write(pid, addr, len))
+}
+
+/// Record a successful `mprotect` over kernel-file mappings. Only an upgrade
+/// to writable changes anything; see
+/// [`crate::memory::SharedMappingTable::update_mapping_protection`].
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_protect(
+    pid: u32,
+    addr: u64,
+    len: u64,
+    writable: i32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.update_mapping_protection(pid, addr, len, writable != 0);
+    0
+}
+
+/// Start mirroring a freshly materialized SysV attachment, seeding the
+/// process's mapped range from the segment's authoritative bytes.
+///
+/// Returns 0, or a negative errno. `-EEXIST` means an attachment is already
+/// mirrored at that address, which is an internal coherence failure rather
+/// than a retryable condition.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_track(
+    pid: u32,
+    addr: usize,
+    seg_id: i32,
+    size: u32,
+    read_only: i32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    if size == 0 || seg_id < 0 {
+        return -(Errno::EINVAL as i32);
+    }
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if table.sysv_mapping(pid, addr as u64).is_some() {
+        return -(Errno::EEXIST as i32);
+    }
+    let mut io = WasmSharedMappingIo::for_table(table);
+    shared_mapping_errno(table.track_sysv_mapping(
+        pid,
+        addr as u64,
+        seg_id,
+        size as usize,
+        read_only != 0,
+        &mut io,
+    ))
+}
+
+/// Publish every current attachment of one segment before a new observer joins
+/// it, so the newcomer starts from the latest shared state.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_sync_segment(seg_id: i32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    let mut io = WasmSharedMappingIo::for_table(table);
+    table.sync_sysv_segment_from_attached(seg_id, &mut io);
+    0
+}
+
+/// Check one attachment's mirror against the attachment record the caller
+/// resolved, without mutating anything.
+///
+/// `shmdt` resolves the record, publishes, detaches, and only then forgets the
+/// mirror, so that a failed detach leaves a mirrored attachment rather than an
+/// attachment nobody is reconciling. That order needs a publish step separate
+/// from the drop.
+///
+/// A divergence between the two in-kernel authorities is reported as `EIO`
+/// rather than papered over: it means the byte mirror cannot be published for
+/// an attachment the caller is about to release.
+fn sysv_mirror_matches(
+    table: &crate::memory::SharedMappingTable,
+    pid: u32,
+    addr: usize,
+    expect_seg_id: i32,
+    expect_size: u32,
+) -> bool {
+    let Some(mapping) = table.sysv_mapping(pid, addr as u64) else {
+        return false;
+    };
+    expect_seg_id >= 0
+        && expect_size != 0
+        && mapping.seg_id == expect_seg_id
+        && mapping.size == expect_size as usize
+}
+
+/// Publish one attachment's writes into its segment and import the
+/// authoritative result, leaving the mirror in place.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_publish_mapping(
+    pid: u32,
+    addr: usize,
+    expect_seg_id: i32,
+    expect_size: u32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if !sysv_mirror_matches(table, pid, addr, expect_seg_id, expect_size) {
+        return -(Errno::EIO as i32);
+    }
+    let mut io = WasmSharedMappingIo::for_table(table);
+    if table.sync_sysv_mapping(pid, addr as u64, &mut io) {
+        0
+    } else {
+        -(Errno::EIO as i32)
+    }
+}
+
+/// Stop mirroring one attachment.
+///
+/// The kernel's own attachment record is a separate authority; this never
+/// detaches. Callers reach here after a successful `shmdt`, or while unwinding
+/// a `shmat` whose later steps failed.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_drop_mapping(
+    pid: u32,
+    addr: usize,
+    expect_seg_id: i32,
+    expect_size: u32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if !sysv_mirror_matches(table, pid, addr, expect_seg_id, expect_size) {
+        return -(Errno::EIO as i32);
+    }
+    if table.drop_sysv_mapping(pid, addr as u64) {
+        0
+    } else {
+        -(Errno::EIO as i32)
+    }
+}
+
+/// Drop every kernel-owned shared mapping of a process.
+///
+/// `publish` forces a final publication first. `detach` also releases the
+/// kernel's own SysV attachment records, which is what an ordinary teardown
+/// wants; `exec` passes 0 because its commit already drained them, and
+/// repeating the detach would release a different same-segment attachment.
+///
+/// A failed detach stops the release and leaves the mirror intact, reporting
+/// the errno. Dropping the mirror after a detach that could not be proven
+/// would discard the only record of an attachment the kernel still holds, and
+/// nothing could reclaim it afterwards. The caller treats the refusal as
+/// fatal, which is what it is: a process is being torn down and its attachment
+/// accounting cannot be settled.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_release_process(
+    pid: u32,
+    publish: i32,
+    detach: i32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    let mut io = WasmSharedMappingIo::for_table(table);
+    if publish != 0 {
+        table.sync_sysv_from_process(pid, true, &mut io);
+    }
+    if detach != 0 {
+        for (addr, _, _, _) in table.sysv_attachments_for(pid) {
+            if let Err(e) = ipc_shmdt_addr(pid, addr as usize, false) {
+                return -(e as i32);
+            }
+        }
+    }
+    table.release_all_for_process(pid, publish != 0, &mut io);
+    0
+}
+
+/// The kernel's live SysV attachment accounting, for the inheritance
+/// transaction in [`crate::memory::SharedMappingTable`].
+///
+/// Everything here is an existing in-kernel operation; the trait exists so the
+/// transaction and its rollback live where they can be unit-tested.
+struct WasmSysvAttachmentOps;
+
+impl crate::memory::SysvAttachmentOps for WasmSysvAttachmentOps {
+    fn attach(&mut self, pid: u32, seg_id: i32, read_only: bool) -> Result<usize, Errno> {
+        let flags = if read_only { SHM_RDONLY_FLAG } else { 0 };
+        let size = kernel_ipc_shmat_for_process(pid, seg_id, 0, flags);
+        if size < 0 {
+            return Err(Errno::from_u32(size.unsigned_abs()).unwrap_or(Errno::EIO));
+        }
+        Ok(size as usize)
+    }
+
+    fn record(&mut self, pid: u32, addr: u64, seg_id: i32, size: usize) -> Result<(), Errno> {
+        let size = u32::try_from(size).map_err(|_| Errno::EOVERFLOW)?;
+        let addr = usize::try_from(addr).map_err(|_| Errno::EOVERFLOW)?;
+        ipc_record_shm_mapping(pid, addr, seg_id, size, true)
+    }
+
+    fn detach_segment(&mut self, pid: u32, seg_id: i32) {
+        let ipc = unsafe { crate::ipc::global_ipc_table() };
+        let _ = ipc.shmdt(seg_id, pid);
+    }
+
+    fn detach_addr(&mut self, pid: u32, addr: u64) -> Result<(), Errno> {
+        let addr = usize::try_from(addr).map_err(|_| Errno::EOVERFLOW)?;
+        ipc_shmdt_addr(pid, addr, false)
+    }
+}
+
+/// Give a forked child its parent's kernel-owned shared mappings, atomically:
+/// SysV attachments (the kernel's attachment records and the byte mirror
+/// together) and kernel-file mappings (a backing reference each, seeded with
+/// the file's current bytes).
+///
+/// One entry point covers both authorities on purpose. The attachment records
+/// (`nattch`, `Process::shm_mappings`) and the byte mirror must commit or roll
+/// back together, and the parent's mappings live in the kernel, so splitting
+/// this across host calls would mean exporting them back to the host to drive
+/// a transaction the kernel can run itself. The transaction and its rollback
+/// live in [`crate::memory::SharedMappingTable::inherit_sysv_attachments`],
+/// where they can be unit-tested.
+///
+/// `child_memory_len` is the child's committed linear-memory length. It is an
+/// argument rather than an import because guest memory length belongs to a
+/// `WebAssembly.Memory` the kernel holds no handle to, and the caller is
+/// holding the value already.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_inherit(
+    parent_pid: u32,
+    child_pid: u32,
+    child_memory_len: u64,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    let mut io = WasmSharedMappingIo::for_table(table);
+    io.set_process_memory_len(child_pid, child_memory_len);
+    shared_mapping_errno(table.inherit_sysv_attachments(
+        parent_pid,
+        child_pid,
+        &mut WasmSysvAttachmentOps,
+        &mut io,
+    ))
 }
 
 /// Byte size of the target musl `struct semid_ds`.
