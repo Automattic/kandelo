@@ -361,6 +361,27 @@ already pin) and apply the fake clock only to the builds.
 
 **Files:** `tools/xtask/src/determinism_check.rs`
 
+### PHP-FPM workers cannot add opcache entries under prewarmed directories
+
+`opcache-prewarm.ts` writes the cache tree it dumps
+(`/var/cache/opcache/<system-id>/var/www/...`) as root-owned `0755`
+directories. The nginx-php image's FPM workers run as `nobody` (uid
+65534), so a worker that compiles a PHP file the build did not prewarm (a
+file added or edited from the demo terminal, or a replacement for an entry
+it rejected) cannot store it: on the Node host, `file_put_contents` into
+`/var/cache/opcache/<system-id>/var/www/html` fails with `EACCES`, and a
+new script's entry never appears. The prewarmed entries themselves are
+read and used. (The kernel enforces the parent-directory permission check
+on its own filesystems, so the store fails at `mkdir` rather than at the
+file.) The same applies to
+the WordPress and LAMP images, whose build deliberately does not prewarm
+`wp-config.php` (the host rewrites it at boot); PHP recompiles it on every
+request. The fix belongs in the image builders: give the cache tree
+the ownership and mode the runtime writer needs, as the WordPress builder
+already does for its database directory.
+
+**Files:** `images/vfs/scripts/opcache-prewarm.ts`, the PHP image builders
+
 ### Define compatibility for restored lazy VFS images
 
 Kandelo currently rebuilds and publishes canonical VFS images for the current

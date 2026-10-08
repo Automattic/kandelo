@@ -1412,6 +1412,8 @@ Semantic changes (not visible to the snapshot):
   metadata, permissions and contents live in the kernel's linear memory;
   only unmodified image content stays in the host's copy of the image.
   `fsync` on their files and directories succeeds without host work.
+  Creating, removing, linking or renaming an entry enforces parent write and
+  search permission and the sticky bit there as on host mounts.
 - **`_PC_PIPE_BUF` always has a value** (4096), including on the kernel's own
   filesystems and on captured stdio; the host pathconf table is gone and a
   host without `fpathconf(3)` defers to the kernel's.

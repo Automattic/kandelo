@@ -1962,8 +1962,11 @@ not own; each becomes a `HostFileSystem` routed by `VirtualPlatformIO`
 (`host/src/vfs/vfs.ts`). The browser has none. Cross-mount operations
 (`rename`, `link`) fail with `EXDEV`.
 
-Because every authority is in the kernel or reached through it, `nosuid`,
-`O_EXCL`, FIFOs and AF_UNIX socket nodes behave the same on all of them. On
+Because every authority is in the kernel or reached through it, permission
+checks, `nosuid`, sticky directories, `O_EXCL`, FIFOs and AF_UNIX socket nodes
+behave the same on all of them. Creating, removing, linking or renaming an
+entry requires write and search permission on its parent, and a sticky
+directory limits removal and rename to the entry's or directory's owner. On
 the in-kernel filesystems `fsync` succeeds without host work: they have no
 separate durable backing.
 
