@@ -498,7 +498,9 @@ stops the recording nobody could resume. A viewer that received nothing
 before the drop asks from `-1`: a recording that published nothing agrees and
 resumes empty, one that did publish refuses. Both halves give up after
 `RESUME_WINDOW_MS` (120 s): the machine must not record for nobody
-indefinitely, and a parked replica whose user never returns is let go.
+indefinitely, and a parked replica whose user never returns is let go. A
+replica whose own page clicked **Disconnect** is not parked at all: that
+person is not coming back, so the replica is let go at once.
 
 During the gap the viewer's page keeps calling itself the viewer — the parked
 replica still reports "running", but it is another computer's machine, so
@@ -579,6 +581,17 @@ two browser-only findings made that true:
   question: should the wire answer the release before the keeper stops its
   recording instead? The current order keeps the one-owner invariant, and
   the taker-side guard compensates.
+
+A taker that clicks **Disconnect** hands the machine back first. The
+`hand_back` message on the replication wire (`LocalReplicationLog.handBack`)
+asks the computer the machine came from to take it, and that computer starts
+an ordinary take — by proof when it runs a replica, by checkpoint otherwise.
+It refuses while it runs a machine of its own, boots a replica, or already
+takes. The taker asks again every second and closes the link only once it
+has stopped running the machine and the peer says it holds it. After 20
+seconds without a take the link stays open and the popup says so; a second
+**Disconnect** closes the link and the machine stays on the taker.
+`kandelo-machine-replication.spec.ts` covers both outcomes.
 
 The remaining open boundary: a seal under a still-running guest contends
 with the freeze exactly as any capture of a busy machine does — the modeset

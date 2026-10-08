@@ -341,6 +341,7 @@ type LocalReplicationMessage<TMachine> =
       readonly reply: boolean;
     }
   | { readonly kind: "granted"; readonly grant: ReplicationGrant }
+  | { readonly kind: "hand_back" }
   | { readonly kind: "ended" }
   | { readonly kind: "join"; readonly joinId: string }
   | { readonly kind: "promote"; readonly takeId: string }
@@ -1158,6 +1159,30 @@ export class LocalReplicationLog<TMachine = never> {
     const listener = (event: MessageEvent) => {
       const message = event.data as LocalReplicationMessage<TMachine>;
       if (message.kind === "granted") handler(message.grant);
+    };
+    this.#channel.addEventListener("message", listener);
+    return () => this.#channel.removeEventListener("message", listener);
+  }
+
+  /**
+   * Ask the other computer to take back the machine this one took from it.
+   *
+   * Only a request: the take is still started by the receiving computer, by
+   * proof or by checkpoint, so a hand back that nobody answers leaves the
+   * machine where it is.
+   */
+  handBack(): void {
+    this.#post({ kind: "hand_back" });
+  }
+
+  /**
+   * Hear the other computer ask this one to take its machine back. Returns
+   * an unsubscribe.
+   */
+  onHandBack(handler: () => void): () => void {
+    const listener = (event: MessageEvent) => {
+      const message = event.data as LocalReplicationMessage<TMachine>;
+      if (message.kind === "hand_back") handler();
     };
     this.#channel.addEventListener("message", listener);
     return () => this.#channel.removeEventListener("message", listener);

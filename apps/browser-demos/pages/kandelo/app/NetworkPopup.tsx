@@ -192,6 +192,13 @@ export const NetworkPopup: React.FC<{
 }) => {
   const connected = session.link !== null;
   const note = takeNote(handover);
+  // A machine taken from the other computer goes back to it before the link
+  // closes, so the person who gave it keeps running it.
+  const disconnect = async () => {
+    if (!(await handover.handBack())) return;
+    replication.disconnecting();
+    session.disconnect();
+  };
 
   // Offered before connecting only: the name introduces you, and once the
   // pair is linked the introduction is made — the connected popup keeps to
@@ -313,9 +320,10 @@ export const NetworkPopup: React.FC<{
             <button
               type="button"
               className="knetwork-button"
-              onClick={session.disconnect}
+              onClick={() => void disconnect()}
+              disabled={handover.handingBack}
             >
-              Disconnect
+              {handover.handingBack ? "Handing it back..." : "Disconnect"}
             </button>
             {canTakeMachine && (
               <button
@@ -330,6 +338,12 @@ export const NetworkPopup: React.FC<{
           </div>
           {canTakeMachine && note !== null && (
             <div className="knetwork-take-note" role="status">{note}</div>
+          )}
+          {handover.handBackFailed && (
+            <div className="knetwork-take-note" role="status">
+              The other computer did not take the machine back. Disconnect
+              again to keep it on this computer.
+            </div>
           )}
         </section>
       </div>

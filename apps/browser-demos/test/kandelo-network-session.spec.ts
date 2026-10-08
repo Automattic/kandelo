@@ -6,7 +6,12 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appUrl, networkButton, openNetworkPopover } from "./support/peer-pair";
+import {
+  appUrl,
+  expectReplica,
+  networkButton,
+  openNetworkPopover,
+} from "./support/peer-pair";
 
 /**
  * Two Kandelo computers connected by a session name through the signalling
@@ -153,6 +158,8 @@ test("connects two computers by session name", async ({
       );
     }
 
+    await expectReplica(viewer);
+
     // A name shows only for someone you watch: the viewer's badge names the
     // sharer, and the sharer's own badge says what its seat does. The
     // distinct viewer nickname proves the badge picks the watched person's
@@ -163,6 +170,16 @@ test("connects two computers by session name", async ({
     await expect(sharer.locator(".kdock-role")).toHaveText("Sharing", {
       timeout: 30_000,
     });
+
+    // A person who disconnects is not coming back, so the copy goes at once
+    // instead of waiting out the resume window.
+    await openNetworkPopover(viewer);
+    await viewer.getByRole("button", { name: "Disconnect" }).click();
+    await expect(viewer.locator(".kdock-status-text")).toHaveAttribute(
+      "data-status",
+      "idle",
+      { timeout: 30_000 },
+    );
   } finally {
     await viewerContext.close();
     await sharerContext.close();

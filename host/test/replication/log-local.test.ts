@@ -335,6 +335,26 @@ describe("local replication log", () => {
     }
   });
 
+  it("carries a hand back to the computer the machine came from", async () => {
+    const channel = `replication-test-${crypto.randomUUID()}`;
+    const giver = new LocalReplicationLog(channel);
+    const receiver = new LocalReplicationLog(channel);
+    let heard = 0;
+    const stop = receiver.onHandBack(() => void heard++);
+    try {
+      giver.handBack();
+      await vi.waitFor(() => expect(heard).toBe(1));
+      stop();
+      giver.handBack();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(heard).toBe(1);
+    } finally {
+      stop();
+      giver.close();
+      receiver.close();
+    }
+  });
+
   it("carries each person's nickname to the other, whichever attached first", async () => {
     const channel = `replication-test-${crypto.randomUUID()}`;
     const early = new LocalReplicationLog(channel);
