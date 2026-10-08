@@ -939,6 +939,27 @@ are still absent, as are datagram/message syscalls and deadlines. Next,
 wire the Go `net` package and poller to Kandelo's socket/epoll contract,
 then prove `net.Dial` and a listener through both hosts before HTTP.
 
+**2026-10-08 — Real Go runtime netpoll and nonblocking flags (fork
+`63b22e7`).** Replaced Kandelo's fake runtime poller with an epoll-backed,
+level-triggered poller and eventfd `netpollBreak`. Its registrations exist
+only while a read or write waiter is armed; leaving unarmed descriptors in
+epoll caused repeated HUP events from stdio and starved timers. Kandelo
+`SetNonblock` and `fcntl(F_GETFL/F_SETFL)` now use the real kernel calls, so
+`os.NewFile` can detect and poll a nonblocking socket. A focused probe wraps
+an accepted TCP socket in `os.NewFile` and confirms a read deadline expires,
+later data wakes a blocked read, and close unblocks another blocked read.
+The first implementation failed intermittently on additional Ms because
+nonzero-initialized poller fd globals were reset when a new Wasm instance
+applied its active data segments to shared memory. Keeping the runtime fd
+state zero-initialized, then setting it in `netpollinit`, removed those
+failures: eight Node repeats and ten Chromium repeats passed before the
+close check; the final close check passed three Node and five Chromium
+repeats, and the full fourteen-probe Chromium suite passed. No kernel or
+host ABI changed; `GOOS=js` and `GOOS=wasip1` standard-library builds passed.
+This proves the focused socket/poller path, not full Go `net` support.
+`GOOS=kandelo go build net` still fails at the missing `netFD`; next, add
+that package backend and prove `net.Dial` and `net.Listen` on both hosts.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed

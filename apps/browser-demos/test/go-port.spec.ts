@@ -97,6 +97,12 @@ const probes: Probe[] = [
     stdout: ["GO SOCKET PASS"],
   },
   {
+    name: "Go runtime TCP readiness, deadlines, and close",
+    file: "netpoll-basic.wasm",
+    argv: ["go-netpoll-basic"],
+    stdout: ["GO NETPOLL PASS"],
+  },
+  {
     name: "process exit from a worker M",
     file: "exit-worker.wasm",
     argv: ["go-exit-worker"],
