@@ -1832,13 +1832,28 @@ Different processes have different WebAssembly memories, so a pointer store in
 one process cannot immediately mutate another process's linear memory. Kandelo
 coordinates anonymous `MAP_SHARED`, SysV SHM attachments, and regular-file
 `MAP_SHARED` mappings at guest-to-kernel syscall boundaries. For each mapping,
-the host compares process memory with the snapshot that process last observed,
-merges only changed byte runs into one authoritative backing, and then imports
-peer updates into every stale alias in the calling process. Fork force-publishes
-the parent before the child inherits the same backing; `exec`, exit, crash,
-`munmap`, `mremap`, and `MAP_FIXED` update backing ownership explicitly.
+the owner of the bytes compares process memory with the snapshot that process
+last observed, merges only changed byte runs into one authoritative backing,
+and then imports peer updates into every stale alias in the calling process.
+Fork force-publishes the parent before the child inherits the same backing;
+`exec`, exit, crash, `munmap`, `mremap`, and `MAP_FIXED` update backing
+ownership explicitly.
 
-Regular-file mappings add a backend-qualified stable identity and retain the
+Who keeps a mapping coherent follows who owns its bytes. The host keeps
+anonymous regions and files on host-mounted directories
+(`host/src/kernel-worker.ts`). The kernel keeps SysV segments and every file
+it owns — the rootfs, the tmpfs scratch mounts including `/dev/shm`, and
+memfds — in `SharedMappingTable` (`crates/runtime-core/src/memory.rs`),
+which the host drives through `kernel_shared_mapping_*` entry points at the
+same points it publishes its own mappings: after `mmap`, at `msync`,
+`munmap`, `mremap` and `mprotect`, at the syscall boundaries of a process
+that holds such a mapping, across `fork`, and at `exec` and teardown. A
+kernel-owned file needs neither a retained host handle nor a per-syscall
+cache policy: the kernel pins the inode for its mappings, observes
+descriptor writes through a content generation its filesystem advances on
+every write and truncation, and writes each publication through to the file.
+
+Host-file mappings add a backend-qualified stable identity and retain the
 original fd's host handle for the mapping lifetime. Identity is derived and
 revalidated through that live handle, never by reopening its remembered path.
 Node uses native device/inode identity; VFS backends scope device/inode identity
@@ -2907,8 +2922,10 @@ client: stock `wl_display_connect()` (via `XDG_RUNTIME_DIR`), stock
 xdg-shell/SSD negotiation, and a real font pipeline. Two declared patches are
 the entire delta, both kernel-model boundaries rather than feature edits:
 `0001` allocates its `wl_shm` pools as `gbm` prime-fd dumb-bos instead of
-memfds (a memfd `MAP_SHARED` mapping only writes back on msync/munmap on this
-kernel, so the compositor would composite stale bytes), and `0002` serializes
+memfds (written when a memfd `MAP_SHARED` mapping never converged across
+processes, so the compositor would have composited stale bytes; the kernel
+now keeps memfd mappings coherent at syscall boundaries, so this patch is a
+candidate for removal), and `0002` serializes
 its font loading (concurrent `FcFontMatch` garbles pattern doubles under the
 kernel's thread model — any future threaded font consumer hits the same wall).
 foot forks its shell (`slave.c`), so its wasm is mandatorily

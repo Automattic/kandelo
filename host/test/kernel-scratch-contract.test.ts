@@ -583,13 +583,6 @@ const ownershipSeeds: OwnershipSeed[] = [
     form: "view",
     why: "This host snapshot is separate from allocator-owned scratch.",
   },
-  {
-    declaration: "host/src/kernel-worker.ts::SysvShmMapping.snapshot",
-    target: "value",
-    owner: "shared-memory",
-    form: "view",
-    why: "This host snapshot tracks a System V shared-memory mapping.",
-  },
 ];
 
 const reviewedScalarKernelExportCall = (
@@ -659,15 +652,55 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#generateHostSignalWithinKernelEntry::kernel-export-direct-use::generateHostSignal(targetPid, signum)",
   ),
+  // The kernel's shared-mapping table (SysV attachments and kernel-file
+  // MAP_SHARED): one `#ksm*` method per entry point, so each export is
+  // resolved by its literal name and called in exactly one reviewed place.
+  // Every argument is a scalar the caller already holds -- a pid, a segment
+  // id, a descriptor, a byte length, a flag, a process address or length as
+  // `bigint`, or a `KernelPointer` produced by `toKernelPtr` from an address
+  // the kernel itself returned. None of them lends a host-owned buffer, so
+  // none needs a scratch lease.
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::kernelShmat!( prepared.childPid, mapping.segId, mapping.mapAddr, mapping.readOnly ? SHM_RDONLY : 0, )",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmFileTrack::kernel-export-direct-use::fileTrack(pid, addr, fd, len, fileOffset, writable, memoryLen)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::kernelShmdt!( prepared.childPid, mapping.segId, )",
-    2,
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmFlush::kernel-export-direct-use::flush(pid, addr, len)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::recordMapping!( prepared.childPid, kernelMapAddrs[mappingIndex]!, mapping.segId, mapping.size, )",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmInherit::kernel-export-direct-use::inherit(parentPid, childPid, childMemoryLen)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmPrepareWrite::kernel-export-direct-use::prepareWrite(pid, addr, len)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmProcessCount::kernel-export-direct-use::processCount(pid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmProtect::kernel-export-direct-use::protect(pid, addr, len, writable)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmReleaseProcess::kernel-export-direct-use::releaseProcess(pid, publish, detach)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmRemap::kernel-export-direct-use::remap(pid, oldAddr, newAddr, newLen)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmSyncProcess::kernel-export-direct-use::syncProcess(pid, force)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmSysvDropMapping::kernel-export-direct-use::sysvDropMapping(pid, addr, segId, size)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmSysvPublishMapping::kernel-export-direct-use::sysvPublishMapping(pid, addr, segId, size)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmSysvSyncSegment::kernel-export-direct-use::sysvSyncSegment(segId)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmSysvTrack::kernel-export-direct-use::sysvTrack(pid, addr, segId, size, readOnly)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmUnmap::kernel-export-direct-use::unmap(pid, addr, len)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#injectIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_inject_connection as ( pid: number, listenerFd: number, a: number, b: number, c: number, d: number, port: number, ) => number )( target.pid, target.fd, remoteAddr[0], remoteAddr[1], remoteAddr[2], remoteAddr[3], remotePort, )",
@@ -758,9 +791,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#retireBlockingRetryCaptureAfterExitedProcess::kernel-export-direct-use::getState(channel.pid)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#rollbackInheritedSysvAttachmentsWithinKernelEntry::kernel-export-direct-use::kernelShmdtAddr( childPid, this.toKernelPtr(mapping.mapAddr), )",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#rollbackIpcShmatWithinKernelEntry::kernel-export-direct-use::kernelShmdt(channel.pid, shmid)",
@@ -900,9 +930,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::getProcessState?.(pid)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.releaseAllSysvShmMappingsForProcess::kernel-export-direct-use::kernelShmdtAddr(pid, this.toKernelPtr(addr))",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveInheritedListenerFd::kernel-export-direct-use::findListenerFd?.(pid, wakeIdx)",

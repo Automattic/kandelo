@@ -99,15 +99,11 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
     ScratchMount { prefix: b"/srv", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 6 },
     // POSIX shared memory. Sticky and world-writable like `/tmp`, and served
     // here for the same reason: the kernel owns `/` and every other scratch
-    // prefix, so `/dev/shm` is tmpfs like the rest.
-    //
-    // This has a known cost, recorded as a gap in `docs/posix-status.md`
-    // (`mmap()`, `shm_open()`): a kernel-owned file has no host handle, so a
-    // writable `MAP_SHARED` mapping of it only writes its changed bytes back to
-    // the file (the host's descriptor write-back at msync/munmap/exec/exit),
-    // and two separate mappings of one `/dev/shm` file -- across `fork` or two
-    // `shm_open` calls -- do not converge with each other. A host-backed
-    // `/dev/shm` converged through the host's backing; this one does not yet.
+    // prefix, so `/dev/shm` is tmpfs like the rest. `MAP_SHARED` mappings of
+    // its objects -- across `fork` or separate `shm_open` calls -- are kept
+    // coherent by the kernel's shared-mapping table
+    // (`memory::SharedMappingTable`), which pins the inode (`pin_mapping`) and
+    // watches its content generation (`content_generation`).
     ScratchMount { prefix: b"/dev/shm", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 7 },
 ];
 
@@ -134,6 +130,13 @@ struct Inode {
     /// Live open descriptions. The inode is freed only when both `nlink` and
     /// `open_count` reach zero (POSIX unlink-while-open).
     open_count: u32,
+    /// Shared-mapping references (see [`pin_mapping`]). Like `open_count`, they
+    /// keep an unlinked inode alive, but they are counted apart from it on
+    /// purpose: the last *descriptor* close is the moment POSIX releases the
+    /// description's locks, and a live mapping must not postpone that.
+    map_pins: u32,
+    /// Bumped by every content mutation (see [`content_generation`]).
+    content_gen: u64,
     st_dev: u64,
     ino: u64,
     atime_sec: u64,
@@ -156,6 +159,8 @@ impl Inode {
             gid,
             nlink,
             open_count: 0,
+            map_pins: 0,
+            content_gen: 0,
             st_dev,
             ino,
             atime_sec: sec,
@@ -168,8 +173,9 @@ impl Inode {
     }
 
     /// Stamp mtime and ctime with the current published wall-clock time (a
-    /// content mutation: write, truncate).
+    /// content mutation: write, truncate), and advance the content generation.
     fn touch_modified(&mut self) {
+        self.content_gen = self.content_gen.wrapping_add(1);
         let (sec, nsec) = now();
         self.mtime_sec = sec;
         self.mtime_nsec = nsec;
@@ -318,7 +324,7 @@ impl TmpfsState {
     fn maybe_free(&mut self, idx: u32) {
         let drop_it = self
             .get(idx)
-            .map(|inode| inode.nlink == 0 && inode.open_count == 0)
+            .map(|inode| inode.nlink == 0 && inode.open_count == 0 && inode.map_pins == 0)
             .unwrap_or(false);
         if drop_it {
             self.inodes[idx as usize] = None;
@@ -595,6 +601,9 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                             if shrank {
                                 node.clear_setid_on_modify();
                             }
+                            // POSIX: an O_TRUNC open of an existing file marks
+                            // mtime and ctime for update, as the rootfs does.
+                            node.touch_modified();
                         }
                     }
                 }
@@ -822,6 +831,45 @@ pub fn release_handle(handle: i64) -> bool {
         state.maybe_free(idx);
         was_last
     })
+}
+
+/// Take a shared-mapping reference on the file behind `handle`.
+///
+/// POSIX: `mmap` adds a reference to the file that a later `close` of the
+/// descriptor does not remove, so the inode must outlive every descriptor and
+/// every name while a mapping of it exists.
+pub fn pin_mapping(handle: i64) -> Result<(), Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        if !matches!(inode.kind, InodeKind::Regular(_)) {
+            return Err(Errno::EBADF);
+        }
+        inode.map_pins = inode.map_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok(())
+    })
+}
+
+/// Drop a reference [`pin_mapping`] took, freeing an inode that has no name,
+/// descriptor or other mapping left.
+pub fn unpin_mapping(handle: i64) {
+    let Ok(idx) = file_handle_to_inode(handle) else {
+        return;
+    };
+    TMPFS.with(|state| {
+        if let Some(inode) = state.get_mut(idx) {
+            inode.map_pins = inode.map_pins.saturating_sub(1);
+        }
+        state.maybe_free(idx);
+    });
+}
+
+/// A counter that changes on every write, truncation or `O_TRUNC` open of the
+/// file behind `handle`. The shared-mapping layer compares it to learn that
+/// descriptor I/O changed a mapped file.
+pub fn content_generation(handle: i64) -> Result<u64, Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| Ok(state.get(idx).ok_or(Errno::EBADF)?.content_gen))
 }
 
 /// Whether a tmpfs handle still names a live backing (trust-boundary check).
