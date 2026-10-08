@@ -32,6 +32,7 @@ build_probe scheduler locked-thread ./locked-thread
 build_probe scheduler locked-exit ./locked-exit
 build_probe scheduler sysmon ./sysmon
 build_probe socket-basic socket-basic
+build_probe netpoll-basic netpoll-basic
 
 GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/atomic-test.wasm" internal/runtime/atomic
 GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/sync-test.wasm" sync
