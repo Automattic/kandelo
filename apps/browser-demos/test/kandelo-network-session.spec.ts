@@ -105,6 +105,38 @@ test("connects two computers by session name", async ({
     // Named before connecting, so the pair exchanges the names as soon as
     // the link opens.
     await sharer.fill("#knetwork-nickname", "garply");
+
+    // A hosted name holds what it was hosted with until hosting stops.
+    await sharer.fill("#knetwork-session", "foo-bar");
+    await sharer.getByRole("button", { name: "Host this session" }).click();
+    const stop = sharer.getByRole("button", { name: "Stop hosting" });
+    await expect(stop).toBeVisible({ timeout: 30_000 });
+    await expect(sharer.locator("#knetwork-session")).toBeDisabled();
+    await expect(sharer.locator("#knetwork-nickname")).toBeDisabled();
+    await expect(sharer.getByRole("button", { name: "Join", exact: true })).toBeDisabled();
+    await stop.click();
+    await expect(sharer.getByRole("button", { name: "Host this session" })).toBeVisible();
+    await expect(sharer.locator("#knetwork-session")).toBeEnabled();
+
+    // An empty name hosts under the suggested one, which the field then shows.
+    const suggested = await sharer.locator("#knetwork-session").getAttribute("placeholder");
+    expect(suggested).toMatch(/^[a-z]+-[a-z]+-[a-z]+$/);
+    await sharer.fill("#knetwork-session", "");
+    await sharer.getByRole("button", { name: "Host this session" }).click();
+    await expect(stop).toBeVisible({ timeout: 30_000 });
+    await expect(sharer.locator("#knetwork-session")).toHaveValue(suggested!);
+    await stop.click();
+
+    // The note says what the pointed grant does, and only while it is pointed.
+    const note = sharer.locator(".knetwork-grant-note");
+    await expect(note).not.toHaveClass(/is-shown/);
+    await sharer.getByRole("button", { name: "Watch", exact: true }).hover();
+    await expect(note).toHaveClass(/is-shown/);
+    await expect(note).toHaveText("Watch shares the screen only");
+    await sharer.getByRole("button", { name: "Join", exact: true }).hover();
+    await expect(note).toHaveText("Join runs a copy of this machine");
+    await sharer.locator("#knetwork-nickname").hover();
+    await expect(note).not.toHaveClass(/is-shown/);
     await openNetworkPopover(viewer);
     await viewer.fill("#knetwork-nickname", "waldo");
 
@@ -118,14 +150,11 @@ test("connects two computers by session name", async ({
       // The codes are off the screen: the exchange the humans used to carry
       // is collapsed behind the by-hand fallback.
       await expect(sharer.locator("#knetwork-local")).toBeHidden();
-      const host = sharer.getByRole("button", { name: "Host this session" });
+      const host = sharer.locator(".knetwork-host");
       await expect(host).toBeVisible({ timeout: 120_000 });
       await sharer.fill("#knetwork-session", "foo-bar");
       await host.click();
-      await expect(sharer.locator(".knetwork-status")).toContainText(
-        'Hosting "foo-bar"',
-        { timeout: 30_000 },
-      );
+      await expect(host).toHaveText("Stop hosting", { timeout: 30_000 });
       await viewer.fill("#knetwork-session", "foo-bar");
       await viewer.getByRole("button", { name: "Join this session" }).click();
       const settled = await Promise.all(
