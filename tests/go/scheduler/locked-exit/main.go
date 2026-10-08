@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	_ "unsafe"
 )
@@ -16,7 +17,12 @@ func main() {
 	runtime.GOMAXPROCS(2)
 	runtime.LockOSThread()
 	mainM := getm()
-	for round := 0; round < 12; round++ {
+	burst := len(os.Args) > 1 && os.Args[1] == "--burst"
+	rounds := 12
+	if burst {
+		rounds = 64
+	}
+	for round := 0; round < rounds; round++ {
 		started := make(chan struct{})
 		go func() {
 			deadline := nanotime() + 5_000_000_000
@@ -45,9 +51,15 @@ func main() {
 			}
 		}
 	startedWorker:
-		deadline = nanotime() + 100_000_000
-		for nanotime() < deadline {
+		if !burst {
+			deadline = nanotime() + 100_000_000
+			for nanotime() < deadline {
+			}
 		}
+	}
+	if burst {
+		fmt.Println("locked worker burst exit and slot reuse: complete")
+		return
 	}
 	fmt.Println("locked worker exit and slot reuse: complete")
 }
