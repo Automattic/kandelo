@@ -67,7 +67,6 @@ export const App: React.FC = () => {
   const lazyDownloads = useLazyDownloads();
   const machineProgress = useMachineProgress();
   const surface = useMachineSurfaceController();
-  useVfsTools();
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
@@ -85,6 +84,7 @@ export const App: React.FC = () => {
   const [themeOpen, setThemeOpen] = React.useState(false);
   const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
+  useVfsTools(() => terminals.find((terminal) => terminal.id === activeTerminalId)?.path ?? null);
   const [audioState, setAudioState] = React.useState<MachineAudioState>(() => host.getAudioState());
   const [audioActive, setAudioActive] = React.useState<boolean>(() => host.getAudioActivity());
   const [audioError, setAudioError] = React.useState<string | null>(null);

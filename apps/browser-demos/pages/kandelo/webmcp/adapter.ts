@@ -6,7 +6,7 @@ import { contracts, guestPath, ToolError, type Schema } from './contract';
 import { buildLaunchLink } from './launch-link';
 import { modelContextOf } from './model-context';
 import { builtInTool, objectSchema, registerTool } from './registry';
-import { getWebMcpRuntimeCapabilities, listGuestDirectory, startGuestJob, readGuestJob, readGuestFile, writeGuestFile } from './runtime';
+import { announceGuestScript, getWebMcpRuntimeCapabilities, jobStreams, listGuestDirectory, startGuestJob, readGuestJob, readGuestFile, writeGuestFile } from './runtime';
 
 export interface AppBindings {
   host: KernelHost;
@@ -87,6 +87,7 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
     if (generationId !== id || disposed) throw new ToolError('STALE_SESSION', 'Computer was replaced; rediscover current IDs');
   }
   function qualified(id: string) { return `${generationId}:${id}`; }
+  function activeTerminalPath() { return get().terminals.find(t => t.id === get().activeTerminalId)?.path ?? null; }
   function parseCursor(raw: unknown, stream: string, oldest: number, end: number): number {
     if (raw === undefined) return oldest;
     const prefix = `${generationId}:${stream}:`;
@@ -156,14 +157,7 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
       throw error;
     }
     if (result.expired) throw new ToolError('OUTPUT_EXPIRED', 'Job output is no longer retained', { oldestCursor: `${prefix}${result.oldest}`, truncated: true });
-    const decode = (stream: 'stdout' | 'stderr') => {
-      const chunks = result.chunks.filter(chunk => chunk.stream === stream);
-      const bytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.bytes.length, 0));
-      let index = 0;
-      for (const chunk of chunks) { bytes.set(chunk.bytes, index); index += chunk.bytes.length; }
-      return decoder.decode(bytes);
-    };
-    return { jobId, pid: result.pid, status: result.status, exitCode: result.exitCode, terminationObserved: result.terminationObserved, stdout: decode('stdout'), stderr: decode('stderr'), nextCursor: `${prefix}${result.next}`, hasMore: result.hasMore, truncated: result.truncated };
+    return { jobId, pid: result.pid, status: result.status, exitCode: result.exitCode, terminationObserved: result.terminationObserved, ...jobStreams(result.chunks), nextCursor: `${prefix}${result.next}`, hasMore: result.hasMore, truncated: result.truncated };
   }
   async function execute(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     checkSignal(signal);
@@ -196,6 +190,7 @@ export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: 
         const jobId = qualified(`job-${crypto.randomUUID()}`);
         await startGuestJob(host, jobId, args as { script: string });
         sameGeneration(current);
+        announceGuestScript(host, activeTerminalPath(), args.script as string);
         const deadline = performance.now() + Number(args.waitMs ?? 1000);
         let result = await readJob(jobId);
         while (result.status === 'running' && performance.now() < deadline) {
