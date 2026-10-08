@@ -39,6 +39,25 @@ pub enum DevfsEntry {
     KandeloDir,
 }
 
+/// Whether `path` is inside the `/dev` namespace at all.
+pub fn is_namespace_path(path: &[u8]) -> bool {
+    path == b"/dev" || path.starts_with(b"/dev/")
+}
+
+/// Whether `path` names a `/dev` subtree that some OTHER authority serves:
+/// `/dev/shm`, POSIX shared memory, which is a separate mount rather than a
+/// devfs node.
+pub fn is_delegated_path(path: &[u8]) -> bool {
+    path == b"/dev/shm" || path.starts_with(b"/dev/shm/")
+}
+
+/// Whether the kernel's devfs — not a mount and not the root filesystem — is
+/// the authority for `path`. The in-kernel root filesystem consults this so a
+/// kernel-owned namespace never depends on the host's mount list.
+pub fn owns_path(path: &[u8]) -> bool {
+    is_namespace_path(path) && !is_delegated_path(path)
+}
+
 /// Match a resolved path to a devfs directory entry.
 pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
     match path {

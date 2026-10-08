@@ -543,6 +543,7 @@ impl ProcessTable {
         self.ensure_init();
         let task_id = self.allocate_task_id()?;
         let pid = task_id.as_raw();
+        crate::image_build_determinism::process_created(pid);
         self.processes
             .insert(pid, Process::new_allocated_with_stdio(task_id, stdio));
         Ok(pid)
@@ -1264,6 +1265,7 @@ impl ProcessTable {
 
         let child_task_id = self.allocate_task_id()?;
         let child_pid = child_task_id.as_raw();
+        crate::image_build_determinism::process_created(child_pid);
         let mut child = Process::new_allocated(child_task_id);
 
         // ── POSIX-required inheritance ─────────────────────────────────
@@ -1530,6 +1532,7 @@ impl ProcessTable {
         };
         let task_id = self.allocate_task_id()?;
         let tid = task_id.as_raw();
+        crate::image_build_determinism::thread_created(pid, tid);
         let process = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
         let thread_info = process.add_allocated_thread(task_id, ctid_ptr, stack_ptr, tls_ptr);
         thread_info.signals.blocked = inherited_blocked;
@@ -1579,6 +1582,13 @@ impl ProcessTable {
             matches!(process.state, ProcessState::Running | ProcessState::Stopped)
                 && process.get_thread(tid).is_some()
         })
+    }
+
+    /// Whether this kernel has ever allocated a user task identity (process or
+    /// thread), whether or not it still exists. Used to refuse boot-time-only
+    /// configuration once any guest has run.
+    pub fn has_allocated_user_tasks(&self) -> bool {
+        self.next_task_id != FIRST_TASK_ID
     }
 
     /// Collect every retained PID, including internal limbo identities.

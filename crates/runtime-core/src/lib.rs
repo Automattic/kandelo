@@ -25,9 +25,14 @@ pub mod fd;
 pub mod fifo;
 pub mod fork;
 pub mod guest_ptr;
+pub mod image_build_determinism;
+pub mod image_policy;
 pub mod input;
 pub mod ipc;
 pub mod ipc_wire;
+pub mod kandelo_image_fs;
+pub mod kandelo_image_write;
+pub mod klzy;
 pub mod lock;
 pub mod memory;
 pub mod mouse;
@@ -46,17 +51,23 @@ pub mod process_wire;
 pub mod procfs;
 pub mod pshared;
 pub mod pty;
+pub mod rootfs;
 pub mod scratch_alloc;
+pub mod sdef;
+pub mod seal;
 pub mod signal;
 pub mod socket;
 pub mod spawn;
 pub mod syscalls;
 pub mod terminal;
+pub mod tmpfs;
 pub mod transfer;
 pub mod unix_socket;
+pub mod vfsi_container;
 pub mod wait_queue;
 pub mod wait_shadow;
 pub mod wakeup;
+pub mod zip;
 
 // The engine-agnostic capability contract. `HostCapabilities` is the forward
 // name for the Rust-first design; `HostIO` is kept as the primary name to
@@ -89,6 +100,11 @@ pub fn debug_log(_msg: &str) {}
 /// Get current real time in seconds (CLOCK_REALTIME).
 /// On wasm32, calls the host import. On native (tests), returns 0.
 pub fn current_time_secs() -> i64 {
+    // An image-build kernel answers the wall clock from the build's epoch
+    // (see `image_build_determinism`), like every other realtime read.
+    if let Some((sec, _nsec)) = image_build_determinism::realtime_for_current_task() {
+        return sec;
+    }
     #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
     {
         #[link(wasm_import_module = "env")]
