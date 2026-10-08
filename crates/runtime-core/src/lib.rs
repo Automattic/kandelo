@@ -25,9 +25,13 @@ pub mod fd;
 pub mod fifo;
 pub mod fork;
 pub mod guest_ptr;
+pub mod image_policy;
 pub mod input;
 pub mod ipc;
 pub mod ipc_wire;
+pub mod kandelo_image_fs;
+pub mod kandelo_image_write;
+pub mod klzy;
 pub mod lock;
 pub mod memory;
 pub mod mouse;
@@ -46,17 +50,23 @@ pub mod process_wire;
 pub mod procfs;
 pub mod pshared;
 pub mod pty;
+pub mod rootfs;
 pub mod scratch_alloc;
+pub mod sdef;
+pub mod seal;
 pub mod signal;
 pub mod socket;
 pub mod spawn;
 pub mod syscalls;
 pub mod terminal;
+pub mod tmpfs;
 pub mod transfer;
 pub mod unix_socket;
+pub mod vfsi_container;
 pub mod wait_queue;
 pub mod wait_shadow;
 pub mod wakeup;
+pub mod zip;
 
 // The engine-agnostic capability contract. `HostCapabilities` is the forward
 // name for the Rust-first design; `HostIO` is kept as the primary name to

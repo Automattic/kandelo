@@ -196,6 +196,36 @@ pub const ABI_VERSION: u32 = 48;
 /// changing this width is an ABI change.
 pub const SCHED_AFFINITY_MASK_SIZE: u32 = 4;
 
+/// Kandelo's reference instant, in whole seconds since the Unix epoch: the
+/// one fixed time to use whenever a fixed time is needed.
+///
+/// It is the commit time of the first Kandelo commit,
+/// `b44d42a0d7ff9527e660972f99c3e837b284da80`, 2026-03-07T23:38:11-05:00.
+///
+/// # Why a named instant rather than 0
+///
+/// Reproducible artifacts cannot carry the wall clock, so something has to
+/// stand in for "now". Zero is the obvious stand-in and the wrong one: real
+/// software reads a timestamp of 0 as "no timestamp". PHP's opcache is the
+/// case that forced this: `opcache_compile_file` refuses to cache a file
+/// whose mtime is 0, so every file an image builder staged at mtime 0 was
+/// silently uncacheable, and the build-time opcache warm-up wrote nothing.
+/// An instant from Kandelo's own history is plausible to every consumer,
+/// is in the past for every consumer, and says where it came from.
+///
+/// Image builders stamp staged files with it unless the caller supplies a
+/// time; images stay byte-deterministic because the value never moves. It
+/// may later become the first instant of a release cycle, which is why it
+/// is one constant with one name rather than a literal at each use.
+///
+/// This is a build/image convention, not part of the kernel<->process ABI:
+/// changing it changes artifact bytes and cache keys, not compatibility.
+pub const KANDELO_REFERENCE_EPOCH_SECONDS: u64 = 1_772_944_691;
+
+/// [`KANDELO_REFERENCE_EPOCH_SECONDS`] in milliseconds, the unit the VFS
+/// image writer stores.
+pub const KANDELO_REFERENCE_EPOCH_MILLIS: u64 = KANDELO_REFERENCE_EPOCH_SECONDS * 1000;
+
 /// Kandelo's advertised cross-layer POSIX limits.
 ///
 /// Keep these outside any one syscall protocol: libc headers, Rust syscall
@@ -915,6 +945,7 @@ pub enum Errno {
     EIO = 5,
     ENXIO = 6,
     E2BIG = 7,
+    ENOEXEC = 8,
     EBADF = 9,
     ECHILD = 10,
     EAGAIN = 11,
@@ -938,6 +969,7 @@ pub enum Errno {
     EROFS = 30,
     EMLINK = 31,
     EPIPE = 32,
+    EDOM = 33,
     ERANGE = 34,
     EDEADLK = 35,
     ENAMETOOLONG = 36,
@@ -948,6 +980,7 @@ pub enum Errno {
     ENOMSG = 42,
     EIDRM = 43,
     ENODATA = 61,
+    EPROTO = 71,
     EOVERFLOW = 75,
     EBADFD = 77,
     ENOTSOCK = 88,
@@ -986,6 +1019,7 @@ impl Errno {
             5 => Some(Errno::EIO),
             6 => Some(Errno::ENXIO),
             7 => Some(Errno::E2BIG),
+            8 => Some(Errno::ENOEXEC),
             9 => Some(Errno::EBADF),
             10 => Some(Errno::ECHILD),
             11 => Some(Errno::EAGAIN),
@@ -1009,6 +1043,7 @@ impl Errno {
             30 => Some(Errno::EROFS),
             31 => Some(Errno::EMLINK),
             32 => Some(Errno::EPIPE),
+            33 => Some(Errno::EDOM),
             34 => Some(Errno::ERANGE),
             35 => Some(Errno::EDEADLK),
             36 => Some(Errno::ENAMETOOLONG),
@@ -1019,6 +1054,7 @@ impl Errno {
             42 => Some(Errno::ENOMSG),
             43 => Some(Errno::EIDRM),
             61 => Some(Errno::ENODATA),
+            71 => Some(Errno::EPROTO),
             75 => Some(Errno::EOVERFLOW),
             77 => Some(Errno::EBADFD),
             88 => Some(Errno::ENOTSOCK),
@@ -2545,6 +2581,63 @@ pub mod abi {
     pub const WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE: u16 = 24;
     pub const WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64: u8 = 1 << 0;
     pub const WPK_FORK_IMPORTED_TABLE_KNOWN_FLAGS: u8 = WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64;
+
+    /// Kernel-facing lazy-linkage section of a VFS image ("KLZY").
+    ///
+    /// A VFS image's trailing sections are otherwise JSON, and JSON is the
+    /// host's persistence form for host authority: fetch URLs, transports,
+    /// integrity digests, activation seals, and per-builder image metadata.
+    /// Exactly two facts in it are kernel-relevant — a lazy file's real size,
+    /// and an archive member's `(archive_id, source_path, size)` — and the
+    /// kernel already consumes both in binary today through RTFS v3's
+    /// `KIND_LAZY_FILE` entries. `KLZY` moves that same kernel-needed subset
+    /// into the image itself, so the kernel can read an image's lazy linkage
+    /// without a JSON parser and without the host walking the tree first.
+    ///
+    /// The section is appended after the image-metadata section and announced
+    /// by `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY`. Readers that predate it stop at
+    /// the metadata section and never observe either the flag or the bytes.
+    ///
+    /// Layout (all little-endian), following the `KFIG` idiom:
+    ///
+    /// Header (`VFS_IMAGE_KERNEL_LAZY_HEADER_SIZE` = 20 bytes): `+0` magic
+    /// `KLZY`, `+4` version (u16), `+6` header size (u16), `+8` archive-group
+    /// count (u32), `+12` file-record count (u32), `+16` reserved (u32, 0).
+    ///
+    /// Then `group_count` group records
+    /// (`VFS_IMAGE_KERNEL_LAZY_GROUP_HEADER_SIZE` = 24 bytes + name): `+0`
+    /// record size (u32, `24 + mount_prefix_len`), `+4` archive id (nonzero
+    /// u32, strictly increasing), `+8` archive byte length (u64), `+16` flags
+    /// (u16), `+18` reserved (u16, 0), `+20` mount-prefix length (u32),
+    /// followed by the UTF-8 mount prefix.
+    ///
+    /// Then `file_count` file records
+    /// (`VFS_IMAGE_KERNEL_LAZY_FILE_HEADER_SIZE` = 24 bytes + path): `+0`
+    /// record size (u32, `24 + source_path_len`), `+4` inode number (nonzero
+    /// u32, unique), `+8` real size in bytes (u64), `+16` archive id (u32; `0`
+    /// means a URL-backed single lazy file rather than an archive member),
+    /// `+20` source-path length (u32; zero exactly when the archive id is
+    /// zero), followed by the UTF-8 source path relative to the archive root.
+    ///
+    /// `archive_id` is assigned by the image writer rather than minted at
+    /// boot, so the kernel's archive table and the host's fetch table cannot
+    /// drift. It is an image-local ordinal and carries no transport meaning.
+    pub const VFS_IMAGE_KERNEL_LAZY_MAGIC: [u8; 4] = *b"KLZY";
+    pub const VFS_IMAGE_KERNEL_LAZY_VERSION: u16 = 1;
+    pub const VFS_IMAGE_KERNEL_LAZY_HEADER_SIZE: u16 = 20;
+    pub const VFS_IMAGE_KERNEL_LAZY_GROUP_HEADER_SIZE: u16 = 24;
+    pub const VFS_IMAGE_KERNEL_LAZY_FILE_HEADER_SIZE: u16 = 24;
+    /// No group flag is defined yet. A `SOURCE_PATH_DERIVED` bit — "every
+    /// member's source path is its VFS path with `mount_prefix + '/'`
+    /// stripped" — is reachable here, but only for a writer that PROVES the
+    /// invariant per group and falls back to explicit paths otherwise. Today's
+    /// images satisfy it, but that is a property of today's builders, not of
+    /// the format, so the writer encodes every source path explicitly.
+    pub const VFS_IMAGE_KERNEL_LAZY_GROUP_KNOWN_FLAGS: u16 = 0;
+    /// Announces the trailing `KLZY` section in the VFS image header's flags
+    /// word. Bits 0-3 are `HAS_LAZY`, `HAS_LAZY_ARCHIVES`, `HAS_METADATA`, and
+    /// `HAS_TYPED_LAZY_ARCHIVES` (see `crates/runtime-core/src/kandelo_image_fs.rs`).
+    pub const VFS_IMAGE_FLAG_HAS_KERNEL_LAZY: u32 = 1 << 4;
 
     /// ABI 43 structural Wasm GC reconstruction catalog.
     ///
