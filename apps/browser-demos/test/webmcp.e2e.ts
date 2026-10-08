@@ -262,6 +262,12 @@ test("nginx serves a guest file through the preview and rejects external or trav
   });
   // Same-origin discovery may include parent tools, but the guest registers none.
   expect(exposed === undefined || exposed === 0).toBe(true);
+  expect((await call(page, "write_file", {
+    path: "/var/www/html/webmcp-away.html", content: "<!doctype html><script>location.replace('about:blank')</script>", overwrite: true,
+  })).ok).toBe(true);
+  await call(page, "navigate_preview", { path: "/webmcp-away.html" });
+  await expect.poll(() => page.locator('iframe.kweb-frame').evaluate((element: HTMLIFrameElement) => element.contentWindow?.location.href)).toBe("about:blank");
+  await expect(page.getByText("Loading...", { exact: true })).not.toBeVisible();
 });
 
 

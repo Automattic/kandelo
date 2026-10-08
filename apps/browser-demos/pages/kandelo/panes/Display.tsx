@@ -1,4 +1,5 @@
 import { beginPreviewNavigation, previewDocumentLoaded, previewRendered } from "./preview-progress";
+import { buildPreviewUrl, normalizePreviewPath, relativePathFromHref } from "./preview-url";
 import * as React from "react";
 import { useKernelHost, useWebPreview } from "../kernel-host/react";
 import { Framebuffer, type FramebufferProps } from "./Framebuffer";
@@ -153,7 +154,7 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
       path={path}
       ready={ready}
       pendingRequests={pendingRequests}
-      loading={loading}
+      loading={ready && loading}
       message={preview.message}
       onNavigate={navigate}
       onReload={reloadPreview}
@@ -208,13 +209,13 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
           src={iframeSrc}
           title={preview.label}
           onLoad={() => {
+            setLoading(false);
             syncFromFrame();
             const frame = iframeRef.current;
             try {
               const href = frame?.contentWindow?.location.href;
               const loadedPath = href && relativePathFromHref(preview.url, href);
               if (loadedPath && frame?.contentDocument?.readyState === "complete") {
-                setLoading(false);
                 const state = previewDocumentLoaded(host, loadedPath);
                 // Two animation frames allow the newly loaded document a paint
                 // opportunity. This is not application-specific hydration readiness.
@@ -318,43 +319,6 @@ const WebPreviewDockControls: React.FC<{
     </form>
   );
 };
-
-function buildPreviewUrl(base: string, path: string): string {
-  if (base === "about:blank") return base;
-  try {
-    const root = new URL(base, window.location.href);
-    const normalized = normalizePreviewPath(path, base);
-    const rel = normalized.slice(1);
-    return new URL(rel || ".", root).href;
-  } catch {
-    return base;
-  }
-}
-
-function normalizePreviewPath(raw: string, base: string): string {
-  const value = raw.trim();
-  if (!value) return "/";
-
-  const fromAbsolute = relativePathFromHref(base, value);
-  if (fromAbsolute) return fromAbsolute;
-
-  if (value.startsWith("?") || value.startsWith("#")) return `/${value}`;
-  return value.startsWith("/") ? value : `/${value}`;
-}
-
-function relativePathFromHref(base: string, href: string): string | null {
-  if (base === "about:blank") return "/";
-  try {
-    const root = new URL(base, window.location.href);
-    const url = new URL(href, root);
-    const rootPath = root.pathname.endsWith("/") ? root.pathname : `${root.pathname}/`;
-    if (url.origin !== root.origin || !url.pathname.startsWith(rootPath)) return null;
-    const suffix = url.pathname.slice(rootPath.length);
-    return `/${suffix}${url.search}${url.hash}`;
-  } catch {
-    return null;
-  }
-}
 
 function frameDocument(ref: React.RefObject<HTMLIFrameElement | null>): Document | null {
   try {
