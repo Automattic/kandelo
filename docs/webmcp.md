@@ -244,6 +244,7 @@ Run the native WebMCP browser E2E suite:
 
 ```sh
 ./run.sh setup
+./run.sh prepare-browser
 scripts/dev-shell.sh bash -c '
   export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
   export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
@@ -251,6 +252,11 @@ scripts/dev-shell.sh bash -c '
   npx playwright test --config webmcp.playwright.config.ts
 '
 ```
+
+`./run.sh setup` does not build the programs the page imports;
+`./run.sh prepare-browser` builds them into `local-binaries/source-only-v1`.
+Without it Vite rejects a missing program such as `elinks.wasm` and no tool
+registers.
 
 The two variables select the source-only resolution policy. Without them the
 binary resolver validates a declared package closure across tiers and demands
