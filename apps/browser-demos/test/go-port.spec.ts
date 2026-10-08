@@ -90,6 +90,18 @@ const probes: Probe[] = [
     argv: ["go-exit-worker"],
     stdout: ["worker M: exiting process"],
   },
+  {
+    name: "Go atomic package short tests",
+    file: "atomic-test.wasm",
+    argv: ["go-atomic-test", "-test.short"],
+    stdout: ["PASS"],
+  },
+  {
+    name: "Go sync mutex, waitgroup, and condition tests",
+    file: "sync-test.wasm",
+    argv: ["go-sync-test", "-test.run=^(TestMutex|TestWaitGroup|TestCondSignal)$", "-test.short"],
+    stdout: ["PASS"],
+  },
 ];
 
 async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<ProbeResult> {

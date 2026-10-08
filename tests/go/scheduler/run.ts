@@ -5,12 +5,13 @@ const programPath = process.argv[2];
 const kernelPath = process.argv[3];
 const expectedOutput = process.argv[4] ?? "parallel M: complete";
 if (!programPath || !kernelPath) {
-  throw new Error("usage: node --import tsx run.ts <program.wasm> <kernel.wasm>");
+  throw new Error("usage: node --import tsx run.ts <program.wasm> <kernel.wasm> [expected-output] [guest-args...]");
 }
 
 const result = await runCentralizedProgram({
   programPath,
   kernelWasmBytes: readFileSync(kernelPath),
+  argv: [programPath, ...process.argv.slice(5)],
   timeout: 30_000,
   useDefaultRootfs: false,
 });

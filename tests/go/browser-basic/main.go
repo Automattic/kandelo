@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"os"
 	"time"
@@ -15,6 +16,20 @@ func main() {
 	}
 	if time.Now().UnixNano() <= 0 {
 		panic("clock unavailable")
+	}
+	randomBytes := make([]byte, 16)
+	if _, err := rand.Read(randomBytes); err != nil {
+		panic(err)
+	}
+	allZero := true
+	for _, randomByte := range randomBytes {
+		if randomByte != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		panic("random source returned only zeroes")
 	}
 	input, err := os.ReadFile("/etc/go-browser-input")
 	if err != nil || string(input) != "browser fixture\n" {

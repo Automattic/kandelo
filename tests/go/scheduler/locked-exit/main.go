@@ -14,6 +14,7 @@ func nanotime() int64
 
 func main() {
 	runtime.GOMAXPROCS(2)
+	runtime.LockOSThread()
 	mainM := getm()
 	for round := 0; round < 12; round++ {
 		started := make(chan struct{})

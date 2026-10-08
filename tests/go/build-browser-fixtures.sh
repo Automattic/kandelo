@@ -32,4 +32,7 @@ build_probe scheduler locked-thread ./locked-thread
 build_probe scheduler locked-exit ./locked-exit
 build_probe scheduler sysmon ./sysmon
 
+GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/atomic-test.wasm" internal/runtime/atomic
+GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/sync-test.wasm" sync
+
 printf 'Go browser fixtures built in %s\n' "$output_dir"
