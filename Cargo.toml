@@ -3,9 +3,11 @@ resolver = "2"
 members = [
     "crates/shared",
     "crates/runtime-core",
+    "crates/kandelo-image-module",
     "crates/kernel",
     "crates/fork-instrument",
     "crates/wasm-local-root-spill",
+    "crates/wasm-artifact",
     "tools/xtask",
 ]
 

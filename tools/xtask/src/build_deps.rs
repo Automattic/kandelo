@@ -8872,7 +8872,7 @@ impl Drop for BuildInputHashPass {
     }
 }
 
-fn hash_build_input(path: &Path) -> Result<[u8; 32], String> {
+pub(crate) fn hash_build_input(path: &Path) -> Result<[u8; 32], String> {
     if let Some(digest) = BUILD_INPUT_HASH_MEMO
         .with(|memo| memo.borrow().as_ref().and_then(|memo| memo.get(path).copied()))
     {
