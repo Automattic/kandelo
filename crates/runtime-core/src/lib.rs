@@ -32,6 +32,7 @@ pub mod input;
 pub mod ipc;
 pub mod ipc_wire;
 pub mod kandelo_image_fs;
+pub mod kernel_file_mapping;
 pub mod kandelo_image_write;
 pub mod klzy;
 pub mod lock;
@@ -68,6 +69,7 @@ pub mod vfsi_container;
 pub mod wait_queue;
 pub mod wait_shadow;
 pub mod wakeup;
+pub mod writeback_loss;
 pub mod zip;
 
 // The engine-agnostic capability contract. `HostCapabilities` is the forward
