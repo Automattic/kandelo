@@ -136,9 +136,13 @@ scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=
 
 It is a deliberately unpassed gate, not part of the passing Go suite. An
 uncommitted `cmd/cgo` frontend experiment in the adjacent fork parses the
-Wasm debug object far enough for both fixtures to reach the Go linker, but
-neither links or runs. The published fork still fails at the pointer-size
-check. Do not use a successful cgo frontend pass as PHP or FrankenPHP support.
+Wasm debug object far enough for both fixtures to reach the Go linker. The
+published fork's internal linker now reads C function bodies and direct CODE
+relocations, but the full build stops at unsupported `runtime/cgo` memory
+relocations, data, and dynamic symbols. Neither fixture links or runs. The
+`go-hello` package is still pinned to the earlier fork revision that fails
+at pointer-size recognition. Do not use a successful cgo frontend or
+function-body parse as PHP or FrankenPHP support.
 
 ## RoadRunner feasibility probe
 

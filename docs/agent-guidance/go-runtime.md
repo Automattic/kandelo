@@ -90,12 +90,13 @@ Trace the whole link path before changing flags or package recipes:
   correct interpretations. The scratch Wasm reader in the adjacent fork
   is not yet a reviewed implementation.
 - `src/cmd/link/internal/ld/lib.go` loads cgo's C objects. Internal mode
-  currently calls them an unrecognized format; external mode reaches
-  unsupported PC-relative relocations. `src/cmd/link/internal/wasm/asm.go`
-  emits a final Wasm module, not an object that `wasm-ld` can link with
-  the SDK's C Wasm objects. A direct `wasm-ld` attempt on that output
-  rejects it. Do not suppress relocation errors to make the build appear
-  to advance.
+  originally rejected their format; the current fork imports function-only
+  Wasm objects but not the data/memory relocations in `runtime/cgo`.
+  External mode reaches unsupported PC-relative relocations.
+  `src/cmd/link/internal/wasm/asm.go` emits a final Wasm module, not an
+  object that `wasm-ld` can link with the SDK's C Wasm objects. A direct
+  `wasm-ld` attempt on that output rejects it. Do not suppress relocation
+  errors to make the build appear to advance.
 - C objects carry Wasm `linking` and `reloc.*` sections. The pthread
   callback fixture's C object needs function-index, global-index,
   table-index, and debug relocations; it references `go_double`,
@@ -111,23 +112,29 @@ Trace the whole link path before changing flags or package recipes:
   Go did not create must attach to a valid M, scheduler P, and per-thread
   Kandelo syscall channel. A same-thread callback alone is insufficient.
 
-Start linker work with an internal Wasm host-object reader for one small SDK
-C object, because the existing Go linker already owns Kandelo's final
-memory, table, exports, and ABI marker. Parse the C object's `linking` and
-`reloc.*` records, resolve its symbols, and prove one real C call in the
-final Go module before expanding to C archives or PHP. This is a proposed
-first spike, not established feasibility: if it cannot preserve C function
-types, table slots, static data and TLS alongside Go's layout, evaluate a
+Continue linker work from the internal Wasm host-object reader, because the
+Go linker already owns Kandelo's final memory, table, exports, and ABI
+marker. Extend it to C data and memory relocations, then resolve the C
+shim's Go-facing symbols and prove one real C call in the final Go module
+before expanding to C archives or PHP. This path is not yet established
+feasible: if it cannot preserve C function types, table slots, static data
+and TLS alongside Go's layout, evaluate a
 relocatable-Go-object/external-link design explicitly. Never feed a final
 Go module to `wasm-ld` as though it were a relocatable object, implement
 only the object parser and call the link complete, or route calls through a
 host shim that changes Kandelo's normal program model.
 
-An initial, isolated `cmd/link/internal/loadwasm` reader in the adjacent fork
-now decodes imports, symbols, and the three CODE relocation kinds exercised
-by the C-call and callback objects. It has not been integrated into `ldobj`,
-does not apply relocations or emit C code, and does not decode debug
-relocations or archives. Keep this distinction explicit in progress reports.
+`cmd/link/internal/loadwasm` in the adjacent fork decodes imports, symbols,
+signatures, bodies, and the CODE relocation kinds exercised by the C-call and
+callback objects. The Kandelo-only internal-linker path imports C function
+bodies and signatures and resolves direct function-index relocations among
+loaded C functions. It still does not decode debug relocations or archives,
+and it cannot link the cgo probes. The first full internal-link attempt
+encounters `runtime/cgo`'s memory-relative relocation and data segments,
+followed by dynamic-symbol and unresolved runtime/cgo references. Do not
+silently omit those sections or treat the C shim's `_cgo_topofstack` call as
+a direct call to a Go-resumable function. The function-body path is only one
+link layer.
 
 Use the staged probes in `tests/go/README.md`:
 first a C call, then Go-to-C-to-Go on the calling thread, then a C-created

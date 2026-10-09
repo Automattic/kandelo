@@ -1349,6 +1349,31 @@ this reader spike. The `go-hello` package remains pinned to fork commit
 `ab8c85d83da6f18ade171f557fd0201344c65ddf`; no Kandelo ABI change or
 package pin update is warranted until a usable linker revision exists.
 
+**2026-10-09 — Wasm host-function import and link boundary.** Published Go
+fork commit `9c67cfe51e473c76f3a8d15020e9ca79106dcdcd`. The internal
+linker now recognizes Kandelo Wasm C objects, loads defined C functions as
+text symbols, carries their actual Wasm signatures and bodies into the final
+emitter, and patches direct function/global index relocations when their
+targets are available. The C-call shim's two `_cgo_topofstack` relocation
+sites are verified against its real SDK object, including padded LEB rewrite;
+the parser rejects relocations outside function bodies and unsupported kinds.
+This is *not* a linked cgo program: a `CGO_ENABLED=1` build with the
+uncommitted frontend and `-ldflags=-linkmode=internal` reaches the new loader
+but stops on `runtime/cgo`'s `R_WASM_MEMORY_ADDR_REL_SLEB` relocation. That
+object also carries data segments and references to `malloc`, `stderr`,
+`fwrite`, and `abort`; Go's internal link reports unsupported dynamic-symbol
+handling and undefined runtime/cgo symbols. The C-call shim itself invokes
+`_cgo_topofstack`, a Go/C calling-convention transition not yet implemented;
+`runtime.asmcgocall` and `runtime.cgocallback` still trap. The next work must
+model C data/memory/global relocations and archive resolution, then implement
+typed Go/C cross-call adapters and runtime/cgo thread attachment before the
+C-call and callback probes can run. `cmd/link/...` tests pass; pure-Go
+`kandelo`, `js`, and `wasip1` sample builds pass, and the Kandelo sample
+validates with Wasm threads enabled. No new C-containing Wasm module was
+produced or run on Node or Chromium. The `go-hello` package remains pinned
+to `ab8c85d83da6f18ade171f557fd0201344c65ddf`; no Kandelo ABI or
+package-pin change accompanies this incomplete link step.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
