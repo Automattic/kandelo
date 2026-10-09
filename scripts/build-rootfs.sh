@@ -33,6 +33,19 @@ source "$REPO_ROOT/scripts/build-step-input-hash.sh"
 OUT="${ROOTFS_OUT:-host/wasm/rootfs.vfs.zst}"
 STAMP="$OUT.input-hash"
 
+# The default Node resolver prefers the engine's published program tree.
+# Compose its lazy references from that same tree: ordinary package caches
+# can lack the ABI-contract section added when the engine publishes a Wasm
+# program, so their byte counts are not interchangeable. Resolver-owned
+# builds and callers selecting an explicit artifact map keep their inputs.
+if [ -z "${ROOTFS_BINARIES_DIR:-}" ] &&
+   [ -z "${ROOTFS_RESOLVED_OUTPUT_MAP:-}" ] &&
+   [ "${ROOTFS_STAGE_RESOLVER_BINARIES:-0}" != "1" ] &&
+   [ -f "$REPO_ROOT/local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json" ]; then
+    ROOTFS_BINARIES_DIR="$REPO_ROOT/local-binaries/source-only-v1"
+    ROOTFS_SKIP_PACKAGE_RESOLVE=1
+fi
+
 # Resolve the manifest path, source-tree path, and target kernel ABI version
 # BEFORE computing the input digest below. All three are overridable via env
 # vars (ROOTFS_MANIFEST, ROOTFS_SOURCE_TREE, ROOTFS_ABI_VERSION) that this
@@ -89,6 +102,7 @@ ROOTFS_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
     scripts/generate-rootfs-package-manifest.mjs \
     scripts/build-step-input-hash.sh \
     crates/shared/src/lib.rs \
+    "literal:ROOTFS_BINARIES_DIR=${ROOTFS_BINARIES_DIR:-default}" \
     "literal:ABI_VERSION=$ABI_VERSION")"
 
 if [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != "1" ] &&

@@ -6,7 +6,7 @@ kind = "library"
 
 name = "libzstd"
 version = "1.5.6"
-kernel_abi = 7
+kernel_abi = 47
 depends_on = []
 arches = ["wasm32", "wasm64"]
 

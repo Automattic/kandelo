@@ -19,9 +19,10 @@ describe("qtbase package contract", () => {
     );
     // The recipe stages its source through the shared verifying helper,
     // and a standalone run checks the same digest the manifest pins.
+    expect(build).toContain('kandelo_package_load_source_metadata "$SCRIPT_DIR"');
     expect(build).toContain("kandelo_package_stage_verified_source qtbase");
     expect(build).toContain(
-      'SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-aeb78d29291a2b5fd53cb55950f8f5065b4978c25fb1d77f627d695ab9adf21e}"',
+      'SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"',
     );
   });
 

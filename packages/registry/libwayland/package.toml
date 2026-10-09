@@ -34,7 +34,7 @@ kind = "library"
 name = "libwayland"
 version = "1.24.0"
 kernel_abi = 16
-depends_on = ["libffi@0.1.0", "wayland-protocols@1.45"]
+depends_on = ["libffi@0.1.0", "wayland-protocols@1.45", "libdrm@2.4.120"]
 
 [[host_tools]]
 # Pure code generator (like flex/bison); provided via flake.nix, consumed

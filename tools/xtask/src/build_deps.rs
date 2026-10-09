@@ -5188,6 +5188,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn package_context_cache_keys(
     manifest: &DepsManifest,
     registry: &Registry,
@@ -5206,8 +5207,19 @@ fn package_context_cache_keys_for_policy(
     abi_version: u32,
     policy: ResolvePolicy,
 ) -> Result<BTreeMap<String, String>, String> {
+    package_context_cache_keys_with_memo(
+        manifest, registry, abi_version, policy, &mut BTreeMap::new(),
+    )
+}
+
+fn package_context_cache_keys_with_memo(
+    manifest: &DepsManifest,
+    registry: &Registry,
+    abi_version: u32,
+    policy: ResolvePolicy,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+) -> Result<BTreeMap<String, String>, String> {
     let mut cache_keys = BTreeMap::new();
-    let mut memo = BTreeMap::new();
     for arch in PROGRAM_PACKAGE_CONTEXT_ARCHES {
         let cache_key = compute_sha_for_policy(
             manifest,
@@ -5215,7 +5227,7 @@ fn package_context_cache_keys_for_policy(
             arch,
             abi_version,
             policy,
-            &mut memo,
+            memo,
             &mut Vec::new(),
         )?;
         cache_keys.insert(arch.as_str().to_string(), hex(&cache_key));
@@ -5362,14 +5374,14 @@ fn program_dependency_closure(
     target: &DepsManifest,
     registry: &Registry,
     arch: TargetArch,
+    memo: &mut BTreeMap<String, [u8; 32]>,
 ) -> Result<Vec<ProgramDependencyIdentity>, String> {
-    program_dependency_closure_for_policy(
-        target,
-        registry,
-        arch,
-        current_abi_version(),
-        ResolvePolicy::Default,
-    )
+    let mut identities = BTreeMap::new();
+    collect_program_dependency_identities(
+        target, registry, arch, &mut identities, &mut Vec::new(), memo,
+        current_abi_version(), ResolvePolicy::Default,
+    )?;
+    Ok(identities.into_values().collect())
 }
 
 fn program_dependency_closure_for_policy(
@@ -5449,6 +5461,10 @@ fn program_package_index_for_root_once(
     // program's physical manifest or members. Lower suffix indexes remain
     // self-contained fallbacks when their root becomes the first existing one.
     let selected_manifests = registry.walk_all()?;
+    // Reuse dependency keys only within this one ordered-registry pass.
+    // The second independent pass still rereads and rehashes all source
+    // inputs, so edits during projection generation remain detectable.
+    let mut cache_key_memo = BTreeMap::new();
     let mut identities = BTreeMap::new();
     for (selected_name, manifest) in &selected_manifests {
         if &manifest.name != selected_name {
@@ -5462,7 +5478,10 @@ fn program_package_index_for_root_once(
         let manifest_path = manifest.dir.join("package.toml");
         let identity = ProgramPackageIdentity {
             manifest_sha256: package_manifest_sha256(&manifest_path)?,
-            cache_keys: package_context_cache_keys(&manifest, registry)?,
+            cache_keys: package_context_cache_keys_with_memo(
+                manifest, registry, current_abi_version(), ResolvePolicy::Default,
+                &mut cache_key_memo,
+            )?,
         };
         if identities.insert(manifest.name.clone(), identity).is_some() {
             return Err(format!(
@@ -5592,7 +5611,7 @@ fn program_package_index_for_root_once(
             );
             dependency_closures.insert(
                 arch.as_str().to_string(),
-                program_dependency_closure(&manifest, registry, *arch)?,
+                program_dependency_closure(&manifest, registry, *arch, &mut cache_key_memo)?,
             );
         }
         let projection = ProgramPackageProjection {

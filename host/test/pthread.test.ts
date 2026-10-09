@@ -36,5 +36,7 @@ describe.skipIf(!hasThreadExitGroupBinary)("thread process exit", () => {
       expect(stderr).toBe("");
       expect(exitCode).toBe(0);
     }
-  }, 30_000);
+    // Each of the ten launches retains its own 10-second execution deadline.
+    // The outer budget also includes source-artifact verification at startup.
+  }, 150_000);
 });

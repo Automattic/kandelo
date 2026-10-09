@@ -425,7 +425,10 @@ describe("canonical source-rootfs shell", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*37$/m);
+    // The integrated desktop and lazy-package metadata require revision 39
+    // or later; subsequent metadata updates may advance it again.
+    expect(Number(buildToml.match(/^revision\s*=\s*(\d+)$/m)?.[1]))
+      .toBeGreaterThanOrEqual(39);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "packages/registry/shell/source-rootfs-shell-demo.json",

@@ -4,15 +4,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   createSourceOnlyBinarySnapshotSession,
-  tryResolveBinarySet,
+  tryResolveBinaries,
 } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { MemoryFileSystem, type LazyDownloadEvent } from "../src/vfs/memory-fs";
 import { guestCompileCommand, guestCompilerCases } from "./fixtures/in-guest-compiler";
 
-// Resolve one coherent artifact set. Never pick a cache generation by mtime
-// or add toolchain entries to a generic rootfs in the test: boot the product
-// consumers actually receive. SourceOnly captures bind all bytes to one receipt.
+// The kernel, shell, SDK and utilities have distinct package closures.
+// Resolve each complete closure under the normal policy; SourceOnly captures
+// bind the complete product set to one published generation.
 const utilityNames = ["coreutils", "grep", "sed"];
 const artifactNames = [
   "kernel.wasm",
@@ -24,8 +24,8 @@ const sourceOnly = process.env.WASM_POSIX_RESOLUTION_POLICY === "source-only-v1"
 const artifacts = sourceOnly
   ? createSourceOnlyBinarySnapshotSession().snapshots(artifactNames, 512 * 1024 * 1024)
     .map((snapshot) => snapshot?.bytes ?? null)
-  : tryResolveBinarySet(artifactNames)?.map((path) => new Uint8Array(readFileSync(path)))
-    ?? [];
+  : tryResolveBinaries(artifactNames).map((path) =>
+      path === null ? null : new Uint8Array(readFileSync(path)));
 const available = artifacts.length === artifactNames.length && artifacts.every((bytes) => bytes !== null);
 if (!available && (sourceOnly || process.env.KANDELO_REQUIRE_GUEST_COMPILER === "1")) {
   throw new Error("Build the current kernel and browser-main-shell product before compiler acceptance");
