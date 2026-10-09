@@ -180,6 +180,10 @@ name = "glibmm"
 class = "platform"
 
 [[packages]]
+name = "go-hello"
+class = "user-software"
+
+[[packages]]
 name = "grep"
 class = "user-software"
 

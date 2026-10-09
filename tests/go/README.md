@@ -35,6 +35,32 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/exec-basic/run.ts .cont
 The Node runner also checks that both child launches leave the parent's fork
 count at zero.
 
+## Resolver package and VFS launch
+
+`go-hello` is a registry program built from this repository's Go sample and
+the exact `kandelo-dev/go` commit declared in its `build.toml`. The source-only
+resolver fetches a sealed Go source tree, builds the toolchain with the dev
+shell's Go bootstrap, invokes `sdk/bin/wasm32posix-go`, and stamps the published
+Wasm with the current ABI-contract digest. The Go fork does not need to be
+checked out beside this repository for this package build.
+
+```sh
+KANDELO_CACHE_GC_AUTO=0 scripts/dev-shell.sh bash -c 'cargo xtask bootstrap go-hello'
+./run.sh build kernel
+scripts/dev-shell.sh bash tests/go/package-basic/build-launcher.sh
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/package-basic/run.ts'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_PACKAGE_TESTS=1 npx playwright test test/go-package.spec.ts --project=chromium'
+```
+
+The Node and Chromium tests load the *resolved* `go-hello.wasm`, put its exact
+bytes at `/bin/go-hello.wasm` in a VFS image, and have a C process launch it
+with `posix_spawn`. They require both programs' ABI digests to match the
+kernel, exit 0, the Go and launcher markers, and no stderr or host
+diagnostics; Node additionally checks that the parent's fork count remains
+zero. This is a first-class package/VFS smoke test, not broad Go conformance.
+The legacy `build-deps resolve` policy does not stamp program output; use the
+source-only local-build projection above for runtime tests.
+
 The Go linker now declares 32 preallocated pthread slots by default (8 MiB of
 control pages). Set a different count per program with
 `go build -ldflags='-kandelothreadslots=64'`; valid counts are 1–1024. The

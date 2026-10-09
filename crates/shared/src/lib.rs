@@ -2579,6 +2579,13 @@ pub mod abi {
         results: &[I32],
     };
 
+    pub const PROCESS_WORKER_THREAD_EXIT_IMPORT: ProgramArtifactImport = ProgramArtifactImport {
+        module: "kernel",
+        name: "kernel_thread_exit",
+        params: &[Pointer],
+        results: &[],
+    };
+
     pub const WPK_FORK_REQUIRED_IMPORTS: &[ProgramArtifactImport] = &[
         ProgramArtifactImport {
             module: WPK_FORK_FRAME_IMPORT_MODULE,
