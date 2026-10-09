@@ -20,11 +20,17 @@ async function flips(page: Page): Promise<number> {
   return Number(text.match(/(\d+)\s*flips\s*·/i)?.[1] ?? -1);
 }
 
-async function terminalText(page: Page): Promise<string> {
+async function terminalText(page: Page, game?: string): Promise<string> {
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   const rows = page.locator(".xterm-rows");
   await expect.poll(async () => (await rows.allTextContents()).join("\n"))
     .toContain("love: using upstream");
+  // The persistent terminal renders replayed PTY output asynchronously when
+  // shown. Wait for this game's command, not a previous game's renderer line.
+  if (game !== undefined) {
+    await expect.poll(async () => (await rows.allTextContents()).join("\n"))
+      .toContain(`/usr/share/love/examples/${game}`);
+  }
   return (await rows.allTextContents()).join("\n");
 }
 
@@ -87,7 +93,7 @@ test("LÖVE menu launches all six games through the native renderer @slow", asyn
     await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);
     await canvas.screenshot({ path: resolve(screenshotDir, `${id}.png`) });
     // Mount the terminal view so guest stderr is available for inspection.
-    const terminal = await terminalText(page);
+    const terminal = await terminalText(page, id);
     expect(terminal, id).toContain(`/usr/share/love/examples/${id}`);
     expect(terminal, id).not.toMatch(/lovefb:.*(?:error|main\.lua:)|configured command failed/);
     await showDemo(page);

@@ -108,9 +108,9 @@ async function bootScummvm(page: Page) {
   return canvas;
 }
 
-/** The screen of the shell the probes run in (the mounted terminal tab). */
+/** The active terminal; inactive tabs retain their screen and parser state. */
 async function terminalText(page: Page): Promise<string> {
-  return page.locator(".xterm-rows").first().evaluate(
+  return page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").evaluate(
     (node) => node.textContent ?? "",
   );
 }
@@ -136,9 +136,8 @@ let probeTerminalOpen = false;
 async function runInShell(page: Page, command: string): Promise<string> {
   await openSurface(page, "Terminal");
   if (!probeTerminalOpen) {
-    // The dock mounts one terminal at a time: the new tab replaces the
-    // machine's terminal in the view, so wait for its own login prompt
-    // rather than for a second terminal element.
+    // The new tab becomes active while the machine's terminal remains
+    // mounted but hidden. Wait for the active tab's own login prompt.
     await page.getByRole("button", { name: "New terminal", exact: true }).click();
     await expect
       .poll(() => terminalText(page), { timeout: 60_000 })
@@ -147,10 +146,10 @@ async function runInShell(page: Page, command: string): Promise<string> {
       .not.toMatch(/\/usr\/local\/bin\/scummvm/);
     probeTerminalOpen = true;
   }
-  await expect(page.locator(".xterm-rows").first()).toBeVisible({
+  await expect(page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows")).toBeVisible({
     timeout: 60_000,
   });
-  await page.locator(".xterm-screen").first().click();
+  await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-screen").click();
   // insertText, not type: keyboard.type drops spaces into this terminal.
   await page.keyboard.insertText(command);
   await page.keyboard.press("Enter");

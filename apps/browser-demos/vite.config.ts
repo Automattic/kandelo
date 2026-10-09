@@ -207,8 +207,13 @@ function candidateEntryExists(relPath: string): boolean {
   // candidate tier. Entering the batch whenever that authority exists makes a
   // declared-but-missing member fail its receipt closure instead of looking
   // like an optional unowned path.
+  // The default shared resolver also considers the implicit SourceOnly
+  // mirror first. Do not reject its candidates before invoking that resolver.
   const candidates = configuredSourceOnlyRoot === null
-    ? authoredBinaryMirrorRoots.map((root) => path.resolve(root, relPath))
+    ? [
+        path.resolve(repoRoot, "local-binaries/source-only-v1", relPath),
+        ...authoredBinaryMirrorRoots.map((root) => path.resolve(root, relPath)),
+      ]
     : [path.resolve(
         configuredSourceOnlyRoot,
         ".kandelo/source-only-program-projection-v1.json",

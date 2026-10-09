@@ -55,7 +55,10 @@ test("base shell lazily fetches one SDK, compiles C/C++, and reports engine limi
         await runScript(page, script, `compiler boundary ${sample.name} status 139`);
         expect(diagnostics.some((line) =>
           line.includes("[process-worker] Kernel worker failed: Maximum call stack size exceeded") &&
-          line.includes("clang::Sema::")), "WebKit must report the diagnosed native stack exhaustion").toBe(true);
+          // Instrumented programs omit function names. The worker's argv
+          // identifies the compiler and source that exhausted the stack.
+          line.includes('argv=["/usr/lib/llvm/bin/clang++"') &&
+          line.includes('"/tmp/cpp-entropy.cpp"')), "WebKit must report the diagnosed native stack exhaustion").toBe(true);
         expect(requests).toHaveLength(1);
         continue;
       }

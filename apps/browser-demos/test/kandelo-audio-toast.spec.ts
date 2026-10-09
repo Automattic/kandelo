@@ -14,6 +14,11 @@ import { machineUrl, VfsProductImageMissing } from "./support/kandelo-machine";
 // audio attributes on the console whenever the DOM changes, and the test
 // reads those reports. Console messages carry no reply into the page.
 
+// Trace recording collects page-load timings through evaluate, which grants
+// Chromium user activation before the app creates its AudioContext. Keep
+// these no-gesture checks observable through console reports alone.
+test.use({ trace: "off" });
+
 interface AudioReport {
   /** `navigator.userActivation.hasBeenActive`: the premise, checked. */
   hasBeenActive: boolean;
