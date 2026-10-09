@@ -3,7 +3,7 @@
 These probes run binaries from the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port) through
 Kandelo's real Chromium process workers and ABI-48 kernel. Use fork commit
-`3296d3f` or later, built with Go 1.25.6 as `GOROOT_BOOTSTRAP`. By default
+`bd12cbf` or later, built with Go 1.25.6 as `GOROOT_BOOTSTRAP`. By default
 the fork is checked out beside this repository as `../go-kandelo`.
 
 From the Kandelo repository root:
@@ -15,7 +15,7 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && npm ci'
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium'
 ```
 
-The fixture script writes sixteen Wasm programs for seventeen browser tests
+The fixture script writes eighteen Wasm programs for nineteen browser tests
 under `.context/go-browser/`. Set `GO_KANDELO_BIN` to an absolute path to use
 another fork binary. Use
 `KANDELO_PLAYWRIGHT_PORT` inside the last command if another workspace already
@@ -34,6 +34,17 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/exec-basic/run.ts .cont
 
 The Node runner also checks that both child launches leave the parent's fork
 count at zero.
+
+To run the `os/user` public API and selected upstream parser tests in Node:
+
+```sh
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/user-basic/run.ts .context/go-browser/user-basic.wasm $(scripts/resolve-binary.sh kernel.wasm)'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/user-basic/run.ts .context/go-browser/user-test.wasm $(scripts/resolve-binary.sh kernel.wasm) stdlib-tests'
+```
+
+These probes supply real `/etc/passwd` and `/etc/group` VFS files for the
+public API check. They do not establish host account database integration or
+full `os/user` conformance.
 
 ## Resolver package and VFS launch
 
@@ -69,7 +80,8 @@ declaration changes the process memory requirement, not the kernel ABI. The
 worker exits.
 
 The browser tests cover startup arguments/environment, clock, random, and file
-syscalls, second-M bootstrap, five sequential clone handoffs, goroutines
+syscalls, VFS-backed account and group lookup and selected upstream `os/user`
+parser tests, second-M bootstrap, five sequential clone handoffs, goroutines
 running on two Ms, concurrent clone handoffs from those Ms, `LockOSThread`
 affinity across yields and unlock, twelve paced locked-M exits and 64 unpaced
 locked-M starts without an explicit unlock (exercising slot recycling),
@@ -95,3 +107,23 @@ the running process's Go package state. UDP/message syscalls, DNS, TLS
 certificate provisioning and broad Go conformance remain
 unverified or unsupported. These focused probes do not establish full Go
 runtime or POSIX conformance.
+
+## RoadRunner feasibility probe
+
+RoadRunner is the better first PHP-server test: its Go server starts PHP
+workers as separate processes, while FrankenPHP embeds PHP through cgo,
+which this Go/Wasm port does not support. A `CGO_ENABLED=0` RoadRunner
+v2025.1.6 build is compatible with the current Go 1.25 toolchain version;
+v2025.1.7 and later require Go 1.26. The feasibility check did not produce
+or run a RoadRunner binary or a PHP worker. The full binary stops at
+`github.com/valyala/fasthttp/tcplisten`, whose source files exclude
+`GOOS=kandelo GOARCH=wasm`. A smaller RoadRunner server-core build proceeds
+past `os/user` but needs `syscall.ForkLock`, process-group fields in
+`syscall.SysProcAttr`, and child credentials. Kandelo's standalone identity
+and process-group syscalls do not yet establish those settings atomically
+during `SYS_SPAWN`; a no-op Go shim would be incorrect.
+
+Prioritize the spawn-time process/descriptor contract and Node/browser
+parity, then resolve third-party build-tag portability and run a real Go
+server ↔ PHP worker HTTP round trip. UDP, DNS, and TLS are not the first
+blockers for this integration.

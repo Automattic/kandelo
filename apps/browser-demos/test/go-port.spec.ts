@@ -45,6 +45,33 @@ const probes: Probe[] = [
     }],
   },
   {
+    name: "Go account and supplementary-group lookup from VFS files",
+    file: "user-basic.wasm",
+    argv: ["go-user-basic"],
+    stdout: ["GO USER PASS"],
+    dataFiles: [
+      {
+        path: "/etc/passwd",
+        data: Array.from(Buffer.from(
+          "root:x:0:0:Root:/root:/bin/sh\ndaemon:x:1:1:Daemon:/home/daemon:/bin/sh\nrunner:x:1001:200:Runner:/home/runner:/bin/sh\n",
+        )),
+      },
+      {
+        path: "/etc/group",
+        data: Array.from(Buffer.from("staff:x:200:runner\nworkers:x:201:runner\n")),
+      },
+    ],
+  },
+  {
+    name: "upstream Go os/user pure-Go parser tests",
+    file: "user-test.wasm",
+    argv: [
+      "go-user-test",
+      "-test.run=^(TestFindGroupName|TestFindGroupId|TestInvalidUserId|TestLookupUserId|TestLookupUserPopulatesAllFields|TestLookupUser|TestListGroups)$",
+    ],
+    stdout: ["PASS"],
+  },
+  {
     name: "second-M bootstrap and per-M syscall channel",
     file: "second-m.wasm",
     argv: ["go-second-m"],

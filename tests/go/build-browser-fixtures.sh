@@ -26,6 +26,7 @@ build_probe() {
 }
 
 build_probe browser-basic basic
+build_probe user-basic user-basic
 build_probe second-m second-m
 build_probe clone-handoff clone-handoff
 build_probe scheduler scheduler
@@ -44,6 +45,8 @@ GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/atomi
 record_built_program_output "$output_dir/atomic-test.wasm"
 GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/sync-test.wasm" sync
 record_built_program_output "$output_dir/sync-test.wasm"
+GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/user-test.wasm" os/user
+record_built_program_output "$output_dir/user-test.wasm"
 
 stamp_built_program_outputs
 
