@@ -2480,7 +2480,14 @@ static void kbd_set_focus(struct surface *s) {
     }
     wl_array_release(&keys);
     schedule_repaint();   /* focus border moved */
-    if (s->layer_surface || s->lock_surface) return;
+    if (s->layer_surface) {
+        /* A client's READY precedes mapping; report only real keyboard focus
+         * so observers cannot send launcher input to the previous window. */
+        printf("KBD_FOCUS layer=%s\n", s->app_id);
+        fflush(stdout);
+        return;
+    }
+    if (s->lock_surface) return;
     kwlctl_emit("activewindow>>%s,%s", s->app_id, s->title);
     kwlctl_emit("activewindowv2>>%p", (void *)s);
     /* Observable focus marker: keyboard focus only moves to a window once its
