@@ -850,24 +850,6 @@ export class NodeKernelHost {
   }
 
   /**
-   * Return the retained capacity of the kernel-owned large-spawn region.
-   * Zero means no spawn has exceeded the ordinary channel-sized scratch.
-   */
-  async getSpawnScratchCapacity(): Promise<number> {
-    const requestId = this._nextRequestId++;
-    const result = await this.request(requestId, {
-      type: "get_spawn_scratch_capacity",
-      requestId,
-    });
-    if (!Number.isSafeInteger(result) || result < 0) {
-      throw new Error(
-        `kernel worker returned an invalid spawn scratch capacity: ${String(result)}`,
-      );
-    }
-    return result;
-  }
-
-  /**
    * Deliver a POSIX signal to `pid`. Resolves false when the process is gone
    * (ESRCH). Mirrors `BrowserKernel.signalProcess`: unlike `terminateProcess`
    * this goes through the kernel's signal path, so disposition and exit

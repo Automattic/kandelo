@@ -610,19 +610,6 @@ function readName(src: Uint8Array, pos: number): [string, number] {
   return [name, pos + len];
 }
 
-function containsAscii(src: Uint8Array, needle: string): boolean {
-  if (needle.length === 0) return true;
-  const bytes = new TextEncoder().encode(needle);
-  outer:
-  for (let i = 0; i <= src.length - bytes.length; i++) {
-    for (let j = 0; j < bytes.length; j++) {
-      if (src[i + j] !== bytes[j]) continue outer;
-    }
-    return true;
-  }
-  return false;
-}
-
 /**
  * Export set produced by `wasm-fork-instrument`.
  *
@@ -2464,8 +2451,17 @@ function abiContractDigestsEqual(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
+/**
+ * Asyncify-instrumented means exporting the transform's entry points. A byte
+ * scan would also match a mere mention, and the kernel itself carries the
+ * word in the artifact checker it links.
+ */
 export function wasmContainsLegacyAsyncify(programBytes: ArrayBuffer): boolean {
-  return containsAscii(new Uint8Array(programBytes), "asyncify_");
+  try {
+    return readWasmExportNames(programBytes).some((name) => name.startsWith("asyncify_"));
+  } catch {
+    return false;
+  }
 }
 
 export function wasmImportsKernelFork(programBytes: ArrayBuffer): boolean {

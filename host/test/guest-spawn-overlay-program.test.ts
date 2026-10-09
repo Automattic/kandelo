@@ -3,26 +3,16 @@
  * PHP popen/proc_open/shell_exec that build on them) must be able to launch a
  * program whose bytes live in the in-kernel rootfs (the sole `/` authority).
  *
- * Root cause this pins: the kernel handles SYS_SPAWN inside a protocol
- * transaction-start (`CentralizedKernelWorker.#handleSpawn` ->
- * `deferProtocolTransactionStart`). Its side-effect-free resolver
- * (`onResolveSpawn` -> `resolveExecutableForLaunch` -> `resolveExec` ->
- * `readExecFromVfs` -> `readRootfsFileWithRetry`) reads the child's bytes
- * through `kernelWorker.rootfsReadFile`, which is an IMMEDIATE, result-bearing kernel
- * entry. The synchronous prefix of that async resolver runs while
- * `#runningProtocolTransactionStart` is still set, so the entry gate rejected
- * it with `KernelReentrantEntryError` ("kernel rootfs read file cannot run
- * while protocol transaction start is active"). libc surfaced that as
- * `posix_spawn` -> EIO, breaking PHP-FPM/nginx/WordPress worker spawning.
- *
- * Guest `execve` never trips this because it reads bytes through the
- * deferrable kernel exec-target mechanism, not an immediate mid-transaction
- * re-entry.
+ * What this pins: SYS_SPAWN of a program that exists only in the in-kernel
+ * overlay. A host-side resolver that read the child's bytes through an
+ * immediate kernel entry inside the spawn's protocol transaction once failed
+ * with `KernelReentrantEntryError`, surfacing as `posix_spawn` -> EIO and
+ * breaking PHP-FPM/nginx/WordPress worker spawning. The kernel now resolves
+ * the target itself, inside `kernel_spawn_process`.
  *
  * This boots the real Node kernel worker (the path that wires the overlay) and
  * stages BOTH the spawner and its child as overlay-resident programs. The child
- * is NOT provided via `execPrograms`, so the only way SYS_SPAWN can find it is
- * through the overlay — exactly the failing path. It must run and exit 0.
+ * exists only in the overlay, so SYS_SPAWN can only find it there. It must run and exit 0.
  */
 
 import { existsSync, readFileSync } from "node:fs";

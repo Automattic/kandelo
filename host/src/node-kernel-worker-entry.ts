@@ -32,7 +32,6 @@ import type {
   ForkBorrowedReplayWorkspace,
   ForkContinuationContext,
   ResolvedSpawnProgram,
-  SpawnCandidateResolution,
   ThreadChannelAttachment,
 } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
@@ -65,9 +64,7 @@ import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import {
-  describeWasmArtifactPolicyFailures,
   detectPtrWidth,
-  extractAbiVersion,
   extractHeapBase,
   isWasmModuleBytes,
 } from "./constants";
@@ -821,51 +818,6 @@ async function resolveExec(path: string): Promise<ArrayBuffer | null> {
   });
 }
 
-const MAX_SHEBANG_DEPTH = 4;
-
-function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
-  const view = new Uint8Array(bytes);
-  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
-  let end = 2;
-  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
-  const line = new TextDecoder().decode(view.subarray(2, end)).replace(/\r$/, "").trim();
-  if (!line) return null;
-  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
-  if (!match) return null;
-  return { interpreter: match[1], arg: match[2] };
-}
-
-async function resolveExecutableForLaunch(
-  path: string,
-  argv: string[],
-  depth = 0,
-): Promise<SpawnCandidateResolution | null> {
-  if (depth > MAX_SHEBANG_DEPTH) return null;
-  const bytes = await resolveExec(path);
-  if (!bytes) return null;
-
-  const shebang = parseShebang(bytes);
-  if (!shebang) {
-    if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
-    const artifactFailures = describeWasmArtifactPolicyFailures(bytes, {
-      expectedAbi: kernelWorker.getKernelAbiVersion(),
-    });
-    if (artifactFailures.length > 0) return { errno: ENOEXEC };
-    const declaredAbi = extractAbiVersion(bytes);
-    if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
-      return { errno: ENOEXEC };
-    }
-    return { programBytes: bytes, argv };
-  }
-
-  const scriptArgv = [
-    shebang.interpreter,
-    ...(shebang.arg ? [shebang.arg] : []),
-    path,
-    ...argv.slice(1),
-  ];
-  return resolveExecutableForLaunch(shebang.interpreter, scriptArgv, depth + 1);
-}
 
 // --- Init ---
 
@@ -1162,7 +1114,6 @@ async function handleInit(msg: InitMessage) {
           throw error;
         }
       },
-      onResolveSpawn: handlePosixSpawnResolve,
       onSpawn: (parentPid, childPid, program, envp) =>
         processMemoryCreators.run(
           "a posix_spawn process Worker",
@@ -2709,31 +2660,9 @@ async function handleExec(
 }
 
 /**
- * Pre-flight resolver for SYS_SPAWN. Side-effect-free: looks up program
- * bytes for `path` through the spawn-only execPrograms/main-thread fallback
- * and follows shebangs. Compilation is deferred to the shared worker's
- * isolated candidate snapshot. Exec never enters this resolver: its bytes
- * come only from the retained kernel target. Returns null on ENOENT and
- * `{ errno }` when the located target cannot be launched.
- *
- * `handleSpawn` in `host/src/kernel-worker.ts` calls this BEFORE
- * `kernel_spawn_process` so that file_actions (which the kernel runs
- * inside `spawn_child`) never execute on a doomed PATH iteration —
- * see the POSIX "exactly once" rule.
- */
-async function handlePosixSpawnResolve(
-  path: string,
-  argv: string[],
-): Promise<SpawnCandidateResolution | null> {
-  return resolveExecutableForLaunch(path, argv);
-}
-
-/**
  * Launch a worker for a SYS_SPAWN child whose program is derived from the
- * exact target already committed by the shared worker. The earlier resolver
- * was only side-effect-free candidate preflight; a changed child CWD, fd
- * table, or credential view selects and recompiles the final bytes before this
- * callback. This phase only allocates Memory, registers, and launches.
+ * exact target already committed by the shared worker. This phase only
+ * allocates Memory, registers, and launches.
  */
 async function handlePosixSpawn(
   parentPid: number,
@@ -3900,23 +3829,6 @@ port.on("message", (msg: MainToKernelMessage) => {
         result: kernelWorker.wasmModules.stats(),
       });
       break;
-    case "get_spawn_scratch_capacity": {
-      try {
-        post({
-          type: "response",
-          requestId: msg.requestId,
-          result: kernelWorker.getSpawnScratchCapacity(),
-        });
-      } catch (err) {
-        post({
-          type: "response",
-          requestId: msg.requestId,
-          result: undefined,
-          error: (err as Error)?.message ?? String(err),
-        });
-      }
-      break;
-    }
     case "enum_procs": {
       // Snapshot the kernel's process table for the Inspector → Procs tab.
       // Mirrors the Browser-side handler in browser-kernel-worker-entry.ts.

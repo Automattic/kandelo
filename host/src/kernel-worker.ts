@@ -73,13 +73,17 @@ import {
   type HostOwnedProcessReapResult,
 } from "./host-owned-process-reap";
 import {
-  compileSpawnCandidateSnapshot,
+  decodeExecTargetAdmission,
   launchPreparedExecTarget,
   PreparedExecTargetError,
   type ExecLaunchCallback,
   type PreparedExecKernel,
+  type ExecTargetAdmission,
 } from "./exec-target";
-import type { DeferredFetchSettled } from "./vfs/rootfs-lazy-archives";
+import {
+  type DeferredFetchSettled,
+  waitForDeferredFetch,
+} from "./vfs/rootfs-lazy-archives";
 import { WasmModuleCache } from "./wasm-module-cache";
 import {
   buildRawHttpRequest,
@@ -184,16 +188,7 @@ import {
   SELECT_FD_SETSIZE,
   SIGNAL_ACTION_RESTART,
   SIGNAL_MASK_BYTES,
-  SPAWN_MAX_ACTION_COUNT,
-  SPAWN_MAX_ARGV_COUNT,
-  SPAWN_MAX_ENVP_COUNT,
-  SPAWN_WIRE_ACTION_RECORD_BYTES,
-  SPAWN_WIRE_HEADER_ACTION_COUNT_OFFSET,
-  SPAWN_WIRE_HEADER_ARGC_OFFSET,
-  SPAWN_WIRE_HEADER_BYTES,
-  SPAWN_WIRE_HEADER_ENVC_OFFSET,
   SPAWN_WIRE_MAX_BYTES,
-  SPAWN_WIRE_STRING_OFFSET_BYTES,
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_KERNEL_WAIT_RESULT,
@@ -836,16 +831,8 @@ function isValidMemoryRange(
  * each list's terminating null pointer. This matches the advertised 4 MiB
  * _SC_ARG_MAX boundary without imposing a separate argument-count ceiling.
  */
-/**
- * Largest complete SYS_SPAWN wire blob accepted by the host.
- *
- * argv + envp retain the public 4 MiB ARG_MAX contract. The remaining room
- * is an aggregate file-action budget equivalent to the parser's 1,024-action
- * ceiling with one PATH_MAX-sized path per action. The host needs an explicit
- * whole-blob bound because this representation also carries file actions,
- * which ARG_MAX itself does not count.
- */
-export const SPAWN_BLOB_MAX_BYTES = SPAWN_WIRE_MAX_BYTES;
+/** Backstop for a spawn waiting on a lazily fetched target. */
+const SPAWN_EAGAIN_MAX_WAIT_MS = 30_000;
 
 /** Syscall numbers for sleep/delay */
 const SYS_NANOSLEEP = ABI_SYSCALLS.Nanosleep;
@@ -1559,125 +1546,6 @@ function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
   return out;
 }
 
-/**
- * Decode just the argv and envp strings out of a SYS_SPAWN blob. The kernel
- * does the authoritative parsing (file actions, attrs); this minimal
- * decoder exists because `onSpawn` needs `string[]` for the worker-launch
- * path.
- *
- * Wire format mirrors `crates/kernel/src/spawn.rs::parse_blob` — see
- * `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
- *
- * Throws on malformed input. Callers should treat the throw as EINVAL.
- */
-function decodeSpawnBlobStrings(
-  blob: Uint8Array,
-  pointerWidth: 4 | 8,
-): { argv: string[]; envp: string[] } {
-  if (blob.byteLength < SPAWN_WIRE_HEADER_BYTES) {
-    throw new Error("blob too short for header");
-  }
-  const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
-  const argc = view.getUint32(SPAWN_WIRE_HEADER_ARGC_OFFSET, true);
-  const envc = view.getUint32(SPAWN_WIRE_HEADER_ENVC_OFFSET, true);
-  const nActions = view.getUint32(
-    SPAWN_WIRE_HEADER_ACTION_COUNT_OFFSET,
-    true,
-  );
-
-  // Cap counts to mirror the kernel parser's adversarial-input cap.
-  if (
-    argc > SPAWN_MAX_ARGV_COUNT
-    || envc > SPAWN_MAX_ENVP_COUNT
-    || nActions > SPAWN_MAX_ACTION_COUNT
-  ) {
-    throw new Error("blob count exceeds limit");
-  }
-
-  const argvOffsetsAt = SPAWN_WIRE_HEADER_BYTES;
-  const envpOffsetsAt =
-    argvOffsetsAt + argc * SPAWN_WIRE_STRING_OFFSET_BYTES;
-  const actionsAt =
-    envpOffsetsAt + envc * SPAWN_WIRE_STRING_OFFSET_BYTES;
-  const stringsAt =
-    actionsAt + nActions * SPAWN_WIRE_ACTION_RECORD_BYTES;
-
-  if (stringsAt > blob.byteLength) {
-    throw new Error("blob truncated before strings region");
-  }
-  const stringsLen = blob.byteLength - stringsAt;
-  const decoder = new TextDecoder();
-
-  // Account for every pointer before scanning or decoding any string. Then
-  // measure all referenced wire spans against one incremental budget. This
-  // makes the total scanning and allocation work proportional to ARG_MAX:
-  // thousands of duplicate offsets into a multi-megabyte tail are rejected
-  // before TextDecoder can allocate that tail once per entry.
-  let representedBytes = (argc + envc + 2) * pointerWidth;
-  if (
-    !Number.isSafeInteger(representedBytes)
-    || representedBytes > POSIX_ARG_MAX_BYTES
-  ) {
-    throw new KernelScratchError(
-      "spawn argv/environment pointer representation exceeds ARG_MAX",
-      E2BIG,
-    );
-  }
-  const measure = (
-    offsetsAt: number,
-    count: number,
-  ): Array<{ start: number; end: number }> => {
-    const ranges = new Array<{ start: number; end: number }>(count);
-    for (let i = 0; i < count; i++) {
-      const off = view.getUint32(
-        offsetsAt + i * SPAWN_WIRE_STRING_OFFSET_BYTES,
-        true,
-      );
-      if (off > stringsLen) {
-        throw new KernelScratchError("spawn string offset is out of bounds", EINVAL);
-      }
-      let end = off;
-      while (end < stringsLen && blob[stringsAt + end] !== 0) end++;
-      if (end === stringsLen) {
-        throw new KernelScratchError(
-          "spawn string is missing its terminating NUL",
-          EINVAL,
-        );
-      }
-      const length = end - off;
-      if (length > PROCESS_METADATA_ENTRY_MAX_BYTES) {
-        throw new KernelScratchError(
-          "spawn metadata entry exceeds the process-metadata transport limit",
-          E2BIG,
-        );
-      }
-      representedBytes += length + 1;
-      if (
-        !Number.isSafeInteger(representedBytes)
-        || representedBytes > POSIX_ARG_MAX_BYTES
-      ) {
-        throw new KernelScratchError(
-          "spawn argv/environment representation exceeds ARG_MAX",
-          E2BIG,
-        );
-      }
-      ranges[i] = {
-        start: stringsAt + off,
-        end: stringsAt + end,
-      };
-    }
-    return ranges;
-  };
-
-  const argvRanges = measure(argvOffsetsAt, argc);
-  const envpRanges = measure(envpOffsetsAt, envc);
-  const decode = ({ start, end }: { start: number; end: number }): string =>
-    decoder.decode(blob.subarray(start, end));
-  const argv = argvRanges.map(decode);
-  const envp = envpRanges.map(decode);
-  return { argv, envp };
-}
-
 /** Syscall number → name mapping for logging */
 export const SYSCALL_NAMES: Record<number, string> = ABI_SYSCALL_NAMES;
 
@@ -2076,21 +1944,6 @@ export interface ResolvedSpawnProgram {
   argv: string[];
 }
 
-/**
- * A resolver's spawn candidate carries bytes only. Compilation happens exactly
- * once, in `compileSpawnCandidateSnapshot`; a resolver-side module would be
- * discarded there while still pinning executable memory (a full desktop of
- * duplicate modules exhausts SpiderMonkey's 2 GiB per-process code arena).
- */
-export interface ResolvedSpawnCandidate {
-  programBytes: ArrayBuffer;
-  argv: string[];
-}
-
-export interface SpawnResolveError {
-  errno: number;
-}
-
 const threadChannelAttachmentBrand: unique symbol = Symbol(
   "ThreadChannelAttachment",
 );
@@ -2171,18 +2024,6 @@ function createThreadChannelAttachment(
   };
   pendingThreadChannelAttachments.set(attachment, pending);
   return { attachment, pending };
-}
-
-export type SpawnProgramResolution = ResolvedSpawnProgram | SpawnResolveError;
-
-export type SpawnCandidateResolution = ResolvedSpawnCandidate | SpawnResolveError;
-
-interface ReservedSpawnScratch {
-  // A token exists before its pointer/capacity can be validated. Keeping that
-  // token in the value even when region construction fails guarantees the
-  // caller still reaches the one cleanup path.
-  region: KernelScratchRegion | null;
-  token: bigint;
 }
 
 interface ReservedTransferScratch {
@@ -2272,13 +2113,6 @@ interface BlockingRetryWakeTargets {
   readonly pollAcceptIndices?: readonly number[];
 }
 
-function isSpawnResolveError(
-  resolution: SpawnProgramResolution | SpawnCandidateResolution,
-): resolution is SpawnResolveError {
-  return "errno" in resolution &&
-    typeof resolution.errno === "number";
-}
-
 /** Callbacks for fork/exec/exit handling. */
 export interface CentralizedKernelCallbacks {
   /**
@@ -2334,28 +2168,8 @@ export interface CentralizedKernelCallbacks {
   onExec?: ExecLaunchCallback;
 
   /**
-   * Pre-flight resolution step for SYS_SPAWN. Returns the validated program
-   * bytes and launch argv for `path`, `{ errno }` for a located but
-   * unlaunchable program, or `null` for ENOENT. The shared worker compiles
-   * the candidate exactly once, from its own isolated byte snapshot.
-   * **Must NOT have side effects** —
-   * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
-   * actions never run on a doomed PATH-iteration. POSIX requires
-   * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
-   * issues one `posix_spawn` per candidate; without this preflight the
-   * kernel applies file_actions on every failed iteration (sortix
-   * `basic/spawn/posix_spawnp` exercises an `addopen(O_EXCL)` "once"
-   * file that would conflict on iteration 2).
-   *
-   * Required if `onSpawn` is set; together they form the spawn surface.
-   */
-  onResolveSpawn?: (path: string, argv: string[]) => Promise<SpawnCandidateResolution | null>;
-
-  /**
    * Launch a worker for the spawned child with bytes and module derived from
-   * its exact committed target. `onResolveSpawn` is only a side-effect-free
-   * candidate; the shared worker re-resolves after attrs/file actions and
-   * recompiles whenever those bytes differ. The kernel has constructed and
+   * its exact committed target. The kernel has constructed and
    * committed the child Process under `childPid` by the time this is called.
    * The callback instantiates a fresh Worker and attaches its channels to that
    * existing Process.
@@ -2686,23 +2500,7 @@ interface CentralizedKernelWorkerTestAuthority {
     exitStatus: number,
   ): void;
   dispatchScratchBoundarySyscallForTest(channel: ChannelInfo): void;
-  dispatchSpawnPreflightForTest(
-    channel: ChannelInfo,
-    origArgs: number[],
-  ): void;
-  dispatchSpawnAfterResolveForTest(options: {
-    readonly channel: ChannelInfo;
-    readonly origArgs: number[];
-    readonly parentPid: number;
-    readonly callerTid: number;
-    readonly pidOutPtr: number;
-    readonly blobBytes: Uint8Array;
-    readonly blobLen: number;
-    readonly program: ResolvedSpawnProgram;
-    readonly envp: string[];
-    readonly authorityPath?: string;
-    readonly originalArgv?: string[];
-  }): void;
+  dispatchSpawnForTest(channel: ChannelInfo, origArgs: number[]): void;
   replaceProcessRegistrationForLifecycleTest(options: {
     readonly pid: number;
     readonly memory: WebAssembly.Memory;
@@ -3158,7 +2956,6 @@ export class CentralizedKernelWorker {
    * Keep the complete begin/copy/commit interval exclusive even after Rust
    * has parsed the bytes and released its own reservation lock.
    */
-  #largeSpawnScratchInUse = false;
   /**
    * Serialize the global Rust transfer reservation across host reentrancy.
    *
@@ -4018,7 +3815,6 @@ export class CentralizedKernelWorker {
         this.#kernelPointerWidth = mainOwner.pointerWidth;
         this.#scratchRegion = mainOwner.region;
         this.#tcpScratchRegion = tcpOwner?.region ?? null;
-        this.#largeSpawnScratchInUse = false;
         this.#largeTransferScratchInUse = false;
         this.#kernelFatalError = null;
         this.#initialized = true;
@@ -5100,46 +4896,11 @@ export class CentralizedKernelWorker {
           },
         );
       },
-      dispatchSpawnPreflightForTest: (channel, origArgs): void => {
-        // WHY: spawn transport tests need the private preflight split without
-        // reopening a mutable method shadow on the sealed worker. Reject a
-        // reentrant test invocation because its caller-owned argv has not
-        // crossed the production channel snapshot boundary.
-        this.#runImmediateKernelEntry(
-          "spawn preflight test",
-          (entry) => {
-            this.#handleSpawn(channel, origArgs, entry);
-            return undefined;
-          },
-        );
-      },
-      dispatchSpawnAfterResolveForTest: (options): void => {
-        // WHY: malformed allocator returns cannot be reached through a real
-        // Rust parser. Keep one exact test-only stage boundary, but run it
-        // under the same generation gate and lexical entry lifetime as the
-        // production continuation. Reject reentry because this fault seam
-        // intentionally accepts non-genuine byte producers that cannot be
-        // safely snapshotted for deferred use.
-        this.#runImmediateKernelEntry(
-          "resolved spawn transport test",
-          (entry) => {
-            this.#handleSpawnAfterResolve(
-              options.channel,
-              options.origArgs,
-              options.parentPid,
-              options.callerTid,
-              options.pidOutPtr,
-              options.blobBytes,
-              options.blobLen,
-              options.authorityPath ?? options.program.argv?.[0] ?? "",
-              options.program,
-              options.originalArgv ?? options.program.argv,
-              options.envp,
-              entry,
-            );
-            return undefined;
-          },
-        );
+      dispatchSpawnForTest: (channel, origArgs): void => {
+        this.#runImmediateKernelEntry("spawn test", (entry) => {
+          this.#handleSpawn(channel, origArgs, entry);
+          return undefined;
+        });
       },
       replaceProcessRegistrationForLifecycleTest: (options) => {
         // WHY: this companion mutates the exact process-registration
@@ -7460,13 +7221,23 @@ export class CentralizedKernelWorker {
           );
         }
         // The kernel parses caller-native structures for this process, so it
-        // must know the process's data model. The host contributes it here,
-        // at registration, because the host is what read the program's bytes
-        // and instantiated its Memory; it is not re-sent per syscall. An exec
-        // re-registration sends it again: on this host the exec image is
-        // read and instantiated here, so the incoming image's width arrives
-        // with the brk and mmap bases it also replaces.
-        if (!this.#setPointerWidthWithinKernelEntry(pid, ptrWidth, entry)) {
+        // must know the process's data model. The host contributes it when an
+        // address space is first created, because the host is what read the
+        // program's bytes and instantiated its Memory. It is not re-sent per
+        // syscall: the kernel reads the registered width back.
+        //
+        // An exec deliberately does NOT re-register it. `preserveProcessState`
+        // means the kernel's process record survives the image swap, and the
+        // width lives in that record — already replaced, from the artifact the
+        // image committed to, inside `kernel_exec_commit`. Writing it again
+        // here would make the host a second authority on the same question,
+        // answered by a second implementation of the same wasm memory-type
+        // scan (`detectPtrWidth`), and a disagreement between the two would
+        // silently resolve in the host's favour.
+        if (
+          !replacingExecImage
+          && !this.#setPointerWidthWithinKernelEntry(pid, ptrWidth, entry)
+        ) {
           throw new Error(
             "Kernel export kernel_set_process_pointer_width is required to "
               + "register a process data model",
@@ -8903,6 +8674,12 @@ export class CentralizedKernelWorker {
     if (encodedPath.byteLength > region.capacity) return -ENAMETOOLONG;
     let result = -EIO;
     let completed = false;
+    // This and the exec-target calls below reject a busy gate instead of
+    // queuing: a queued call would run after its caller gave up on it (a
+    // prepare would retain a token nobody owns). The launch retries it.
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("kernel exec target prepare");
+    }
     const deferred = this.#runOrDeferKernelEntry(
       `kernel exec target prepare pid=${pid}`,
       (entry) => {
@@ -8951,6 +8728,9 @@ export class CentralizedKernelWorker {
     if (encodedPath.byteLength > region.capacity) return -ENAMETOOLONG;
     let result = -EIO;
     let completed = false;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("kernel spawn exec target prepare");
+    }
     const deferred = this.#runOrDeferKernelEntry(
       `kernel spawn exec target prepare child=${childPid}`,
       (entry) => {
@@ -8989,6 +8769,9 @@ export class CentralizedKernelWorker {
     let result = -EIO as number | bigint;
     let completed = false;
     let missingExportError: Error | undefined;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("kernel exec target size");
+    }
     const deferred = this.#runOrDeferKernelEntry(
       `kernel exec target size pid=${ownerPid} target=${target}`,
       (entry) => {
@@ -9035,6 +8818,9 @@ export class CentralizedKernelWorker {
     if (offset < 0n || offset > 0x7fff_ffff_ffff_ffffn) return -EOVERFLOW;
     let result = -EIO;
     let completed = false;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("kernel exec target read");
+    }
     const deferred = this.#runOrDeferKernelEntry(
       `kernel exec target read pid=${ownerPid} target=${target}`,
       (entry) => {
@@ -9078,11 +8864,66 @@ export class CentralizedKernelWorker {
     return result;
   }
 
+  /** What the kernel decides a retained exec target is. */
+  execTargetAdmit(
+    ownerPid: number,
+    target: number,
+    expectedAbi: number,
+  ): ExecTargetAdmission {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const region = this.#requireMainScratchRegion();
+    let admission: ExecTargetAdmission | null = null;
+    let result = -EIO;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("kernel exec target admit");
+    }
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target admit pid=${ownerPid} target=${target}`,
+      (entry) => {
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = ownerPid;
+        try {
+          region.withLease((lease) => {
+            result = this.#invokeEntryScratchExport(entry, lease, "kernel_exec_target_admit", [
+              ownerPid,
+              target,
+              expectedAbi,
+              lease.exportPointer(0, region.capacity),
+              region.capacity,
+            ]);
+            if (result > 0) {
+              const length = this.#checkedScratchProducerByteLength(
+                result,
+                region.capacity,
+                "kernel_exec_target_admit",
+              );
+              admission = decodeExecTargetAdmission(lease.copyOut(0, length));
+            }
+          });
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        return undefined;
+      },
+    );
+    if (deferred) throw new KernelReentrantEntryError("kernel exec target admit");
+    if (admission === null) {
+      throw new PreparedExecTargetError(
+        "prepared exec target admission failed",
+        result < 0 && -result <= 4095 ? -result : EIO,
+      );
+    }
+    return admission;
+  }
+
   execTargetCancel(ownerPid: number, target: number): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     let result = -EIO;
     let completed = false;
     let missingExportError: Error | undefined;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("kernel exec target cancel");
+    }
     const deferred = this.#runOrDeferKernelEntry(
       `kernel exec target cancel pid=${ownerPid} target=${target}`,
       (entry) => {
@@ -21598,444 +21439,160 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Handle SYS_SPAWN: read the blob and `path` from caller memory, copy
-   * the blob to kernel scratch, ask the kernel to allocate a child pid +
-   * build the child Process descriptor, then call `onSpawn` to launch a
-   * fresh worker for that pid.
-   *
-   * Channel arg layout (per docs/plans/2026-05-04-non-forking-posix-spawn-design.md):
-   *   arg0 = path_ptr (caller memory; PATH-resolved)
-   *   arg1 = path_len
-   *   arg2 = blob_ptr (caller memory)
-   *   arg3 = blob_len
-   *   arg4 = pid_out_ptr (caller writes child pid here on success)
-   *   arg5 = 0 (reserved)
-   *
-   * Returns 0 on success / -errno on failure via the channel; the child
-   * pid is delivered through `pid_out_ptr` rather than the return value
-   * so callers can distinguish "kernel error" (negative) from "got a
-   * child" (zero, then read pid_out).
-   *
-   * If `onSpawn` returns non-zero or rejects, the kernel-side child
-   * descriptor is rolled back via `kernel_remove_process` so the spawn
-   * attempt leaves no trace.
+   * Handle SYS_SPAWN (path, path_len, blob, blob_len, pid_out, 0). The kernel
+   * reads the request from the caller's memory, refuses a target a launch
+   * could not run, and builds the child with its file actions applied once;
+   * the host then launches the child's committed target. The child pid is
+   * written to `pid_out`, so a negative result is always a kernel error.
    */
   #handleSpawn(
     channel: ChannelInfo,
     origArgs: number[],
     entry: KernelWorkerEntryContext,
+    waitedMs = 0,
   ): void {
     const parentPid = channel.pid;
     const callerTid = this.guestTidForChannel(channel);
-    const pathPtr = origArgs[0];
-    const pathLen = origArgs[1];
-    const blobPtr = origArgs[2];
-    const blobLen = origArgs[3];
-    const pidOutPtr = origArgs[4];
-
-    if (!this.callbacks.onSpawn || !this.callbacks.onResolveSpawn) {
-      this.completeChannel(
-        channel, SYS_SPAWN, origArgs, undefined, -1, 38,
-        [], undefined, entry,
-      ); // ENOSYS
+    const [pathPtr, pathLen, blobPtr, blobLen, pidOutPtr] = origArgs;
+    if (!this.callbacks.onSpawn) {
+      this.#completeSpawnWithinKernelEntry(channel, origArgs, -1, ENOSYS, entry);
       return;
     }
-
-    // ── Read path + blob from caller memory ──
-    const processMem = new Uint8Array(channel.memory.buffer);
-    if (
-      !Number.isSafeInteger(pathLen) ||
-      pathLen < 0 ||
-      !Number.isSafeInteger(blobLen) ||
-      blobLen <= 0
-    ) {
-      this.completeChannel(
-        channel, SYS_SPAWN, origArgs, undefined, -1, EINVAL,
-        [], undefined, entry,
-      );
+    if (![pathPtr, pathLen, blobPtr, blobLen].every((v) => Number.isSafeInteger(v) && v >= 0)) {
+      this.#completeSpawnWithinKernelEntry(channel, origArgs, -1, EINVAL, entry);
       return;
     }
-    if (pathLen >= POSIX_PATH_MAX_BYTES) {
-      this.completeChannel(
-        channel,
-        SYS_SPAWN,
-        origArgs,
-        undefined,
-        -1,
-        ENAMETOOLONG,
-        [],
-        undefined,
-        entry,
-      );
+    if (blobLen > SPAWN_WIRE_MAX_BYTES) {
+      this.#completeSpawnWithinKernelEntry(channel, origArgs, -1, E2BIG, entry);
       return;
     }
-    if (blobLen > SPAWN_BLOB_MAX_BYTES) {
-      this.completeChannel(
-        channel, SYS_SPAWN, origArgs, undefined, -1, E2BIG,
-        [], undefined, entry,
-      );
-      return;
-    }
-    let checkedPathPtr = pathPtr;
-    let checkedBlobPtr: number;
     let checkedPidOutPtr = pidOutPtr;
     try {
-      if (pathLen > 0) {
-        checkedPathPtr = this.checkedProcessRange(
-          channel,
-          pathPtr,
-          pathLen,
-          "spawn path",
-        ).pointer;
-      }
-      checkedBlobPtr = this.checkedProcessRange(
-        channel,
-        blobPtr,
-        blobLen,
-        "spawn blob",
-      ).pointer;
       if (pidOutPtr !== 0) {
-        checkedPidOutPtr = this.checkedProcessRange(
-          channel,
-          pidOutPtr,
-          4,
-          "spawn pid output",
-        ).pointer;
+        checkedPidOutPtr = this.checkedProcessRange(channel, pidOutPtr, 4, "spawn pid output")
+          .pointer;
       }
     } catch {
-      this.completeChannel(
-        channel, SYS_SPAWN, origArgs, undefined, -1, EFAULT,
-        [], undefined, entry,
-      );
+      this.#completeSpawnWithinKernelEntry(channel, origArgs, -1, EFAULT, entry);
       return;
     }
-
-    let path = "";
-    if (pathLen > 0) {
-      path = new TextDecoder().decode(
-        processMem.slice(checkedPathPtr, checkedPathPtr + pathLen),
-      );
-      // Strip trailing NUL if the user copied a C string with the terminator.
-      if (path.endsWith("\0")) path = path.slice(0, -1);
+    const spawn = this.#kernelInstanceForEntry(entry).exports.kernel_spawn_process as
+      | ((...args: [number, number, bigint, number, bigint, number]) => number)
+      | undefined;
+    if (typeof spawn !== "function") {
+      this.#completeSpawnWithinKernelEntry(channel, origArgs, -1, EIO, entry);
+      return;
     }
-    const rawPath = path;
-    if (path && !path.startsWith("/")) {
-      const resolvedPath = this.resolveExecPathAgainstCwd(
+    let result: number;
+    try {
+      result = spawn(
         parentPid,
-        path,
-        entry,
-      );
-      if (resolvedPath.kind === "error") {
-        this.completeChannel(
-          channel,
-          SYS_SPAWN,
-          origArgs,
-          undefined,
-          -1,
-          resolvedPath.errno,
-          [],
-          undefined,
-          entry,
-        );
-        return;
-      }
-      path = resolvedPath.value;
-    }
-
-    // .slice copies into a regular ArrayBuffer (TextDecoder rejects SAB views).
-    const blobBytes = processMem.slice(
-      checkedBlobPtr,
-      checkedBlobPtr + blobLen,
-    );
-
-    // ── Decode argv + envp host-side ──
-    // The kernel parses the blob too, but onSpawn needs string[] for the
-    // worker launch path. We don't redo action/attr parsing here; the
-    // kernel is the authoritative parser for that surface.
-    let argv: string[];
-    let envp: string[];
-    try {
-      const decoded = decodeSpawnBlobStrings(
-        blobBytes,
-        this.getPtrWidth(parentPid),
-      );
-      argv = decoded.argv;
-      envp = decoded.envp;
-    } catch (error) {
-      const errno = error instanceof KernelScratchError
-        ? error.errno
-        : EINVAL;
-      this.completeChannel(
-        channel,
-        SYS_SPAWN,
-        origArgs,
-        undefined,
-        -1,
-        errno,
-        [],
-        undefined,
-        entry,
-      );
-      return;
-    }
-    const metadataResult = this.validateExecMetadata(
-      argv,
-      envp,
-      this.getPtrWidth(parentPid),
-    );
-    if (metadataResult < 0) {
-      this.completeChannel(
-        channel,
-        SYS_SPAWN,
-        origArgs,
-        undefined,
-        -1,
-        -metadataResult,
-        [],
-        undefined,
-        entry,
-      );
-      return;
-    }
-    // Preflight resolvers may follow a shebang and return rewritten argv.
-    // Preserve the blob's original vector so the authoritative child-state
-    // target parser performs that rewrite exactly once.
-    const originalArgv = [...argv];
-
-    // ── PRE-FLIGHT: resolve and compile BEFORE calling the kernel ──
-    // POSIX requires file_actions to run "exactly once." `posix_spawnp`'s
-    // PATH search emits one `posix_spawn` per candidate; if we let the
-    // kernel apply file_actions on each iteration, the side effects
-    // (e.g. `addopen(O_EXCL)`) accumulate and the second iteration sees
-    // its own state from the first. Resolve bytes via the host's
-    // side-effect-free preflight first; only call the kernel if the
-    // program actually exists and compiles.
-    const resolveSpawnProgram = async (): Promise<SpawnProgramResolution | null> => {
-      const resolved = await this.callbacks.onResolveSpawn!(path, argv);
-      let selected = resolved;
-      if (
-        !selected
-        && rawPath !== path
-        && rawPath
-        && !rawPath.startsWith("/")
-      ) {
-        // SYS_SPAWN is also used by posix_spawnp-style PATH probes. Those
-        // callers may hand us a relative executable name that exists only in
-        // the host execPrograms map, not in the kernel VFS at CWD/name.
-        // Keep the CWD-resolved path as the primary POSIX exec target, but
-        // fall back to the original token for host-side program maps.
-        selected = await this.callbacks.onResolveSpawn!(rawPath, argv);
-      }
-      if (!selected || isSpawnResolveError(selected)) return selected;
-
-      try {
-        const candidate = await compileSpawnCandidateSnapshot(
-          selected.programBytes,
-          this.getKernelAbiVersion(),
-          (bytes) => this.wasmModules.programModule(bytes),
-        );
-        return {
-          programBytes: candidate.targetBytes,
-          programModule: candidate.targetModule,
-          argv: [...selected.argv],
-        };
-      } catch (cause) {
-        if (cause instanceof PreparedExecTargetError) {
-          return { errno: cause.errno };
-        }
-        throw cause;
-      }
-    };
-
-    entry.deferProtocolTransactionStart(() => {
-      const resolution = resolveSpawnProgram();
-      this.#continuePromise(resolution, (resolved) => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
-          "spawn program resolution",
-          (resolutionEntry) => {
-            if (
-              !this.#isAsyncChannelProcessActiveWithinKernelEntry(
-                channel,
-                resolutionEntry,
-              )
-            ) {
-              return undefined;
-            }
-            if (!resolved) {
-              this.completeChannel(
-                channel, SYS_SPAWN, origArgs, undefined, -1, 2,
-                [], undefined, resolutionEntry,
-              ); // ENOENT
-              return undefined;
-            }
-            if (isSpawnResolveError(resolved)) {
-              this.completeChannel(
-                channel,
-                SYS_SPAWN,
-                origArgs,
-                undefined,
-                -1,
-                resolved.errno >>> 0,
-                [],
-                undefined,
-                resolutionEntry,
-              );
-              return undefined;
-            }
-            this.#handleSpawnAfterResolve(
-              channel,
-              origArgs,
-              parentPid,
-              callerTid,
-              checkedPidOutPtr,
-              blobBytes,
-              blobLen,
-              rawPath,
-              resolved,
-              originalArgv,
-              envp,
-              resolutionEntry,
-            );
-            return undefined;
-          },
-        );
-      }, (err) => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
-          "spawn program resolution failure",
-          (failureEntry) => {
-            if (
-              !this.#isAsyncChannelProcessActiveWithinKernelEntry(
-                channel,
-                failureEntry,
-              )
-            ) {
-              return undefined;
-            }
-            failureEntry.deferObserverEffect(() => {
-              console.error(
-                `[kernel] spawn resolve error for parent ${parentPid}:`,
-                err,
-              );
-              return undefined;
-            });
-            this.completeChannel(
-              channel, SYS_SPAWN, origArgs, undefined, -1, 5,
-              [], undefined, failureEntry,
-            ); // EIO
-            return undefined;
-          },
-        );
-      });
-      return undefined;
-    });
-  }
-
-  /**
-   * Continuation of `handleSpawn` after `onResolveSpawn` has returned
-   * validated, compiled program. Now safe to ask the kernel to build the
-   * child (which will apply file_actions exactly once).
-   */
-  #beginLargeSpawnScratch(
-    blobLen: number,
-    entry: KernelWorkerEntryContext,
-  ): { reservation: ReservedSpawnScratch | null; errno: number } {
-    const kernelExports = this.#kernelInstanceForEntry(entry).exports;
-    const begin = kernelExports.kernel_spawn_scratch_begin as
-      ((minimumCapacity: KernelPointer) => bigint) | undefined;
-    const pointer = kernelExports.kernel_spawn_scratch_pointer as
-      ((token: bigint) => KernelPointer) | undefined;
-    const capacity = kernelExports.kernel_spawn_scratch_capacity as
-      ((token: bigint) => KernelPointer) | undefined;
-    const cancel = kernelExports.kernel_spawn_scratch_cancel as
-      ((token: bigint) => number) | undefined;
-    if (
-      typeof begin !== "function"
-      || typeof pointer !== "function"
-      || typeof capacity !== "function"
-      || typeof cancel !== "function"
-    ) {
-      // ABI 43 makes the transactional reservation contract mandatory. A
-      // same-version kernel missing it is mismatched and must fail loudly.
-      return { reservation: null, errno: EIO };
-    }
-
-    let token: bigint | null = null;
-    let beginErrno = EIO;
-    try {
-      const rawToken = begin(this.toKernelPtr(blobLen));
-      if (typeof rawToken !== "bigint") {
-        throw new KernelScratchError(
-          "kernel returned a non-i64 spawn scratch token",
-          EIO,
-        );
-      }
-      if (rawToken <= 0n) {
-        const rawErrno = -rawToken;
-        beginErrno = rawErrno > 0n && rawErrno <= BigInt(0x7fff_ffff)
-          ? Number(rawErrno)
-          : EIO;
-        return { reservation: null, errno: beginErrno };
-      }
-      token = rawToken;
-      const region = reserveKernelScratchRegion(
-        this.#kernelMemory!,
-        () => ({
-          pointer: pointer(rawToken),
-          capacity: capacity(rawToken),
-        }),
+        callerTid,
+        BigInt(pathPtr),
+        Math.min(pathLen, 0xffff_ffff),
+        BigInt(blobPtr),
         blobLen,
-        this.#kernelPointerWidth,
-        "kernel reserved spawn scratch",
-        // Bind allocator provenance to the same persistent gated generation as
-        // every I/O reservation. A scoped entry façade cannot outlive this call.
-        this.#kernelInstance!,
       );
-      return { reservation: { region, token }, errno: 0 };
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
-      if (this.#kernelFatalError !== null) {
-        throw new KernelTransferExecuteTrapError(
-          "kernel spawn reservation query trapped",
-          error,
-        );
-      }
-      // WHY: once begin returns a token, even an invalid allocator pointer or
-      // capacity must flow through the caller's unconditional cancellation.
-      // Returning only an errno here would lose the sole cleanup authority.
-      return {
-        reservation: token === null ? null : { region: null, token },
-        errno: beginErrno,
-      };
+      this.#completeSpawnWithinKernelEntry(channel, origArgs, -1, EIO, entry);
+      return;
     }
+    if (result === -EAGAIN) {
+      // A lazily fetched target is still arriving and nothing has changed;
+      // retry once the fetch settles, with a truthful timeout as backstop.
+      if (waitedMs >= SPAWN_EAGAIN_MAX_WAIT_MS) {
+        this.#completeSpawnWithinKernelEntry(channel, origArgs, -1, ETIMEDOUT, entry);
+        return;
+      }
+      const started = Date.now();
+      entry.deferProtocolTransactionStart(() => {
+        this.#continuePromise(waitForDeferredFetch(this.deferredFetchSettled(), 10), () => {
+          this.#runOrDeferChannelKernelEntry(channel, "spawn retry", (retryEntry) => {
+            if (this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, retryEntry)) {
+              this.#handleSpawn(channel, origArgs, retryEntry, waitedMs + Date.now() - started);
+            }
+            return undefined;
+          });
+        });
+        return undefined;
+      });
+      return;
+    }
+    if (result <= 0) {
+      const errno = result < 0 ? (-result) >>> 0 : EIO;
+      this.#completeSpawnWithinKernelEntry(channel, origArgs, -1, errno, entry);
+      return;
+    }
+    const childPid = result >>> 0;
+    let path: string;
+    let metadata: { argv: string[]; envp: string[] };
+    try {
+      const start = this.checkedProcessRange(channel, pathPtr, pathLen, "spawn path").pointer;
+      path = new TextDecoder()
+        .decode(new Uint8Array(channel.memory.buffer).slice(start, start + pathLen))
+        .replace(/\0$/, "");
+      metadata = this.#readProcessMetadataWithinKernelEntry(childPid, entry);
+    } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
+      this.#rollbackSpawnWithinKernelEntry(
+        channel,
+        origArgs,
+        parentPid,
+        childPid,
+        error instanceof KernelScratchError ? error.errno : EIO,
+        error,
+        entry,
+      );
+      return;
+    }
+    this.#launchSpawnedChild(
+      channel,
+      origArgs,
+      parentPid,
+      childPid,
+      checkedPidOutPtr,
+      path,
+      metadata.argv,
+      metadata.envp,
+      entry,
+    );
   }
 
-  #cancelLargeSpawnScratch(
-    token: bigint,
+  /** The argv and environment the kernel holds for `pid`. */
+  #readProcessMetadataWithinKernelEntry(
+    pid: number,
     entry: KernelWorkerEntryContext,
-  ): "cancelled" | "already-consumed" {
-    const cancel = this.#kernelInstanceForEntry(entry).exports.kernel_spawn_scratch_cancel as
-      ((token: bigint) => number) | undefined;
-    if (typeof cancel !== "function") {
-      throw new KernelScratchError(
-        "kernel spawn scratch cancel export is unavailable",
-        EIO,
-      );
+  ): { argv: string[]; envp: string[] } {
+    const region = this.#requireMainScratchRegion();
+    const decoder = new TextDecoder();
+    const vectors: [string[], string[]] = [[], []];
+    for (const kind of [PROCESS_METADATA_KIND_ARGV, PROCESS_METADATA_KIND_ENVIRONMENT]) {
+      for (let index = 0; ; index++) {
+        const result = region.withLease((lease) => {
+          const length = this.#invokeEntryScratchExport(
+            entry,
+            lease,
+            "kernel_process_metadata_read",
+            [pid, kind, index, lease.exportPointer(0, region.capacity), region.capacity],
+          );
+          if (length >= 0) {
+            const bytes = this.#checkedScratchProducerByteLength(
+              length,
+              region.capacity,
+              "kernel_process_metadata_read",
+            );
+            vectors[kind].push(decoder.decode(lease.copyOut(0, bytes)));
+          }
+          return length;
+        });
+        if (result === -EINVAL) break;
+        if (result < 0) {
+          throw new KernelScratchError("kernel_process_metadata_read failed", -result);
+        }
+      }
     }
-    const result = cancel(token);
-    if (!Number.isSafeInteger(result)) {
-      throw new KernelScratchError(
-        `kernel rejected spawn scratch cancellation: ${String(result)}`,
-        EIO,
-      );
-    }
-    if (result === 0) return "cancelled";
-    if (result === -EINVAL) return "already-consumed";
-    throw new KernelScratchError(
-      `kernel rejected spawn scratch cancellation: ${String(result)}`,
-      EIO,
-    );
+    return { argv: vectors[0], envp: vectors[1] };
   }
 
   #completeSpawnWithinKernelEntry(
@@ -22232,222 +21789,17 @@ export class CentralizedKernelWorker {
     }
   }
 
-  #handleSpawnAfterResolve(
+  #launchSpawnedChild(
     channel: ChannelInfo,
     origArgs: number[],
     parentPid: number,
-    callerTid: number,
+    childPid: number,
     pidOutPtr: number,
-    blobBytes: Uint8Array,
-    blobLen: number,
     authorityPath: string,
-    program: ResolvedSpawnProgram,
-    originalArgv: string[],
+    argv: string[],
     envp: string[],
     entry: KernelWorkerEntryContext,
   ): void {
-    // ── Copy blob to kernel scratch ──
-    if (
-      blobLen !== blobBytes.byteLength ||
-      blobLen <= 0 ||
-      blobLen > SPAWN_BLOB_MAX_BYTES
-    ) {
-      const errno = blobLen > SPAWN_BLOB_MAX_BYTES ? E2BIG : EINVAL;
-      this.#completeSpawnWithinKernelEntry(
-        channel,
-        origArgs,
-        -1,
-        errno,
-        entry,
-      );
-      return;
-    }
-    let result = -EIO;
-    if (blobLen <= SCRATCH_SIZE) {
-      const kernelSpawn = this.#kernelInstanceForEntry(entry).exports.kernel_spawn_process as
-        | ((
-            parentPid: number,
-            callerTid: number,
-            blobPtr: KernelPointer,
-            blobLen: KernelPointer,
-          ) => number)
-        | undefined;
-      if (typeof kernelSpawn !== "function") {
-        this.#completeSpawnWithinKernelEntry(
-          channel, origArgs, -1, EIO, entry,
-        );
-        return;
-      }
-      try {
-        result = this.#requireMainScratchRegion().withLease((scratch) => {
-          scratch.copyFrom(blobBytes, 0, 0, blobLen);
-          return this.#invokeEntryScratchExport(
-            entry,
-            scratch,
-            "kernel_spawn_process",
-            [
-              parentPid,
-              callerTid,
-              scratch.exportPointer(0, blobLen),
-              this.toKernelPtr(blobLen),
-            ],
-          );
-        });
-      } catch (error) {
-        this.#rethrowKernelEntryFatal(error);
-        if (this.#kernelFatalError !== null) {
-          // The scoped export exception already made the kernel generation
-          // unusable. Do not publish EIO or relisten this guest while fatal
-          // shutdown is unwinding.
-          throw error;
-        }
-        this.#completeSpawnWithinKernelEntry(
-          channel, origArgs, -1, EIO, entry,
-        );
-        return;
-      }
-    } else {
-      if (this.#largeSpawnScratchInUse) {
-        this.#completeSpawnWithinKernelEntry(
-          channel, origArgs, -1, EBUSY, entry,
-        );
-        return;
-      }
-      const reservedSpawn = this.#kernelInstanceForEntry(entry).exports
-        .kernel_spawn_reserved_process as
-        | ((
-            parentPid: number,
-            callerTid: number,
-            token: bigint,
-            blobLen: KernelPointer,
-          ) => number)
-        | undefined;
-      if (typeof reservedSpawn !== "function") {
-        this.#completeSpawnWithinKernelEntry(
-          channel, origArgs, -1, EIO, entry,
-        );
-        return;
-      }
-
-      this.#largeSpawnScratchInUse = true;
-      let reservation: ReservedSpawnScratch | null = null;
-      let operationErrno: number | null = null;
-      let commitStarted = false;
-      let commitReturned = false;
-      let fatalError: KernelTransferExecuteTrapError | null = null;
-      try {
-        const begun = this.#beginLargeSpawnScratch(blobLen, entry);
-        reservation = begun.reservation;
-        if (!reservation?.region) {
-          operationErrno = begun.errno;
-        } else {
-          const activeRegion = reservation.region;
-          const activeToken = reservation.token;
-          result = activeRegion.withLease((scratch) => {
-            scratch.copyFrom(blobBytes, 0, 0, blobLen);
-            commitStarted = true;
-            const spawnResult = reservedSpawn(
-              parentPid,
-              callerTid,
-              activeToken,
-              this.toKernelPtr(blobLen),
-            );
-            commitReturned = true;
-            if (
-              !Number.isInteger(spawnResult)
-              || spawnResult < -0x8000_0000
-              || spawnResult > 0x7fff_ffff
-            ) {
-              throw new KernelScratchError(
-                `kernel returned an invalid reserved spawn result: ${
-                  String(spawnResult)
-                }`,
-                EIO,
-              );
-            }
-            return spawnResult;
-          });
-        }
-      } catch (error) {
-        if (isKernelExportFailure(error)) {
-          fatalError = new KernelTransferExecuteTrapError(
-            "kernel spawn reservation export trapped",
-            error,
-          );
-        } else if (error instanceof KernelTransferExecuteTrapError) {
-          fatalError = error;
-        } else if (
-          this.#kernelFatalError !== null
-          || (commitStarted && !commitReturned)
-        ) {
-          fatalError = new KernelTransferExecuteTrapError(
-            "kernel reserved spawn export trapped",
-            error,
-          );
-        } else {
-          operationErrno = EIO;
-        }
-      } finally {
-        if (reservation) {
-          // WHY: the Rust Vec may move on the next reservation. Revoke the
-          // one-shot host region whether this token was consumed or cancelled
-          // so no retained object can later lease the stale pointer.
-          try {
-            reservation.region?.revoke();
-          } catch (error) {
-            fatalError ??= new KernelTransferExecuteTrapError(
-              "kernel spawn reservation lease could not be revoked",
-              error,
-            );
-          }
-          if (fatalError === null) {
-            try {
-              // WHY: do not infer reservation state from the spawn errno. Rust
-              // commit and cancel take a blocking, no-import lock, and tokens
-              // are never reused. Cancelling after every ordinary return
-              // either releases an unconsumed token or observes that commit
-              // already consumed it.
-              const disposition = this.#cancelLargeSpawnScratch(
-                reservation.token,
-                entry,
-              );
-              if (result > 0 && disposition === "cancelled") {
-                throw new KernelScratchError(
-                  "kernel created a child without consuming its spawn reservation",
-                  EIO,
-                );
-              }
-            } catch (error) {
-              this.#rethrowKernelEntryFatal(error);
-              fatalError = new KernelTransferExecuteTrapError(
-                "kernel spawn reservation could not be settled",
-                error,
-              );
-            }
-          }
-        }
-        // A fatal path leaves the guard set. No later operation may replace
-        // bytes whose Rust reservation state is uncertain.
-        if (fatalError === null) this.#largeSpawnScratchInUse = false;
-      }
-
-      if (fatalError !== null) throw fatalError;
-      if (operationErrno !== null) {
-        this.#completeSpawnWithinKernelEntry(
-          channel, origArgs, -1, operationErrno, entry,
-        );
-        return;
-      }
-    }
-
-    if (result <= 0) {
-      const errno = result < 0 ? (-result) >>> 0 : EIO;
-      this.#completeSpawnWithinKernelEntry(
-        channel, origArgs, -1, errno, entry,
-      );
-      return;
-    }
-    const childPid = result >>> 0;
 
     // The preflight candidate is deliberately not pathname authority. Resolve
     // diagnostics again from the resulting child CWD after RESETIDS, attrs,
@@ -22507,8 +21859,7 @@ export class CentralizedKernelWorker {
             childPid,
             authorityPath,
             finalDiagnosticPath,
-            program,
-            originalArgv,
+            argv,
             envp,
           ),
         );
@@ -22777,8 +22128,7 @@ export class CentralizedKernelWorker {
     childPid: number,
     authorityPath: string,
     diagnosticPath: string,
-    candidate: ResolvedSpawnProgram,
-    originalArgv: string[],
+    argv: string[],
     envp: string[],
   ): Promise<number> {
     const callback = this.callbacks.onSpawn;
@@ -22790,12 +22140,9 @@ export class CentralizedKernelWorker {
         pid: childPid,
         callerTid: childPid,
         diagnosticPath,
-        argv: originalArgv,
+        argv,
         envp,
         expectedAbi: this.getKernelAbiVersion(),
-        materializePath: async (path) => {
-          await this.io.preparePath?.(path);
-        },
         prepareInitialTarget: () =>
           this.spawnExecTargetPrepare(parentPid, childPid, authorityPath),
         prepareInterpreterTarget: (interpreterPath) =>
@@ -22809,7 +22156,6 @@ export class CentralizedKernelWorker {
             markTargetConsumed,
           ),
         compileModule: (bytes) => this.wasmModules.programModule(bytes),
-        preflightModule: candidate.programModule,
       }, async (request) => ({
         // onSpawn owns no replacement image before commit. If a future host
         // adds staged resources, they must remain bounded to this hook.
@@ -22853,9 +22199,6 @@ export class CentralizedKernelWorker {
         argv,
         envp,
         expectedAbi: this.getKernelAbiVersion(),
-        materializePath: async (path) => {
-          await this.io.preparePath?.(path);
-        },
         prepareInitialTarget: () =>
           this.execTargetPrepare(
             pid,
@@ -29823,60 +29166,6 @@ export class CentralizedKernelWorker {
       throw new Error("kernel_get_memory_pages export is unavailable");
     }
     return pages;
-  }
-
-  /**
-   * Retained capacity of the kernel-owned large-spawn reservation in bytes.
-   *
-   * Zero means no large spawn has needed a reservation.
-  */
-  getSpawnScratchCapacity(): number {
-    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
-    if (this.#kernelInstance === null) {
-      throw new Error(
-        "kernel_spawn_scratch_retained_capacity export is unavailable",
-      );
-    }
-    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
-      throw new KernelReentrantEntryError(
-        "retained spawn-scratch capacity query",
-      );
-    }
-    let raw: KernelPointer = this.#kernelPointerWidth === 8 ? 0n : 0;
-    let exportMissing = false;
-    let completed = false;
-    const deferred = this.#runOrDeferKernelEntry(
-      "retained spawn-scratch capacity query",
-      (entry) => {
-        const fn = this.#kernelInstanceForEntry(entry).exports
-          .kernel_spawn_scratch_retained_capacity as
-          (() => KernelPointer) | undefined;
-        if (typeof fn !== "function") {
-          exportMissing = true;
-        } else {
-          raw = fn();
-        }
-        completed = true;
-        return undefined;
-      },
-    );
-    if (deferred || !completed) {
-      throw new KernelReentrantEntryError(
-        "retained spawn-scratch capacity query",
-      );
-    }
-    if (exportMissing) {
-      throw new Error(
-        "kernel_spawn_scratch_retained_capacity export is unavailable",
-      );
-    }
-    const capacity = typeof raw === "bigint" ? Number(raw) : raw;
-    if (!Number.isSafeInteger(capacity) || capacity < 0) {
-      throw new Error(
-        `kernel returned an invalid spawn scratch capacity: ${String(raw)}`,
-      );
-    }
-    return capacity;
   }
 
   /**

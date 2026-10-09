@@ -14909,10 +14909,6 @@ fn rewrite_dir(dir: &Path, needle: &str, replacement: &str) -> Result<(), String
 const WASM_MAGIC: &[u8; 4] = b"\0asm";
 const EXECUTABLE_PROGRAM_REQUIRED_EXPORTS: [&str; 2] = ["__abi_version", "_start"];
 
-fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
-}
-
 fn is_wasm_bytes(bytes: &[u8]) -> bool {
     bytes.len() >= WASM_MAGIC.len() && &bytes[..WASM_MAGIC.len()] == WASM_MAGIC
 }
@@ -15306,9 +15302,6 @@ fn wasm_artifact_policy_failures_for(
     }
 
     let mut failures = Vec::new();
-    if bytes_contain(bytes, b"asyncify_") {
-        failures.push("contains legacy asyncify_ instrumentation".to_string());
-    }
 
     let facts = match wasm_artifact_facts(bytes) {
         Ok(facts) => facts,
@@ -15317,6 +15310,18 @@ fn wasm_artifact_policy_failures_for(
             return failures;
         }
     };
+
+    // WHY export names rather than a raw byte scan: this was
+    // `bytes_contain(bytes, b"asyncify_")`, which rejects any artifact that
+    // merely *mentions* the string anywhere in its data section. It began
+    // rejecting the kernel itself once the kernel linked `crates/wasm-artifact`'s
+    // artifact policy, which carries the literal in order to *detect* legacy
+    // instrumentation. A wasm module is asyncify-instrumented when it exports
+    // the transform's entry points, so that is what is checked, as
+    // `wasm-artifact`'s own detector already does.
+    if facts.exports.iter().any(|name| name.starts_with("asyncify_")) {
+        failures.push("contains legacy asyncify_ instrumentation".to_string());
+    }
 
     if facts.is_relocatable_object {
         return failures;
@@ -29927,11 +29932,34 @@ ln -s {:?} "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
     #[test]
     fn program_output_validation_rejects_legacy_asyncify_wasm() {
         let out = tempdir("prog-out-asyncify");
-        fs::write(
-            out.join("bad.wasm"),
-            b"\0asm\x01\0\0\0 exported asyncify_start_unwind",
-        )
-        .unwrap();
+        // A real module that *exports* `asyncify_start_unwind`, rather than a
+        // header followed by that text.
+        //
+        // WHY the fixture changed: the old one was
+        // `b"\0asm\x01\0\0\0 exported asyncify_start_unwind"` — a valid
+        // header and then loose bytes, with no export section at all. It only
+        // ever tripped the gate because the gate was a substring scan, and a
+        // substring scan cannot tell a property of an artifact from a mention
+        // of it. That scan began rejecting the kernel itself once
+        // `crates/wasm-artifact`, which carries the literal in order to
+        // *detect* legacy instrumentation, was linked in. The gate now reads
+        // export names, so the fixture has to actually have one.
+        let name = b"asyncify_start_unwind";
+        let mut wasm: Vec<u8> = b"\0asm\x01\0\0\0".to_vec();
+        // Type section: one `() -> ()`.
+        wasm.extend_from_slice(&[0x01, 0x04, 0x01, 0x60, 0x00, 0x00]);
+        // Function section: one function of type 0.
+        wasm.extend_from_slice(&[0x03, 0x02, 0x01, 0x00]);
+        // Export section: that function, under the asyncify name.
+        let mut exports: Vec<u8> = vec![0x01, name.len() as u8];
+        exports.extend_from_slice(name);
+        exports.extend_from_slice(&[0x00, 0x00]);
+        wasm.push(0x07);
+        wasm.push(exports.len() as u8);
+        wasm.extend_from_slice(&exports);
+        // Code section: one empty body.
+        wasm.extend_from_slice(&[0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b]);
+        fs::write(out.join("bad.wasm"), &wasm).unwrap();
         let m = DepsManifest::parse(
             r#"kind = "program"
 name = "bad"
@@ -30114,6 +30142,21 @@ wasm = "bad.wasm"
             &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS,
         );
         assert!(failures.is_empty(), "got: {failures:?}");
+    }
+
+    #[test]
+    fn program_artifact_policy_does_not_mistake_a_mention_of_asyncify_for_instrumentation() {
+        // The kernel links `crates/wasm-artifact`, whose detector carries the
+        // literal `asyncify_` in its message text. Mentioning the word is not
+        // being instrumented: only an `asyncify_*` export is.
+        let mut mentions_only = b"\0asm\x01\0\0\0".to_vec();
+        mentions_only.extend(wasm_custom_section("note", b"contains asyncify_"));
+        let failures =
+            wasm_artifact_policy_failures(&mentions_only, ForkInstrumentationPolicy::Auto);
+        assert!(
+            !failures.iter().any(|failure| failure.contains("asyncify")),
+            "got: {failures:?}",
+        );
     }
 
     #[test]

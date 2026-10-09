@@ -15,7 +15,6 @@ const REQUIRED_KERNEL_CALLBACKS = [
   "onFork",
   "onKernelFatal",
   "onProcessMemoryTarget",
-  "onResolveSpawn",
   "onSpawn",
   "onThreadExit",
 ] as const;
@@ -28,7 +27,6 @@ const FORBIDDEN_WORKER_MEMBERS = new Set([
   "kernelEntryGate",
   "kernelInstance",
   "kernelMemory",
-  "largeSpawnScratchInUse",
   "largeTransferScratchInUse",
   "pendingPipeReaders",
   "pendingPipeWriters",

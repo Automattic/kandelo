@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
+  decodeExecTargetAdmission,
   launchPreparedExecTarget,
   readPreparedExecTarget,
+  type ExecTargetAdmission,
   type PreparedExecKernel,
 } from "../src/exec-target";
 import {
@@ -32,6 +34,7 @@ import {
   PROCESS_STARTUP_MAX_ENVP_COUNT,
 } from "../src/generated/abi";
 import { EXEC_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
+import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 import { createKernelSharedMappingStub } from "./support/kernel-shared-mapping-stub";
@@ -64,7 +67,16 @@ function preparedExecExports(memory: WebAssembly.Memory) {
       return count;
     }),
     kernel_exec_target_cancel: vi.fn(() => 0),
+    kernel_exec_target_admit: admitProgram(memory),
   };
+}
+
+/** A kernel double that decides every target is a runnable program. */
+function admitProgram(memory: WebAssembly.Memory) {
+  return vi.fn((_pid: number, _target: number, _abi: number, out: number) => {
+    new Uint8Array(memory.buffer)[out] = 0;
+    return 1;
+  });
 }
 
 describe("opaque prepared exec target launch", () => {
@@ -82,6 +94,7 @@ describe("opaque prepared exec target launch", () => {
         return count;
       },
       execTargetCancel: cancel,
+      execTargetAdmit: () => ({ kind: "program" }),
     };
 
     await expect(readPreparedExecTarget(kernel, 7, 11)).resolves.toEqual(
@@ -114,7 +127,6 @@ describe("opaque prepared exec target launch", () => {
     ]);
     const cancelled: number[] = [];
     const committed: number[] = [];
-    const materialized: string[] = [];
     const kernel: PreparedExecKernel = {
       execTargetSize: (_ownerPid, target) =>
         BigInt(targets.get(target)!.byteLength),
@@ -129,6 +141,11 @@ describe("opaque prepared exec target launch", () => {
         cancelled.push(target);
         return 0;
       },
+      // The kernel decides target 31 is the script; 32 is its interpreter.
+      execTargetAdmit: (_ownerPid, target) =>
+        target === 31
+          ? { kind: "script", interpreter: "/bin/exact-interpreter", argument: "--flag" }
+          : { kind: "program" },
     };
 
     const result = await launchPreparedExecTarget({
@@ -141,9 +158,6 @@ describe("opaque prepared exec target launch", () => {
       envp: ["A=B"],
       expectedAbi: ABI_VERSION,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
-      materializePath: async (path) => {
-        materialized.push(path);
-      },
       prepareInitialTarget: () => 31,
       prepareInterpreterTarget: (path) => {
         expect(path).toBe("/bin/exact-interpreter");
@@ -175,9 +189,188 @@ describe("opaque prepared exec target launch", () => {
     });
 
     expect(result).toBe(0);
-    expect(materialized).toEqual(["/bin/script", "/bin/exact-interpreter"]);
     expect(cancelled).toEqual([31]);
     expect(committed).toEqual([32]);
+  });
+
+  describe("admission the kernel decides", () => {
+    // Imports `kernel.kernel_fork` with none of the fork instrumentation, so
+    // the fork-artifact contract (still a host check) rejects it.
+    const uninstrumentedForkCaller = new Uint8Array([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+      0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f,
+      0x02, 0x16, 0x01,
+      0x06, ...new TextEncoder().encode("kernel"),
+      0x0b, ...new TextEncoder().encode("kernel_fork"),
+      0x00, 0x00,
+    ]);
+
+    function admissionLaunch(
+      targets: Map<number, Uint8Array>,
+      admit: (target: number) => ExecTargetAdmission,
+    ) {
+      const cancelled: number[] = [];
+      const compiled: number[] = [];
+      const callback = vi.fn(async () => -5);
+      const kernel: PreparedExecKernel = {
+        execTargetSize: (_pid, target) => BigInt(targets.get(target)!.byteLength),
+        execTargetRead: (_pid, target, offset, destination) => {
+          const bytes = targets.get(target)!.subarray(Number(offset));
+          const count = Math.min(destination.byteLength, bytes.byteLength);
+          destination.set(bytes.subarray(0, count));
+          return count;
+        },
+        execTargetCancel: (_pid, target) => {
+          cancelled.push(target);
+          return 0;
+        },
+        execTargetAdmit: (_pid, target, abi) => {
+          expect(abi).toBe(ABI_VERSION);
+          return admit(target);
+        },
+      };
+      const launch = launchPreparedExecTarget({
+        kernel,
+        ownerPid: 7,
+        pid: 7,
+        callerTid: 9,
+        diagnosticPath: "/bin/program",
+        argv: ["program"],
+        envp: [],
+        expectedAbi: ABI_VERSION,
+        compileModule: async (bytes: ArrayBuffer) => {
+          compiled.push(bytes.byteLength);
+          return WebAssembly.compile(bytes);
+        },
+        prepareInitialTarget: () => 41,
+        prepareInterpreterTarget: () => 42,
+        commitTarget: () => {
+          throw new Error("a refused target must never reach commit");
+        },
+      }, callback);
+      return { launch, cancelled, compiled, callback };
+    }
+
+    it("refuses a target the kernel refuses, with ENOEXEC and one cancel", async () => {
+      const { launch, cancelled, compiled, callback } = admissionLaunch(
+        new Map([[41, preparedExecFixture]]),
+        () => ({ kind: "refused", reason: "ABI 49, expected 50" }),
+      );
+      await expect(launch).rejects.toMatchObject({
+        errno: 8,
+        message: expect.stringContaining("ABI 49, expected 50"),
+      });
+      expect(cancelled).toEqual([41]);
+      expect(compiled).toEqual([]);
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("still applies the host fork-artifact contract the kernel does not judge yet", async () => {
+      const { launch, cancelled, compiled, callback } = admissionLaunch(
+        new Map([[41, uninstrumentedForkCaller]]),
+        () => ({ kind: "program" }),
+      );
+      await expect(launch).rejects.toMatchObject({ errno: 8 });
+      expect(cancelled).toEqual([41]);
+      expect(compiled).toEqual([]);
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("refuses an interpreter the kernel decides is itself a script", async () => {
+      const { launch, cancelled, compiled, callback } = admissionLaunch(
+        new Map([
+          [41, new TextEncoder().encode("#!/bin/outer\n")],
+          [42, new TextEncoder().encode("#!/bin/inner\n")],
+        ]),
+        (target) => ({ kind: "script", interpreter: target === 41 ? "/bin/outer" : "/bin/inner" }),
+      );
+      await expect(launch).rejects.toMatchObject({
+        errno: 8,
+        message: expect.stringContaining("itself a script"),
+      });
+      expect(cancelled).toEqual([41, 42]);
+      expect(compiled).toEqual([]);
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("waits out a busy kernel gate at every launch call instead of failing the exec", async () => {
+      // Each call first finds the gate busy, which rejects without running it.
+      const busy = new Set<string>();
+      const contend = <T>(call: string, run: () => T): T => {
+        if (!busy.has(call)) {
+          busy.add(call);
+          throw new KernelReentrantEntryError(call);
+        }
+        return run();
+      };
+      const targets = new Map([
+        [41, new TextEncoder().encode("#!/bin/sh\n")],
+        [42, preparedExecFixture],
+      ]);
+      const cancelled: number[] = [];
+      const kernel: PreparedExecKernel = {
+        execTargetSize: (_pid, target) =>
+          contend(`size ${target}`, () => BigInt(targets.get(target)!.byteLength)),
+        execTargetRead: (_pid, target, offset, destination) =>
+          contend(`read ${target}@${offset}`, () => {
+            const bytes = targets.get(target)!.subarray(Number(offset));
+            const count = Math.min(destination.byteLength, bytes.byteLength);
+            destination.set(bytes.subarray(0, count));
+            return count;
+          }),
+        execTargetCancel: (_pid, target) =>
+          contend(`cancel ${target}`, () => {
+            cancelled.push(target);
+            return 0;
+          }),
+        execTargetAdmit: (_pid, target) =>
+          contend(`admit ${target}`, () =>
+            target === 41 ? { kind: "script", interpreter: "/bin/sh" } : { kind: "program" }),
+      };
+      const callback = vi.fn(async () => -5);
+      const launch = launchPreparedExecTarget({
+        kernel,
+        ownerPid: 7,
+        pid: 7,
+        callerTid: 9,
+        diagnosticPath: "/bin/script",
+        argv: ["script"],
+        envp: [],
+        expectedAbi: ABI_VERSION,
+        compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
+        prepareInitialTarget: () => contend("prepare initial", () => 41),
+        prepareInterpreterTarget: () => contend("prepare interpreter", () => 42),
+        commitTarget: () => {
+          throw new Error("the callback refuses before commit");
+        },
+      }, callback);
+      // The launch reaches the callback, which refuses it; each target was
+      // released exactly once.
+      await expect(launch).resolves.toBe(-5);
+      expect(callback).toHaveBeenCalledWith(expect.objectContaining({
+        argv: ["/bin/sh", "/bin/script"],
+      }));
+      expect(cancelled).toEqual([41, 42]);
+      expect([...busy]).toEqual(expect.arrayContaining([
+        "prepare initial", "size 41", "admit 41", "cancel 41",
+        "prepare interpreter", "size 42", "admit 42", "cancel 42",
+      ]));
+    });
+
+    it("decodes the kernel's admission record and refuses a malformed one", () => {
+      const record = (bytes: number[]) => Uint8Array.from(bytes);
+      expect(decodeExecTargetAdmission(record([0]))).toEqual({ kind: "program" });
+      expect(decodeExecTargetAdmission(record([2, 0x61, 0x62]))).toEqual({
+        kind: "refused",
+        reason: "ab",
+      });
+      expect(decodeExecTargetAdmission(record([1, 1, 2, 0, 0, 0, 1, 0, 0, 0, 0x2f, 0x73, 0x78])))
+        .toEqual({ kind: "script", interpreter: "/s", argument: "x" });
+      expect(decodeExecTargetAdmission(record([1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0x2f, 0x73])))
+        .toEqual({ kind: "script", interpreter: "/s" });
+      expect(() => decodeExecTargetAdmission(record([1, 0, 9, 0, 0, 0, 0, 0, 0, 0])))
+        .toThrow(/malformed/);
+    });
   });
 
   it("cancels one precommit callback failure but never cancels after commit", async () => {
@@ -195,6 +388,7 @@ describe("opaque prepared exec target launch", () => {
         return count;
       },
       execTargetCancel: cancel,
+      execTargetAdmit: () => ({ kind: "program" }),
     };
     const options = () => ({
       kernel,
@@ -206,7 +400,6 @@ describe("opaque prepared exec target launch", () => {
       envp: [] as string[],
       expectedAbi: ABI_VERSION,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
-      materializePath: async () => {},
       prepareInitialTarget: () => nextTarget++,
       prepareInterpreterTarget: () => {
         throw new Error("not a script");
@@ -253,6 +446,7 @@ describe("opaque prepared exec target launch", () => {
         return count;
       },
       execTargetCancel: cancel,
+      execTargetAdmit: () => ({ kind: "program" }),
     };
     const launch = (
       target: number,
@@ -271,7 +465,6 @@ describe("opaque prepared exec target launch", () => {
       envp: [],
       expectedAbi: ABI_VERSION,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
-      materializePath: async () => {},
       prepareInitialTarget: () => target,
       prepareInterpreterTarget: () => {
         throw new Error("not a script");
@@ -321,6 +514,7 @@ describe("opaque prepared exec target launch", () => {
           return count;
         },
         execTargetCancel: cancel,
+        execTargetAdmit: () => ({ kind: "program" }),
       },
       ownerPid: 7,
       pid: 7,
@@ -330,7 +524,6 @@ describe("opaque prepared exec target launch", () => {
       envp: [],
       expectedAbi: ABI_VERSION,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
-      materializePath: async () => {},
       prepareInitialTarget: () => 51,
       prepareInterpreterTarget: () => {
         throw new Error("not a script");
@@ -389,6 +582,7 @@ describe("opaque prepared exec target launch", () => {
           return count;
         },
         execTargetCancel: cancel,
+        execTargetAdmit: () => ({ kind: "program" }),
       },
       ownerPid: 7,
       pid: 7,
@@ -398,7 +592,6 @@ describe("opaque prepared exec target launch", () => {
       envp: [],
       expectedAbi: ABI_VERSION,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
-      materializePath: async () => {},
       prepareInitialTarget: () => 52,
       prepareInterpreterTarget: () => {
         throw new Error("not a script");
@@ -439,6 +632,7 @@ describe("opaque prepared exec target launch", () => {
           return count;
         },
         execTargetCancel: cancel,
+        execTargetAdmit: () => ({ kind: "program" }),
       },
       ownerPid: 7,
       pid: 7,
@@ -448,7 +642,6 @@ describe("opaque prepared exec target launch", () => {
       envp: [],
       expectedAbi: ABI_VERSION,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
-      materializePath: async () => {},
       prepareInitialTarget: () => 53,
       prepareInterpreterTarget: () => {
         throw new Error("not a script");
@@ -894,27 +1087,17 @@ describe("exec host-state transition", () => {
     expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
   });
 
-  it("does not create a spawn child after async resolution loses its parent channel", async () => {
+  it("does not retry a spawn whose parent channel retired while its target was fetched", async () => {
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
     const channel = createChannel(7, memory, 0);
-    const bytes = new Uint8Array(memory.buffer);
-    const pathPtr = 0x100;
     const path = new TextEncoder().encode("/bin/child");
-    bytes.set(path, pathPtr);
-    const blobPtr = 0x200;
-    bytes.fill(0, blobPtr, blobPtr + 40);
-    let resolveProgram!: (value: ReturnType<typeof resolvedProgram>) => void;
-    const program = new Promise<ReturnType<typeof resolvedProgram>>((resolve) => {
-      resolveProgram = resolve;
-    });
-    const kernelSpawn = vi.fn(() => 100);
+    new Uint8Array(memory.buffer).set(path, 0x100);
+    // The kernel reports the lazily fetched target is still arriving.
+    const kernelSpawn = vi.fn(() => -11);
     const onSpawn = vi.fn(async () => 0);
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
-      callbacks: {
-        onResolveSpawn: vi.fn(() => program),
-        onSpawn,
-      },
+      callbacks: { onSpawn },
       kernelInstance: {
         exports: { kernel_spawn_process: kernelSpawn },
       },
@@ -923,20 +1106,62 @@ describe("exec host-state transition", () => {
     writeChannelSyscall(
       channel,
       HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
-      [pathPtr, path.length, blobPtr, 40, 0, 0],
+      [0x100, path.length, 0x200, 40, 0, 0],
+    );
+    worker.handleSyscall(channel);
+    expect(kernelSpawn).toHaveBeenCalledOnce();
+    worker.processes.get(7).channels = [];
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await flushMicrotasks();
+
+    expect(kernelSpawn).toHaveBeenCalledOnce();
+    expect(onSpawn).not.toHaveBeenCalled();
+    expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+  });
+
+  it("retries a spawn once its lazily fetched target arrives", async () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const channel = createChannel(7, memory, 0);
+    const path = new TextEncoder().encode("/bin/child");
+    new Uint8Array(memory.buffer).set(path, 0x100);
+    const kernelSpawn = vi.fn()
+      .mockReturnValueOnce(-11)
+      .mockReturnValueOnce(-11)
+      .mockReturnValue(-2);
+    const worker = createWorker({
+      processes: new Map([[7, { channels: [channel], memory }]]),
+      callbacks: { onSpawn: vi.fn(async () => 0) },
+      kernelInstance: {
+        exports: { kernel_spawn_process: kernelSpawn },
+      },
+    });
+
+    writeChannelSyscall(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+      [0x100, path.length, 0x200, 40, 0, 0],
     );
     worker.handleSyscall(channel);
     await flushMicrotasksUntil(
-      () => worker.callbacks.onResolveSpawn.mock.calls.length === 1,
-      "spawn resolution did not start",
+      () => readChannelStatus(channel) !== CHANNEL_STATUS_PENDING,
+      "spawn retry never completed",
+      5_000,
     );
-    worker.processes.get(7).channels = [];
-    resolveProgram(resolvedProgram());
-    await flushMicrotasks();
-
-    expect(kernelSpawn).not.toHaveBeenCalled();
-    expect(onSpawn).not.toHaveBeenCalled();
-    expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+    expect(kernelSpawn).toHaveBeenCalledTimes(3);
+    // Guest addresses and lengths go to the kernel as-is; nothing is copied.
+    expect(kernelSpawn).toHaveBeenLastCalledWith(
+      7,
+      expect.any(Number),
+      0x100n,
+      path.length,
+      0x200n,
+      40,
+    );
+    expect(readChannelCompletion(channel)).toEqual({
+      status: CHANNEL_STATUS_COMPLETE,
+      returnValue: -1,
+      errno: 2,
+    });
   });
 
   it("rejects an unlaunchable spawn before creating a child or applying file actions", async () => {
@@ -948,14 +1173,12 @@ describe("exec host-state transition", () => {
     bytes.set(path, pathPtr);
     const blobPtr = 0x200;
     bytes.fill(0, blobPtr, blobPtr + 40);
-    const kernelSpawn = vi.fn(() => 100);
+    // The kernel refuses the target before it creates a child.
+    const kernelSpawn = vi.fn(() => -8);
     const onSpawn = vi.fn(async () => 0);
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
-      callbacks: {
-        onResolveSpawn: vi.fn(async () => ({ errno: 8 })),
-        onSpawn,
-      },
+      callbacks: { onSpawn },
       kernelInstance: {
         exports: { kernel_spawn_process: kernelSpawn },
       },
@@ -972,12 +1195,229 @@ describe("exec host-state transition", () => {
       "unlaunchable spawn did not complete",
     );
 
-    expect(kernelSpawn).not.toHaveBeenCalled();
+    expect(kernelSpawn).toHaveBeenCalledOnce();
     expect(onSpawn).not.toHaveBeenCalled();
     expect(readChannelCompletion(channel)).toEqual({
       status: CHANNEL_STATUS_COMPLETE,
       returnValue: -1,
       errno: 8,
+    });
+  });
+
+  it("launches the spawn child with the argv and environment the kernel decoded", async () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const channel = createChannel(7, memory, 0);
+    const path = new TextEncoder().encode("/bin/child");
+    new Uint8Array(memory.buffer).set(path, 0x100);
+    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
+    const vectors = [["child", "x"], ["A=B"]];
+    const onSpawn = vi.fn(() => new Promise<number>(() => {}));
+    const worker = createWorker({
+      processes: new Map([[7, { channels: [channel], memory }]]),
+      callbacks: { onSpawn },
+      kernelMemory,
+      kernelInstance: {
+        exports: {
+          kernel_spawn_process: () => 100,
+          kernel_process_metadata_read: (
+            pid: number,
+            kind: number,
+            index: number,
+            out: number,
+          ) => {
+            expect(pid).toBe(100);
+            const entry = vectors[kind]?.[index];
+            if (entry === undefined) return -22;
+            const bytes = new TextEncoder().encode(entry);
+            new Uint8Array(kernelMemory.buffer).set(bytes, out);
+            return bytes.byteLength;
+          },
+        },
+      },
+    });
+
+    writeChannelSyscall(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+      [0x100, path.length, 0x200, 40, 0, 0],
+    );
+    worker.handleSyscall(channel);
+    await flushMicrotasksUntil(() => onSpawn.mock.calls.length === 1, "child was not launched");
+    expect(onSpawn).toHaveBeenCalledWith(
+      7,
+      100,
+      expect.objectContaining({ argv: ["child", "x"] }),
+      ["A=B"],
+    );
+  });
+
+  it("launches a script's interpreter while another process's syscall waits for the gate", async () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const channel = createChannel(7, memory, 0);
+    const otherMemory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const otherChannel = createChannel(8, otherMemory, 0);
+    const path = new TextEncoder().encode("/bin/script");
+    new Uint8Array(memory.buffer).set(path, 0x100);
+    const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 8 });
+    const script = new TextEncoder().encode("#!/bin/sh\n");
+    const targets = new Map([[41, script], [42, preparedExecFixture]]);
+    const prepare = vi.fn().mockReturnValueOnce(41).mockReturnValueOnce(42);
+    const onSpawn = vi.fn(() => new Promise<number>(() => {}));
+    let worker: any;
+    worker = createWorker({
+      processes: new Map([
+        [7, { channels: [channel], memory }],
+        [8, { channels: [otherChannel], memory: otherMemory }],
+      ]),
+      callbacks: { onSpawn },
+      kernelMemory,
+      kernelInstance: {
+        exports: {
+          kernel_spawn_process: () => 100,
+          kernel_handle_channel: vi.fn(() => 0),
+          kernel_spawn_exec_target_prepare: prepare,
+          kernel_exec_target_size: (_pid: number, target: number) =>
+            BigInt(targets.get(target)!.byteLength),
+          kernel_exec_target_read: (
+            _pid: number,
+            target: number,
+            offsetLo: number,
+            _offsetHi: number,
+            destination: number,
+            capacity: number,
+          ) => {
+            const bytes = targets.get(target)!.subarray(offsetLo);
+            const count = Math.min(capacity, bytes.byteLength);
+            new Uint8Array(kernelMemory.buffer, destination, count).set(bytes.subarray(0, count));
+            return count;
+          },
+          kernel_exec_target_admit: (_pid: number, target: number, _abi: number, out: number) => {
+            const record = target === 41
+              ? [1, 0, 7, 0, 0, 0, 0, 0, 0, 0, ...new TextEncoder().encode("/bin/sh")]
+              : [0];
+            new Uint8Array(kernelMemory.buffer).set(record, out);
+            return record.length;
+          },
+          // Another process's syscall arrives while the script's token is
+          // being released, so the gate has queued work when the
+          // interpreter is prepared.
+          kernel_exec_target_cancel: vi.fn(() => {
+            writeChannelSyscall(otherChannel, 20, [0, 0, 0, 0, 0, 0]);
+            worker.handleSyscall(otherChannel);
+            return 0;
+          }),
+        },
+      },
+    });
+
+    writeChannelSyscall(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+      [0x100, path.length, 0x200, 40, 0, 0],
+    );
+    worker.handleSyscall(channel);
+    await flushMicrotasksUntil(
+      () => onSpawn.mock.calls.length === 1 || readChannelStatus(channel) !== CHANNEL_STATUS_PENDING,
+      "script spawn neither launched nor completed",
+      5_000,
+    );
+    expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+    expect(onSpawn).toHaveBeenCalledWith(
+      7,
+      100,
+      expect.objectContaining({ argv: ["/bin/sh", "/bin/script"] }),
+      [],
+    );
+    // Each target was prepared once: contention never queued a second one.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an exec-target call on a busy gate without queuing it for later", async () => {
+    const prepare = vi.fn(() => 41);
+    const cancel = vi.fn(() => 0);
+    const size = vi.fn(() => 8n);
+    const read = vi.fn(() => 0);
+    const admit = vi.fn(() => 1);
+    const execPrepare = vi.fn(() => 41);
+    let contended: unknown[] = [];
+    let worker: any;
+    worker = createWorker({
+      kernelInstance: {
+        exports: {
+          kernel_spawn_exec_target_prepare: prepare,
+          kernel_exec_target_cancel: cancel,
+          kernel_exec_target_size: size,
+          kernel_exec_target_read: read,
+          kernel_exec_target_admit: admit,
+          kernel_exec_target_prepare: execPrepare,
+          // Any export holding the gate: the calls below arrive meanwhile.
+          kernel_drain_wakeup_events: () => {
+            if (contended.length > 0) return 0;
+            contended = [
+              () => worker.spawnExecTargetPrepare(7, 100, "/bin/sh"),
+              () => worker.execTargetCancel(100, 41),
+              () => worker.execTargetSize(100, 41),
+              () => worker.execTargetRead(100, 41, 0n, new Uint8Array(8)),
+              () => worker.execTargetAdmit(100, 41, ABI_VERSION),
+              () => worker.execTargetPrepare(7, 7, -100, "/bin/sh", 0),
+            ].map((call) => {
+              try {
+                return call();
+              } catch (error) {
+                return error;
+              }
+            });
+            return 0;
+          },
+        },
+      },
+    });
+
+    worker.testAuthority.drainWakeupEventsForTest();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(contended).toEqual(Array(6).fill(expect.any(KernelReentrantEntryError)));
+    // A queued prepare would retain a token its caller already gave up on.
+    for (const call of [prepare, cancel, size, read, admit, execPrepare]) {
+      expect(call.mock.calls.length).toBe(0);
+    }
+  });
+
+  it("rolls back the spawn child when its argv cannot be read back", async () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const channel = createChannel(7, memory, 0);
+    const path = new TextEncoder().encode("/bin/child");
+    new Uint8Array(memory.buffer).set(path, 0x100);
+    const removeProcess = vi.fn();
+    const onSpawn = vi.fn(async () => 0);
+    const worker = createWorker({
+      processes: new Map([[7, { channels: [channel], memory }]]),
+      callbacks: { onSpawn },
+      kernelInstance: {
+        exports: {
+          kernel_spawn_process: () => 100,
+          kernel_process_metadata_read: () => -34,
+          kernel_remove_process: removeProcess,
+        },
+      },
+    });
+
+    writeChannelSyscall(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+      [0x100, path.length, 0x200, 40, 0, 0],
+    );
+    worker.handleSyscall(channel);
+    await flushMicrotasksUntil(
+      () => readChannelStatus(channel) !== CHANNEL_STATUS_PENDING,
+      "spawn did not complete",
+    );
+    expect(onSpawn).not.toHaveBeenCalled();
+    expect(removeProcess).toHaveBeenCalledExactlyOnceWith(100);
+    expect(readChannelCompletion(channel)).toEqual({
+      status: CHANNEL_STATUS_COMPLETE,
+      returnValue: -1,
+      errno: 34,
     });
   });
 
@@ -1001,7 +1441,6 @@ describe("exec host-state transition", () => {
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: {
-        onResolveSpawn: vi.fn(async () => program),
         onSpawn,
       },
       kernelMemory: new WebAssembly.Memory({ initial: 2 }),
@@ -1026,7 +1465,6 @@ describe("exec host-state transition", () => {
       () => onSpawn.mock.calls.length === 1,
       "spawn child was not launched after candidate compilation",
     );
-    expect(worker.callbacks.onResolveSpawn).toHaveBeenCalledOnce();
     expect(
       kernelSpawn,
       JSON.stringify(readChannelCompletion(channel)),
@@ -1066,7 +1504,6 @@ describe("exec host-state transition", () => {
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: {
-        onResolveSpawn: vi.fn(async () => resolvedProgram()),
         onSpawn: vi.fn(() => spawned),
       },
       kernelMemory,
@@ -1113,7 +1550,6 @@ describe("exec host-state transition", () => {
       () => worker.callbacks.onSpawn.mock.calls.length === 1,
       "spawn worker launch did not begin after candidate compilation",
     );
-    expect(worker.callbacks.onResolveSpawn).toHaveBeenCalledOnce();
     expect(
       worker.callbacks.onSpawn,
       JSON.stringify(readChannelCompletion(channel)),
@@ -1932,6 +2368,13 @@ function createWorker(overrides: Record<string, unknown>): any {
   }
   if (!("kernel_exec_target_cancel" in exports)) {
     exports.kernel_exec_target_cancel = vi.fn(() => 0);
+  }
+  if (!("kernel_exec_target_admit" in exports)) {
+    exports.kernel_exec_target_admit = admitProgram(kernelMemory);
+  }
+  if (!("kernel_process_metadata_read" in exports)) {
+    // No argv or environment entries: index 0 is already past the end.
+    exports.kernel_process_metadata_read = vi.fn(() => -22);
   }
   if (!("kernel_spawn_exec_commit" in exports)) {
     exports.kernel_spawn_exec_commit = vi.fn(() => 0);

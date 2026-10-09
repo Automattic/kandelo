@@ -195,7 +195,15 @@ pub mod process_layout;
 ///     path component relative to a directory handle; the path-taking
 ///     `host_open`/`host_stat`/... family is gone). docs/abi-versioning.md
 ///     ("ABI 49") lists each.
-pub const ABI_VERSION: u32 = 49;
+/// 50: the kernel decides what an exec or spawn runs. `kernel_spawn_process`
+///     reads the SYS_SPAWN request from the caller's memory and refuses a
+///     target a launch could not run before any file action runs (the spawn
+///     scratch reservation exports are gone); `kernel_process_metadata_read`
+///     hands the host the child's argv and environment;
+///     `kernel_exec_target_admit` decides whether a retained exec target is a
+///     `#!` script or a runnable program; and an exec commit sets the process
+///     pointer width. docs/abi-versioning.md ("ABI 50") lists each.
+pub const ABI_VERSION: u32 = 50;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -3446,6 +3454,7 @@ pub mod abi {
         "kernel_create_process_with_stdio",
         "kernel_dequeue_signal",
         "kernel_exec_commit",
+        "kernel_exec_target_admit",
         "kernel_exec_target_cancel",
         "kernel_exec_target_prepare",
         "kernel_exec_target_read",
@@ -3487,6 +3496,7 @@ pub mod abi {
         "kernel_process_metadata_begin",
         "kernel_process_metadata_cancel",
         "kernel_process_metadata_commit",
+        "kernel_process_metadata_read",
         "kernel_process_metadata_stage",
         "kernel_process_secure_exec",
         "kernel_publish_spawn_child",
@@ -3497,12 +3507,6 @@ pub mod abi {
         "kernel_spawn_exec_commit",
         "kernel_spawn_exec_target_prepare",
         "kernel_spawn_process",
-        "kernel_spawn_reserved_process",
-        "kernel_spawn_scratch_begin",
-        "kernel_spawn_scratch_cancel",
-        "kernel_spawn_scratch_capacity",
-        "kernel_spawn_scratch_pointer",
-        "kernel_spawn_scratch_retained_capacity",
         "kernel_take_process_timer_cleanup",
         "kernel_thread_exit",
         "kernel_thread_has_deliverable",

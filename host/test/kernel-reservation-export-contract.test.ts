@@ -10,12 +10,6 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ABI_43_RESERVATION_EXPORTS = [
   "kernel_blocking_retry_release",
   "kernel_blocking_retry_token",
-  "kernel_spawn_reserved_process",
-  "kernel_spawn_scratch_begin",
-  "kernel_spawn_scratch_cancel",
-  "kernel_spawn_scratch_capacity",
-  "kernel_spawn_scratch_pointer",
-  "kernel_spawn_scratch_retained_capacity",
   "kernel_transfer_channel_execute",
   "kernel_transfer_io_execute",
   "kernel_transfer_scratch_begin",
