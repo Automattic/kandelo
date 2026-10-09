@@ -3013,12 +3013,52 @@ child_process.ChildProcess = (function () {
 // ============================================================
 
 const crypto = (() => {
-    function randomBytes(size) {
-        const buf = Buffer.alloc(size);
-        // Use Math.random as fallback (not cryptographically secure)
-        for (let i = 0; i < size; i++) {
-            buf[i] = Math.floor(Math.random() * 256);
+    // Real CSPRNG source: `/dev/urandom` is a kernel virtual device whose
+    // reads delegate to host_getrandom() (see docs/posix-status.md). We fill
+    // the caller's bytes from it, failing loud if the device yields no data —
+    // never silently falling back to the non-CSPRNG Math.random(). Open +
+    // read + close per call keeps fd lifecycle trivial across fork/exec;
+    // crypto calls are not a syscall hot path.
+    function _fillRandomBytes(u8, byteOffset, byteLength) {
+        if (byteLength <= 0) return u8;
+        // A Buffer view sharing the target's memory, so readSync writes in place.
+        const view = Buffer.from(u8.buffer, u8.byteOffset + byteOffset, byteLength);
+        let fd;
+        try {
+            fd = fs.openSync('/dev/urandom', 'r');
+            let got = 0;
+            while (got < byteLength) {
+                const n = fs.readSync(fd, view, got, byteLength - got, null);
+                if (n <= 0) throw new Error('crypto: /dev/urandom returned no data');
+                got += n;
+            }
+        } finally {
+            if (fd !== undefined) { try { fs.closeSync(fd); } catch (_) { /* ignore */ } }
         }
+        return u8;
+    }
+
+    function randomBytes(size, cb) {
+        const buf = Buffer.alloc(size);
+        if (typeof cb === 'function') {
+            let err = null;
+            try { _fillRandomBytes(buf, 0, size); } catch (e) { err = e; }
+            queueMicrotask(() => err ? cb(err) : cb(null, buf));
+            return;
+        }
+        _fillRandomBytes(buf, 0, size);
+        return buf;
+    }
+
+    // Node's crypto.randomFillSync(buf[, offset][, size]) fills any
+    // ArrayBufferView region in place and returns it.
+    function randomFillSync(buf, offset, size) {
+        const u8 = buf instanceof Uint8Array
+            ? buf
+            : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+        const off = offset === undefined ? 0 : offset;
+        const len = size === undefined ? (u8.byteLength - off) : size;
+        _fillRandomBytes(u8, off, len);
         return buf;
     }
 
@@ -3032,7 +3072,24 @@ const crypto = (() => {
 
     function randomInt(min, max) {
         if (max === undefined) { max = min; min = 0; }
-        return min + Math.floor(Math.random() * (max - min));
+        if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max)) {
+            throw new RangeError('randomInt: min and max must be safe integers');
+        }
+        const range = max - min;
+        if (range <= 0) throw new RangeError('randomInt: max must be greater than min');
+        if (range > 0x1000000000000) throw new RangeError('randomInt: range must be <= 2^48');
+        // Unbiased rejection sampling over whole bytes — no modulo bias, which
+        // is the guarantee callers rely on (session ids, jitter, etc.).
+        let bytesNeeded = 1;
+        while (Math.pow(256, bytesNeeded) < range) bytesNeeded++;
+        const maxValue = Math.pow(256, bytesNeeded);
+        const limit = maxValue - (maxValue % range);
+        for (;;) {
+            const b = randomBytes(bytesNeeded);
+            let v = 0;
+            for (let i = 0; i < bytesNeeded; i++) v = v * 256 + b[i];
+            if (v < limit) return min + (v % range);
+        }
     }
 
     function createHash(algorithm) {
@@ -3064,11 +3121,20 @@ const crypto = (() => {
     }
 
     return {
-        randomBytes, randomUUID, randomInt,
+        randomBytes, randomUUID, randomInt, randomFillSync,
         createHash, createHmac,
         getHashes() { return ['sha1', 'sha256', 'sha512', 'md5']; },
+        // Web Crypto getRandomValues: fills an integer TypedArray in place from
+        // the real CSPRNG. Node/WHATWG cap the request at 65536 bytes.
         getRandomValues(buf) {
-            for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256);
+            if (buf == null || typeof buf.byteLength !== 'number' || typeof buf.buffer === 'undefined') {
+                throw new TypeError('getRandomValues: argument must be an integer-typed TypedArray');
+            }
+            if (buf.byteLength > 65536) {
+                throw new Error("getRandomValues: The ArrayBufferView's byte length exceeds 65536");
+            }
+            const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+            _fillRandomBytes(u8, 0, buf.byteLength);
             return buf;
         },
     };
@@ -3083,8 +3149,8 @@ crypto.timingSafeEqual = function (a, b) {
     return diff === 0;
 };
 // Throwing stubs: no libcrypto cipher/asymmetric-key surface wired through
-// the wasm sysroot yet. See docs/posix-status.md.
-crypto.randomFillSync = _notImpl('crypto', 'randomFillSync');
+// the wasm sysroot yet. See docs/posix-status.md. (randomFillSync is now real,
+// backed by /dev/urandom — see the crypto module above.)
 crypto.createCipheriv = _notImpl('crypto', 'createCipheriv');
 crypto.createDecipheriv = _notImpl('crypto', 'createDecipheriv');
 crypto.createPrivateKey = _notImpl('crypto', 'createPrivateKey');

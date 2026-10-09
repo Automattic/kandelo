@@ -179,6 +179,21 @@ const FIXTURES: Record<string, string> = {
     'let empt="";try{const z=zlib.zstdDecompressSync(Buffer.alloc(0));empt=(z&&z.length===0)?"EMPTY":"LEN:"+z.length;}catch(e){empt="THREW:"+(e&&e.message);}' +
     'console.log("ZSTD",viaZlib===viaBun,viaZlib,bad,trunc,empt);' +
     '}catch(e){console.log("ZSTDERR",(e&&e.name)||"",(e&&e.message)||e);}})();',
+  // Real CSPRNG (M2 Phase N): crypto randomness is backed by /dev/urandom
+  // (host_getrandom), NOT Math.random. Asserts two randomBytes calls differ
+  // (real entropy), two getRandomValues fills differ, randomFillSync fills a
+  // non-constant buffer, randomUUID is a valid v4 and two differ, and
+  // randomInt(10,20) stays unbiased within [10,20).
+  "maincrypto.cjs":
+    '(()=>{try{const c=require("crypto");' +
+    'const a=c.randomBytes(32).toString("hex");const b=c.randomBytes(32).toString("hex");' +
+    'const gv=new Uint8Array(16);c.getRandomValues(gv);const gv2=new Uint8Array(16);c.getRandomValues(gv2);' +
+    'const fb=Buffer.alloc(16);c.randomFillSync(fb);const fbOk=fb.length===16&&!fb.every((x)=>x===fb[0]);' +
+    'const u1=c.randomUUID();const u2=c.randomUUID();' +
+    'const uuidOk=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u1);' +
+    'let intOk=true;for(let i=0;i<64;i++){const r=c.randomInt(10,20);if(!Number.isInteger(r)||r<10||r>=20){intOk=false;break;}}' +
+    'console.log("CRYPTO",a!==b,Buffer.compare(Buffer.from(gv),Buffer.from(gv2))!==0,fbOk,uuidOk,u1!==u2,intOk);' +
+    '}catch(e){console.log("CRYPTOERR",(e&&e.name)||"",(e&&e.message)||e);}})();',
 };
 
 function stageFixtures(): string {
@@ -446,5 +461,12 @@ describe("spidermonkey-node ESM probe", () => {
     // eslint-disable-next-line no-console
     console.log("ZSTD OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
     expect(r.stdout).toContain("ZSTD true hello zstd from kandelo THROW THROW EMPTY");
+  }, 90_000);
+
+  it.runIf(ready)("real CSPRNG: crypto randomness uses /dev/urandom, not Math.random", async () => {
+    const r = await runOne("/app/maincrypto.cjs");
+    // eslint-disable-next-line no-console
+    console.log("CRYPTO OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    expect(r.stdout).toContain("CRYPTO true true true true true true");
   }, 90_000);
 });
