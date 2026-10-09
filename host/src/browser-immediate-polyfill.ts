@@ -15,6 +15,9 @@ export interface BrowserImmediatePolyfillTarget {
   setImmediate?: unknown;
   clearImmediate?: unknown;
   MessageChannel: typeof MessageChannel;
+  performance: Pick<Performance, "now">;
+  setTimeout: (callback: () => void, delay: number) => unknown;
+  scheduler?: { yield(): Promise<void> };
 }
 
 export interface BrowserImmediatePolyfillState {
@@ -39,6 +42,8 @@ export function installBrowserSetImmediatePolyfill(
   let nextId = 0;
   let scheduled = false;
   let flushing = false;
+  let sliceStartedAt = target.performance.now();
+  const sliceBudgetMs = 4;
 
   const channel = new target.MessageChannel();
   channel.port1.onmessage = flush;
@@ -48,7 +53,26 @@ export function installBrowserSetImmediatePolyfill(
       return;
     }
     scheduled = true;
-    channel.port2.postMessage(null);
+    // WebKit prioritizes a continuously ready MessageChannel over worker
+    // timers. Keep the fairness boundary, using a native scheduler task when
+    // available to avoid timer scheduling overhead on Chromium's syscall path.
+    if (target.performance.now() - sliceStartedAt >= sliceBudgetMs) {
+      const resume = () => {
+        sliceStartedAt = target.performance.now();
+        channel.port2.postMessage(null);
+      };
+      if (typeof target.scheduler?.yield === "function") {
+        // A rejected scheduler yield must not strand the immediate queue.
+        void target.scheduler.yield().then(
+          resume,
+          () => { target.setTimeout(resume, 0); },
+        );
+      } else {
+        target.setTimeout(resume, 0);
+      }
+    } else {
+      channel.port2.postMessage(null);
+    }
   }
 
   function flush(): void {
@@ -79,6 +103,8 @@ export function installBrowserSetImmediatePolyfill(
   }
 
   (target as any).setImmediate = (fn: BrowserImmediateCallback, ...args: any[]) => {
+    // An empty queue can occur between promise-driven notifications even
+    // under continuous load. Only a completed yield resets the fairness budget.
     const handle: BrowserImmediateHandle = { id: ++nextId };
     const entry: BrowserImmediateEntry = {
       handle,

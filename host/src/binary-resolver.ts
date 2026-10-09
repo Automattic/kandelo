@@ -3595,10 +3595,10 @@ export type LazyAssetResolution = { path: string } | { error: Error };
  * Resolve every image lazy asset URL after one source-projection freshness
  * check, capturing per-URL failures instead of throwing.
  *
- * The Node host calls this once at image-mount time, before any process
- * runs: `resolveBinary` can shell out to the canonical Rust freshness
- * checker, and the kernel worker thread must never pay that inside a
- * syscall-driven lazy fetch. A captured error is rethrown by the fetcher
+ * The Node host starts this on the first lazy read in a resolver worker:
+ * `resolveBinary` can shell out to the canonical Rust freshness checker,
+ * so the syscall worker must not run this blocking checkpoint. A lazy read
+ * awaits the completed checkpoint. A captured error is rethrown by the fetcher
  * only when its URL is actually fetched, so a latent bad artifact does not
  * abort boot.
  */

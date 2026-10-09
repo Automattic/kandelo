@@ -57,10 +57,7 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
-import {
-  resolveLazyAssetPath,
-  resolveLazyAssetPaths,
-} from "./binary-resolver";
+import { NodeLazyAssetResolver } from "./node-lazy-asset-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import type {
@@ -918,34 +915,19 @@ function collectRelativeLazyAssetUrls(memfs: MemoryFileSystem): string[] {
 
 /**
  * Serve the image's lazy assets from repository trees. Every image URL is
- * resolved once here, at mount time, before any process runs: resolver
- * lookups can shell out to the canonical freshness checker, and a
- * syscall-driven lazy fetch on the kernel worker thread must never pay
- * that. A URL whose resolution failed rethrows that failure only when the
- * URL is actually fetched, so a latent bad artifact does not abort boot.
+ * resolved in one checkpoint started on the first lazy read in a separate
+ * worker. Programs that never read these assets need no resolver preparation;
+ * a lazy read awaits its pinned path before reading bytes.
+ * A failed URL rethrows only when fetched, so latent bad assets do not abort boot.
  */
 function createRepoLazyAssetFetcher(
   memfs: MemoryFileSystem,
 ): (url: string) => Promise<Response> {
-  const resolutions = resolveLazyAssetPaths(collectRelativeLazyAssetUrls(memfs));
-  const pathFor = (url: string): string => {
-    let resolution = resolutions.get(url);
-    if (resolution === undefined) {
-      try {
-        resolution = { path: resolveLazyAssetPath(url) };
-      } catch (error) {
-        resolution = {
-          error: error instanceof Error ? error : new Error(String(error)),
-        };
-      }
-      resolutions.set(url, resolution);
-    }
-    if ("error" in resolution) throw resolution.error;
-    return resolution.path;
-  };
+  const resolver = new NodeLazyAssetResolver(collectRelativeLazyAssetUrls(memfs));
+  repoLazyAssetResolver = resolver;
   return async (url: string) => {
     if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
-    const path = url.startsWith("file://") ? fileURLToPath(url) : pathFor(url);
+    const path = url.startsWith("file://") ? fileURLToPath(url) : await resolver.resolve(url);
     if (!existsSync(path)) return new Response(null, { status: 404 });
     const bytes = new Uint8Array(readFileSync(path));
     return new Response(bytes, {
@@ -1036,7 +1018,11 @@ async function buildVirtualPlatformIO(
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
 
+let repoLazyAssetResolver: NodeLazyAssetResolver | undefined;
+
 function cleanupSessionDir(): void {
+  void repoLazyAssetResolver?.close();
+  repoLazyAssetResolver = undefined;
   if (sessionDir) {
     try {
       rmSync(sessionDir, { recursive: true, force: true });
@@ -3484,6 +3470,7 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 // --- Destroy ---
 
 async function performDestroy() {
+  await repoLazyAssetResolver?.close();
   // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
   // is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
   //
@@ -3638,9 +3625,14 @@ async function handleDestroy(msg: { requestId: number }) {
   // closes admission synchronously, drains every creator that entered first,
   // and runs this terminal sweep only once. The outer worker-realm termination
   // remains the bounded fallback if an admitted creator does not finish.
-  const result = await processMemoryCreators.closeAndRunAfterDrain(
+  const destroy = processMemoryCreators.closeAndRunAfterDrain(
     performDestroy,
   );
+  // Pending lazy exec reads may hold a creator token. Cancel their resolver
+  // after closing admission, before waiting for that token to drain.
+  const resolverClosed = repoLazyAssetResolver?.close();
+  const result = await destroy;
+  await resolverClosed;
   respond(msg.requestId, result);
 }
 

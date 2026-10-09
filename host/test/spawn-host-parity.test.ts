@@ -250,7 +250,7 @@ describe("spawn host parity", () => {
     }
   });
 
-  it("both hosts own the exact fork clone before their first async yield", () => {
+  it("both hosts capture the exact fork snapshot before their first async yield", () => {
     for (const entry of [nodeEntry, browserEntry]) {
       const handler = ordinaryForkHandlerSource(readFileSync(entry, "utf8"));
       const clone = handler.indexOf("acquireForkMemoryClone(");
@@ -260,7 +260,22 @@ describe("spawn host parity", () => {
       // WHY: after the first yield, sibling exec can release and recycle the
       // parent generation. The helper's owned synchronous copy is the fork
       // snapshot; doing it later creates an ABA/two-owner race.
-      expect(clone, `${entry} must clone before yielding`).toBeLessThan(firstAwait);
+      if (entry === browserEntry) {
+        // The await operand runs before suspension. The asynchronous factory
+        // captures and charges a plain snapshot synchronously, then constructs
+        // fresh process memory in another worker. Its deferred-provider tests
+        // mutate and retire the parent before construction resolves and verify
+        // that the child still receives the original snapshot.
+        const asynchronousClone = handler.indexOf(
+          "await processMemoryAllocator.acquireForkClone(",
+        );
+        expect(asynchronousClone).toBe(firstAwait);
+        expect(handler).toMatch(
+          /const childMemoryLease = processMemoryAllocator\.hasAsyncMemoryFactory\s*\? await processMemoryAllocator\.acquireForkClone\([\s\S]*?\)\s*: acquireForkMemoryClone\(/,
+        );
+      } else {
+        expect(clone, `${entry} must clone before yielding`).toBeLessThan(firstAwait);
+      }
     }
   });
 

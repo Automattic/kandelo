@@ -6,6 +6,8 @@
  * instance, process spawning (fork/exec/clone), and the HTTP connection pump.
  */
 
+import { BrowserProcessMemoryFactory } from "./browser-process-memory-factory";
+import { runtimeMemoryProfileSignals } from "./runtime-memory-profile";
 import { installBrowserSetImmediatePolyfill } from "./browser-immediate-polyfill";
 
 installBrowserSetImmediatePolyfill();
@@ -147,6 +149,7 @@ let io: VirtualPlatformIO;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let processMemoryAllocator: ProcessMemoryAllocator;
+let processMemoryFactory: BrowserProcessMemoryFactory | undefined;
 const processMemoryRetirementPressureHook =
   createProcessMemoryRetirementPressureHook();
 let defaultEnv: string[] = [];
@@ -1014,7 +1017,14 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     "KANDELO_TEST_EXEC_WORKER_CONSTRUCTION_FAILURE=once",
   );
   injectedExecWorkerConstructionFailure = false;
+  processMemoryFactory = runtimeMemoryProfileSignals({
+    userAgent: navigator.userAgent,
+    maxTouchPoints: navigator.maxTouchPoints,
+  }).chargesDeclaredCeilings ? new BrowserProcessMemoryFactory() : undefined;
   processMemoryAllocator = new ProcessMemoryAllocator({
+    createMemoryAsync: processMemoryFactory
+      ? (request) => processMemoryFactory!.allocate(request)
+      : undefined,
     // The sampled byte budget is the concurrency authority. Keep the count
     // ceiling high enough that small address spaces do not inherit the
     // historically unenforced maxWorkers value as a new process-count limit.
@@ -2350,17 +2360,20 @@ async function handleOrdinaryFork(
   const childLayout = parentInfo.layout;
   // WHY: teardown and compilation below yield. A sibling exec may then retire
   // the parent's exact generation, so the committed fork must pass
-  // retired-memory admission and own its clone before the first await.
+  // retired-memory admission and capture its bytes before the first await.
+  // On WebKit the allocator also charges the temporary snapshot while a
+  // disposable worker constructs the child's independently owned Memory.
   const memoryStatsBeforeClone = sampleProcessMemoryStats(
     vforkMechanismTraceEnabled,
     processMemoryAllocator,
   );
-  const childMemoryLease = acquireForkMemoryClone(
-    processMemoryAllocator,
-    parentMemory,
-    ptrWidth,
-    childLayout.maximumPages,
-  );
+  const childMemoryLease = processMemoryAllocator.hasAsyncMemoryFactory
+    ? await processMemoryAllocator.acquireForkClone(
+      parentMemory, ptrWidth, childLayout.maximumPages,
+    )
+    : acquireForkMemoryClone(
+      processMemoryAllocator, parentMemory, ptrWidth, childLayout.maximumPages,
+    );
   const childMemory = childMemoryLease.memory;
   const memoryStatsAfterClone = sampleProcessMemoryStats(
     vforkMechanismTraceEnabled,
@@ -4365,9 +4378,11 @@ async function handleDestroy(
   // handler yields. The shared gate closes admission synchronously, drains
   // every creator already in flight, and runs this terminal sweep only once.
   // Browser main still terminates this whole worker realm on timeout.
-  const result = await processMemoryCreators.closeAndRunAfterDrain(
-    performDestroy,
-  );
+  const destroy = processMemoryCreators.closeAndRunAfterDrain(performDestroy);
+  // Closing the creator gate happens synchronously. Cancel allocations before
+  // awaiting its drain, including a constructor stalled in its own realm.
+  processMemoryFactory?.dispose();
+  const result = await destroy;
   respond(msg.requestId, result);
 }
 

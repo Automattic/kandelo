@@ -14,6 +14,7 @@ export default defineConfig({
     "src/worker-entry.ts",
     "src/worker-entry-browser.ts",
     "src/node-kernel-worker-entry.ts",
+    "src/node-lazy-asset-resolver-entry.ts",
     "src/worker-main.ts",
     "src/vfs/index.ts",
     "src/vfs/opfs-worker.ts",

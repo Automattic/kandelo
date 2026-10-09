@@ -1768,12 +1768,19 @@ cannot wait asynchronously at that point: a sibling thread could mutate the
 parent memory while the caller yielded, changing the purported syscall-time
 snapshot.
 
-Once admitted, the host synchronously acquires an exactly sized fresh backing
-and copies the parent's current memory length before the first asynchronous
-host operation. This preserves the syscall-time snapshot even if a sibling
-thread execs while the child Worker is prepared. The child copies the current
-length, not the configured maximum, because `memory.size()` and the accessible
-address-space boundary are part of the state fork duplicates. Pthread workers
+Once admitted, the host captures the parent's current memory length before the
+first asynchronous host operation. Node, Chromium and Firefox acquire and
+populate a fresh shared backing directly. WebKit captures plain snapshot bytes
+first, then constructs the child's shared memory in a disposable worker realm
+to avoid synchronous garbage collection stalling the kernel realm. The
+allocator charges both the temporary snapshot and the pending child backing
+against its sampled byte budget, including concurrent pending allocations.
+It rechecks guest growth before publishing a constructed memory. Machine
+shutdown cancels pending construction workers before draining process creators.
+This preserves the syscall-time snapshot even if a sibling thread execs while
+the child Worker is prepared. The child copies the current length, not the
+configured maximum, because `memory.size()` and the accessible address-space
+boundary are part of the state fork duplicates. Pthread workers
 share the owning process memory plus that process's thread allocator. A fork
 child does not inherit dead parent pthread slot reservations. Correctness must
 not depend on page reloads, context resets, periodic kernel resets, or garbage
@@ -2133,9 +2140,17 @@ and the lazy and eager paths validate and install the same normalized modes.
 from the exact package output,” covers the policy with deliberately
 non-portable input modes.
 
-Relative lazy asset URLs are resolved inside the dedicated kernel worker on
-both hosts. Browser boots use `BrowserKernel`'s `lazyUrlBase`; Node boots use
-the peer `NodeKernelHost.rootfsLazyUrlBase` option. Closed/offline acceptance
+Browser lazy asset URLs are resolved in the dedicated kernel worker using
+`BrowserKernel`'s `lazyUrlBase`; Node boots use the peer
+`NodeKernelHost.rootfsLazyUrlBase` option. Repository-backed Node boots start
+one source-freshness checkpoint for the image's relative URLs in a separate
+resolver worker on the first lazy read. Unused assets need no resolver
+preparation. Each lazy read awaits the complete cohort's pinned path or
+per-URL error before reading bytes. Paths are pinned at first use, rather
+than at mount time; later reads do not mix in another generation. Newly
+introduced URLs receive another off-thread
+checkpoint. Destroy cancels pending lookups and terminates these workers.
+Closed/offline acceptance
 can bind the resolved URL to exact caller-owned bytes through the existing
 closed-lazy-asset transport. Before kernel boot, that acceptance-only loader
 eagerly fetches bounded source URLs, verifies each complete decoded response

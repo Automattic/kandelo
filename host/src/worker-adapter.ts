@@ -183,7 +183,10 @@ export class NodeWorkerAdapter implements WorkerAdapter {
   private readonly initializeByMessage: boolean;
   private injectedVforkStartFailure = false;
 
-  constructor(entryUrl?: URL) {
+  constructor(
+    entryUrl?: URL,
+    private readonly sourceOptions: { bundleSource?: boolean } = {},
+  ) {
     // WHY: arbitrary custom entries may read workerData directly and do not
     // understand Kandelo's marker/message protocol. Only the built-in entry can
     // safely select the new transport without changing the public custom-entry
@@ -328,7 +331,8 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     // Try the compiled JS entry first (much faster startup — avoids tsx
     // bootstrap which takes >500ms with 10+ concurrent workers).
     const compiledEntry =
-      this.resolveCompiledEntry() ?? this.resolveBundledSourceEntry();
+      this.resolveCompiledEntry() ?? (this.sourceOptions.bundleSource === false
+        ? null : this.resolveBundledSourceEntry());
     if (compiledEntry) {
       const worker = new Worker(
         compiledEntry,
