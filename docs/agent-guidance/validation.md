@@ -253,6 +253,20 @@ result. If a suite genuinely cannot run (no network for a package source
 download, no display for browser tests, etc.), name the exact step that failed
 and why; that is different from validation being impossible.
 
+Sortix's upstream suite contains filenames that differ only by case, such
+as `PRIX16.c` and `PRIx16.c`. On a case-insensitive filesystem, a checkout
+can overwrite one with the other and appear dirty immediately. Use a
+pristine checkout at the pinned submodule commit on a case-sensitive
+volume, and run the normal suite with that source root:
+
+```bash
+scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
+  bash scripts/ci-run-test-suite.sh sortix
+```
+
+The runner keeps its build directory below the selected source root;
+SDK, kernel, overrides, and runtime still come from the current worktree.
+
 Before blaming a suite failure on your change, confirm it actually is your
 change: a few package/demo tests (e.g. the Erlang `ring` benchmark) can fail for
 environment or artifact reasons unrelated to a given diff. Reproduce the failure
