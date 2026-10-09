@@ -999,7 +999,10 @@ Chromium probe passes too, and all seventeen Go Chromium probes pass together.
 This meets milestone 5's focused shell-out/child management check, not
 comprehensive process or signal conformance. Next is
 milestone 6: first-class Go package integration through the normal resolver
-and VFS path, followed by the recorded Go-runtime-specific agent guidance.
+and VFS path. Directly built Go binaries still emit the legacy
+`kandelo.abi.contract` stamp warning; package integration must resolve that
+through the normal build path. The recorded Go-runtime-specific agent guidance
+follows at the end.
 
 ---
 
