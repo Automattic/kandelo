@@ -586,11 +586,13 @@ A taker that clicks **Disconnect** hands the machine back first. The
 `hand_back` message on the replication wire (`LocalReplicationLog.handBack`)
 asks the computer the machine came from to take it, and that computer starts
 an ordinary take — by proof when it runs a replica, by checkpoint otherwise.
-It refuses while it runs a machine of its own, boots a replica, or already
-takes. The taker asks again every second and closes the link only once it
-has stopped running the machine and the peer says it holds it. After 20
-seconds without a take the link stays open and the popup says so; a second
-**Disconnect** closes the link and the machine stays on the taker.
+It refuses while it runs or boots a machine of its own, boots a replica, or
+already takes: a take that starts while a boot is under way races it, and
+the machine can then arrive on neither computer. The taker asks again
+every second and closes the link only once it has stopped running the
+machine and the peer says it holds it. After 20 seconds without a take the
+link stays open and the popup says so; a second **Disconnect** closes the
+link and the machine stays on the taker.
 `kandelo-machine-replication.spec.ts` covers both outcomes.
 
 The remaining open boundary: a seal under a still-running guest contends

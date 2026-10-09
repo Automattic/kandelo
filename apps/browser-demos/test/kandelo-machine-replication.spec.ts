@@ -723,13 +723,22 @@ test("keeps a machine the other computer cannot take back on the computer that d
     await expect(viewer.locator(".kdock-status-text"))
       .toHaveAttribute("data-status", "running", { timeout: 300_000 });
 
-    // The computer the machine came from runs a machine of its own now, so it
-    // does not take the other one back.
+    // The computer the machine came from boots a machine of its own now, so
+    // it does not take the other one back. Its kernel is held until the hand
+    // back is refused: a boot still under way is its own machine too.
+    let bootKernel = () => {};
+    const kernelHeld = new Promise<void>((resolve) => {
+      bootKernel = resolve;
+    });
+    await userContext.route("**/kernel.wasm", async (route) => {
+      await kernelHeld;
+      await route.continue();
+    });
     await user.getByRole("button", { name: "New", exact: true }).click();
     await user.getByRole("row", { name: "Launch Node.js" })
       .getByRole("button", { name: "Launch" }).click();
-    await expect(user.locator(".kdock-status"))
-      .toHaveAttribute("data-role", "user", { timeout: 300_000 });
+    await expect(user.locator(".kdock-status-text"))
+      .toHaveAttribute("data-status", "booting");
 
     // The hand back waits, says it was refused, and keeps the link. The second
     // Disconnect is the person choosing to keep the machine here.
@@ -741,6 +750,9 @@ test("keeps a machine the other computer cannot take back on the computer that d
     await expect(disconnect).toHaveText("Handing it back...");
     await expect(viewer.locator(".knetwork-take-note"))
       .toContainText("did not take the machine back", { timeout: 60_000 });
+    bootKernel();
+    await expect(user.locator(".kdock-status-text"))
+      .toHaveAttribute("data-status", "running", { timeout: 300_000 });
     await expect(networkButton(viewer)).toHaveClass(/is-connected/);
     await viewer.getByRole("button", { name: "Disconnect" }).click();
     await expect(networkButton(viewer))
