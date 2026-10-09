@@ -1,0 +1,100 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { OwnedJobs } from '../src/owned-jobs';
+
+afterEach(() => vi.useRealTimers());
+describe('owned command families', () => {
+  it('waits for every worker to detach and retries reaping before reporting completion', () => {
+    vi.useFakeTimers();
+    const reap = vi.fn().mockImplementationOnce(() => { throw new Error('kernel busy'); });
+    const jobs = new OwnedJobs(vi.fn(), 4096, reap);
+    jobs.create('a', 10, 1000);
+    jobs.inherit(10, 11);
+    jobs.exited(11, 0);
+    jobs.detached(11);
+    expect(reap).not.toHaveBeenCalled(); // The parent may still wait for child 11.
+    jobs.exited(10, 7);
+    expect(jobs.read('a')).toMatchObject({ exitCode: 7, terminationObserved: false });
+    jobs.detached(10);
+    expect(reap).toHaveBeenCalledWith(new Set([10, 11]));
+    expect(jobs.read('a').terminationObserved).toBe(false);
+    vi.advanceTimersByTime(10);
+    expect(jobs.read('a')).toMatchObject({ status: 'completed', terminationObserved: true });
+    expect(reap).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['cancelled', 'timed_out'] as const)('reaps the full %s family after asynchronous detachment', reason => {
+    vi.useFakeTimers();
+    const reap = vi.fn();
+    const jobs = new OwnedJobs(vi.fn(), 4096, reap);
+    jobs.create('a', 10, 100);
+    jobs.inherit(10, 11);
+    if (reason === 'timed_out') vi.advanceTimersByTime(100);
+    else jobs.cancel('a');
+    jobs.exited(10, 137);
+    jobs.detached(10);
+    jobs.exited(11, 137);
+    expect(jobs.read('a')).toMatchObject({ status: 'cancelling', terminationObserved: false });
+    jobs.detached(11);
+    expect(reap).toHaveBeenCalledWith(new Set([10, 11]));
+    expect(jobs.read('a')).toMatchObject({ status: reason, terminationObserved: true });
+    vi.advanceTimersByTime(1000);
+    expect(reap).toHaveBeenCalledTimes(1);
+  });
+  it('requires all descendants to exit and retries cancellation across launch gaps', () => {
+    vi.useFakeTimers();
+    const kill = vi.fn();
+    const jobs = new OwnedJobs(kill);
+    jobs.create('a', 10, 1000);
+    jobs.inherit(10, 11);
+    jobs.create('unrelated', 20, 1000);
+    jobs.exited(10, 7);
+    jobs.detached(10);
+    expect(jobs.read('a')).toMatchObject({ status: 'running', exitCode: 7, terminationObserved: false });
+    jobs.cancel('a');
+    jobs.inherit(11, 12);
+    jobs.exited(11, 137);
+    jobs.detached(11);
+    vi.advanceTimersByTime(10);
+    expect(kill.mock.calls.map(call => call[0])).toEqual([11, 12]);
+    jobs.exited(12, 137);
+    jobs.detached(12);
+    expect(jobs.read('a')).toMatchObject({ status: 'cancelled', exitCode: 7, terminationObserved: true });
+    expect(jobs.read('unrelated')).toMatchObject({ status: 'running' });
+    vi.advanceTimersByTime(10);
+    expect(kill).toHaveBeenCalledTimes(2);
+    jobs.exited(20, 0);
+    jobs.detached(20);
+  });
+  it('retains a bounded mixed stream, expires old cursors and paginates without duplicates', () => {
+    vi.useFakeTimers();
+    const jobs = new OwnedJobs(() => {}, 5);
+    jobs.create('a', 10, 1000);
+    const enc = new TextEncoder();
+    jobs.output(10, 'stdout', enc.encode('abc'));
+    jobs.output(10, 'stderr', enc.encode('defg'));
+    expect(jobs.read('a', 0)).toEqual({ expired: true, oldest: 2 });
+    const first = jobs.read('a', undefined, 2);
+    expect(first).toMatchObject({ next: 4, truncated: true, hasMore: true });
+    if (first.expired) throw new Error('unexpected expiry');
+    expect(first.chunks.map(chunk => [chunk.stream, new TextDecoder().decode(chunk.bytes)])).toEqual([['stdout', 'c'], ['stderr', 'd']]);
+    const next = jobs.read('a', first.next, 2);
+    expect(next).toMatchObject({ next: 6, hasMore: true });
+    expect(() => jobs.read('a', 100)).toThrow('INVALID_CURSOR');
+    jobs.exited(10, 0);
+    jobs.detached(10);
+  });
+  it('times out even when no client polls and does not change a completed job', () => {
+    vi.useFakeTimers();
+    const kill = vi.fn();
+    const jobs = new OwnedJobs(kill);
+    jobs.create('a', 10, 100);
+    vi.advanceTimersByTime(100);
+    expect(kill).toHaveBeenCalledWith(10);
+    expect(jobs.read('a')).toMatchObject({ status: 'cancelling', terminationObserved: false });
+    jobs.exited(10, 137);
+    jobs.detached(10);
+    expect(jobs.read('a')).toMatchObject({ status: 'timed_out', terminationObserved: true });
+    jobs.cancel('a');
+    expect(jobs.read('a')).toMatchObject({ status: 'timed_out' });
+  });
+});
