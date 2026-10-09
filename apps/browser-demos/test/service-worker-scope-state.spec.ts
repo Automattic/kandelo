@@ -89,6 +89,18 @@ test.beforeAll(async () => {
       return;
     }
 
+    if (url.pathname === "/a/module-worker.js" ||
+      url.pathname === "/a/module-dependency.js") {
+      response.writeHead(200, {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/javascript; charset=utf-8",
+      });
+      response.end(url.pathname === "/a/module-worker.js"
+        ? 'import { value } from "./module-dependency.js"; self.postMessage(value);'
+        : 'export const value = "module-worker-ready";');
+      return;
+    }
+
     const lazyAsset = lazyAssetResponses.get(url.pathname);
     if (lazyAsset) {
       if (lazyAsset.kind === "failed") {
@@ -145,6 +157,25 @@ test.afterAll(async () => {
   await new Promise<void>((resolve, reject) => {
     fixtureServer.close((error) => error ? reject(error) : resolve());
   });
+});
+
+test("a controlled module worker loads imports without waiting on its own client", async ({
+  page,
+}) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const value = await page.evaluate(() => new Promise<string>((resolve, reject) => {
+    const worker = new Worker("/a/module-worker.js", { type: "module" });
+    worker.onmessage = (event) => {
+      worker.terminate();
+      resolve(event.data);
+    };
+    worker.onerror = (event) => {
+      worker.terminate();
+      reject(new Error(event.message || "module worker crashed"));
+    };
+  }));
+  expect(value).toBe("module-worker-ready");
 });
 
 test("activation removes only obsolete caches in its exact scope namespace", async ({
@@ -431,6 +462,39 @@ test("root-relative subresources are attributed to the viewing machine", async (
       (await fetch("/wp-content/x.css", { cache: "no-store" })).text()
     );
     expect(body).toBe("bridge:solo");
+  } finally {
+    await viewer.close();
+  }
+});
+
+test("root-relative writes preserve their method and exact body in the viewing machine", async ({ context, page }) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const machine = await installBridge(page, SESSION_A, "writer");
+  const other = await installBridge(page, SESSION_B, "other");
+  const viewer = await context.newPage();
+  try {
+    await viewer.goto(`${FIXTURE_ORIGIN}${machine.appPrefix}`);
+    const payload = [0, 1, 127, 128, 255, 10, 13];
+    for (const method of ["POST", "PUT", "PATCH"]) {
+      const response = await viewer.evaluate(async ({ method, payload }) => {
+        const response = await fetch("/api/write", {
+          method,
+          headers: { "Content-Type": "application/octet-stream" },
+          body: new Uint8Array(payload),
+        });
+        return { status: response.status, url: response.url, body: await response.text() };
+      }, { method, payload });
+      expect(response).toMatchObject({ status: 200, body: "bridge:writer" });
+      expect(response.url).toBe(`${FIXTURE_ORIGIN}/api/write`);
+      const writes = await page.evaluate(() => (window as any).__bridgeWrites);
+      expect(writes.writer.at(-1)).toEqual({
+        method, url: "/api/write", body: payload,
+        contentType: "application/octet-stream",
+      });
+      expect(writes.other).toEqual([]);
+    }
+    expect(other.name).not.toBe(machine.name);
   } finally {
     await viewer.close();
   }
@@ -728,6 +792,51 @@ test("a restarted SW restores each machine by name", async ({
     .toBe("restored:one");
   expect(await fetchText(page, `${two.appPrefix}after-restart`))
     .toBe("restored:two");
+});
+
+test("a restarted SW recovers nameless viewer reads and writes without routing the host", async ({ context, page, browserName }) => {
+  test.skip(browserName !== "chromium", "SW restart via CDP is Chromium-only");
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const one = await installBridge(page, SESSION_A, "one");
+  const two = await installBridge(page, SESSION_B, "two");
+  await installNamedRestoreResponder(page, [
+    { name: one.name, appPrefix: one.appPrefix, sessionId: SESSION_A, label: "one" },
+    { name: two.name, appPrefix: two.appPrefix, sessionId: SESSION_B, label: "two" },
+  ]);
+  const viewer = await context.newPage();
+  const payload = [0, 1, 127, 128, 255, 10, 13];
+  try {
+    await viewer.goto(`${FIXTURE_ORIGIN}${one.appPrefix}`);
+    for (const method of ["POST", "GET"]) {
+      await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+      // The worker has no viewer map or live port. The original document's
+      // first nameless request must identify its machine and restore its bridge.
+      const response = await viewer.evaluate(async ({ method, payload }) => {
+        const reply = await fetch("/api/probe", {
+          method,
+          headers: { "Content-Type": "application/octet-stream" },
+          body: method === "POST" ? new Uint8Array(payload) : undefined,
+        });
+        return {
+          status: reply.status, body: await reply.text(),
+          cookie: reply.headers.get("x-replayed-cookie"),
+        };
+      }, { method, payload });
+      expect(response).toEqual({ status: 200, body: "restored:one", cookie: "one=1" });
+    }
+    const writes = await page.evaluate(() => (window as any).__restoredBridgeRequests
+      .filter((request: any) => request.method === "POST"));
+    expect(writes).toEqual([{ name: one.name, method: "POST", url: "/api/probe", body: payload }]);
+    await stopWorker(context, page, `${FIXTURE_ORIGIN}/a/service-worker.js`);
+    // A spoofed app referrer cannot turn the host document into a viewer.
+    expect(await page.evaluate(async (prefix) => {
+      const response = await fetch("/a/not-an-app-path", { referrer: location.origin + prefix });
+      return response.text();
+    }, one.appPrefix)).toBe("network:/a/not-an-app-path");
+  } finally {
+    await viewer.close();
+  }
 });
 
 test("a restarted SW reloads durable authority and replays each machine's jar", async ({
@@ -1128,10 +1237,20 @@ async function installBridge(
     keepAlive.__bridgePorts ??= [];
     keepAlive.__bridgeCookies ??= {};
     keepAlive.__bridgeCookieValues ??= {};
+    keepAlive.__bridgeWrites ??= {};
+    keepAlive.__bridgeWrites[responseLabel] ??= [];
     keepAlive.__bridgeCookies[responseLabel] ??= [];
     const bridge = new MessageChannel();
     bridge.port1.onmessage = (event) => {
       if (event.data?.type !== "http-request") return;
+      if (event.data.method !== "GET" && event.data.method !== "HEAD") {
+        keepAlive.__bridgeWrites[responseLabel].push({
+          method: event.data.method,
+          url: event.data.url,
+          body: event.data.body === null ? null : Array.from(event.data.body),
+          contentType: event.data.headers["content-type"],
+        });
+      }
       keepAlive.__bridgeCookies[responseLabel].push(event.data.headers?.cookie ?? "");
       bridge.port1.postMessage({
         type: "http-response",
@@ -1233,9 +1352,11 @@ async function installNamedRestoreResponder(
     const keepAlive = window as typeof window & {
       __bridgePorts?: MessagePort[];
       __needBridgeCount?: number;
+      __restoredBridgeRequests?: Array<{ name: string; method: string; url: string; body: number[] | null }>;
     };
     keepAlive.__bridgePorts ??= [];
     keepAlive.__needBridgeCount = 0;
+    keepAlive.__restoredBridgeRequests ??= [];
     for (const machine of entries) {
       navigator.serviceWorker.addEventListener("message", (event) => {
         if (event.data?.type !== "need-bridge" || !event.ports[0]) return;
@@ -1243,6 +1364,10 @@ async function installNamedRestoreResponder(
         const fresh = new MessageChannel();
         fresh.port1.onmessage = (bridgeEvent) => {
           if (bridgeEvent.data?.type !== "http-request") return;
+          keepAlive.__restoredBridgeRequests!.push({
+            name: machine.name, method: bridgeEvent.data.method, url: bridgeEvent.data.url,
+            body: bridgeEvent.data.body === null ? null : Array.from(bridgeEvent.data.body),
+          });
           fresh.port1.postMessage({
             type: "http-response",
             requestId: bridgeEvent.data.requestId,

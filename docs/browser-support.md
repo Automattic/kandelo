@@ -1496,6 +1496,26 @@ in a second tab reaches the same running machine and relays through the
 bridge on the tab that owns it, rather than starting a second machine, because
 the name in the URL always takes priority over any per-client attribution.
 
+Nameless GET and HEAD requests redirect into the viewing machine's URL
+space. Other methods dispatch once through that machine's bridge with the
+original unread request body. WebKit loses body bytes when replaying a
+synthetic service-worker 307, so body-bearing methods avoid that redirect
+on every engine. Their browser response URL remains the original request
+URL; the guest receives the canonical app path and forwarded prefix and
+URI. Owner reconciliation, bridge restoration, and the machine's cookie
+and session checks are the same as for explicitly named requests.
+
+After idle termination or restart, the worker recovers a nameless request's
+machine from the requesting window client's actual same-origin app URL.
+It waits for the durable registry and uses the ordinary bridge restoration
+handshake. Host documents remain outside machine routing even if their
+request supplies an app-shaped referrer; unknown machines fail explicitly.
+Recovery enumerates controlled window clients and matches the request's
+client id. It does not look up worker clients: Firefox can wait for a
+loading worker's imports inside that lookup while the imports wait for
+the service-worker response. Worker imports retain ordinary network
+fetching without acquiring a machine's viewer authority.
+
 Each machine has its own cookie jar, keyed by its SW-minted name, so session
 cookies for one machine (WordPress admin cookies, for example) are never
 visible to another machine's requests even though both live under the same
@@ -2137,6 +2157,13 @@ are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or
 resolver-managed artifact is absent, the browser reports that exact missing
 image and asks the user to run `./run.sh fetch`.
+
+Normal Vite development resolves exact optional binary URL globs through
+the verified binary resolver, including the implicit SourceOnly tree.
+The authored legacy mirror need not exist for a built image to be found.
+Absent assets remain unavailable; provenance failures propagate instead
+of being treated as missing files. Explicit SourceOnly builds retain
+their snapshot, syntax, and fallback-denial checks.
 
 The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
 `mysql` account (uid/gid 101). Their writable `/data` directories are

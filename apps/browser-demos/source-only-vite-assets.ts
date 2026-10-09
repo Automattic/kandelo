@@ -185,6 +185,113 @@ function contentType(relPath: string): string {
   return "application/octet-stream";
 }
 
+/** Resolve exact lazy binary globs through the same authority as imports.
+ * Filesystem globbing alone misses products in the implicit source tree.
+ * SourceOnly retains its strict syntax and fallback-denial policy.
+ */
+export function rewriteBinaryMirrorUrlGlobs(
+  code: string,
+  importer: string,
+  options: {
+    resolveMirrorImport: (specifier: string, importer: string) => string | null;
+    resolveModule: (relPath: string) => string | null;
+    denyFallbackGlob?: (specifier: string, importer: string) => boolean;
+    strict?: boolean;
+  },
+): string | null {
+  if (!code.includes("import.meta.glob")) return null;
+  const ast = parse(code, {
+    sourceType: "unambiguous",
+    sourceFilename: importer,
+    plugins: ["jsx", "typescript", "importAttributes"],
+  });
+  const replacements: Array<{ start: number; end: number; text: string }> = [];
+  const pending: unknown[] = [ast.program];
+  while (pending.length > 0) {
+    const candidate = pending.pop();
+    if (typeof candidate !== "object" || candidate === null) continue;
+    const node = candidate as SyntaxNode;
+    if (node.type === "CallExpression") {
+      const callee = node.callee as SyntaxNode | undefined;
+      const object = callee?.object as SyntaxNode | undefined;
+      const property = callee?.property as SyntaxNode | undefined;
+      const meta = object?.meta as SyntaxNode | undefined;
+      const metaProperty = object?.property as SyntaxNode | undefined;
+      if (
+        callee?.type === "MemberExpression"
+        && (callee.computed as boolean | undefined) === false
+        && object?.type === "MetaProperty"
+        && meta?.name === "import"
+        && metaProperty?.name === "meta"
+        && property?.type === "Identifier"
+        && property.name === "glob"
+      ) {
+        const args = node.arguments;
+        if (
+          Array.isArray(args)
+          && typeof args[0] === "object"
+          && args[0] !== null
+          && (args[0] as SyntaxNode).type === "ArrayExpression"
+          && options.strict
+        ) {
+          throw new Error(
+            `array-valued import.meta.glob is not admitted by the SourceOnly Vite boundary: ${importer}`,
+          );
+        }
+        const specifier = Array.isArray(args)
+          ? stringLiteralValue(args[0])
+          : null;
+        if (specifier !== null) {
+          const relPath = options.resolveMirrorImport(specifier, importer);
+          const deniedFallback = relPath === null
+            && (options.denyFallbackGlob?.(specifier, importer) ?? false);
+          if (relPath !== null || deniedFallback) {
+            if (
+              !Array.isArray(args)
+              || args.length !== 2
+              || !isSupportedUrlGlobOptions(args[1])
+              || typeof node.start !== "number"
+              || typeof node.end !== "number"
+            ) {
+              if (options.strict) {
+                throw new Error(
+                  `SourceOnly mirror glob must use exact lazy { query: "?url", import: "default" } options: ${specifier}`,
+                );
+              }
+              continue;
+            }
+            const moduleId = relPath === null ? null : options.resolveModule(relPath);
+            const replacement = moduleId === null
+              ? "({})"
+              : `({${JSON.stringify(specifier)}:()=>import(${JSON.stringify(
+                moduleId,
+              )}).then((module)=>module.default)})`;
+            replacements.push({
+              start: node.start,
+              end: node.end,
+              text: replacement,
+            });
+          }
+        }
+      }
+    }
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) pending.push(...value);
+      else if (typeof value === "object" && value !== null) pending.push(value);
+    }
+  }
+  if (replacements.length === 0) return null;
+  let rewritten = code;
+  for (const replacement of replacements.sort((left, right) =>
+    right.start - left.start
+  )) {
+    rewritten = rewritten.slice(0, replacement.start)
+      + replacement.text
+      + rewritten.slice(replacement.end);
+  }
+  return rewritten;
+}
+
 /**
  * Copy one pinned aggregate generation behind virtual Vite modules.
  *
@@ -315,98 +422,6 @@ export function createSourceOnlyViteAssets(
     return byRelPath.get(relPath) ?? null;
   }
 
-  function rewriteMirrorGlobs(code: string, importer: string): string | null {
-    if (
-      options.resolveMirrorImport === undefined
-      || !code.includes("import.meta.glob")
-    ) return null;
-    const ast = parse(code, {
-      sourceType: "unambiguous",
-      sourceFilename: importer,
-      plugins: ["jsx", "typescript", "importAttributes"],
-    });
-    const replacements: Array<{ start: number; end: number; text: string }> = [];
-    const pending: unknown[] = [ast.program];
-    while (pending.length > 0) {
-      const candidate = pending.pop();
-      if (typeof candidate !== "object" || candidate === null) continue;
-      const node = candidate as SyntaxNode;
-      if (node.type === "CallExpression") {
-        const callee = node.callee as SyntaxNode | undefined;
-        const object = callee?.object as SyntaxNode | undefined;
-        const property = callee?.property as SyntaxNode | undefined;
-        const meta = object?.meta as SyntaxNode | undefined;
-        const metaProperty = object?.property as SyntaxNode | undefined;
-        if (
-          callee?.type === "MemberExpression"
-          && (callee.computed as boolean | undefined) === false
-          && object?.type === "MetaProperty"
-          && meta?.name === "import"
-          && metaProperty?.name === "meta"
-          && property?.type === "Identifier"
-          && property.name === "glob"
-        ) {
-          const args = node.arguments;
-          if (
-            Array.isArray(args)
-            && typeof args[0] === "object"
-            && args[0] !== null
-            && (args[0] as SyntaxNode).type === "ArrayExpression"
-          ) {
-            throw new Error(
-              `array-valued import.meta.glob is not admitted by the SourceOnly Vite boundary: ${importer}`,
-            );
-          }
-          const specifier = Array.isArray(args)
-            ? stringLiteralValue(args[0])
-            : null;
-          if (specifier !== null) {
-            const relPath = options.resolveMirrorImport(specifier, importer);
-            const deniedFallback = relPath === null
-              && (options.denyFallbackGlob?.(specifier, importer) ?? false);
-            if (relPath !== null || deniedFallback) {
-              if (
-                !Array.isArray(args)
-                || args.length !== 2
-                || !isSupportedUrlGlobOptions(args[1])
-                || typeof node.start !== "number"
-                || typeof node.end !== "number"
-              ) {
-                throw new Error(
-                  `SourceOnly mirror glob must use exact lazy { query: "?url", import: "default" } options: ${specifier}`,
-                );
-              }
-              const virtualId = relPath === null ? null : tryRetain(relPath);
-              const replacement = virtualId === null
-                ? "({})"
-                : `({${JSON.stringify(specifier)}:()=>import(${JSON.stringify(
-                  `${MODULE_PREFIX}${encodeURIComponent(relPath)}`,
-                )}).then((module)=>module.default)})`;
-              replacements.push({
-                start: node.start,
-                end: node.end,
-                text: replacement,
-              });
-            }
-          }
-        }
-      }
-      for (const value of Object.values(node)) {
-        if (Array.isArray(value)) pending.push(...value);
-        else if (typeof value === "object" && value !== null) pending.push(value);
-      }
-    }
-    if (replacements.length === 0) return null;
-    let rewritten = code;
-    for (const replacement of replacements.sort((left, right) =>
-      right.start - left.start
-    )) {
-      rewritten = rewritten.slice(0, replacement.start)
-        + replacement.text
-        + rewritten.slice(replacement.end);
-    }
-    return rewritten;
-  }
 
   return {
     resolve: retain,
@@ -427,7 +442,14 @@ export function createSourceOnlyViteAssets(
           return source.startsWith(VIRTUAL_PREFIX) ? source : null;
         },
         transform(code, id) {
-          const rewritten = rewriteMirrorGlobs(code, id);
+          if (options.resolveMirrorImport === undefined) return null;
+          const rewritten = rewriteBinaryMirrorUrlGlobs(code, id, {
+            resolveMirrorImport: options.resolveMirrorImport,
+            resolveModule: (relPath) => tryRetain(relPath) === null
+              ? null : `${MODULE_PREFIX}${encodeURIComponent(relPath)}`,
+            denyFallbackGlob: options.denyFallbackGlob,
+            strict: true,
+          });
           return rewritten === null ? null : { code: rewritten, map: null };
         },
         load(id) {

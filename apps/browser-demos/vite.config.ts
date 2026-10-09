@@ -31,6 +31,7 @@ import {
 import {
   createSourceOnlyPublicSnapshot,
   createSourceOnlyViteAssets,
+  rewriteBinaryMirrorUrlGlobs,
 } from "./source-only-vite-assets";
 import {
   createBatchedBrowserBinaryResolution,
@@ -621,6 +622,20 @@ function resolveBinariesAlias(
           `Looked at:\n  ${local}\n  ${fetched}\n` +
           `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`,
       );
+    },
+    transform(code, id) {
+      if (sourceOnlyViteAssets !== null) return null;
+      const rewritten = rewriteBinaryMirrorUrlGlobs(code, id, {
+        resolveMirrorImport: (specifier, importer) => {
+          // Keep wildcard globs under Vite's existing discovery rules;
+          // these authored optional binary URLs are exact paths.
+          if (/[*?\[\]{}!]/.test(specifier)) return null;
+          return relativeBinaryMirrorImport(specifier, importer)?.relPath ?? null;
+        },
+        resolveModule: (relPath) => resolution.resolve(relPath) === null
+          ? null : `@binaries/${relPath}?url`,
+      });
+      return rewritten === null ? null : { code: rewritten, map: null };
     },
     configureServer(server) {
       access.attachServer(server);

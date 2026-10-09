@@ -13,6 +13,7 @@ import { join } from "node:path";
 import {
   createSourceOnlyPublicSnapshot,
   createSourceOnlyViteAssets,
+  rewriteBinaryMirrorUrlGlobs,
   SOURCE_ONLY_VITE_RETAINED_MAX_BYTES,
 } from "../../apps/browser-demos/source-only-vite-assets";
 import type {
@@ -20,6 +21,41 @@ import type {
   SourceOnlyBinarySnapshotSession,
 } from "../../host/src/binary-resolver";
 import type { Plugin } from "vite";
+
+describe("normal binary mirror URL globs", () => {
+  const specifier = "../../local-binaries/programs/wasm32/lamp.vfs.zst";
+  const code = `export const images = import.meta.glob(${JSON.stringify(specifier)}, `
+    + '{ query: "?url", import: "default" });';
+
+  it("asks the binary authority even when the authored mirror is absent", () => {
+    const requests: string[] = [];
+    const rewritten = rewriteBinaryMirrorUrlGlobs(code, "/app/loader.ts", {
+      resolveMirrorImport: () => "programs/wasm32/lamp.vfs.zst",
+      resolveModule: (relPath) => {
+        requests.push(relPath);
+        return `@binaries/${relPath}?url`;
+      },
+    });
+    expect(requests).toEqual(["programs/wasm32/lamp.vfs.zst"]);
+    expect(rewritten).toContain(JSON.stringify(specifier));
+    expect(rewritten).toContain('import("@binaries/programs/wasm32/lamp.vfs.zst?url")');
+    expect(rewritten).not.toContain("import.meta.glob");
+  });
+
+  it("distinguishes an absent asset from a rejected provenance check", () => {
+    const options = {
+      resolveMirrorImport: () => "programs/wasm32/lamp.vfs.zst",
+      resolveModule: () => null,
+    };
+    expect(rewriteBinaryMirrorUrlGlobs(code, "/app/loader.ts", options))
+      .toBe("export const images = ({});");
+    const failure = new Error("stale artifact receipt");
+    expect(() => rewriteBinaryMirrorUrlGlobs(code, "/app/loader.ts", {
+      ...options,
+      resolveModule: () => { throw failure; },
+    })).toThrow(failure);
+  });
+});
 
 function snapshot(relPath: string, text: string): SourceOnlyBinarySnapshot {
   const bytes = Buffer.from(text);

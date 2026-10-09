@@ -1409,9 +1409,14 @@ if (typeof window !== "undefined") {
     return pathname;
   }
 
-  function redirectIntoApp(record, url) {
+  function urlInsideApp(record, url) {
     var redirectUrl = new URL(url.href);
     redirectUrl.pathname = appRootPathFor(record) + pathInsideApp(url.pathname);
+    return redirectUrl;
+  }
+
+  function redirectIntoApp(record, url) {
+    var redirectUrl = urlInsideApp(record, url);
     return new Response(null, {
       status: 307,
       headers: appRedirectHeaders(redirectUrl.href),
@@ -1815,41 +1820,25 @@ if (typeof window !== "undefined") {
 
     // Per-machine bridge dispatch. A name in the path addresses a machine
     // directly; a nameless request from a client already viewing a machine is
-    // attributed to it and redirected into that machine's app prefix so the
-    // generic bridge can serve it without app-specific path allowlists.
+    // attributed to it so the generic bridge can serve it without
+    // app-specific path allowlists.
     // A name in the path addresses a machine directly. Await the startup scan
     // so a request that arrives while a restarted worker is still repopulating
     // its registry sees the restored (reconnecting) record rather than an empty
     // map. A well-formed but unknown machine never falls back to another.
     var namedInPath = instanceNameFromPath(url.pathname);
     if (namedInPath) {
-      event.respondWith(appPrefixReady.then(function () {
-        // Lazy crash detection: reconcile owners before dispatch so a host tab
-        // that crashed without sending instance-closing is retired on this
-        // request and its viewers get a machine-offline push + the 503 page.
-        return reconcileOwners();
-      }).then(function () {
-        var record = instances.get(namedInPath) || null;
-        if (!record) return offlineOrUnknownResponse(namedInPath);
-        markViewer(record, event, event.request);
-        if (record.bridgePort) {
-          return handleAppRequest(record, event.request, url);
-        }
-        return fetchRestoredAppRequest(record, event.request, url);
-      }));
+      event.respondWith(dispatchAppRequest(event, namedInPath, url));
       return;
     }
 
     // A nameless request from a client already viewing a machine is attributed
-    // to it and redirected into that machine's app prefix so the generic bridge
-    // can serve it without app-specific path allowlists. The viewing map is
-    // in-memory and only populated during this worker's lifetime, so no scan
-    // await is needed here.
+    // to it. This fast path uses only this worker's in-memory viewing map.
     if (event.clientId && clientToInstance.has(event.clientId)) {
       var record = resolveInstanceForEvent(event, url);
       if (record) {
         markViewer(record, event, event.request);
-        event.respondWith(redirectIntoApp(record, url));
+        event.respondWith(serveViewerRequest(record, event, url));
         return;
       }
     }
@@ -1871,9 +1860,61 @@ if (typeof window !== "undefined") {
       return;
     }
 
-    // Same-origin requests — pass through but add COI headers
-    event.respondWith(fetchWithCoiHeaders(event.request));
+    // Browser idle termination loses the viewing map while the document stays
+    // open. Recover from the actual WindowClient URL, never a caller-supplied
+    // referrer. Host-page requests therefore cannot become machine viewers.
+    event.respondWith(serveUnmappedClientRequest(event, url));
   });
+
+  function serveViewerRequest(record, event, url) {
+    if (event.request.method === "GET" || event.request.method === "HEAD") {
+      return redirectIntoApp(record, url);
+    }
+    // WebKit drops request bytes when replaying a synthetic SW 307.
+    // Dispatch writes once, retaining the original unread Request and the
+    // same canonical app path, cookies, and owner reconciliation.
+    return dispatchAppRequest(event, record.name, urlInsideApp(record, url));
+  }
+
+  async function serveUnmappedClientRequest(event, url) {
+    if (event.clientId) {
+      // Looking up a loading WorkerClient can wait for its module imports,
+      // which are themselves waiting on this fetch handler in Firefox.
+      // Only actual windows can recover viewer routing; exclude workers
+      // before lookup so their imports retain the ordinary network path.
+      var windows = await self.clients.matchAll({ type: "window" });
+      var client = windows.find(function (candidate) {
+        return candidate.id === event.clientId;
+      });
+      if (client && client.type === "window") {
+        var clientUrl = new URL(client.url);
+        var name = clientUrl.origin === self.location.origin
+          ? instanceNameFromPath(clientUrl.pathname) : null;
+        if (name) {
+          await appPrefixReady;
+          var record = instances.get(name) || null;
+          if (!record) return offlineOrUnknownResponse(name);
+          clientToInstance.set(event.clientId, name);
+          record.viewerClientIds.add(event.clientId);
+          return serveViewerRequest(record, event, url);
+        }
+      }
+    }
+    return fetchWithCoiHeaders(event.request);
+  }
+
+  function dispatchAppRequest(event, name, url) {
+    return appPrefixReady.then(function () {
+      // Retire crashed owners before either named or client-attributed requests.
+      return reconcileOwners();
+    }).then(function () {
+      var record = instances.get(name) || null;
+      if (!record) return offlineOrUnknownResponse(name);
+      markViewer(record, event, event.request);
+      if (record.bridgePort) return handleAppRequest(record, event.request, url);
+      return fetchRestoredAppRequest(record, event.request, url);
+    });
+  }
 
   function handleAppRequest(record, request, url) {
     return (async function () {
