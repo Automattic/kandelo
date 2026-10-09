@@ -1017,6 +1017,30 @@ test. This fixes the direct-fixture gap independently of milestone 6;
 package integration still needs to produce stamped Go programs through the
 normal resolver/VFS build path.
 
+**2026-10-08 — First-class Go package through source-only resolution (fork
+`3296d3f`).** Added `go-hello` as a registry program and selected local-build
+root. Its recipe obtains the pinned fork commit as a sealed `git_input`, builds
+the Kandelo Go toolchain with the dev shell's declared Go bootstrap, and invokes
+the SDK's `wasm32posix-go` wrapper. The source-only resolver caches and
+ABI-contract-stamps the declared Wasm output; no adjacent fork checkout or
+ambient compiler is needed. The package import audit originally rejected the
+Go runtime's supported `kernel.kernel_thread_exit` process-worker import, so
+its shared typed declaration now admits the exact pointer-width signature
+without allowing arbitrary kernel exports. The source-only `go-hello` and
+kernel builds succeeded. A C launcher uses `posix_spawn` to run the resolved
+Go output from `/bin` in a VFS image: Node exits 0 with both expected markers,
+empty stderr/diagnostics, and fork-count sample `[0]`; the equivalent
+Chromium browser-host test passes with no console errors. The legacy Default
+resolver's artifact remains unstamped and is not used for these runtime
+checks. This meets the focused milestone-6 package/VFS smoke criterion, not
+full Go conformance or a browser-demo UI test. The remaining discrete plan
+item is Go-runtime-specific agent guidance below. During iteration, a
+metadata-only manifest license edit left a cached source-only receipt tied to
+the previous manifest SHA and caused projection finalization to refuse it;
+`cargo xtask clean go-hello` followed by `cargo xtask bootstrap go-hello`
+recovered through the supported path. The underlying receipt-refresh behavior
+is a package-manager gap, not a Go runtime failure.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
