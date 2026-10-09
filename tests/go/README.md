@@ -127,6 +127,19 @@ interoperability: run the binary in Node and Chromium and add a C-to-Go
 callback probe before building FrankenPHP. See the dated WordPress pivot in
 the Go implementation progress log.
 
+The separate `cgo/callback` fixture exercises Go-to-C-to-Go calls on the
+calling thread and a C-created pthread entering Go:
+
+```sh
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/cgo-callback-probe.wasm ./tests/go/cgo/callback'
+```
+
+It is a deliberately unpassed gate, not part of the passing Go suite. An
+uncommitted `cmd/cgo` frontend experiment in the adjacent fork parses the
+Wasm debug object far enough for both fixtures to reach the Go linker, but
+neither links or runs. The published fork still fails at the pointer-size
+check. Do not use a successful cgo frontend pass as PHP or FrankenPHP support.
+
 ## RoadRunner feasibility probe
 
 RoadRunner is a useful Go process/IPC integration test: its Go server starts
