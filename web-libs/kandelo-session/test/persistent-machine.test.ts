@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import { createInlineBootInput } from "../src/boot-inputs";
 import type { BootDescriptor } from "../src/kernel-host";
 import {
   ephemeralDescriptor,
   PERSISTENT_MACHINES_STORAGE_KEY,
   PersistentMachineError,
   PersistentMachineRegistry,
-  persistentMachineDescriptor,
-  persistentMachineIdOf,
+  savedMachineDescriptor,
   type MachineStorage,
   type PersistentMachine,
 } from "../src/persistent-machine";
@@ -47,7 +47,8 @@ function machine(id: string, name: string, openedAt: string): PersistentMachine 
   return {
     id,
     name,
-    descriptor: persistentMachineDescriptor(SHELL, id, HOME),
+    home: HOME,
+    descriptor: SHELL,
     createdAt: "2026-09-30T10:00:00.000Z",
     openedAt,
   };
@@ -63,60 +64,29 @@ class MapStorage implements MachineStorage {
   }
 }
 
-describe("persistentMachineDescriptor", () => {
-  it("mounts the workspace at the home directory and declares persistence", () => {
-    const desc = persistentMachineDescriptor(SHELL, FOO_ID, HOME);
-    expect(desc.mounts).toEqual([
-      ...SHELL.mounts,
-      { path: "/home/maker", source: "opfs", name: FOO_ID },
-    ]);
-    expect(desc.caps).toEqual({ network: true, persistence: true });
-    expect(persistentMachineIdOf(desc)).toBe(FOO_ID);
-  });
-
-  it("replaces a workspace the descriptor already carried", () => {
-    const desc = persistentMachineDescriptor(
-      persistentMachineDescriptor(SHELL, FOO_ID, HOME),
-      BAR_ID,
-      HOME,
-    );
-    expect(desc.mounts.filter((m) => m.source === "opfs")).toEqual([
-      { path: "/home/maker", source: "opfs", name: BAR_ID },
-    ]);
-  });
-
-  it("leaves the input descriptor untouched", () => {
-    const before = JSON.stringify(SHELL);
-    persistentMachineDescriptor(SHELL, FOO_ID, HOME);
-    expect(JSON.stringify(SHELL)).toBe(before);
-  });
-});
-
-describe("persistentMachineIdOf", () => {
-  it("is null for a machine on memory", () => {
-    expect(persistentMachineIdOf(SHELL)).toBeNull();
-  });
-
-  it("ignores a workspace the descriptor does not declare as its persistence", () => {
-    const mounted = {
-      ...SHELL,
-      mounts: [...SHELL.mounts, { path: HOME, source: "opfs" as const, name: FOO_ID }],
-    };
-    expect(persistentMachineIdOf(mounted)).toBeNull();
-  });
-});
-
 describe("ephemeralDescriptor", () => {
-  it("drops every workspace and the persistence capability", () => {
-    const desc = ephemeralDescriptor(persistentMachineDescriptor(SHELL, FOO_ID, HOME));
-    expect(desc.mounts).toEqual(SHELL.mounts);
-    expect(desc.caps).toEqual({ network: true });
-  });
+  const WORKSPACE = { path: HOME, source: "opfs" as const, name: FOO_ID };
 
-  it("drops caps entirely when persistence was the only one", () => {
-    const { caps: _caps, ...noCaps } = SHELL;
-    const desc = ephemeralDescriptor(persistentMachineDescriptor(noCaps, FOO_ID, HOME));
-    expect(desc.caps).toBeUndefined();
+  it("drops every workspace and keeps the rest of the descriptor", () => {
+    const desc = ephemeralDescriptor({ ...SHELL, mounts: [...SHELL.mounts, WORKSPACE] });
+    expect(desc).toEqual(SHELL);
+  });
+});
+
+describe("savedMachineDescriptor", () => {
+  it("drops a link's boot inputs and parameters along with every workspace", () => {
+    const linked: BootDescriptor = {
+      ...SHELL,
+      mounts: [...SHELL.mounts, { path: HOME, source: "opfs", name: FOO_ID }],
+      boot: {
+        ...SHELL.boot,
+        inputs: [{ id: "script", path: "/run/kandelo/script.sh", source: { kind: "inline", data: "ZWNobyBmb28K" } }],
+        parameters: { runScript: "script" },
+      },
+    } as BootDescriptor;
+    const saved = savedMachineDescriptor(linked);
+    expect(saved.mounts).toEqual(SHELL.mounts);
+    expect(saved.boot).toEqual(SHELL.boot);
   });
 });
 
@@ -167,10 +137,41 @@ describe("PersistentMachineRegistry", () => {
     expect(() => registry.touch(FOO_ID)).toThrow(PersistentMachineError);
   });
 
-  it("refuses a machine whose descriptor does not mount its workspace at home", () => {
+  it("refuses a machine whose descriptor mounts browser storage", () => {
     const registry = new PersistentMachineRegistry(new MapStorage());
-    const wrong = { ...machine(FOO_ID, "foo", "2026-09-30T10:00:00.000Z"), descriptor: SHELL };
-    expect(() => registry.save(wrong)).toThrow(/does not mount its own workspace/);
+    const wrong = {
+      ...machine(FOO_ID, "foo", "2026-09-30T10:00:00.000Z"),
+      descriptor: { ...SHELL, mounts: [...SHELL.mounts, { path: HOME, source: "opfs" as const, name: FOO_ID }] },
+    };
+    expect(() => registry.save(wrong)).toThrow(/mounts browser storage/);
+  });
+
+  it("refuses a machine whose descriptor would run a link's script", async () => {
+    const registry = new PersistentMachineRegistry(new MapStorage());
+    const scripted = {
+      ...machine(FOO_ID, "foo", "2026-09-30T10:00:00.000Z"),
+      descriptor: { ...SHELL, boot: { ...SHELL.boot, parameters: { runScript: "script" } } },
+    };
+    expect(() => registry.save(scripted)).toThrow(/never runs a link's script/);
+    const inputs = [await createInlineBootInput({
+      id: "script",
+      filename: "foo.sh",
+      bytes: new TextEncoder().encode("echo foo"),
+      compression: "gzip",
+    })];
+    const carried = {
+      ...machine(FOO_ID, "foo", "2026-09-30T10:00:00.000Z"),
+      descriptor: { ...SHELL, boot: { ...SHELL.boot, inputs } },
+    };
+    expect(() => registry.save(carried)).toThrow(/never runs a link's script/);
+  });
+
+  it("refuses a home that is not a canonical absolute directory", () => {
+    const registry = new PersistentMachineRegistry(new MapStorage());
+    for (const home of ["", "/", "home/maker", "/home/maker/", "/home/../root", "/home//maker"]) {
+      expect(() => registry.save({ ...machine(FOO_ID, "foo", "2026-09-30T10:00:00.000Z"), home }))
+        .toThrow(/no canonical home directory/);
+    }
   });
 
   it("refuses a blank or overlong name and a bad id", () => {
@@ -180,7 +181,7 @@ describe("PersistentMachineRegistry", () => {
     expect(() => registry.save(machine(FOO_ID, "x".repeat(65), "2026-09-30T10:00:00.000Z")))
       .toThrow(/no usable name/);
     expect(() => registry.save(machine("../escape", "foo", "2026-09-30T10:00:00.000Z")))
-      .toThrow(/not a workspace name/);
+      .toThrow(/not a machine id/);
   });
 
   it("fails loudly on a corrupt list instead of showing an empty one", () => {

@@ -91,6 +91,17 @@ test("connects two computers by session name", async ({
     await gotoMachine(sharer, "shell", { search: { signalling: signallingUrl } });
     await viewer.goto(appUrl(`/?${query}`), { waitUntil: "domcontentloaded" });
 
+    // A saved machine stays saved by this browser while the other computer
+    // follows it.
+    await sharer.getByRole("button", { name: "Machines", exact: true }).click();
+    await sharer.getByRole("button", { name: "Save this machine" })
+      .click({ timeout: 180_000 });
+    await expect(sharer.locator(".kdock-save-state")).toHaveText("Saved", {
+      timeout: 180_000,
+    });
+    await sharer.getByRole("dialog", { name: "Machines", exact: true })
+      .getByRole("button", { name: "Close" }).click();
+
     // A name outside the rule is refused on the computer, before any request.
     await openNetworkPopover(sharer);
     await sharer.fill("#knetwork-session", "Foo Bar");
@@ -186,7 +197,9 @@ test("connects two computers by session name", async ({
       );
     }
 
+    await expect(sharer.locator(".kdock-save-state")).toHaveText("Saved");
     await expectReplica(viewer);
+    await expect(sharer.locator(".kdock-save-state")).toHaveText("Saved");
 
     // A name shows only for someone you watch: the viewer's badge names the
     // sharer, and the sharer's own badge says what its seat does. The

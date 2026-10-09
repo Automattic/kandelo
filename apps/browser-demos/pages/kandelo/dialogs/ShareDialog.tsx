@@ -14,7 +14,6 @@ import {
   createInlineBootInput,
   decodeInlineBootInputText,
 } from "../../../../../web-libs/kandelo-session/src/boot-inputs";
-import { ephemeralDescriptor } from "../../../../../web-libs/kandelo-session/src/persistent-machine";
 import { machineUrl } from "../url-state";
 import type {
   BootDescriptor,
@@ -59,10 +58,8 @@ export const SharePanel: React.FC<SharePanelProps> = ({
   const [error, setError] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
 
-  // A saved machine's workspace is this browser's; the link carries the
-  // machine's image and boot, and the opener runs them on memory.
   const baseDescriptor: BootDescriptor = React.useMemo(
-    () => ephemeralDescriptor(presetDesc ?? host.getBootDescriptor()),
+    () => presetDesc ?? host.getBootDescriptor(),
     [presetDesc, host],
   );
 

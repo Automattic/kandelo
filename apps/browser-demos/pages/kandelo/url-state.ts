@@ -56,15 +56,7 @@ export function galleryItemUrl(
   href = currentHref(),
 ): string {
   const url = new URL(href);
-  // `?demo=` is gone. Strip it so a legacy link the visitor arrived on does
-  // not keep a parameter nothing reads any more.
-  url.searchParams.delete("demo");
-  url.searchParams.delete("idle");
-  url.searchParams.delete(PROFILE_QUERY_PARAM);
-  clearVfsImageQueryParams(url.searchParams);
-  // A #k1= boot-link fragment belongs to the linked machine only. Launching
-  // a different machine from the gallery must not carry its script along.
-  url.hash = "";
+  clearMachine(url);
   if (item.vfsImageUrl) {
     // WHY: the exact image URL identifies the bytes and their resource limit,
     // while `&profile=` selects which machine inside them to boot. This is
@@ -77,16 +69,17 @@ export function galleryItemUrl(
 }
 
 /**
- * Point the address bar at the bare page without leaving the document.
+ * Point the address bar at a page that names no machine, without leaving the
+ * document.
  *
  * A saved machine is found in this browser's list, not in a URL: a `?vfs=`
  * address reloaded after saving would boot a fresh machine on memory beside
- * the saved one. The bare page shows the list instead.
+ * the saved one. A page that names no machine shows the list instead.
+ * Page-level parameters such as `?signalling=` stay.
  */
-export function replaceBareUrl(): void {
+export function replaceMachinelessUrl(): void {
   const url = new URL(currentHref());
-  url.search = "";
-  url.hash = "";
+  clearMachine(url);
   if (url.href === window.location.href) return;
   window.history.replaceState(window.history.state, "", url.href);
 }
@@ -95,8 +88,8 @@ export function replaceBareUrl(): void {
  * The page URL that boots the machine `descriptor` describes, for a link.
  *
  * The address bar names the machine it booted through `?vfs=` and
- * `&profile=`, and a link is that address. A saved machine's address is the
- * bare page, so its link names the machine from the descriptor instead.
+ * `&profile=`, and a link is that address. A saved machine's address names
+ * no machine, so its link names the machine from the descriptor instead.
  */
 export function machineUrl(
   descriptor: BootDescriptor,
@@ -245,10 +238,18 @@ function firstVfsImageQueryValue(params: URLSearchParams): string | null {
   return null;
 }
 
-function clearVfsImageQueryParams(params: URLSearchParams): void {
+function clearMachine(url: URL): void {
+  // `?demo=` is gone. Strip it so a legacy link the visitor arrived on does
+  // not keep a parameter nothing reads any more.
+  url.searchParams.delete("demo");
+  url.searchParams.delete("idle");
+  url.searchParams.delete(PROFILE_QUERY_PARAM);
   for (const key of VFS_IMAGE_QUERY_ALIASES) {
-    params.delete(key);
+    url.searchParams.delete(key);
   }
+  // A #k1= boot-link fragment belongs to the linked machine only. Another
+  // machine must not carry its script along.
+  url.hash = "";
 }
 
 async function resolvedCandidateBaseUrl<SourceId extends string>(

@@ -12,7 +12,7 @@ import { EmptyState } from "../views/EmptyState";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { SharedMachine } from "../panes/SharedMachine";
 import { NetworkPopup } from "./NetworkPopup";
-import { SavePopup } from "./SavePopup";
+import { SaveButton } from "./SaveButton";
 import { MachinesList } from "./MachinesList";
 import { usePersistentMachines } from "./persistent-machines";
 import { ephemeralDescriptor } from "../../../../../web-libs/kandelo-session/src/persistent-machine";
@@ -68,8 +68,8 @@ const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
     subtitle: "Choose a published Kandelo computer or local demo image to boot.",
   },
   machines: {
-    title: "Saved Machines",
-    subtitle: "Machines saved in this browser. Open one to boot it on its own files.",
+    title: "Machines",
+    subtitle: "Save the running machine in this browser, or open one saved here to boot it on its own files.",
   },
 };
 
@@ -93,7 +93,6 @@ export const App: React.FC = () => {
   const [shareOpen, setShareOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [networkOpen, setNetworkOpen] = React.useState(false);
-  const [saveOpen, setSaveOpen] = React.useState(false);
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
   const [themeOpen, setThemeOpen] = React.useState(false);
@@ -121,18 +120,25 @@ export const App: React.FC = () => {
     peer.link,
     presenting === "framebuffer",
   );
-  // Replication first: a viewer running a replica is still a viewer, and the
+  // Saved machines first: a machine that changes computer keeps its saved
+  // copy where it was saved, so both handover paths report the move.
+  const persistent = usePersistentMachines(peer.link);
+  const moved = React.useMemo(
+    () => ({ gaveAway: persistent.gaveAway, took: persistent.took }),
+    [persistent.gaveAway, persistent.took],
+  );
+  // Replication next: a viewer running a replica is still a viewer, and the
   // handover must not offer that replica as a second machine to take.
-  const replication = useMachineReplication(host, peer.link);
+  const replication = useMachineReplication(host, peer.link, persistent.gaveAway);
   const handover = useMachineHandover(
     host,
     peer.link,
     replication.replicating,
     replication.promote,
     replication.joining,
+    moved,
   );
   const names = usePeerNickname(peer.link);
-  const persistent = usePersistentMachines();
 
   const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
   React.useEffect(() => {
@@ -241,7 +247,6 @@ export const App: React.FC = () => {
     setDemoGuidePopup(null);
     setInternalsOpen(false);
     setNetworkOpen(false);
-    setSaveOpen(false);
     setThemeOpen(false);
   }, [desc.id]);
 
@@ -260,7 +265,6 @@ export const App: React.FC = () => {
     setInternalsOpen(false);
     setDemoGuideOpen(false);
     setNetworkOpen(false);
-    setSaveOpen(false);
     setThemeOpen(false);
     setDockPane((current) => current === pane ? null : pane);
   }, []);
@@ -269,7 +273,6 @@ export const App: React.FC = () => {
     setDockPane(null);
     setInternalsOpen(false);
     setNetworkOpen(false);
-    setSaveOpen(false);
     setThemeOpen(false);
     surface.chooseView(view);
   }, [surface]);
@@ -279,7 +282,6 @@ export const App: React.FC = () => {
     setDockPane(null);
     setInternalsOpen(false);
     setNetworkOpen(false);
-    setSaveOpen(false);
     setThemeOpen(false);
     setDemoGuideOpen((open) => !open);
   }, [demoGuide]);
@@ -289,7 +291,6 @@ export const App: React.FC = () => {
     setDockPane(null);
     setDemoGuideOpen(false);
     setNetworkOpen(false);
-    setSaveOpen(false);
     setThemeOpen(false);
     setInternalsOpen((open) => !open);
   }, [surface.canUseInternals]);
@@ -298,18 +299,8 @@ export const App: React.FC = () => {
     setDockPane(null);
     setDemoGuideOpen(false);
     setInternalsOpen(false);
-    setSaveOpen(false);
     setThemeOpen(false);
     setNetworkOpen((open) => !open);
-  }, []);
-
-  const toggleSave = React.useCallback(() => {
-    setDockPane(null);
-    setDemoGuideOpen(false);
-    setInternalsOpen(false);
-    setNetworkOpen(false);
-    setThemeOpen(false);
-    setSaveOpen((open) => !open);
   }, []);
 
   const toggleTheme = React.useCallback(() => {
@@ -317,7 +308,6 @@ export const App: React.FC = () => {
     setDemoGuideOpen(false);
     setInternalsOpen(false);
     setNetworkOpen(false);
-    setSaveOpen(false);
     setThemeOpen((open) => !open);
   }, []);
 
@@ -442,6 +432,9 @@ export const App: React.FC = () => {
     )
     : null;
   const meta = dockPane ? PANE_META[dockPane] : null;
+  // A replica is another computer's machine: saving it here would keep a copy
+  // that machine's owner never handed over.
+  const saveAvailable = surface.status === "running" && !replication.replicating;
   const appStyle = {
     "--kdock-height": `${dockHeight}px`,
   } as React.CSSProperties;
@@ -566,6 +559,9 @@ export const App: React.FC = () => {
               pane={dockPane}
               title={meta.title}
               subtitle={meta.subtitle}
+              actions={dockPane === "machines" && saveAvailable
+                ? <SaveButton home={host.getHomeDirectory()} persistent={persistent} />
+                : undefined}
               onClose={closeDockPane}
             >
               {dockPane === "gallery" && (
@@ -574,9 +570,7 @@ export const App: React.FC = () => {
                   onLaunch={onLaunchGalleryItem}
                 />
               )}
-              {dockPane === "machines" && (
-                <MachinesList persistent={persistent} />
-              )}
+              {dockPane === "machines" && <MachinesList persistent={persistent} />}
             </DockPane>
           </>
         )}
@@ -616,13 +610,6 @@ export const App: React.FC = () => {
               onNicknameChange={names.setNickname}
             />
           }
-          savePopup={
-            <SavePopup
-              home={host.getHomeDirectory()}
-              persistent={persistent}
-              onOpenMachines={() => selectDockPane("machines")}
-            />
-          }
           themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
           guideAvailable={!isEmpty && demoGuide !== null}
           guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
@@ -630,11 +617,7 @@ export const App: React.FC = () => {
           internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
           networkOpen={networkOpen}
           networkConnected={peer.link !== null}
-          saveOpen={saveOpen}
-          // A replica is another computer's machine: saving it here would keep
-          // a copy that machine's owner never handed over.
-          saveAvailable={surface.status === "running" && !replication.replicating}
-          saved={persistent.current !== null}
+          saveState={persistent.saveState}
           role={pairRole}
           roleName={pairRoleName}
           themeOpen={themeOpen}
@@ -656,13 +639,11 @@ export const App: React.FC = () => {
           onToggleGuide={toggleDemoGuide}
           onToggleInternals={toggleInternals}
           onToggleNetwork={toggleNetwork}
-          onToggleSave={toggleSave}
           onToggleTheme={toggleTheme}
           onOpenShare={() => setShareOpen(true)}
           onCloseGuide={() => setDemoGuideOpen(false)}
           onCloseInternals={() => setInternalsOpen(false)}
           onCloseNetwork={() => setNetworkOpen(false)}
-          onCloseSave={() => setSaveOpen(false)}
           onCloseTheme={() => setThemeOpen(false)}
           onHeightChange={setDockHeight}
           onLayoutChange={onDockLayoutChange}

@@ -158,7 +158,7 @@ export class BootDescriptorError extends Error {
   }
 }
 
-function canonicalAbsolutePath(value: string): boolean {
+export function canonicalAbsolutePath(value: string): boolean {
   if (
     value.length === 0 ||
     !value.startsWith("/") ||

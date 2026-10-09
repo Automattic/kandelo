@@ -206,7 +206,7 @@ export interface KernelLike {
    * Read the directory tree under `path` from the kernel-owned VFS. Mirrors
    * `host/src/vfs/tree.ts: readVfsTree`.
    */
-  readTreeFromVfs?(path: string): Promise<VfsTreeEntry[]>;
+  readTreeFromVfs?(path: string, known?: VfsTreeFingerprints): Promise<VfsTreeEntry[]>;
   /**
    * Freeze this machine, read it whole, and resume it. The machine keeps
    * running: every buffer in the result is a copy the freeze took, which is
@@ -953,25 +953,42 @@ export interface VfsDirent {
   target?: string;                  // for symlinks
 }
 
+interface VfsTreeNode {
+  readonly path: string;
+  readonly mode: number;
+  readonly uid: number;
+  readonly gid: number;
+}
+
 /**
  * One entry of a directory tree read out of the VFS, path relative to the
- * root that was read. Mirrors `host/src/vfs/tree.ts: VfsTreeEntry`.
+ * root that was read. Mirrors `host/src/vfs/tree.ts: VfsTreeEntry`: a file's
+ * `fingerprint` changes with its inode, size, modification time, or change
+ * time, and its `bytes` are null when the reader was given that fingerprint.
  */
 export type VfsTreeEntry =
-  | { readonly path: string; readonly kind: "directory"; readonly mode: number }
-  | {
-      readonly path: string;
+  | (VfsTreeNode & { readonly kind: "directory" })
+  | (VfsTreeNode & {
       readonly kind: "file";
-      readonly mode: number;
-      readonly bytes: Uint8Array;
-    }
-  | {
-      readonly path: string;
-      readonly kind: "symlink";
-      readonly mode: number;
-      readonly target: string;
-    }
-  | { readonly path: string; readonly kind: "other"; readonly mode: number };
+      readonly mtimeMs: number;
+      readonly fingerprint: string;
+      readonly bytes: Uint8Array | null;
+    })
+  | (VfsTreeNode & { readonly kind: "symlink"; readonly target: string })
+  | (VfsTreeNode & { readonly kind: "other" });
+
+/** Path → fingerprint of the files whose bytes a reader already holds. */
+export type VfsTreeFingerprints = Readonly<Record<string, string>>;
+
+/** What a boot starts from besides its descriptor. */
+export interface BootOptions {
+  /**
+   * The tree the machine's login home directory holds when its first process
+   * starts, in place of the one its image carries. A saved machine's files
+   * reach a new boot this way.
+   */
+  homeSeed?: readonly VfsTreeEntry[];
+}
 
 export interface MountInfo {
   source: string;                   // "kandelo-vfs", "tmpfs"
@@ -1073,7 +1090,7 @@ export interface KernelHost {
 
   // descriptor lifecycle
   getBootDescriptor(): BootDescriptor;
-  applyBootDescriptor(desc: BootDescriptor): Promise<void>;
+  applyBootDescriptor(desc: BootDescriptor, options?: BootOptions): Promise<void>;
   halt(): Promise<void>;
   reboot(): Promise<void>;
 
@@ -1279,8 +1296,11 @@ export interface KernelHost {
   readFile(path: string): Promise<Uint8Array>;
   readFileText(path: string): Promise<string>;
   readDir(path: string): Promise<VfsDirent[]>;
-  /** The whole tree under `path`, files with their bytes, through the kernel. */
-  readTree(path: string): Promise<VfsTreeEntry[]>;
+  /**
+   * The whole tree under `path`, files with their bytes, through the kernel.
+   * A file `known` names at its current fingerprint comes without bytes.
+   */
+  readTree(path: string, known?: VfsTreeFingerprints): Promise<VfsTreeEntry[]>;
   stat(path: string): Promise<VfsDirent | null>;
   /**
    * Write `bytes` to `path` in the live guest VFS. The parent directory must
@@ -1574,6 +1594,7 @@ export interface LiveKernelHostOptions {
     host: LiveKernelHost,
     restore?: MachineCheckpointLike,
     replay?: MachineReplayLike,
+    options?: BootOptions,
   ) => Promise<void>;
   /**
    * Load what booting a descriptor would need, without booting it.
@@ -2295,12 +2316,12 @@ export class LiveKernelHost implements KernelHost {
     return structuredClone(this._descriptor);
   }
 
-  async applyBootDescriptor(desc: BootDescriptor): Promise<void> {
+  async applyBootDescriptor(desc: BootDescriptor, options?: BootOptions): Promise<void> {
     if (!this.applyBootDescriptorImpl) {
       this.setDescriptor(desc);
       return;
     }
-    await this.applyBootDescriptorImpl(desc, this);
+    await this.applyBootDescriptorImpl(desc, this, undefined, undefined, options);
   }
 
   async halt(): Promise<void> {
@@ -3230,14 +3251,16 @@ export class LiveKernelHost implements KernelHost {
     return new TextDecoder().decode(await this.readFile(path));
   }
 
-  async readTree(path: string): Promise<VfsTreeEntry[]> {
+  async readTree(path: string, known?: VfsTreeFingerprints): Promise<VfsTreeEntry[]> {
     if (!this.kernel?.readTreeFromVfs) {
       throw new Error(
         `LiveKernelHost.readTree(${path}): the attached kernel cannot read ` +
         `a VFS tree (no readTreeFromVfs).`,
       );
     }
-    return this.kernel.readTreeFromVfs(path);
+    return known === undefined
+      ? this.kernel.readTreeFromVfs(path)
+      : this.kernel.readTreeFromVfs(path, known);
   }
 
   /**

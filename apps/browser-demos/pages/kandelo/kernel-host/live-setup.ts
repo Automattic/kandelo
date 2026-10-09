@@ -41,6 +41,7 @@ import {
   type BootParameters,
   type DemoPresentation,
   type GalleryItem,
+  type VfsTreeEntry,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
   opfsMountsFromDescriptor,
@@ -642,7 +643,7 @@ export async function createLiveHost(
     status: machineRequested ? "booting" : "idle",
     descriptor: initialDescriptor,
     galleryItems: localGalleryItems,
-    applyBootDescriptor: async (desc, h, restore, replay) => {
+    applyBootDescriptor: async (desc, h, restore, replay, options) => {
       if (protectedProfile !== undefined) {
         assertProtectedCandidateDescriptor(desc, protectedProfile.descriptor);
         await activateProtectedProfile();
@@ -670,6 +671,7 @@ export async function createLiveHost(
             entries: replay.entries as readonly ReplicationLogEntry[],
             queue: replay.queue,
           },
+        options?.homeSeed,
       );
     },
     prewarmBootDescriptor: async (desc) => {
@@ -737,6 +739,7 @@ export async function createLiveHost(
         initialDescriptor,
         undefined,
         undefined,
+        undefined,
         opts.legacyScriptIgnored ?? false,
       );
     }
@@ -757,6 +760,7 @@ export async function createLiveHost(
     descriptor: BootDescriptor,
     restoreCheckpoint?: MachineCheckpoint,
     replicationReplay?: ReplicationReplaySpec,
+    homeSeed?: readonly VfsTreeEntry[],
     legacyScriptIgnored = false,
   ): Promise<void> {
     const seq = ++bootSeq;
@@ -799,6 +803,7 @@ export async function createLiveHost(
         requireServiceWorker,
         restoreCheckpoint,
         replicationReplay,
+        homeSeed,
         legacyScriptIgnored,
       );
       if (seq !== bootSeq) {
@@ -1229,6 +1234,7 @@ async function bootProfile(
   ) => Promise<ServiceWorker>,
   restoreCheckpoint?: MachineCheckpoint,
   replicationReplay?: ReplicationReplaySpec,
+  homeSeed?: readonly VfsTreeEntry[],
   legacyScriptIgnored = false,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
@@ -1409,7 +1415,13 @@ async function bootProfile(
   // Ingest is an image-owned capability. Absence is valid and must not be
   // replaced with a package- or profile-name-specific UI promise.
   host.setDemoIngest(resolveDemoIngest(imageConfig, profileId));
-  host.setHomeDirectory(loginHomeForMachine(machine.init));
+  const home = loginHomeForMachine(machine.init);
+  host.setHomeDirectory(home);
+  if (homeSeed !== undefined && home === null) {
+    throw new Error(
+      "This machine declares no home directory, so the saved files have nowhere to go.",
+    );
+  }
   // The one command this machine asked its login shell to run, if any. Read
   // once here: `init` is the single block that says what a machine runs.
   const machineShellCommand = shellCommandForMachine(machine.init);
@@ -1568,6 +1580,9 @@ async function bootProfile(
         ? {}
         : { restoreCheckpoint, takeRestoreCheckpointOwnership: true }),
       ...(replicationReplay === undefined ? {} : { replicationReplay }),
+      ...(homeSeed === undefined || home === null
+        ? {}
+        : { vfsSeedTrees: [{ path: home, entries: [...homeSeed] }] }),
     });
     assertCurrent();
     host.attachKernel(kernel);
@@ -2403,14 +2418,9 @@ function descriptorForMachine(
         uid: init.uid,
         gid: init.gid,
       },
-    // Only `persistence` carries over: it says the caller's workspace mount is
-    // the machine's saved home, which the host enforces (one tab per
-    // workspace). No other `caps`: the machine declares no capability the host
-    // enforces, and a flag that reads like a sandbox control but gates nothing
-    // is worse than an absent one.
-    ...(requestedDescriptor.caps?.persistence === true
-      ? { caps: { persistence: true } }
-      : {}),
+    // No `caps`: the machine declares no capability the host enforces, and a
+    // flag that reads like a sandbox control but gates nothing is worse than
+    // an absent one.
   };
 }
 

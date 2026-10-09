@@ -669,11 +669,14 @@ describe("LiveKernelHost: VFS tree", () => {
   it("reads the tree through the attached kernel", async () => {
     const host = new LiveKernelHost({ status: "running" });
     const entries = [{ path: "hello.txt", kind: "file", mode: 0o644, bytes: new Uint8Array([1]) }];
-    const readTreeFromVfs = vi.fn(async () => entries);
+    const readTreeFromVfs = vi.fn(async (_path: string, _known?: Record<string, string>) => entries);
     host.attachKernel({ readTreeFromVfs } as any);
 
     await expect(host.readTree("/home/maker")).resolves.toBe(entries);
     expect(readTreeFromVfs).toHaveBeenCalledWith("/home/maker");
+
+    await host.readTree("/home/maker", { "hello.txt": "foo" });
+    expect(readTreeFromVfs).toHaveBeenLastCalledWith("/home/maker", { "hello.txt": "foo" });
   });
 
   it("refuses without a kernel that can read a tree", async () => {
@@ -681,6 +684,24 @@ describe("LiveKernelHost: VFS tree", () => {
     const host = new LiveKernelHost();
     host.attachKernel({} as any);
     await expect(host.readTree("/home/maker")).rejects.toThrow(/readTreeFromVfs/);
+  });
+});
+
+describe("LiveKernelHost: boot options", () => {
+  it("hands a home seed to the boot alongside the descriptor", async () => {
+    const applyBootDescriptor = vi.fn(async () => undefined);
+    const host = new LiveKernelHost({ applyBootDescriptor });
+    const homeSeed = [{ path: "foo", kind: "directory" as const, mode: 0o700, uid: 1000, gid: 1000 }];
+
+    await host.applyBootDescriptor(DUMMY_DESCRIPTOR, { homeSeed });
+
+    expect(applyBootDescriptor).toHaveBeenCalledWith(
+      DUMMY_DESCRIPTOR,
+      host,
+      undefined,
+      undefined,
+      { homeSeed },
+    );
   });
 });
 

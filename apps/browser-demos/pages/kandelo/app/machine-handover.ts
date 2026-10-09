@@ -126,6 +126,8 @@ export function useMachineHandover(
    * started during that boot races it, so a hand back waits it out.
    */
   joining: boolean,
+  /** What this page does as the machine leaves or arrives. */
+  moved: { gaveAway: () => void; took: () => void },
 ): MachineHandover {
   const status = useStatus();
   const [taking, setTaking] = React.useState(false);
@@ -211,6 +213,7 @@ export function useMachineHandover(
         // The machine runs on the other computer now. Give this one up
         // rather than keep a second copy diverging from one state.
         setHandedOver(true);
+        moved.gaveAway();
         void host.releaseMachine();
       },
       // Says which image this machine runs, so the computer watching can load
@@ -220,7 +223,7 @@ export function useMachineHandover(
       // something it could have fetched anyway.
       () => host.getBootDescriptor(),
     );
-  }, [handover, host, replicating, status]);
+  }, [handover, host, moved, replicating, status]);
 
   const take = React.useCallback(() => {
     if (!handover) return;
@@ -235,6 +238,7 @@ export function useMachineHandover(
         // before promotion existed.
         if (replicating && (await promote())) {
           tookFromPeerRef.current = true;
+          moved.took();
           return;
         }
         const machine = await handover.take(TAKE_TIMEOUT_MS);
@@ -253,13 +257,14 @@ export function useMachineHandover(
           machine.terminals,
         );
         tookFromPeerRef.current = true;
+        moved.took();
       } catch (error) {
         setFailure(error instanceof Error ? error.message : String(error));
       } finally {
         setTaking(false);
       }
     })();
-  }, [handover, host, promote, replicating]);
+  }, [handover, host, moved, promote, replicating]);
 
   // The hand back is heard through refs: the listener lives as long as the
   // link, and the state it reads changes with every take.

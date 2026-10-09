@@ -12,9 +12,10 @@
  * with an automatic exchange of the same two strings; nothing else here
  * changes.
  *
- * The link opens four labeled, ordered, reliable data channels — one for the
+ * The link opens five labeled, ordered, reliable data channels — one for the
  * checkpoint handover protocol, one for the framebuffer mirror, one for the
- * terminal mirror, one for the replication decision log — and wraps each in a
+ * terminal mirror, one for the replication decision log, one for a saved
+ * machine's home kept by the computer that saved it — and wraps each in a
  * `ChunkedMessageChannel`, so the transports speak to a remote computer
  * exactly as they speak to a same-origin tab. Each label equals the
  * BroadcastChannel name its transport uses on one origin.
@@ -29,6 +30,7 @@ const HANDOVER_LABEL = "kandelo-checkpoint-handover";
 const MIRROR_LABEL = "kandelo-framebuffer-mirror";
 const TERMINAL_LABEL = "kandelo-terminal-mirror";
 const REPLICATION_LABEL = "kandelo-replication-log";
+const SAVED_MACHINE_LABEL = "kandelo-saved-machine";
 const CODE_PREFIX = "kandelo1:";
 const ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -53,6 +55,7 @@ export interface PeerLink {
   readonly mirror: ChunkedMessageChannel;
   readonly terminal: ChunkedMessageChannel;
   readonly replication: ChunkedMessageChannel;
+  readonly savedMachine: ChunkedMessageChannel;
   onClose(listener: () => void): () => void;
   close(): void;
 }
@@ -131,6 +134,7 @@ function buildLink(
   mirrorChannel: RTCDataChannel,
   terminalChannel: RTCDataChannel,
   replicationChannel: RTCDataChannel,
+  savedMachineChannel: RTCDataChannel,
 ): PeerLink {
   const closeListeners = new Set<() => void>();
   let closed = false;
@@ -155,11 +159,13 @@ function buildLink(
   });
   const terminal = new ChunkedMessageChannel(terminalChannel);
   const replication = new ChunkedMessageChannel(replicationChannel);
+  const savedMachine = new ChunkedMessageChannel(savedMachineChannel);
   return {
     handover,
     mirror,
     terminal,
     replication,
+    savedMachine,
     onClose: (listener) => {
       closeListeners.add(listener);
       return () => closeListeners.delete(listener);
@@ -169,6 +175,7 @@ function buildLink(
       mirror.close();
       terminal.close();
       replication.close();
+      savedMachine.close();
       connection.close();
       fireClose();
     },
@@ -181,6 +188,7 @@ export async function createPeerInvite(): Promise<PeerInvite> {
   const mirrorChannel = connection.createDataChannel(MIRROR_LABEL);
   const terminalChannel = connection.createDataChannel(TERMINAL_LABEL);
   const replicationChannel = connection.createDataChannel(REPLICATION_LABEL);
+  const savedMachineChannel = connection.createDataChannel(SAVED_MACHINE_LABEL);
   await connection.setLocalDescription(await connection.createOffer());
   await gatheringSettled(connection);
   return {
@@ -192,6 +200,7 @@ export async function createPeerInvite(): Promise<PeerInvite> {
         channelOpen(connection, mirrorChannel),
         channelOpen(connection, terminalChannel),
         channelOpen(connection, replicationChannel),
+        channelOpen(connection, savedMachineChannel),
       ]);
       return buildLink(
         connection,
@@ -199,6 +208,7 @@ export async function createPeerInvite(): Promise<PeerInvite> {
         mirrorChannel,
         terminalChannel,
         replicationChannel,
+        savedMachineChannel,
       );
     },
     cancel: () => connection.close(),
@@ -224,18 +234,25 @@ export async function answerPeerInvite(
   await connection.setLocalDescription(await connection.createAnswer());
   await gatheringSettled(connection);
   const connected = (async () => {
-    const [handoverChannel, mirrorChannel, terminalChannel, replicationChannel] =
-      await Promise.all([
-        arrived(HANDOVER_LABEL),
-        arrived(MIRROR_LABEL),
-        arrived(TERMINAL_LABEL),
-        arrived(REPLICATION_LABEL),
-      ]);
+    const [
+      handoverChannel,
+      mirrorChannel,
+      terminalChannel,
+      replicationChannel,
+      savedMachineChannel,
+    ] = await Promise.all([
+      arrived(HANDOVER_LABEL),
+      arrived(MIRROR_LABEL),
+      arrived(TERMINAL_LABEL),
+      arrived(REPLICATION_LABEL),
+      arrived(SAVED_MACHINE_LABEL),
+    ]);
     await Promise.all([
       channelOpen(connection, handoverChannel),
       channelOpen(connection, mirrorChannel),
       channelOpen(connection, terminalChannel),
       channelOpen(connection, replicationChannel),
+      channelOpen(connection, savedMachineChannel),
     ]);
     return buildLink(
       connection,
@@ -243,6 +260,7 @@ export async function answerPeerInvite(
       mirrorChannel,
       terminalChannel,
       replicationChannel,
+      savedMachineChannel,
     );
   })();
   return { answer: encodeSignal(connection.localDescription!), connected };

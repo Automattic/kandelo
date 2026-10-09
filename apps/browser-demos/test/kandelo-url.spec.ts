@@ -148,6 +148,63 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
   expect(result.relativeRefUrl).toBe(result.expectedRelativeRefUrl);
 });
 
+test("Kandelo URL helper names a saved machine in its link and drops it from the address", async ({ page }) => {
+  await gotoMachine(page, "shell");
+
+  const result = await page.evaluate(async (abiVersion) => {
+    const {
+      descriptorWithVfsImageUrl,
+      machineUrl,
+      replaceMachinelessUrl,
+    } = await import("/pages/kandelo/url-state.ts");
+    const descriptor = {
+      version: 1,
+      id: "shell",
+      title: "Shell",
+      base: `kandelo:shell@abi${abiVersion}`,
+      runtime: {
+        arch: "wasm32",
+        kernel: "kernel@local",
+        memoryPages: 2048,
+        features: ["shared-array-buffer", "pty"],
+        time: "real",
+      },
+      packages: [],
+      mounts: [
+        { path: "/", source: "image", ref: "shell.vfs@local", readonly: false },
+      ],
+      boot: { argv: ["bash", "-l", "-i"], cwd: "/home", env: {} },
+      caps: { network: false },
+    };
+    const withVfs = descriptorWithVfsImageUrl(descriptor, "https://cdn.example.invalid/foo.vfs.zst");
+    const before = window.location.href;
+    window.history.replaceState(
+      window.history.state,
+      "",
+      "/?vfs=bar.vfs.zst&profile=baz&demo=qux&idle=1&signalling=https%3A%2F%2Fsignal.example.invalid%2F#k1=quux",
+    );
+    replaceMachinelessUrl();
+    const machineless = window.location.search + window.location.hash;
+    window.history.replaceState(window.history.state, "", before);
+    return {
+      bare: machineUrl(withVfs, "https://kandelo.dev/?signalling=foo#k1=bar"),
+      named: machineUrl(withVfs, "https://kandelo.dev/?vfs=corge.vfs.zst&profile=garply#k1=bar"),
+      local: machineUrl(descriptor, "https://kandelo.dev/#k1=bar"),
+      profile: withVfs.id,
+      machineless,
+    };
+  }, ABI_VERSION);
+
+  const bare = new URL(result.bare);
+  expect(bare.searchParams.get("vfs")).toBe("https://cdn.example.invalid/foo.vfs.zst");
+  expect(bare.searchParams.get("profile")).toBe(result.profile);
+  expect(bare.searchParams.get("signalling")).toBe("foo");
+  expect(bare.hash).toBe("");
+  expect(result.named).toBe("https://kandelo.dev/?vfs=corge.vfs.zst&profile=garply");
+  expect(result.local).toBe("https://kandelo.dev/");
+  expect(result.machineless).toBe("?signalling=https%3A%2F%2Fsignal.example.invalid%2F");
+});
+
 test("Kandelo identifies a built-in VFS image only by its exact source", async ({ page }) => {
   await gotoMachine(page, "shell");
 

@@ -80,7 +80,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     <div className="kempty-hero">
       <img className="kempty-logo" src={markUrl} alt="" />
       <h1 className="kempty-wordmark">Kandelo</h1>
-      <div className="kempty-tag">Boot a VFS image in your browser.</div>
+      <div className="kempty-tag">Boot a machine in your browser.</div>
       {peerNote && (
         <div className="kempty-peer-note" role="status">{peerNote}</div>
       )}

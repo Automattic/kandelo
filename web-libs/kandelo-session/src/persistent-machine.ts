@@ -1,28 +1,29 @@
-// Persistent machines — a machine whose home directory is a browser-storage
-// workspace, and the list of them this browser profile keeps.
+// Persistent machines — a machine whose home directory this browser profile
+// keeps, and the list of them.
 //
-// A machine is its boot descriptor plus the `opfs` mount that puts its home
-// directory in origin storage. Booting the descriptor again mounts the same
-// workspace, so the files come back; the processes do not, because nothing
-// here saves them. The list is the browser profile's own: it lives in
-// localStorage, the workspaces live in OPFS, and the browser clears both with
-// this origin's site data. Neither is synced, verified, or shared by the
-// browser.
+// A machine is its boot descriptor plus the home directory its files belong
+// to. The files themselves live in IndexedDB under the machine's id (see
+// saved-machine.ts); booting the descriptor with them as the home's seed brings
+// the files back, and the processes do not, because nothing here saves them.
+// The list is the browser profile's own: it lives in localStorage, and the
+// browser clears it and the files with this origin's site data. Neither is
+// synced, verified, or shared by the browser.
 
-import { validateBootDescriptor } from "./boot-descriptor";
-import type { BootDescriptor, DescriptorMount } from "./kernel-host";
+import { canonicalAbsolutePath, validateBootDescriptor } from "./boot-descriptor";
+import type { BootDescriptor } from "./kernel-host";
 import { MACHINE_NAME_MAX_LENGTH } from "./machine-name";
 
 export const PERSISTENT_MACHINES_STORAGE_KEY = "kandelo.persistent-machines.v1";
 
-/** Mirrors OPFS_WORKSPACE_NAME_PATTERN in host/src/vfs/default-mounts.ts. */
-const WORKSPACE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MACHINE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export interface PersistentMachine {
-  /** The OPFS workspace name; never shown, never changes. */
+  /** Names the machine's files in IndexedDB; never shown, never changes. */
   id: string;
   name: string;
-  /** Boots the machine, home directory mounted on the workspace `id`. */
+  /** The login home directory whose files the machine keeps. */
+  home: string;
+  /** Boots the machine; mounts no browser storage. */
   descriptor: BootDescriptor;
   /** ISO 8601 instants. */
   createdAt: string;
@@ -150,10 +151,10 @@ function validateMachine(value: unknown): asserts value is PersistentMachine {
     throw new PersistentMachineError("E_MACHINE", "saved machine is not an object");
   }
   const machine = value as Record<string, unknown>;
-  if (typeof machine.id !== "string" || !WORKSPACE_NAME_RE.test(machine.id)) {
+  if (typeof machine.id !== "string" || !MACHINE_ID_RE.test(machine.id)) {
     throw new PersistentMachineError(
       "E_MACHINE_ID",
-      `saved machine id is not a workspace name: ${JSON.stringify(machine.id)}`,
+      `saved machine id is not a machine id: ${JSON.stringify(machine.id)}`,
     );
   }
   if (
@@ -173,57 +174,49 @@ function validateMachine(value: unknown): asserts value is PersistentMachine {
       );
     }
   }
-  validateBootDescriptor(machine.descriptor);
-  if (persistentMachineIdOf(machine.descriptor) !== machine.id) {
+  if (
+    typeof machine.home !== "string" || machine.home === "/" ||
+    !canonicalAbsolutePath(machine.home)
+  ) {
     throw new PersistentMachineError(
-      "E_MACHINE_WORKSPACE",
-      `saved machine ${machine.id} does not mount its own workspace at home`,
+      "E_MACHINE_HOME",
+      `saved machine ${machine.id} has no canonical home directory: ${JSON.stringify(machine.home)}`,
+    );
+  }
+  validateBootDescriptor(machine.descriptor);
+  if (machine.descriptor.mounts.some((m) => m.source === "opfs")) {
+    throw new PersistentMachineError(
+      "E_MACHINE_DESCRIPTOR",
+      `saved machine ${machine.id} mounts browser storage; its files live in IndexedDB`,
+    );
+  }
+  if (machine.descriptor.boot.inputs !== undefined || machine.descriptor.boot.parameters !== undefined) {
+    throw new PersistentMachineError(
+      "E_MACHINE_DESCRIPTOR",
+      `saved machine ${machine.id} carries a link's boot inputs; a saved machine never runs a link's script`,
     );
   }
 }
 
 /**
- * The workspace a saved machine's descriptor mounts at its home directory, or
- * null. A descriptor that mounts a workspace without declaring persistence is
- * a machine on memory with a mount, not a saved machine.
+ * The descriptor a saved machine boots: `ephemeralDescriptor(descriptor)`
+ * without the boot inputs and parameters a link may carry. A link's script
+ * runs without asking only because the machine it runs in is on memory, so a
+ * machine whose files persist never takes one along.
  */
-export function persistentMachineIdOf(descriptor: BootDescriptor): string | null {
-  if (descriptor.caps?.persistence !== true) return null;
-  const workspaces = descriptor.mounts.filter((m) => m.source === "opfs");
-  if (workspaces.length !== 1) return null;
-  const mount = workspaces[0];
-  return typeof mount?.name === "string" ? mount.name : null;
-}
-
-/** `descriptor` with its home directory `home` on the workspace `id`. */
-export function persistentMachineDescriptor(
-  descriptor: BootDescriptor,
-  id: string,
-  home: string,
-): BootDescriptor {
-  const workspace: DescriptorMount = { path: home, source: "opfs", name: id };
-  return {
-    ...descriptor,
-    mounts: [...withoutWorkspaces(descriptor.mounts), workspace],
-    caps: { ...descriptor.caps, persistence: true },
-  };
+export function savedMachineDescriptor(descriptor: BootDescriptor): BootDescriptor {
+  const ephemeral = ephemeralDescriptor(descriptor);
+  const { inputs: _inputs, parameters: _parameters, ...boot } = ephemeral.boot;
+  return { ...ephemeral, boot };
 }
 
 /**
- * `descriptor` with no workspace: what a share link carries, because a
- * workspace name means nothing in another browser, and what a copy of a
- * persistent machine boots on memory.
+ * `descriptor` with no browser-storage workspace: what a pasted link boots,
+ * because a link must never mount this browser's storage.
  */
 export function ephemeralDescriptor(descriptor: BootDescriptor): BootDescriptor {
-  const { caps, ...rest } = descriptor;
-  const { persistence: _persistence, ...otherCaps } = caps ?? {};
   return {
-    ...rest,
-    mounts: withoutWorkspaces(descriptor.mounts),
-    ...(Object.keys(otherCaps).length === 0 ? {} : { caps: otherCaps }),
+    ...descriptor,
+    mounts: descriptor.mounts.filter((m) => m.source !== "opfs").map((m) => ({ ...m })),
   };
-}
-
-function withoutWorkspaces(mounts: DescriptorMount[]): DescriptorMount[] {
-  return mounts.filter((m) => m.source !== "opfs").map((m) => ({ ...m }));
 }

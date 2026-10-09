@@ -257,56 +257,130 @@ per-backend OPFS specs still self-skip outside Chromium.
 
 ### Saved machines
 
-The Kandelo page's **Save** dock button turns the running machine into a
-saved machine: a machine whose home directory (the login session's home,
-`/home/maker` for the shell images) is an `opfs` workspace instead
-of the scratch mount. Saving copies the home directory's regular files and
-directories into a new workspace from the page, through the `KernelHost` VFS
-reads and the File System API, then reboots the machine on the descriptor that
-mounts the workspace at home. The reboot is stated in the popup before the
-button is pressed: the files carry over, the running programs do not. Entries
-a workspace cannot hold — symlinks, pipes, sockets, devices — are listed in the
-popup afterwards, not approximated.
+The **Save this machine** button, at the top of the Kandelo page's
+**Machines** dock pane, turns the running machine into a saved machine: a
+machine whose home directory (the login session's home, `/home/maker` for the
+shell images) this browser keeps. The machine keeps running on memory. Saving
+reads the home directory through `KernelHost.readTree` and writes it into
+IndexedDB; from then on the page reads the home every second and writes what
+changed. A replica of another computer's machine cannot be saved.
 
 What a saved machine is:
 
 - A record in this browser profile's `localStorage`
-  (`kandelo.persistent-machines.v1`): an id, a three-word name, the boot
-  descriptor, and two instants. The id is the workspace name under
-  `kandelo-opfs/`. `web-libs/kandelo-session/src/persistent-machine.ts` owns
+  (`kandelo.persistent-machines.v1`): an id, a three-word name, the home
+  directory, the boot descriptor, and two instants. The descriptor carries no
+  browser-storage mount and none of a link's `boot.inputs` or
+  `boot.parameters` (`savedMachineDescriptor`), so a saved machine never runs
+  a link's script. `web-libs/kandelo-session/src/persistent-machine.ts` owns
   the record and its validation; a corrupt list is reported in the UI, not
   shown as empty.
-- The workspace itself, with everything the machine wrote under its home
-  directory as it wrote it.
+- The saved home in IndexedDB (`kandelo-saved-machines`, store `entries`), one
+  record per directory, regular file, or symbolic link under the key
+  `[machine id, path]`, with its mode, owner, group, and, for a file, its bytes
+  and modification time (`web-libs/kandelo-session/src/saved-machine.ts`). Every
+  save is one transaction with `strict` durability. Devices, named FIFOs, and
+  sockets are not kept; the pane lists the ones it left out. A named FIFO is
+  an empty regular file in the VFS, so the kernel's FIFO table, not the file,
+  decides that it is left out.
+
+When changes are saved:
+
+- `HomeTracker` (`web-libs/kandelo-session/src/home-tracker.ts`) compares
+  each read with the saved copy. The read sends the fingerprint (device,
+  inode, size, modification and change time) of every file the tracker holds,
+  and the kernel returns those files without bytes while their fingerprint is
+  unchanged. A file modified less than a second ago is always read again and
+  compared by content, because two writes within one clock tick can leave its
+  fingerprint as it was.
+- A read that finds changes marks the machine **Modified**. The page writes
+  the changes when the next read finds the same ones, which means the home
+  stopped changing for about a second, or after 10 seconds of continuous
+  change. The dock shows **Saving…** during the write and **Saved** after it.
+  A failed write shows **Not saved** with the error in the pane, and the next
+  read tries again.
+- Changes made while the dock reads **Modified** or **Saving…** are lost if
+  the tab crashes or the machine stops. The page asks the browser to warn
+  before it closes in that state.
+
+Opening a saved machine boots its image with the saved home as the home
+directory's seed: `applyBootDescriptor(descriptor, { homeSeed })` hands the
+tree to the kernel's `vfsSeedTrees`, and the kernel writes it after the mounts
+exist and before the first process starts (`writeVfsTree` in
+`host/src/vfs/tree.ts`). The home then holds exactly the saved tree: an image
+file the user deleted stays deleted, and owners, modes, and modification times
+are the saved ones. Nothing else survives: opening a saved machine runs its
+boot command again on those files, and files outside the home directory are
+the image's and the scratch mounts', as for any other machine.
 
 What it promises and does not:
 
-- Files under the home directory survive closing the tab, reloading, and
-  rebooting, subject to the origin-storage durability limits above. Nothing
-  else survives: opening a saved machine boots its image again and runs its
-  boot command on those files. Files outside the home directory are the
-  image's and the scratch mounts', as for any other machine.
-- The record and the workspace live in one browser profile on one device.
+- The record and the saved home live in one browser profile on one device.
   Clearing this site's data deletes both. Nothing is synced, verified, or
   carried in a share link: **Share** on a saved machine names the image with
   `?vfs=` and `&profile=` taken from the descriptor, since the address bar is
-  bare, and a script fragment encodes `ephemeralDescriptor(...)`, the same
-  machine on memory. A pasted link is booted the same way whatever workspace
-  it names, so a link can never mount this browser's storage.
-- One tab runs a saved machine at a time, by the workspace lock above. A
-  second tab that opens it fails its boot with the lock error, visibly, as
-  status `Error`. Deleting a machine takes the same lock first and is refused
-  while the machine runs anywhere; delete removes the workspace directory and
-  then the record.
-- Ownership, permission bits, and timestamps under the home directory are the
-  synthesized OPFS values described in the filesystem section above.
+  bare, and a script fragment encodes the descriptor, which mounts no browser
+  storage. A pasted link is booted as `ephemeralDescriptor(...)` whatever
+  workspace it names, so a link can never mount this browser's storage.
+- One tab runs a saved machine at a time. The tab that runs it holds the Web
+  Lock `kandelo-saved-machine:<id>`; a second tab that opens it is refused
+  with a message in the list. Deleting a machine takes the same lock first and
+  is refused while the machine runs anywhere; delete removes the saved home
+  and then the record.
+- Only a boot the page starts for a saved machine runs it as saved. Any other
+  boot of the page's machine — a reboot, a gallery launch — ends the session
+  without writing, so a home the saved copy never held is never saved over
+  it. The saved copy stays as it was at its last **Saved**. A handover is not
+  such a boot; see below.
 
-The machine is opened, renamed, and deleted from the **Machines** dock pane
-and from the landing page, which lists saved machines above the presets. After
-a save or an open the page URL is replaced by the bare page URL: a `?vfs=`
-address would boot a fresh machine on memory on reload, while the bare page
-shows the list. `kandelo-saved-machine.spec.ts` covers the round trip in
-Chromium.
+A handover moves a saved machine to the other computer of a peer pair, but the
+saved copy stays in the browser that saved it, and that browser keeps saving
+it (`app/persistent-machines.ts`):
+
+1. The page that gives the machine away keeps the machine's Web Lock and
+   becomes the keeper. It sends the other computer the saved copy's state on
+   the peer link's `kandelo-saved-machine` data channel: each path with its
+   mode, owner, and, for a file, its modification time and SHA-256 digest,
+   with no bytes.
+2. The page that takes the machine becomes the runner. It reads the home
+   against that state each second, as a page that saved the machine itself
+   does, and sends each change to the keeper. When a read finds a change, the
+   runner first tells the keeper, so the keeper's dock shows **Modified**
+   before the change arrives. Its first read also finds what the giving page
+   changed but had not yet saved.
+3. The keeper checks each change (`parseSavedMachineMessage` in
+   `web-libs/kandelo-session/src/saved-machine-message.ts` refuses any path that
+   is not under the home directory), writes it to IndexedDB, and answers. The
+   save state (**Modified**, **Saving…**, **Saved**) shows on the keeper's
+   dock only; the runner's dock shows none.
+4. When the machine comes back, the keeper runs it as saved again from the
+   state it kept. Its first read writes what the runner changed but had not
+   yet sent.
+
+The runner's **Machines** pane names the machine and says it is saved on the
+other computer, and offers no **Save this machine** button. The keeper's pane
+shows the machine as running on the other computer. The keeper's page asks the
+browser to warn before it closes. A closed link ends both sides: the keeper
+releases the lock, and the runner reports that changes from then on are not
+saved. Changes that the runner made but that the keeper had not answered when
+the link closed are lost.
+
+A runner that clicks **Disconnect** hands the machine back first. The keeper
+takes it, by proof or by checkpoint, and the link closes only once the keeper
+says it holds the machine. When the keeper has not taken it within 20
+seconds, the link stays open and the popup says so; a second **Disconnect**
+closes the link and the machine stays on the runner.
+
+The machine is opened, renamed, and deleted from the list in the **Machines**
+dock pane. The landing page lists saved machines above the presets and only
+opens them. The **Save this machine** button sits at the top right of the
+**Machines** pane. After a save or an open the page URL drops the parameters
+that name a machine (`?vfs=`, `&profile=`, the `#k1=` fragment): a `?vfs=`
+address would boot a fresh machine on memory on reload, while a page that
+names no machine shows the list. Page-level parameters such as
+`?signalling=` stay. `kandelo-saved-machine.spec.ts` covers the round trip, a
+saved machine moved between two computers and back, and a machine handed back
+on **Disconnect**.
 
 ### Terminal
 - PTY support with full line discipline
@@ -1667,8 +1741,9 @@ empty scripts during authoring.
 
 Scripts currently run without a confirmation step because every machine a
 link boots is ephemeral: a link's mounts are not applied at page load, and a
-pasted link is booted as `ephemeralDescriptor(...)`, so a script never runs
-inside a saved machine's workspace. This is a load-bearing boundary: before a
+pasted link is booted as `ephemeralDescriptor(...)`, and a saved machine's
+descriptor never carries a link's boot inputs, so a script never runs inside
+a saved machine. This is a load-bearing boundary: before a
 link can boot into persistent or restored machine state, script links must
 gain an explicit show-the-script consent step (see the warning at the
 execution site in `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`

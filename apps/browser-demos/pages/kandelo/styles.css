@@ -611,7 +611,7 @@
 }
 
 .kdock-status-text {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 5px;
   min-width: 0;
@@ -625,6 +625,7 @@
 }
 
 .kdock-status-copy {
+  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -730,6 +731,20 @@
 
 .kdock-status-text[data-status="running"] {
   color: var(--k-ok);
+}
+
+.kdock-save-state {
+  margin-left: auto;
+  color: var(--kdock-muted);
+}
+
+.kdock-save-state[data-save-state="modified"],
+.kdock-save-state[data-save-state="saving"] {
+  color: var(--k-warn);
+}
+
+.kdock-save-state[data-save-state="failed"] {
+  color: var(--k-err);
 }
 
 .kdock-status-text[data-status="booting"] {
@@ -1076,10 +1091,6 @@
 
 .kdock-network-popover {
   --kdock-popover-width: 460px;
-}
-
-.kdock-save-popover {
-  --kdock-popover-width: 400px;
 }
 
 .kdock-internals-popover {
@@ -3673,7 +3684,7 @@
 .kgal-url-cell {
   white-space: nowrap;
 }
-.kgal-actions-cell {
+.kgal-table .kgal-actions-cell {
   text-align: right;
 }
 .kgal-row-actions {
@@ -4657,59 +4668,25 @@
   opacity: 0.75;
 }
 
-.kdock-item.is-connected .kdock-icon,
-.kdock-item.is-saved .kdock-icon {
+.kdock-item.is-connected .kdock-icon {
   color: var(--k-ok, var(--k-accent, currentColor));
 }
 
-.ksave-popup {
-  width: 100%;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 14px;
-  background: var(--k-surface);
-  color: var(--k-text);
-}
-
-.ksave-section {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ksave-label {
-  color: var(--k-text-muted);
-  font-size: 11px;
-  font-weight: 760;
-  letter-spacing: 0.06em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.ksave-text {
-  margin: 0;
-  color: var(--k-text-muted);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
 .ksave-button {
-  align-self: flex-start;
   padding: 6px 10px;
-  border: 1px solid var(--k-border);
+  border: 1px solid var(--k-accent);
   border-radius: 8px;
-  background: var(--k-surface-raised, transparent);
-  color: var(--k-text);
+  background: var(--k-accent);
+  color: #fff;
   font-family: inherit;
   font-size: 12px;
+  font-weight: 680;
   cursor: pointer;
 }
 
 .ksave-button:hover:not(:disabled) {
-  border-color: var(--k-accent, var(--k-border));
+  background: var(--k-accent-fire);
+  border-color: var(--k-accent-fire);
 }
 
 .ksave-button:disabled {
@@ -4717,33 +4694,9 @@
   opacity: 0.6;
 }
 
-.ksave-button-primary {
-  background: var(--k-accent);
-  border-color: var(--k-accent);
-  color: #fff;
-  font-weight: 680;
-}
-
-.ksave-button-primary:hover:not(:disabled) {
-  background: var(--k-accent-fire);
-  border-color: var(--k-accent-fire);
-}
-
-.ksave-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.ksave-name-label {
-  color: var(--k-text-muted);
-  font-size: 12px;
-}
-
-.ksave-name-input,
 .kmachines-name-input {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
   padding: 6px 8px;
   border: 1px solid var(--k-border);
   border-radius: 8px;
@@ -4753,15 +4706,6 @@
   font-size: 12px;
 }
 
-.ksave-skipped {
-  margin: 0;
-  padding-left: 18px;
-  color: var(--k-text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.ksave-failure,
 .kmachines-failure {
   padding: 8px 10px;
   border-radius: 8px;
@@ -4771,123 +4715,90 @@
   line-height: 1.4;
 }
 
-.kmachines {
+.kmachines-compact {
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  text-align: left;
 }
 
-.kmachines-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.kmachines .kgal-table {
+  min-width: 420px;
 }
 
-.kmachines-row {
-  display: flex;
+.kmachines .kgal-table th:nth-child(1) { width: 46%; }
+.kmachines .kgal-table th:nth-child(3) { width: 170px; }
+
+.kmachines-rename {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--k-border);
-  border-radius: var(--k-radius-sm);
-  background: var(--k-surface);
-}
-
-.kmachines-row[data-running="true"] {
-  background: color-mix(in oklch, var(--k-accent) 9%, var(--k-surface));
-}
-
-.kmachines-main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.kmachines-name {
+  justify-content: center;
   padding: 0;
   border: 0;
+  border-radius: 5px;
   background: transparent;
-  color: var(--k-text);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 680;
-  text-align: left;
+  color: var(--k-text-faint);
   cursor: pointer;
 }
 
-.kmachines-name:disabled {
-  cursor: default;
+.kmachines-rename:hover:not(:disabled),
+.kmachines-rename:focus-visible {
+  background: var(--k-surface-alt);
+  color: var(--k-text);
+  outline: none;
 }
 
-.kmachines-meta,
-.kmachines-empty,
-.kmachines-note {
+.kmachines-elsewhere {
+  margin: 0;
+  color: var(--k-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.kmachines-type {
+  color: var(--k-text-muted);
+}
+
+.kmachines-empty {
   color: var(--k-text-muted);
   font-size: 11.5px;
   line-height: 1.4;
 }
 
-.kmachines-note {
+.kmachines-empty p {
   margin: 0;
 }
 
-.kmachines-actions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.kmachines-btn {
-  height: 26px;
-  display: inline-flex;
+.kdock-pane .kmachines-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  padding: 0 10px;
-  border-radius: 6px;
-  border: 1px solid var(--k-border);
-  background: var(--k-surface);
-  color: var(--k-text);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 680;
-  cursor: pointer;
+  justify-content: center;
+  gap: 20px;
+  padding: 24px;
+  text-align: center;
 }
 
-.kmachines-btn:hover:not(:disabled) {
-  background: var(--k-surface-alt);
-  border-color: var(--k-border-strong);
+.kdock-pane .kmachines-empty p {
+  max-width: 520px;
 }
 
-.kmachines-btn:disabled {
+.kmachines .kgal-row-btn:disabled {
   cursor: default;
   opacity: 0.55;
 }
 
-.kmachines-btn-primary {
-  background: var(--k-accent);
-  border-color: var(--k-accent);
-  color: #fff;
-}
-
-.kmachines-btn-primary:hover:not(:disabled) {
-  background: var(--k-accent-fire);
-  border-color: var(--k-accent-fire);
-}
-
-.kmachines-btn-danger {
+.kmachines-btn-danger,
+.kmachines-btn-danger:hover,
+.kmachines-btn-danger:focus-visible {
   background: var(--k-err);
   border-color: var(--k-err);
   color: #fff;
-}
-
-.kempty-saved .kmachines-row {
-  text-align: left;
 }
 
 .kshared-machine {

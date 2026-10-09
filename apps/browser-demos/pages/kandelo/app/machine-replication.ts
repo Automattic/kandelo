@@ -248,7 +248,12 @@ const IDLE: MachineReplication = {
 export function useMachineReplication(
   host: KernelHost,
   link: PeerLink | null,
+  /** Runs when this page gives its machine to a promoted replica, before the machine stops here. */
+  gaveAway: () => void,
 ): MachineReplication {
+  // The loops below outlive renders, so they call the latest callback.
+  const gaveAwayRef = React.useRef(gaveAway);
+  gaveAwayRef.current = gaveAway;
   const [publishing, setPublishing] = React.useState(false);
   const [joining, setJoining] = React.useState(false);
   const [replicating, setReplicating] = React.useState(false);
@@ -423,6 +428,7 @@ export function useMachineReplication(
           if (sealedHash === null) return false;
           const report = comparePromotionStateHashes(sealedHash.hash, hash);
           if (report.diverged) return false;
+          gaveAwayRef.current();
           await host.releaseMachine();
           return true;
         },
