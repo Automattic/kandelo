@@ -999,10 +999,23 @@ Chromium probe passes too, and all seventeen Go Chromium probes pass together.
 This meets milestone 5's focused shell-out/child management check, not
 comprehensive process or signal conformance. Next is
 milestone 6: first-class Go package integration through the normal resolver
-and VFS path. Directly built Go binaries still emit the legacy
-`kandelo.abi.contract` stamp warning; package integration must resolve that
-through the normal build path. The recorded Go-runtime-specific agent guidance
-follows at the end.
+and VFS path. At this point, directly built Go fixtures still emit the legacy
+`kandelo.abi.contract` stamp warning. The recorded Go-runtime-specific agent
+guidance follows at the end.
+
+**2026-10-08 — Stamp directly built Go fixtures.** The Go browser-fixture
+builder now records exactly its sixteen newly built Wasm outputs and applies
+the existing `stamp-abi-contract` tool once to that list. It does not sweep
+other files or overwrite stale stamps. The Node exec probe and all Chromium
+Go probes now require their fixture digest to equal the running kernel's
+digest, preventing the host's warn-and-allow path from masking a missing
+stamp. The Node exec probe passes without the misleading legacy-binary
+warning, and all seventeen Chromium Go probes pass with matching stamps.
+The existing stamp-helper regression test passes. The browser-demo TypeScript
+project check still reports unrelated errors outside the changed Go probe
+test. This fixes the direct-fixture gap independently of milestone 6;
+package integration still needs to produce stamped Go programs through the
+normal resolver/VFS build path.
 
 ---
 

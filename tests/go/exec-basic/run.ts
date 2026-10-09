@@ -1,4 +1,8 @@
 import { readFileSync } from "node:fs";
+import {
+  ABI_CONTRACT_SECTION,
+  readWasmCustomSectionPayload,
+} from "../../../host/src/constants.ts";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper.ts";
 
 const programPath = process.argv[2];
@@ -7,9 +11,25 @@ if (!programPath || !kernelPath) {
   throw new Error("usage: node --import tsx run.ts <program.wasm> <kernel.wasm>");
 }
 
+const programBytes = readFileSync(programPath);
+const kernelBytes = readFileSync(kernelPath);
+const programDigest = readWasmCustomSectionPayload(
+  Uint8Array.from(programBytes).buffer, ABI_CONTRACT_SECTION,
+);
+const kernelDigest = readWasmCustomSectionPayload(
+  Uint8Array.from(kernelBytes).buffer, ABI_CONTRACT_SECTION,
+);
+if (
+  !programDigest || !kernelDigest ||
+  programDigest.length !== 32 || kernelDigest.length !== 32 ||
+  !programDigest.every((byte, index) => byte === kernelDigest[index])
+) {
+  throw new Error("Go fixture ABI-contract digest does not match the kernel");
+}
+
 const result = await runCentralizedProgram({
   programPath,
-  kernelWasmBytes: readFileSync(kernelPath),
+  kernelWasmBytes: kernelBytes,
   argv: [programPath],
   execPrograms: new Map([["/bin/go-exec-basic.wasm", programPath]]),
   captureForkCount: true,
