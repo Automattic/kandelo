@@ -29,9 +29,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # validated this one. Pin the cwd so both agree.
 cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
-OS_TEST="$REPO_ROOT/tests/sortix/os-test"
+# Upstream has case-distinct test filenames. A caller on a case-insensitive
+# filesystem can supply a pristine checkout on a case-sensitive volume.
+OS_TEST="${KANDELO_SORTIX_SOURCE_ROOT:-$REPO_ROOT/tests/sortix/os-test}"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
-BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
+BUILD_DIR="$OS_TEST/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
