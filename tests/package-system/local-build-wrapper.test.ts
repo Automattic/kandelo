@@ -102,6 +102,8 @@ EOF
     `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$CARGO_RECORD"
 printf '%s\\n' "$PATH" > "$CARGO_PATH_RECORD"
+# Prerequisites succeed; only the graph runner owns the failed graph result.
+if [[ " $* " == *" bootstrap "* ]]; then exit 0; fi
 printf '%s\\n' "$FAKE_LOCAL_BUILD_RESULT"
 exit "$FAKE_CARGO_STATUS"
 `,

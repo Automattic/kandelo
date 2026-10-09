@@ -35,5 +35,7 @@ describe.skipIf(!zstdBinary)("zstd", () => {
     });
     expect(decompressed.exitCode).toBe(0);
     expect(decompressed.stdout).toBe("hello zstd world\n");
-  });
+    // Both invocations retain their 10-second execution deadline; allow for
+    // both launches and their source-artifact verification in the outer test.
+  }, 30_000);
 });

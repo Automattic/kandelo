@@ -612,6 +612,11 @@ const reviewedScalarKernelExportCall = (
 });
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
+  // The coalesced PTY notification consumes a boolean within the existing
+  // kernel entry; it accepts no pointer and borrows no kernel memory.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#drainAndProcessWakeupEventsWithinKernelEntry::kernel-export-direct-use::takePtyReadiness?.()",
+  ),
   reviewedScalarKernelExportCall(
     "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_create_process()",
   ),
@@ -1029,16 +1034,6 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/kernel.ts::<module>::wasm-authority-escape::WebAssembly.Instance.prototype",
     disposition: "kernel-control",
     why: "The kernel wrapper passes the intrinsic Instance prototype directly to a captured descriptor lookup so raw engine exports can be authenticated before gate construction; it retains no instance or namespace.",
-  },
-  {
-    key: "packages/registry/node-compat/bootstrap.js::runInThisContext::dynamic-code-contract::eval(code)",
-    disposition: "non-kernel",
-    why: "This reviewed Node compatibility boundary implements vm.runInThisContext for package JavaScript; the evaluated source runs in its explicit compatibility realm and receives no kernel Memory, Instance, exports namespace, or scratch authority.",
-  },
-  {
-    key: "packages/registry/node-compat/bootstrap.js::runInThisContext::dynamic-code-contract::eval(this.code)",
-    disposition: "non-kernel",
-    why: "This is the matching compiled-script path for the reviewed Node vm compatibility boundary and likewise receives no kernel WebAssembly authority.",
   },
   {
     key: "packages/registry/spidermonkey/node-compat/adapter.js::evalScriptAsFunction::dynamic-code-contract::(0, eval)(source + '\\n//# sourceURL=' + filename)",

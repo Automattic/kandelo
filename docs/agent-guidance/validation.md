@@ -198,8 +198,10 @@ part of the task. Build or fetch what is missing:
    checks both musl sysroots, rebuilding missing, stale, or altered core
    outputs and refreshing the graphics archives, then builds the
    kernel, every package, and the rootfs, producing
-   `local-binaries/kernel.wasm` (the binary resolver prefers it over
-   `binaries/`) and `host/wasm/rootfs.vfs.zst`:
+   `local-binaries/source-only-v1/kernel.wasm` (the binary resolver prefers
+   the published tree over `binaries/`) and `host/wasm/rootfs.vfs.zst`.
+   The default rootfs records lazy-file sizes from that same published
+   tree, including the programs' ABI-contract stamps:
    ```bash
    scripts/dev-shell.sh ./run.sh setup
    ```

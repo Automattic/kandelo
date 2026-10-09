@@ -31,9 +31,17 @@ export const localOnlyBrowserImports = new Set([
 ]);
 
 export const registryPackagesWithoutBuildToml = new Set([
+  // Verified upstream sources are consumed by other recipes and do not
+  // publish compiled artifacts of their own.
+  "bytepath-source",
+  "libyaml-source",
   "netsurf-buildsystem-source",
+  "pcaudiolib-source",
   "pcre2-source",
+  "sqlite-amalgamation-source",
   "sqlite-cli",
+  "sqlite3-ruby-source",
+  "snkrx-source",
   "wordpress-sqlite-integration-source",
 ]);
 

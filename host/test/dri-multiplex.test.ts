@@ -19,6 +19,21 @@ class RecordingGl {
   enable(c: number) { this.log.push(["enable", [c]]); }
   disable(c: number) { this.log.push(["disable", [c]]); }
   clearColor(...a: number[]) { this.log.push(["clearColor", a]); }
+  clearDepth(...a: number[]) { this.log.push(["clearDepth", a]); }
+  clearStencil(...a: number[]) { this.log.push(["clearStencil", a]); }
+  lineWidth(...a: number[]) { this.log.push(["lineWidth", a]); }
+  depthRange(...a: number[]) { this.log.push(["depthRange", a]); }
+  polygonOffset(...a: number[]) { this.log.push(["polygonOffset", a]); }
+  sampleCoverage(...a: unknown[]) { this.log.push(["sampleCoverage", a]); }
+  bindBuffer(...a: unknown[]) { this.log.push(["bindBuffer", a]); }
+  bindRenderbuffer(...a: unknown[]) { this.log.push(["bindRenderbuffer", a]); }
+  colorMask(...a: boolean[]) { this.log.push(["colorMask", a]); }
+  depthMask(...a: boolean[]) { this.log.push(["depthMask", a]); }
+  stencilFuncSeparate(...a: number[]) { this.log.push(["stencilFuncSeparate", a]); }
+  stencilMaskSeparate(...a: number[]) { this.log.push(["stencilMaskSeparate", a]); }
+  stencilOpSeparate(...a: number[]) { this.log.push(["stencilOpSeparate", a]); }
+  blendColor(...a: number[]) { this.log.push(["blendColor", a]); }
+  vertexAttrib4f(...a: number[]) { this.log.push(["vertexAttrib4f", a]); }
   clear(m: number) { this.log.push(["clear", [m]]); }
   depthFunc(f: number) { this.log.push(["depthFunc", [f]]); }
   blendFuncSeparate(...a: number[]) { this.log.push(["blendFuncSeparate", a]); }

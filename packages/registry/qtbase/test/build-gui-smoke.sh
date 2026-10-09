@@ -47,6 +47,7 @@ prefix() {
 }
 
 QTBASE="$(prefix qtbase)"
+LIBDBUS="$(prefix libdbus)"
 FREETYPE="$(prefix freetype)"
 FONTCONFIG="$(prefix fontconfig)"
 HARFBUZZ="$(prefix harfbuzz)"
@@ -75,8 +76,10 @@ wasm32posix-c++ \
     "$QTBASE/plugins/wayland-shell-integration/libxdg-shell.a" \
     "$QTBASE/lib/libQt6WaylandClient.a" \
     "$QTBASE/lib/libQt6Gui.a" \
+    "$QTBASE/lib/libQt6DBus.a" \
     "$QTBASE/lib/libQt6Core.a" \
     "$QTBASE/lib/libQt6BundledPcre2.a" \
+    "$LIBDBUS/lib/libdbus-1.a" \
     "$FONTCONFIG/lib/libfontconfig.a" \
     "$FREETYPE/lib/libfreetype.a" \
     "$HARFBUZZ/lib/libharfbuzz.a" \

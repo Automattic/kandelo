@@ -61,7 +61,9 @@ done
 
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set (invoke via cargo xtask build-deps resolve libwayland)}"
 PROTO_SRC="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set (invoke via cargo xtask build-deps resolve libwayland)}"
+LIBDRM_PREFIX="${WASM_POSIX_DEP_LIBDRM_DIR:?resolver did not provide the direct libdrm dependency}"
 WAYLAND_XML="$PROTO_SRC/xml/wayland.xml"
+test -f "$LIBDRM_PREFIX/include/drm/drm_fourcc.h"
 
 if [ ! -f "$LIBFFI_PREFIX/include/ffi.h" ]; then
     echo "ERROR: libffi shim header not found at $LIBFFI_PREFIX/include/ffi.h" >&2
@@ -218,6 +220,7 @@ EGL_CFLAGS=(
     "-I$EGL_GEN"
     "-I$GLUE_DIR"
     "-I$GLUE_DIR/wayland-egl-include"
+    "-I$LIBDRM_PREFIX/include"
 )
 wasm32posix-cc -c "${EGL_CFLAGS[@]}" "$GLUE_DIR/libwayland-egl.c" -o "$BUILD_DIR/libwayland-egl.o"
 wasm32posix-cc -c "${EGL_CFLAGS[@]}" "$EGL_GEN/linux-dmabuf-v1-protocol.c" -o "$BUILD_DIR/linux-dmabuf-v1-protocol.o"

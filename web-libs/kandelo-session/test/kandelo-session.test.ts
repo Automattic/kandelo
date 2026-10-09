@@ -918,7 +918,6 @@ describe("LiveKernelHost: shell command queue", () => {
     const resizes: Array<[number, number, number]> = [];
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
           onOutput = callback;
@@ -959,7 +958,6 @@ describe("LiveKernelHost: shell command queue", () => {
     }));
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
         spawnFromVfs,
         onPtyOutput() {},
         ptyResize() {},
@@ -2740,4 +2738,3 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     }
   });
 });
-

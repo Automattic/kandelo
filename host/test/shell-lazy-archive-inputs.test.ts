@@ -418,7 +418,7 @@ describe("declared shell lazy-archive inputs", () => {
     );
 
     const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-    const vim = SHELL_LAZY_ARCHIVE_SPECS[0];
+    const vim = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "vim-browser-bundle")!;
     const archive = registerDeclaredShellLazyArchive(
       fs,
       vim,
@@ -622,7 +622,7 @@ describe("declared shell lazy-archive inputs", () => {
   });
 
   it("propagates a missing declared dependency output instead of falling back", () => {
-    const spec = SHELL_LAZY_ARCHIVE_SPECS[0];
+    const spec = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "vim-browser-bundle")!;
     expect(() =>
       loadDeclaredShellLazyArchive(spec, () => {
         throw new Error(
@@ -635,8 +635,8 @@ describe("declared shell lazy-archive inputs", () => {
   });
 
   it("rejects a valid ZIP from the wrong bundle before changing the VFS", () => {
-    const vim = SHELL_LAZY_ARCHIVE_SPECS[0];
-    const nethack = SHELL_LAZY_ARCHIVE_SPECS[1];
+    const vim = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "vim-browser-bundle")!;
+    const nethack = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "nethack-browser-bundle")!;
     const wrongPath = writeArchive(nethack.archiveUrl, archiveFor(nethack));
     const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
 
@@ -650,7 +650,7 @@ describe("declared shell lazy-archive inputs", () => {
   });
 
   it("reports a corrupt declared output as an invalid lazy ZIP", () => {
-    const spec = SHELL_LAZY_ARCHIVE_SPECS[0];
+    const spec = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "vim-browser-bundle")!;
     const corruptPath = writeArchive(
       spec.archiveUrl,
       new Uint8Array([1, 2, 3]),

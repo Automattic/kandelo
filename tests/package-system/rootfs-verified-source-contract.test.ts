@@ -114,20 +114,33 @@ describe("source-rootfs verified archive contract", () => {
       const sourceUrl = sourceField(manifest, "url");
       const sourceSha256 = sourceField(manifest, "sha256");
       expect(sourceSha256).toMatch(/^[0-9a-f]{64}$/);
-      const sourceUrlTemplate = sourceUrl.replace(
-        version,
-        `\${${versionVariable}}`,
-      );
-
+      // The manifest is the sole source identity. Exercise the shared loader
+      // rather than requiring a second copy of release metadata in recipes.
       expect(buildScript).toContain(
-        `${versionVariable}="\${WASM_POSIX_DEP_VERSION:-\${${versionVariable}:-${version}}}"`,
+        'kandelo_package_load_source_metadata "$SCRIPT_DIR"',
       );
-      expect(buildScript).toContain(
-        `SOURCE_URL="\${WASM_POSIX_DEP_SOURCE_URL:-${sourceUrlTemplate}}"`,
-      );
-      expect(buildScript).toContain(
-        `SOURCE_SHA256="\${WASM_POSIX_DEP_SOURCE_SHA256:-${sourceSha256}}"`,
-      );
+      expect(buildScript).toContain(`${versionVariable}="$WASM_POSIX_DEP_VERSION"`);
+      expect(buildScript).toContain('SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"');
+      expect(buildScript).toContain('SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"');
+      const loader = resolve(repoRoot, "scripts/package-build-roots.sh");
+      const recipe = resolve(repoRoot, `packages/registry/${packageName}`);
+      const command =
+        'source "$1"; kandelo_package_load_source_metadata "$2"; '
+        + "printf '%s\\n' \"$WASM_POSIX_DEP_VERSION\" \"$WASM_POSIX_DEP_SOURCE_URL\" \"$WASM_POSIX_DEP_SOURCE_SHA256\"";
+      const env = { ...process.env };
+      delete env.WASM_POSIX_DEP_VERSION;
+      delete env.WASM_POSIX_DEP_SOURCE_URL;
+      delete env.WASM_POSIX_DEP_SOURCE_SHA256;
+      const args = ["-euc", command, "source-contract", loader, recipe];
+      const identity = execFileSync("bash", args, { encoding: "utf8", env });
+      expect(identity.trimEnd().split("\n")).toEqual([
+        version, sourceUrl, sourceSha256,
+      ]);
+      // A resolver may repeat the manifest identity, but cannot override it.
+      expect(() => execFileSync("bash", args, {
+        env: { ...env, WASM_POSIX_DEP_SOURCE_SHA256: "0".repeat(64) },
+        stdio: "pipe",
+      })).toThrow();
       expect(buildScript).toContain(
         'VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"',
       );
@@ -177,15 +190,9 @@ describe("source-rootfs verified archive contract", () => {
           `^https://ftpmirror\\.gnu\\.org/${mirrorSelectorPath.replaceAll("-", "\\-")}/`,
         ),
       );
-      if (packageName === "bc") {
-        expect(buildScript, packageName).toContain(
-          "https://ftpmirror.gnu.org/gnu/bc/",
-        );
-      } else {
-        expect(buildScript, packageName).not.toContain(
-          "https://ftpmirror.gnu.org/gnu/",
-        );
-      }
+      // Recipes consume the manifest URL through the shared metadata loader.
+      expect(buildScript, packageName).toContain("kandelo_package_load_source_metadata");
+      expect(buildScript, packageName).not.toContain("https://ftpmirror.gnu.org/");
     }
   });
 
@@ -236,7 +243,10 @@ describe("source-rootfs verified archive contract", () => {
     expect(builder).toContain("--stage-resolver-binaries");
     expect(builder).toContain("node_modules/tsx/dist/cli.mjs");
     expect(buildToml).toContain('"package-lock.json"');
-    expect(buildToml).toMatch(/^revision\s*=\s*11$/m);
+    // Revision 12 invalidates images created before default rootfs builds
+    // selected the published, ABI-stamped program tree.
+    const revision = Number(/^revision\s*=\s*(\d+)$/m.exec(buildToml)?.[1]);
+    expect(revision).toBeGreaterThanOrEqual(12);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
   });
 });
