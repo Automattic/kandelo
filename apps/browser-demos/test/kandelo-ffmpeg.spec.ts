@@ -225,8 +225,8 @@ test("ffplay runs as a Wayland client in the Omarchy desktop", async ({ page }) 
   test.setTimeout(600_000);
   await open(page, "omarchy");
   await openSurface(page, "Terminal");
-  // The bar's workspace module is the last of the desktop to come up.
-  await expect.poll(() => terminalText(page), { timeout: 240_000 }).toMatch(/Creating workspace 1/);
+  // Quickshell reports its workspace after attaching the desktop bar.
+  await expect.poll(() => terminalText(page), { timeout: 240_000 }).toMatch(/BAR_WORKSPACE active=1/);
 
   // CTRL+Return opens foot; type the command into it with real keys.
   await expect.poll(async () => {

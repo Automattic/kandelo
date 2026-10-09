@@ -666,7 +666,7 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     const cacheKey = writeProgramProjection(registryRoot, namespace);
     generation = join(
       programCacheRoot,
-      `${namespace}-1.0.0-rev1-wasm32-${cacheKey}`,
+      `${namespace}-1.0.0-rev1-wasm32-abi${ABI_VERSION}-${cacheKey}`,
     );
     const artifact = join(generation, "artifact.dat");
     const sidecar = join(generation, "sidecar.dat");

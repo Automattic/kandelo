@@ -5,6 +5,8 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { ensureDirRecursive, writeVfsBinary } from "../../../host/src/vfs/image-helpers";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import {
   detectPtrWidth,
@@ -30,11 +32,6 @@ const artifactsAvailable = rubyBinaryPath !== null;
 const browserKernelModulePath = resolve(
   repoRoot,
   "host/src/browser-kernel-host.ts",
-);
-const memoryFsModulePath = resolve(repoRoot, "host/src/vfs/memory-fs.ts");
-const imageHelpersModulePath = resolve(
-  repoRoot,
-  "host/src/vfs/image-helpers.ts",
 );
 
 function initialAddressSpaceBytes(programPath: string): number {
@@ -84,58 +81,35 @@ async function runRubyCases(
   const asViteFsUrl = (path: string) =>
     new URL(`/@fs/${path}`, baseURL).href;
 
+  // Build the fixture image in the test runner. The browser receives only
+  // transferable image bytes; its kernel worker owns the live VFS buffer.
+  const maxImageBytes = 8 * 1024 * 1024;
+  const imageOwner = MemoryFileSystem.create(
+    new SharedArrayBuffer(2 * 1024 * 1024), maxImageBytes,
+  );
+  ensureDirRecursive(imageOwner, "/tmp");
+  ensureDirRecursive(imageOwner, "/bin");
+  writeVfsBinary(imageOwner, RUBY_VFORK_EXECUTABLE,
+    new Uint8Array(readFileSync(execChildBinaryPath)), 0o755);
+  const imageBytes = Array.from(await imageOwner.saveImage());
+
   return page.evaluate(
     async ({
       browserKernelUrl,
-      memoryFsUrl,
-      imageHelpersUrl,
+      imageBytes,
       rubyUrl,
-      execChildUrl,
-      executable,
       cases,
     }) => {
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsUrl
-      );
-      const { ensureDirRecursive, writeVfsBinary } = await import(
-        /* @vite-ignore */ imageHelpersUrl
-      );
-      const [rubyResponse, execChildResponse] = await Promise.all([
-        fetch(rubyUrl),
-        fetch(execChildUrl),
-      ]);
-      if (!rubyResponse.ok || !execChildResponse.ok) {
-        throw new Error(
-          `Ruby fixture fetch failed: ruby=${rubyResponse.status} `
-            + `exec-child=${execChildResponse.status}`,
-        );
+      const rubyResponse = await fetch(rubyUrl);
+      if (!rubyResponse.ok) {
+        throw new Error(`Ruby fixture fetch failed: ruby=${rubyResponse.status}`);
       }
       const rubyBytes = await rubyResponse.arrayBuffer();
-      const execChildBytes = await execChildResponse.arrayBuffer();
 
-      const maxImageBytes = 8 * 1024 * 1024;
-      const SharedArrayBufferCtor = SharedArrayBuffer as new (
-        byteLength: number,
-        options?: { maxByteLength?: number },
-      ) => SharedArrayBuffer;
-      const imageOwner = MemoryFileSystem.create(
-        new SharedArrayBufferCtor(2 * 1024 * 1024, {
-          maxByteLength: maxImageBytes,
-        }),
-        maxImageBytes,
-      );
-      ensureDirRecursive(imageOwner, "/tmp");
-      ensureDirRecursive(imageOwner, "/bin");
-      writeVfsBinary(
-        imageOwner,
-        executable,
-        new Uint8Array(execChildBytes),
-        0o755,
-      );
-      const vfsImage = await imageOwner.saveImage();
+      const vfsImage = new Uint8Array(imageBytes);
       const decoder = new TextDecoder();
       const results = [];
 
@@ -212,15 +186,12 @@ async function runRubyCases(
     },
     {
       browserKernelUrl: asViteFsUrl(browserKernelModulePath),
-      memoryFsUrl: asViteFsUrl(memoryFsModulePath),
-      imageHelpersUrl: asViteFsUrl(imageHelpersModulePath),
+      imageBytes,
       // WHY: `@binaries` intentionally resolves a complete provenance tier.
       // This focused runtime test already selected exact artifacts through
       // Kandelo's resolver and must not require unrelated demo packages such
       // as Bash merely to transfer those bytes into a browser worker.
       rubyUrl: await devServerAssetUrl(page, "@binaries/programs/wasm32/ruby/ruby.wasm"),
-      execChildUrl: asViteFsUrl(execChildBinaryPath),
-      executable: RUBY_VFORK_EXECUTABLE,
       cases,
     },
   );
