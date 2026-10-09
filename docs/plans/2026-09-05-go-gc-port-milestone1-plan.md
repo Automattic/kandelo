@@ -1249,6 +1249,50 @@ embed prerequisites. Do not claim a runnable FrankenPHP port from a cgo
 frontend or compile-only result: the first real gate is a C call and C-to-Go
 callback executing in the same Kandelo process on Node and Chromium.
 
+**2026-10-09 — FrankenPHP classic-mode integration trace.** Keep the focused
+RoadRunner Go/PHP-worker probe as a separate integration test, but do not use
+its old WordPress-to-FPM proxy as a performance demo. FrankenPHP's documented
+WordPress setup uses classic mode, which executes PHP scripts directly. In
+FrankenPHP v1.11.0, `frankenphp_execute_script` calls PHP request startup,
+executes the script, and calls request shutdown for each request. This gives
+WordPress its normal per-request lifecycle; it does **not** keep WordPress
+bootstrapped between requests as FrankenPHP worker mode would. No speedup
+over FPM should be assumed without a same-content measurement.
+
+The smallest honest integration gate is the v1.11.0 FrankenPHP Go library,
+not the entire Caddy/xcaddy distribution. Its `Init`,
+`NewRequestWithContext`, and `ServeHTTP` path can serve a simple PHP file in
+classic mode without configuring worker scripts. That is a proof of PHP
+execution and response handling, not yet a WordPress server: the eventual
+demo also needs real front-controller routing, static-file handling, and the
+rest of the browser-visible HTTP behavior. Prefer the upstream Caddy
+`php_server` path for that final demo if it can be ported; do not call a
+bespoke Go router a drop-in FrankenPHP configuration.
+
+Three independent implementation gates remain before even the library proof:
+
+1. Finish Kandelo Go/Wasm cgo: parse actual Wasm debug/object information,
+   link Go and SDK C objects into one module, and implement Go-to-C and
+   C-to-Go transitions. The local, uncommitted cgo reader experiment advanced
+   beyond the pointer-size error but stopped at unsupported imported Wasm
+   globals; forcing the final link also exposed unsupported Go linker
+   relocations or an unrecognized C object format. It is not a usable port.
+2. Validate C-created pthreads calling back into Go. FrankenPHP v1.11.0
+   starts its PHP main and request threads with `pthread_create`, and C
+   callbacks enter Go for request data and response writes. A C-call-only
+   probe would not exercise the required runtime/thread contract.
+3. Build PHP 8.3's ZTS embed SAPI through the package resolver with the
+   WordPress extension set, then link it into the Go/C module. The current
+   `php` package produces CLI and FPM Wasm outputs but no ZTS `libphp` embed
+   library; neither executable can stand in for one.
+
+After these gates, run a simple classic-mode PHP page in Node and Chromium,
+then add the actual FrankenPHP/Caddy request routing and serve the existing
+WordPress VFS without nginx or FPM. Verify repeated page, admin, redirect,
+cookie, POST, and static-asset requests before comparing it to the existing
+FPM profile. There is still no runnable Kandelo FrankenPHP binary, demo URL,
+or performance result.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
