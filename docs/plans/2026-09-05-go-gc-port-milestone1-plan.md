@@ -1229,6 +1229,26 @@ Next milestones, in dependency order:
 
 No direct FrankenPHP demo URL or performance result exists yet.
 
+**2026-10-09 — cgo feasibility trace.** A scratch change in the Go fork taught
+`cmd/cgo` the correct 32-bit Wasm pointer and integer sizes, moving the
+checked-in C-call probe past its first error. Its next build stage tried to
+parse a linked Wasm module as ELF, Mach-O, PE or XCOFF for dynamic imports.
+Temporarily recognizing the Wasm magic exposed the next independent barrier:
+`gccDebug` also needs a real Wasm object reader for DWARF and generated
+constant/symbol data. A magic-byte skip is not a correct implementation; it
+does not provide the data cgo requires. Beyond parsing, the Go Wasm runtime's
+`asmcgocall` and `runtime/cgo` cross-calls still trap, and Go's linker does
+not integrate the SDK's C/Wasm objects into the current final module. This
+is an ABI, runtime and linker design task, not a package flag. The scratch
+parser bypass was discarded rather than promoted as apparent cgo support.
+
+FrankenPHP v1.11.0 is a candidate source pin because its `go.mod` requires
+Go 1.25.4, within the fork's Go 1.25 line; current upstream `main` requires
+Go 1.27. Source-version compatibility does not remove the cgo and ZTS PHP
+embed prerequisites. Do not claim a runnable FrankenPHP port from a cgo
+frontend or compile-only result: the first real gate is a C call and C-to-Go
+callback executing in the same Kandelo process on Node and Chromium.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
