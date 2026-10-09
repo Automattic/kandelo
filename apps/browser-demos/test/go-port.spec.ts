@@ -129,7 +129,7 @@ const probes: Probe[] = [
     stdout: ["GO SOCKET PASS"],
   },
   {
-    name: "Go runtime TCP readiness, deadlines, and close",
+    name: "Go runtime TCP readiness and blocking syscall scheduler release",
     file: "netpoll-basic.wasm",
     argv: ["go-netpoll-basic"],
     stdout: ["GO NETPOLL PASS"],

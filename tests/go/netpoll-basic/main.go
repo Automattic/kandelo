@@ -15,6 +15,28 @@ func must(err error) {
 	}
 }
 
+func blockingPipe() {
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	pipe := make([]int, 2)
+	must(syscall.Pipe(pipe))
+	defer syscall.Close(pipe[0])
+	defer syscall.Close(pipe[1])
+	written := make(chan error, 1)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_, writeErr := syscall.Write(pipe[1], []byte("pipe wakeup"))
+		written <- writeErr
+	}()
+	buffer := make([]byte, 32)
+	count, err := syscall.Read(pipe[0], buffer)
+	must(err)
+	must(<-written)
+	if string(buffer[:count]) != "pipe wakeup" {
+		panic("blocking syscall did not release scheduler P")
+	}
+}
+
 func main() {
 	runtime.GOMAXPROCS(2)
 	listener, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
@@ -78,5 +100,6 @@ func main() {
 	case <-time.After(time.Second):
 		panic("close did not unblock read")
 	}
+	blockingPipe()
 	fmt.Println("GO NETPOLL PASS")
 }
