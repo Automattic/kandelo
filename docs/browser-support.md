@@ -2165,6 +2165,14 @@ Absent assets remain unavailable; provenance failures propagate instead
 of being treated as missing files. Explicit SourceOnly builds retain
 their snapshot, syntax, and fallback-denial checks.
 
+Browser binary dependency audits parse authored JavaScript and TypeScript,
+including nested source directories. App-root `test-results/` and
+`playwright-report/` are reserved for generated browser evidence and are
+excluded from that scan. Trace resources can contain network response bodies
+saved with MIME-derived extensions; they are not browser source inputs.
+Malformed authored modules still fail the audit, with their file path in the
+parse error.
+
 The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
 `mysql` account (uid/gid 101). Their writable `/data` directories are
 therefore serialized as `101:101` with mode `0775`; `/tmp` remains a

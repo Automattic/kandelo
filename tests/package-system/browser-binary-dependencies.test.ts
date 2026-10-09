@@ -334,6 +334,40 @@ describe("browser binary dependencies", () => {
     }
   });
 
+  it("keeps generated browser reports outside authored import authority", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-reports-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      const nestedSource = join(browserRoot, "pages", "test-results");
+      mkdirSync(nestedSource, { recursive: true });
+      writeFileSync(join(browserRoot, "entry.ts"),
+        'import guest from "@binaries/programs/hello.wasm?url";');
+      writeFileSync(join(nestedSource, "authored.ts"),
+        'import guest from "@binaries/programs/nested.wasm?url";');
+      for (const output of ["test-results", "playwright-report"]) {
+        const resources = join(browserRoot, output, "resources");
+        mkdirSync(resources, { recursive: true });
+        // A real JSON response saved as JavaScript by Playwright's trace
+        // recorder must not make an authored-source audit parse network data.
+        writeFileSync(join(resources, "response.js"),
+          '{\n\t"Comment-authors": "",\n\t"Engine-authors": "table"\n}');
+        writeFileSync(join(resources, "captured-module.js"),
+          'import ignored from "@binaries/programs/captured.wasm?url";');
+      }
+      expect(browserBinariesImports(fixtureRoot)).toEqual([
+        "programs/wasm32/hello.wasm",
+        "programs/wasm32/nested.wasm",
+      ]);
+      writeFileSync(join(nestedSource, "authored.ts"),
+        '{\n\t"Comment-authors": ""\n}');
+      expect(() => browserBinariesImports(fixtureRoot)).toThrow(
+        /browser source failed to parse: .*authored\.ts:.*Missing semicolon/,
+      );
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects array-valued globs instead of admitting syntax Vite cannot mirror exactly", () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-imports-"));
     try {
