@@ -50,7 +50,32 @@ Service Worker ──MessagePort──> Kernel Worker       │
 
 ### Key Design Decisions
 
-- **Kernel in dedicated worker**: Browser syscall notification remains event-driven through `Atomics.waitAsync`; it does not poll channels. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue, allowing syscall handling and worker messages to keep progressing together under multi-process bridge load. Node.js keeps its native/default batching unchanged.
+- **Kernel in dedicated worker**: Browser syscall notification remains event-driven through `Atomics.waitAsync`; it does not poll channels. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue, allowing syscall handling and worker messages to keep progressing together under multi-process bridge load. Node.js keeps its native/default batching unchanged. The immediate queue yields after
+  four milliseconds of continuous work through `scheduler.yield()` where
+  available, otherwise through the timer queue. A rejected scheduler yield
+  also falls back to a timer. This keeps device clocks, blocked
+  syscall retries, and lifecycle timers progressing on WebKit, where an
+  uninterrupted MessageChannel chain can starve timers.
+- **WebKit process-memory construction**: spawn, exec and ordinary fork
+  construct fresh shared memories in disposable allocation workers. Native
+  samples found the kernel realm stalled inside JavaScriptCore's synchronous
+  memory collection; moving construction to a fresh realm keeps kernel input,
+  device clocks and process teardown responsive. The allocator owns admission
+  and retirement on every engine. A WebKit fork captures plain bytes before
+  yielding and charges its temporary snapshot and pending child memory against
+  the existing byte budget. Construction fails after 30 seconds if its worker
+  does not reply, and machine shutdown cancels pending construction workers.
+  JavaScriptCore's native allocation retry collects the calling realm. A fresh
+  worker cannot collect retired wrappers held by the owning kernel realm, so
+  a constructor `RangeError` triggers one final allocation in that owner after
+  the disposable worker has terminated. It uses the same admitted descriptor
+  and ceilings; clone errors and timeouts do not take this path. Native
+  collection in this final synchronous attempt can pause the kernel worker.
+  A second failure propagates through ordinary allocation rollback, without
+  relying on finalizer delivery or reducing the guest's address-space limit.
+  This engine boundary requires `blob:` in a deployment's `worker-src` Content
+  Security Policy. Node, Chromium and Firefox retain direct construction and
+  the same independent-address-space fork semantics.
 - **Kernel-owned VFS** (preferred path, `kernelOwnedFs: true` + `kernel.boot()`): the kernel worker restores a pre-built VFS image and exec()s `argv[0]` as the first user process. The main thread never instantiates a `MemoryFileSystem` and is not in the FS hot path. Service-supervised demos run dinit under the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. Single-program demos exec the language interpreter directly.
   Browser harnesses that must stage a transient file between process spawns use
   `BrowserKernel`'s worker RPC methods (`readFileSnapshotFromVfs`,

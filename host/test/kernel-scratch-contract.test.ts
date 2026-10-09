@@ -999,6 +999,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 ];
 
 const auditAllowances: AuditAllowance[] = [
+  {
+    key: 'host/src/browser-process-memory-factory.ts::createProcessMemory::wasm-memory-authority::new WebAssembly.Memory(request.ptrWidth === 8 ? { initial: BigInt(request.initialPages), maximum: BigInt(request.maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor : { initial: request.initialPages, maximum: request.maximumPages, shared: true, })',
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This self-contained constructor creates only the admitted guest address space, normally in a disposable realm and once in its owner after native constructor exhaustion. It has no kernel imports or kernel memory; the allocator validates and records fresh process ownership before exposing it.",
+  },
   ...reviewedScalarKernelExportCalls,
   {
     key: "host/src/host-adapter-manifest.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
