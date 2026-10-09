@@ -1,3 +1,4 @@
+import { OwnedJobs } from "./owned-jobs";
 /**
  * Kernel Worker Entry Point — Dedicated web worker that hosts the
  * CentralizedKernelWorker and manages all process lifecycle.
@@ -36,6 +37,7 @@ import type {
 import {
   readPreparedPlatformFile,
   VirtualPlatformIO,
+  vfsPathIsWithin,
 } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
@@ -92,6 +94,7 @@ import type {
 import { ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import {
+  DIRENT_TYPES,
   FILE_MODES,
   OPEN_FLAGS,
   PROCESS_FORK_MODE_VFORK,
@@ -127,6 +130,7 @@ import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
+  VfsDirEntry,
 } from "./browser-kernel-protocol";
 import {
   initializeBrowserCorsProxyForWorker,
@@ -142,6 +146,8 @@ let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
 let memfs: MemoryFileSystem;
 let io: VirtualPlatformIO;
+const watchedVfsPrefixes = new Set<string>();
+let offVfsChanges: (() => void) | null = null;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let processMemoryAllocator: ProcessMemoryAllocator;
@@ -588,7 +594,18 @@ let bridgeTargetPort: number | null = null; // The specific HTTP port to route b
 let nextBridgeActivityId = 1;
 const activeBridgeRequests = new Set<number>();
 
+const ownedJobs = new OwnedJobs(pid => {
+  // A committed child can still be awaiting its Worker; let launch settle first.
+  if (processes.has(pid)) kernelWorker.signalProcess(pid, 9);
+}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => reportHostDiagnostic({
+  pid: 0,
+  source: "owned job reap",
+  message: `[browser-kernel-worker] failed to reap an exited owned job family: ${formatError(error)}`,
+}));
+
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
+  if (msg.type === "stdout" || msg.type === "stderr") ownedJobs.output(msg.pid, msg.type, msg.data);
+  if (msg.type === "exit") ownedJobs.exited(msg.pid, msg.status);
   (globalThis as any).postMessage(msg, transfer ?? []);
 }
 
@@ -1132,6 +1149,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         continuation,
         borrowedReplay,
       }) => {
+        ownedJobs.inherit(parentPid, childPid);
         const launch = (releaseCreatorAdmission?: () => void) => {
           // Tell the main thread a kernel-side fork happened so Inspector
           // panes can refresh their process table without polling.
@@ -1151,7 +1169,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
             releaseCreatorAdmission,
           );
         };
-        return mode === PROCESS_FORK_MODE_VFORK
+        return (mode === PROCESS_FORK_MODE_VFORK
           ? processMemoryCreators.runUntilCommitted(
               "a vfork process Worker",
               (commit) => launch(commit),
@@ -1159,7 +1177,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
           : processMemoryCreators.run(
               "a fork process Worker",
               () => launch(),
-            );
+            )).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
       },
       onExec: async (request) => {
         const creatorAdmission = processMemoryCreators.acquire(
@@ -1238,11 +1256,13 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         }
       },
       onResolveSpawn: handlePosixSpawnResolve,
-      onSpawn: (parentPid, childPid, program, envp) =>
-        processMemoryCreators.run(
+      onSpawn: (parentPid, childPid, program, envp) => {
+        ownedJobs.inherit(parentPid, childPid);
+        return processMemoryCreators.run(
           "a posix_spawn process Worker",
           () => handlePosixSpawn(parentPid, childPid, program, envp),
-        ),
+        ).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
+      },
       onClone: (attachment) => processMemoryCreators.run(
         "a pthread Worker",
         () => handleClone(attachment),
@@ -1455,6 +1475,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     );
     createdPid = pid;
+    if (msg.ownedJob) ownedJobs.create(msg.ownedJob.id, pid, msg.ownedJob.timeoutMs);
     const path = msg.programPath ?? msg.argv[0];
     const pages = msg.maxPages ?? maxPages;
     const ptrWidth = detectPtrWidth(programBytes);
@@ -1635,6 +1656,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
         }
       }
     }
+    if (createdPid !== undefined && !processes.has(createdPid)) ownedJobs.abandon(createdPid);
     respondError(msg.requestId, String(e));
   } finally {
     releaseMutation?.();
@@ -3756,6 +3778,8 @@ async function finishProcessExit(
           formatError(error),
       });
     }
+    // Exit was published earlier; completion also requires exact detachment.
+    ownedJobs.detached(pid);
   })();
   processTeardowns.set(expectedWorker, teardown);
 
@@ -3814,6 +3838,83 @@ async function handleReadVfsFile(
 // Mutate the mounted filesystem from inside its owning worker. This keeps the
 // VFS SAB off the persistent browser main thread while allowing harnesses to
 // stage transient files between process spawns.
+async function handleReadVfsDir(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_dir" }>,
+) {
+  if (!io) { respond(msg.requestId, null); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    // Listing can materialize a lazy tree, so it is serialized with snapshots.
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "read or materialize a rootfs directory",
+    );
+    await io.preparePath?.(msg.path);
+    const handle = io.opendir(msg.path);
+    const entries: VfsDirEntry[] = [];
+    try {
+      for (;;) {
+        const entry = io.readdir(handle);
+        if (!entry) break;
+        if (entry.name === "." || entry.name === "..") continue;
+        const described = describeVfsDirEntry(msg.path, entry);
+        if (described) entries.push(described);
+      }
+    } finally {
+      io.closedir(handle);
+    }
+    respond(msg.requestId, entries);
+  } catch (error) {
+    if (isMissingPathError(error)) respond(msg.requestId, null);
+    else respondError(msg.requestId, formatError(error));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
+const { DT_LNK } = DIRENT_TYPES;
+
+function describeVfsDirEntry(
+  dir: string,
+  entry: { name: string; type: number },
+): VfsDirEntry | null {
+  const path = dir.endsWith("/") ? dir + entry.name : `${dir}/${entry.name}`;
+  let stat;
+  try {
+    stat = io.lstat(path);
+  } catch {
+    // An entry unlinked mid-listing is not an error for the whole directory.
+    return null;
+  }
+  let target: string | undefined;
+  if (entry.type === DT_LNK) {
+    try { target = io.readlink(path); } catch { target = undefined; }
+  }
+  return {
+    name: entry.name,
+    type: entry.type,
+    mode: stat.mode,
+    size: stat.size,
+    uid: stat.uid,
+    gid: stat.gid,
+    target,
+  };
+}
+
+function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_vfs_changes" }>) {
+  if (msg.enabled) watchedVfsPrefixes.add(msg.prefix);
+  else watchedVfsPrefixes.delete(msg.prefix);
+  if (watchedVfsPrefixes.size === 0) {
+    offVfsChanges?.();
+    offVfsChanges = null;
+    return;
+  }
+  if (offVfsChanges) return;
+  offVfsChanges = io.subscribeChanges((event) => {
+    const watched = [...watchedVfsPrefixes].some((prefix) => vfsPathIsWithin(prefix, event.path));
+    if (watched) post({ type: "vfs_change", event });
+  });
+}
+
 function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
   if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
   let releaseMutation: (() => void) | undefined;
@@ -4046,6 +4147,11 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
         `failed to detach exact process generation for pid ${pid}`,
       );
       return;
+    }
+    // A forced terminate posts no exit. A superseded pid belongs to its exec successor.
+    if (detachResult.detachDisposition === "removed-or-absent") {
+      ownedJobs.exited(pid, msg.status);
+      ownedJobs.detached(pid);
     }
   } else {
     try {
@@ -4531,6 +4637,19 @@ sw.onmessage = (e: MessageEvent) => {
         post({ type: "init_error", error });
       });
       break;
+    case "read_owned_job":
+    case "cancel_owned_job":
+      try {
+        if (msg.type === "cancel_owned_job") ownedJobs.cancel(msg.jobId);
+        respond(msg.requestId, ownedJobs.read(msg.jobId, msg.offset, msg.limit));
+      } catch (error) { respondError(msg.requestId, formatError(error)); }
+      break;
+    case "release_owned_job":
+      try {
+        ownedJobs.release(msg.jobId);
+        respond(msg.requestId, true);
+      } catch (error) { respondError(msg.requestId, formatError(error)); }
+      break;
     case "spawn":
       void processMemoryCreators
         .run("a host-spawned process Worker", () => handleSpawn(msg))
@@ -4538,6 +4657,7 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "terminate_process": void handleTerminateProcess(msg); break;
     case "read_vfs_file": void handleReadVfsFile(msg); break;
+    case "read_vfs_dir": void handleReadVfsDir(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
@@ -4620,6 +4740,7 @@ sw.onmessage = (e: MessageEvent) => {
       else kernelWorker.disableSyscallTrace();
       break;
     }
+    case "watch_vfs_changes": handleWatchVfsChanges(msg); break;
     case "drain_syscall_trace": {
       try {
         respond(msg.requestId, kernelWorker.drainSyscallTrace());

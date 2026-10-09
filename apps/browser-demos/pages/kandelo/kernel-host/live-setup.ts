@@ -1,6 +1,8 @@
+import { observePreviewRequest } from "../panes/preview-progress";
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { setWebMcpSession, type WebMcpIdentity } from "../webmcp/runtime";
 import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
 import { connectorModeSize } from "@host/dri/kms-registry";
 import { composeImageInWorker } from "./image-composer-client";
@@ -249,6 +251,12 @@ function pid1BaselineEnv(uid: number): string[] {
     "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
     "SSL_CERT_DIR=/etc/ssl/certs",
   ];
+}
+
+// The account an agent driving this page acts as: the same `maker` account
+// the terminal logs into, with the baseline a non-interactive shell needs.
+function agentIdentity(): WebMcpIdentity {
+  return { uid: DEMO_UID, gid: DEMO_GID, env: pid1BaselineEnv(DEMO_UID) };
 }
 
 /**
@@ -729,6 +737,7 @@ export async function createLiveHost(
     // WHY: detach while this activation still owns the previous generation.
     // If we await teardown first, a newer boot can attach its kernel and this
     // superseded activation would detach that newer generation on resume.
+    setWebMcpSession(h, null);
     h.detachKernel();
     if (previousKernel) {
       // No reclamation nudge needed after destroy: the previous machine's
@@ -771,6 +780,7 @@ export async function createLiveHost(
       // WebKit's deterministic reclamation. Nothing to nudge here.
       if (err instanceof BootSuperseded || seq !== bootSeq) return;
       currentKernel = null;
+      setWebMcpSession(h, null);
       h.detachKernel();
       showBootError(h, descriptor, err, bootStartedAt);
     }
@@ -1480,6 +1490,7 @@ async function bootProfile(
     await kernel.initFromImage(kernelInitOptions);
     assertCurrent();
     host.attachKernel(kernel);
+    setWebMcpSession(host, agentIdentity());
     host.setTerminalSessionPolicy(
       experimentalTerminalSessionPolicy(terminalSession),
     );
@@ -1503,6 +1514,7 @@ async function bootProfile(
           sessionId,
           {
             timeoutMs: 90_000,
+            onRequestStart: (request) => isCurrent() ? observePreviewRequest(host, request.url) : undefined,
             debugLog: (line) => tick(line),
             onPendingRequests: (count) => {
               if (isCurrent()) host.setWebPreviewPendingRequests(count);
@@ -1733,6 +1745,7 @@ async function bootProfile(
     return kernel;
   } catch (err) {
     if (kernel) {
+      if (isCurrent()) setWebMcpSession(host, null);
       await kernel.destroy().catch(() => {});
     }
     throw err;

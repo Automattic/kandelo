@@ -1,4 +1,4 @@
-export { readPreparedPlatformFile, VirtualPlatformIO } from "./vfs";
+export { readPreparedPlatformFile, VirtualPlatformIO, vfsPathIsWithin } from "./vfs";
 export type { HostFileOffset } from "../types";
 export type { PreparedPlatformFile } from "./vfs";
 export { HostFileSystem } from "./host-fs";
@@ -90,6 +90,9 @@ export type {
   MountConfig,
   MountSetIdCapability,
   DirEntry,
+  VfsChangeEvent,
+  VfsChangeKind,
+  VfsChangeListener,
 } from "./types";
 export { PATHCONF_NAMES } from "../generated/abi";
 export { filesystemPathconf } from "../pathconf";

@@ -311,6 +311,227 @@ describe("LiveKernelHost: status", () => {
   });
 });
 
+describe("LiveKernelHost: worker-owned VFS", () => {
+  const encoder = new TextEncoder();
+
+  it("reads files and directories through the kernel worker when no sync fs exists", async () => {
+    const files: Record<string, string> = {
+      "/etc/passwd": "root:x:0:0::/root:/bin/sh\nmaker:x:1000:1000::/home/maker:/bin/bash\n",
+      "/etc/group": "root:x:0:\nmaker:x:1000:\n",
+      "/home/maker/mcp/run_command.json": "{}",
+    };
+    const host = new LiveKernelHost();
+    host.attachKernel({
+      readFileFromVfs: async (path: string) =>
+        path in files ? encoder.encode(files[path]) : null,
+      readDirFromVfs: async (path: string) =>
+        path === "/home/maker/mcp"
+          ? [{ name: "run_command.json", type: 8, mode: 0o100644, size: 2, uid: 1000, gid: 1000 }]
+          : null,
+    } as any);
+
+    expect(await host.readFileText("/home/maker/mcp/run_command.json")).toBe("{}");
+    await expect(host.readFile("/missing")).rejects.toThrow("ENOENT: /missing");
+    expect(await host.readDir("/home/maker/mcp")).toEqual([
+      {
+        name: "run_command.json",
+        kind: "f",
+        mode: "-rw-r--r--",
+        owner: "maker",
+        group: "maker",
+        size: "2",
+        target: undefined,
+      },
+    ]);
+    await expect(host.readDir("/missing")).rejects.toThrow("ENOENT: /missing");
+  });
+
+  it("reads directories through the legacy synchronous fs", async () => {
+    const passwd = encoder.encode("root:x:0:0::/root:/bin/sh\n");
+    const dirEntries = [
+      { name: ".", type: 4, ino: 1 },
+      { name: "run_command.json", type: 8, ino: 2 },
+      { name: "sh", type: 10, ino: 3 },
+      { name: "gone", type: 8, ino: 4 },
+    ];
+    let cursor = 0;
+    const fs: FileSystemLike = {
+      ...makeFs({ "/etc/passwd": "root:x:0:0::/root:/bin/sh\n" }),
+      stat(path: string) {
+        if (path === "/etc/passwd") return { mode: 0o100644, size: passwd.byteLength, mtimeMs: 0, uid: 0, gid: 0 };
+        if (path === "/home/maker/mcp/run_command.json") return { mode: 0o100644, size: 437, mtimeMs: 0, uid: 0, gid: 0 };
+        if (path === "/home/maker/mcp/sh") return { mode: 0o100755, size: 5, mtimeMs: 0, uid: 0, gid: 0 };
+        throw new Error(`ENOENT: ${path}`);
+      },
+      readlink(path: string) {
+        if (path === "/home/maker/mcp/sh") return "/bin/sh";
+        throw new Error(`EINVAL: ${path}`);
+      },
+      opendir(path: string) {
+        if (path !== "/home/maker/mcp") throw new Error(`ENOENT: ${path}`);
+        cursor = 0;
+        return 42;
+      },
+      readdir() {
+        return dirEntries[cursor++] ?? null;
+      },
+      closedir() {},
+    };
+    const host = new LiveKernelHost();
+    host.attachKernel({ fs } as any);
+
+    expect(await host.readDir("/home/maker/mcp")).toEqual([
+      {
+        name: "run_command.json",
+        kind: "f",
+        mode: "-rw-r--r--",
+        owner: "root",
+        group: "root",
+        size: "437",
+        target: undefined,
+      },
+      {
+        name: "sh",
+        kind: "l",
+        mode: "lrwxr-xr-x",
+        owner: "root",
+        group: "root",
+        size: "5",
+        target: "/bin/sh",
+      },
+    ]);
+  });
+
+  it("rejects reads when the kernel has neither a sync fs nor worker reads", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({} as any);
+    await expect(host.readFile("/etc/passwd")).rejects.toThrow("no VFS surface");
+    await expect(host.readDir("/etc")).rejects.toThrow("no VFS surface");
+  });
+});
+
+describe("LiveKernelHost: raw VFS surface", () => {
+  it("reports a missing path as null rather than an error", async () => {
+    const host = new LiveKernelHost({
+      kernel: {
+        readFileFromVfs: async () => null,
+        readDirFromVfs: async () => null,
+      } as any,
+    });
+
+    expect(await host.readVfsFile("/absent")).toBeNull();
+    expect(await host.readVfsDir("/absent")).toBeNull();
+  });
+
+  it("rejects raw operations when the kernel has no worker VFS surface", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({} as any);
+    await expect(host.readVfsFile("/etc/passwd")).rejects.toThrow("no VFS surface");
+    await expect(host.readVfsDir("/etc")).rejects.toThrow("no VFS surface");
+  });
+});
+
+describe("LiveKernelHost: owned jobs", () => {
+  const ownedJobKernel = (exit: Promise<number>) => {
+    const spawnFromVfs = vi.fn(async () => ({ pid: 7, exit }));
+    const readOwnedJob = vi.fn(async () => ({ expired: true as const, oldest: 0 }));
+    const releaseOwnedJob = vi.fn(async () => {});
+    return { spawnFromVfs, readOwnedJob, releaseOwnedJob };
+  };
+
+  it("names the family, bounds it and gives it an immediate stdin EOF", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.startOwnedJob("job-1", "/bin/bash", ["bash", "-c", "true"], {
+      timeoutMs: 1234,
+      cwd: "/home/maker",
+      env: ["FOO=bar"],
+      uid: 1000,
+      gid: 1000,
+    });
+
+    expect(kernel.spawnFromVfs).toHaveBeenCalledWith("/bin/bash", ["bash", "-c", "true"], {
+      ownedJob: { id: "job-1", timeoutMs: 1234 },
+      cwd: "/home/maker",
+      env: ["FOO=bar"],
+      uid: 1000,
+      gid: 1000,
+      stdin: new Uint8Array(0),
+    });
+  });
+
+  it("hands the family the stdin bytes it is given", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+    const stdin = new Uint8Array([1, 2]);
+
+    await host.startOwnedJob("job-1", "/bin/sh", ["sh", "-c", "cat > /tmp/foo"], { timeoutMs: 1234, stdin });
+
+    expect(kernel.spawnFromVfs).toHaveBeenCalledWith("/bin/sh", ["sh", "-c", "cat > /tmp/foo"], expect.objectContaining({ stdin }));
+  });
+
+  it("consumes the root exit so a destroyed machine cannot reject unhandled", async () => {
+    const kernel = ownedJobKernel(Promise.reject(new Error("computer destroyed")));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.startOwnedJob("job-1", "/bin/bash", ["bash"], { timeoutMs: 1 });
+    // An unconsumed rejection surfaces within this tick and fails the file.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("forwards the cursor and the cancel flag to the worker", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.readOwnedJob("job-1", 16, 64, true);
+
+    expect(kernel.readOwnedJob).toHaveBeenCalledWith("job-1", 16, 64, true);
+  });
+
+  it("forwards a release to the worker", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.releaseOwnedJob("job-1");
+
+    expect(kernel.releaseOwnedJob).toHaveBeenCalledWith("job-1");
+  });
+
+  it("rejects when the attached kernel cannot own a command family", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({ spawnFromVfs: async () => ({ pid: 1, exit: Promise.resolve(0) }) } as any);
+    await expect(
+      host.startOwnedJob("job-1", "/bin/bash", ["bash"], { timeoutMs: 1 }),
+    ).rejects.toThrow("cannot own a command family");
+    await expect(host.readOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
+    await expect(host.releaseOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
+  });
+});
+
+describe("LiveKernelHost: VFS change events", () => {
+  it("delegates prefix subscriptions to the attached kernel", () => {
+    const offKernel = vi.fn();
+    const subscribeVfsChanges = vi.fn(() => offKernel);
+    const host = new LiveKernelHost({
+      kernel: { fs: makeFs({ "/etc/passwd": "" }), subscribeVfsChanges } as any,
+    });
+    const callback = vi.fn();
+
+    const off = host.subscribeVfsChanges("/home/maker/mcp", callback);
+
+    expect(subscribeVfsChanges).toHaveBeenCalledWith("/home/maker/mcp", callback);
+    off();
+    expect(offKernel).toHaveBeenCalledOnce();
+  });
+
+  it("rejects subscriptions when the attached kernel cannot report changes", () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({} as any);
+    expect(() => host.subscribeVfsChanges("/home/maker/mcp", () => {})).toThrow("cannot report VFS changes");
+  });
+});
+
 describe("LiveKernelHost: dmesg ring", () => {
   it("collects pushed lines into history", () => {
     const host = new LiveKernelHost();
@@ -1085,6 +1306,47 @@ describe("LiveKernelHost: shell command queue", () => {
     releaseFinalPrompt();
     await command;
     expect(completed).toBe(true);
+  });
+
+  it("shows injected text on an attached terminal without writing to the guest", async () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const writes: Uint8Array[] = [];
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, data: Uint8Array) {
+          writes.push(data);
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/maker",
+    });
+
+    expect(host.injectPtyOutput("/dev/pts/0", "[agent] ls")).toBe(false);
+
+    const pty = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    const seen: string[] = [];
+    pty.onData((bytes) => seen.push(decoder.decode(bytes)));
+    expect(host.injectPtyOutput("/dev/pts/0", "[agent] ls")).toBe(true);
+    expect(seen).toContain("[agent] ls");
+    expect(writes).toEqual([]);
+
+    const later = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    const replayed: string[] = [];
+    later.onData((bytes) => replayed.push(decoder.decode(bytes)));
+    expect(replayed).toContain("[agent] ls");
+    expect(host.injectPtyOutput("/dev/pts/9", "[agent] ls")).toBe(false);
   });
 
   it("serializes concurrent PTY attaches for the same terminal session", async () => {

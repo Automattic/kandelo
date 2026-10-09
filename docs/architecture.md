@@ -1518,6 +1518,38 @@ reparent a guest descendant when its parent exits, so such a descendant can
 still become an unreapable zombie after it exits. That existing process-
 lifecycle gap is separate from reaping direct host-owned launches.
 
+### Owned command families (jobs)
+
+A host can launch a top-level process as an *owned job*: one identifier that
+names that process and every descendant it creates. `host/src/owned-jobs.ts`
+holds the record, and both kernel workers wire it the same way. `fork`,
+`vfork` and `posix_spawn` add the child to the family before the child's
+worker launches, so ownership cannot be lost in the gap. `exec`, reparenting
+and `setsid` do not remove it.
+
+The record carries a bounded tail of the family's combined stdout and stderr
+(256 KiB), the root's exit status, and 64 jobs per kernel at most. Cancelling a
+job sends `SIGKILL` to every live member and retries across launch and exec
+gaps. `terminationObserved` turns true only after every member has exited, its
+process worker has detached, and the remaining family records have been reaped
+through the host-owned reap path above. A guest parent inside the family keeps
+normal `wait()`/`waitpid()` semantics while the job runs.
+
+A record outlives its family so the host can still read the tail and the exit
+status after the command ends. A spawn that fails before its root launches
+keeps no record: the start is refused, and the identifier stays free.
+Releasing a job forgets the record and frees both the slot and the identifier.
+A release is refused while any member is still live, because forgetting a
+running family would discard the guarantee that every member really
+terminated. The 64-job limit therefore bounds the families a host holds at
+once, not the families it may run over a session: a host that runs thousands
+of commands releases each one when it is done reading it.
+
+Owned jobs are a host primitive, not a browser feature. `BrowserKernel` and
+`NodeKernelHost` both accept `spawnFromVfs(..., { ownedJob })` and both expose
+`readOwnedJob(id, offset, limit, cancel)` and `releaseOwnedJob(id)`. The WebMCP
+`kandelo_run_command` tool is one consumer; see `docs/webmcp.md`.
+
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
@@ -1906,6 +1938,11 @@ resolves. Graceful destroy, initialization failure, and fatal worker paths
 attempt to remove the complete session tree; abrupt process termination
 cannot run that best-effort hook, so cleanup is not the ownership proof. New
 private inodes and publication-before-`ready` establish ownership.
+
+`NodeKernelHost` exposes the same raw worker-owned VFS operations as
+`BrowserKernel`: `readFileFromVfs`, `readDirFromVfs` and `writeFileToVfs`. These
+run as the worker, not as a guest account, so they check no permission. A
+missing path resolves `null` rather than throwing, on both hosts.
 
 `execPrograms` and `execProgramBytes` are spawn-preflight inputs only. They
 cannot authorize `execve` or `execveat`, whose executable bytes and metadata

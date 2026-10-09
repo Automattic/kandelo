@@ -162,6 +162,19 @@ export interface DestroyProgressEvent {
  * attached kernel, rather than with response chunk count; it has no fixed
  * asset cap.
  */
+export type VfsChangeKind = "modify" | "delete";
+
+/**
+ * A path in the guest VFS changed. `modify` fires when a handle opened for
+ * writing closes or a rename gives the name new content; `delete` fires when
+ * a name is unlinked or renamed away.
+ */
+export interface VfsChangeEvent {
+  kind: VfsChangeKind;
+  path: string;
+  t: number;
+}
+
 export interface LazyDownloadSummary extends LazyDownloadEvent {
   /** Timestamp of the first event observed for this asset. */
   firstSeenAt: number;
@@ -169,6 +182,53 @@ export interface LazyDownloadSummary extends LazyDownloadEvent {
   startedAt: number;
   /** Number of raw events observed for this asset, including this state. */
   eventCount: number;
+}
+
+/** One directory entry as the VFS-owning worker reports it. */
+export interface KernelDirEntry {
+  name: string;
+  /** Linux `d_type` of the entry. */
+  type: number;
+  mode: number;
+  size: number;
+  uid: number;
+  gid: number;
+  /** Link target when the entry is a symlink. */
+  target?: string;
+}
+
+/**
+ * One read of a worker-owned command family. The worker retains a bounded tail
+ * of the family's output, so a cursor older than `oldest` has expired.
+ */
+export type KernelOwnedJobRead =
+  | { expired: true; oldest: number }
+  | {
+      expired: false;
+      /** The pid the family was started as. */
+      pid: number;
+      status: "running" | "cancelling" | "cancelled" | "timed_out" | "completed";
+      /** Exit status of the family's root, null while it still runs. */
+      exitCode: number | null;
+      /** True once every member of the family has been observed to terminate. */
+      terminationObserved: boolean;
+      chunks: Array<{ stream: "stdout" | "stderr"; bytes: Uint8Array }>;
+      /** Cursor to pass to the next read. */
+      next: number;
+      hasMore: boolean;
+      /** True when retained output had already been dropped before this read. */
+      truncated: boolean;
+    };
+
+export interface KernelOwnedJobOptions {
+  /** Cancel the family after this many milliseconds. The worker enforces it. */
+  timeoutMs: number;
+  env?: string[];
+  cwd?: string;
+  uid?: number;
+  gid?: number;
+  /** Bytes the root reads on stdin. Without them it reads EOF at once. */
+  stdin?: Uint8Array;
 }
 
 export interface KernelLike {
@@ -194,6 +254,16 @@ export interface KernelLike {
    * round-trip (unlike the deprecated synchronous {@link fs}).
    */
   writeFileToVfs?(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
+  /**
+   * Read a regular file through the VFS-owning worker. Resolves `null` when
+   * the path is absent or not a regular file.
+   */
+  readFileFromVfs?(path: string): Promise<Uint8Array | null>;
+  /**
+   * List a directory through the VFS-owning worker. Resolves `null` when the
+   * path is absent.
+   */
+  readDirFromVfs?(path: string): Promise<KernelDirEntry[] | null>;
   /**
    * Append bytes to a process's stdin buffer. Used by the framebuffer
    * input path so DOM key events on the canvas reach the fb-bound
@@ -301,6 +371,11 @@ export interface KernelLike {
   subscribeDestroyProgress?(
     cb: (event: DestroyProgressEvent) => void,
   ): () => void;
+  /**
+   * Subscribe to changes of paths under `prefix` in the worker-owned VFS.
+   * Worker-owned hosts forward events only while a prefix is watched.
+   */
+  subscribeVfsChanges?(prefix: string, cb: (event: VfsChangeEvent) => void): () => void;
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
@@ -320,6 +395,7 @@ export interface KernelLike {
     programPath: string,
     argv: string[],
     options?: {
+      ownedJob?: { id: string; timeoutMs: number };
       env?: string[];
       cwd?: string;
       uid?: number;
@@ -330,6 +406,22 @@ export interface KernelLike {
       ptyRows?: number;
     },
   ): Promise<{ pid: number; exit: Promise<number> }>;
+  /**
+   * Read a worker-owned command family, optionally cancelling it first. Both
+   * the browser and the Node kernel worker own jobs; a kernel that predates
+   * the surface omits this method.
+   */
+  readOwnedJob?(
+    jobId: string,
+    offset?: number,
+    limit?: number,
+    cancel?: boolean,
+  ): Promise<KernelOwnedJobRead>;
+  /**
+   * Forget a finished job's record. Rejects while any member of the family is
+   * still live.
+   */
+  releaseOwnedJob?(jobId: string): Promise<void>;
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
   ptyWrite(pid: number, data: Uint8Array): void;
   ptyResize(pid: number, rows: number, cols: number): void;
@@ -862,6 +954,12 @@ export interface KernelHost {
   dispatchShellCommand(command: string): Promise<void>;
   runShellCommand(command: string): Promise<void>;
   /**
+   * Show `text` on the terminal attached at `path` without sending anything
+   * to the guest: the bytes reach the terminal's output listeners and its
+   * replay history only. Returns false when no terminal is attached there.
+   */
+  injectPtyOutput(path: string, text: string): boolean;
+  /**
    * Type the terminal's interrupt character (Ctrl+C) into the machine's
    * shell PTY and resolve once the shell prints its next prompt, i.e. once
    * the foreground job has actually exited. Rejects if no prompt appears
@@ -881,6 +979,46 @@ export interface KernelHost {
    * the payload — this is a raw capability, not a policy layer.
    */
   writeFile(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
+  /**
+   * Subscribe to changes of paths under `prefix` in the live guest VFS. Files
+   * present at boot never emit; list the directory once, then watch it.
+   */
+  subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void;
+
+  // Raw peers of readFile/readDir. These report the values the VFS
+  // holds rather than the strings the Inspector renders, and a path that is
+  // not there resolves null instead of throwing. Callers that present a
+  // listing to a person want readFile/readDir; callers that hand bytes and
+  // numbers to a program want these.
+  readVfsFile(path: string): Promise<Uint8Array | null>;
+  readVfsDir(path: string): Promise<KernelDirEntry[] | null>;
+
+  // owned jobs
+  /**
+   * Start `program` as a command family this host owns. Ownership survives
+   * exec, fork and setsid, so cancelling the job terminates every descendant
+   * and the job reports the root's exit status once all of them are gone.
+   */
+  startOwnedJob(
+    id: string,
+    program: string,
+    argv: string[],
+    options: KernelOwnedJobOptions,
+  ): Promise<void>;
+  /** Read one owned job, cancelling it first when `cancel` is true. */
+  readOwnedJob(
+    id: string,
+    offset?: number,
+    limit?: number,
+    cancel?: boolean,
+  ): Promise<KernelOwnedJobRead>;
+  /**
+   * Forget a finished job's record and free the slot it holds. A kernel holds
+   * a bounded number of job records, so a caller that runs many commands
+   * releases the ones it has finished reading. Rejects while the family is
+   * still live, and a released job reads back as an unknown job.
+   */
+  releaseOwnedJob(id: string): Promise<void>;
 
   // process control
   /**
@@ -1507,6 +1645,13 @@ export class LiveKernelHost implements KernelHost {
   async runShellCommand(command: string): Promise<void> {
     const { completion } = await this.startShellCommand(command);
     await completion;
+  }
+
+  injectPtyOutput(path: string, text: string): boolean {
+    const session = this.ptySessions.get(path || "/dev/pts/0");
+    if (!session || session.closed) return false;
+    this.emitPtyData(session, new TextEncoder().encode(text));
+    return true;
   }
 
   /**
@@ -2249,7 +2394,13 @@ export class LiveKernelHost implements KernelHost {
   // ── KernelHost: VFS ──────────────────────────────────────────────────────
 
   async readFile(path: string): Promise<Uint8Array> {
-    return readFileSync(this.requireFs(), path);
+    if (this.kernel?.fs) return readFileSync(this.kernel.fs, path);
+    if (!this.kernel?.readFileFromVfs) {
+      throw new Error("LiveKernelHost.readFile: the attached kernel has no VFS surface.");
+    }
+    const bytes = await this.kernel.readFileFromVfs(path);
+    if (!bytes) throw new Error(`ENOENT: ${path}`);
+    return bytes;
   }
 
   async readFileText(path: string): Promise<string> {
@@ -2271,6 +2422,79 @@ export class LiveKernelHost implements KernelHost {
     await this.kernel.writeFileToVfs(path, bytes, mode);
   }
 
+  subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void {
+    if (!this.kernel?.subscribeVfsChanges) {
+      throw new Error(
+        "LiveKernelHost.subscribeVfsChanges: the attached kernel cannot report VFS changes.",
+      );
+    }
+    return this.kernel.subscribeVfsChanges(prefix, cb);
+  }
+
+  async readVfsFile(path: string): Promise<Uint8Array | null> {
+    if (!this.kernel?.readFileFromVfs) {
+      throw new Error("LiveKernelHost.readVfsFile: the attached kernel has no VFS surface.");
+    }
+    return this.kernel.readFileFromVfs(path);
+  }
+
+  async readVfsDir(path: string): Promise<KernelDirEntry[] | null> {
+    if (!this.kernel?.readDirFromVfs) {
+      throw new Error("LiveKernelHost.readVfsDir: the attached kernel has no VFS surface.");
+    }
+    return this.kernel.readDirFromVfs(path);
+  }
+
+  // ── KernelHost: owned jobs ──────────────────────────────────────────────
+
+  async startOwnedJob(
+    id: string,
+    program: string,
+    argv: string[],
+    options: KernelOwnedJobOptions,
+  ): Promise<void> {
+    if (!this.kernel?.spawnFromVfs || !this.kernel.readOwnedJob) {
+      throw new Error(
+        "LiveKernelHost.startOwnedJob: the attached kernel cannot own a command family.",
+      );
+    }
+    const spawned = await this.kernel.spawnFromVfs(program, argv, {
+      ownedJob: { id, timeoutMs: options.timeoutMs },
+      cwd: options.cwd,
+      env: options.env,
+      uid: options.uid,
+      gid: options.gid,
+      // An owned job has no interactive input: it reads the bytes it is given, then EOF.
+      stdin: options.stdin ?? new Uint8Array(0),
+    });
+    // The job record carries lifecycle and output. Consume the separate root
+    // exit so destroying the machine mid-command cannot reject unhandled.
+    void spawned.exit.catch(() => {});
+  }
+
+  async readOwnedJob(
+    id: string,
+    offset?: number,
+    limit?: number,
+    cancel = false,
+  ): Promise<KernelOwnedJobRead> {
+    if (!this.kernel?.readOwnedJob) {
+      throw new Error(
+        "LiveKernelHost.readOwnedJob: the attached kernel cannot own a command family.",
+      );
+    }
+    return this.kernel.readOwnedJob(id, offset, limit, cancel);
+  }
+
+  async releaseOwnedJob(id: string): Promise<void> {
+    if (!this.kernel?.releaseOwnedJob) {
+      throw new Error(
+        "LiveKernelHost.releaseOwnedJob: the attached kernel cannot own a command family.",
+      );
+    }
+    await this.kernel.releaseOwnedJob(id);
+  }
+
   // ── KernelHost: process control ─────────────────────────────────────────
 
   async signalProcess(pid: number, signum: number): Promise<boolean> {
@@ -2283,52 +2507,25 @@ export class LiveKernelHost implements KernelHost {
   }
 
   async readDir(path: string): Promise<VfsDirent[]> {
-    const fs = this.requireFs();
-    const names = loadIdNameMaps(fs);
-    const handle = fs.opendir(path);
-    try {
-      const out: VfsDirent[] = [];
-      while (true) {
-        const entry = fs.readdir(handle);
-        if (!entry) break;
-        if (entry.name === "." || entry.name === "..") continue;
-        const childPath = path.endsWith("/")
-          ? path + entry.name
-          : path + "/" + entry.name;
-        let mode: number;
-        let size: number;
-        let uid: number;
-        let gid: number;
-        let target: string | undefined;
-        try {
-          const st = fs.stat(childPath);
-          mode = st.mode;
-          size = st.size;
-          uid = st.uid;
-          gid = st.gid;
-        } catch {
-          // Disappearing entries (race with another process) shouldn't blow
-          // up the whole listing.
-          continue;
-        }
-        const kind = direntKind(entry.type, mode);
-        if (kind === "l") {
-          try { target = fs.readlink(childPath); } catch { /* ignore */ }
-        }
-        out.push({
-          name: entry.name,
-          kind,
-          mode: formatMode(mode, kind),
-          owner: idToLabel(uid, names.users),
-          group: idToLabel(gid, names.groups),
-          size: kind === "d" ? "—" : humanSize(size),
-          target,
-        });
-      }
-      return out;
-    } finally {
-      fs.closedir(handle);
+    if (this.kernel?.fs) return readDirSync(this.kernel.fs, path);
+    if (!this.kernel?.readDirFromVfs) {
+      throw new Error("LiveKernelHost.readDir: the attached kernel has no VFS surface.");
     }
+    const entries = await this.kernel.readDirFromVfs(path);
+    if (!entries) throw new Error(`ENOENT: ${path}`);
+    const names = await this.loadIdNameMapsFromVfs();
+    return entries.map((entry) => direntFromEntry(entry, names));
+  }
+
+  private async loadIdNameMapsFromVfs(): Promise<IdNameMaps> {
+    const readText = async (path: string): Promise<string | null> => {
+      const bytes = await this.kernel?.readFileFromVfs?.(path).catch(() => null);
+      return bytes ? decodeBytes(bytes) : null;
+    };
+    return {
+      users: parseColonIdMap(await readText("/etc/passwd"), 2, new Map([[0, "root"]])),
+      groups: parseColonIdMap(await readText("/etc/group"), 2, new Map([[0, "root"]])),
+    };
   }
 
   async stat(path: string): Promise<VfsDirent | null> {
@@ -3073,6 +3270,59 @@ function readFileSync(fs: FileSystemLike, path: string): Uint8Array {
   }
 }
 
+function readDirSync(fs: FileSystemLike, path: string): VfsDirent[] {
+  const names = loadIdNameMaps(fs);
+  const handle = fs.opendir(path);
+  try {
+    const out: VfsDirent[] = [];
+    while (true) {
+      const entry = fs.readdir(handle);
+      if (!entry) break;
+      if (entry.name === "." || entry.name === "..") continue;
+      const childPath = path.endsWith("/")
+        ? path + entry.name
+        : path + "/" + entry.name;
+      let st: ReturnType<FileSystemLike["stat"]>;
+      try {
+        st = fs.stat(childPath);
+      } catch {
+        // Disappearing entries (race with another process) shouldn't blow
+        // up the whole listing.
+        continue;
+      }
+      let target: string | undefined;
+      if (direntKind(entry.type, st.mode) === "l") {
+        try { target = fs.readlink(childPath); } catch { /* ignore */ }
+      }
+      out.push(direntFromEntry({
+        name: entry.name,
+        type: entry.type,
+        mode: st.mode,
+        size: st.size,
+        uid: st.uid,
+        gid: st.gid,
+        target,
+      }, names));
+    }
+    return out;
+  } finally {
+    fs.closedir(handle);
+  }
+}
+
+function direntFromEntry(entry: KernelDirEntry, names: IdNameMaps): VfsDirent {
+  const kind = direntKind(entry.type, entry.mode);
+  return {
+    name: entry.name,
+    kind,
+    mode: formatMode(entry.mode, kind),
+    owner: idToLabel(entry.uid, names.users),
+    group: idToLabel(entry.gid, names.groups),
+    size: kind === "d" ? "—" : humanSize(entry.size),
+    target: entry.target,
+  };
+}
+
 // d_type values from MemoryFileSystem.readdir: DT_REG=8, DT_DIR=4, DT_LNK=10.
 function direntKind(dtype: number, mode: number): "d" | "f" | "l" | "b" | "c" | "p" | "s" {
   if (dtype === 4 || (mode & 0xf000) === 0x4000) return "d";
@@ -3243,13 +3493,22 @@ function loadColonIdMap(
   idField: number,
   fallback: IdNameMap,
 ): IdNameMap {
-  const out: IdNameMap = new Map();
-  let text: string;
+  let text: string | null;
   try {
     text = decodeBytes(readFileSync(fs, path));
   } catch {
-    return new Map(fallback);
+    text = null;
   }
+  return parseColonIdMap(text, idField, fallback);
+}
+
+function parseColonIdMap(
+  text: string | null,
+  idField: number,
+  fallback: IdNameMap,
+): IdNameMap {
+  if (text === null) return new Map(fallback);
+  const out: IdNameMap = new Map();
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
