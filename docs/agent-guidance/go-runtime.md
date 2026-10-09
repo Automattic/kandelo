@@ -136,6 +136,13 @@ silently omit those sections or treat the C shim's `_cgo_topofstack` call as
 a direct call to a Go-resumable function. The function-body path is only one
 link layer.
 
+For a repeatable function-only link proof, run
+`scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends a
+small SDK C object to a cgo-free Go archive and verifies the internal
+linker's C-to-C relocation in the final Wasm module. This is a linker test,
+not the normal cgo build or a runnable Go-to-C interoperability test. The
+real `C.abs` and callback probes remain the required runtime gates.
+
 Use the staged probes in `tests/go/README.md`:
 first a C call, then Go-to-C-to-Go on the calling thread, then a C-created
 pthread callback. For the scratch frontend, run `../bin/go test cmd/cgo`
