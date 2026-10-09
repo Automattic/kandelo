@@ -71,6 +71,71 @@ incompatible changes require an `ABI_VERSION` bump and updated snapshot.
 Stamp newly built probe binaries with this checkout's ABI-contract digest;
 do not validate against a stale or unstamped binary.
 
+## Go/Wasm cgo and C linking
+
+FrankenPHP classic mode embeds a PHP ZTS SAPI through cgo. A working
+`cmd/cgo` frontend is only one layer of that port. The current published
+`GOOS=kandelo GOARCH=wasm` fork defaults to `CGO_ENABLED=0`; its first cgo
+probe fails at Wasm pointer-size recognition. An uncommitted frontend
+experiment can compile the C-call and callback fixtures, but **neither
+links or runs on Kandelo**. Do not describe it as cgo support or pin it
+for a FrankenPHP package.
+
+Trace the whole link path before changing flags or package recipes:
+
+- `src/cmd/cgo/main.go`, `gcc.go`, and `out.go` own C type discovery,
+  DWARF/constant extraction, and dynamic-import handling. Wasm is not
+  ELF, Mach-O, PE, or XCOFF. A magic-byte bypass of object parsing is
+  insufficient: the generated constants, symbols, and imports still need
+  correct interpretations. The scratch Wasm reader in the adjacent fork
+  is not yet a reviewed implementation.
+- `src/cmd/link/internal/ld/lib.go` loads cgo's C objects. Internal mode
+  currently calls them an unrecognized format; external mode reaches
+  unsupported PC-relative relocations. `src/cmd/link/internal/wasm/asm.go`
+  emits a final Wasm module, not an object that `wasm-ld` can link with
+  the SDK's C Wasm objects. A direct `wasm-ld` attempt on that output
+  rejects it. Do not suppress relocation errors to make the build appear
+  to advance.
+- C objects carry Wasm `linking` and `reloc.*` sections. The pthread
+  callback fixture's C object needs function-index, global-index,
+  table-index, and debug relocations; it references `go_double`,
+  `pthread_create`, `pthread_join`, `__stack_pointer`, and
+  `__table_base`. A linker design must resolve these into one function
+  table and one shared linear memory without colliding with Go's
+  `funcValueOffset`, static data, heap, TLS, or Kandelo's thread slots.
+- Go's Wasm functions use the runtime's resumable call convention, while
+  the SDK's C functions use the Wasm C ABI. A final link also needs
+  real Go-to-C and C-to-Go adapters. `src/runtime/asm_wasm.s` currently
+  leaves `asmcgocall` and `cgocallback` as `UNDEF`. FrankenPHP additionally
+  starts PHP threads with C `pthread_create`, so callbacks from a thread
+  Go did not create must attach to a valid M, scheduler P, and per-thread
+  Kandelo syscall channel. A same-thread callback alone is insufficient.
+
+Start linker work with an internal Wasm host-object reader for one small SDK
+C object, because the existing Go linker already owns Kandelo's final
+memory, table, exports, and ABI marker. Parse the C object's `linking` and
+`reloc.*` records, resolve its symbols, and prove one real C call in the
+final Go module before expanding to C archives or PHP. This is a proposed
+first spike, not established feasibility: if it cannot preserve C function
+types, table slots, static data and TLS alongside Go's layout, evaluate a
+relocatable-Go-object/external-link design explicitly. Never feed a final
+Go module to `wasm-ld` as though it were a relocatable object, implement
+only the object parser and call the link complete, or route calls through a
+host shim that changes Kandelo's normal program model.
+
+Use the staged probes in `tests/go/README.md`:
+first a C call, then Go-to-C-to-Go on the calling thread, then a C-created
+pthread callback. For the scratch frontend, run `../bin/go test cmd/cgo`
+from `../go-kandelo/src` under `scripts/dev-shell.sh`. Use `go build -x -work`
+and `llvm-readobj --sections --symbols --relocations` on its generated C
+object to locate the exact build boundary. A successful native-host probe
+checks the fixture only; a successful cgo frontend or link is not proof of
+runtime behavior. Require a process that executes both callback paths on
+Node and Chromium with the normal ABI stamp, matching memory/table layout,
+expected output, empty stderr, and no host diagnostics before building a
+PHP embed library or FrankenPHP. Re-run `js` and `wasip1` builds after
+compiler, linker, or runtime changes.
+
 ## Evidence and handoff
 
 The reproducible probe commands and scope are in `tests/go/README.md`.

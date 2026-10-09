@@ -1312,6 +1312,23 @@ fork changes are not committed, pushed, or pinned by the package. The next
 implementation task is a coherent Go/C Wasm link and cross-call ABI design;
 do not mask these failures with a cgo parser skip or package-local shim.
 
+**2026-10-09 — Go/C Wasm link-route inspection.** `llvm-readobj` on the
+callback fixture's SDK C object found `linking` and `reloc.CODE` sections:
+function-index relocations to `go_double`, `pthread_create`, and
+`pthread_join`, global-index relocations to `__stack_pointer` and
+`__table_base`, and a table-index relocation for the pthread entry. The
+fresh cgo-disabled Go binary is already a final Kandelo Wasm module;
+handing it and the C object to `wasm-ld` fails with `out of order section
+type: 0`. This does not establish that an external-link implementation is
+impossible, only that the current Go output cannot be used as its input.
+The next executable linker spike should import one SDK C Wasm object into
+Go's internal Wasm linker, resolve its symbols and relocations, and run the
+existing C-call probe in one module. It must preserve the imported shared
+memory, function table, thread-slot declaration, and ABI stamp. If that
+route cannot accommodate C function types, table elements, data and TLS,
+evaluate emitting a relocatable Go object instead. Neither route is
+implemented, and the C-call and callback probes remain unpassed on Kandelo.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
