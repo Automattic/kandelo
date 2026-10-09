@@ -120,6 +120,7 @@ kernel_shmid_ds_bytes(process_pointer_width) → bytes | -errno
 kernel_get_cwd(pid, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_fd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_dirfd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
+kernel_get_fifo_paths(buf, capacity) → required_or_written_bytes | -errno
 kernel_enum_procs(buf, capacity) → complete_snapshot_bytes | -errno
 kernel_process_metadata_begin(pid) → transaction_token | -errno
 kernel_process_metadata_stage(pid, transaction_token, kind, buf, len) → 0 | -errno
@@ -419,7 +420,8 @@ overlap that snapshot. A positive short capacity writes nothing and returns
 `ERANGE`; zero capacity never dereferences its pointer. The directory-only
 export additionally returns `ENOTDIR` for a non-directory descriptor, so
 relative `execveat` and shared-mapping lookup cannot join a path against an
-ordinary file.
+ordinary file. `kernel_get_fifo_paths` follows the same contract for the
+canonical path of every named FIFO, each followed by a NUL byte.
 
 These returned canonical paths are not capped by `PATH_MAX`. That limit
 constrains one caller-supplied pathname, not the absolute spelling produced by

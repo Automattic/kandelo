@@ -2490,6 +2490,21 @@ fn kernel_copy_fd_path(
     }
 }
 
+/// Get every registered FIFO's canonical path, each followed by a NUL byte.
+///
+/// A named FIFO's VFS node is a regular marker file, so only this registry
+/// tells a host walking the VFS which marker names a FIFO. The zero-capacity
+/// query and complete-or-`ERANGE` copy contract matches `kernel_get_cwd`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_fifo_paths(buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let mut paths = Vec::new();
+    for path in unsafe { crate::fifo::global_fifo_table() }.paths() {
+        paths.extend_from_slice(path);
+        paths.push(0);
+    }
+    unsafe { crate::complete_copy::copy_complete_bytes(&paths, buf_ptr, buf_len) }
+}
+
 /// Return 1 when `fd` names a live descriptor in `pid`, 0 when it does not,
 /// and a negative errno when the process itself is absent.
 #[unsafe(no_mangle)]

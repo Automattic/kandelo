@@ -49,6 +49,11 @@ impl FifoTable {
         self.map.get(path).copied()
     }
 
+    /// Iterate every registered FIFO name in canonical-path order.
+    pub fn paths(&self) -> impl Iterator<Item = &[u8]> {
+        self.map.keys().map(Vec::as_slice)
+    }
+
     /// Return any live name for a FIFO buffer. This lets fstat refresh marker
     /// metadata after the original open pathname has been renamed or unlinked.
     pub fn path_for_pipe(&self, pipe_idx: usize) -> Option<Vec<u8>> {
@@ -143,6 +148,17 @@ mod tests {
         assert!(table.register(b"/tmp/b".to_vec(), 7));
         assert_eq!(table.lookup(b"/tmp/a"), Some(7));
         assert_eq!(table.lookup(b"/tmp/b"), Some(7));
+    }
+
+    #[test]
+    fn paths_lists_every_name_in_order() {
+        let mut table = FifoTable::new();
+        assert!(table.register(b"/tmp/foo".to_vec(), 1));
+        assert!(table.register(b"/tmp/bar".to_vec(), 1));
+        assert!(table.register(b"/home/baz".to_vec(), 2));
+
+        let paths: Vec<&[u8]> = table.paths().collect();
+        assert_eq!(paths, [&b"/home/baz"[..], b"/tmp/bar", b"/tmp/foo"]);
     }
 
     #[test]

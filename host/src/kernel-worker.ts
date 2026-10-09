@@ -5628,6 +5628,27 @@ export class CentralizedKernelWorker {
       : directoryOnly
         ? "kernel_get_dirfd_path"
         : "kernel_get_fd_path";
+    return this.#readKernelOwnedBytes(
+      exportName,
+      fd === null ? [pid] : [pid, fd],
+      entry,
+    );
+  }
+
+  /**
+   * Read the complete output of one complete-or-`ERANGE` kernel byte getter.
+   * `leading` holds the arguments before its pointer and capacity. Output
+   * larger than main scratch is copied through an exact transfer reservation.
+   */
+  #readKernelOwnedBytes(
+    exportName:
+      | "kernel_get_cwd"
+      | "kernel_get_dirfd_path"
+      | "kernel_get_fd_path"
+      | "kernel_get_fifo_paths",
+    leading: readonly number[],
+    entry: KernelWorkerEntryContext,
+  ): SharedMmapHostResult<Uint8Array> {
     if (typeof entry.instance.exports[exportName] !== "function") {
       return { kind: "error", errno: ENOSYS };
     }
@@ -5646,9 +5667,7 @@ export class CentralizedKernelWorker {
           entry,
           lease,
           exportName,
-          fd === null
-            ? [pid, pointer, mainRegion.capacity]
-            : [pid, fd, pointer, mainRegion.capacity],
+          [...leading, pointer, mainRegion.capacity],
         );
         if (!Number.isSafeInteger(result)) {
           throw new KernelScratchError(
@@ -5688,7 +5707,7 @@ export class CentralizedKernelWorker {
           entry,
           lease,
           exportName,
-          fd === null ? [pid, pointer, 0] : [pid, fd, pointer, 0],
+          [...leading, pointer, 0],
         );
       });
     } catch (error) {
@@ -5731,9 +5750,7 @@ export class CentralizedKernelWorker {
             entry,
             lease,
             exportName,
-            fd === null
-              ? [pid, pointer, required]
-              : [pid, fd, pointer, required],
+            [...leading, pointer, required],
           );
           if (result !== required) {
             errno = result < 0 ? errnoForResult(result) : EIO;
@@ -8183,6 +8200,41 @@ export class CentralizedKernelWorker {
       }
       return lease.copyOut(0, n);
     });
+  }
+
+  /**
+   * List the canonical path of every named FIFO. A FIFO's VFS node is a
+   * regular marker file, so a host walking the VFS needs this list to report
+   * it as a FIFO. A failed or partial read throws.
+   */
+  fifoPaths(): string[] {
+    if (!this.#initialized) return [];
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("FIFO path enumeration");
+    }
+    const outcome: { value?: SharedMmapHostResult<Uint8Array> } = {};
+    const deferred = this.#runOrDeferKernelEntry(
+      "FIFO path enumeration",
+      (entry) => {
+        outcome.value = this.#readKernelOwnedBytes(
+          "kernel_get_fifo_paths",
+          [],
+          entry,
+        );
+        return undefined;
+      },
+    );
+    if (deferred || outcome.value === undefined) {
+      throw new KernelReentrantEntryError("FIFO path enumeration");
+    }
+    if (outcome.value.kind === "error") {
+      throw new KernelScratchError(
+        "kernel FIFO path enumeration failed",
+        outcome.value.errno,
+      );
+    }
+    return new TextDecoder().decode(outcome.value.value).split("\0").slice(0, -1);
   }
 
   /**

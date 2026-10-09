@@ -137,6 +137,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_get_cwd",
   "kernel_get_dirfd_path",
   "kernel_get_fd_path",
+  "kernel_get_fifo_paths",
   "kernel_getrusage",
   "kernel_getsockopt",
   "kernel_handle_channel",
@@ -225,6 +226,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
     case "kernel_enumerate_host_handles":
+    case "kernel_get_fifo_paths":
     case "kernel_handle_channel":
     case "kernel_mq_drain_notification":
     case "kernel_poll":
@@ -313,6 +315,7 @@ function isKernelScratchExportName(
     case "kernel_get_cwd":
     case "kernel_get_dirfd_path":
     case "kernel_get_fd_path":
+    case "kernel_get_fifo_paths":
     case "kernel_getrusage":
     case "kernel_getsockopt":
     case "kernel_handle_channel":

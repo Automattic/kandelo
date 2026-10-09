@@ -124,6 +124,10 @@ function signatures(
       parameters: [i32, i32, pointer, i32],
       result: i32,
     },
+    kernel_get_fifo_paths: {
+      parameters: [pointer, i32],
+      result: i32,
+    },
     kernel_get_fork_count: {
       parameters: [i32],
       result: i64,

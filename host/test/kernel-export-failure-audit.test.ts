@@ -33,9 +33,9 @@ const reservationSettlementAllowances = [
   },
   {
     owner:
-      "CentralizedKernelWorker.#readKernelOwnedPath",
+      "CentralizedKernelWorker.#readKernelOwnedBytes",
     why:
-      "The large canonical-path catch records a branded reservation or copy "
+      "The large kernel-owned byte catch records a branded reservation or copy "
       + "trap, then its finally revokes the lease and skips cancellation "
       + "because Rust settlement is unknown before throwing one fatal wrapper.",
   },

@@ -2289,6 +2289,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_get_fifo_paths",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_get_fork_count",
       "signature": "(i32) -> (i64)"
     },

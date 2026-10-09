@@ -46,6 +46,7 @@ function makeRootHarness(pointerWidth: 4 | 8): RootHarness {
   const kernelBytes = new Uint8Array(memory.buffer);
   const implementations: Record<string, unknown> = {
     kernel_enum_procs: () => 0,
+    kernel_get_fifo_paths: () => 0,
     kernel_pty_create: () => 7,
     kernel_pty_master_read: () => 0,
     kernel_read_proc_maps: () => 0,
@@ -61,6 +62,7 @@ function makeRootHarness(pointerWidth: 4 | 8): RootHarness {
     4,
     [
       "kernel_enum_procs",
+      "kernel_get_fifo_paths",
       "kernel_pty_create",
       "kernel_pty_master_read",
       "kernel_read_proc_maps",
@@ -140,6 +142,7 @@ describe("CentralizedKernelWorker public kernel-entry roots", () => {
         "1000-2000 rw-p 00000000 00:00 0 [heap]\n",
       );
       const snapshots = processSnapshotBytes();
+      const fifos = new TextEncoder().encode("/home/foo\0/tmp/bar\0");
       const setupPty = vi.fn(() => 9);
       const setCredentials = vi.fn(() => 0);
       const setCwd = vi.fn((
@@ -182,8 +185,17 @@ describe("CentralizedKernelWorker public kernel-entry roots", () => {
         harness.kernelBytes.set(maps, Number(pointer));
         return maps.length;
       });
+      const getFifoPaths = vi.fn((
+        pointer: number | bigint,
+        capacity: number,
+      ) => {
+        expect(capacity).toBe(SCRATCH_CAPACITY);
+        harness.kernelBytes.set(fifos, Number(pointer));
+        return fifos.length;
+      });
       Object.assign(harness.implementations, {
         kernel_enum_procs: enumProcs,
+        kernel_get_fifo_paths: getFifoPaths,
         kernel_pty_create: setupPty,
         kernel_pty_master_read: readPty,
         kernel_read_proc_maps: readMaps,
@@ -210,6 +222,7 @@ describe("CentralizedKernelWorker public kernel-entry roots", () => {
       expect(harness.worker.readProcMaps(41)).toBe(
         new TextDecoder().decode(maps),
       );
+      expect(harness.worker.fifoPaths()).toEqual(["/home/foo", "/tmp/bar"]);
 
       expect(setupPty).toHaveBeenCalledOnce();
       expect(setCredentials).toHaveBeenCalledWith(41, 501, 20);
@@ -217,6 +230,7 @@ describe("CentralizedKernelWorker public kernel-entry roots", () => {
       expect(readPty).toHaveBeenCalledOnce();
       expect(enumProcs).toHaveBeenCalledOnce();
       expect(readMaps).toHaveBeenCalledOnce();
+      expect(getFifoPaths).toHaveBeenCalledOnce();
     },
   );
 
@@ -225,6 +239,7 @@ describe("CentralizedKernelWorker public kernel-entry roots", () => {
     const calls = Object.fromEntries(
       [
         "kernel_enum_procs",
+        "kernel_get_fifo_paths",
         "kernel_pty_create",
         "kernel_pty_master_read",
         "kernel_read_proc_maps",
@@ -242,6 +257,7 @@ describe("CentralizedKernelWorker public kernel-entry roots", () => {
         () => harness.worker.setCredentials(41, { uid: 1 }),
         () => harness.worker.enumProcs(),
         () => harness.worker.readProcMaps(41),
+        () => harness.worker.fifoPaths(),
       ]) {
         expect(operation).toThrow(KernelReentrantEntryError);
       }
@@ -319,6 +335,13 @@ describe("CentralizedKernelWorker public kernel-entry roots", () => {
       }
     },
   );
+
+  it("throws when FIFO path enumeration fails", () => {
+    const harness = makeRootHarness(4);
+    harness.implementations.kernel_get_fifo_paths = () => -12;
+
+    expect(() => harness.worker.fifoPaths()).toThrow(KernelScratchError);
+  });
 
   it("keeps ordinary PTY/cwd/credential errnos process-local", () => {
     const harness = makeRootHarness(4);
