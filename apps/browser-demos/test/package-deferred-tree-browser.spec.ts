@@ -470,7 +470,7 @@ async function registerRootServiceWorker(page: Page): Promise<void> {
     if (registration.scope !== new URL("/", location.href).href) {
       throw new Error(`unexpected root scope ${registration.scope}`);
     }
-    if (navigator.serviceWorker.controller?.scriptURL === registration.active?.scriptURL) {
+    if (registration.active && navigator.serviceWorker.controller?.scriptURL === registration.active.scriptURL) {
       return;
     }
     await new Promise<void>((resolve, reject) => {
@@ -479,7 +479,7 @@ async function registerRootServiceWorker(page: Page): Promise<void> {
         10_000,
       );
       const check = () => {
-        if (navigator.serviceWorker.controller?.scriptURL !== registration.active?.scriptURL) {
+        if (!registration.active || navigator.serviceWorker.controller?.scriptURL !== registration.active.scriptURL) {
           return;
         }
         navigator.serviceWorker.removeEventListener("controllerchange", check);
