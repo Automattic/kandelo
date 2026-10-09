@@ -11,6 +11,8 @@ if [[ ! -x "$go_bin" ]]; then
 fi
 
 mkdir -p "$output_dir"
+REPO_ROOT="$repo_root"
+source "$repo_root/scripts/build-programs-abi-stamp.sh"
 
 build_probe() {
   local source_dir="$1"
@@ -20,6 +22,7 @@ build_probe() {
     cd "$repo_root/tests/go/$source_dir"
     GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" build -o "$output_dir/$output_name.wasm" "$package"
   )
+  record_built_program_output "$output_dir/$output_name.wasm"
 }
 
 build_probe browser-basic basic
@@ -38,6 +41,10 @@ build_probe http-basic http-basic
 build_probe exec-basic exec-basic
 
 GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/atomic-test.wasm" internal/runtime/atomic
+record_built_program_output "$output_dir/atomic-test.wasm"
 GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/sync-test.wasm" sync
+record_built_program_output "$output_dir/sync-test.wasm"
+
+stamp_built_program_outputs
 
 printf 'Go browser fixtures built in %s\n' "$output_dir"

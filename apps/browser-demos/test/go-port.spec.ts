@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBinary } from "../../../host/src/binary-resolver";
+import {
+  ABI_CONTRACT_SECTION,
+  readWasmCustomSectionPayload,
+} from "../../../host/src/constants";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -143,20 +147,29 @@ const probes: Probe[] = [
 ];
 
 async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<ProbeResult> {
+  const programBytes = readFileSync(resolve(fixtureDir, probe.file));
+  const kernelBytes = readFileSync(resolveBinary("kernel.wasm"));
+  const programDigest = readWasmCustomSectionPayload(
+    Uint8Array.from(programBytes).buffer, ABI_CONTRACT_SECTION,
+  );
+  const kernelDigest = readWasmCustomSectionPayload(
+    Uint8Array.from(kernelBytes).buffer, ABI_CONTRACT_SECTION,
+  );
+  expect(kernelDigest?.length).toBe(32);
+  expect(programDigest).toEqual(kernelDigest);
   const programUrl = new URL("/__kandelo_go_probe__.wasm", baseURL).href;
   const kernelUrl = new URL("/__kandelo_go_kernel__.wasm", baseURL).href;
   const browserKernelUrl = new URL(`/@fs/${browserKernelModulePath}`, baseURL).href;
   await page.route(programUrl, (route) => route.fulfill({
     status: 200,
     contentType: "application/wasm",
-    body: readFileSync(resolve(fixtureDir, probe.file)),
+    body: programBytes,
   }));
   await page.route(kernelUrl, (route) => route.fulfill({
     status: 200,
     contentType: "application/wasm",
-    body: readFileSync(resolveBinary("kernel.wasm")),
+    body: kernelBytes,
   }));
-  const programBytes = readFileSync(resolve(fixtureDir, probe.file));
   const imageCapacity = probe.selfExecPath
     ? Math.max(8 * 1024 * 1024, programBytes.byteLength + 2 * 1024 * 1024)
     : 2 * 1024 * 1024;

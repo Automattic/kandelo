@@ -21,6 +21,11 @@ another fork binary. Use
 `KANDELO_PLAYWRIGHT_PORT` inside the last command if another workspace already
 serves the default Playwright port.
 
+The script stamps only the binaries it rebuilt with this checkout's
+`kandelo.abi.contract` digest. The Node and Chromium probes require the
+fixture digest to match the kernel, so run the fixture script rather than
+building individual probes directly with `go build`.
+
 To run the exec probe in Node after building the fixtures:
 
 ```sh
