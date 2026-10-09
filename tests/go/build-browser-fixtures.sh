@@ -35,6 +35,7 @@ build_probe socket-basic socket-basic
 build_probe netpoll-basic netpoll-basic
 build_probe net-basic net-basic
 build_probe http-basic http-basic
+build_probe exec-basic exec-basic
 
 GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/atomic-test.wasm" internal/runtime/atomic
 GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/sync-test.wasm" sync

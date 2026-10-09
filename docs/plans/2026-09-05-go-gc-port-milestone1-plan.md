@@ -981,6 +981,26 @@ DNS/TLS coverage remain. Next milestone: implement `syscall.StartProcess`
 through Kandelo `SYS_SPAWN`, then package integration; finish the recorded
 Go-runtime guidance work item at the end.
 
+**2026-10-08 — Go process execution through non-forking spawn (fork
+`3296d3f`).** Replaced Kandelo's `syscall.StartProcess`, `Wait4`, `Kill`, and
+process-ID stubs with
+native channel syscalls. `StartProcess` now encodes the established 40-byte
+`SYS_SPAWN` header, argv/env string tables, ordered `CHDIR`/`DUP2`/`CLOSE`
+actions, and a PID output slot. It duplicates requested child fds above the
+target range with `F_DUPFD_CLOEXEC` before issuing actions, preventing
+remapping collisions and parent fd leaks; it enforces path, string, action,
+and `ARG_MAX` limits and rejects embedded NULs. The Go port now exposes real
+wait status and 144-byte rusage layout, `pipe2`, `dup`, `dup2`, and close-on-exec
+flags so `os.Pipe` and `os/exec.Cmd.Output` work. The checked-in self-exec
+probe validates child parent PID, cwd, environment, exit code, output capture,
+and launch errors. It passes in Node with no host diagnostics, and the
+instrumented Node runner records fork-count samples `[0, 0]`; the focused
+Chromium probe passes too, and all seventeen Go Chromium probes pass together.
+This meets milestone 5's focused shell-out/child management check, not
+comprehensive process or signal conformance. Next is
+milestone 6: first-class Go package integration through the normal resolver
+and VFS path, followed by the recorded Go-runtime-specific agent guidance.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
