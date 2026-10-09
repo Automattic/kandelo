@@ -24,6 +24,7 @@ import {
   postSessionAnswer,
   postSessionOffer,
   readSession,
+  randomSessionName,
   validSessionName,
   waitForSessionAnswer,
 } from "../../../lib/peer-signalling";
@@ -50,15 +51,20 @@ export interface PeerSession {
   signalling: boolean;
   /** The session name the two computers agreed on. */
   sessionName: string;
+  /** The name hosting uses while no session name is typed. */
+  suggestedName: string;
   /** The code to hand to the other computer. */
   localCode: string;
   /** The code pasted from the other computer. */
   remoteCode: string;
   status: string;
+  /** Whether the session name is hosted and waits for the other computer. */
+  hosting: boolean;
   link: PeerLink | null;
   setSessionName: (name: string) => void;
   setRemoteCode: (code: string) => void;
   hostSession: () => void;
+  stopHosting: () => void;
   joinSession: () => void;
   createInvite: () => void;
   answerInvite: () => void;
@@ -72,6 +78,7 @@ function describeError(error: unknown): string {
 
 export function usePeerSession(): PeerSession {
   const [sessionName, setSessionName] = React.useState("");
+  const [suggestedName] = React.useState(randomSessionName);
   const [localCode, setLocalCode] = React.useState("");
   const [remoteCode, setRemoteCode] = React.useState("");
   // Empty while nothing is happening: the connect steps already say there is
@@ -84,6 +91,13 @@ export function usePeerSession(): PeerSession {
   // top of the attempt the user is actually waiting for.
   const attemptRef = React.useRef(0);
   const linkRef = React.useRef<PeerLink | null>(null);
+  const [hosting, setHosting] = React.useState(false);
+
+  // A new attempt supersedes a hosted name as surely as an older attempt.
+  const beginAttempt = React.useCallback(() => {
+    setHosting(false);
+    return ++attemptRef.current;
+  }, []);
 
   const adopt = React.useCallback((connected: PeerLink) => {
     linkRef.current?.close();
@@ -93,6 +107,9 @@ export function usePeerSession(): PeerSession {
     connected.onClose(() => {
       if (linkRef.current !== connected) return;
       linkRef.current = null;
+      // The other side hung up; this side's peer connection is dead but not
+      // closed, and an unclosed one keeps its ICE agent and ports until GC.
+      connected.close();
       setLink(null);
       setStatus("Connection lost.");
     });
@@ -106,8 +123,9 @@ export function usePeerSession(): PeerSession {
 
   const hostSession = React.useCallback(() => {
     void (async () => {
-      const attempt = ++attemptRef.current;
-      const name = sessionName.trim();
+      const attempt = beginAttempt();
+      const name = sessionName.trim() || suggestedName;
+      setSessionName(name);
       try {
         if (SIGNALLING_SERVER === null) {
           throw new Error("no signalling server is configured");
@@ -124,16 +142,15 @@ export function usePeerSession(): PeerSession {
         pendingInviteRef.current = invite;
         await postSessionOffer(SIGNALLING_SERVER, name, invite.invite);
         if (attempt !== attemptRef.current) return;
-        setStatus(
-          `Hosting "${name}". Tell the other computer the name; the `
-          + "connection completes by itself.",
-        );
+        setStatus("");
+        setHosting(true);
         const answer = await waitForSessionAnswer(
           SIGNALLING_SERVER,
           name,
           () => attempt === attemptRef.current,
         );
         if (answer === null || attempt !== attemptRef.current) return;
+        setHosting(false);
         setStatus("Answer received; completing the connection...");
         const connectedLink = await invite.acceptAnswer(answer);
         if (attempt !== attemptRef.current) {
@@ -144,14 +161,24 @@ export function usePeerSession(): PeerSession {
         adopt(connectedLink);
       } catch (error) {
         if (attempt !== attemptRef.current) return;
+        setHosting(false);
         setStatus(`Hosting failed: ${describeError(error)}`);
       }
     })();
-  }, [adopt, sessionName]);
+  }, [adopt, beginAttempt, sessionName, suggestedName]);
+
+  // The server keeps the offer until it forgets the session; this page stops
+  // waiting for an answer to it and closes the invite it would complete.
+  const stopHosting = React.useCallback(() => {
+    beginAttempt();
+    pendingInviteRef.current?.cancel();
+    pendingInviteRef.current = null;
+    setStatus("");
+  }, [beginAttempt]);
 
   const joinSession = React.useCallback(() => {
     void (async () => {
-      const attempt = ++attemptRef.current;
+      const attempt = beginAttempt();
       const name = sessionName.trim();
       try {
         if (SIGNALLING_SERVER === null) {
@@ -179,11 +206,11 @@ export function usePeerSession(): PeerSession {
         setStatus(`Joining failed: ${describeError(error)}`);
       }
     })();
-  }, [adopt, sessionName]);
+  }, [adopt, beginAttempt, sessionName]);
 
   const createInvite = React.useCallback(() => {
     void (async () => {
-      const attempt = ++attemptRef.current;
+      const attempt = beginAttempt();
       try {
         setStatus("Creating the invite code...");
         pendingInviteRef.current?.cancel();
@@ -201,11 +228,11 @@ export function usePeerSession(): PeerSession {
         setStatus(`Invite failed: ${describeError(error)}`);
       }
     })();
-  }, []);
+  }, [beginAttempt]);
 
   const answerInvite = React.useCallback(() => {
     void (async () => {
-      const attempt = ++attemptRef.current;
+      const attempt = beginAttempt();
       try {
         setStatus("Answering the invite...");
         const { answer, connected } = await answerPeerInvite(remoteCode);
@@ -226,11 +253,11 @@ export function usePeerSession(): PeerSession {
         setStatus(`Answer failed: ${describeError(error)}`);
       }
     })();
-  }, [adopt, remoteCode]);
+  }, [adopt, beginAttempt, remoteCode]);
 
   const completeConnection = React.useCallback(() => {
     void (async () => {
-      const attempt = ++attemptRef.current;
+      const attempt = beginAttempt();
       try {
         const invite = pendingInviteRef.current;
         if (!invite) throw new Error("create an invite code first");
@@ -247,10 +274,10 @@ export function usePeerSession(): PeerSession {
         setStatus(`Connection failed: ${describeError(error)}`);
       }
     })();
-  }, [adopt, remoteCode]);
+  }, [adopt, beginAttempt, remoteCode]);
 
   const disconnect = React.useCallback(() => {
-    attemptRef.current += 1;
+    beginAttempt();
     pendingInviteRef.current?.cancel();
     pendingInviteRef.current = null;
     linkRef.current?.close();
@@ -259,18 +286,21 @@ export function usePeerSession(): PeerSession {
     setLocalCode("");
     setRemoteCode("");
     setStatus("");
-  }, []);
+  }, [beginAttempt]);
 
   return {
     signalling: SIGNALLING_SERVER !== null,
     sessionName,
+    suggestedName,
     localCode,
     remoteCode,
     status,
+    hosting,
     link,
     setSessionName,
     setRemoteCode,
     hostSession,
+    stopHosting,
     joinSession,
     createInvite,
     answerInvite,

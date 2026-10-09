@@ -53,6 +53,7 @@ function machineSurface() {
         installed.httpTap = tap;
       },
       currentGuestPid: () => installed.pid,
+      currentGuestTid: () => installed.pid,
     },
     clock: {
       clockGettime: () => ({ sec: 1, nsec: 2 }),
@@ -105,7 +106,7 @@ describe("beginReplicationReplay", () => {
     const entries: ReplicationLogEntry[] = [
       {
         seq: 0,
-        decision: { kind: "clock", pid: 102, clockId: 1, sec: 7, nsec: 9 },
+        decision: { kind: "clock", pid: 102, tid: 102, clockId: 1, sec: 7, nsec: 9 },
       },
       {
         seq: 1,
@@ -114,7 +115,7 @@ describe("beginReplicationReplay", () => {
       { seq: 2, decision: { kind: "accept", listener: 3, pid: 104 } },
       {
         seq: 3,
-        decision: { kind: "random", pid: 102, bytes: new Uint8Array([9, 8, 7]) },
+        decision: { kind: "random", pid: 102, tid: 102, bytes: new Uint8Array([9, 8, 7]) },
       },
     ];
     beginReplicationReplay(

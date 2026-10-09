@@ -192,6 +192,15 @@ export const NetworkPopup: React.FC<{
 }) => {
   const connected = session.link !== null;
   const note = takeNote(handover);
+  // A machine taken from the other computer goes back to it before the link
+  // closes, so the person who gave it keeps running it.
+  const disconnect = async () => {
+    if (!(await handover.handBack())) return;
+    replication.disconnecting();
+    session.disconnect();
+  };
+  const [pointedGrant, setPointedGrant] =
+    React.useState<MachineReplication["grant"] | null>(null);
 
   // Offered before connecting only: the name introduces you, and once the
   // pair is linked the introduction is made — the connected popup keeps to
@@ -199,7 +208,8 @@ export const NetworkPopup: React.FC<{
   const nicknameSection = (
     <section className="knetwork-section">
       <label className="knetwork-label" htmlFor="knetwork-nickname">
-        Your nickname — how the other person sees you
+        Your nickname{" "}
+        <span className="knetwork-label-hint">— how the other person sees you</span>
       </label>
       <input
         id="knetwork-nickname"
@@ -208,6 +218,7 @@ export const NetworkPopup: React.FC<{
         spellCheck={false}
         maxLength={NICKNAME_MAX_LENGTH}
         value={nickname}
+        disabled={session.hosting}
         placeholder="Ada"
         onChange={(event) => onNicknameChange(event.target.value)}
       />
@@ -218,31 +229,51 @@ export const NetworkPopup: React.FC<{
   // whole state to the other computer, so the person holding it decides how
   // it may be followed — before completing the connection, and at any time
   // after.
+  const grantButtons = (
+    <>
+      <button
+        type="button"
+        className="knetwork-button knetwork-grant"
+        aria-pressed={replication.grant === "watch"}
+        disabled={session.hosting}
+        onClick={() => replication.setGrant("watch")}
+        onPointerEnter={() => setPointedGrant("watch")}
+        onPointerLeave={() => setPointedGrant(null)}
+        onFocus={() => setPointedGrant("watch")}
+        onBlur={() => setPointedGrant(null)}
+      >
+        Watch
+      </button>
+      <button
+        type="button"
+        className="knetwork-button knetwork-grant"
+        aria-pressed={replication.grant === "join"}
+        disabled={session.hosting}
+        onClick={() => replication.setGrant("join")}
+        onPointerEnter={() => setPointedGrant("join")}
+        onPointerLeave={() => setPointedGrant(null)}
+        onFocus={() => setPointedGrant("join")}
+        onBlur={() => setPointedGrant(null)}
+      >
+        Join
+      </button>
+    </>
+  );
+
+  const grantNote = (
+    <div
+      className={`knetwork-grant-note${pointedGrant !== null ? " is-shown" : ""}`}
+    >
+      {(pointedGrant ?? replication.grant) === "join"
+        ? "Join runs a copy of this machine"
+        : "Watch shares the screen only"}
+    </div>
+  );
+
   const grantSection = (
     <section className="knetwork-section">
-      <div className="knetwork-label">They can</div>
-      <div className="knetwork-link-controls">
-        <button
-          type="button"
-          className="knetwork-button knetwork-grant"
-          aria-pressed={replication.grant === "watch"}
-          onClick={() => replication.setGrant("watch")}
-        >
-          Watch
-        </button>
-        <button
-          type="button"
-          className="knetwork-button knetwork-grant"
-          aria-pressed={replication.grant === "join"}
-          onClick={() => replication.setGrant("join")}
-        >
-          Join
-        </button>
-      </div>
-      <div className="knetwork-grant-note">
-        Watch shares this screen only; Join lets the other computer run a copy
-        of this machine.
-      </div>
+      <div className="knetwork-link-controls">{grantButtons}</div>
+      {grantNote}
     </section>
   );
 
@@ -313,9 +344,10 @@ export const NetworkPopup: React.FC<{
             <button
               type="button"
               className="knetwork-button"
-              onClick={session.disconnect}
+              onClick={() => void disconnect()}
+              disabled={handover.handingBack}
             >
-              Disconnect
+              {handover.handingBack ? "Handing it back..." : "Disconnect"}
             </button>
             {canTakeMachine && (
               <button
@@ -330,6 +362,12 @@ export const NetworkPopup: React.FC<{
           </div>
           {canTakeMachine && note !== null && (
             <div className="knetwork-take-note" role="status">{note}</div>
+          )}
+          {handover.handBackFailed && (
+            <div className="knetwork-take-note" role="status">
+              The other computer did not take the machine back. Disconnect
+              again to keep it on this computer.
+            </div>
           )}
         </section>
       </div>
@@ -396,52 +434,56 @@ export const NetworkPopup: React.FC<{
     <div className="knetwork-popup">
       {nicknameSection}
 
-      <section className="knetwork-section">
-        <div className="knetwork-label">Connect another computer</div>
-        {session.signalling ? (
-          <>
-            <label className="knetwork-label" htmlFor="knetwork-session">
-              Session name — the words the two of you agreed on
-            </label>
+      {session.signalling ? (
+        <section className="knetwork-section">
+          <label className="knetwork-label" htmlFor="knetwork-session">
+            Session name{" "}
+            <span className="knetwork-label-hint">
+              — the words the two of you agreed on
+            </span>
+          </label>
+          {/* The grant precedes hosting for the same reason it precedes
+              completing: joining sends the machine's whole state, so the
+              owner says what the other computer may do before the name is
+              hosted and the connection completes by itself. */}
+          <div className="knetwork-session-row">
             <input
               id="knetwork-session"
               className="knetwork-name"
               type="text"
               spellCheck={false}
               value={session.sessionName}
-              placeholder="lucky-orange-lantern"
+              disabled={session.hosting}
+              placeholder={session.suggestedName}
               onChange={(event) => session.setSessionName(event.target.value)}
             />
-          </>
-        ) : (
-          manualSteps
-        )}
-      </section>
-
-      {session.signalling ? (
-        <>
-          {/* The grant precedes hosting for the same reason it precedes
-              completing: joining sends the machine's whole state, so the
-              owner says what the other computer may do before the name is
-              hosted and the connection completes by itself. */}
-          {hasMachine && grantSection}
-          <section className="knetwork-section">
-            <div className="knetwork-steps">
-              {/* The same one-side-each split as the manual exchange: the
-                  computer with a machine hosts the name, the empty one joins
-                  it. */}
-              <button
-                type="button"
-                className="knetwork-button"
-                onClick={hasMachine ? session.hostSession : session.joinSession}
-              >
-                {hasMachine ? "Host this session" : "Join this session"}
-              </button>
-            </div>
-          </section>
-        </>
+            {hasMachine && grantButtons}
+          </div>
+          {hasMachine && grantNote}
+          {/* The same one-side-each split as the manual exchange: the
+              computer with a machine hosts the name, the empty one joins
+              it. */}
+          <button
+            type="button"
+            className={`knetwork-button knetwork-host${session.hosting ? " is-hosting" : ""}`}
+            onClick={!hasMachine
+              ? session.joinSession
+              : session.hosting
+                ? session.stopHosting
+                : session.hostSession}
+          >
+            {!hasMachine
+              ? "Join this session"
+              : session.hosting
+                ? "Stop hosting"
+                : "Host this session"}
+          </button>
+        </section>
       ) : (
-        manualExchange
+        <>
+          <section className="knetwork-section">{manualSteps}</section>
+          {manualExchange}
+        </>
       )}
 
       {session.status !== "" && (

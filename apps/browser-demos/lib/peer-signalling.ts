@@ -37,6 +37,38 @@ export function validSessionName(name: string): boolean {
   );
 }
 
+const SESSION_NAME_WORDS = [
+  [
+    "brave", "bright", "calm", "clever", "cosy", "eager", "gentle", "happy",
+    "jolly", "kind", "lively", "lucky", "merry", "nimble", "proud", "quick",
+    "quiet", "rapid", "shiny", "silent", "sleepy", "smooth", "snowy", "sunny",
+    "swift", "tidy", "tiny", "vivid", "warm", "wild", "wise", "witty",
+  ],
+  [
+    "amber", "azure", "black", "blue", "bronze", "coral", "crimson", "cyan",
+    "golden", "green", "grey", "indigo", "ivory", "jade", "lemon", "lilac",
+    "lime", "magenta", "maroon", "mint", "navy", "olive", "orange", "pink",
+    "plum", "purple", "red", "ruby", "silver", "teal", "violet", "white",
+  ],
+  [
+    "anchor", "badger", "beacon", "candle", "comet", "falcon", "feather",
+    "garden", "harbor", "island", "kettle", "lantern", "maple", "meadow",
+    "mountain", "otter", "pebble", "pigeon", "planet", "puffin", "river",
+    "rocket", "saddle", "spruce", "teapot", "thistle", "tiger", "tulip",
+    "valley", "walrus", "willow", "zephyr",
+  ],
+];
+
+/** Three random words that satisfy the session name rule. */
+export function randomSessionName(): string {
+  const picks = crypto.getRandomValues(
+    new Uint32Array(SESSION_NAME_WORDS.length),
+  );
+  return SESSION_NAME_WORDS
+    .map((words, index) => words[picks[index] % words.length])
+    .join("-");
+}
+
 function sessionUrl(server: string, name: string, role?: string): string {
   const url = new URL(server);
   url.searchParams.set("session", name);

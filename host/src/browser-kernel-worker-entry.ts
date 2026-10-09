@@ -71,7 +71,10 @@ import {
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
-import { withBrowserMitmCaEnv } from "./networking/browser-mitm-ca-env";
+import {
+  BROWSER_MITM_CA_BUNDLE_PATH,
+  withBrowserMitmCaEnv,
+} from "./networking/browser-mitm-ca-env";
 import { patchWasmForThread } from "./worker-main";
 import {
   describeWasmArtifactPolicyFailures,
@@ -170,7 +173,10 @@ import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
+  ReplicationSealResponse,
+  ReplicationReplicaHashResponse,
 } from "./browser-kernel-protocol";
+import { hashMachineCheckpoint } from "./replication/state-hash";
 import {
   initializeBrowserCorsProxyForWorker,
 } from "./browser-kernel-protocol";
@@ -942,6 +948,28 @@ function beginStreamAtCapture(): void {
  * holding a log that is silently empty, or a replay that silently read this
  * host's time.
  */
+/**
+ * Stop the decision log at the state a checkpoint just read, and say where.
+ *
+ * `beginStreamAtCapture`'s other half, for the take-over seal: it runs inside
+ * the freeze, so the log's final entry and the frozen state name one instant.
+ * Returns the seal position — the sequence number the next entry would have
+ * taken.
+ */
+function endStreamAtCapture(): number {
+  const recorder = replicationRecorder;
+  if (!recorder) {
+    throw new Error("this machine is not recording a decision log to seal");
+  }
+  replicationRecorder = null;
+  if (io && baseTimeProvider) io.setTimeProvider(baseTimeProvider);
+  if (io) io.setRandomProvider(baseRandomProvider);
+  kernelWorker?.setGlQueryTap(null);
+  kernelWorker?.setAcceptSelectionTap(null);
+  kernelWorker?.setHttpExchangeTap(null);
+  return recorder.nextSeq;
+}
+
 function respondToReplication(
   requestId: number,
   swap: (io: VirtualPlatformIO, clock: BrowserTimeProvider) => void,
@@ -1254,6 +1282,34 @@ async function createFreshProcessMemory(
   }
 }
 
+/**
+ * This page's MITM CA, waiting for the machine to become this page's own.
+ *
+ * A machine booted as a replica keeps the primary's trust store; the CA of
+ * the replica's own TLS backend is provisioned only at promotion, when live
+ * TLS starts terminating against it.
+ */
+let pendingReplicaCaBundlePem: string | null = null;
+
+function installMitmCaBundle(caCertPem: string): void {
+  try {
+    // Demo images don't always include /etc — create the full chain.
+    for (const dir of ["/etc", "/etc/ssl", "/etc/ssl/certs"]) {
+      try { memfs.mkdir(dir, 0o755); } catch { /* exists */ }
+    }
+    const certBytes = new TextEncoder().encode(caCertPem);
+    const certFd = memfs.open(
+      BROWSER_MITM_CA_BUNDLE_PATH,
+      O_WRONLY_CREAT_TRUNC,
+      0o644,
+    );
+    memfs.write(certFd, certBytes, 0, certBytes.length);
+    memfs.close(certFd);
+  } catch (e) {
+    console.error("[kernel-worker] Failed to write CA cert to VFS:", e);
+  }
+}
+
 // ── Init ──
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
@@ -1404,23 +1460,18 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   await tlsBackend.init();
   io.network = tlsBackend;
 
-  // Install the MITM CA certificate in the VFS so OpenSSL trusts it.
-  const caCertPem = tlsBackend.getCACertPEM();
-  try {
-    // Demo images don't always include /etc — create the full chain.
-    for (const dir of ["/etc", "/etc/ssl", "/etc/ssl/certs"]) {
-      try { memfs.mkdir(dir, 0o755); } catch { /* exists */ }
-    }
-    const certBytes = new TextEncoder().encode(caCertPem);
-    const certFd = memfs.open(
-      "/etc/ssl/certs/ca-certificates.crt",
-      O_WRONLY_CREAT_TRUNC,
-      0o644,
-    );
-    memfs.write(certFd, certBytes, 0, certBytes.length);
-    memfs.close(certFd);
-  } catch (e) {
-    console.error("[kernel-worker] Failed to write CA cert to VFS:", e);
+  // Install the MITM CA certificate in the VFS so OpenSSL trusts it — but
+  // only on a machine that runs live under this page's TLS backend. A
+  // replica's rootfs is the primary's state: overwriting the bundle here
+  // would be an unrecorded write with this host's CA and clock, and the
+  // take-over promotion gate would refuse on the filesystem digest every
+  // time. The bundle waits until promotion makes the machine this page's
+  // own (`replication_replay_stop`).
+  if (msg.replicationReplay) {
+    pendingReplicaCaBundlePem = tlsBackend.getCACertPEM();
+  } else {
+    pendingReplicaCaBundlePem = null;
+    installMitmCaBundle(tlsBackend.getCACertPEM());
   }
 
   // Create worker adapter for spawning sub-workers
@@ -5459,12 +5510,20 @@ sw.onmessage = (e: MessageEvent) => {
         }
         replicationRecorder = new ReplicationLogRecorder();
         target.setTimeProvider(
-          new RecordingTimeProvider(clock, replicationRecorder, () =>
-            kernelWorker.currentGuestPid()),
+          new RecordingTimeProvider(
+            clock,
+            replicationRecorder,
+            () => kernelWorker.currentGuestPid(),
+            () => kernelWorker.currentGuestTid(),
+          ),
         );
         target.setRandomProvider(
-          new RecordingRandomProvider(baseRandomProvider, replicationRecorder,
-            () => kernelWorker.currentGuestPid()),
+          new RecordingRandomProvider(
+            baseRandomProvider,
+            replicationRecorder,
+            () => kernelWorker.currentGuestPid(),
+            () => kernelWorker.currentGuestTid(),
+          ),
         );
         kernelWorker.setGlQueryTap(glQueryRecordTap(replicationRecorder));
         kernelWorker.setAcceptSelectionTap(
@@ -5485,6 +5544,75 @@ sw.onmessage = (e: MessageEvent) => {
       kernelWorker?.setAcceptSelectionTap(null);
       kernelWorker?.setHttpExchangeTap(null);
       respond(msg.requestId, recorder?.entries ?? []);
+      break;
+    }
+    case "replication_seal": {
+      const { requestId, unwindTimeoutMs, vforkTimeoutMs } = msg;
+      const refuse = (reason: string) => respond(requestId, {
+        status: "refused",
+        reason,
+      } satisfies ReplicationSealResponse);
+      let sealSeq = -1;
+      void captureMachineCheckpoint(checkpointMachine, {
+        unwindTimeoutMs,
+        vforkTimeoutMs,
+        onRead: () => {
+          sealSeq = endStreamAtCapture();
+        },
+      }).then(
+        async (result) => {
+          if (result.status !== "captured") {
+            refuse(result.reason);
+            return;
+          }
+          const hash = await hashMachineCheckpoint(result.checkpoint, sealSeq);
+          respond(requestId, {
+            status: "sealed",
+            seq: sealSeq,
+            hash,
+          } satisfies ReplicationSealResponse);
+        },
+        (err: unknown) => refuse((err as Error)?.message ?? String(err)),
+      );
+      break;
+    }
+    case "replication_hash_replica": {
+      const { requestId, seq, unwindTimeoutMs, vforkTimeoutMs } = msg;
+      const refuse = (reason: string) => respond(requestId, {
+        status: "refused",
+        reason,
+      } satisfies ReplicationReplicaHashResponse);
+      void captureMachineCheckpoint(checkpointMachine, {
+        unwindTimeoutMs,
+        vforkTimeoutMs,
+        // Inside the freeze, so no read can move the replica between the
+        // position check and the state the hash covers.
+        onRead: () => {
+          const reader = replicationReplay?.reader;
+          if (!reader) {
+            throw new Error("this machine is not replaying a decision log");
+          }
+          if (reader.nextSeq !== seq) {
+            throw new Error(
+              `this replica stands at ${reader.nextSeq}, not at the seal `
+                + `${seq}`,
+            );
+          }
+        },
+      }).then(
+        async (result) => {
+          if (result.status !== "captured") {
+            refuse(result.reason);
+            return;
+          }
+          const hash = await hashMachineCheckpoint(result.checkpoint, seq);
+          respond(requestId, {
+            status: "hashed",
+            hash,
+          } satisfies ReplicationReplicaHashResponse);
+        },
+        (err: unknown) => refuse((err as Error)?.message ?? String(err)),
+      );
       break;
     }
     case "replication_replay_start": {
@@ -5512,6 +5640,12 @@ sw.onmessage = (e: MessageEvent) => {
       kernelWorker?.setReplicationAheadProbe(null);
       kernelWorker?.setHttpExchangeTap(null);
       replayedHttpExchanges.drop();
+      // The machine is this page's own from here, so live TLS terminates
+      // against this page's backend: the guest must trust its CA now.
+      if (pendingReplicaCaBundlePem !== null) {
+        installMitmCaBundle(pendingReplicaCaBundlePem);
+        pendingReplicaCaBundlePem = null;
+      }
       respond(msg.requestId, {
         consumed: replay?.reader.consumed ?? 0,
         total: replay?.reader.known ?? 0,
