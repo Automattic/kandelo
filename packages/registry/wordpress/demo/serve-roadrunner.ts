@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   if (!response.ok || !/WordPress on Kandelo|Hello world/i.test(body)) {
     throw new Error(`RoadRunner did not serve WordPress: HTTP ${response.status}: ${body.slice(0, 512)}`);
   }
-  console.log(`WordPress through RoadRunner is running at ${url}`);
+  console.log(`WordPress through RoadRunner proxy to nginx/PHP-FPM is running at ${url}`);
   console.log(`Admin: http://127.0.0.1:${port}/wp-admin/`);
 
   await Promise.race([exitPromise, exit]);

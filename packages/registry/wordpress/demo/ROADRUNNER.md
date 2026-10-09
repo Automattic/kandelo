@@ -8,6 +8,10 @@ HTTP port is owned by RoadRunner. This is a Go/RoadRunner integration test,
 not direct WordPress execution inside a RoadRunner PHP worker, a browser
 gallery profile, or a source-only RoadRunner package.
 
+Do not use this profile to compare RoadRunner PHP-worker performance against
+PHP-FPM. PHP-FPM still executes every WordPress request, and the extra
+RoadRunner/CLI forwarding hop measures a different stack.
+
 From the repository root, with the adjacent Go fork available:
 
 ```sh
