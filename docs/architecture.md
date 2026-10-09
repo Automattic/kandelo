@@ -1799,12 +1799,8 @@ A workspace already held by another tab or kernel fails the boot rather than
 admitting a second writer. Workers and locks are released on destroy,
 including on boots that fail before the kernel worker exists.
 
-The kernel worker lays the requested entries over `DEFAULT_MOUNT_SPEC` with
-`withOpfsWorkspaces` and resolves the result through the same verified
-resolver. A workspace at a path the canonical layout gives to a scratch mount
-takes that mount's place, so a boot can put `/home/maker` itself on browser
-storage; every other entry stays, and a workspace aimed at the root image is
-still the duplicate `validateSpec` rejects. `ensureMountPointDirectories`
+The kernel worker extends `DEFAULT_MOUNT_SPEC` with the requested entries and
+resolves them through the same verified resolver. `ensureMountPointDirectories`
 creates each mount point directory in the mount that owns its parent path,
 walking the owner chain so every mount in between has its directory in the
 filesystem beneath it. A workspace nested under another mount (for example
@@ -1820,6 +1816,29 @@ The entry path from the UI is a boot descriptor mount
 `validateBootDescriptor` rejects a missing or malformed workspace name and
 `opfsMountsFromDescriptor` projects the surviving mounts into the kernel boot
 call.
+
+### Seed trees and tree reads
+
+A boot may also start with trees written into its mounts. `BrowserKernel`
+`initFromImage` and `NodeKernelHost` accept `vfsSeedTrees: [{ path, entries }]`;
+the kernel worker writes each tree with `writeVfsTree` (`host/src/vfs/tree.ts`)
+after the mounts exist and before the first process starts. The tree under
+`path` then holds exactly the entries — directories, regular files, and
+symbolic links with their modes, owners, and file modification times — and
+anything the image put there is removed. A restored or replayed machine
+already carries its filesystem, so both hosts refuse seeds alongside a
+checkpoint or a replication replay.
+
+`read_vfs_tree` is the reverse: `readVfsTree` lists the tree under a path with
+each entry's mode and owner, and each regular file's bytes, modification time,
+and fingerprint (device, inode, size, modification and change time). A caller
+that passes `known` fingerprints receives a file still at its known fingerprint
+without bytes, so it can poll a large tree and read only what changed. A named
+FIFO is a regular marker file in the VFS (`crates/runtime-core/src/fifo.rs`),
+so both kernel workers pass the paths from `kernel_get_fifo_paths` and the tree
+lists a marker at one of them as `other`, never as an empty file. The
+browser page uses both for saved machines (`docs/browser-support.md`, "Saved
+machines").
 
 ### rootfs image as the source of truth
 

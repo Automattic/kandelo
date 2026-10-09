@@ -16,6 +16,9 @@
  *   path-resolution    exercise component-wise symlink, dot-dot, and mount
  *                      crossing behavior below the supplied scratch path
  *
+ *   probe-fifo         mkfifo <path> and leave it in place
+ *                      (lets the host read a named FIFO out of the VFS tree)
+ *
  * Output format is one machine-parseable line per probe so the host test
  * can assert on substrings without compiling-in C-specific marshalling.
  */
@@ -192,6 +195,15 @@ static int probe_path_resolution(const char *base) {
     return 0;
 }
 
+static int probe_fifo(const char *path) {
+    if (mkfifo(path, 0600) < 0) {
+        printf("FIFO mkfifo-errno=%d\n", errno);
+        return 1;
+    }
+    printf("FIFO created=%s\n", path);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <probe> <path>\n", argv[0]);
@@ -205,6 +217,7 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "rootfs") == 0) return probe_rootfs(argv[2]);
     if (strcmp(argv[1], "scratch") == 0) return probe_scratch(argv[2]);
     if (strcmp(argv[1], "unmounted") == 0) return probe_unmounted(argv[2]);
+    if (strcmp(argv[1], "fifo") == 0) return probe_fifo(argv[2]);
     fprintf(stderr, "unknown probe: %s\n", argv[1]);
     return 2;
 }

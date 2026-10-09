@@ -69,7 +69,7 @@ import {
   type HttpResponse,
 } from "./networking/in-kernel-http";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
-import { readVfsTree } from "./vfs/tree";
+import { readVfsTree, writeVfsTree } from "./vfs/tree";
 import { ensureMountPointDirectories } from "./vfs/default-mounts";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -1459,6 +1459,15 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     // captured machine's clock, and a guest's monotonic clock must never run
     // backwards. Advance before anything reads this machine's clock.
     io.advanceMonotonicFloor(msg.restoreCheckpoint.monotonicNs);
+  }
+  if (msg.vfsSeedTrees?.length) {
+    // A seed is fresh state for a fresh machine. A restored or replayed
+    // machine already carries its filesystem, and writing over it would be a
+    // change no process made.
+    if (msg.restoreCheckpoint || msg.replicationReplay) {
+      throw new Error("vfsSeedTrees cannot combine with a restored or replayed machine");
+    }
+    for (const seed of msg.vfsSeedTrees) await writeVfsTree(io, seed.path, seed.entries);
   }
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
@@ -4738,7 +4747,10 @@ async function handleReadVfsTree(
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "read or materialize a rootfs tree",
     );
-    respond(msg.requestId, await readVfsTree(io, msg.path));
+    respond(
+      msg.requestId,
+      await readVfsTree(io, msg.path, msg.known, new Set(kernelWorker.fifoPaths())),
+    );
   } catch (error) {
     respondError(msg.requestId, formatError(error));
   } finally {

@@ -19,6 +19,7 @@ import type {
   ClosedLazyAssetSource,
 } from "./vfs/closed-lazy-assets";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { VfsSeedTree, VfsTreeFingerprints } from "./vfs/tree";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 import type { MachineCheckpoint } from "./migration/checkpoint";
 import type { ReplicationLogEntry } from "./replication/log";
@@ -106,6 +107,11 @@ export interface InitMessage {
    * before ready. Guest mutations never write back to the source.
    */
   sessionSeedTrees?: NodeSessionSeedTree[];
+  /**
+   * Trees written through the VFS after the mounts exist, before the first
+   * process. Unlike `sessionSeedTrees`, the entries arrive in the message.
+   */
+  vfsSeedTrees?: VfsSeedTree[];
   /** Attach a real-TCP backend (TcpNetworkBackend) to the worker's PlatformIO
    *  so wasm programs can dial external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
@@ -257,6 +263,8 @@ export interface ReadVfsTreeMessage {
   requestId: number;
   /** Directory whose tree is read; the reply lists `VfsTreeEntry` values. */
   path: string;
+  /** Files whose bytes the caller holds; a file still at this fingerprint is listed without bytes. */
+  known?: VfsTreeFingerprints;
 }
 
 /** Create or replace one regular file through the worker-owned VFS. */

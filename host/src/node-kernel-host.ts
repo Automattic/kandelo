@@ -12,7 +12,6 @@
  *   const exitCode = await host.spawn(programBytes, ["hello"], { env: [...] });
  *   await host.destroy();
  */
-import type { VfsTreeEntry } from "./vfs/tree";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +57,7 @@ import {
   WASM_PAGE_SIZE,
 } from "./constants";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { VfsSeedTree, VfsTreeEntry, VfsTreeFingerprints } from "./vfs/tree";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
@@ -224,6 +224,12 @@ export interface NodeKernelHostOptions {
    * resolves.
    */
   sessionSeedTrees?: readonly NodeSessionSeedTree[];
+  /**
+   * Trees written through the VFS after the mounts exist, before the first
+   * process: the Node peer of BrowserKernel's `vfsSeedTrees`. Requires
+   * `rootfsImage`.
+   */
+  vfsSeedTrees?: readonly VfsSeedTree[];
 }
 
 export interface SpawnOptions {
@@ -335,6 +341,9 @@ export class NodeKernelHost {
       && rootfsImage === null
     ) {
       throw new Error("sessionSeedTrees requires rootfsImage");
+    }
+    if ((this.options.vfsSeedTrees?.length ?? 0) > 0 && rootfsImage === null) {
+      throw new Error("vfsSeedTrees requires rootfsImage");
     }
 
     this.worker = spawnKernelWorkerThread();
@@ -469,6 +478,10 @@ export class NodeKernelHost {
           rootfsLazyAssetSources,
           extraMounts: this.options.extraMounts,
           sessionSeedTrees,
+          vfsSeedTrees: this.options.vfsSeedTrees?.map((seed) => ({
+            path: seed.path,
+            entries: [...seed.entries],
+          })),
           enableTcpNetwork: this.options.enableTcpNetwork,
         };
         const transfer = [
@@ -1246,7 +1259,10 @@ export class NodeKernelHost {
    * Read the directory tree under `path` from the worker-owned VFS. This is
    * the Node peer of BrowserKernel.readTreeFromVfs().
    */
-  async readTreeFromVfs(path: string): Promise<VfsTreeEntry[]> {
+  async readTreeFromVfs(
+    path: string,
+    known?: VfsTreeFingerprints,
+  ): Promise<VfsTreeEntry[]> {
     if (!this.initialized) {
       throw new Error("VFS read requires an initialized kernel");
     }
@@ -1255,6 +1271,7 @@ export class NodeKernelHost {
       type: "read_vfs_tree",
       requestId,
       path,
+      ...(known === undefined ? {} : { known }),
     });
     if (!Array.isArray(result)) {
       throw new Error("kernel worker returned an invalid VFS tree");

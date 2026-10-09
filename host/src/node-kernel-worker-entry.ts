@@ -47,6 +47,7 @@ import {
   MemoryFileSystem,
   readPreparedPlatformFile,
   readVfsTree,
+  writeVfsTree,
 } from "./vfs";
 import {
   ReplicationLogRecorder,
@@ -1359,6 +1360,15 @@ async function handleInit(msg: InitMessage) {
   if (!msg.rootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
     throw new Error("sessionSeedTrees requires rootfsImage");
   }
+  if (!msg.rootfsImage && (msg.vfsSeedTrees?.length ?? 0) > 0) {
+    throw new Error("vfsSeedTrees requires rootfsImage");
+  }
+  if ((msg.restoreCheckpoint || msg.replicationReplay) && (msg.vfsSeedTrees?.length ?? 0) > 0) {
+    // A seed is fresh state for a fresh machine. A restored or replayed
+    // machine already carries its filesystem, and writing over it would be a
+    // change no process made.
+    throw new Error("vfsSeedTrees cannot combine with a restored or replayed machine");
+  }
   let restoredProgramModules:
     | ReadonlyMap<number, WebAssembly.Module>
     | undefined;
@@ -1384,6 +1394,7 @@ async function handleInit(msg: InitMessage) {
       msg.restoreCheckpoint,
     )
     : new NodePlatformIO();
+  for (const seed of msg.vfsSeedTrees ?? []) await writeVfsTree(io, seed.path, seed.entries);
   vfsExecIO = msg.rootfsImage ? io : null;
   replicationIO = io instanceof VirtualPlatformIO ? io : null;
   if (msg.enableTcpNetwork) {
@@ -4686,7 +4697,10 @@ async function handleReadVfsTree(
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "read or materialize a rootfs tree",
     );
-    respond(msg.requestId, await readVfsTree(io, msg.path));
+    respond(
+      msg.requestId,
+      await readVfsTree(io, msg.path, msg.known, new Set(kernelWorker.fifoPaths())),
+    );
   } catch (error) {
     respondError(
       msg.requestId,

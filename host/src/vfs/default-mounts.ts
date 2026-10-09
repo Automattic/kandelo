@@ -276,39 +276,6 @@ export function ensureMountPointDirectories(
   }
 }
 
-/** One browser-storage workspace a boot asks for, by mount point and name. */
-export interface OpfsWorkspaceMount {
-  path: string;
-  name: string;
-}
-
-/**
- * Lay `opfs` workspaces over a mount layout.
- *
- * A workspace at a path the layout gives to a scratch mount takes that mount's
- * place: a scratch mount is empty at boot, so the workspace is the same
- * directory with a backing store behind it. Every other entry stays, so a
- * workspace aimed at the root image or at another workspace is still the
- * duplicate that {@link validateSpec} rejects.
- */
-export function withOpfsWorkspaces(
-  spec: readonly MountSpec[],
-  workspaces: readonly OpfsWorkspaceMount[],
-): MountSpec[] {
-  const replaced = new Set(workspaces.map((workspace) => workspace.path));
-  return [
-    ...spec.filter((m) => !(m.source === "scratch" && replaced.has(m.path))),
-    ...workspaces.map((workspace) => ({
-      path: workspace.path,
-      source: "opfs" as const,
-      opfsName: workspace.name,
-      // A workspace is guest-writable storage, so like every scratch mount
-      // it must not grant set-ID credentials on exec.
-      nosuid: true,
-    })),
-  ];
-}
-
 export function validateSpec(spec: MountSpec[]): void {
   const seen = new Set<string>();
   for (const m of spec) {

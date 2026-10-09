@@ -7,7 +7,6 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
-import type { VfsTreeEntry } from "./vfs/tree";
 import {
   MemoryFileSystem,
   type LazyDownloadEvent,
@@ -63,6 +62,7 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { VfsSeedTree, VfsTreeEntry, VfsTreeFingerprints } from "./vfs/tree";
 import { FILE_MODES } from "./generated/abi";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
@@ -512,6 +512,8 @@ export class BrowserKernel {
     takeRestoreCheckpointOwnership?: boolean;
     replicationReplay?: ReplicationReplaySpec;
     opfsMounts?: readonly BrowserKernelOpfsMount[];
+    /** Trees written through the VFS after the mounts exist, before the first process. */
+    vfsSeedTrees?: readonly VfsSeedTree[];
   }): Promise<void> {
     const [wasmBytes, vfsImage] = await Promise.all([
       options.kernelWasm
@@ -533,6 +535,7 @@ export class BrowserKernel {
         options.takeRestoreCheckpointOwnership ?? false,
       replicationReplay: options.replicationReplay,
       opfsMounts: options.opfsMounts,
+      vfsSeedTrees: options.vfsSeedTrees,
       takeVfsImageOwnership: false,
     });
   }
@@ -717,6 +720,7 @@ export class BrowserKernel {
     takeRestoreCheckpointOwnership: boolean;
     replicationReplay?: ReplicationReplaySpec;
     opfsMounts?: readonly BrowserKernelOpfsMount[];
+    vfsSeedTrees?: readonly VfsSeedTree[];
     takeVfsImageOwnership: boolean;
   }): Promise<void> {
     if (
@@ -837,6 +841,10 @@ export class BrowserKernel {
           restoreCheckpoint: opts.restoreCheckpoint,
           replicationReplay: opts.replicationReplay,
           opfsMounts: opfsMountInits,
+          vfsSeedTrees: opts.vfsSeedTrees?.map((seed) => ({
+            path: seed.path,
+            entries: [...seed.entries],
+          })),
           shmSab: this.shmSab,
           workerEntryUrl,
           config: {
@@ -1913,15 +1921,21 @@ export class BrowserKernel {
 
   /**
    * Read the directory tree under `path` from the worker-owned VFS: every
-   * entry with its mode, regular files with their bytes, symlinks with their
-   * target. The main thread never receives the live VFS SharedArrayBuffer.
+   * entry with its mode and owner, regular files with their bytes, symlinks
+   * with their target. A file `known` names at its current fingerprint comes
+   * without bytes. The main thread never receives the live VFS
+   * SharedArrayBuffer.
    */
-  async readTreeFromVfs(path: string): Promise<VfsTreeEntry[]> {
+  async readTreeFromVfs(
+    path: string,
+    known?: VfsTreeFingerprints,
+  ): Promise<VfsTreeEntry[]> {
     const requestId = this.nextRequestId++;
     const result = await this.request(requestId, {
       type: "read_vfs_tree",
       requestId,
       path,
+      ...(known === undefined ? {} : { known }),
     });
     if (!Array.isArray(result)) {
       throw new Error("kernel worker returned an invalid VFS tree");

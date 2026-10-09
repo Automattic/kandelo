@@ -106,4 +106,4 @@ export {
 export type { MountSpec, BrowserResolverOptions } from "./default-mounts";
 export { resolveForNode } from "./default-mounts-node";
 export { overlayEtcFromRootfs } from "./rootfs-overlay";
-export { readVfsTree, type VfsTreeEntry } from "./tree";
+export { readVfsTree, writeVfsTree } from "./tree";

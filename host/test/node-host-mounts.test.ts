@@ -19,6 +19,8 @@
  *
  *   custom    overriding `io` opts out of the default mount setup —
  *             /etc/services is no longer reachable via the rootfs image.
+ *
+ *   fifo      mkfifo leaves a named FIFO that the VFS tree reads as other.
  */
 
 import { describe, it, expect } from "vitest";
@@ -36,6 +38,7 @@ import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import type { ReplicationReplaySpec } from "../src/replication/worker";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -73,6 +76,19 @@ describe("node session seed configuration", () => {
     try {
       await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
         "sessionSeedTrees requires rootfsImage",
+      );
+    } finally {
+      await host.destroy();
+    }
+  });
+
+  it("rejects VFS seed trees without a rootfs before starting a worker", async () => {
+    const host = new NodeKernelHost({
+      vfsSeedTrees: [{ path: "/home/maker", entries: [] }],
+    });
+    try {
+      await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
+        "vfsSeedTrees requires rootfsImage",
       );
     } finally {
       await host.destroy();
@@ -168,11 +184,21 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
         ).resolves.toEqual(new TextEncoder().encode("seed"));
       }
       await expect(first.readTreeFromVfs("/tmp/kandelo-run")).resolves.toEqual([
-        { path: "suite", kind: "directory", mode: expect.any(Number) },
+        {
+          path: "suite",
+          kind: "directory",
+          mode: expect.any(Number),
+          uid: expect.any(Number),
+          gid: expect.any(Number),
+        },
         {
           path: "suite/fixture",
           kind: "file",
           mode: expect.any(Number),
+          uid: expect.any(Number),
+          gid: expect.any(Number),
+          mtimeMs: expect.any(Number),
+          fingerprint: expect.any(String),
           bytes: new TextEncoder().encode("seed"),
         },
       ]);
@@ -251,6 +277,103 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       }
     },
   );
+
+  it("writes a VFS seed tree into the home directory before the first process", async () => {
+    const host = new NodeKernelHost({
+      rootfsImage: "default",
+      vfsSeedTrees: [{
+        path: "/home/maker",
+        entries: [
+          { path: "foo", kind: "directory", mode: 0o700, uid: 1000, gid: 1000 },
+          {
+            path: "foo/bar",
+            kind: "file",
+            mode: 0o600,
+            uid: 1000,
+            gid: 1000,
+            mtimeMs: 1_700_000_000_000,
+            fingerprint: "",
+            bytes: new TextEncoder().encode("baz"),
+          },
+        ],
+      }],
+    });
+    try {
+      await host.init();
+      const tree = await host.readTreeFromVfs("/home/maker");
+      expect(tree.map((entry) => [entry.path, entry.kind, entry.mode, entry.uid])).toEqual([
+        ["foo", "directory", 0o700, 1000],
+        ["foo/bar", "file", 0o600, 1000],
+      ]);
+      expect(tree[1]).toMatchObject({
+        mtimeMs: 1_700_000_000_000,
+        bytes: new TextEncoder().encode("baz"),
+      });
+      const fingerprint = tree[1]!.kind === "file" ? tree[1]!.fingerprint : "";
+      const again = await host.readTreeFromVfs("/home/maker", { "foo/bar": fingerprint });
+      expect(again[1]).toMatchObject({ fingerprint, bytes: null });
+    } finally {
+      await host.destroy();
+    }
+  });
+
+  it("reads a named FIFO a program made in the home directory as other", async () => {
+    const program = readFileSync(probeWasm);
+    const host = new NodeKernelHost({
+      rootfsImage: "default",
+      vfsSeedTrees: [{
+        path: "/home/maker",
+        entries: [
+          { path: "foo", kind: "directory", mode: 0o777, uid: 0, gid: 0 },
+          {
+            path: "foo/baz",
+            kind: "file",
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+            mtimeMs: 1_700_000_000_000,
+            fingerprint: "",
+            bytes: new Uint8Array(0),
+          },
+        ],
+      }],
+    });
+    try {
+      await host.init();
+      expect(
+        await host.spawn(
+          program.buffer.slice(
+            program.byteOffset,
+            program.byteOffset + program.byteLength,
+          ),
+          ["mount_probe_test", "fifo", "/home/maker/foo/bar"],
+        ),
+      ).toBe(0);
+      const tree = await host.readTreeFromVfs("/home/maker");
+      expect(tree.map((entry) => [entry.path, entry.kind, entry.mode])).toEqual([
+        ["foo", "directory", 0o777],
+        ["foo/bar", "other", 0o600],
+        ["foo/baz", "file", 0o644],
+      ]);
+    } finally {
+      await host.destroy();
+    }
+  });
+
+  it("refuses VFS seed trees for a replayed machine", async () => {
+    const host = new NodeKernelHost({
+      rootfsImage: "default",
+      vfsSeedTrees: [{ path: "/home/maker", entries: [] }],
+      replicationReplay: {} as ReplicationReplaySpec,
+    });
+    try {
+      await expect(host.init()).rejects.toThrow(
+        "vfsSeedTrees cannot combine with a restored or replayed machine",
+      );
+    } finally {
+      await host.destroy();
+    }
+  });
 
   it("returns ENOENT for paths outside every mount (no fallthrough)", async () => {
     const result = await runCentralizedProgram({

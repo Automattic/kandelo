@@ -224,29 +224,13 @@ describe("restoreBrowserKernelInitMounts with opfs mounts", () => {
     expect(persist!.nosuid).toBe(true);
   });
 
-  it("puts a workspace in the place of the canonical scratch mount at its path", async () => {
-    const image = await buildFixtureImage();
-    const channelSab = new SharedArrayBuffer(OPFS_CHANNEL_SIZE);
-    const mounts = await restoreBrowserKernelInitMounts(image, DEFAULT_MOUNT_SPEC, {
-      opfsMounts: [{ path: "/home/maker", name: "workspace-a", channelSab }],
-    });
-    expect(mounts).toHaveLength(DEFAULT_MOUNT_SPEC.length);
-    const home = mounts.filter((m) => m.mountPoint === "/home/maker");
-    expect(home).toHaveLength(1);
-    expect(home[0]!.backend).toBeInstanceOf(OpfsFileSystem);
-    expect(home[0]!.nosuid).toBe(true);
-  });
-
-  it("rejects two workspaces at one mount point", async () => {
+  it("rejects an opfs mount that duplicates a canonical mount point", async () => {
     const image = await buildFixtureImage();
     const channelSab = new SharedArrayBuffer(OPFS_CHANNEL_SIZE);
     // validateSpec throws synchronously, before any backend allocation.
     expect(() =>
       restoreBrowserKernelInitMounts(image, DEFAULT_MOUNT_SPEC, {
-        opfsMounts: [
-          { path: "/persist", name: "workspace-a", channelSab },
-          { path: "/persist", name: "workspace-b", channelSab },
-        ],
+        opfsMounts: [{ path: "/tmp", name: "workspace-a", channelSab }],
       }),
     ).toThrow(/duplicate/i);
   });

@@ -270,6 +270,28 @@ describe("BrowserKernel", () => {
     await initPromise;
   });
 
+  it("hands VFS seed trees to the worker in its init message", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const entries = [
+      { path: "foo", kind: "directory" as const, mode: 0o700, uid: 1000, gid: 1000 },
+    ];
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      vfsSeedTrees: [{ path: "/home/maker", entries }],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    expect(worker.lastMessage("init").vfsSeedTrees).toEqual([
+      { path: "/home/maker", entries },
+    ]);
+
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+  });
+
   it("snapshots and transfers an exhaustive lazy-asset binding to the worker", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
@@ -819,11 +841,19 @@ describe("BrowserKernel", () => {
     await new Promise((r) => setTimeout(r, 0));
     const read = w.lastMessage("read_vfs_tree");
     expect(read.path).toBe("/home/maker");
+    expect(read.known).toBeUndefined();
     const entries = [
-      { path: "hello.txt", kind: "file", mode: 0o644, bytes: new Uint8Array([1]) },
+      { path: "hello.txt", kind: "file", mode: 0o644, uid: 0, gid: 0, mtimeMs: 1, fingerprint: "a", bytes: new Uint8Array([1]) },
     ];
     w.simulateMessage({ type: "response", requestId: read.requestId, result: entries });
     expect(await readPromise).toEqual(entries);
+
+    const knownPromise = kernel.readTreeFromVfs("/home/maker", { "hello.txt": "a" });
+    await new Promise((r) => setTimeout(r, 0));
+    const knownRead = w.lastMessage("read_vfs_tree");
+    expect(knownRead.known).toEqual({ "hello.txt": "a" });
+    w.simulateMessage({ type: "response", requestId: knownRead.requestId, result: [] });
+    expect(await knownPromise).toEqual([]);
 
     const badPromise = kernel.readTreeFromVfs("/home/maker");
     await new Promise((r) => setTimeout(r, 0));

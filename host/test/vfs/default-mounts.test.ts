@@ -22,7 +22,6 @@ import {
   IMAGE_MEMFS_MAX_BYTES,
   imageMemfsReservationBytes,
   resolveForBrowser,
-  withOpfsWorkspaces,
   type MountSpec,
 } from "../../src/vfs/default-mounts";
 import {
@@ -155,36 +154,6 @@ describe("DEFAULT_MOUNT_SPEC", () => {
 
     expect(scratch.length).toBeGreaterThan(0);
     expect(scratch.every((mount) => mount.nosuid === true)).toBe(true);
-  });
-});
-
-describe("withOpfsWorkspaces", () => {
-  it("appends a workspace at a new path as a nosuid opfs mount", () => {
-    const spec = withOpfsWorkspaces(DEFAULT_MOUNT_SPEC, [{ path: "/persist", name: "foo" }]);
-    expect(spec).toHaveLength(DEFAULT_MOUNT_SPEC.length + 1);
-    expect(spec.at(-1)).toEqual({
-      path: "/persist",
-      source: "opfs",
-      opfsName: "foo",
-      nosuid: true,
-    });
-  });
-
-  it("replaces the scratch mount at the workspace's path", () => {
-    const spec = withOpfsWorkspaces(DEFAULT_MOUNT_SPEC, [{ path: "/home/maker", name: "foo" }]);
-    expect(spec).toHaveLength(DEFAULT_MOUNT_SPEC.length);
-    expect(spec.filter((m) => m.path === "/home/maker")).toEqual([
-      { path: "/home/maker", source: "opfs", opfsName: "foo", nosuid: true },
-    ]);
-  });
-
-  it("keeps the root image, so a workspace aimed at / stays a duplicate", () => {
-    const spec = withOpfsWorkspaces(DEFAULT_MOUNT_SPEC, [{ path: "/", name: "foo" }]);
-    expect(spec.filter((m) => m.path === "/")).toHaveLength(2);
-  });
-
-  it("leaves the layout alone without workspaces", () => {
-    expect(withOpfsWorkspaces(DEFAULT_MOUNT_SPEC, [])).toEqual(DEFAULT_MOUNT_SPEC);
   });
 });
 

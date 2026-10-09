@@ -13,6 +13,7 @@ import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { VfsSeedTree, VfsTreeFingerprints } from "./vfs/tree";
 import type { MachineCheckpoint } from "./migration/checkpoint";
 import type { ReplicationLogEntry } from "./replication/log";
 import type { MachineStateHash } from "./replication/state-hash";
@@ -121,6 +122,8 @@ export interface InitMessage {
   closedLazyAssets?: ClosedLazyAsset[];
   /** Browser-storage-backed mounts resolved through the `opfs` mount source. */
   opfsMounts?: OpfsMountInit[];
+  /** Trees written through the VFS after the mounts exist, before the first process. */
+  vfsSeedTrees?: VfsSeedTree[];
   shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;
@@ -201,6 +204,8 @@ export interface ReadVfsTreeMessage {
   requestId: number;
   /** Directory whose tree is read; the reply lists `VfsTreeEntry` values. */
   path: string;
+  /** Files whose bytes the caller holds; a file still at this fingerprint is listed without bytes. */
+  known?: VfsTreeFingerprints;
 }
 
 export interface WriteVfsFileMessage {
