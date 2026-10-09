@@ -111,11 +111,28 @@ certificate provisioning and broad Go conformance remain
 unverified or unsupported. These focused probes do not establish full Go
 runtime or POSIX conformance.
 
+## FrankenPHP prerequisite: cgo
+
+FrankenPHP classic mode is the WordPress server target, but its Go-to-PHP
+embedding requires cgo and a PHP ZTS embed library. The first Go/Wasm gate is
+the small C-call program in `cgo/main.go`:
+
+```sh
+scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/cgo-probe.wasm tests/go/cgo/main.go'
+```
+
+This currently fails with `cgo: unknown ptrSize for $GOARCH "wasm"` before
+runtime or linker validation. A compile-only pass will not establish working
+interoperability: run the binary in Node and Chromium and add a C-to-Go
+callback probe before building FrankenPHP. See the dated WordPress pivot in
+the Go implementation progress log.
+
 ## RoadRunner feasibility probe
 
-RoadRunner is the better first PHP-server test: its Go server starts PHP
-workers as separate processes, while FrankenPHP embeds PHP through cgo,
-which this Go/Wasm port does not support. A `CGO_ENABLED=0` RoadRunner
+RoadRunner is a useful Go process/IPC integration test: its Go server starts
+PHP workers as separate processes, while FrankenPHP embeds PHP through cgo,
+which this Go/Wasm port does not yet support. It is not the WordPress
+performance-demo target. A `CGO_ENABLED=0` RoadRunner
 v2025.1.6 build is compatible with the current Go 1.25 toolchain version;
 v2025.1.7 and later require Go 1.26. The feasibility check did not produce
 or run a RoadRunner binary or a PHP worker. The full binary stops at

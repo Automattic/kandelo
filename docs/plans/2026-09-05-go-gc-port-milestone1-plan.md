@@ -1194,6 +1194,41 @@ This supersedes the WordPress-facing part of the preceding package-first
 sequence; packaging the minimal RoadRunner server remains useful, but it does
 not by itself meet the direct-worker milestone.
 
+**2026-10-09 — WordPress server pivot to FrankenPHP.** The direct RoadRunner
+WordPress worker milestone above is superseded: the desired demo is now
+FrankenPHP classic mode executing WordPress directly, without nginx or
+PHP-FPM, on the existing WordPress VFS. Remove the RoadRunner-to-FPM
+WordPress proxy profile; retain the focused RoadRunner Go/PHP worker probe
+as Go process and IPC coverage, not as a WordPress server or benchmark.
+
+FrankenPHP cannot yet be built for Kandelo. Its official source build requires
+Go cgo plus a ZTS PHP embed SAPI (`--enable-embed --enable-zts`). The Kandelo
+Go port defaults to `CGO_ENABLED=0`; forcing `CGO_ENABLED=1` on a minimal
+`C.abs` probe with `CC=wasm32posix-cc` currently stops at
+`cgo: unknown ptrSize for $GOARCH "wasm"`. This is only the first error:
+the Go wasm `runtime.asmcgocall` and `runtime/cgo` cross-call implementations
+are `UNDEF`, and the current PHP package builds CLI and FPM but not a ZTS
+embed library. A proxy to FPM or a native-host FrankenPHP sidecar would not
+meet the Kandelo demo goal; neither is a substitute for this prerequisite.
+
+Next milestones, in dependency order:
+
+1. Design and implement Kandelo Go/Wasm cgo interoperability, including C/Go
+   calls, callbacks, shared memory, linker integration, and pthread behavior.
+   First prove a minimal C call and callback in both Node and Chromium; do
+   not start FrankenPHP packaging from a failing cgo target.
+2. Build PHP's ZTS embed library through the normal package resolver, with
+   its required extensions and request-lifecycle behavior. Validate a small
+   Go-to-embedded-PHP request on both hosts before WordPress.
+3. Port a minimal FrankenPHP `net/http` handler in classic mode, then boot
+   the existing WordPress VFS without nginx or PHP-FPM. Verify home, login,
+   admin, redirects, cookies, POST, static assets, and repeated requests.
+4. Compare against the existing FPM profile on the same VFS/content and host,
+   with warmup and repeated latency/throughput measurements. Do not claim a
+   performance benefit until both paths are running and measured.
+
+No direct FrankenPHP demo URL or performance result exists yet.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
