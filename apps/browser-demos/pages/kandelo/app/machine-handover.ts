@@ -267,10 +267,12 @@ export function useMachineHandover(
   takeRef.current = take;
   const peerHasMachineRef = React.useRef(peerHasMachine);
   peerHasMachineRef.current = peerHasMachine;
+  // A booting machine is this computer's own, as much as a running one: a take
+  // started during its boot races it, and the machine can arrive on neither.
   const mayTakeBackRef = React.useRef(false);
   mayTakeBackRef.current =
     peerHasMachine
-    && (status !== "running" || replicating)
+    && ((status !== "running" && status !== "booting") || replicating)
     && !joining
     && !taking;
 
