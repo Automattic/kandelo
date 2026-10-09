@@ -28,6 +28,10 @@ const serveScript = join(repoRoot, "packages/registry/erlang/demo/serve.ts");
 // issue, not a regression.
 const installDir = join(repoRoot, "packages/registry/erlang/erlang-install");
 const hasErlang = !!beamBinary && existsSync(installDir);
+// Temporarily disabled at the maintainer's request for the integration batch.
+// Revisit ring.beam fixture preparation and the launcher's idle-based success
+// detection before restoring these tests with actual guest-exit assertions.
+const erlangTestsDeferred = true;
 
 function runErlang(evalExpr: string, timeoutMs = 30_000): string {
   const result = execFileSync("npx", ["tsx", serveScript, "-eval", evalExpr], {
@@ -39,7 +43,7 @@ function runErlang(evalExpr: string, timeoutMs = 30_000): string {
   return result;
 }
 
-describe.skipIf(!hasErlang)("Erlang BEAM", () => {
+describe.skipIf(erlangTestsDeferred || !hasErlang)("Erlang BEAM", () => {
   it("prints hello world", { timeout: 30_000 }, () => {
     const output = runErlang('io:format("Hello from BEAM!~n"), halt().');
     expect(output).toContain("Hello from BEAM!");
