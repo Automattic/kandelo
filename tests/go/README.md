@@ -137,23 +137,27 @@ scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=
 It is a deliberately unpassed gate, not part of the passing Go suite. An
 uncommitted `cmd/cgo` frontend experiment in the adjacent fork parses the
 Wasm debug object far enough for both fixtures to reach the Go linker. The
-published fork's internal linker now reads C function bodies and direct CODE
-relocations, but the full build stops at unsupported `runtime/cgo` memory
-relocations, data, and dynamic symbols. Neither fixture links or runs. The
+adjacent fork's internal linker now reads C function bodies, initialized C
+data, and direct CODE relocations, but the full build stops at cgo
+dynamic-export handling and missing runtime/cgo symbols. Neither fixture
+links or runs. The
 `go-hello` package is still pinned to the earlier fork revision that fails
 at pointer-size recognition. Do not use a successful cgo frontend or
 function-body parse as PHP or FrankenPHP support.
 
-The intermediate function-only linker test is reproducible with:
+The intermediate Go/C object-link test is reproducible with:
 
 ```sh
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && npm ci'
 scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh
 ```
 
-It manually adds a two-function SDK C object to a cgo-free Go archive and
-checks that the final Go Wasm module validates and `c_target` calls the
-relocated `triple`. It does not call C from Go, exercise `runtime/cgo`, or
-run on Node/Chromium; it is not a substitute for either cgo probe above.
+It manually adds SDK C objects to a cgo-free Go archive and checks that the
+final Go Wasm module validates, relocates a C-to-C call and C static data,
+then executes both C functions through the exported Wasm function table in
+Node and Chromium. This does not call C from Go, execute Go runtime code,
+exercise `runtime/cgo`, or run through a Kandelo process worker. It is not a
+substitute for either cgo probe above.
 
 ## RoadRunner feasibility probe
 
