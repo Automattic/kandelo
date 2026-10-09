@@ -3,7 +3,7 @@
 These probes run binaries from the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port) through
 Kandelo's real Chromium process workers and ABI-48 kernel. Use fork commit
-`bd12cbf` or later, built with Go 1.25.6 as `GOROOT_BOOTSTRAP`. By default
+`98dc3f1` or later, built with Go 1.25.6 as `GOROOT_BOOTSTRAP`. By default
 the fork is checked out beside this repository as `../go-kandelo`.
 
 From the Kandelo repository root:
@@ -119,11 +119,20 @@ or run a RoadRunner binary or a PHP worker. The full binary stops at
 `github.com/valyala/fasthttp/tcplisten`, whose source files exclude
 `GOOS=kandelo GOARCH=wasm`. A smaller RoadRunner server-core build proceeds
 past `os/user` but needs `syscall.ForkLock`, process-group fields in
-`syscall.SysProcAttr`, and child credentials. Kandelo's standalone identity
-and process-group syscalls do not yet establish those settings atomically
-during `SYS_SPAWN`; a no-op Go shim would be incorrect.
+`syscall.SysProcAttr`, and child credentials. The subsequent fork revision
+`98dc3f1` uses Kandelo's existing atomic spawn-time process-group attribute
+and serializes spawn against non-atomic descriptor creation with
+`syscall.ForkLock`. Explicit child credentials remain unsupported and return
+`ENOSYS`; no-op success would be incorrect.
 
-Prioritize the spawn-time process/descriptor contract and Node/browser
-parity, then resolve third-party build-tag portability and run a real Go
-server ↔ PHP worker HTTP round trip. UDP, DNS, and TLS are not the first
-blockers for this integration.
+The default RoadRunner binary also pulls plugins and CLI paths unrelated to
+the first HTTP/PHP-worker test. `roadrunner/build.sh` builds a minimal custom
+entrypoint with the real server, HTTP, and logging plugins from pinned
+upstream source. Its checked-in generic-listener adapter covers plain TCP;
+it does not claim support for upstream's other listener options. The C
+supervisor starts this server, sends one HTTP request, checks a real PHP CLI
+worker's response, and reaps the server. The Node probe and opt-in Chromium
+test pass through the normal kernel/VFS process path with matching ABI
+digests and no host diagnostics. See `roadrunner/README.md` for commands
+and scope. This is not yet a registry package, Composer SDK test, all-plugin
+CLI, or full Go conformance. UDP, DNS, and TLS are not the first blockers.

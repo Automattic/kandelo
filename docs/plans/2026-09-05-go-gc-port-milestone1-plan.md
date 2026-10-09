@@ -1062,18 +1062,75 @@ Full `go build std` now fails only in `net/internal/socktest`; this is still
 not full standard-library
 conformance. The server-core compile then reaches `syscall.ForkLock` and
 `SysProcAttr` process-group and credential fields. These are genuine process
-integration gaps. Kandelo has standalone `setpgid` and identity syscalls,
-but `SYS_SPAWN` does not currently express child-atomic process-group or
-credential setup, and the fork lock must preserve descriptor inheritance
+integration gaps in the Go fork. Kandelo already has child-atomic
+`SETPGROUP` in its `SYS_SPAWN` attributes; explicit child credentials have
+no spawn representation. The fork lock must preserve descriptor inheritance
 semantics rather than merely satisfy the compiler.
 
 The next broader work is therefore the process-startup and descriptor
-contract: design spawn-time group/credential actions, lock semantics, and
-Node/browser parity before adapting third-party build tags. After that,
+contract: wire existing spawn-time group attributes, define honest
+credential behavior, and protect descriptor inheritance on both hosts.
+After that,
 compile a minimal RoadRunner server and demonstrate an HTTP request through
 a real PHP worker. The RoadRunner executable and PHP worker have not run;
 UDP, DNS, and TLS are not the first blockers for this target. Keep the
 Go-runtime-specific agent guidance work item at the end of this plan.
+
+**2026-10-09 — RoadRunner process integration (fork `98dc3f1`).** The Go
+fork now serializes its descriptor snapshot and `SYS_SPAWN` call against
+third-party non-atomic socket/close-on-exec creation through
+`syscall.ForkLock`. `SysProcAttr.Setpgid` and `Pgid` use the existing
+Kandelo `SETPGROUP` spawn attribute; negative group IDs fail before spawn.
+The Go `Getpgid` wrapper lets the child verify its own group. A requested
+`Credential` explicitly returns `ENOSYS`, since no child-atomic credential
+action exists in the spawn wire contract. The checked-in Go exec probe now
+checks the isolated child's group and the two failure cases. It exits 0 in
+Node with three fork-count samples of zero, and the focused Chromium exec
+probe passes. No ABI or kernel source changed; the Go package source pin is
+updated to this fork commit.
+
+With a generic `net.Listen` adapter for
+`roadrunner-server/tcplisten`, the RoadRunner server core and HTTP plugin
+compile for Kandelo. A minimal custom entrypoint using RoadRunner's real
+server, HTTP, and logging plugins also builds to a 35 MiB Wasm program and
+receives this checkout's ABI-contract stamp. The stock all-plugin CLI still
+hits unrelated terminal (`goterm`) and reload (`syscall.Exec`) compile gaps.
+The full CLI's modified plugin list remains scratch-only.
+
+The checked-in `tests/go/roadrunner/build.sh` now reproducibly builds that
+minimal server from pinned upstream source and the listener adapter. The
+source-only PHP package supplies the CLI worker. A C supervisor launches the
+server, sends a loopback HTTP request, verifies the PHP worker's Goridge
+response, terminates the server, and reaps it. The Node test exits 0 with
+`ROADRUNNER ROUND TRIP PASS`, empty stderr/host diagnostics, and zero fork
+counts; the opt-in Chromium test passes the same VFS-loaded round trip.
+Both programs carry the kernel's ABI-contract digest. This proves an actual
+RoadRunner-to-PHP request, not a full package, Composer SDK integration,
+all-plugin CLI, or Go conformance.
+
+The first Node run exposed a host signal-exit race: `waitpid` wakeup tried
+to dequeue a signal from a thread whose process had already exited. The
+shared host now retires host-deferred child waiters when the parent is already
+host-reaped, before polling or publishing any completion. A focused host
+regression test, all 70 process-wait lifecycle tests, and the Node/Chromium
+integration run pass. The `go-hello` source-only package rebuilds from fork
+`98dc3f1`; its resolved VFS child exits 0 in Node and Chromium. No ABI or
+kernel source changed. A real child-credential feature is a separate
+POSIX/ABI design task, not a shim for the optional RoadRunner user-switch
+setting.
+
+Focused Sortix process/signal conformance was attempted twice, but its
+runner never reached a guest test: the worktree lacks the full built-in
+program closure. Building `dash` moved the missing artifact to `grep`;
+the complete local-build plan has 157 uncached nodes and an estimated
+36-minute critical path. This is a provisioning gap, not a conformance
+pass or an observed POSIX failure. Full conformance remains merge
+validation work after the closure is built.
+
+Next: turn the minimal server into a registry package with a source-only
+recipe, then exercise normal package resolution and VFS launch in Node and
+Chromium. After that, expand realistic configuration and PHP worker coverage,
+and revisit the all-plugin CLI only where its features are needed.
 
 ---
 
