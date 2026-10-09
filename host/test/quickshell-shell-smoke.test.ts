@@ -205,11 +205,6 @@ describe("quickshell — the Omarchy shell on wlcompositor + dbus", () => {
       const out = { value: "" };
       const err = { value: "" };
       const host = new NodeKernelHost({
-        execProgramBytes: {
-          [dashTarget]: loadBytes(dashBin!),
-          [notifyTarget]: loadBytes(notifyBin!),
-          [loginTarget]: loadBytes(loginBin),
-        },
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
       });
