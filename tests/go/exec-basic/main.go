@@ -25,6 +25,12 @@ func main() {
 		if os.Getenv("GO_CHILD_MARKER") != "present" {
 			panic("child environment missing")
 		}
+		if os.Getenv("GO_ISOLATED_CHILD") == "present" {
+			group, err := syscall.Getpgid(0)
+			if err != nil || group != os.Getpid() {
+				panic(fmt.Sprintf("wrong child process group: got %d, pid %d: %v", group, os.Getpid(), err))
+			}
+		}
 		fmt.Println("GO EXEC CHILD")
 		os.Exit(7)
 	}
@@ -45,11 +51,22 @@ func main() {
 		{path: "bad\x00path", args: []string{"bad"}, want: syscall.EINVAL},
 		{path: strings.Repeat("a", 4096), args: []string{"long"}, want: syscall.ENAMETOOLONG},
 		{path: executable, args: []string{strings.Repeat("a", 65536)}, want: syscall.E2BIG},
+		{path: executable, args: []string{"bad-pgid"}, want: syscall.EINVAL},
 	} {
-		_, _, err := syscall.StartProcess(check.path, check.args, &syscall.ProcAttr{})
+		attributes := &syscall.ProcAttr{}
+		if check.args[0] == "bad-pgid" {
+			attributes.Sys = &syscall.SysProcAttr{Setpgid: true, Pgid: -1}
+		}
+		_, _, err := syscall.StartProcess(check.path, check.args, attributes)
 		if err != check.want {
 			panic(fmt.Sprintf("wrong launch error for %q: got %v, want %v", check.path[:min(len(check.path), 32)], err, check.want))
 		}
+	}
+	_, _, credentialErr := syscall.StartProcess(executable, []string{executable}, &syscall.ProcAttr{
+		Sys: &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 1001, Gid: 200}},
+	})
+	if credentialErr != syscall.ENOSYS {
+		panic(fmt.Sprintf("unsupported child credentials: got %v", credentialErr))
 	}
 	env := []string{"GO_PARENT_PID=" + strconv.Itoa(parent), "GO_CHILD_MARKER=present"}
 	process, err := os.StartProcess(executable, []string{executable, "child"}, &os.ProcAttr{
@@ -61,6 +78,18 @@ func main() {
 	state, err := process.Wait()
 	if err != nil || state.Pid() != process.Pid || state.ExitCode() != 7 {
 		panic(fmt.Sprintf("wrong child wait: state=%v pid=%d err=%v", state, process.Pid, err))
+	}
+	isolatedEnv := append(append([]string(nil), env...), "GO_ISOLATED_CHILD=present")
+	isolated := exec.Command(executable, "child")
+	isolated.Dir = workDir
+	isolated.Env = isolatedEnv
+	isolated.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: 0}
+	isolated.Stdin = os.Stdin
+	isolated.Stderr = os.Stderr
+	isolatedOutput, isolatedErr := isolated.Output()
+	isolatedExit, isolatedExited := isolatedErr.(*exec.ExitError)
+	if !strings.Contains(string(isolatedOutput), "GO EXEC CHILD") || !isolatedExited || isolatedExit.ExitCode() != 7 {
+		panic(fmt.Sprintf("wrong isolated child output/wait: output=%q err=%v", isolatedOutput, isolatedErr))
 	}
 
 	command := exec.Command(executable, "child")

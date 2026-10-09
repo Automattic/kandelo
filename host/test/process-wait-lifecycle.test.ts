@@ -1362,6 +1362,35 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(new DataView(processMemory.buffer).getInt32(1024, true)).toBe(3 << 8);
   });
 
+  it("retires an exited parent's parked wait before signal wakeup", () => {
+    const processMemory = createSharedMemory();
+    const channel = createChannel(7, processMemory);
+    const dequeueSignal = vi.fn(() => -3);
+    const waitChildPoll = vi.fn(() => -10);
+    const worker = createWorkerHarness({
+      kernel_dequeue_signal: dequeueSignal,
+      kernel_wait_child_poll: waitChildPoll,
+    });
+    worker.processes = new Map([[7, { channels: [channel], memory: processMemory }]]);
+    worker.hostReaped = new Set([7]);
+    worker.waitingForChild = [{
+      parentPid: 7,
+      channel,
+      origArgs: [42, 0, 0, 0],
+      pid: 42,
+      options: 0,
+      syscallNr: ABI_SYSCALLS.Wait4,
+    }];
+    const completeChannel = observeMarshalledCompletions(worker);
+
+    worker.wakeWaitingParent(7);
+
+    expect(worker.waitingForChild).toEqual([]);
+    expect(waitChildPoll).not.toHaveBeenCalled();
+    expect(dequeueSignal).not.toHaveBeenCalled();
+    expect(completeChannel).not.toHaveBeenCalled();
+  });
+
   it("completes every matching WNOWAIT waiter while leaving a running waiter blocked", () => {
     const kernelMemory = createSharedMemory();
     const processMemory = createSharedMemory();
