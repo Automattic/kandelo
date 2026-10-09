@@ -56,7 +56,10 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `BrowserKernel`'s worker RPC methods (`readFileSnapshotFromVfs`,
   `writeFileToVfs`, and `unlinkFileFromVfs`). The owning worker performs those
   mutations through the mounted VFS; the main thread never receives the live
-  VFS `SharedArrayBuffer`.
+  VFS `SharedArrayBuffer`. `subscribeVfsChanges(prefix, cb)` delivers `modify`
+  and `delete` events for paths under `prefix` as guest processes close written
+  files, unlink, or rename them; the worker forwards events only while a prefix
+  is watched. `NodeKernelHost` exposes the same method.
   A quiescent machine can return durable root-image bytes through
   `BrowserKernel.exportRootfsImage()`. The worker rejects export while a guest
   process or teardown is live, serializes it against the same staging and lazy

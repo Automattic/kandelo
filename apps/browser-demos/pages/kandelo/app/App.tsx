@@ -2,7 +2,9 @@
 // switches machine views and opens exploratory panes for gallery and overlays.
 
 import * as React from "react";
+import { flushSync } from "react-dom";
 import { useDemoGuide, useKernelHost, useLazyDownloads, useMachineProgress } from "../kernel-host/react";
+import { useVfsTools } from "../webmcp/use-vfs-tools";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
 import { MachineProgressOverlay } from "../panes/MachineProgressOverlay";
@@ -20,6 +22,8 @@ import type {
   MachineAudioState,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
+import { useWebMcp } from "../webmcp/use-webmcp";
+import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
@@ -63,6 +67,7 @@ export const App: React.FC = () => {
   const lazyDownloads = useLazyDownloads();
   const machineProgress = useMachineProgress();
   const surface = useMachineSurfaceController();
+  useVfsTools();
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
@@ -84,6 +89,7 @@ export const App: React.FC = () => {
   const [audioActive, setAudioActive] = React.useState<boolean>(() => host.getAudioActivity());
   const [audioError, setAudioError] = React.useState<string | null>(null);
   const nextTerminalIndex = React.useRef(2);
+  const webMcpPreview = React.useRef<DisplayHandle | null>(null);
   const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
 
   const desc = host.getBootDescriptor();
@@ -233,62 +239,87 @@ export const App: React.FC = () => {
     });
   }, [host, closeDockPane]);
 
-  const onLaunchGalleryItem = React.useCallback((item: GalleryItem) => {
-    void (async () => {
-      let vfsImageUrl = item.vfsImageUrl;
-      if (!vfsImageUrl && item.resolveVfsImageUrl) {
-        try {
-          vfsImageUrl = await item.resolveVfsImageUrl();
-        } catch (err) {
-          // Applying the descriptor below lets the host surface the same
-          // missing-artifact error through its normal boot diagnostics.
-          console.warn("resolveVfsImageUrl failed:", err);
-        }
+  const launchGalleryItem = React.useCallback(async (item: GalleryItem) => {
+    let vfsImageUrl = item.vfsImageUrl;
+    if (!vfsImageUrl && item.resolveVfsImageUrl) {
+      try {
+        vfsImageUrl = await item.resolveVfsImageUrl();
+      } catch (err) {
+        // Applying the descriptor below lets the host surface the same
+        // missing-artifact error through its normal boot diagnostics.
+        console.warn("resolveVfsImageUrl failed:", err);
       }
-      // Boot in place, then move the address bar to match.
-      //
-      // Launching used to call `location.assign` whenever the item carried a
-      // VFS image URL, which navigates. A navigation destroys this document
-      // without running the machine's teardown, and on JavaScriptCore a worker
-      // parked in `Atomics.wait` does not release its OS thread when the
-      // browser terminates it — so every gallery switch leaked the whole
-      // machine's worker set and the tab grew until it threw "Out of memory".
-      // Measured at roughly +2.4 leaked threads per navigation. See
-      // docs/jsc-terminate-atomics-wait-workaround.md and
-      // benchmarks/measure-machine-switch-leak.mjs.
-      //
-      // `applyBootDescriptor` awaits the previous kernel's `destroy()` while
-      // this document is still alive, which is what lets those workers exit on
-      // their own. The descriptor already carries the image URL
-      // (`descriptorFromGalleryItem` -> `mountsWithRootImageUrl`), so nothing
-      // about the `?vfs=` contract changes: `pushState` writes exactly the URL
-      // `location.assign` would have, and a cold load still reads it from
-      // `location.search`.
-      const next = descriptorFromGalleryItem(
-        vfsImageUrl ? { ...item, vfsImageUrl } : item,
-        host.getBootDescriptor(),
-      );
-      await host.applyBootDescriptor(next);
-      if (vfsImageUrl) {
-        // WHY after the boot: if composition fails, applyBootDescriptor throws
-        // and the address bar keeps naming the machine that is actually
-        // loaded, rather than one that never booted.
-        const url = galleryItemUrl({ ...item, vfsImageUrl });
-        if (url !== window.location.href) {
-          window.history.pushState(null, "", url);
-        }
+    }
+    // Boot in place, then move the address bar to match.
+    //
+    // Launching used to call `location.assign` whenever the item carried a
+    // VFS image URL, which navigates. A navigation destroys this document
+    // without running the machine's teardown, and on JavaScriptCore a worker
+    // parked in `Atomics.wait` does not release its OS thread when the
+    // browser terminates it — so every gallery switch leaked the whole
+    // machine's worker set and the tab grew until it threw "Out of memory".
+    // Measured at roughly +2.4 leaked threads per navigation. See
+    // docs/jsc-terminate-atomics-wait-workaround.md and
+    // benchmarks/measure-machine-switch-leak.mjs.
+    //
+    // `applyBootDescriptor` awaits the previous kernel's `destroy()` while
+    // this document is still alive, which is what lets those workers exit on
+    // their own. The descriptor already carries the image URL
+    // (`descriptorFromGalleryItem` -> `mountsWithRootImageUrl`), so nothing
+    // about the `?vfs=` contract changes: `pushState` writes exactly the URL
+    // `location.assign` would have, and a cold load still reads it from
+    // `location.search`.
+    const next = descriptorFromGalleryItem(
+      vfsImageUrl ? { ...item, vfsImageUrl } : item,
+      host.getBootDescriptor(),
+    );
+    await host.applyBootDescriptor(next);
+    if (vfsImageUrl) {
+      // WHY after the boot: if composition fails, applyBootDescriptor throws
+      // and the address bar keeps naming the machine that is actually
+      // loaded, rather than one that never booted.
+      const url = galleryItemUrl({ ...item, vfsImageUrl });
+      if (url !== window.location.href) {
+        window.history.pushState(null, "", url);
       }
-      closeDockPane();
-    })().catch((err) => {
-      console.warn("applyBootDescriptor failed:", err);
-    });
+    }
+    closeDockPane();
   }, [host, closeDockPane]);
 
-  const onAddTerminal = React.useCallback(() => {
+  const onLaunchGalleryItem = React.useCallback((item: GalleryItem) => {
+    void launchGalleryItem(item).catch((err) => console.warn("applyBootDescriptor failed:", err));
+  }, [launchGalleryItem]);
+
+  const createTerminal = React.useCallback((activate: boolean) => {
     const terminal = createShellTerminal(nextTerminalIndex.current++);
     setTerminals((prev) => [...prev, terminal]);
-    setActiveTerminalId(terminal.id);
+    if (activate) setActiveTerminalId(terminal.id);
+    return terminal;
   }, []);
+
+  const onAddTerminal = React.useCallback(() => { createTerminal(true); }, [createTerminal]);
+
+  useWebMcp({
+    host, terminals, activeTerminalId,
+    createTerminal: (activate) => {
+      let terminal!: ShellTerminal;
+      flushSync(() => {
+        terminal = createTerminal(activate);
+        if (activate) selectMachineView("terminal");
+      });
+      return terminal;
+    },
+    selectTerminal: (id) => {
+      flushSync(() => { setActiveTerminalId(id); selectMachineView("terminal"); });
+    },
+    launch: launchGalleryItem,
+    navigatePreview: (path) => {
+      if (!webMcpPreview.current) return false;
+      webMcpPreview.current.navigate(path);
+      selectMachineView("demo");
+      return true;
+    },
+  });
 
   const onRemoveTerminalId = React.useCallback((id: string) => {
     const removedIndex = terminals.findIndex((terminal) => terminal.id === id);
@@ -366,6 +397,7 @@ export const App: React.FC = () => {
             />
           ) : (
             <MachineView
+              webMcpPreviewRef={webMcpPreview}
               surface={surface}
               demoGuideOpen={demoGuideOpen}
               onDemoGuideOpenChange={setDemoGuideOpen}
