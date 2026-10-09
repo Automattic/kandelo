@@ -1041,6 +1041,40 @@ the previous manifest SHA and caused projection finalization to refuse it;
 recovered through the supported path. The underlying receipt-refresh behavior
 is a package-manager gap, not a Go runtime failure.
 
+**2026-10-08 — RoadRunner-first PHP-server feasibility (fork `bd12cbf`).**
+RoadRunner is the first practical integration target: it runs PHP workers as
+separate processes and supports a `CGO_ENABLED=0` Go build. FrankenPHP embeds
+PHP through cgo, which remains outside this Go/Wasm port. The RoadRunner
+v2025.1.6 source is
+the latest release compatible with the fork's Go 1.25 toolchain; v2025.1.7
+raises the minimum to Go 1.26. This is a pinned feasibility probe, not a
+RoadRunner package or a supported server release.
+
+The full `GOOS=kandelo GOARCH=wasm` RoadRunner binary stops in third-party
+`fasthttp/tcplisten`: no source file matches the Kandelo target. A narrower
+RoadRunner server-core build first exposed missing `os/user` lookup. Enabling
+the upstream pure-Go `/etc/passwd` and `/etc/group` parser for Kandelo in the
+fork makes public user/group lookup and seven selected upstream parser tests
+pass in Node and Chromium with VFS account files. The full nineteen-probe
+Chromium Go suite passes. The source-only `go-hello` recipe rebuilt from the
+new fork pin and its resolved VFS-launch probe passes in Node and Chromium.
+Full `go build std` now fails only in `net/internal/socktest`; this is still
+not full standard-library
+conformance. The server-core compile then reaches `syscall.ForkLock` and
+`SysProcAttr` process-group and credential fields. These are genuine process
+integration gaps. Kandelo has standalone `setpgid` and identity syscalls,
+but `SYS_SPAWN` does not currently express child-atomic process-group or
+credential setup, and the fork lock must preserve descriptor inheritance
+semantics rather than merely satisfy the compiler.
+
+The next broader work is therefore the process-startup and descriptor
+contract: design spawn-time group/credential actions, lock semantics, and
+Node/browser parity before adapting third-party build tags. After that,
+compile a minimal RoadRunner server and demonstrate an HTTP request through
+a real PHP worker. The RoadRunner executable and PHP worker have not run;
+UDP, DNS, and TLS are not the first blockers for this target. Keep the
+Go-runtime-specific agent guidance work item at the end of this plan.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
