@@ -138,10 +138,10 @@ const SETUP_FAILURE = /configured command failed/;
 const DESKTOP_FAILURE = /omarchydesktop: /;
 
 // A launcher session that is up and not yet dismissed: the last
-// LAUNCHER_READY on screen with no LAUNCHER_EXIT after it. A key typed
+// compositor KBD_FOCUS on screen with no LAUNCHER_EXIT after it. A key typed
 // before the launcher holds the keyboard goes to the focused window, exactly
 // as it would on the real desktop, so each session is awaited this way.
-const OPEN_LAUNCHER = /LAUNCHER_READY n=\d+(?![\s\S]*LAUNCHER_EXIT)/;
+const OPEN_LAUNCHER = /KBD_FOCUS layer=launcher(?![\s\S]*LAUNCHER_EXIT)/;
 
 /**
  * The Omarchy machine boots the tiling compositor with the desktop shell
@@ -267,6 +267,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   await expectTerminal(page, /SHORTCUT_PRESSED app=quickshell id=launcher/, 60_000);
   await expectTerminal(page, /LAYER ns=launcher layer=3 /, 60_000);
   await expectTerminal(page, /LAUNCHER_READY n=14/, 60_000);
+  await expectTerminal(page, OPEN_LAUNCHER, 60_000);
 
   // "term" narrows the desktop applications and six games to Terminal.
   // "te" also matches Asteroids and BYTEPATH.
@@ -353,6 +354,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   // an entry dispatches the switch through the Hyprland IPC.
   await pressCtrl(page, "Space", false, true);
   await expectTerminal(page, /LAUNCHER_LEVEL root/, 60_000);
+  await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["ArrowDown", "Enter"]);
   await expectTerminal(page, /LAUNCHER_LEVEL themes/, 60_000);
   await pressKeys(page, ["Enter"]);
@@ -604,13 +606,31 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
       await page.waitForTimeout(2_000);
     }
     await pressCtrl(page, "KeyW");
+    const previousClockPid = [...(await terminalText(page)).matchAll(
+      /KWLCTL_EXEC "\/usr\/local\/bin\/wlclock" pid=(\d+)/g,
+    )].at(-1)?.[1];
     await pressCtrl(page, "KeyK");
-    await expectTerminal(page, /KBD_FOCUS app_id=wlclock/, 60_000);
+    await openSurface(page, "Terminal");
+    let cleanupClockPid: string | undefined;
     await expect.poll(async () => {
-      const tiles = [...(await terminalText(page)).matchAll(/TILE n=(\d+) i=\d+ /g)];
-      return Number(tiles.at(-1)?.[1] ?? 0);
-    }, { timeout: 60_000 }).toBe(1);
+      const text = await terminalText(page);
+      const clock = [...text.matchAll(
+        /KWLCTL_EXEC "\/usr\/local\/bin\/wlclock" pid=(\d+)/g,
+      )].at(-1);
+      // A previous clock's focus and one-window tile remain on screen.
+      // Closing before the new clock owns focus leaves it beside the next game.
+      if (!clock || clock[1] === previousClockPid) return false;
+      const output = text.slice(clock.index);
+      const tiles = [...output.matchAll(/TILE n=(\d+) i=\d+ /g)];
+      const focused = /KBD_FOCUS app_id=wlclock(?![\s\S]*KBD_FOCUS)/.test(output);
+      if (!focused || Number(tiles.at(-1)?.[1]) !== 1) return false;
+      cleanupClockPid = clock[1];
+      return true;
+    }, { timeout: 60_000 }).toBe(true);
     await pressCtrl(page, "KeyW");
+    await expectTerminal(page, new RegExp(
+      `KWLCTL_EXEC "/usr/local/bin/wlclock" pid=${cleanupClockPid}\\s[\\s\\S]*WLCLOCK_EXIT`,
+    ), 60_000);
     expect(await terminalText(page), game).not.toMatch(CLIENT_FAILURE);
   }
   expect(errors).toEqual([]);

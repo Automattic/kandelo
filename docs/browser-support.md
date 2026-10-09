@@ -1070,6 +1070,15 @@ Two things still bound what a shell may do:
   costs a compiled copy on Chromium and WebKit and does not fit on
   Firefox at all (next section).
 
+The compositor reports `KBD_FOCUS layer=<namespace>` only after mapping a
+keyboard-interactive layer and sending its keyboard enter event. Launcher
+automation waits for that focus marker before typing; Quickshell's own
+`LAUNCHER_READY` reports a queued commit and can precede keyboard ownership.
+Repeated desktop automation also scopes window focus to the PID in its
+latest `KWLCTL_EXEC` record and waits for that client's exit before
+launching another window. Older focus and tile records remain in terminal
+history and do not establish that a new window is ready to receive input.
+
 #### Firefox executable-code limit
 
 SpiderMonkey reserves one fixed 2 GiB region per content process for all
