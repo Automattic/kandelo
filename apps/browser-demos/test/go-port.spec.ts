@@ -25,6 +25,7 @@ type Probe = {
   threadMarkers?: number;
   env?: string[];
   dataFiles?: { path: string; data: number[] }[];
+  selfExecPath?: string;
 };
 
 const probes: Probe[] = [
@@ -115,6 +116,13 @@ const probes: Probe[] = [
     stdout: ["GO HTTP PASS"],
   },
   {
+    name: "Go spawn, wait, and command output through a pipe",
+    file: "exec-basic.wasm",
+    argv: ["go-exec-basic"],
+    stdout: ["GO EXEC CHILD", "GO EXEC PASS"],
+    selfExecPath: "/bin/go-exec-basic.wasm",
+  },
+  {
     name: "process exit from a worker M",
     file: "exit-worker.wasm",
     argv: ["go-exit-worker"],
@@ -148,8 +156,16 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     contentType: "application/wasm",
     body: readFileSync(resolveBinary("kernel.wasm")),
   }));
-  const image = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
+  const programBytes = readFileSync(resolve(fixtureDir, probe.file));
+  const imageCapacity = probe.selfExecPath
+    ? Math.max(8 * 1024 * 1024, programBytes.byteLength + 2 * 1024 * 1024)
+    : 2 * 1024 * 1024;
+  const image = MemoryFileSystem.create(new SharedArrayBuffer(Math.ceil(imageCapacity / 4) * 4));
   image.mkdir("/etc", 0o755);
+  if (probe.selfExecPath) {
+    image.mkdir("/bin", 0o755);
+    image.createFileWithOwner(probe.selfExecPath, 0o755, 0, 0, new Uint8Array(programBytes));
+  }
   for (const file of probe.dataFiles ?? []) {
     image.createFileWithOwner(file.path, 0o644, 0, 0, new Uint8Array(file.data));
   }
