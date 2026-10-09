@@ -1293,6 +1293,25 @@ cookie, POST, and static-asset requests before comparing it to the existing
 FPM profile. There is still no runnable Kandelo FrankenPHP binary, demo URL,
 or performance result.
 
+**2026-10-09 — cgo frontend and callback probe.** The adjacent Go fork's
+uncommitted `cmd/cgo` experiment now accounts for imported Wasm globals in
+the linked debug module. The full `cmd/cgo` unit suite passes with that
+change. A tracked fixture at `tests/go/cgo/callback` adds both a synchronous
+Go-to-C-to-Go callback and a callback from a C-created pthread. With the
+scratch frontend, both this fixture and the existing `C.abs` probe compile
+their generated Go and C files, then fail at the Go linker's unsupported
+PC-relative relocation handling for Kandelo/Wasm. The callback fixture runs
+successfully with native-host Go, which checks the fixture but not Kandelo.
+Forcing internal linking instead rejects the C Wasm object format. The Wasm
+linker currently emits a final module, not a relocatable Go object that
+`wasm-ld` can combine with C.
+Its `runtime.asmcgocall` and `runtime.cgocallback` implementations also end
+in `UNDEF`. Therefore this is a frontend-only advance, not a runnable C
+call or callback, and no PHP/FrankenPHP request was executed. The scratch
+fork changes are not committed, pushed, or pinned by the package. The next
+implementation task is a coherent Go/C Wasm link and cross-call ABI design;
+do not mask these failures with a cgo parser skip or package-local shim.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
