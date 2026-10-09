@@ -206,7 +206,15 @@ pub mod process_layout;
 ///     a host-backed shutdown keeps its
 ///     connection handle until close, and accepted connections report the
 ///     routed local address. docs/abi-versioning.md ("ABI 50") lists each.
-pub const ABI_VERSION: u32 = 50;
+/// 51: the kernel decides what an exec or spawn runs. `kernel_spawn_process`
+///     reads the SYS_SPAWN request from the caller's memory and refuses a
+///     target a launch could not run before any file action runs (the spawn
+///     scratch reservation exports are gone); `kernel_process_metadata_read`
+///     hands the host the child's argv and environment;
+///     `kernel_exec_target_admit` decides whether a retained exec target is a
+///     `#!` script or a runnable program; and an exec commit sets the process
+///     pointer width. docs/abi-versioning.md ("ABI 51") lists each.
+pub const ABI_VERSION: u32 = 51;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -3540,6 +3548,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_create_process_with_stdio"),
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
         HostAdapterKernelExport::required("kernel_exec_commit"),
+        HostAdapterKernelExport::required("kernel_exec_target_admit"),
         HostAdapterKernelExport::required("kernel_exec_target_cancel"),
         HostAdapterKernelExport::required("kernel_exec_target_prepare"),
         HostAdapterKernelExport::required("kernel_exec_target_read"),
@@ -3583,6 +3592,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_process_metadata_begin"),
         HostAdapterKernelExport::required("kernel_process_metadata_cancel"),
         HostAdapterKernelExport::required("kernel_process_metadata_commit"),
+        HostAdapterKernelExport::required("kernel_process_metadata_read"),
         HostAdapterKernelExport::required("kernel_process_metadata_stage"),
         HostAdapterKernelExport::required("kernel_process_secure_exec"),
         HostAdapterKernelExport::required("kernel_publish_spawn_child"),
@@ -3598,12 +3608,6 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_spawn_exec_commit"),
         HostAdapterKernelExport::required("kernel_spawn_exec_target_prepare"),
         HostAdapterKernelExport::required("kernel_spawn_process"),
-        HostAdapterKernelExport::required("kernel_spawn_reserved_process"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_begin"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_cancel"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_capacity"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_pointer"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_retained_capacity"),
         HostAdapterKernelExport::required("kernel_take_process_timer_cleanup"),
         HostAdapterKernelExport::required("kernel_tcp_connection_id"),
         HostAdapterKernelExport::required("kernel_thread_exit"),

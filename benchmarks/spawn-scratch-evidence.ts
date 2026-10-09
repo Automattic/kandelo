@@ -50,7 +50,6 @@ function requirePositiveSafeInteger(value: number, label: string): number {
 
 export function collectSpawnScratchEvidence(options: {
   stdout: string;
-  retainedCapacity: number;
   kernelMemoryPages: number;
 }): Record<string, number> {
   const metrics = parseMetrics(options.stdout);
@@ -69,16 +68,6 @@ export function collectSpawnScratchEvidence(options: {
     );
   }
 
-  const retainedCapacity = requirePositiveSafeInteger(
-    options.retainedCapacity,
-    "retained scratch capacity",
-  );
-  if (retainedCapacity < SPAWN_SCRATCH_LARGE_WIRE_BYTES) {
-    throw new Error(
-      "spawn-bench did not retain enough scratch for the exercised large blob: " +
-      `${retainedCapacity} < ${SPAWN_SCRATCH_LARGE_WIRE_BYTES}`,
-    );
-  }
   const kernelMemoryPages = requirePositiveSafeInteger(
     options.kernelMemoryPages,
     "kernel memory pages",
@@ -92,7 +81,6 @@ export function collectSpawnScratchEvidence(options: {
 
   return {
     ...metrics,
-    spawn_scratch_retained_bytes: retainedCapacity,
     spawn_scratch_kernel_bytes: kernelMemoryBytes,
   };
 }
