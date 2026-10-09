@@ -1374,6 +1374,21 @@ produced or run on Node or Chromium. The `go-hello` package remains pinned
 to `ab8c85d83da6f18ade171f557fd0201344c65ddf`; no Kandelo ABI or
 package-pin change accompanies this incomplete link step.
 
+**2026-10-09 — function-only Go/C module proof.** Published fork commit
+`450543dc16b46ff49edb4865209bec6c2c4f323e` adds linker reachability
+edges for C-to-C calls so dead-code elimination retains the callee. The
+checked-in `tests/go/cgo/link-only/test-link.sh` packages a two-function
+SDK C object into a cgo-free Go archive, links it with the fork's normal
+internal Wasm linker, and validates the resulting Kandelo module with Wasm
+threads enabled. `wasm-objdump` confirms both `c_target` and `triple` in the
+Go module and a rewritten `call 7 <triple>` in `c_target`; the script passes
+in the dev shell. The fixture deliberately only retains a C function value:
+it does not execute a Go-to-C call, use `runtime/cgo`, stamp the output for
+the Kandelo host, or run on Node/Chromium. This proves C function-body
+import and C-to-C function-index relocation in a final Go module, **not**
+cgo interoperability. The full `C.abs` build remains stopped at the
+`runtime/cgo` memory/data/dynamic-symbol and Go/C adapter barriers above.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed

@@ -144,6 +144,17 @@ relocations, data, and dynamic symbols. Neither fixture links or runs. The
 at pointer-size recognition. Do not use a successful cgo frontend or
 function-body parse as PHP or FrankenPHP support.
 
+The intermediate function-only linker test is reproducible with:
+
+```sh
+scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh
+```
+
+It manually adds a two-function SDK C object to a cgo-free Go archive and
+checks that the final Go Wasm module validates and `c_target` calls the
+relocated `triple`. It does not call C from Go, exercise `runtime/cgo`, or
+run on Node/Chromium; it is not a substitute for either cgo probe above.
+
 ## RoadRunner feasibility probe
 
 RoadRunner is a useful Go process/IPC integration test: its Go server starts
