@@ -123,6 +123,12 @@ Go module to `wasm-ld` as though it were a relocatable object, implement
 only the object parser and call the link complete, or route calls through a
 host shim that changes Kandelo's normal program model.
 
+An initial, isolated `cmd/link/internal/loadwasm` reader in the adjacent fork
+now decodes imports, symbols, and the three CODE relocation kinds exercised
+by the C-call and callback objects. It has not been integrated into `ldobj`,
+does not apply relocations or emit C code, and does not decode debug
+relocations or archives. Keep this distinction explicit in progress reports.
+
 Use the staged probes in `tests/go/README.md`:
 first a C call, then Go-to-C-to-Go on the calling thread, then a C-created
 pthread callback. For the scratch frontend, run `../bin/go test cmd/cgo`
