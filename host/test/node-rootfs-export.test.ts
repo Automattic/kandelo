@@ -136,37 +136,6 @@ async function createExecutableRootfs(
 }
 
 describe("NodeKernelHost rootfs export contract", () => {
-  it("rejects ambiguous path and byte exec sources before starting a worker", async () => {
-    const host = new NodeKernelHost({
-      execPrograms: { "/bin/tool": wasiHelloPath },
-      execProgramBytes: { "/bin/tool": new Uint8Array([0]) },
-    });
-    try {
-      await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
-        'exec program "/bin/tool" has both path and byte sources',
-      );
-    } finally {
-      await host.destroy();
-    }
-  });
-
-  it("rejects concurrently mutable shared exec bytes before starting a worker", async () => {
-    const host = new NodeKernelHost({
-      execProgramBytes: {
-        "/bin/tool": new Uint8Array(
-          new SharedArrayBuffer(1),
-        ) as unknown as Uint8Array<ArrayBuffer>,
-      },
-    });
-    try {
-      await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
-        "bytes must use an ordinary ArrayBuffer",
-      );
-    } finally {
-      await host.destroy();
-    }
-  });
-
   it("rejects export before initialization without starting a worker", async () => {
     const host = new NodeKernelHost({ rootfsImage: new Uint8Array() });
     await expect(host.readFileFromVfs("/missing")).rejects.toThrow(
@@ -302,15 +271,10 @@ describe("NodeKernelHost rootfs export contract", () => {
       );
       let stdout = "";
       let lazyDownloads = 0;
-      let ambientResolveRequests = 0;
       const host = new NodeKernelHost({
         rootfsImage: rootfs,
         onLazyDownload: () => {
           lazyDownloads += 1;
-        },
-        onResolveExec: () => {
-          ambientResolveRequests += 1;
-          return null;
         },
         onStdout: (_pid, bytes) => {
           stdout += new TextDecoder().decode(bytes);
@@ -341,7 +305,6 @@ describe("NodeKernelHost rootfs export contract", () => {
         expect(stdout.match(/Hello from WASI\n/g)).toHaveLength(4);
         expect(stdout.match(/OK\n/g)).toHaveLength(4);
         expect(lazyDownloads).toBe(0);
-        expect(ambientResolveRequests).toBe(0);
       } finally {
         await host.destroy();
       }
@@ -458,18 +421,8 @@ describe("NodeKernelHost rootfs export contract", () => {
         new Uint8Array(readFileSync(wasiHelloPath)),
       );
       let stdout = "";
-      let ambientResolveRequests = 0;
       const host = new NodeKernelHost({
         rootfsImage: rootfs,
-        // A VFS-path spawn must not fall back to either ambient resolution
-        // mechanism, even when both could satisfy the missing path.
-        execPrograms: { "/bin/missing": wasiHelloPath },
-        onResolveExec: (path) => {
-          ambientResolveRequests += 1;
-          return path === "/bin/missing"
-            ? asArrayBuffer(new Uint8Array(readFileSync(wasiHelloPath)))
-            : null;
-        },
         onStdout: (_pid, bytes) => {
           stdout += new TextDecoder().decode(bytes);
         },
@@ -501,7 +454,6 @@ describe("NodeKernelHost rootfs export contract", () => {
         await expect(
           host.spawnFromVfs("/bin/missing", ["missing"]),
         ).rejects.toThrow("ENOENT: /bin/missing");
-        expect(ambientResolveRequests).toBe(0);
       } finally {
         await host.destroy();
       }

@@ -8,10 +8,9 @@
  *
  * Protocol (see node-kernel-protocol.ts):
  *   Main → Worker: init, spawn, append_stdin_data, set_stdin_data,
- *                  pty_write, pty_resize, terminate_process, destroy,
- *                  resolve_exec_response
+ *                  pty_write, pty_resize, terminate_process, destroy
  *   Worker → Main: ready, response, exit, stdout, stderr, host_diagnostic,
- *                  pty_output, resolve_exec, lazy_download
+ *                  pty_output, lazy_download
  */
 import { parentPort } from "node:worker_threads";
 import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -200,8 +199,6 @@ const processMemoryRetirementPressureHook =
   createProcessMemoryRetirementPressureHook(
     reclamationMeasurementPressure,
   );
-let execPrograms: Record<string, string> = {};
-let execProgramBytes: Record<string, ArrayBuffer> = {};
 let vfsExecIO: PlatformIO | null = null;
 /** The transport this boot resolves the `/` image's deferred addresses
  *  through: a closed-asset bundle, a closed-asset source, or the dev fallback
@@ -544,10 +541,6 @@ function reportRetainedProcessGeneration(
   }
 }
 
-// Exec resolution: request ID → resolver
-let execResolveId = 0;
-const pendingExecResolves = new Map<number, (bytes: ArrayBuffer | null) => void>();
-
 // --- Helpers ---
 
 /**
@@ -764,24 +757,6 @@ function bufferToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return out;
 }
 
-function resolveExecLocal(path: string): ArrayBuffer | null {
-  const owned = Object.prototype.hasOwnProperty.call(execProgramBytes, path)
-    ? execProgramBytes[path]
-    : undefined;
-  if (owned !== undefined) {
-    // WHY: process-worker launch transfers its program buffer. Preserve the
-    // worker-lifetime snapshot by lending a fresh copy to every execution.
-    return owned.slice(0);
-  }
-  const mapped = Object.prototype.hasOwnProperty.call(execPrograms, path)
-    ? execPrograms[path]
-    : undefined;
-  if (mapped && existsSync(mapped)) {
-    const bytes = readFileSync(mapped);
-    return bufferToArrayBuffer(bytes);
-  }
-  return null;
-}
 
 async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
   // The kernel owns `/`, so it is the source of exec bytes for every path it
@@ -803,20 +778,6 @@ async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
   }
 }
 
-async function resolveExec(path: string): Promise<ArrayBuffer | null> {
-  const local = resolveExecLocal(path);
-  if (local) return local;
-
-  const vfs = await readExecFromVfs(path);
-  if (vfs) return vfs;
-
-  // Ask main thread to resolve
-  const requestId = ++execResolveId;
-  return new Promise<ArrayBuffer | null>((resolve) => {
-    pendingExecResolves.set(requestId, resolve);
-    post({ type: "resolve_exec", requestId, path });
-  });
-}
 
 
 // --- Init ---
@@ -960,8 +921,6 @@ async function handleInit(msg: InitMessage) {
     ),
     retirementPressureHook: processMemoryRetirementPressureHook,
   });
-  execPrograms = msg.execPrograms ?? {};
-  execProgramBytes = msg.execProgramBytes ?? {};
   workerAdapter = new NodeWorkerAdapter();
   if (!msg.rootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
     throw new Error("sessionSeedTrees requires rootfsImage");
@@ -3872,14 +3831,6 @@ port.on("message", (msg: MainToKernelMessage) => {
           result: undefined,
           error: (err as Error)?.message ?? String(err),
         });
-      }
-      break;
-    }
-    case "resolve_exec_response": {
-      const resolve = pendingExecResolves.get(msg.requestId);
-      if (resolve) {
-        pendingExecResolves.delete(msg.requestId);
-        resolve(msg.programBytes);
       }
       break;
     }

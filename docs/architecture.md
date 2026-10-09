@@ -2090,12 +2090,11 @@ so an image built this way must replace every secret on each machine's first
 boot (the WordPress images do, `images/vfs/scripts/wordpress-first-boot.ts`).
 The browser host has no way to set it.
 
-`execPrograms` and `execProgramBytes` are spawn-preflight inputs only. They
-cannot authorize `execve` or `execveat`, whose executable bytes and metadata
-come exclusively from the exact retained target prepared through the calling
-process's kernel VFS state. Tests that name an exec fixture stage it into an
-explicit test rootfs before boot. A virtual spawn-preflight path cannot use
-both mapping sources. Without a rootfs image, the worker falls back to raw
+`execve`, `execveat` and `posix_spawn` take their executable bytes and
+metadata only from the exact target the kernel resolves through the caller's
+VFS state; the host has no program map to consult. Tests that name an exec
+fixture stage it into an explicit test rootfs before boot. Without a rootfs
+image, the worker falls back to raw
 `NodePlatformIO` (the host's `/` published as one host mount) — kept for
 legacy callers that have not migrated.
 

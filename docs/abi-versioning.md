@@ -1490,6 +1490,9 @@ Semantic changes (not visible to the snapshot):
 - **The fork-instrumentation contract** is still checked by the host's
   TypeScript (`describeWasmArtifactPolicyFailures`), because
   `crates/wasm-artifact` does not yet carry the `wpk_fork` decoders.
+- **The Node host's `execPrograms`, `execProgramBytes` and `onResolveExec`
+  options are gone.** They fed only the spawn preflight; no launch ever ran
+  their bytes.
 
 ## The snapshot
 

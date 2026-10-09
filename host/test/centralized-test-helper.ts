@@ -283,15 +283,6 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   const forkCountSamplePromises: Promise<bigint>[] = [];
 
 
-  // Convert execPrograms Map to plain object for the worker
-  let execPrograms: Record<string, string> | undefined;
-  if (options.execPrograms) {
-    execPrograms = {};
-    for (const [k, v] of options.execPrograms) {
-      execPrograms[k] = v;
-    }
-  }
-
   const rootfsImage = await prepareExecTargetTestRootfs(options);
 
   // Prepare stdin
@@ -312,7 +303,6 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxWorkers: 4,
     maxPages: options.maxPages,
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
-    execPrograms,
     rootfsImage,
     rootfsMountSpec: options.rootfsNosuid === undefined
       ? undefined

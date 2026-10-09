@@ -126,16 +126,6 @@ export interface InitMessage {
     imageBuildDeterminism?: ImageBuildDeterminism;
   };
   /**
-   * Virtual path → immutable host file for spawn-only preflight. Exec never
-   * consults this map and uses only a retained kernel VFS target.
-   */
-  execPrograms?: Record<string, string>;
-  /**
-   * Virtual path → worker-owned bytes for spawn-only preflight through Task
-   * 12. Exec never consults this map.
-   */
-  execProgramBytes?: Record<string, ArrayBuffer>;
-  /**
    * Bytes of `host/wasm/rootfs.vfs.zst`, read on the main thread and forwarded
    * to the worker. When present, the worker materialises the default mount
    * spec (rootfs at `/`, scratch dirs at `/tmp` etc.) and constructs a
@@ -201,12 +191,6 @@ export interface ReadVfsFileMessage {
   type: "read_vfs_file";
   requestId: number;
   path: string;
-}
-
-export interface ResolveExecResponseMessage {
-  type: "resolve_exec_response";
-  requestId: number;
-  programBytes: ArrayBuffer | null;
 }
 
 /** Report the display size (device pixels) of a CRTC's canvas element.
@@ -310,7 +294,6 @@ export type MainToKernelMessage =
   | GetKernelMemoryPagesRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
   | SignalProcessMessage
-  | ResolveExecResponseMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
@@ -333,12 +316,6 @@ export interface ExitMessage {
   type: "exit";
   pid: number;
   status: number;
-}
-
-export interface ResolveExecRequestMessage {
-  type: "resolve_exec";
-  requestId: number;
-  path: string;
 }
 
 /** Which teardown step `performDestroy` is in. */
@@ -373,7 +350,6 @@ export type KernelToMainMessage =
   | StderrMessage
   | HostDiagnosticMessage
   | PtyOutputMessage
-  | ResolveExecRequestMessage
   | ProcEventMessage
   | LazyDownloadMessage
   | DestroyProgressMessage;
