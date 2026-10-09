@@ -1329,6 +1329,26 @@ route cannot accommodate C function types, table elements, data and TLS,
 evaluate emitting a relocatable Go object instead. Neither route is
 implemented, and the C-call and callback probes remain unpassed on Kandelo.
 
+**2026-10-09 — internal Wasm C-object reader spike.** Published fork commit
+`85c99ecc12d0dedde902d884369ee1bfbaa40a6f` with an isolated
+`cmd/link/internal/loadwasm` reader. It decodes the
+SDK object's import names, linking symbol table, section references, and
+the function-index, global-index, and table-relative CODE relocations needed
+by the current probes; it rejects unsupported CODE relocation types instead
+of misinterpreting them. Unit tests cover a small object and malformed
+inputs. With `KANDELO_WASM_OBJECT` set to each actual SDK object, the reader
+tests pass for the `C.abs` cgo shim (two `_cgo_topofstack` relocations) and
+the pthread callback fixture (nine CODE relocations); the decoded entries
+match `llvm-readobj`. The cgo build still stops at unsupported Go linker
+relocations, and this reader is not yet connected to `ldobj` or the Wasm
+emitter. No Go/C call has linked or run on Kandelo, Node, or Chromium. The
+next step is to map parsed C function types/bodies, globals, data, table
+elements, and relocations into the Go linker's final Wasm layout, beginning
+with the C-call shim. Debug relocations and archives remain out of scope for
+this reader spike. The `go-hello` package remains pinned to fork commit
+`ab8c85d83da6f18ade171f557fd0201344c65ddf`; no Kandelo ABI change or
+package pin update is warranted until a usable linker revision exists.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
