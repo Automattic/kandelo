@@ -25,14 +25,6 @@ const reservationSettlementAllowances = [
   },
   {
     owner:
-      "CentralizedKernelWorker.#handleSpawnAfterResolve",
-    why:
-      "The reserved spawn catch records the branded commit trap, then its "
-      + "finally revokes the lease and skips cancellation because Rust "
-      + "settlement is unknown before throwing one fatal wrapper.",
-  },
-  {
-    owner:
       "CentralizedKernelWorker.#readKernelOwnedPath",
     why:
       "The large canonical-path catch records a branded reservation or copy "
@@ -279,8 +271,8 @@ describe("kernel export-failure catch audit", () => {
     );
     expect(formatKernelExportFailureAudit(result)).toEqual([]);
     expect(result.exportBearingOwners).toEqual(expect.arrayContaining([
-      "CentralizedKernelWorker.#beginLargeSpawnScratch",
       "CentralizedKernelWorker.#beginLargeTransferScratch",
+      "CentralizedKernelWorker.#handleSpawn",
     ]));
   });
 });

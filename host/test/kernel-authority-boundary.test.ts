@@ -37,7 +37,6 @@ const hiddenWorkerNames = [
   "scratchOffset",
   "scratchRegion",
   "tcpScratchRegion",
-  "largeSpawnScratchInUse",
   "largeTransferScratchInUse",
   "kernelFatalError",
   "initialized",
@@ -69,8 +68,7 @@ const hiddenWorkerNames = [
   "handleLargeWrite",
   "handleLargeRead",
   "handleSpawn",
-  "cancelLargeSpawnScratch",
-  "handleSpawnAfterResolve",
+  "launchSpawnedChild",
 ] as const;
 
 const hiddenPackageSymbols = [
@@ -119,7 +117,6 @@ describe("kernel authority boundary", () => {
     expect(Reflect.set(worker, "initialized", true)).toBe(false);
     expect(Reflect.set(worker, "kernelMemory", fakeMemory)).toBe(false);
     expect(Reflect.set(worker, "kernelInstance", fakeInstance)).toBe(false);
-    expect(Reflect.set(worker, "largeSpawnScratchInUse", false)).toBe(false);
     expect(Reflect.set(worker, "largeTransferScratchInUse", false)).toBe(false);
     expect(Reflect.set(worker, "kernelFatalError", null)).toBe(false);
 
@@ -211,8 +208,7 @@ describe("kernel authority boundary", () => {
       "discardStoppedProcessStateForTest",
       "dispatchRegisteredMainChannelForAdvisoryLockTest",
       "dispatchScratchBoundarySyscallForTest",
-      "dispatchSpawnAfterResolveForTest",
-      "dispatchSpawnPreflightForTest",
+      "dispatchSpawnForTest",
       "dispatchUntrackedExecForTaskAuthorityTest",
       "dispatchUntrackedExecveatForTaskAuthorityTest",
       "dispatchUntrackedForkForTaskAuthorityTest",
@@ -267,7 +263,7 @@ describe("kernel authority boundary", () => {
       expect(name in authority).toBe(false);
     }
     expect(
-      Reflect.set(authority, "dispatchSpawnPreflightForTest", vi.fn()),
+      Reflect.set(authority, "dispatchSpawnForTest", vi.fn()),
     ).toBe(false);
     expect(Reflect.defineProperty(authority, "arbitraryDispatch", {
       value: vi.fn(),

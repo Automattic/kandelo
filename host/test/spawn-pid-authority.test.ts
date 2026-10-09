@@ -54,7 +54,6 @@ describe("kernel task-ID authority", () => {
   it("does not substitute the process leader for a pthread missing its TID mapping", () => {
     const parentPid = 77;
     const onFork = vi.fn();
-    const onResolveSpawn = vi.fn();
     const onSpawn = vi.fn();
     const kernelForkProcess = vi.fn(() => 100);
     const forkHarness = createTaskAuthorityHarness({
@@ -82,7 +81,7 @@ describe("kernel task-ID authority", () => {
 
     const spawnHarness = createTaskAuthorityHarness({
       pid: parentPid,
-      callbacks: { onResolveSpawn, onSpawn },
+      callbacks: { onSpawn },
     });
     const spawnThread = untrackedThreadChannel(
       parentPid,
@@ -91,13 +90,12 @@ describe("kernel task-ID authority", () => {
     expectEntryCause(
       () =>
         spawnHarness.worker.testAuthority
-          .dispatchSpawnPreflightForTest(
+          .dispatchSpawnForTest(
             spawnThread,
             [0, 0, 0, 0, 0, 0],
           ),
       expected,
     );
-    expect(onResolveSpawn).not.toHaveBeenCalled();
     expect(onSpawn).not.toHaveBeenCalled();
   });
 
@@ -256,6 +254,16 @@ describe("kernel task-ID authority", () => {
           return count;
         }),
         kernel_exec_target_cancel: vi.fn(() => 0),
+        // The kernel decides the retained target is a runnable program.
+        kernel_exec_target_admit: vi.fn((
+          _pid: number,
+          _target: number,
+          _abi: number,
+          out: number,
+        ) => {
+          new Uint8Array(emptyPath.kernelMemory.buffer)[out] = 0;
+          return 1;
+        }),
       },
     });
     kernelBytes = new Uint8Array(emptyPath.kernelMemory.buffer);
@@ -328,26 +336,11 @@ describe("kernel task-ID authority", () => {
       callbacks: { onSpawn },
       kernelExports: { kernel_spawn_process: kernelSpawnProcess },
     });
-    const origArgs = [1, 2, 3, 4, 5, 0];
+    const origArgs = [1, 2, 3, 4, 0, 0];
 
-    harness.worker.testAuthority.dispatchSpawnAfterResolveForTest({
-      channel: harness.channel,
-      origArgs,
-      parentPid,
-      callerTid: parentPid,
-      pidOutPtr: 5,
-      blobBytes: new Uint8Array([1]),
-      blobLen: 1,
-      program: {} as never,
-      envp: [],
-    });
+    harness.worker.testAuthority.dispatchSpawnForTest(harness.channel, origArgs);
 
-    expect(kernelSpawnProcess).toHaveBeenCalledWith(
-      parentPid,
-      parentPid,
-      harness.scratchPointer,
-      1,
-    );
+    expect(kernelSpawnProcess).toHaveBeenCalledWith(parentPid, parentPid, 1n, 2, 3n, 4);
     expect(onSpawn).not.toHaveBeenCalled();
     expect(harness.completeChannel).toHaveBeenCalledWith(
       harness.channel,
