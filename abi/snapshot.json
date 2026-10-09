@@ -1,5 +1,5 @@
 {
-  "abi_version": 53,
+  "abi_version": 54,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1268,7 +1268,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 53,
+      "abi_version": 54,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1343,7 +1343,6 @@
       "kernel_clipboard_guest_read",
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
-      "kernel_publish_process_exit",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
@@ -1382,6 +1381,7 @@
       "kernel_exchange_stream_start",
       "kernel_exchange_take_pending",
       "kernel_exec_commit",
+      "kernel_exec_target_admit",
       "kernel_exec_target_cancel",
       "kernel_exec_target_prepare",
       "kernel_exec_target_read",
@@ -1425,8 +1425,10 @@
       "kernel_process_metadata_begin",
       "kernel_process_metadata_cancel",
       "kernel_process_metadata_commit",
+      "kernel_process_metadata_read",
       "kernel_process_metadata_stage",
       "kernel_process_secure_exec",
+      "kernel_publish_process_exit",
       "kernel_publish_spawn_child",
       "kernel_reap_exited_child",
       "kernel_remove_process",
@@ -1436,12 +1438,6 @@
       "kernel_spawn_exec_commit",
       "kernel_spawn_exec_target_prepare",
       "kernel_spawn_process",
-      "kernel_spawn_reserved_process",
-      "kernel_spawn_scratch_begin",
-      "kernel_spawn_scratch_cancel",
-      "kernel_spawn_scratch_capacity",
-      "kernel_spawn_scratch_pointer",
-      "kernel_spawn_scratch_retained_capacity",
       "kernel_take_process_timer_cleanup",
       "kernel_tcp_connection_id",
       "kernel_thread_exit",
@@ -2669,6 +2665,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_exec_target_admit",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_exec_target_cancel",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -3149,6 +3150,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_process_metadata_read",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_process_metadata_stage",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -3535,37 +3541,7 @@
     {
       "kind": "func",
       "name": "kernel_spawn_process",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_reserved_process",
-      "signature": "(i32,i32,i64,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_scratch_begin",
-      "signature": "(i32) -> (i64)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_scratch_cancel",
-      "signature": "(i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_scratch_capacity",
-      "signature": "(i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_scratch_pointer",
-      "signature": "(i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_scratch_retained_capacity",
-      "signature": "() -> (i32)"
+      "signature": "(i32,i32,i64,i32,i64,i32) -> (i32)"
     },
     {
       "kind": "func",

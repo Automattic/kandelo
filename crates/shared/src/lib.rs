@@ -215,7 +215,13 @@ pub mod process_layout;
 ///     ("ABI 52").
 /// 53: the extended-attribute syscalls marshal their arguments and carry
 ///     channel scalar contracts. docs/abi-versioning.md ("ABI 53") lists each.
-pub const ABI_VERSION: u32 = 53;
+/// 54: the rust-first kernel batch (one unreleased epoch for the whole
+///     batch PR). The kernel decides what an exec or spawn runs
+///     (`kernel_spawn_process` reads the SYS_SPAWN request itself; the spawn
+///     scratch reservation exports are gone; `kernel_process_metadata_read`;
+///     `kernel_exec_target_admit`); later commits of the batch fold their
+///     changes in here. docs/abi-versioning.md ("ABI 54") lists each.
+pub const ABI_VERSION: u32 = 54;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -3610,6 +3616,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_exchange_stream_start"),
         HostAdapterKernelExport::required("kernel_exchange_take_pending"),
         HostAdapterKernelExport::required("kernel_exec_commit"),
+        HostAdapterKernelExport::required("kernel_exec_target_admit"),
         HostAdapterKernelExport::required("kernel_exec_target_cancel"),
         HostAdapterKernelExport::required("kernel_exec_target_prepare"),
         HostAdapterKernelExport::required("kernel_exec_target_read"),
@@ -3653,6 +3660,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_process_metadata_begin"),
         HostAdapterKernelExport::required("kernel_process_metadata_cancel"),
         HostAdapterKernelExport::required("kernel_process_metadata_commit"),
+        HostAdapterKernelExport::required("kernel_process_metadata_read"),
         HostAdapterKernelExport::required("kernel_process_metadata_stage"),
         HostAdapterKernelExport::required("kernel_process_secure_exec"),
         HostAdapterKernelExport::optional_until("kernel_publish_process_exit", 53, 54),
@@ -3669,12 +3677,6 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_spawn_exec_commit"),
         HostAdapterKernelExport::required("kernel_spawn_exec_target_prepare"),
         HostAdapterKernelExport::required("kernel_spawn_process"),
-        HostAdapterKernelExport::required("kernel_spawn_reserved_process"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_begin"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_cancel"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_capacity"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_pointer"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_retained_capacity"),
         HostAdapterKernelExport::required("kernel_take_process_timer_cleanup"),
         HostAdapterKernelExport::required("kernel_tcp_connection_id"),
         HostAdapterKernelExport::required("kernel_thread_exit"),

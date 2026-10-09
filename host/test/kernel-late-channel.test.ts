@@ -24,7 +24,10 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
-async function instantiateKernelOnly(bytes: Uint8Array): Promise<WebAssembly.Instance> {
+async function instantiateKernelOnly(
+  bytes: Uint8Array,
+  imports: Record<string, unknown> = {},
+): Promise<WebAssembly.Instance> {
   const ptrWidth = detectPtrWidth(toArrayBuffer(bytes));
   const memory = ptrWidth === 8
     ? new WebAssembly.Memory({
@@ -39,7 +42,7 @@ async function instantiateKernelOnly(bytes: Uint8Array): Promise<WebAssembly.Ins
         shared: true,
       });
   const module = await WebAssembly.compile(bytes as BufferSource);
-  const importObject: WebAssembly.Imports = { env: { memory } };
+  const importObject: WebAssembly.Imports = { env: { memory, ...imports } };
   const envImports = importObject.env as Record<string, unknown>;
   for (const imp of WebAssembly.Module.imports(module)) {
     if (imp.module !== "env" || imp.name === "memory") continue;
@@ -109,16 +112,48 @@ describe("kernel_handle_channel", () => {
   });
 
   it("keeps a signaled spawn child hidden from wasm wait/reap until publication", async () => {
-    const instance = await instantiateKernelOnly(readFileSync(resolveBinary("kernel.wasm")));
+    // The caller's memory the kernel reads the spawn request from: the
+    // target path at 0x100 and an empty 40-byte request blob at 0x200.
+    const callerMemory = new Uint8Array(0x1000);
+    const path = new TextEncoder().encode("/tmp/prog");
+    callerMemory.set(path, 0x100);
+    let kernelMemory!: WebAssembly.Memory;
+    const instance = await instantiateKernelOnly(
+      readFileSync(resolveBinary("kernel.wasm")),
+      {
+        host_proc_read_bytes: (_pid: number, addr: bigint, dst: number, len: number) => {
+          new Uint8Array(kernelMemory.buffer, Number(dst), len)
+            .set(callerMemory.subarray(Number(addr), Number(addr) + len));
+          return 0;
+        },
+      },
+    );
     const memory = instance.exports.memory as WebAssembly.Memory;
+    kernelMemory = memory;
     const allocScratch = instance.exports.kernel_alloc_scratch as (size: number) => number;
     const createProcess = instance.exports.kernel_create_process as () => number;
     const spawnProcess = instance.exports.kernel_spawn_process as (
       parentPid: number,
       callerTid: number,
-      blobPtr: number,
+      pathAddr: bigint,
+      pathLen: number,
+      blobAddr: bigint,
       blobLen: number,
     ) => number;
+    // The kernel refuses a target a launch could not run, so give it one: an
+    // executable WebAssembly header in the in-kernel tmpfs.
+    (instance.exports.kernel_set_rootfs_enabled as (enabled: number) => number)(1);
+    (instance.exports.kernel_set_tmpfs_enabled as (enabled: number) => number)(1);
+    const header = Uint8Array.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+    const headerPtr = allocScratch(header.byteLength);
+    new Uint8Array(memory.buffer, headerPtr, header.byteLength).set(header);
+    const pathPtr = allocScratch(path.byteLength);
+    new Uint8Array(memory.buffer, pathPtr, path.byteLength).set(path);
+    expect(
+      (instance.exports.kernel_rootfs_write_file as (...args: number[]) => number)(
+        pathPtr, path.byteLength, 0, 0, headerPtr, header.byteLength, 0o755, 1,
+      ),
+    ).toBeGreaterThanOrEqual(0);
     const markProcessSignaled = instance.exports.kernel_mark_process_signaled as (
       pid: number,
       signum: number,
@@ -145,10 +180,7 @@ describe("kernel_handle_channel", () => {
     ) => number;
 
     const parentPid = createProcess();
-    const blob = new Uint8Array(40);
-    const blobPtr = allocScratch(blob.byteLength);
-    new Uint8Array(memory.buffer, blobPtr, blob.byteLength).set(blob);
-    const childPid = spawnProcess(parentPid, parentPid, blobPtr, blob.byteLength);
+    const childPid = spawnProcess(parentPid, parentPid, 0x100n, path.byteLength, 0x200n, 40);
     const waitResultPtr = allocScratch(STRUCT_SIZE_KERNEL_WAIT_RESULT);
 
     expect(childPid).toBeGreaterThan(0);

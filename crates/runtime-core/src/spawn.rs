@@ -1,202 +1,14 @@
-//! Non-forking spawn — types shared between the host-side blob parser
-//! (in `host/src/kernel-worker.ts`) and the kernel's
-//! `ProcessTable::spawn_child` implementation.
+//! Non-forking spawn: the SYS_SPAWN request the kernel reads from the
+//! caller's memory, and the types `ProcessTable::spawn_child` consumes.
 //!
 //! See `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`.
 
 extern crate alloc;
 
 use alloc::vec::Vec;
-use spin::Mutex;
-use wasm_posix_shared::{Errno, spawn_contract};
+use wasm_posix_shared::{Errno, platform_limits, spawn_contract};
 
-/// Kernel-owned reusable transport for SYS_SPAWN blobs larger than the normal
-/// syscall-channel scratch region.
-///
-/// A positive token represents the one reservation whose bytes the host may
-/// currently replace. Growing is allowed only while idle, and parsing consumes
-/// the matching token before any process-table or host-import work begins.
-struct SpawnScratchBuffer {
-    bytes: Vec<u8>,
-    reservation: Option<i64>,
-    next_token: Option<i64>,
-}
-
-impl SpawnScratchBuffer {
-    const fn new() -> Self {
-        Self {
-            bytes: Vec::new(),
-            reservation: None,
-            next_token: Some(1),
-        }
-    }
-
-    fn begin(&mut self, minimum_capacity: usize) -> Result<i64, Errno> {
-        self.begin_with_reserve(minimum_capacity, |bytes, additional| {
-            bytes
-                .try_reserve_exact(additional)
-                .map_err(|_| Errno::ENOMEM)
-        })
-    }
-
-    fn begin_with_reserve(
-        &mut self,
-        minimum_capacity: usize,
-        reserve: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), Errno>,
-    ) -> Result<i64, Errno> {
-        if minimum_capacity == 0 {
-            return Err(Errno::EINVAL);
-        }
-        if minimum_capacity > spawn_contract::WIRE_MAX_BYTES {
-            return Err(Errno::E2BIG);
-        }
-        if self.reservation.is_some() {
-            return Err(Errno::EBUSY);
-        }
-        let token = self.next_token.ok_or(Errno::EOVERFLOW)?;
-        if self.bytes.len() < minimum_capacity {
-            let additional = minimum_capacity - self.bytes.len();
-            reserve(&mut self.bytes, additional)?;
-            // Expose only initialized bytes to the host. `try_reserve_exact`
-            // has already proven this resize cannot allocate or fail.
-            let capacity = self.bytes.capacity();
-            self.bytes.resize(capacity, 0);
-        }
-        self.reservation = Some(token);
-        self.next_token = token.checked_add(1);
-        Ok(token)
-    }
-
-    fn pointer(&mut self, token: i64) -> Result<usize, Errno> {
-        if token <= 0 || self.reservation != Some(token) {
-            return Err(Errno::EINVAL);
-        }
-        Ok(self.bytes.as_mut_ptr() as usize)
-    }
-
-    fn capacity(&self, token: i64) -> Result<usize, Errno> {
-        if token <= 0 || self.reservation != Some(token) {
-            return Err(Errno::EINVAL);
-        }
-        Ok(self.bytes.len())
-    }
-
-    fn retained_capacity(&self) -> usize {
-        self.bytes.len()
-    }
-
-    fn cancel(&mut self, token: i64) -> Result<(), Errno> {
-        if token <= 0 || self.reservation != Some(token) {
-            return Err(Errno::EINVAL);
-        }
-        self.reservation = None;
-        Ok(())
-    }
-
-    fn parse_reserved(&mut self, token: i64, length: usize) -> Result<ParsedBlob, Errno> {
-        if token <= 0 || self.reservation != Some(token) {
-            return Err(Errno::EINVAL);
-        }
-
-        // WHY: a matching commit consumes the reservation even when its
-        // length or wire bytes are malformed. A failed caller cannot strand
-        // the reusable allocation in Busy forever, while a stale token cannot
-        // cancel or consume the current operation.
-        self.reservation = None;
-        let bytes = self.bytes.get(..length).ok_or(Errno::E2BIG)?;
-        parse_blob(bytes)
-    }
-}
-
-struct GlobalSpawnScratch {
-    inner: Mutex<SpawnScratchBuffer>,
-}
-
-impl GlobalSpawnScratch {
-    const fn new() -> Self {
-        Self {
-            inner: Mutex::new(SpawnScratchBuffer::new()),
-        }
-    }
-
-    fn begin(&self, minimum_capacity: usize) -> Result<i64, Errno> {
-        self.inner
-            .try_lock()
-            .ok_or(Errno::EBUSY)?
-            .begin(minimum_capacity)
-    }
-
-    fn pointer(&self, token: i64) -> Result<usize, Errno> {
-        self.inner.try_lock().ok_or(Errno::EBUSY)?.pointer(token)
-    }
-
-    fn capacity(&self, token: i64) -> Result<usize, Errno> {
-        self.inner.try_lock().ok_or(Errno::EBUSY)?.capacity(token)
-    }
-
-    fn retained_capacity(&self) -> Result<usize, Errno> {
-        Ok(self
-            .inner
-            .try_lock()
-            .ok_or(Errno::EBUSY)?
-            .retained_capacity())
-    }
-
-    fn cancel(&self, token: i64) -> Result<(), Errno> {
-        // WHY: cancellation is the fail-safe that releases host write
-        // authority. This critical section performs no host import or callback,
-        // so a blocking lock cannot re-enter this mutex and cannot strand a
-        // matching reservation merely because another Wasm thread contended.
-        self.inner.lock().cancel(token)
-    }
-
-    fn parse_reserved(&self, token: i64, length: usize) -> Result<ParsedBlob, Errno> {
-        // WHY: commit must either consume the matching token or establish that
-        // the token is stale. Nothing under this guard imports host code; keep
-        // that no-callback property so blocking contention cannot deadlock or
-        // return before the host has a definitive reservation state.
-        self.inner.lock().parse_reserved(token, length)
-    }
-}
-
-static SPAWN_SCRATCH: GlobalSpawnScratch = GlobalSpawnScratch::new();
-
-/// Begin one exclusive host-write reservation for a complete spawn blob.
-pub fn begin_spawn_scratch(minimum_capacity: usize) -> Result<i64, Errno> {
-    SPAWN_SCRATCH.begin(minimum_capacity)
-}
-
-/// Pointer owned by exactly the reservation named by `token`.
-pub fn spawn_scratch_pointer(token: i64) -> Result<usize, Errno> {
-    SPAWN_SCRATCH.pointer(token)
-}
-
-/// Writable byte capacity of exactly the reservation named by `token`.
-pub fn spawn_scratch_capacity(token: i64) -> Result<usize, Errno> {
-    SPAWN_SCRATCH.capacity(token)
-}
-
-/// Retained byte capacity of the reusable allocation.
-///
-/// This diagnostic reveals no pointer and grants no authority to mutate the
-/// allocation. Active reservation access remains token-gated.
-pub fn spawn_scratch_retained_capacity() -> Result<usize, Errno> {
-    SPAWN_SCRATCH.retained_capacity()
-}
-
-/// Cancel exactly the reservation named by `token`.
-pub fn cancel_spawn_scratch(token: i64) -> Result<(), Errno> {
-    SPAWN_SCRATCH.cancel(token)
-}
-
-/// Consume and parse exactly the reservation named by `token`.
-///
-/// The returned representation owns all argv, environment, and action bytes,
-/// so the scratch mutex is released before callers enter the process table or
-/// invoke any host import.
-pub fn parse_reserved_spawn_blob(token: i64, length: usize) -> Result<ParsedBlob, Errno> {
-    SPAWN_SCRATCH.parse_reserved(token, length)
-}
+use crate::process::HostIO;
 
 /// Implemented bits from `posix_spawnattr_t::__flags`.
 ///
@@ -529,275 +341,65 @@ fn decode_measured_strings(ranges: &[(usize, usize)], strings: &[u8]) -> Vec<Vec
         .collect()
 }
 
+/// Read one SYS_SPAWN request (the target path and the request blob) out of
+/// the caller's memory and validate it the way process startup will consume
+/// it: the per-entry transport limit and `ARG_MAX` counted with the caller's
+/// pointer width. Nothing here touches process state.
+pub fn read_request(
+    host: &mut dyn HostIO,
+    pid: u32,
+    pointer_width: u8,
+    path_addr: u64,
+    path_len: usize,
+    blob_addr: u64,
+    blob_len: usize,
+) -> Result<(Vec<u8>, ParsedBlob), Errno> {
+    if path_len >= platform_limits::PATH_MAX_BYTES {
+        return Err(Errno::ENAMETOOLONG);
+    }
+    if blob_len == 0 {
+        return Err(Errno::EINVAL);
+    }
+    if blob_len > spawn_contract::WIRE_MAX_BYTES {
+        return Err(Errno::E2BIG);
+    }
+    let pid = pid as i32;
+    let mut path =
+        crate::guest_ptr::read_guest_bytes(host, pid, path_addr, path_len, platform_limits::PATH_MAX_BYTES)?;
+    if path.last() == Some(&0) {
+        path.pop();
+    }
+    let blob = crate::guest_ptr::read_guest_bytes(
+        host,
+        pid,
+        blob_addr,
+        blob_len,
+        spawn_contract::WIRE_MAX_BYTES,
+    )?;
+    let parsed = parse_blob(&blob)?;
+    if parsed.argv.len() > platform_limits::PROCESS_STARTUP_MAX_ARGV_COUNT
+        || parsed.envp.len() > platform_limits::PROCESS_STARTUP_MAX_ENVP_COUNT
+    {
+        return Err(Errno::E2BIG);
+    }
+    let width = usize::from(pointer_width);
+    let mut total = 2 * width;
+    for entry in parsed.argv.iter().chain(parsed.envp.iter()) {
+        if entry.len() > platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES {
+            return Err(Errno::E2BIG);
+        }
+        total += width + entry.len() + 1;
+        if total > platform_limits::ARG_MAX_BYTES {
+            return Err(Errno::E2BIG);
+        }
+    }
+    Ok((path, parsed))
+}
+
 #[cfg(test)]
 mod parser_tests {
     use super::*;
 
-    #[test]
-    fn scratch_queries_reject_invalid_bounds_and_lock_contention() {
-        let scratch = GlobalSpawnScratch::new();
-        assert_eq!(scratch.begin(0), Err(Errno::EINVAL));
-        assert_eq!(
-            scratch.begin(spawn_contract::WIRE_MAX_BYTES + 1),
-            Err(Errno::E2BIG)
-        );
-
-        let guard = scratch.inner.try_lock().expect("hold scratch lock");
-        assert_eq!(scratch.begin(84 * 1024), Err(Errno::EBUSY));
-        assert_eq!(scratch.pointer(1), Err(Errno::EBUSY));
-        assert_eq!(scratch.capacity(1), Err(Errno::EBUSY));
-        assert_eq!(scratch.retained_capacity(), Err(Errno::EBUSY));
-        // Commit and cancellation deliberately block instead of returning
-        // EBUSY. Calling either while this test owns the lock would deadlock;
-        // the next two threaded tests prove their settlement under contention.
-        drop(guard);
-    }
-
-    #[test]
-    fn scratch_cancel_waits_for_contention_then_definitively_releases_token() {
-        use std::sync::{Arc, mpsc};
-        use std::time::Duration;
-
-        let scratch = Arc::new(GlobalSpawnScratch::new());
-        let token = scratch
-            .begin(spawn_contract::WIRE_HEADER_BYTES)
-            .expect("begin reservation");
-        let guard = scratch.inner.lock();
-        let (started_tx, started_rx) = mpsc::sync_channel(0);
-        let (result_tx, result_rx) = mpsc::sync_channel(0);
-        let cancel_scratch = Arc::clone(&scratch);
-        let cancel_thread = std::thread::spawn(move || {
-            started_tx.send(()).expect("announce cancellation");
-            let result = cancel_scratch.cancel(token);
-            result_tx.send(result).expect("report cancellation");
-        });
-
-        started_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("cancellation thread started");
-        assert!(
-            result_rx.recv_timeout(Duration::from_millis(50)).is_err(),
-            "cancellation must not return before the contended lock settles",
-        );
-        drop(guard);
-        assert_eq!(
-            result_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("cancellation settled"),
-            Ok(()),
-        );
-        cancel_thread.join().expect("cancellation thread joined");
-        assert_eq!(scratch.pointer(token), Err(Errno::EINVAL));
-
-        let retry = scratch
-            .begin(spawn_contract::WIRE_HEADER_BYTES)
-            .expect("reservation reusable after cancellation");
-        scratch.cancel(retry).expect("cancel retry");
-    }
-
-    #[test]
-    fn scratch_commit_waits_for_contention_then_definitively_consumes_token() {
-        use std::sync::{Arc, mpsc};
-        use std::time::Duration;
-
-        let scratch = Arc::new(GlobalSpawnScratch::new());
-        let blob = build_basic_blob();
-        let token = scratch.begin(blob.len()).expect("begin reservation");
-        {
-            let mut writable = scratch.inner.lock();
-            writable.bytes[..blob.len()].copy_from_slice(&blob);
-        }
-
-        let guard = scratch.inner.lock();
-        let (started_tx, started_rx) = mpsc::sync_channel(0);
-        let (result_tx, result_rx) = mpsc::sync_channel(0);
-        let commit_scratch = Arc::clone(&scratch);
-        let commit_thread = std::thread::spawn(move || {
-            started_tx.send(()).expect("announce commit");
-            let result = commit_scratch
-                .parse_reserved(token, blob.len())
-                .map(|parsed| parsed.argv);
-            result_tx.send(result).expect("report commit");
-        });
-
-        started_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("commit thread started");
-        assert!(
-            result_rx.recv_timeout(Duration::from_millis(50)).is_err(),
-            "commit must not return before the contended lock settles",
-        );
-        drop(guard);
-        assert_eq!(
-            result_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("commit settled"),
-            Ok(alloc::vec![b"/bin/ls".to_vec()]),
-        );
-        commit_thread.join().expect("commit thread joined");
-        assert_eq!(scratch.pointer(token), Err(Errno::EINVAL));
-        assert_eq!(scratch.cancel(token), Err(Errno::EINVAL));
-
-        let retry = scratch
-            .begin(spawn_contract::WIRE_HEADER_BYTES)
-            .expect("reservation reusable after commit");
-        scratch.cancel(retry).expect("cancel retry");
-    }
-
-    #[test]
-    fn scratch_reserve_failure_preserves_idle_state_and_token() {
-        let mut scratch = SpawnScratchBuffer::new();
-        let requested = 84 * 1024;
-
-        assert_eq!(
-            scratch.begin_with_reserve(requested, |bytes, additional| {
-                assert!(bytes.is_empty());
-                assert_eq!(bytes.capacity(), 0);
-                assert_eq!(additional, requested);
-                Err(Errno::ENOMEM)
-            }),
-            Err(Errno::ENOMEM),
-        );
-        assert_eq!(scratch.reservation, None);
-        assert_eq!(scratch.next_token, Some(1));
-        assert_eq!(scratch.retained_capacity(), 0);
-        assert_eq!(scratch.bytes.capacity(), 0);
-
-        let token = scratch
-            .begin(spawn_contract::WIRE_HEADER_BYTES)
-            .expect("retry after reserve failure");
-        assert_eq!(token, 1);
-        assert_eq!(scratch.reservation, Some(token));
-        assert_eq!(scratch.next_token, Some(2));
-        assert!(scratch.retained_capacity() >= spawn_contract::WIRE_HEADER_BYTES,);
-        scratch.cancel(token).expect("cancel successful retry");
-    }
-
-    #[test]
-    fn scratch_reservation_parses_exact_capacity_and_releases_on_capacity_plus_one() {
-        let scratch = GlobalSpawnScratch::new();
-        let blob = build_basic_blob();
-        let token = scratch.begin(blob.len()).expect("begin exact");
-        let pointer = scratch.pointer(token).expect("reservation pointer");
-        let capacity = scratch.capacity(token).expect("reservation capacity");
-        assert_ne!(pointer, 0);
-        assert!(capacity >= blob.len());
-
-        let mut padded = blob;
-        padded.resize(capacity, 0);
-        scratch.inner.try_lock().expect("write reservation").bytes[..capacity]
-            .copy_from_slice(&padded);
-        let parsed = scratch
-            .parse_reserved(token, capacity)
-            .expect("parse exact capacity");
-        assert_eq!(parsed.argv, alloc::vec![b"/bin/ls".to_vec()]);
-        assert_eq!(scratch.pointer(token), Err(Errno::EINVAL));
-        assert_eq!(scratch.capacity(token), Err(Errno::EINVAL));
-        assert_eq!(scratch.retained_capacity(), Ok(capacity));
-
-        let overflow_token = scratch.begin(capacity).expect("begin overflow case");
-        assert!(matches!(
-            scratch.parse_reserved(overflow_token, capacity + 1),
-            Err(Errno::E2BIG)
-        ));
-        assert_eq!(scratch.pointer(overflow_token), Err(Errno::EINVAL));
-        assert!(scratch.begin(capacity).is_ok());
-    }
-
-    #[test]
-    fn scratch_reservation_reuses_then_grows_one_owned_allocation() {
-        let scratch = GlobalSpawnScratch::new();
-        let first_token = scratch.begin(84 * 1024).expect("first begin");
-        let first_pointer = scratch.pointer(first_token).expect("first pointer");
-        let first_capacity = scratch.capacity(first_token).expect("first capacity");
-        assert_ne!(first_pointer, 0);
-        assert!(first_capacity >= 84 * 1024);
-        scratch.cancel(first_token).expect("cancel first");
-
-        let reused_token = scratch.begin(80 * 1024).expect("reuse begin");
-        let reused_pointer = scratch.pointer(reused_token).expect("reused pointer");
-        let reused_capacity = scratch.capacity(reused_token).expect("reused capacity");
-        assert_eq!(reused_pointer, first_pointer);
-        assert_eq!(reused_capacity, first_capacity);
-        scratch.cancel(reused_token).expect("cancel reuse");
-
-        let grown_token = scratch.begin(first_capacity + 1).expect("grow begin");
-        let grown_pointer = scratch.pointer(grown_token).expect("grown pointer");
-        let grown_capacity = scratch.capacity(grown_token).expect("grown capacity");
-        assert_ne!(grown_pointer, 0);
-        assert!(grown_capacity > first_capacity);
-        scratch.cancel(grown_token).expect("cancel grown");
-        assert_eq!(scratch.retained_capacity(), Ok(grown_capacity));
-    }
-
-    #[test]
-    fn scratch_reservation_rejects_overlap_and_stale_tokens() {
-        let scratch = GlobalSpawnScratch::new();
-        let first = scratch.begin(84 * 1024).expect("first begin");
-        assert_eq!(scratch.begin(84 * 1024), Err(Errno::EBUSY));
-        assert_eq!(scratch.pointer(first + 1), Err(Errno::EINVAL));
-        assert_eq!(scratch.capacity(first + 1), Err(Errno::EINVAL));
-        assert_eq!(scratch.cancel(0), Err(Errno::EINVAL));
-        scratch.cancel(first).expect("cancel first");
-
-        let second = scratch.begin(84 * 1024).expect("second begin");
-        assert!(second > first);
-        assert_eq!(scratch.cancel(first), Err(Errno::EINVAL));
-        assert!(matches!(
-            scratch.parse_reserved(first, spawn_contract::WIRE_HEADER_BYTES),
-            Err(Errno::EINVAL)
-        ));
-        assert_eq!(scratch.pointer(first), Err(Errno::EINVAL));
-        assert_eq!(scratch.capacity(first), Err(Errno::EINVAL));
-        assert_ne!(scratch.pointer(second).expect("current pointer"), 0,);
-        assert_eq!(
-            scratch.capacity(second).expect("current capacity"),
-            scratch.retained_capacity().expect("retained capacity"),
-        );
-        scratch.cancel(second).expect("cancel second");
-    }
-
-    #[test]
-    fn malformed_reserved_blob_releases_the_matching_reservation() {
-        let scratch = GlobalSpawnScratch::new();
-        let token = scratch
-            .begin(spawn_contract::WIRE_HEADER_BYTES)
-            .expect("begin malformed");
-        assert!(matches!(
-            scratch.parse_reserved(token, spawn_contract::WIRE_HEADER_BYTES - 1),
-            Err(Errno::EINVAL)
-        ));
-        assert_eq!(scratch.pointer(token), Err(Errno::EINVAL));
-
-        let retry = scratch
-            .begin(spawn_contract::WIRE_HEADER_BYTES)
-            .expect("retry after malformed parse");
-        scratch.cancel(retry).expect("cancel retry");
-    }
-
-    #[test]
-    fn reservation_tokens_exhaust_without_wrapping_to_a_stale_value() {
-        let scratch = GlobalSpawnScratch::new();
-        scratch
-            .inner
-            .try_lock()
-            .expect("set token cursor")
-            .next_token = Some(i64::MAX);
-
-        let last = scratch
-            .begin(spawn_contract::WIRE_HEADER_BYTES)
-            .expect("last token");
-        assert_eq!(last, i64::MAX);
-        scratch.cancel(last).expect("cancel last token");
-        assert_eq!(
-            scratch.begin(spawn_contract::WIRE_HEADER_BYTES),
-            Err(Errno::EOVERFLOW)
-        );
-    }
-
-    /// Build a well-formed blob with a single argv entry, a single envp
-    /// entry, one Close action, and SETPGROUP attrs. Used to anchor the
-    /// happy-path round-trip test.
     fn build_basic_blob() -> Vec<u8> {
         let mut blob: Vec<u8> = Vec::new();
         // ── header ──

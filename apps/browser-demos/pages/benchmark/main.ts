@@ -7,7 +7,7 @@
  * Supported suites:
  *   - "syscall-io": pipe/file throughput and syscall latency
  *   - "process-lifecycle": hello start, fork, clone
- *   - "spawn-scratch": ordinary/large spawn and retained scratch capacity
+ *   - "spawn-scratch": ordinary and large spawn requests
  *   - "wordpress": nginx + PHP-FPM boot with WordPress page load
  *   - "mariadb-aria": MariaDB with Aria engine
  *   - "mariadb-innodb": MariaDB with InnoDB engine
@@ -162,7 +162,6 @@ async function runProgramWithExecMap(
 ): Promise<{
   exitCode: number;
   stdout: string;
-  spawnScratchCapacity: number;
   kernelMemoryPages: number;
 }> {
   let stdout = "";
@@ -185,7 +184,6 @@ async function runProgramWithExecMap(
     return {
       exitCode,
       stdout,
-      spawnScratchCapacity: await kernel.getSpawnScratchCapacity(),
       kernelMemoryPages: await kernel.getKernelMemoryPages(),
     };
   } finally {
@@ -282,7 +280,6 @@ async function runSpawnScratch(): Promise<Record<string, number>> {
   if (spawn.exitCode !== 0) throw new Error(`spawn-bench failed: ${spawn.stdout}`);
   return collectSpawnScratchEvidence({
     stdout: spawn.stdout,
-    retainedCapacity: spawn.spawnScratchCapacity,
     kernelMemoryPages: spawn.kernelMemoryPages,
   });
 }
