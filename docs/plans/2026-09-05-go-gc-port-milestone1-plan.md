@@ -1221,6 +1221,11 @@ milestones 3–6 in the design doc.
 
 ## Follow-up work item: Go-runtime-specific agent guidance
 
+**Completed 2026-10-09.** `docs/agent-guidance/go-runtime.md` is linked from
+`CLAUDE.md` and routes fork/runtime work separately from registry package
+porting. It records the build, ABI, per-M memory/channel, `exitThread`,
+Node/browser probe, and progress-log contracts below.
+
 Add a focused guide for extending the `GOOS=kandelo` Go runtime port. Route
 agents to it from `CLAUDE.md` and distinguish it from the registry-package
 porting skill. Cover the adjacent Go fork and its bootstrap/build commands;
