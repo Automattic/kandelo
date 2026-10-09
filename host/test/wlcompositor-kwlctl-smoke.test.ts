@@ -10,7 +10,7 @@
  *   - `kwlctl --listen` streams the `event>>data` line emitted when
  *     `kwlctl dispatch workspace 2` switches workspace (proves the event bus);
  *   - `kwlctl dispatch exec wlclient-test` forks+execs a fourth client through
- *     the compositor (proves dispatch exec; the exec resolves via onResolveExec);
+ *     the compositor (proves dispatch exec; the kernel resolves the exec target);
  *   - the Hyprland IPC pair (/tmp/hypr/wlcompositor/.socket.sock + .socket2.sock)
  *     answers `j/`-prefixed queries in hyprctl -j shapes and streams the same
  *     events with no handshake — the surface Waybar's hyprland modules consume.
@@ -101,11 +101,6 @@ describe("wlcompositor — kwlctl control + event IPC", () => {
       const host = new NodeKernelHost({
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
-        // `dispatch exec` runs posix_spawnp inside the compositor. Under raw
-        // NodePlatformIO a spawn needs both legs: this map feeds the
-        // side-effect-free preflight its program bytes, and the kernel's
-        // authoritative target stat reaches the same real host path.
-        execProgramBytes: { [clientBin!]: clientBytes },
       });
       const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
 

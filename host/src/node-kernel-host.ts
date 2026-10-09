@@ -33,7 +33,6 @@ import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
-  ResolveExecRequestMessage,
   DestroyProgressEvent,
 } from "./node-kernel-protocol";
 import type { OwnedJobRead } from "./owned-jobs";
@@ -107,25 +106,6 @@ export interface NodeKernelHostOptions {
   /** Size of the data buffer for syscall data transfer (default: 65536).
    *  Increase for programs that do large pwrite() calls (e.g. InnoDB). */
   dataBufferSize?: number;
-  /**
-   * Virtual path → immutable host filesystem generation for the Task 12 spawn
-   * preflight. Exec does not consult this map; its authority is an executable
-   * already present in the kernel-owned VFS.
-   */
-  execPrograms?: Record<string, string>;
-  /**
-   * Virtual path → exact program bytes for the Task 12 spawn preflight. Exec
-   * does not consult this map; its authority is an executable already present
-   * in the kernel-owned VFS.
-   *
-   * Ordinary ArrayBuffer-backed bytes are copied during init and owned by the
-   * worker for its complete lifetime; concurrently mutable SharedArrayBuffer
-   * views are rejected. Use this for mutable build outputs; `execPrograms` is
-   * suitable only when its host path names a generation that remains immutable.
-   */
-  execProgramBytes?: Readonly<
-    Record<string, ArrayBuffer | Uint8Array<ArrayBuffer>>
-  >;
   /** Attach a real-TCP backend in the worker so wasm programs can dial
    *  external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
@@ -154,11 +134,6 @@ export interface NodeKernelHostOptions {
    *  polling. Kernel-internal fork and posix_spawn events carry `ppid`;
    *  the synthetic root spawn does not. */
   onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
-  /**
-   * Called when the worker can't resolve an exec path locally.
-   * Return the program bytes or null if not found.
-   */
-  onResolveExec?: (path: string) => ArrayBuffer | null | Promise<ArrayBuffer | null>;
   /**
    * Opt in to mount-based VFS for this kernel boot.
    *
@@ -292,21 +267,6 @@ export class NodeKernelHost {
     }
     if (this.options.rootfsLazyUrlBase === "") {
       throw new Error("rootfsLazyUrlBase must not be empty");
-    }
-    const execProgramBytes = snapshotExecProgramBytes(
-      this.options.execProgramBytes,
-    );
-    for (const path of Object.keys(execProgramBytes ?? {})) {
-      if (
-        Object.prototype.hasOwnProperty.call(
-          this.options.execPrograms ?? {},
-          path,
-        )
-      ) {
-        throw new Error(
-          `exec program ${JSON.stringify(path)} has both path and byte sources`,
-        );
-      }
     }
     const rootfsLazyAssets = this.options.rootfsLazyAssets === undefined
       ? undefined
@@ -451,8 +411,6 @@ export class NodeKernelHost {
               this.options.imageBuildDeterminism,
             ),
           },
-          execPrograms: this.options.execPrograms,
-          execProgramBytes,
           rootfsImage: rootfsImage ?? undefined,
           rootfsMountSpec: this.options.rootfsMountSpec === undefined
             ? undefined
@@ -471,7 +429,6 @@ export class NodeKernelHost {
           ...(rootfsLazyAssets ?? []).map(
             (asset) => asset.bytes.buffer as ArrayBuffer,
           ),
-          ...new Set(Object.values(execProgramBytes ?? {})),
         ];
         this.worker.postMessage(initMsg, transfer);
       });
@@ -1418,9 +1375,6 @@ export class NodeKernelHost {
       case "pty_output":
         this.options.onPtyOutput?.(msg.pid, msg.data);
         break;
-      case "resolve_exec":
-        this.handleResolveExec(msg);
-        break;
       case "lazy_download":
         this.emitLazyDownload(msg.event);
         break;
@@ -1471,18 +1425,6 @@ export class NodeKernelHost {
       }
     }
   }
-
-  private async handleResolveExec(msg: ResolveExecRequestMessage): Promise<void> {
-    let programBytes: ArrayBuffer | null = null;
-    if (this.options.onResolveExec) {
-      programBytes = await this.options.onResolveExec(msg.path);
-    }
-    this.sendToWorker({
-      type: "resolve_exec_response",
-      requestId: msg.requestId,
-      programBytes,
-    });
-  }
 }
 
 // ── Module-level helpers ──
@@ -1501,36 +1443,6 @@ function mergeEnv(env: string[]): string[] {
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(resolveBinary("kernel.wasm"));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-}
-
-function snapshotExecProgramBytes(
-  sources: NodeKernelHostOptions["execProgramBytes"],
-): Record<string, ArrayBuffer> | undefined {
-  if (sources === undefined) return undefined;
-  const snapshots: Record<string, ArrayBuffer> = Object.create(null);
-  const copies = new WeakMap<object, ArrayBuffer>();
-  for (const [path, source] of Object.entries(sources)) {
-    if (
-      !(source instanceof ArrayBuffer)
-      && (!(source instanceof Uint8Array)
-        || !(source.buffer instanceof ArrayBuffer))
-    ) {
-      throw new Error(
-        `exec program ${JSON.stringify(path)} bytes must use an ordinary ArrayBuffer`,
-      );
-    }
-    let snapshot = copies.get(source);
-    if (snapshot === undefined) {
-      const bytes = source instanceof ArrayBuffer
-        ? new Uint8Array(source)
-        : source;
-      snapshot = new ArrayBuffer(bytes.byteLength);
-      new Uint8Array(snapshot).set(bytes);
-      copies.set(source, snapshot);
-    }
-    snapshots[path] = snapshot;
-  }
-  return snapshots;
 }
 
 /**

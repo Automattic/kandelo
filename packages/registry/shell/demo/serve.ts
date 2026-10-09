@@ -57,62 +57,8 @@ async function main() {
 
   const programBytes = loadBytes(dashBinary);
 
-  // --- Load external programs for exec ---
-  const execPrograms: Record<string, string> = {};
-
-  // Load coreutils single binary (if available)
-  const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
-  if (coreutilsBinary) {
-    const coreutilsNames = [
-      "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
-      "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
-      "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname",
-      "du", "echo", "env", "expand", "expr", "factor", "false", "fmt",
-      "fold", "groups", "head", "hostid", "id", "install", "join", "link",
-      "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp",
-      "mv", "nice", "nl", "nohup", "nproc", "numfmt", "od", "paste",
-      "pathchk", "pr", "printenv", "printf", "ptx", "pwd", "readlink",
-      "realpath", "rm", "rmdir", "runcon", "seq", "sha1sum", "sha224sum",
-      "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep",
-      "sort", "split", "stat", "stty", "sum", "sync", "tac", "tail",
-      "tee", "test", "timeout", "touch", "tr", "true", "truncate", "tsort",
-      "tty", "uname", "unexpand", "uniq", "unlink", "vdir", "wc", "whoami",
-      "yes",
-    ];
-    for (const name of coreutilsNames) {
-      execPrograms[`/bin/${name}`] = coreutilsBinary;
-      execPrograms[`/usr/bin/${name}`] = coreutilsBinary;
-    }
-    execPrograms["/bin/["] = coreutilsBinary;
-    execPrograms["/usr/bin/["] = coreutilsBinary;
-    console.error(`Loaded ${coreutilsNames.length} coreutils commands`);
-  }
-
-  // Load GNU grep (if available)
-  const grepBinary = tryResolveBinary("programs/grep.wasm");
-  if (grepBinary) {
-    for (const name of ["grep", "egrep", "fgrep"]) {
-      execPrograms[`/bin/${name}`] = grepBinary;
-      execPrograms[`/usr/bin/${name}`] = grepBinary;
-    }
-    console.error("Loaded GNU grep");
-  }
-
-  // Load GNU sed (if available)
-  const sedBinary = tryResolveBinary("programs/sed.wasm");
-  if (sedBinary) {
-    execPrograms["/bin/sed"] = sedBinary;
-    execPrograms["/usr/bin/sed"] = sedBinary;
-    console.error("Loaded GNU sed");
-  }
-
-  // Load dash as /bin/sh
-  execPrograms["/bin/sh"] = dashBinary;
-  execPrograms["/bin/dash"] = dashBinary;
-
   const host = new NodeKernelHost({
     maxWorkers: 8,
-    execPrograms,
     onStdout: (_pid, data) => process.stdout.write(data),
     onStderr: (_pid, data) => process.stderr.write(data),
   });
