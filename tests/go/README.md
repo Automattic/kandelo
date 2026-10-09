@@ -87,7 +87,8 @@ affinity across yields and unlock, twelve paced locked-M exits and 64 unpaced
 locked-M starts without an explicit unlock (exercising slot recycling),
 sysmon-assisted cooperative preemption under `GOMAXPROCS=1`, IPv4 and IPv6
 TCP loopback through Go `syscall`, runtime epoll readiness with a read
-deadline and blocked-read close, `net.Dial`/`net.Listen` IPv4 and IPv6
+deadline and blocked-read close, a raw blocking pipe read that releases the
+scheduler P under `GOMAXPROCS=1`, `net.Dial`/`net.Listen` IPv4 and IPv6
 round trips, HTTP client/server requests on both address families, process
 spawn/wait with child argv, environment, cwd, exit status, and command output
 through a pipe, process-wide exit from a worker M, and selected upstream Go
@@ -99,7 +100,9 @@ The socket probe covers address conversion, socket options, bind, listen,
 connect, accept, peer/local names, and stream read/write on both hosts. The
 netpoll probe wraps a nonblocking
 TCP socket in `os.NewFile` to exercise deadline expiry, data readiness,
-and close-unblocks-read through the runtime poller. The `net` probe uses
+and close-unblocks-read through the runtime poller. It also checks that a
+blocking `syscall.Read` cannot starve a timer-driven writer when there is
+only one P. The `net` probe uses
 `netFD` for IPv4/IPv6 `net.Listen` and `net.DialTimeout`; the HTTP probe runs
 an actual Go server and client over loopback. The host uses a thread-specific
 Wasm module without active data segments so adding an M cannot reinitialize

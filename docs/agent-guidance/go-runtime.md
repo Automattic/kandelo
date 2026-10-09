@@ -18,8 +18,7 @@ package shim.
 Build the fork with the dev shell's bootstrap Go:
 
 ```sh
-cd ../go-kandelo/src
-GOROOT_BOOTSTRAP="$(go env GOROOT)" ./make.bash
+scripts/dev-shell.sh bash -c 'cd ../go-kandelo/src && GOROOT_BOOTSTRAP="$(go env GOROOT)" ./make.bash'
 ```
 
 The current fork is based on Go 1.25.6 and builds with cgo disabled for this
@@ -40,6 +39,16 @@ APIs apply to Kandelo.
   `src/runtime/channel_kandelo.go` captures it into the M before syscalls.
   Channel layout comes from `crates/shared/src/lib.rs`, not a Go-local
   convention. Keep the Go heap above the channel/control region.
+- The exported `syscall` channel entry must release its scheduler P while a
+  guest syscall blocks, then reacquire one before returning to Go. Keep
+  runtime-internal channel calls separate: they also run from g0 and cannot
+  unconditionally enter the user-g syscall transition. RoadRunner's
+  concurrent HTTP assets exposed a deadlock that a one-request probe missed.
+- A disconnected TCP client can make Kandelo `write` return `EPIPE` and raise
+  `SIGPIPE`. Go's socket write path uses `Send` with `MSG_NOSIGNAL`, falling
+  back to `write` for non-sockets. Exercise canceled browser requests as well
+  as completed requests; a successful first page is not evidence that the
+  server survives navigation or client disconnects.
 - Clone handoff needs an acknowledgment before reusing its shared words.
   A child must bootstrap its own stack and channel before entering the Go
   scheduler. Thread replicas must not replay active Wasm data segments over

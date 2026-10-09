@@ -1127,6 +1127,37 @@ the complete local-build plan has 157 uncached nodes and an estimated
 pass or an observed POSIX failure. Full conformance remains merge
 validation work after the closure is built.
 
+**2026-10-09 — WordPress RoadRunner local profile (fork `ab8c85d`).** The
+existing WordPress SQLite VFS now has an opt-in Node profile that stages the
+pinned-source minimal RoadRunner binary, PHP CLI, and a Goridge PHP bridge into
+the same boot image. RoadRunner owns public port 3000; the bridge forwards to
+the image's unchanged nginx/PHP-FPM application path on guest port 38080.
+This is not direct WordPress execution as a RoadRunner worker, a browser
+gallery profile, or a source-only RoadRunner package.
+
+Real browser navigation revealed two Go-runtime gaps hidden by the one-request
+probe. The exported `syscall` channel entry blocked without releasing its P,
+starving concurrent HTTP handling; `entersyscallblock`/`exitsyscall` now wrap
+user-g channel calls, while runtime-internal calls stay separate. Guest socket
+`write` raised fatal `SIGPIPE` when a browser canceled an asset request; Go
+now uses `Send` with `MSG_NOSIGNAL` for sockets and falls back to `write` for
+non-sockets. The fork revision is pinned by `go-hello`. No Kandelo ABI or
+kernel source changed.
+
+The same-VFS local demo returned WordPress HTTP 200 in Chromium for home and
+login, loaded their assets with no failed requests, and served repeated
+sequential curl requests. The original focused RoadRunner Node and Chromium
+worker round trips pass with the new fork; cross-target `js` and `wasip1`
+`os`/`net/http` builds pass. The pinned `go-hello` source-only build and its
+resolved VFS child pass in Node and Chromium. The netpoll probe now includes a
+raw blocking pipe read under `GOMAXPROCS=1`; it passes in Node and Chromium
+without stderr or host diagnostics. A stronger C-pthread concurrent-request browser
+probe completed the HTTP checks but repeatedly reported a browser kernel-worker
+detach timeout during teardown; it was not retained as a passing regression.
+Browser-host concurrency and direct PHP request-lifecycle integration remain
+separate work. The Go-runtime-specific guidance item below is complete and
+now includes these two lessons.
+
 Next: turn the minimal server into a registry package with a source-only
 recipe, then exercise normal package resolution and VFS launch in Node and
 Chromium. After that, expand realistic configuration and PHP worker coverage,

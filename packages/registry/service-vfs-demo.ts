@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { Socket } from "node:net";
 import { join } from "node:path";
-import { NodeKernelHost } from "../../host/src/node-kernel-host";
+import { NodeKernelHost, type NodeKernelHostOptions } from "../../host/src/node-kernel-host";
 import { findRepoRoot, tryResolveBinary } from "../../host/src/binary-resolver";
 import type { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
 import { ensureDirRecursive, writeVfsFile } from "../../host/src/vfs/image-helpers";
@@ -23,7 +23,7 @@ export interface ServiceVfsImageRef {
   buildHint: string;
 }
 
-export interface BootDinitServiceOptions {
+export interface BootDinitServiceOptions extends Pick<NodeKernelHostOptions, "onHostDiagnostic"> {
   image: ServiceVfsImageRef;
   target?: string;
   maxWorkers?: number;
@@ -56,6 +56,7 @@ export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Pro
     rootfsImage,
     onStdout: (_pid, data) => process.stdout.write(data),
     onStderr: (_pid, data) => process.stderr.write(data),
+    onHostDiagnostic: options.onHostDiagnostic,
   });
   await host.init();
 
