@@ -154,6 +154,13 @@ static void mkparents(const char *path) {
 
 /* Minimal UTF-16LE -> UTF-8 (BMP + surrogate pairs). Returns malloc'd buf, sets *outlen. */
 static char *utf16le_to_utf8(const unsigned char *in, size_t inlen, size_t *outlen) {
+    /* inlen is attacker-controlled (cont_len from the untrusted module-graph
+     * blob). "inlen * 3 + 4" can wrap size_t (32-bit on this target) for a
+     * large-enough inlen, yielding a small cap that malloc happily satisfies
+     * while the loop below still writes up to 4 bytes per UTF-16 code unit
+     * — a heap buffer overflow. Reject before computing cap if the true
+     * (non-wrapping) result would exceed SIZE_MAX. */
+    if (inlen > (SIZE_MAX - 4) / 3) { *outlen = 0; return NULL; }
     size_t cap = inlen * 3 + 4, o = 0;
     char *out = malloc(cap);
     if (!out) return NULL;
