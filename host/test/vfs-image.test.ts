@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { Buffer } from "node:buffer";
 import { zstdCompressSync } from "node:zlib";
 import {
   existsSync,
@@ -1316,7 +1317,9 @@ describe("VFS image save/restore", () => {
       const roundTripped = readFile(restored, "/dense.bin");
 
       expect(roundTripped.byteLength).toBe(payload.byteLength);
-      expect(roundTripped).toEqual(payload);
+      // Verify every byte without making the matcher enumerate four million
+      // array elements inside this test's five-second execution budget.
+      expect(Buffer.compare(roundTripped, payload)).toBe(0);
     });
   });
 });
