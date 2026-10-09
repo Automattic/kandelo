@@ -529,6 +529,13 @@ remain explicit gaps.
 
 ## Locale
 
+The packaged `gencat` utility compiles message sources into musl's binary
+catalog format. It supports numbered sets and messages, replacement and
+deletion, quoting, escaped characters, continued lines, and standard input
+and output. Updating a catalog validates the existing file first and replaces
+it atomically after successful compilation. Sortix's `catopen`, `catgets`,
+and `catclose` checks exercise the generated catalogs through musl.
+
 | Function | Status | Notes |
 |----------|--------|-------|
 | `getlocalename_l()` | Full | Returns the real per-category name from local and global locale objects. LC_ALL returns a `setlocale()`-compatible name, including mixed-category locales. |
