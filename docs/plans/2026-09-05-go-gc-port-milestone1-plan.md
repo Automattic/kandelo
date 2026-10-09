@@ -1163,6 +1163,37 @@ recipe, then exercise normal package resolution and VFS launch in Node and
 Chromium. After that, expand realistic configuration and PHP worker coverage,
 and revisit the all-plugin CLI only where its features are needed.
 
+**2026-10-09 — Direct WordPress worker requirement.** The same-VFS proxy
+profile is not an acceptable performance demo of RoadRunner as an alternative
+to PHP-FPM: its WordPress requests still execute in PHP-FPM. PHP CLI cannot
+substitute for an HTTP SAPI by including WordPress in a loop; its SAPI discards
+response headers, and a persistent PHP request would also retain request
+globals and WordPress state. The next WordPress milestone is a PHP worker
+entrypoint with a real per-request PHP lifecycle, not another HTTP proxy or a
+one-shot CLI process per request. Keep the current profile only as a Go server
+and Goridge integration probe.
+
+Build and validate that milestone in this order:
+
+1. Prototype a dedicated PHP SAPI worker that accepts RoadRunner's pipe
+   protocol, maps request method, URI, headers, cookies and body into PHP's
+   request environment, and maps PHP status, headers and body back to
+   RoadRunner. Reuse PHP module startup across requests but run PHP request
+   startup, WordPress entrypoint execution and request shutdown for each one.
+2. Prove isolation with two distinct sequential WordPress requests in one
+   worker process, including redirects, cookies, POST bodies and PHP `exit`;
+   then test concurrent requests across workers. Do this in Node and Chromium
+   against the same VFS without starting nginx or PHP-FPM.
+3. Add a direct-worker demo profile and compare it with the existing
+   nginx/PHP-FPM profile on the same WordPress content, VFS and host, with
+   warmup, repeated page/API requests, throughput and latency distributions.
+   Report failures and resource limits; make no performance claim until these
+   measurements exist. The proxy profile is not a comparison baseline.
+
+This supersedes the WordPress-facing part of the preceding package-first
+sequence; packaging the minimal RoadRunner server remains useful, but it does
+not by itself meet the direct-worker milestone.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
