@@ -1389,6 +1389,35 @@ import and C-to-C function-index relocation in a final Go module, **not**
 cgo interoperability. The full `C.abs` build remains stopped at the
 `runtime/cgo` memory/data/dynamic-symbol and Go/C adapter barriers above.
 
+**2026-10-09 — initialized C data and executable C-only calls in a Go
+module.** Published Go fork commit
+`27f85fe4f40aeef2a7469fc9c70b2cf17044bbf6`. Its Wasm object reader
+now decodes active data segments, segment alignment, data symbols, and
+memory-address CODE relocations, with malformed-object checks. The internal
+linker places initialized C data in Go's pointer-free static section,
+resolves C memory addresses against that placement, and adds an internal
+`__memory_base` global only when a retained C object needs it. This raises
+the final module's static-data end before Kandelo allocates host channel
+memory, rather than placing C data in Go's heap. Unsupported `reloc.DATA`
+and element/global sections fail explicitly; C archives are not resolved.
+
+`scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh` now links
+C-to-C and C-data fixtures into a cgo-free Go Wasm module, validates it,
+and invokes their C functions through the exported Wasm table on Node and
+Chromium. The result is 10 from `c_target(5)` and 12 from `weighted(5)`,
+whose second result reads initialized C static data. This is executable
+C-in-Go-module evidence, **not** Go-to-C interoperability: no Go runtime
+code calls C and no Kandelo process worker executes this module. Focused
+`cmd/link/...` and `cmd/cgo` tests pass, pure-Go `kandelo`/`js`/`wasip1`
+builds pass, the Kandelo sample validates, and the Kandelo ABI snapshot
+check passes. The full `C.abs` link with the uncommitted cgo frontend now
+stops at `adddynsym: unsupported binary format` for cgo exports and at
+undefined `x_cgo_pthread_key_created` and
+`x_cgo_notify_runtime_init_done`. The Go/C cross-call adapters, C runtime
+symbols, archive resolution, callback/thread attachment, ZTS PHP embed
+library, FrankenPHP classic-mode server, and WordPress demo are still
+unimplemented. No package pin or Kandelo ABI version changes in this step.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
