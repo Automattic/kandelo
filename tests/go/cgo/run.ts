@@ -11,6 +11,7 @@ const result = await runCentralizedProgram({
   kernelWasmBytes: readFileSync(kernelPath),
   timeout: 30_000,
   useDefaultRootfs: false,
+  env: ["KANDELO_CGO_PROBE=cgo-startup"],
 });
 
 console.log(JSON.stringify({

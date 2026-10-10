@@ -1699,12 +1699,42 @@ wrapper hits `runtime.notInitialized`; the attempted Go diagnostic then
 faults on an uninitialized channel. This is a known unsupported path, not
 a passing callback or PHP-ZTS claim. Full libc startup is still missing.
 
+**2026-10-09 — Go-led libc environment startup and mutation.** Published
+Go fork commit `8aec831cb5d6d3b9f2a0bb1c9d18aeabd4f2929a`. The musl
+overlay now isolates `__init_libc` from C process entry, allowing a Go-led
+cgo program to initialize libc without pulling in the C runtime's `_start`
+and incompatible constructor references. The Go runtime builds a
+process-lifetime C-width environment and program-name table through its own
+allocator, avoiding a separate C `mmap` allocation that collided with Go
+heap growth. `runtime/cgo` passes that table to musl initialization. The
+Kandelo `setenv_c`/`unsetenv_c` frames use 32-bit C pointers rather than
+Go's 64-bit pointers. The standard cgo fixture verifies C `getenv` at
+startup, Go `os.Setenv` and `os.Unsetenv` reflected in C, a Go GC, existing
+scalar/pointer calls, and per-M `pthread_self`/`errno`. The raw Wasm
+validates, fork-instruments, and receives the current ABI stamp; Node
+exits 0 with empty stderr and diagnostics. The focused Chromium standard
+cgo and Go-owned callback cases pass. Focused Go cgo/linker tests pass;
+`fmt`, `net`, `os`, and `runtime` build with cgo disabled for `kandelo`,
+`js`, and `wasip1`; the Kandelo ABI snapshot check passes. Follow-up Go
+fork commit `00a02c890d2da06c82e5c359904bc160ddd3949c` adds Kandelo to
+the socket-test helper build tags, closing the `net/internal/socktest.Sockets`
+failure; forced cgo-disabled `go build -a std` now passes for `kandelo`,
+`js`, and `wasip1`. The first narrow libc-test
+attempt cannot resolve missing rootfs/builtin artifacts; provisioning and
+rerun are required before claiming C-process conformance.
+
+This is **not** complete libc startup: nonempty C constructor arrays still
+fail in the linker, destructor execution is unproven, and secure-exec
+behavior has not been exercised in a Go-led process. The C-created pthread
+fixture still traps in `runtime.canpanic` with no Go `g`/stack/channel,
+exiting 139 on Node; libc initialization did not attach that thread.
+
 Remaining work, in dependency order:
 
-1. Finish the Go/C runtime: preserve full libc environment,
-   secure-startup and constructor/destructor behavior; review callback
-   safety across scheduling and the mixed-width `cmd/cgo` frontend beyond
-   the passing scalar/pointer cases.
+1. Finish Go/C runtime semantics: initialize and execute nonempty C
+   constructors/destructors, validate secure-exec behavior, and review
+   callback safety and the mixed-width `cmd/cgo` frontend beyond the
+   passing scalar/pointer/environment cases.
 2. Attach C-created pthreads to a Go M/P with both C and Go per-thread
    channel state. Pass
    pthread callback probes on Node and Chromium with no host
