@@ -262,3 +262,13 @@ Multi-output paths are resolver-owned. Do not hardcode
 `binaries/programs/<arch>/...`; ask
 `cargo xtask build-deps output-path <pkg> <wasm-basename>` or use the existing
 helper in `run.sh`.
+
+## Image recipes outside the default build
+
+The default local-build set and browser deployment projection do not exercise
+every registered image recipe. When changing shared SDK, ABI, resolver or image
+builder contracts, identify affected recipes outside that set and validate them
+through the normal package resolver for their declared architectures. A passing
+default build does not establish that those recipes still work. Dormant status
+controls product exposure; retain it while checking build compatibility. Do not
+add a dormant product to the shipped projection just to validate its recipe.
