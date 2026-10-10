@@ -2356,6 +2356,12 @@ Never move a group within an already completed build. Its complete group must
 remain beneath the owning prefix; moving only an image or asset also breaks
 the authenticated inventory.
 
+The shell's lazy SDK archive maps to
+`assets/programs/wasm32/kandelo-sdk.zip`. Its LÖVE examples archive maps to
+`assets/programs/wasm32/love/share/love-examples.zip`, preserving the
+package's runtime-file location. Both names are accepted by the grouped
+reference grammar; other unknown archive names remain invalid.
+
 Each output places `service-worker.js` at its prefix root. The bootstrap
 registers that exact script with its own script-directory scope (`/a/` or
 `/candidate-b/`). Servers must not grant a broader scope with
