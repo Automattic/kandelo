@@ -100,6 +100,8 @@ for required_tool in python3 rustc cargo cbindgen node curl make; do
     fi
 done
 
+export RUSTC="$(command -v rustc)"
+
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 resolve_dep() {
     local name="$1"

@@ -1955,6 +1955,16 @@ The remaining gates, in order, are:
    general callback/thread stress, and wider libc/POSIX coverage have not
    been established by these focused probes.
 
+**2026-10-10 — Source-only shell dependency unblocked.** The first full
+WordPress resolution built many canonical shell packages but stopped when
+SpiderMonkey's Mozilla configure selected the user's Rustup `stable`
+compiler after entering its external source directory. That compiler lacked
+the Wasm standard library; it was not a Go/FrankenPHP failure. The
+SpiderMonkey recipe now exports the absolute compiler selected by Kandelo's
+pinned dev shell. Its revision-15 source-only resolver build succeeded.
+The WordPress resolver was restarted with the current package revisions;
+the projected image and browser gallery checks remain pending.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
