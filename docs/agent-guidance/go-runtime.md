@@ -155,6 +155,9 @@ legacy syscall-channel handoff address. Kandelo's pthread host calls
 needs distinct C TLS state, a copied template and initialization on every
 thread, and a channel handoff that does not alias C TLS. Validate fork replay
 and both hosts before claiming TLS support.
+Fork commit `3e2250b` rejects TLS relocation and data-segment inputs
+explicitly until that design exists; do not remove those errors just to
+advance the link.
 
 For a repeatable C function-and-data link proof, run
 `scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends
