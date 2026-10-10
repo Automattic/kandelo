@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
@@ -321,9 +321,14 @@ test.describe("Node-host counterparts for Kandelo browser demos", () => {
     }
   });
 
-  test("WordPress FrankenPHP serves the preinstalled site without PHP-FPM", async () => {
+  test("WordPress FrankenPHP serves and logs into the preinstalled site without PHP-FPM", async ({ page }) => {
     test.setTimeout(300_000);
-    skipUnlessRunnable("WordPress FrankenPHP Node-host demo", serviceImages.wordpress);
+    const explicitImage = process.env.KANDELO_WORDPRESS_FRANKENPHP_IMAGE;
+    if (explicitImage) {
+      test.skip(!existsSync(resolve(repoRoot, explicitImage)), "WordPress FrankenPHP image path is missing");
+    } else {
+      skipUnlessRunnable("WordPress FrankenPHP Node-host demo", serviceImages.wordpress);
+    }
 
     const port = await getFreePort();
     const demo = await startNodeHostDemo(
@@ -334,10 +339,16 @@ test.describe("Node-host counterparts for Kandelo browser demos", () => {
     );
 
     try {
-      const html = await fetchText(`http://127.0.0.1:${port}/`);
+      const html = await fetchText(`http://localhost:${port}/`);
       expect(html).toMatch(/WordPress/i);
       expect(html).not.toMatch(/id="setup"|id="language-chooser"/i);
       expect(demo.output()).not.toMatch(/php-fpm|nginx.*listening/i);
+
+      await page.goto(`http://localhost:${port}/wp-login.php`);
+      await page.locator("#user_login").fill("admin");
+      await page.locator("#user_pass").fill("password");
+      await page.locator("#wp-submit").click();
+      await expect(page.locator("#adminmenu, body.wp-admin").first()).toBeVisible({ timeout: 120_000 });
     } finally {
       await stopNodeHostDemo(demo.proc);
     }

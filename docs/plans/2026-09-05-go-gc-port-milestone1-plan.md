@@ -1929,6 +1929,32 @@ uses the built VFS bytes without bypassing the kernel. Pending gates are
 the resolver-built image, gallery login flow, durable running demo URL,
 ABI and package pin checks, and any defensible performance comparison.
 
+**2026-10-10 — Direct WordPress admin flow passes.** The Node-host
+FrankenPHP demo boots the verified direct-build VFS through dinit and serves
+the preinstalled site at `http://localhost:3000/`. A Chromium Playwright
+session navigated to `/wp-login.php`, submitted the image's preinstalled
+admin credentials, and reached the real WordPress admin UI. The direct
+Chromium kernel-host test independently received the homepage and login
+form from embedded PHP. Neither path starts nginx or PHP-FPM. This is an
+application-behavior check, not an application-performance comparison.
+
+The remaining gates, in order, are:
+
+1. Complete the source-only WordPress resolver build, including its
+   canonical shell dependency tree; then rebuild with the current package
+   revisions and verify the projected VFS image.
+2. Run the Node demo without a direct-image override, the browser gallery
+   profile and admin flow, and the merge-gate profile test against that
+   resolver-owned image.
+3. Recheck the package pin, ABI snapshot, and relevant Node/Chromium probes;
+   record any conformance suites that remain unrun or blocked. Compare
+   WordPress application performance only with measured, comparable runs.
+4. Keep the draft PR and this log aligned with the evidence. Broader Go/C
+   conformance remains distinct from the WordPress demo: explicit C
+   initializer/finalizer handling, secure-exec and C shutdown semantics,
+   general callback/thread stress, and wider libc/POSIX coverage have not
+   been established by these focused probes.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
