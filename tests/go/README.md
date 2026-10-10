@@ -125,13 +125,14 @@ The published package revision still fails at pointer-size recognition.
 The adjacent fork's experimental cgo frontend gets this fixture through the
 linker. The linker discovers SDK libc and executable glue and emits a raw
 Wasm module that passes `wasm-validate --enable-threads`. This is not a
-runnable cgo artifact: fork instrumentation currently rejects the combined
-module, and Go/C adapters remain unimplemented. `run.ts` is an opt-in
+runnable cgo artifact: fork instrumentation now succeeds, but cgo runtime
+startup traps before the C call. Go/C adapters remain unimplemented. `run.ts` is an opt-in
 failing runtime gate, not passing coverage.
 
 ```sh
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-c-abs.wasm ./tests/go/cgo && wasm-validate --enable-threads .context/go-c-abs.wasm'
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-c-abs.wasm -o .context/go-c-abs-instrumented.wasm'
+scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-c-abs-instrumented.wasm; stamp_built_program_outputs'
 node --import tsx tests/go/cgo/run.ts .context/go-c-abs-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
 ```
 

@@ -32,6 +32,7 @@ use fork_instrument::{
         linked_frame_descriptor_section_hex, reserved_env_imports,
     },
     instrument,
+    target_features::used_features,
 };
 
 #[derive(Debug, Parser)]
@@ -307,6 +308,26 @@ fn post_optimize(path: &Path, level: &str, keep_debug_info: bool) -> Result<()> 
     let wasm_opt = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
     let mut command = Command::new(&wasm_opt);
     command.arg(path).arg(format!("-{level}"));
+    for feature in used_features(&fs::read(path)?)? {
+        let flag = match feature {
+            "atomics" => "--enable-threads",
+            "bulk-memory" => "--enable-bulk-memory",
+            "exception-handling" => "--enable-exception-handling",
+            "gc" => "--enable-gc",
+            "memory64" => "--enable-memory64",
+            "multimemory" => "--enable-multimemory",
+            "multivalue" => "--enable-multivalue",
+            "mutable-globals" => "--enable-mutable-globals",
+            "nontrapping-fptoint" => "--enable-nontrapping-float-to-int",
+            "reference-types" => "--enable-reference-types",
+            "relaxed-simd" => "--enable-relaxed-simd",
+            "sign-ext" => "--enable-sign-ext",
+            "simd128" => "--enable-simd",
+            "tail-call" => "--enable-tail-call",
+            _ => continue,
+        };
+        command.arg(flag);
+    }
     if keep_debug_info {
         command.arg("-g");
     }

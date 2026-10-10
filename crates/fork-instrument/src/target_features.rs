@@ -2,7 +2,7 @@
 //!
 //! The `target_features` custom section lists the features a module was
 //! built with (`+name`) or must not use (`-name`). LLVM writes it at link
-//! time, and Binaryen's `wasm-opt` enables exactly the features it lists:
+//! time, and the CLI passes matching feature flags to Binaryen's `wasm-opt`:
 //! a module that uses an undeclared feature fails validation there.
 //!
 //! WHY scan the output instead of listing what the transform adds: the
