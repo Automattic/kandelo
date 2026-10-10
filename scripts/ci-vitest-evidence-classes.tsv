@@ -386,7 +386,6 @@ packages/registry/dash/test/dash-signal-regression.test.ts	prepared-product
 packages/registry/dash/test/dash.test.ts	prepared-product
 packages/registry/dinit/test/dinit-scripted-service.test.ts	prepared-product
 packages/registry/dinit/test/dinitctl.test.ts	prepared-product
-packages/registry/erlang/test/erlang.test.ts	prepared-product
 packages/registry/ffmpeg/test/ffmpeg-devices.test.ts	prepared-product
 packages/registry/ffmpeg/test/ffmpeg-process-runtime.test.ts	prepared-product
 packages/registry/ffmpeg/test/ffmpeg-tier1.test.ts	prepared-product
