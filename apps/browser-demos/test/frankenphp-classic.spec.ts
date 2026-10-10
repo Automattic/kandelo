@@ -12,8 +12,7 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 const programPath = process.env.KANDELO_FRANKENPHP_CLASSIC_WASM;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
-test("FrankenPHP classic serves PHP and static HTTP in Chromium", async ({ page, baseURL, browserName }) => {
-  test.skip(browserName !== "chromium", "FrankenPHP browser gate uses Chromium");
+test("FrankenPHP classic serves PHP and static HTTP", async ({ page, baseURL }) => {
   test.skip(!programPath, "Build frankenphp-classic and set KANDELO_FRANKENPHP_CLASSIC_WASM");
   expect(baseURL).toBeTruthy();
 

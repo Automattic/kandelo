@@ -38,6 +38,17 @@ void request_c_exit(void) {
     exit(0);
 }
 
+void request_c_immediate_exit(void) {
+    static const char message[] = "CGO C _EXIT PASS\n";
+    report_exit = 1;
+    write(1, message, sizeof(message) - 1);
+    _exit(0);
+}
+
+void expect_no_exit_handler(void) {
+    report_exit = 1;
+}
+
 unsigned int constructor_count(void) {
     return __kandelo_cgo_ctor_count;
 }

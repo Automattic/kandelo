@@ -9,10 +9,17 @@ if (!programPath || !kernelPath) {
 const result = await runCentralizedProgram({
   programPath,
   kernelWasmBytes: readFileSync(kernelPath),
-  argv: mode === "c-exit" ? ["go-cgo-constructors", "c-exit"] : ["go-cgo-constructors"],
+  argv: mode ? ["go-cgo-constructors", mode] : ["go-cgo-constructors"],
   timeout: 30_000,
   useDefaultRootfs: false,
 });
+const expectedMarker = mode === "c-exit"
+  ? "CGO C EXIT HANDLER PASS"
+  : mode === "c-immediate-exit"
+    ? "CGO C _EXIT PASS"
+  : mode
+    ? "CGO GO EXIT PASS"
+    : "CGO CONSTRUCTORS PASS";
 
 console.log(JSON.stringify({
   exitCode: result.exitCode,
@@ -23,7 +30,8 @@ console.log(JSON.stringify({
 
 if (
   result.exitCode !== 0 ||
-  !result.stdout.includes(mode === "c-exit" ? "CGO C EXIT HANDLER PASS" : "CGO CONSTRUCTORS PASS") ||
+  !result.stdout.includes(expectedMarker) ||
+  (mode !== "c-exit" && result.stdout.includes("CGO C EXIT HANDLER PASS")) ||
   result.stderr !== "" ||
   result.hostDiagnostics.length !== 0
 ) {

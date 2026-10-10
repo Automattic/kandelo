@@ -2118,6 +2118,82 @@ integrated and running; these remaining items are platform-wide rather than
 demo-specific. The unrelated full-tree `./run.sh browser` failures in
 `librsvg` and `rsvg-convert` remain a separate build issue.
 
+**2026-10-10 — broader libc functional coverage.** The full musl libc-test
+`functional` runner completed: 62 PASS, zero unexpected FAIL/BUILD/TIMEOUT,
+and one expected `pthread_cancel` XFAIL for asynchronous cancellation that
+Wasm cannot preempt. This supersedes the narrow three-case pthread run as
+libc functional evidence, but is not the libc regression/math categories,
+the Open POSIX Test Suite, Sortix os-test, or full Go standard-library tests.
+
+**2026-10-10 — Open POSIX runner preflight and suite pass.** The first full
+Open POSIX invocation timed out before guest execution because every test
+launched a cold release `xtask` build inside its 30-second watchdog. The
+runner now prepares the exact release checker once before entering per-test
+timeouts and exports its path; its focused `asctime`/`clock` retry passed
+3/3. The corrected full Open POSIX Test Suite then completed 179 cases:
+174 PASS, three documented XFAIL (`mlock` and `munmap`), two unsupported
+scheduler-priority SKIP, and zero unexpected failures, build errors,
+unresolved cases, or timeouts. This is real C/POSIX conformance evidence,
+not full Go stdlib or cross-browser POSIX conformance. Libc regression/math
+and Sortix coverage remain separate.
+
+**2026-10-10 — complete available musl libc-test categories.** The full
+`regression` runner completed 59 PASS, two documented XFAIL, and one
+`pthread_cond-smasher` FLAKE-PASS (62 total); the full `math` runner completed
+185 PASS and 14 documented XFAIL (199 total). Together with `functional`,
+the three categories ran 324 cases: 306 PASS, 17 documented XFAIL, and one
+FLAKE-PASS, with zero unexpected failures, build errors, or timeouts. These
+are C/libc conformance suites, not Go standard-library tests. They do not
+erase the documented XFAIL boundaries.
+
+**2026-10-10 — Go browser parity and shutdown policy.** The focused Go/C
+runtime suite now runs in Chromium, Firefox, and WebKit. Its 31 cases per
+engine include Go-owned return, `os.Exit`, C `exit(0)`, and C `_exit(0)`.
+Go-led exits and C `_exit` bypass C handlers; C `exit(0)` dispatches them.
+The four modes also pass in Node. The full browser matrix passed 93/93;
+a three-engine smoke test also passed with a fresh Playwright-owned Vite
+server. This intentionally follows Kandelo's
+Linux-style raw `exit_group` Go runtime path, not observed native macOS
+Go/cgo C-handler behavior. It is focused lifecycle evidence, not full Go
+stdlib conformance or cross-engine WordPress behavior.
+
+**2026-10-10 — Go filesystem/ownership conformance and refreshed packages.**
+Fork commit `aff9084745912a3b0aedcda1214a0c809c3ace25` fixes Kandelo
+directory enumeration, seek position, zero-inode entries, kernel-owned mode
+bits, and path/fd/symlink ownership syscalls. Selected upstream Go `os`
+(14 tests) and `syscall` (two tests) now pass on Node, Chromium, Firefox,
+and WebKit. Pure-Go `kandelo`, `js`, and `wasip1` standard-library builds and
+focused `cmd/cgo`/`cmd/link` host tests pass. These are selected upstream
+cases, not the complete Go standard-library suites.
+
+The source-only `go-hello` revision 8 and `frankenphp-classic` revision 11
+packages now pin that fork commit. Both resolver bootstraps pass, including
+the revision-21 WordPress image. The `go-hello` package VFS launch passes
+Node and all three browsers (3/3 browser); direct FrankenPHP PHP/static HTTP
+passes Node and all three browsers (3/3 browser). The WordPress/FrankenPHP
+homepage, admin, and Gallery browser flow passes 3/3 in Chromium on that
+image. The focused Go browser suite passes 33 cases per engine, 99/99 total,
+including the selected upstream `os` and `syscall` cases. This supersedes the
+31-per-engine checkpoint above. The live Node demo serves HTTP 200 at
+`http://localhost:3000/`; the source-only browser image is served from the
+Vite app at `http://127.0.0.1:5401/`. Neither the exploratory timing nor
+these correctness gates show a FrankenPHP performance advantage.
+
+The remaining Go/C platform gates, in recommended order, are:
+
+1. Run broader Go standard-library/runtime conformance on the Kandelo target.
+2. Support real relocated/non-metadata C initializer and finalizer arrays
+   if needed by source ports; the current LLVM toolchain rejects
+   `.fini_array` before Kandelo's linker sees it.
+3. Generalize mixed-width pointer-bearing C struct access and by-value cgo
+   calls; current PHP integration uses explicit C accessors and a scalar
+   registration entry at that interop boundary.
+4. Exercise configured thread-slot ceilings, longer PHP worker churn,
+   allocator pressure, and concurrent callbacks; provision the full built-in
+   program closure before rerunning Sortix os-test. Keep a formal application
+   performance suite distinct from correctness validation. The exploratory
+   browser timing so far demonstrates no FrankenPHP latency advantage.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed

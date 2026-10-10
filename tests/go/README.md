@@ -2,8 +2,8 @@
 
 These probes run binaries from the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port) through
-Kandelo's real Chromium process workers and ABI-48 kernel. Use fork commit
-`98dc3f1` or later, built with Go 1.25.6 as `GOROOT_BOOTSTRAP`. By default
+Kandelo's real Chromium, Firefox, and WebKit process workers and ABI-48 kernel. Use fork commit
+`aff9084745912a3b0aedcda1214a0c809c3ace25` or later, built with Go 1.25.6 as `GOROOT_BOOTSTRAP`. By default
 the fork is checked out beside this repository as `../go-kandelo`.
 
 From the Kandelo repository root:
@@ -12,17 +12,17 @@ From the Kandelo repository root:
 ./run.sh build kernel
 scripts/dev-shell.sh bash tests/go/build-browser-fixtures.sh
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && npm ci'
-scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit'
 ```
 
-The fixture script writes eighteen Wasm programs for nineteen browser tests
+The fixture script writes the core Wasm programs for opt-in browser tests
 under `.context/go-browser/`. Set `GO_KANDELO_BIN` to an absolute path to use
 another fork binary. Use
 `KANDELO_PLAYWRIGHT_PORT` inside the last command if another workspace already
 serves the default Playwright port.
 
 The script stamps only the binaries it rebuilt with this checkout's
-`kandelo.abi.contract` digest. The Node and Chromium probes require the
+`kandelo.abi.contract` digest. The Node and three-browser probes require the
 fixture digest to match the kernel, so run the fixture script rather than
 building individual probes directly with `go build`.
 
@@ -46,6 +46,20 @@ These probes supply real `/etc/passwd` and `/etc/group` VFS files for the
 public API check. They do not establish host account database integration or
 full `os/user` conformance.
 
+The fixture builder also compiles upstream `os` and `syscall` test binaries.
+The selected `os` cases cover stat, positioned reads, open errors, directory
+batching/cleanup, chmod, and path/fd/symlink chown. The selected `syscall`
+cases cover `ReadDirent` and `ParseDirent` across repeated buffers. Run their
+Node VFS cases with:
+
+```sh
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/os-stdlib/run.ts .context/go-browser/os-test.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/syscall-stdlib/run.ts .context/go-browser/syscall-test.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+```
+
+The same selected cases are included in `go-port.spec.ts` for Chromium,
+Firefox, and WebKit. They are not the full upstream `os` or `syscall` suites.
+
 ## Resolver package and VFS launch
 
 `go-hello` is a registry program built from this repository's Go sample and
@@ -60,10 +74,10 @@ KANDELO_CACHE_GC_AUTO=0 scripts/dev-shell.sh bash -c 'cargo xtask bootstrap go-h
 ./run.sh build kernel
 scripts/dev-shell.sh bash tests/go/package-basic/build-launcher.sh
 scripts/dev-shell.sh bash -c 'node --import tsx tests/go/package-basic/run.ts'
-scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_PACKAGE_TESTS=1 npx playwright test test/go-package.spec.ts --project=chromium'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_PACKAGE_TESTS=1 npx playwright test test/go-package.spec.ts --project=chromium --project=firefox --project=webkit'
 ```
 
-The Node and Chromium tests load the *resolved* `go-hello.wasm`, put its exact
+The Node and three-browser tests load the *resolved* `go-hello.wasm`, put its exact
 bytes at `/bin/go-hello.wasm` in a VFS image, and have a C process launch it
 with `posix_spawn`. They require both programs' ABI digests to match the
 kernel, exit 0, the Go and launcher markers, and no stderr or host
@@ -182,8 +196,13 @@ The `cgo/constructors` fixture verifies standard Wasm C constructor
 metadata, priority order, a metadata-only `.init_array.150` segment, and C
 destructor registration. Its ordinary mode calls musl's exit-handler
 dispatcher explicitly. Its `c-exit` mode enters C `exit(0)` and checks that
-the registered handler runs on Node and Chromium. A Go main return does not
-establish automatic C exit-handler dispatch. The linker still rejects
+the registered handler runs on Node and all three browser engines. Its
+`c-immediate-exit` mode enters C `_exit(0)` and verifies that the handler
+does not run. Its `go-return` and
+`go-os-exit` modes arm the same handler and verify that Go's process-wide
+`exit_group` path does not dispatch it. This matches the fork's Linux-style
+runtime exit path, but not macOS native Go/cgo shutdown behavior. The linker
+still rejects
 nonzero or referenced initializer arrays; LLVM currently rejects
 `.fini_array` at compile time.
 
@@ -208,7 +227,10 @@ scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-co
 scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-constructors-instrumented.wasm; stamp_built_program_outputs'
 node --import tsx tests/go/cgo/constructors/run.ts .context/go-constructors-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
 node --import tsx tests/go/cgo/constructors/run.ts .context/go-constructors-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)" c-exit
-cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'C constructors|C exit dispatches'
+node --import tsx tests/go/cgo/constructors/run.ts .context/go-constructors-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)" c-immediate-exit
+node --import tsx tests/go/cgo/constructors/run.ts .context/go-constructors-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)" go-return
+node --import tsx tests/go/cgo/constructors/run.ts .context/go-constructors-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)" go-os-exit
+cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit --grep 'C constructors|C exit dispatches|C _exit|bypasses C exit'
 ```
 
 The separate `cgo/callback` fixture exercises Go-to-C-to-Go calls on the
