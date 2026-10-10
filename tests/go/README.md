@@ -122,11 +122,18 @@ scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32po
 ```
 
 The published package revision still fails at pointer-size recognition.
-The adjacent fork's experimental cgo frontend gets this fixture to the
-linker. The linker discovers SDK libc and now passes the first C TLS and
-data-pointer relocation gates. The normal build currently stops at the
-missing linker-owned `__fini_array_end` initialization-array symbol. No cgo binary
-is emitted.
+The adjacent fork's experimental cgo frontend gets this fixture through the
+linker. The linker discovers SDK libc and executable glue and emits a raw
+Wasm module that passes `wasm-validate --enable-threads`. This is not a
+runnable cgo artifact: fork instrumentation currently rejects the combined
+module, and Go/C adapters remain unimplemented. `run.ts` is an opt-in
+failing runtime gate, not passing coverage.
+
+```sh
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-c-abs.wasm ./tests/go/cgo && wasm-validate --enable-threads .context/go-c-abs.wasm'
+scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-c-abs.wasm -o .context/go-c-abs-instrumented.wasm'
+node --import tsx tests/go/cgo/run.ts .context/go-c-abs-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
+```
 
 A compile-only pass will not establish working interoperability: run the
 binary in Node and Chromium and add a C-to-Go callback probe before building
