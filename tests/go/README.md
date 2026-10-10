@@ -125,7 +125,7 @@ The published package revision still fails at pointer-size recognition.
 The adjacent fork's experimental cgo frontend gets this fixture to the
 linker. The linker discovers SDK libc and now passes the first C TLS and
 data-pointer relocation gates. The normal build currently stops at the
-missing Kandelo `_cgo_sys_thread_start` runtime/cgo function. No cgo binary
+missing linker-owned `__fini_array_end` initialization-array symbol. No cgo binary
 is emitted.
 
 A compile-only pass will not establish working interoperability: run the
@@ -170,6 +170,8 @@ direct tests verify that separate Wasm instances over shared memory retain
 distinct TLS bases, and the Go assembly process checks the same variable.
 The function-pointer object checks a C function pointer initialized in DATA
 and called indirectly from Go through C code.
+The channel-base object checks the host writes a positive per-instance
+`__channel_base` global before the Go process calls C code.
 Stamp the exact
 fresh output, then run the process and browser cases:
 

@@ -120,8 +120,8 @@ Continue linker work from the internal Wasm host-object reader, because the
 Go linker already owns Kandelo's final memory, table, exports, and ABI
 marker. The narrow fixture now verifies Go-to-C calls, C static data,
 function-pointer DATA relocation, and per-instance TLS on Node and Chromium.
-The normal `C.abs` build reaches missing Kandelo `runtime/cgo` thread-start
-code; it is not an executable cgo binary. If the internal path cannot
+The normal `C.abs` build reaches missing linker-owned init/fini-array
+symbols; it is not an executable cgo binary. If the internal path cannot
 preserve C function types, table slots, static data and TLS alongside Go's
 layout, evaluate a
 relocatable-Go-object/external-link design explicitly. Never feed a final
@@ -145,9 +145,9 @@ The link-only fixture now makes a narrow Go assembly call to C, including
 an initialized `_Thread_local` value, and executes as a Kandelo process on
 Node and Chromium. Direct table tests also prove per-instance TLS isolation
 on shared memory in both engines. It does not exercise `runtime/cgo` or the
-standard Go/C adapters. The normal `C.abs` build discovers SDK libc without
-a manual archive flag and currently stops at missing Kandelo
-`_cgo_sys_thread_start`. Musl/PHP TLS conformance, Go/C adapters, and
+standard Go/C adapters. The normal `C.abs` build discovers SDK libc and
+executable glue without manual linker flags and currently stops at missing
+`__fini_array_end`. Musl/PHP TLS conformance, Go/C adapters, and
 C-created-thread attachment remain. Do not treat the C shim's `_cgo_topofstack` call as
 a direct call to a Go-resumable function. The C-data path is only one link
 layer.
@@ -162,16 +162,16 @@ or unsupported TLS initializer relocations explicitly. Validate musl/PHP TLS,
 C-created threads, fork replay, and both hosts before claiming general TLS
 support. The link-only fixture proves only a simple initialized TLS variable.
 
-The next normal-cgo linker failure is `_cgo_sys_thread_start`.
-`runtime/cgo/gcc_util.c` calls it from `x_cgo_thread_start`, and
-`runtime.newm` deliberately uses that C thread-start path when `iscgo` is
-true. A Kandelo implementation must preserve real C pthread creation and
-adapt its entry to Go's resumable Wasm function ABI. A C function pointer
-cannot call a raw Go table entry with the wrong Wasm signature. It must also
-initialize the C thread pointer and TLS and capture a per-instance Kandelo
-channel before Go callbacks. Do not add a no-op symbol solely to satisfy
-the linker or assume the existing pure-Go M bootstrap covers C-created
-threads.
+Kandelo-owned Go Ms can use the existing native `newosprocKandelo` path even
+when cgo is enabled, avoiding the `_cgo_sys_thread_start` gate for those Ms.
+This does **not** attach C-created pthreads: they still require a real
+Go-compatible entry, musl thread pointer and TLS, M/P attachment, and a
+per-instance Kandelo channel. C function pointers cannot call raw Go table
+entries with the wrong Wasm signature. Do not add no-op thread or callback
+symbols to satisfy the linker. The new per-instance C `__channel_base` global
+and Go handoff word must both be initialized by the host; do not conflate
+either with C TLS. The SDK's normal executable glue (syscall, compiler-rt,
+and C++ runtime) is loaded by the Go linker through SDK source queries.
 
 For a repeatable C function-and-data link proof, run
 `scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends
