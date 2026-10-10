@@ -13,11 +13,11 @@
  * no host/src change. Skips if the binaries aren't built.
  */
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
@@ -57,7 +57,7 @@ describe("wlcompositor — global shortcuts, idle notify, session lock", () => {
   it.skipIf(!hasBinaries)(
     "a bound shortcut reaches its client, idle fires and resumes, and the session locks and unlocks",
     async () => {
-      const dir = mkdtempSync(join(tmpdir(), "wlc-shell-"));
+      const dir = makeHostScratchTempRoot("wlc-shell-");
       const confPath = join(dir, "wlcompositor.conf");
       writeFileSync(confPath, "bind = CTRL, F1, global, wlclient-test:foo\n");
 
@@ -145,6 +145,7 @@ describe("wlcompositor — global shortcuts, idle notify, session lock", () => {
         expect(compCode, `compositor exit.\n${dump()}`).toBe(0);
       } finally {
         await host.destroy().catch(() => {});
+        rmSync(dir, { recursive: true, force: true });
       }
     },
     90_000,

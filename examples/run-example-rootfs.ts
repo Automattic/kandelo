@@ -7,7 +7,7 @@ import {
   MAX_CLOSED_LAZY_ASSET_BYTES,
   type ClosedLazyAsset,
 } from "../host/src/vfs/closed-lazy-assets";
-import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs";
 
 const ROOTFS_LAZY_URL_BASE = "https://kandelo-runner.invalid/";
 
@@ -44,7 +44,7 @@ export function prepareRunExampleRootfs(image: Uint8Array): {
 } {
   const rootfsImage = new Uint8Array(image);
   const sources = new Map<string, number>();
-  for (const { url, size } of MemoryFileSystem.readImageLazyFileSources(rootfsImage)) {
+  for (const { url, size } of KandeloImageFs.readImageLazyFileSources(rootfsImage)) {
     // The canonical rootfs names local program artifacts. Do not turn a
     // transport hint into an arbitrary host path or ambient network fetch.
     const segments = url.split("/");

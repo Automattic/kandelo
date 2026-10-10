@@ -41,9 +41,7 @@ import {
   NodeTimeProvider,
   DEFAULT_MOUNT_SPEC,
   HostFileSystem,
-  listPreparedPlatformDirectory,
   readPreparedPlatformFile,
-  statPreparedPlatformPath,
 } from "./vfs";
 import * as rootImage from "./vfs/root-image-facts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
@@ -158,6 +156,7 @@ import {
   isMissingPathError,
   isRootfsMissingFileError,
   readRootfsFileWithRetry,
+  readNamespaceFileWithRetry,
   signalFromExitStatus,
   type ProcessGenerationOwnership,
   type VforkWorkspaceOwnership,
@@ -881,16 +880,9 @@ async function resolveExecutableForLaunch(
 function createRepoLazyAssetFetcher(): (url: string) => Promise<Response> {
   return async (url: string) => {
     if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
-    // The kernel has loaded and validated the image before its first read.
-    // Inspect its URL cohort once; all freshness checks stay off this worker.
-    repoLazyAssetResolver ??= new NodeLazyAssetResolver(
-      kernelWorker.rootfsLazyAssetUrls().filter(
-        (member) => !/^[a-z][a-z0-9+.-]*:/i.test(member),
-      ),
-    );
     const path = url.startsWith("file://")
       ? fileURLToPath(url)
-      : await repoLazyAssetResolver.resolve(url);
+      : await repoLazyAssetResolver!.resolve(url);
     if (!existsSync(path)) return new Response(null, { status: 404 });
     const bytes = new Uint8Array(readFileSync(path));
     return new Response(bytes, {
@@ -1198,9 +1190,10 @@ async function handleInit(msg: InitMessage) {
 
   // The kernel owns `/`: hand it the boot image and the byte pipe for what the
   // image does not carry before `init` loads them.
+  let finalizeRootfsTransport: (() => void) | undefined;
   if (rootImage.has()) {
     const rootfsContainer = new Uint8Array(msg.rootfsImage!);
-    configureRootfsOverlayFromImage(kernelWorker, {
+    finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
       imageRead: imageReadFromContainer(rootfsContainer),
       imageBytes: rootfsContainer,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
@@ -1212,6 +1205,16 @@ async function handleInit(msg: InitMessage) {
   }
 
   await kernelWorker.init(msg.kernelWasmBytes);
+  finalizeRootfsTransport?.();
+  if (rootImage.has() && msg.rootfsLazyAssets === undefined && msg.rootfsLazyAssetSources === undefined) {
+    // Read metadata after native validation, outside a Wasm import callback.
+    // Freshness checking still starts only on the first lazy read, off-thread.
+    repoLazyAssetResolver = new NodeLazyAssetResolver(
+      [...kernelWorker.rootfsLazyResourceLimits().keys()].filter(
+        (url) => !/^[a-z][a-z0-9+.-]*:/i.test(url),
+      ),
+    );
+  }
 
   const pcmTransport = kernelWorker.claimPcmTransport(false);
   pcmDriver = new NodePcmDriver({
@@ -3716,7 +3719,7 @@ async function handleReadVfsFile(
     );
     // The kernel owns `/`, including guest copy-on-writes; a missing path or a
     // non-regular file answers null, as before.
-    const data = await readRootfsFileWithRetry(kernelWorker, msg.path);
+    const data = await readNamespaceFileWithRetry(kernelWorker, msg.path);
     if (data === null) {
       respond(msg.requestId, null);
       return;
@@ -3749,7 +3752,7 @@ async function handleReadVfsDir(
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "list or materialize a rootfs directory",
     );
-    respond(msg.requestId, await listPreparedPlatformDirectory(vfs, msg.path));
+    respond(msg.requestId, await retryKernelEntryResult(() => kernelWorker.rootfsReadDirectory(msg.path)));
   } catch (error) {
     if (isMissingPathError(error)) respond(msg.requestId, null);
     else respondError(msg.requestId, error instanceof Error ? error.message : String(error));
@@ -3768,7 +3771,7 @@ async function handleStatVfsPath(
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "stat or materialize a rootfs path",
     );
-    respond(msg.requestId, await statPreparedPlatformPath(vfs, msg.path));
+    respond(msg.requestId, await retryKernelEntryResult(() => kernelWorker.rootfsStat(msg.path)));
   } catch (error) {
     if (isMissingPathError(error)) respond(msg.requestId, null);
     else respondError(msg.requestId, error instanceof Error ? error.message : String(error));

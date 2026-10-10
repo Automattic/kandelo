@@ -36,9 +36,7 @@ import type {
   PreparedExecLaunchRequest,
 } from "./exec-target";
 import {
-  listPreparedPlatformDirectory,
   readPreparedPlatformFile,
-  statPreparedPlatformPath,
   VirtualPlatformIO,
 } from "./vfs/vfs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
@@ -148,6 +146,7 @@ import {
   isMissingPathError,
   isRootfsMissingFileError,
   readRootfsFileWithRetry,
+  readNamespaceFileWithRetry,
   signalFromExitStatus,
   type ProcessGenerationOwnership,
   type VforkWorkspaceOwnership,
@@ -1122,8 +1121,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   // The kernel owns `/`: hand it the boot image and the byte pipe for what the
   // image does not carry before `init` loads them. Mirrors the Node entry.
+  let finalizeRootfsTransport: (() => void) | undefined;
   if (rootImage.has()) {
-    configureRootfsOverlayFromImage(kernelWorker, {
+    finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
       imageRead: imageReadFromContainer(msg.vfsImage),
       imageBytes: msg.vfsImage,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
@@ -1136,6 +1136,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   }
 
   await kernelWorker.init(msg.kernelWasmBytes);
+  finalizeRootfsTransport?.();
 
   // Install the TLS-MITM CA certificate so guest OpenSSL trusts it. This runs
   // after `init` because the kernel owns `/`, and before any guest process is
@@ -3636,7 +3637,7 @@ async function handleReadVfsFile(
     // The kernel owns `/` and the scratch mounts, including guest writes; a
     // missing path or a non-regular file answers null, as before. The bytes
     // come back in a fresh, non-shared buffer, so they structured-clone.
-    const data = await readRootfsFileWithRetry(kernelWorker, msg.path);
+    const data = await readNamespaceFileWithRetry(kernelWorker, msg.path);
     if (data === null) {
       respond(msg.requestId, null);
       return;
@@ -3646,7 +3647,7 @@ async function handleReadVfsFile(
       msg.includeMode
         ? {
           data,
-          mode: kernelWorker.rootfsStatMode(msg.path) & FILE_MODES.S_MODE_BITS,
+          mode: kernelWorker.rootfsStat(msg.path).mode & FILE_MODES.S_MODE_BITS,
         }
         : data,
     );
@@ -3672,7 +3673,7 @@ async function handleReadVfsDir(
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "list or materialize a rootfs directory",
     );
-    respond(msg.requestId, await listPreparedPlatformDirectory(vfs, msg.path));
+    respond(msg.requestId, await retryKernelEntryResult(() => kernelWorker.rootfsReadDirectory(msg.path)));
   } catch (error) {
     if (isMissingPathError(error)) respond(msg.requestId, null);
     else respondError(msg.requestId, formatError(error));
@@ -3691,7 +3692,7 @@ async function handleStatVfsPath(
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "stat or materialize a rootfs path",
     );
-    respond(msg.requestId, await statPreparedPlatformPath(vfs, msg.path));
+    respond(msg.requestId, await retryKernelEntryResult(() => kernelWorker.rootfsStat(msg.path)));
   } catch (error) {
     if (isMissingPathError(error)) respond(msg.requestId, null);
     else respondError(msg.requestId, formatError(error));

@@ -1,14 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../../../../host/src/binary-resolver";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import { ensureDirRecursive, writeVfsBinary } from "../../../../host/src/vfs/image-helpers";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 
 // Exercise the packaged utility via guest PATH lookup. Sortix separately
 // checks that musl catopen/catgets/catclose consume the resulting format.
 async function compile(source: string, update?: string, stdin = false) {
-  const image = MemoryFileSystem.fromImagePreservingCapacity(
+  const image = KandeloImageFs.create();
+  image.loadImage(
     new Uint8Array(readFileSync(resolveBinary("rootfs.vfs.zst"))),
   );
   // /tmp is a separate per-boot scratch mount; fixture inputs belong on the

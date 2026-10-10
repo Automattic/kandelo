@@ -165,6 +165,10 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_rootfs_read_file",
   "kernel_rootfs_set_foreign_mount_roots",
   "kernel_rootfs_stat_mode",
+  "kernel_rootfs_inspect_stat",
+  "kernel_rootfs_inspect_read_file",
+  "kernel_rootfs_inspect_directory",
+  "kernel_rootfs_lazy_resource_limits",
   "kernel_rootfs_unlink_file",
   "kernel_rootfs_write_file",
   "kernel_select",
@@ -223,6 +227,8 @@ const REQUIRED_POINTER_1 = intrinsicObjectFreeze([1] as const);
 const REQUIRED_POINTER_2 = intrinsicObjectFreeze([2] as const);
 const REQUIRED_POINTER_3 = intrinsicObjectFreeze([3] as const);
 const REQUIRED_POINTER_3_5 = intrinsicObjectFreeze([3, 5] as const);
+const REQUIRED_POINTER_0_2 = intrinsicObjectFreeze([0, 2] as const);
+const REQUIRED_POINTER_0_3 = intrinsicObjectFreeze([0, 3] as const);
 const REQUIRED_POINTER_0_4 = intrinsicObjectFreeze([0, 4] as const);
 const REQUIRED_POINTER_4 = intrinsicObjectFreeze([4] as const);
 const REQUIRED_POINTER_5 = intrinsicObjectFreeze([5] as const);
@@ -250,6 +256,12 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_truncate":
     case "kernel_uname":
       return REQUIRED_POINTER_0;
+    case "kernel_rootfs_inspect_stat":
+      return REQUIRED_POINTER_0_2;
+    case "kernel_rootfs_inspect_directory":
+      return REQUIRED_POINTER_0_3;
+    case "kernel_rootfs_lazy_resource_limits":
+      return REQUIRED_POINTER_1;
     case "kernel_get_cwd":
     case "kernel_getrusage":
     case "kernel_pipe2":
@@ -285,6 +297,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_exec_target_read":
       return REQUIRED_POINTER_4;
     case "kernel_rootfs_read_file":
+    case "kernel_rootfs_inspect_read_file":
     case "kernel_rootfs_write_file":
       // path bytes at arg 0, data buffer at arg 4.
       return REQUIRED_POINTER_0_4;
@@ -364,6 +377,10 @@ function isKernelScratchExportName(
     case "kernel_rootfs_read_file":
     case "kernel_rootfs_set_foreign_mount_roots":
     case "kernel_rootfs_stat_mode":
+    case "kernel_rootfs_inspect_stat":
+    case "kernel_rootfs_inspect_read_file":
+    case "kernel_rootfs_inspect_directory":
+    case "kernel_rootfs_lazy_resource_limits":
     case "kernel_rootfs_unlink_file":
     case "kernel_rootfs_write_file":
     case "kernel_select":
