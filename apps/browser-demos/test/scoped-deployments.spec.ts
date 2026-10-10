@@ -345,7 +345,16 @@ async function readVimArchiveIdentity(
 }
 
 async function waitForShell(page: Page): Promise<void> {
-  await expect.poll(() => page.evaluate(() => document.body.innerText), { timeout: 180_000 }).toContain("Ready");
+  // The readiness status belongs to the demo guide, which starts closed.
+  // Open it before observing readiness; a running shell alone does not render it.
+  if (await page.locator("aside.kdemo").count() === 0) {
+    await page.getByRole("button", { name: "Demo guide" }).click({
+      timeout: 120_000,
+    });
+  }
+  await expect(page.locator("aside.kdemo .kdemo-status")).toHaveText("Ready", {
+    timeout: 180_000,
+  });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
 }
 
