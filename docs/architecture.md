@@ -2089,7 +2089,8 @@ and acquires no descriptors. A directory snapshot includes each entry's
 current mode, size, uid/gid and symlink target. Copied snapshots stream
 through allocator-owned scratch within one kernel entry and are freed
 at EOF. The main thread receives plain metadata and transferable bytes.
-Procfs/devfs listings share the guest directory enumerators. Numeric
+Root listings include the kernel's virtual mounts even when the image omits
+them. Procfs/devfs listings share the guest directory enumerators. Numeric
 `/proc/<pid>/fd` and `fdinfo` use that process's live descriptors; a fresh
 listing reflects descriptor close and process reaping. Exited children remain
 visible until their parent reaps them. `/dev/pts` uses live

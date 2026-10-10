@@ -44,6 +44,10 @@ describe("worker-side VFS listing and stat", () => {
       buffered.delete(pid);
     });
     expect(result.status).toBe(0);
+  for (const name of ["dev", "proc"]) {
+    expect(result.root!.filter((entry) => entry.name === name)).toHaveLength(1);
+    expect(result.root!.find((entry) => entry.name === name)!.mode & 0o170000).toBe(0o040000);
+  }
     expect(result.proc!.find((entry) => entry.name === String(result.pid))).toMatchObject({ mode: 0o040555 });
     expect(result.proc!.find((entry) => entry.name === "self")).toMatchObject({ mode: 0o120777, target: "1" });
     expect(result.process!.find((entry) => entry.name === "cwd")).toMatchObject({ mode: 0o120777, target: "/" });

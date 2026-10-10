@@ -14,6 +14,7 @@ export async function virtualInspection(
   const readyPromise = new Promise<void>((resolve) => { ready = resolve; });
   const closedPromise = new Promise<void>((resolve) => { closed = resolve; });
   let output = "";
+  const root = await host.readDirFromVfs("/");
   const initialPts = await host.readDirFromVfs("/dev/pts");
   const { pid: parentPid, exit } = await host.spawnFromVfs("/usr/bin/bash", ["bash", "-c", [
     "set -e",
@@ -66,6 +67,6 @@ export async function virtualInspection(
   const finalProc = await host.readDirFromVfs("/proc");
   const vanished = await host.readDirFromVfs(`/proc/${pid}/fd`);
   const finalPts = await host.readDirFromVfs("/dev/pts");
-  return { pid, status, initialPts, proc, process, fds, fdinfo, pts, dev, initFds, devFds,
+  return { pid, status, root, initialPts, proc, process, fds, fdinfo, pts, dev, initFds, devFds,
     input, dri, kandelo, shm, closedFds, closedInfo, closedPts, finalProc, vanished, finalPts };
 }

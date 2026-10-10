@@ -2979,6 +2979,17 @@ pub fn inspect_namespace_directory(
                 entries.push(entry);
             }
         }
+        // Images need not contain the kernel's virtual mount directories.
+        // Use the guest root listing's mount names and real namespace metadata.
+        if directory.as_slice() == b"/" {
+            for name in ROOT_VIRTUAL_DIRENTS {
+                if !entries.iter().any(|(entry_name, _, _)| entry_name.as_slice() == *name) {
+                    if let Some(entry) = inspect_directory_entry(proc, host, directory, name)? {
+                        entries.push(entry);
+                    }
+                }
+            }
+        }
         Ok(entries)
     })();
     let closed = if crate::tmpfs::is_tmpfs_dir_handle(handle) {
