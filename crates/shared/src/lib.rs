@@ -171,7 +171,7 @@ pub mod process_layout;
 ///     fork/dup/exec, instead of a host handle answered per pid. The GL
 ///     command stream gains OP_BLEND_FUNC_SEPARATE, OP_BLEND_EQUATION_SEPARATE
 ///     and QOP_FINISH.
-pub const ABI_VERSION: u32 = 47;
+pub const ABI_VERSION: u32 = 48;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1960,6 +1960,8 @@ pub mod process_memory {
     /// the requested concurrent pthread limit.
     pub const THREAD_SLOT_DECL_EXPORT: &str = "__wasm_posix_thread_slots";
 
+    pub const THREAD_SLOT_PREALLOCATE_EXPORT: &str = "__wasm_posix_preallocate_thread_slots";
+
     /// Legacy kernel MemoryManager::MMAP_BASE. Compact hosts override this
     /// per process but still expose the legacy boundary for compatibility.
     pub const LEGACY_MMAP_BASE: u32 = 0x0400_0000;
@@ -2575,6 +2577,13 @@ pub mod abi {
         name: "kernel_fork",
         params: &[I32],
         results: &[I32],
+    };
+
+    pub const PROCESS_WORKER_THREAD_EXIT_IMPORT: ProgramArtifactImport = ProgramArtifactImport {
+        module: "kernel",
+        name: "kernel_thread_exit",
+        params: &[Pointer],
+        results: &[],
     };
 
     pub const WPK_FORK_REQUIRED_IMPORTS: &[ProgramArtifactImport] = &[

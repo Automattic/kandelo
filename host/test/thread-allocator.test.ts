@@ -158,6 +158,35 @@ describe("ThreadPageAllocator", () => {
     expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
   });
 
+  it("keeps opt-in pthread slots below the heap while reserving host control separately", () => {
+    let nextDynamicPage = 128;
+    const alloc = new ThreadPageAllocator({
+      firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
+      maxPageExclusive: FIRST_THREAD_SLOT_PAGE + 2 * PAGES_PER_THREAD,
+      reservedSlots: 2,
+      reserveSlotStartPage: () => {
+        const page = nextDynamicPage;
+        nextDynamicPage += PAGES_PER_THREAD;
+        return page;
+      },
+    });
+    const mem = makeMemory();
+
+    const first = alloc.allocate(mem);
+    const control = alloc.allocateHostControl(mem);
+    const second = alloc.allocate(mem);
+    expect(first.slotStartPage).toBe(FIRST_THREAD_SLOT_PAGE);
+    expect(second.slotStartPage).toBe(FIRST_THREAD_SLOT_PAGE + PAGES_PER_THREAD);
+    expect(control.slotStartPage).toBe(128);
+    expect(nextDynamicPage).toBe(128 + PAGES_PER_THREAD);
+    expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
+
+    alloc.free(control.slotStartPage);
+    alloc.free(first.slotStartPage);
+    expect(alloc.allocate(mem).slotStartPage).toBe(first.slotStartPage);
+    expect(alloc.allocateHostControl(mem).slotStartPage).toBe(control.slotStartPage);
+  });
+
   it("reuses dynamic slots without reserving a new host range", () => {
     let nextPage = 128;
     let reservations = 0;

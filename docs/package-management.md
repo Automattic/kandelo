@@ -1105,7 +1105,9 @@ side-file admission also runs in the resolver. Wasm inside runtime archives
 is not recursively audited here. Host names and kinds come from shared ABI
 declarations; typed kernel process imports come from the current
 architecture's actual SDK libc and startup objects, plus the shared fork
-import declaration.
+and process-worker thread-exit import declarations. Go's runtime uses the
+typed `kernel.kernel_thread_exit` process-worker import directly; it is not
+the similarly named kernel Wasm export used by the host adapter.
 Kernel-worker-only exports are not process imports. Unknown modules,
 unknown main-module host names, and wrong kernel function types fail.
 Side modules may import ordinary dynamic-library symbols and the loader's

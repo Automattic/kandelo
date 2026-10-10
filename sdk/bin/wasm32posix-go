@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${KANDELO_GO_ROOT:?set KANDELO_GO_ROOT to a built Kandelo Go toolchain}"
+case "$KANDELO_GO_ROOT" in
+    /*) ;;
+    *) echo "wasm32posix-go: KANDELO_GO_ROOT must be absolute" >&2; exit 2 ;;
+esac
+if [ ! -x "$KANDELO_GO_ROOT/bin/go" ]; then
+    echo "wasm32posix-go: Kandelo Go compiler is missing at $KANDELO_GO_ROOT/bin/go" >&2
+    exit 2
+fi
+
+export GOROOT="$KANDELO_GO_ROOT"
+export GOOS=kandelo GOARCH=wasm CGO_ENABLED=0 GOTOOLCHAIN=local GOENV=off
+exec "$GOROOT/bin/go" "$@"

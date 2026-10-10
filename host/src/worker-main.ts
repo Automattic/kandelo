@@ -314,6 +314,7 @@ function continuationMunmap(
  */
 type KernelImports = Record<string, WebAssembly.ExportValue> & {
   kernel_exit: (status: number) => void;
+  kernel_thread_exit: (waitPtr: WasmGuestPointer) => void;
   kernel_fork: (mode: number) => number;
 };
 
@@ -451,6 +452,29 @@ function buildKernelImports(
     return encoded.byteLength;
   };
 
+  const publishExit = (status: number): void => {
+    const view = new DataView(memory.buffer);
+    const base = channelOffset;
+    if (isExecRetirementMarker(view, base)) {
+      view.setUint32(base + CH_SIG_SIGNUM, 0, true);
+      view.setUint32(base + CH_SIG_SI_CODE, 0, true);
+      throw new ExecRetirement();
+    }
+    view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+    view.setBigInt64(base + CH_ARGS, BigInt(status), true);
+    const i32 = new Int32Array(memory.buffer);
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+    while (
+      Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
+      "ok"
+    ) {
+      /* */
+    }
+    onKernelExit?.(status);
+    throw new WebAssembly.RuntimeError("unreachable");
+  };
+
   return {
     // CRT argv support
     kernel_get_argc: (): number => metadata.argv.length,
@@ -485,37 +509,20 @@ function buildKernelImports(
     kernel_execve: (_pathPtr: number | bigint): number => -38, // ENOSYS
 
     // Exit dispatches through channel (SYS_EXIT)
-    kernel_exit: (status: number): void => {
-      const view = new DataView(memory.buffer);
-      const base = channelOffset;
-      if (isExecRetirementMarker(view, base)) {
-        // Exec keeps the kernel Process alive. The old browser Worker must
-        // unwind without publishing SYS_EXIT, then its wrapper emits the
-        // exact-generation memory_quiescent ownership fence.
-        view.setUint32(base + CH_SIG_SIGNUM, 0, true);
-        view.setUint32(base + CH_SIG_SI_CODE, 0, true);
-        throw new ExecRetirement();
+    kernel_exit: publishExit,
+    kernel_thread_exit: (waitPtr: WasmGuestPointer): void => {
+      const range = checkedWasmMemoryRange(
+        memory,
+        waitPtr,
+        4,
+        ptrWidth,
+        "kernel_thread_exit",
+      );
+      if (range.offset % 4 !== 0) {
+        throw new RangeError("kernel_thread_exit: unaligned wait pointer");
       }
-      view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
-      view.setBigInt64(base + CH_ARGS, BigInt(status), true);
-      const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      // Wait until the reusable kernel transaction returns and the host has
-      // committed the exit before terminating this disposable process Worker.
-      while (
-        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-        "ok"
-      ) {
-        /* */
-      }
-      onKernelExit?.(status);
-      // WHY: this trap belongs at the disposable guest-Worker boundary, not in
-      // the reusable kernel Wasm. It enforces `_Noreturn` even if a caller was
-      // built without the compiler's trailing unreachable, and prevents
-      // libc's SYS_exit retry loop from parking on a channel already removed
-      // by the host.
-      throw new WebAssembly.RuntimeError("unreachable");
+      Atomics.store(new Int32Array(memory.buffer), range.offset / 4, 0);
+      publishExit(0);
     },
 
     // Clone dispatches through channel (SYS_CLONE)
@@ -4595,6 +4602,10 @@ function setupChannelBase(
   programBytes?: ArrayBuffer,
   ptrWidth: 4 | 8 = 4,
 ): void {
+  const channelBase = instance.exports.__channel_base as WebAssembly.Global | undefined;
+  if (channelBase) {
+    channelBase.value = ptrWidth === 8 ? BigInt(channelOffset) : channelOffset;
+  }
   // If the module imports env.__channel_base as a global, the channel offset was
   // already set at instantiation via WebAssembly.Global in buildImportObject.
   const moduleImports = wasmModuleImports(module);
@@ -4735,9 +4746,14 @@ function sendForkSyscall(
  *   they would clobber shared global state (e.g. resetting LOGGER::file_log_handler
  *   to NULL in MariaDB).
  *
+ * Go's Kandelo modules instead have no Start section and use active data
+ * segments. Thread instances must omit those segments rather than replaying
+ * them over the already-running process memory.
+ *
  * This function:
- * 1. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
- * 2. Finds the constructor function by scanning the known LLVM helper exports
+ * 1. Removes all-active data sections from modules without a Start section.
+ * 2. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
+ * 3. Finds the constructor function by scanning the known LLVM helper exports
  *    for their common call target and replaces that function body with a no-op.
  */
 export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
@@ -4795,6 +4811,38 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     });
     if (sectionId === 8) hasStartSection = true;
     offset += totalSize;
+  }
+
+  if (!hasStartSection) {
+    const dataSection = sections.find((section) => section.id === 11);
+    const dataCountSection = sections.find((section) => section.id === 12);
+    if (dataSection && !dataCountSection) {
+      let position = dataSection.contentOffset;
+      const dataEnd = position + dataSection.contentSize;
+      const [segmentCount, countSize] = readLEB128(src, position);
+      position += countSize;
+      let activeDataOnly = true;
+      for (let index = 0; index < segmentCount && activeDataOnly; index++) {
+        if (src[position++] !== 0 || src[position++] !== 0x41) {
+          activeDataOnly = false;
+          break;
+        }
+        position += readLEB128(src, position)[1];
+        if (src[position++] !== 0x0b) {
+          activeDataOnly = false;
+          break;
+        }
+        const [dataLength, lengthSize] = readLEB128(src, position);
+        position += lengthSize + dataLength;
+        if (position > dataEnd) activeDataOnly = false;
+      }
+      if (activeDataOnly && position === dataEnd) {
+        const patched = new Uint8Array(src.length - dataSection.totalSize);
+        patched.set(src.subarray(0, dataSection.offset));
+        patched.set(src.subarray(dataSection.offset + dataSection.totalSize), dataSection.offset);
+        return patched.buffer;
+      }
+    }
   }
 
   if (!hasStartSection) return bytes;

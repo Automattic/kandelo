@@ -143,16 +143,30 @@ fn sdk_kernel_contract(sysroot: &Path) -> Result<KernelContract, String> {
     )?;
     // channel_syscall.c supplies this import outside libc.a. Its typed
     // declaration is already authoritative in the shared fork contract.
-    let fork = abi::WPK_FORK_PROCESS_IMPORT;
     let value = |value: &abi::ProgramArtifactValueType| match value {
         abi::ProgramArtifactValueType::I32 => wasmparser::ValType::I32,
         abi::ProgramArtifactValueType::I64 => wasmparser::ValType::I64,
-        _ => unreachable!("kernel_fork has scalar arguments"),
+        abi::ProgramArtifactValueType::Pointer => {
+            if sysroot.ends_with("sysroot64") {
+                wasmparser::ValType::I64
+            } else {
+                wasmparser::ValType::I32
+            }
+        }
+        _ => unreachable!("process worker imports have scalar arguments"),
     };
-    contract.entry(fork.name.into()).or_default().insert((
-        fork.params.iter().map(value).collect(),
-        fork.results.iter().map(value).collect(),
-    ));
+    for declaration in [
+        abi::WPK_FORK_PROCESS_IMPORT,
+        abi::PROCESS_WORKER_THREAD_EXIT_IMPORT,
+    ] {
+        contract
+            .entry(declaration.name.into())
+            .or_default()
+            .insert((
+                declaration.params.iter().map(value).collect(),
+                declaration.results.iter().map(value).collect(),
+            ));
+    }
     Ok(contract)
 }
 
@@ -345,6 +359,33 @@ mod tests {
             };
             assert!(!audit(&invalid, &contract).is_empty(), "{module}.{name}");
         }
+    }
+
+    #[test]
+    fn thread_exit_is_a_typed_process_worker_import() {
+        let declaration = abi::PROCESS_WORKER_THREAD_EXIT_IMPORT;
+        let contract = BTreeMap::from([(
+            declaration.name.into(),
+            BTreeSet::from([(vec![wasmparser::ValType::I32], vec![])]),
+        )]);
+        let valid = Imports {
+            entries: vec![(
+                declaration.module.into(),
+                declaration.name.into(),
+                TypeRef::Func(0),
+            )],
+            types: vec![FuncType::new([wasmparser::ValType::I32], [])],
+            ..Imports::default()
+        };
+        assert!(audit(&valid, &contract).is_empty());
+        let wrong_type = Imports {
+            types: vec![FuncType::new([wasmparser::ValType::I64], [])],
+            ..valid
+        };
+        assert_eq!(
+            audit(&wrong_type, &contract),
+            ["wrong function type for kernel.kernel_thread_exit"]
+        );
     }
 
     #[test]

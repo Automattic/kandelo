@@ -1,5 +1,5 @@
 {
-  "abi_version": 47,
+  "abi_version": 48,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1031,7 +1031,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 47,
+      "abi_version": 48,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -5563,6 +5563,7 @@
     "process_wasm_declarations": {
       "none": 0,
       "thread_slot_export": "__wasm_posix_thread_slots",
+      "thread_slot_preallocate_export": "__wasm_posix_preallocate_thread_slots",
       "use_host_default": -1
     },
     "thread_slot": {

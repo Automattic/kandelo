@@ -25601,7 +25601,10 @@ export class CentralizedKernelWorker {
         i++;
         continue;
       }
-      if (!this.isRegisteredChannel(waiter.channel)) {
+      if (
+        this.hostReaped.has(parentPid)
+        || !this.isRegisteredChannel(waiter.channel)
+      ) {
         this.waitingForChild.splice(i, 1);
         continue;
       }

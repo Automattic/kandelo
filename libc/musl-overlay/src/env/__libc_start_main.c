@@ -5,9 +5,8 @@
  * Standard musl calls main(argc, argv, envp) — 3 args — which causes
  * a Wasm call_indirect type mismatch. This version uses 2 args.
  *
- * Additionally, the standard __init_libc is replaced with a simplified
- * version for Wasm that avoids iterating auxv (not available on Wasm)
- * and avoids TLS init (single-threaded).
+ * The Wasm-specific __init_libc lives in a separate object so Go-led
+ * processes can initialize libc without also linking the C process entry.
  */
 
 #include <stdlib.h>
@@ -28,59 +27,7 @@ extern weak hidden void (*const __init_array_start)(void), (*const __init_array_
 static void dummy1(void *p) {}
 weak_alias(dummy1, __init_ssp);
 
-extern unsigned long __wasm_tp_storage[64];
-extern _Thread_local unsigned long __wasm_thread_pointer;
-int __init_tp(void *);
-
-extern int32_t kernel_get_secure_exec(void)
-	__attribute__((import_module("kernel"), import_name("kernel_get_secure_exec")));
-
-static _Noreturn void secure_startup_failure(void)
-{
-	__syscall(SYS_exit_group, 127);
-	for (;;) __asm__ ("" ::: "memory");
-}
-
-static void secure_standard_fds(void)
-{
-	for (int fd = 0; fd != 3; ++fd) {
-		if (__syscall(SYS_fcntl, fd, F_GETFD) != -EBADF) continue;
-		int opened = __syscall(SYS_openat, AT_FDCWD, "/dev/null", O_RDWR, 0);
-		if (opened < 0) secure_startup_failure();
-		if (opened != fd && __syscall(SYS_dup2, opened, fd) < 0)
-			secure_startup_failure();
-		if (opened != fd) __syscall(SYS_close, opened);
-	}
-}
-
-void __init_libc(char **envp, char *pn)
-{
-	size_t i;
-	libc.secure = kernel_get_secure_exec() != 0;
-	if (libc.secure) secure_standard_fds();
-	__environ = envp;
-
-	/* On Wasm, there is no auxv. Set up minimal libc state only. */
-	libc.page_size = 65536; /* Wasm page size */
-
-	/* Set minimal TLS metrics so pthread_create's __copy_tls can
-	 * correctly lay out struct pthread for new threads. LLVM Wasm TLS
-	 * (_Thread_local) is handled separately by __wasm_init_tls; musl
-	 * only needs to know how much space to reserve for struct pthread. */
-	libc.tls_size = 2*sizeof(void *) + sizeof(struct pthread);
-	libc.tls_align = _Alignof(struct pthread) > 4 ? _Alignof(struct pthread) : 4;
-
-	if (!pn) pn = "";
-	__progname = __progname_full = pn;
-	for (i=0; pn[i]; i++) if (pn[i]=='/') __progname = pn+i+1;
-
-	/* Initialize the thread pointer for the main thread.
-	 * Set __wasm_thread_pointer to point at __wasm_tp_storage,
-	 * then call __init_tp which sets self, locale, tid,
-	 * libc.can_do_threads, etc. */
-	__wasm_thread_pointer = (unsigned long)__wasm_tp_storage;
-	__init_tp((void *)__wasm_tp_storage);
-}
+void __init_libc(char **envp, char *pn);
 
 static void libc_start_init(void)
 {
