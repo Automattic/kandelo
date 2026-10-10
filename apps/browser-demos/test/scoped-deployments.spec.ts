@@ -56,6 +56,12 @@ interface NamedCacheSnapshot {
   name: string;
 }
 
+interface BridgeReady {
+  type: "bridge-ready";
+  name: string;
+  appPrefix: string;
+}
+
 let fixtureRoot: string;
 let server: ScopedStaticServer;
 let vimArchiveIdentity: { bytes: number; sha256: string };
@@ -198,8 +204,11 @@ test.describe.serial("real scoped production deployments", () => {
         request.pathname.endsWith("/vim.zip")
       )).toEqual([]);
 
-      await expect(installBridgeAuthority(pageB)).resolves.toEqual({
+      const bridge = await installBridgeAuthority(pageB);
+      expect(bridge).toEqual({
         type: "bridge-ready",
+        name: expect.stringMatching(/^[a-z]+-[a-z]+-[a-z]+$/),
+        appPrefix: `/candidate-b/computer/${bridge.name}/`,
       });
       const missingCache = "scoped-deployment-observation-must-not-create";
       await expect(readCacheSnapshot(pageB, missingCache, false)).rejects.toThrow(
@@ -221,7 +230,7 @@ test.describe.serial("real scoped production deployments", () => {
         },
       });
       expect(candidateBeforeRestart.bridgeCache.entries).toHaveLength(1);
-      assertBridgeAuthority(candidateBeforeRestart.bridgeCache, server.origin);
+      assertBridgeAuthority(candidateBeforeRestart.bridgeCache, server.origin, bridge);
       expect(candidateBeforeRestart.lazyCache.entries.length).toBeGreaterThan(0);
       expect(candidateBeforeRestart.lazyCache.entries.some((entry) =>
         new URL(entry.request.url).pathname.endsWith("/vim.zip")
@@ -434,8 +443,8 @@ async function seedUnrelatedCache(page: Page): Promise<void> {
   await page.evaluate(async () => (await caches.open("unrelated-site-cache")).put("seed", new Response("seed")));
 }
 
-async function installBridgeAuthority(page: Page): Promise<unknown> {
-  return page.evaluate(async ({ appPrefix, sessionId }) => {
+async function installBridgeAuthority(page: Page): Promise<BridgeReady> {
+  return page.evaluate(async (sessionId) => {
     const controller = navigator.serviceWorker.controller;
     if (controller === null) {
       throw new Error("service worker does not control candidate deployment");
@@ -447,7 +456,7 @@ async function installBridgeAuthority(page: Page): Promise<unknown> {
     const bridge = new MessageChannel();
     bridge.port1.start();
     const reply = new MessageChannel();
-    const acknowledged = new Promise<unknown>((resolveReply, reject) => {
+    const acknowledged = new Promise<BridgeReady>((resolveReply, reject) => {
       const timeout = window.setTimeout(
         () => reject(new Error("timed out installing candidate bridge")),
         5_000,
@@ -460,11 +469,11 @@ async function installBridgeAuthority(page: Page): Promise<unknown> {
     });
     keepAlive.__scopedDeploymentBridgePorts.push(bridge.port1, reply.port1);
     controller.postMessage(
-      { type: "init-bridge", appPrefix, sessionId },
+      { type: "init-bridge", sessionId },
       [bridge.port2, reply.port2],
     );
     return acknowledged;
-  }, { appPrefix: "/candidate-b/app/", sessionId: SESSION_B });
+  }, SESSION_B);
 }
 
 async function cacheNames(page: Page): Promise<string[]> { return page.evaluate(() => caches.keys()); }
@@ -513,6 +522,7 @@ async function durableSnapshot(page: Page) {
 function assertBridgeAuthority(
   snapshot: NamedCacheSnapshot,
   origin: string,
+  bridge: BridgeReady,
 ): void {
   expect(snapshot.name).toBe(CACHE_B);
   expect(snapshot.entries).toHaveLength(1);
@@ -520,7 +530,7 @@ function assertBridgeAuthority(
   expect(entry.request).toMatchObject({
     body: null,
     method: "GET",
-    url: `${origin}/candidate-b/bridge-authority-v1`,
+    url: `${origin}/candidate-b/bridge-authority-v1/${bridge.name}`,
   });
   expect(entry.response).toMatchObject({
     headers: expect.arrayContaining([["content-type", "application/json"]]),
@@ -549,7 +559,7 @@ function assertBridgeAuthority(
   expect(authority.sessionId).toMatch(
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   );
-  expect(authority.appPrefix).toBe("/candidate-b/app/");
+  expect(authority.appPrefix).toBe(bridge.appPrefix);
   expect(Array.isArray(authority.cookies)).toBe(true);
   for (const value of authority.cookies as unknown[]) {
     expect(value !== null && typeof value === "object").toBe(true);
@@ -568,7 +578,7 @@ function assertBridgeAuthority(
     expect(new TextEncoder().encode(String(cookie.value)).byteLength)
       .toBeLessThanOrEqual(4_096);
     expect(typeof cookie.path).toBe("string");
-    expect(cookie.path).toMatch(/^\/candidate-b\/app\//);
+    expect(String(cookie.path).startsWith(bridge.appPrefix)).toBe(true);
     expect(String(cookie.path)).not.toMatch(/[\u0000-\u001f\u007f;]/);
     expect(new TextEncoder().encode(String(cookie.path)).byteLength)
       .toBeLessThanOrEqual(4_096);
