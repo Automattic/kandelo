@@ -2071,9 +2071,12 @@ The host stages and reads kernel-owned files only through kernel exports
 browser's TLS root certificate use these methods. Worker inspection uses
 the namespace methods below, including foreign mounts and cross-mount links.
 
-Lazy archive materialization currently supports ZIP. Generic gzip, tar and
-zstd archive activation from the former TypeScript filesystem is not
-implemented by the native archive reader; unsupported formats fail.
+Lazy archive materialization currently supports ZIP. The former TypeScript
+filesystem also supported gzip-compressed TAR (`tar-gzip-v1`) deferred
+trees, including OCI image layers. That decoder is not implemented by the
+native archive reader; unsupported formats fail. Standalone gzip and
+zstd were not separate lazy archive decoders. Zstd boot-image decoding
+remains supported and is separate from lazy archive activation.
 
 ### Inspection of the live filesystem
 

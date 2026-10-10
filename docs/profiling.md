@@ -210,6 +210,19 @@ The complete Node and browser suite is still required before making a broad
 performance or no-regression claim. Adding these cases does not itself establish
 that the lock-manager migration is faster, slower, or neutral.
 
+The current lock benchmark runs each phase once per fresh guest. Its
+`gettimeofday()` timer uses the browser's millisecond-resolution realtime
+clock: one millisecond changes a 256-operation result by 3.90625
+microseconds per operation. More fresh-machine rounds do not measure
+sustained locking in one machine. Garbage collection can also move
+between phases when preceding file creation and teardown change.
+
+To investigate a phase regression, retain the original first-pass result
+and compare it with a separate repeated-cycle diagnostic using
+`CLOCK_MONOTONIC`. Report the iteration counts and warm-up exclusion
+explicitly; inspect worker CPU profiles for collection and scheduling
+costs before attributing the difference to the Rust lock manager.
+
 #### process-lifecycle
 
 Measures process management primitives against the default Node rootfs. The
