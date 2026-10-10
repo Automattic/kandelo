@@ -11,15 +11,33 @@ static int add_middle_pointer(int first, const int *value, int last) { return fi
 static uintptr_t thread_identity(void) { return (uintptr_t)pthread_self(); }
 static int set_thread_errno(int value) { errno = value; return errno; }
 static int get_thread_errno(void) { return errno; }
+static const char *probe_env(void) { return getenv("KANDELO_CGO_PROBE"); }
 */
 import "C"
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 )
 
 func main() {
+	if got := C.probe_env(); got == nil || C.GoString(got) != "cgo-startup" {
+		panic("C environment initialization failed")
+	}
+	if err := os.Setenv("KANDELO_CGO_PROBE", "cgo-updated"); err != nil {
+		panic(err)
+	}
+	if got := C.probe_env(); got == nil || C.GoString(got) != "cgo-updated" {
+		panic("C environment update failed")
+	}
+	if err := os.Unsetenv("KANDELO_CGO_PROBE"); err != nil {
+		panic(err)
+	}
+	if C.probe_env() != nil {
+		panic("C environment unset failed")
+	}
+	runtime.GC()
 	if result := C.abs(-7); result != 7 {
 		panic(fmt.Sprintf("C call failed: got %d", result))
 	}

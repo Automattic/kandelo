@@ -192,17 +192,23 @@ The shared host assigns a new instance's `__stack_pointer` from the
 `kernel_clone` stack argument. Go passes the dedicated C stack top for cgo
 Ms, not the g0 stack top; reusing g0 here would overwrite live Go frames.
 The musl thread pointer and C TLS block are per-instance, not Go goroutine
-state. Full libc startup, security state, constructors, and destructors are
-still unproven in a Go process.
+state. Fork commit `8aec831` passes Go's process environment to musl
+`__init_libc` in Go-owned storage; `os.Setenv`/`os.Unsetenv` use C-width
+pointer frames so C `getenv` observes changes. Keep the libc initializer
+separate from the C process entry archive member, and do not allocate its
+environment table with independent C `mmap`: that collided with the Go
+heap in the combined process. A Node/Chromium cgo probe verifies this
+narrow environment path. Secure-exec behavior and nonempty constructor/
+destructor execution are still unproven in a Go process.
 For Go-owned callbacks, a typed Wasm export wrapper keeps the C call stack
 while Go's resumable scheduler completes the callback. Its linker root must
 traverse Go dependencies even when C relocations eagerly marked the wrapper
 reachable. C-created pthreads still enter with no Go `g`, stack pointer,
 or attached M; the Go-owned export wrapper is not a general foreign-thread
 callback adapter.
-The combined pthread fixture currently reaches `runtime.notInitialized`
-on the child and then faults while that Go diagnostic uses an unset Go
-channel. A C-created thread needs a separate Go bootstrap stack before
+The combined pthread fixture currently faults in `runtime.canpanic` on the
+child because it has no Go `g` or Go stack. A C-created thread needs a
+separate Go bootstrap stack before
 entering any Go export, a valid per-instance Go channel, and the
 `needm`/`cgocallback`/`dropm` lifecycle for an extra M. Do not reuse live
 C frames as that Go stack or treat the trap as successful attachment.

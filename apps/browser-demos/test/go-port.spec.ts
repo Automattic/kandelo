@@ -187,6 +187,7 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
     name: "standard cgo calls C with scalar, pointer, and per-M TLS state",
     file: "../go-c-abs-instrumented.wasm",
     argv: ["go-cgo-basic"],
+    env: ["KANDELO_CGO_PROBE=cgo-startup"],
     stdout: ["CGO ABS PASS"],
   });
   probes.push({
