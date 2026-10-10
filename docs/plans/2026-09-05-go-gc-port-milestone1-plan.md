@@ -2243,8 +2243,9 @@ of upstream `TestRoot*` found genuine shared-platform gaps beyond the
 selected `os` cases: SharedFS rounds `Chtimes` to milliseconds, `linkat` does
 not preserve symlink-source hard-link behavior, renaming an opened directory
 breaks later fd-relative lookup because its OFD remembers a pathname, and
-some root-relative rename/dot cases disagree with upstream Go. `TestRootDirFS`
-also lacks its source-tree testdata in this VFS and is not a platform result.
+some root-relative rename/dot cases disagree with upstream Go. At this sweep,
+`TestRootDirFS` lacked its source-tree testdata in the VFS; the follow-up
+below staged the fixture and uncovered a separate Go channel defect.
 The concrete `TestRootRemoveDot` failure was a Kandelo syscall defect:
 `unlinkat(..., AT_REMOVEDIR)` could canonicalize `.` to the opened root and
 remove it. `runtime-core` now rejects a final `.` with EINVAL for `rmdir`
@@ -2269,22 +2270,72 @@ this kernel. The live source-only browser profile also reaches Running and
 renders the WordPress homepage, using the republished image whose SHA-256 is
 `e20fb208d2732e4df062f2e1d28ad63852ed6f4663927dd53796110a9ece9c7b`.
 
+**2026-10-10 — `os.Root` DirFS seek follow-up.** The upstream
+`TestRootDirFS` source-tree fixture has only three empty files, which are now
+staged in the Node and browser test VFS images. This exposed a real Go fork
+channel-argument defect: `syscall.fd_seek` sent a full `int64` offset in one
+slot and put whence in the next, but Kandelo `lseek` expects separate 32-bit
+low and high offset slots before whence. `Seek(0, SEEK_CUR)` consequently
+returned `1<<32` after an empty-file EOF read. Fork commit
+`7c639cb7fd655cfdfa600b79c8ba1fbdf06cb502` fixes the argument split;
+`go-hello` rev10 and `frankenphp-classic` rev13 pin it, and WordPress rev22
+rebuilds with that dependency. Upstream `TestSeek` and `TestSeekError` also
+pass on Node, covering large offsets, negative offsets, and ESPIPE. The
+selected upstream `os` set is now 34 top-level tests and passes on Node;
+its initial 32-case browser probe passed Chromium, Firefox, and WebKit
+(3/3). Including `TestSeek` initially exposed an independent browser
+SharedFS defect: it rejected logical `lseek` positions above the filesystem's
+maximum writable file size, even though no file data was allocated. SharedFS
+now accepts safe-integer nonnegative logical seeks while retaining EFBIG on
+writes beyond its storage limit. The targeted SharedFS unit file passes
+10/10, and the complete 34-case `os` probe passes Chromium, Firefox, and
+WebKit (3/3). The full broader `os.Root` sweep still
+has the timestamp, host-symlink-link, dirfd-after-rename, and rename-dot
+gaps listed below. Rebuild and revalidate the source-only WordPress image
+after the new fork pin before claiming the browser demo at this checkpoint.
+
+**2026-10-10 — published seek follow-up and demo verification.** Source-only
+bootstrap published `frankenphp-classic` rev13, WordPress rev22, and
+`go-hello` rev10 from the pinned fork. The complete focused Go browser
+matrix passed 102/102 (34 per Chromium, Firefox, and WebKit) with the new
+34-case upstream `os` selection. Resolved `go-hello` launches through the
+Node VFS with zero forks; direct FrankenPHP PHP/static HTTP passes Node and
+all three browsers (6/6 combined with the Go package launch). Rebuilt
+WordPress/FrankenPHP direct kernel-host, browser homepage/admin, and Node
+counterpart pass Chromium 3/3. The live Node homepage and login both return
+HTTP 200; the live source-only browser profile reaches Running and renders
+WordPress. The WordPress VFS SHA-256 is
+`5023ff29fa5c7b505896b16625af0d308aa7d5a9ca5a5ee47c06f6aaae7ab284`.
+A concurrent full Open POSIX rerun was invalidated when package bootstrap
+regenerated its program index mid-suite; its apparent failures are not
+platform-conformance evidence. The earlier full 174 PASS/3 XFAIL/2 SKIP
+checkpoint predates the latest seek work; a clean full conformance rerun
+remains to be done.
+
 The remaining Go/C platform gates, in recommended order, are:
 
-1. Continue broader Go standard-library/runtime conformance, including the
-   `os.Root` timestamp-precision, symlink-source `linkat`, remembered-path
-   dirfd after rename, and root-relative rename/dot gaps found above.
-2. Support real relocated/non-metadata C initializer and finalizer arrays
+1. Close the upstream `os.Root` filesystem failures at their owning layers:
+   SharedFS sub-millisecond timestamps, Node/macOS symlink-source `linkat`,
+   stable dirfd identity after rename, and root-relative rename/dot parity.
+   Rerun the whole `TestRoot*` sweep on Node and all three browsers, staging
+   source-tree fixtures rather than treating missing testdata as a pass.
+2. Expand Go standard-library and runtime conformance beyond the selected
+   `os`, `syscall`, and runtime probes. Track genuine browser boundaries such
+   as AF_UNIX separately from implementation failures.
+3. Support real relocated/non-metadata C initializer and finalizer arrays
    if needed by source ports; the current LLVM toolchain rejects
    `.fini_array` before Kandelo's linker sees it.
-3. Generalize mixed-width pointer-bearing C struct access and by-value cgo
+4. Generalize mixed-width pointer-bearing C struct access and by-value cgo
    calls; current PHP integration uses explicit C accessors and a scalar
    registration entry at that interop boundary.
-4. Exercise upper configured thread-slot counts, longer PHP worker churn,
-   allocator pressure, and concurrent callbacks; provision the full built-in
-   program closure before rerunning Sortix os-test. Keep a formal application
-   performance suite distinct from correctness validation. The exploratory
-   browser timing so far demonstrates no FrankenPHP latency advantage.
+5. Exercise upper configured thread-slot counts, longer PHP worker churn,
+   allocator pressure, and concurrent callbacks; the one-slot failure probe
+   does not establish high-count stability.
+6. Provision the full built-in program closure and rerun Sortix os-test and a
+   clean Open POSIX suite against the final kernel and host.
+7. Build a formal application performance suite separate from correctness
+   validation. Exploratory browser timing so far demonstrates no FrankenPHP
+   latency advantage.
 
 ---
 

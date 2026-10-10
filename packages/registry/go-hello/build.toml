@@ -9,9 +9,9 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 9
+revision = 10
 
 [[git_inputs]]
 name = "go_toolchain"
 repository = "https://github.com/kandelo-dev/go.git"
-commit = "e2cb38f430915ba703332d91eb9950643c89a84e"
+commit = "7c639cb7fd655cfdfa600b79c8ba1fbdf06cb502"

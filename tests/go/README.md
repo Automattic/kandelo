@@ -3,7 +3,7 @@
 These probes run binaries from the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port) through
 Kandelo's real Chromium, Firefox, and WebKit process workers and ABI-48 kernel. Use fork commit
-`e2cb38f430915ba703332d91eb9950643c89a84e` or later, built with the dev shell's Go 1.25.8 as `GOROOT_BOOTSTRAP`. By default
+`7c639cb7fd655cfdfa600b79c8ba1fbdf06cb502` or later, built with the dev shell's Go 1.25.8 as `GOROOT_BOOTSTRAP`. By default
 the fork is checked out beside this repository as `../go-kandelo`.
 
 From the Kandelo repository root:
@@ -47,10 +47,11 @@ public API check. They do not establish host account database integration or
 full `os/user` conformance.
 
 The fixture builder also compiles upstream `os` and `syscall` test binaries.
-The 31 selected upstream `os` cases cover stat, positioned reads, open
-errors, directory batching/cleanup/seek, chmod, path/fd/symlink chown,
+The 34 selected upstream `os` cases cover stat, positioned reads, open
+errors, directory batching/cleanup/seek, large and negative file seeks,
+chmod, path/fd/symlink chown,
 root-relative `MkdirAll`, recursive removal, symlink/rename, file read/write,
-temporary paths, and root-relative open/symlink/remove-dot containment. Two Unix-domain
+temporary paths, and root-relative open/symlink/remove-dot/DirFS containment. Two Unix-domain
 socket subcases skip because AF_UNIX is not supported. The selected `syscall`
 cases cover `ReadDirent` and `ParseDirent` across repeated buffers. Run their
 Node VFS cases with:

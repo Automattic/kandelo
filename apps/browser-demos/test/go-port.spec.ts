@@ -77,13 +77,17 @@ const probes: Probe[] = [
   {
     name: "upstream Go os file and directory tests",
     file: "os-test.wasm",
-    argv: ["go-os-test", "-test.run=^(TestStat|TestStatError|TestReadClosed|TestReadAt|TestReadAtOffset|TestReadAtNegativeOffset|TestOpenError|TestReaddirNValues|TestReaddirOfFile|TestChmod|TestOpenFileKeepsPermissions|TestChown|TestFileChown|TestLchown|TestReadFile|TestWriteFile|TestReadDir|TestMkdirAll|TestRemoveAll|TestSymlink|TestRename|TestCreateTemp|TestMkdirTemp|TestTruncate|TestDirSeek|TestReaddirSmallSeek|TestRootOpen_File|TestRootOpen_Directory|TestRootSymlink|TestRootConsistencyMkdirAll|TestRootRemoveDot)$", "-test.v"],
-    stdout: ["--- PASS: TestOpenError", "--- PASS: TestReaddirNValues", "--- PASS: TestChmod", "--- PASS: TestChown", "--- PASS: TestFileChown", "--- PASS: TestLchown", "--- PASS: TestMkdirAll", "--- PASS: TestRemoveAll", "--- PASS: TestReadFile", "--- PASS: TestReadDir", "--- PASS: TestDirSeek", "--- PASS: TestReaddirSmallSeek", "--- PASS: TestRootOpen_File", "--- PASS: TestRootOpen_Directory", "--- PASS: TestRootSymlink", "--- PASS: TestRootConsistencyMkdirAll", "--- PASS: TestRootRemoveDot", "PASS"],
-    directories: ["/tmp", "/exec", "/testdata", "/testdata/issue37161"],
+    argv: ["go-os-test", "-test.run=^(TestStat|TestStatError|TestReadClosed|TestReadAt|TestReadAtOffset|TestReadAtNegativeOffset|TestOpenError|TestReaddirNValues|TestReaddirOfFile|TestChmod|TestOpenFileKeepsPermissions|TestChown|TestFileChown|TestLchown|TestReadFile|TestWriteFile|TestReadDir|TestMkdirAll|TestRemoveAll|TestSymlink|TestRename|TestCreateTemp|TestMkdirTemp|TestTruncate|TestDirSeek|TestReaddirSmallSeek|TestSeek|TestSeekError|TestRootOpen_File|TestRootOpen_Directory|TestRootSymlink|TestRootConsistencyMkdirAll|TestRootRemoveDot|TestRootDirFS)$", "-test.v"],
+    stdout: ["--- PASS: TestOpenError", "--- PASS: TestReaddirNValues", "--- PASS: TestChmod", "--- PASS: TestChown", "--- PASS: TestFileChown", "--- PASS: TestLchown", "--- PASS: TestMkdirAll", "--- PASS: TestRemoveAll", "--- PASS: TestReadFile", "--- PASS: TestReadDir", "--- PASS: TestDirSeek", "--- PASS: TestReaddirSmallSeek", "--- PASS: TestSeek", "--- PASS: TestSeekError", "--- PASS: TestRootOpen_File", "--- PASS: TestRootOpen_Directory", "--- PASS: TestRootSymlink", "--- PASS: TestRootConsistencyMkdirAll", "--- PASS: TestRootRemoveDot", "--- PASS: TestRootDirFS", "PASS"],
+    directories: ["/tmp", "/exec", "/testdata", "/testdata/issue37161", "/testdata/dirfs", "/testdata/dirfs/dir"],
     imageCapacity: 8 * 1024 * 1024,
     dataFiles: [
       { path: "/etc/group", data: Array.from(Buffer.from("staff:x:200:runner\n")) },
       { path: "/read_test.go", data: Array.from(Buffer.from("package os_test\n")) },
+      ...["a", "b", "dir/x"].map((name) => ({
+        path: `/testdata/dirfs/${name}`,
+        data: [],
+      })),
       ...["a", "b", "c"].map((name) => ({
         path: `/testdata/issue37161/${name}`,
         data: Array.from(Buffer.from(`${name}\n`)),
