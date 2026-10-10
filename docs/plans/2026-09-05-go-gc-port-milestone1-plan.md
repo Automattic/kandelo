@@ -1639,15 +1639,24 @@ The same-thread callback fixture now links and validates after retaining a
 Go callback referenced through a C function-address global. Its Node run
 still traps at the explicit `crosscall2` callback boundary. The combined
 same-thread/pthread fixture also links and validates after retaining musl's
-local function aliases, but has not passed its process gate. Full musl startup, C-created
-thread attachment, callbacks, PHP ZTS, FrankenPHP, and the WordPress demo
-remain unimplemented. The `go-hello` package still pins the earlier pure-Go
-fork revision; there is no PHP/FrankenPHP performance claim. Focused Go
-`cmd/cgo`, `cmd/link/internal/loadwasm`, and `cmd/link/internal/wasm` tests
-pass. Pure-Go Kandelo browser fixtures rebuild, and all 20 opt-in Chromium
-Go-port tests pass, including the new standard-cgo process case. Forced
+local function aliases, but has not passed its process gate. Full musl
+startup, C-created thread attachment, callbacks, PHP ZTS, FrankenPHP,
+and the WordPress demo remain unimplemented. The `go-hello` package still
+pins the earlier pure-Go fork revision; there is no PHP/FrankenPHP
+performance claim. Focused Go
+`cmd/cgo`, `cmd/link/internal/loadwasm`, `cmd/link/internal/ld`, and
+`cmd/link/internal/wasm` tests pass. Pure-Go Kandelo browser fixtures
+rebuild, and all 20 opt-in Chromium Go-port tests pass, including the new
+standard-cgo process case. Forced
 `js` and `wasip1` browser-basic builds validate; the ABI snapshot check
 passes. No PHP or POSIX conformance suite was run at this checkpoint.
+Follow-up source tracing found that the host sets a child instance's C
+`__stack_pointer` from `kernel_clone`'s stack argument, but native Go M
+creation passes the g0 stack top. Reusing that as a C stack would corrupt
+live g0 frames; a separate per-M C stack and thread-pointer initialization
+must precede lifting the current trap. The C-to-Go trampoline must also
+respect Go/Wasm's resumable scheduler convention across a synchronous C
+callback. These are design constraints, not yet passing behavior.
 
 Remaining work, in dependency order:
 

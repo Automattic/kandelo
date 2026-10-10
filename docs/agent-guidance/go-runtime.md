@@ -181,6 +181,15 @@ symbols to satisfy the linker. The new per-instance C `__channel_base` global
 and Go handoff word must both be initialized by the host; do not conflate
 either with C TLS. The SDK's normal executable glue (syscall, compiler-rt,
 and C++ runtime) is loaded by the Go linker through SDK source queries.
+The shared host already assigns a new instance's `__stack_pointer` from the
+`kernel_clone` stack argument, but Go currently passes the g0 stack top there.
+Do not simply remove the secondary-M guard: C would overwrite live g0
+frames. Allocate and reclaim a distinct C stack per Go M, pass its top to
+`kernel_clone`, and initialize the C musl thread pointer before C calls.
+For callbacks, a typed C trampoline alone is not enough: Go's resumable
+Wasm call convention can unwind for a scheduler transition while the C
+caller expects a synchronous return. Preserve the C call stack and use a
+continuation boundary that resumes the Go callback before returning to C.
 
 For a repeatable C function-and-data link proof, run
 `scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends
