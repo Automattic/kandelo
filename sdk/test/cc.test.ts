@@ -27,6 +27,14 @@ describe('buildClangArgs', () => {
   it('reports the SDK libc archive to toolchain consumers', () => {
     expect(sdkToolQuery(['--print-file-name=libc.a'], toolchain))
       .toBe('/tmp/sysroot/lib/libc.a');
+    expect(sdkToolQuery(['--print-file-name=channel_syscall.c'], toolchain))
+      .toBe('/tmp/glue/channel_syscall.c');
+    expect(sdkToolQuery(['--print-file-name=compiler_rt.c'], toolchain))
+      .toBe('/tmp/glue/compiler_rt.c');
+    expect(sdkToolQuery(['--print-file-name=cxxrt.c'], toolchain))
+      .toBe('/tmp/glue/cxxrt.c');
+    expect(sdkToolQuery(['--print-file-name=dlopen.c'], toolchain))
+      .toBe('/tmp/glue/dlopen.c');
     expect(sdkToolQuery(['--print-file-name=libgcc.a'], toolchain)).toBeNull();
   });
   const build = (

@@ -20,19 +20,24 @@ func tls_weighted(value int32) int32
 //go:linkname call_function_pointer call_function_pointer
 func call_function_pointer(value int32) int32
 
+//go:linkname channel_base_ready channel_base_ready
+func channel_base_ready(value int32) int32
+
 var retained = c_target
 var retainedData = weighted
 var retainedCrossData = cross_weighted
 var retainedTLS = tls_weighted
 var retainedFunctionPointer = call_function_pointer
+var retainedChannelBase = channel_base_ready
 
 func callWeighted(value int32) int32
 func callCrossWeighted(value int32) int32
 func callTLSWeighted(value int32) int32
 func callFunctionPointer(value int32) int32
+func callChannelBase(value int32) int32
 
 func main() {
-	if retained == nil || retainedData == nil || retainedCrossData == nil || retainedTLS == nil || retainedFunctionPointer == nil {
+	if retained == nil || retainedData == nil || retainedCrossData == nil || retainedTLS == nil || retainedFunctionPointer == nil || retainedChannelBase == nil {
 		panic("missing C function")
 	}
 	if callWeighted(5) != 12 {
@@ -46,6 +51,9 @@ func main() {
 	}
 	if callFunctionPointer(5) != 8 {
 		panic("C function pointer call failed")
+	}
+	if callChannelBase(5) != 6 {
+		panic("C channel base was not initialized")
 	}
 	fmt.Println("GO TO C DATA PASS")
 }

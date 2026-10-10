@@ -720,6 +720,12 @@ export function sdkToolQuery(userArgs: string[], toolchain: Toolchain): string |
   if (userArgs.length === 1 && userArgs[0] === '--print-file-name=libc.a') {
     return join(toolchain.sysroot, 'lib', 'libc.a');
   }
+  if (userArgs.length === 1 && userArgs[0].startsWith('--print-file-name=')) {
+    const name = userArgs[0].slice('--print-file-name='.length);
+    if (['channel_syscall.c', 'compiler_rt.c', 'cxxrt.c', 'dlopen.c'].includes(name)) {
+      return join(toolchain.glueDir, name);
+    }
+  }
   return null;
 }
 

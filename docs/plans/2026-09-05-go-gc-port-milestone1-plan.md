@@ -1562,21 +1562,47 @@ adapter issue appears in `asmcgocall`, `cgocallback`, and `crosscall2`, all
 still `UNDEF` in the fork's Wasm assembly. Do not resolve the linker error
 with a no-op thread-start stub or an unverified direct table call.
 
+**2026-10-09 — cgo executable glue and channel checkpoint.** Published Go
+fork commit `ead1b2352595dbbb92d61bc82dff61c66c389050`. The Go fork
+now keeps Kandelo-owned Go Ms on `newosprocKandelo` even when cgo is
+enabled, instead of requiring `_cgo_sys_thread_start` for those Ms. The SDK
+exposes its executable glue sources to toolchain consumers; the Go internal
+linker compiles and loads the syscall, compiler-rt, and C++ runtime glue
+through that SDK path. Its Wasm object reader retains typed function imports;
+the final linker maps C `kernel.*` imports into its function index space and
+creates an exported, per-instance mutable `__channel_base` for C while
+preserving Go's existing channel handoff word. The shared host assigns both
+when present. libc archive selection now recognizes TLS-only references,
+and C function relocations retain referenced weak functions. These edits
+move the normal `C.abs` build from `_cgo_sys_thread_start` to unresolved
+`__fini_array_end` in musl's exit path. The link-only fixture now also
+calls a C function that reads `__channel_base`; its ABI-stamped process
+checks exit 0, `GO TO C DATA PASS`, empty stderr and host diagnostics on
+Node, and the matching Chromium Playwright case passes. Direct-table
+Node/Chromium checks, focused Go linker tests, SDK compiler tests, pure-Go
+`kandelo`/`js`/`wasip1` browser-basic builds, and the ABI snapshot check
+pass. There is still **no cgo executable**; the host typecheck encounters
+unrelated `rootDir` errors from the OpenSSL package. The added optional
+`__channel_base` export preserves existing Go and C process behavior, so no
+ABI bump was made. The package pin remains on the earlier pure-Go revision.
+
 Remaining work, in dependency order:
 
-1. Review the experimental Wasm `cmd/cgo` frontend; implement Kandelo's
-   `runtime/cgo` thread-start half, validate `_cgo_topofstack`, add
-   `asmcgocall` and C stack/global state, and finish C symbol/linker rules
-   until the normal `C.abs` probe builds and runs on Node and Chromium.
-2. Implement `crosscall2`, `cgocallback`, and runtime/cgo platform support;
-   run same-thread and C-created-pthread callback probes on Node and Chromium
-   with truthful ABI stamps and no host diagnostics.
-3. Build and resolve a PHP ZTS embed library through the normal Kandelo SDK,
-   prove embedded PHP lifecycle, then port FrankenPHP classic mode and a
-   WordPress VFS demo without nginx or PHP-FPM.
+1. Complete the normal cgo link: implement linker-owned init/fini arrays
+   and their symbols, C stack initialization, musl thread-pointer lifecycle,
+   and remaining C object relocations without dummy symbols. Review the
+   experimental Wasm `cmd/cgo` frontend and validate `C.abs` on Node and
+   Chromium through an ABI-stamped Kandelo process.
+2. Implement real Go/C ABI transitions (`asmcgocall`, `crosscall2`,
+   `cgocallback`), then attach C-created pthreads with a Go M/P and both C
+   and Go per-thread channel state. Pass same-thread and pthread callback
+   probes on Node and Chromium with no host diagnostics.
+3. Build PHP ZTS embed through the normal SDK/resolver, prove PHP lifecycle,
+   port FrankenPHP classic mode, and deliver the WordPress VFS demo without
+   nginx or PHP-FPM. Measure performance only after the Kandelo server runs.
 4. Recheck ABI, pure-Go `kandelo`/`js`/`wasip1` regressions, package pin,
-   end-to-end browser behavior, performance evidence, and Go-runtime guidance
-   before closing this plan and its draft PR.
+   browser end-to-end behavior, conformance, and Go-runtime guidance before
+   closing the draft PR.
 
 ---
 

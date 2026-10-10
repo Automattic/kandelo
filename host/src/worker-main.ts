@@ -4602,6 +4602,10 @@ function setupChannelBase(
   programBytes?: ArrayBuffer,
   ptrWidth: 4 | 8 = 4,
 ): void {
+  const channelBase = instance.exports.__channel_base as WebAssembly.Global | undefined;
+  if (channelBase) {
+    channelBase.value = ptrWidth === 8 ? BigInt(channelOffset) : channelOffset;
+  }
   // If the module imports env.__channel_base as a global, the channel offset was
   // already set at instantiation via WebAssembly.Global in buildImportObject.
   const moduleImports = wasmModuleImports(module);

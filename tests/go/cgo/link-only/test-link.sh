@@ -13,6 +13,7 @@ wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/cross-da
 wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/offset.c" -o "$output_dir/offset.o"
 wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/tls.c" -o "$output_dir/tls.o"
 wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/function-pointer.c" -o "$output_dir/function-pointer.o"
+wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/channel-base.c" -o "$output_dir/channel-base.o"
 
 if GO111MODULE=off CGO_ENABLED=0 GOOS=kandelo GOARCH=wasm GOTMPDIR="$output_dir" \
     "$go_bin" build -x -work -o "$output_dir/base.wasm" ./tests/go/cgo/link-only \
@@ -39,9 +40,9 @@ if [[ ! -f "$work_dir/b001/_pkg_.a" ]]; then
   cp "$cached_archive" "$work_dir/b001/_pkg_.a"
 fi
 
-"$go_bin" tool pack r "$work_dir/b001/_pkg_.a" "$output_dir/functions.o" "$output_dir/data.o" "$output_dir/cross-data.o" "$output_dir/offset.o" "$output_dir/tls.o" "$output_dir/function-pointer.o"
+"$go_bin" tool pack r "$work_dir/b001/_pkg_.a" "$output_dir/functions.o" "$output_dir/data.o" "$output_dir/cross-data.o" "$output_dir/offset.o" "$output_dir/tls.o" "$output_dir/function-pointer.o" "$output_dir/channel-base.o"
 GOROOT="$("$go_bin" env GOROOT)" GOOS=kandelo GOARCH=wasm \
-  "$go_bin" tool link -linkmode=internal -o "$output_dir/combined.wasm" \
+  "$go_bin" tool link -linkmode=internal -extld=wasm32posix-cc -o "$output_dir/combined.wasm" \
   -importcfg "$work_dir/b001/importcfg.link" "$work_dir/b001/_pkg_.a"
 wasm-validate --enable-threads "$output_dir/combined.wasm"
 wasm-objdump -d "$output_dir/combined.wasm" > "$output_dir/disassembly.log"
