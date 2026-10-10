@@ -535,7 +535,9 @@ describe("posix_spawn credential/action/target order", () => {
       resolvedProgram(candidateA, ["relative-child"]),
       "relative-child",
     );
-    await drainSpawnTransaction();
+    // Observe completion, not a guessed number of event-loop turns: the real
+    // detached Wasm compiler may settle later when the full suite is busy.
+    await harness.completed;
 
     expect(onSpawn).not.toHaveBeenCalled();
     expect(exports.kernel_publish_spawn_child).toHaveBeenCalledExactlyOnceWith(
@@ -739,7 +741,9 @@ function createSpawnHarness(options: {
     maximum: 4,
     shared: true,
   });
-  const completeChannel = vi.fn();
+  let resolveCompleted!: () => void;
+  const completed = new Promise<void>((resolve) => { resolveCompleted = resolve; });
+  const completeChannel = vi.fn(() => { resolveCompleted(); });
   const worker = createCentralizedKernelWorkerTestDouble({
     callbacks: options.callbacks,
   });
@@ -779,6 +783,7 @@ function createSpawnHarness(options: {
   return {
     channel,
     completeChannel,
+    completed,
     origArgs,
     siblingWaitChannel,
     retireParentChannel(): void {
