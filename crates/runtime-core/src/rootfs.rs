@@ -2550,6 +2550,9 @@ pub enum ByteReq {
     /// The URI is the image's own words, carried through unread. Whoever
     /// fetches decides whether it may be fetched.
     Deferred { uri: Vec<u8>, offset: u64 },
+    /// Forget transport bytes rejected by native length or digest validation.
+    /// This does not start a fetch; only a later explicit read may fetch again.
+    DiscardDeferred { uri: Vec<u8> },
     /// A positioned read of the VFS image's own container bytes at `offset`.
     ///
     /// This is how the kernel parses its own `/` image ([`load_image`]) instead
@@ -2684,7 +2687,8 @@ where
         // A short read lands here too: `filled < size` cannot hash to a digest
         // taken over the whole archive, so a truncated fetch stops being a
         // silently truncated archive and becomes EIO.
-        if !crate::sdef::digest_accepts(&expected, &data) {
+        if filled as u64 != size || !crate::sdef::digest_accepts(&expected, &data) {
+            let _ = byte_source(ByteReq::DiscardDeferred { uri }, &mut []);
             return Err(Errno::EIO);
         }
         ROOTFS.with(|state| {
@@ -2801,7 +2805,8 @@ where
             // before they become this inode's contents, for the same reason the
             // archive's are: accepting them stores them, and a stored wrong
             // answer is indistinguishable from a right one afterwards.
-            if !crate::sdef::digest_accepts(&expected, &data) {
+            if filled as u64 != size || !crate::sdef::digest_accepts(&expected, &data) {
+                let _ = byte_source(ByteReq::DiscardDeferred { uri }, &mut []);
                 return Err(Errno::EIO);
             }
             ROOTFS.with(|state| {
@@ -4876,6 +4881,33 @@ pub fn lazy_entries() -> Vec<LazyEntryView> {
     })
 }
 
+/// The deduplicated transport cohort of the loaded filesystem, without
+/// fetching bodies, rewriting identities, or interpreting opaque descriptors.
+/// Each limit is the largest declared resource size for that URI; native
+/// materialization still checks each individual file/archive and its digest.
+pub fn lazy_resource_limits() -> Vec<(Vec<u8>, u64)> {
+    ROOTFS.with(|state| {
+        let mut resources = alloc::collections::BTreeMap::<Vec<u8>, u64>::new();
+        for inode in state.inodes.iter().flatten() {
+            if !inode.deferred_uri.is_empty() {
+                resources
+                    .entry(inode.deferred_uri.clone())
+                    .and_modify(|size| *size = (*size).max(inode.stat().st_size))
+                    .or_insert(inode.stat().st_size);
+            }
+        }
+        for archive in state.archives.values() {
+            if !archive.uri.is_empty() {
+                resources
+                    .entry(archive.uri.clone())
+                    .and_modify(|size| *size = (*size).max(archive.size))
+                    .or_insert(archive.size);
+            }
+        }
+        resources.into_iter().collect()
+    })
+}
+
 /// Every declared archive, as `(archive_id, fetch description)`.
 ///
 /// The descriptions are opaque here, exactly as they are everywhere else in
@@ -5200,6 +5232,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn lazy_resource_limits_deduplicate_files_and_archives_without_fetching() {
+        let _guard = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_file(b"/first", 7, 4, 0o755, 0, 0, 2).unwrap();
+        insert_base_file(b"/second", 8, 4, 0o755, 0, 0, 3).unwrap();
+        set_deferred_source(b"/first", b"binaries/programs/tool.wasm", b"").unwrap();
+        set_deferred_source(b"/second", b"binaries/programs/tool.wasm", b"").unwrap();
+        declare_archive(9, 20).unwrap();
+        set_archive_source(9, b"archives/data.zip", b"").unwrap();
+        assert_eq!(
+            lazy_resource_limits(),
+            alloc::vec![
+                (b"archives/data.zip".to_vec(), 20),
+                (b"binaries/programs/tool.wasm".to_vec(), 4),
+            ]
+        );
+        assert_eq!(
+            deferred_source(b"/first").unwrap().0,
+            b"binaries/programs/tool.wasm"
+        );
+    }
+
     /// Insert a host-backed base file AND record the address this test host
     /// serves it at, mirroring what `load_image` does from a deferred record:
     /// the file goes in, then its source is attached.
@@ -5291,6 +5346,7 @@ mod tests {
                 // capability it never installed, and ENOSYS is the truthful
                 // answer (the same one a real host gives before an image source
                 // is wired).
+                ByteReq::DiscardDeferred { .. } => Ok(0),
                 ByteReq::Image { .. } => Err(Errno::ENOSYS),
             }
         };
@@ -7246,6 +7302,46 @@ mod tests {
     }
 
     #[test]
+    fn a_short_deferred_file_cannot_become_a_truncated_overlay() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_host_file(b"/short", 9, 4, 0o644, 0, 0, 9).unwrap();
+        mark_deferred_base(b"/short").unwrap();
+        let uri = blob_uri(9);
+        set_deferred_source(b"/short", &uri, &crate::sdef::DIGEST_NONE).unwrap();
+        let before = lstat(b"/short").unwrap();
+        let h = open(b"/short", O_WRONLY, 0, 0, 0).unwrap();
+        let mut discarded = 0;
+        let mut short = |req: ByteReq, buf: &mut [u8]| match req {
+            ByteReq::Deferred { offset: 0, .. } => {
+                buf[..2].copy_from_slice(b"ab");
+                Ok(2)
+            }
+            ByteReq::Deferred { .. } => Ok(0),
+            ByteReq::DiscardDeferred { uri: rejected } => {
+                assert_eq!(rejected, uri);
+                discarded += 1;
+                // A cache-cleanup error must not hide the original EIO.
+                Err(Errno::ENOSYS)
+            }
+            ByteReq::Image { .. } => Err(Errno::ENOSYS),
+        };
+        assert_eq!(write(h, 0, b"Z", &mut short), Err(Errno::EIO));
+        assert_eq!(discarded, 1);
+        let after = lstat(b"/short").unwrap();
+        assert_eq!(after.st_size, before.st_size);
+        assert_eq!(after.st_mode, before.st_mode);
+        assert_eq!(after.st_mtime_sec, before.st_mtime_sec);
+        assert!(lazy_info(b"/short").unwrap().0);
+        let (mut complete, _) = make_byte_source(alloc::vec![(9, b"abcd".to_vec())], alloc::vec![]);
+        assert_eq!(write(h, 0, b"Z", &mut complete), Ok(1));
+        let mut bytes = [0; 4];
+        assert_eq!(read(h, 0, &mut bytes, &mut complete), Ok(4));
+        assert_eq!(&bytes, b"Zbcd");
+        release_handle(h);
+    }
+
+    #[test]
     fn a_standalone_file_whose_bytes_fail_their_digest_is_refused() {
         let _g = TestGuard::acquire();
         // The other kind of deferred file: no archive, one URI, and a digest
@@ -7798,6 +7894,7 @@ mod tests {
                     asked.set(asked.get() + 1);
                     Err(Errno::ENOSYS)
                 }
+                ByteReq::DiscardDeferred { .. } => Ok(0),
             }
         };
         load_image(image.len() as u64, &mut host).expect("load image");

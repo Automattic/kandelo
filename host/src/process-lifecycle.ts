@@ -41,6 +41,7 @@
  * holds, rather than a browser-specific quirk the Node entry appears to be
  * missing.
  */
+import { fetchLazyResourceBytes, type DeferredByteProgress } from "./vfs/lazy-fetch-bytes";
 
 import type { ForkExternrefImportWake } from "./fork-externref-import-mailbox";
 import type { ForkHostImportOwnerWorker } from "./fork-host-import-runtime";
@@ -151,6 +152,8 @@ export function signalFromExitStatus(exitStatus: number): number | null {
  */
 export function isMissingPathError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
+  const errno = rootfsErrno(err);
+  if (errno === ROOTFS_ENOENT_ERRNO || errno === ROOTFS_ENOTDIR_ERRNO) return true;
   const code = (err as { code?: unknown }).code;
   if (code === -2 || code === "ENOENT") return true;
   // The kernel owns `/`, so the host mount table holds only the host-backed
@@ -364,7 +367,8 @@ export function configureRootfsOverlayFromImage(
      *  before `lazyUrlBase`. See `lazyUrlMap` in `browser-kernel-protocol.ts`. */
     lazyUrlMap?: Readonly<Record<string, string>>;
   },
-): void {
+): () => void {
+  let resourceLimits: Map<string, number> | undefined;
   const installedLazyFetcher = options.lazyFetcher;
   const lazyUrlBase = options.lazyUrlBase;
   const lazyUrlMap = options.lazyUrlMap;
@@ -377,22 +381,20 @@ export function configureRootfsOverlayFromImage(
     }
     return lazyUrlBase ? resolveLazyUrl(lazyUrlBase, url) : url;
   };
-  const fetchUrlBytes: (url: string) => Promise<Uint8Array> =
+  const fetchUrlBytes =
     installedLazyFetcher
-      ? async (url) => {
+      ? async (url: string, onProgress?: DeferredByteProgress) => {
         const resolved = resolveAddress(url);
-        const response = await installedLazyFetcher(resolved);
-        if (!response.ok) {
-          throw new Error(`lazy fetch of ${resolved} failed: HTTP ${response.status}`);
-        }
-        return new Uint8Array(await response.arrayBuffer());
+        const limit = resourceLimits?.get(url);
+        if (limit === undefined) throw new Error(`No native lazy resource bound for ${url}`);
+        return fetchLazyResourceBytes(installedLazyFetcher, resolved, limit, onProgress);
       }
       : async () => {
         // With no transport installed a lazy read genuinely cannot succeed;
         // the kernel reports EIO to the guest rather than hanging.
         throw new Error("no lazy transport configured");
       };
-  const { deferredProvider, whenFetchSettles } = buildRootfsLazyWiring(
+  const { deferredProvider, whenFetchSettles, discardDeferred } = buildRootfsLazyWiring(
     fetchUrlBytes,
     options.onLazyProgress,
   );
@@ -403,7 +405,11 @@ export function configureRootfsOverlayFromImage(
     options.imageBytes,
     options.imageRead,
     whenFetchSettles,
+    discardDeferred,
   );
+  // Populate only after native image validation, outside Wasm imports. These
+  // are transfer bounds, never a second filesystem or content authority.
+  return () => { resourceLimits = kernel.rootfsLazyResourceLimits(); };
 }
 
 const ROOTFS_EAGAIN_ERRNO = 11;
@@ -458,14 +464,30 @@ function rootfsErrno(error: unknown): number | undefined {
  * `retryKernelEntryResult` retries that on a later host turn, which is safe
  * because the gate rejects the read before touching kernel state.
  */
-export async function readRootfsFileWithRetry(
+export function readRootfsFileWithRetry(
   kernel: CentralizedKernelWorker,
   path: string,
+): Promise<Uint8Array | null> {
+  return readKernelFileWithRetry(kernel, path, () => kernel.rootfsReadFile(path));
+}
+
+/** Worker inspection follows the entire live namespace, including mounts. */
+export function readNamespaceFileWithRetry(
+  kernel: CentralizedKernelWorker,
+  path: string,
+): Promise<Uint8Array | null> {
+  return readKernelFileWithRetry(kernel, path, () => kernel.rootfsInspectFile(path));
+}
+
+async function readKernelFileWithRetry(
+  kernel: CentralizedKernelWorker,
+  path: string,
+  read: () => Uint8Array,
 ): Promise<Uint8Array | null> {
   const start = Date.now();
   for (;;) {
     try {
-      return await retryKernelEntryResult(() => kernel.rootfsReadFile(path));
+      return await retryKernelEntryResult(read);
     } catch (error) {
       const errno = rootfsErrno(error);
       if (

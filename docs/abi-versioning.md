@@ -1206,7 +1206,7 @@ Structural changes (recorded in the snapshot):
   `KernelMsghdrWire`, `KernelCmsghdrWire`, and
   `kernel_message_wire.flattened_iovec_count` leave the snapshot, because
   nothing stages them any more.
-- **Kernel exports: 332 → 198.** Removed: the five sizing exports the host no
+- **Kernel exports: 333 → 199.** Removed: the five sizing exports the host no
   longer needs (`kernel_msqid_ds_bytes`, `kernel_semid_ds_bytes`,
   `kernel_shmid_ds_bytes`, `kernel_semctl_array_bytes`,
   `kernel_mq_descriptor_msgsize`); 24 exports nothing anywhere called
@@ -1312,7 +1312,7 @@ against the other.
 
 Structural changes (recorded in the snapshot):
 
-- **Kernel exports: 198 → 228.** Added, all optional for the host-adapter
+- **Kernel exports: 199 → 233.** Added, all optional for the host-adapter
   manifest (a host that boots without a `/` image calls none of the rootfs
   ones, and a process that holds no kernel-owned shared mapping none of the
   shared-mapping ones):
@@ -1336,6 +1336,15 @@ Structural changes (recorded in the snapshot):
     `unlink_vfs_file`, the spawn preflight's program reads, and the browser's
     per-session TLS root certificate). A path under a scratch mount reaches
     tmpfs; any other path reaches the rootfs.
+  - `kernel_rootfs_inspect_stat`, `kernel_rootfs_inspect_read_file`,
+    `kernel_rootfs_inspect_directory`: live worker inspection through the
+    native namespace walker, including mount-crossing symlinks and current
+    owners. Directory records carry `WasmStat` and the link target; workers
+    copy bounded chunks out of kernel scratch within one serialized entry.
+  - `kernel_rootfs_lazy_resource_limits`: the validated image's URI cohort
+    and declared transfer bounds. Node uses it to preserve one asynchronous
+    resolver checkpoint on first use; both hosts stop oversized downloads
+    before retaining them. Rust remains responsible for content validation.
   - `kernel_rootfs_export_container_read(off_lo, off_hi, buf, len)`: stream
     the finished image of the live `/`, which replaces the host rebuilding
     one (`export_rootfs_image`).
@@ -1376,7 +1385,7 @@ Structural changes (recorded in the snapshot):
   generated `ERRNO` table and `KANDELO_REFERENCE_EPOCH_SECONDS`.
 
 Host imports (not in the structural snapshot, so listed here): the kernel
-imports 76 host functions, down from 82.
+imports 77 host functions, down from 82.
 
 - Removed, the path-taking filesystem family: `host_open`, `host_stat`,
   `host_lstat`, `host_statfs`, `host_pathconf`, `host_mkdir`, `host_rmdir`,
@@ -1400,6 +1409,10 @@ imports 76 host functions, down from 82.
   (a URL-backed lazy file or a lazy archive). The kernel relays the image's
   URI unread; the host fetches it and answers `EAGAIN` while the fetch is in
   flight.
+- Added `host_discard_deferred(uri_ptr, uri_len)`: native length or digest
+  rejection evicts the completed transport cache entry. The failed read
+  returns `EIO`; a later explicit read may fetch fresh bytes. Transport
+  failures keep their bounded retry policy and are not cleared by this hook.
 
 VFS image binding (not in the structural snapshot):
 

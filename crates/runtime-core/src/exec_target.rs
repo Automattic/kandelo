@@ -446,6 +446,10 @@ fn target_pread(
     if crate::rootfs::is_rootfs_file_handle(host_handle) {
         crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
             crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                host.discard_deferred(&uri);
+                Ok(0)
+            }
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         })
     } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {

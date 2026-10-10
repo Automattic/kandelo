@@ -24,6 +24,10 @@
  * The generated `CH_*` constants below are authoritative; this summary is
  * explanatory only and generated-file drift tests cover the live values.
  */
+import { ERRNO } from "./generated/abi";
+import { decodeInspectionDirectory, decodeInspectionStat, decodeInspectionResourceLimits } from "./vfs/rootfs-inspection";
+import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
+
 
 import { LongTimeouts, MAX_ENGINE_TIMER_DELAY_MS } from "./long-timeout";
 import {
@@ -3048,6 +3052,7 @@ export class CentralizedKernelWorker {
    * its fetch. Null until configured, or when the pipe offers none.
    */
   #rootfsDeferredSettled: DeferredFetchSettled | null = null;
+  #rootfsDeferredInvalidator: ((uri: string) => void) | undefined;
   /**
    * Canonical mount points of the host filesystems still mounted under the
    * kernel-owned `/` (for example session-seed host mounts and extra
@@ -5494,9 +5499,11 @@ export class CentralizedKernelWorker {
     /** When a fetch `deferredProvider` started settles; see
      *  {@link deferredFetchSettled}. */
     deferredSettled?: DeferredFetchSettled,
+    deferredInvalidator?: (uri: string) => void,
   ): void {
     this.#rootfsDeferredProvider = deferredProvider;
     this.#rootfsDeferredSettled = deferredSettled ?? null;
+    this.#rootfsDeferredInvalidator = deferredInvalidator;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
     this.#rootfsImage = image;
@@ -5580,6 +5587,7 @@ export class CentralizedKernelWorker {
       );
     }
     this.#kernel.setRootfsDeferredProvider(provider);
+    this.#kernel.setRootfsDeferredInvalidator(this.#rootfsDeferredInvalidator);
     // Tell the overlay which sibling mounts still live under `/` so it does not
     // greedily claim their paths (which would shadow session-seed host mounts
     // and extra HostFileSystem mounts, since the overlay is the sole `/`
@@ -5665,6 +5673,14 @@ export class CentralizedKernelWorker {
    * if a kernel entry is already active (the RPC caller retries).
    */
   rootfsReadFile(path: string): Uint8Array {
+    return this.#rootfsReadFileExport(path, "kernel_rootfs_read_file");
+  }
+
+  rootfsInspectFile(path: string): Uint8Array {
+    return this.#rootfsReadFileExport(path, "kernel_rootfs_inspect_read_file");
+  }
+
+  #rootfsReadFileExport(path: string, name: "kernel_rootfs_read_file" | "kernel_rootfs_inspect_read_file"): Uint8Array {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     const encodedPath = new TextEncoder().encode(path);
     const pathLen = encodedPath.byteLength;
@@ -5680,7 +5696,7 @@ export class CentralizedKernelWorker {
       "kernel rootfs read file",
       (entry) => {
         if (
-          typeof entry.instance.exports.kernel_rootfs_read_file !== "function"
+          typeof entry.instance.exports[name] !== "function"
         ) {
           failErrno = ENOSYS;
           return undefined;
@@ -5702,7 +5718,7 @@ export class CentralizedKernelWorker {
               const result = this.#invokeEntryScratchExport(
                 entry,
                 lease,
-                "kernel_rootfs_read_file",
+                name,
                 [
                   pathPtr,
                   pathLen,
@@ -6087,6 +6103,89 @@ export class CentralizedKernelWorker {
       throw new KernelScratchError("rootfs stat failed", failErrno);
     }
     return mode;
+  }
+
+  /** Inspect the authoritative namespace, including kernel scratch mounts. */
+  rootfsStat(path: string): VfsPathStat {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encoded = new TextEncoder().encode(path);
+    if (encoded.length >= POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("Inspection path too long", ENAMETOOLONG);
+    }
+    let statBytes: Uint8Array | undefined;
+    let failErrno = 0;
+    this.#runImmediateKernelEntry("inspect filesystem stat", (entry) => {
+      const region = this.#requireMainScratchRegion();
+      const outputOffset = Math.ceil(encoded.length / 8) * 8;
+      region.withLease((lease) => {
+        lease.copyFrom(encoded, 0, 0, encoded.length);
+        const result = this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_inspect_stat", [
+          lease.exportPointer(0, encoded.length), encoded.length,
+          lease.exportPointer(outputOffset, STRUCT_SIZE_WASM_STAT), STRUCT_SIZE_WASM_STAT,
+        ]);
+        if (result !== 0) {
+          failErrno = Number.isSafeInteger(result) && result < 0 ? -result : EIO;
+          return;
+        }
+        statBytes = lease.copyOut(outputOffset, STRUCT_SIZE_WASM_STAT);
+      });
+      return undefined;
+    });
+    // Routine errno must leave the ingress before becoming a host exception.
+    if (failErrno !== 0) throw new KernelScratchError("Filesystem stat failed", failErrno);
+    return decodeInspectionStat(new DataView(statBytes!.buffer, statBytes!.byteOffset, statBytes!.byteLength));
+  }
+
+  rootfsReadDirectory(path: string): VfsDirEntrySnapshot[] {
+    return decodeInspectionDirectory(this.#readRootfsInspectionSnapshot(path));
+  }
+
+  rootfsLazyResourceLimits(): Map<string, number> {
+    return decodeInspectionResourceLimits(this.#readRootfsInspectionSnapshot());
+  }
+
+  #readRootfsInspectionSnapshot(path?: string): Uint8Array {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encoded = new TextEncoder().encode(path ?? "");
+    if (encoded.length >= POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("Inspection path too long", ENAMETOOLONG);
+    }
+    const chunks: Uint8Array[] = [];
+    let offset = 0;
+    let failErrno = 0;
+    // All chunks are read in one serialized entry: another inspection cannot
+    // replace the native snapshot between chunks, and no guest can mutate it.
+    this.#runImmediateKernelEntry("inspect filesystem metadata", (entry) => {
+      const region = this.#requireMainScratchRegion();
+      const outputOffset = Math.ceil(encoded.length / 8) * 8;
+      const capacity = region.capacity - outputOffset;
+      if (capacity <= 0) throw new KernelScratchError("Inspection scratch capacity", EIO);
+      region.withLease((lease) => {
+        lease.copyFrom(encoded, 0, 0, encoded.length);
+        for (;;) {
+          const output = lease.exportPointer(outputOffset, capacity);
+          const result = path === undefined
+            ? this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_lazy_resource_limits", [offset, output, capacity])
+            : this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_inspect_directory", [
+                lease.exportPointer(0, encoded.length), encoded.length, offset, output, capacity,
+              ]);
+          if (!Number.isSafeInteger(result) || result < 0 || result > capacity) {
+            failErrno = Number.isSafeInteger(result) && result < 0 ? -result : EIO;
+            break;
+          }
+          if (result === 0) break;
+          chunks.push(lease.copyOut(outputOffset, result));
+          offset += result;
+          if (offset > 0xffff_ffff) { failErrno = ERRNO.EOVERFLOW; break; }
+        }
+      });
+      return undefined;
+    });
+    if (failErrno !== 0) throw new KernelScratchError("Filesystem inspection failed", failErrno);
+    const bytes = new Uint8Array(offset);
+    let at = 0;
+    for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
+    return bytes;
   }
 
   /**

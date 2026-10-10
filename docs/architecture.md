@@ -2064,13 +2064,50 @@ through the closed-lazy-asset transport
 (`host/src/vfs/closed-lazy-assets.ts`), which verifies each declared byte
 count and SHA-256 before boot.
 
-The host reads and writes kernel-owned files on its own behalf only through
-kernel exports (`kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
+The host stages and reads kernel-owned files only through kernel exports
+(`kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
 `kernel_rootfs_stat_mode`, `kernel_rootfs_unlink_file`,
-`kernel_rootfs_mkdir_parents`); these are what `read_vfs_file`,
-`write_vfs_file`, `unlink_vfs_file`, the spawn preflight's program reads, and
-the browser's per-session TLS root certificate use. A scratch path reaches
-tmpfs and any other path the rootfs.
+`kernel_rootfs_mkdir_parents`). Writes, unlink, spawn preflight reads and the
+browser's TLS root certificate use these methods. Worker inspection uses
+the namespace methods below, including foreign mounts and cross-mount links.
+
+Lazy archive materialization currently supports ZIP. Generic gzip, tar and
+zstd archive activation from the former TypeScript filesystem is not
+implemented by the native archive reader; unsupported formats fail.
+
+### Inspection of the live filesystem
+
+Both host workers answer `read_vfs_file`, `read_vfs_dir` and
+`stat_vfs_path` through Rust. The native inspection methods use the same
+namespace walker as guest syscalls, including symlink resolution across
+rootfs, tmpfs and foreign mounts. They use the reserved init record's
+root credentials for privileged host inspection; init stays immutable
+and acquires no descriptors. A directory snapshot includes each entry's
+current mode, size, uid/gid and symlink target. Copied snapshots stream
+through allocator-owned scratch within one kernel entry and are freed
+at EOF. The main thread receives plain metadata and transferable bytes.
+Procfs/devfs directory streams still return `EOPNOTSUPP`.
+
+Node takes the validated rootfs's deduplicated lazy URI cohort after
+kernel initialization and gives it to `NodeLazyAssetResolver`. The first
+use starts one off-thread freshness checkpoint; successful paths and
+per-resource failures stay pinned, and destruction cancels pending work.
+Unused resources never start a resolver worker or abort boot. Both
+hosts retain bounded retries (three attempts, delays capped at five
+seconds) for transient network and HTTP failures; exhausted, permanent
+and aborted transfers stay failed. Rust verifies content sizes and
+digests after transport and never retries invalid content as a network
+failure. The native resource inventory supplies transfer byte bounds: both
+hosts reject oversized response headers and stop a stream before retaining
+excess chunks. The isolated example runner reads standalone transport sizes
+through the zero-import Rust image module without allocating a shared
+filesystem buffer.
+
+When native length or digest validation rejects a completed download,
+`host_discard_deferred` evicts only those transport bytes. The failed read
+returns `EIO` without changing the inode or automatically fetching again;
+a later explicit read can fetch a fresh response. Stream progress remains
+a host transfer observation, independent of native materialization.
 
 ### Default mount layout
 

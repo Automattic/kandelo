@@ -107,6 +107,10 @@ pub fn pread(
             crate::rootfs::ByteReq::Deferred { uri, offset } => {
                 host.fetch_deferred(&uri, buf, offset)
             }
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                host.discard_deferred(&uri);
+                Ok(0)
+            }
             crate::rootfs::ByteReq::Image { offset } => host.image_read(buf, offset),
         }),
         Object::Tmpfs(h) => crate::tmpfs::read(h, offset, dst),
@@ -143,6 +147,10 @@ pub fn pwrite(handle: i64, offset: u64, src: &[u8], host: &mut dyn HostIO) -> Re
         Object::Rootfs(h) => crate::rootfs::write(h, offset_i64, src, |req, buf| match req {
             crate::rootfs::ByteReq::Deferred { uri, offset } => {
                 host.fetch_deferred(&uri, buf, offset)
+            }
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                host.discard_deferred(&uri);
+                Ok(0)
             }
             crate::rootfs::ByteReq::Image { offset } => host.image_read(buf, offset),
         }),
