@@ -10,7 +10,7 @@ import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 test.use({ serviceWorkers: "block" });
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-async function readNativeImage(page: Page, baseURL: string, image: Uint8Array, path: string, executable?: string) {
+async function readNativeImage(page: Page, baseURL: string, image: Uint8Array, path: string, executable?: string, lazyUrlMap?: Record<string, string>) {
   const kernelUrl = new URL("/__native_lazy_kernel.wasm", baseURL).href;
   const imageUrl = new URL("/__native_lazy_image.vfs", baseURL).href;
   await page.route(kernelUrl, route => route.fulfill({ body: readFileSync(resolveBinary("kernel.wasm")) }));
@@ -18,18 +18,23 @@ async function readNativeImage(page: Page, baseURL: string, image: Uint8Array, p
   await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
   await page.waitForFunction(() => (window as any).__testRunnerReady === true);
   const modulePath = fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts", import.meta.url));
-  return page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, path, executable }) => {
+  return page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, path, executable, lazyUrlMap }) => {
     const { BrowserKernel } = await import(moduleUrl);
     let stdout = "";
     let stderr = "";
+    const downloads: Array<{ id: string; url: string; status: string }> = [];
     const kernel = new BrowserKernel({ kernelOwnedFs: true,
       onStdout: (bytes: Uint8Array) => { stdout += new TextDecoder().decode(bytes); },
       onStderr: (bytes: Uint8Array) => { stderr += new TextDecoder().decode(bytes); },
+      onLazyDownload: (event: { id: string; url: string; status: string }) => {
+        downloads.push({ id: event.id, url: event.url, status: event.status });
+      },
     });
     try {
       await kernel.initFromImage({
         kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
         vfsImage: new Uint8Array(await (await fetch(imageUrl)).arrayBuffer()),
+        lazyUrlMap,
       });
       const before = await kernel.statVfsPath(path);
       const reads: Array<{ text?: string; error?: string }> = [];
@@ -43,17 +48,18 @@ async function readNativeImage(page: Page, baseURL: string, image: Uint8Array, p
           { env: ["INITIAL=parent", "REMOVE=before-fork"] });
         exitCode = await exit;
       }
-      return { before, after: await kernel.statVfsPath(path), reads, stdout, stderr, exitCode };
+      return { before, after: await kernel.statVfsPath(path), reads, stdout, stderr, exitCode, downloads };
     } finally { await kernel.destroy(); }
-  }, { moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href, kernelUrl, imageUrl, path, executable });
+  }, { moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href, kernelUrl, imageUrl, path, executable, lazyUrlMap });
 }
 
-test("native lazy ZIP retries HTTP 502 and caches verified bytes on each browser engine", async ({ page, baseURL }) => {
+test("native lazy ZIP resolves progress URLs, retries HTTP 502 and caches verified bytes on each browser engine", async ({ page, baseURL }) => {
   test.setTimeout(120_000);
   const url = new URL("/__native_lazy_data.zip", baseURL).href;
+  const uri = "fixture-native-retry.zip";
   const archive = zipSync({ "etc/data": new TextEncoder().encode("native archive bytes") });
   const fs = KandeloImageFs.create();
-  fs.registerLazyArchive({ url, entries: parseZipCentralDirectory(archive), mountPrefix: "/",
+  fs.registerLazyArchive({ url: uri, entries: parseZipCentralDirectory(archive), mountPrefix: "/",
     integrity: { sha256: digest(archive), bytes: archive.byteLength } });
   let fetches = 0;
   await page.route(url, route => {
@@ -62,10 +68,17 @@ test("native lazy ZIP retries HTTP 502 and caches verified bytes on each browser
       ? { status: 502, body: "temporarily unavailable", headers: { "retry-after": "0" } }
       : { body: Buffer.from(archive) });
   });
-  const result = await readNativeImage(page, baseURL!, await fs.saveImage(), "/etc/data");
+  const result = await readNativeImage(page, baseURL!, await fs.saveImage(), "/etc/data", undefined, { [uri]: url });
   expect(result.reads).toEqual([{ text: "native archive bytes" }, { text: "native archive bytes" }]);
   expect(fetches).toBe(2);
   expect(result.before).toEqual(result.after);
+  expect(result.downloads.filter(event => event.status === "started")).toEqual([
+    { id: uri, url, status: "started" },
+  ]);
+  expect(result.downloads.filter(event => event.status === "complete")).toEqual([
+    { id: uri, url, status: "complete" },
+  ]);
+  expect(result.downloads.every(event => event.url === url)).toBe(true);
 });
 
 test("native lazy file rejects an oversized response without retrying or changing file metadata", async ({ page, baseURL }) => {

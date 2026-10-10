@@ -22,12 +22,12 @@
  * Skips if the binaries aren't built (bare checkout).
  */
 import { afterAll, describe, expect, it } from "vitest";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -102,7 +102,7 @@ describe("qtgallery — the theme gallery on the wayland desktop", () => {
   it.skipIf(!hasBinaries)(
     "maps through xdg-shell, takes a click, and switches the theme",
     async () => {
-      workDir = mkdtempSync(join(tmpdir(), "qtgallery-smoke-"));
+      workDir = makeHostScratchTempRoot("qtgallery-smoke-");
       const fontDir = join(workDir, "fonts");
       const cacheDir = join(workDir, "cache");
       const themesDir = join(workDir, "themes");

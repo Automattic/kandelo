@@ -21,15 +21,15 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 const REPO_ROOT = join(__dirname, "../..");
 const INCONSOLATA = join(REPO_ROOT, "third_party/Inconsolata-Regular.ttf");
@@ -67,12 +67,9 @@ const KEY_LEFTCTRL = 29;
 const KEY_LEFTSHIFT = 42;
 const KEY_LEFTALT = 56;
 
-// Unique per run: the kernel's /tmp is host-backed and persists across
-// hosts, so a failed run's leftovers would collide with the next.
+// The bus socket lives in this boot's native tmpfs, shared by its guests.
 const RUN = `${process.pid}`;
 const BUS_SOCKET = `/tmp/dbus-qs-${RUN}.socket`;
-const NOTIFY_FLAG = `/tmp/qs-notify-${RUN}`;
-const STOP_FLAG = `/tmp/qs-stop-${RUN}`;
 
 const SESSION_CONF = `<busconfig>
   <type>session</type>
@@ -122,7 +119,10 @@ describe("quickshell — the Omarchy shell on wlcompositor + dbus", () => {
   it.skipIf(!hasBinaries)(
     "maps its bar and wallpaper, owns the shortcuts, notifications, launcher, themes and the lock screen",
     async () => {
-      const root = mkdtempSync(join(tmpdir(), "kandelo-qs-shell-"));
+      const root = makeHostScratchTempRoot("kandelo-qs-shell-");
+      // Host-written flags and fixtures must stay outside native scratch.
+      const NOTIFY_FLAG = join(root, "notify");
+      const STOP_FLAG = join(root, "stop");
       const fontDir = join(root, "fonts");
       const themesDir = join(root, "themes");
       const appsDir = join(root, "share", "applications");
@@ -365,6 +365,7 @@ describe("quickshell — the Omarchy shell on wlcompositor + dbus", () => {
         expect(compCode, `compositor exit.\n${dump()}`).toBe(0);
       } finally {
         await host.destroy().catch(() => {});
+        rmSync(root, { recursive: true, force: true });
       }
     },
     300_000,
