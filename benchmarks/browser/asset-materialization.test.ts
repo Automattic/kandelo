@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -41,4 +41,19 @@ test("public copies cannot satisfy missing or rejected package authority", () =>
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test("sealed read-only images can be refreshed repeatedly without changing source permissions", () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-benchmark-sealed-"));
+  try {
+    const source = join(root, "verified-image");
+    writeFileSync(source, "sealed bytes");
+    chmodSync(source, 0o444);
+    for (let refresh = 0; refresh < 3; refresh++) {
+      const selected = materializePublicAsset("programs/app.vfs.zst", "app.vfs.zst", root, () => source);
+      assert.equal(readFileSync(selected.selectedPath!, "utf8"), "sealed bytes");
+      assert.equal(statSync(source).mode & 0o777, 0o444);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

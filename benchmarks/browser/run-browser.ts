@@ -8,7 +8,7 @@
  */
 import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
-import { copyFileSync, existsSync, mkdirSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { tryResolveBinary } from "../../host/src/binary-resolver.js";
@@ -114,7 +114,16 @@ export function materializePublicAsset(
   }
 
   mkdirSync(dirname(publicPath), { recursive: true });
-  copyFileSync(sourcePath, publicPath);
+  // Sealed package files are read-only, and copyFileSync preserves that mode.
+  // Replace the public copy instead of overwriting it on the next refresh.
+  const staging = mkdtempSync(resolve(dirname(publicPath), ".benchmark-asset-"));
+  try {
+    const temporary = resolve(staging, "image");
+    copyFileSync(sourcePath, temporary);
+    renameSync(temporary, publicPath);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
   return {
     publicPath,
     resolverRequest: relBinaryPath,
