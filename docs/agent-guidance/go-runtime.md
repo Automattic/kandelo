@@ -162,6 +162,17 @@ or unsupported TLS initializer relocations explicitly. Validate musl/PHP TLS,
 C-created threads, fork replay, and both hosts before claiming general TLS
 support. The link-only fixture proves only a simple initialized TLS variable.
 
+The next normal-cgo linker failure is `_cgo_sys_thread_start`.
+`runtime/cgo/gcc_util.c` calls it from `x_cgo_thread_start`, and
+`runtime.newm` deliberately uses that C thread-start path when `iscgo` is
+true. A Kandelo implementation must preserve real C pthread creation and
+adapt its entry to Go's resumable Wasm function ABI. A C function pointer
+cannot call a raw Go table entry with the wrong Wasm signature. It must also
+initialize the C thread pointer and TLS and capture a per-instance Kandelo
+channel before Go callbacks. Do not add a no-op symbol solely to satisfy
+the linker or assume the existing pure-Go M bootstrap covers C-created
+threads.
+
 For a repeatable C function-and-data link proof, run
 `scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends
 small SDK C objects to a cgo-free Go archive and verifies C-to-C and C-data
