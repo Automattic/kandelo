@@ -36,7 +36,7 @@ test("the inspector lists directories and previews files from the kernel-owned V
   // Kernel-owned virtual entries are visible in the same browser.
   await page.getByRole("button", { name: "/", exact: true }).click();
   await row(/^proc\/$/).click();
-  await expect(row(/^self$/)).toBeVisible({ timeout: 60_000 });
+  await expect(row(/^self(?:\s|→|$)/)).toBeVisible({ timeout: 60_000 });
   await expect(row(/^1\/$/)).toBeVisible();
   await row(/^1\/$/).click();
   await row(/^fd\/$/).click();
@@ -44,7 +44,7 @@ test("the inspector lists directories and previews files from the kernel-owned V
   await page.getByRole("button", { name: "/", exact: true }).click();
   await row(/^dev\/$/).click();
   await expect(row(/^null$/)).toBeVisible({ timeout: 60_000 });
-  await expect(row(/^stdin$/)).toContainText("lrwxrwxrwx");
+  await expect(row(/^stdin(?:\s|→|$)/)).toContainText("lrwxrwxrwx");
   await row(/^pts\/$/).click();
   await expect(row(/^\d+$/)).toBeVisible({ timeout: 60_000 });
 
