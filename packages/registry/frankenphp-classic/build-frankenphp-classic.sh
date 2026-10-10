@@ -77,9 +77,11 @@ chmod -R u+w "$MODULE_DIR"
 unset CC CXX AR RANLIB CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$WORK_DIR/frankenphp-classic.wasm" \
     -o "$WORK_DIR/frankenphp-classic-instrumented.wasm"
-source "$REPO_ROOT/scripts/build-programs-abi-stamp.sh"
-record_built_program_output "$WORK_DIR/frankenphp-classic-instrumented.wasm"
-stamp_built_program_outputs
+if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" != source-only-v1 ]; then
+    source "$REPO_ROOT/scripts/build-programs-abi-stamp.sh"
+    record_built_program_output "$WORK_DIR/frankenphp-classic-instrumented.wasm"
+    stamp_built_program_outputs
+fi
 
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     export WASM_POSIX_INSTALL_LOCAL_MIRROR=0

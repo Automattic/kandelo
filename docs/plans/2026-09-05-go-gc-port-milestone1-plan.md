@@ -1922,8 +1922,10 @@ boots the same VFS, gets HTTP 200 for the homepage and WordPress login
 form, and shuts down dinit without diagnostics. These are application
 requests executed in FrankenPHP classic mode, not FPM or a proxy.
 
-The full source-only WordPress package build is still resolving the
-canonical shell dependency tree. Its prior projection is stale, so the
+The full WordPress package build is still resolving the canonical shell
+dependency tree. This invocation was later found to use the default resolver
+policy, not `source-only-v1`; see the correction below. Its prior projection
+is stale, so the
 gallery/UI test cannot load the image yet; the direct browser-host test
 uses the built VFS bytes without bypassing the kernel. Pending gates are
 the resolver-built image, gallery login flow, durable running demo URL,
@@ -1955,15 +1957,32 @@ The remaining gates, in order, are:
    general callback/thread stress, and wider libc/POSIX coverage have not
    been established by these focused probes.
 
-**2026-10-10 — Source-only shell dependency unblocked.** The first full
-WordPress resolution built many canonical shell packages but stopped when
+**2026-10-10 — Shell dependency Rust compiler unblocked.** The first full
+WordPress resolution, inadvertently run under the resolver's default policy,
+built many canonical shell packages but stopped when
 SpiderMonkey's Mozilla configure selected the user's Rustup `stable`
 compiler after entering its external source directory. That compiler lacked
 the Wasm standard library; it was not a Go/FrankenPHP failure. The
 SpiderMonkey recipe now exports the absolute compiler selected by Kandelo's
-pinned dev shell. Its revision-15 source-only resolver build succeeded.
-The WordPress resolver was restarted with the current package revisions;
-the projected image and browser gallery checks remain pending.
+pinned dev shell. Its revision-15 package resolver build succeeded under the
+default policy.
+A default-policy WordPress retry then stopped at a browser bundle that
+requires the source-only verified-source handoff. The WordPress resolver was
+restarted with `WASM_POSIX_RESOLUTION_POLICY=source-only-v1` and the current
+package revisions; the projected image and browser gallery checks remain
+pending. Neither failed default-policy run is source-only evidence.
+
+**2026-10-10 — Source-only FrankenPHP package stamping fixed.** The first
+actual source-only WordPress resolution built through its shell and PHP ZTS
+dependencies, then rejected `frankenphp-classic` because its recipe had
+already stamped the Wasm with `kandelo.abi.contract`. The source-only resolver
+owns that stamp and correctly refuses a duplicate. The recipe now stamps
+only for default-policy/direct builds; revision 9 resolves under
+`source-only-v1`. A new WordPress resolution is running against that verified
+dependency. The revision-9 source-only artifact independently served PHP and
+static HTTP in Node and Chromium with no host diagnostics. This fixes package
+distribution and preserves the request behavior already established; it is
+not WordPress gallery validation.
 
 ---
 
