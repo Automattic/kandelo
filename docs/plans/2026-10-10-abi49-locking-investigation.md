@@ -1,5 +1,13 @@
 # ABI 49 locking investigation
 
+## Follow-up status
+
+This records the initial investigation before any runtime optimization.
+The [allocation and virtual-inspection follow-up](2026-10-10-lock-allocation-and-virtual-inspection.md)
+implements input-only lock-result avoidance and connects live procfs/devfs
+directory inspection. Its separate measurements and validation supersede
+the missing inspection adapter described at the end of this record.
+
 ## Question and scope
 
 PR #1515 previously described roughly 28% slower locking. That statement

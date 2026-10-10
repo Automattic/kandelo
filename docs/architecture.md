@@ -2102,6 +2102,7 @@ process exit closes the guest slave descriptors but not that host master.
 inspection record, whose descriptor table stays empty. `/dev/shm` remains
 served by tmpfs. This connects directory metadata; it does not add a host
 API for reading generated procfs file contents.
+The existing `/dev/mqueue` directory provider returns an empty listing.
 
 Node takes the validated rootfs's deduplicated lazy URI cohort after
 kernel initialization and gives it to `NodeLazyAssetResolver`. The first
