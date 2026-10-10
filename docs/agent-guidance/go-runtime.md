@@ -112,6 +112,11 @@ APIs apply to Kandelo.
   storage and pathname-backed directory OFDs likewise cause separate
   `Chtimes` and rename-after-open failures. Fix these at their owning
   syscall/VFS/OFD layers and keep the other upstream failures visible.
+- `linkat` without `AT_SYMLINK_FOLLOW` must link the source symlink inode.
+  Kernel no-follow resolution alone does not ensure that behavior: Node's
+  `fs.linkSync` follows a symlink source on macOS, while browser SharedFS
+  links the symlink inode. `TestRootLinkFrom` exposes this host mismatch;
+  fix the HostFileSystem capability rather than changing Go's expectation.
 - Kandelo's `lseek` channel has four argument slots: fd, 32-bit offset low,
   signed 32-bit offset high, and whence. Passing Go's `int64` offset in one
   slot shifts whence into the high half; `Seek(0, SEEK_CUR)` then returns
