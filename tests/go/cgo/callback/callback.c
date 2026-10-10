@@ -6,6 +6,7 @@
 
 extern int go_double(int value);
 extern char *go_message(int value);
+extern int go_deep(int value);
 
 int call_go(int value) {
     return go_double(value);
@@ -45,6 +46,26 @@ int call_go_message_on_pthread(void) {
     }
     if (pthread_join(thread, NULL) != 0) {
         return 0;
+    }
+    return result;
+}
+
+static void *deep_thread_main(void *argument) {
+    int *result = argument;
+    for (int callback = 0; callback < 3; ++callback) {
+        *result = go_deep(128);
+    }
+    return NULL;
+}
+
+int call_go_deep_on_pthread(void) {
+    pthread_t thread;
+    int result = 0;
+    if (pthread_create(&thread, NULL, deep_thread_main, &result) != 0) {
+        return -1;
+    }
+    if (pthread_join(thread, NULL) != 0) {
+        return -1;
     }
     return result;
 }

@@ -209,7 +209,7 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
     stdout: ["CGO CALLBACK PASS"],
   });
   probes.push({
-    name: "C-created pthread attaches to Go for callback",
+    name: "C-created pthread callback grows its Go stack",
     file: "../cgo-callback-probe-instrumented.wasm",
     argv: ["go-cgo-pthread-callback"],
     stdout: ["CGO CALLBACK PASS"],

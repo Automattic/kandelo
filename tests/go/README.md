@@ -193,11 +193,15 @@ cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS
 ```
 
 The separate `cgo/callback` fixture exercises Go-to-C-to-Go calls on the
-calling thread and a C-created pthread entering Go. It also checks that a
-mixed scalar/pointer callback frame returns a valid C pointer:
+calling thread and a C-created pthread entering Go. It checks a mixed
+scalar/pointer callback frame and forces stack growth in the foreign callback:
 
 ```sh
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/cgo-callback-probe.wasm ./tests/go/cgo/callback'
+scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/cgo-callback-probe.wasm -o .context/cgo-callback-probe-instrumented.wasm'
+scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/cgo-callback-probe-instrumented.wasm; stamp_built_program_outputs'
+node --import tsx tests/go/cgo/callback/run.ts .context/cgo-callback-probe-instrumented.wasm local-binaries/kernel.wasm
+cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'C-created pthread callback grows'
 ```
 
 It passes as an opt-in Node and Chromium process gate after fork

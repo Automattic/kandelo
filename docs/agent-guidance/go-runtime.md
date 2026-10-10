@@ -61,6 +61,15 @@ APIs apply to Kandelo.
   back to `write` for non-sockets. Exercise canceled browser requests as well
   as completed requests; a successful first page is not evidence that the
   server survives navigation or client disconnects.
+- A foreign C pthread callback enters an extra Go goroutine through a
+  synthetic frame, not a resumable Go caller. Mark that frame `TOPFRAME` in
+  the Kandelo Wasm assembly; otherwise Go stack growth traces through the
+  C callback argument address as a return PC and aborts. A small callback
+  can pass despite this defect. Exercise deep recursion or a substantial
+  PHP response from a C-created pthread on both Node and Chromium. Save the
+  idle callback stack as an offset from its high bound, not an absolute
+  pointer: Go may relocate the stack during the callback, and reentry must
+  use the new high bound.
 - Clone handoff needs an acknowledgment before reusing its shared words.
   A child must bootstrap its own stack and channel before entering the Go
   scheduler. Thread replicas must not replay active Wasm data segments over
@@ -91,9 +100,10 @@ pins the callback-capable fork revision, but remains a pure-Go hello program.
 The adjacent fork runs focused Go/C calls and Go-owned and C-created-pthread
 callbacks on Node and Chromium. The `php-zts` package and PHP embed lifecycle
 probe pass on both hosts. The `frankenphp-classic` package now serves a PHP
-request and a static asset through real HTTP on Node and Chromium. Its
-WordPress profile is a separate gate. Do not infer full cgo or WordPress
-support from these focused probes.
+request and a static asset through real HTTP on Node and Chromium. A
+directly built WordPress VFS now serves PHP homepage and login requests
+on both hosts, but its source-only resolver and gallery/UI gates remain.
+Do not infer full cgo or deployed WordPress support from these probes.
 
 Trace the whole link path before changing flags or package recipes:
 

@@ -6,6 +6,7 @@ import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesys
  *   wp-config-init (internal) + smtp-capture (process)
  *     + wordpress-secrets (scripted; this machine's keys, on first boot)
  *       → php-fpm (process) → nginx (process)
+ *       → FrankenPHP classic (process)
  *
  * The browser host overwrites wp-config.php with the page-supplied
  * @@APP_PATH@@ and @@PROTO@@ values before dinit starts. Keeping that
@@ -24,6 +25,7 @@ import {
 } from "./vfs-image-helpers";
 import {
   addDinitInit,
+  DINIT_SERVICE_ENV,
   type DinitBinaryInputs,
   type DinitService,
 } from "./dinit-image-helpers";
@@ -71,6 +73,7 @@ const PHP_FPM_GID = 65534;
 // WordPress layers service binaries and application data on the complete
 // canonical shell, so its product profile must admit that 512 MiB base.
 const WORDPRESS_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
+const FRANKENPHP_ENV_PATH = "/etc/dinit.d/env-frankenphp";
 
 // --- Service configs (reuse logic from init modules) ---
 
@@ -302,6 +305,7 @@ include $docRoot . '/index.php';
  *   smtp-capture   (process)  — local SMTP sink storing mail under /var/mail
  *   php-fpm        (process)  — depends-on wp-config-init + smtp-capture
  *   nginx          (process)  — depends-on php-fpm
+ *   frankenphp-classic (process) — depends-on wp-config-init + smtp-capture
  */
 function buildServices(): DinitService[] {
   return [
@@ -332,6 +336,16 @@ function buildServices(): DinitService[] {
       logfile: "/var/log/nginx.log",
       restart: false,
     },
+    {
+      name: "frankenphp-classic",
+      type: "process",
+      command: "/usr/sbin/frankenphp-classic",
+      dependsOn: ["wp-config-init", "smtp-capture"],
+      logfile: "/var/log/frankenphp-classic.log",
+      restart: false,
+      noDefaultEnvFile: true,
+      extra: [`env-file = ${FRANKENPHP_ENV_PATH}`],
+    },
   ];
 }
 
@@ -343,6 +357,7 @@ export interface WordPressVfsImageBuildInputs {
   sqliteDirectory: string;
   nginx: Uint8Array;
   phpFpm: Uint8Array;
+  frankenphpClassic: Uint8Array;
   opcache: Uint8Array;
   msmtpd: Uint8Array;
   dinit?: DinitBinaryInputs;
@@ -370,11 +385,21 @@ export async function buildWordPressVfsImage(
   populateSmtpCaptureConfig(fs);
   populateWordPressFirstBootSecrets(fs);
 
-  console.log("Writing nginx + php-fpm + msmtpd binaries...");
+  console.log("Writing nginx + php-fpm + FrankenPHP + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
   writeVfsBinary(fs, "/usr/sbin/nginx", inputs.nginx);
   writeVfsBinary(fs, "/usr/sbin/php-fpm", inputs.phpFpm);
+  writeVfsBinary(fs, "/usr/sbin/frankenphp-classic", inputs.frankenphpClassic);
   writeVfsBinary(fs, "/usr/sbin/msmtpd", inputs.msmtpd);
+  ensureDirRecursive(fs, "/etc/frankenphp");
+  writeVfsFile(fs, "/etc/frankenphp/php.ini", `curl.cainfo=/etc/ssl/certs/ca-certificates.crt
+openssl.cafile=/etc/ssl/certs/ca-certificates.crt
+`);
+  ensureDirRecursive(fs, "/etc/dinit.d");
+  writeVfsFile(fs, FRANKENPHP_ENV_PATH,
+    `${Object.entries({ ...DINIT_SERVICE_ENV, PHPRC: "/etc/frankenphp" })
+      .map(([name, value]) => `${name}=${value}`)
+      .join("\n")}\n`);
 
   // Template + default wp-config. The browser host overwrites wp-config.php
   // with the current page prefix/protocol before dinit starts.
@@ -452,6 +477,7 @@ async function main(): Promise<void> {
   const shellRoot = process.env.WASM_POSIX_DEP_SHELL_DIR;
   const nginxRoot = process.env.WASM_POSIX_DEP_NGINX_DIR;
   const phpRoot = process.env.WASM_POSIX_DEP_PHP_DIR;
+  const frankenphpRoot = process.env.WASM_POSIX_DEP_FRANKENPHP_CLASSIC_DIR;
   const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
   const msmtpdRoot = process.env.WASM_POSIX_DEP_MSMTPD_DIR;
   const kernelRoot = process.env.WASM_POSIX_DEP_KERNEL_DIR;
@@ -467,6 +493,9 @@ async function main(): Promise<void> {
     phpFpm: new Uint8Array(readFileSync(phpRoot === undefined
       ? resolveBinary("programs/php/php-fpm.wasm")
       : join(phpRoot, "php-fpm.wasm"))),
+    frankenphpClassic: new Uint8Array(readFileSync(frankenphpRoot === undefined
+      ? resolveBinary("programs/frankenphp-classic.wasm")
+      : join(frankenphpRoot, "frankenphp-classic.wasm"))),
     opcache: new Uint8Array(readFileSync(phpRoot === undefined
       ? resolveBinary("programs/php/opcache.so")
       : join(phpRoot, "opcache.so"))),

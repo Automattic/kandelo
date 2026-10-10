@@ -33,6 +33,21 @@ func go_message(value C.int) *C.char {
 	return C.CString("callback-7")
 }
 
+//go:noinline
+func deepCallback(depth int) int {
+	var frame [256]byte
+	frame[0] = byte(depth)
+	if depth == 0 {
+		return int(frame[0])
+	}
+	return int(frame[0]) + deepCallback(depth-1)
+}
+
+//export go_deep
+func go_deep(value C.int) C.int {
+	return C.int(deepCallback(int(value)))
+}
+
 func main() {
 	if C.call_go(7) != 14 {
 		panic("C-to-Go callback failed")
@@ -51,6 +66,9 @@ func main() {
 	}
 	if C.call_go_message_on_pthread() != 1 {
 		panic("C pointer result from Go callback failed")
+	}
+	if C.call_go_deep_on_pthread() != 128*129/2 {
+		panic("C pthread callback stack growth failed")
 	}
 	fmt.Println("CGO CALLBACK PASS")
 }

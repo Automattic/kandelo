@@ -1892,6 +1892,43 @@ there is no performance claim until the application is measured. The
 WordPress profile has been added to the existing VFS recipe, but its
 full source-only image build and end-to-end requests remain in progress.
 
+**2026-10-10 — WordPress VFS exposes a foreign-callback stack boundary.**
+The existing shell/WordPress VFS builder, with FrankenPHP as an alternate
+dinit service, produces a 266 MiB raw / 50 MiB compressed image and
+preinstalls WordPress SQLite. A first in-kernel homepage request reached
+FrankenPHP's PHP output callback, then aborted during Go stack growth:
+the synthetic C-created-thread callback frame exposed a C pointer as its
+return PC. Fork commit `24e918744d0fe8d932e120654dcfba822d7acfd5`
+marks that frame as the stack top. A strengthened callback fixture now
+forces stack growth on a C-created pthread and passes in Node and Chromium.
+The next WordPress request reached PHP output but exposed a second stack
+boundary: the callback adapter restored an absolute idle stack pointer
+after Go had relocated that stack. Fork commit
+`5cf3a87e416c6d6c5f05a27fd74e45fce3a5aec8` preserves the offset
+from the stack high bound instead. The fixture now repeats deep callbacks
+on one C pthread and passes in Node and Chromium. `frankenphp-classic`
+revision 8 and `go-hello` revision 6 pin both fixes.
+The WordPress end-to-end rerun against the rebuilt binary remains open;
+this checkpoint is not a working WordPress or performance claim.
+
+**2026-10-10 — WordPress PHP requests pass on Node and Chromium hosts.**
+The direct image builder now embeds revision-8 FrankenPHP alongside the
+existing nginx/PHP-FPM stack, adds a separate dinit target and profile,
+and gives embedded PHP its own `PHPRC` so it does not attempt to load
+FPM's dynamic OPcache module. The preinstalled SQLite image responds to
+`GET /` in the Node kernel host with HTTP 200 and a 68 KiB WordPress
+homepage, with no host diagnostics. A direct Chromium kernel-host test
+boots the same VFS, gets HTTP 200 for the homepage and WordPress login
+form, and shuts down dinit without diagnostics. These are application
+requests executed in FrankenPHP classic mode, not FPM or a proxy.
+
+The full source-only WordPress package build is still resolving the
+canonical shell dependency tree. Its prior projection is stale, so the
+gallery/UI test cannot load the image yet; the direct browser-host test
+uses the built VFS bytes without bypassing the kernel. Pending gates are
+the resolver-built image, gallery login flow, durable running demo URL,
+ABI and package pin checks, and any defensible performance comparison.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
