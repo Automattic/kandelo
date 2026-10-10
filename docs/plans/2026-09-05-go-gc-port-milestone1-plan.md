@@ -1619,18 +1619,47 @@ startup; `runtime/cgo/asm_wasm.s` still defines `set_crosscall2` and
 there is no Chromium standard-cgo run or PHP embed yet. The narrow
 Go-assembly→C process probe continues to pass Node and Chromium.
 
+**2026-10-09 — first standard cgo calls on Node and Chromium.**
+Published Go fork commit `6a04d1a208d9f4e506ed7a755d8a3aa74640231b`.
+The adjacent Go fork now reserves an 8 MiB C stack below the heap, gives C
+calls the `(i32) -> ()` Wasm signature, initializes the main musl thread
+pointer before C work, and replaces the undefined `set_crosscall2` startup
+routine with a typed C initializer. The C callback entry deliberately traps
+until a real Go/C callback transition exists. `cmd/cgo` now pads the generated
+argument frame at the Go/Wasm 8-byte boundary while retaining the SDK's
+4-byte C pointer size; the focused frame-layout unit test covers a pointer
+between scalars. The normal `C.abs` probe also calls C functions with three
+scalars and with pointers in first and middle argument positions. A forced
+build validates, fork-instruments, receives the current ABI stamp, and exits
+0 with `CGO ABS PASS`, empty stderr, and no host diagnostics in both the
+Node process and Chromium browser-host test. The C stack is only safe on the
+main Go M; a C call from another Go M traps rather than sharing it.
+
+The same-thread callback fixture now links and validates after retaining a
+Go callback referenced through a C function-address global. Its Node run
+still traps at the explicit `crosscall2` callback boundary. The combined
+same-thread/pthread fixture also links and validates after retaining musl's
+local function aliases, but has not passed its process gate. Full musl startup, C-created
+thread attachment, callbacks, PHP ZTS, FrankenPHP, and the WordPress demo
+remain unimplemented. The `go-hello` package still pins the earlier pure-Go
+fork revision; there is no PHP/FrankenPHP performance claim. Focused Go
+`cmd/cgo`, `cmd/link/internal/loadwasm`, and `cmd/link/internal/wasm` tests
+pass. Pure-Go Kandelo browser fixtures rebuild, and all 20 opt-in Chromium
+Go-port tests pass, including the new standard-cgo process case. Forced
+`js` and `wasip1` browser-basic builds validate; the ABI snapshot check
+passes. No PHP or POSIX conformance suite was run at this checkpoint.
+
 Remaining work, in dependency order:
 
-1. Make the normal cgo artifact runnable: implement `set_crosscall2` and
-   `asmcgocall` with real C ABI function-pointer types, initialize the C
-   stack and musl thread pointer, handle init/fini arrays and retained
-   `kernel_fork` imports correctly, and prove `C.abs` on Node and Chromium
-   through an ABI-stamped Kandelo process. Review the experimental Wasm
-   `cmd/cgo` frontend.
-2. Implement real Go/C ABI transitions (`asmcgocall`, `crosscall2`,
-   `cgocallback`), then attach C-created pthreads with a Go M/P and both C
-   and Go per-thread channel state. Pass same-thread and pthread callback
-   probes on Node and Chromium with no host diagnostics.
+1. Finish the Go/C runtime: implement real `crosscall2`/`cgocallback`
+   transitions; give every Go M a distinct C stack and initialized musl
+   thread pointer; preserve full libc environment, secure-startup and
+   constructor/destructor behavior; review the mixed-width `cmd/cgo`
+   frontend beyond the passing scalar/pointer cases.
+2. Attach C-created pthreads to a Go M/P with both C and Go per-thread
+   channel state. Pass
+   same-thread and pthread callback probes on Node and Chromium with no host
+   diagnostics.
 3. Build PHP ZTS embed through the normal SDK/resolver, prove PHP lifecycle,
    port FrankenPHP classic mode, and deliver the WordPress VFS demo without
    nginx or PHP-FPM. Measure performance only after the Kandelo server runs.

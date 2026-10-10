@@ -122,24 +122,35 @@ scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32po
 ```
 
 The published package revision still fails at pointer-size recognition.
-The adjacent fork's experimental cgo frontend gets this fixture through the
-linker. The linker discovers SDK libc and executable glue and emits a raw
-Wasm module that passes `wasm-validate --enable-threads`. This is not a
-runnable cgo artifact: fork instrumentation now succeeds, but cgo runtime
-startup traps before the C call. Go/C adapters remain unimplemented. `run.ts` is an opt-in
-failing runtime gate, not passing coverage.
+The adjacent fork's experimental cgo frontend and linker now execute this
+fixture on the main Go M. It checks `C.abs`, three scalar arguments, and C
+pointer arguments in first and middle positions. The raw module validates,
+fork-instruments, and runs as an ABI-stamped Kandelo process on Node and
+Chromium with exit 0 and no diagnostics. This is narrow Go-to-C coverage,
+not general cgo support: `crosscall2` deliberately traps, other Go Ms have
+no C stack, and musl/PHP initialization remains incomplete.
 
 ```sh
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-c-abs.wasm ./tests/go/cgo && wasm-validate --enable-threads .context/go-c-abs.wasm'
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-c-abs.wasm -o .context/go-c-abs-instrumented.wasm'
 scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-c-abs-instrumented.wasm; stamp_built_program_outputs'
 node --import tsx tests/go/cgo/run.ts .context/go-c-abs-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
+cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'standard cgo calls C'
 ```
 
-A compile-only pass will not establish working interoperability: run the
-binary in Node and Chromium and add a C-to-Go callback probe before building
-FrankenPHP. See the dated WordPress pivot in the Go implementation progress
-log.
+A compile-only pass does not establish working interoperability. The
+same-thread callback fixture at `cgo/callback-same` links and validates but
+its Node process traps at `crosscall2`. The combined pthread fixture links
+and validates but has not passed its process gate. Both callbacks must
+pass on Node and Chromium before a FrankenPHP build is meaningful. See the
+dated WordPress pivot in the Go implementation progress log.
+
+```sh
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-callback-same.wasm ./tests/go/cgo/callback-same'
+scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-callback-same.wasm -o .context/go-callback-same-instrumented.wasm'
+scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-callback-same-instrumented.wasm; stamp_built_program_outputs'
+node --import tsx tests/go/cgo/callback-same/run.ts .context/go-callback-same-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
+```
 
 The separate `cgo/callback` fixture exercises Go-to-C-to-Go calls on the
 calling thread and a C-created pthread entering Go:
@@ -153,8 +164,9 @@ experimental `cmd/cgo` frontend in the adjacent fork parses the
 Wasm debug object far enough for both fixtures to reach the Go linker. The
 adjacent fork's internal linker now reads C function bodies, initialized C
 data, active table elements, and the CODE relocations reached by runtime/cgo.
-The full build stops at Kandelo's missing runtime/cgo thread-start half;
-neither fixture links or runs.
+The combined fixture now links and validates after retaining musl local
+function aliases; the separate same-thread fixture links but traps at the
+missing C-to-Go transition.
 The `go-hello` package is still pinned to the earlier fork revision that
 fails at pointer-size recognition. Do not use a successful cgo frontend or
 function-body parse as PHP or FrankenPHP support.

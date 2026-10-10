@@ -182,6 +182,15 @@ if (process.env.KANDELO_GO_CGO_LINK_TESTS === "1") {
   });
 }
 
+if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
+  probes.push({
+    name: "standard cgo calls C with scalar and pointer arguments",
+    file: "../go-c-abs-instrumented.wasm",
+    argv: ["go-cgo-basic"],
+    stdout: ["CGO ABS PASS"],
+  });
+}
+
 async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<ProbeResult> {
   const programBytes = readFileSync(resolve(fixtureDir, probe.file));
   const kernelBytes = readFileSync(resolveBinary("kernel.wasm"));
