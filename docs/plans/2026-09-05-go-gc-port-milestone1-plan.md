@@ -1499,6 +1499,29 @@ the linker still rejects TLS until it has real per-thread layout. The SDK
 compiler query and 31 focused `cc.test.ts` cases pass; focused Go linker
 tests pass. This changes no existing Kandelo ABI or package source pin.
 
+**2026-10-09 — cross-object C data addresses.** Go fork commit
+`2fcbf8c92b29590062c4208cfe89118dfc456c6b` collects defined C data
+symbols across host objects and synthesizes immutable Wasm address globals
+for cross-object `global.get` relocations. The checked-in link-only fixture
+now links a third C object whose `cross_weighted(5)` reads `offset` from a
+different C object and returns 13. Direct Wasm-table checks pass in Node and
+Chromium. After ABI stamping, the Go assembly call runs in a Kandelo process
+with exit 0, expected stdout, empty stderr, and no host diagnostics on Node;
+the Chromium process-worker test passes. This remains a cgo-free linker
+fixture, not `runtime/cgo` or a PHP embed. The added globals are internal to
+C-containing modules, so no Kandelo ABI version or package pin change.
+
+**2026-10-09 — data-only C archive members.** Go fork commit
+`686572e8259d21dcd53468d7f2239dc163ac3e94` records C global data
+symbols independently of retained C functions and keeps loaded C data
+segments in the final module. The fixture moves `offset=7` into a fourth,
+function-free object; both `weighted(5)=12` and `cross_weighted(5)=13` now
+resolve its address. The direct table tests pass in Node and Chromium, and
+the ABI-stamped Go process test passes in Node (exit 0, expected stdout,
+empty stderr and diagnostics) and Chromium. Pure-Go `kandelo`, `js`, and
+`wasip1` browser-basic builds pass. The normal `C.abs` build still stops at
+the explicit musl TLS boundary. No ABI or package pin change.
+
 Remaining work, in dependency order:
 
 1. Review the experimental Wasm `cmd/cgo` frontend; validate the

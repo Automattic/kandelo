@@ -135,6 +135,12 @@ kinds exercised by the C-call, C-data, and runtime/cgo objects. The
 Kandelo-only internal linker imports C functions and initialized data into
 Go's static layout, resolves direct C-to-C calls and memory-relative C-data
 addresses, and maps C function-pointer relocations to Go's existing table.
+Fork commit `2fcbf8c` also resolves C data-address globals that refer to
+symbols in another C object; the checked-in linker fixture verifies this
+through Go assembly on both hosts.
+Fork commit `686572e` records global data symbols even from C objects with
+no function body and retains their static segments. This is required for
+musl archive members that define only data.
 The link-only fixture now makes a narrow Go assembly call to C and executes
 as a Kandelo process on Node and Chromium. It does not exercise `runtime/cgo`
 or the standard Go/C adapters. The full `C.abs` build with fork commit

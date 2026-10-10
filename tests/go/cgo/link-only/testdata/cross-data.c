@@ -1,6 +1,6 @@
 extern const int offset;
 
-int weighted(int value) {
+int cross_weighted(int value) {
     volatile const int *address = &offset;
-    return value + *address;
+    return value + *address + 1;
 }

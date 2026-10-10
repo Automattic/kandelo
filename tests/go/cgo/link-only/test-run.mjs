@@ -18,7 +18,7 @@ for (const entry of WebAssembly.Module.imports(module)) {
 const instance = new WebAssembly.Instance(module, imports);
 const table = instance.exports.__indirect_function_table;
 
-for (const [name, input, expected] of [['c_target', 5, 10], ['weighted', 5, 12]]) {
+for (const [name, input, expected] of [['c_target', 5, 10], ['weighted', 5, 12], ['cross_weighted', 5, 13]]) {
   const match = sections.match(new RegExp(`elem\\[(\\d+)\\] = ref\\.func:\\d+ <${name}>`));
   assert.ok(match, `missing table entry for ${name}`);
   assert.equal(table.get(Number(match[1]))(input), expected);

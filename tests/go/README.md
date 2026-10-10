@@ -158,9 +158,12 @@ scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh
 
 It manually adds SDK C objects to a cgo-free Go archive and checks that the
 final Go Wasm module validates, relocates a C-to-C call and C static data,
-then executes both C functions through the exported Wasm function table in
-Node and Chromium. The checked-in Go assembly also calls `weighted(5)` and
-checks its return value in a Kandelo process on both hosts. Stamp the exact
+then executes C functions through the exported Wasm function table in Node
+and Chromium. The `weighted` and `cross_weighted` C objects read `offset`
+from a data-only fourth object;
+both its direct table call and its Go assembly call return 13. The checked-in
+Go assembly checks these return values in a Kandelo process on both hosts.
+Stamp the exact
 fresh output, then run the process and browser cases:
 
 ```sh
