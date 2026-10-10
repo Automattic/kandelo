@@ -370,6 +370,7 @@ export function configureRootfsOverlayFromImage(
 ): () => void {
   let resourceLimits: Map<string, number> | undefined;
   const installedLazyFetcher = options.lazyFetcher;
+  const onLazyProgress = options.onLazyProgress;
   const lazyUrlBase = options.lazyUrlBase;
   const lazyUrlMap = options.lazyUrlMap;
   const resolveAddress = (url: string): string => {
@@ -396,7 +397,12 @@ export function configureRootfsOverlayFromImage(
       };
   const { deferredProvider, whenFetchSettles, discardDeferred } = buildRootfsLazyWiring(
     fetchUrlBytes,
-    options.onLazyProgress,
+    onLazyProgress === undefined
+      ? undefined
+      : (event) => onLazyProgress({
+          ...event,
+          url: resolveAddress(event.url),
+        }),
   );
   kernel.configureRootfsOverlay(
     deferredProvider,

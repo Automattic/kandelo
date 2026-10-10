@@ -156,15 +156,19 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     writeFileSync(join(fixtureRoot, "suite", "fixture"), "seed");
     const host = new NodeKernelHost({
       rootfsImage: "default" as const,
+      rootfsMountSpec: [
+        ...DEFAULT_MOUNT_SPEC,
+        { path: "/run", source: "scratch", mode: 0o755, nosuid: true },
+      ],
       sessionSeedTrees: [{
         sourcePath: fixtureRoot,
-        destinationPath: "/tmp/kandelo-run",
+        destinationPath: "/run/kandelo-run",
       }],
     });
 
     try {
       await host.init();
-      const entries = await host.readDirFromVfs("/tmp/kandelo-run/suite");
+      const entries = await host.readDirFromVfs("/run/kandelo-run/suite");
       expect(entries?.map((entry) => entry.name).sort()).toEqual([
         "fixture",
         "nested",
@@ -176,11 +180,11 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       expect(dir.mode & 0o170000).toBe(0o040000);
 
       await expect(
-        host.statVfsPath("/tmp/kandelo-run/suite/fixture"),
+        host.statVfsPath("/run/kandelo-run/suite/fixture"),
       ).resolves.toMatchObject({ size: 4 });
       // A missing path is `null`, never an empty listing or a zeroed stat.
-      await expect(host.readDirFromVfs("/tmp/kandelo-run/absent")).resolves.toBeNull();
-      await expect(host.statVfsPath("/tmp/kandelo-run/absent")).resolves.toBeNull();
+      await expect(host.readDirFromVfs("/run/kandelo-run/absent")).resolves.toBeNull();
+      await expect(host.statVfsPath("/run/kandelo-run/absent")).resolves.toBeNull();
     } finally {
       await host.destroy();
       rmSync(fixtureRoot, { recursive: true, force: true });
@@ -205,11 +209,9 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       { path: "/run", source: "scratch", mode: 0o755, nosuid: true },
     ];
     const seedPath = "/run/kandelo-run/suite/fixture";
-    // Verify through the guest, not `readFileFromVfs`: the in-kernel rootfs
-    // overlay is the sole `/` authority and disowns the `/run` foreign mount, so
-    // the host-side `readFileFromVfs` (which reads only the overlay) never sees
-    // seeded host-mount bytes. A guest `mount_probe rootfs` read routes through
-    // the `/run` backend and reports `ROOTFS size=<n> ... head=<hex>`.
+    // Verify through ordinary guest reads as well as the inspection RPC above.
+    // A guest `mount_probe rootfs` read routes through the `/run` backend and
+    // reports `ROOTFS size=<n> ... head=<hex>`.
     function makeSeededHost(): { host: NodeKernelHost; readOut: () => string } {
       let out = "";
       const host = new NodeKernelHost({

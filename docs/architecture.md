@@ -2103,6 +2103,10 @@ excess chunks. The isolated example runner reads standalone transport sizes
 through the zero-import Rust image module without allocating a shared
 filesystem buffer.
 
+Lazy progress events identify the resolved transport URL on both hosts,
+including deployment mappings and relative URL bases. Their stable transfer
+ID retains the image URI; neither progress nor URL mapping mutates the image.
+
 When native length or digest validation rejects a completed download,
 `host_discard_deferred` evicts only those transport bytes. The failed read
 returns `EIO` without changing the inode or automatically fetching again;

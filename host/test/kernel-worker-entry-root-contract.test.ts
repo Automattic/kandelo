@@ -44,12 +44,15 @@ const FORBIDDEN_WORKER_MEMBERS = new Set([
 // `process-lifecycle.ts` (so both entries share one implementation) and takes
 // the worker as a `CentralizedKernelWorker` parameter it uses only through
 // public ingress: `configureRootfsOverlayFromImage` calls
-// `configureRootfsOverlay`, and `readRootfsFileWithRetry` calls
-// `rootfsReadFile`. The last test below pins the declarations, so a helper
-// cannot join this list without living where both entries share it.
+// `configureRootfsOverlay`, `readRootfsFileWithRetry` calls
+// `rootfsReadFile`, and `readNamespaceFileWithRetry` calls
+// `rootfsInspectFile` through the same entry-gated retry path. The last test
+// below pins the declarations, so a helper cannot join this list without
+// living where both entries share it.
 const REVIEWED_KERNEL_WORKER_HELPERS = new Set([
   "configureRootfsOverlayFromImage",
   "readRootfsFileWithRetry",
+  "readNamespaceFileWithRetry",
 ]);
 
 type Finding = {
