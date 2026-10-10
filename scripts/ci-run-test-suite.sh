@@ -853,7 +853,7 @@ case "$suite" in
         if [ "$group" = "all" ] || [ "$group" = "1/2" ]; then
             (
                 cd host
-                bun x vitest run \
+                KANDELO_VITEST_RUNTIME=bun bun x --bun vitest run \
                     test/teardown-reclaim.test.ts \
                     test/pthread.test.ts
             )

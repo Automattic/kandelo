@@ -276,7 +276,8 @@ EOF
 
 cat > "$FIXTURE/bin/bun" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "x" ] && [ "${2:-}" = "vitest" ] &&
+if [ "${1:-}" = "x" ] && [ "${2:-}" = "--bun" ] &&
+    [ "${3:-}" = "vitest" ] && [ "${KANDELO_VITEST_RUNTIME:-}" = "bun" ] &&
     [ -n "${BUN_CAPTURE:-}" ]; then
     printf '%s\n' "$*" >> "$BUN_CAPTURE"
     exit 0
