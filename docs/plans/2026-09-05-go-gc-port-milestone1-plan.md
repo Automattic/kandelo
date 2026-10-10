@@ -1751,16 +1751,49 @@ startup in a Go-led process is still untested. C-created pthreads still
 cannot call Go; PHP ZTS and FrankenPHP remain unbuilt. The go-hello package
 pin and Kandelo ABI version are unchanged.
 
+**2026-10-09 — C-created pthread callback and shared memory allocator.**
+The Go fork now exports a typed C-thread bootstrap and musl's
+`__wasm_thread_init`, attaches a C-created pthread through `needm`, and gives
+it a Go bootstrap stack and the thread's Kandelo syscall channel. The callback
+probe calls Go twice on each C-created pthread, yields and waits on a timer in
+each callback, and repeats from a second Go M. Its ABI-stamped, fork-instrumented
+Wasm exits 0 on Node with `CGO CALLBACK PASS`, empty stderr, and no host
+diagnostics. A focused Chromium process run also passes. This is a callback
+milestone, not PHP or general cgo conformance.
+
+Repeat runs exposed a second, independent race: the shared Go channel handoff
+word could be overwritten when a C pthread and Go M started concurrently.
+The cgo runtime now reads the per-instance C `__channel_base` global instead
+of that shared word. Ten clean Node callback process runs and three serial
+Chromium runs pass after the fix, all with empty stderr and no host
+diagnostics. A parallel three-worker Chromium repeat timed out before this
+race was fixed; it is not evidence of passing concurrent-process load.
+The stronger Chromium run exposed a real allocator collision: Go's original
+contiguous `sbrk` growth lost access to later pages when a C pthread mapped
+above the break, and an 8 MiB Go-created-M C stack then failed. Kandelo Go
+runtime allocations now use the same kernel `mmap`/`munmap` address manager as
+C, including reserved Go arenas and fixed-address commits. The strengthened
+callback passes on both hosts after that change. Forced cgo-disabled std builds
+for `kandelo`, `js`, and `wasip1`, focused cgo/linker tests, and ABI snapshot
+check pass. A narrow libc `env`/`argv`/`tls_init` conformance invocation could
+not resolve the required rootfs/builtin artifacts; `./run.sh setup` finished
+with unrelated `librsvg` and `rsvg-convert` package failures. The broader
+browser run, libc conformance, PHP ZTS, and FrankenPHP remain separate gates;
+no WordPress/FrankenPHP demo is running.
+
+The `go-hello` package input now pins fork commit
+`44b8926f137a7ea1887ded013f08e90cfc793523`; its resolver build remains
+a separate validation gate.
+
 Remaining work, in dependency order:
 
 1. Finish Go/C runtime semantics: handle explicit `.init_array` and
    `.fini_array` segments where needed, validate secure-exec behavior,
    define C shutdown expectations, and review callback safety and the
    mixed-width `cmd/cgo` frontend beyond the passing probes.
-2. Attach C-created pthreads to a Go M/P with both C and Go per-thread
-   channel state. Pass
-   pthread callback probes on Node and Chromium with no host
-   diagnostics.
+2. Stress and harden C-created pthread attachment and shared Go/C memory
+   allocation beyond the focused Node and Chromium callback process tests,
+   including concurrent callbacks, reclaim, limits, and libc conformance.
 3. Build PHP ZTS embed through the normal SDK/resolver, prove PHP lifecycle,
    port FrankenPHP classic mode, and deliver the WordPress VFS demo without
    nginx or PHP-FPM. Measure performance only after the Kandelo server runs.

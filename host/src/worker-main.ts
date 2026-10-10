@@ -65,6 +65,7 @@ import {
   PROCESS_METADATA_ENTRY_MAX_BYTES,
   PROCESS_STARTUP_MAX_ARGV_COUNT,
   PROCESS_STARTUP_MAX_ENVP_COUNT,
+  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
@@ -80,6 +81,7 @@ import { assertDeclaredEnvImports } from "./env-imports";
 import {
   FORK_SAVE_BUFFER_SIZE,
   FORK_SAVE_CONTROL_PREFIX_SIZE,
+  CHANNEL_PAGES,
 } from "./process-memory";
 import {
   ContinuationAllocationError,
@@ -5933,6 +5935,18 @@ export async function centralizedThreadWorkerMain(
       initData.programBytes,
       ptrWidth,
     );
+
+    const cgoThreadBootstrap = instance.exports.__kandelo_cgo_thread_bootstrap as
+      ((slotIndex: number) => void) | undefined;
+    if (cgoThreadBootstrap) {
+      const firstSlotOffset = processChannelOffset + CHANNEL_PAGES * WASM_PAGE_SIZE;
+      const slotSize = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
+      const slotIndex = (tlsOffset - firstSlotOffset) / slotSize;
+      if (!Number.isInteger(slotIndex) || slotIndex < 0) {
+        throw new Error(`pid=${pid} tid=${tid}: invalid cgo thread slot ${tlsOffset}`);
+      }
+      cgoThreadBootstrap(slotIndex);
+    }
 
     // Call the thread function via indirect function table
     const table = threadTable;

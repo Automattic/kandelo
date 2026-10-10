@@ -10,7 +10,8 @@ int call_go(int value) {
 
 static void *thread_main(void *argument) {
     int *value = argument;
-    *value = go_double(*value);
+    int first = go_double(*value);
+    *value = go_double(first / 2);
     return NULL;
 }
 

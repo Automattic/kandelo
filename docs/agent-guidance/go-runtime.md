@@ -39,6 +39,18 @@ APIs apply to Kandelo.
   `src/runtime/channel_kandelo.go` captures it into the M before syscalls.
   Channel layout comes from `crates/shared/src/lib.rs`, not a Go-local
   convention. Keep the Go heap above the channel/control region.
+- In cgo builds, the shared Go `__tls_base` handoff word is unsafe when a C
+  pthread and a Go M start concurrently. The Go runtime reads the C
+  `__channel_base` mutable Wasm global through a typed C getter, so every
+  instance captures its own channel. Non-cgo Go still uses the serialized
+  shared handoff. A single callback pass does not detect this race; repeat
+  the second-Go-M/C-pthread process probe.
+- A cgo build must not grow a private contiguous Go `sbrk` heap beside C's
+  `mmap` allocations. A C-created pthread can map directly above the break,
+  blocking later Go growth despite unused process address space. Kandelo's Go
+  runtime now allocates and reserves through the kernel's shared `mmap` and
+  `munmap` manager. Test with both C-created pthreads and later Go scheduler
+  allocations in Node and Chromium; success in one engine is insufficient.
 - The exported `syscall` channel entry must release its scheduler P while a
   guest syscall blocks, then reacquire one before returning to Go. Keep
   runtime-internal channel calls separate: they also run from g0 and cannot
@@ -75,10 +87,11 @@ do not validate against a stale or unstamped binary.
 
 FrankenPHP classic mode embeds a PHP ZTS SAPI through cgo. A working
 `cmd/cgo` frontend is only one layer of that port. The `go-hello` package
-still pins an earlier pure-Go revision that fails the first cgo probe at
-Wasm pointer-size recognition. The adjacent fork now runs a narrow standard
-Go-to-C fixture on Node and Chromium. **Callbacks, C-created pthreads, and
-PHP embedding do not work.** Do not pin it for a FrankenPHP package.
+pins the callback-capable fork revision, but remains a pure-Go hello program.
+The adjacent fork now runs a narrow standard
+Go-to-C fixture on Node and Chromium. Focused Go-owned and C-created-pthread
+callback probes now pass on both hosts; PHP embedding remains unbuilt. Do not
+pin it for a FrankenPHP package on the strength of those probes alone.
 
 Trace the whole link path before changing flags or package recipes:
 
@@ -112,8 +125,9 @@ Trace the whole link path before changing flags or package recipes:
   real Go-to-C and C-to-Go adapters. `asmcgocall` now makes a typed C call
   on Go-created Ms. A Wasm-exported `crosscall2` wrapper resumes
   Go-owned callback goroutines across scheduler yields; the generic
-  `cgocallback` assembly entry remains `UNDEF`, and C-created threads
-  cannot attach. FrankenPHP additionally
+  `cgocallback` assembly entry remains `UNDEF`. A separate foreign-thread
+  bootstrap now attaches C-created pthreads for the focused callback probe.
+  FrankenPHP additionally
   starts PHP threads with C `pthread_create`, so callbacks from a thread
   Go did not create must attach to a valid M, scheduler P, and per-thread
   Kandelo syscall channel. A same-thread callback alone is insufficient.
@@ -127,7 +141,7 @@ an ABI-stamped Kandelo process on Node and Chromium, including scalar and
 pointer argument frames and distinct musl state on a second Go M. The
 Go-owned callback fixture runs on Node and Chromium, including a scheduler
 yield, timer wait, nested Go-to-C call, and second Go M. The combined pthread
-fixture links and validates but its C-created callback cannot enter Go.
+fixture also executes its C-created callback on Node and Chromium.
 If the internal path cannot
 preserve C function types, table slots, static data and TLS alongside Go's
 layout, evaluate a
@@ -182,10 +196,9 @@ M, and a 256-byte musl thread-pointer backing store. The host installs its C
 stack pointer and musl thread pointer before the child entry, and the child
 calls `__init_tp` before joining the Go scheduler. The scalar/pointer cgo
 probe checks four worker rounds, including distinct `pthread_self()` and
-thread-local `errno`, on Node and Chromium. This does **not** attach C-created
-pthreads: they still require a real
-Go-compatible entry, musl thread pointer and TLS, M/P attachment, and a
-per-instance Kandelo channel. C function pointers cannot call raw Go table
+thread-local `errno`, on Node and Chromium. C-created pthreads use a separate
+typed Go bootstrap export, musl's `__wasm_thread_init`, an extra Go M/P, and
+the per-instance Kandelo channel. C function pointers cannot call raw Go table
 entries with the wrong Wasm signature. Do not add no-op thread or callback
 symbols to satisfy the linker. The new per-instance C `__channel_base` global
 and Go handoff word must both be initialized by the host; do not conflate
@@ -199,8 +212,8 @@ state. Fork commit `8aec831` passes Go's process environment to musl
 `__init_libc` in Go-owned storage; `os.Setenv`/`os.Unsetenv` use C-width
 pointer frames so C `getenv` observes changes. Keep the libc initializer
 separate from the C process entry archive member, and do not allocate its
-environment table with independent C `mmap`: that collided with the Go
-heap in the combined process. A Node/Chromium cgo probe verifies this
+environment table with independent C `mmap` while Go still uses a private
+contiguous `sbrk` heap: that collided in the combined process. A Node/Chromium cgo probe verifies this
 narrow environment path. Fork commit `dbec8a7` adds the Wasm constructor
 table and a static `__dso_handle` for C destructor registration. The
 constructor fixture verifies priority order and explicitly dispatches a
@@ -211,15 +224,14 @@ metadata rather than silently discard it.
 For Go-owned callbacks, a typed Wasm export wrapper keeps the C call stack
 while Go's resumable scheduler completes the callback. Its linker root must
 traverse Go dependencies even when C relocations eagerly marked the wrapper
-reachable. C-created pthreads still enter with no Go `g`, stack pointer,
-or attached M; the Go-owned export wrapper is not a general foreign-thread
-callback adapter.
-The combined pthread fixture currently faults in `runtime.canpanic` on the
-child because it has no Go `g` or Go stack. A C-created thread needs a
-separate Go bootstrap stack before
-entering any Go export, a valid per-instance Go channel, and the
-`needm`/`cgocallback`/`dropm` lifecycle for an extra M. Do not reuse live
-C frames as that Go stack or treat the trap as successful attachment.
+reachable. C-created pthreads need a distinct typed bootstrap export. The
+host invokes it with the kernel thread-slot index before the C start
+function, giving the thread a reserved Go bootstrap stack. The callback
+adapter then uses `needm`/`cgocallbackg`/`dropm`; after a yield it reloads
+g0 from the resumed Go M rather than trusting Wasm locals across the
+scheduler unwind. The focused callback probe exercises two callbacks per C
+thread and a second Go M on Node and Chromium. Do not treat it as general
+foreign-thread or PHP conformance.
 
 For a repeatable C function-and-data link proof, run
 `scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends
@@ -227,8 +239,8 @@ small SDK C objects to a cgo-free Go archive and verifies C-to-C and C-data
 relocations in the final Wasm module on Node and Chromium. After stamping,
 `tests/go/cgo/link-only/run.ts` and the opt-in Chromium case verify the
 assembly Go-to-C call inside a process. This is not the normal cgo build. The
-standard `C.abs` and Go-owned callback gates pass; C-created pthread
-callbacks remain the required runtime gate.
+standard `C.abs`, Go-owned callback, and focused C-created-pthread callback
+gates pass; broader cgo and PHP lifecycle remain required runtime gates.
 
 Use the staged probes in `tests/go/README.md`:
 first a C call, then Go-to-C-to-Go on the calling thread, then a C-created
