@@ -32,6 +32,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "wgpu-window",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
       "name": "espeak-ng",
       "version": "1.52.0",
       "role": "lazy-file"

@@ -131,7 +131,6 @@ describe("wlcompositor — dwindle tiling partitions the output", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         // Compositor in dwindle mode.
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
@@ -197,7 +196,6 @@ describe("wlcompositor — dwindle tiling partitions the output", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle"],

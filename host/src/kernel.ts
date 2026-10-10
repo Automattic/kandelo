@@ -34,6 +34,7 @@ import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry } from "./webgl/registry";
+import { createBindingWebGl2Context } from "./webgl/context";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
@@ -811,19 +812,6 @@ export interface KernelCallbacks {
    * than running it on every kernel, most of which never touch KMS.
    */
   onKmsScanoutActive?: () => void;
-  /**
-   * A SETCRTC/PAGE_FLIP latched `fbId` onto `crtcId`; `width`/`height`
-   * are that framebuffer's dimensions. The scanout framebuffer defines
-   * the pointer coordinate space — the embedder maps pointer positions
-   * into framebuffer pixels and `sendPointerAbs` forwards them as
-   * `EV_ABS` — so the worker uses this to keep the pointer device's
-   * advertised `EVIOCGABS` range equal to the space those coordinates
-   * are in for consumers that open the device after the modeset. A
-   * consumer that is already running never re-reads the range (libinput
-   * caches absinfo at device open); open-time correctness comes from
-   * `setKmsDisplaySize` advertising the derived connector mode.
-   */
-  onKmsScanoutFb?: (crtcId: number, width: number, height: number) => void;
 }
 
 export class WasmPosixKernel {
@@ -1000,31 +988,7 @@ export class WasmPosixKernel {
       attachedCrtc = crtc;
     }
     if (!b.canvas) return;
-    const ctx = b.canvas.getContext("webgl2", {
-      antialias: false,
-      premultipliedAlpha: false,
-      depth: true,
-      stencil: true,
-      preserveDrawingBuffer: true,
-    }) as WebGL2RenderingContext | null;
-    if (ctx) {
-      // Mirror main-forward.ts: enable the WebGL2 float extensions so
-      // RGBA16F framebuffers are renderable and float textures accept
-      // LINEAR filtering. Without these, ping-pong sims (Pavel-style
-      // fluid, GPU-side image processing) hit
-      // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT silently.
-      ctx.getExtension("EXT_color_buffer_float");
-      ctx.getExtension("OES_texture_float_linear");
-      ctx.getExtension("EXT_float_blend");
-      // Seed the shadow viewport with the actual WebGL2 default (the
-      // canvas drawing-buffer size). Otherwise `defaultShadow()`'s
-      // [0,0,0,0] reaches the context through `GlMuxer.switchTo` the
-      // first time sessions share it and clobbers the implicit default
-      // viewport, so a program that never calls glViewport (SDL2's
-      // KMSDRM/OpenGLES backend) draws into a 0×0 region.
-      b.shadow.viewport = [0, 0, b.canvas.width, b.canvas.height];
-    }
-    b.gl = ctx;
+    const ctx = createBindingWebGl2Context(b, b.canvas);
     // Claim the canvas for GL (disabling the vblank 2D-blit pump for this
     // CRTC) only once a WebGL2 context truly exists. Marking it earlier
     // would strand the canvas with neither GL nor the 2D blit if
@@ -2315,6 +2279,14 @@ export class WasmPosixKernel {
               this.gl.applyRenderTarget(b);
               return;
             }
+            // No display and no compositor: a headless client (surfaceless
+            // or pbuffer rendering) gets a context of its own on an
+            // offscreen canvas. Hosts without OffscreenCanvas (Node) leave
+            // the binding inert, so its GL queries fail.
+            if (typeof OffscreenCanvas !== "undefined") {
+              createBindingWebGl2Context(b, new OffscreenCanvas(1, 1));
+              return;
+            }
           }
           // Auto-attach the KMS scanout canvas and build the WebGL2
           // context. This handles both the modeset ordering (SETCRTC
@@ -2393,6 +2365,7 @@ export class WasmPosixKernel {
           if (b.renderTargetFbo) {
             b.renderTargetFbo = null;
             b.shadow.fbo = null;
+            b.shadow.readFbo = null;
           }
           // The canvas-backed present target IS owned by this binding, so
           // dropping the redirect above has to free it as well; a later
@@ -2737,7 +2710,6 @@ export class WasmPosixKernel {
           this.tryAttachKmsGlCanvas(pid);
           const b = this.gl.get(pid);
           const fb = this.kms.currentFb(crtc_id);
-          if (fb) this.callbacks.onKmsScanoutFb?.(crtc_id, fb.width, fb.height);
           if (
             b?.canvas && fb &&
             (b.canvas.width !== fb.width || b.canvas.height !== fb.height)

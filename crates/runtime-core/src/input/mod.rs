@@ -1,34 +1,13 @@
 //! evdev input subsystem — backs `/dev/input/event{0,1}`.
 //!
-//! Covers the canvas-dim cache used to size `EVIOCGABS(ABS_X/ABS_Y)`,
-//! the `EVIOCGBIT(*)` bitmap helper, and (in [`dispatch`]) the host-
+//! Covers the `EVIOCGBIT(*)` bitmap helper, and (in [`dispatch`]) the host-
 //! callable event fan-out.
 
 pub mod dispatch;
 
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use wasm_posix_shared::input::*;
-
-/// Canvas pixel dimensions used by `EVIOCGABS(ABS_X/ABS_Y)` on the
-/// pointer device. The host sets these once a KMS canvas attaches
-/// (A4 wires `HostIO`'s canvas-dims push); until then the default
-/// is 1280×720 so SDL2 probes don't see a degenerate 0-wide axis
-/// and reject the device.
-static CANVAS_W: AtomicU32 = AtomicU32::new(1280);
-static CANVAS_H: AtomicU32 = AtomicU32::new(720);
-
-pub fn canvas_dims() -> (u32, u32) {
-    (CANVAS_W.load(Ordering::Relaxed), CANVAS_H.load(Ordering::Relaxed))
-}
-
-/// Update the canvas-dim cache. Both dimensions are clamped to at
-/// least 1 so `maximum = w - 1` in the EVIOCGABS reply doesn't go
-/// negative.
-pub fn set_canvas_dims(width: u32, height: u32) {
-    CANVAS_W.store(width.max(1), Ordering::Relaxed);
-    CANVAS_H.store(height.max(1), Ordering::Relaxed);
-}
 
 /// Device-global pressed-key bitmaps for `EVIOCGKEY`, indexed by device
 /// (0 = keyboard, 1 = pointer) and sized to `KEY_CNT` bits so every code
@@ -36,8 +15,7 @@ pub fn set_canvas_dims(width: u32, height: u32) {
 ///
 /// This mirrors Linux's per-device `dev->key`: it is machine-wide device
 /// state shared by every open fd and every process. It therefore
-/// "survives fork" the same way the canvas dims do — it lives in the one
-/// kernel instance, not in per-process state serialized by `fork.rs` —
+/// "survives fork": it lives in the one kernel instance, not in per-process state serialized by `fork.rs` —
 /// and, crucially, it is updated even when a per-fd event ring overflows.
 /// That is what makes `SYN_DROPPED` recovery real: after a drop, a client
 /// re-reads `EVIOCGKEY` and sees the true current key state, unsticking
@@ -154,17 +132,6 @@ pub fn populate_evbit(device: u8, ev_type: u16, buf: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn canvas_dims_round_trip_and_clamp_to_one() {
-        set_canvas_dims(640, 480);
-        assert_eq!(canvas_dims(), (640, 480));
-        set_canvas_dims(0, 0);
-        assert_eq!(canvas_dims(), (1, 1));
-        // Restore the default so any test running in parallel that
-        // expects 1280×720 sees the original value.
-        set_canvas_dims(1280, 720);
-    }
 
     #[test]
     fn evbit_type_query_kbd_advertises_syn_and_key_only() {

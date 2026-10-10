@@ -196,10 +196,11 @@ TOML
 : > "$STD_BUILD/src/lib.rs"
 # --target-dir pins the output below STD_BUILD: a resolver build exports
 # CARGO_TARGET_DIR into its private work root, and the copy below reads
-# from STD_BUILD.
+# from STD_BUILD. -Cembed-bitcode=yes: as in rustup's std, a crate whose
+# profile sets `lto` needs the bitcode of std to link.
 (
   cd "$STD_BUILD"
-  RUSTC="$WRAP" RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 \
+  RUSTC="$WRAP" RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 RUSTFLAGS="-Cembed-bitcode=yes" \
     cargo build --release --quiet \
       -Z build-std=std,panic_abort \
       --target "$TARGET" \

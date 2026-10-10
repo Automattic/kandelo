@@ -3542,7 +3542,8 @@ fn program_artifact_type_name(value: shared::abi::ProgramArtifactValueType) -> &
 }
 
 /// Emit every evdev event-type / SYN / KEY / BTN / REL / ABS code as a
-/// single frozen `INPUT_CODES` object, sourced from the authoritative
+/// single frozen `INPUT_CODES` object, and the pointer's fixed `EV_ABS`
+/// range as `INPUT_POINTER_ABS_MAX`, sourced from the authoritative
 /// `shared::input::CODE_TABLE`. The browser input translator and the
 /// `KeyboardEvent.code` → `KEY_*` table import these values instead of
 /// hand-redeclaring them, so a code renumber in `shared::input` flows to
@@ -3553,6 +3554,10 @@ fn render_input_ts_bindings(out: &mut String) {
         out.push_str(&format!("  {}: {},\n", name, value));
     }
     out.push_str("} as const;\n\n");
+    out.push_str(&format!(
+        "export const INPUT_POINTER_ABS_MAX = {} as const;\n\n",
+        shared::input::POINTER_ABS_MAX,
+    ));
 }
 
 fn render_pcm_ts_bindings(out: &mut String) {

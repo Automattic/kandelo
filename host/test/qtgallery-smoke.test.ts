@@ -28,6 +28,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { pointerAbs } from "./support/pointer-abs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -148,8 +149,8 @@ describe("qtgallery — the theme gallery on the wayland desktop", () => {
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
       };
       const moveTo = (x: number, y: number) => {
-        host.injectInputEvent(1, EV_ABS, ABS_X, x);
-        host.injectInputEvent(1, EV_ABS, ABS_Y, y);
+        host.injectInputEvent(1, EV_ABS, ABS_X, pointerAbs(x, CANVAS_W));
+        host.injectInputEvent(1, EV_ABS, ABS_Y, pointerAbs(y, CANVAS_H));
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
       };
       const click = () => {
@@ -161,7 +162,6 @@ describe("qtgallery — the theme gallery on the wayland desktop", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(loadBytes(compositorBin!), ["wlcompositor"], {
           env: [`WLC_THEME_DIR=${themesDir}`],

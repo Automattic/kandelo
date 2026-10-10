@@ -227,7 +227,6 @@ describe("quickshell — the Omarchy shell on wlcompositor + dbus", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(loadBytes(compositorBin!), ["wlcompositor"], {
           env: [

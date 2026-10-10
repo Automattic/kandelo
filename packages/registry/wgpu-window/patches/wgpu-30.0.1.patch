@@ -1,0 +1,90 @@
+# wgpu 30.0.1: target_arch = "wasm32" means the browser's WebGPU/WebGL
+# here; Kandelo takes the native path (wgpu-core over wgpu-hal's GLES).
+--- a/Cargo.toml	2026-10-08 15:41:34
++++ b/Cargo.toml	2026-10-08 15:41:34
+@@ -209,26 +209,26 @@
+ [build-dependencies.cfg_aliases]
+ version = "0.2.2"
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.js-sys]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))'.dependencies.js-sys]
+ version = "0.3.104"
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.smallvec]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))'.dependencies.smallvec]
+ version = "1.14"
+ optional = true
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.wasm-bindgen]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))'.dependencies.wasm-bindgen]
+ version = "0.2.127"
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.wasm-bindgen-futures]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))'.dependencies.wasm-bindgen-futures]
+ version = "0.4.77"
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.web-sys]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))'.dependencies.web-sys]
+ version = "0.3.104"
+ features = [
+     "HtmlCanvasElement",
+@@ -237,15 +237,15 @@
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.wgpu-core]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))'.dependencies.wgpu-core]
+ version = "30.0.0"
+ optional = true
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.wgpu-hal]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))'.dependencies.wgpu-hal]
+ version = "30.0.0"
+ optional = true
+ 
+-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.smallvec]
++[target.'cfg(any(not(target_arch = "wasm32"), target_os = "kandelo"))'.dependencies.smallvec]
+ version = "1.14"
+ 
+ [target.'cfg(not(target_arch = "wasm32"))'.dependencies.wgpu-core]
+@@ -256,7 +256,14 @@
+     "portable-atomic",
+ ]
+ 
+-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.wgpu-hal]
++[target.'cfg(target_os = "kandelo")'.dependencies.wgpu-core]
++version = "30.0.0"
++features = [
++    "wgsl",
++    "portable-atomic",
++]
++
++[target.'cfg(any(not(target_arch = "wasm32"), target_os = "kandelo"))'.dependencies.wgpu-hal]
+ version = "30.0.0"
+ 
+ [target.'cfg(not(target_has_atomic = "64"))'.dependencies.portable-atomic]
+--- a/build.rs
++++ b/build.rs
+@@ -1,6 +1,6 @@
+ fn main() {
+     cfg_aliases::cfg_aliases! {
+-        native: { not(target_arch = "wasm32") },
++        native: { any(not(target_arch = "wasm32"), target_os = "kandelo") },
+         Emscripten: { all(target_arch = "wasm32", target_os = "emscripten") },
+         web: { all(target_arch = "wasm32", not(Emscripten), feature = "web") },
+ 
+@@ -28,7 +28,7 @@
+         gles: { any(
+             // The `gles` feature enables the OpenGL/GLES backend only on "native OpenGL" platforms, i.e. Windows, Linux, Android, and Emscripten.
+             // (Note that WebGL is also not included here!)
+-            all(any(windows, target_os = "linux", target_os = "android", target_os = "freebsd", Emscripten), feature = "gles"),
++            all(any(windows, target_os = "linux", target_os = "android", target_os = "freebsd", target_os = "kandelo", Emscripten), feature = "gles"),
+             // On Apple platforms, however, we require the `angle` feature to explicitly opt-in to OpenGL
+             // since its meant to be used with ANGLE.
+             all(target_vendor = "apple", feature = "angle")

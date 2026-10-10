@@ -63,7 +63,6 @@ describe("wlcompositor — wl_output scale", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_SCALE=2"],

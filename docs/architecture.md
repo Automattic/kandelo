@@ -1888,7 +1888,7 @@ The writable root image honors set-ID on both hosts. Default scratch mounts,
 choice, not a trust classification for the image. Custom mount specifications
 may make the same choice. The browser and Node hosts apply the same rules.
 
-The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
+The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces; its root has mode `1777` on both hosts, as on Linux, so every uid can `shm_open`) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
 
 ### rootfs image as the source of truth
 
@@ -2711,7 +2711,7 @@ throughput or performance claim.
 
 This section is the implementation walk-through; [Linux-compatible graphics devices](#linux-compatible-graphics-devices) states the device-level contract.
 
-`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (only `DUMB_BUFFER` and `PRIME` report support; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. There is no plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same surface unmodified. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the pane's aspect ratio at a fixed 1080 logical height — `round(1080 × aspect) × 1080`, width clamped to [1440, 3840] — so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The mode is sampled per GETCONNECTOR call but effectively fixed once a client boots; resizing the pane afterwards reintroduces letterboxing rather than switching modes. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (only `DUMB_BUFFER` and `PRIME` report support; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. There is no plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same surface unmodified. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the pane's aspect ratio at a fixed 1080 logical height — `round(1080 × aspect) × 1080`, width clamped to [1440, 3840] — so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The mode is sampled per GETCONNECTOR call. No hotplug uevent announces a change (there is no `AF_NETLINK`), so only a client that re-reads the connector follows a pane resize: wlcompositor polls it every 250 ms and re-modes; a client that reads it once (SDL2 KMSDRM) keeps its boot mode and letterboxes. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
 
 `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
 
@@ -3085,7 +3085,7 @@ Node.js. The kernel does not contain GL rendering code.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
-accepts versions 1 and 2, and rejects zero or newer versions with `ENOSYS`.
+accepts versions 1 through 3, and rejects zero or newer versions with `ENOSYS`.
 Its version and extension strings describe that API. Extension queries carry
 an optional operation-table version: legacy requests retain their empty list,
 while version 2 advertises bridged capabilities. Optional float rendering and
@@ -3108,6 +3108,36 @@ The multiplexer restores masks, stencil operations, clear values, constant
 vertex attributes and texture bindings when switching guest contexts. Node
 hosts without WebGL2 cannot render these sessions; no software simulation
 stands in for the native LÖVE renderer.
+
+Operation-table version 3 adds the OpenGL ES 3.0 subset that wgpu's GLES
+backend uses, and a context created with EGL client version 3 reports
+`OpenGL ES 3.0`. WebGL2 is close to ES 3.0, so most commands map one to one.
+The library emulates the rest in client memory: mapped buffer ranges are
+copies read through a synchronous host query and written back with
+`glBufferSubData`, and `glClientWaitSync` polls the fence. `glGetStringi`
+indexes the same extension list as `GL_EXTENSIONS`. A client-memory texture
+upload is sent as tightly packed rows after the caller's unpack parameters are
+applied, split into bands of rows and, for a row longer than one record (a
+16384-texel RGBA row is 64 KiB), bands of columns. A context with no
+surface (`EGL_KHR_surfaceless_context`) is valid: `GLIO_MAKE_CURRENT` accepts
+surface id 0. In the browser, a non-master client with no compositor context
+gets its own `OffscreenCanvas(1, 1)` WebGL2 context for this headless work.
+Clients that share one WebGL2 context also get the GLES 3.0 context state (read
+framebuffer, texture and sampler units for every target, generic and indexed
+buffer bindings, pixel-store parameters) replayed by `GlMuxer.switchTo`.
+
+`libEGL.a` has one display and two EGL platforms. The GBM platform
+(`EGL_PLATFORM_GBM_KHR`) is always present; SDL2's KMSDRM backend uses it.
+The Wayland platform (`EGL_PLATFORM_WAYLAND_KHR`) is present when the program
+links `libwayland-egl`: libEGL checks the weak `_wpk_wlegl_bo_handle` symbol.
+A client such as wgpu reads the client extensions
+(`eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS)`) to pick its window kind, so
+the list names `EGL_KHR_platform_wayland` and `EGL_EXT_platform_wayland` only
+when the Wayland platform is present. `EGL_EXT_platform_base` is always listed,
+and `eglGetProcAddress` returns its entry points (`eglGetPlatformDisplayEXT`,
+`eglCreatePlatformWindowSurfaceEXT`, `eglCreatePlatformPixmapSurfaceEXT`). Both
+platforms open the same `/dev/dri/renderD128` device, so the native display
+pointer selects nothing.
 
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package

@@ -1,0 +1,21 @@
+# parking_lot_core 0.9.12: build timespec by field assignment; libc's
+# timespec has private padding on 32-bit musl with 64-bit time_t.
+--- a/src/thread_parker/unix.rs
++++ b/src/thread_parker/unix.rs
+@@ -230,9 +230,13 @@
+         sec = sec.and_then(|sec| sec.checked_add(1));
+     }
+ 
+-    sec.map(|sec| libc::timespec {
+-        tv_nsec: nsec,
+-        tv_sec: sec,
++    // Assign the fields rather than using a struct literal: on 32-bit musl
++    // with 64-bit time_t, libc's timespec carries private padding.
++    sec.map(|sec| {
++        let mut ts: libc::timespec = unsafe { core::mem::zeroed() };
++        ts.tv_sec = sec;
++        ts.tv_nsec = nsec;
++        ts
+     })
+ }
+ 

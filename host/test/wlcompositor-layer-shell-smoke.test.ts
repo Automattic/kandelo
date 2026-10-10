@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { pointerAbs } from "./support/pointer-abs";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
@@ -48,9 +49,8 @@ const KEY_T = 20;
 const KEY_ENTER = 28;
 const BTN_LEFT = 0x110;
 
-// The input canvas matches the compositor's output, so an injected absolute
-// coordinate maps 1:1 to the cursor position. This point sits inside the bar's
-// top strip, which is what surface_at() resolves a click there to.
+// Output pixels, which `pointerAbs` turns into the pointer device's fixed
+// EV_ABS range. This point sits inside the bar's top strip, which is what surface_at() resolves a click there to.
 const BAR_POINT_X = 960;
 const BAR_POINT_Y = 15;
 
@@ -143,7 +143,6 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle"],
@@ -224,7 +223,6 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle"],
@@ -304,7 +302,6 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle"],
@@ -325,8 +322,8 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
         // keyboard back to it, but the launcher's grab is exclusive, and
         // wlr-layer-shell-v1 makes that focus unconditional so a lock screen
         // cannot be clicked past.
-        host.injectInputEvent(1, EV_ABS, ABS_X, WINDOW_POINT_X);
-        host.injectInputEvent(1, EV_ABS, ABS_Y, WINDOW_POINT_Y);
+        host.injectInputEvent(1, EV_ABS, ABS_X, pointerAbs(WINDOW_POINT_X, CANVAS_W));
+        host.injectInputEvent(1, EV_ABS, ABS_Y, pointerAbs(WINDOW_POINT_Y, CANVAS_H));
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
         host.injectInputEvent(1, EV_KEY, BTN_LEFT, 1);
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
@@ -361,7 +358,6 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle"],
@@ -376,8 +372,8 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
         // Click-to-focus raises whatever surface_at() returns, and that
         // includes the bar — the path a user takes when they press one of the
         // bar's workspace buttons.
-        host.injectInputEvent(1, EV_ABS, ABS_X, BAR_POINT_X);
-        host.injectInputEvent(1, EV_ABS, ABS_Y, BAR_POINT_Y);
+        host.injectInputEvent(1, EV_ABS, ABS_X, pointerAbs(BAR_POINT_X, CANVAS_W));
+        host.injectInputEvent(1, EV_ABS, ABS_Y, pointerAbs(BAR_POINT_Y, CANVAS_H));
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
         host.injectInputEvent(1, EV_KEY, BTN_LEFT, 1);
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);

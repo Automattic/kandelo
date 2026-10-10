@@ -30,6 +30,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { pointerAbs } from "./support/pointer-abs";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const clockBin = tryResolveBinary("programs/wayland-demo/wlclock.wasm");
@@ -96,8 +97,8 @@ describe("wayland desktop liveness — flips keep flowing across drag strokes", 
 
       // Browser sendPointerAbs: state the position, then SYN.
       const moveAbs = (x: number, y: number) => {
-        host.injectInputEvent(1, EV_ABS, ABS_X, Math.round(x));
-        host.injectInputEvent(1, EV_ABS, ABS_Y, Math.round(y));
+        host.injectInputEvent(1, EV_ABS, ABS_X, pointerAbs(x, CANVAS_W));
+        host.injectInputEvent(1, EV_ABS, ABS_Y, pointerAbs(y, CANVAS_H));
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
       };
       // >25 ms between button edges so libinput debounce forwards them.

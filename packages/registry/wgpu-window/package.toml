@@ -1,0 +1,42 @@
+# Per-program manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "program"
+
+# wgpu-window: a winit + wgpu program that opens one Wayland window,
+# clears it for 60 frames through wgpu's GLES backend (libEGL and
+# libGLESv2 over the WebGL2 bridge), and prints WGPU WINDOW OK. It is the
+# window stack PhotoCraft's eframe app runs on. The source stays under
+# programs/rust/; it is built with the SDK's Rust toolchain setup
+# (sdk/rust/build-env.sh).
+name = "wgpu-window"
+version = "0.1.0"
+kernel_abi = 48
+depends_on = [
+  "libwayland@1.24.0",
+  "libxkbcommon@1.7.0",
+  "libffi@0.1.0",
+]
+arches = ["wasm32"]
+
+# wgpu 30 requires rustc >= its MSRV (1.87).
+[[host_tools]]
+name = "cargo"
+version_constraint = ">=1.87.0"
+install_hints = { darwin = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh", linux = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh" }
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/wgpu-window/build-wgpu-window.sh"
+
+[[outputs]]
+name = "wgpu-window"
+wasm = "wgpu-window.wasm"

@@ -220,9 +220,6 @@ export class BrowserInputSource implements InputSource {
    *   defaults to following `pointer`. Wheel events are REL_WHEEL and carry
    *   no absolute coordinates, so `{ pointer: false, wheel: true }` lets a
    *   pane keep the pointer while the wheel still scrolls.
-   * @param opts.onResize  Invoked on window resize so the caller can
-   *   re-publish the canvas dims to the kernel (EVIOCGABS maxima). Rides the
-   *   `bindings` list, so stop() removes it — no leaked resize listener.
    * @param opts.paste  Turns the browser's paste gesture into an offer on
    *   the guest's clipboard (images declaring the `clipboard` feature). A
    *   Cmd/Ctrl+V keydown is left to the browser; if it fires `paste`, the
@@ -245,7 +242,6 @@ export class BrowserInputSource implements InputSource {
     private opts: {
       pointer?: boolean;
       wheel?: boolean;
-      onResize?: () => void;
       shouldCapture?: (e: Event) => boolean;
       paste?: BrowserPasteHandler;
       copy?: BrowserCopyHandler;
@@ -279,7 +275,6 @@ export class BrowserInputSource implements InputSource {
       this.bind("pointerup", this.onPointerUp);
       this.bind("pointerleave", this.onPointerLeave);
     }
-    if (this.opts.onResize) this.bind("resize", this.onWindowResize);
     // `wheel` listeners default to passive on window/document, which makes
     // onWheel's e.preventDefault() a silent no-op (the page scrolls while we
     // also inject REL_WHEEL). Register it non-passive so preventDefault works.
@@ -353,10 +348,6 @@ export class BrowserInputSource implements InputSource {
     // report the gap as one large motion delta.
     this.lastAbsX = null;
     this.lastAbsY = null;
-  }
-
-  private onWindowResize(): void {
-    this.opts.onResize?.();
   }
 
   private onKeyDown(e: KeyboardEvent): void {

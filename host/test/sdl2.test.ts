@@ -72,7 +72,6 @@ describe("SDL2 playground — editor + audio + sound-shader end-to-end", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(1280, 720);
 
         const exitPromise = host.spawn(programBytes, ["sdl2"]);
 

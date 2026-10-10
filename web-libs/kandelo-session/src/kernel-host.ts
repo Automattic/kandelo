@@ -610,8 +610,9 @@ export interface KmsDisplayHandle {
    *  bit2=middle. No-op when the wrapped kernel lacks mouse injection. */
   sendMouseEvent(dx: number, dy: number, buttons: number): void;
   /** Inject an absolute-position pointer update into evdev
-   *  `/dev/input/event1`. `x`/`y` are framebuffer pixels (origin
-   *  top-left, matching the canvas drawing buffer); `buttons` uses the
+   *  `/dev/input/event1`. `x`/`y` are positions in the device's fixed
+   *  `EV_ABS` range, 0..`INPUT_POINTER_ABS_MAX` across the framebuffer
+   *  (origin top-left), not pixels; `buttons` uses the
    *  same bitmask as `sendMouseEvent` (bit0=left, bit1=right,
    *  bit2=middle). This is the path SDL2's KMSDRM/evdev backend reads —
    *  `sendMouseEvent` only feeds the PS/2 `/dev/input/mice` node, which
@@ -2940,9 +2941,7 @@ export class LiveKernelHost implements KernelHost {
         // records; the host compensated by driving the cursor to the
         // origin with an over-large negative delta before every event, and
         // any click that landed before the corrective frame registered at
-        // (0, 0). The axis range comes from `kernel_set_input_canvas_dims`,
-        // which is why these are framebuffer pixels and not a normalised
-        // value.
+        // (0, 0).
         inject.call(kernel, 1, EV_ABS, ABS_X, rx);
         inject.call(kernel, 1, EV_ABS, ABS_Y, ry);
         inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);

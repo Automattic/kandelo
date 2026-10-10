@@ -274,6 +274,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   { id: "fbdoom", resolverPath: "programs/fbdoom.wasm", vfsPath: "/usr/local/bin/fbdoom", symlinks: [] },
   { id: "modeset", resolverPath: "programs/modeset.wasm", vfsPath: "/usr/local/bin/modeset", symlinks: [] },
+  { id: "wgpu-window", resolverPath: "programs/wgpu-window.wasm", vfsPath: "/usr/local/bin/wgpu-window", symlinks: [] },
   {
     id: "espeak-ng",
     resolverPath: "programs/espeak-ng/espeak-ng.wasm",

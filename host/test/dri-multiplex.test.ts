@@ -44,6 +44,20 @@ class RecordingGl {
   useProgram(p: unknown) { this.log.push(["useProgram", [p]]); }
   activeTexture(u: number) { this.log.push(["activeTexture", [u]]); }
   pixelStorei(p: number, v: number) { this.log.push(["pixelStorei", [p, v]]); }
+  colorMask(...a: unknown[]) { this.log.push(["colorMask", a]); }
+  depthMask(...a: unknown[]) { this.log.push(["depthMask", a]); }
+  stencilFuncSeparate(...a: unknown[]) { this.log.push(["stencilFuncSeparate", a]); }
+  stencilOpSeparate(...a: unknown[]) { this.log.push(["stencilOpSeparate", a]); }
+  stencilMaskSeparate(...a: unknown[]) { this.log.push(["stencilMaskSeparate", a]); }
+  polygonOffset(...a: unknown[]) { this.log.push(["polygonOffset", a]); }
+  blendColor(...a: unknown[]) { this.log.push(["blendColor", a]); }
+  depthRange(...a: unknown[]) { this.log.push(["depthRange", a]); }
+  clearDepth(...a: unknown[]) { this.log.push(["clearDepth", a]); }
+  clearStencil(...a: unknown[]) { this.log.push(["clearStencil", a]); }
+  bindSampler(...a: unknown[]) { this.log.push(["bindSampler", a]); }
+  bindBuffer(...a: unknown[]) { this.log.push(["bindBuffer", a]); }
+  bindBufferRange(...a: unknown[]) { this.log.push(["bindBufferRange", a]); }
+  bindBufferBase(...a: unknown[]) { this.log.push(["bindBufferBase", a]); }
 }
 
 function setupBinding(

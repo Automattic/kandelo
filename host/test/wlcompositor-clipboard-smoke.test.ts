@@ -34,8 +34,6 @@ const clipBin = tryResolveBinary("programs/wlclip-test.wasm");
 const kwlctlBin = tryResolveBinary("programs/kwlctl.wasm");
 const hasBinaries = !!compositorBin && !!clipBin && !!kwlctlBin;
 
-const CANVAS_W = 1920;
-const CANVAS_H = 1080;
 
 // evdev keycodes (linux/input-event-codes.h).
 const EV_KEY = 0x01;
@@ -124,7 +122,6 @@ describe("wlcompositor — clipboard selection", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
         host.spawn(compositorBytes, ["wlcompositor"], {}).catch(() => {});
         await waitFor(() => out.all, "COMPOSITOR_UP", 20_000, dump);
 
@@ -218,7 +215,6 @@ describe("wlcompositor — clipboard selection", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: [`WLC_CONFIG=${confPath}`],
         }).catch(() => {});

@@ -213,6 +213,43 @@
         "hostPointer": true
       }
     },
+    "wgpu-window": {
+      "identity": {
+        "title": "wgpu window",
+        "summary": "wlcompositor with one client, wgpu-window, a Rust program on winit and wgpu: it opens an xdg-shell window and clears it for 60 frames through wgpu's OpenGL ES backend, which libEGL and libGLESv2 carry to the browser's WebGL2. The window stack PhotoCraft's editor runs on.",
+        "accent": "#3a7d7b",
+        "glyph": "G",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "display": {
+        "minWidth": 1920,
+        "minHeight": 1080
+      },
+      "init": {
+        "shellCommand": "/usr/local/bin/wldesktop /usr/local/bin/wgpu-window"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "hostPointer": true
+      }
+    },
     "omarchy": {
       "identity": {
         "title": "Omarchy-style desktop",

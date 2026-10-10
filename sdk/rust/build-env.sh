@@ -1,56 +1,61 @@
 # shellcheck shell=bash
 #
-# Prepare a staged librsvg source tree to build its Rust crates for
-# wasm32-unknown-kandelo-std. Sourced by build-librsvg.sh (the library,
-# through upstream's meson + cargo-c) and by the rsvg-convert package (the
-# program, through cargo).
+# Prepare a staged source tree to build its Rust crates for
+# wasm32-unknown-kandelo-std through its own Cargo.lock. Sourced by the
+# packages that compile third-party Rust crates (librsvg through meson +
+# cargo-c, rsvg-convert and wgpu-window through cargo) and by projects
+# outside this repository.
 #
-#   librsvg_rust_build_env <repo-root> <src-dir> <work-dir> <dep-pkg-config-path>
+#   kandelo_rust_build_env <src-dir> <work-dir> <dep-pkg-config-path> <patches-dir>
 #
 # On return the environment selects:
 #
 #   - a private Rust sysroot (prebuilt std, libc fork, std overlay)
-#     assembled in <work-dir>/rust, so a package build shares no mutable
-#     state with other checkouts;
+#     assembled in <work-dir>/rust, so a build shares no mutable state
+#     with other checkouts; KANDELO_RUST_DIR points at it, so
+#     wasm32posix-cargo builds against the same sysroot;
 #   - the crate graph: Cargo.lock's libc moved to the fork's exact version
 #     (a [patch] replaces only that version), the other crates vendored
 #     from Cargo.lock and checked against its sha256 values, the crates in
-#     patches/ overridden, then offline. The overrides live in
+#     <patches-dir> overridden, then offline. The overrides live in
 #     $CARGO_HOME/config.toml: meson runs cargo from its build directory
 #     with --manifest-path, and cargo finds .cargo/config.toml from its
 #     working directory, not from the manifest;
-#   - pkg-config for the gtk-rs -sys crates and librsvg's build script,
-#     static, over the dependency closure (what librsvg's meson.build sets
-#     for a static build).
+#   - pkg-config for -sys crates and build scripts, static, over the
+#     dependency closure (what librsvg's meson.build sets for a static
+#     build).
 #
-# Also sets LIBRSVG_RUST_TARGET and LIBRSVG_RUSTC (the sysroot's rustc
-# wrapper, which meson must use to query the target).
+# Sourcing sets KANDELO_RUST_TARGET. The function also sets KANDELO_RUSTC
+# (the sysroot's rustc wrapper, which meson must use to query the target).
 
-librsvg_rust_build_env() {
-    local repo_root="$1" src_dir="$2" work_dir="$3" dep_pkg_config_path="$4"
-    local patches_dir="$repo_root/packages/registry/librsvg/patches"
+KANDELO_RUST_TARGET="wasm32-unknown-kandelo-std"
+KANDELO_SDK_RUST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-    LIBRSVG_RUST_TARGET="wasm32-unknown-kandelo-std"
+kandelo_rust_build_env() {
+    local src_dir="$1" work_dir="$2" dep_pkg_config_path="$3" patches_dir="$4"
+    local repo_root
+    repo_root="$(cd "$KANDELO_SDK_RUST_DIR/../.." && pwd)"
 
     # --- Private Rust sysroot -------------------------------------------
     local rust_dir="$work_dir/rust"
-    echo "==> Assembling the Rust sysroot for $LIBRSVG_RUST_TARGET..."
-    KANDELO_RUST_DIR="$rust_dir" bash "$repo_root/scripts/build-rust-sysroot.sh"
-    LIBRSVG_RUSTC="$rust_dir/rustc-kandelo"
+    echo "==> Assembling the Rust sysroot for $KANDELO_RUST_TARGET..."
+    export KANDELO_RUST_DIR="$rust_dir"
+    bash "$repo_root/scripts/build-rust-sysroot.sh"
+    KANDELO_RUSTC="$rust_dir/rustc-kandelo"
     local fork_libc="$rust_dir/libc-kandelo"
-    [ -x "$LIBRSVG_RUSTC" ] || { echo "ERROR: rustc wrapper missing at $LIBRSVG_RUSTC" >&2; return 1; }
+    [ -x "$KANDELO_RUSTC" ] || { echo "ERROR: rustc wrapper missing at $KANDELO_RUSTC" >&2; return 1; }
     local fork_libc_version
     fork_libc_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$fork_libc/Cargo.toml" | head -n1)"
     [ -n "$fork_libc_version" ] || { echo "ERROR: cannot read the libc fork version" >&2; return 1; }
 
-    export RUSTC="$LIBRSVG_RUSTC"
+    export RUSTC="$KANDELO_RUSTC"
     export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1
     # WHY a directory of its own: the package resolver already exports
     # <work-dir>/cargo-home as the recipe's CARGO_HOME. The vendored-crate
     # config written below would land there and outlive the caller's
     # subshell, and the repo's own cargo (install_local_binary's xtask)
-    # would then resolve Kandelo's crates against librsvg's vendor tree.
-    export CARGO_HOME="$work_dir/librsvg-cargo-home"
+    # would then resolve Kandelo's crates against the package's vendor tree.
+    export CARGO_HOME="$work_dir/rust-cargo-home"
     local cargo_config="$CARGO_HOME/config.toml"
     mkdir -p "$CARGO_HOME"
 

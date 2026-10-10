@@ -20,15 +20,20 @@
  */
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
+import { pixelsAt } from "./pixels.js";
 import {
   GL_BACK,
   GL_FRONT,
   GL_FRONT_AND_BACK,
   setCap,
   type GlStencilFaceState,
+  GL_DRAW_FRAMEBUFFER,
   GL_PACK_ALIGNMENT,
+  GL_PIXEL_UNPACK_BUFFER,
   GL_READ_FRAMEBUFFER,
   GL_TEXTURE0,
+  GL_TEXTURE_2D,
+  GL_UNIFORM_BUFFER,
   GL_UNPACK_ALIGNMENT,
 } from "./shadow.js";
 
@@ -211,19 +216,27 @@ function copyInt32Array(v: DataView, offset: number, count: number): Int32Array 
   return new Int32Array(bytes.buffer, bytes.byteOffset, count);
 }
 
-/** WebGL requires non-shared, correctly typed upload views. TLV data can be
- * unaligned, so copy before constructing the view (also for float textures). */
-function copyPixels(v: DataView, offset: number, length: number, type: number) {
-  const bytes = copyBytes(v, offset, length);
-  switch (type) {
-    case GL_FLOAT: return new Float32Array(bytes.buffer);
-    case GL_HALF_FLOAT: case GL_UNSIGNED_SHORT:
-    case 0x8363: case 0x8033: case 0x8034:
-      return new Uint16Array(bytes.buffer);
-    case GL_UNSIGNED_INT: case 0x84fa: case 0x8368: case 0x8c3b:
-      return new Uint32Array(bytes.buffer);
-    default: return bytes;
-  }
+function copyUint32Array(v: DataView, offset: number, count: number): Uint32Array {
+  const bytes = copyBytes(v, offset, count * 4);
+  return new Uint32Array(bytes.buffer, bytes.byteOffset, count);
+}
+
+/** `{u32 location, u32 components, u32 count, u32 values[components*count]}`. */
+function uniformVectorPayload(v: DataView): boolean {
+  if (v.byteLength < 12) return false;
+  const comps = v.getUint32(4, true);
+  const count = v.getUint32(8, true);
+  return comps >= 1 && comps <= 4 && v.byteLength === 12 + comps * count * 4;
+}
+
+/** `{u32 location, u32 columns, u32 rows, u32 count, u32 transpose, f32 values[]}`. */
+function uniformMatrixPayload(v: DataView): boolean {
+  if (v.byteLength < 20) return false;
+  const cols = v.getUint32(4, true);
+  const rows = v.getUint32(8, true);
+  const count = v.getUint32(12, true);
+  return cols >= 2 && cols <= 4 && rows >= 2 && rows <= 4 && cols !== rows
+    && v.byteLength === 20 + cols * rows * count * 4;
 }
 
 function normalizeTextureType(type: number): number {
@@ -403,6 +416,55 @@ function validPayload(op: number, v: DataView): boolean {
       return exact(v, 32);
     case O.OP_COPY_TEX_SUB_IMAGE_2D:
       return exact(v, 32);
+
+    case O.OP_DELETE_SYNC:
+      return exact(v, 4);
+    case O.OP_VERTEX_ATTRIB_DIVISOR:
+    case O.OP_BIND_SAMPLER:
+    case O.OP_WAIT_SYNC:
+      return exact(v, 8);
+    case O.OP_BIND_BUFFER_BASE:
+    case O.OP_UNIFORM_BLOCK_BINDING:
+    case O.OP_SAMPLER_PARAMETERI:
+    case O.OP_SAMPLER_PARAMETERF:
+    case O.OP_FENCE_SYNC:
+      return exact(v, 12);
+    case O.OP_DRAW_ARRAYS_INSTANCED:
+    case O.OP_CLEAR_BUFFERFI:
+      return exact(v, 16);
+    case O.OP_COPY_BUFFER_SUB_DATA:
+    case O.OP_BIND_BUFFER_RANGE:
+    case O.OP_TEX_STORAGE_2D:
+    case O.OP_VERTEX_ATTRIB_I_POINTER:
+    case O.OP_DRAW_ELEMENTS_INSTANCED:
+    case O.OP_FRAMEBUFFER_TEXTURE_LAYER:
+    case O.OP_RENDERBUFFER_STORAGE_MULTISAMPLE:
+      return exact(v, 20);
+    case O.OP_TEX_STORAGE_3D:
+    case O.OP_CLEAR_BUFFERFV:
+    case O.OP_CLEAR_BUFFERIV:
+    case O.OP_CLEAR_BUFFERUIV:
+      return exact(v, 24);
+    case O.OP_READ_PIXELS_PBO:
+      return exact(v, 28);
+    case O.OP_TEX_SUB_IMAGE_2D_PBO:
+    case O.OP_COPY_TEX_SUB_IMAGE_3D:
+      return exact(v, 36);
+    case O.OP_BLIT_FRAMEBUFFER:
+      return exact(v, 40);
+    case O.OP_TEX_SUB_IMAGE_3D_PBO:
+      return exact(v, 44);
+    case O.OP_TEX_SUB_IMAGE_3D:
+      return tailBytesPayload(v, 44, 40);
+    case O.OP_GEN_SAMPLERS:
+    case O.OP_DELETE_SAMPLERS:
+      return u32ArrayPayload(v);
+    case O.OP_INVALIDATE_FRAMEBUFFER:
+      return v.byteLength >= 8 && v.byteLength === 8 + v.getUint32(4, true) * 4;
+    case O.OP_UNIFORM_UIV:
+      return uniformVectorPayload(v);
+    case O.OP_UNIFORM_MATRIX_FV:
+      return uniformMatrixPayload(v);
 
     default:
       return false;
@@ -614,6 +676,7 @@ function dispatch(
       gl.pixelStorei(pname, param);
       if (pname === GL_UNPACK_ALIGNMENT) b.shadow.unpackAlignment = param;
       else if (pname === GL_PACK_ALIGNMENT) b.shadow.packAlignment = param;
+      else b.shadow.pixelStore.set(pname, param);
       return;
     }
 
@@ -635,6 +698,12 @@ function dispatch(
         const obj = b.buffers.get(name);
         if (obj) gl.deleteBuffer(obj);
         if (obj === b.shadow.arrayBuffer) b.shadow.arrayBuffer = null;
+        for (const [target, buf] of b.shadow.bufferBindings) {
+          if (buf === obj) b.shadow.bufferBindings.set(target, null);
+        }
+        for (const [index, range] of b.shadow.uniformBufferRanges) {
+          if (range.buffer === obj) b.shadow.uniformBufferRanges.delete(index);
+        }
         b.buffers.delete(name);
       }
       return;
@@ -644,6 +713,8 @@ function dispatch(
       const buffer = b.buffers.get(v.getUint32(p + 4, true)) ?? null;
       gl.bindBuffer(target, buffer);
       if (target === GL_ARRAY_BUFFER) b.shadow.arrayBuffer = buffer;
+      // The element array binding is vertex-array state, restored with it.
+      else if (target !== GL_ELEMENT_ARRAY_BUFFER) b.shadow.bufferBindings.set(target, buffer);
       return;
     }
     // Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage
@@ -687,6 +758,9 @@ function dispatch(
         const obj = b.textures.get(name);
         if (obj) gl.deleteTexture(obj);
         b.shadow.textureUnits = b.shadow.textureUnits.map(tex => tex === obj ? null : tex);
+        for (const units of b.shadow.textureUnitsByTarget.values()) {
+          for (let u = 0; u < units.length; u++) if (units[u] === obj) units[u] = null;
+        }
         b.textures.delete(name);
       }
       return;
@@ -697,9 +771,17 @@ function dispatch(
       const tex = b.textures.get(texName) ?? null;
       gl.bindTexture(target, tex);
       const unit = b.shadow.activeTexture;
-      if (unit >= 0 && unit < b.shadow.textureUnits.length) {
+      if (unit < 0 || unit >= b.shadow.textureUnits.length) return;
+      if (target === GL_TEXTURE_2D) {
         b.shadow.textureUnits[unit] = tex;
+        return;
       }
+      let units = b.shadow.textureUnitsByTarget.get(target);
+      if (!units) {
+        units = new Array(b.shadow.textureUnits.length).fill(null);
+        b.shadow.textureUnitsByTarget.set(target, units);
+      }
+      units[unit] = tex;
       return;
     }
     // Payload: u32 target, i32 level, i32 internalFormat, i32 width,
@@ -715,13 +797,16 @@ function dispatch(
       const format = v.getUint32(p + 24, true);
       const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
-      const data = dataLen === 0
-        ? null
-        : copyPixels(v, p + 36, dataLen, type);
+      const data = dataLen === 0 ? null : pixelsAt(v, p + 36, dataLen, type);
+      // A record without data allocates the level. WebGL2 refuses a null
+      // upload while an unpack buffer is bound, so unbind it around it.
+      const unpack = data === null ? b.shadow.bufferBindings.get(GL_PIXEL_UNPACK_BUFFER) ?? null : null;
+      if (unpack) gl.bindBuffer(GL_PIXEL_UNPACK_BUFFER, null);
       gl.texImage2D(
         target, level, normalizeTextureInternalFormat(internalFormat, format, type), width, height, border,
         format, type, data,
       );
+      if (unpack) gl.bindBuffer(GL_PIXEL_UNPACK_BUFFER, unpack);
       return;
     }
     // Payload: u32 target, i32 level, i32 xoff, i32 yoff, i32 width,
@@ -737,7 +822,7 @@ function dispatch(
       const format = v.getUint32(p + 24, true);
       const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
-      const data = copyPixels(v, p + 36, dataLen, type);
+      const data = pixelsAt(v, p + 36, dataLen, type);
       gl.texSubImage2D(
         target, level, xoff, yoff, width, height, format, type, data,
       );
@@ -1131,6 +1216,7 @@ function dispatch(
       }
       gl.bindFramebuffer(target, fbo);
       if (target !== GL_READ_FRAMEBUFFER) b.shadow.fbo = fbo;
+      if (target !== GL_DRAW_FRAMEBUFFER) b.shadow.readFbo = fbo;
       return;
     }
     // Payload: u32 target, u32 attachment, u32 textarget, u32 textureName,
@@ -1199,6 +1285,241 @@ function dispatch(
     }
     case O.OP_READ_BUFFER: {
       gl.readBuffer(v.getUint32(p, true));
+      return;
+    }
+
+    // ----- GLES 3.0 buffers -----------------------------------------------
+    case O.OP_COPY_BUFFER_SUB_DATA:
+      gl.copyBufferSubData(
+        v.getUint32(p, true), v.getUint32(p + 4, true),
+        v.getUint32(p + 8, true), v.getUint32(p + 12, true), v.getUint32(p + 16, true),
+      );
+      return;
+    case O.OP_BIND_BUFFER_RANGE: {
+      const target = v.getUint32(p, true), index = v.getUint32(p + 4, true);
+      const buffer = b.buffers.get(v.getUint32(p + 8, true)) ?? null;
+      const offset = v.getUint32(p + 12, true), size = v.getUint32(p + 16, true);
+      gl.bindBufferRange(target, index, buffer, offset, size);
+      if (target === GL_UNIFORM_BUFFER) {
+        b.shadow.uniformBufferRanges.set(index, { buffer, offset, size });
+        b.shadow.bufferBindings.set(target, buffer);
+      }
+      return;
+    }
+    case O.OP_BIND_BUFFER_BASE: {
+      const target = v.getUint32(p, true), index = v.getUint32(p + 4, true);
+      const buffer = b.buffers.get(v.getUint32(p + 8, true)) ?? null;
+      gl.bindBufferBase(target, index, buffer);
+      if (target === GL_UNIFORM_BUFFER) {
+        b.shadow.uniformBufferRanges.set(index, { buffer, offset: 0, size: -1 });
+        b.shadow.bufferBindings.set(target, buffer);
+      }
+      return;
+    }
+
+    // ----- GLES 3.0 textures and samplers ---------------------------------
+    case O.OP_TEX_STORAGE_2D:
+      gl.texStorage2D(
+        v.getUint32(p, true), v.getInt32(p + 4, true), v.getUint32(p + 8, true),
+        v.getInt32(p + 12, true), v.getInt32(p + 16, true),
+      );
+      return;
+    case O.OP_TEX_STORAGE_3D:
+      gl.texStorage3D(
+        v.getUint32(p, true), v.getInt32(p + 4, true), v.getUint32(p + 8, true),
+        v.getInt32(p + 12, true), v.getInt32(p + 16, true), v.getInt32(p + 20, true),
+      );
+      return;
+    // Payload: u32 target, i32 level, i32 x, y, z, u32 w, h, d, format, type,
+    //          u32 dataLen, u8 data[dataLen]
+    case O.OP_TEX_SUB_IMAGE_3D: {
+      const type = normalizeTextureType(v.getUint32(p + 36, true));
+      gl.texSubImage3D(
+        v.getUint32(p, true), v.getInt32(p + 4, true),
+        v.getInt32(p + 8, true), v.getInt32(p + 12, true), v.getInt32(p + 16, true),
+        v.getInt32(p + 20, true), v.getInt32(p + 24, true), v.getInt32(p + 28, true),
+        v.getUint32(p + 32, true), type,
+        pixelsAt(v, p + 44, v.getUint32(p + 40, true), type),
+      );
+      return;
+    }
+    case O.OP_TEX_SUB_IMAGE_2D_PBO:
+      gl.texSubImage2D(
+        v.getUint32(p, true), v.getInt32(p + 4, true),
+        v.getInt32(p + 8, true), v.getInt32(p + 12, true),
+        v.getInt32(p + 16, true), v.getInt32(p + 20, true),
+        v.getUint32(p + 24, true), normalizeTextureType(v.getUint32(p + 28, true)), v.getUint32(p + 32, true),
+      );
+      return;
+    case O.OP_TEX_SUB_IMAGE_3D_PBO:
+      gl.texSubImage3D(
+        v.getUint32(p, true), v.getInt32(p + 4, true),
+        v.getInt32(p + 8, true), v.getInt32(p + 12, true), v.getInt32(p + 16, true),
+        v.getInt32(p + 20, true), v.getInt32(p + 24, true), v.getInt32(p + 28, true),
+        v.getUint32(p + 32, true), normalizeTextureType(v.getUint32(p + 36, true)), v.getUint32(p + 40, true),
+      );
+      return;
+    case O.OP_COPY_TEX_SUB_IMAGE_3D:
+      gl.copyTexSubImage3D(
+        v.getUint32(p, true), v.getInt32(p + 4, true),
+        v.getInt32(p + 8, true), v.getInt32(p + 12, true), v.getInt32(p + 16, true),
+        v.getInt32(p + 20, true), v.getInt32(p + 24, true),
+        v.getInt32(p + 28, true), v.getInt32(p + 32, true),
+      );
+      return;
+    case O.OP_GEN_SAMPLERS: {
+      const n = v.getUint32(p, true);
+      for (let i = 0; i < n; i++) {
+        const sampler = gl.createSampler();
+        if (sampler) b.samplers.set(v.getUint32(p + 4 + i * 4, true), sampler);
+      }
+      return;
+    }
+    case O.OP_DELETE_SAMPLERS: {
+      const n = v.getUint32(p, true);
+      for (let i = 0; i < n; i++) {
+        const name = v.getUint32(p + 4 + i * 4, true);
+        const sampler = b.samplers.get(name);
+        if (!sampler) continue;
+        gl.deleteSampler(sampler);
+        b.samplers.delete(name);
+        b.shadow.samplerUnits = b.shadow.samplerUnits.map((s) => (s === sampler ? null : s));
+      }
+      return;
+    }
+    case O.OP_BIND_SAMPLER: {
+      const unit = v.getUint32(p, true);
+      const sampler = b.samplers.get(v.getUint32(p + 4, true)) ?? null;
+      gl.bindSampler(unit, sampler);
+      if (unit < b.shadow.samplerUnits.length) b.shadow.samplerUnits[unit] = sampler;
+      return;
+    }
+    case O.OP_SAMPLER_PARAMETERI: {
+      const sampler = b.samplers.get(v.getUint32(p, true));
+      if (sampler) gl.samplerParameteri(sampler, v.getUint32(p + 4, true), v.getInt32(p + 8, true));
+      return;
+    }
+    case O.OP_SAMPLER_PARAMETERF: {
+      const sampler = b.samplers.get(v.getUint32(p, true));
+      if (sampler) gl.samplerParameterf(sampler, v.getUint32(p + 4, true), v.getFloat32(p + 8, true));
+      return;
+    }
+
+    // ----- GLES 3.0 programs and uniforms ---------------------------------
+    case O.OP_UNIFORM_BLOCK_BINDING: {
+      const prog = b.programs.get(v.getUint32(p, true));
+      if (prog) gl.uniformBlockBinding(prog, v.getUint32(p + 4, true), v.getUint32(p + 8, true));
+      return;
+    }
+    case O.OP_UNIFORM_UIV: {
+      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const comps = v.getUint32(p + 4, true);
+      const values = copyUint32Array(v, p + 12, comps * v.getUint32(p + 8, true));
+      [gl.uniform1uiv, gl.uniform2uiv, gl.uniform3uiv, gl.uniform4uiv][comps - 1].call(gl, loc, values);
+      return;
+    }
+    case O.OP_UNIFORM_MATRIX_FV: {
+      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const cols = v.getUint32(p + 4, true), rows = v.getUint32(p + 8, true);
+      const values = copyFloat32Array(v, p + 20, cols * rows * v.getUint32(p + 12, true));
+      const transpose = v.getUint32(p + 16, true) !== 0;
+      const setters: Record<string, (l: WebGLUniformLocation | null, t: boolean, d: Float32Array) => void> = {
+        "2x3": gl.uniformMatrix2x3fv, "2x4": gl.uniformMatrix2x4fv, "3x2": gl.uniformMatrix3x2fv,
+        "3x4": gl.uniformMatrix3x4fv, "4x2": gl.uniformMatrix4x2fv, "4x3": gl.uniformMatrix4x3fv,
+      };
+      setters[`${cols}x${rows}`].call(gl, loc, transpose, values);
+      return;
+    }
+
+    // ----- GLES 3.0 vertex arrays and draws -------------------------------
+    case O.OP_VERTEX_ATTRIB_I_POINTER:
+      gl.vertexAttribIPointer(
+        v.getUint32(p, true), v.getInt32(p + 4, true), v.getUint32(p + 8, true),
+        v.getInt32(p + 12, true), v.getUint32(p + 16, true),
+      );
+      return;
+    case O.OP_VERTEX_ATTRIB_DIVISOR:
+      gl.vertexAttribDivisor(v.getUint32(p, true), v.getUint32(p + 4, true));
+      return;
+    case O.OP_DRAW_ARRAYS_INSTANCED:
+      gl.drawArraysInstanced(
+        v.getUint32(p, true), v.getInt32(p + 4, true),
+        v.getInt32(p + 8, true), v.getInt32(p + 12, true),
+      );
+      return;
+    case O.OP_DRAW_ELEMENTS_INSTANCED:
+      gl.drawElementsInstanced(
+        v.getUint32(p, true), v.getInt32(p + 4, true), v.getUint32(p + 8, true),
+        v.getUint32(p + 12, true), v.getInt32(p + 16, true),
+      );
+      return;
+
+    // ----- GLES 3.0 framebuffers ------------------------------------------
+    case O.OP_FRAMEBUFFER_TEXTURE_LAYER:
+      gl.framebufferTextureLayer(
+        v.getUint32(p, true), v.getUint32(p + 4, true),
+        b.textures.get(v.getUint32(p + 8, true)) ?? null,
+        v.getInt32(p + 12, true), v.getInt32(p + 16, true),
+      );
+      return;
+    case O.OP_RENDERBUFFER_STORAGE_MULTISAMPLE:
+      gl.renderbufferStorageMultisample(
+        v.getUint32(p, true), v.getInt32(p + 4, true), v.getUint32(p + 8, true),
+        v.getInt32(p + 12, true), v.getInt32(p + 16, true),
+      );
+      return;
+    case O.OP_BLIT_FRAMEBUFFER:
+      gl.blitFramebuffer(
+        v.getInt32(p, true), v.getInt32(p + 4, true), v.getInt32(p + 8, true), v.getInt32(p + 12, true),
+        v.getInt32(p + 16, true), v.getInt32(p + 20, true), v.getInt32(p + 24, true), v.getInt32(p + 28, true),
+        v.getUint32(p + 32, true), v.getUint32(p + 36, true),
+      );
+      return;
+    case O.OP_INVALIDATE_FRAMEBUFFER:
+      gl.invalidateFramebuffer(
+        v.getUint32(p, true),
+        Array.from(copyUint32Array(v, p + 8, v.getUint32(p + 4, true))),
+      );
+      return;
+    case O.OP_CLEAR_BUFFERFV:
+      gl.clearBufferfv(v.getUint32(p, true), v.getInt32(p + 4, true), copyFloat32Array(v, p + 8, 4));
+      return;
+    case O.OP_CLEAR_BUFFERIV:
+      gl.clearBufferiv(v.getUint32(p, true), v.getInt32(p + 4, true), copyInt32Array(v, p + 8, 4));
+      return;
+    case O.OP_CLEAR_BUFFERUIV:
+      gl.clearBufferuiv(v.getUint32(p, true), v.getInt32(p + 4, true), copyUint32Array(v, p + 8, 4));
+      return;
+    case O.OP_CLEAR_BUFFERFI:
+      gl.clearBufferfi(
+        v.getUint32(p, true), v.getInt32(p + 4, true),
+        v.getFloat32(p + 8, true), v.getInt32(p + 12, true),
+      );
+      return;
+    case O.OP_READ_PIXELS_PBO:
+      gl.readPixels(
+        v.getInt32(p, true), v.getInt32(p + 4, true), v.getInt32(p + 8, true), v.getInt32(p + 12, true),
+        v.getUint32(p + 16, true), v.getUint32(p + 20, true), v.getUint32(p + 24, true),
+      );
+      return;
+
+    // ----- GLES 3.0 sync objects ------------------------------------------
+    case O.OP_FENCE_SYNC: {
+      const sync = gl.fenceSync(v.getUint32(p + 4, true), v.getUint32(p + 8, true));
+      if (sync) b.syncs.set(v.getUint32(p, true), sync);
+      return;
+    }
+    case O.OP_DELETE_SYNC: {
+      const name = v.getUint32(p, true);
+      const sync = b.syncs.get(name);
+      if (sync) gl.deleteSync(sync);
+      b.syncs.delete(name);
+      return;
+    }
+    case O.OP_WAIT_SYNC: {
+      const sync = b.syncs.get(v.getUint32(p, true));
+      // GL_TIMEOUT_IGNORED: WebGL2 takes it as a signed -1.
+      if (sync) gl.waitSync(sync, v.getUint32(p + 4, true), -1);
       return;
     }
 

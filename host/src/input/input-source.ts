@@ -4,7 +4,7 @@
  * DOM events (keyboard + pointer + wheel) and translates them to Linux
  * evdev codes; `NodeInputSource` is a null-source for headless test
  * runs. The host wires `dispatch` to `kernel.exports.kernel_input_event`
- * at boot, after `kernel.exports.kernel_set_input_canvas_dims`.
+ * at boot.
  */
 
 /** Records a single evdev-shaped event ready for kernel dispatch.

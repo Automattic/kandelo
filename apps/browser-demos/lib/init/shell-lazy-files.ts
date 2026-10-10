@@ -75,6 +75,7 @@ import kclipdWasmUrl from "@binaries/programs/wasm32/wayland-demo/kclipd.wasm?ur
 import sdl2WasmUrl from "@binaries/programs/wasm32/sdl2.wasm?url";
 import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 import modesetWasmUrl from "@binaries/programs/wasm32/modeset.wasm?url";
+import wgpuWindowWasmUrl from "@binaries/programs/wasm32/wgpu-window.wasm?url";
 import espeakNgWasmUrl from "@binaries/programs/wasm32/espeak-ng/espeak-ng.wasm?url";
 import elinksWasmUrl from "@binaries/programs/wasm32/elinks.wasm?url";
 
@@ -153,6 +154,7 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/sdl2.wasm": sdl2WasmUrl,
   "programs/fbdoom.wasm": fbdoomWasmUrl,
   "programs/modeset.wasm": modesetWasmUrl,
+  "programs/wgpu-window.wasm": wgpuWindowWasmUrl,
   "programs/espeak-ng/espeak-ng.wasm": espeakNgWasmUrl,
   "programs/elinks.wasm": elinksWasmUrl,
 };

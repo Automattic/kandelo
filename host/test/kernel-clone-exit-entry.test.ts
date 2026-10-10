@@ -41,7 +41,6 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_inject_mouse_event",
   "kernel_input_event",
   "kernel_set_current_tid",
-  "kernel_set_input_canvas_dims",
   "kernel_take_process_timer_cleanup",
   "kernel_thread_exit",
 ] as const;
@@ -108,7 +107,6 @@ function makeHarness(
     kernel_inject_mouse_event: () => 0,
     kernel_input_event: () => 0,
     kernel_set_current_tid: () => 0,
-    kernel_set_input_canvas_dims: () => 0,
     kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     kernel_thread_exit: () => 0,
     ...implementations,
@@ -411,16 +409,10 @@ describe("clone and exit entry authority", () => {
       order.push("queued evdev record");
       return 0;
     });
-    const canvasDims = vi.fn(() => {
-      order.push("queued canvas dimensions");
-      return 0;
-    });
     let harness!: LifecycleHarness;
     const onExit = vi.fn(() => {
       order.push("host exit callback");
-      harness.worker.setInputCanvasDims(1024, 768);
       harness.worker.injectInputEvent(0, 0x01, 30, 1);
-      expect(canvasDims).not.toHaveBeenCalled();
       expect(inputEvent).not.toHaveBeenCalled();
     });
     harness = makeHarness(
@@ -428,7 +420,6 @@ describe("clone and exit entry authority", () => {
       { onExit },
       {
         kernel_input_event: inputEvent,
-        kernel_set_input_canvas_dims: canvasDims,
       },
     );
     writeSyscall(harness.channel, ABI_SYSCALLS.Exit, [7n]);
@@ -437,11 +428,9 @@ describe("clone and exit entry authority", () => {
 
     await flushLifecycleContinuations();
 
-    expect(canvasDims).toHaveBeenCalledExactlyOnceWith(1024, 768);
     expect(inputEvent).toHaveBeenCalledExactlyOnceWith(0, 0x01, 30, 1);
     expect(order).toEqual([
       "host exit callback",
-      "queued canvas dimensions",
       "queued evdev record",
     ]);
   });

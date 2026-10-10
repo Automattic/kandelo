@@ -105,7 +105,6 @@ describe("wlcompositor — libkwl clients resize to the dictated tile", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle"],
@@ -162,7 +161,6 @@ describe("wlcompositor — libkwl clients resize to the dictated tile", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle"],

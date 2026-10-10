@@ -1054,6 +1054,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // controls the rootfs contents directly via kernel.fs and would lose
   // control if the spec dictated additional scratch mounts.
   const shmfs = MemoryFileSystem.fromExisting(msg.shmSab);
+  shmfs.chmod("/", 0o1777);
   const devfs = new DeviceFileSystem();
   // The kernel worker OWNS the VFS: rebuild it from the demo's image bytes and
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
@@ -4706,9 +4707,6 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "input_event_batch_inject":
       kernelWorker.injectInputEventBatch(msg.records);
-      break;
-    case "set_input_canvas_dims":
-      kernelWorker.setInputCanvasDims(msg.width, msg.height);
       break;
     default: {
       // Every typed MainToKernelMessage must have a case above. Browser

@@ -350,19 +350,6 @@ export interface InputEventBatchInjectMessage {
 }
 
 /**
- * Main-thread → kernel-worker canvas-dims update. Tells the kernel
- * the current host canvas dimensions so EVIOCGABS on
- * `/dev/input/event1` reports the right `ABS_X.maximum` /
- * `ABS_Y.maximum`. Sent at boot once the canvas exists; resend on
- * canvas resize.
- */
-export interface SetInputCanvasDimsMessage {
-  type: "set_input_canvas_dims";
-  width: number;
-  height: number;
-}
-
-/**
  * Main-thread → kernel-worker audio drain request. The main thread's
  * AudioContext scheduler ticks every ~50 ms, asks the kernel ring for
  * up to `maxBytes` of PCM samples, and feeds them to a chained
@@ -563,7 +550,6 @@ export type MainToKernelMessage =
   | MouseInjectMessage
   | InputEventInjectMessage
   | InputEventBatchInjectMessage
-  | SetInputCanvasDimsMessage
   | AudioDrainMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage

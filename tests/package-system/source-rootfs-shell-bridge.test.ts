@@ -647,6 +647,7 @@ describe("canonical source-rootfs shell", () => {
     for (const [guest, url] of [
       ["/usr/local/bin/fbdoom", "kandelo-lazy:programs/fbdoom.wasm"],
       ["/usr/local/bin/modeset", "kandelo-lazy:programs/modeset.wasm"],
+      ["/usr/local/bin/wgpu-window", "kandelo-lazy:programs/wgpu-window.wasm"],
       ["/usr/local/bin/sdl2", "kandelo-lazy:programs/sdl2.wasm"],
       ["/usr/bin/espeak-ng", "kandelo-lazy:programs/espeak-ng/espeak-ng.wasm"],
       [

@@ -171,7 +171,12 @@ pub mod process_layout;
 ///     fork/dup/exec, instead of a host handle answered per pid. The GL
 ///     command stream gains OP_BLEND_FUNC_SEPARATE, OP_BLEND_EQUATION_SEPARATE
 ///     and QOP_FINISH.
-pub const ABI_VERSION: u32 = 47;
+/// 48: `/dev/input/event1` reports a fixed 0..32767 absolute range and the
+///     `kernel_set_input_canvas_dims` export is removed. A blocked signal whose
+///     default action is to ignore it stays pending. `GLIO_MAKE_CURRENT`
+///     accepts a context without a surface. docs/abi-versioning.md ("ABI 48")
+///     lists each.
+pub const ABI_VERSION: u32 = 48;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -4639,7 +4644,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 2;
+    pub const OP_VERSION: u32 = 3;
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
@@ -4706,6 +4711,13 @@ pub mod gl {
     pub const OP_BIND_BUFFER: u16 = 0x0102;
     pub const OP_BUFFER_DATA: u16 = 0x0103;
     pub const OP_BUFFER_SUB_DATA: u16 = 0x0104;
+    /// `glCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset,
+    /// size)`: five u32.
+    pub const OP_COPY_BUFFER_SUB_DATA: u16 = 0x0105;
+    /// `glBindBufferRange(target, index, buffer, offset, size)`: five u32.
+    pub const OP_BIND_BUFFER_RANGE: u16 = 0x0106;
+    /// `glBindBufferBase(target, index, buffer)`: three u32.
+    pub const OP_BIND_BUFFER_BASE: u16 = 0x0107;
 
     pub const OP_GEN_TEXTURES: u16 = 0x0200;
     pub const OP_DELETE_TEXTURES: u16 = 0x0201;
@@ -4715,6 +4727,26 @@ pub mod gl {
     pub const OP_TEX_PARAMETERI: u16 = 0x0205;
     pub const OP_ACTIVE_TEXTURE: u16 = 0x0206;
     pub const OP_GENERATE_MIPMAP: u16 = 0x0207;
+    /// `glTexStorage2D(target, levels, internalformat, width, height)`: five u32.
+    pub const OP_TEX_STORAGE_2D: u16 = 0x020D;
+    /// `glTexStorage3D(target, levels, internalformat, width, height, depth)`:
+    /// six u32.
+    pub const OP_TEX_STORAGE_3D: u16 = 0x020E;
+    /// `glTexSubImage3D` from client memory: u32 target, i32 level, i32
+    /// xoffset, yoffset, zoffset, u32 width, height, depth, format, type,
+    /// dataLen, u8 data[dataLen]. Rows are tightly packed; the encoder splits
+    /// an upload into records of whole rows.
+    pub const OP_TEX_SUB_IMAGE_3D: u16 = 0x020F;
+    /// `glTexSubImage2D` from the bound `GL_PIXEL_UNPACK_BUFFER`: u32 target,
+    /// i32 level, xoffset, yoffset, u32 width, height, format, type, offset.
+    pub const OP_TEX_SUB_IMAGE_2D_PBO: u16 = 0x0210;
+    /// `glTexSubImage3D` from the bound `GL_PIXEL_UNPACK_BUFFER`: u32 target,
+    /// i32 level, xoffset, yoffset, zoffset, u32 width, height, depth,
+    /// format, type, offset.
+    pub const OP_TEX_SUB_IMAGE_3D_PBO: u16 = 0x0211;
+    /// `glCopyTexSubImage3D(target, level, xoffset, yoffset, zoffset, x, y,
+    /// width, height)`: nine 32-bit words.
+    pub const OP_COPY_TEX_SUB_IMAGE_3D: u16 = 0x0212;
 
     pub const OP_CREATE_SHADER: u16 = 0x0300;
     pub const OP_SHADER_SOURCE: u16 = 0x0301;
@@ -4727,6 +4759,8 @@ pub mod gl {
     pub const OP_BIND_ATTRIB_LOCATION: u16 = 0x0308;
     pub const OP_DELETE_PROGRAM: u16 = 0x0309;
     pub const OP_DETACH_SHADER: u16 = 0x030A;
+    /// `glUniformBlockBinding(program, blockIndex, binding)`: three u32.
+    pub const OP_UNIFORM_BLOCK_BINDING: u16 = 0x030B;
 
     pub const OP_UNIFORM1I: u16 = 0x0400;
     pub const OP_UNIFORM1F: u16 = 0x0401;
@@ -4738,6 +4772,12 @@ pub mod gl {
     /// this for the directional light position. `OP_UNIFORM4F` (scalar) is a
     /// different signature; both are needed.
     pub const OP_UNIFORM4FV: u16 = 0x0406;
+    /// `glUniform{1,2,3,4}uiv`: u32 location, u32 components, u32 count,
+    /// u32 values[components * count].
+    pub const OP_UNIFORM_UIV: u16 = 0x0410;
+    /// `glUniformMatrix{C}x{R}fv` with C != R: u32 location, u32 columns,
+    /// u32 rows, u32 count, u32 transpose, f32 values[columns * rows * count].
+    pub const OP_UNIFORM_MATRIX_FV: u16 = 0x0411;
 
     pub const OP_ENABLE_VERTEX_ATTRIB_ARRAY: u16 = 0x0500;
     pub const OP_DISABLE_VERTEX_ATTRIB_ARRAY: u16 = 0x0501;
@@ -4748,6 +4788,15 @@ pub mod gl {
     /// attribute. ScummVM's shader pipeline feeds the per-draw color
     /// through this when the attribute array is disabled.
     pub const OP_VERTEX_ATTRIB_4FV: u16 = 0x0505;
+    /// `glVertexAttribIPointer(index, size, type, stride, offset)`: five u32.
+    pub const OP_VERTEX_ATTRIB_I_POINTER: u16 = 0x0506;
+    /// `glVertexAttribDivisor(index, divisor)`: two u32.
+    pub const OP_VERTEX_ATTRIB_DIVISOR: u16 = 0x0507;
+    /// `glDrawArraysInstanced(mode, first, count, instances)`: four 32-bit words.
+    pub const OP_DRAW_ARRAYS_INSTANCED: u16 = 0x0508;
+    /// `glDrawElementsInstanced(mode, count, type, offset, instances)`: five
+    /// 32-bit words; `offset` is into the bound element array buffer.
+    pub const OP_DRAW_ELEMENTS_INSTANCED: u16 = 0x0509;
 
     pub const OP_GEN_VERTEX_ARRAYS: u16 = 0x0600;
     pub const OP_DELETE_VERTEX_ARRAYS: u16 = 0x0601;
@@ -4761,6 +4810,49 @@ pub mod gl {
     pub const OP_RENDERBUFFER_STORAGE: u16 = 0x0705;
     pub const OP_FRAMEBUFFER_RENDERBUFFER: u16 = 0x0706;
     pub const OP_DELETE_FRAMEBUFFERS: u16 = 0x0707;
+    /// `glFramebufferTextureLayer(target, attachment, texture, level, layer)`:
+    /// five 32-bit words.
+    pub const OP_FRAMEBUFFER_TEXTURE_LAYER: u16 = 0x070C;
+    /// `glRenderbufferStorageMultisample(target, samples, internalformat,
+    /// width, height)`: five u32.
+    pub const OP_RENDERBUFFER_STORAGE_MULTISAMPLE: u16 = 0x070D;
+    /// `glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1,
+    /// dstY1, mask, filter)`: eight i32, two u32.
+    pub const OP_BLIT_FRAMEBUFFER: u16 = 0x070E;
+    /// `glInvalidateFramebuffer(target, n, attachments)`: u32 target, u32 n,
+    /// u32 attachments[n].
+    pub const OP_INVALIDATE_FRAMEBUFFER: u16 = 0x070F;
+    /// `glClearBufferfv(buffer, drawbuffer, value)`: u32, i32, f32 value[4].
+    pub const OP_CLEAR_BUFFERFV: u16 = 0x0710;
+    /// `glClearBufferiv(buffer, drawbuffer, value)`: u32, i32, i32 value[4].
+    pub const OP_CLEAR_BUFFERIV: u16 = 0x0711;
+    /// `glClearBufferuiv(buffer, drawbuffer, value)`: u32, i32, u32 value[4].
+    pub const OP_CLEAR_BUFFERUIV: u16 = 0x0712;
+    /// `glClearBufferfi(buffer, drawbuffer, depth, stencil)`: u32, i32, f32, i32.
+    pub const OP_CLEAR_BUFFERFI: u16 = 0x0713;
+    /// `glReadPixels` into the bound `GL_PIXEL_PACK_BUFFER`: i32 x, y, u32
+    /// width, height, format, type, offset.
+    pub const OP_READ_PIXELS_PBO: u16 = 0x0714;
+
+    /// `glGenSamplers(n, names)`: u32 n, u32 names[n].
+    pub const OP_GEN_SAMPLERS: u16 = 0x0800;
+    /// `glDeleteSamplers(n, names)`: u32 n, u32 names[n].
+    pub const OP_DELETE_SAMPLERS: u16 = 0x0801;
+    /// `glBindSampler(unit, sampler)`: two u32.
+    pub const OP_BIND_SAMPLER: u16 = 0x0802;
+    /// `glSamplerParameteri(sampler, pname, param)`: u32, u32, i32.
+    pub const OP_SAMPLER_PARAMETERI: u16 = 0x0803;
+    /// `glSamplerParameterf(sampler, pname, param)`: u32, u32, f32.
+    pub const OP_SAMPLER_PARAMETERF: u16 = 0x0804;
+
+    /// `glFenceSync(condition, flags)`: u32 name (chosen by the encoder),
+    /// u32 condition, u32 flags.
+    pub const OP_FENCE_SYNC: u16 = 0x0900;
+    /// `glDeleteSync(sync)`: u32 name.
+    pub const OP_DELETE_SYNC: u16 = 0x0901;
+    /// `glWaitSync(sync, flags, timeout)`: u32 name, u32 flags. The timeout
+    /// must be `GL_TIMEOUT_IGNORED`, so it is not encoded.
+    pub const OP_WAIT_SYNC: u16 = 0x0902;
 
     // --- sync query op tags (used in GlQueryInfo.op) -----------------------
 
@@ -4780,6 +4872,21 @@ pub mod gl {
     /// `glFinish`: no input, no output. The reply is sent only after the host
     /// has executed every earlier command and `finish()`ed the context.
     pub const QOP_FINISH: u32 = 0x0E;
+    /// `glGetStringi(name, index)`: in u32 name, u32 index; out u32 strLen,
+    /// u8 str[strLen]. Fails with `-EINVAL` for an index out of range.
+    pub const QOP_GET_STRINGI: u32 = 0x12;
+    /// A read of a buffer's store, for `glMapBufferRange(GL_MAP_READ_BIT)`:
+    /// in u32 target, u32 offset, u32 length; out u8 data[length]. Lengths
+    /// above `MAX_QUERY_OUT_LEN` are read in several queries.
+    pub const QOP_GET_BUFFER_SUB_DATA: u32 = 0x13;
+    /// `glGetUniformBlockIndex(program, name)`: in u32 program, u32 nameLen,
+    /// u8 name[nameLen]; out u32 index.
+    pub const QOP_GET_UNIFORM_BLOCK_INDEX: u32 = 0x14;
+    /// One non-blocking `glClientWaitSync` poll: in u32 name, u32 flags; out
+    /// u32 status. The encoder repeats it until the caller's timeout.
+    pub const QOP_CLIENT_WAIT_SYNC: u32 = 0x15;
+    /// `glGetSynciv(sync, pname)`: in u32 name, u32 pname; out i32 value.
+    pub const QOP_GET_SYNCIV: u32 = 0x16;
 
     pub const OP_BLEND_EQUATION: u16 = 0x000F;
     pub const OP_BLEND_COLOR: u16 = 0x0010;
@@ -5541,6 +5648,14 @@ pub mod input {
     pub const ABS_X: u16 = 0x00;
     pub const ABS_Y: u16 = 0x01;
 
+    /// `ABS_X` / `ABS_Y` maximum of the pointer device. The range is fixed,
+    /// like a virtual USB tablet's, and independent of the display mode:
+    /// libinput and SDL read it once at device open and scale every
+    /// position by it, so a range that followed the display would misplace
+    /// the pointer after each mode change. The host scales its position to
+    /// this range.
+    pub const POINTER_ABS_MAX: i32 = 32767;
+
     /// Canonical `(name, value)` index of every evdev event-type / SYN /
     /// KEY / BTN / REL / ABS code above. The individual `pub const`s
     /// remain the sole source of truth for the values; this table only
@@ -5858,10 +5973,10 @@ pub mod input {
     pub struct WpkInputAbsinfo {
         pub value: i32,     // 0   current value
         pub minimum: i32,   // 4
-        pub maximum: i32,   // 8   canvas width-1 / height-1
+        pub maximum: i32,   // 8   POINTER_ABS_MAX
         pub fuzz: i32,      // 12
         pub flat: i32,      // 16
-        pub resolution: i32,// 20  1 unit per pixel
+        pub resolution: i32,// 20
                             // total: 24
     }
 }

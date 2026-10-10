@@ -22,8 +22,6 @@ import { tryResolveBinary } from "../src/binary-resolver";
 
 const fixtureBinary = tryResolveBinary("programs/libinput_smoke.wasm");
 
-const CANVAS_W = 1024;
-const CANVAS_H = 768;
 
 const EV_SYN = 0x00;
 const EV_KEY = 0x01;
@@ -76,7 +74,6 @@ describe("libinput — path backend accepts a device and decodes a key", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         let pid = 0;
         const exitPromise = host.spawn(programBytes, ["libinput_smoke"], {

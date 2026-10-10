@@ -47,8 +47,6 @@ const dashBin = tryResolveBinary("programs/dash.wasm");
 const hasBinaries =
   !!compositorBin && !!footBin && !!dashBin && existsSync(dashBin!);
 
-const CANVAS_W = 1920;
-const CANVAS_H = 1080;
 
 // linux/input-event-codes.h
 const EV_SYN = 0x00;
@@ -132,7 +130,6 @@ describe("foot — upstream terminal on wlcompositor + the ported font stack", (
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle"],

@@ -46,6 +46,7 @@ includedir=${prefix}/include
 Name: egl
 Description: Kandelo wasm EGL userspace shim
 Version: 1.0.0
+Requires.private: glesv2
 Libs: -L${libdir} -lEGL
 Cflags: -I${includedir}
 EOF
