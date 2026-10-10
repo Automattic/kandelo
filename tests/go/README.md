@@ -121,7 +121,8 @@ the small C-call program in `cgo/main.go`:
 scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/cgo-probe.wasm tests/go/cgo/main.go'
 ```
 
-The published package revision still fails at pointer-size recognition.
+The pinned `go-hello` package now uses the callback-capable fork revision,
+although that package itself builds only a pure-Go program.
 The adjacent fork's experimental cgo frontend and linker now execute this
 fixture on the main and a second Go M. It checks `C.abs`, three scalar
 arguments, C pointer arguments in first and middle positions, and independent
@@ -130,8 +131,8 @@ that C `getenv` sees the initial process environment and Go
 `os.Setenv`/`os.Unsetenv` changes, including across a Go GC. The raw module
 validates, fork-instruments, and runs as an ABI-stamped Kandelo process on Node and
 Chromium with exit 0 and no diagnostics. This is narrow Go-to-C coverage,
-not general cgo support: Go-owned callbacks work, but C-created pthreads
-cannot enter Go, and secure startup and PHP initialization remain incomplete.
+not general cgo support: Go-owned and C-created-pthread callbacks pass focused
+process probes, but secure startup and PHP initialization remain incomplete.
 
 ```sh
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-c-abs.wasm ./tests/go/cgo && wasm-validate --enable-threads .context/go-c-abs.wasm'
@@ -145,9 +146,9 @@ A compile-only pass does not establish working interoperability. The
 Go-owned callback fixture at `cgo/callback-same` now runs on Node and
 Chromium: it yields, waits on a timer, calls C again, and repeats on a
 second Go M. The combined pthread fixture links and validates but its
-C-created callback has no attached Go M or channel and fails its process
-gate. That path must pass on Node and Chromium before a FrankenPHP build
-is meaningful. See the
+C-created callback now attaches to a Go M and channel and passes focused Node
+and Chromium process gates, including a yield, timer wait, repeat callback,
+and second Go M. That is a prerequisite, not a FrankenPHP build. See the
 dated WordPress pivot in the Go implementation progress log.
 
 ```sh
@@ -179,16 +180,18 @@ calling thread and a C-created pthread entering Go:
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/cgo-callback-probe.wasm ./tests/go/cgo/callback'
 ```
 
-It is a deliberately unpassed gate, not part of the passing Go suite. An
+It passes as an opt-in Node and Chromium process gate after fork
+instrumentation and ABI stamping. An
 experimental `cmd/cgo` frontend in the adjacent fork parses the
 Wasm debug object far enough for both fixtures to reach the Go linker. The
 adjacent fork's internal linker now reads C function bodies, initialized C
 data, active table elements, and the CODE relocations reached by runtime/cgo.
 The combined fixture now links and validates after retaining musl local
-function aliases; its C-created pthread callback still lacks a Go M/P,
-stack, and channel. The Go-owned same-thread callback fixture passes.
-The `go-hello` package is still pinned to the earlier fork revision that
-fails at pointer-size recognition. Do not use a successful cgo frontend or
+function aliases; its C-created pthread callback now attaches to a Go M/P,
+bootstrap stack, and channel. This is still narrow callback coverage, not
+general PHP embedding.
+The `go-hello` package pin now follows the callback-capable fork revision,
+but its pure-Go artifact is not evidence of PHP support. Do not use a successful cgo frontend or
 function-body parse as PHP or FrankenPHP support.
 
 The intermediate Go/C object-link test is reproducible with:
