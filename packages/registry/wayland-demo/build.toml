@@ -80,4 +80,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = ""
-revision    = 6
+revision    = 7
