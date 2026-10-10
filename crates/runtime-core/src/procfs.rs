@@ -1015,7 +1015,7 @@ pub fn write_virtual_dirents64(
 
 /// Build the list of directory entries for a procfs directory path.
 /// Returns (name, d_type, ino) tuples.
-fn dir_entries(
+pub(crate) fn dir_entries(
     proc: &Process,
     path: &[u8],
     pids: &[u32],
@@ -1088,6 +1088,31 @@ fn dir_entries(
     }
 
     Ok(entries)
+}
+
+/// Inspect a directory using its target process's live descriptors and the
+/// same process-table membership used by guest getdents64.
+#[cfg(any(test, target_arch = "wasm32", target_arch = "wasm64"))]
+pub(crate) fn directory_entries_for_pid(
+    table: &crate::process_table::ProcessTable,
+    pid: u32,
+    path: &[u8],
+) -> Result<Vec<(Vec<u8>, u8, u64)>, Errno> {
+    let proc = table.get(pid).ok_or(Errno::ENOENT)?;
+    dir_entries(proc, path, &table.procfs_pids())
+}
+
+/// Called only under the serialized kernel entry used for host inspection.
+#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+pub(crate) fn inspection_directory_entries(
+    proc: &Process,
+    path: &[u8],
+) -> Result<Vec<(Vec<u8>, u8, u64)>, Errno> {
+    let entry = match_procfs(path, proc.pid).ok_or(Errno::ENOENT)?;
+    let pid = entry_pid(&entry).unwrap_or(proc.pid);
+    // SAFETY: inspection and syscall ingress share the kernel entry gate.
+    let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
+    directory_entries_for_pid(table, pid, path)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1247,6 +1272,36 @@ mod tests {
         assert_eq!(
             procfs_getdents64_for_pid(&table, pid + 1, b"/proc/101/fd", &mut [], 0),
             Err(Errno::ENOENT),
+        );
+    }
+
+    #[test]
+    fn inspection_entries_use_target_process_and_live_membership() {
+        let mut table = crate::process_table::ProcessTable::new();
+        table.ensure_init();
+        let pid = table.create_process().unwrap();
+        let root = directory_entries_for_pid(&table, 1, b"/proc").unwrap();
+        assert!(root.iter().any(|(name, _, _)| name == b"100"));
+        assert!(
+            directory_entries_for_pid(&table, 1, b"/proc/1/fd")
+                .unwrap()
+                .is_empty()
+        );
+        let fd_names = directory_entries_for_pid(&table, pid, b"/proc/100/fd").unwrap();
+        assert_eq!(
+            fd_names
+                .iter()
+                .map(|(name, _, _)| name.as_slice())
+                .collect::<Vec<_>>(),
+            [b"0", b"1", b"2"]
+        );
+        assert_eq!(
+            directory_entries_for_pid(&table, pid + 1, b"/proc/101/fd"),
+            Err(Errno::ENOENT)
+        );
+        assert_eq!(
+            directory_entries_for_pid(&table, pid, b"/proc/100/status"),
+            Err(Errno::ENOTDIR)
         );
     }
 

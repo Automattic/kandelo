@@ -2926,10 +2926,26 @@ pub fn inspect_namespace_directory(
     }
     check_access(proc, &stat, R_OK | X_OK)?;
     let directory = &resolved.path;
-    if is_procfs_namespace_path(directory)
-        || (is_devfs_namespace_path(directory) && !is_delegated_devfs_path(directory))
-    {
-        return Err(Errno::EOPNOTSUPP);
+    let virtual_entries = if is_procfs_namespace_path(directory) {
+        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+        let entries = crate::procfs::inspection_directory_entries(proc, directory)?;
+        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        let entries = crate::procfs::dir_entries(proc, directory, &[proc.pid])?;
+        Some(entries)
+    } else if crate::devfs::owns_path(directory) {
+        let entry = crate::devfs::match_devfs_dir(directory).ok_or(Errno::ENOTDIR)?;
+        Some(crate::devfs::dir_entries(proc, &entry))
+    } else {
+        None
+    };
+    if let Some(names) = virtual_entries {
+        let mut entries = Vec::new();
+        for (name, _, _) in names {
+            if let Some(entry) = inspect_directory_entry(proc, host, directory, &name)? {
+                entries.push(entry);
+            }
+        }
+        return Ok(entries);
     }
     let handle = if crate::tmpfs::claims_path(directory) {
         crate::tmpfs::opendir(directory)?
@@ -2959,22 +2975,9 @@ pub fn inspect_namespace_directory(
             if name == b"." || name == b".." {
                 continue;
             }
-            let child = directory_entry_path(directory, name);
-            let stat = match namespace_lstat_raw(proc, host, &child) {
-                Ok(stat) => stat,
-                Err(Errno::ENOENT | Errno::ENOTDIR) => continue,
-                Err(error) => return Err(error),
-            };
-            let target = if stat.st_mode & S_IFMT == S_IFLNK {
-                match namespace_readlink_raw(proc, host, &child) {
-                    Ok(target) => Some(target),
-                    Err(Errno::ENOENT | Errno::EINVAL | Errno::ENOTDIR) => None,
-                    Err(error) => return Err(error),
-                }
-            } else {
-                None
-            };
-            entries.push((name.to_vec(), stat, target));
+            if let Some(entry) = inspect_directory_entry(proc, host, directory, name)? {
+                entries.push(entry);
+            }
         }
         Ok(entries)
     })();
@@ -2993,6 +2996,44 @@ pub fn inspect_namespace_directory(
         }
         Err(error) => Err(error),
     }
+}
+
+/// Copy metadata without opening devices or allocating inspection descriptors.
+/// Devfs aliases use the guest's lstat/readlink helpers, including dangling
+/// stdin/stdout/stderr links on the immutable init inspection record.
+fn inspect_directory_entry(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    directory: &[u8],
+    name: &[u8],
+) -> Result<Option<(Vec<u8>, WasmStat, Option<Vec<u8>>)>, Errno> {
+    let child = directory_entry_path(directory, name);
+    if let Some(fd) = match_dev_fd(&child) {
+        return match dev_fd_link_target(proc, &child, fd) {
+            Ok(target) => Ok(Some((
+                name.to_vec(),
+                dev_fd_lstat(proc, &child, fd)?,
+                Some(target.to_vec()),
+            ))),
+            Err(Errno::ENOENT) => Ok(None),
+            Err(error) => Err(error),
+        };
+    }
+    let stat = match namespace_lstat_raw(proc, host, &child) {
+        Ok(stat) => stat,
+        Err(Errno::ENOENT | Errno::ENOTDIR) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let target = if stat.st_mode & S_IFMT == S_IFLNK {
+        match namespace_readlink_raw(proc, host, &child) {
+            Ok(target) => Some(target),
+            Err(Errno::ENOENT | Errno::EINVAL | Errno::ENOTDIR) => None,
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
+    Ok(Some((name.to_vec(), stat, target)))
 }
 
 fn ensure_host_mutable_namespace_path(path: &[u8]) -> Result<(), Errno> {
@@ -20277,6 +20318,51 @@ mod tests {
         );
         sys_unlink(&mut guest, &mut host, b"/tmp/inspect-live/data").unwrap();
         sys_rmdir(&mut guest, &mut host, b"/tmp/inspect-live").unwrap();
+    }
+
+    #[test]
+    fn inspection_lists_virtual_names_without_opening_devices_or_init_fds() {
+        let mut table = crate::process_table::ProcessTable::new();
+        table.ensure_init();
+        let inspector = table.get(crate::process_table::SYNTHETIC_INIT_PID).unwrap();
+        let mut host = MockHostIO::new();
+        let proc = inspect_namespace_directory(inspector, &mut host, b"/proc").unwrap();
+        assert!(proc.iter().any(|(name, _, _)| name == b"1"));
+        assert_eq!(
+            proc.iter()
+                .find(|(name, _, _)| name == b"self")
+                .unwrap()
+                .2
+                .as_deref(),
+            Some(b"1".as_slice())
+        );
+        let dev = inspect_namespace_directory(inspector, &mut host, b"/dev").unwrap();
+        let stdin = dev.iter().find(|(name, _, _)| name == b"stdin").unwrap();
+        assert_eq!(stdin.1.st_mode & S_IFMT, S_IFLNK);
+        assert_eq!(stdin.1.st_size, 9);
+        assert_eq!(stdin.2.as_deref(), Some(b"/dev/fd/0".as_slice()));
+        assert!(
+            dev.iter()
+                .any(|(name, stat, _)| name == b"null" && stat.st_mode & S_IFMT == S_IFCHR)
+        );
+        assert!(
+            inspect_namespace_directory(inspector, &mut host, b"/dev/fd")
+                .unwrap()
+                .is_empty()
+        );
+        for path in [b"/dev/input".as_slice(), b"/dev/dri", b"/dev/kandelo"] {
+            assert!(
+                !inspect_namespace_directory(inspector, &mut host, path)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert!(inspector.dir_streams.is_empty());
+        assert!(
+            host.opendir_paths
+                .iter()
+                .all(|path| !is_procfs_namespace_path(path) && !is_devfs_namespace_path(path))
+        );
     }
 
     #[test]

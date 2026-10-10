@@ -165,7 +165,10 @@ pub fn devfs_getdents64(
 }
 
 /// Build directory entries for a devfs directory.
-fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u8>, u8, u64)> {
+pub(crate) fn dir_entries(
+    proc: &crate::process::Process,
+    entry: &DevfsEntry,
+) -> Vec<(Vec<u8>, u8, u64)> {
     let mut entries = Vec::new();
 
     match entry {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import { virtualInspection } from "./support/virtual-inspection";
 import { inspectionImage, INSPECTION_MUTATION } from "./support/inspection-image";
 
 const hosts: NodeKernelHost[] = [];
@@ -27,6 +28,43 @@ async function machine(large = false, foreign = false): Promise<NodeKernelHost> 
 }
 
 describe("worker-side VFS listing and stat", () => {
+  it("inspects live procfs descriptors and device entries through guest close and exit", async () => {
+    const listeners = new Map<number, (data: Uint8Array) => void>();
+    const buffered = new Map<number, Uint8Array[]>();
+    const host = new NodeKernelHost({ rootfsImage: await inspectionImage(), onPtyOutput: (pid, data) => {
+      const listener = listeners.get(pid);
+      if (listener) listener(data);
+      else buffered.set(pid, [...(buffered.get(pid) ?? []), data]);
+    } });
+    hosts.push(host);
+    await host.init();
+    const result = await virtualInspection(host, (pid, listener) => {
+      listeners.set(pid, listener);
+      for (const data of buffered.get(pid) ?? []) listener(data);
+      buffered.delete(pid);
+    });
+    expect(result.status).toBe(0);
+    expect(result.proc!.find((entry) => entry.name === String(result.pid))).toMatchObject({ mode: 0o040555 });
+    expect(result.proc!.find((entry) => entry.name === "self")).toMatchObject({ mode: 0o120777, target: "1" });
+    expect(result.process!.find((entry) => entry.name === "cwd")).toMatchObject({ mode: 0o120777, target: "/" });
+    expect(result.fds!.find((entry) => entry.name === "9")).toMatchObject({ mode: 0o120777, target: "/tmp/inspection-open-fd" });
+    expect(result.fdinfo!.find((entry) => entry.name === "9").mode & 0o170000).toBe(0o100000);
+    expect(result.closedFds!.some((entry) => entry.name === "9")).toBe(false);
+    expect(result.closedInfo!.some((entry) => entry.name === "9")).toBe(false);
+    expect(result.initFds).toEqual([]);
+    expect(result.devFds).toEqual([]);
+    expect(result.dev!.find((entry) => entry.name === "stdin")).toMatchObject({ mode: 0o120777, size: 9, target: "/dev/fd/0" });
+    expect(result.dev!.find((entry) => entry.name === "null").mode & 0o170000).toBe(0o020000);
+    expect(result.input!.map((entry) => entry.name)).toEqual(["mice", "event0", "event1"]);
+    expect(result.dri!.map((entry) => entry.name)).toEqual(["card0", "renderD128"]);
+    expect(result.kandelo!.map((entry) => entry.name)).toEqual(["clipboard"]);
+    expect(result.shm).toEqual([]);
+    expect(result.pts!.length).toBe(result.initialPts!.length + 1);
+    expect(result.finalPts).toEqual(result.initialPts);
+    expect(result.finalProc!.some((entry) => entry.name === String(result.pid))).toBe(false);
+    expect(result.vanished).toBeNull();
+  }, 60_000);
+
   it("lists entries without following symlinks, and reports targets and real owners", async () => {
     const host = await machine();
     const entries = await host.readDirFromVfs("/inspection");
