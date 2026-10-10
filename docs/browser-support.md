@@ -1990,11 +1990,14 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | package-built platform rootfs plus shell demo assets; Bash and login are embedded; every other program — sudo, the ordinary command set, and the demo machines' programs — is a first-use package output, and the composer rejects any other program it would embed |
-| WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
+| WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | Preinstalled WordPress and SQLite, with separate nginx/PHP-FPM and FrankenPHP classic service targets |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
-Node, WordPress, and LAMP are optional demo profiles. Their VFS asset imports
+Node, WordPress, WordPress on FrankenPHP, and LAMP are optional demo profiles.
+The two WordPress profiles use the same VFS image but start different dinit
+targets; FrankenPHP executes PHP directly rather than proxying to PHP-FPM.
+Their VFS asset imports
 are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or
 resolver-managed artifact is absent, the browser reports that exact missing

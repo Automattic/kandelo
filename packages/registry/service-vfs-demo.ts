@@ -25,6 +25,7 @@ export interface ServiceVfsImageRef {
 
 export interface BootDinitServiceOptions extends Pick<NodeKernelHostOptions, "onHostDiagnostic"> {
   image: ServiceVfsImageRef;
+  imagePath?: string;
   target?: string;
   maxWorkers?: number;
   maxPages?: number;
@@ -39,7 +40,7 @@ export interface BootedDinitService {
 }
 
 export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Promise<BootedDinitService> {
-  const imagePath = resolveServiceVfsImage(options.image);
+  const imagePath = options.imagePath ?? resolveServiceVfsImage(options.image);
   const image = readFileSync(imagePath);
   // WHY: configuration rewrites are host-side effects derived from imported
   // image state, so reject forged lazy-tree seals before reading or writing it.

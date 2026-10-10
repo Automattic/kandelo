@@ -20,6 +20,7 @@ const { host, exitPromise } = await bootDinitServiceVfs({
     publicFile: "wordpress.vfs.zst",
     buildHint: "./run.sh build wp-vfs",
   },
+  imagePath: process.env.KANDELO_WORDPRESS_FRANKENPHP_IMAGE,
   target: "frankenphp-classic",
   maxWorkers: 12,
   maxPages: 4096,
