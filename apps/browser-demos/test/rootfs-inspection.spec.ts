@@ -48,12 +48,13 @@ test("worker inspection reports native guest writes, mount-crossing links and la
 });
 
 
-test("worker inspection lists live procfs descriptors and devfs through guest close and exit", async ({ page, baseURL }) => {
+test("worker inspection lists live procfs descriptors and devfs through guest close and reaping", async ({ page, baseURL }) => {
   test.setTimeout(120_000);
   const kernelUrl = new URL("/inspection-kernel.wasm", baseURL).href;
   const imageUrl = new URL("/inspection.vfs", baseURL).href;
   await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(resolveBinary("kernel.wasm")) }));
-  await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(await inspectionImage()) }));
+  const image = await inspectionImage();
+  await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
   await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
   await page.waitForFunction(() => (window as any).__testRunnerReady === true);
   const modulePath = fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts", import.meta.url));
@@ -72,9 +73,9 @@ test("worker inspection lists live procfs descriptors and devfs through guest cl
   expect(result.proc!.find((entry) => entry.name === "self")).toMatchObject({ mode: 0o120777, target: "1" });
   expect(result.process!.find((entry) => entry.name === "cwd")).toMatchObject({ mode: 0o120777, target: "/" });
   expect(result.fds!.find((entry) => entry.name === "9")).toMatchObject({ mode: 0o120777, target: "/tmp/inspection-open-fd" });
-    expect(result.fds!.length).toBeGreaterThanOrEqual(803);
-    expect(result.fds!.find((entry) => entry.name === "809")).toMatchObject({ mode: 0o120777, target: "/tmp/inspection-open-fd" });
-    expect(result.fdinfo!.find((entry) => entry.name === "809")!.mode & 0o170000).toBe(0o100000);
+  expect(result.fds!.length).toBeGreaterThanOrEqual(803);
+  expect(result.fds!.find((entry) => entry.name === "809")).toMatchObject({ mode: 0o120777, target: "/tmp/inspection-open-fd" });
+  expect(result.fdinfo!.find((entry) => entry.name === "809")!.mode & 0o170000).toBe(0o100000);
   expect(result.fdinfo!.find((entry) => entry.name === "9")!.mode & 0o170000).toBe(0o100000);
   expect(result.closedFds!.some((entry) => entry.name === "9")).toBe(false);
   expect(result.closedInfo!.some((entry) => entry.name === "9")).toBe(false);
@@ -87,9 +88,9 @@ test("worker inspection lists live procfs descriptors and devfs through guest cl
   expect(result.kandelo!.map((entry) => entry.name)).toEqual(["clipboard"]);
   expect(result.shm).toEqual([]);
   expect(result.pts!.length).toBe(result.initialPts!.length + 2);
-    expect(result.closedPts!.length).toBe(result.initialPts!.length + 1);
-    // The host's implicit master remains open until machine destruction.
-    // Guest-owned master close must remove only its own live device entry.
+  expect(result.closedPts!.length).toBe(result.initialPts!.length + 1);
+  // The host's implicit master remains open until machine destruction.
+  // Guest-owned master close must remove only its own live device entry.
   expect(result.finalPts).toEqual(result.closedPts);
   expect(result.finalProc!.some((entry) => entry.name === String(result.pid))).toBe(false);
   expect(result.vanished).toBeNull();
