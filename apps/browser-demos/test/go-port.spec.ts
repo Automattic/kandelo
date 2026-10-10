@@ -184,6 +184,18 @@ if (process.env.KANDELO_GO_CGO_LINK_TESTS === "1") {
 
 if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
   probes.push({
+    name: "PHP ZTS embed initializes, evaluates, and shuts down in Go cgo",
+    file: "../go-php-embed/probe-instrumented.wasm",
+    argv: ["go-php-embed"],
+    stdout: ["PHP EMBED PASS", "GO PHP EMBED PASS"],
+  });
+  probes.push({
+    name: "cgo links a declared C static archive",
+    file: "../go-static-archive/probe-instrumented.wasm",
+    argv: ["go-cgo-static-archive"],
+    stdout: ["CGO STATIC ARCHIVE PASS"],
+  });
+  probes.push({
     name: "standard cgo calls C with scalar, pointer, and per-M TLS state",
     file: "../go-c-abs-instrumented.wasm",
     argv: ["go-cgo-basic"],

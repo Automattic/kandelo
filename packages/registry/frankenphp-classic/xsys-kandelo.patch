@@ -1,0 +1,25 @@
+diff --git a/cpu/cpu_wasm.go b/cpu/cpu_wasm.go
+--- a/cpu/cpu_wasm.go
++++ b/cpu/cpu_wasm.go
+@@ -2,6 +2,6 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build wasm
++//go:build wasm && !kandelo
+ 
+ package cpu
+diff --git a/cpu/cpu_wasm_kandelo.go b/cpu/cpu_wasm_kandelo.go
+new file mode 100644
+--- /dev/null
++++ b/cpu/cpu_wasm_kandelo.go
+@@ -0,0 +1,9 @@
++//go:build wasm && kandelo
++
++package cpu
++
++const cacheLineSize = 64
++
++func initOptions() {}
++
++func archInit() {}
