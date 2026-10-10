@@ -3,6 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP_DIR="$(mktemp -d)"
+# Vitest reports physical paths; macOS resolves /tmp through /private/tmp.
+TMP_DIR="$(cd "$TMP_DIR" && pwd -P)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # WHY: ordinary files stay in Vitest's deterministic two-way partition while
@@ -1074,7 +1076,7 @@ rm -rf "$FIXTURE/.ci-test-binary-cache"
 prepared_files=(
     target/fixture-host/release/xtask
     local-binaries/kernel.wasm
-    host/wasm/rootfs.vfs
+    host/wasm/rootfs.vfs.zst
     examples/gencat.wasm
     examples/pthread_channel_reuse_test.wasm
     examples/wait_lifecycle_test.wasm
