@@ -1586,13 +1586,31 @@ unrelated `rootDir` errors from the OpenSSL package. The added optional
 `__channel_base` export preserves existing Go and C process behavior, so no
 ABI bump was made. The package pin remains on the earlier pure-Go revision.
 
+**2026-10-09 — first standard-cgo Wasm link, runtime still blocked.**
+Published Go fork commit `fbfffde21d6011b85f34837003c3734bbbfa04da`.
+The linker now resolves absent weak C data to zero, rejects nonempty
+constructor/destructor arrays instead of silently skipping them, and emits
+a typed C-ABI `_cgo_topofstack` wrapper around Go's resumable function.
+The Kandelo-tagged `runtime/cgo/setenv.go` is included. A forced normal
+`CGO_ENABLED=1` build of `C.abs` now emits a Wasm binary, and
+`wasm-validate --enable-threads` accepts the raw module. This is **not a
+working cgo runtime**. `wasm-fork-instrument` rejects the instrumented
+module with `expected valid result type`, so the host refuses the raw
+artifact because its retained `kernel_fork` import requires full fork
+instrumentation. A separate run of the previously emitted instrumented
+artifact reached Go runtime initialization but failed `_cgo_setenv missing`;
+the setenv build-tag fix has not been revalidated in a runnable process.
+`asmcgocall` remains `UNDEF`; no standard Go-to-C call has executed.
+Focused Go linker and cgo frontend tests pass. The Go fork binary is not
+yet repinned in the `go-hello` package; ABI version is unchanged.
+
 Remaining work, in dependency order:
 
-1. Complete the normal cgo link: implement linker-owned init/fini arrays
-   and their symbols, C stack initialization, musl thread-pointer lifecycle,
-   and remaining C object relocations without dummy symbols. Review the
-   experimental Wasm `cmd/cgo` frontend and validate `C.abs` on Node and
-   Chromium through an ABI-stamped Kandelo process.
+1. Make the normal cgo artifact safe and runnable: fix fork instrumentation
+   for the mixed Go/C module, handle retained `kernel_fork` imports and
+   init/fini arrays correctly, initialize the C stack and musl thread
+   pointer, and prove `C.abs` on Node and Chromium through an ABI-stamped
+   Kandelo process. Review the experimental Wasm `cmd/cgo` frontend.
 2. Implement real Go/C ABI transitions (`asmcgocall`, `crosscall2`,
    `cgocallback`), then attach C-created pthreads with a Go M/P and both C
    and Go per-thread channel state. Pass same-thread and pthread callback

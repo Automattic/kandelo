@@ -120,8 +120,9 @@ Continue linker work from the internal Wasm host-object reader, because the
 Go linker already owns Kandelo's final memory, table, exports, and ABI
 marker. The narrow fixture now verifies Go-to-C calls, C static data,
 function-pointer DATA relocation, and per-instance TLS on Node and Chromium.
-The normal `C.abs` build reaches missing linker-owned init/fini-array
-symbols; it is not an executable cgo binary. If the internal path cannot
+The normal `C.abs` build now emits a Wasm binary that validates, but is not
+a runnable cgo program: fork instrumentation fails, and the Go/C adapters
+are not implemented. If the internal path cannot
 preserve C function types, table slots, static data and TLS alongside Go's
 layout, evaluate a
 relocatable-Go-object/external-link design explicitly. Never feed a final
@@ -146,8 +147,11 @@ an initialized `_Thread_local` value, and executes as a Kandelo process on
 Node and Chromium. Direct table tests also prove per-instance TLS isolation
 on shared memory in both engines. It does not exercise `runtime/cgo` or the
 standard Go/C adapters. The normal `C.abs` build discovers SDK libc and
-executable glue without manual linker flags and currently stops at missing
-`__fini_array_end`. Musl/PHP TLS conformance, Go/C adapters, and
+executable glue without manual linker flags. Absent weak init/fini bounds
+resolve to zero, while nonempty constructor arrays fail explicitly until
+their linker-owned layout and execution are implemented. The emitted module
+validates but does not pass the fork-instrumentation or process gates.
+Musl/PHP TLS conformance, Go/C adapters, and
 C-created-thread attachment remain. Do not treat the C shim's `_cgo_topofstack` call as
 a direct call to a Go-resumable function. The C-data path is only one link
 layer.
