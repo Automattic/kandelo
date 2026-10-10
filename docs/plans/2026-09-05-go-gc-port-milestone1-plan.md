@@ -2339,11 +2339,39 @@ with HTTP 302. The resolved Go package VFS launcher again exited 0 with
 zero forks, and direct FrankenPHP again served PHP and a static asset with
 HTTP 200 and no host diagnostics against the rebuilt kernel.
 
+The full focused Go browser matrix passes 102/102 (34 probes each in
+Chromium, Firefox, and WebKit). Resolved Go package launch and direct
+FrankenPHP PHP/static HTTP pass 6/6 across those browsers. The focused
+Node HostFileSystem path-resolution suite passes 9/9; the ABI snapshot
+check passes after the commit.
+
+The rebuilt-image WordPress/FrankenPHP direct kernel-host request, browser
+homepage/admin flow, and Node-host admin counterpart pass 3/3 in Chromium.
+The first UI run loaded a stale Vite optimized React dependency and showed
+a blank page; moving the generated `.vite` cache aside and rerunning all
+three tests on a fresh cache resolved that runner failure. Neither PHP nor
+the Kandelo kernel reported a failure in that trace.
+
+The live source-only browser profile loaded this exact image at the
+`wordpress-frankenphp` route: Chromium reported HTTP 200, a running machine,
+and the preinstalled "WordPress on Kandelo" homepage. Its companion Node
+server remained available at `http://localhost:3000/`.
+The fresh full Open POSIX run against this renamed-dot kernel completed
+with 174 PASS, three documented XFAIL, two SKIP, and zero unexpected
+failures (179 cases total).
+
 The remaining Go/C platform gates, in recommended order, are:
 
 1. Close the remaining upstream `os.Root` filesystem failures at their
    owning layers: SharedFS sub-millisecond timestamps, Node/macOS
    symlink-source `linkat`, and stable dirfd identity after rename.
+   SharedFS stores integer-millisecond inode times and the host stat bridge
+   currently transports millisecond numbers, so exact `Chtimes` requires
+   coordinated storage and stat changes. Node's native hard-link call can
+   follow the source symlink despite kernel no-follow resolution. `openat`
+   currently resolves through the directory OFD's remembered pathname, so
+   a correct rename-after-open fix needs stable object identity rather than
+   rewriting a single process's cached path.
    Rerun the whole `TestRoot*` sweep on Node and all three browsers, staging
    source-tree fixtures rather than treating missing testdata as a pass.
 2. Expand Go standard-library and runtime conformance beyond the selected
