@@ -47,9 +47,15 @@ const OPTIONAL_WEBGL_TO_GLES_EXTENSIONS = [
     webgl: ["EXT_float_blend"],
     gles: ["GL_EXT_float_blend"],
   },
+  {
+    webgl: ["EXT_texture_filter_anisotropic"],
+    gles: ["GL_EXT_texture_filter_anisotropic"],
+  },
 ] as const;
 
-export function getGlesExtensionString(gl: MaybeExtensionProvider): string {
+/** The GLES extensions this context supports, in `glGetStringi` order.
+ *  Querying a WebGL extension enables it, so each listed one is usable. */
+export function getGlesExtensions(gl: MaybeExtensionProvider): string[] {
   const extensions = new Set<string>(WEBGL2_CORE_GLES2_EXTENSIONS);
   if (typeof gl.getExtension === "function") {
     for (const group of OPTIONAL_WEBGL_TO_GLES_EXTENSIONS) {
@@ -58,5 +64,9 @@ export function getGlesExtensionString(gl: MaybeExtensionProvider): string {
       }
     }
   }
-  return [...extensions].sort().join(" ");
+  return [...extensions].sort();
+}
+
+export function getGlesExtensionString(gl: MaybeExtensionProvider): string {
+  return getGlesExtensions(gl).join(" ");
 }

@@ -607,6 +607,10 @@ name = "wayland-demo"
 class = "user-software"
 
 [[packages]]
+name = "wgpu-window"
+class = "user-software"
+
+[[packages]]
 name = "sdl2-mixer"
 class = "platform"
 

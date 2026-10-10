@@ -6,7 +6,7 @@
 # librsvg is a C/GObject API over a Rust core. Upstream's meson build
 # configures the C side and runs `cargo cbuild` (cargo-c) to compile the
 # `librsvg-c` crate as a static library for the Rust target named by
-# -Dtriplet. rust-build-env.sh (shared with the rsvg-convert package)
+# -Dtriplet. sdk/rust/build-env.sh (shared with the other Rust packages)
 # prepares what that build expects from a Rust toolchain: a private
 # sysroot with a prebuilt std for wasm32-unknown-kandelo-std, the crate
 # graph with `libc` replaced by Kandelo's fork and patches/ applied, and
@@ -64,9 +64,9 @@ echo "==> Staging verified librsvg $LIBRSVG_VERSION source..."
 kandelo_package_stage_verified_source librsvg "$SRC_DIR" "$VERIFIED_SOURCE_DIR" \
     "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
 
-# shellcheck source=rust-build-env.sh
-source "$SCRIPT_DIR/rust-build-env.sh"
-librsvg_rust_build_env "$REPO_ROOT" "$SRC_DIR" "$WORK_DIR" "$DEP_PKG_CONFIG_PATH"
+# shellcheck source=../../../sdk/rust/build-env.sh
+source "$REPO_ROOT/sdk/rust/build-env.sh"
+kandelo_rust_build_env "$SRC_DIR" "$WORK_DIR" "$DEP_PKG_CONFIG_PATH" "$SCRIPT_DIR/patches"
 
 # --- Meson ---------------------------------------------------------------
 # meson.build looks up `rustc` to ask for the target's native static
@@ -75,7 +75,7 @@ librsvg_rust_build_env "$REPO_ROOT" "$SRC_DIR" "$WORK_DIR" "$DEP_PKG_CONFIG_PATH
 RUST_MACHINE_FILE="$WORK_DIR/rust-machine.ini"
 cat > "$RUST_MACHINE_FILE" <<EOF
 [binaries]
-rustc = '$LIBRSVG_RUSTC'
+rustc = '$KANDELO_RUSTC'
 cargo = '$(command -v cargo)'
 EOF
 
@@ -100,7 +100,7 @@ meson setup "$BUILD_DIR" "$SRC_DIR" \
     --libdir lib \
     -Dbuildtype=release \
     -Doptimization=2 \
-    -Dtriplet="$LIBRSVG_RUST_TARGET" \
+    -Dtriplet="$KANDELO_RUST_TARGET" \
     -Dpixbuf=enabled \
     -Dpixbuf-loader=disabled \
     -Davif=disabled \

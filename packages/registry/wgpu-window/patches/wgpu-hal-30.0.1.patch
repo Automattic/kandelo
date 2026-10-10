@@ -1,0 +1,178 @@
+# wgpu-hal 30.0.1: Kandelo takes the native EGL path, with libEGL and
+# libwayland-egl linked at build time (no dlopen, as on Emscripten), and
+# the GLES limits of WebGL2, which renders its GL: no 16-byte-unaligned
+# buffer bindings, no unrestricted index buffers, no index role change.
+--- a/Cargo.toml	2026-10-08 15:41:34
++++ b/Cargo.toml	2026-10-08 15:41:34
+@@ -269,17 +269,17 @@
+ [build-dependencies.cfg_aliases]
+ version = "0.2.2"
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.js-sys]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))'.dependencies.js-sys]
+ version = "0.3.104"
+ optional = true
+ default-features = true
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.wasm-bindgen]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))'.dependencies.wasm-bindgen]
+ version = "0.2.127"
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies.web-sys]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))'.dependencies.web-sys]
+ version = "0.3.104"
+ features = [
+     "default",
+@@ -488,13 +488,31 @@
+ optional = true
+ default-features = false
+ 
+-[target."cfg(unix)".dependencies.wayland-sys]
++[target.'cfg(all(unix, not(target_os = "kandelo")))'.dependencies.wayland-sys]
+ version = "0.31.3"
+ features = [
+     "client",
+     "dlopen",
+     "egl",
+ ]
++optional = true
++
++[target.'cfg(target_os = "kandelo")'.dependencies.wayland-sys]
++version = "0.31.3"
++features = [
++    "client",
++    "egl",
++]
++optional = true
++
++[target.'cfg(target_os = "kandelo")'.dependencies.khronos-egl]
++version = "6"
++features = ["static"]
++optional = true
++
++[target.'cfg(target_os = "kandelo")'.dependencies.smallvec]
++version = "1.14"
++features = ["union"]
+ optional = true
+ 
+ [target."cfg(windows)".dependencies.bit-set]
+--- a/build.rs
++++ b/build.rs
+@@ -1,12 +1,15 @@
+ fn main() {
+     cfg_aliases::cfg_aliases! {
+-        native: { not(target_arch = "wasm32") },
++        native: { any(not(target_arch = "wasm32"), target_os = "kandelo") },
+         send_sync: { any(
+             not(target_arch = "wasm32"),
++            target_os = "kandelo",
+             all(feature = "fragile-send-sync-non-atomic-wasm", not(target_feature = "atomics"))
+         ) },
+-        webgl: { all(target_arch = "wasm32", not(target_os = "emscripten"), gles) },
++        webgl: { all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo")), gles) },
+         Emscripten: { all(target_os = "emscripten", gles) },
++        // EGL linked at build time rather than loaded with dlopen.
++        static_egl: { all(any(target_os = "emscripten", target_os = "kandelo"), gles) },
+         dx12: { all(target_os = "windows", feature = "dx12") },
+         gles: { all(feature = "gles") },
+         // Within the GL ES backend, use `std` and be Send + Sync only if we are using a target
+@@ -18,7 +21,8 @@
+                 // Accept wasm32-unknown-unknown, which uniquely has a stub `std`
+                 all(target_vendor = "unknown", target_os = "unknown"),
+                 // Accept wasm32-unknown-emscripten and similar, which has a real `std`
+-                target_os = "emscripten"
++                target_os = "emscripten",
++                target_os = "kandelo"
+             )
+         ) },
+         metal: { all(target_vendor = "apple", feature = "metal") },
+--- a/src/gles/adapter.rs	2026-10-08 15:41:34
++++ b/src/gles/adapter.rs	2026-10-08 15:41:34
+@@ -420,12 +420,12 @@
+         }
+         downlevel_flags.set(
+             wgt::DownlevelFlags::BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED,
+-            !(cfg!(any(webgl, Emscripten)) || is_angle),
++            !(cfg!(any(webgl, Emscripten, target_os = "kandelo")) || is_angle),
+         );
+         // see https://registry.khronos.org/webgl/specs/latest/2.0/#BUFFER_OBJECT_BINDING
+         downlevel_flags.set(
+             wgt::DownlevelFlags::UNRESTRICTED_INDEX_BUFFER,
+-            !cfg!(any(webgl, Emscripten)),
++            !cfg!(any(webgl, Emscripten, target_os = "kandelo")),
+         );
+         downlevel_flags.set(
+             wgt::DownlevelFlags::UNRESTRICTED_EXTERNAL_TEXTURE_COPIES,
+@@ -659,7 +659,7 @@
+         );
+         private_caps.set(
+             super::PrivateCapabilities::INDEX_BUFFER_ROLE_CHANGE,
+-            !cfg!(any(webgl, Emscripten)),
++            !cfg!(any(webgl, Emscripten, target_os = "kandelo")),
+         );
+         private_caps.set(
+             super::PrivateCapabilities::GET_BUFFER_SUB_DATA,
+--- a/src/gles/egl.rs
++++ b/src/gles/egl.rs
+@@ -23,12 +23,17 @@
+ const EGL_GL_COLORSPACE_KHR: u32 = 0x309D;
+ const EGL_GL_COLORSPACE_SRGB_KHR: u32 = 0x3089;
+ 
+-#[cfg(not(Emscripten))]
++#[cfg(not(static_egl))]
+ type EglInstance = khronos_egl::DynamicInstance<khronos_egl::EGL1_4>;
+ 
+-#[cfg(Emscripten)]
++#[cfg(static_egl)]
+ type EglInstance = khronos_egl::Instance<khronos_egl::Static>;
+ 
++// Without wayland-sys's `dlopen` feature, `ffi_dispatch!` calls the
++// libwayland-egl functions by name.
++#[cfg(target_os = "kandelo")]
++use wayland_sys::egl::{wl_egl_window_create, wl_egl_window_destroy, wl_egl_window_resize};
++
+ type EglLabel = *const ffi::c_void;
+ 
+ #[allow(clippy::upper_case_acronyms)]
+@@ -725,11 +730,11 @@
+         use raw_window_handle::RawDisplayHandle as Rdh;
+ 
+         profiling::scope!("Init OpenGL (EGL) Backend");
+-        #[cfg(Emscripten)]
++        #[cfg(static_egl)]
+         let egl_result: Result<EglInstance, khronos_egl::Error> =
+             Ok(khronos_egl::Instance::new(khronos_egl::Static));
+ 
+-        #[cfg(not(Emscripten))]
++        #[cfg(not(static_egl))]
+         let egl_result = if cfg!(windows) {
+             unsafe {
+                 khronos_egl::DynamicInstance::<khronos_egl::EGL1_4>::load_required_from_filename(
+@@ -760,10 +765,10 @@
+             client_ext_str.split_whitespace().collect::<Vec<_>>()
+         );
+ 
+-        #[cfg(not(Emscripten))]
++        #[cfg(not(static_egl))]
+         let egl1_5 = egl.upcast::<khronos_egl::EGL1_5>();
+ 
+-        #[cfg(Emscripten)]
++        #[cfg(static_egl)]
+         let egl1_5: Option<&Arc<EglInstance>> = Some(&egl);
+ 
+         let (display, wsi_kind) = match (desc.display.map(|d| d.as_raw()), egl1_5) {
+@@ -1333,10 +1338,10 @@
+                 }
+                 attributes.push(khronos_egl::ATTRIB_NONE as i32);
+ 
+-                #[cfg(not(Emscripten))]
++                #[cfg(not(static_egl))]
+                 let egl1_5 = self.egl.instance.upcast::<khronos_egl::EGL1_5>();
+ 
+-                #[cfg(Emscripten)]
++                #[cfg(static_egl)]
+                 let egl1_5: Option<&Arc<EglInstance>> = Some(&self.egl.instance);
+ 
+                 // Careful, we can still be in 1.4 version even if `upcast` succeeds

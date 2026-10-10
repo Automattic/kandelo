@@ -1,0 +1,139 @@
+# wgpu-types 30.0.1: target_arch = "wasm32" means the browser here;
+# Kandelo is a native, threaded target (Send + Sync wgpu types).
+--- a/Cargo.toml	2026-10-08 15:41:34
++++ b/Cargo.toml	2026-10-08 15:41:34
+@@ -128,12 +128,12 @@
+ [dev-dependencies.serde_json]
+ version = "1.0.143"
+ 
+-[target.'cfg(target_arch = "wasm32")'.dependencies.js-sys]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "kandelo")))'.dependencies.js-sys]
+ version = "0.3.104"
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "kandelo")))'.dependencies.web-sys]
+ version = "0.3.104"
+ features = [
+     "ImageBitmap",
+--- a/src/send_sync.rs
++++ b/src/send_sync.rs
+@@ -2,6 +2,7 @@
+ impl<T: WasmNotSend + WasmNotSync> WasmNotSendSync for T {}
+ #[cfg(any(
+     not(target_arch = "wasm32"),
++    target_os = "kandelo",
+     all(
+         feature = "fragile-send-sync-non-atomic-wasm",
+         not(target_feature = "atomics")
+@@ -10,6 +11,7 @@
+ pub trait WasmNotSend: Send {}
+ #[cfg(any(
+     not(target_arch = "wasm32"),
++    target_os = "kandelo",
+     all(
+         feature = "fragile-send-sync-non-atomic-wasm",
+         not(target_feature = "atomics")
+@@ -18,6 +20,7 @@
+ impl<T: Send> WasmNotSend for T {}
+ #[cfg(not(any(
+     not(target_arch = "wasm32"),
++    target_os = "kandelo",
+     all(
+         feature = "fragile-send-sync-non-atomic-wasm",
+         not(target_feature = "atomics")
+@@ -26,6 +29,7 @@
+ pub trait WasmNotSend {}
+ #[cfg(not(any(
+     not(target_arch = "wasm32"),
++    target_os = "kandelo",
+     all(
+         feature = "fragile-send-sync-non-atomic-wasm",
+         not(target_feature = "atomics")
+@@ -35,6 +39,7 @@
+ 
+ #[cfg(any(
+     not(target_arch = "wasm32"),
++    target_os = "kandelo",
+     all(
+         feature = "fragile-send-sync-non-atomic-wasm",
+         not(target_feature = "atomics")
+@@ -43,6 +48,7 @@
+ pub trait WasmNotSync: Sync {}
+ #[cfg(any(
+     not(target_arch = "wasm32"),
++    target_os = "kandelo",
+     all(
+         feature = "fragile-send-sync-non-atomic-wasm",
+         not(target_feature = "atomics")
+@@ -51,6 +57,7 @@
+ impl<T: Sync> WasmNotSync for T {}
+ #[cfg(not(any(
+     not(target_arch = "wasm32"),
++    target_os = "kandelo",
+     all(
+         feature = "fragile-send-sync-non-atomic-wasm",
+         not(target_feature = "atomics")
+@@ -59,6 +66,7 @@
+ pub trait WasmNotSync {}
+ #[cfg(not(any(
+     not(target_arch = "wasm32"),
++    target_os = "kandelo",
+     all(
+         feature = "fragile-send-sync-non-atomic-wasm",
+         not(target_feature = "atomics")
+--- a/src/texture/external_image.rs	2026-10-08 15:41:34
++++ b/src/texture/external_image.rs	2026-10-08 15:41:34
+@@ -5,7 +5,7 @@
+ ///
+ /// Corresponds to [WebGPU `GPUCopyExternalImageSourceInfo`](
+ /// https://gpuweb.github.io/gpuweb/#dictdef-gpuimagecopyexternalimage).
+-#[cfg(all(target_arch = "wasm32", feature = "web"))]
++#[cfg(all(target_arch = "wasm32", not(target_os = "kandelo"), feature = "web"))]
+ #[derive(Clone, Debug)]
+ pub struct CopyExternalImageSourceInfo {
+     /// The texture to be copied from. The copy source data is captured at the moment
+@@ -28,7 +28,7 @@
+ ///
+ /// Corresponds to the [implicit union type on WebGPU `GPUCopyExternalImageSourceInfo.source`](
+ /// https://gpuweb.github.io/gpuweb/#dom-gpuimagecopyexternalimage-source).
+-#[cfg(all(target_arch = "wasm32", feature = "web"))]
++#[cfg(all(target_arch = "wasm32", not(target_os = "kandelo"), feature = "web"))]
+ #[derive(Clone, Debug)]
+ pub enum ExternalImageSource {
+     /// Copy from a previously-decoded image bitmap.
+@@ -49,7 +49,7 @@
+     VideoFrame(web_sys::VideoFrame),
+ }
+ 
+-#[cfg(all(target_arch = "wasm32", feature = "web"))]
++#[cfg(all(target_arch = "wasm32", not(target_os = "kandelo"), feature = "web"))]
+ impl ExternalImageSource {
+     /// Gets the pixel, not css, width of the source.
+     pub fn width(&self) -> u32 {
+@@ -78,7 +78,7 @@
+     }
+ }
+ 
+-#[cfg(all(target_arch = "wasm32", feature = "web"))]
++#[cfg(all(target_arch = "wasm32", not(target_os = "kandelo"), feature = "web"))]
+ impl core::ops::Deref for ExternalImageSource {
+     type Target = js_sys::Object;
+ 
+@@ -97,6 +97,7 @@
+ 
+ #[cfg(all(
+     target_arch = "wasm32",
++    not(target_os = "kandelo"),
+     feature = "web",
+     feature = "fragile-send-sync-non-atomic-wasm",
+     not(target_feature = "atomics")
+@@ -104,6 +105,7 @@
+ unsafe impl Send for ExternalImageSource {}
+ #[cfg(all(
+     target_arch = "wasm32",
++    not(target_os = "kandelo"),
+     feature = "web",
+     feature = "fragile-send-sync-non-atomic-wasm",
+     not(target_feature = "atomics")

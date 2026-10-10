@@ -12,7 +12,7 @@
 
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 2u
+#define WPK_GL_OP_VERSION 3u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -53,6 +53,9 @@
 #define OP_BIND_BUFFER                 0x0102u
 #define OP_BUFFER_DATA                 0x0103u
 #define OP_BUFFER_SUB_DATA             0x0104u
+#define OP_COPY_BUFFER_SUB_DATA        0x0105u
+#define OP_BIND_BUFFER_RANGE           0x0106u
+#define OP_BIND_BUFFER_BASE            0x0107u
 
 #define OP_GEN_TEXTURES                0x0200u
 #define OP_DELETE_TEXTURES             0x0201u
@@ -62,6 +65,12 @@
 #define OP_TEX_PARAMETERI              0x0205u
 #define OP_ACTIVE_TEXTURE              0x0206u
 #define OP_GENERATE_MIPMAP             0x0207u
+#define OP_TEX_STORAGE_2D              0x020Du
+#define OP_TEX_STORAGE_3D              0x020Eu
+#define OP_TEX_SUB_IMAGE_3D            0x020Fu
+#define OP_TEX_SUB_IMAGE_2D_PBO        0x0210u
+#define OP_TEX_SUB_IMAGE_3D_PBO        0x0211u
+#define OP_COPY_TEX_SUB_IMAGE_3D       0x0212u
 
 #define OP_CREATE_SHADER               0x0300u
 #define OP_SHADER_SOURCE               0x0301u
@@ -74,6 +83,7 @@
 #define OP_BIND_ATTRIB_LOCATION        0x0308u
 #define OP_DELETE_PROGRAM              0x0309u
 #define OP_DETACH_SHADER               0x030Au
+#define OP_UNIFORM_BLOCK_BINDING       0x030Bu
 
 #define OP_UNIFORM1I                   0x0400u
 #define OP_UNIFORM1F                   0x0401u
@@ -82,6 +92,8 @@
 #define OP_UNIFORM4F                   0x0404u
 #define OP_UNIFORM_MATRIX4FV           0x0405u
 #define OP_UNIFORM4FV                  0x0406u
+#define OP_UNIFORM_UIV                 0x0410u
+#define OP_UNIFORM_MATRIX_FV           0x0411u
 
 #define OP_ENABLE_VERTEX_ATTRIB_ARRAY  0x0500u
 #define OP_DISABLE_VERTEX_ATTRIB_ARRAY 0x0501u
@@ -89,6 +101,10 @@
 #define OP_DRAW_ARRAYS                 0x0503u
 #define OP_DRAW_ELEMENTS               0x0504u
 #define OP_VERTEX_ATTRIB_4FV           0x0505u
+#define OP_VERTEX_ATTRIB_I_POINTER     0x0506u
+#define OP_VERTEX_ATTRIB_DIVISOR       0x0507u
+#define OP_DRAW_ARRAYS_INSTANCED       0x0508u
+#define OP_DRAW_ELEMENTS_INSTANCED     0x0509u
 
 #define OP_GEN_VERTEX_ARRAYS           0x0600u
 #define OP_DELETE_VERTEX_ARRAYS        0x0601u
@@ -102,6 +118,25 @@
 #define OP_RENDERBUFFER_STORAGE        0x0705u
 #define OP_FRAMEBUFFER_RENDERBUFFER    0x0706u
 #define OP_DELETE_FRAMEBUFFERS         0x0707u
+#define OP_FRAMEBUFFER_TEXTURE_LAYER   0x070Cu
+#define OP_RENDERBUFFER_STORAGE_MULTISAMPLE 0x070Du
+#define OP_BLIT_FRAMEBUFFER            0x070Eu
+#define OP_INVALIDATE_FRAMEBUFFER      0x070Fu
+#define OP_CLEAR_BUFFERFV              0x0710u
+#define OP_CLEAR_BUFFERIV              0x0711u
+#define OP_CLEAR_BUFFERUIV             0x0712u
+#define OP_CLEAR_BUFFERFI              0x0713u
+#define OP_READ_PIXELS_PBO             0x0714u
+
+#define OP_GEN_SAMPLERS                0x0800u
+#define OP_DELETE_SAMPLERS             0x0801u
+#define OP_BIND_SAMPLER                0x0802u
+#define OP_SAMPLER_PARAMETERI          0x0803u
+#define OP_SAMPLER_PARAMETERF          0x0804u
+
+#define OP_FENCE_SYNC                  0x0900u
+#define OP_DELETE_SYNC                 0x0901u
+#define OP_WAIT_SYNC                   0x0902u
 
 #define OP_BLEND_EQUATION 0x000Fu
 #define OP_BLEND_COLOR 0x0010u
@@ -155,6 +190,14 @@
 #define QOP_CHECK_FB_STATUS       0x0Cu
 #define QOP_GET_SHADER_PRECISION_FORMAT 0x0Du
 #define QOP_FINISH                0x0Eu
+#define QOP_GET_STRINGI           0x12u
+#define QOP_GET_BUFFER_SUB_DATA   0x13u
+#define QOP_GET_UNIFORM_BLOCK_INDEX 0x14u
+#define QOP_CLIENT_WAIT_SYNC      0x15u
+#define QOP_GET_SYNCIV            0x16u
+
+/* Mirrors shared::gl::MAX_QUERY_OUT_LEN: larger reads are split. */
+#define WPK_GL_MAX_QUERY_OUT_LEN  (64u * 1024u)
 
 /* Marshalled ioctl arg structs — must match shared::gl byte-for-byte. */
 struct gl_submit_info { uint32_t offset; uint32_t length; };
@@ -175,5 +218,7 @@ struct gl_query_info {
 int      _wpk_gl_fd(void);
 uint8_t *_wpk_gl_cmdbuf_base(void);
 void     _wpk_gl_flush(void);
+/* The EGL_CONTEXT_CLIENT_VERSION of the current context (2 or 3). */
+uint32_t _wpk_gl_client_version(void);
 
 #endif
