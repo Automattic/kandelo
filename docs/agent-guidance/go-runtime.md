@@ -110,8 +110,10 @@ Trace the whole link path before changing flags or package recipes:
 - Go's Wasm functions use the runtime's resumable call convention, while
   the SDK's C functions use the Wasm C ABI. A final link also needs
   real Go-to-C and C-to-Go adapters. `asmcgocall` now makes a typed C call
-  on Go-created Ms; `cgocallback` remains `UNDEF`, and the typed C `crosscall2`
-  entry deliberately traps. FrankenPHP additionally
+  on Go-created Ms. A Wasm-exported `crosscall2` wrapper resumes
+  Go-owned callback goroutines across scheduler yields; the generic
+  `cgocallback` assembly entry remains `UNDEF`, and C-created threads
+  cannot attach. FrankenPHP additionally
   starts PHP threads with C `pthread_create`, so callbacks from a thread
   Go did not create must attach to a valid M, scheduler P, and per-thread
   Kandelo syscall channel. A same-thread callback alone is insufficient.
@@ -123,9 +125,10 @@ function-pointer DATA relocation, and per-instance TLS on Node and Chromium.
 The normal `C.abs` build now validates, fork-instruments, and runs through
 an ABI-stamped Kandelo process on Node and Chromium, including scalar and
 pointer argument frames and distinct musl state on a second Go M. The
-same-thread callback fixture links but traps at `crosscall2`; the combined
-pthread fixture links and validates after local musl aliases were retained,
-but has not passed its process gate. If the internal path cannot
+Go-owned callback fixture runs on Node and Chromium, including a scheduler
+yield, timer wait, nested Go-to-C call, and second Go M. The combined pthread
+fixture links and validates but its C-created callback cannot enter Go.
+If the internal path cannot
 preserve C function types, table slots, static data and TLS alongside Go's
 layout, evaluate a
 relocatable-Go-object/external-link design explicitly. Never feed a final
@@ -191,10 +194,18 @@ Ms, not the g0 stack top; reusing g0 here would overwrite live Go frames.
 The musl thread pointer and C TLS block are per-instance, not Go goroutine
 state. Full libc startup, security state, constructors, and destructors are
 still unproven in a Go process.
-For callbacks, a typed C trampoline alone is not enough: Go's resumable
-Wasm call convention can unwind for a scheduler transition while the C
-caller expects a synchronous return. Preserve the C call stack and use a
-continuation boundary that resumes the Go callback before returning to C.
+For Go-owned callbacks, a typed Wasm export wrapper keeps the C call stack
+while Go's resumable scheduler completes the callback. Its linker root must
+traverse Go dependencies even when C relocations eagerly marked the wrapper
+reachable. C-created pthreads still enter with no Go `g`, stack pointer,
+or attached M; the Go-owned export wrapper is not a general foreign-thread
+callback adapter.
+The combined pthread fixture currently reaches `runtime.notInitialized`
+on the child and then faults while that Go diagnostic uses an unset Go
+channel. A C-created thread needs a separate Go bootstrap stack before
+entering any Go export, a valid per-instance Go channel, and the
+`needm`/`cgocallback`/`dropm` lifecycle for an extra M. Do not reuse live
+C frames as that Go stack or treat the trap as successful attachment.
 
 For a repeatable C function-and-data link proof, run
 `scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends
@@ -202,7 +213,8 @@ small SDK C objects to a cgo-free Go archive and verifies C-to-C and C-data
 relocations in the final Wasm module on Node and Chromium. After stamping,
 `tests/go/cgo/link-only/run.ts` and the opt-in Chromium case verify the
 assembly Go-to-C call inside a process. This is not the normal cgo build. The
-standard `C.abs` gate now passes; callbacks remain the required runtime gate.
+standard `C.abs` and Go-owned callback gates pass; C-created pthread
+callbacks remain the required runtime gate.
 
 Use the staged probes in `tests/go/README.md`:
 first a C call, then Go-to-C-to-Go on the calling thread, then a C-created

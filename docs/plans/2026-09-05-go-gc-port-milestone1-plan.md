@@ -1677,15 +1677,37 @@ the ABI snapshot check, and all 20 opt-in Chromium Go-port tests pass.
 This establishes Go-created M isolation for simple calls, not C-created
 pthread attachment, callbacks, full libc startup, PHP ZTS, or WordPress.
 
+**2026-10-09 — callbacks into Go-owned threads execute on Node and Chromium.**
+Published Go fork commit `926b131d8d969757cbf0aed04c013c5c67e2868b`.
+The Go fork now supplies a C-ABI `crosscall2` through a Go Wasm export
+wrapper. It resumes the Go callback before returning to the still-live C
+Wasm call stack, including when the callback yields to the scheduler. The
+internal linker maps C relocations to that Go export and traverses Go
+dependencies that C relocation loading had marked reachable before the
+dead-code pass. The Go-owned callback fixture calls back into Go on the
+main and a second Go M. In each callback it yields, waits on a timer, and
+makes a nested Go-to-C call. Forced build, Wasm validation, instrumentation,
+and ABI stamp pass; Node exits 0 with `CGO CALLBACK PASS`, empty stderr,
+and no host diagnostics. The focused Chromium browser-host test and all
+21 opt-in Go-port browser-host tests pass. Focused Go cgo/linker tests,
+forced `js`/`wasip1` builds, and the Kandelo ABI snapshot check pass.
+
+The combined C-created pthread fixture also links and validates but fails
+its Node process gate. The new pthread instance has no Go `g`, Go stack
+pointer, attached M/P, or per-M Go channel. Its call to the Go-owned export
+wrapper hits `runtime.notInitialized`; the attempted Go diagnostic then
+faults on an uninitialized channel. This is a known unsupported path, not
+a passing callback or PHP-ZTS claim. Full libc startup is still missing.
+
 Remaining work, in dependency order:
 
-1. Finish the Go/C runtime: implement real `crosscall2`/`cgocallback`
-   transitions; preserve full libc environment, secure-startup and
-   constructor/destructor behavior; review the mixed-width `cmd/cgo`
-   frontend beyond the passing scalar/pointer cases.
+1. Finish the Go/C runtime: preserve full libc environment,
+   secure-startup and constructor/destructor behavior; review callback
+   safety across scheduling and the mixed-width `cmd/cgo` frontend beyond
+   the passing scalar/pointer cases.
 2. Attach C-created pthreads to a Go M/P with both C and Go per-thread
    channel state. Pass
-   same-thread and pthread callback probes on Node and Chromium with no host
+   pthread callback probes on Node and Chromium with no host
    diagnostics.
 3. Build PHP ZTS embed through the normal SDK/resolver, prove PHP lifecycle,
    port FrankenPHP classic mode, and deliver the WordPress VFS demo without
