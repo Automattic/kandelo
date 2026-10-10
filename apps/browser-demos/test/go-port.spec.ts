@@ -189,6 +189,12 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
     argv: ["go-cgo-basic"],
     stdout: ["CGO ABS PASS"],
   });
+  probes.push({
+    name: "Go-owned M cgo callback yields and calls C again",
+    file: "../go-callback-same-instrumented.wasm",
+    argv: ["go-cgo-callback"],
+    stdout: ["CGO CALLBACK PASS"],
+  });
 }
 
 async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<ProbeResult> {

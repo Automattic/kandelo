@@ -128,7 +128,7 @@ arguments, C pointer arguments in first and middle positions, and independent
 musl pthread identity and `errno` across four worker rounds. The raw module
 validates, fork-instruments, and runs as an ABI-stamped Kandelo process on Node and
 Chromium with exit 0 and no diagnostics. This is narrow Go-to-C coverage,
-not general cgo support: `crosscall2` deliberately traps, C-created pthreads
+not general cgo support: Go-owned callbacks work, but C-created pthreads
 cannot enter Go, and full musl/PHP initialization remains incomplete.
 
 ```sh
@@ -140,10 +140,12 @@ cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS
 ```
 
 A compile-only pass does not establish working interoperability. The
-same-thread callback fixture at `cgo/callback-same` links and validates but
-its Node process traps at `crosscall2`. The combined pthread fixture links
-and validates but has not passed its process gate. Both callbacks must
-pass on Node and Chromium before a FrankenPHP build is meaningful. See the
+Go-owned callback fixture at `cgo/callback-same` now runs on Node and
+Chromium: it yields, waits on a timer, calls C again, and repeats on a
+second Go M. The combined pthread fixture links and validates but its
+C-created callback has no attached Go M or channel and fails its process
+gate. That path must pass on Node and Chromium before a FrankenPHP build
+is meaningful. See the
 dated WordPress pivot in the Go implementation progress log.
 
 ```sh
@@ -151,6 +153,7 @@ scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-callback-same.wasm -o .context/go-callback-same-instrumented.wasm'
 scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-callback-same-instrumented.wasm; stamp_built_program_outputs'
 node --import tsx tests/go/cgo/callback-same/run.ts .context/go-callback-same-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
+cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'Go-owned M cgo callback'
 ```
 
 The separate `cgo/callback` fixture exercises Go-to-C-to-Go calls on the
