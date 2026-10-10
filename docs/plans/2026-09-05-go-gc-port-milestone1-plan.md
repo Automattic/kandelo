@@ -2316,11 +2316,34 @@ platform-conformance evidence. A subsequent clean full run against this
 kernel and host completed with 174 PASS, 3 expected XFAIL, 2 SKIP, and zero
 unexpected failures (179 total).
 
+**2026-10-10 — rename-from-dot parity.** `TestRootConsistencyRename` showed
+plain `os.Rename("dir/.", "dir/other")` could succeed after Kandelo's
+component walker canonicalized `dir/.` to `dir`, while root-relative
+`renameat` correctly returned EINVAL. Both `rename` and `renameat` now reject
+a final `.` before host mutation. The Rust regression passes; all 1,716
+runtime-core unit tests and six doc-tests pass. Upstream
+`TestRootConsistencyRename` passes on Node, as does the 35-case selected
+`os` set; its focused browser probe passes Chromium, Firefox, and WebKit
+(3/3). A fresh full upstream `TestRoot*` Node sweep now has exactly three
+failing top-level tests: `TestRootChtimes`, `TestRootLinkFrom`, and
+`TestRootRenameAfterOpen`. The ABI snapshot check passes. The source-only
+WordPress image must be republished and revalidated after this kernel change.
+
+The source-only WordPress bootstrap subsequently republished the image at
+`local-binaries/source-only-v1/programs/wasm32/wordpress.vfs.zst` (SHA-256
+`c01e8902413bf116467d0aca1bbb8eab856a0964fb8bd436e501e01a223a2fad`,
+52,708,842 bytes). Browser and direct HTTP checks against this exact image
+remain the release gate. The rebuilt-image Node demo subsequently served
+the homepage and login with HTTP 200 and redirected `/wp-admin/` to login
+with HTTP 302. The resolved Go package VFS launcher again exited 0 with
+zero forks, and direct FrankenPHP again served PHP and a static asset with
+HTTP 200 and no host diagnostics against the rebuilt kernel.
+
 The remaining Go/C platform gates, in recommended order, are:
 
-1. Close the upstream `os.Root` filesystem failures at their owning layers:
-   SharedFS sub-millisecond timestamps, Node/macOS symlink-source `linkat`,
-   stable dirfd identity after rename, and root-relative rename/dot parity.
+1. Close the remaining upstream `os.Root` filesystem failures at their
+   owning layers: SharedFS sub-millisecond timestamps, Node/macOS
+   symlink-source `linkat`, and stable dirfd identity after rename.
    Rerun the whole `TestRoot*` sweep on Node and all three browsers, staging
    source-tree fixtures rather than treating missing testdata as a pass.
 2. Expand Go standard-library and runtime conformance beyond the selected

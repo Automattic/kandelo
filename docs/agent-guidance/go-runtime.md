@@ -122,6 +122,10 @@ APIs apply to Kandelo.
   accepted them while browser SharedFS initially returned EFBIG at its
   smaller maximum file size. `lseek` and EOF reads may retain that logical
   position without allocating data, while a write beyond the limit fails.
+- Root-relative rename consistency is a syscall/platform check. Kandelo's
+  component walker canonicalizes `dir/.` to `dir`; `rename` and `renameat`
+  must reject a final `.` before host mutation or the plain-path operation
+  can move the directory while `os.Root.Rename` correctly fails.
 
 Treat changes to memory declarations, Wasm imports/exports, channel layout,
 or syscall semantics as ABI reviews. Follow `docs/agent-guidance/abi.md`:
