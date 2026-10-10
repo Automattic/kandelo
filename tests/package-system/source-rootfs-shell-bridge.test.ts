@@ -615,13 +615,13 @@ describe("canonical source-rootfs shell", () => {
     for (const spec of SHELL_LAZY_BINARY_SPECS) {
       expect(fs.getLazyEntry(spec.vfsPath), spec.id).not.toBeNull();
     }
-    expect(fs.getLazyEntry("/usr/bin/jq")).toMatchObject({
-      url: "kandelo-lazy:programs/jq.wasm",
+    expect(composed.files.find((file) => file.path === "/usr/bin/jq")).toMatchObject({
+      uri: "kandelo-lazy:programs/jq.wasm",
     });
     expect(fs.stat("/usr/bin/jq").mode & 0o777).toBe(0o755);
     expect(fs.readlink("/bin/jq")).toBe("/usr/bin/jq");
-    expect(fs.getLazyEntry("/bin/jq")?.ino).toBe(
-      fs.getLazyEntry("/usr/bin/jq")?.ino,
+    expect(fs.stat("/bin/jq").ino).toBe(
+      fs.stat("/usr/bin/jq").ino,
     );
     // FFmpeg's three programs are lazy files provided by the ffmpeg package.
     for (const id of ["ffmpeg", "ffprobe", "ffplay"]) {
@@ -855,7 +855,7 @@ describe("canonical source-rootfs shell", () => {
         ["asteroids", "Asteroids"], ["bytepath", "BYTEPATH"], ["snkrx", "SNKRX"],
       ].map(([id, label]) => ({id, label, restart: `/usr/local/bin/love /usr/share/love/examples/${id}`})),
     }]);
-    expect(fs.getLazyEntry("/usr/local/bin/love")?.url)
+    expect(composed.files.find((file) => file.path === "/usr/local/bin/love")?.uri)
       .toContain("programs/love/love.wasm");
     expect(fs.exportLazyArchiveEntries()).toContainEqual(expect.objectContaining({
       url: "love-examples.zip", mountPrefix: "/usr",

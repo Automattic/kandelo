@@ -234,18 +234,12 @@ describe("package build input import closure", () => {
       expect(builder).toContain(
         'writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils)',
       );
-      if (packageName === "mariadb-test") {
-        expect(builder).toContain(
-          "const coreutilsRoot = process.env.WASM_POSIX_DEP_COREUTILS_DIR;",
-        );
-        expect(builder).toMatch(
-          /coreutils:\s*new Uint8Array\(readFileSync\(coreutilsRoot\s*\?\s*join\(coreutilsRoot, "coreutils\.wasm"\)\s*:\s*resolveBinary\("programs\/coreutils\.wasm"\)\)\)/,
-        );
-      } else {
-        expect(builder).toMatch(
-          /coreutils:\s*new Uint8Array\(\s*readFileSync\(resolveBinary\("programs\/coreutils\.wasm"\)\)/,
-        );
-      }
+      expect(builder).toContain(
+        "const coreutilsRoot = process.env.WASM_POSIX_DEP_COREUTILS_DIR;",
+      );
+      expect(builder).toMatch(
+        /coreutils:\s*new Uint8Array\(\s*readFileSync\(coreutilsRoot\s*\?\s*join\(coreutilsRoot, "coreutils\.wasm"\)\s*:\s*resolveBinary\("programs\/coreutils\.wasm"\)\)/,
+      );
       expect(builder).not.toContain(
         'tryResolveBinary("programs/coreutils.wasm")',
       );

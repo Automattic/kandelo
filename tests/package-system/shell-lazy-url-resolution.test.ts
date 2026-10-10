@@ -48,8 +48,12 @@ describe("shell lazy deployment URL closure", () => {
     // demo works in one deployment and not the other.
     const map = imageOwnedRuntimeUrlMapper(AUTHORITY);
     for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
+      const member = spec.resolverPath.replace(
+        /^programs\/(?!wasm32\/)/,
+        "programs/wasm32/",
+      );
       expect(map(spec.archiveUrl)).toBe(
-        `https://demo.invalid/a/assets-group/assets/programs/wasm32/${spec.archiveUrl}`,
+        `https://demo.invalid/a/assets-group/assets/${member}`,
       );
     }
   });

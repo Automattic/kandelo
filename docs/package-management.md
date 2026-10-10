@@ -253,6 +253,12 @@ revision 11 composes only declared Kandelo package outputs. Shell revision 29
 extends that exact rootfs package artifact with shell demo assets and records
 the base artifact's digest, byte length, and kernel ABI.
 
+The standalone rootfs builder uses the verified published program tree
+when no artifact authority is selected. An explicit
+`WASM_POSIX_BINARY_RESOLVER_REPO_ROOT` keeps resolution in that repository;
+the current checkout's published tree must not override it. Explicit
+binary directories and resolved output maps likewise retain their inputs.
+
 The rootfs package embeds `login` because the terminal session needs it at
 boot. `sudo-lite`, upstream `sudo`, and the ordinary command set remain lazy
 package outputs. All three privileged commands are installed as root-owned
