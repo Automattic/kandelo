@@ -154,8 +154,11 @@ Node and Chromium. Direct table tests also prove per-instance TLS isolation
 on shared memory in both engines. It does not exercise `runtime/cgo` or the
 standard Go/C adapters. The normal `C.abs` build discovers SDK libc and
 executable glue without manual linker flags. Absent weak init/fini bounds
-resolve to zero, while nonempty constructor arrays fail explicitly until
-their linker-owned layout and execution are implemented. The emitted module
+resolve to zero. The fork now parses standard Wasm `INIT_FUNCS` linking
+metadata, orders C constructors by priority, and runs them after musl
+initialization through a C-ABI function-pointer table. Explicit nonempty
+`.init_array`/`.fini_array` segments still fail until their linker-owned
+layout and execution are implemented. The emitted module
 passes the Node and Chromium process gate with empty stderr and no host
 diagnostics. Musl/PHP TLS conformance, C-to-Go adapters, and
 C-created-thread attachment remain. Do not treat the C shim's `_cgo_topofstack` call as
@@ -198,8 +201,13 @@ pointer frames so C `getenv` observes changes. Keep the libc initializer
 separate from the C process entry archive member, and do not allocate its
 environment table with independent C `mmap`: that collided with the Go
 heap in the combined process. A Node/Chromium cgo probe verifies this
-narrow environment path. Secure-exec behavior and nonempty constructor/
-destructor execution are still unproven in a Go process.
+narrow environment path. Fork commit `dbec8a7` adds the Wasm constructor
+table and a static `__dso_handle` for C destructor registration. The
+constructor fixture verifies priority order and explicitly dispatches a
+registered destructor on Node and Chromium. Go-led secure-exec behavior,
+automatic C exit handlers, and explicit `.init_array`/`.fini_array` layout
+remain unproven. A cgo-disabled mixed C/Go link must reject C constructor
+metadata rather than silently discard it.
 For Go-owned callbacks, a typed Wasm export wrapper keeps the C call stack
 while Go's resumable scheduler completes the callback. Its linker root must
 traverse Go dependencies even when C relocations eagerly marked the wrapper

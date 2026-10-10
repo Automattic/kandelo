@@ -196,6 +196,12 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
     argv: ["go-cgo-callback"],
     stdout: ["CGO CALLBACK PASS"],
   });
+  probes.push({
+    name: "C constructors run in priority order before Go main",
+    file: "../go-constructors-instrumented.wasm",
+    argv: ["go-cgo-constructors"],
+    stdout: ["CGO CONSTRUCTORS PASS"],
+  });
 }
 
 async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<ProbeResult> {

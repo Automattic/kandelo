@@ -131,8 +131,7 @@ that C `getenv` sees the initial process environment and Go
 validates, fork-instruments, and runs as an ABI-stamped Kandelo process on Node and
 Chromium with exit 0 and no diagnostics. This is narrow Go-to-C coverage,
 not general cgo support: Go-owned callbacks work, but C-created pthreads
-cannot enter Go, and C constructors, secure startup, and PHP initialization
-remain incomplete.
+cannot enter Go, and secure startup and PHP initialization remain incomplete.
 
 ```sh
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-c-abs.wasm ./tests/go/cgo && wasm-validate --enable-threads .context/go-c-abs.wasm'
@@ -159,6 +158,20 @@ node --import tsx tests/go/cgo/callback-same/run.ts .context/go-callback-same-in
 cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'Go-owned M cgo callback'
 ```
 
+The `cgo/constructors` fixture verifies standard Wasm C constructor
+metadata, priority order, and C destructor registration. It calls musl's
+exit-handler dispatcher explicitly; it does not claim Go process exit
+automatically executes C exit handlers. Nonempty explicit `.init_array` and
+`.fini_array` segments remain unsupported.
+
+```sh
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-constructors.wasm ./tests/go/cgo/constructors && wasm-validate --enable-threads .context/go-constructors.wasm'
+scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-constructors.wasm -o .context/go-constructors-instrumented.wasm'
+scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-constructors-instrumented.wasm; stamp_built_program_outputs'
+node --import tsx tests/go/cgo/constructors/run.ts .context/go-constructors-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
+cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'C constructors run'
+```
+
 The separate `cgo/callback` fixture exercises Go-to-C-to-Go calls on the
 calling thread and a C-created pthread entering Go:
 
@@ -172,8 +185,8 @@ Wasm debug object far enough for both fixtures to reach the Go linker. The
 adjacent fork's internal linker now reads C function bodies, initialized C
 data, active table elements, and the CODE relocations reached by runtime/cgo.
 The combined fixture now links and validates after retaining musl local
-function aliases; the separate same-thread fixture links but traps at the
-missing C-to-Go transition.
+function aliases; its C-created pthread callback still lacks a Go M/P,
+stack, and channel. The Go-owned same-thread callback fixture passes.
 The `go-hello` package is still pinned to the earlier fork revision that
 fails at pointer-size recognition. Do not use a successful cgo frontend or
 function-body parse as PHP or FrankenPHP support.
