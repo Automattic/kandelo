@@ -890,6 +890,8 @@ export class WasmPosixKernel {
       dest: Uint8Array,
     ) => number)
     | undefined = undefined;
+  /** Evict only the transport resource rejected by native validation. */
+  #rootfsDeferredInvalidator: ((uri: string) => void) | undefined;
   /**
    * Raw VFS image byte window. The Rust kernel parses the `/` image itself — it
    * mounts the image's own filesystem, walks it, and reads its deferred-file
@@ -1126,10 +1128,12 @@ export class WasmPosixKernel {
     this.#rootfsDeferredProvider = provider;
   }
 
-  /**
-   * Install the raw VFS image byte window.
-   * See {@link WasmPosixKernel.prototype} `#rootfsImageProvider`.
-   */
+  /** Install native rejection feedback for the deferred transport cache. */
+  setRootfsDeferredInvalidator(invalidator: ((uri: string) => void) | undefined): void {
+    this.#rootfsDeferredInvalidator = invalidator;
+  }
+
+  /** Install the raw VFS image byte window. */
   setRootfsImageProvider(
     provider: (offset: bigint, dest: Uint8Array) => number,
   ): void {
@@ -1835,6 +1839,9 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
+        },
+        host_discard_deferred: (uriPtr: KernelPointer, uriLen: number): void => {
+          this.#rootfsDeferredInvalidator?.(this.#readComponentFromMemory(uriPtr, uriLen));
         },
         host_fetch_deferred: (
           uriPtr: KernelPointer,

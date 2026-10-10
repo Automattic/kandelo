@@ -7,7 +7,8 @@ import {
   tryResolveBinaries,
 } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { MemoryFileSystem, type LazyDownloadEvent } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import type { LazyDownloadEvent } from "../src/vfs/lazy-download-event";
 import { guestCompileCommand, guestCompilerCases } from "./fixtures/in-guest-compiler";
 
 // The kernel, shell, SDK and utilities have distinct package closures.
@@ -41,7 +42,8 @@ function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
 describe.skipIf(!available)("base shell in-guest compiler", () => {
   it("fetches one deferred SDK archive on first use, then compiles and runs C and C++", async () => {
     const [kernel, shell, sdk, ...utilities] = artifacts as Uint8Array[];
-    const image = MemoryFileSystem.fromImage(shell!);
+    const image = KandeloImageFs.create();
+    image.loadImage(shell!);
     for (const path of [
       "/usr/bin/cc", "/usr/bin/c++", "/usr/lib/llvm/bin/clang",
       "/usr/lib/llvm/bin/wasm-ld", "/usr/lib/llvm/bin/llvm-ar",

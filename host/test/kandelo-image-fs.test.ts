@@ -37,6 +37,20 @@ function zipEntry(over: Partial<ZipEntry> & { fileName: string }): ZipEntry {
  * points, reached through real wasm, from the language that will call them.
  */
 describe("KandeloImageFs", () => {
+  it("round-trips every byte of a dense file through the Rust image writer", () => {
+    const fs = KandeloImageFs.create();
+    const bytes = new Uint8Array(4 * 1024 * 1024);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 31 + (i >>> 8)) & 255;
+    fs.writeFile("/dense.bin", bytes);
+    const image = fs.exportImage();
+    const restored = KandeloImageFs.create();
+    restored.loadImage(image);
+    const actual = restored.readFile("/dense.bin");
+    expect(actual.length).toBe(bytes.length);
+    // Compare every byte natively, keeping main's bounded assertion overhead.
+    expect(Buffer.compare(actual, bytes)).toBe(0);
+  });
+
   it("builds a tree and reads it back", () => {
     const fs = KandeloImageFs.create();
 

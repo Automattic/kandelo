@@ -33,15 +33,15 @@
  * address to fetch is not, and for a while a table here held both: alternate
  * URLs for an address, and a declared length to judge a mirror's answer by.
  *
- * Both are gone, because neither had a producer. An image
- * records ONE uri per archive, so there are no alternates to list; and the
- * kernel checks the fetched bytes against the image's DIGEST when it
- * materializes them, which is the check that decides — a length is a hint that
- * happens to be cheap. What is left is a pipe, and a pipe with no table in
- * front of it has nowhere for a second opinion about identity to live.
+ * An image records one URI per resource. Native metadata supplies transfer
+ * bounds so the fetcher can stop oversized responses before retaining them.
+ * Rust verifies content length and digest when materializing; its rejection
+ * notification discards only that completed transport entry. A later explicit
+ * read may fetch again. The host supplies no second filesystem or digest policy.
  */
 
 import type { LazyDownloadEvent } from "./lazy-download-event";
+import type { DeferredByteProgress } from "./lazy-fetch-bytes";
 
 const EAGAIN = -11;
 const EIO = -5;
@@ -129,12 +129,12 @@ function report(
  * does it.
  *
  * A fetch in flight is `EAGAIN` — the same answer the kernel's own byte source
- * gives, and the guest retry loop is already built for it. A failed fetch is
- * `EIO` once and stays failed, because a pipe that silently retries forever is
- * a hang rather than a failure.
+ * gives, and the guest retry loop is already built for it. The fetcher applies bounded retries for transient transport failures.
+ * Once those attempts are exhausted, this pipe retains `EIO`; retrying a
+ * failed guest read never starts an unbounded new fetch.
  */
 export function buildRootfsLazyWiring(
-  fetcher: (url: string) => Promise<Uint8Array>,
+  fetcher: (url: string, onProgress?: DeferredByteProgress) => Promise<Uint8Array>,
   onProgress?: DeferredProgress,
 ): {
   deferredProvider: (
@@ -147,6 +147,7 @@ export function buildRootfsLazyWiring(
    * when none is in flight. See {@link DeferredFetchSettled}.
    */
   whenFetchSettles: DeferredFetchSettled;
+  discardDeferred: (uri: string) => void;
 } {
   type Slot =
     | { state: "pending" }
@@ -189,7 +190,9 @@ export function buildRootfsLazyWiring(
         url: uri,
       };
       report(onProgress, { ...base, status: "started", loadedBytes: 0 });
-      const settled = fetchDeferred(uri, fetcher).then((bytes) => {
+      const settled = fetchDeferred(uri, fetcher, (loadedBytes, totalBytes) => {
+        report(onProgress, { ...base, status: "progress", loadedBytes, totalBytes });
+      }).then((bytes) => {
         if (bytes === undefined) {
           slots.set(uri, { state: "failed" });
           report(onProgress, {
@@ -223,7 +226,12 @@ export function buildRootfsLazyWiring(
     return n;
   };
 
-  return { deferredProvider, whenFetchSettles };
+  const discardDeferred = (uri: string): void => {
+    // Only native validation can reject a completed transfer. Pending and
+    // terminal transport failures retain their original bounded policy.
+    if (slots.get(uri)?.state === "ready") slots.delete(uri);
+  };
+  return { deferredProvider, whenFetchSettles, discardDeferred };
 }
 
 /**
@@ -277,10 +285,11 @@ export async function waitForDeferredFetch(
  */
 async function fetchDeferred(
   uri: string,
-  fetcher: (url: string) => Promise<Uint8Array>,
+  fetcher: (url: string, onProgress?: DeferredByteProgress) => Promise<Uint8Array>,
+  onProgress: DeferredByteProgress,
 ): Promise<Uint8Array | undefined> {
   try {
-    return await fetcher(uri);
+    return await fetcher(uri, onProgress);
   } catch {
     return undefined;
   }

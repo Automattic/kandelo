@@ -2844,6 +2844,157 @@ pub fn resolve_existing_namespace_path(
     Ok(resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path)
 }
 
+/// Resolve host inspection through the guest's namespace walker. The caller
+/// supplies the immutable kernel init record, so inspection allocates no task
+/// and cannot acquire guest descriptors or change a guest's credentials/CWD.
+pub fn inspect_namespace_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    follow: bool,
+) -> Result<WasmStat, Errno> {
+    let options = if follow {
+        PathResolveOptions::FOLLOW
+    } else {
+        PathResolveOptions::NOFOLLOW
+    };
+    resolve_namespace_path_from(proc, host, path, b"/", options)?
+        .stat
+        .ok_or(Errno::ENOENT)
+}
+
+/// Read a regular file through the same component-wise namespace resolver as
+/// guest stat/open. Mount-crossing links and foreign mounts retain one owner.
+pub fn inspect_namespace_read_file(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    offset: i64,
+    out: &mut [u8],
+) -> Result<usize, Errno> {
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let resolved = resolve_namespace_path_from(proc, host, path, b"/", PathResolveOptions::FOLLOW)?;
+    let stat = resolved.stat.ok_or(Errno::ENOENT)?;
+    if stat.st_mode & S_IFMT == S_IFDIR {
+        return Err(Errno::EISDIR);
+    }
+    if stat.st_mode & S_IFMT != S_IFREG {
+        return Err(Errno::EINVAL);
+    }
+    check_access(proc, &stat, R_OK)?;
+    let path = &resolved.path;
+    if crate::tmpfs::claims_path(path) {
+        return crate::tmpfs::read_file_at(path, offset, out);
+    }
+    if crate::rootfs::claims_path(path) {
+        return crate::rootfs::read_file_at(path, offset, out, |request, buffer| match request {
+            crate::rootfs::ByteReq::Deferred { uri, offset } => {
+                host.fetch_deferred(&uri, buffer, offset)
+            }
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                host.discard_deferred(&uri);
+                Ok(0)
+            }
+            crate::rootfs::ByteReq::Image { offset } => host.image_read(buffer, offset),
+        });
+    }
+    let handle = crate::hostdir::open(host, path, O_RDONLY, 0)?;
+    let result = host.host_pread(handle, out, offset);
+    let closed = host.host_close(handle);
+    match result {
+        Ok(read) => {
+            closed?;
+            Ok(read)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// One directory snapshot, including current ownership and final symlink data.
+/// Native and foreign handles stay inside this call and close on every path.
+pub fn inspect_namespace_directory(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+) -> Result<Vec<(Vec<u8>, WasmStat, Option<Vec<u8>>)>, Errno> {
+    let resolved = resolve_namespace_path_from(proc, host, path, b"/", PathResolveOptions::FOLLOW)?;
+    let stat = resolved.stat.ok_or(Errno::ENOENT)?;
+    if stat.st_mode & S_IFMT != S_IFDIR {
+        return Err(Errno::ENOTDIR);
+    }
+    check_access(proc, &stat, R_OK | X_OK)?;
+    let directory = &resolved.path;
+    if is_procfs_namespace_path(directory)
+        || (is_devfs_namespace_path(directory) && !is_delegated_devfs_path(directory))
+    {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let handle = if crate::tmpfs::claims_path(directory) {
+        crate::tmpfs::opendir(directory)?
+    } else if crate::rootfs::claims_path(directory) {
+        crate::rootfs::opendir(directory)?
+    } else {
+        crate::hostdir::opendir(host, directory)?
+    };
+    let result = (|| {
+        let mut entries = Vec::new();
+        let mut name = alloc::vec![0u8; NAMESPACE_NAME_MAX];
+        loop {
+            let entry = if crate::tmpfs::is_tmpfs_dir_handle(handle) {
+                crate::tmpfs::readdir(handle, &mut name)?
+            } else if crate::rootfs::is_rootfs_dir_handle(handle) {
+                crate::rootfs::readdir(handle, &mut name)?
+            } else {
+                host.host_readdir(handle, &mut name)?
+            };
+            let Some((_, _, len)) = entry else {
+                break;
+            };
+            if len == 0 || len > name.len() {
+                return Err(Errno::EIO);
+            }
+            let name = &name[..len];
+            if name == b"." || name == b".." {
+                continue;
+            }
+            let child = directory_entry_path(directory, name);
+            let stat = match namespace_lstat_raw(proc, host, &child) {
+                Ok(stat) => stat,
+                Err(Errno::ENOENT | Errno::ENOTDIR) => continue,
+                Err(error) => return Err(error),
+            };
+            let target = if stat.st_mode & S_IFMT == S_IFLNK {
+                match namespace_readlink_raw(proc, host, &child) {
+                    Ok(target) => Some(target),
+                    Err(Errno::ENOENT | Errno::EINVAL | Errno::ENOTDIR) => None,
+                    Err(error) => return Err(error),
+                }
+            } else {
+                None
+            };
+            entries.push((name.to_vec(), stat, target));
+        }
+        Ok(entries)
+    })();
+    let closed = if crate::tmpfs::is_tmpfs_dir_handle(handle) {
+        crate::tmpfs::closedir(handle)
+    } else if crate::rootfs::is_rootfs_dir_handle(handle) {
+        crate::rootfs::closedir(handle)
+    } else {
+        host.host_close(handle)
+    };
+    // Keep the original inspection error if cleanup fails as well.
+    match result {
+        Ok(entries) => {
+            closed?;
+            Ok(entries)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn ensure_host_mutable_namespace_path(path: &[u8]) -> Result<(), Errno> {
     if is_procfs_namespace_path(path)
         || (is_devfs_namespace_path(path) && !is_delegated_devfs_path(path))
@@ -5793,6 +5944,10 @@ pub fn sys_read(
                     proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset();
                 let n = crate::rootfs::read(host_handle, current_offset, buf, |req, b| match req {
                     crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+                    crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                        host.discard_deferred(&uri);
+                        Ok(0)
+                    }
                     crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
                 })?;
                 let new_offset = checked_host_cursor_advance(current_offset, buf.len(), n)?;
@@ -6053,6 +6208,10 @@ pub fn sys_write(
                 let n =
                     crate::rootfs::write(host_handle, start, &buf[..writable_len], |req, b| match req {
                         crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+                        crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                            host.discard_deferred(&uri);
+                            Ok(0)
+                        }
                         crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
                     })?;
                 let new_offset = checked_host_cursor_advance(start, writable_len, n)?;
@@ -6608,6 +6767,10 @@ pub fn sys_pread(
     if crate::rootfs::is_rootfs_file_handle(host_handle) {
         return crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
             crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                host.discard_deferred(&uri);
+                Ok(0)
+            }
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         });
     }
@@ -7058,6 +7221,10 @@ pub fn sys_pwrite(
         tmpfs_stamp_now(host)?;
         return crate::rootfs::write(host_handle, offset, &buf[..writable_len], |req, b| match req {
             crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                host.discard_deferred(&uri);
+                Ok(0)
+            }
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         });
     }
@@ -11200,6 +11367,10 @@ pub fn sys_mmap(
             crate::rootfs::prefetch_range(ofd.host_handle, offset, len, |req, b| match req {
                 crate::rootfs::ByteReq::Deferred { uri, offset } => {
                     host.fetch_deferred(&uri, b, offset)
+                }
+                crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                    host.discard_deferred(&uri);
+                    Ok(0)
                 }
                 crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
             })?;
@@ -18389,6 +18560,10 @@ pub fn sys_ftruncate(
         tmpfs_stamp_now(host)?;
         return crate::rootfs::truncate_handle(host_handle, length, |req, b| match req {
             crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                host.discard_deferred(&uri);
+                Ok(0)
+            }
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         });
     }
@@ -20015,6 +20190,93 @@ mod tests {
         fn drop(&mut self) {
             crate::tmpfs::set_enabled(self.0);
         }
+    }
+
+    #[test]
+    fn inspection_uses_live_namespace_owners_symlinks_and_scratch_mounts() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/inspection", 0o750, 12, 34, 2).unwrap();
+        crate::rootfs::insert_base_dir(b"/tmp", 0o1777, 0, 0, 3).unwrap();
+        crate::rootfs::insert_base_symlink(
+            b"/inspection/current",
+            b"/tmp/inspect-live",
+            0o777,
+            56,
+            78,
+            4,
+        )
+        .unwrap();
+        let mut guest = Process::new(100);
+        let mut host = MockHostIO::new();
+        sys_mkdir(&mut guest, &mut host, b"/tmp/inspect-live", 0o751).unwrap();
+        let fd = sys_open(
+            &mut guest,
+            &mut host,
+            b"/tmp/inspect-live/data",
+            O_CREAT | O_RDWR,
+            0o640,
+        )
+        .unwrap();
+        sys_write(&mut guest, &mut host, fd, b"live bytes").unwrap();
+        sys_close(&mut guest, &mut host, fd).unwrap();
+        sys_chown(&mut guest, &mut host, b"/tmp/inspect-live/data", 123, 456).unwrap();
+        let mut table = crate::process_table::ProcessTable::new();
+        table.ensure_init();
+        let inspector = table.get(crate::process_table::SYNTHETIC_INIT_PID).unwrap();
+        let followed =
+            inspect_namespace_stat(inspector, &mut host, b"/inspection/current/data", true)
+                .unwrap();
+        assert_eq!(
+            (followed.st_size, followed.st_uid, followed.st_gid),
+            (10, 123, 456)
+        );
+        let mut bytes = [0; 10];
+        assert_eq!(
+            inspect_namespace_read_file(
+                inspector,
+                &mut host,
+                b"/inspection/current/data",
+                0,
+                &mut bytes
+            )
+            .unwrap(),
+            10
+        );
+        assert_eq!(&bytes, b"live bytes");
+        let entries = inspect_namespace_directory(inspector, &mut host, b"/inspection").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, b"current");
+        assert_eq!(entries[0].1.st_mode & S_IFMT, S_IFLNK);
+        assert_eq!((entries[0].1.st_uid, entries[0].1.st_gid), (56, 78));
+        assert_eq!(
+            entries[0].2.as_deref(),
+            Some(b"/tmp/inspect-live".as_slice())
+        );
+        assert_eq!(
+            inspect_namespace_directory(inspector, &mut host, b"/inspection/current").unwrap()[0].0,
+            b"data"
+        );
+        assert_eq!(
+            inspect_namespace_stat(inspector, &mut host, b"/inspection/current/absent", true)
+                .unwrap_err(),
+            Errno::ENOENT
+        );
+        assert_eq!(
+            inspect_namespace_directory(inspector, &mut host, b"/inspection/current/data")
+                .unwrap_err(),
+            Errno::ENOTDIR
+        );
+        assert_eq!(inspector.cwd, b"/");
+        assert!(inspector.dir_streams.is_empty());
+        assert!(
+            host.opendir_paths.is_empty(),
+            "native directories must never reach the host"
+        );
+        sys_unlink(&mut guest, &mut host, b"/tmp/inspect-live/data").unwrap();
+        sys_rmdir(&mut guest, &mut host, b"/tmp/inspect-live").unwrap();
     }
 
     #[test]

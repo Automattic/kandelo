@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../src/binary-resolver";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { ensureDirRecursive, symlink, writeVfsBinary } from "../src/vfs/image-helpers";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
@@ -226,7 +226,8 @@ function stageFixtures(): string {
 const DIR = stageFixtures();
 
 function image(): Uint8Array | Promise<Uint8Array> {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(8 * 1024 * 1024);
   ensureDirRecursive(fs, "/app");
   for (const f of Object.keys(FIXTURES)) {
     const sub = dirname(f);

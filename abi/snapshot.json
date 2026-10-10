@@ -2876,6 +2876,26 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_inspect_directory",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_inspect_read_file",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_inspect_stat",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_lazy_resource_limits",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_load_image",
       "signature": "(i32,i32) -> (i32)"
     },

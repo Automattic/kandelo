@@ -37,9 +37,11 @@ STAMP="$OUT.input-hash"
 # Compose its lazy references from that same tree: ordinary package caches
 # can lack the ABI-contract section added when the engine publishes a Wasm
 # program, so their byte counts are not interchangeable. Resolver-owned
-# builds and callers selecting an explicit artifact map keep their inputs.
+# builds and callers selecting an explicit artifact map or resolver repository
+# keep their inputs.
 if [ -z "${ROOTFS_BINARIES_DIR:-}" ] &&
    [ -z "${ROOTFS_RESOLVED_OUTPUT_MAP:-}" ] &&
+   [ -z "${WASM_POSIX_BINARY_RESOLVER_REPO_ROOT:-}" ] &&
    [ "${ROOTFS_STAGE_RESOLVER_BINARIES:-0}" != "1" ] &&
    [ -f "$REPO_ROOT/local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json" ]; then
     ROOTFS_BINARIES_DIR="$REPO_ROOT/local-binaries/source-only-v1"

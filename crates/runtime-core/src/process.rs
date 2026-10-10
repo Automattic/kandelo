@@ -101,6 +101,9 @@ pub trait HostIO {
     fn fetch_deferred(&mut self, _uri: &[u8], _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
         Err(Errno::ENOSYS)
     }
+    /// Forget a deferred resource rejected by the kernel's integrity checks.
+    /// Hosts without a transport cache have nothing to discard.
+    fn discard_deferred(&mut self, _uri: &[u8]) {}
     /// Read up to `buf.len()` bytes at `offset` from the raw bytes of the VFS
     /// image this kernel booted from. This is the seam that lets the kernel
     /// parse its own image (`rootfs::load_image`) rather than consume a tree the

@@ -52,6 +52,62 @@ function tryResolveKernelWasm(): string | null {
 const kernel = tryResolveKernelWasm();
 const available = existsSync(environmentProgram) && kernel !== null;
 
+async function prepareNativeAcceptance(page: Page, baseURL: string): Promise<void> {
+  const kernelUrl = sameOriginFixtureUrl(baseURL, "kernel.wasm");
+  await routeBytes(page, kernelUrl, readFileSync(resolveBinary("kernel.wasm")), "application/wasm");
+  await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
+  await page.waitForFunction(() => (window as any).__testRunnerReady === true);
+  const modulePath = fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts", import.meta.url));
+  await page.evaluate(async ({ moduleUrl, kernelUrl, proxyUrl }) => {
+    const { BrowserKernel } = await import(moduleUrl);
+    window.__runLazyVfsAcceptance = async (request) => {
+      let stdout = "";
+      let stderr = "";
+      const kernel = new BrowserKernel({
+        kernelOwnedFs: true,
+        corsProxy: request.corsProxyExternalLazyUrls ? {
+          url: proxyUrl,
+          allowedRequestHeaderNames: [],
+          allowAnonymousGetHeaderOmission: true,
+        } : undefined,
+        onStdout: (bytes: Uint8Array) => { stdout += new TextDecoder().decode(bytes); },
+        onStderr: (bytes: Uint8Array) => { stderr += new TextDecoder().decode(bytes); },
+      });
+      try {
+        await kernel.initFromImage({
+          kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+          vfsImage: new Uint8Array(await (await fetch(request.vfsUrl)).arrayBuffer()),
+        });
+        let firstReadError: string | undefined;
+        let bytes: Uint8Array | null = null;
+        try { bytes = await kernel.readFileFromVfs(request.readPath); }
+        catch (error) {
+          if (!request.retryReadAfterFailure) throw error;
+          firstReadError = String(error);
+          bytes = await kernel.readFileFromVfs(request.readPath);
+        }
+        let exitCode: number | undefined;
+        if (request.executable) {
+          const { exit } = await kernel.spawnFromVfs(request.executable,
+            request.argv ?? [request.executable], { env: request.env });
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            exitCode = await Promise.race([exit, new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("lazy guest execution timed out")), request.timeoutMs);
+            })]);
+          } finally { clearTimeout(timer); }
+        }
+        return { readText: new TextDecoder().decode(bytes ?? new Uint8Array()), firstReadError, exitCode, stdout, stderr };
+      } finally { await kernel.destroy(); }
+    };
+    window.__lazyArchiveVfsTestReady = true;
+  }, {
+    moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href,
+    kernelUrl,
+    proxyUrl: new URL("/__kandelo_cors_proxy?url=", baseURL).href,
+  });
+}
+
 // The production preview itself supplies the cross-origin isolation headers.
 // Keep Playwright's byte routes authoritative for these same-origin fixtures;
 // the dedicated proxy test below separately exercises external transport.
@@ -112,7 +168,7 @@ async function routeBytes(
 
 test.skip(!available, "lazy archive Chromium fixtures are not built");
 
-test("Chromium boots, reads, and execs through verified lazy archives", async ({
+test("Browser boots, reads, and execs through verified lazy archives", async ({
   page,
   baseURL,
 }) => {
@@ -162,11 +218,7 @@ test("Chromium boots, reads, and execs through verified lazy archives", async ({
     });
   });
 
-  await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
-  await expect.poll(
-    () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
-    { timeout: 120_000 },
-  ).toBe(true);
+  await prepareNativeAcceptance(page, baseURL);
   const result = await page.evaluate(
     (url) => window.__runLazyVfsAcceptance({
       vfsUrl: url,
@@ -188,7 +240,7 @@ test("Chromium boots, reads, and execs through verified lazy archives", async ({
   expect(execFetches).toBe(1);
 });
 
-test("Chromium retries a transient lazy-tree response before surfacing EIO", async ({
+test("Browser retries a transient lazy-tree response before surfacing EIO", async ({
   page,
   baseURL,
 }) => {
@@ -223,11 +275,7 @@ test("Chromium retries a transient lazy-tree response before surfacing EIO", asy
     });
   });
 
-  await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
-  await expect.poll(
-    () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
-    { timeout: 120_000 },
-  ).toBe(true);
+  await prepareNativeAcceptance(page, baseURL);
   const result = await page.evaluate(
     (url) => window.__runLazyVfsAcceptance({
       vfsUrl: url,
@@ -285,11 +333,7 @@ test("browser workers proxy external lazy archives under cross-origin isolation"
 
   try {
     await routeBytes(page, imageUrl, image, "application/octet-stream");
-    await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
-    await expect.poll(
-      () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
-      { timeout: 120_000 },
-    ).toBe(true);
+    await prepareNativeAcceptance(page, baseURL);
     const result = await page.evaluate(
       ({ vfsUrl }) => window.__runLazyVfsAcceptance({
         vfsUrl,
@@ -315,7 +359,7 @@ test("browser workers proxy external lazy archives under cross-origin isolation"
   }
 });
 
-test("Chromium reports digest failure without mutation and retries cleanly", async ({
+test("Browser reports digest failure without mutation and retries cleanly", async ({
   page,
   baseURL,
 }) => {
@@ -343,11 +387,7 @@ test("Chromium reports digest failure without mutation and retries cleanly", asy
     });
   });
 
-  await page.goto(new URL("/pages/lazy-archive-vfs-test/", baseURL).href);
-  await expect.poll(
-    () => page.evaluate(() => window.__lazyArchiveVfsTestReady),
-    { timeout: 120_000 },
-  ).toBe(true);
+  await prepareNativeAcceptance(page, baseURL);
   const result = await page.evaluate(
     (url) => window.__runLazyVfsAcceptance({
       vfsUrl: url,
@@ -358,7 +398,7 @@ test("Chromium reports digest failure without mutation and retries cleanly", asy
     imageUrl,
   );
 
-  expect(result.firstReadError).toContain("SHA-256");
+  expect(result.firstReadError).toContain("rootfs read failed");
   expect(result.readText).toBe("verified-after-retry");
   expect(fetches).toBe(2);
 });

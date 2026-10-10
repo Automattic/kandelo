@@ -16,7 +16,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../src/binary-resolver";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const ELF = process.env.CLAUDE_BUN_ELF ?? "/tmp/cc-inspect/lx259/package/claude";
@@ -42,7 +42,8 @@ describe("bun-run: real Claude Code ELF end-to-end on spidermonkey-node", () => 
       // headroom for the additional staged files and bun-run.js's own
       // bookkeeping under /var/cache/kandelo/bun-run.
       const cap = 420 * 1024 * 1024;
-      const fs = MemoryFileSystem.create(new SharedArrayBuffer(cap));
+      const fs = KandeloImageFs.create();
+      fs.setImageCapacity(cap);
       const emptyImage = await fs.saveImage();
 
       const result = await runCentralizedProgram({
