@@ -123,16 +123,9 @@ scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32po
 
 The published package revision still fails at pointer-size recognition.
 The adjacent fork's experimental cgo frontend (commit `2431313`) gets this
-fixture to the linker,
-where the new C-ABI `_cgo_topofstack` adapter resolves, but SDK libc archive
-symbols such as `pthread_mutex_lock` remain unresolved by default. Fork
-commit `8e3a587` can select members with an explicit SDK archive linker flag;
-commit `d2b748a` handles DATA address relocations; that build now stops on
-musl TLS relocations. To reproduce that boundary from this checkout, use:
-
-```sh
-scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -ldflags="-libgcc=$PWD/sysroot/lib/libc.a" -o .context/cgo-probe.wasm tests/go/cgo/main.go'
-```
+fixture to the linker. Fork commit `acc452f` discovers SDK libc through
+`wasm32posix-cc`, so the normal build command above now reaches the explicit
+per-thread TLS linking error. No cgo binary is emitted.
 
 A compile-only pass will not establish working interoperability: run the
 binary in Node and Chromium and add a C-to-Go callback probe before building
@@ -151,11 +144,9 @@ experimental `cmd/cgo` frontend in the adjacent fork parses the
 Wasm debug object far enough for both fixtures to reach the Go linker. The
 adjacent fork's internal linker now reads C function bodies, initialized C
 data, active table elements, and the CODE relocations reached by runtime/cgo.
-The full build stops at missing SDK libc archive symbols by default, or at
-musl TLS relocations with explicit archive selection; neither fixture
-links or runs. The `go-hello` package is still pinned to the earlier fork
-revision that fails
-at pointer-size recognition. Do not use a successful cgo frontend or
+The full build stops at musl TLS relocations; neither fixture links or runs.
+The `go-hello` package is still pinned to the earlier fork revision that
+fails at pointer-size recognition. Do not use a successful cgo frontend or
 function-body parse as PHP or FrankenPHP support.
 
 The intermediate Go/C object-link test is reproducible with:

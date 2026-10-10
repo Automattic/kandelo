@@ -1488,11 +1488,22 @@ instead of silently placing thread-local bytes in Go static data. SDK
 `abort.o` and `__wasm_tp.o` tests cover those cases. This does not implement
 TLS or advance the runnable cgo gate.
 
+**2026-10-09 — normal SDK archive discovery.** Go fork commit
+`acc452fd67b8109a4eb9eaf5a7181c94f713af93` uses the existing Go lazy
+host-archive loader with the libc path reported by `wasm32posix-cc`; the SDK
+driver now answers `--print-file-name=libc.a` from its resolved sysroot. The
+normal `C.abs` command, without manual linker flags, selects musl members
+and fails explicitly on `__wasm_thread_pointer` TLS relocations. The parser
+also decodes those relocations and C function-pointer table relocations, while
+the linker still rejects TLS until it has real per-thread layout. The SDK
+compiler query and 31 focused `cc.test.ts` cases pass; focused Go linker
+tests pass. This changes no existing Kandelo ABI or package source pin.
+
 Remaining work, in dependency order:
 
 1. Review the experimental Wasm `cmd/cgo` frontend; validate the
    `_cgo_topofstack` adapter, implement `asmcgocall` and C stack/global state,
-   finish SDK libc archive discovery, TLS relocations, and symbol
+   finish TLS layout and relocations, and symbol
    resolution until the normal `C.abs` probe runs.
 2. Implement `crosscall2`, `cgocallback`, and runtime/cgo platform support;
    run same-thread and C-created-pthread callback probes on Node and Chromium

@@ -93,7 +93,9 @@ Trace the whole link path before changing flags or package recipes:
   originally rejected their format; the adjacent fork now imports C functions,
   initialized data, active table elements, and the CODE relocations reached
   by `runtime/cgo`, including narrow `reloc.DATA` address references, but not
-  TLS relocations, automatic SDK archive discovery, or Go/C ABI adapters.
+  TLS layout and relocation or Go/C ABI adapters. Fork commit `acc452f`
+  asks the SDK compiler for its libc archive and resolves C function-pointer
+  table relocations needed by the selected members.
   External mode reaches unsupported PC-relative relocations.
   `src/cmd/link/internal/wasm/asm.go` emits a final Wasm module, not an
   object that `wasm-ld` can link with the SDK's C Wasm objects. A direct
@@ -135,13 +137,9 @@ Go's static layout, resolves direct C-to-C calls and memory-relative C-data
 addresses, and maps C function-pointer relocations to Go's existing table.
 The link-only fixture now makes a narrow Go assembly call to C and executes
 as a Kandelo process on Node and Chromium. It does not exercise `runtime/cgo`
-or the standard Go/C adapters. The full `C.abs` build with the experimental
-frontend now gets past `_cgo_topofstack` and stops at unresolved SDK libc
-archive symbols such as `pthread_mutex_lock` by default. Fork commit
-`8e3a587` reaches musl archive members when passed an explicit SDK libc path,
-then stopped on `reloc.DATA` and `R_WASM_MEMORY_ADDR_TLS_SLEB`. Fork commit
-`d2b748a` handles narrow DATA address relocations; the build now stops on
-TLS relocations. Normal SDK archive discovery, C TLS layout, Go/C adapters,
+or the standard Go/C adapters. The full `C.abs` build with fork commit
+`acc452f` discovers SDK libc without a manual archive flag, then stops at
+the explicit per-thread TLS linking boundary. C TLS layout, Go/C adapters,
 and C-created-thread attachment remain. Do not silently omit those sections
 or treat the C shim's `_cgo_topofstack` call as
 a direct call to a Go-resumable function. The C-data path is only one link

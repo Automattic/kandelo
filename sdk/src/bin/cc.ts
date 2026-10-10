@@ -716,12 +716,24 @@ export function mayCompile(userArgs: string[], arch: WasmArch): boolean {
   return parsed.sourceFiles.length > 0 || parsed.compileOnly || parsed.assemblyOnly || needsLinking(parsed);
 }
 
+export function sdkToolQuery(userArgs: string[], toolchain: Toolchain): string | null {
+  if (userArgs.length === 1 && userArgs[0] === '--print-file-name=libc.a') {
+    return join(toolchain.sysroot, 'lib', 'libc.a');
+  }
+  return null;
+}
+
 /** Shared entry of wasm{32,64}posix-cc and -c++. */
 export async function compilerMain(selectCompiler: (toolchain: Toolchain) => string): Promise<never> {
   const arch = detectArch();
   const toolchain = await resolveToolchain(arch);
   const compiler = selectCompiler(toolchain);
   const userArgs = process.argv.slice(2);
+  const queryResult = sdkToolQuery(userArgs, toolchain);
+  if (queryResult !== null) {
+    process.stdout.write(`${queryResult}\n`);
+    process.exit(0);
+  }
   if (mayCompile(userArgs, arch)) toolchain.calltypesPlugin = await ensureCalltypesPlugin(toolchain.cc);
   const executableLinker = await prepareExecutableLinker(userArgs, toolchain, arch, compiler);
   const glue = await compileExecutableGlue(userArgs, toolchain, arch, executableLinker);
