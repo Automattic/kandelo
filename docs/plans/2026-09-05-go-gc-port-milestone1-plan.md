@@ -1449,11 +1449,46 @@ already recognized by the host, and this step changes neither the syscall
 channel nor an existing required import/export. The package source pin stays
 at the last usable pure-Go revision until standard cgo runs.
 
+**2026-10-09 — SDK archive selection reaches TLS and DATA relocations.**
+Go fork commit `8e3a5871110968ebd8ce5b562a261b2b34b344d0` marks undefined
+Wasm C relocation targets as external references, allowing Go's existing
+lazy host-archive loader to select SDK libc members. With the explicit
+`-libgcc=<this checkout>/sysroot/lib/libc.a` probe flag, `C.abs` now reaches
+those members and reports unsupported `reloc.DATA` plus CODE relocation type
+21 (`R_WASM_MEMORY_ADDR_TLS_SLEB`) in musl objects. Focused linker tests pass.
+This is not an executable cgo module: the linker still needs DATA relocation,
+TLS layout and per-thread TLS addressing, a normal SDK archive lookup path,
+and the Go/C runtime adapters above. No Kandelo ABI or package-pin change.
+
+**2026-10-09 — SDK DATA relocation milestone.** Go fork commit
+`d2b748a1fb21dd8aaf4373f818af676bce68fe09` parses checked DATA
+address relocations and emits Go static-data `R_ADDR` edges so SDK C pointer
+initializers relocate with their target symbols. The `lite_malloc.o` SDK
+object test and focused linker tests pass. The `C.abs` link with an explicit
+SDK libc archive no longer reports DATA errors, but still fails on musl's
+type-21 `R_WASM_MEMORY_ADDR_TLS_SLEB` relocations. This requires real
+per-thread C TLS allocation and addressing, not treating TLS symbols as
+ordinary static data. No executable cgo binary or FrankenPHP demo yet.
+
+TLS design boundary: musl's `_Thread_local` objects use a per-instance
+mutable `__tls_base` and LLVM TLS address relocations. The current Go linker
+instead exports an immutable `__tls_base` whose value is the address of its
+legacy syscall-channel handoff word. The host's pthread startup calls
+`__wasm_init_tls(tlsOffset)` when that export exists and separately sets
+`__stack_pointer`. A combined Go/C module cannot map LLVM TLS relocations to
+the current Go `__tls_base` without corrupting this channel contract. The
+next linker/runtime design must give C a distinct mutable TLS base and a
+correct TLS template/init export (or migrate Go channel discovery to an
+independent import), then validate main-thread, pthread, fork replay, and
+Node/Chromium behavior. Do not map TLS offsets into Go static memory or
+reuse the immutable channel handoff global as a shortcut.
+
 Remaining work, in dependency order:
 
 1. Review the experimental Wasm `cmd/cgo` frontend; validate the
    `_cgo_topofstack` adapter, implement `asmcgocall` and C stack/global state,
-   and SDK libc archive resolution until the normal `C.abs` probe runs.
+   finish SDK libc archive discovery, TLS relocations, and symbol
+   resolution until the normal `C.abs` probe runs.
 2. Implement `crosscall2`, `cgocallback`, and runtime/cgo platform support;
    run same-thread and C-created-pthread callback probes on Node and Chromium
    with truthful ABI stamps and no host diagnostics.

@@ -92,7 +92,8 @@ Trace the whole link path before changing flags or package recipes:
 - `src/cmd/link/internal/ld/lib.go` loads cgo's C objects. Internal mode
   originally rejected their format; the adjacent fork now imports C functions,
   initialized data, active table elements, and the CODE relocations reached
-  by `runtime/cgo`, but not `reloc.DATA`, C archives, or Go/C ABI adapters.
+  by `runtime/cgo`, including narrow `reloc.DATA` address references, but not
+  TLS relocations, automatic SDK archive discovery, or Go/C ABI adapters.
   External mode reaches unsupported PC-relative relocations.
   `src/cmd/link/internal/wasm/asm.go` emits a final Wasm module, not an
   object that `wasm-ld` can link with the SDK's C Wasm objects. A direct
@@ -136,11 +137,24 @@ The link-only fixture now makes a narrow Go assembly call to C and executes
 as a Kandelo process on Node and Chromium. It does not exercise `runtime/cgo`
 or the standard Go/C adapters. The full `C.abs` build with the experimental
 frontend now gets past `_cgo_topofstack` and stops at unresolved SDK libc
-archive symbols such as `pthread_mutex_lock`. Debug and DATA relocations, C
-archive resolution, Go/C adapters, and C-created-thread attachment remain. Do not
-silently omit those sections or treat the C shim's `_cgo_topofstack` call as
+archive symbols such as `pthread_mutex_lock` by default. Fork commit
+`8e3a587` reaches musl archive members when passed an explicit SDK libc path,
+then stopped on `reloc.DATA` and `R_WASM_MEMORY_ADDR_TLS_SLEB`. Fork commit
+`d2b748a` handles narrow DATA address relocations; the build now stops on
+TLS relocations. Normal SDK archive discovery, C TLS layout, Go/C adapters,
+and C-created-thread attachment remain. Do not silently omit those sections
+or treat the C shim's `_cgo_topofstack` call as
 a direct call to a Go-resumable function. The C-data path is only one link
 layer.
+
+The TLS barrier is semantic, not just another relocation opcode. Musl C
+objects use a mutable per-instance `__tls_base` for `_Thread_local` data;
+the current Go linker exports an immutable `__tls_base` only as the host's
+legacy syscall-channel handoff address. Kandelo's pthread host calls
+`__wasm_init_tls` for native C modules before thread entry. A combined module
+needs distinct C TLS state, a copied template and initialization on every
+thread, and a channel handoff that does not alias C TLS. Validate fork replay
+and both hosts before claiming TLS support.
 
 For a repeatable C function-and-data link proof, run
 `scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends
