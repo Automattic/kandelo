@@ -13,7 +13,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { findRepoRoot } from "../../../host/src/binary-resolver";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
@@ -49,7 +49,7 @@ export function loadTrackedDemoConfig(
 }
 
 export function writeTrackedDemoConfig(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   relPath: string,
   repoRoot = findRepoRoot(),
 ): void {

@@ -12,26 +12,18 @@ import { describe, expect, it } from "vitest";
 import {
   copyMariaDbTestSources,
 } from "../../images/vfs/scripts/mariadb-test-source-copy";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
-const O_RDONLY = 0;
-
-function createFs(): MemoryFileSystem {
-  return MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+// The fixture is the producer that ships. `copyMariaDbTestSources` writes into
+// whatever image filesystem a builder hands it, and every builder hands it a
+// `KandeloImageFs`; the suite was proving the copier against a filesystem no
+// builder uses.
+function createFs(): KandeloImageFs {
+  return KandeloImageFs.create();
 }
 
-function readVfsText(fs: MemoryFileSystem, path: string): string {
-  const bytes = new Uint8Array(fs.stat(path).size);
-  const fd = fs.open(path, O_RDONLY, 0);
-  try {
-    const count = fs.read(fd, bytes, null, bytes.byteLength);
-    if (count !== bytes.byteLength) {
-      throw new Error(`short test read for ${path}`);
-    }
-  } finally {
-    fs.close(fd);
-  }
-  return new TextDecoder().decode(bytes);
+function readVfsText(fs: KandeloImageFs, path: string): string {
+  return new TextDecoder().decode(fs.readFile(path));
 }
 
 function withMariaDbSource(run: (root: string) => void): void {

@@ -173,8 +173,10 @@ manager operations. The lock workload uses OFD locks so an independently opened
 descriptor can perform a real conflicting lookup without including a fork in
 the timed region. One shape holds one to three separated records on each of 64
 files (127 total records); the other holds 256 separated ranges on one file.
-The 64-file shape retains 128 OFDs, below the browser SharedFS backend's
-160-handle ceiling while still exercising file-index selection at scale.
+The 64-file shape retains 128 OFDs, which still exercises file-index
+selection at scale. (The counts were chosen to fit the former browser
+filesystem's 160-handle ceiling; the in-kernel filesystems that replaced it
+have no fixed handle table.)
 These counts fit both sides of a before/after comparison with the former fixed
 table. They are performance workloads, not substitutes for the 4096-record
 capacity tests.
@@ -207,6 +209,19 @@ scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=browser --suite=syscall-io
 The complete Node and browser suite is still required before making a broad
 performance or no-regression claim. Adding these cases does not itself establish
 that the lock-manager migration is faster, slower, or neutral.
+
+The current lock benchmark runs each phase once per fresh guest. Its
+`gettimeofday()` timer uses the browser's millisecond-resolution realtime
+clock: one millisecond changes a 256-operation result by 3.90625
+microseconds per operation. More fresh-machine rounds do not measure
+sustained locking in one machine. Garbage collection can also move
+between phases when preceding file creation and teardown change.
+
+To investigate a phase regression, retain the original first-pass result
+and compare it with a separate repeated-cycle diagnostic using
+`CLOCK_MONOTONIC`. Report the iteration counts and warm-up exclusion
+explicitly; inspect worker CPU profiles for collection and scheduling
+costs before attributing the difference to the Rust lock manager.
 
 #### process-lifecycle
 

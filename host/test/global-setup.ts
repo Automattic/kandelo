@@ -70,6 +70,17 @@ const RESOLVED_PROGRAM_FIXTURES = [
     ),
   },
   {
+    // Recompiled from source so the no-grow and close-after-mmap writeback
+    // checks of kernel-owned file mappings always run against the current
+    // source, not a stale prebuilt binary.
+    arch: "wasm32",
+    src: join(repoRoot, "programs/mmap_shared_test.c"),
+    out: join(
+      repoRoot,
+      "local-binaries/programs/wasm32/mmap_shared_test.wasm",
+    ),
+  },
+  {
     arch: "wasm64",
     src: join(repoRoot, "programs/scm-rights-semantics.c"),
     out: join(
@@ -107,6 +118,7 @@ const TEST_PROGRAMS = [
   "timerfd_signalfd_scratch_test.c",
   "sysv_ipc_test.c",
   "sysv_shm_departed_peer_test.c",
+  "shm_mapping_coherence_test.c",
   "wasm_trap_test.c",
   "oob_trap_test.c",
   "divzero_trap_test.c",
@@ -137,6 +149,7 @@ const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c", "int128_division_test.c"];
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "sysv_shm_departed_peer_test.c",
   "pty_readiness_test.c",
+  "shm_mapping_coherence_test.c",
   "environment_lifecycle_test.c",
   "pthread_channel_reuse_test.c",
   "unix_listener_exec_test.c",
@@ -153,11 +166,36 @@ const WAT_FIXTURES = [
   "wasi-scalar-abi.wat",
 ];
 
+/**
+ * Toolchain inputs whose change must force every compiled fixture to rebuild.
+ * The syscall glue and the built libc are compiled into (or linked with) every
+ * program, so a glue/libc edit that does not touch the test source would
+ * otherwise leave stale `.wasm` fixtures behind an mtime-only cache.
+ */
+const FIXTURE_TOOLCHAIN_INPUTS = [
+  join(repoRoot, "libc/glue/channel_syscall.c"),
+  join(repoRoot, "sysroot/lib/libc.a"),
+  join(repoRoot, "sysroot64/lib/libc.a"),
+];
+
+function newestToolchainMtimeMs(): number {
+  let newest = 0;
+  for (const input of FIXTURE_TOOLCHAIN_INPUTS) {
+    if (existsSync(input)) {
+      newest = Math.max(newest, statSync(input).mtimeMs);
+    }
+  }
+  return newest;
+}
+
 function needsRebuild(srcFile: string, outFile: string): boolean {
   if (!existsSync(outFile)) return true;
   const srcStat = statSync(srcFile);
   const outStat = statSync(outFile);
-  return srcStat.mtimeMs > outStat.mtimeMs;
+  if (srcStat.mtimeMs > outStat.mtimeMs) return true;
+  // Rebuild when the syscall glue or libc is newer than the artifact: those
+  // are compiled/linked into every program but are not the test source.
+  return newestToolchainMtimeMs() > outStat.mtimeMs;
 }
 
 function compileCTestProgram(

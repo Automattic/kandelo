@@ -15,7 +15,6 @@ export function playwrightTestIgnoreForEnvironment(
   const ignored: RegExp[] = [];
   ignored.push(
     /browser-package-layer\.spec\.ts$/,
-    /lazy-archive-runtime\.spec\.ts$/,
     /rootfs-export\.spec\.ts$/,
   );
   if (env.KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT === undefined) {

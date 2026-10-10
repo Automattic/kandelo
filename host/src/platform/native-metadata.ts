@@ -86,7 +86,14 @@ export function modeAfterRegularFileMutation(
  * a genuine host-level read-only file still fails its write at the native fs
  * layer. Guest `chmod`/`chown` continue to override through the overlay.
  */
-const SYNTHESIZE_POSIX_MODE = process.platform === "win32";
+// `typeof process` rather than a bare `process.platform`: if a browser bundle
+// ever reaches this module (it sits under `vfs/host-fs`, which the `vfs`
+// barrel re-exports), `process` is not defined there and a top-level read
+// would throw `ReferenceError` during module evaluation, killing the worker
+// before the kernel boots. `false` is also the honest answer there: a browser
+// host has no native filesystem whose Windows ACLs would need synthesizing.
+const SYNTHESIZE_POSIX_MODE =
+  typeof process !== "undefined" && process.platform === "win32";
 
 export function synthesizePosixMode(nativeMode: number): number {
   const type = nativeMode & S_IFMT;

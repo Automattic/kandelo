@@ -6,11 +6,11 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build, type Plugin } from "vite";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const workerPath = resolve(dirname(fileURLToPath(import.meta.url)), "network-demo-worker.ts");
 
-test("canonical network rootfs binds activated lazy URLs before mounting", async () => {
+test("canonical network rootfs hands over the activated image unchanged", async () => {
   const root = mkdtempSync(join(tmpdir(), "kandelo-network-pages-loader-"));
   const fixture = await rootfsFixture();
   const output = join(root, "output");
@@ -37,9 +37,6 @@ test("canonical network rootfs binds activated lazy URLs before mounting", async
       }
       if (id === "\0host-stubs") {
         return `
-          export { MemoryFileSystem } from ${JSON.stringify(
-            resolve(dirname(workerPath), "../../../../host/src/vfs/memory-fs.ts"),
-          )};
           export const CAPTURED_STDIO = {};
           export class CentralizedKernelWorker {}
           export function installBrowserSetImmediatePolyfill() {}
@@ -47,11 +44,13 @@ test("canonical network rootfs binds activated lazy URLs before mounting", async
           export function detectPtrWidth() { return 4; }
           export function extractHeapBase() { return null; }
           export class LocalVirtualNetwork {}
-          export class DeviceFileSystem {}
           export class BrowserTimeProvider {}
           export const DEFAULT_MOUNT_SPEC = [];
           export async function resolveForBrowser() { return []; }
           export class VirtualPlatformIO {}
+          export function configureRootfsOverlayFromImage() {}
+          export function imageReadFromContainer() { return () => 0; }
+          export function maybeDecompressImage(bytes) { return bytes; }
         `;
       }
       return null;
@@ -111,11 +110,18 @@ test("canonical network rootfs binds activated lazy URLs before mounting", async
       `${pathToFileURL(join(output, "worker.mjs")).href}?t=${Date.now()}`
     );
     const artifacts = await module.__loadArtifactsForTest();
-    const restored = MemoryFileSystem.fromImage(artifacts.rootfs);
+
+    // The canonical path hands over the ACTIVATED bytes as the manifest
+    // described them. The image keeps the lazy address it was built with: a
+    // deployment's hashed asset path is transport policy, applied when the
+    // kernel worker fetches (`imageOwnedRuntimeUrlTable`), never written into
+    // the image.
+    const reader = KandeloImageFs.create();
+    reader.loadImage(artifacts.rootfs);
     assert.equal(
-      restored.getLazyEntry("/bin/program")?.url,
-      "https://kandelo.invalid/a/vfs-groups/release-1/assets/programs/wasm32/program.wasm",
-      "the rootfs handed to network machines must bind product lazy URLs from activation authority",
+      reader.lazyEntries().files.find((file) => file.path === "/bin/program")?.uri,
+      "binaries/programs/wasm32/program.wasm",
+      "the activated image keeps the address it was built with",
     );
     assert.equal(legacyRootfsFetches, 0, "canonical mode must not consult the legacy rootfs URL");
   } finally {
@@ -157,9 +163,6 @@ test("legacy map-only network rootfs preserves absent lazy asset authority", asy
       }
       if (id === "\0host-stubs") {
         return `
-          export { MemoryFileSystem } from ${JSON.stringify(
-            resolve(dirname(workerPath), "../../../../host/src/vfs/memory-fs.ts"),
-          )};
           export const CAPTURED_STDIO = {};
           export class CentralizedKernelWorker {}
           export function installBrowserSetImmediatePolyfill() {}
@@ -167,11 +170,13 @@ test("legacy map-only network rootfs preserves absent lazy asset authority", asy
           export function detectPtrWidth() { return 4; }
           export function extractHeapBase() { return null; }
           export class LocalVirtualNetwork {}
-          export class DeviceFileSystem {}
           export class BrowserTimeProvider {}
           export const DEFAULT_MOUNT_SPEC = [];
           export async function resolveForBrowser() { return []; }
           export class VirtualPlatformIO {}
+          export function configureRootfsOverlayFromImage() {}
+          export function imageReadFromContainer() { return () => 0; }
+          export function maybeDecompressImage(bytes) { return bytes; }
         `;
       }
       return null;
@@ -237,7 +242,9 @@ test("legacy map-only network rootfs preserves absent lazy asset authority", asy
 });
 
 async function rootfsFixture(options: { withLazyFile?: boolean } = {}) {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  // The producer that writes every shipped image: this fixture stands in for a
+  // product rootfs a deployment activates.
+  const fs = KandeloImageFs.create();
   if (options.withLazyFile !== false) {
     fs.registerLazyFile(
       "/bin/program",

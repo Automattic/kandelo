@@ -41,11 +41,19 @@ const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // This header version is also shared by the cfg(test) exec-state fixture.
 // v15 preserves complete credentials plus the kernel-owned secure-exec marker.
-// v16 carries each socket's SO_PEERCRED peer credentials and the process's
-// epoll instances (their registrations), which the child inherits.
+// v16 carries each socket's SO_PEERCRED peer credentials and, then, the
+// process's epoll instances. v17 adds the process's registered pointer
+// width: a forked child runs on a copy of its parent's address space, so it
+// inherits that address space's data model rather than having the host
+// register it again. It no longer carries epoll instances: they are owned by
+// the epoll open file description in `descriptor_backing::with_epolls`, so a
+// fork child's inherited epoll descriptor reaches the parent's live instance
+// (Linux semantics) instead of a copy. The state is produced and consumed by
+// one kernel build, so the version guards against a mismatched kernel, not
+// a persisted format.
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
-const FORK_VERSION: u32 = 16;
+const FORK_VERSION: u32 = 17;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -55,8 +63,6 @@ const MAX_ARGV: u32 = 65536;
 const MAX_PATH_LEN: usize = 1048576; // 1 MiB
 const MAX_STRING_LEN: usize = 1048576; // 1 MiB
 const MAX_SOCKET_SLOTS: usize = 65536;
-const MAX_EPOLL_SLOTS: usize = 65536;
-const MAX_EPOLL_INTERESTS: usize = 65536;
 const MAX_SOCKET_OPTIONS: usize = 4096;
 const MAX_SOCKET_STRING_LEN: usize = 256;
 const MAX_IPV4_MULTICAST_MEMBERSHIPS: usize = 4096;
@@ -341,7 +347,16 @@ fn read_bounded_count(r: &mut Reader<'_>, max: usize) -> Result<usize, Errno> {
     Ok(count)
 }
 
-fn write_credentials_and_secure_exec(w: &mut Writer<'_>, proc: &Process) -> Result<(), Errno> {
+/// Write the kernel-owned facts that belong to the process image: its
+/// credentials, its secure-startup marker, and the pointer width of its
+/// address space.
+///
+/// `pointer_width` rides here because `fork` must hand the child the parent's
+/// width -- a child inherits the address space, so it inherits the data model
+/// -- and because the exec record carries process state across the image
+/// transport that `exec` performs. Omitting it would leave a forked wasm64
+/// child silently reading wasm32 structure layouts.
+fn write_credentials_and_image_facts(w: &mut Writer<'_>, proc: &Process) -> Result<(), Errno> {
     let credentials = proc.credentials();
     if credentials.supplementary_groups.len() > NGROUPS_MAX {
         return Err(Errno::EINVAL);
@@ -356,10 +371,11 @@ fn write_credentials_and_secure_exec(w: &mut Writer<'_>, proc: &Process) -> Resu
     for group in &credentials.supplementary_groups {
         w.write_u32(*group)?;
     }
-    w.write_u32(u32::from(proc.secure_exec))
+    w.write_u32(u32::from(proc.secure_exec))?;
+    w.write_u32(u32::from(proc.pointer_width))
 }
 
-fn read_credentials_and_secure_exec(r: &mut Reader<'_>) -> Result<(Credentials, bool), Errno> {
+fn read_credentials_and_image_facts(r: &mut Reader<'_>) -> Result<(Credentials, bool, u8), Errno> {
     let ruid = r.read_u32()?;
     let euid = r.read_u32()?;
     let suid = r.read_u32()?;
@@ -374,7 +390,7 @@ fn read_credentials_and_secure_exec(r: &mut Reader<'_>) -> Result<(Credentials, 
         .checked_mul(size_of::<u32>())
         .ok_or(Errno::EINVAL)?;
     let remaining_required = group_bytes
-        .checked_add(size_of::<u32>())
+        .checked_add(2 * size_of::<u32>())
         .ok_or(Errno::EINVAL)?;
     if r.remaining() < remaining_required {
         return Err(Errno::EINVAL);
@@ -391,6 +407,13 @@ fn read_credentials_and_secure_exec(r: &mut Reader<'_>) -> Result<(Credentials, 
         1 => true,
         _ => return Err(Errno::EINVAL),
     };
+    // Only the two data models this kernel serves are representable. A record
+    // claiming any other width is malformed, not a width to be guessed at.
+    let pointer_width = match r.read_u32()? {
+        4 => 4u8,
+        8 => 8u8,
+        _ => return Err(Errno::EINVAL),
+    };
     Ok((
         Credentials {
             ruid,
@@ -402,6 +425,7 @@ fn read_credentials_and_secure_exec(r: &mut Reader<'_>) -> Result<(Credentials, 
             supplementary_groups,
         },
         secure_exec,
+        pointer_width,
     ))
 }
 
@@ -434,60 +458,6 @@ fn read_ipv4_source_list(r: &mut Reader<'_>) -> Result<Vec<[u8; 4]>, Errno> {
 
 /// Write socket fields that are durable across fork but were added after the
 /// original v4 socket block. Consume-once queues remain intentionally absent.
-fn write_epoll_instances(
-    w: &mut Writer<'_>,
-    epolls: &[Option<crate::process::EpollInstance>],
-) -> Result<(), Errno> {
-    write_bounded_len(w, epolls.len(), MAX_EPOLL_SLOTS)?;
-    for slot in epolls {
-        match slot {
-            None => w.write_u32(0)?,
-            Some(ep) => {
-                w.write_u32(1)?;
-                write_bounded_len(w, ep.interests.len(), MAX_EPOLL_INTERESTS)?;
-                for i in &ep.interests {
-                    w.write_i32(i.fd)?;
-                    w.write_u32(i.events)?;
-                    w.write_u64(i.data)?;
-                    w.write_u64(i.ofd_id.0)?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn read_epoll_instances(
-    r: &mut Reader<'_>,
-) -> Result<Vec<Option<crate::process::EpollInstance>>, Errno> {
-    let slots = read_bounded_count(r, MAX_EPOLL_SLOTS)?;
-    let mut epolls = Vec::with_capacity(slots.min(r.remaining() / 4));
-    for _ in 0..slots {
-        match r.read_u32()? {
-            0 => epolls.push(None),
-            1 => {
-                let count = read_bounded_count(r, MAX_EPOLL_INTERESTS)?;
-                // Each registration is 24 encoded bytes.
-                if r.remaining() < count.checked_mul(24).ok_or(Errno::EINVAL)? {
-                    return Err(Errno::EINVAL);
-                }
-                let mut interests = Vec::with_capacity(count);
-                for _ in 0..count {
-                    interests.push(crate::process::EpollInterest {
-                        fd: r.read_i32()?,
-                        events: r.read_u32()?,
-                        data: r.read_u64()?,
-                        ofd_id: crate::lock::OfdId(r.read_u64()?),
-                    });
-                }
-                epolls.push(Some(crate::process::EpollInstance { interests }));
-            }
-            _ => return Err(Errno::EINVAL),
-        }
-    }
-    Ok(epolls)
-}
-
 fn write_durable_socket_state(
     w: &mut Writer<'_>,
     sock: &crate::socket::SocketInfo,
@@ -1005,7 +975,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Identity, credentials, and process scalars ──
     // Write the parent's pid as the child's ppid (child's parent is this process)
     w.write_u32(proc.pid)?;
-    write_credentials_and_secure_exec(&mut w, proc)?;
+    write_credentials_and_image_facts(&mut w, proc)?;
     w.write_u32(proc.pgid)?;
     w.write_u32(proc.sid)?;
     w.write_u32(proc.umask)?;
@@ -1298,17 +1268,6 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         }
     }
 
-    // ── Epoll instances ──
-    // An epoll fd is inherited like any other fd, so its registrations must
-    // be too: without them the child's epoll fd names an instance that no
-    // longer exists and every epoll_ctl/epoll_wait on it fails EBADF. Slot
-    // indices are preserved (the epoll OFD's host_handle encodes the slot).
-    // Registrations name their open file description by ofd_id, which the
-    // fd table above carries unchanged. (Linux shares one instance between
-    // parent and child; here each gets a copy of the registrations as they
-    // stood at fork.)
-    write_epoll_instances(&mut w, &proc.epolls)?;
-
     // ── Patch total_size ──
     let total = u32::try_from(w.pos).map_err(|_| Errno::EOVERFLOW)?;
     w.patch_u32(total_size_offset, total);
@@ -1348,7 +1307,8 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
 
     // ── Identity, credentials, and process scalars ──
     let ppid = r.read_u32()?;
-    let (credentials, secure_exec) = read_credentials_and_secure_exec(&mut r)?;
+    let (credentials, secure_exec, pointer_width) =
+        read_credentials_and_image_facts(&mut r)?;
     let pgid = r.read_u32()?;
     let sid = r.read_u32()?;
     let umask = r.read_u32()?;
@@ -1748,8 +1708,6 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         }
     }
 
-    let epolls = read_epoll_instances(&mut r)?;
-
     if r.remaining() != 0 {
         return Err(Errno::EINVAL);
     }
@@ -1757,6 +1715,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.ppid = ppid;
     child.install_credentials(credentials);
     child.secure_exec = secure_exec;
+    child.pointer_width = pointer_width;
     child.pgid = pgid;
     child.sid = sid;
     // POSIX: fork children inherit sid but are NEVER session leaders. The
@@ -1798,7 +1757,11 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.fork_fd_actions = fork_fd_actions;
     child.next_ephemeral_port = 49152;
     child.clear_threads(); // POSIX: child has one task, the process leader.
-    child.epolls = epolls;
+    // Epoll instances are NOT cleared here: an epoll fd names an open file
+    // description, and the child's inherited descriptor refers to the same
+    // instance the parent holds. Ownership lives in
+    // `descriptor_backing::with_epolls`, keyed by the OFD's handle, and
+    // `bump_inherited_resource_refcounts` takes the child's reference.
     child.posix_timers.clear();
     child.alt_stack_sp = 0;
     child.alt_stack_flags = 2; // SS_DISABLE
@@ -1854,7 +1817,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Identity, credentials, and process scalars ──
     // Preserve the process's own ppid (exec replaces the image, not the process)
     w.write_u32(proc.ppid)?;
-    write_credentials_and_secure_exec(&mut w, proc)?;
+    write_credentials_and_image_facts(&mut w, proc)?;
     w.write_u32(proc.pgid)?;
     w.write_u32(proc.sid)?;
     w.write_u32(proc.is_session_leader as u32)?;
@@ -2037,7 +2000,8 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
 
     // ── Identity, credentials, and process scalars ──
     let ppid = r.read_u32()?;
-    let (credentials, secure_exec) = read_credentials_and_secure_exec(&mut r)?;
+    let (credentials, secure_exec, pointer_width) =
+        read_credentials_and_image_facts(&mut r)?;
     let pgid = r.read_u32()?;
     let sid = r.read_u32()?;
     let is_session_leader = r.read_u32()? != 0; // preserved across exec
@@ -2231,6 +2195,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.ppid = ppid;
     process.install_credentials(credentials);
     process.secure_exec = secure_exec;
+    process.pointer_width = pointer_width;
     process.pgid = pgid;
     process.sid = sid;
     process.is_session_leader = is_session_leader;
@@ -2267,7 +2232,10 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.fork_fd_actions.clear();
     process.next_ephemeral_port = 49152;
     process.clear_threads(); // exec resets to the process leader only.
-    process.epolls.clear();
+    // An epoll fd without FD_CLOEXEC survives exec on Linux, interest list
+    // included, because the open file description survives. Ownership is
+    // OFD-keyed in `descriptor_backing`, and CLOEXEC-dropped descriptors
+    // release their reference through `removed_backings_for_exec`.
     process.posix_timers.clear();
     process.alt_stack_sp = 0;
     process.alt_stack_flags = 2; // SS_DISABLE
@@ -2364,6 +2332,10 @@ mod tests {
             vec![1000, 2000, 3000, 4000, 5000, 6000, 2, 7000, 8000],
         );
         assert_eq!(u32::from_le_bytes(buf[52..56].try_into().unwrap()), 1);
+        // The pointer width follows secure_exec in wire order, and a forked
+        // child inherits it: it inherits the address space it describes.
+        assert_eq!(u32::from_le_bytes(buf[56..60].try_into().unwrap()), 4);
+        assert_eq!(child.pointer_width, 4);
         assert_eq!(child.real_uid(), 1000);
         assert_eq!(child.effective_uid(), 2000);
         assert_eq!(child.saved_uid(), 3000);
@@ -2463,7 +2435,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_format_roundtrips_complete_credentials_and_secure_exec() {
+    fn exec_format_roundtrips_complete_credentials_and_image_facts() {
         let mut proc = Process::new(1);
         proc.install_credentials(Credentials {
             ruid: 101,

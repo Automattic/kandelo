@@ -20,7 +20,7 @@ import {
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import {
-  bindImageOwnedRuntimeUrls,
+  imageOwnedRuntimeUrlTable,
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
@@ -1293,15 +1293,16 @@ async function bootProfile(
     `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(loadedVfs.imageBytes.byteLength)}`,
   );
   // Compose the boot image in a DISPOSABLE worker, never on this thread.
-  // Composition needs a live MemoryFileSystem — a SharedArrayBuffer — and on
-  // WebKit only Worker.terminate() reclaims shared memory deterministically;
-  // a buffer this persistent thread merely dropped waits on a GC that
-  // reserved shared memory rarely provokes, accumulating across machine
-  // switches until Safari throws "Out of memory". The worker returns plain
-  // transferable bytes plus the image-read machine data; the kernel worker
-  // then rebuilds and owns the live VFS (kernelOwnedFs). Supersession is
-  // enforced by terminating the worker, which also frees its staging buffer.
-  // See image-composer.ts for the composition itself.
+  // Composition instantiates the image-writer module (KandeloImageFs), whose
+  // Wasm memory grows with the staged tree; on WebKit only Worker.terminate()
+  // reclaims such memory deterministically — memory this persistent thread
+  // merely dropped waits on a GC that reserved memory rarely provokes,
+  // accumulating across machine switches until Safari throws "Out of memory".
+  // The worker returns plain transferable bytes plus the image-read machine
+  // data; the kernel worker then rebuilds and owns the live VFS
+  // (kernelOwnedFs). Supersession is enforced by terminating the worker,
+  // which also frees its staging memory. See image-composer.ts for the
+  // composition itself.
   const composed = await composeImageInWorker(
     {
       imageBytes: new Uint8Array(loadedVfs.imageBytes),
@@ -1311,7 +1312,6 @@ async function bootProfile(
       requestedProfileSource: profile.requestedProfileSource,
       hasCandidateEvidence: profile.candidateEvidence !== undefined,
       descriptor: requestedDescriptor,
-      lazyAssets: loadedVfs.lazyAssets,
       appPath: APP_PATH,
       proto: PROTO,
       preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
@@ -1326,6 +1326,11 @@ async function bootProfile(
   const { imageConfig, profileId, terminalSession, bootInputManifest } =
     composed;
   const vfsImageBytes = composed.imageBytes;
+  // The image keeps its canonical lazy addresses: nothing rewrites them. WHERE
+  // this deployment serves them is transport policy, which travels beside the
+  // image as a table for the kernel worker's lazy fetcher, so the deferred
+  // entries the image writer sealed reach the kernel exactly as built.
+  const lazyUrlMap = imageOwnedRuntimeUrlTable(loadedVfs.lazyAssets);
   // ── The machine, read from the image it lives in ────────────────────────
   //
   // The composer already failed the boot if the image declares no machine
@@ -1465,10 +1470,15 @@ async function bootProfile(
         );
       },
     });
-    const kernelInitOptions = profile.candidateEvidence === undefined
+    // Typed against the host's own init contract, so an option the host does
+    // not accept (the lazy URL table above) is a type error, never a field the
+    // host silently drops.
+    const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =
+      profile.candidateEvidence === undefined
       ? {
         kernelWasm: kernelBytes,
         vfsImage: vfsImageBytes,
+        lazyUrlMap,
       }
       : candidateEvidenceKernelInitOptions(
         profile.candidateEvidence,

@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const packages = discoverVfsImagePackages();
+const CARGO_INPUT_PREFIX = "cargo:";
 const sourceExtensions = new Set([
   ".cjs",
   ".cts",
@@ -44,7 +45,13 @@ describe("package build input import closure", () => {
       ]);
     }
 
-    expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual(packages);
+    // Every image builder stamps `kernelAbi` into the image it writes, so the
+    // generated ABI constants are in every derived image's cache identity.
+    expect(packagesAffectedBy("host/src/generated/abi.ts")).toEqual(packages);
+    // So is the image writer every builder drives.
+    expect(
+      packagesAffectedBy("images/vfs/lib/kandelo-image-fs.ts"),
+    ).toEqual(packages);
 
     expect(
       packagesAffectedBy(
@@ -126,7 +133,12 @@ describe("package build input import closure", () => {
       );
       const buildToml = readFileSync(buildTomlPath, "utf8");
       const declaredInputs = parseBuildInputs(buildToml);
-      const declaredPaths = declaredInputs.map((input) =>
+      // `cargo:<crate>` entries name a workspace crate whose closure xtask
+      // expands at keying time; they are not repository paths to follow.
+      const pathInputs = declaredInputs.filter(
+        (input) => !input.startsWith(CARGO_INPUT_PREFIX),
+      );
+      const declaredPaths = pathInputs.map((input) =>
         resolve(repoRoot, input),
       );
       const scriptPath = buildToml.match(
@@ -222,18 +234,12 @@ describe("package build input import closure", () => {
       expect(builder).toContain(
         'writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils)',
       );
-      if (packageName === "mariadb-test") {
-        expect(builder).toContain(
-          "const coreutilsRoot = process.env.WASM_POSIX_DEP_COREUTILS_DIR;",
-        );
-        expect(builder).toMatch(
-          /coreutils:\s*new Uint8Array\(readFileSync\(coreutilsRoot\s*\?\s*join\(coreutilsRoot, "coreutils\.wasm"\)\s*:\s*resolveBinary\("programs\/coreutils\.wasm"\)\)\)/,
-        );
-      } else {
-        expect(builder).toMatch(
-          /coreutils:\s*new Uint8Array\(\s*readFileSync\(resolveBinary\("programs\/coreutils\.wasm"\)\)/,
-        );
-      }
+      expect(builder).toContain(
+        "const coreutilsRoot = process.env.WASM_POSIX_DEP_COREUTILS_DIR;",
+      );
+      expect(builder).toMatch(
+        /coreutils:\s*new Uint8Array\(\s*readFileSync\(coreutilsRoot\s*\?\s*join\(coreutilsRoot, "coreutils\.wasm"\)\s*:\s*resolveBinary\("programs\/coreutils\.wasm"\)\)/,
+      );
       expect(builder).not.toContain(
         'tryResolveBinary("programs/coreutils.wasm")',
       );
@@ -254,7 +260,9 @@ function packagesAffectedBy(changedPath: string): string[] {
       );
       const declaredPaths = parseBuildInputs(
         readFileSync(buildTomlPath, "utf8"),
-      ).map((input) => resolve(repoRoot, input));
+      )
+        .filter((input) => !input.startsWith(CARGO_INPUT_PREFIX))
+        .map((input) => resolve(repoRoot, input));
       return declaredPaths.some((declaredPath) =>
         covers(declaredPath, absoluteChangedPath),
       );

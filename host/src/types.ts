@@ -19,6 +19,27 @@ export interface KernelConfig {
    * see `runtime-memory-profile.ts`.
    */
   kernelMaxPages?: number;
+  /**
+   * Deterministic image-build mode, for kernels an image builder boots while
+   * building a VFS image: `CLOCK_REALTIME` counts up from `epochSeconds` and
+   * all entropy comes from a stream seeded by `seed`, so the software the
+   * build runs writes the same bytes every time. Seeded entropy is public;
+   * never set this for a machine a person uses. Only the Node host's image
+   * builders set it (`NodeKernelHost`'s `imageBuildDeterminism`); the browser
+   * host has no way to. See `crates/runtime-core/src/image_build_determinism.rs`.
+   */
+  imageBuildDeterminism?: ImageBuildDeterminism;
+}
+
+/** See {@link KernelConfig.imageBuildDeterminism}. */
+export interface ImageBuildDeterminism {
+  /**
+   * A number naming the build step (a non-negative safe integer). Different
+   * steps use different seeds so their streams are unrelated.
+   */
+  seed: number;
+  /** The instant the image's clock starts at: the image's SOURCE_DATE_EPOCH. */
+  epochSeconds: number;
 }
 
 export interface StatResult {
@@ -132,38 +153,93 @@ export interface PlatformIO {
    */
   fileHandleIdentity?(handle: number, dev: bigint, ino: bigint): string | null;
 
-  // Path-based operations
-  stat(path: string): StatResult;
-  lstat(path: string): StatResult;
-  statfs(path: string): StatfsResult;
-  pathconf(path: string, name: number): PathconfValue;
-  mkdir(path: string, mode: number): void;
-  rmdir(path: string): void;
-  unlink(path: string): void;
-  rename(oldPath: string, newPath: string): void;
-  link(existingPath: string, newPath: string): void;
-  symlink(target: string, path: string): void;
-  readlink(path: string): string;
-  chmod(path: string, mode: number): void;
-  chown(path: string, uid: number, gid: number): void;
-  lchown(path: string, uid: number, gid: number): void;
-  access(path: string, mode: number): void;
-  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void;
-
-  // Directory iteration
   /**
-   * Open a directory and return an opaque handle. A handle must not be reused
-   * while its previous directory iterator is still live.
+   * Metadata for a guest path, for this host's OWN bookkeeping only.
+   *
+   * This is NOT part of the kernel contract and backs no `env.host_*` import.
+   * The kernel never asks this host to resolve a path; its sole caller is the
+   * shared-mmap backing lookup in `kernel-worker.ts`, which needs a file's
+   * identity to find the mapping it already created for that file.
+   *
+   * It is the last path-shaped method on this interface, and it survives only
+   * because the mmap-coherence machinery that needs it is keyed by path rather
+   * than by descriptor. Reworking that is a change to the worker's mapping
+   * model, not to the host filesystem contract.
    */
-  opendir(path: string): number;
+  stat(path: string): StatResult;
+
+  // Directory-relative operations.
+  //
+  // The kernel owns the POSIX namespace. It resolves mount routing, `..`, and
+  // symlink chains itself, then asks this host to resolve exactly ONE path
+  // component relative to a directory handle this host previously issued. No
+  // method here ever receives a guest path, a mount prefix, a `..`, or a
+  // symlink chain, and `name` is always a single component (`"."` naming the
+  // directory itself).
+  //
+  // This whole group is an OPTIONAL capability: "expose a real host
+  // directory". A host with no host-backed mount implements none of it, and
+  // the kernel never calls it, because no path can reach a mount that does not
+  // exist.
+
   /**
-   * Return and consume the next entry. If this throws, the iterator must stay
-   * on that entry so the caller can retry without a directory-position gap.
+   * Directory handles naming each mount's root, published to the kernel at
+   * boot as the anchors for its per-component walks.
+   */
+  foreignMountRoots(): { prefix: string; handle: number }[];
+
+  /**
+   * Open one component relative to a directory handle. `O_DIRECTORY` yields
+   * another directory handle; anything else yields a file handle. Both share
+   * one id space and are released by `close`.
+   */
+  openat(dirHandle: number, name: string, flags: number, mode: number): number;
+  /** `AT_SYMLINK_NOFOLLOW` describes a symlink rather than its target. */
+  fstatat(dirHandle: number, name: string, flags: number): StatResult;
+  mkdirat(dirHandle: number, name: string, mode: number): void;
+  /** `AT_REMOVEDIR` selects `rmdir(2)` semantics. */
+  unlinkat(dirHandle: number, name: string, flags: number): void;
+  renameat(
+    oldDirHandle: number,
+    oldName: string,
+    newDirHandle: number,
+    newName: string,
+  ): void;
+  linkat(
+    oldDirHandle: number,
+    oldName: string,
+    newDirHandle: number,
+    newName: string,
+  ): void;
+  /** `target` is opaque data stored verbatim; only `name` names an entry. */
+  symlinkat(target: string, dirHandle: number, name: string): void;
+  readlinkat(dirHandle: number, name: string): string;
+  fchmodat(dirHandle: number, name: string, mode: number): void;
+  /** `AT_SYMLINK_NOFOLLOW` selects `lchown(2)`. */
+  fchownat(
+    dirHandle: number,
+    name: string,
+    uid: number,
+    gid: number,
+    flags: number,
+  ): void;
+  utimensatAt(
+    dirHandle: number,
+    name: string,
+    atimeSec: number,
+    atimeNsec: number,
+    mtimeSec: number,
+    mtimeNsec: number,
+  ): void;
+  /**
+   * Return and consume the next entry of a directory handle. If this throws,
+   * the iterator must stay on that entry so the caller can retry without a
+   * directory-position gap: the kernel may return a short successful
+   * `getdents64` after copying earlier records and retry on the next syscall.
    */
   readdir(
     handle: number,
   ): { name: string; type: number; ino: number } | null;
-  closedir(handle: number): void;
 
   // File operations
   ftruncate(handle: number, length: number): void;
@@ -173,7 +249,6 @@ export interface PlatformIO {
 
   // Time
   clockGettime(clockId: number): { sec: number; nsec: number };
-  nanosleep(sec: number, nsec: number): void;
 
   // Process (optional — only needed when process management is available)
   waitpid?(pid: number, options: number): { pid: number; status: number };
@@ -190,7 +265,16 @@ export interface NetworkAddress {
 export interface TcpConnectionPeer {
   send(data: Uint8Array, flags: number): number;
   recv(maxLen: number, flags: number): Uint8Array;
-  poll?(events: number): number;
+  /**
+   * Report what this engine can observe about the connection, as a
+   * `NET_READINESS` fact word (`host/src/generated/abi.ts`).
+   *
+   * This is deliberately *not* `revents`. Deciding which of
+   * POLLIN/POLLOUT/POLLERR/POLLHUP belongs in `revents` is a POSIX decision
+   * and the kernel makes it, in `runtime_core::net_readiness`. Report facts
+   * here and nothing else.
+   */
+  readiness?(): number;
   /** Disable one or both directions without resetting the connection. */
   shutdown(how: number): void;
   /** Orderly close: flush/FIN the write half and orphan the receive half. */
@@ -223,8 +307,20 @@ export interface NetworkIO {
   connectStatus(handle: number): number;
   send(handle: number, data: Uint8Array, flags: number): number;
   recv(handle: number, maxLen: number, flags: number): Uint8Array;
-  /** Return POSIX poll revents bits for this connection handle. */
-  poll?(handle: number, events: number): number;
+  /**
+   * Report what this engine can observe about a connection handle, as a
+   * `NET_READINESS` fact word (`host/src/generated/abi.ts`).
+   *
+   * This is deliberately *not* `revents`. Deciding which of
+   * POLLIN/POLLOUT/POLLERR/POLLHUP belongs in `revents` is a POSIX decision
+   * and the kernel makes it, in `runtime_core::net_readiness`. Report facts
+   * here and nothing else.
+   *
+   * A backend that omits this is reported to the kernel as
+   * `NET_READINESS.UNOBSERVABLE`, whose documented handling is
+   * wake-every-round with `EAGAIN` from `recv`/`send`.
+   */
+  readiness?(handle: number): number;
   close(handle: number): void;
   getaddrinfo(hostname: string): Uint8Array; // Returns 4-byte IPv4
   listenTcp?(listenerId: string, addr: Uint8Array, port: number, target: TcpListenTarget): number;

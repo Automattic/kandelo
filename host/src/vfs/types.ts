@@ -79,7 +79,6 @@ export interface FileSystemBackend {
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
   lchown(path: string, uid: number, gid: number): void;
-  access(path: string, mode: number): void;
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void;
 
   // Directory iteration
@@ -91,7 +90,6 @@ export interface FileSystemBackend {
 
 export interface TimeProvider {
   clockGettime(clockId: number): { sec: number; nsec: number };
-  nanosleep(sec: number, nsec: number): void;
 }
 
 export interface MountConfig {

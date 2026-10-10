@@ -152,7 +152,6 @@ struct SpawnInheritFromParent {
     fd_table: crate::fd::FdTable,
     ofd_table: crate::ofd::OfdTable,
     sockets: crate::socket::SocketTable,
-    epolls: Vec<Option<crate::process::EpollInstance>>,
 }
 
 /// Return each socket-table slot owned by at least one live OFD, exactly once.
@@ -213,7 +212,7 @@ pub fn bump_inherited_resource_refcounts(
     // fail without requiring rollback of unrelated inherited resources.
     let owned_socket_indices = socket_indices_named_by_live_ofds(child)?;
 
-    // Backings for eventfd/timerfd/signalfd/memfd/procfs are indexed by the
+    // Backings for eventfd/timerfd/signalfd/memfd/epoll/procfs are indexed by the
     // inherited OFD's stable negative handle. Add these fallible references
     // first, rolling them back if a stale handle is encountered, before
     // touching the older infallible global-resource refcounts below.
@@ -544,6 +543,7 @@ impl ProcessTable {
         self.ensure_init();
         let task_id = self.allocate_task_id()?;
         let pid = task_id.as_raw();
+        crate::image_build_determinism::process_created(pid);
         self.processes
             .insert(pid, Process::new_allocated_with_stdio(task_id, stdio));
         Ok(pid)
@@ -661,8 +661,11 @@ impl ProcessTable {
             }
         }
 
-        // Drop kernel-global eventfd/timerfd/signalfd/memfd/procfs backing
-        // references for every OFD the process still owns. Normal exit closes
+        // Drop kernel-global eventfd/timerfd/signalfd/memfd/epoll/procfs
+        // backing references for every OFD the process still owns. A shared
+        // epoll instance therefore outlives a process that exits while a fork
+        // peer still holds a descriptor for the same open file description.
+        // Normal exit closes
         // fds first; this also covers crash removal and spawn rollback.
         for (_ofd_idx, ofd) in proc.ofd_table.iter() {
             crate::descriptor_backing::release_for_ofd(ofd.file_type, ofd.host_handle);
@@ -1257,12 +1260,12 @@ impl ProcessTable {
                 fd_table: parent.fd_table.clone(),
                 ofd_table: parent.ofd_table.clone(),
                 sockets: parent.sockets.clone(),
-                epolls: parent.epolls.clone(),
             }
         };
 
         let child_task_id = self.allocate_task_id()?;
         let child_pid = child_task_id.as_raw();
+        crate::image_build_determinism::process_created(child_pid);
         let mut child = Process::new_allocated(child_task_id);
 
         // ── POSIX-required inheritance ─────────────────────────────────
@@ -1287,11 +1290,10 @@ impl ProcessTable {
         child.fd_table = inherit.fd_table;
         child.ofd_table = inherit.ofd_table;
         child.sockets = inherit.sockets;
-        // An inherited epoll fd must keep naming a live instance, as after
-        // fork. Registrations whose descriptions spawn's fd actions or
-        // close-on-exec closed are dropped the first time the child uses the
-        // instance (they no longer reach an open description).
-        child.epolls = inherit.epolls;
+        // An inherited epoll fd keeps naming the parent's live instance: the
+        // instance belongs to the epoll open file description
+        // (`descriptor_backing::with_epolls`), and the inherited-resource
+        // refcount pass below takes the child's reference.
 
         // Retry pins are kernel capabilities owned by the parent task, not
         // descriptors inherited by a new process. Rebuild local OFD counts
@@ -1391,7 +1393,7 @@ impl ProcessTable {
         if let Err(e) = self.apply_spawn_file_actions(child_pid, file_actions, host) {
             if let Some(removed) = self.remove_process(child_pid) {
                 for dir_handle in removed.host_dir_closes {
-                    let _ = host.host_closedir(dir_handle);
+                    let _ = host.host_close(dir_handle);
                 }
                 for handle in removed.host_closes {
                     let _ = host.host_close(handle);
@@ -1530,6 +1532,7 @@ impl ProcessTable {
         };
         let task_id = self.allocate_task_id()?;
         let tid = task_id.as_raw();
+        crate::image_build_determinism::thread_created(pid, tid);
         let process = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
         let thread_info = process.add_allocated_thread(task_id, ctid_ptr, stack_ptr, tls_ptr);
         thread_info.signals.blocked = inherited_blocked;
@@ -1579,6 +1582,13 @@ impl ProcessTable {
             matches!(process.state, ProcessState::Running | ProcessState::Stopped)
                 && process.get_thread(tid).is_some()
         })
+    }
+
+    /// Whether this kernel has ever allocated a user task identity (process or
+    /// thread), whether or not it still exists. Used to refuse boot-time-only
+    /// configuration once any guest has run.
+    pub fn has_allocated_user_tasks(&self) -> bool {
+        self.next_task_id != FIRST_TASK_ID
     }
 
     /// Collect every retained PID, including internal limbo identities.
@@ -2217,6 +2227,38 @@ mod wait_tests {
             )
             .unwrap();
         assert_eq!(table.get(spawn_pid).unwrap().signals.blocked, 0x22);
+    }
+
+    #[test]
+    fn fork_and_vfork_children_inherit_the_parent_pointer_width() {
+        use wasm_posix_shared::fork_contract::Mode;
+
+        // A child inherits its parent's address space, so it inherits the data
+        // model of that address space. Nothing re-registers the width for a
+        // forked child -- if it did not ride the fork state record, a wasm64
+        // parent would produce a child the kernel read as wasm32, and every
+        // caller-native structure that child passed would be mis-parsed.
+        for mode in [Mode::Fork, Mode::Vfork] {
+            let mut table = ProcessTable::new();
+            let parent_pid = table.create_process().unwrap();
+            table.get_mut(parent_pid).unwrap().pointer_width = 8;
+
+            let child_pid = table
+                .fork_process_for_caller_with_mode(parent_pid, parent_pid, mode)
+                .unwrap();
+
+            assert_eq!(table.get(child_pid).unwrap().pointer_width, 8);
+            // The parent keeps its own width across the transition.
+            assert_eq!(table.get(parent_pid).unwrap().pointer_width, 8);
+        }
+
+        // A wasm32 parent is inherited just as exactly, rather than landing on
+        // the same answer by way of the struct default.
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        assert_eq!(table.get(parent_pid).unwrap().pointer_width, 4);
+        let child_pid = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
+        assert_eq!(table.get(child_pid).unwrap().pointer_width, 4);
     }
 
     #[test]

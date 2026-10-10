@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import * as os from "node:os";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 
@@ -21,7 +24,7 @@ afterEach(() => {
 });
 
 function fixtureDir(files: Record<string, string>): string {
-  const scratch = mkdtempSync(join(os.tmpdir(), "kandelo-elinks-"));
+  const scratch = makeHostScratchTempRoot("kandelo-elinks-");
   scratchDirs.push(scratch);
   for (const [name, content] of Object.entries(files)) {
     writeFileSync(join(scratch, name), content);

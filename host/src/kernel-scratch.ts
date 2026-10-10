@@ -114,8 +114,10 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  *
  * WHY: this is deliberately a narrow lifetime allowlist, not a list of every
  * kernel export. Each Rust implementation was reviewed to consume or copy its
- * borrowed bytes before returning. `kernel_handle_channel` scopes its raw
- * mailbox view to decoding/publishing and clears the active task binding;
+ * borrowed bytes before returning. `kernel_handle_channel` and
+ * `kernel_handle_channel_record` (the same implementation on the record
+ * transport) scope their raw mailbox view to decoding/publishing and clear the
+ * active task binding;
  * `kernel_spawn_process` parses the complete blob into owned Rust values
  * before it enters process-table or host work; and
  * `kernel_process_metadata_stage` copies one complete entry into a token-owned
@@ -133,6 +135,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_drain_audio",
   "kernel_drain_wakeup_events",
   "kernel_enum_procs",
+  "kernel_epoll_wake_indices",
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
   "kernel_get_cwd",
@@ -141,6 +144,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_getrusage",
   "kernel_getsockopt",
   "kernel_handle_channel",
+  "kernel_handle_channel_record",
   "kernel_inject_datagram",
   "kernel_ioctl",
   "kernel_ipc_shm_read_chunk",
@@ -156,6 +160,17 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_pty_master_write",
   "kernel_read_proc_maps",
   "kernel_recv",
+  "kernel_rootfs_export_container_read",
+  "kernel_rootfs_mkdir_parents",
+  "kernel_rootfs_read_file",
+  "kernel_rootfs_set_foreign_mount_roots",
+  "kernel_rootfs_stat_mode",
+  "kernel_rootfs_inspect_stat",
+  "kernel_rootfs_inspect_read_file",
+  "kernel_rootfs_inspect_directory",
+  "kernel_rootfs_lazy_resource_limits",
+  "kernel_rootfs_unlink_file",
+  "kernel_rootfs_write_file",
   "kernel_select",
   "kernel_send",
   "kernel_set_cwd",
@@ -212,6 +227,9 @@ const REQUIRED_POINTER_1 = intrinsicObjectFreeze([1] as const);
 const REQUIRED_POINTER_2 = intrinsicObjectFreeze([2] as const);
 const REQUIRED_POINTER_3 = intrinsicObjectFreeze([3] as const);
 const REQUIRED_POINTER_3_5 = intrinsicObjectFreeze([3, 5] as const);
+const REQUIRED_POINTER_0_2 = intrinsicObjectFreeze([0, 2] as const);
+const REQUIRED_POINTER_0_3 = intrinsicObjectFreeze([0, 3] as const);
+const REQUIRED_POINTER_0_4 = intrinsicObjectFreeze([0, 4] as const);
 const REQUIRED_POINTER_4 = intrinsicObjectFreeze([4] as const);
 const REQUIRED_POINTER_5 = intrinsicObjectFreeze([5] as const);
 const REQUIRED_POINTER_11 = intrinsicObjectFreeze([11] as const);
@@ -228,11 +246,22 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
     case "kernel_handle_channel":
+    case "kernel_handle_channel_record":
     case "kernel_mq_drain_notification":
     case "kernel_poll":
+    case "kernel_rootfs_mkdir_parents":
+    case "kernel_rootfs_set_foreign_mount_roots":
+    case "kernel_rootfs_stat_mode":
+    case "kernel_rootfs_unlink_file":
     case "kernel_truncate":
     case "kernel_uname":
       return REQUIRED_POINTER_0;
+    case "kernel_rootfs_inspect_stat":
+      return REQUIRED_POINTER_0_2;
+    case "kernel_rootfs_inspect_directory":
+      return REQUIRED_POINTER_0_3;
+    case "kernel_rootfs_lazy_resource_limits":
+      return REQUIRED_POINTER_1;
     case "kernel_get_cwd":
     case "kernel_getrusage":
     case "kernel_pipe2":
@@ -254,10 +283,12 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_pipe_read":
     case "kernel_pipe_write":
     case "kernel_pick_tcp_listener_target":
+    case "kernel_rootfs_export_container_read":
     case "kernel_spawn_exec_target_prepare":
     case "kernel_spawn_process":
     case "kernel_tcsetattr":
       return REQUIRED_POINTER_2;
+    case "kernel_epoll_wake_indices":
     case "kernel_process_metadata_stage":
     case "kernel_exec_target_prepare":
     case "kernel_setsockopt":
@@ -265,6 +296,11 @@ export function kernelScratchRequiredPointerArguments(
       return REQUIRED_POINTER_3;
     case "kernel_exec_target_read":
       return REQUIRED_POINTER_4;
+    case "kernel_rootfs_read_file":
+    case "kernel_rootfs_inspect_read_file":
+    case "kernel_rootfs_write_file":
+      // path bytes at arg 0, data buffer at arg 4.
+      return REQUIRED_POINTER_0_4;
     case "kernel_getsockopt":
       return REQUIRED_POINTER_3_5;
     case "kernel_wait_child_poll":
@@ -311,6 +347,7 @@ function isKernelScratchExportName(
     case "kernel_drain_audio":
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
+    case "kernel_epoll_wake_indices":
     case "kernel_exec_target_prepare":
     case "kernel_exec_target_read":
     case "kernel_get_cwd":
@@ -319,6 +356,7 @@ function isKernelScratchExportName(
     case "kernel_getrusage":
     case "kernel_getsockopt":
     case "kernel_handle_channel":
+    case "kernel_handle_channel_record":
     case "kernel_inject_datagram":
     case "kernel_ioctl":
     case "kernel_ipc_shm_read_chunk":
@@ -334,6 +372,17 @@ function isKernelScratchExportName(
     case "kernel_pty_master_write":
     case "kernel_read_proc_maps":
     case "kernel_recv":
+    case "kernel_rootfs_export_container_read":
+    case "kernel_rootfs_mkdir_parents":
+    case "kernel_rootfs_read_file":
+    case "kernel_rootfs_set_foreign_mount_roots":
+    case "kernel_rootfs_stat_mode":
+    case "kernel_rootfs_inspect_stat":
+    case "kernel_rootfs_inspect_read_file":
+    case "kernel_rootfs_inspect_directory":
+    case "kernel_rootfs_lazy_resource_limits":
+    case "kernel_rootfs_unlink_file":
+    case "kernel_rootfs_write_file":
     case "kernel_select":
     case "kernel_send":
     case "kernel_set_cwd":

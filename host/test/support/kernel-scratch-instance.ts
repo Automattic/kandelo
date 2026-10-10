@@ -243,6 +243,49 @@ function signatures(
       parameters: [i32, i32, pointer],
       result: i64,
     },
+    // Kernel-owned shared mappings (SysV attachments and kernel-file
+    // MAP_SHARED). The table is Rust-owned; these are the host's entry points.
+    kernel_shared_mapping_process_count: { parameters: [i32], result: i32 },
+    kernel_shared_mapping_sync_process: { parameters: [i32, i32], result: i32 },
+    kernel_shared_mapping_release_process: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_inherit: { parameters: [i32, i32, i64], result: i32 },
+    kernel_shared_mapping_sysv_drop_mapping: {
+      parameters: [i32, pointer, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_publish_mapping: {
+      parameters: [i32, pointer, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_sync_segment: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_track: {
+      parameters: [i32, pointer, i32, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_file_track: {
+      parameters: [i32, i64, i32, i64, i64, i32, i64],
+      result: i32,
+    },
+    kernel_shared_mapping_flush: { parameters: [i32, i64, i64], result: i32 },
+    kernel_shared_mapping_unmap: { parameters: [i32, i64, i64], result: i32 },
+    kernel_shared_mapping_remap: {
+      parameters: [i32, i64, i64, i64],
+      result: i32,
+    },
+    kernel_shared_mapping_prepare_write: {
+      parameters: [i32, i64, i64],
+      result: i32,
+    },
+    kernel_shared_mapping_protect: {
+      parameters: [i32, i64, i64, i32],
+      result: i32,
+    },
     kernel_ipc_shm_record_mapping_for_process: {
       parameters: [i32, pointer, i32, i32],
       result: i32,
@@ -283,16 +326,8 @@ function signatures(
       parameters: [pointer, i32],
       result: i32,
     },
-    kernel_mq_descriptor_msgsize: {
-      parameters: [i32, i32, i32],
-      result: i32,
-    },
     kernel_mark_process_signaled: {
       parameters: [i32, i32],
-      result: i32,
-    },
-    kernel_msqid_ds_bytes: {
-      parameters: [i32],
       result: i32,
     },
     kernel_kms_commit_count: {
@@ -429,14 +464,6 @@ function signatures(
       ],
       result: i32,
     },
-    kernel_semctl_array_bytes: {
-      parameters: [i32, i32, i32, i32],
-      result: i32,
-    },
-    kernel_semid_ds_bytes: {
-      parameters: [i32],
-      result: i32,
-    },
     kernel_send: {
       parameters: [i32, pointer, i32, i32],
       result: i32,
@@ -457,10 +484,6 @@ function signatures(
       parameters: [i32, i32, i32],
       result: i32,
     },
-    kernel_shmid_ds_bytes: {
-      parameters: [i32],
-      result: i32,
-    },
     kernel_set_current_tid: {
       parameters: [i32, i32],
       result: i32,
@@ -475,6 +498,10 @@ function signatures(
     },
     kernel_set_mmap_base: {
       parameters: [i32, pointer],
+      result: i32,
+    },
+    kernel_set_process_pointer_width: {
+      parameters: [i32, i32],
       result: i32,
     },
     kernel_socketpair: {
@@ -580,6 +607,80 @@ function signatures(
       parameters: [i32, i32, i32, i32, i32, pointer, i32],
       result: i32,
     },
+    kernel_set_wait_queue_enabled: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_wait_deadline_open: {
+      // (pid, tid, kind, timeout_ms) -> handle
+      parameters: [i32, i32, i32, i64],
+      result: i64,
+    },
+    kernel_wait_deadline_remaining_ns: {
+      parameters: [i64],
+      result: i64,
+    },
+    kernel_wait_deadline_close: {
+      parameters: [i64],
+      result: i32,
+    },
+    kernel_wait_retire_process: {
+      parameters: [i32],
+      result: i32,
+    },
+  };
+}
+
+/** `kernel_wait_deadline_remaining_ns` sentinel for "live wait, no deadline". */
+const TEST_WAIT_NO_DEADLINE = -(2n ** 63n);
+
+/**
+ * A faithful stand-in for the kernel's wait-deadline exports.
+ *
+ * These are not neutral no-ops on purpose. A double that answered "plenty of
+ * time left" would make every timeout test pass while proving nothing, which
+ * is precisely how a divergence stays invisible. This keeps the real
+ * contract: monotonic remaining time, handles that are never reused, and
+ * `-ESRCH` for a handle the kernel does not hold.
+ */
+export function createWaitDeadlineTestDouble(): Record<string, unknown> {
+  const ESRCH = 3;
+  const deadlines = new Map<bigint, { pid: number; deadlineNs: bigint | null }>();
+  let next = 1n;
+  const nowNs = (): bigint => BigInt(Math.round(performance.now() * 1_000_000));
+  return {
+    kernel_set_wait_queue_enabled: () => 0,
+    kernel_wait_deadline_open: (
+      pid: number,
+      _tid: number,
+      _kind: number,
+      timeoutMs: bigint,
+    ) => {
+      const handle = next++;
+      deadlines.set(handle, {
+        pid: Number(pid),
+        deadlineNs: timeoutMs < 0n ? null : nowNs() + timeoutMs * 1_000_000n,
+      });
+      return handle;
+    },
+    kernel_wait_deadline_remaining_ns: (handle: bigint) => {
+      const entry = deadlines.get(handle);
+      if (entry === undefined) return BigInt(-ESRCH);
+      if (entry.deadlineNs === null) return TEST_WAIT_NO_DEADLINE;
+      const remaining = entry.deadlineNs - nowNs();
+      return remaining > 0n ? remaining : 0n;
+    },
+    kernel_wait_deadline_close: (handle: bigint) =>
+      deadlines.delete(handle) ? 1 : 0,
+    kernel_wait_retire_process: (pid: number) => {
+      let dropped = 0;
+      for (const [handle, entry] of deadlines) {
+        if (entry.pid !== Number(pid)) continue;
+        deadlines.delete(handle);
+        dropped++;
+      }
+      return dropped;
+    },
   };
 }
 
@@ -601,9 +702,23 @@ export function createKernelScratchTestInstance(
   includedExports?: readonly string[],
   excludedExports: readonly string[] = [],
 ): WebAssembly.Instance {
+  // Every blocking call asks the kernel how long is left on its deadline, so
+  // these belong to the baseline contract the way `kernel_alloc_scratch` does
+  // -- not to a test's opt-in list. A fixture that omitted them would report a
+  // stale-kernel failure instead of the behaviour under test. `excludedExports`
+  // still removes them, which is how a required-export test proves the host
+  // fails loudly without them.
+  const ALWAYS_EXPORTED = [
+    "kernel_alloc_scratch",
+    "kernel_set_wait_queue_enabled",
+    "kernel_wait_deadline_open",
+    "kernel_wait_deadline_remaining_ns",
+    "kernel_wait_deadline_close",
+    "kernel_wait_retire_process",
+  ];
   const selected = includedExports === undefined
     ? undefined
-    : new Set(["kernel_alloc_scratch", ...includedExports]);
+    : new Set([...ALWAYS_EXPORTED, ...includedExports]);
   const excluded = new Set(excludedExports);
   const entries = Object.entries(signatures(pointerWidth)).filter(
     ([name]) =>
@@ -650,6 +765,8 @@ export function createKernelScratchTestInstance(
   ];
   const imports: Record<string, (...args: Array<number | bigint>) => number | bigint>
     = {};
+  const waitDeadlineDefaults = createWaitDeadlineTestDouble() as
+    Record<string, unknown>;
 
   entries.forEach(([name, signature], index) => {
     typePayload.push(
@@ -674,7 +791,14 @@ export function createKernelScratchTestInstance(
       if (name === "kernel_alloc_scratch") {
         return allocator(Number(args[0]));
       }
-      const implementation = resolveExports()[name];
+      // WHY a built-in default for the wait-deadline exports and nothing else:
+      // every blocking call now asks the kernel how long is left, so requiring
+      // each of ~200 test doubles to restate that contract would make the
+      // fixture, not the behaviour, decide which tests can run. The default is
+      // faithful (see createWaitDeadlineTestDouble), and a test that wants to
+      // inject a fault still overrides it through resolveExports.
+      const implementation = resolveExports()[name]
+        ?? waitDeadlineDefaults[name];
       // Structural fixtures without terminal mutations have no coalesced
       // readiness to consume. Explicit mocks still support fault injection.
       if (name === "kernel_take_pty_readiness_changed" && implementation === undefined) {

@@ -4,11 +4,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 
-if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
-  exec node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
-    "$SCRIPT_DIR/staged-product-inputs.ts" browser-nginx-python "$@"
-fi
-
 echo "==> Building nginx + Python VFS image..."
 
 WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$(mktemp -d /tmp/kandelo-nginx-python.XXXXXX)}"

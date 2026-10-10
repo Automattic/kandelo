@@ -33,6 +33,21 @@ test("the inspector lists directories and previews files from the kernel-owned V
   await passwd.click();
   await expect(page.getByText(/root:x:0:0:/).first()).toBeVisible({ timeout: 60_000 });
 
+  // Kernel-owned virtual entries are visible in the same browser.
+  await page.getByRole("button", { name: "/", exact: true }).click();
+  await row(/^proc\/$/).click();
+  await expect(row(/^self(?:\s|→|$)/)).toBeVisible({ timeout: 60_000 });
+  await expect(row(/^1\/$/)).toBeVisible();
+  await row(/^1\/$/).click();
+  await row(/^fd\/$/).click();
+  await expect(page.getByText("Empty directory.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "/", exact: true }).click();
+  await row(/^dev\/$/).click();
+  await expect(row(/^null$/)).toBeVisible({ timeout: 60_000 });
+  await expect(row(/^stdin(?:\s|→|$)/)).toContainText("lrwxrwxrwx");
+  await row(/^pts\/$/).click();
+  await expect(row(/^\d+$/)).toBeVisible({ timeout: 60_000 });
+
   // A path that does not exist is an error, not an empty directory.
   await expect(row(/^definitely-not-here$/)).toHaveCount(0);
 });

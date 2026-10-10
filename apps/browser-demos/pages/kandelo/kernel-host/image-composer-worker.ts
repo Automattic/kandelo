@@ -1,9 +1,9 @@
 /**
  * Worker entry for VFS image composition.
  *
- * The staging `SharedArrayBuffer` lives and dies inside this realm. The main
- * thread aborts a composition by terminating the worker, which is the only
- * mechanism that reclaims shared memory deterministically on WebKit — see
+ * The staging image writer's Wasm memory lives and dies inside this realm.
+ * The main thread aborts a composition by terminating the worker, which is the
+ * only mechanism that reclaims that memory deterministically on WebKit — see
  * `image-composer.ts` for why that matters.
  */
 

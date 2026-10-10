@@ -17,6 +17,10 @@ import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import {
+  createKernelSharedMappingStub,
+  SYSV_MIRROR_EXPORT_NAMES,
+} from "./support/kernel-shared-mapping-stub";
 
 const MAP_SHARED = 1;
 const MAP_PRIVATE = 2;
@@ -152,6 +156,9 @@ function createFileHarness() {
         : { kind: "error" as const, errno: 9 };
     },
   );
+  // Kernel-owned (rootfs/tmpfs/memfd) files are kept coherent by the
+  // kernel's shared-mapping table; this stands in for its entry points.
+  const kernelShared = createKernelSharedMappingStub();
   const getFdPathForSharedMapping = vi.fn(
     (_channel: unknown, fd: number) =>
       fdIdentity.has(fd)
@@ -169,8 +176,6 @@ function createFileHarness() {
     anonymousSharedBackings: new Map(),
     sharedMmapBackings: new Map(),
     sharedMmapFdCache: new Map(),
-    shmMappings: new Map(),
-    shmSegmentVersions: new Map(),
   });
   kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
   kw.testAuthority.configureScratchBoundaryHooksForTest({
@@ -184,7 +189,10 @@ function createFileHarness() {
     new WebAssembly.Memory({ initial: 2, maximum: 2 }),
     128,
     4,
-    { kernelExportNames: [] },
+    {
+      kernelExports: kernelShared.exports,
+      kernelExportNames: [...SYSV_MIRROR_EXPORT_NAMES],
+    },
   );
 
   const mapResult = (
@@ -211,6 +219,7 @@ function createFileHarness() {
   return {
     channels,
     close,
+    kernelShared,
     fdHostHandles,
     fdIdentity,
     fdSupportsMmapWriteback,
@@ -235,6 +244,24 @@ function createFileHarness() {
 }
 
 type FileHarness = ReturnType<typeof createFileHarness>;
+
+/**
+ * Model a kernel-owned (tmpfs/memfd) regular file of a chosen size: fstat
+ * completes inside the kernel, so there is no host handle, and the fd's
+ * `F_GETFL & O_ACCMODE` is `accessMode` (O_RDWR unless a case says otherwise).
+ */
+function asKernelOwnedFile(h: FileHarness, size: number, accessMode = 2): void {
+  h.getFdStatForSharedMapping.mockReturnValue({
+    kind: "ok",
+    value: {
+      dev: 0n, ino: 1n, size, mode: REGULAR_MODE, hostHandle: null,
+    },
+  });
+  h.getFdAccessModeForSharedMapping.mockReturnValue({
+    kind: "ok",
+    value: accessMode,
+  });
+}
 
 function configureKernelSyscallHarness(h: FileHarness, pid: number) {
   const kernelHandle = vi.fn();
@@ -1368,26 +1395,138 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(backing.sizeValid).toBe(true);
   });
 
-  it("shared memfd mappings take the populate-only fallback, untracked", () => {
+  it("hands a writable kernel-owned MAP_SHARED to the kernel's table", () => {
     const h = createFileHarness();
-    h.getFdStatForSharedMapping.mockReturnValue({
-      kind: "ok",
-      value: {
-        dev: 0n,
-        ino: 1n,
-        size: h.logicalSize(),
-        mode: REGULAR_MODE,
-        hostHandle: null,
-      },
-    });
-    // No persistent host capability exists for a kernel-backed regular
-    // file, so the mapping falls back to fd-pread population like
-    // MAP_SHARED on non-regular files — no writeback tracker entry.
-    // libwayland-cursor's memfd theme pool depends on this mapping.
-    expect(h.mapResult(h.pids[0], 4, 0x1000))
-      .toEqual({ kind: "unsupported" });
+    const pid = h.pids[0];
+    // hostHandle === null models a regular file the kernel owns (in-kernel
+    // rootfs, tmpfs including /dev/shm, or memfd): there is no host handle to
+    // anchor a host byte store, and none is needed. The kernel keeps every
+    // mapping of the file coherent and populates the new one itself.
+    asKernelOwnedFile(h, h.logicalSize());
+    expect(h.mapResult(pid, 4, 0x1000)).toEqual({ kind: "mapped" });
     expect(h.retainHostFileHandle).not.toHaveBeenCalled();
     expect((h.kw as any).sharedMappings.size).toBe(0);
+    const memoryLen = BigInt(h.memories.get(pid)!.buffer.byteLength);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_file_track")).toEqual([{
+      name: "kernel_shared_mapping_file_track",
+      args: [pid, 0x1000n, 4, 4096n, 0n, 1, memoryLen],
+    }]);
+    // The boundary predicate now names the pid, so its syscalls sync it.
+    expect((h.kw as any).kernelSharedMappingPids.has(pid)).toBe(true);
+  });
+
+  it("hands a read-only kernel-owned MAP_SHARED to the kernel too", () => {
+    const h = createFileHarness();
+    // A read-only shared mapping must still observe other writers, so it is
+    // kept coherent like any other rather than populated once.
+    asKernelOwnedFile(h, h.logicalSize());
+    expect(h.mapResult(h.pids[0], 4, 0x1000, 4096, PROT_READ))
+      .toEqual({ kind: "mapped" });
+    const [call] = h.kernelShared.callsTo("kernel_shared_mapping_file_track");
+    expect(call!.args[5]).toBe(0);
+  });
+
+  it("populates once a kernel-owned file the kernel's table cannot keep", () => {
+    const h = createFileHarness();
+    asKernelOwnedFile(h, h.logicalSize());
+    // ENOTSUP: a procfs snapshot or synthetic regular file. It is populated
+    // like MAP_PRIVATE, as main does for every file without a host handle.
+    h.kernelShared.exports.kernel_shared_mapping_file_track = () => -95;
+    expect(h.mapResult(h.pids[0], 4, 0x1000, 4096, PROT_READ))
+      .toEqual({ kind: "unsupported" });
+  });
+
+  it("still rejects a writable kernel-owned mapping without an O_RDWR fd", () => {
+    const h = createFileHarness();
+    // O_RDONLY (0): a writable MAP_SHARED requires a read+write descriptor.
+    asKernelOwnedFile(h, h.logicalSize(), 0);
+    expect(h.mapResult(h.pids[0], 4, 0x1000))
+      .toEqual({ kind: "error", errno: 13 });
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_file_track")).toEqual([]);
+  });
+
+  it("read-only MAP_SHARED of a kernel-owned file rejects an O_WRONLY fd", () => {
+    const h = createFileHarness();
+    asKernelOwnedFile(h, h.logicalSize(), 1);
+    // PROT_READ only (read-only mapping) still requires a readable descriptor.
+    expect(h.mapResult(h.pids[0], 4, 0x1000, 4096, PROT_READ))
+      .toEqual({ kind: "error", errno: 13 });
+  });
+
+  it("drives msync, munmap, mremap and mprotect of kernel-owned mappings through the kernel", () => {
+    const h = createFileHarness();
+    const pid = h.pids[0];
+    const addr = 0x1000;
+    asKernelOwnedFile(h, 4096);
+    expect(h.map(pid, 4, addr)).toBe(true);
+
+    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096]))
+      .toBe(true);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_flush")).toEqual([{
+      name: "kernel_shared_mapping_flush",
+      args: [pid, BigInt(addr), 4096n],
+    }]);
+
+    expect((h.kw as any).prepareFileSharedMappingsForWrite(pid, addr, 4096))
+      .toBe(0);
+    (h.kw as any).updateSharedMappingProtection(pid, addr, 4096, true);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_protect")).toHaveLength(1);
+
+    (h.kw as any).remapSharedMapping(pid, addr, 0x3000, 8192);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_remap")).toEqual([{
+      name: "kernel_shared_mapping_remap",
+      args: [pid, BigInt(addr), 0x3000n, 8192n],
+    }]);
+
+    (h.kw as any).cleanupSharedMappings(pid, 0x3000, 8192);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_unmap")).toEqual([{
+      name: "kernel_shared_mapping_unmap",
+      args: [pid, 0x3000n, 8192n],
+    }]);
+    // The last mapping went, so the pid stops paying for boundary syncs.
+    expect((h.kw as any).kernelSharedMappingPids.has(pid)).toBe(false);
+  });
+
+  it("refuses an mprotect write upgrade the kernel refuses", () => {
+    const h = createFileHarness();
+    const pid = h.pids[0];
+    asKernelOwnedFile(h, 4096);
+    expect(h.mapResult(pid, 4, 0x1000, 4096, PROT_READ))
+      .toEqual({ kind: "mapped" });
+    h.kernelShared.exports.kernel_shared_mapping_prepare_write = () => -13;
+    expect((h.kw as any).prepareFileSharedMappingsForWrite(pid, 0x1000, 4096))
+      .toBe(13);
+  });
+
+  it("gives a forked child the parent's kernel-owned mappings in one kernel call", () => {
+    const h = createFileHarness();
+    const [parentPid, , childPid] = h.pids;
+    asKernelOwnedFile(h, 4096);
+    expect(h.map(parentPid, 4, 0x1800)).toBe(true);
+    h.kw.inheritProcessSharedMappings(parentPid, childPid);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_inherit")).toEqual([{
+      name: "kernel_shared_mapping_inherit",
+      args: [
+        parentPid,
+        childPid,
+        BigInt(h.memories.get(childPid)!.buffer.byteLength),
+      ],
+    }]);
+    expect((h.kw as any).kernelSharedMappingPids.has(childPid)).toBe(true);
+  });
+
+  it("exec forgets kernel-owned mappings after the preflight published them", () => {
+    const h = createFileHarness();
+    const pid = h.pids[0];
+    asKernelOwnedFile(h, 4096);
+    expect(h.map(pid, 4, 0x1000)).toBe(true);
+    (h.kw as any).finalizeAddressSpaceForExec(pid);
+    expect(h.kernelShared.callsTo("kernel_shared_mapping_release_process"))
+      .toEqual([{
+        name: "kernel_shared_mapping_release_process",
+        args: [pid, 0, 0],
+      }]);
+    expect((h.kw as any).kernelSharedMappingPids.has(pid)).toBe(false);
   });
 
   it("rejects a backend that cannot promise stable file identity", () => {

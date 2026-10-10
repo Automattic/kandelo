@@ -1,3 +1,84 @@
+// Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
+// for which types are NOT shared and why.
+export type {
+  SignalProcessMessage,
+  GetForkCountRequestMessage,
+  GetKernelMemoryPagesRequestMessage,
+  GetWasmModuleCacheStatsRequestMessage,
+  GetSpawnScratchCapacityRequestMessage,
+  EnumProcsRequestMessage,
+  ReadProcMapsRequestMessage,
+  SetSyscallTraceMessage,
+  DrainSyscallTraceMessage,
+  KmsAttachCanvasMessage,
+  KmsAttachStatsMessage,
+  InitErrorMessage,
+  KernelFatalMessage,
+  ResponseMessage,
+  StdoutMessage,
+  StderrMessage,
+  PtyOutputMessage,
+  LazyDownloadMessage,
+  AppendStdinDataMessage,
+  DestroyMessage,
+  ExportRootfsImageMessage,
+  InjectConnectionMessage,
+  PickListenerTargetMessage,
+  PipeCloseReadMessage,
+  PipeCloseWriteMessage,
+  PipeIsWriteOpenMessage,
+  PipeReadMessage,
+  PipeWriteMessage,
+  PtyResizeMessage,
+  PtyWriteMessage,
+  SetStdinDataMessage,
+  TerminateProcessMessage,
+  WakeBlockedReadersMessage,
+  WakeBlockedWritersMessage,
+  HttpRequestMessage,
+  WriteVfsFileMessage,
+  ProcEventMessage,
+} from "./kernel-protocol-shared";
+import type {
+  SignalProcessMessage,
+  GetForkCountRequestMessage,
+  GetKernelMemoryPagesRequestMessage,
+  GetWasmModuleCacheStatsRequestMessage,
+  GetSpawnScratchCapacityRequestMessage,
+  EnumProcsRequestMessage,
+  ReadProcMapsRequestMessage,
+  SetSyscallTraceMessage,
+  DrainSyscallTraceMessage,
+  KmsAttachCanvasMessage,
+  KmsAttachStatsMessage,
+  InitErrorMessage,
+  KernelFatalMessage,
+  ResponseMessage,
+  StdoutMessage,
+  StderrMessage,
+  PtyOutputMessage,
+  LazyDownloadMessage,
+  AppendStdinDataMessage,
+  DestroyMessage,
+  ExportRootfsImageMessage,
+  InjectConnectionMessage,
+  PickListenerTargetMessage,
+  PipeCloseReadMessage,
+  PipeCloseWriteMessage,
+  PipeIsWriteOpenMessage,
+  PipeReadMessage,
+  PipeWriteMessage,
+  PtyResizeMessage,
+  PtyWriteMessage,
+  SetStdinDataMessage,
+  TerminateProcessMessage,
+  WakeBlockedReadersMessage,
+  WakeBlockedWritersMessage,
+  HttpRequestMessage,
+  WriteVfsFileMessage,
+  ProcEventMessage,
+} from "./kernel-protocol-shared";
+
 /**
  * Message protocol for main thread ↔ kernel worker communication.
  *
@@ -5,10 +86,7 @@
  * lifecycle. The main thread is a thin UI proxy that sends messages here.
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
-import type {
-  LazyDownloadEvent,
-  SerializedLazyArchiveEntry,
-} from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
@@ -65,20 +143,33 @@ export interface InitMessage {
   type: "init";
   kernelWasmBytes: ArrayBuffer;
   /**
-   * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
-   * restores and authenticates an owned memfs through the verified image-mount
-   * resolver — no VFS SAB is shared with the main thread. Demos that need
-   * `/etc/{passwd,group,hosts,services}` bake it into the image (see
-   * apps/browser-demos/lib/kernel-owned-boot.ts::overlayEtcFromRootfs).
+   * Decoded VFS image bytes (a `KandeloImageFs.saveImage()` result, or a
+   * zstd-decoded `.vfs.zst`). The kernel worker hands them to the kernel,
+   * which parses the image and owns `/`; an imported image's seal is checked
+   * by the verified image-mount resolver first. No VFS buffer is shared with
+   * the main thread. Demos that need `/etc/{passwd,group,hosts,services}` bake
+   * them into the image.
    */
   vfsImage: Uint8Array;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
+  /**
+   * Where this deployment serves addresses the image records, for a
+   * deployment that serves those bytes somewhere other than where the image
+   * names them (hashed production asset names, or an image-owned scheme such
+   * as the shell image's `kandelo-lazy:`). Consulted before `lazyUrlBase`.
+   *
+   * The image's address is canonical and nothing rewrites it; this is
+   * transport policy, so it travels as data. A table rather than a resolver,
+   * because the deployment knows every asset it serves without asking the
+   * image what it contains. An address the table does not carry is resolved
+   * against `lazyUrlBase`, or fetched as written.
+   */
+  lazyUrlMap?: Readonly<Record<string, string>>;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
   closedLazyAssets?: ClosedLazyAsset[];
-  shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;
   config: {
@@ -86,8 +177,6 @@ export interface InitMessage {
     maxMemoryPages: number;
     /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */
     kernelMaxPages: number;
-    /** Upper bound on the image-backed rootfs reservation, in bytes. */
-    imageMemfsMaxBytes: number;
     /** Identifier of the runtime memory profile these budgets came from. */
     memoryProfileId: string;
     /**
@@ -133,13 +222,6 @@ export interface SpawnMessage {
   maxPages?: number;
 }
 
-export interface TerminateProcessMessage {
-  type: "terminate_process";
-  requestId: number;
-  pid: number;
-  status: number;
-}
-
 export interface VfsFileSnapshot {
   data: Uint8Array;
   mode: number;
@@ -167,108 +249,10 @@ export interface StatVfsPathMessage {
   path: string;
 }
 
-export interface WriteVfsFileMessage {
-  type: "write_vfs_file";
-  requestId: number;
-  /** Normalized absolute guest path whose parent already exists. */
-  path: string;
-  data: Uint8Array;
-  mode: number;
-}
-
 export interface UnlinkVfsFileMessage {
   type: "unlink_vfs_file";
   requestId: number;
   path: string;
-}
-
-/**
- * Serialize the quiescent worker-owned root filesystem.
- *
- * This deliberately captures only the `/` image backend. Scratch and device
- * mounts are boot-scoped and are recreated by the host on the next boot.
- */
-export interface ExportRootfsImageMessage {
-  type: "export_rootfs_image";
-  requestId: number;
-}
-
-export interface AppendStdinDataMessage {
-  type: "append_stdin_data";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface SetStdinDataMessage {
-  type: "set_stdin_data";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface PtyWriteMessage {
-  type: "pty_write";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface PtyResizeMessage {
-  type: "pty_resize";
-  pid: number;
-  rows: number;
-  cols: number;
-}
-
-export interface InjectConnectionMessage {
-  type: "inject_connection";
-  requestId: number;
-  pid: number;
-  fd: number;
-  peerAddr: [number, number, number, number];
-  peerPort: number;
-}
-
-export interface PipeReadMessage {
-  type: "pipe_read";
-  requestId: number;
-  pid: number;
-  pipeIdx: number;
-}
-
-export interface PipeWriteMessage {
-  type: "pipe_write";
-  requestId: number;
-  pid: number;
-  pipeIdx: number;
-  data: Uint8Array;
-}
-
-export interface PipeCloseReadMessage {
-  type: "pipe_close_read";
-  pid: number;
-  pipeIdx: number;
-}
-
-export interface PipeCloseWriteMessage {
-  type: "pipe_close_write";
-  pid: number;
-  pipeIdx: number;
-}
-
-export interface PipeIsWriteOpenMessage {
-  type: "pipe_is_write_open";
-  requestId: number;
-  pid: number;
-  pipeIdx: number;
-}
-
-export interface WakeBlockedReadersMessage {
-  type: "wake_blocked_readers";
-  pipeIdx: number;
-}
-
-export interface WakeBlockedWritersMessage {
-  type: "wake_blocked_writers";
-  pipeIdx: number;
 }
 
 export interface IsStdinConsumedMessage {
@@ -277,34 +261,9 @@ export interface IsStdinConsumedMessage {
   pid: number;
 }
 
-/** Deliver `signum` to `pid`. Responds `true` when the process existed. */
-export interface SignalProcessMessage {
-  type: "signal_process";
-  requestId: number;
-  pid: number;
-  signum: number;
-}
-
-export interface PickListenerTargetMessage {
-  type: "pick_listener_target";
-  requestId: number;
-  port: number;
-}
-
-export interface DestroyMessage {
-  type: "destroy";
-  requestId: number;
-}
-
 export interface RegisterPtyOutputMessage {
   type: "register_pty_output";
   pid: number;
-}
-
-export interface RegisterLazyFilesMessage {
-  type: "register_lazy_files";
-  requestId?: number;
-  entries: Array<{ ino: number; path: string; url: string; size: number }>;
 }
 
 /**
@@ -374,107 +333,6 @@ export interface AudioDrainMessage {
   type: "audio_drain";
   requestId: number;
   maxBytes: number;
-}
-
-export interface RegisterLazyArchivesMessage {
-  type: "register_lazy_archives";
-  requestId?: number;
-  entries: SerializedLazyArchiveEntry[];
-}
-
-/** Read kernel-side per-process fork counter. Mirrors the Node host's
- * `get_fork_count` request in node-kernel-protocol.ts. The kernel-worker
- * forwards to `kernel_get_fork_count` and posts a `response` whose
- * `result` is a `bigint`. Used by the spawn regression tests to assert
- * SYS_SPAWN didn't fall back to fork. */
-export interface GetForkCountRequestMessage {
-  type: "get_fork_count";
-  requestId: number;
-  pid: number;
-}
-
-/** Read the kernel Wasm instance's current 64 KiB linear-memory page count. */
-export interface GetKernelMemoryPagesRequestMessage {
-  type: "get_kernel_memory_pages";
-  requestId: number;
-}
-
-/** Read the kernel worker's compiled-module cache counters. */
-export interface GetWasmModuleCacheStatsRequestMessage {
-  type: "get_wasm_module_cache_stats";
-  requestId: number;
-}
-
-/** Read the retained capacity of the kernel-owned large-spawn region. */
-export interface GetSpawnScratchCapacityRequestMessage {
-  type: "get_spawn_scratch_capacity";
-  requestId: number;
-}
-
-/** Snapshot the kernel's process table. The kernel-worker forwards to
- * `CentralizedKernelWorker.enumProcs()`; the response carries `ProcessSnapshot[]`.
- * Used by Kandelo's Inspector → Procs tab. */
-export interface EnumProcsRequestMessage {
-  type: "enum_procs";
-  requestId: number;
-}
-
-/** Read `/proc/[pid]/maps` for a foreign process via the host. The kernel-
- * worker forwards to `CentralizedKernelWorker.readProcMaps(pid)`; response
- * carries a string (Linux smaps-ish text) or `null` if the pid is gone. */
-export interface ReadProcMapsRequestMessage {
-  type: "read_proc_maps";
-  requestId: number;
-  pid: number;
-}
-
-/** Enable / disable the syscall trace ring buffer. Off by default — flip
- * on when a subscriber attaches, off when the last one detaches. */
-export interface SetSyscallTraceMessage {
-  type: "set_syscall_trace";
-  enabled: boolean;
-}
-
-/** Drain pending syscall trace events. Response carries SyscallTraceEvent[]. */
-export interface DrainSyscallTraceMessage {
-  type: "drain_syscall_trace";
-  requestId: number;
-}
-
-/** Send an HTTP request to a server running in the kernel and wait for the
- *  response. Reply arrives as a `response` message whose `result` is an
- *  {@link HttpResponse}. */
-export interface HttpRequestMessage {
-  type: "http_request";
-  requestId: number;
-  port: number;
-  request: HttpRequest;
-  timeoutMs?: number;
-  maxResponseBytes?: number;
-}
-
-/** Register an `OffscreenCanvas` as the scanout target for a KMS CRTC.
- *  The kernel-worker's vblank pump blits the CRTC's bound framebuffer
- *  into this canvas at 60 Hz. The canvas MUST be transferred (the
- *  `transfer` array contains it) — the browser would otherwise refuse
- *  to hand off control. Optional `stats` SAB receives blit/page-flip
- *  telemetry. */
-export interface KmsAttachCanvasMessage {
-  type: "kms_attach_canvas";
-  crtcId: number;
-  canvas: OffscreenCanvas;
-  stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" };
-}
-
-/** Register a stats SAB for a CRTC without binding a scanout canvas. The
- *  vblank pump still writes kernel-side `commit_count` / `last_frame_us`
- *  into slots 5/6. Used by GL-rendered demos that present via WebGL
- *  rather than the 2D blit path. */
-export interface KmsAttachStatsMessage {
-  type: "kms_attach_stats";
-  crtcId: number;
-  stats: SharedArrayBuffer;
 }
 
 /**
@@ -554,8 +412,6 @@ export type MainToKernelMessage =
   | PickListenerTargetMessage
   | DestroyMessage
   | RegisterPtyOutputMessage
-  | RegisterLazyFilesMessage
-  | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
@@ -583,48 +439,12 @@ export interface ReadyMessage {
   pcmTransport?: PcmTransportDescriptor;
 }
 
-export interface InitErrorMessage {
-  type: "init_error";
-  error: string;
-}
-
-/** The dedicated kernel instance is poisoned and has stopped permanently. */
-export interface KernelFatalMessage {
-  type: "kernel_fatal";
-  error: string;
-}
-
-export interface ResponseMessage {
-  type: "response";
-  requestId: number;
-  result: unknown;
-  error?: string;
-}
-
 export interface ExitMessage {
   type: "exit";
   pid: number;
   /** Host-only execution identity. PIDs persist across exec. */
   generation: number;
   status: number;
-}
-
-export interface StdoutMessage {
-  type: "stdout";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface StderrMessage {
-  type: "stderr";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface PtyOutputMessage {
-  type: "pty_output";
-  pid: number;
-  data: Uint8Array;
 }
 
 export interface ListenTcpMessage {
@@ -719,28 +539,12 @@ export interface FbForgetGenerationMessage {
 }
 
 /**
- * Posted whenever the kernel forks, execs, or spawns. The main thread
- * uses this to refresh Inspector-style views without polling. `kind ===
- * "exit"` is delivered via the existing ExitMessage instead; we don't
- * duplicate it here. Spawn events always carry the authoritative parent pid;
- * exec events preserve process identity and do not.
- */
-export type ProcEventMessage =
-  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
-  | { type: "proc_event"; kind: "exec"; pid: number };
-
-/**
  * Number of service-worker preview requests currently being served through
  * the transferred HTTP bridge.
  */
 export interface HttpBridgePendingMessage {
   type: "http_bridge_pending";
   count: number;
-}
-
-export interface LazyDownloadMessage {
-  type: "lazy_download";
-  event: LazyDownloadEvent;
 }
 
 /** Which teardown step `performDestroy` is in. */

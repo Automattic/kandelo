@@ -345,12 +345,22 @@ fn retain_empty_path_target(
         let ofd = proc.ofd_table.get(ofd_ref.0).ok_or(Errno::EBADF)?;
         (ofd.ofd_id, ofd.file_type, ofd.host_handle, ofd.path.clone())
     };
-    if file_type != FileType::Regular || host_handle < 0 {
+    let invalid_handle = host_handle < 0 && !is_kernel_fs_file_handle(host_handle);
+    if file_type != FileType::Regular || invalid_handle {
         return Err(Errno::EACCES);
     }
-    let stat = host.host_fstat(host_handle)?;
+    let stat = target_fstat(host, host_handle)?;
     crate::syscalls::check_prepared_exec_stat(proc, &stat)?;
-    let statfs = crate::syscalls::host_fstatfs_or_default(host, host_handle)?;
+    let statfs = if crate::rootfs::is_rootfs_file_handle(host_handle) {
+        // The overlay statfs carries the `/` mount's real `nosuid` flag, so an
+        // AT_EMPTY_PATH exec of a set-ID overlay binary honors (or, on a nosuid
+        // mount, drops) the set-ID bits exactly like the pathname exec path.
+        crate::rootfs::statfs(&diagnostic_path)?
+    } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+        crate::tmpfs::statfs(&diagnostic_path)?
+    } else {
+        crate::syscalls::host_fstatfs_or_default(host, host_handle)?
+    };
     let file_id = (stat.st_ino != 0).then_some(FileId::Host {
         dev: stat.st_dev,
         ino: stat.st_ino,
@@ -397,10 +407,56 @@ fn retained_host_handle(proc: &Process, target: &PreparedExecTarget) -> Result<i
         .ofd_table
         .get(target.ofd_ref().0)
         .ok_or(Errno::ETXTBSY)?;
-    if ofd.ofd_id != target.ofd_id() || ofd.file_type != FileType::Regular || ofd.host_handle < 0 {
+    // An exec target in an in-kernel filesystem carries a negative rootfs or
+    // tmpfs handle, which is a valid backing (not the "no host handle"
+    // sentinel).
+    let invalid_handle = ofd.host_handle < 0 && !is_kernel_fs_file_handle(ofd.host_handle);
+    if ofd.ofd_id != target.ofd_id() || ofd.file_type != FileType::Regular || invalid_handle {
         return Err(Errno::ETXTBSY);
     }
     Ok(ofd.host_handle)
+}
+
+/// Whether `handle` names a regular file in an in-kernel filesystem: the
+/// rootfs overlay that owns `/`, or the tmpfs that owns the scratch mounts.
+fn is_kernel_fs_file_handle(handle: i64) -> bool {
+    crate::rootfs::is_rootfs_file_handle(handle) || crate::tmpfs::is_tmpfs_file_handle(handle)
+}
+
+/// fstat the retained exec target, honoring in-kernel filesystem handles (a
+/// negative rootfs or tmpfs handle is served by the kernel, not the host).
+fn target_fstat(host: &mut dyn HostIO, host_handle: i64) -> Result<WasmStat, Errno> {
+    if crate::rootfs::is_rootfs_file_handle(host_handle) {
+        crate::rootfs::fstat(host_handle)
+    } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+        crate::tmpfs::fstat(host_handle)
+    } else {
+        host.host_fstat(host_handle)
+    }
+}
+
+/// Positioned read of the retained exec target, honoring overlay handles: base
+/// bytes come from the blob provider, copy-on-written bytes from the overlay.
+fn target_pread(
+    host: &mut dyn HostIO,
+    host_handle: i64,
+    buf: &mut [u8],
+    offset: i64,
+) -> Result<usize, Errno> {
+    if crate::rootfs::is_rootfs_file_handle(host_handle) {
+        crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
+            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                host.discard_deferred(&uri);
+                Ok(0)
+            }
+            crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
+        })
+    } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+        crate::tmpfs::read(host_handle, offset, buf)
+    } else {
+        host.host_pread(host_handle, buf, offset)
+    }
 }
 
 pub fn size(proc: &Process, owner_pid: u32, token: u32) -> Result<i64, Errno> {
@@ -430,7 +486,7 @@ pub fn read(
         return Ok(0);
     }
     let wanted = buffer.len().min(size - offset);
-    let read = host.host_pread(handle, &mut buffer[..wanted], offset as i64)?;
+    let read = target_pread(host, handle, &mut buffer[..wanted], offset as i64)?;
     if read > wanted {
         return Err(Errno::EIO);
     }
@@ -504,7 +560,8 @@ fn revalidate(
 ) -> Result<(), Errno> {
     let expected = target.observed_bytes()?;
     let handle = retained_host_handle(proc, target)?;
-    let before = host.host_fstat(handle)?;
+    let is_kernel_fs = is_kernel_fs_file_handle(handle);
+    let before = target_fstat(host, handle)?;
     if !metadata_matches(target.stat(), &before) {
         return Err(Errno::ETXTBSY);
     }
@@ -513,7 +570,15 @@ fn revalidate(
     if credential_bearing {
         validate_stable_privileged_source(target)?;
     }
-    let live = host.host_fstatfs(handle).map_err(|_| Errno::ENOTSUP)?;
+    // The rootfs overlay and the tmpfs scratch mounts are fixed in-kernel
+    // mounts; they cannot remount under the kernel, so their mount identity is
+    // the prepared value by construction. Host mounts are still re-checked for
+    // a remount race.
+    let live = if is_kernel_fs {
+        *target.statfs()
+    } else {
+        host.host_fstatfs(handle).map_err(|_| Errno::ENOTSUP)?
+    };
     if !mount_matches(target.statfs(), &live) {
         return Err(Errno::ETXTBSY);
     }
@@ -522,13 +587,13 @@ fn revalidate(
     let mut scratch = [0u8; 64 * 1024];
     while offset < expected.len() {
         let wanted = scratch.len().min(expected.len() - offset);
-        let read = host.host_pread(handle, &mut scratch[..wanted], offset as i64)?;
+        let read = target_pread(host, handle, &mut scratch[..wanted], offset as i64)?;
         if read == 0 || read > wanted || scratch[..read] != expected[offset..offset + read] {
             return Err(Errno::ETXTBSY);
         }
         offset += read;
     }
-    let after = host.host_fstat(handle)?;
+    let after = target_fstat(host, handle)?;
     if !metadata_matches(target.stat(), &after) {
         return Err(Errno::ETXTBSY);
     }

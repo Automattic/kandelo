@@ -10,6 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -34,6 +35,10 @@ function usage() {
     "                     an explicit package or output install mode",
     "  --out <path>       generated mkrootfs manifest fragment (required)",
     "  --help             print this message",
+    "",
+    "Without --binaries-dir, --stage-resolver-binaries or --resolved-output-map,",
+    "every output is resolved by scripts/resolve-binary.sh, the resolver the",
+    "hosts serve lazy outputs from.",
     "",
   ].join("\n");
 }
@@ -354,28 +359,78 @@ function stageResolverOutputs(config, stageDir) {
   return stageRoot;
 }
 
-function resolveBinary(binaryRel, binariesDir) {
-  if (binariesDir) {
-    const selectedRoot = resolve(repoRoot, binariesDir);
-    const selected = resolveWithin(selectedRoot, binaryRel);
-    if (requireRegularFileIfPresent(selected, binaryRel, "selected artifact tree")) return selected;
-    throw new Error(
-      `binary not found for rootfs package output: ${binaryRel}\n` +
-        `  checked selected artifact tree: ${selected}\n` +
-        `  Resolve the package into ${selectedRoot} before generating the manifest.`,
-    );
-  }
+function sha256Hex(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
-  const local = resolveWithin(resolve(repoRoot, "local-binaries"), binaryRel);
-  if (requireRegularFileIfPresent(local, binaryRel, "local override tree")) return local;
-  const fetched = resolveWithin(resolve(repoRoot, "binaries"), binaryRel);
-  if (requireRegularFileIfPresent(fetched, binaryRel, "fetched artifact tree")) return fetched;
+function resolveFromSelectedTree(binaryRel, binariesDir) {
+  const selectedRoot = resolve(repoRoot, binariesDir);
+  const selected = resolveWithin(selectedRoot, binaryRel);
+  if (requireRegularFileIfPresent(selected, binaryRel, "selected artifact tree")) return selected;
   throw new Error(
     `binary not found for rootfs package output: ${binaryRel}\n` +
-      `  checked: ${local}\n` +
-      `  checked: ${fetched}\n` +
-      `  Build the package locally.`,
+      `  checked selected artifact tree: ${selected}\n` +
+      `  Resolve the package into ${selectedRoot} before generating the manifest.`,
   );
+}
+
+/**
+ * Ask the repository's binary resolver for every output at once.
+ *
+ * WHY THE RESOLVER, AND NOT A LOOKUP OF OUR OWN. The image records a digest
+ * and size for each lazy output, and the host serves that output later by
+ * asking the resolver (`tryResolveBinary` in the Node kernel worker's lazy
+ * fetcher; the `@binaries/` Vite plugin in the browser). The recorded digest is
+ * only correct if it describes the bytes the host will serve, so both answers
+ * must come from ONE resolution process. This generator used to keep its own
+ * (`local-binaries/<rel>`, then `binaries/<rel>`), while the resolver searches
+ * the local-build tier (`local-binaries/source-only-v1`) first. The two
+ * disagreed silently: a leftover `local-binaries/programs/wasm32/dash.wasm`
+ * symlink from an old build made the image record a 640013-byte dash while the
+ * host served the freshly built 506394-byte one, so every `/bin/sh` read
+ * failed its digest with EIO. Even with no leftover, `binaries/` held a second
+ * build of each package that lacked the local build's trailing custom
+ * sections, so the image recorded a prefix of the served file.
+ *
+ * One call for all outputs: the resolver checks the program-package
+ * projection's freshness once per call, not once per output.
+ */
+function resolveThroughResolver(binaryRels) {
+  if (binaryRels.length === 0) return new Map();
+  const result = spawnSync(
+    "bash",
+    [resolve(repoRoot, "scripts/resolve-binary.sh"), ...binaryRels],
+    { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    // The tail only: the resolver's wrapper may first rebuild its checker
+    // (cargo output), and the resolver's own explanation comes last.
+    const explanation = result.stderr.trim().split("\n").slice(-30).join("\n");
+    throw new Error(
+      `the binary resolver could not resolve every rootfs package output ` +
+        `(exit ${result.status}):\n${explanation}\n` +
+        `  Build the packages locally (./run.sh setup) before building the rootfs.`,
+    );
+  }
+  const paths = result.stdout.split("\n").filter((line) => line.length > 0);
+  if (paths.length !== binaryRels.length) {
+    throw new Error(
+      `the binary resolver answered ${paths.length} path(s) for ${binaryRels.length} output(s)`,
+    );
+  }
+  const resolved = new Map();
+  for (const [index, binaryRel] of binaryRels.entries()) {
+    const path = paths[index];
+    if (!isAbsolute(path)) {
+      throw new Error(`the binary resolver answered a relative path for ${binaryRel}: ${path}`);
+    }
+    if (!requireRegularFileIfPresent(path, binaryRel, "resolved artifact")) {
+      throw new Error(`the binary resolver answered a missing file for ${binaryRel}: ${path}`);
+    }
+    resolved.set(binaryRel, path);
+  }
+  return resolved;
 }
 
 function requireRegularFileIfPresent(path, binaryRel, treeName) {
@@ -579,6 +634,21 @@ function generateManifest(config, binariesDir, defaultInstall, resolvedOutputs) 
     "",
   ];
   const installed = [];
+  // Without an explicit input (a selected tree or a resolved-output map, the
+  // package system's sealed modes), every output comes from the resolver --
+  // the same one the hosts serve lazy outputs from. See
+  // `resolveThroughResolver`.
+  const resolverPaths = binariesDir === undefined && resolvedOutputs === undefined
+    ? resolveThroughResolver(
+      config.packages.flatMap((pkg) =>
+        Array.isArray(pkg.outputs)
+          ? pkg.outputs.map((output) =>
+            requireBinaryPath(output, `package ${pkg.name} output`)
+          )
+          : []
+      ),
+    )
+    : undefined;
 
   for (const pkg of config.packages) {
     const packageName = requireString(pkg, "name", "package");
@@ -608,14 +678,19 @@ function generateManifest(config, binariesDir, defaultInstall, resolvedOutputs) 
         throw new Error(`rootfs package output ${inputId} is not resolved`);
       }
       if (resolved) resolvedOutputs.delete(inputId);
-      const resolvedBinary = resolved ? undefined : resolveBinary(binaryRel, binariesDir);
+      const resolvedBinary = resolved
+        ? undefined
+        : resolverPaths?.get(binaryRel) ?? resolveFromSelectedTree(binaryRel, binariesDir);
 
       if (resolved?.materialization === "lazy-reference") {
         if (install !== "lazy") {
           throw new Error(`rootfs package output ${inputId} must be embedded`);
         }
+        // `resolved.sha256` is validated above and is the identity the lazy
+        // reference itself embeds, so this records a fact the manifest already
+        // depended on rather than computing a new one.
         lines.push(
-          `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(resolved.reference, "lazy_url")} lazy_size=${resolved.bytes}`,
+          `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(resolved.reference, "lazy_url")} lazy_size=${resolved.bytes} lazy_sha256=${resolved.sha256}`,
         );
       } else if (resolved?.materialization === "embedded") {
         lines.push(
@@ -624,12 +699,39 @@ function generateManifest(config, binariesDir, defaultInstall, resolvedOutputs) 
       } else if (install === "lazy") {
         const lazyUrl =
           output.lazy_url ?? `${config.lazy_url_prefix ?? ""}${encodeBinaryUrlPath(binaryRel)}`;
-        const size = statSync(resolvedBinary).size;
+        // Hashed from the artifact this line already opened to measure. Until
+        // now these files were fetched with LENGTH as their only check, and
+        // several ship mode 4755 — so bytes of the same length from a
+        // substituting host, a poisoned cache or a network position executed as
+        // root inside the guest.
+        //
+        // The digest is only correct if this file is the file the host later
+        // SERVES. In the default mode that holds because this file IS the
+        // resolver's answer, and the hosts ask the same resolver
+        // (`resolveThroughResolver` says why that had to be one process). In
+        // the sealed package modes the file is the package system's own
+        // dependency output, copied byte-for-byte (`stageResolverOutputs`),
+        // which is what the local build also projects into the resolver's
+        // first tier. If the two ever diverge, every lazy binary fails its
+        // digest at first use: loud, which is the right failure.
+        const contents = readFileSync(resolvedBinary);
         lines.push(
-          `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(lazyUrl, "lazy_url")} lazy_size=${size}`,
+          `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(lazyUrl, "lazy_url")} lazy_size=${contents.byteLength} lazy_sha256=${sha256Hex(contents)}`,
         );
       } else if (install === "eager") {
-        const src = relative(repoRoot, resolvedBinary);
+        // Relative when the resolver answered inside the checkout (the
+        // readable, historical spelling); absolute otherwise, e.g. a package
+        // generation the resolver pinned outside it. mkrootfs resolves `src=`
+        // against the repo root, which leaves an absolute path as it is.
+        const fromRoot = relative(repoRoot, resolvedBinary);
+        const src = fromRoot.startsWith("..") || isAbsolute(fromRoot)
+          ? resolvedBinary
+          : fromRoot;
+        // The digest line is for the rootfs build's input stamp, which hashes
+        // this fragment: `src=` names a PATH, and the local build rewrites the
+        // file at a path in place, so a path alone would let a rebuilt binary
+        // keep a stale image looking current. mkrootfs ignores comments.
+        lines.push(`# ${path} sha256=${sha256Hex(readFileSync(resolvedBinary))}`);
         lines.push(`${path} f ${mode} ${uid} ${gid} src=${manifestToken(src, "src")}`);
       } else {
         throw new Error(`package ${packageName} output ${binaryRel}: unsupported install=${install}`);

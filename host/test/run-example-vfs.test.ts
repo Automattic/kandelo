@@ -14,6 +14,7 @@ import {
   buildRunExampleGuestEnvironment,
   resolveRunExampleFilesystem,
 } from "../../examples/run-example-vfs";
+import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
 
 describe("run-example isolated filesystem", () => {
   it("preserves the legacy raw-host mode unless isolation is explicit", () => {
@@ -53,12 +54,18 @@ describe("run-example isolated filesystem", () => {
         KANDELO_RUNNER_FIXTURE_CWD: "basic",
         KANDELO_RUNNER_GUEST_PROGRAM: "basic/stdio/fopen",
       }, "/ignored")).toEqual({
-        guestCwd: "/tmp/kandelo-run/basic",
-        guestProgram: "/tmp/kandelo-run/basic/stdio/fopen",
+        guestCwd: "/run/kandelo-run/basic",
+        guestProgram: "/run/kandelo-run/basic/stdio/fopen",
         isolated: true,
         rootfsImage: "default",
+        // The isolated fixture is seeded under `/run` (a host-backed mount the
+        // in-kernel tmpfs never claims), so a spawned child can see it.
+        rootfsMountSpec: [
+          ...DEFAULT_MOUNT_SPEC,
+          { path: "/run", source: "scratch", mode: 0o755, nosuid: true },
+        ],
         sessionSeedTrees: [{
-          destinationPath: "/tmp/kandelo-run",
+          destinationPath: "/run/kandelo-run",
           sourcePath: realpathSync(sourceRoot),
         }],
       });

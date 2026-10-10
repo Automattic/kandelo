@@ -71,11 +71,11 @@ assert_matches package_archive_changed_files \
   ".github/actions/fetch-submodules/action.yml" \
   ".github/actions/fetch-submodules/action.yml"
 assert_matches package_archive_changed_files \
-  "host/src/vfs/memory-fs.ts" \
-  "host/src/vfs/memory-fs.ts"
+  "host/src/vfs/vfs-image-transport.ts" \
+  "host/src/vfs/vfs-image-transport.ts"
 assert_matches package_archive_changed_files \
-  "host/src/vfs/sharedfs-vendor.ts" \
-  "host/src/vfs/sharedfs-vendor.ts"
+  "crates/kandelo-image-module/build-wasm.sh" \
+  "crates/kandelo-image-module/build-wasm.sh"
 # The shell package lists the exact host-side VFS source closure in
 # build.toml. Every member must stage a replacement shell archive.
 for shell_host_input in \
@@ -85,8 +85,9 @@ for shell_host_input in \
   host/src/statfs.ts \
   host/src/types.ts \
   host/src/vfs/image-helpers.ts \
-  host/src/vfs/memory-fs.ts \
-  host/src/vfs/sharedfs-vendor.ts \
+  host/src/vfs/lazy-archive-paths.ts \
+  host/src/vfs/vfs-errors.ts \
+  host/src/vfs/vfs-image-transport.ts \
   host/src/vfs/types.ts \
   host/src/vfs/zip.ts
 do
@@ -186,9 +187,6 @@ assert_matches binary_materialization_changed_files \
 assert_matches binary_materialization_changed_files \
   "scripts/test-wasm-artifact-guards.sh" \
   "scripts/test-wasm-artifact-guards.sh"
-assert_matches binary_materialization_changed_files \
-  "scripts/vfs-has-stale-abi.mjs" \
-  "scripts/vfs-has-stale-abi.mjs"
 for resolver_input in \
   host/src/binary-resolver.ts \
   scripts/resolve-binary.ts \

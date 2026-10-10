@@ -24,7 +24,7 @@ Core validation surface:
 | Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
-| Browser package-tree contract | `cd apps/browser-demos && npx playwright test test/package-deferred-tree-browser.spec.ts --project=chromium --project=firefox --project=webkit` | Browser lazy/eager package-tree parity, including Safari/WebKit |
+| Browser native filesystem contracts | `cd apps/browser-demos && npx playwright test test/native-rootfs-lazy.spec.ts test/rootfs-inspection.spec.ts --project=chromium --project=firefox --project=webkit` | Native lazy fetch/read/exec and live filesystem inspection, including Safari/WebKit |
 | Browser asset check | `bash scripts/ci-check-browser-assets.sh` | Browser asset/import changes |
 | musl libc-test | `scripts/run-libc-tests.sh` | libc, syscall, and kernel semantic changes |
 | Open POSIX Test Suite | `scripts/run-posix-tests.sh` | POSIX API behavior |

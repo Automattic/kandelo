@@ -25,6 +25,9 @@ function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
 // dumb). screen-256color and tmux-256color only resolve if the db is really
 // staged in the image and ncurses reads it — the whole point of the general
 // (per-system, not per-package) fix.
+// Every program the script runs (bash, ls, infocmp, tput) is a lazy file of
+// the shell image, fetched and verified against the image's digest on first
+// use, which outgrows Vitest's 5 s default.
 describe.skipIf(!available)("shared /usr/share/terminfo database", () => {
   it("resolves non-fallback terminals (screen-256color, tmux-256color)", async () => {
     let stdout = "";
@@ -73,5 +76,5 @@ describe.skipIf(!available)("shared /usr/share/terminfo database", () => {
     const tmux = stdout.match(/===TPUT_TMUX===\s*(\d+)/)?.[1];
     expect(screen, `full output:\n${stdout}`).toBe("256");
     expect(tmux, `full output:\n${stdout}`).toBe("256");
-  });
+  }, 60_000);
 });

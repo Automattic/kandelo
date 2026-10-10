@@ -13,7 +13,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
+// Read through the module that writes the image: it is the reader that sees
+// the deferred files an image describes in its in-body `SDEF` section.
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import {
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
   parseExperimentalTerminalSession,
@@ -550,18 +552,6 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
       `src=${relative(repoRoot, selectedEager)}`,
     );
     expect(selectedManifest).not.toContain("local-binaries");
-
-    const defaultOut = join(scratch, "default.MANIFEST");
-    const defaultResult = runGenerator([
-      "--packages",
-      packages,
-      "--out",
-      defaultOut,
-    ]);
-    expect(defaultResult.status, defaultResult.stderr).toBe(0);
-    const defaultManifest = readFileSync(defaultOut, "utf8");
-    expect(defaultManifest).toContain("lazy_size=14");
-    expect(defaultManifest).toContain(`src=local-binaries/${eagerRel}`);
   });
 
   it("makes only otherwise-unspecified package outputs eager", () => {
@@ -686,9 +676,7 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
       `/usr/bin/fixture f 0755 0 0 lazy_url=binaries/${binaryRel} lazy_size=13`,
     );
     expect(
-      MemoryFileSystem.fromImage(
-        new Uint8Array(readFileSync(canonicalImage)),
-      ).isPathDeferred("/usr/bin/fixture"),
+      deferredInImage(canonicalImage, "/usr/bin/fixture"),
     ).toBe(true);
   });
 
@@ -720,9 +708,7 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
       `/usr/bin/fixture f 0755 0 0 src=${relative(repoRoot, binary)}`,
     );
     expect(
-      MemoryFileSystem.fromImage(
-        new Uint8Array(readFileSync(eagerImage)),
-      ).isPathDeferred("/usr/bin/fixture"),
+      deferredInImage(eagerImage, "/usr/bin/fixture"),
     ).toBe(false);
   });
 
@@ -963,40 +949,170 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
     },
   );
 
-  it("fails on an invalid local override instead of falling through to fetched bytes", () => {
-    const scratch = makeScratch();
-    const unique = `manifest-provenance-${process.pid}-${Date.now()}`;
-    const binaryRel = `programs/wasm32/${unique}/fixture.wasm`;
-    const localRoot = join(repoRoot, "local-binaries");
-    const fetchedRoot = join(repoRoot, "binaries");
-    scratchRoots.push(join(localRoot, "programs", "wasm32", unique));
-    scratchRoots.push(join(fetchedRoot, "programs", "wasm32", unique));
-    mkdirSync(join(localRoot, binaryRel), { recursive: true });
-    writeArtifact(fetchedRoot, binaryRel, "fetched");
-    const packages = join(scratch, "PACKAGES.toml");
-    writeFileSync(
-      packages,
-      [
-        "[[packages]]",
-        'name = "fixture"',
-        "[[packages.outputs]]",
-        `binary = "${binaryRel}"`,
-        'path = "/usr/bin/fixture"',
-        "",
-      ].join("\n"),
-    );
+});
 
-    const result = runGenerator([
-      "--packages",
-      packages,
-      "--out",
-      join(scratch, "invalid-local.MANIFEST"),
-    ]);
+/**
+ * A throwaway repository root for the binary resolver, with one artifact tree
+ * per tier. `WASM_POSIX_BINARY_RESOLVER_REPO_ROOT` points the resolver at it,
+ * so these cases exercise the real resolver (`scripts/resolve-binary.sh`, the
+ * same code the hosts serve lazy files from) without touching this checkout's
+ * own artifact trees. Paths outside `programs/` keep the fixtures independent
+ * of the program-package registry.
+ */
+function makeResolverRoot(): {
+  root: string;
+  env: NodeJS.ProcessEnv;
+  write(tier: "local-binaries/source-only-v1" | "local-binaries" | "binaries", rel: string, bytes: string): string;
+} {
+  const root = join(makeScratch(), "resolver-root");
+  mkdirSync(root, { recursive: true });
+  // What `findRepoRoot` recognizes as a repository root.
+  writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  writeFileSync(join(root, "package.json"), '{"name":"kandelo"}\n');
+  return {
+    root,
+    env: { WASM_POSIX_BINARY_RESOLVER_REPO_ROOT: root },
+    write: (tier, rel, bytes) => writeArtifact(join(root, tier), rel, bytes),
+  };
+}
+
+function resolverAnswer(env: NodeJS.ProcessEnv, rel: string): string {
+  const result = spawnSync("bash", [join(repoRoot, "scripts/resolve-binary.sh"), rel], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  return result.stdout.trim();
+}
+
+function writeFixturePackages(scratch: string, lazyRel: string, eagerRel: string): string {
+  const packages = join(scratch, "PACKAGES.toml");
+  writeFileSync(
+    packages,
+    [
+      'lazy_url_prefix = "binaries/"',
+      "[[packages]]",
+      'name = "fixture"',
+      "[[packages.outputs]]",
+      `binary = "${lazyRel}"`,
+      'path = "/usr/bin/fixture"',
+      "[[packages.outputs]]",
+      `binary = "${eagerRel}"`,
+      'path = "/usr/share/fixture.dat"',
+      'install = "eager"',
+      'mode = "0644"',
+      "",
+    ].join("\n"),
+  );
+  return packages;
+}
+
+describe("generate-rootfs-package-manifest without an explicit input asks the binary resolver", () => {
+  // The image records a digest for every lazy file, and the host later serves
+  // that file by asking the resolver. The generator used to keep its own
+  // lookup (`local-binaries/<rel>`, then `binaries/<rel>`), which a leftover
+  // `local-binaries/programs/wasm32/dash.wasm` from an old build could satisfy
+  // while the resolver served the fresh local build: the image vouched for
+  // bytes nobody served, and every `/bin/sh` read failed its digest with EIO.
+  it("records the bytes the resolver serves, not a leftover mirror", () => {
+    const scratch = makeScratch();
+    const resolverRoot = makeResolverRoot();
+    const lazyRel = "share/fixture/lazy.dat";
+    const eagerRel = "share/fixture/eager.dat";
+    const fresh = "fresh local build";
+    const freshEager = "fresh eager bytes";
+    resolverRoot.write("local-binaries/source-only-v1", lazyRel, fresh);
+    resolverRoot.write("local-binaries/source-only-v1", eagerRel, freshEager);
+    // A leftover from an old build, where the old lookup looked first.
+    resolverRoot.write("local-binaries", lazyRel, "stale leftover from an old build");
+    resolverRoot.write("local-binaries", eagerRel, "stale eager");
+    resolverRoot.write("binaries", lazyRel, "fetched");
+    const packages = writeFixturePackages(scratch, lazyRel, eagerRel);
+    const out = join(scratch, "resolved.MANIFEST");
+
+    const result = runGenerator(["--packages", packages, "--out", out], resolverRoot.env);
+
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = readFileSync(out, "utf8");
+    // The same answer the resolver gives the hosts, byte for byte.
+    const served = readFileSync(resolverAnswer(resolverRoot.env, lazyRel), "utf8");
+    expect(served).toBe(fresh);
+    expect(manifest).toContain(
+      `/usr/bin/fixture f 0755 0 0 lazy_url=binaries/${lazyRel} ` +
+        `lazy_size=${fresh.length} lazy_sha256=${sha256(fresh)}`,
+    );
+    const eagerPath = resolverAnswer(resolverRoot.env, eagerRel);
+    expect(eagerPath).toBe(join(resolverRoot.root, "local-binaries/source-only-v1", eagerRel));
+    // With its digest, for the rootfs build's input stamp. (The fixture root
+    // sits under the checkout's target/, so the path is recorded relative.)
+    expect(manifest).toContain(`# /usr/share/fixture.dat sha256=${sha256(freshEager)}`);
+    expect(manifest).toContain(
+      `/usr/share/fixture.dat f 0644 0 0 src=${relative(repoRoot, eagerPath)}`,
+    );
+    expect(manifest).not.toContain("stale");
+  });
+
+  it("fails loudly when the resolver has no answer, naming the build to run", () => {
+    const scratch = makeScratch();
+    const resolverRoot = makeResolverRoot();
+    const packages = writeFixturePackages(scratch, "share/fixture/missing.dat", "share/fixture/also-missing.dat");
+    const out = join(scratch, "missing.MANIFEST");
+
+    const result = runGenerator(["--packages", packages, "--out", out], resolverRoot.env);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("local override tree");
-    expect(result.stderr).toContain("not a regular file");
+    expect(result.stderr).toContain("the binary resolver could not resolve every rootfs package output");
+    expect(result.stderr).toContain("Binary not found: share/fixture/missing.dat");
+    expect(result.stderr).toContain("./run.sh setup");
+    expect(() => readFileSync(out, "utf8")).toThrow();
   });
+
+  // The rootfs build's up-to-date check hashes the generated fragment, which
+  // carries a digest for every resolved output. The local build rewrites a
+  // binary IN PLACE (same path, new bytes), so hashing paths, or one tier's
+  // projection file, let a rebuilt binary keep a stale image looking current.
+  // It runs the whole rootfs build three times, which outgrows Vitest's 5 s
+  // default on an ordinary machine.
+  it("rebuilds the image when a resolved binary changes in place", () => {
+    const scratch = makeScratch();
+    const resolverRoot = makeResolverRoot();
+    const lazyRel = "share/fixture/lazy.dat";
+    const eagerRel = "share/fixture/eager.dat";
+    resolverRoot.write("local-binaries/source-only-v1", lazyRel, "first build");
+    const eager = resolverRoot.write("local-binaries/source-only-v1", eagerRel, "first eager");
+    const packages = writeFixturePackages(scratch, lazyRel, eagerRel);
+    const env = {
+      ...process.env,
+      ...resolverRoot.env,
+      ROOTFS_PACKAGES_CONFIG: packages,
+      ROOTFS_PACKAGE_MANIFEST: join(scratch, "rootfs-packages.MANIFEST"),
+      ROOTFS_OUT: join(scratch, "rootfs.vfs"),
+      ROOTFS_SKIP_PACKAGE_RESOLVE: "1",
+      ROOTFS_SEALED_BUILD: "1",
+    };
+    const build = () =>
+      spawnSync("bash", [join(repoRoot, "scripts/build-rootfs.sh")], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env,
+      });
+
+    const first = build();
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.stdout).toContain("==> Built");
+    const again = build();
+    expect(again.status, again.stderr).toBe(0);
+    expect(again.stdout).toMatch(/rootfs\.vfs(?:\.zst)? up to date/);
+
+    // Same path, new bytes: the eager file, whose fragment line names only a
+    // path.
+    writeFileSync(eager, "second eager");
+    const rebuilt = build();
+    expect(rebuilt.status, rebuilt.stderr).toBe(0);
+    expect(rebuilt.stdout).toContain("==> Built");
+    expect(rebuilt.stdout).not.toContain("up to date");
+  }, 60_000);
 });
 
 function sha256(value: string | Uint8Array): string {
@@ -1015,4 +1131,11 @@ function sortJson(value: unknown): unknown {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, child]) => [key, sortJson(child)]),
   );
+}
+
+/** Whether the image at `path` describes `vfsPath` as deferred. */
+function deferredInImage(path: string, vfsPath: string): boolean {
+  const fs = KandeloImageFs.create();
+  fs.loadImage(new Uint8Array(readFileSync(path)));
+  return fs.lstat(vfsPath).deferred;
 }

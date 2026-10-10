@@ -23,6 +23,10 @@ path = "src/main.rs"
 
 [dependencies]
 wasm-posix-shared = { path = "../../crates/shared" }
+# The VFS image reader and writer the kernel itself uses. `vfs-image` (and the
+# image drill-down in `check-determinism`) decodes images through it rather
+# than reimplementing the format, so its answers match what the kernel mounts.
+runtime-core = { path = "../../crates/runtime-core" }
 fork-instrument = { path = "../../crates/fork-instrument" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

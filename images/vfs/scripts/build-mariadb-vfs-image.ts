@@ -20,7 +20,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -151,8 +151,11 @@ export async function buildMariadbVfsImage(
 ): Promise<void> {
   console.log(`==> Building MariaDB VFS image (${inputs.architecture})`);
 
-  const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
+  const fs = KandeloImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. The SharedArrayBuffer it used to come from was never anything but
+  // the old constructor's first argument.
+  fs.setImageCapacity(256 * 1024 * 1024);
 
   for (const dir of [
     "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
@@ -256,21 +259,42 @@ async function main(): Promise<void> {
     .slice(2)
     .find((argument) => !argument.startsWith("--"));
   const architecture = useWasm64 ? "wasm64" : "wasm32";
-  const mariadbPath = resolveBinary(useWasm64
-    ? "programs/wasm64/mariadb/mariadbd.wasm"
-    : "programs/mariadb/mariadbd.wasm");
+  const mariadbRoot = process.env.WASM_POSIX_DEP_MARIADB_DIR;
+  const bashRoot = process.env.WASM_POSIX_DEP_BASH_DIR;
+  const dashRoot = process.env.WASM_POSIX_DEP_DASH_DIR;
+  const coreutilsRoot = process.env.WASM_POSIX_DEP_COREUTILS_DIR;
+  const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
+  // Resolver builds consume their declared dependencies, including their SQL
+  // runtime files. Only standalone builds discover the installed package tree.
+  const mariadbPath = mariadbRoot
+    ? join(mariadbRoot, "mariadbd.wasm")
+    : resolveBinary(useWasm64
+      ? "programs/wasm64/mariadb/mariadbd.wasm"
+      : "programs/mariadb/mariadbd.wasm");
   await buildMariadbVfsImage({
     architecture,
     mariadbd: new Uint8Array(readFileSync(mariadbPath)),
-    systemTablesDirectory: resolveLegacySystemTablesDirectory(
-      repositoryRoot,
-      useWasm64,
-    ),
-    bash: new Uint8Array(readFileSync(resolveBinary("programs/bash.wasm"))),
-    dash: new Uint8Array(readFileSync(resolveBinary("programs/dash.wasm"))),
+    systemTablesDirectory: mariadbRoot
+      ? join(mariadbRoot, "share/mysql")
+      : resolveLegacySystemTablesDirectory(repositoryRoot, useWasm64),
+    bash: new Uint8Array(readFileSync(bashRoot
+      ? join(bashRoot, "bash.wasm")
+      : resolveBinary("programs/bash.wasm"))),
+    dash: new Uint8Array(readFileSync(dashRoot
+      ? join(dashRoot, "dash.wasm")
+      : resolveBinary("programs/dash.wasm"))),
     coreutils: new Uint8Array(
-      readFileSync(resolveBinary("programs/coreutils.wasm")),
+      readFileSync(coreutilsRoot
+        ? join(coreutilsRoot, "coreutils.wasm")
+        : resolveBinary("programs/coreutils.wasm")),
     ),
+    dinit: dinitRoot ? {
+      dinit: new Uint8Array(readFileSync(join(dinitRoot, "dinit.wasm"))),
+      dinitctl: new Uint8Array(readFileSync(join(dinitRoot, "dinitctl.wasm"))),
+    } : undefined,
+    services: new Uint8Array(readFileSync(
+      join(repositoryRoot, "images/rootfs/etc/services"),
+    )),
     outputPath: outputArgument
       ? resolve(outputArgument)
       : join(

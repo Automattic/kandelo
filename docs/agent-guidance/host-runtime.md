@@ -20,10 +20,13 @@ with resident memory still low, and there is no recovery except declaring
 smaller ceilings. V8 and SpiderMonkey reserve address space lazily, so a
 ceiling that is invisible on Chrome, Firefox, and Node can still make Safari
 fail. Before adding or raising any ceiling, ask what it costs on the engine
-that charges it, and check whether the ceiling can even be reached: a
-SharedFS-backed filesystem cannot grow past the capacity recorded in its own
-superblock, so reserving beyond that recorded capacity buys nothing anywhere
-and costs real budget on WebKit. Host budgets live in
+that charges it, and check whether the ceiling can even be reached. The
+machine's filesystem lives in the kernel's linear memory (the in-kernel rootfs
+and tmpfs; see `docs/architecture.md`, "Filesystem"), so the kernel's ceiling
+is also the ceiling on everything guests write and every lazy file they pull
+in (1 GiB under the desktop profile, 768 MiB under the constrained one). A
+write past it fails with `ENOSPC` rather than aborting the kernel. Host
+budgets live in
 `host/src/runtime-memory-profile.ts`; when a budget forces a smaller address
 space than a caller asked for, report the reduction rather than applying it
 silently.
@@ -52,6 +55,65 @@ Before and after host work, ask: "What does this look like on the other host?"
 | Worker adapter | `host/src/worker-adapter.ts` | `host/src/worker-adapter-browser.ts` |
 | Process-worker runtime | shared `host/src/worker-main.ts` | shared `host/src/worker-main.ts` |
 | Kernel worker | shared `host/src/kernel-worker.ts` | shared `host/src/kernel-worker.ts` |
+| Kernel-worker lifecycle helpers | shared `host/src/process-lifecycle.ts` | shared `host/src/process-lifecycle.ts` |
+| Protocol types both entries declare | shared `host/src/kernel-protocol-shared.ts` | shared `host/src/kernel-protocol-shared.ts` |
+
+Logic and message types that are the same on both hosts live once, in
+`process-lifecycle.ts` and `kernel-protocol-shared.ts`. The lifecycle module is
+parameterised by an explicit `ProcessLifecycleHost` record, so each genuine
+platform difference is named there — most importantly
+`terminationProvesQuiescence`, which is `true` on Node (an awaited
+`worker.terminate()` joins the thread) and `false` in the browser (where
+`Worker.terminate()` reports nothing). Nothing reads that field yet: the code
+that should branch on it (thread-slot reclaim, exec-rollback lease release,
+the browser's memory-retirement bookkeeping) is still duplicated in the two
+entries. Move a function into the shared module
+only when it is equivalent on both hosts; declare a real difference in the
+host record rather than forking the function again.
+
+## The host filesystem contract is handle-only
+
+**A host resolves at most one path component, relative to a directory handle
+it previously issued. It never receives a guest path, a mount prefix, a `..`,
+or a symlink chain.**
+
+The kernel owns the POSIX namespace. It serves `/` and the scratch mounts
+itself (`crates/runtime-core/src/rootfs.rs`, `tmpfs.rs`), and the host is only
+consulted for a host-backed mount beneath `/` (a Node `extraMounts` directory,
+a session-seed tree). For those, `resolve_namespace_path_from`
+(`crates/runtime-core/src/syscalls.rs`) resolves the guest path against the
+kernel's own metadata, and `crates/runtime-core/src/hostdir.rs` steps a host
+directory handle along the canonical result with
+`host_openat(dir, component, O_DIRECTORY|O_NOFOLLOW)`, presenting the final
+operation a single component.
+
+What this means when you touch host code:
+
+- **Do not add a path-taking host import.** Anything shaped like "resolve the
+  rest of this path for me" is the defect this contract removed.
+- **A directory is an ordinary handle.** `host_openat(..., O_DIRECTORY)` issues
+  it, `host_readdir` iterates it, `host_close` releases it; there is no
+  `closedir`. A host must issue distinct handles for distinct directories (the
+  kernel's walk holds several at once), keep directory ids disjoint from file
+  ids (one `close` serves both), and answer `fstat`, `fstatfs`, `fpathconf`,
+  `fchmod`, `fchown`, and `fsync` on a directory handle as well as a file one.
+- **The whole family is optional.** It is reachable only under a mount whose
+  root handle the host published through
+  `kernel_rootfs_set_foreign_mount_roots`. A host with no host-backed mount
+  implements none of it, which is the browser today.
+- **The final component is still a name.** `mkdir`, `unlink`, `rename`, `link`
+  and `symlink` name an entry that does not exist yet or is about to stop
+  existing; `lstat`, `lchown` and an `AT_SYMLINK_NOFOLLOW` `utimensat` name an
+  entry the host must not open, because opening a symlink follows it.
+- **`PlatformIO`'s remaining path methods are host-internal.** They implement
+  the `*at` methods; the kernel calls none of them.
+
+The host's other filesystem duty is to be a byte pipe for the kernel-owned
+`/`: `host_image_read` serves positioned reads of the boot image the worker
+holds, and `host_fetch_deferred(uri, ...)` fetches bytes the image only names
+(lazy files and lazy archives), answering `EAGAIN` while a fetch is in flight.
+The host never decodes the image into a filesystem of its own.
+`docs/abi-versioning.md` ("ABI 49") lists the import set.
 
 Worker protocols are contracts. Spawn, fork, exec, clone, exit, terminate,
 thread exit, crash, syscall trace, PTY, framebuffer, audio, network, VFS, and

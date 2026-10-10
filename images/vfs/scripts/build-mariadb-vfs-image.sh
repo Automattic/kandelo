@@ -3,12 +3,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
-if [ "$#" -ne 0 ] && [ "${1:-}" = "--vfs-product-manifest" ]; then
-  exec node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
-    "$SCRIPT_DIR/staged-product-inputs.ts" browser-mariadb "$@"
-fi
 echo "==> Building MariaDB VFS image..."
-npx tsx "$SCRIPT_DIR/build-mariadb-vfs-image.ts" "$@"
+# The tsx CLI creates an IPC socket beneath TMPDIR; resolver work paths exceed
+# macOS's Unix socket path limit. The ESM loader runs the same TypeScript input
+# directly without that CLI-only socket or an ambient temporary directory.
+node --import tsx/esm "$SCRIPT_DIR/build-mariadb-vfs-image.ts" "$@"
 echo "==> Done."
 # A non-flag argument is the output path; otherwise the builder writes the
 # browser demo's public/ copy.

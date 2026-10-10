@@ -36,21 +36,23 @@ import type {
   PreparedExecLaunchRequest,
 } from "./exec-target";
 import {
-  listPreparedPlatformDirectory,
   readPreparedPlatformFile,
-  statPreparedPlatformPath,
   VirtualPlatformIO,
 } from "./vfs/vfs";
-import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
-import { resolveLazyUrl } from "./vfs/lazy-url";
-import { DeviceFileSystem } from "./vfs/device-fs";
+import * as rootImage from "./vfs/root-image-facts";
+import { DEFAULT_MOUNT_SPEC } from "./vfs/default-mounts";
+import type { LazyFetch } from "./vfs/lazy-download-event";
+import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
-import { withBrowserMitmCaEnv } from "./networking/browser-mitm-ca-env";
+import {
+  BROWSER_MITM_CA_BUNDLE_PATH,
+  withBrowserMitmCaEnv,
+} from "./networking/browser-mitm-ca-env";
 import { patchWasmForThread } from "./worker-main";
 import {
   describeWasmArtifactPolicyFailures,
@@ -137,6 +139,18 @@ import {
 } from "./browser-kernel-protocol";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import { createDestroyProgressReporter } from "./destroy-progress-reporter";
+import {
+  configureRootfsOverlayFromImage,
+  createProcessLifecycle,
+  handleThreadExit,
+  isMissingPathError,
+  isRootfsMissingFileError,
+  readRootfsFileWithRetry,
+  readNamespaceFileWithRetry,
+  signalFromExitStatus,
+  type ProcessGenerationOwnership,
+  type VforkWorkspaceOwnership,
+} from "./process-lifecycle";
 
 const PAGE_SIZE = 65536;
 const O_WRONLY_CREAT_TRUNC =
@@ -144,7 +158,6 @@ const O_WRONLY_CREAT_TRUNC =
 // State
 let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
-let memfs: MemoryFileSystem;
 let io: VirtualPlatformIO;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
@@ -155,16 +168,9 @@ const processMemoryRetirementPressureHook =
 let defaultEnv: string[] = [];
 const ENOEXEC = 8;
 
-type LazyRegistrationMessage = Extract<
-  MainToKernelMessage,
-  { type: "register_lazy_files" | "register_lazy_archives" }
->;
-
 let initReady = false;
 let initFailure: string | null = null;
 let kernelFatalReported = false;
-const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
-let lazyRegistrationTail: Promise<void> = Promise.resolve();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
 let vforkMechanismTraceEnabled = false;
@@ -173,27 +179,11 @@ let injectedVforkWorkerStartFailure = false;
 let injectExecWorkerConstructionFailure = false;
 let injectedExecWorkerConstructionFailure = false;
 
-function traceVforkMechanism(event: string, fields: string): void {
-  if (!vforkMechanismTraceEnabled) return;
-  console.log(`[vfork-mechanism] event=${event} ${fields}`);
-}
-
 // Process tracking
 interface ForkReplayContext {
   fnPtr: number;
   argPtr: number;
   forkBufAddr: number;
-}
-
-interface ProcessGenerationOwnership {
-  memory: WebAssembly.Memory;
-  memoryLease: ProcessMemoryLease;
-}
-
-interface VforkWorkspaceOwnership {
-  readonly allocator: ThreadPageAllocator;
-  readonly slotStartPage: number;
-  released: boolean;
 }
 
 interface ProcessInfo extends ProcessGenerationOwnership {
@@ -263,6 +253,40 @@ const FRAMEBUFFER_RELEASE_ACK_WAIT_MS = 2000;
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
+
+/**
+ * The shared lifecycle implementation both host entries call.
+ *
+ * `terminationProvesQuiescence` is `false` here: `Worker.terminate()` returns
+ * `void`, gives no completion signal, and cannot be observed to have stopped a
+ * guest parked in `Atomics.wait`, so `BrowserWorkerHandle` has to synthesize
+ * the `exit` event itself. Anything released after a browser termination must
+ * be force-retired rather than exactly released. The Node entry declares
+ * `true` for the same field, and that one difference is why its thread-slot
+ * reclaim and exec-rollback paths look different from these.
+ */
+const lifecycle = createProcessLifecycle<ProcessInfo>({
+  post: (message) => post(message),
+  terminationProvesQuiescence: false,
+  isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
+  vforkLifetimes,
+  vmInterruptTimers,
+  reserveThreadSlotStartPage: (pid, bytes) =>
+    kernelWorker.reserveHostRegion(pid, bytes),
+  forkHostImportsByWorker,
+});
+const {
+  bindForkHostImports,
+  completeVforkGenerationTeardown,
+  dispatchForkHostImport,
+  handleVmInterruptTimer,
+  releaseVforkWorkspace,
+  reportHostDiagnostic,
+  respond,
+  respondError,
+  threadAllocatorForLayout,
+  traceVforkMechanism,
+} = lifecycle;
 
 /**
  * Workers we deliberately terminated — exec, exit, top-level destroy. The
@@ -359,16 +383,6 @@ async function waitForExecRetirement(
   );
 }
 
-function handleVmInterruptTimer(msg: {
-  pid: number;
-  timedOutPtr: number;
-  vmInterruptPtr: number;
-  seconds: number;
-}, pid: number, process: ProcessInfo): void {
-  if (msg.pid !== pid) return;
-  vmInterruptTimers.handleRequest(pid, process, msg);
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -447,29 +461,6 @@ async function terminateTrackedWorker(
   workerTeardowns.add(teardown);
   void teardown.finally(() => workerTeardowns.delete(teardown));
   await teardown;
-}
-
-function bindForkHostImports(
-  worker: ReturnType<BrowserWorkerAdapter["createWorker"]>,
-  owner: ForkHostImportOwnerWorker,
-): void {
-  forkHostImportsByWorker.set(worker as object, owner);
-}
-
-function dispatchForkHostImport(
-  worker: ReturnType<BrowserWorkerAdapter["createWorker"]>,
-  message: Extract<WorkerToHostMessage, { type: "fork_host_import" }>,
-): void {
-  const owner = forkHostImportsByWorker.get(worker as object);
-  if (!owner || !owner.dispatch(message.wake)) {
-    reportHostDiagnostic({
-      pid: message.wake.pid,
-      source: "fork host-import protocol",
-      message:
-        `[kernel-worker] ignored stale or unbound fork host-import wake `
-        + `pid=${message.wake.pid} sender=${message.wake.senderId}`,
-    }, "warn");
-  }
 }
 
 async function terminateThreadWorkers(
@@ -662,15 +653,6 @@ function acknowledgeMainFramebufferRelease(requestId: number): void {
   pending.resolve(true);
 }
 
-function reportHostDiagnostic(
-  diagnostic: HostDiagnostic,
-  level: "error" | "warn" = "error",
-): void {
-  if (level === "warn") console.warn(diagnostic.message);
-  else console.error(diagnostic.message);
-  post({ type: "host_diagnostic", ...diagnostic });
-}
-
 function terminatePoisonedKernelWorker(error: Error): void {
   if (kernelFatalReported) return;
   kernelFatalReported = true;
@@ -739,16 +721,6 @@ function formatError(err: unknown): string {
   return String(err);
 }
 
-function isMissingPathError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const code = (err as { code?: unknown }).code;
-  return code === -2 || code === "ENOENT";
-}
-
-function respond(requestId: number, result: unknown) {
-  post({ type: "response", requestId, result });
-}
-
 function respondTransferredBytes(requestId: number, result: Uint8Array) {
   post(
     { type: "response", requestId, result },
@@ -756,126 +728,11 @@ function respondTransferredBytes(requestId: number, result: Uint8Array) {
   );
 }
 
-function respondError(requestId: number, error: string) {
-  post({ type: "response", requestId, result: null, error });
-}
-
-function respondIfRequested(
-  msg: { requestId?: number },
-  result: unknown,
-): void {
-  if (typeof msg.requestId === "number") {
-    respond(msg.requestId, result);
-  }
-}
-
-function respondErrorIfRequested(
-  msg: { requestId?: number },
-  error: string,
-): void {
-  if (typeof msg.requestId === "number") {
-    respondError(msg.requestId, error);
-  }
-}
-
 function reportWorkerProtocolError(message: string): void {
   reportHostDiagnostic({
     pid: 0,
     source: "worker protocol",
     message: `[kernel-worker] ${message}`,
-  });
-}
-
-async function applyLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
-  if (msg.type === "register_lazy_files") {
-    memfs.importLazyEntries(msg.entries);
-  } else {
-    await memfs.importVerifiedLazyArchiveEntries(msg.entries);
-  }
-  respondIfRequested(msg, true);
-}
-
-function failPendingLazyRegistrations(error: string): void {
-  const pending = pendingLazyRegistrationMessages.splice(0);
-  for (const msg of pending) {
-    respondErrorIfRequested(msg, error);
-  }
-}
-
-function scheduleLazyRegistration(
-  msg: LazyRegistrationMessage,
-): Promise<void> {
-  // WHY: worker message handlers may overlap after an await. Serialize trust
-  // checks so two registrations cannot both authenticate against an obsolete
-  // view and then publish in a different order.
-  const scheduled = lazyRegistrationTail.then(async () => {
-    const releaseMutation = rootfsSnapshotGate.beginMutation(
-      "register lazy rootfs entries",
-    );
-    try {
-      await applyLazyRegistration(msg);
-    } finally {
-      releaseMutation();
-    }
-  });
-  lazyRegistrationTail = scheduled.catch(() => {});
-  return scheduled;
-}
-
-function reportLazyRegistrationFailure(
-  msg: LazyRegistrationMessage,
-  err: unknown,
-): void {
-  const error = formatError(err);
-  respondErrorIfRequested(msg, error);
-  reportWorkerProtocolError(`${msg.type} failed: ${error}`);
-}
-
-async function flushPendingLazyRegistrations(): Promise<void> {
-  // Keep init closed while draining. Messages delivered while a digest yields
-  // join this queue and must be authenticated before the worker reports ready.
-  while (pendingLazyRegistrationMessages.length !== 0) {
-    const msg = pendingLazyRegistrationMessages.shift()!;
-    try {
-      await scheduleLazyRegistration(msg);
-    } catch (err) {
-      reportLazyRegistrationFailure(msg, err);
-      throw err;
-    }
-  }
-}
-
-async function handleLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
-  if (initFailure) {
-    respondErrorIfRequested(msg, initFailure);
-    reportWorkerProtocolError(
-      `${msg.type} rejected because kernel worker init failed: ${initFailure}`,
-    );
-    return;
-  }
-  if (!initReady) {
-    pendingLazyRegistrationMessages.push(msg);
-    return;
-  }
-  try {
-    await scheduleLazyRegistration(msg);
-  } catch (err) {
-    reportLazyRegistrationFailure(msg, err);
-  }
-}
-
-function threadAllocatorForLayout(
-  layout: ProcessMemoryLayout,
-  ptrWidth: 4 | 8,
-  pid: number,
-): ThreadPageAllocator {
-  return new ThreadPageAllocator({
-    firstSlotStartPage: layout.firstThreadSlotPage,
-    maxPageExclusive: layout.threadArenaEndPage,
-    ptrWidth,
-    reservedSlots: layout.threadSlotCount,
-    reserveSlotStartPage: () =>
-      kernelWorker.reserveHostRegion(pid, PAGES_PER_THREAD * PAGE_SIZE) / PAGE_SIZE,
   });
 }
 
@@ -1040,53 +897,48 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     retirementPressureHook: processMemoryRetirementPressureHook,
   });
 
-  // Create VFS — prefer pre-built image bytes (kernel-owned FS); fall back
-  // to the legacy shared-SAB path so the existing demos keep working.
-  //
-  // vfsImage path (Task 4.4): apply DEFAULT_MOUNT_SPEC through the shared
-  // browser-worker VFS-init boundary,
-  // giving 8 mounts — / from the image, plus scratch memfs at /tmp, /var/tmp,
-  // /var/log, /var/run, /home/maker, /root, /srv. Layer /dev/shm and /dev on
-  // top: those are browser-platform internals (POSIX semaphore SAB,
-  // kernel devices) not part of the canonical spec.
-  //
-  // Legacy fsSab path keeps the prior 3-mount layout intact — its caller
-  // controls the rootfs contents directly via kernel.fs and would lose
-  // control if the spec dictated additional scratch mounts.
-  const shmfs = MemoryFileSystem.fromExisting(msg.shmSab);
-  const devfs = new DeviceFileSystem();
-  // The kernel worker OWNS the VFS: rebuild it from the demo's image bytes and
-  // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
-  // /var/*, /home/maker, /root, /srv). /etc is part of the image, baked in by
-  // the demo (see apps/browser-demos/lib/kernel-owned-boot.ts).
+  // The kernel worker owns the machine's filesystem. The `/` image is parsed
+  // by the kernel itself (configured below, loaded by `init`), and the
+  // in-kernel tmpfs serves the scratch prefixes (`/tmp`, `/var/*`,
+  // `/home/maker`, `/root`, `/srv`) and POSIX shared memory (`/dev/shm`). The
+  // kernel's devfs owns `/dev`. `restoreBrowserKernelInitMounts` validates the
+  // mount spec and returns only the host-backed mounts that remain, which on
+  // the browser is none: a scratch mount outside the kernel's prefixes is
+  // refused there. An imported image's seals are verified by the kernel when
+  // it loads the image.
   const specMounts = await restoreBrowserKernelInitMounts(
     msg.vfsImage,
     msg.rootfsMountSpec,
-    msg.config.imageMemfsMaxBytes,
   );
-  const rootMount = specMounts.find((m) => m.mountPoint === "/");
-  if (!rootMount) throw new Error("rootfs mount spec missing / mount");
-  memfs = rootMount.backend as MemoryFileSystem;
-  if (msg.lazyUrlBase) {
-    memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
-    memfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
+  // What the boot needs from the SPEC is whether `/` is an image and whether
+  // it was declared `nosuid`; there is no host `/` backend to ask.
+  if (!rootImage.record(msg.rootfsMountSpec ?? DEFAULT_MOUNT_SPEC)) {
+    throw new Error("rootfs mount spec missing / mount");
   }
+  // The transport for the image's deferred addresses. Relative addresses are
+  // resolved against `lazyUrlBase` at fetch time (see
+  // `configureRootfsOverlayFromImage`); the image itself is never rewritten.
+  let rootfsLazyFetcher: LazyFetch;
   if (msg.closedLazyAssets !== undefined) {
-    memfs.setLazyFetcher(createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets));
+    rootfsLazyFetcher = createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets);
   } else if (corsProxyLazyFetcher !== undefined) {
     // WHY: guest networking and lazy VFS downloads are separate fetch paths.
     // Lazy VFS must read and verify release-asset bytes, which requires CORS.
     // CORP alone cannot make an opaque response body readable to JavaScript.
-    memfs.setLazyFetcher(corsProxyLazyFetcher);
+    rootfsLazyFetcher = corsProxyLazyFetcher;
+  } else {
+    // No closed asset bundle and no CORS proxy: the image's addresses are
+    // fetched as ordinary requests, which serves every same-origin asset (the
+    // dev server's `binaries/` tree, a deployment's own archives). The Node
+    // host has the same default. Without one the kernel answered every lazy
+    // read with EIO, though nothing about such an image is unreachable.
+    rootfsLazyFetcher = (url, init) =>
+      init === undefined ? globalThis.fetch(url) : globalThis.fetch(url, init);
   }
-  const mounts: MountConfig[] = [
-    { mountPoint: "/dev/shm", backend: shmfs, nosuid: true },
-    { mountPoint: "/dev", backend: devfs, nosuid: true },
-    ...specMounts,
-  ];
-  memfs.subscribeLazyDownloads((event) => {
-    post({ type: "lazy_download", event });
-  });
+  const mounts: MountConfig[] = [...specMounts];
+  // The host mounts are exactly the sibling filesystems the kernel's rootfs
+  // must not claim. Mirrors the Node entry.
+  const rootfsForeignPrefixes = mounts.map((m) => m.mountPoint);
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
@@ -1097,24 +949,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   await tlsBackend.init();
   io.network = tlsBackend;
 
-  // Install the MITM CA certificate in the VFS so OpenSSL trusts it.
+  // The MITM CA certificate is installed after `init`, below: it is
+  // per-session runtime data that can never be in an image, and `/` is the
+  // kernel's, so it is a kernel write and the kernel has to exist first.
   const caCertPem = tlsBackend.getCACertPEM();
-  try {
-    // Demo images don't always include /etc — create the full chain.
-    for (const dir of ["/etc", "/etc/ssl", "/etc/ssl/certs"]) {
-      try { memfs.mkdir(dir, 0o755); } catch { /* exists */ }
-    }
-    const certBytes = new TextEncoder().encode(caCertPem);
-    const certFd = memfs.open(
-      "/etc/ssl/certs/ca-certificates.crt",
-      O_WRONLY_CREAT_TRUNC,
-      0o644,
-    );
-    memfs.write(certFd, certBytes, 0, certBytes.length);
-    memfs.close(certFd);
-  } catch (e) {
-    console.error("[kernel-worker] Failed to write CA cert to VFS:", e);
-  }
 
   // Create worker adapter for spawning sub-workers
   workerAdapter = new BrowserWorkerAdapter(msg.workerEntryUrl);
@@ -1281,7 +1119,50 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     post({ type: "listen_tcp", pid, fd, port });
   });
 
+  // The kernel owns `/`: hand it the boot image and the byte pipe for what the
+  // image does not carry before `init` loads them. Mirrors the Node entry.
+  let finalizeRootfsTransport: (() => void) | undefined;
+  if (rootImage.has()) {
+    finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
+      imageRead: imageReadFromContainer(msg.vfsImage),
+      imageBytes: msg.vfsImage,
+      onLazyProgress: (event) => post({ type: "lazy_download", event }),
+      foreignPrefixes: rootfsForeignPrefixes,
+      nosuid: rootImage.nosuid(),
+      lazyFetcher: rootfsLazyFetcher,
+      lazyUrlBase: msg.lazyUrlBase,
+      lazyUrlMap: msg.lazyUrlMap,
+    });
+  }
+
   await kernelWorker.init(msg.kernelWasmBytes);
+  finalizeRootfsTransport?.();
+
+  // Install the TLS-MITM CA certificate so guest OpenSSL trusts it. This runs
+  // after `init` because the kernel owns `/`, and before any guest process is
+  // launched, which is what the trust requires. The directory chain is created
+  // explicitly because a demo image need not carry `/etc/ssl/certs`, and the
+  // write opens with `O_CREAT`, which needs the parent to exist.
+  //
+  // A failure is reported, not swallowed: every outbound HTTPS connection this
+  // session is terminated by the MITM, so a guest that does not trust the CA
+  // would otherwise fail later with a confusing certificate error.
+  if (rootImage.has()) {
+    try {
+      kernelWorker.rootfsMkdirParents(BROWSER_MITM_CA_BUNDLE_PATH, 0o755);
+      kernelWorker.rootfsWriteFile(
+        BROWSER_MITM_CA_BUNDLE_PATH,
+        new TextEncoder().encode(caCertPem),
+        0o644,
+      );
+    } catch (e) {
+      console.error(
+        `[kernel-worker] Failed to install the MITM CA certificate at ${BROWSER_MITM_CA_BUNDLE_PATH};`
+        + " guest TLS clients will reject every HTTPS connection this session:",
+        e,
+      );
+    }
+  }
 
   // /dev/fb0 forwarding: the registry lives in this worker, but the canvas
   // lives on the main thread. WHY: today's zero-copy fbdev contract therefore
@@ -1391,9 +1272,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     resetBridgePendingRequests();
   }
 
-  await flushPendingLazyRegistrations();
-  // No await separates the final queue check from opening init, so a message
-  // cannot slip past both the pending queue and the serialized live path.
   initReady = true;
 
   const pcmTransport = kernelWorker.claimPcmTransport(true);
@@ -1840,43 +1718,6 @@ async function handleFork(
     parentMemory,
     continuation,
   );
-}
-
-function releaseVforkWorkspace(info: ProcessInfo): void {
-  const workspace = info.vforkWorkspace;
-  if (!workspace || workspace.released) return;
-  workspace.released = true;
-  workspace.allocator.free(workspace.slotStartPage);
-}
-
-function completeVforkGenerationTeardown(
-  info: ProcessInfo,
-  exact: boolean,
-  reason: VforkExactCompletionReason,
-  cause?: unknown,
-): void {
-  const phase = vforkLifetimes.phaseForChild(info);
-  if (phase === undefined) return;
-  if (!exact) {
-    vforkLifetimes.requireAddressSpaceContainment(
-      info,
-      cause ?? new Error("vfork child teardown lacked an exact quiescence fence"),
-    );
-    return;
-  }
-  traceVforkMechanism(
-    "exact_teardown",
-    `child_channel=${info.channelOffset} reason=${reason}`,
-  );
-  releaseVforkWorkspace(info);
-  if (phase === "starting") {
-    vforkLifetimes.completeWithoutBorrow(
-      info,
-      reason === "exit" ? "exit" : "signal",
-    );
-  } else {
-    vforkLifetimes.completeAfterExactTeardown(info, reason);
-  }
 }
 
 async function containVforkAddressSpace(
@@ -3130,9 +2971,10 @@ async function handleExec(
 
 /**
  * Pre-flight resolver — see node-kernel-worker-entry.ts:handlePosixSpawnResolve.
- * Browser-side equivalent: materialize the lazy file (async fetch via
- * the memfs lazy-loader, avoiding sync-XHR + SW deadlocks), reads its
- * contents from the VFS, and follows shebangs. Compilation is deferred to the
+ * Browser-side equivalent: materialize the lazy file (the kernel answers
+ * EAGAIN while the host fetches its bytes asynchronously, avoiding sync-XHR +
+ * SW deadlocks; see `readRootfsFileWithRetry`), reads its contents from the
+ * VFS, and follows shebangs. Compilation is deferred to the
  * shared worker's isolated candidate snapshot. Safe to call before the kernel
  * applies spawn file actions.
  */
@@ -3628,19 +3470,6 @@ async function handleClone(
 
 }
 
-function handleThreadExit(pid: number, channelOffset: number): boolean {
-  // The kernel has completed the exit syscall, but the browser Worker may not
-  // yet have resumed from Atomics.wait. The worker-entry memory_quiescent
-  // message, not Worker.terminate(), authorizes slot reclamation.
-  void pid;
-  void channelOffset;
-  return true;
-}
-
-function signalFromExitStatus(exitStatus: number): number | null {
-  return exitStatus >= 128 ? (exitStatus - 128) & 0x7f : null;
-}
-
 function handleExit(
   pid: number,
   exitStatus: number,
@@ -3797,29 +3626,33 @@ async function finishProcessExit(
 async function handleReadVfsFile(
   msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
 ) {
-  if (!io) { respond(msg.requestId, null); return; }
+  if (!rootImage.has()) { respond(msg.requestId, null); return; }
   let releaseMutation: (() => void) | undefined;
   try {
-    // A read can materialize a lazy file/tree and is therefore serialized
-    // with snapshots even though an already-materialized read is non-mutating.
+    // A read can materialize a lazy file and is therefore serialized with
+    // snapshots even though an already-materialized read is non-mutating.
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "read or materialize a rootfs file",
     );
-    const { data, stat } = await readPreparedPlatformFile(io, msg.path);
-    if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
+    // The kernel owns `/` and the scratch mounts, including guest writes; a
+    // missing path or a non-regular file answers null, as before. The bytes
+    // come back in a fresh, non-shared buffer, so they structured-clone.
+    const data = await readNamespaceFileWithRetry(kernelWorker, msg.path);
+    if (data === null) {
       respond(msg.requestId, null);
       return;
     }
-    // Copy into a plain (non-shared) ArrayBuffer so it structured-clones back.
-    const result = data.slice();
     respond(
       msg.requestId,
       msg.includeMode
-        ? { data: result, mode: stat.mode & FILE_MODES.S_MODE_BITS }
-        : result,
+        ? {
+          data,
+          mode: kernelWorker.rootfsStat(msg.path).mode & FILE_MODES.S_MODE_BITS,
+        }
+        : data,
     );
   } catch (error) {
-    if (isMissingPathError(error)) respond(msg.requestId, null);
+    if (isRootfsMissingFileError(error)) respond(msg.requestId, null);
     else respondError(msg.requestId, formatError(error));
   } finally {
     releaseMutation?.();
@@ -3840,7 +3673,7 @@ async function handleReadVfsDir(
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "list or materialize a rootfs directory",
     );
-    respond(msg.requestId, await listPreparedPlatformDirectory(vfs, msg.path));
+    respond(msg.requestId, await retryKernelEntryResult(() => kernelWorker.rootfsReadDirectory(msg.path)));
   } catch (error) {
     if (isMissingPathError(error)) respond(msg.requestId, null);
     else respondError(msg.requestId, formatError(error));
@@ -3859,7 +3692,7 @@ async function handleStatVfsPath(
     releaseMutation = rootfsSnapshotGate.beginMutation(
       "stat or materialize a rootfs path",
     );
-    respond(msg.requestId, await statPreparedPlatformPath(vfs, msg.path));
+    respond(msg.requestId, await retryKernelEntryResult(() => kernelWorker.rootfsStat(msg.path)));
   } catch (error) {
     if (isMissingPathError(error)) respond(msg.requestId, null);
     else respondError(msg.requestId, formatError(error));
@@ -3872,39 +3705,19 @@ async function handleStatVfsPath(
 // VFS SAB off the persistent browser main thread while allowing harnesses to
 // stage transient files between process spawns.
 function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
-  if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  if (!rootImage.has()) { respondError(msg.requestId, "VFS is not initialized"); return; }
   let releaseMutation: (() => void) | undefined;
-  let fd: number | null = null;
   try {
     releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
-    fd = io.open(
+    // Written through the kernel so live guests see it. The kernel creates or
+    // replaces the file and applies the requested mode either way.
+    kernelWorker.rootfsWriteFile(
       msg.path,
-      O_WRONLY_CREAT_TRUNC,
+      msg.data,
       msg.mode & FILE_MODES.S_MODE_BITS,
     );
-    let offset = 0;
-    while (offset < msg.data.byteLength) {
-      const written = io.write(
-        fd,
-        msg.data.subarray(offset),
-        null,
-        msg.data.byteLength - offset,
-      );
-      if (written <= 0) {
-        throw new Error(`Short write while staging ${msg.path}`);
-      }
-      offset += written;
-    }
-    io.close(fd);
-    fd = null;
-    // open(O_CREAT) preserves an existing file's mode. Apply the caller's
-    // requested mode explicitly so replacement and creation behave alike.
-    io.chmod(msg.path, msg.mode & FILE_MODES.S_MODE_BITS);
     respond(msg.requestId, true);
   } catch (err) {
-    if (fd !== null) {
-      try { io.close(fd); } catch { /* preserve the original failure */ }
-    }
     respondError(msg.requestId, formatError(err));
   } finally {
     releaseMutation?.();
@@ -3912,18 +3725,12 @@ function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs
 }
 
 function handleUnlinkVfsFile(msg: Extract<MainToKernelMessage, { type: "unlink_vfs_file" }>) {
-  if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  if (!rootImage.has()) { respondError(msg.requestId, "VFS is not initialized"); return; }
   let releaseMutation: (() => void) | undefined;
   try {
     releaseMutation = rootfsSnapshotGate.beginMutation("unlink a rootfs file");
-    try {
-      io.lstat(msg.path);
-    } catch {
-      respond(msg.requestId, false);
-      return;
-    }
-    io.unlink(msg.path);
-    respond(msg.requestId, true);
+    // The kernel answers false for a path that is not there, as before.
+    respond(msg.requestId, kernelWorker.rootfsUnlinkFile(msg.path));
   } catch (err) {
     respondError(msg.requestId, formatError(err));
   } finally {
@@ -3968,7 +3775,7 @@ async function handleClipboardOffer(
 async function handleExportRootfsImage(
   msg: Extract<MainToKernelMessage, { type: "export_rootfs_image" }>,
 ) {
-  if (!memfs) {
+  if (!rootImage.has()) {
     respondError(msg.requestId, "VFS is not initialized");
     return;
   }
@@ -3987,7 +3794,9 @@ async function handleExportRootfsImage(
           "rootfs export requires a quiescent kernel with no live or tearing-down processes",
         );
       }
-      return memfs.saveImage();
+      // The kernel exports the image it owns: the base tree with every guest
+      // change reconciled into it (`kernel_rootfs_export_container_read`).
+      return kernelWorker.rootfsExportContainerRead();
     });
     respondTransferredBytes(msg.requestId, image);
   } catch (error) {
@@ -4349,7 +4158,6 @@ async function performDestroy() {
   kernelWorker.shutdownPcmTransport();
   initReady = false;
   initFailure = "kernel worker destroyed";
-  failPendingLazyRegistrations(initFailure);
   if (gracefulDetachComplete) {
     try {
       processMemoryAllocator.clear();
@@ -4537,27 +4345,33 @@ async function handleHttpRequestMessage(msg: {
 // ── Filesystem helpers ──
 
 function readFileFromFs(path: string): ArrayBuffer | null {
+  // A diagnostic read (a service's log for a failure report): one immediate
+  // kernel entry, and any failure, including a busy entry gate, is "no log".
   try {
-    const fd = memfs.open(path, OPEN_FLAGS.O_RDONLY, 0);
-    try {
-      const stat = memfs.fstat(fd);
-      const size = stat.size;
-      if (size <= 0) { memfs.close(fd); return null; }
-      const buf = new Uint8Array(size);
-      const nread = memfs.read(fd, buf, null, size);
-      memfs.close(fd);
-      if (nread <= 0) return null;
-      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + nread);
-    } catch {
-      memfs.close(fd);
-      return null;
-    }
+    const data = kernelWorker.rootfsReadFile(path);
+    if (data.byteLength === 0) return null;
+    return data.buffer.slice(
+      data.byteOffset,
+      data.byteOffset + data.byteLength,
+    ) as ArrayBuffer;
   } catch {
     return null;
   }
 }
 
 async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
+  // The kernel owns `/`, so it is the source of exec bytes for every path it
+  // serves. A path it does not own (a host mount beneath `/`) falls through to
+  // the host mount table. Mirrors the Node entry.
+  if (rootImage.has()) {
+    const fromRootfs = await readRootfsFileWithRetry(kernelWorker, path);
+    if (fromRootfs) {
+      return fromRootfs.buffer.slice(
+        fromRootfs.byteOffset,
+        fromRootfs.byteOffset + fromRootfs.byteLength,
+      ) as ArrayBuffer;
+    }
+  }
   try {
     const { data } = await readPreparedPlatformFile(io, path);
     return data.buffer.slice(
@@ -4585,7 +4399,6 @@ sw.onmessage = (e: MessageEvent) => {
         const error = formatError(err);
         initReady = false;
         initFailure = error;
-        failPendingLazyRegistrations(error);
         console.error("[kernel-worker] init failed:", err);
         post({ type: "init_error", error });
       });
@@ -4622,8 +4435,6 @@ sw.onmessage = (e: MessageEvent) => {
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;
-    case "register_lazy_files": void handleLazyRegistration(msg); break;
-    case "register_lazy_archives": void handleLazyRegistration(msg); break;
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for
       // tests asserting SYS_SPAWN didn't fall back to fork. Mirrors the

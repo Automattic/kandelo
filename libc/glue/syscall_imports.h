@@ -16,16 +16,6 @@
     __attribute__((import_module("kernel"), import_name(#name)))
 
 /* ------------------------------------------------------------------ */
-/* Process / Fork / Exec management                                    */
-/* ------------------------------------------------------------------ */
-
-KERNEL_IMPORT(kernel_get_fork_state)
-int32_t kernel_get_fork_state(uint8_t *buf_ptr, uint32_t buf_len);
-
-KERNEL_IMPORT(kernel_convert_pipe_to_host)
-int32_t kernel_convert_pipe_to_host(uint32_t ofd_idx, int64_t new_host_handle);
-
-/* ------------------------------------------------------------------ */
 /* File operations                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -171,15 +161,6 @@ int32_t kernel_closedir(int32_t dir_handle);
 KERNEL_IMPORT(kernel_getdents64)
 int32_t kernel_getdents64(int32_t fd, uint8_t *buf_ptr, uint32_t buf_len);
 
-KERNEL_IMPORT(kernel_rewinddir)
-int32_t kernel_rewinddir(int32_t dir_handle);
-
-KERNEL_IMPORT(kernel_telldir)
-int64_t kernel_telldir(int32_t dir_handle);
-
-KERNEL_IMPORT(kernel_seekdir)
-int32_t kernel_seekdir(int32_t dir_handle, uint32_t loc_lo, uint32_t loc_hi);
-
 /* ------------------------------------------------------------------ */
 /* Process info                                                        */
 /* ------------------------------------------------------------------ */
@@ -258,10 +239,6 @@ int32_t kernel_sigsuspend(uint32_t mask_lo, uint32_t mask_hi);
 KERNEL_IMPORT(kernel_pause)
 int32_t kernel_pause(void);
 
-KERNEL_IMPORT(kernel_rt_sigtimedwait)
-int32_t kernel_rt_sigtimedwait(uint32_t mask_lo, uint32_t mask_hi,
-                               int32_t timeout_ms);
-
 /* ------------------------------------------------------------------ */
 /* Time                                                                */
 /* ------------------------------------------------------------------ */
@@ -281,9 +258,6 @@ int32_t kernel_nanosleep(const uint8_t *req_ptr);
 
 KERNEL_IMPORT(kernel_time)
 int64_t kernel_time(void);
-
-KERNEL_IMPORT(kernel_gettimeofday)
-int32_t kernel_gettimeofday(int64_t *sec_ptr, int64_t *usec_ptr);
 
 KERNEL_IMPORT(kernel_usleep)
 int32_t kernel_usleep(uint32_t usec);
@@ -332,11 +306,6 @@ int32_t kernel_ioctl(int32_t fd, uint32_t request, uint8_t *buf_ptr,
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */
 
-KERNEL_IMPORT(kernel_mmap)
-uint32_t kernel_mmap(uint32_t addr, uint32_t len, uint32_t prot,
-                     uint32_t flags, int32_t fd, uint32_t offset_lo,
-                     int32_t offset_hi);
-
 KERNEL_IMPORT(kernel_munmap)
 int32_t kernel_munmap(uint32_t addr, uint32_t len);
 
@@ -345,10 +314,6 @@ uint32_t kernel_brk(uint32_t addr);
 
 KERNEL_IMPORT(kernel_mprotect)
 int32_t kernel_mprotect(uint32_t addr, uint32_t len, uint32_t prot);
-
-KERNEL_IMPORT(kernel_mremap)
-uint32_t kernel_mremap(uint32_t old_addr, uint32_t old_len, uint32_t new_len,
-                       uint32_t flags);
 
 /* ------------------------------------------------------------------ */
 /* Truncate / Sync                                                     */
@@ -372,10 +337,6 @@ int32_t kernel_fchmod(int32_t fd, uint32_t mode);
 
 KERNEL_IMPORT(kernel_fchown)
 int32_t kernel_fchown(int32_t fd, uint32_t uid, uint32_t gid);
-
-KERNEL_IMPORT(kernel_sendfile)
-int32_t kernel_sendfile(int32_t out_fd, int32_t in_fd, uint8_t *offset_ptr,
-                        size_t count);
 
 KERNEL_IMPORT(kernel_statx)
 int32_t kernel_statx(int32_t dirfd, const uint8_t *path_ptr,
@@ -433,13 +394,6 @@ int32_t kernel_get_fork_exec_argv(uint32_t idx, uint8_t *buf_ptr, uint32_t buf_l
 KERNEL_IMPORT(kernel_get_fork_exec_argc)
 int32_t kernel_get_fork_exec_argc(void);
 
-KERNEL_IMPORT(kernel_set_fork_exec)
-int32_t kernel_set_fork_exec(const uint8_t *path_ptr, uint32_t path_len,
-                              const uint32_t *argv_ptrs, uint32_t argc);
-
-KERNEL_IMPORT(kernel_set_fork_fd_action)
-int32_t kernel_set_fork_fd_action(uint32_t action_type, int32_t fd1, int32_t fd2);
-
 KERNEL_IMPORT(kernel_apply_fork_fd_actions)
 int32_t kernel_apply_fork_fd_actions(void);
 
@@ -462,10 +416,6 @@ int32_t kernel_getrusage(int32_t who, uint8_t *buf_ptr, uint32_t buf_len);
 /* ------------------------------------------------------------------ */
 /* System info                                                         */
 /* ------------------------------------------------------------------ */
-
-KERNEL_IMPORT(kernel_prctl)
-int32_t kernel_prctl(uint32_t option, uint32_t arg2, uint8_t *buf_ptr,
-                     uint32_t buf_len);
 
 KERNEL_IMPORT(kernel_umask)
 uint32_t kernel_umask(uint32_t mask);
@@ -697,13 +647,17 @@ int32_t kernel_setgroups(uint32_t size, const uint32_t *list_ptr);
 /* Message-based socket I/O                                            */
 /* ------------------------------------------------------------------ */
 
+/* `msg_addr` is the caller's own `struct msghdr *` as an integer, and
+ * `pointer_width` names the caller's data model in bytes. The kernel reads and
+ * writes the header, its iovec table and its CMSG chain directly in the
+ * caller's memory; nothing is staged in kernel scratch. */
 KERNEL_IMPORT(kernel_sendmsg)
-int32_t kernel_sendmsg(int32_t fd, const uint8_t *msg_ptr, uint32_t flags,
-                       int64_t retry_token);
+int32_t kernel_sendmsg(int32_t fd, int64_t msg_addr, uint32_t flags,
+                       uint32_t pointer_width, int64_t retry_token);
 
 KERNEL_IMPORT(kernel_recvmsg)
-int32_t kernel_recvmsg(int32_t fd, uint8_t *msg_ptr, uint32_t flags,
-                       int64_t retry_token);
+int32_t kernel_recvmsg(int32_t fd, int64_t msg_addr, uint32_t flags,
+                       uint32_t pointer_width, int64_t retry_token);
 
 KERNEL_IMPORT(kernel_getaddrinfo)
 int32_t kernel_getaddrinfo(const uint8_t *name_ptr, uint32_t name_len,
@@ -763,9 +717,6 @@ int32_t kernel_ipc_shmget(int32_t key, int32_t size, int32_t flags);
 
 KERNEL_IMPORT(kernel_ipc_shmat)
 int32_t kernel_ipc_shmat(int32_t shmid, int32_t shmaddr, int32_t flags);
-
-KERNEL_IMPORT(kernel_ipc_shmdt)
-int32_t kernel_ipc_shmdt(int32_t addr);
 
 KERNEL_IMPORT(kernel_ipc_shmctl)
 int32_t kernel_ipc_shmctl(int32_t shmid, int32_t cmd, int32_t buf_ptr);

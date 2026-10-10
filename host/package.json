@@ -116,7 +116,7 @@
     "docs": "typedoc",
     "test": "vitest",
     "test:teardown": "vitest run test/teardown-reclaim.test.ts test/pthread.test.ts",
-    "test:teardown:bun": "bun x vitest run test/teardown-reclaim.test.ts test/pthread.test.ts",
+    "test:teardown:bun": "KANDELO_VITEST_RUNTIME=bun bun x --bun vitest run test/teardown-reclaim.test.ts test/pthread.test.ts",
     "test:teardown:engines": "npm run test:teardown && npm run test:teardown:bun",
     "prepack": "npm run build && bash ../scripts/prepare-host-package.sh"
   },

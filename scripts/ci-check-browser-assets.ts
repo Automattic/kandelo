@@ -9,6 +9,19 @@ import {
   browserBinariesImports,
   browserRequiredInputs,
 } from "../apps/browser-demos/browser-binary-imports.mjs";
+import {
+  browserImageModule32ModuleSpecifier,
+  browserKernelModuleSpecifier,
+  browserRootfsModuleSpecifier,
+} from "../apps/browser-demos/browser-module-contract.mjs";
+
+// The wasm modules the browser needs beyond the kernel, keyed by the same
+// specifiers the Vite alias plugin resolves, so a module added to the browser
+// contract cannot escape this check. The image writer runs in the page to
+// assemble the boot image, and the browser cannot boot without an image.
+const BROWSER_WASM_MODULE_ARTIFACTS: ReadonlyArray<readonly [string, string]> = [
+  [browserImageModule32ModuleSpecifier, "kandelo_image_module32.wasm"],
+];
 
 export function browserAssetImportsForPolicy(
   repoRoot: string,
@@ -24,8 +37,9 @@ export function browserAssetImportsForPolicy(
     }).imports
     : browserBinariesImports(repoRoot);
   return [
-    "@kernel-wasm",
-    "@rootfs-vfs",
+    browserKernelModuleSpecifier,
+    browserRootfsModuleSpecifier,
+    ...BROWSER_WASM_MODULE_ARTIFACTS.map(([specifier]) => specifier),
     ...browserImports.map((relPath) =>
       `@binaries/${relPath}`
     ),
@@ -47,6 +61,11 @@ function resolveAssetImport(spec: string): string {
   }
   if (pathPart === "@rootfs-vfs") {
     return resolveRootfsVfs();
+  }
+  const sideModule = BROWSER_WASM_MODULE_ARTIFACTS
+    .find(([specifier]) => specifier === pathPart);
+  if (sideModule) {
+    return resolveBinary(sideModule[1]);
   }
   if (pathPart.startsWith("@binaries/")) {
     return resolveBinary(pathPart.slice("@binaries/".length));

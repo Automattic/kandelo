@@ -3,6 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP_DIR="$(mktemp -d)"
+# Vitest reports physical paths; macOS resolves /tmp through /private/tmp.
+TMP_DIR="$(cd "$TMP_DIR" && pwd -P)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # WHY: ordinary files stay in Vitest's deterministic two-way partition while
@@ -276,7 +278,8 @@ EOF
 
 cat > "$FIXTURE/bin/bun" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "x" ] && [ "${2:-}" = "vitest" ] &&
+if [ "${1:-}" = "x" ] && [ "${2:-}" = "--bun" ] &&
+    [ "${3:-}" = "vitest" ] && [ "${KANDELO_VITEST_RUNTIME:-}" = "bun" ] &&
     [ -n "${BUN_CAPTURE:-}" ]; then
     printf '%s\n' "$*" >> "$BUN_CAPTURE"
     exit 0
@@ -518,7 +521,7 @@ resource_path=../packages/registry/ruby/test/posix-spawn.test.ts
 resource_exclude="--exclude=$resource_path"
 # The runner appends the disabled-software exclusions to every ordinary and
 # exact Vitest run. Mirror that exact suffix so the captured command lines match.
-disabled_software_excludes="--exclude=**/*brew* --exclude=../**/*brew* --exclude=**/*bottle* --exclude=../**/*bottle* --exclude=**/*formula* --exclude=../**/*formula* --exclude=**/*tap* --exclude=../**/*tap* --exclude=test/abi-staging-mini-vfs.test.ts --exclude=test/abi-staging-product-builders.test.ts --exclude=test/privileged-projection.test.ts --exclude=test/shell-vfs-build.test.ts --exclude=test/vfs-product-builder-contract.test.ts"
+disabled_software_excludes="--exclude=**/*brew* --exclude=../**/*brew* --exclude=**/*bottle* --exclude=../**/*bottle* --exclude=**/*formula* --exclude=../**/*formula* --exclude=**/*tap* --exclude=../**/*tap* --exclude=test/abi-staging-mini-vfs.test.ts --exclude=test/abi-staging-product-builders.test.ts --exclude=test/shell-vfs-build.test.ts"
 resource_manifest="$FIXTURE/scripts/ci-vitest-resource-isolated-cases.tsv"
 resource_manifest_valid="$TMP_DIR/vitest-resource-manifest-valid.tsv"
 resource_inventory="$TMP_DIR/vitest-resource-inventory"
@@ -1073,7 +1076,7 @@ rm -rf "$FIXTURE/.ci-test-binary-cache"
 prepared_files=(
     target/fixture-host/release/xtask
     local-binaries/kernel.wasm
-    host/wasm/rootfs.vfs
+    host/wasm/rootfs.vfs.zst
     examples/gencat.wasm
     examples/pthread_channel_reuse_test.wasm
     examples/wait_lifecycle_test.wasm

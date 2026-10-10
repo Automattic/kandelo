@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
  * browser demo. The image starts from shell.vfs.zst, then dinit, the first
@@ -7,8 +8,10 @@
  *   wp-config-init    (internal) — dependency marker. The browser host writes
  *                                  runtime wp-config.php before dinit starts.
  *   smtp-capture      (process)  — local SMTP sink storing mail under /var/mail
+ *   wordpress-secrets (scripted) — this machine's WordPress keys, on first boot
  *   mariadb-ready     (scripted) — waits for the MariaDB socket
- *   php-fpm           (process)  — depends-on mariadb-ready, wp-config-init, smtp-capture
+ *   php-fpm           (process)  — depends-on mariadb-ready, wp-config-init,
+ *                                  smtp-capture, wordpress-secrets
  *   nginx             (process)  — depends-on php-fpm
  *
  * Produces: apps/browser-demos/public/lamp.vfs
@@ -16,7 +19,6 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   writeVfsFile,
@@ -34,6 +36,8 @@ import { prewarmOpcache } from "./opcache-prewarm";
 import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
+  WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN,
+  WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN_PATH,
   patchWordPressMysqliPersistentSource,
   renderWordPressConfig,
   wordpressConfigTemplate,
@@ -43,6 +47,11 @@ import {
   smtpCaptureService,
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
+import {
+  WORDPRESS_SECRETS_SERVICE,
+  populateWordPressFirstBootSecrets,
+  wordpressFirstBootSecretsService,
+} from "./wordpress-first-boot";
 import { MYSQL_BENCHMARK_PHP } from "../../../apps/browser-demos/lib/init/mysql-benchmark";
 import {
   loadShellBaseFileSystem,
@@ -78,7 +87,7 @@ const MARIADB_INNODB_LOG_BUFFER_SIZE = 1024 * 1024;
 const MARIADB_INNODB_BUFFER_POOL_SIZE = 8 * 1024 * 1024;
 
 function populateMariadb(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   mariadbd: Uint8Array,
   systemTablesDirectory: string,
 ): void {
@@ -97,7 +106,7 @@ function populateMariadb(
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 }
 
-function populateNginxConfig(fs: MemoryFileSystem): void {
+function populateNginxConfig(fs: VfsImageFilesystem): void {
   for (const dir of [
     "/etc/nginx", "/var/www/html", "/var/log/nginx",
     "/tmp/nginx_client_temp", "/tmp/nginx_fastcgi_temp", "/tmp/nginx_proxy_temp",
@@ -184,7 +193,7 @@ http {
 }
 
 function populatePhpFpmConfig(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   opcache: Uint8Array,
 ): void {
   ensureDirRecursive(fs, "/etc/php-fpm.d");
@@ -325,7 +334,7 @@ wait $PID 2>/dev/null || true
 exit 0
 `;
 
-function buildServices(fs: MemoryFileSystem): DinitService[] {
+function buildServices(fs: VfsImageFilesystem): DinitService[] {
   const mariadbReady = addPathReadinessService(fs, {
     name: "mariadb-ready",
     path: MARIADB_SOCKET_PATH,
@@ -357,12 +366,13 @@ function buildServices(fs: MemoryFileSystem): DinitService[] {
       restart: false,
     },
     smtpCaptureService(),
+    wordpressFirstBootSecretsService(),
     mariadbReady,
     {
       name: "php-fpm",
       type: "process",
       command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /etc/php.ini --nodaemonize",
-      dependsOn: ["mariadb-ready", "wp-config-init", "smtp-capture"],
+      dependsOn: ["mariadb-ready", "wp-config-init", "smtp-capture", WORDPRESS_SECRETS_SERVICE],
       logfile: "/var/log/php-fpm.log",
       restart: false,
     },
@@ -379,7 +389,7 @@ function buildServices(fs: MemoryFileSystem): DinitService[] {
 
 const decoder = new TextDecoder();
 
-function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
+function patchWordPressPersistentMysqli(fs: VfsImageFilesystem): void {
   for (const path of [
     "/var/www/html/wp-includes/class-wpdb.php",
     "/var/www/html/wp-includes/wp-db.php",
@@ -391,7 +401,7 @@ function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
   }
 }
 
-function readOptionalVfsText(fs: MemoryFileSystem, path: string): string | null {
+function readOptionalVfsText(fs: VfsImageFilesystem, path: string): string | null {
   try {
     const st = fs.stat(path);
     const fd = fs.open(path, 0, 0);
@@ -454,6 +464,7 @@ export async function buildLampVfsImage(
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs, inputs.opcache);
   populateSmtpCaptureConfig(fs);
+  populateWordPressFirstBootSecrets(fs);
 
   // Build-time MariaDB bootstrap script + default wp-config. The browser host
   // overwrites wp-config.php with the current page prefix/protocol before dinit starts.
@@ -470,6 +481,11 @@ export async function buildLampVfsImage(
     fs,
     "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",
     wordpressSmtpCaptureMuPlugin(),
+  );
+  writeVfsFile(
+    fs,
+    WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN_PATH,
+    WORDPRESS_DEMO_ADMIN_EMAIL_MU_PLUGIN,
   );
 
   console.log("Writing WordPress core files...");

@@ -43,7 +43,6 @@ host/test/demo-login-image.test.ts	source-only
 host/test/derived-vfs-symlink.test.ts	prepared-product
 host/test/dev-cors-proxy.test.ts	source-only
 host/test/dev-fd-stat.test.ts	prepared-product
-host/test/device-fs.test.ts	source-only
 host/test/dinit-image-helpers.test.ts	prepared-product
 host/test/dlopen-e2e.test.ts	prepared-product
 host/test/dlopen-host-imports.test.ts	source-only
@@ -118,7 +117,6 @@ host/test/getdents-boundary.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
-host/test/hardlink-graph.test.ts	source-only
 host/test/host-adapter-manifest.test.ts	source-only
 host/test/host-diagnostic-routing.test.ts	source-only
 host/test/host-file-offset.test.ts	source-only
@@ -167,11 +165,7 @@ host/test/kernel-wasm-input-snapshot.test.ts	source-only
 host/test/kernel-worker-copyback.test.ts	source-only
 host/test/kernel-worker-entry-root-contract.test.ts	source-only
 host/test/kernel.test.ts	prepared-product
-host/test/lazy-archive.test.ts	source-only
-host/test/lazy-prepared-io.test.ts	source-only
-host/test/lazy-tree.test.ts	source-only
 host/test/lazy-url.test.ts	source-only
-host/test/lazy-vfs.test.ts	source-only
 host/test/libevdev-smoke.test.ts	prepared-product
 host/test/libffi-full-unit.test.ts	prepared-product
 host/test/libffi-shim-unit.test.ts	source-only
@@ -201,7 +195,6 @@ host/test/node-image-runtime.test.ts	prepared-product
 host/test/node-input-source.test.ts	source-only
 host/test/node-kernel-fatal.test.ts	prepared-product
 host/test/node-kernel-host-diagnostic.test.ts	prepared-product
-host/test/node-kernel-init-seal.test.ts	prepared-product
 host/test/node-kernel-pipe-proxy.test.ts	prepared-product
 host/test/node-lazy-archive-runtime.test.ts	prepared-product
 host/test/node-pcm-driver.test.ts	source-only
@@ -216,7 +209,6 @@ host/test/opfs-channel.test.ts	source-only
 host/test/opfs-readdir-atomicity.test.ts	source-only
 host/test/optional-demo-vfs.test.ts	source-only
 host/test/ordinary-process-exit.test.ts	prepared-product
-host/test/package-deferred-tree.test.ts	source-only
 host/test/package-runtime-file.test.ts	prepared-product
 host/test/pango-cairo-smoke.test.ts	prepared-product
 host/test/patch-wasm-for-thread-gc.test.ts	source-only
@@ -288,7 +280,6 @@ host/test/shared-memory-coherence.test.ts	source-only
 host/test/shared-pipe-buffer.test.ts	source-only
 host/test/shared-wasm-memory-growth-isolate.test.ts	source-only
 host/test/shared-wasm-memory-growth.test.ts	source-only
-host/test/sharedfs-safety.test.ts	source-only
 host/test/shell-lazy-archive-inputs.test.ts	prepared-product
 host/test/signal-accept-livelock.test.ts	source-only
 host/test/signal-no-restart.test.ts	prepared-product
@@ -302,11 +293,9 @@ host/test/spawn-credential-order.test.ts	source-only
 host/test/spawn-host-parity.test.ts	source-only
 host/test/spawn-pid-authority.test.ts	source-only
 host/test/sqlite-testrunner-patch.test.ts	source-only
-host/test/staged-product-inputs.test.ts	prepared-product
 host/test/startup-crt-contract.test.ts	source-only
 host/test/startup-metadata-capacity.test.ts	source-only
 host/test/sudo-lite.test.ts	prepared-product
-host/test/symlink.test.ts	source-only
 host/test/syscall-cp-offset.test.ts	prepared-product
 host/test/sysv-ipc.test.ts	prepared-product
 host/test/tar.test.ts	source-only
@@ -333,18 +322,12 @@ host/test/vfork-workspace.test.ts	source-only
 host/test/vfs-create-route.test.ts	source-only
 host/test/vfs-image-helpers.test.ts	prepared-product
 host/test/vfs-image-wasm-policy.test.ts	prepared-product
-host/test/vfs-image.test.ts	prepared-product
 host/test/vfs.test.ts	source-only
-host/test/vfs/browser-mount-layering.test.ts	source-only
 host/test/vfs/default-mounts.test.ts	source-only
 host/test/vfs/directory-fsync.test.ts	source-only
 host/test/vfs/host-fs-path-resolution.test.ts	source-only
 host/test/vfs/host-fs-uid-gid.test.ts	source-only
 host/test/vfs/image-helpers.test.ts	source-only
-host/test/vfs/memfs-uid-gid-image.test.ts	source-only
-host/test/vfs/rootfs-overlay.test.ts	source-only
-host/test/vfs/sharedfs-positioned-io.test.ts	source-only
-host/test/vfs/sharedfs-uid-gid.test.ts	source-only
 host/test/vim-input-repaint.test.ts	prepared-product
 host/test/virtual-network-e2e.test.ts	prepared-product
 host/test/virtual-network.test.ts	source-only

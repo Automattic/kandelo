@@ -8,7 +8,7 @@
  */
 import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
-import { copyFileSync, existsSync, mkdirSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { tryResolveBinary } from "../../host/src/binary-resolver.js";
@@ -93,21 +93,17 @@ export interface BrowserBenchmarkAssetSelection {
   selectedPath: string | null;
 }
 
-function materializePublicAsset(
+export function materializePublicAsset(
   relBinaryPath: string,
   publicName: string,
+  publicRoot = resolve(browserDir, "public"),
+  resolveBinary: (request: string) => string | null = tryResolveBinary,
 ): BrowserBenchmarkAssetSelection {
-  const publicPath = resolve(browserDir, "public", publicName);
-  if (existsSync(publicPath)) {
-    return {
-      publicPath,
-      resolverRequest: relBinaryPath,
-      resolverSelectedPath: null,
-      selectedPath: publicPath,
-    };
-  }
-
-  const sourcePath = tryResolveBinary(relBinaryPath);
+  const publicPath = resolve(publicRoot, publicName);
+  // Public copies outlive source rebuilds and ABI migrations. Resolve and
+  // refresh from verified package bytes on every run; an existing public file
+  // must never bypass provenance checks or become benchmark evidence.
+  const sourcePath = resolveBinary(relBinaryPath);
   if (!sourcePath || !existsSync(sourcePath)) {
     return {
       publicPath,
@@ -118,7 +114,16 @@ function materializePublicAsset(
   }
 
   mkdirSync(dirname(publicPath), { recursive: true });
-  copyFileSync(sourcePath, publicPath);
+  // Sealed package files are read-only, and copyFileSync preserves that mode.
+  // Replace the public copy instead of overwriting it on the next refresh.
+  const staging = mkdtempSync(resolve(dirname(publicPath), ".benchmark-asset-"));
+  try {
+    const temporary = resolve(staging, "image");
+    copyFileSync(sourcePath, temporary);
+    renameSync(temporary, publicPath);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
   return {
     publicPath,
     resolverRequest: relBinaryPath,
