@@ -45,29 +45,45 @@ const intrinsicObjectGetOwnPropertyDescriptor =
   Object.getOwnPropertyDescriptor;
 const intrinsicWeakMapGet = WeakMap.prototype.get;
 const intrinsicWeakMapSet = WeakMap.prototype.set;
-const intrinsicMemoryBuffer = intrinsicObjectGetOwnPropertyDescriptor(
-  WebAssembly.Memory.prototype,
-  "buffer",
-)!.get!;
-const intrinsicArrayBufferByteLength =
+const intrinsicWeakMapDelete = WeakMap.prototype.delete;
+// WHY: bind the captured receiver calls once. Range checks still read the
+// genuine current buffer and length, without a temporary apply-argument array
+// for every scalar access. Later prototype replacement cannot change them.
+const intrinsicMemoryBuffer = Function.prototype.call.bind(
   intrinsicObjectGetOwnPropertyDescriptor(
-    ArrayBuffer.prototype,
-    "byteLength",
-  )!.get!;
+    WebAssembly.Memory.prototype,
+    "buffer",
+  )!.get!,
+) as (memory: WebAssembly.Memory) => ArrayBufferLike;
+const intrinsicArrayBufferByteLength =
+  Function.prototype.call.bind(
+    intrinsicObjectGetOwnPropertyDescriptor(
+      ArrayBuffer.prototype,
+      "byteLength",
+    )!.get!,
+  ) as (buffer: ArrayBufferLike) => number;
 const intrinsicSharedArrayBufferByteLength =
   typeof SharedArrayBuffer === "undefined"
     ? null
-    : intrinsicObjectGetOwnPropertyDescriptor(
-      SharedArrayBuffer.prototype,
-      "byteLength",
-    )!.get!;
+    : Function.prototype.call.bind(
+      intrinsicObjectGetOwnPropertyDescriptor(
+        SharedArrayBuffer.prototype,
+        "byteLength",
+      )!.get!,
+    ) as (buffer: ArrayBufferLike) => number;
 type IntrinsicBufferByteLengthGetter = (
-  this: ArrayBufferLike,
+  buffer: ArrayBufferLike,
 ) => number;
 const intrinsicBufferByteLengthGetters = new WeakMap<
   object,
   IntrinsicBufferByteLengthGetter
 >();
+const intrinsicBufferByteLengthGetterGet = intrinsicWeakMapGet.bind(
+  intrinsicBufferByteLengthGetters,
+) as (buffer: object) => IntrinsicBufferByteLengthGetter | undefined;
+const intrinsicBufferByteLengthGetterSet = intrinsicWeakMapSet.bind(
+  intrinsicBufferByteLengthGetters,
+) as (buffer: object, getter: IntrinsicBufferByteLengthGetter) => unknown;
 const intrinsicDataViewPrototype = IntrinsicDataView.prototype;
 const intrinsicDataViewByteLength = intrinsicObjectGetOwnPropertyDescriptor(
   intrinsicDataViewPrototype,
@@ -205,6 +221,8 @@ interface KernelScratchExportPointerRecord {
   readonly lease: ActiveKernelScratchLease;
   readonly offset: number;
   readonly length: number;
+  readonly token: object;
+  readonly previous: KernelScratchExportPointerRecord | null;
 }
 
 const kernelScratchExportPointers = new WeakMap<
@@ -467,11 +485,7 @@ function intrinsicWasmMemoryBuffer(
     // captured intrinsic getter both to prove that `memory` is genuine and to
     // prevent a callback from substituting a larger fake buffer for the
     // current-memory bound.
-    return intrinsicApply(
-      intrinsicMemoryBuffer,
-      memory,
-      [],
-    ) as ArrayBufferLike;
+    return intrinsicMemoryBuffer(memory);
   } catch {
     throw new KernelScratchError(
       `${field} does not use a genuine WebAssembly.Memory`,
@@ -483,41 +497,24 @@ function intrinsicBufferByteLength(
   buffer: ArrayBufferLike,
   field: string,
 ): number {
-  const cachedGetter = intrinsicApply(
-    intrinsicWeakMapGet,
-    intrinsicBufferByteLengthGetters,
-    [buffer],
-  ) as IntrinsicBufferByteLengthGetter | undefined;
+  const cachedGetter = intrinsicBufferByteLengthGetterGet(buffer);
   if (cachedGetter !== undefined) {
     // WHY: cache only the proven intrinsic, never its result. Growable memory
     // still needs a live length read, while a shared buffer must not throw
     // through the ArrayBuffer getter on every scratch-range check.
-    return intrinsicApply(cachedGetter, buffer, []) as number;
+    return cachedGetter(buffer);
   }
   try {
-    const byteLength = intrinsicApply(
-      intrinsicArrayBufferByteLength,
-      buffer,
-      [],
-    ) as number;
-    intrinsicApply(
-      intrinsicWeakMapSet,
-      intrinsicBufferByteLengthGetters,
-      [buffer, intrinsicArrayBufferByteLength],
-    );
+    const byteLength = intrinsicArrayBufferByteLength(buffer);
+    intrinsicBufferByteLengthGetterSet(buffer, intrinsicArrayBufferByteLength);
     return byteLength;
   } catch {
     if (intrinsicSharedArrayBufferByteLength !== null) {
       try {
-        const byteLength = intrinsicApply(
-          intrinsicSharedArrayBufferByteLength,
+        const byteLength = intrinsicSharedArrayBufferByteLength(buffer);
+        intrinsicBufferByteLengthGetterSet(
           buffer,
-          [],
-        ) as number;
-        intrinsicApply(
-          intrinsicWeakMapSet,
-          intrinsicBufferByteLengthGetters,
-          [buffer, intrinsicSharedArrayBufferByteLength],
+          intrinsicSharedArrayBufferByteLength,
         );
         return byteLength;
       } catch {
@@ -979,18 +976,19 @@ intrinsicObjectFreeze(ActiveKernelScratchDataView);
 function exactNonNegativeInteger(
   value: number | bigint,
   field: string,
+  suffix = "",
 ): number {
   if (typeof value === "bigint") {
     if (value < 0n || value > IntrinsicBigInt(HOST_MAX_SAFE_INTEGER)) {
       throw new KernelScratchError(
-        `${field} is not losslessly representable as a host memory index`,
+        `${field}${suffix} is not losslessly representable as a host memory index`,
       );
     }
     return IntrinsicNumber(value);
   }
   if (!intrinsicNumberIsSafeInteger(value) || value < 0) {
     throw new KernelScratchError(
-      `${field} must be a non-negative safe integer`,
+      `${field}${suffix} must be a non-negative safe integer`,
     );
   }
   return value;
@@ -1000,15 +998,16 @@ function exactPointer(
   value: WasmPointer,
   pointerWidth: WasmPointerWidth,
   field: string,
+  suffix = "",
 ): number {
   if (pointerWidth !== 4 && pointerWidth !== 8) {
     throw new KernelScratchError(
-      `${field} pointer width must be exactly 4 or 8`,
+      `${field}${suffix} pointer width must be exactly 4 or 8`,
     );
   }
-  const pointer = exactNonNegativeInteger(value, field);
+  const pointer = exactNonNegativeInteger(value, field, suffix);
   if (pointerWidth === 4 && pointer > WASM32_MAX_POINTER) {
-    throw new KernelScratchError(`${field} does not fit a wasm32 pointer`);
+    throw new KernelScratchError(`${field}${suffix} does not fit a wasm32 pointer`);
   }
   return pointer;
 }
@@ -1085,12 +1084,12 @@ export function checkedWasmAddressRange(
   return { pointer, length, end };
 }
 
-function checkedRange(
+function checkedRangeEnd(
   pointer: number,
   length: number,
   limit: number,
   field: string,
-): CheckedMemoryRange {
+): number {
   if (!intrinsicNumberIsSafeInteger(limit) || limit < 0) {
     throw new KernelScratchError(`${field} has an invalid range limit`);
   }
@@ -1098,7 +1097,16 @@ function checkedRange(
   if (!intrinsicNumberIsSafeInteger(end) || end < pointer || end > limit) {
     throw new KernelScratchError(`${field} is outside its owned range`);
   }
-  return { pointer, length, end };
+  return end;
+}
+
+function checkedRange(
+  pointer: number,
+  length: number,
+  limit: number,
+  field: string,
+): CheckedMemoryRange {
+  return { pointer, length, end: checkedRangeEnd(pointer, length, limit, field) };
 }
 
 /**
@@ -1118,8 +1126,10 @@ export function checkedMemoryRange(
   field: string,
   allowAddressZero = false,
 ): CheckedMemoryRange {
-  const pointer = exactPointer(pointerValue, pointerWidth, `${field} pointer`);
-  const length = exactNonNegativeInteger(lengthValue, `${field} length`);
+  // WHY: retain exact diagnostics, but build their labels only on failure.
+  // Successful scalar range checks should not allocate diagnostic strings.
+  const pointer = exactPointer(pointerValue, pointerWidth, field, " pointer");
+  const length = exactNonNegativeInteger(lengthValue, field, " length");
   if (!allowAddressZero && pointer === 0 && length !== 0) {
     throw new KernelScratchError(`${field} uses a null pointer`);
   }
@@ -1273,17 +1283,29 @@ function invalidateActiveKernelScratchLease(
   if (invalidate === undefined) {
     throw new KernelScratchError("kernel scratch lease has no revocation state");
   }
-  invalidate();
+  try {
+    invalidate();
+  } finally {
+    // WHY: revocation is one-shot. Remove its closure once the private valid
+    // flag has been cleared instead of leaving thousands of dead lease/closure
+    // cycles in the weak table for the collector to discover. Escaped views
+    // still consult that permanently revoked lease state on every access.
+    intrinsicApply(
+      intrinsicWeakMapDelete,
+      activeKernelScratchLeaseInvalidators,
+      [lease],
+    );
+  }
 }
 
 class ActiveKernelScratchLease implements KernelScratchLease {
   #valid = true;
   #invokingKernelExport = false;
-  readonly #writeOnlyAddressRanges = intrinsicObjectCreate(null) as
-    Record<number, {
+  #exportPointers: KernelScratchExportPointerRecord | null = null;
+  #writeOnlyAddressRanges: Record<number, {
     start: number;
     end: number;
-  }>;
+  }> | null = null;
   #writeOnlyAddressRangeCount = 0;
   readonly #label: string;
   readonly #rangeForLease: (
@@ -1332,7 +1354,7 @@ class ActiveKernelScratchLease implements KernelScratchLease {
           index < this.#writeOnlyAddressRangeCount;
           index++
         ) {
-          const range = this.#writeOnlyAddressRanges[index];
+          const range = this.#writeOnlyAddressRanges![index];
           const encodedAddress = new IntrinsicUint8Array(
             buffer,
             range.start,
@@ -1343,7 +1365,6 @@ class ActiveKernelScratchLease implements KernelScratchLease {
             encodedAddress,
             [0],
           );
-          delete this.#writeOnlyAddressRanges[index];
         }
       }
     } finally {
@@ -1351,15 +1372,22 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       // address or stale sensitivity state, including when the operation
       // throws. Scrub while this lease still owns the allocation, then revoke
       // every escaped wrapper even if the scrub itself reports an error.
-      for (
-        let index = 0;
-        index < this.#writeOnlyAddressRangeCount;
-        index++
-      ) {
-        delete this.#writeOnlyAddressRanges[index];
-      }
+      this.#writeOnlyAddressRanges = null;
       this.#writeOnlyAddressRangeCount = 0;
       this.#valid = false;
+      // WHY: retired opaque tokens have no authority. Remove their private
+      // records immediately so the weak table does not retain dead lease
+      // graphs until collection; an escaped token is now an invalid token.
+      let pointerRecord = this.#exportPointers;
+      this.#exportPointers = null;
+      while (pointerRecord !== null) {
+        intrinsicApply(
+          intrinsicWeakMapDelete,
+          kernelScratchExportPointers,
+          [pointerRecord.token],
+        );
+        pointerRecord = pointerRecord.previous;
+      }
     }
   }
 
@@ -1403,11 +1431,13 @@ class ActiveKernelScratchLease implements KernelScratchLease {
   ): CheckedMemoryRange {
     const offset = exactNonNegativeInteger(
       offsetValue,
-      `${this.#label} offset`,
+      this.#label,
+      " offset",
     );
     const length = exactNonNegativeInteger(
       lengthValue,
-      `${this.#label} length`,
+      this.#label,
+      " length",
     );
     return this.#rangeForLease(offset, length);
   }
@@ -1453,7 +1483,7 @@ class ActiveKernelScratchLease implements KernelScratchLease {
     let high = this.#writeOnlyAddressRangeCount;
     while (low < high) {
       const middle = low + intrinsicMathFloor((high - low) / 2);
-      if (this.#writeOnlyAddressRanges[middle].start < range.pointer) {
+      if (this.#writeOnlyAddressRanges![middle].start < range.pointer) {
         low = middle + 1;
       } else {
         high = middle;
@@ -1468,10 +1498,10 @@ class ActiveKernelScratchLease implements KernelScratchLease {
   ): boolean {
     if (range.length === 0) return false;
     const previous = insertionIndex > 0
-      ? this.#writeOnlyAddressRanges[insertionIndex - 1]
+      ? this.#writeOnlyAddressRanges![insertionIndex - 1]
       : undefined;
     const next = insertionIndex < this.#writeOnlyAddressRangeCount
-      ? this.#writeOnlyAddressRanges[insertionIndex]
+      ? this.#writeOnlyAddressRanges![insertionIndex]
       : undefined;
     return (
       (previous !== undefined && previous.end > range.pointer)
@@ -1486,31 +1516,21 @@ class ActiveKernelScratchLease implements KernelScratchLease {
         `${this.#label} encoded address bytes are immutable for this lease`,
       );
     }
+    // WHY: scalar outputs and signal/wakeup transfers encode no addresses.
+    // Allocate their private interval index only if an address is written.
+    const ranges = this.#writeOnlyAddressRanges ??=
+      intrinsicObjectCreate(null) as Record<number, {
+        start: number;
+        end: number;
+      }>;
     for (
       let index = this.#writeOnlyAddressRangeCount;
       index > insertionIndex;
       index--
     ) {
-      intrinsicObjectDefineProperty(
-        this.#writeOnlyAddressRanges,
-        index,
-        {
-          value: this.#writeOnlyAddressRanges[index - 1],
-          configurable: true,
-        },
-      );
+      ranges[index] = ranges[index - 1];
     }
-    intrinsicObjectDefineProperty(
-      this.#writeOnlyAddressRanges,
-      insertionIndex,
-      {
-        value: {
-          start: range.pointer,
-          end: range.end,
-        },
-        configurable: true,
-      },
-    );
+    ranges[insertionIndex] = { start: range.pointer, end: range.end };
     this.#writeOnlyAddressRangeCount++;
   }
 
@@ -1524,22 +1544,27 @@ class ActiveKernelScratchLease implements KernelScratchLease {
   ): KernelScratchExportPointer {
     const checkedOffset = exactNonNegativeInteger(
       offset,
-      `${this.#label} offset`,
+      this.#label,
+      " offset",
     );
     const range = this.#ownedRange(checkedOffset, length);
     const pointer = intrinsicObjectFreeze(
       intrinsicObjectCreate(null) as object,
     ) as KernelScratchExportPointer;
+    const record: KernelScratchExportPointerRecord = {
+      lease: this,
+      offset: checkedOffset,
+      length: range.length,
+      token: pointer,
+      previous: this.#exportPointers,
+    };
+    this.#exportPointers = record;
     intrinsicApply(
       intrinsicWeakMapSet,
       kernelScratchExportPointers,
       [
         pointer,
-        {
-          lease: this,
-          offset: checkedOffset,
-          length: range.length,
-        },
+        record,
       ],
     );
     return pointer;
@@ -1636,17 +1661,15 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       }
 
       const convertedArgs = intrinsicObjectCreate(null) as {
-        readonly length: number;
-        readonly [index: number]: number | bigint;
+        length: number;
+        [index: number]: number | bigint;
       };
-      intrinsicObjectDefineProperty(convertedArgs, "length", {
-        value: argumentCount,
-      });
+      // WHY: these records never escape; Reflect.apply passes their primitive
+      // values, not the records themselves. A null prototype excludes inherited
+      // setters while direct writes avoid a descriptor object per argument.
+      convertedArgs.length = argumentCount;
       const borrowedRanges = intrinsicObjectCreate(null) as
         Record<number, CheckedMemoryRange>;
-      const borrowedRangeList = intrinsicObjectCreate(null) as
-        Record<number, CheckedMemoryRange>;
-      let borrowedRangeCount = 0;
       for (let index = 0; index < argumentCount; index++) {
         const argument = args[index];
         let pointerKind: "required" | "nullable" | null = null;
@@ -1704,12 +1727,16 @@ class ActiveKernelScratchLease implements KernelScratchLease {
             }
             for (
               let borrowedIndex = 0;
-              borrowedIndex < borrowedRangeCount;
+              borrowedIndex < index;
               borrowedIndex++
             ) {
-              const prior = borrowedRangeList[borrowedIndex];
+              // WHY: the capacity proof already retains every prior borrow
+              // by argument position. Reuse that private record for overlap
+              // checks instead of allocating a second index for every export.
+              const prior = borrowedRanges[borrowedIndex];
               if (
-                range.length > 0
+                prior !== undefined
+                && range.length > 0
                 && prior.length > 0
                 && range.pointer < prior.end
                 && range.end > prior.pointer
@@ -1720,15 +1747,7 @@ class ActiveKernelScratchLease implements KernelScratchLease {
                 );
               }
             }
-            intrinsicObjectDefineProperty(borrowedRanges, index, {
-              value: range,
-            });
-            intrinsicObjectDefineProperty(
-              borrowedRangeList,
-              borrowedRangeCount,
-              { value: range },
-            );
-            borrowedRangeCount++;
+            borrowedRanges[index] = range;
             convertedArgument = this.#pointerWidth === 4
               ? range.pointer
               : IntrinsicBigInt(range.pointer);
@@ -1754,9 +1773,7 @@ class ActiveKernelScratchLease implements KernelScratchLease {
           }
           convertedArgument = argument;
         }
-        intrinsicObjectDefineProperty(convertedArgs, index, {
-          value: convertedArgument,
-        });
+        convertedArgs[index] = convertedArgument;
       }
 
       // WHY: every approved pointer-bearing export places an explicit byte
@@ -1897,14 +1914,16 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       (viewOffset, viewLength) => {
         const checkedViewOffset = exactNonNegativeInteger(
           viewOffset,
-          `${this.#label} DataView offset`,
+          this.#label,
+          " DataView offset",
         );
         this.#readableRange(offset + checkedViewOffset, viewLength);
       },
       (viewOffset, viewLength) => {
         const checkedViewOffset = exactNonNegativeInteger(
           viewOffset,
-          `${this.#label} DataView offset`,
+          this.#label,
+          " DataView offset",
         );
         this.#writableRange(offset + checkedViewOffset, viewLength);
       },
@@ -2294,7 +2313,9 @@ class OwnedKernelScratchRegion implements KernelScratchRegion {
     length: number,
   ): CheckedMemoryRange {
     this.#assertActiveLease(token);
-    checkedRange(offset, length, this.#capacity, this.#label);
+    // The capacity proof needs no retained range; the current-memory proof
+    // below supplies the range consumed by this access.
+    checkedRangeEnd(offset, length, this.#capacity, this.#label);
     return checkedMemoryRange(
       this.#memory,
       this.#pointer + offset,

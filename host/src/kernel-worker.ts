@@ -14492,7 +14492,8 @@ export class CentralizedKernelWorker {
     const tid = this.guestTidForChannel(channel);
     // Copy the fixed signal record to host-owned bytes before releasing the
     // region. Completion can synchronously wake another channel and reuse it.
-    const snapshot = this.#requireMainScratchRegion().withLease((lease) => {
+    let signalBytes: Uint8Array | undefined;
+    const sigResult = this.#requireMainScratchRegion().withLease((lease) => {
       const sigResult = this.#invokeEntryScratchExport(
         entry,
         lease,
@@ -14507,17 +14508,17 @@ export class CentralizedKernelWorker {
           KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
         ],
       );
-      return {
-        sigResult,
-        bytes: sigResult > 0
-          ? lease.copyOut(
-            CH_SIG_BASE,
-            KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
-          )
-          : new Uint8Array(0),
-      };
+      // WHY: most syscall completions have no caught signal. Return the
+      // scalar authority marker without allocating an empty buffer or result
+      // object; a delivered signal still needs detached bytes before revocation.
+      if (sigResult > 0) {
+        signalBytes = lease.copyOut(
+          CH_SIG_BASE,
+          KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
+        );
+      }
+      return sigResult;
     });
-    const { sigResult } = snapshot;
     if (sigResult < 0) {
       throw new KernelTaskBindingError(
         channel.pid,
@@ -14527,6 +14528,8 @@ export class CentralizedKernelWorker {
       );
     }
     if (sigResult > 0) {
+      // A positive dequeue copied the record while the lease was active.
+      const bytes = signalBytes!;
       if (suppressRestart) {
         // WHY: CH_SIG carries the effective action flags for this one
         // interruption. A socket deadline makes Linux/POSIX restart
@@ -14534,9 +14537,9 @@ export class CentralizedKernelWorker {
         // snapshot before exposing any bytes to the shared guest mailbox.
         const flagsOffset = CH_SIG_FLAGS - CH_SIG_BASE;
         const signalView = new DataView(
-          snapshot.bytes.buffer,
-          snapshot.bytes.byteOffset,
-          snapshot.bytes.byteLength,
+          bytes.buffer,
+          bytes.byteOffset,
+          bytes.byteLength,
         );
         signalView.setUint32(
           flagsOffset,
@@ -14549,7 +14552,7 @@ export class CentralizedKernelWorker {
       // process-channel slot.
       const processMem = new Uint8Array(channel.memory.buffer);
       processMem.set(
-        snapshot.bytes,
+        bytes,
         channel.channelOffset + CH_SIG_BASE,
       );
       return sigResult;
@@ -19252,9 +19255,12 @@ export class CentralizedKernelWorker {
         flockPtr + FCNTL_FLOCK_BYTES,
       );
     }
-    let result: { retVal: number; errVal: number; flock: Uint8Array | null };
+    const cmd = origArgs[1];
+    let retVal = -1;
+    let errVal = 0;
+    let resultFlock: Uint8Array | undefined;
     try {
-      result = this.#requireMainScratchRegion().withLease((lease) => {
+      this.#requireMainScratchRegion().withLease((lease) => {
         const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
         lease.copyFrom(flockBytes, CH_DATA, 0, FCNTL_FLOCK_BYTES);
         kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
@@ -19295,15 +19301,17 @@ export class CentralizedKernelWorker {
         } finally {
           this.currentHandlePid = 0;
         }
-        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
-        return {
-          retVal,
-          errVal: resultView.getUint32(CH_ERRNO, true),
-          flock: retVal >= 0
-            ? lease.copyOut(CH_DATA, FCNTL_FLOCK_BYTES)
-            : null,
-        };
+        // This lease-bound wrapper rechecks ownership and refreshes its native
+        // view after memory growth. Reuse it within this lease rather than
+        // allocate a second wrapper and its closures for every lock request.
+        retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
+        errVal = kernelView.getUint32(CH_ERRNO, true);
+        // Only GETLK commands have output. SETLK/SETLKW take an input-only
+        // flock; avoid allocating and writing back a redundant result copy.
+        // The original owned input remains immutable for blocking retries.
+        if (retVal >= 0 && (cmd === F_GETLK || cmd === F_GETLK64 || cmd === F_OFD_GETLK)) {
+          resultFlock = lease.copyOut(CH_DATA, FCNTL_FLOCK_BYTES);
+        }
       });
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
@@ -19313,7 +19321,6 @@ export class CentralizedKernelWorker {
 
     if (this.#finishSignalTermination(channel, entry)) return;
 
-    const { retVal, errVal } = result;
     // This marshalling path bypasses the generic syscall completion path,
     // so it must also dequeue a caught signal itself. A conflicting blocking
     // request is interruptible: once a handler signal is prepared for this
@@ -19322,11 +19329,10 @@ export class CentralizedKernelWorker {
     if (this.#finishSignalTermination(channel, entry)) return;
 
     // Copy flock struct back from kernel → process (F_GETLK writes to it)
-    if (result.flock) {
-      new Uint8Array(channel.memory.buffer).set(result.flock, flockPtr);
+    if (resultFlock) {
+      new Uint8Array(channel.memory.buffer).set(resultFlock, flockPtr);
     }
 
-    const cmd = origArgs[1];
     if (
       retVal === -1
       && errVal === EAGAIN
