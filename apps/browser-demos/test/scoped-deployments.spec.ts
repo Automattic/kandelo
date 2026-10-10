@@ -142,7 +142,7 @@ test.describe.serial("real scoped production deployments", () => {
     await rm(fixtureRoot, { force: true, recursive: true });
   });
 
-  test("keeps real sibling shells, workers, VFS groups, and restart state isolated", async ({ browser }) => {
+  test("keeps real sibling shells, workers, VFS groups, and restart state isolated", async ({ browser, browserName }) => {
     const context = await browser.newContext();
     try {
       const pageA = await context.newPage();
@@ -249,7 +249,13 @@ test.describe.serial("real scoped production deployments", () => {
           },
         },
       }]);
-      await stopWorker(context, pageA, `${server.origin}/a/service-worker.js`);
+      if (browserName === "chromium") {
+        await stopWorker(context, pageA, `${server.origin}/a/service-worker.js`);
+      } else {
+        // Only Chromium exposes a hard-stop API. A real script update also
+        // replaces the worker realm without disrupting the sibling scope.
+        await replaceScopedWorker(pageA, "restart");
+      }
       await pageA.reload({ waitUntil: "domcontentloaded" });
       await waitForShell(pageA);
       await runTerminalCommand(pageA, "printf restart-a-ok", "restart-a-ok");
@@ -257,7 +263,7 @@ test.describe.serial("real scoped production deployments", () => {
       await expect(durableSnapshot(pageB)).resolves.toEqual(candidateBeforeRestart);
 
       const candidateBeforeUpdate = await durableSnapshot(pageB);
-      await pageA.evaluate(async () => (await navigator.serviceWorker.getRegistration("/a/"))?.update());
+      await replaceScopedWorker(pageA, "update");
       await pageA.reload({ waitUntil: "domcontentloaded" });
       await waitForShell(pageA);
       await runTerminalCommand(pageA, "printf update-a-ok", "update-a-ok");
@@ -650,6 +656,34 @@ async function readCacheSnapshot(
     return { entries, name };
   }, { includeExactBytes, name: cacheName });
 }
+async function replaceScopedWorker(page: Page, revision: string): Promise<void> {
+  const script = join(fixtureRoot, "a", "service-worker.js");
+  await writeFile(script, `${await readFile(script, "utf8")}\n// scoped test ${revision}\n`);
+  await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.getRegistration("/a/");
+    const previous = navigator.serviceWorker.controller;
+    if (!registration || !previous) throw new Error("deployment A has no active worker");
+    await new Promise<void>((resolveReplacement, reject) => {
+      const timeout = window.setTimeout(() => {
+        navigator.serviceWorker.removeEventListener("controllerchange", onChange);
+        reject(new Error("timed out replacing deployment A's worker"));
+      }, 30_000);
+      function onChange() {
+        if (navigator.serviceWorker.controller === previous) return;
+        window.clearTimeout(timeout);
+        navigator.serviceWorker.removeEventListener("controllerchange", onChange);
+        resolveReplacement();
+      }
+      navigator.serviceWorker.addEventListener("controllerchange", onChange);
+      void registration.update().catch((error) => {
+        window.clearTimeout(timeout);
+        navigator.serviceWorker.removeEventListener("controllerchange", onChange);
+        reject(error);
+      });
+    });
+  });
+}
+
 async function stopWorker(context: BrowserContext, page: Page, scriptURL: string): Promise<void> {
   const cdp = await context.newCDPSession(page);
   try {
