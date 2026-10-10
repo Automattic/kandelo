@@ -1658,11 +1658,29 @@ must precede lifting the current trap. The C-to-Go trampoline must also
 respect Go/Wasm's resumable scheduler convention across a synchronous C
 callback. These are design constraints, not yet passing behavior.
 
+**2026-10-09 — Go-created secondary M has its own C stack and musl state.**
+Published Go fork commit `fc42f1a2d2a59d8d8c8d383bf95c77a8e387bc8f`.
+The adjacent Go fork now allocates a distinct 8 MiB C stack for every
+Go-created M in a cgo process and reclaims it when the M's g0 stack is
+reaped. C state is kept behind a pointer so the native Go `m` still fits
+its required allocation size class. `kernel_clone` receives that C stack
+top instead of the live g0 stack top. The host sets the child's C stack
+pointer and musl thread pointer; the child calls `__init_tp` before
+entering the scheduler.
+The standard cgo fixture locks the main Go M, makes Go-to-C calls across
+four worker rounds, and verifies distinct `pthread_self()` values and
+isolated `errno`. Forced build, Wasm validation, fork instrumentation,
+and ABI stamp pass; the Node process exits 0 with `CGO ABS PASS`, empty stderr and no host
+diagnostics. The focused Chromium browser-host test also passes. Focused
+Go cgo/linker tests, forced `kandelo`, `js`, and `wasip1` pure-Go builds,
+the ABI snapshot check, and all 20 opt-in Chromium Go-port tests pass.
+This establishes Go-created M isolation for simple calls, not C-created
+pthread attachment, callbacks, full libc startup, PHP ZTS, or WordPress.
+
 Remaining work, in dependency order:
 
 1. Finish the Go/C runtime: implement real `crosscall2`/`cgocallback`
-   transitions; give every Go M a distinct C stack and initialized musl
-   thread pointer; preserve full libc environment, secure-startup and
+   transitions; preserve full libc environment, secure-startup and
    constructor/destructor behavior; review the mixed-width `cmd/cgo`
    frontend beyond the passing scalar/pointer cases.
 2. Attach C-created pthreads to a Go M/P with both C and Go per-thread

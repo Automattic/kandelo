@@ -21,7 +21,7 @@ Build the fork with the dev shell's bootstrap Go:
 scripts/dev-shell.sh bash -c 'cd ../go-kandelo/src && GOROOT_BOOTSTRAP="$(go env GOROOT)" ./make.bash'
 ```
 
-The current fork is based on Go 1.25.6 and builds with cgo disabled for this
+The current fork is based on Go 1.25.6; cgo support remains partial for this
 target. Confirm `GOOS=kandelo GOARCH=wasm` and cross-target `js`/`wasip1`
 builds after runtime or linker changes. Do not assume Linux build tags or
 APIs apply to Kandelo.
@@ -110,7 +110,7 @@ Trace the whole link path before changing flags or package recipes:
 - Go's Wasm functions use the runtime's resumable call convention, while
   the SDK's C functions use the Wasm C ABI. A final link also needs
   real Go-to-C and C-to-Go adapters. `asmcgocall` now makes a typed C call
-  on the main M; `cgocallback` remains `UNDEF`, and the typed C `crosscall2`
+  on Go-created Ms; `cgocallback` remains `UNDEF`, and the typed C `crosscall2`
   entry deliberately traps. FrankenPHP additionally
   starts PHP threads with C `pthread_create`, so callbacks from a thread
   Go did not create must attach to a valid M, scheduler P, and per-thread
@@ -122,7 +122,7 @@ marker. The narrow fixture now verifies Go-to-C calls, C static data,
 function-pointer DATA relocation, and per-instance TLS on Node and Chromium.
 The normal `C.abs` build now validates, fork-instruments, and runs through
 an ABI-stamped Kandelo process on Node and Chromium, including scalar and
-pointer argument frames. This proves only main-M Go-to-C calls. The
+pointer argument frames and distinct musl state on a second Go M. The
 same-thread callback fixture links but traps at `crosscall2`; the combined
 pthread fixture links and validates after local musl aliases were retained,
 but has not passed its process gate. If the internal path cannot
@@ -169,11 +169,15 @@ or unsupported TLS initializer relocations explicitly. Validate musl/PHP TLS,
 C-created threads, fork replay, and both hosts before claiming general TLS
 support. The link-only fixture proves only a simple initialized TLS variable.
 
-Kandelo-owned Go Ms can use the existing native `newosprocKandelo` path even
-when cgo is enabled, avoiding the `_cgo_sys_thread_start` gate for those Ms.
-Only the main Go M has a C stack and initialized musl thread pointer; a
-Go-to-C call on another M traps instead of sharing that stack. This does
-**not** attach C-created pthreads: they still require a real
+Kandelo-owned Go Ms use the native `newosprocKandelo` path even when cgo is
+enabled, avoiding the `_cgo_sys_thread_start` gate for those Ms. Each
+Go-created M now gets a separate 8 MiB C stack, reclaimed with the retired
+M, and a 256-byte musl thread-pointer backing store. The host installs its C
+stack pointer and musl thread pointer before the child entry, and the child
+calls `__init_tp` before joining the Go scheduler. The scalar/pointer cgo
+probe checks four worker rounds, including distinct `pthread_self()` and
+thread-local `errno`, on Node and Chromium. This does **not** attach C-created
+pthreads: they still require a real
 Go-compatible entry, musl thread pointer and TLS, M/P attachment, and a
 per-instance Kandelo channel. C function pointers cannot call raw Go table
 entries with the wrong Wasm signature. Do not add no-op thread or callback
@@ -181,11 +185,12 @@ symbols to satisfy the linker. The new per-instance C `__channel_base` global
 and Go handoff word must both be initialized by the host; do not conflate
 either with C TLS. The SDK's normal executable glue (syscall, compiler-rt,
 and C++ runtime) is loaded by the Go linker through SDK source queries.
-The shared host already assigns a new instance's `__stack_pointer` from the
-`kernel_clone` stack argument, but Go currently passes the g0 stack top there.
-Do not simply remove the secondary-M guard: C would overwrite live g0
-frames. Allocate and reclaim a distinct C stack per Go M, pass its top to
-`kernel_clone`, and initialize the C musl thread pointer before C calls.
+The shared host assigns a new instance's `__stack_pointer` from the
+`kernel_clone` stack argument. Go passes the dedicated C stack top for cgo
+Ms, not the g0 stack top; reusing g0 here would overwrite live Go frames.
+The musl thread pointer and C TLS block are per-instance, not Go goroutine
+state. Full libc startup, security state, constructors, and destructors are
+still unproven in a Go process.
 For callbacks, a typed C trampoline alone is not enough: Go's resumable
 Wasm call convention can unwind for a scheduler transition while the C
 caller expects a synchronous return. Preserve the C call stack and use a
