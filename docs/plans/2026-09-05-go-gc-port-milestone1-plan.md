@@ -1604,13 +1604,29 @@ the setenv build-tag fix has not been revalidated in a runnable process.
 Focused Go linker and cgo frontend tests pass. The Go fork binary is not
 yet repinned in the `go-hello` package; ABI version is unchanged.
 
+**2026-10-09 — mixed-module fork instrumentation and next runtime gate.**
+The fork instrumenter's Binaryen post-pass now enables the Wasm features
+found in its emitted module. Its prior no-flag invocation rejected the
+mixed Go/C output despite a valid `target_features` section. The new
+shared-memory CLI regression and the full `fork-instrument` crate tests
+pass. The normal `C.abs` build, fork instrumentation, ABI stamp, and
+Kandelo Node process launch now all complete, but the process traps at
+`runtime.abort` during `runtime.main` after `_cgo_setenv` is present.
+Disassembly places the trap at an indirect Go function call in cgo runtime
+startup; `runtime/cgo/asm_wasm.s` still defines `set_crosscall2` and
+`crosscall2` as `UNDEF`, and `runtime/asm_wasm.s` still leaves
+`asmcgocall` and `cgocallback` undefined. This is not a passing C call;
+there is no Chromium standard-cgo run or PHP embed yet. The narrow
+Go-assembly→C process probe continues to pass Node and Chromium.
+
 Remaining work, in dependency order:
 
-1. Make the normal cgo artifact safe and runnable: fix fork instrumentation
-   for the mixed Go/C module, handle retained `kernel_fork` imports and
-   init/fini arrays correctly, initialize the C stack and musl thread
-   pointer, and prove `C.abs` on Node and Chromium through an ABI-stamped
-   Kandelo process. Review the experimental Wasm `cmd/cgo` frontend.
+1. Make the normal cgo artifact runnable: implement `set_crosscall2` and
+   `asmcgocall` with real C ABI function-pointer types, initialize the C
+   stack and musl thread pointer, handle init/fini arrays and retained
+   `kernel_fork` imports correctly, and prove `C.abs` on Node and Chromium
+   through an ABI-stamped Kandelo process. Review the experimental Wasm
+   `cmd/cgo` frontend.
 2. Implement real Go/C ABI transitions (`asmcgocall`, `crosscall2`,
    `cgocallback`), then attach C-created pthreads with a Go M/P and both C
    and Go per-thread channel state. Pass same-thread and pthread callback

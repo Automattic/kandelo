@@ -154,6 +154,27 @@ fn the_default_level_is_os() {
 }
 
 #[test]
+fn shared_memory_output_is_optimized_with_required_features() {
+    let dir = TempDir::new("shared-memory");
+    let input = dir.join("input.wasm");
+    fs::write(
+        &input,
+        wat::parse_str(FORK_WAT.replace("(memory 1)", "(memory 1 2 shared)")).unwrap(),
+    )
+    .unwrap();
+    let output = dir.join("output.wasm");
+    let result = instrument(&input, &output, &[], None);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    wasmparser::Validator::new()
+        .validate_all(&fs::read(output).unwrap())
+        .expect("optimized shared-memory output validates");
+}
+
+#[test]
 fn names_and_dwarf_are_dropped() {
     let dir = TempDir::new("names");
     let input = dir.join("input.wasm");
