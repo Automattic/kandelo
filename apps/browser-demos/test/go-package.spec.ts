@@ -14,9 +14,8 @@ const repoRoot = resolve(here, "../../..");
 const launcherPath = resolve(repoRoot, ".context/go-package/launcher.wasm");
 const browserKernelModulePath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
 
-test("resolved Go package launches from a Chromium VFS image", async ({ page, baseURL, browserName }) => {
+test("resolved Go package launches from a browser VFS image", async ({ page, baseURL }) => {
   test.skip(process.env.KANDELO_GO_PACKAGE_TESTS !== "1", "Build go-hello and set KANDELO_GO_PACKAGE_TESTS=1");
-  test.skip(browserName !== "chromium", "Go package gate uses Chromium");
   expect(baseURL).toBeTruthy();
 
   const launcherBytes = readFileSync(launcherPath);

@@ -85,6 +85,18 @@ APIs apply to Kandelo.
   inheritance must be serialized with `ForkLock`. The existing spawn
   attribute supports child-atomic process groups. Requested child
   credentials currently return `ENOSYS`; do not report a no-op as success.
+- Kandelo directory reads use the kernel's Linux-style `getdents64` records
+  and fd-owned iteration position, not the WASI preview-1 dirent/cookie
+  format. Match `syscall.Dirent` and `os` parsing to the kernel's byte layout;
+  preserve zero-inode entries, and send directory `Seek` to the kernel so
+  rewind and `seekdir` cookies affect the real iterator. The selected upstream
+  `os` and `syscall` dirent tests exercise multi-buffer reads on Node and all
+  three browser engines.
+- Kernel `stat` already supplies real mode, uid, and gid. Map those values
+  into Go `FileInfo`; do not substitute WASI-style default permissions or
+  zero owners. `Chown`, `Fchown`, and `Lchown` route through Kandelo's
+  existing ownership syscalls, including no-follow behavior for symlinks.
+  The selected upstream `os` chmod/chown tests cover these paths.
 
 Treat changes to memory declarations, Wasm imports/exports, channel layout,
 or syscall semantics as ABI reviews. Follow `docs/agent-guidance/abi.md`:
@@ -261,10 +273,14 @@ Node and Chromium. Go-led secure-exec startup passes focused set-ID and
 zero-filled initializer arrays whose priorities match `INIT_FUNCS` metadata;
 it rejects nonzero, relocated, exported, or referenced arrays rather than
 treating their bytes as callable pointers. LLVM currently rejects
-`.fini_array` sections. A Go main return does not establish automatic C
-exit-handler dispatch, and broader Go security and shutdown semantics remain
-unproven. A
-cgo-disabled mixed C/Go link must reject C constructor
+`.fini_array` sections. Go main return and `os.Exit` use Kandelo's
+process-wide `exit_group` path and do not dispatch registered C exit handlers;
+explicit C `exit(0)` does, and C `_exit(0)` does not. The constructor
+fixture verifies all four paths on Node, Chromium, Firefox, and WebKit.
+This matches the Linux Go runtime's raw `exit_group`
+shutdown, not native macOS Go/cgo's observed C-handler behavior. Broader Go
+security and shutdown semantics remain unproven. A cgo-disabled mixed C/Go
+link must reject C constructor
 metadata rather than silently discard it.
 For Go-owned callbacks, a typed Wasm export wrapper keeps the C call stack
 while Go's resumable scheduler completes the callback. Its linker root must

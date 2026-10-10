@@ -47,6 +47,10 @@ GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/sync-
 record_built_program_output "$output_dir/sync-test.wasm"
 GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/user-test.wasm" os/user
 record_built_program_output "$output_dir/user-test.wasm"
+GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/os-test.wasm" os
+record_built_program_output "$output_dir/os-test.wasm"
+GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/syscall-test.wasm" syscall
+record_built_program_output "$output_dir/syscall-test.wasm"
 
 stamp_built_program_outputs
 

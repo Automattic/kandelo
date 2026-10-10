@@ -26,6 +26,9 @@ type Probe = {
   file: string;
   argv: string[];
   stdout: string[];
+  absentStdout?: string[];
+  directories?: string[];
+  imageCapacity?: number;
   threadMarkers?: number;
   env?: string[];
   dataFiles?: { path: string; data: number[] }[];
@@ -70,6 +73,23 @@ const probes: Probe[] = [
       "-test.run=^(TestFindGroupName|TestFindGroupId|TestInvalidUserId|TestLookupUserId|TestLookupUserPopulatesAllFields|TestLookupUser|TestListGroups)$",
     ],
     stdout: ["PASS"],
+  },
+  {
+    name: "upstream Go os file and directory tests",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^(TestStat|TestStatError|TestReadClosed|TestReadAt|TestReadAtOffset|TestReadAtNegativeOffset|TestOpenError|TestReaddirNValues|TestReaddirOfFile|TestChmod|TestOpenFileKeepsPermissions|TestChown|TestFileChown|TestLchown)$", "-test.v"],
+    stdout: ["--- PASS: TestOpenError", "--- PASS: TestReaddirNValues", "--- PASS: TestChmod", "--- PASS: TestChown", "--- PASS: TestFileChown", "--- PASS: TestLchown", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
+    dataFiles: [{ path: "/etc/group", data: Array.from(Buffer.from("staff:x:200:runner\n")) }],
+  },
+  {
+    name: "upstream Go syscall dirent and repeat tests",
+    file: "syscall-test.wasm",
+    argv: ["go-syscall-test", "-test.run=^TestDirent(Repeat)?$", "-test.v"],
+    stdout: ["--- PASS: TestDirent", "--- PASS: TestDirentRepeat", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
   },
   {
     name: "second-M bootstrap and per-M syscall channel",
@@ -232,6 +252,25 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
     argv: ["go-cgo-constructors", "c-exit"],
     stdout: ["CGO C EXIT HANDLER PASS"],
   });
+  probes.push({
+    name: "C _exit bypasses registered handlers from Go/cgo",
+    file: "../go-constructors-instrumented.wasm",
+    argv: ["go-cgo-constructors", "c-immediate-exit"],
+    stdout: ["CGO C _EXIT PASS"],
+    absentStdout: ["CGO C EXIT HANDLER PASS"],
+  });
+  for (const { name, mode } of [
+    { name: "Go main return bypasses C exit handlers", mode: "go-return" },
+    { name: "Go os.Exit bypasses C exit handlers", mode: "go-os-exit" },
+  ]) {
+    probes.push({
+      name,
+      file: "../go-constructors-instrumented.wasm",
+      argv: ["go-cgo-constructors", mode],
+      stdout: ["CGO GO EXIT PASS"],
+      absentStdout: ["CGO C EXIT HANDLER PASS"],
+    });
+  }
 }
 
 async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<ProbeResult> {
@@ -260,9 +299,12 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
   }));
   const imageCapacity = probe.selfExecPath
     ? Math.max(8 * 1024 * 1024, programBytes.byteLength + 2 * 1024 * 1024)
-    : 2 * 1024 * 1024;
+    : (probe.imageCapacity ?? 2 * 1024 * 1024);
   const image = MemoryFileSystem.create(new SharedArrayBuffer(Math.ceil(imageCapacity / 4) * 4));
   image.mkdir("/etc", 0o755);
+  for (const directory of probe.directories ?? []) {
+    image.mkdir(directory, 0o777);
+  }
   if (probe.selfExecPath) {
     image.mkdir("/bin", 0o755);
     image.createFileWithOwner(probe.selfExecPath, 0o755, 0, 0, new Uint8Array(programBytes));
@@ -316,15 +358,14 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
   });
 }
 
-test.describe("native Go port milestones in Chromium", () => {
+test.describe("native Go port milestones", () => {
   test.skip(
     process.env.KANDELO_GO_BROWSER_TESTS !== "1",
     "Build the Go fork fixtures and set KANDELO_GO_BROWSER_TESTS=1",
   );
 
   for (const probe of probes) {
-    test(probe.name, async ({ page, baseURL, browserName }) => {
-      test.skip(browserName !== "chromium", "Go browser milestone gate uses Chromium");
+    test(probe.name, async ({ page, baseURL }) => {
       expect(baseURL).toBeTruthy();
 
       const runtimeErrors: string[] = [];
@@ -339,6 +380,9 @@ test.describe("native Go port milestones in Chromium", () => {
       expect(result.exitCode, JSON.stringify(result)).toBe(0);
       for (const marker of probe.stdout) {
         expect(result.stdout).toContain(marker);
+      }
+      for (const marker of probe.absentStdout ?? []) {
+        expect(result.stdout).not.toContain(marker);
       }
       if (probe.threadMarkers !== undefined) {
         expect(result.stderr.match(/M2 alive via kernel_clone/g) ?? []).toHaveLength(

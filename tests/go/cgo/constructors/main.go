@@ -21,6 +21,18 @@ func main() {
 		C.request_c_exit()
 		panic("C exit returned")
 	}
+	if len(os.Args) > 1 && os.Args[1] == "c-immediate-exit" {
+		C.request_c_immediate_exit()
+		panic("C _exit returned")
+	}
+	if len(os.Args) > 1 && (os.Args[1] == "go-return" || os.Args[1] == "go-os-exit") {
+		C.expect_no_exit_handler()
+		fmt.Println("CGO GO EXIT PASS")
+		if os.Args[1] == "go-os-exit" {
+			os.Exit(0)
+		}
+		return
+	}
 	if value := C.run_destructors(); value != 9123 {
 		panic(fmt.Sprintf("C destructor registration failed: %d", value))
 	}
