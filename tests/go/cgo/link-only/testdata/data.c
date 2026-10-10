@@ -1,4 +1,4 @@
-static const int offset = 7;
+extern const int offset;
 
 int weighted(int value) {
     volatile const int *address = &offset;
