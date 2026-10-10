@@ -2,7 +2,6 @@
 
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
-import { connectorModeSize } from "@host/dri/kms-registry";
 import { composeImageInWorker } from "./image-composer-client";
 import { imageMachine, type ImageMachine } from "./image-composer";
 import {
@@ -1764,45 +1763,24 @@ function genericPresentationForMachine(
  * DOM.
  *
  * - `evdev-input` WITH a display feature: that pane owns the pointer (it
- *   feeds framebuffer-positioned absolute events through `sendPointerAbs`, so
+ *   feeds absolute events through `sendPointerAbs`, so
  *   this source's window-relative coordinates would fight it). The wheel
  *   stays on — REL_WHEEL carries no coordinates. Capture is scoped to the
  *   display pane so the dock and sibling panes stay usable.
  * - `evdev-input` ALONE: a global input consumer. Pointer comes from the
  *   window and capture is scoped to the demo stage.
- *
- * The viewport is the browser window. `display` in demo.json is a FLOOR the
- * machine states, not a size it imposes, so the published canvas dimensions
- * (which set EVIOCGABS's ABS_X/Y maxima) are the window clamped up to that
- * minimum, republished on resize.
  */
 function attachDeclaredInputSource(
   kernel: BrowserKernel,
   machine: ImageMachine,
   tick: (msg: string) => void,
-  host: Pick<LiveKernelHost, "getKmsDisplaySize" | "reportClipboardPasteFailure">,
+  host: Pick<LiveKernelHost, "reportClipboardPasteFailure">,
 ): void {
   const displaySelector = machine.runtime.features.includes("kms")
     ? ".kmodeset-surface"
     : machine.runtime.features.includes("framebuffer")
     ? ".kframebuffer-surface"
     : null;
-  // A KMS pane sends the pointer as framebuffer pixels (sendPointerAbs), and
-  // consumers scale EV_ABS values by the advertised range (SDL's evdev
-  // backend does, and libinput caches the range when it opens the device),
-  // so the range must be the space those values are in: the connector's
-  // mode, which is the framebuffer a KMS program renders at. The window size
-  // is unrelated to it — publishing it here put ScummVM's cursor 1.5x off.
-  // The mode is fixed at boot (a resize letterboxes), so it is not
-  // republished on resize; the kernel worker also keeps the range on the
-  // scanout framebuffer at SETCRTC.
-  const kms = displaySelector === ".kmodeset-surface";
-  const dims = () => kms
-    ? connectorModeSize(host.getKmsDisplaySize(KMS_PRIMARY_CRTC))
-    : {
-      width: Math.max(window.innerWidth, machine.display?.minWidth ?? 0),
-      height: Math.max(window.innerHeight, machine.display?.minHeight ?? 0),
-    };
   tick("attaching input source...");
   kernel.attachInputSource(
     // Bound to the window for global reach; `shouldCapture` is what keeps the
@@ -1811,12 +1789,6 @@ function attachDeclaredInputSource(
     new BrowserInputSource(window, {
       ...(displaySelector === null ? {} : { pointer: false }),
       wheel: true,
-      ...(kms ? {} : {
-        onResize: () => {
-          const { width, height } = dims();
-          kernel.setInputCanvasDims(width, height);
-        },
-      }),
       shouldCapture: demoSurfaceCaptureGate(
         () => document.querySelector(displaySelector ?? "main"),
       ),
@@ -1861,7 +1833,6 @@ function attachDeclaredInputSource(
         }
         : {}),
     }),
-    dims(),
   );
 }
 

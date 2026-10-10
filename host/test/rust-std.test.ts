@@ -30,6 +30,7 @@ const FORK_RUNTIME_IMPORT = /^__wpk_fork_/;
 const FIXTURES = [
   "std-hello",
   "thread-demo",
+  "fd-demo",
   "net-demo",
   "proc-demo",
   "std-boundaries",
@@ -108,6 +109,7 @@ describe.skipIf(!canBuild)("Rust std programs on Kandelo", () => {
   const expected: Record<Fixture, string> = {
     "std-hello": "HashMap len=3",
     "thread-demo": "std::thread + Mutex OK",
+    "fd-demo": "std fd duplication OK",
     "net-demo": "std::net TCP loopback OK",
     "proc-demo": "std::process::Command OK",
     "std-boundaries": "STD BOUNDARIES OK",
@@ -121,6 +123,17 @@ describe.skipIf(!canBuild)("Rust std programs on Kandelo", () => {
       expect(result.stderr, dump).toBe("");
     }, 60_000);
   }
+
+  it("reports the kernel's one CPU through available_parallelism", async () => {
+    const { result, dump } = await run("thread-demo");
+    expect(result.stdout, dump).toContain("available_parallelism = 1\n");
+  }, 60_000);
+
+  it("redirects stdout away from the terminal in fd-demo", async () => {
+    const { result, dump } = await run("fd-demo");
+    expect(result.stdout, dump).not.toContain("baz");
+    expect(result.stdout, dump).not.toContain("qux");
+  }, 60_000);
 
   it("aborts on panic with the panic message", async () => {
     const { result, dump } = await run("std-boundaries", ["panic"]);

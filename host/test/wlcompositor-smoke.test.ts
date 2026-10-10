@@ -27,6 +27,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { pointerAbs } from "./support/pointer-abs";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
@@ -92,7 +93,6 @@ describe("wlcompositor — server composites + routes input to a client", () => 
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         // --- compositor (server) ---
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
@@ -127,8 +127,8 @@ describe("wlcompositor — server composites + routes input to a client", () => 
         // button on event1 (routed to the surface under the cursor).
         host.injectInputEvent(0, EV_KEY, KEY_A, 1);
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
-        host.injectInputEvent(1, EV_ABS, ABS_X, POINT_X);
-        host.injectInputEvent(1, EV_ABS, ABS_Y, POINT_Y);
+        host.injectInputEvent(1, EV_ABS, ABS_X, pointerAbs(POINT_X, CANVAS_W));
+        host.injectInputEvent(1, EV_ABS, ABS_Y, pointerAbs(POINT_Y, CANVAS_H));
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
         host.injectInputEvent(1, EV_KEY, BTN_LEFT, 1);
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);

@@ -12,11 +12,10 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { INPUT_POINTER_ABS_MAX } from "../src/generated/abi";
 
 const fixtureBinary = tryResolveBinary("programs/input-evdev-smoke.wasm");
 
-const CANVAS_W = 1024;
-const CANVAS_H = 768;
 
 const EV_SYN = 0x00;
 const EV_KEY = 0x01;
@@ -69,7 +68,6 @@ describe("evdev — end-to-end key + pointer + ring overflow", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         let pid = 0;
         const exitPromise = host.spawn(programBytes, ["input-evdev-smoke"], {
@@ -123,7 +121,7 @@ describe("evdev — end-to-end key + pointer + ring overflow", () => {
 
         // EVIOCGABS(ABS_X) on event1 reports canvas_w - 1.
         expect(stdout.value).toMatch(
-          new RegExp(`ptr_abs_x_max=${CANVAS_W - 1}\\b`),
+          new RegExp(`ptr_abs_x_max=${INPUT_POINTER_ABS_MAX}\\b`),
         );
 
         // Phase 1: KEY_A down + SYN_REPORT, in that order, with

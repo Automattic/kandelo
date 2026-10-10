@@ -114,7 +114,6 @@ describe("wlcompositor — kwlctl control + event IPC", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle"],

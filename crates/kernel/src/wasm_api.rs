@@ -14150,14 +14150,6 @@ pub extern "C" fn kernel_input_event(
     );
 }
 
-/// Cache the canvas pixel dimensions advertised by
-/// `EVIOCGABS(ABS_X/ABS_Y)` on `/dev/input/event1`. Without this the
-/// first SDL2 / libinput probe sees the 1280×720 fallback.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
-    crate::input::set_canvas_dims(width, height);
-}
-
 /// Number of successful page-flip commits on the given crtc.
 ///
 /// Useful for the host-side stats UI ("how many frames has the

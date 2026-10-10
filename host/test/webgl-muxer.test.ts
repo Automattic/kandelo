@@ -7,6 +7,7 @@ import {
   GL_DEPTH_TEST,
   GL_FRAMEBUFFER,
   GL_PACK_ALIGNMENT,
+  GL_READ_FRAMEBUFFER,
   GL_POLYGON_OFFSET_FILL,
   GL_SCISSOR_TEST,
   GL_STENCIL_TEST,
@@ -50,6 +51,20 @@ class RecordingGl {
   activeTexture(u: number) { this.log.push(["activeTexture", [u]]); }
   bindTexture(t: number, tex: unknown) { this.log.push(["bindTexture", [t, tex]]); }
   pixelStorei(p: number, v: number) { this.log.push(["pixelStorei", [p, v]]); }
+  colorMask(...a: unknown[]) { this.log.push(["colorMask", a]); }
+  depthMask(...a: unknown[]) { this.log.push(["depthMask", a]); }
+  stencilFuncSeparate(...a: unknown[]) { this.log.push(["stencilFuncSeparate", a]); }
+  stencilOpSeparate(...a: unknown[]) { this.log.push(["stencilOpSeparate", a]); }
+  stencilMaskSeparate(...a: unknown[]) { this.log.push(["stencilMaskSeparate", a]); }
+  polygonOffset(...a: unknown[]) { this.log.push(["polygonOffset", a]); }
+  blendColor(...a: unknown[]) { this.log.push(["blendColor", a]); }
+  depthRange(...a: unknown[]) { this.log.push(["depthRange", a]); }
+  clearDepth(...a: unknown[]) { this.log.push(["clearDepth", a]); }
+  clearStencil(...a: unknown[]) { this.log.push(["clearStencil", a]); }
+  bindSampler(...a: unknown[]) { this.log.push(["bindSampler", a]); }
+  bindBuffer(...a: unknown[]) { this.log.push(["bindBuffer", a]); }
+  bindBufferRange(...a: unknown[]) { this.log.push(["bindBufferRange", a]); }
+  bindBufferBase(...a: unknown[]) { this.log.push(["bindBufferBase", a]); }
 
   callsOf(name: string): Array<unknown[]> {
     return this.log.filter((r) => r[0] === name).map((r) => r[1]);
@@ -118,13 +133,18 @@ describe("GlMuxer.switchTo", () => {
     expect(gl.callsOf("useProgram")).toEqual([[prog]]);
   });
 
-  it("bindFramebuffer always targets FRAMEBUFFER (draw+read)", () => {
+  it("binds the draw framebuffer to FRAMEBUFFER, then the read framebuffer", () => {
     const { gl, mux } = mk();
     const fbo = { id: 13 };
+    const readFbo = { id: 14 };
     const t = newTarget();
     t.shadow.fbo = fbo as unknown as WebGLFramebuffer;
+    t.shadow.readFbo = readFbo as unknown as WebGLFramebuffer;
     mux.switchTo(t);
-    expect(gl.callsOf("bindFramebuffer")).toEqual([[GL_FRAMEBUFFER, fbo]]);
+    expect(gl.callsOf("bindFramebuffer")).toEqual([
+      [GL_FRAMEBUFFER, fbo],
+      [GL_READ_FRAMEBUFFER, readFbo],
+    ]);
   });
 
   it("scissor enabled → gl.enable; disabled → gl.disable; rect is always replayed", () => {

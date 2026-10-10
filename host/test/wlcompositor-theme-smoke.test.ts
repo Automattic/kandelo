@@ -162,7 +162,6 @@ describe("wlcompositor — theme system", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: [
@@ -246,7 +245,6 @@ describe("wlcompositor — theme system", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: [
@@ -310,7 +308,6 @@ describe("wlcompositor — theme system", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: [`WLC_CONFIG=${confPath}`, `WLC_THEME_DIR=${root}`],
@@ -373,7 +370,6 @@ describe("wlcompositor — theme system", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: [
@@ -423,7 +419,6 @@ describe("wlcompositor — theme system", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: [`WLC_CONFIG=${confPath}`, `WLC_THEME_DIR=${themeDir}`],
@@ -468,7 +463,6 @@ describe("wlcompositor — theme system", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         host.spawn(compositorBytes, ["wlcompositor"], {
           env: [`WLC_CONFIG=${confPath}`, `WLC_THEME_DIR=${themeDir}`],

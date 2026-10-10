@@ -1,0 +1,401 @@
+# rustix 1.1.5: Kandelo's libc is musl: it has O_RSYNC and O_PATH as on
+# Linux, has no FALLOC_FL_NO_HIDE_STALE (as musl on Linux), and types the
+# ioctl opcode as c_int. Kandelo has Linux's epoll, eventfd and timerfd.
+--- a/src/backend/libc/conv.rs
++++ b/src/backend/libc/conv.rs
+@@ -86,6 +86,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    all(target_os = "kandelo", feature = "event"),
+     all(target_os = "illumos", feature = "event"),
+     all(target_os = "redox", feature = "event")
+ ))]
+--- a/src/backend/libc/event/mod.rs	2026-10-08 15:41:35
++++ b/src/backend/libc/event/mod.rs	2026-10-08 15:41:35
+@@ -5,5 +5,5 @@
+ #[cfg_attr(windows, path = "windows_syscalls.rs")]
+ pub(crate) mod syscalls;
+ 
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", target_os = "illumos", target_os = "redox"))]
+ pub mod epoll;
+--- a/src/backend/libc/event/syscalls.rs	2026-10-08 15:41:35
++++ b/src/backend/libc/event/syscalls.rs	2026-10-08 15:41:35
+@@ -1,10 +1,10 @@
+ //! libc syscalls supporting `rustix::event`.
+ 
+ use crate::backend::c;
+-#[cfg(any(linux_kernel, solarish, target_os = "redox"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", solarish, target_os = "redox"))]
+ use crate::backend::conv::ret;
+ use crate::backend::conv::ret_c_int;
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", target_os = "illumos", target_os = "redox"))]
+ use crate::backend::conv::ret_u32;
+ #[cfg(bsd)]
+ use crate::event::kqueue::Event;
+@@ -12,6 +12,7 @@
+ use crate::event::port::Event;
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "illumos",
+     target_os = "espidf"
+@@ -21,7 +22,7 @@
+ use crate::event::FdSetElement;
+ use crate::event::{PollFd, Timespec};
+ use crate::io;
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", target_os = "illumos", target_os = "redox"))]
+ use crate::utils::as_ptr;
+ #[cfg(solarish)]
+ use core::mem::MaybeUninit;
+@@ -35,9 +36,9 @@
+     target_os = "wasi"
+ ))]
+ use core::ptr::null;
+-#[cfg(any(bsd, linux_kernel, solarish, target_os = "redox", target_os = "wasi"))]
++#[cfg(any(bsd, linux_kernel, target_os = "kandelo", solarish, target_os = "redox", target_os = "wasi"))]
+ use core::ptr::null_mut;
+-#[cfg(any(bsd, linux_kernel, solarish, target_os = "redox"))]
++#[cfg(any(bsd, linux_kernel, target_os = "kandelo", solarish, target_os = "redox"))]
+ use {crate::backend::conv::borrowed_fd, crate::fd::BorrowedFd};
+ #[cfg(any(
+     bsd,
+@@ -46,12 +47,14 @@
+     target_os = "freebsd",
+     target_os = "illumos",
+     target_os = "espidf",
++    target_os = "kandelo",
+     target_os = "redox"
+ ))]
+ use {crate::backend::conv::ret_owned_fd, crate::fd::OwnedFd};
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "illumos",
+     target_os = "espidf"
+@@ -80,7 +83,7 @@
+         ret_owned_fd(eventfd(initval, bitflags_bits!(flags)))
+     }
+ 
+-    #[cfg(any(target_os = "illumos", target_os = "espidf"))]
++    #[cfg(any(target_os = "kandelo", target_os = "illumos", target_os = "espidf"))]
+     unsafe {
+         ret_owned_fd(c::eventfd(initval, bitflags_bits!(flags)))
+     }
+@@ -486,13 +489,13 @@
+ }
+ 
+ #[inline]
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", target_os = "illumos", target_os = "redox"))]
+ pub(crate) fn epoll_create(flags: super::epoll::CreateFlags) -> io::Result<OwnedFd> {
+     unsafe { ret_owned_fd(c::epoll_create1(bitflags_bits!(flags))) }
+ }
+ 
+ #[inline]
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", target_os = "illumos", target_os = "redox"))]
+ pub(crate) fn epoll_add(
+     epoll: BorrowedFd<'_>,
+     source: BorrowedFd<'_>,
+@@ -513,7 +516,7 @@
+ }
+ 
+ #[inline]
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", target_os = "illumos", target_os = "redox"))]
+ pub(crate) fn epoll_mod(
+     epoll: BorrowedFd<'_>,
+     source: BorrowedFd<'_>,
+@@ -531,7 +534,7 @@
+ }
+ 
+ #[inline]
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", target_os = "illumos", target_os = "redox"))]
+ pub(crate) fn epoll_del(epoll: BorrowedFd<'_>, source: BorrowedFd<'_>) -> io::Result<()> {
+     unsafe {
+         ret(c::epoll_ctl(
+@@ -544,7 +547,7 @@
+ }
+ 
+ #[inline]
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", target_os = "illumos", target_os = "redox"))]
+ pub(crate) unsafe fn epoll_wait(
+     epoll: BorrowedFd<'_>,
+     events: (*mut crate::event::epoll::Event, usize),
+--- a/src/backend/libc/event/types.rs	2026-10-08 15:41:35
++++ b/src/backend/libc/event/types.rs	2026-10-08 15:41:35
+@@ -1,7 +1,8 @@
+-#[cfg(any(linux_kernel, target_os = "freebsd", target_os = "illumos"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", target_os = "freebsd", target_os = "illumos"))]
+ use crate::backend::c;
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "illumos",
+     target_os = "espidf"
+@@ -10,6 +11,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "illumos",
+     target_os = "espidf"
+--- a/src/backend/libc/fs/types.rs	2026-10-08 15:41:35
++++ b/src/backend/libc/fs/types.rs	2026-10-08 15:41:35
+@@ -302,6 +302,7 @@
+         /// `O_RSYNC`
+         #[cfg(any(
+             linux_kernel,
++            target_os = "kandelo",
+             netbsdlike,
+             solarish,
+             target_os = "emscripten",
+@@ -319,6 +320,7 @@
+         /// `O_PATH`
+         #[cfg(any(
+             linux_kernel,
++            target_os = "kandelo",
+             target_os = "emscripten",
+             target_os = "freebsd",
+             target_os = "fuchsia",
+@@ -817,6 +819,7 @@
+             target_os = "haiku",
+             target_os = "hurd",
+             target_os = "l4re",
++            target_os = "kandelo",
+             target_os = "linux",
+             target_os = "wasi",
+         )))]
+--- a/src/backend/libc/time/syscalls.rs	2026-10-08 15:41:35
++++ b/src/backend/libc/time/syscalls.rs	2026-10-08 15:41:35
+@@ -4,6 +4,7 @@
+ use crate::backend::conv::ret;
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -29,6 +30,7 @@
+ use core::mem::MaybeUninit;
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -312,6 +314,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -323,6 +326,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -371,6 +375,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -444,6 +449,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -481,6 +487,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+--- a/src/backend/libc/time/types.rs	2026-10-08 15:41:35
++++ b/src/backend/libc/time/types.rs	2026-10-08 15:41:35
+@@ -1,5 +1,6 @@
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -8,6 +9,7 @@
+ use crate::backend::c;
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -16,6 +18,7 @@
+ use crate::time::Itimerspec;
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -25,6 +28,7 @@
+ use crate::timespec::LibcTimespec;
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -35,6 +39,7 @@
+ /// On most platforms, `LibcItimerspec` is just `Itimerspec`.
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -47,6 +52,7 @@
+ /// define our own struct, with bidirectional `From` impls.
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -62,6 +68,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -80,6 +87,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -98,6 +106,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -114,6 +123,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -132,6 +142,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -159,6 +170,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -190,6 +202,7 @@
+ /// [`timerfd_create`]: crate::time::timerfd_create
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -253,6 +266,7 @@
+ 
+     #[cfg(any(
+         linux_kernel,
++        target_os = "kandelo",
+         target_os = "freebsd",
+         target_os = "fuchsia",
+         target_os = "illumos",
+--- a/src/event/mod.rs	2026-10-08 15:41:35
++++ b/src/event/mod.rs	2026-10-08 15:41:35
+@@ -1,9 +1,10 @@
+ //! Event operations.
+ 
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, target_os = "kandelo", target_os = "illumos", target_os = "redox"))]
+ pub mod epoll;
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "illumos",
+     target_os = "espidf"
+@@ -22,6 +23,7 @@
+ pub use crate::timespec::{Nsecs, Secs, Timespec};
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "illumos",
+     target_os = "espidf"
+--- a/src/ioctl/mod.rs	2026-10-08 15:41:35
++++ b/src/ioctl/mod.rs	2026-10-08 15:41:35
+@@ -303,7 +303,7 @@
+ // Musl uses `c_int`.
+ #[cfg(all(
+     not(linux_raw),
+-    target_os = "linux",
++    any(target_os = "linux", target_os = "kandelo"),
+     not(target_env = "gnu"),
+     not(target_env = "uclibc")
+ ))]
+--- a/src/time/mod.rs	2026-10-08 15:41:35
++++ b/src/time/mod.rs	2026-10-08 15:41:35
+@@ -3,6 +3,7 @@
+ mod clock;
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",
+@@ -15,6 +16,7 @@
+ pub use clock::*;
+ #[cfg(any(
+     linux_kernel,
++    target_os = "kandelo",
+     target_os = "freebsd",
+     target_os = "fuchsia",
+     target_os = "illumos",

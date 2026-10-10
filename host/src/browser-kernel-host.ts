@@ -1176,34 +1176,19 @@ export class BrowserKernel {
   }
 
   /**
-   * Tell the kernel the current host canvas dimensions so EVIOCGABS
-   * on `/dev/input/event1` reports `ABS_X.maximum = width - 1` and
-   * `ABS_Y.maximum = height - 1`. Call once at boot when the canvas
-   * is attached and again on any resize.
-   */
-  setInputCanvasDims(width: number, height: number): void {
-    this.sendToKernel({ type: "set_input_canvas_dims", width, height });
-  }
-
-  /**
-   * Wire an `InputSource` into the kernel: sets canvas dims, then
-   * starts the source with a dispatch callback that funnels each
+   * Wire an `InputSource` into the kernel: starts the source with a dispatch callback that funnels each
    * emitted record through `injectInputEvent`. Mirrors
    * `NodeKernelHost.attachInputSource` — dual-host parity per
    * CLAUDE.md §"Two hosts".
    */
   private attachedInputSource: InputSource | null = null;
 
-  attachInputSource(
-    source: InputSource,
-    dims: { width: number; height: number },
-  ): void {
+  attachInputSource(source: InputSource): void {
     // Stop and replace any previously attached source so re-attach (demo
     // reboot / image switch) does not leak its DOM listeners and keep
     // injecting into a torn-down worker.
     this.attachedInputSource?.stop();
     this.attachedInputSource = source;
-    this.setInputCanvasDims(dims.width, dims.height);
     source.start(
       batchBySynReport((records) => this.injectInputEventBatch(records)),
     );

@@ -1,0 +1,34 @@
+# getrandom 0.3.4: Kandelo has the getrandom syscall (musl getrandom),
+# and musl's errno lives at __errno_location.
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -92,7 +92,7 @@
+ version = "5.1"
+ default-features = false
+ 
+-[target.'cfg(any(target_os = "dragonfly", target_os = "freebsd", target_os = "hurd", target_os = "illumos", target_os = "cygwin", all(target_os = "horizon", target_arch = "arm")))'.dependencies.libc]
++[target.'cfg(any(target_os = "kandelo", target_os = "dragonfly", target_os = "freebsd", target_os = "hurd", target_os = "illumos", target_os = "cygwin", all(target_os = "horizon", target_arch = "arm")))'.dependencies.libc]
+ version = "0.2.154"
+ default-features = false
+ 
+--- a/src/backends.rs
++++ b/src/backends.rs
+@@ -120,6 +120,7 @@
+         mod sanitizer;
+         pub use linux_android_with_fallback::*;
+     } else if #[cfg(any(
++        target_os = "kandelo",
+         target_os = "android",
+         target_os = "linux",
+         target_os = "dragonfly",
+--- a/src/util_libc.rs
++++ b/src/util_libc.rs
+@@ -4,7 +4,7 @@
+ cfg_if! {
+     if #[cfg(any(target_os = "netbsd", target_os = "openbsd", target_os = "android", target_os = "cygwin"))] {
+         use libc::__errno as errno_location;
+-    } else if #[cfg(any(target_os = "linux", target_os = "emscripten", target_os = "hurd", target_os = "redox", target_os = "dragonfly"))] {
++    } else if #[cfg(any(target_os = "linux", target_os = "kandelo", target_os = "emscripten", target_os = "hurd", target_os = "redox", target_os = "dragonfly"))] {
+         use libc::__errno_location as errno_location;
+     } else if #[cfg(any(target_os = "solaris", target_os = "illumos"))] {
+         use libc::___errno as errno_location;

@@ -465,10 +465,6 @@ function signatures(
       parameters: [i32, i32],
       result: i32,
     },
-    kernel_set_input_canvas_dims: {
-      parameters: [i32, i32],
-      result: i32,
-    },
     kernel_set_max_addr: {
       parameters: [i32, pointer],
       result: i32,

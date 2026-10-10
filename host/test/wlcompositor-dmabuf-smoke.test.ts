@@ -32,8 +32,6 @@ const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm"
 const clientBin = tryResolveBinary("programs/wldmabuf-test.wasm");
 const hasBinaries = !!compositorBin && !!clientBin;
 
-const CANVAS_W = 1920;
-const CANVAS_H = 1080;
 
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -73,7 +71,6 @@ describe("wlcompositor — composites a zwp_linux_dmabuf_v1 client buffer", () =
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
         await waitFor(out, "COMPOSITOR_UP", 20_000, dump);

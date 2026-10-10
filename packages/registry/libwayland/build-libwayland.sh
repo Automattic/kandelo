@@ -272,6 +272,7 @@ Name: Wayland Client
 Description: Wayland client side library
 Version: $WL_VERSION
 Libs: -L\${libdir} -lwayland-client
+Libs.private: -L$LIBFFI_PREFIX/lib -lffi
 Cflags: -I\${includedir}
 EOF
 
@@ -283,6 +284,7 @@ includedir=\${prefix}/include
 Name: wayland-egl
 Description: Wayland EGL backend (wl_egl_window) — kandelo shim
 Version: 18.1.0
+Requires.private: wayland-client egl gbm
 Libs: -L\${libdir} -lwayland-egl
 Cflags: -I\${includedir}
 EOF

@@ -725,17 +725,7 @@ export class NodeKernelHost {
   }
 
   /**
-   * Tell the kernel the current host canvas dimensions so EVIOCGABS
-   * on `/dev/input/event1` reports the right `ABS_X.maximum` /
-   * `ABS_Y.maximum`. Mirrors `BrowserKernel.setInputCanvasDims`.
-   */
-  setInputCanvasDims(width: number, height: number): void {
-    this.sendToWorker({ type: "set_input_canvas_dims", width, height });
-  }
-
-  /**
-   * Wire an `InputSource` into the kernel: sets canvas dims, then
-   * starts the source with a dispatch callback that funnels each
+   * Wire an `InputSource` into the kernel: starts the source with a dispatch callback that funnels each
    * emitted record through `injectInputEvent`. Mirrors
    * `BrowserKernel.attachInputSource` — dual-host parity per
    * CLAUDE.md §"Two hosts".
@@ -746,17 +736,13 @@ export class NodeKernelHost {
    */
   private attachedInputSource: InputSource | null = null;
 
-  attachInputSource(
-    source: InputSource,
-    dims: { width: number; height: number },
-  ): void {
+  attachInputSource(source: InputSource): void {
     // Stop and replace any previously attached source (dual-host parity with
     // BrowserKernel); NodeInputSource.stop() is a no-op today, but keeping
     // the lifecycle symmetric avoids a divergence when a real Node source
     // (e.g. a TTY capture) is added.
     this.attachedInputSource?.stop();
     this.attachedInputSource = source;
-    this.setInputCanvasDims(dims.width, dims.height);
     source.start(
       batchBySynReport((records) => this.injectInputEventBatch(records)),
     );

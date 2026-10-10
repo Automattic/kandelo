@@ -77,7 +77,6 @@ describe("wlcompositor — global shortcuts, idle notify, session lock", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(loadBytes(compositorBin!), ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle", `WLC_CONFIG=${confPath}`],

@@ -26,8 +26,6 @@ const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
 const kwlctlBin = tryResolveBinary("programs/kwlctl.wasm");
 const hasBinaries = !!compositorBin && !!clientBin && !!kwlctlBin;
 
-const CANVAS_W = 1920;
-const CANVAS_H = 1080;
 
 // evdev keycodes (linux/input-event-codes.h).
 const EV_KEY = 0x01;
@@ -101,7 +99,6 @@ describe("wlcompositor — config-file keybind engine", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         // No WLC_CONFIG -> generic defaults.
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
@@ -182,7 +179,6 @@ describe("wlcompositor — config-file keybind engine", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle", `WLC_CONFIG=${confPath}`],
@@ -248,7 +244,6 @@ describe("wlcompositor — config-file keybind engine", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle", `WLC_CONFIG=${confPath}`],
@@ -298,7 +293,6 @@ describe("wlcompositor — config-file keybind engine", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle", `WLC_CONFIG=${confPath}`],
@@ -383,7 +377,6 @@ describe("wlcompositor — config-file keybind engine", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
           env: ["WLC_LAYOUT=dwindle", `WLC_CONFIG=${confPath}`],

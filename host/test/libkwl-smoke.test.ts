@@ -28,14 +28,14 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { pointerAbs } from "./support/pointer-abs";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const kwldemoBin = tryResolveBinary("programs/kwldemo.wasm");
 const hasBinaries = !!compositorBin && !!kwldemoBin;
 
-// The input canvas matches the compositor's card0 output (1920x1080) so an
-// injected absolute pointer coordinate maps 1:1 to the compositor's cursor
-// position (ABS_X.maximum = canvasW-1, scaled to g.width). We then move the
+// The compositor's card0 output is 1920x1080; `pointerAbs` turns an output
+// pixel into the pointer device's fixed EV_ABS range. We move the
 // cursor to a point inside the kwldemo window before pressing — the
 // compositor's default cursor centre (960,540) is outside it. The v2
 // compositor places an unmatched app_id at the first cascade slot
@@ -98,7 +98,6 @@ describe("libkwl — toolkit window maps, composites, and routes input", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         // --- compositor (server) ---
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
@@ -145,8 +144,8 @@ describe("libkwl — toolkit window maps, composites, and routes input", () => {
         // Move the cursor into the window (absolute motion on event1), then
         // press the left button there. libkwl reports the button at the
         // motion-updated position, inside the button rect.
-        host.injectInputEvent(1, EV_ABS, ABS_X, POINT_X);
-        host.injectInputEvent(1, EV_ABS, ABS_Y, POINT_Y);
+        host.injectInputEvent(1, EV_ABS, ABS_X, pointerAbs(POINT_X, CANVAS_W));
+        host.injectInputEvent(1, EV_ABS, ABS_Y, pointerAbs(POINT_Y, CANVAS_H));
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
         host.injectInputEvent(1, EV_KEY, BTN_LEFT, 1);
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);

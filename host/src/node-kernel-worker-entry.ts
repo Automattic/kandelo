@@ -4142,9 +4142,6 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "input_event_batch_inject":
       kernelWorker.injectInputEventBatch(msg.records);
       break;
-    case "set_input_canvas_dims":
-      kernelWorker.setInputCanvasDims(msg.width, msg.height);
-      break;
     default: {
       const exhaustive: never = msg;
       void exhaustive;

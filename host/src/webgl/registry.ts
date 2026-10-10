@@ -69,6 +69,8 @@ export type GlBinding = GlBindingInput & {
   vaos: Map<number, WebGLVertexArrayObject>;
   fbos: Map<number, WebGLFramebuffer>;
   rbos: Map<number, WebGLRenderbuffer>;
+  samplers: Map<number, WebGLSampler>;
+  syncs: Map<number, WebGLSync>;
   /** Number-keyed (NOT string-keyed) so the cmdbuf int round-trips
    *  cleanly. Indices are assigned by `++nextUniformLoc` and never
    *  reused so insert/delete cycles cannot collide. */
@@ -199,6 +201,8 @@ export class GlContextRegistry {
       vaos: new Map(),
       fbos: new Map(),
       rbos: new Map(),
+      samplers: new Map(),
+      syncs: new Map(),
       uniformLocations: new Map(),
       nextUniformLoc: 0,
       foreignTextures: new Map(),
@@ -425,6 +429,7 @@ export class GlContextRegistry {
     if (!gpu || b.gl !== gpu.gl) return false;
     b.renderTargetFbo = gpu.fbo;
     b.shadow.fbo = gpu.fbo;
+    b.shadow.readFbo = gpu.fbo;
     b.shadow.viewport = [0, 0, gpu.w, gpu.h];
     return true;
   }

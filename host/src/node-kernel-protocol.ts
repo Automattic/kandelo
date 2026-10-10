@@ -394,17 +394,6 @@ export interface InputEventBatchInjectMessage {
 }
 
 /**
- * Main-thread → kernel-worker canvas-dims update. Mirrors the
- * Browser-side `SetInputCanvasDimsMessage`. Sets `ABS_X.maximum` /
- * `ABS_Y.maximum` reported by EVIOCGABS on `/dev/input/event1`.
- */
-export interface SetInputCanvasDimsMessage {
-  type: "set_input_canvas_dims";
-  width: number;
-  height: number;
-}
-
-/**
  * Offer host clipboard text to the guest's clipboard agent through
  * `/dev/kandelo/clipboard`. Answered with a `ClipboardOfferResult` once the
  * agent installs it, or with the reason it could not.
@@ -467,8 +456,7 @@ export type MainToKernelMessage =
   | KmsAttachStatsMessage
   | KmsSetDisplaySizeMessage
   | InputEventInjectMessage
-  | InputEventBatchInjectMessage
-  | SetInputCanvasDimsMessage;
+  | InputEventBatchInjectMessage;
 
 // ── Kernel Worker → Main Thread ──
 

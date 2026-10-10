@@ -18,8 +18,6 @@ import { tryResolveBinary } from "../src/binary-resolver";
 
 const fixtureBinary = tryResolveBinary("programs/libevdev_smoke.wasm");
 
-const CANVAS_W = 1024;
-const CANVAS_H = 768;
 
 const EV_SYN = 0x00;
 const EV_KEY = 0x01;
@@ -70,7 +68,6 @@ describe("libevdev — capability probe + event decode", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         let pid = 0;
         const exitPromise = host.spawn(programBytes, ["libevdev_smoke"], {

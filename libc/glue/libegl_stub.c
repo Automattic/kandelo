@@ -14,7 +14,7 @@
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#include <GLES2/gl2.h>
+#include <GLES3/gl3.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -34,6 +34,7 @@ static uint8_t *g_cmdbuf_base   = NULL;
 static EGLint   g_last_error    = EGL_SUCCESS;
 static int      g_initialized   = 0;
 static int      g_context_made  = 0;
+static uint32_t g_client_version = 2;
 static int      g_surface_made  = 0;
 /* GPU-tier producer target: the bo handle (from PRIME_FD_TO_HANDLE /
  * gbm_bo) whose FBO the NEXT eglCreateWindowSurface renders into. Set by
@@ -58,10 +59,17 @@ __attribute__((weak)) void     _wpk_wlegl_present(void *egl_window);
 
 int      _wpk_gl_fd(void)           { return g_fd; }
 uint8_t *_wpk_gl_cmdbuf_base(void)  { return g_cmdbuf_base; }
+uint32_t _wpk_gl_client_version(void) { return g_client_version; }
 
 EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id) {
     (void)display_id;
     return EGL_DPY_HANDLE;
+}
+
+/* The Wayland platform exists when the program links libwayland-egl: its
+ * wl_egl_window is the native window eglCreateWindowSurface renders into. */
+static int wayland_platform(void) {
+    return _wpk_wlegl_bo_handle != NULL;
 }
 
 /* EGL 1.5 core. `eglQueryString(dpy, EGL_VERSION)` below reports 1.5, so
@@ -74,15 +82,18 @@ EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id) {
  *
  * One display, one device: everything is driven through
  * WPK_GL_DEVICE. `EGL_PLATFORM_GBM_KHR` (== EGL_PLATFORM_GBM_MESA, the
- * enum SDL2's KMSDRM backend passes) is the only platform this backend
- * really is, so every other platform gets the EGL_BAD_PARAMETER the
- * spec asks for rather than a display that cannot work. `native_display`
- * is the caller's `gbm_device *`, which selects nothing here: the
- * libgbm shim opens the same device. */
+ * enum SDL2's KMSDRM backend passes) and, with libwayland-egl linked,
+ * `EGL_PLATFORM_WAYLAND_KHR` (== EGL_PLATFORM_WAYLAND_EXT, the enum wgpu
+ * passes) are the platforms this backend really is, so every other
+ * platform gets the EGL_BAD_PARAMETER the spec asks for rather than a
+ * display that cannot work. `native_display` is the caller's
+ * `gbm_device *` or `wl_display *`, which selects nothing here: the
+ * libgbm shim and libwayland-egl open the same device. */
 EGLDisplay eglGetPlatformDisplay(EGLenum platform, void *native_display,
                                  const EGLAttrib *attrib_list) {
     (void)native_display;
-    if (platform != EGL_PLATFORM_GBM_KHR) {
+    if (platform != EGL_PLATFORM_GBM_KHR
+        && !(platform == EGL_PLATFORM_WAYLAND_KHR && wayland_platform())) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_NO_DISPLAY;
     }
@@ -160,6 +171,15 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
     return EGL_TRUE;
 }
 
+EGLBoolean eglGetConfigs(EGLDisplay dpy, EGLConfig *configs,
+                         EGLint config_size, EGLint *num_config) {
+    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
+    if (!num_config) { g_last_error = EGL_BAD_PARAMETER; return EGL_FALSE; }
+    if (configs && config_size > 0) configs[0] = EGL_CONFIG_HANDLE;
+    *num_config = (configs && config_size <= 0) ? 0 : 1;
+    return EGL_TRUE;
+}
+
 EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
                               EGLint attribute, EGLint *value) {
     (void)config;
@@ -174,7 +194,7 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
         case EGL_DEPTH_SIZE:       *value = 24; break;
         case EGL_STENCIL_SIZE:     *value = 8; break;
         case EGL_SURFACE_TYPE:     *value = EGL_WINDOW_BIT; break;
-        case EGL_RENDERABLE_TYPE:  *value = EGL_OPENGL_ES2_BIT; break;
+        case EGL_RENDERABLE_TYPE:  *value = EGL_OPENGL_ES2_BIT | EGL_OPENGL_ES3_BIT; break;
         default:                   *value = 0; break;
     }
     return EGL_TRUE;
@@ -205,6 +225,7 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
         return EGL_NO_CONTEXT;
     }
     g_context_made = 1;
+    g_client_version = attrs.client_version;
     return EGL_CONTEXT_HANDLE;
 }
 
@@ -258,6 +279,56 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
     return EGL_SURFACE_HANDLE;
 }
 
+/* EGL 1.5: the native window is passed by pointer and the attributes are
+ * EGLAttrib-sized. On this one-platform display the pointer is the same
+ * window eglCreateWindowSurface takes. */
+EGLSurface eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig config,
+                                          void *native_window,
+                                          const EGLAttrib *attrib_list) {
+    EGLint attribs[16];
+    size_t n = 0;
+    if (attrib_list) {
+        for (const EGLAttrib *a = attrib_list; a[0] != EGL_NONE; a += 2) {
+            if (n + 3 > sizeof attribs / sizeof attribs[0]) {
+                g_last_error = EGL_BAD_ATTRIBUTE;
+                return EGL_NO_SURFACE;
+            }
+            attribs[n++] = (EGLint)a[0];
+            attribs[n++] = (EGLint)a[1];
+        }
+    }
+    attribs[n] = EGL_NONE;
+    return eglCreateWindowSurface(dpy, config, (EGLNativeWindowType)native_window,
+                                  attribs);
+}
+
+/* EGL_EXT_platform_base: the pre-1.5 spellings, with EGLint attributes. */
+EGLDisplay eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
+                                    const EGLint *attrib_list) {
+    if (attrib_list && attrib_list[0] != EGL_NONE) {
+        g_last_error = EGL_BAD_ATTRIBUTE;
+        return EGL_NO_DISPLAY;
+    }
+    return eglGetPlatformDisplay(platform, native_display, NULL);
+}
+
+EGLSurface eglCreatePlatformWindowSurfaceEXT(EGLDisplay dpy, EGLConfig config,
+                                             void *native_window,
+                                             const EGLint *attrib_list) {
+    return eglCreateWindowSurface(dpy, config, (EGLNativeWindowType)native_window,
+                                  attrib_list);
+}
+
+/* Neither GBM nor Wayland has native pixmaps; both platform specs fail
+ * this call with EGL_BAD_PARAMETER. */
+EGLSurface eglCreatePlatformPixmapSurfaceEXT(EGLDisplay dpy, EGLConfig config,
+                                             void *native_pixmap,
+                                             const EGLint *attrib_list) {
+    (void)dpy; (void)config; (void)native_pixmap; (void)attrib_list;
+    g_last_error = EGL_BAD_PARAMETER;
+    return EGL_NO_SURFACE;
+}
+
 /* Called by libwayland-egl after wl_egl_window_resize gave the window a new
  * bo: re-aim the live window surface's default framebuffer at it. The
  * surface is destroyed and re-created with the new target, which the host
@@ -288,12 +359,20 @@ void _wpk_egl_window_retarget(void *egl_window) {
 EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
                           EGLSurface read, EGLContext ctx) {
     if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
-    if (draw != EGL_SURFACE_HANDLE || read != EGL_SURFACE_HANDLE
+    /* Releasing the current context: queued commands still reach the host. */
+    if (draw == EGL_NO_SURFACE && read == EGL_NO_SURFACE && ctx == EGL_NO_CONTEXT) {
+        _wpk_gl_flush();
+        return EGL_TRUE;
+    }
+    /* EGL_KHR_surfaceless_context: a context without surfaces renders into
+     * framebuffer objects only. */
+    int surfaceless = draw == EGL_NO_SURFACE && read == EGL_NO_SURFACE;
+    if ((!surfaceless && (draw != EGL_SURFACE_HANDLE || read != EGL_SURFACE_HANDLE))
         || ctx != EGL_CONTEXT_HANDLE) {
         g_last_error = EGL_BAD_MATCH;
         return EGL_FALSE;
     }
-    if (!g_context_made || !g_surface_made) {
+    if (!g_context_made || (!surfaceless && !g_surface_made)) {
         g_last_error = EGL_BAD_MATCH;
         return EGL_FALSE;
     }
@@ -368,8 +447,8 @@ EGLint eglGetError(void) {
  * does not define the whole 1.5 entry-point set: the sync objects
  * (eglCreateSync/eglDestroySync/eglClientWaitSync/eglWaitSync/
  * eglGetSyncAttrib), the images (eglCreateImage/eglDestroyImage),
- * eglCreatePlatformWindowSurface/eglCreatePlatformPixmapSurface, and
- * several 1.0-1.4 queries (eglGetConfigs, eglQuerySurface,
+ * eglCreatePlatformPixmapSurface, and
+ * several 1.0-1.4 queries (eglQuerySurface,
  * eglQueryContext, eglGetCurrent*, eglSurfaceAttrib, eglBindTexImage,
  * eglReleaseTexImage, eglCopyBuffers, eglCreatePixmapSurface,
  * eglCreatePbufferFromClientBuffer) are all absent. That gap is
@@ -381,13 +460,25 @@ EGLint eglGetError(void) {
  * consumer needs it; eglQuerySurface in particular needs the granted
  * surface size, which GLIO_CREATE_SURFACE does not report back today. */
 const char *eglQueryString(EGLDisplay dpy, EGLint name) {
-    if (dpy != EGL_DPY_HANDLE) return NULL;
+    /* EGL_EXT_client_extensions: EGL_EXTENSIONS on EGL_NO_DISPLAY lists the
+     * client extensions, which are independent of any display. */
+    if (dpy == EGL_NO_DISPLAY && name == EGL_EXTENSIONS)
+        return wayland_platform()
+            ? "EGL_EXT_client_extensions EGL_EXT_platform_base "
+              "EGL_KHR_platform_wayland EGL_EXT_platform_wayland"
+            : "EGL_EXT_client_extensions EGL_EXT_platform_base";
+    if (dpy != EGL_DPY_HANDLE) {
+        g_last_error = EGL_BAD_DISPLAY;
+        return NULL;
+    }
     switch (name) {
         case EGL_VENDOR:      return "wasm-posix-kernel";
         case EGL_VERSION:     return "1.5 wpk";
         case EGL_CLIENT_APIS: return "OpenGL_ES";
-        case EGL_EXTENSIONS:  return "";
-        default:              return NULL;
+        case EGL_EXTENSIONS:  return "EGL_KHR_surfaceless_context";
+        default:
+            g_last_error = EGL_BAD_PARAMETER;
+            return NULL;
     }
 }
 
@@ -396,31 +487,46 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
 
 __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname) {
     if (!procname) return NULL;
+    WPK_MAP_GL(eglCreatePlatformPixmapSurfaceEXT);
+    WPK_MAP_GL(eglCreatePlatformWindowSurfaceEXT);
+    WPK_MAP_GL(eglGetPlatformDisplayEXT);
     WPK_MAP_GL(glActiveTexture);
     WPK_MAP_GL(glAttachShader);
     WPK_MAP_GL(glBindAttribLocation);
     WPK_MAP_GL(glBindBuffer);
+    WPK_MAP_GL(glBindBufferBase);
+    WPK_MAP_GL(glBindBufferRange);
     WPK_MAP_GL(glBindFramebuffer);
     WPK_MAP_GL(glBindRenderbuffer);
+    WPK_MAP_GL(glBindSampler);
     WPK_MAP_GL(glBindTexture);
+    WPK_MAP_GL(glBindVertexArray);
     WPK_MAP_GL(glBlendColor);
     WPK_MAP_GL(glBlendEquation);
     WPK_MAP_GL(glBlendEquationSeparate);
     WPK_MAP_GL(glBlendFunc);
     WPK_MAP_GL(glBlendFuncSeparate);
+    WPK_MAP_GL(glBlitFramebuffer);
     WPK_MAP_GL(glBufferData);
     WPK_MAP_GL(glBufferSubData);
     WPK_MAP_GL(glCheckFramebufferStatus);
     WPK_MAP_GL(glClear);
+    WPK_MAP_GL(glClearBufferfi);
+    WPK_MAP_GL(glClearBufferfv);
+    WPK_MAP_GL(glClearBufferiv);
+    WPK_MAP_GL(glClearBufferuiv);
     WPK_MAP_GL(glClearColor);
     WPK_MAP_GL(glClearDepthf);
     WPK_MAP_GL(glClearStencil);
+    WPK_MAP_GL(glClientWaitSync);
     WPK_MAP_GL(glColorMask);
     WPK_MAP_GL(glCompileShader);
     WPK_MAP_GL(glCompressedTexImage2D);
     WPK_MAP_GL(glCompressedTexSubImage2D);
+    WPK_MAP_GL(glCopyBufferSubData);
     WPK_MAP_GL(glCopyTexImage2D);
     WPK_MAP_GL(glCopyTexSubImage2D);
+    WPK_MAP_GL(glCopyTexSubImage3D);
     WPK_MAP_GL(glCreateProgram);
     WPK_MAP_GL(glCreateShader);
     WPK_MAP_GL(glCullFace);
@@ -428,8 +534,11 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(glDeleteFramebuffers);
     WPK_MAP_GL(glDeleteProgram);
     WPK_MAP_GL(glDeleteRenderbuffers);
+    WPK_MAP_GL(glDeleteSamplers);
     WPK_MAP_GL(glDeleteShader);
+    WPK_MAP_GL(glDeleteSync);
     WPK_MAP_GL(glDeleteTextures);
+    WPK_MAP_GL(glDeleteVertexArrays);
     WPK_MAP_GL(glDepthFunc);
     WPK_MAP_GL(glDepthMask);
     WPK_MAP_GL(glDepthRangef);
@@ -437,23 +546,30 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(glDisable);
     WPK_MAP_GL(glDisableVertexAttribArray);
     WPK_MAP_GL(glDrawArrays);
+    WPK_MAP_GL(glDrawArraysInstanced);
     WPK_MAP_GL(glDrawElements);
     WPK_MAP_GL(glDrawBuffer);
     WPK_MAP_GL(glDrawBuffers);
 
+    WPK_MAP_GL(glDrawElementsInstanced);
     WPK_MAP_GL(glEnable);
     WPK_MAP_GL(glEnableVertexAttribArray);
+    WPK_MAP_GL(glFenceSync);
     WPK_MAP_GL(glFinish);
     WPK_MAP_GL(glFlush);
+    WPK_MAP_GL(glFlushMappedBufferRange);
     WPK_MAP_GL(glFramebufferRenderbuffer);
     WPK_MAP_GL(glFramebufferTexture2D);
+    WPK_MAP_GL(glFramebufferTextureLayer);
     WPK_MAP_GL(glFrontFace);
     WPK_MAP_GL(glGenBuffers);
     WPK_MAP_GL(glGenerateMipmap);
     WPK_MAP_GL(glGenFramebuffers);
     WPK_MAP_GL(glGenRenderbuffers);
+    WPK_MAP_GL(glGenSamplers);
     WPK_MAP_GL(glGenTextures);
 
+    WPK_MAP_GL(glGenVertexArrays);
     WPK_MAP_GL(glGetActiveUniform);
 
     WPK_MAP_GL(glGetAttribLocation);
@@ -473,6 +589,9 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(glGetString);
 
 
+    WPK_MAP_GL(glGetStringi);
+    WPK_MAP_GL(glGetSynciv);
+    WPK_MAP_GL(glGetUniformBlockIndex);
     WPK_MAP_GL(glGetUniformfv);
     WPK_MAP_GL(glGetUniformiv);
     WPK_MAP_GL(glGetUniformLocation);
@@ -487,15 +606,20 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
 
 
 
+    WPK_MAP_GL(glInvalidateFramebuffer);
     WPK_MAP_GL(glLineWidth);
     WPK_MAP_GL(glLinkProgram);
+    WPK_MAP_GL(glMapBufferRange);
     WPK_MAP_GL(glPixelStorei);
     WPK_MAP_GL(glPolygonOffset);
     WPK_MAP_GL(glReadBuffer);
     WPK_MAP_GL(glReadPixels);
     WPK_MAP_GL(glReleaseShaderCompiler);
     WPK_MAP_GL(glRenderbufferStorage);
+    WPK_MAP_GL(glRenderbufferStorageMultisample);
     WPK_MAP_GL(glSampleCoverage);
+    WPK_MAP_GL(glSamplerParameterf);
+    WPK_MAP_GL(glSamplerParameteri);
     WPK_MAP_GL(glScissor);
     WPK_MAP_GL(glShaderBinary);
     WPK_MAP_GL(glShaderSource);
@@ -510,26 +634,45 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(glTexParameterfv);
     WPK_MAP_GL(glTexParameteri);
     WPK_MAP_GL(glTexParameteriv);
+    WPK_MAP_GL(glTexStorage2D);
+    WPK_MAP_GL(glTexStorage3D);
     WPK_MAP_GL(glTexSubImage2D);
+    WPK_MAP_GL(glTexSubImage3D);
     WPK_MAP_GL(glUniform1f);
     WPK_MAP_GL(glUniform1fv);
     WPK_MAP_GL(glUniform1i);
     WPK_MAP_GL(glUniform1iv);
+    WPK_MAP_GL(glUniform1ui);
+    WPK_MAP_GL(glUniform1uiv);
     WPK_MAP_GL(glUniform2f);
     WPK_MAP_GL(glUniform2fv);
     WPK_MAP_GL(glUniform2i);
     WPK_MAP_GL(glUniform2iv);
+    WPK_MAP_GL(glUniform2ui);
+    WPK_MAP_GL(glUniform2uiv);
     WPK_MAP_GL(glUniform3f);
     WPK_MAP_GL(glUniform3fv);
     WPK_MAP_GL(glUniform3i);
     WPK_MAP_GL(glUniform3iv);
+    WPK_MAP_GL(glUniform3ui);
+    WPK_MAP_GL(glUniform3uiv);
     WPK_MAP_GL(glUniform4f);
     WPK_MAP_GL(glUniform4fv);
     WPK_MAP_GL(glUniform4i);
     WPK_MAP_GL(glUniform4iv);
+    WPK_MAP_GL(glUniform4ui);
+    WPK_MAP_GL(glUniform4uiv);
+    WPK_MAP_GL(glUniformBlockBinding);
     WPK_MAP_GL(glUniformMatrix2fv);
+    WPK_MAP_GL(glUniformMatrix2x3fv);
+    WPK_MAP_GL(glUniformMatrix2x4fv);
     WPK_MAP_GL(glUniformMatrix3fv);
+    WPK_MAP_GL(glUniformMatrix3x2fv);
+    WPK_MAP_GL(glUniformMatrix3x4fv);
     WPK_MAP_GL(glUniformMatrix4fv);
+    WPK_MAP_GL(glUniformMatrix4x2fv);
+    WPK_MAP_GL(glUniformMatrix4x3fv);
+    WPK_MAP_GL(glUnmapBuffer);
     WPK_MAP_GL(glUseProgram);
 
     WPK_MAP_GL(glVertexAttrib1f);
@@ -540,8 +683,11 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(glVertexAttrib3fv);
     WPK_MAP_GL(glVertexAttrib4f);
     WPK_MAP_GL(glVertexAttrib4fv);
+    WPK_MAP_GL(glVertexAttribDivisor);
+    WPK_MAP_GL(glVertexAttribIPointer);
     WPK_MAP_GL(glVertexAttribPointer);
     WPK_MAP_GL(glViewport);
+    WPK_MAP_GL(glWaitSync);
     return NULL;
 }
 

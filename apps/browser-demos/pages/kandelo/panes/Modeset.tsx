@@ -14,6 +14,7 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { describeClipboardPasteFailure } from "../../../../../web-libs/kandelo-session/src/clipboard-paste";
 import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
+import { INPUT_POINTER_ABS_MAX } from "@host/generated/abi";
 import { DemoSurfaceDockControls, IngestControl } from "./Framebuffer";
 import { useDockActions } from "./DockActions";
 import { useFittedCanvasStyle } from "./canvasFit";
@@ -228,14 +229,19 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
       prevCanvasY = canvasY;
     };
     // Absolute-position pointer feed for evdev consumers (SDL2's
-    // KMSDRM backend reads `/dev/input/event1`, which the PS/2
-    // `sendMouseEvent` path above does NOT reach). `toCanvasCoords`
-    // already maps the OS pointer into framebuffer pixels (0..canvas
-    // .width), exactly the range SDL expects after we set the kernel's
-    // ABS_X/Y.maximum to the framebuffer size. modeset.c ignores
-    // event1 (it reads PS/2 /dev/input/mice), so feeding both is safe.
+    // KMSDRM backend and libinput read `/dev/input/event1`, which the
+    // PS/2 `sendMouseEvent` path above does NOT reach). The device
+    // advertises a fixed 0..INPUT_POINTER_ABS_MAX range that does not
+    // follow the display mode, so the framebuffer position is sent as
+    // that fraction of the framebuffer. modeset.c ignores event1 (it
+    // reads PS/2 /dev/input/mice), so feeding both is safe.
     const sendAbs = (canvasX: number, canvasY: number) => {
-      handleRef.current?.sendPointerAbs(canvasX, canvasY, buttons);
+      const { w, h } = fbDims();
+      handleRef.current?.sendPointerAbs(
+        Math.round((canvasX / w) * INPUT_POINTER_ABS_MAX),
+        Math.round((canvasY / h) * INPUT_POINTER_ABS_MAX),
+        buttons,
+      );
     };
     const onPointerEnter = (e: PointerEvent) => {
       if (e.pointerType === "touch") return;

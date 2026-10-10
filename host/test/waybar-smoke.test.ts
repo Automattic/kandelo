@@ -55,8 +55,6 @@ const hasBinaries =
   !!compositorBin && !!dashBin && !!daemonBin && !!waybarBin && !!kwlctlBin &&
   existsSync(dashBin!);
 
-const CANVAS_W = 1920;
-const CANVAS_H = 1080;
 
 // Unique per run: the kernel's /tmp is host-backed and persists across
 // hosts, so a failed run's leftover socket node would EADDRINUSE the
@@ -210,7 +208,6 @@ describe("waybar — upstream status bar on wlcompositor's Hyprland IPC", () => 
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         // Never settles: the compositor runs until its last client goes,
         // and this test leaves the bar up for host.destroy() to reap.

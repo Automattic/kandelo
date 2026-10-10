@@ -1,0 +1,170 @@
+# winit 0.30.13: target_family = "wasm" means the browser here (winit's
+# own web_platform alias adds target_os = "unknown"); Kandelo takes the
+# Wayland backend. Kandelo's gettid() is the pid on the main thread.
+--- a/Cargo.toml	2026-10-08 15:41:35
++++ b/Cargo.toml	2026-10-08 15:41:35
+@@ -219,38 +219,38 @@
+ [build-dependencies.cfg_aliases]
+ version = "0.2.1"
+ 
+-[target.'cfg(all(target_family = "wasm", target_feature = "atomics"))'.dependencies.atomic-waker]
++[target.'cfg(all(all(target_family = "wasm", target_os = "unknown"), target_feature = "atomics"))'.dependencies.atomic-waker]
+ version = "1"
+ 
+-[target.'cfg(all(target_family = "wasm", target_feature = "atomics"))'.dependencies.concurrent-queue]
++[target.'cfg(all(all(target_family = "wasm", target_os = "unknown"), target_feature = "atomics"))'.dependencies.concurrent-queue]
+ version = "2"
+ default-features = false
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.ahash]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.ahash]
+ version = "0.8.7"
+ features = ["no-rng"]
+ optional = true
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.bytemuck]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.bytemuck]
+ version = "1.13.1"
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.calloop]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.calloop]
+ version = "0.13.0"
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.libc]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.libc]
+ version = "0.2.64"
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.memmap2]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.memmap2]
+ version = "0.9.0"
+ optional = true
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.percent-encoding]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.percent-encoding]
+ version = "2.0"
+ optional = true
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.rustix]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.rustix]
+ version = "0.38.4"
+ features = [
+     "std",
+@@ -260,43 +260,43 @@
+ ]
+ default-features = false
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.sctk]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.sctk]
+ version = "0.19.2"
+ features = ["calloop"]
+ optional = true
+ default-features = false
+ package = "smithay-client-toolkit"
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.sctk-adwaita]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.sctk-adwaita]
+ version = "0.10.1"
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.wayland-backend]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.wayland-backend]
+ version = "0.3.10"
+ features = ["client_system"]
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.wayland-client]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.wayland-client]
+ version = "0.31.10"
+ optional = true
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.wayland-protocols]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.wayland-protocols]
+ version = "0.32.8"
+ features = ["staging"]
+ optional = true
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.wayland-protocols-plasma]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.wayland-protocols-plasma]
+ version = "0.3.8"
+ features = ["client"]
+ optional = true
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.x11-dl]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.x11-dl]
+ version = "2.19.1"
+ optional = true
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.x11rb]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.x11rb]
+ version = "0.13.0"
+ features = [
+     "allow-unsafe-code",
+@@ -309,7 +309,7 @@
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.xkbcommon-dl]
++[target.'cfg(all(unix, not(any(target_os = "redox", all(target_family = "wasm", target_os = "unknown"), target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies.xkbcommon-dl]
+ version = "0.4.2"
+ 
+ [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies.block2]
+@@ -332,22 +332,22 @@
+ ]
+ default-features = false
+ 
+-[target.'cfg(target_family = "wasm")'.dependencies.js-sys]
++[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.js-sys]
+ version = "0.3.70"
+ 
+-[target.'cfg(target_family = "wasm")'.dependencies.pin-project]
++[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.pin-project]
+ version = "1"
+ 
+-[target.'cfg(target_family = "wasm")'.dependencies.wasm-bindgen]
++[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.wasm-bindgen]
+ version = "0.2.93"
+ 
+-[target.'cfg(target_family = "wasm")'.dependencies.wasm-bindgen-futures]
++[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.wasm-bindgen-futures]
+ version = "0.4.43"
+ 
+-[target.'cfg(target_family = "wasm")'.dependencies.web-time]
++[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.web-time]
+ version = "1"
+ 
+-[target.'cfg(target_family = "wasm")'.dependencies.web_sys]
++[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.web_sys]
+ version = "0.3.70"
+ features = [
+     "AbortController",
+@@ -402,10 +402,10 @@
+ ]
+ package = "web-sys"
+ 
+-[target.'cfg(target_family = "wasm")'.dev-dependencies.console_error_panic_hook]
++[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dev-dependencies.console_error_panic_hook]
+ version = "0.1"
+ 
+-[target.'cfg(target_family = "wasm")'.dev-dependencies.tracing-web]
++[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dev-dependencies.tracing-web]
+ version = "0.1"
+ 
+ [target.'cfg(target_os = "android")'.dependencies.android-activity]
+--- a/src/platform_impl/linux/mod.rs	2026-10-08 15:41:35
++++ b/src/platform_impl/linux/mod.rs	2026-10-08 15:41:35
+@@ -1031,6 +1031,11 @@
+     rustix::thread::gettid() == rustix::process::getpid()
+ }
+ 
++#[cfg(target_os = "kandelo")]
++fn is_main_thread() -> bool {
++    unsafe { libc::gettid() == libc::getpid() }
++}
++
+ #[cfg(any(target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd"))]
+ fn is_main_thread() -> bool {
+     use libc::pthread_main_np;

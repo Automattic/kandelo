@@ -44,6 +44,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { pointerAbs } from "./support/pointer-abs";
 
 const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const clockBin = tryResolveBinary("programs/wayland-demo/wlclock.wasm");
@@ -115,8 +116,8 @@ describe("wayland desktop — multi-client compositing, routing, move grabs", ()
         `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
 
       const moveTo = (x: number, y: number) => {
-        host.injectInputEvent(1, EV_ABS, ABS_X, x);
-        host.injectInputEvent(1, EV_ABS, ABS_Y, y);
+        host.injectInputEvent(1, EV_ABS, ABS_X, pointerAbs(x, CANVAS_W));
+        host.injectInputEvent(1, EV_ABS, ABS_Y, pointerAbs(y, CANVAS_H));
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
       };
       // libinput's button debounce (evdev-debounce.c) treats a
@@ -137,7 +138,6 @@ describe("wayland desktop — multi-client compositing, routing, move grabs", ()
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(loadBytes(compositorBin!), ["wlcompositor"], {});
         await waitFor(out, "COMPOSITOR_UP", 20_000, dump);

@@ -1761,6 +1761,28 @@ impl Process {
         pending & !blocked
     }
 
+    /// Signals deliverable to TID that interrupt a wait. A deliverable signal
+    /// whose action is to ignore it (a default-ignored one kept pending while
+    /// it was blocked) is discarded first: delivering it has no effect, so it
+    /// must not end a sigsuspend or turn a poll into EINTR, as on Linux.
+    pub fn interrupting_signals_for(&mut self, tid: u32) -> u64 {
+        let mut ignored = self.deliverable_for(tid);
+        while ignored != 0 {
+            let signum = ignored.trailing_zeros() + 1;
+            ignored &= ignored - 1;
+            let handler = self.signals.get_action(signum).handler;
+            if !crate::signal::should_discard_pending(signum, &handler) {
+                continue;
+            }
+            while self.deliverable_for(tid) & crate::signal::sig_bit(signum) != 0 {
+                if self.consume_signal_for(tid, signum).is_none() {
+                    break;
+                }
+            }
+        }
+        self.deliverable_for(tid)
+    }
+
     /// Return the next signal deliverable in the current lifecycle state.
     /// Stopped processes retain every pending signal except SIGKILL; SIGCONT
     /// resumes at generation time and reaches this method as Running.

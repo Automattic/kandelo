@@ -1,0 +1,40 @@
+# rustix 0.38.44: Kandelo's libc is musl: it has O_RSYNC and O_PATH as on
+# Linux, has no FALLOC_FL_NO_HIDE_STALE (as musl on Linux), and types the
+# ioctl opcode as c_int.
+--- a/src/backend/libc/fs/types.rs	2026-10-08 15:41:35
++++ b/src/backend/libc/fs/types.rs	2026-10-08 15:41:35
+@@ -269,6 +269,7 @@
+         /// `O_RSYNC`
+         #[cfg(any(
+             linux_kernel,
++            target_os = "kandelo",
+             netbsdlike,
+             solarish,
+             target_os = "emscripten",
+@@ -286,6 +287,7 @@
+         /// `O_PATH`
+         #[cfg(any(
+             linux_kernel,
++            target_os = "kandelo",
+             target_os = "emscripten",
+             target_os = "freebsd",
+             target_os = "fuchsia",
+@@ -839,6 +841,7 @@
+             target_os = "haiku",
+             target_os = "hurd",
+             target_os = "l4re",
++            target_os = "kandelo",
+             target_os = "linux",
+             target_os = "wasi",
+         )))]
+--- a/src/ioctl/mod.rs	2026-10-08 15:41:35
++++ b/src/ioctl/mod.rs	2026-10-08 15:41:35
+@@ -318,7 +318,7 @@
+ // Musl uses `c_int`.
+ #[cfg(all(
+     not(linux_raw),
+-    target_os = "linux",
++    any(target_os = "linux", target_os = "kandelo"),
+     not(target_env = "gnu"),
+     not(target_env = "uclibc")
+ ))]

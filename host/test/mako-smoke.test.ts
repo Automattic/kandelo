@@ -53,8 +53,6 @@ const hasBinaries =
   !!compositorBin && !!dashBin && !!daemonBin && !!makoBin && !!makoctlBin &&
   !!notifyBin && existsSync(dashBin!);
 
-const CANVAS_W = 1920;
-const CANVAS_H = 1080;
 
 // Unique per run: the kernel's /tmp is host-backed and persists across
 // hosts, so a failed run's leftover socket node would EADDRINUSE the
@@ -161,7 +159,6 @@ describe("mako — upstream notification daemon on wlcompositor + dbus", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         // A scale-2 output, so the toast has a scale to discover. mako reads
         // it from wl_surface.enter and sizes its buffer from it, which is why

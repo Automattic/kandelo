@@ -38,12 +38,6 @@ const wltermBin = tryResolveBinary("programs/wayland-demo/wlterm.wasm");
 const shellBin = tryResolveBinary("programs/bash.wasm");
 const hasBinaries = !!compositorBin && !!wltermBin && !!shellBin && existsSync(shellBin!);
 
-// Input canvas dims are arbitrary here — wlterm is keyboard-driven, and the
-// compositor routes keys by keycode independent of the pointer scale. We match
-// the compositor's card0 output anyway for consistency with the other smokes.
-const CANVAS_W = 1920;
-const CANVAS_H = 1080;
-
 // linux/input-event-codes.h
 const EV_SYN = 0x00;
 const EV_KEY = 0x01;
@@ -92,7 +86,6 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         // --- compositor (server) ---
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
@@ -179,7 +172,6 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
         const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
         await waitFor(out, "COMPOSITOR_UP", 20_000, dump);

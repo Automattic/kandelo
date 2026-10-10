@@ -707,7 +707,14 @@ impl SignalState {
         if signum == 0 || signum >= 65 {
             return false;
         }
-        if should_discard_pending(signum, &self.actions[signum as usize].handler) {
+        // A blocked signal whose default action is to ignore it stays
+        // pending, as on Linux: sigwait() and a signalfd read it while it is
+        // blocked (libwayland's SIGCHLD source does). Unblocking it later
+        // delivers it, which has no effect. SIG_IGN still discards it here.
+        let handler = self.actions[signum as usize].handler;
+        let blocked_default = matches!(handler, SignalHandler::Default)
+            && self.blocked & sig_bit(signum) != 0;
+        if should_discard_pending(signum, &handler) && !blocked_default {
             return true;
         }
         if signum >= SIGRTMIN {
@@ -1274,6 +1281,23 @@ mod tests {
 
         assert!(state.raise(SIGUSR1));
         assert!(!state.is_pending(SIGUSR1));
+    }
+
+    #[test]
+    fn test_blocked_default_ignored_signal_stays_pending() {
+        let mut state = SignalState::new();
+        state.blocked = sig_bit(SIGCHLD);
+
+        assert!(state.raise(SIGCHLD));
+        assert!(state.is_pending(SIGCHLD));
+    }
+
+    #[test]
+    fn test_unblocked_default_ignored_signal_is_discarded() {
+        let mut state = SignalState::new();
+
+        assert!(state.raise(SIGCHLD));
+        assert!(!state.is_pending(SIGCHLD));
     }
 
     #[test]
