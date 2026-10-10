@@ -63,6 +63,20 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/syscall-stdlib/run.ts .
 The same selected cases are included in `go-port.spec.ts` for Chromium,
 Firefox, and WebKit. They are not the full upstream `os` or `syscall` suites.
 
+The builder also links `one-slot-second-m.wasm` with
+`-ldflags=-kandelothreadslots=1`. Go can request an additional M before
+`main`; the one-slot fixture must fail visibly with the host's
+`pthread slot limit exhausted (limit=1` diagnostic and the Go runtime's
+`newosproc: kernel_clone failed` message, rather than hang or overrun its
+declared control arena. Run the Node boundary check with:
+
+```sh
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/slot-limit/run.ts .context/go-browser/one-slot-second-m.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+```
+
+The same negative boundary is exercised in Chromium, Firefox, and WebKit.
+It does not prove every configured slot count or long-lived slot reuse.
+
 ## Resolver package and VFS launch
 
 `go-hello` is a registry program built from this repository's Go sample and

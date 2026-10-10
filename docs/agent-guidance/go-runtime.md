@@ -32,7 +32,11 @@ APIs apply to Kandelo.
   slot arena below the Go heap. The default is 32 slots; the per-program
   `-ldflags='-kandelothreadslots=N'` accepts 1–1024. Each slot reserves
   control memory, so increasing it is a memory-budget decision, especially
-  for browser/WebKit. See `src/cmd/link/internal/wasm/asm.go` in the fork and
+  for browser/WebKit. Go may start another M before `main`, so a one-slot
+  program can hit the host limit during startup; the opt-in Node and
+  three-browser ceiling probe requires a visible diagnostic and Go runtime
+  failure, not a hang or silent arena overflow. See
+  `src/cmd/link/internal/wasm/asm.go` in the fork and
   `host/src/process-memory.ts` in Kandelo.
 - The main thread and each Go M need their own syscall channel. The host
   writes the channel offset through the linker's `__tls_base` receiver;
