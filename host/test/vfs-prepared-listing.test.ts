@@ -28,7 +28,7 @@ async function machine(large = false, foreign = false): Promise<NodeKernelHost> 
 }
 
 describe("worker-side VFS listing and stat", () => {
-  it("inspects live procfs descriptors and device entries through guest close and exit", async () => {
+  it("inspects live procfs descriptors and device entries through guest close and reaping", async () => {
     const listeners = new Map<number, (data: Uint8Array) => void>();
     const buffered = new Map<number, Uint8Array[]>();
     const host = new NodeKernelHost({ rootfsImage: await inspectionImage(), onPtyOutput: (pid, data) => {
@@ -44,10 +44,10 @@ describe("worker-side VFS listing and stat", () => {
       buffered.delete(pid);
     });
     expect(result.status).toBe(0);
-  for (const name of ["dev", "proc"]) {
-    expect(result.root!.filter((entry) => entry.name === name)).toHaveLength(1);
-    expect(result.root!.find((entry) => entry.name === name)!.mode & 0o170000).toBe(0o040000);
-  }
+    for (const name of ["dev", "proc"]) {
+      expect(result.root!.filter((entry) => entry.name === name)).toHaveLength(1);
+      expect(result.root!.find((entry) => entry.name === name)!.mode & 0o170000).toBe(0o040000);
+    }
     expect(result.proc!.find((entry) => entry.name === String(result.pid))).toMatchObject({ mode: 0o040555 });
     expect(result.proc!.find((entry) => entry.name === "self")).toMatchObject({ mode: 0o120777, target: "1" });
     expect(result.process!.find((entry) => entry.name === "cwd")).toMatchObject({ mode: 0o120777, target: "/" });

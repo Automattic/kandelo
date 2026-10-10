@@ -2095,6 +2095,9 @@ them. Procfs/devfs listings share the guest directory enumerators. Numeric
 listing reflects descriptor close and process reaping. Exited children remain
 visible until their parent reaps them. `/dev/pts` uses live
 PTY state, and device aliases report their guest-visible symlink targets.
+Guest-owned PTY masters disappear on their final close. Host-created
+terminal masters currently stay retained until machine destruction;
+process exit closes the guest slave descriptors but not that host master.
 `/proc/self`, `/proc/thread-self` and `/dev/fd` refer to the reserved init
 inspection record, whose descriptor table stays empty. `/dev/shm` remains
 served by tmpfs. This connects directory metadata; it does not add a host
