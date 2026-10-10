@@ -379,6 +379,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   await expectTerminal(page, /LOCK_ENGAGED/, 60_000);
   await expectTerminal(page, /SESSION_LOCKED/, 60_000);
   await expectTerminal(page, /LOCK_SURFACE w=\d+ h=\d+/, 60_000);
+  await expectTerminal(page, /LOCK_INPUT_READY/, 60_000);
   await pressKeys(page, ["KeyX", "Enter"]);
   await expectTerminal(page, /LOCK_ATTEMPT ok=0/, 60_000);
   expect(await terminalText(page), "a wrong password unlocked the session")

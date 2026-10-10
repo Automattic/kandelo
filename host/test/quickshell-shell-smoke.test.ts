@@ -339,6 +339,7 @@ describe("quickshell — the Omarchy shell on wlcompositor + dbus", () => {
         await waitFor(out, "LOCK_ENGAGED", 30_000, dump);
         await waitFor(out, "SESSION_LOCKED", 30_000, dump);
         await waitFor(out, `LOCK_SURFACE w=${CANVAS_W} h=${CANVAS_H}`, 30_000, dump);
+        await waitFor(out, "LOCK_INPUT_READY", 30_000, dump);
         tap(KEY_X);
         tap(KEY_ENTER);
         await waitFor(out, "LOCK_ATTEMPT ok=0", 60_000, dump);

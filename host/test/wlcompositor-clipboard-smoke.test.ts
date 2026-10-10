@@ -138,6 +138,9 @@ describe("wlcompositor — clipboard selection", () => {
         // pastes it through a pipe that A writes.
         const pasteExit = run("paste", ["paste"]);
         await waitFor(() => out.of("paste"), "CLIP_PASTED", 20_000, dump);
+        // Receiving the bytes can finish before the client dispatches keyboard
+        // enter. Observe both events before comparing their actual order.
+        await waitFor(() => out.of("paste"), "CLIP_ENTER", 20_000, dump);
         const paste = out.of("paste");
         expect(paste, dump()).toContain(
           `CLIP_PASTED len=${copyText.length} text=${copyText}`,
