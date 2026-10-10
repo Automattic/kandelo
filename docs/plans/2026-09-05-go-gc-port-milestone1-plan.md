@@ -2306,11 +2306,15 @@ counterpart pass Chromium 3/3. The live Node homepage and login both return
 HTTP 200; the live source-only browser profile reaches Running and renders
 WordPress. The WordPress VFS SHA-256 is
 `5023ff29fa5c7b505896b16625af0d308aa7d5a9ca5a5ee47c06f6aaae7ab284`.
+A fresh full upstream `TestRoot*` Node sweep passes `TestRootDirFS` and
+`TestRootRemoveDot`; its only four failing top-level tests are
+`TestRootChtimes`, `TestRootLinkFrom`, `TestRootConsistencyRename`, and
+`TestRootRenameAfterOpen`, matching the four filesystem gaps below.
 A concurrent full Open POSIX rerun was invalidated when package bootstrap
-regenerated its program index mid-suite; its apparent failures are not
-platform-conformance evidence. The earlier full 174 PASS/3 XFAIL/2 SKIP
-checkpoint predates the latest seek work; a clean full conformance rerun
-remains to be done.
+regenerated its program index mid-suite; its apparent failures were not
+platform-conformance evidence. A subsequent clean full run against this
+kernel and host completed with 174 PASS, 3 expected XFAIL, 2 SKIP, and zero
+unexpected failures (179 total).
 
 The remaining Go/C platform gates, in recommended order, are:
 
@@ -2331,8 +2335,9 @@ The remaining Go/C platform gates, in recommended order, are:
 5. Exercise upper configured thread-slot counts, longer PHP worker churn,
    allocator pressure, and concurrent callbacks; the one-slot failure probe
    does not establish high-count stability.
-6. Provision the full built-in program closure and rerun Sortix os-test and a
-   clean Open POSIX suite against the final kernel and host.
+6. Provision the full built-in program closure and rerun Sortix os-test;
+   repeat broad POSIX conformance after further kernel/host changes. The
+   current Open POSIX suite passes with its documented XFAIL/SKIP cases.
 7. Build a formal application performance suite separate from correctness
    validation. Exploratory browser timing so far demonstrates no FrankenPHP
    latency advantage.
