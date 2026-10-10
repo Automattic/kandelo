@@ -19252,9 +19252,12 @@ export class CentralizedKernelWorker {
         flockPtr + FCNTL_FLOCK_BYTES,
       );
     }
-    let result: { retVal: number; errVal: number; flock: Uint8Array | null };
+    const cmd = origArgs[1];
+    let retVal = -1;
+    let errVal = 0;
+    let resultFlock: Uint8Array | undefined;
     try {
-      result = this.#requireMainScratchRegion().withLease((lease) => {
+      this.#requireMainScratchRegion().withLease((lease) => {
         const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
         lease.copyFrom(flockBytes, CH_DATA, 0, FCNTL_FLOCK_BYTES);
         kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
@@ -19296,14 +19299,14 @@ export class CentralizedKernelWorker {
           this.currentHandlePid = 0;
         }
         const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
-        return {
-          retVal,
-          errVal: resultView.getUint32(CH_ERRNO, true),
-          flock: retVal >= 0
-            ? lease.copyOut(CH_DATA, FCNTL_FLOCK_BYTES)
-            : null,
-        };
+        retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+        errVal = resultView.getUint32(CH_ERRNO, true);
+        // Only GETLK commands have output. SETLK/SETLKW take an input-only
+        // flock; avoid allocating and writing back a redundant result copy.
+        // The original owned input remains immutable for blocking retries.
+        if (retVal >= 0 && (cmd === F_GETLK || cmd === F_GETLK64 || cmd === F_OFD_GETLK)) {
+          resultFlock = lease.copyOut(CH_DATA, FCNTL_FLOCK_BYTES);
+        }
       });
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
@@ -19313,7 +19316,6 @@ export class CentralizedKernelWorker {
 
     if (this.#finishSignalTermination(channel, entry)) return;
 
-    const { retVal, errVal } = result;
     // This marshalling path bypasses the generic syscall completion path,
     // so it must also dequeue a caught signal itself. A conflicting blocking
     // request is interruptible: once a handler signal is prepared for this
@@ -19322,11 +19324,10 @@ export class CentralizedKernelWorker {
     if (this.#finishSignalTermination(channel, entry)) return;
 
     // Copy flock struct back from kernel → process (F_GETLK writes to it)
-    if (result.flock) {
-      new Uint8Array(channel.memory.buffer).set(result.flock, flockPtr);
+    if (resultFlock) {
+      new Uint8Array(channel.memory.buffer).set(resultFlock, flockPtr);
     }
 
-    const cmd = origArgs[1];
     if (
       retVal === -1
       && errVal === EAGAIN

@@ -32,6 +32,42 @@ const LOCK_NB = 4;
 const WAKE_ADVISORY_LOCK = 64;
 
 describe("Rust-owned advisory-lock retry scheduling", () => {
+  it.each([5, 6, 7, 12, 13, 14, 36, 37, 38])(
+    "preserves GETLK output and input-only setters for command %i after memory growth",
+    (command) => {
+      const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 3, shared: true });
+      const processMemory = new WebAssembly.Memory({ initial: 2, maximum: 3, shared: true });
+      const channel = createChannel(7, processMemory);
+      const bytes = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
+      const worker = createWorker({
+        kernel_handle_channel: (pointer: number) => {
+          const input = new DataView(kernelMemory.buffer, pointer);
+          const flock = Number(input.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true));
+          expect(new Uint8Array(kernelMemory.buffer, flock, 32)).toEqual(bytes);
+          // Both memory generations change while the lease is live. Copy-out
+          // and guest writeback must use fresh views rather than stale aliases.
+          kernelMemory.grow(1);
+          processMemory.grow(1);
+          new Uint8Array(kernelMemory.buffer, flock, 32).fill(0xa5);
+          const result = new DataView(kernelMemory.buffer, pointer);
+          result.setBigInt64(CH_RETURN, 0n, true);
+          result.setUint32(CH_ERRNO, 0, true);
+          return 0;
+        },
+      }, kernelMemory);
+      const state = mutableState(worker);
+      state.processes = new Map([[channel.pid, { channels: [channel], memory: processMemory, ptrWidth: 4 }]]);
+      state.activeChannels = [channel];
+      new Uint8Array(processMemory.buffer).set(bytes, FLOCK_PTR);
+      setChannelSyscall(channel, ABI_SYSCALLS.Fcntl, [3, command, FLOCK_PTR, 0, 0, 0]);
+      worker.testAuthority.dispatchScratchBoundarySyscallForTest(channel);
+      expect(new Uint8Array(processMemory.buffer, FLOCK_PTR, 32)).toEqual(
+        [5, 12, 36].includes(command) ? new Uint8Array(32).fill(0xa5) : bytes,
+      );
+      expect(readChannelResult(channel)).toEqual({ retVal: 0n, errVal: 0 });
+    },
+  );
+
   it("parks only a conflicting blocking request, not ENOLCK", () => {
     const conflict = createFcntlHarness(EAGAIN);
     conflict.worker.testAuthority.dispatchScratchBoundarySyscallForTest(
