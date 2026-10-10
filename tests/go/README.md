@@ -47,11 +47,11 @@ public API check. They do not establish host account database integration or
 full `os/user` conformance.
 
 The fixture builder also compiles upstream `os` and `syscall` test binaries.
-The 34 selected upstream `os` cases cover stat, positioned reads, open
+The 35 selected upstream `os` cases cover stat, positioned reads, open
 errors, directory batching/cleanup/seek, large and negative file seeks,
 chmod, path/fd/symlink chown,
 root-relative `MkdirAll`, recursive removal, symlink/rename, file read/write,
-temporary paths, and root-relative open/symlink/remove-dot/DirFS containment. Two Unix-domain
+temporary paths, and root-relative open/symlink/rename/remove-dot/DirFS containment. Two Unix-domain
 socket subcases skip because AF_UNIX is not supported. The selected `syscall`
 cases cover `ReadDirent` and `ParseDirent` across repeated buffers. Run their
 Node VFS cases with:

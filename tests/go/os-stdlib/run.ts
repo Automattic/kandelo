@@ -32,7 +32,7 @@ const selectedTests = [
   "TestRemoveAll", "TestSymlink", "TestRename", "TestCreateTemp", "TestMkdirTemp",
   "TestTruncate", "TestDirSeek", "TestReaddirSmallSeek", "TestSeek", "TestSeekError",
   "TestRootOpen_File", "TestRootOpen_Directory", "TestRootSymlink",
-  "TestRootConsistencyMkdirAll", "TestRootDirFS",
+  "TestRootConsistencyMkdirAll", "TestRootConsistencyRename", "TestRootDirFS",
   "TestRootRemoveDot",
 ];
 const requiredMarkers = [
@@ -43,6 +43,7 @@ const requiredMarkers = [
   "--- PASS: TestSeek", "--- PASS: TestSeekError",
   "--- PASS: TestRootOpen_File", "--- PASS: TestRootOpen_Directory",
   "--- PASS: TestRootSymlink", "--- PASS: TestRootConsistencyMkdirAll",
+  "--- PASS: TestRootConsistencyRename",
   "--- PASS: TestRootRemoveDot", "--- PASS: TestRootDirFS",
 ];
 

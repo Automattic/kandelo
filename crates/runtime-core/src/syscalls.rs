@@ -7990,6 +7990,9 @@ pub fn sys_rename(
     newpath: &[u8],
 ) -> Result<(), Errno> {
     let old_entry = resolve_namespace_path(proc, host, oldpath, PathResolveOptions::NOFOLLOW)?;
+    if final_component_is_dot(oldpath) {
+        return Err(Errno::EINVAL);
+    }
     let new_options = if old_entry
         .stat
         .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFDIR)
@@ -15009,6 +15012,9 @@ pub fn sys_renameat(
     newpath: &[u8],
 ) -> Result<(), Errno> {
     let old_entry = resolve_at_path(proc, host, olddirfd, oldpath, PathResolveOptions::NOFOLLOW)?;
+    if final_component_is_dot(oldpath) {
+        return Err(Errno::EINVAL);
+    }
     let new_options = if old_entry
         .stat
         .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFDIR)
@@ -30040,6 +30046,22 @@ mod tests {
             assert_eq!(sys_rmdir(&mut proc, &mut host, path), Err(Errno::EINVAL));
             assert_eq!(
                 sys_unlinkat(&mut proc, &mut host, AT_FDCWD, path, AT_REMOVEDIR),
+                Err(Errno::EINVAL)
+            );
+        }
+    }
+
+    #[test]
+    fn test_rename_dot_does_not_reach_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for path in [b".".as_slice(), b"./", b"/tmp/.", b"/tmp/.//"] {
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, path, b"/tmp/new"),
+                Err(Errno::EINVAL)
+            );
+            assert_eq!(
+                sys_renameat(&mut proc, &mut host, AT_FDCWD, path, AT_FDCWD, b"/tmp/new"),
                 Err(Errno::EINVAL)
             );
         }
