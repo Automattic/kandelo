@@ -124,6 +124,61 @@ test("produces every registered image and the 80-body closure from all legacy re
   }
 });
 
+test("stages a complete deployment larger than its bounded capture budget", async () => {
+  const fixture = await createFixture();
+  try {
+    const bodies = [...fixture.members.values()];
+    const budget = Math.max(...bodies.map((body) => body.byteLength));
+    assert.ok(bodies.reduce((total, body) => total + body.byteLength, 0) > budget);
+    await withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+      buildLocalVfsAssetGroup({
+        assetGroupDirectory: fixture.outputDirectory,
+        productMapPath: fixture.productMapPath,
+        sourceRoot,
+        maxCaptureBytes: budget,
+      }),
+    );
+    for (const [_id, _load, sourceName, output] of PRODUCTS) {
+      assert.deepEqual(
+        readFileSync(join(fixture.outputDirectory, "images", output)),
+        fixture.members.get(`programs/wasm32/${sourceName}`),
+      );
+    }
+    const manifest = validateVfsAssetGroupManifest(JSON.parse(
+      readFileSync(join(fixture.outputDirectory, "manifest.json"), "utf8"),
+    ));
+    for (const asset of manifest.assets) {
+      const bytes = readFileSync(join(fixture.outputDirectory, asset.path));
+      assert.equal(bytes.byteLength, asset.bytes);
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), asset.sha256);
+    }
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("rejects a body above the capture budget and removes unpublished staging", async () => {
+  const fixture = await createFixture();
+  try {
+    await assert.rejects(
+      withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+        buildLocalVfsAssetGroup({
+          assetGroupDirectory: fixture.outputDirectory,
+          productMapPath: fixture.productMapPath,
+          sourceRoot,
+          maxCaptureBytes: 1,
+        }),
+      ),
+      /total retained-byte limit/,
+    );
+    assert.equal(existsSync(fixture.outputDirectory), false);
+    assert.equal(existsSync(fixture.productMapPath), false);
+    assert.deepEqual(readdirSync(dirname(fixture.outputDirectory)), []);
+  } finally {
+    fixture.dispose();
+  }
+});
+
 test("rejects a missing SourceOnly lazy member before publishing", async () => {
   const fixture = await createFixture();
   try {

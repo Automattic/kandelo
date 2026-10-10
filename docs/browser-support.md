@@ -2332,6 +2332,14 @@ way to build the seven active VFS products. Produce
 `local-binaries/vfs-group` and its private product map, then pass both explicit
 paths to each production build:
 
+The group producer pins one SourceOnly authority and captures, verifies and
+stages one body at a time. Each capture is limited to 512 MiB (callers may
+select a smaller budget); the complete on-disk deployment may be larger.
+Only byte counts and hashes remain in the manifest inventory. Every lazy
+body must match its image's size and archive digest before the completed
+group and private map are published. A failed capture removes unpublished
+staging and preserves the prior generated outputs.
+
 ```bash
 export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
 export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
