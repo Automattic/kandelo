@@ -239,14 +239,12 @@ exited normally with status zero.
 | `spawn_large_wire_bytes` | bytes | Complete deterministic large-spawn wire size asserted by both host wrappers |
 | `spawn_large_first_ms` | ms | First spawn with an 84,386-byte complete wire blob |
 | `spawn_large_repeat_ms` | ms | Mean of five subsequent 84,386-byte spawns in the same kernel |
-| `spawn_scratch_retained_bytes` | bytes | Rust-owned spawn scratch capacity retained after the workload |
 | `spawn_scratch_kernel_bytes` | bytes | Kernel WebAssembly memory size after the workload |
 
 For this workload, post-run kernel memory is also peak kernel memory only
-because WebAssembly memory grows monotonically and cannot shrink. Likewise,
-post-run Rust `Vec<u8>` capacity is the retained scratch high-water mark because
-the kernel keeps that reusable allocation and does not shrink it between
-spawns. These are properties of the measured implementation, not a general
+because WebAssembly memory grows monotonically and cannot shrink. The kernel
+reads each spawn request straight from the caller's memory (ABI 50), so there
+is no retained spawn scratch to report. These are properties of the measured implementation, not a general
 claim that a final sample can substitute for peak-memory instrumentation.
 
 #### erlang-ring

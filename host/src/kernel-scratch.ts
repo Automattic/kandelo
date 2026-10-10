@@ -118,11 +118,10 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  * `kernel_handle_channel_record` (the same implementation on the record
  * transport) scope their raw mailbox view to decoding/publishing and clear the
  * active task binding;
- * `kernel_spawn_process` parses the complete blob into owned Rust values
- * before it enters process-table or host work; and
  * `kernel_process_metadata_stage` copies one complete entry into a token-owned
  * Rust vector before returning; both executable-target prepare exports copy
- * the path before returning. The transfer execute export names no raw pointer,
+ * the path before returning. `kernel_exec_target_admit` and
+ * `kernel_process_metadata_read` only write their record into the lease. The transfer execute export names no raw pointer,
  * but its token authorizes Rust to borrow the allocation represented by this
  * exact lease. Adding a name requires the same lifetime review and a pointer-
  * position update below.
@@ -136,6 +135,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_drain_wakeup_events",
   "kernel_enum_procs",
   "kernel_epoll_wake_indices",
+  "kernel_exec_target_admit",
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
   "kernel_get_cwd",
@@ -155,6 +155,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_pipe_write",
   "kernel_pick_tcp_listener_target",
   "kernel_poll",
+  "kernel_process_metadata_read",
   "kernel_process_metadata_stage",
   "kernel_pty_master_read",
   "kernel_pty_master_write",
@@ -173,7 +174,6 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_setsockopt",
   "kernel_socketpair",
   "kernel_spawn_exec_target_prepare",
-  "kernel_spawn_process",
   "kernel_take_process_timer_cleanup",
   "kernel_tcgetattr",
   "kernel_tcsetattr",
@@ -273,12 +273,13 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_pick_tcp_listener_target":
     case "kernel_rootfs_export_container_read":
     case "kernel_spawn_exec_target_prepare":
-    case "kernel_spawn_process":
     case "kernel_tcsetattr":
       return REQUIRED_POINTER_2;
     case "kernel_epoll_wake_indices":
     case "kernel_process_metadata_stage":
     case "kernel_exec_target_prepare":
+    case "kernel_exec_target_admit":
+    case "kernel_process_metadata_read":
     case "kernel_setsockopt":
     case "kernel_socketpair":
       return REQUIRED_POINTER_3;
@@ -335,6 +336,7 @@ function isKernelScratchExportName(
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
     case "kernel_epoll_wake_indices":
+    case "kernel_exec_target_admit":
     case "kernel_exec_target_prepare":
     case "kernel_exec_target_read":
     case "kernel_get_cwd":
@@ -354,6 +356,7 @@ function isKernelScratchExportName(
     case "kernel_pipe_write":
     case "kernel_pick_tcp_listener_target":
     case "kernel_poll":
+    case "kernel_process_metadata_read":
     case "kernel_process_metadata_stage":
     case "kernel_pty_master_read":
     case "kernel_pty_master_write":
@@ -372,7 +375,6 @@ function isKernelScratchExportName(
     case "kernel_setsockopt":
     case "kernel_socketpair":
     case "kernel_spawn_exec_target_prepare":
-    case "kernel_spawn_process":
     case "kernel_take_process_timer_cleanup":
     case "kernel_tcgetattr":
     case "kernel_tcsetattr":

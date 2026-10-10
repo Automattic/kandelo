@@ -35,7 +35,6 @@
         "host/test/exec.test.ts",
         "host/test/exec-state-tracking.test.ts",
         "host/test/fixtures/ordinary-nonzero-exit.ts",
-        "host/test/spawn-credential-order.test.ts",
         "host/test/spawn-pid-authority.test.ts",
         "host/test/vfork-lifecycle-guest.test.ts",
         "packages/registry/ruby/test/posix-spawn.test.ts"

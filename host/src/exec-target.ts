@@ -1,8 +1,5 @@
-import {
-  describeWasmArtifactPolicyFailures,
-  extractAbiVersion,
-  isWasmModuleBytes,
-} from "./constants";
+import { describeWasmArtifactPolicyFailures } from "./constants";
+import { retryKernelEntryResult } from "./kernel-entry-retry";
 import {
   CH_DATA_SIZE,
   MAX_REPORTABLE_TRANSFER_BYTES,
@@ -32,7 +29,11 @@ const EXEC_TARGET_EAGAIN_RETRY_DELAY_MS = 10;
 // stuck fetch fails exec with a truthful timeout instead of hanging it.
 const EXEC_TARGET_EAGAIN_MAX_WAIT_MS = 30_000;
 
-const MAX_SHEBANG_LINE_BYTES = 4096;
+/** What the kernel decides a retained target is (`kernel_exec_target_admit`). */
+export type ExecTargetAdmission =
+  | { readonly kind: "program" }
+  | { readonly kind: "script"; readonly interpreter: string; readonly argument?: string }
+  | { readonly kind: "refused"; readonly reason: string };
 
 export interface PreparedExecKernel {
   execTargetSize(ownerPid: number, target: number): bigint;
@@ -43,6 +44,7 @@ export interface PreparedExecKernel {
     destination: Uint8Array,
   ): number;
   execTargetCancel(ownerPid: number, target: number): number;
+  execTargetAdmit(ownerPid: number, target: number, expectedAbi: number): ExecTargetAdmission;
   /** The next settlement of a deferred fetch in flight, or `null` when none
    *  is; see `CentralizedKernelWorker.deferredFetchSettled`. Optional: a
    *  kernel without a deferred pipe never returns EAGAIN for one. */
@@ -85,12 +87,9 @@ function cancelPreparedTarget(
   // One attempt consumes this host-side cancellation obligation even when a
   // corrupt kernel reports an error. Retrying could consume a reused token.
   error.targetCancelled = true;
-  try {
-    kernel.execTargetCancel(ownerPid, target);
-  } catch {
-    // Preserve the original precommit failure. The kernel entry/fatal boundary
-    // owns any exception raised while trying to release its retained target.
-  }
+  // Preserve the original precommit failure. The kernel entry/fatal boundary
+  // owns any exception raised while trying to release its retained target.
+  retryKernelEntryResult(() => kernel.execTargetCancel(ownerPid, target)).catch(() => {});
   return error;
 }
 
@@ -100,7 +99,7 @@ export async function readPreparedExecTarget(
   target: number,
 ): Promise<Uint8Array> {
   try {
-    const size = kernel.execTargetSize(ownerPid, target);
+    const size = await retryKernelEntryResult(() => kernel.execTargetSize(ownerPid, target));
     if (size < 0n) {
       throw new PreparedExecTargetError(
         "prepared exec target size failed",
@@ -143,11 +142,8 @@ export async function readPreparedExecTarget(
         output.byteLength - start,
       );
       const destination = output.subarray(start, start + capacity);
-      const read = kernel.execTargetRead(
-        ownerPid,
-        target,
-        offset,
-        destination,
+      const read = await retryKernelEntryResult(() =>
+        kernel.execTargetRead(ownerPid, target, offset, destination)
       );
       if (read === -EAGAIN) {
         // The deferred bytes are still being fetched: retry the same offset
@@ -226,7 +222,6 @@ export interface PreparedExecLaunchOptions {
   readonly argv: string[];
   readonly envp: string[];
   readonly expectedAbi: number;
-  readonly materializePath: (diagnosticPath: string) => Promise<void>;
   readonly prepareInitialTarget: () => number;
   readonly prepareInterpreterTarget: (interpreterPath: string) => number;
   readonly commitTarget: (
@@ -234,48 +229,30 @@ export interface PreparedExecLaunchOptions {
     expectedSize: number,
     markTargetConsumed: () => void,
   ) => number;
-  /**
-   * Compile, or reuse the module already compiled for, exactly these bytes.
-   * The kernel worker's content-addressed cache keys on a digest of the
-   * bytes, so a spawn's preflight module is reused only when the final
-   * target is byte-identical to the candidate.
-   */
+  /** Compile, or reuse the module already compiled for, exactly these bytes. */
   readonly compileModule: CompileWasmModule;
-  /**
-   * A spawn's preflight module. Never executed or compared here: it only
-   * stays reachable through these options until the final target compiles,
-   * so the weakly held cache entry for byte-identical bytes cannot be
-   * collected in between.
-   */
-  readonly preflightModule?: WebAssembly.Module;
 }
 
 export type CompileWasmModule = (
   bytes: ArrayBuffer,
 ) => Promise<WebAssembly.Module>;
 
-function parseShebang(bytes: Uint8Array): {
-  interpreter: string;
-  argument?: string;
-} | null {
-  if (bytes.byteLength < 2 || bytes[0] !== 0x23 || bytes[1] !== 0x21) {
-    return null;
+/** Decode the record `kernel_exec_target_admit` writes. */
+export function decodeExecTargetAdmission(record: Uint8Array): ExecTargetAdmission {
+  const decoder = new TextDecoder();
+  const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
+  if (record[0] === 0 && record.byteLength === 1) return { kind: "program" };
+  if (record[0] === 2) return { kind: "refused", reason: decoder.decode(record.subarray(1)) };
+  if (record[0] === 1 && record.byteLength >= 10) {
+    const end = 10 + view.getUint32(2, true);
+    if (end + view.getUint32(6, true) === record.byteLength) {
+      const interpreter = decoder.decode(record.subarray(10, end));
+      return record[1] === 1
+        ? { kind: "script", interpreter, argument: decoder.decode(record.subarray(end)) }
+        : { kind: "script", interpreter };
+    }
   }
-  let end = 2;
-  while (
-    end < bytes.byteLength
-    && end < MAX_SHEBANG_LINE_BYTES
-    && bytes[end] !== 0x0a
-  ) {
-    end += 1;
-  }
-  const line = new TextDecoder()
-    .decode(bytes.subarray(2, end))
-    .replace(/\r$/, "")
-    .trim();
-  const match = /^(\S+)(?:\s+(.*))?$/.exec(line);
-  if (!match) return null;
-  return { interpreter: match[1]!, argument: match[2] };
+  throw new PreparedExecTargetError("kernel returned a malformed admission record", EIO);
 }
 
 function preparedTargetToken(result: number): number {
@@ -290,152 +267,68 @@ function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer as ArrayBuffer;
 }
 
-/**
- * Snapshot and compile one side-effect-free spawn candidate before the child
- * exists. The resolver's separately supplied module is intentionally absent:
- * only a module compiled here from this isolated byte snapshot may be reused,
- * and the content-addressed `compileModule` reuses it for the authoritative
- * final target only when that target has the same bytes.
- */
-export async function compileSpawnCandidateSnapshot(
-  programBytes: ArrayBuffer,
-  expectedAbi: number,
-  compileModule: CompileWasmModule,
-): Promise<Readonly<{
-  targetBytes: ArrayBuffer;
-  targetModule: WebAssembly.Module;
-}>> {
-  let snapshot: Uint8Array;
-  try {
-    const source = new Uint8Array(programBytes);
-    if (source.byteLength > MAX_REPORTABLE_TRANSFER_BYTES) {
-      throw new PreparedExecTargetError(
-        "spawn candidate exceeds the program-size limit",
-        EFBIG,
-      );
-    }
-    // Copy before the first await. A resolver retains no mutable authority
-    // over the candidate compared or launched by the shared worker.
-    snapshot = source.slice();
-  } catch (cause) {
-    if (cause instanceof PreparedExecTargetError) throw cause;
-    throw new PreparedExecTargetError(
-      "spawn candidate bytes are unavailable",
-      ENOEXEC,
-    );
-  }
-
-  const targetBytes = exactArrayBuffer(snapshot);
-  if (!isWasmModuleBytes(targetBytes)) {
-    throw new PreparedExecTargetError(
-      "spawn candidate is not a WebAssembly module",
-      ENOEXEC,
-    );
-  }
-  const targetAbi = extractAbiVersion(targetBytes);
-  if (
-    describeWasmArtifactPolicyFailures(targetBytes, { expectedAbi }).length > 0
-    || (targetAbi !== null && targetAbi !== expectedAbi)
-  ) {
-    throw new PreparedExecTargetError(
-      "spawn candidate violates the artifact ABI policy",
-      ENOEXEC,
-    );
-  }
-
-  let targetModule: WebAssembly.Module;
-  try {
-    targetModule = await compileModule(targetBytes);
-  } catch (cause) {
-    if (cause instanceof WebAssembly.CompileError) {
-      throw new PreparedExecTargetError(
-        "spawn candidate failed WebAssembly compilation",
-        ENOEXEC,
-      );
-    }
-    throw cause;
-  }
-  return { targetBytes, targetModule };
-}
-
 export async function launchPreparedExecTarget(
   options: PreparedExecLaunchOptions,
   callback: ExecLaunchCallback,
 ): Promise<number> {
-  await options.materializePath(options.diagnosticPath);
-  let target = preparedTargetToken(options.prepareInitialTarget());
-  let bytes = await readPreparedExecTarget(
-    options.kernel,
-    options.ownerPid,
-    target,
-  );
-
+  // Every kernel call here rejects a busy gate without running. The launch has
+  // yielded, so another process's entry may hold the gate; that contention is
+  // waited out on a later turn rather than reported as an exec failure.
+  let target = preparedTargetToken(await retryKernelEntryResult(options.prepareInitialTarget));
   let targetLive = true;
   let launchArgv = [...options.argv];
   let finalDiagnosticPath = options.diagnosticPath;
-  const script = parseShebang(bytes);
-  if (script !== null) {
-    // Script set-ID state is deliberately never committed. Consume the script
-    // token before preparing the interpreter as the sole final authority.
-    targetLive = false;
-    const cancelResult = options.kernel.execTargetCancel(
-      options.ownerPid,
-      target,
+  try {
+    const admit = () => retryKernelEntryResult(() =>
+      options.kernel.execTargetAdmit(options.ownerPid, target, options.expectedAbi)
     );
-    if (cancelResult < 0) {
-      throw new PreparedExecTargetError(
-        "unable to cancel prepared script target",
-        errnoFromNegativeResult(cancelResult),
-        true,
+    let bytes = await readPreparedExecTarget(options.kernel, options.ownerPid, target);
+    let admission = await admit();
+    if (admission.kind === "script") {
+      // Script set-ID state is deliberately never committed. Consume the
+      // script token before preparing the interpreter as the sole final
+      // authority.
+      targetLive = false;
+      const cancelResult = await retryKernelEntryResult(() =>
+        options.kernel.execTargetCancel(options.ownerPid, target)
       );
-    }
-    launchArgv = [
-      script.interpreter,
-      ...(script.argument ? [script.argument] : []),
-      options.diagnosticPath,
-      ...options.argv.slice(1),
-    ];
-    finalDiagnosticPath = script.interpreter;
-    await options.materializePath(script.interpreter);
-    target = preparedTargetToken(
-      options.prepareInterpreterTarget(script.interpreter),
-    );
-    bytes = await readPreparedExecTarget(
-      options.kernel,
-      options.ownerPid,
-      target,
-    );
-    targetLive = true;
-    if (parseShebang(bytes) !== null) {
-      throw cancelPreparedTarget(
-        options.kernel,
-        options.ownerPid,
-        target,
-        new PreparedExecTargetError(
+      if (cancelResult < 0) {
+        throw new PreparedExecTargetError(
+          "unable to cancel prepared script target",
+          errnoFromNegativeResult(cancelResult),
+          true,
+        );
+      }
+      launchArgv = [
+        admission.interpreter,
+        ...(admission.argument ? [admission.argument] : []),
+        options.diagnosticPath,
+        ...options.argv.slice(1),
+      ];
+      finalDiagnosticPath = admission.interpreter;
+      const interpreter = admission.interpreter;
+      target = preparedTargetToken(
+        await retryKernelEntryResult(() => options.prepareInterpreterTarget(interpreter)),
+      );
+      targetLive = true;
+      bytes = await readPreparedExecTarget(options.kernel, options.ownerPid, target);
+      admission = await admit();
+      if (admission.kind === "script") {
+        throw new PreparedExecTargetError(
           "the prepared shebang interpreter is itself a script",
           ENOEXEC,
-        ),
-      );
+        );
+      }
     }
-  }
-
-  try {
     const targetBytes = exactArrayBuffer(bytes);
-    if (!isWasmModuleBytes(targetBytes)) {
+    // The kernel judged these exact bytes; the host adds only the fork
+    // contract, which the kernel cannot judge until the fork work lands.
+    const refusal = admission.kind === "refused"
+      ? admission.reason
+      : describeWasmArtifactPolicyFailures(targetBytes).join("; ");
+    if (refusal !== "") {
       throw new PreparedExecTargetError(
-        "prepared exec target is not a WebAssembly module",
-        ENOEXEC,
-      );
-    }
-    const targetAbi = extractAbiVersion(targetBytes);
-    if (
-      describeWasmArtifactPolicyFailures(targetBytes, {
-        expectedAbi: options.expectedAbi,
-      }).length > 0
-      || (targetAbi !== null && targetAbi !== options.expectedAbi)
-    ) {
-      throw new PreparedExecTargetError(
-        "prepared exec target violates the artifact ABI policy",
+        `prepared exec target is not runnable: ${refusal}`,
         ENOEXEC,
       );
     }
@@ -466,7 +359,7 @@ export async function launchPreparedExecTarget(
     const decision = await callback(request);
     if (typeof decision === "number") {
       targetLive = false;
-      options.kernel.execTargetCancel(options.ownerPid, target);
+      await retryKernelEntryResult(() => options.kernel.execTargetCancel(options.ownerPid, target));
       return decision < 0 ? decision : -EIO;
     }
 

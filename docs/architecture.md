@@ -74,7 +74,7 @@ kernel_create_process_with_stdio(stdin_kind, stdout_kind, stderr_kind) → assig
 kernel_validate_task(pid, tid) → 0 | -errno
 kernel_set_current_tid(pid, tid) → 0 | -errno
 kernel_fork_process(parent_pid, caller_tid, mode) → assigned_child_pid | -errno
-kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len) → assigned_child_pid | -errno
+kernel_spawn_process(parent_pid, caller_tid, path_addr, path_len, blob_addr, blob_len) → assigned_child_pid | -errno
 kernel_remove_process(pid) → 0
 kernel_handle_channel(channel_offset, channel_capacity, pid, retry_token) → result
 kernel_blocking_retry_token(pid, tid, syscall_nr) → opaque_token | -errno
@@ -83,6 +83,7 @@ kernel_exec_target_prepare(pid, caller_tid, dirfd, path_ptr, path_len, flags) �
 kernel_spawn_exec_target_prepare(parent_pid, child_pid, path_ptr, path_len) → opaque_target | -errno
 kernel_exec_target_size(owner_pid, opaque_target) → byte_length | -errno
 kernel_exec_target_read(owner_pid, opaque_target, offset_lo, offset_hi, dst_ptr, dst_capacity) → bytes_read | -errno
+kernel_exec_target_admit(owner_pid, opaque_target, expected_abi, out_ptr, out_capacity) → record_bytes | -errno
 kernel_exec_target_cancel(owner_pid, opaque_target) → 0 | -errno
 kernel_exec_commit(pid, caller_tid, opaque_target) → 0 | -errno
 kernel_spawn_exec_commit(parent_pid, child_pid, opaque_target) → 0 | -errno
@@ -107,12 +108,6 @@ kernel_transfer_scratch_capacity(reservation_token) → reservation_capacity | 0
 kernel_transfer_scratch_cancel(reservation_token) → 0 | -errno
 kernel_transfer_io_execute(pid, tid, reservation_token, len, syscall, fd, offset, retry_token) → bytes | -errno
 kernel_transfer_channel_execute(pid, tid, reservation_token, retry_token) → 0 | -errno
-kernel_spawn_scratch_begin(minimum_capacity) → reservation_token | -errno
-kernel_spawn_scratch_pointer(reservation_token) → kernel_owned_pointer | 0
-kernel_spawn_scratch_capacity(reservation_token) → reservation_capacity | 0
-kernel_spawn_scratch_retained_capacity() → retained_capacity
-kernel_spawn_scratch_cancel(reservation_token) → 0 | -errno
-kernel_spawn_reserved_process(parent_pid, caller_tid, reservation_token, blob_len) → assigned_child_pid | -errno
 kernel_get_cwd(pid, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_fd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_dirfd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
@@ -121,6 +116,7 @@ kernel_process_metadata_begin(pid) → transaction_token | -errno
 kernel_process_metadata_stage(pid, transaction_token, kind, buf, len) → 0 | -errno
 kernel_process_metadata_commit(pid, transaction_token) → 0 | -errno
 kernel_process_metadata_cancel(pid, transaction_token) → 0 | -errno
+kernel_process_metadata_read(pid, kind, index, buf, capacity) → entry_bytes | -errno
 kernel_set_max_addr(pid, addr) → 0
 kernel_set_brk_base(pid, addr) → 0
 kernel_set_mmap_base(pid, addr) → 0
@@ -518,40 +514,9 @@ pipe bytes. Only the prefix reported by the append is committed. An append
 rejection, file-size clip, or short write therefore cannot consume source data
 that the destination did not publish.
 
-Large spawn blobs use a different kernel-owned high-water region in
-`crates/kernel/src/spawn.rs::SpawnScratchBuffer`. Every large operation calls
-`kernel_spawn_scratch_begin`, which may grow the Rust `Vec` only while no
-reservation is active and returns a fresh positive token. Begin and the
-pointer/capacity queries are nonblocking: mutex contention makes begin return
-`EBUSY` and makes query exports return zero. The host then reads the token's
-pointer and capacity together, proves that the complete blob fits both that
-allocation and the current `Memory.buffer`, and copies under one synchronous
-lease. `kernel_spawn_reserved_process` accepts no host-selected pointer: it
-consumes the matching token, parses the selected prefix into Rust-owned
-vectors, and releases the scratch mutex before entering the process table or
-any host import. After every successful begin, including setup or copy failure,
-the host invokes cancellation in a `finally` block. Commit and cancellation
-wait through mutex contention; neither guarded path can call a host import, so
-each returns with a definitive token state. Cancellation success releases an
-unconsumed matching token; `EINVAL` means the never-reused token was already
-consumed or is stale. For the just-issued in-contract token after commit, the
-consumed case is expected.
-Stale tokens, overlapping reservations, and reentrant large-spawn attempts
-fail without replacing live bytes. The reservation-derived host region is
-single-use and is revoked after the attempt, so a later Rust-owned `Vec`
-growth cannot revive its old pointer/capacity pair.
-
-The allocation lives until the kernel instance ends and may retain the largest
-accepted blob seen. Because WebAssembly memory cannot shrink, freeing or
-replacing Rust allocations does not reduce the visible linear-memory
-high-water mark. The growable design is selected for its ownership and
-lifetime contract, not an unrecorded performance claim. Before/after retained
-capacity, peak kernel memory, and timing are mutable validation evidence rather
-than architecture: the draft PR ledger must record the exact baseline,
-candidate head/tree, workload, runtime-artifact fingerprints, and separate
-Node.js and real-Chromium results after the candidate is frozen. ABI 43
-requires the complete transactional export set and has no older-kernel
-fixed-buffer fallback under the same version.
+A `posix_spawn` request is not staged through the host at all: the kernel
+copies the caller's blob straight out of the caller's memory inside
+`kernel_spawn_process`, bounded by the 8,417,320-byte whole-request ceiling.
 
 Rust-lent host-import destinations are deliberately separate. Rust supplies a
 pointer and capacity valid for that synchronous import, so
@@ -1435,11 +1400,20 @@ pipes, sockets, PTYs, terminal devices, and listener queues.
 3. The host queries `kernel_exec_target_size` and copies the retained target
    through bounded `kernel_exec_target_read` calls into only the explicitly
    lent destination. A precommit failure calls `kernel_exec_target_cancel`
-   exactly once. For a shebang, the script token is canceled, `argv` is
-   rewritten once, and a separately prepared interpreter becomes the sole
-   final target; script set-ID state is never applied.
-4. The host validates the exact bytes' ABI marker and fork-artifact policy,
-   obtains the module for those same bytes from the kernel worker's
+   exactly once. Whether the target is a `#!` script, and which interpreter
+   and single optional argument it names, is decided by the kernel
+   (`kernel_exec_target_admit`) from the bytes the retained target
+   committed to; the host parses no program bytes for it. For a shebang, the script token is
+   canceled, `argv` is rewritten once from the kernel's answer, and a
+   separately prepared interpreter becomes the sole final target; script
+   set-ID state is never applied. An interpreter the kernel decodes as itself
+   a script fails `ENOEXEC` (one level of `#!`, where Linux allows several).
+4. For a program, the same answer judges the exact bytes the kernel retained
+   against the ABI-epoch artifact policy (a WebAssembly module, no legacy
+   Asyncify, the expected ABI marker); a refusal is `ENOEXEC`. The host then
+   runs the one check the kernel does not yet own, the fork-instrumentation
+   contract (`describeWasmArtifactPolicyFailures`), obtains the module for
+   those same bytes from the kernel worker's
    content-addressed cache (see
    [Compiled module sharing](#compiled-module-sharing)), validates the 4 MiB
    combined argv/environment
@@ -1460,8 +1434,11 @@ pipes, sockets, PTYs, terminal devices, and listener queues.
    yielding. Rust consumes the token,
    revalidates the final retained target's exact handle, byte length, bytes,
    metadata, and execute capability, then atomically commits the in-place
-   process transition. Commit closes CLOEXEC fds and directory streams, resets
-   image-specific state including the program break, and preserves the exact
+   process transition. The process's pointer width is replaced there, from the
+   committed bytes, so an exec may switch between wasm32 and wasm64 and the
+   host never re-registers it. Commit closes CLOEXEC fds and directory
+   streams, resets image-specific state including the program break, and
+   preserves the exact
    kernel objects behind surviving descriptors without pathname re-resolution.
    The diagnostic-only path and caller-provided bytes are never commit
    authority.
@@ -1507,40 +1484,24 @@ caller now take.
    issues `__syscall6(SYS_SPAWN, path, path_len, blob, blob_len,
    &pid_out, 0)`. Wire format documented in
    `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
-2. Host (`handleSpawn` in `kernel-worker.ts`) reads the blob from
-   caller memory, validates argv + envp against the same 4 MiB `ARG_MAX`
-   contract as `execve`, and performs a side-effect-free candidate lookup and
-   compilation. Shared trusted code immediately snapshots the resolver bytes
-   and obtains the candidate module for that exact isolated snapshot from the
-   content-addressed module cache; a separately callback-supplied module is
-   ignored. That preflight prevents
-   failed PATH probes from creating a child, but it is never executable
-   authority. The host then copies the blob to bounded kernel-owned scratch.
-   Each argv/environment entry also has the separate 64 KiB
-   process-metadata transport limit described for `execve`; this
-   implementation ceiling is not `ARG_MAX`.
-   Ordinary blobs reuse the channel-sized syscall region and call
-   `kernel_spawn_process(parent_pid, caller_tid, blob_ptr, blob_len)` while its
-   lease is active. A blob above that size begins an exclusive tokenized
-   reservation in the Rust-owned reusable region, reads its pointer and
-   capacity, copies under a lease, and commits with
-   `kernel_spawn_reserved_process(parent_pid, caller_tid, token, blob_len)`.
-   Begin and the pointer/capacity queries are nonblocking and report
-   contention as `EBUSY` or zero. Commit consumes the token before parsing.
-   After every successful begin, the host unconditionally calls cancellation
-   from a `finally` block, including setup and copy failures. Cancellation
-   success releases an unconsumed matching token; `EINVAL` means the
-   never-reused token was already consumed or is stale. For the just-issued
-   in-contract token after commit, consumption is expected. Commit and
-   cancellation use a blocking critical section that performs no host imports,
-   so both return with a definitive token state.
-   Host-side reentry protection rejects a second large spawn while the first
-   reservation is active. Keeping both paths kernel-owned prevents a
-   large environment or file-action list from overwriting adjacent Rust heap
-   state. Merely fitting within the total kernel `Memory` would not establish
-   this allocation-ownership fact. The explicit 8,417,320-byte whole-blob
-   ceiling also bounds file-action data that `ARG_MAX` does not count. The
-   advertised 4 MiB `ARG_MAX`,
+2. Host (`handleSpawn` in `kernel-worker.ts`) passes the caller's path and
+   blob addresses and lengths, unread, to
+   `kernel_spawn_process(parent_pid, caller_tid, path_addr, path_len,
+   blob_addr, blob_len)`. The kernel copies both out of the caller's memory
+   once (`spawn::read_request`), so the host never copies or interprets the
+   spawn wire format, and validates argv + envp against the same 4 MiB
+   `ARG_MAX` contract as `execve`, counted at the caller's pointer width, plus
+   the separate 64 KiB per-entry process-metadata transport limit (an
+   implementation ceiling, not `ARG_MAX`). Before anything changes it refuses
+   a target a launch could not run (`exec_target::probe_spawn_target`): the
+   path from the caller's CWD with execute permission, a WebAssembly or `#!`
+   header, and one `#!` level whose interpreter must itself be a program.
+   That keeps a failed `posix_spawnp` PATH probe from creating a child or
+   running its file actions; it retains nothing and is never launch
+   authority. A target whose bytes are still being fetched returns `EAGAIN`
+   with nothing changed, and the host retries once the fetch settles. The
+   explicit 8,417,320-byte whole-blob ceiling also bounds file-action data
+   that `ARG_MAX` does not count. The advertised 4 MiB `ARG_MAX`,
    4,096-byte `PATH_MAX`, and 1,024-entry `IOV_MAX` live in
    `crates/shared/src/lib.rs::platform_limits` and generate the Rust,
    TypeScript, and musl consumers. The same platform module owns the defensive
@@ -1557,10 +1518,11 @@ caller now take.
    argv/environment count caps defend the admitted process representation and
    are not additional POSIX `ARG_MAX` promises. The action count remains a
    spawn-parser limit.
-3. Kernel parses the blob (`crates/kernel/src/spawn.rs::parse_blob` —
-   the trust boundary; bails with EINVAL on any malformed offset), validates
-   `caller_tid` as a live task belonging to the parent, and calls
-   `ProcessTable::spawn_child_for_caller`.
+3. The kernel parses the blob (`crates/runtime-core/src/spawn.rs::parse_blob`
+   — the trust boundary; bails with EINVAL on any malformed offset),
+   validates `caller_tid` as a live task belonging to the parent, and calls
+   `ProcessTable::spawn_child_for_caller`. The host reads the child's argv
+   and environment back with `kernel_process_metadata_read`.
 4. `spawn_child_for_caller` allocates the child PID from the same global task-ID sequence
    used by top-level creation, fork, and clone, then consumes that opaque
    allocation token to build the child Process plus selective inheritance from the
@@ -1575,11 +1537,9 @@ caller now take.
    forward order. Failure on any action rolls back via `remove_process`.
 5. In the resulting child CWD, descriptor, and credential state, the host asks
    Rust to prepare an exact executable target. The host reads those retained
-   bytes, runs the same ABI and artifact checks on them, and asks the module
-   cache for their module: the preflight module is reused only when the final
-   bytes have the same SHA-256 digest and length, and otherwise the final
-   bytes are compiled. The preflight module stays reachable until that lookup
-   completes. The opaque child-bound token is
+   bytes, the kernel admits them exactly as for `execve`
+   (`kernel_exec_target_admit`), and the host compiles them through the
+   content-addressed module cache. The opaque child-bound token is
    committed with `kernel_spawn_exec_commit`, which evaluates set-ID and
    trusted-mount/nosuid policy and closes remaining `FD_CLOEXEC` descriptors.
    Any prepare, read, policy, compile, or commit failure cancels the exact
@@ -1699,7 +1659,7 @@ on both hosts:
 | Launch | Module source |
 |---|---|
 | Host `spawn`/`spawnFromVfs` (top-level) | `programModule(bytes)`; a `CompileError` answers the request with `ENOEXEC` |
-| `posix_spawn` preflight and final target | `programModule(bytes)` |
+| `posix_spawn` final target | `programModule(bytes)` |
 | `execve`/`execveat` | `programModule(bytes)` |
 | `fork`/`vfork` | the parent's module; a fork never compiles |
 | `clone` | `threadModule(programBytes, patchWasmForThread)` |
@@ -1724,8 +1684,7 @@ cached.
 **Lifetime.** The cache's own index holds each module through a `WeakRef`.
 Strong references belong to the users: each process record's
 `programModule`, the per-process thread module, and launch continuations in
-flight (a spawn's preflight module stays reachable until its final target is
-looked up). A module is therefore shareable exactly while some live process
+flight. A module is therefore shareable exactly while some live process
 or pending launch holds it and becomes collectable with its last user. Two
 launches of the same bytes that overlap share one in-flight compilation.
 
@@ -1741,8 +1700,7 @@ coreutils 10–13 times with weak references only, and once with the window
 2 GiB SpiderMonkey arena; the timer never keeps a Node kernel worker alive.
 
 **Cost.** Each spawn or exec hashes its target bytes with WebCrypto SHA-256
-in the kernel worker (twice for `posix_spawn`: the preflight snapshot and
-the final target). A thread lookup reuses the digest recorded for the
+in the kernel worker. A thread lookup reuses the digest recorded for the
 process's own bytes buffer. Hashing 78 MB took 33–42 ms on Node 24, and
 34 ms in Chromium and 53 ms in WebKit inside a dedicated worker. That is less
 than the JavaScript byte-by-byte comparison it replaced on the spawn path
@@ -2030,7 +1988,7 @@ The host reads and writes kernel-owned files on its own behalf only through
 kernel exports (`kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
 `kernel_rootfs_stat_mode`, `kernel_rootfs_unlink_file`,
 `kernel_rootfs_mkdir_parents`); these are what `read_vfs_file`,
-`write_vfs_file`, `unlink_vfs_file`, the spawn preflight's program reads, and
+`write_vfs_file`, `unlink_vfs_file`, and
 the browser's per-session TLS root certificate use. A scratch path reaches
 tmpfs and any other path the rootfs.
 
@@ -2132,12 +2090,11 @@ so an image built this way must replace every secret on each machine's first
 boot (the WordPress images do, `images/vfs/scripts/wordpress-first-boot.ts`).
 The browser host has no way to set it.
 
-`execPrograms` and `execProgramBytes` are spawn-preflight inputs only. They
-cannot authorize `execve` or `execveat`, whose executable bytes and metadata
-come exclusively from the exact retained target prepared through the calling
-process's kernel VFS state. Tests that name an exec fixture stage it into an
-explicit test rootfs before boot. A virtual spawn-preflight path cannot use
-both mapping sources. Without a rootfs image, the worker falls back to raw
+`execve`, `execveat` and `posix_spawn` take their executable bytes and
+metadata only from the exact target the kernel resolves through the caller's
+VFS state; the host has no program map to consult. Tests that name an exec
+fixture stage it into an explicit test rootfs before boot. Without a rootfs
+image, the worker falls back to raw
 `NodePlatformIO` (the host's `/` published as one host mount) — kept for
 legacy callers that have not migrated.
 

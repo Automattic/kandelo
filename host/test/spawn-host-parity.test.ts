@@ -56,7 +56,7 @@ function ordinaryForkHandlerSource(src: string): string {
 
 function execHandlerSource(src: string): string {
   const start = src.indexOf("async function handleExec(");
-  const end = src.indexOf("\n/**\n * Pre-flight resolver", start);
+  const end = src.indexOf("\nasync function handlePosixSpawn(", start);
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   return src.slice(start, end);
@@ -82,19 +82,19 @@ function centralizedInitMessageSource(handler: string): string {
 }
 
 function spawnCallbackSource(src: string): string {
-  const start = src.indexOf("onResolveSpawn:");
+  const start = src.indexOf("onSpawn:");
   const end = src.indexOf("\n      onClone:", start);
-  expect(start, "onResolveSpawn callback must exist").toBeGreaterThanOrEqual(0);
+  expect(start, "onSpawn callback must exist").toBeGreaterThanOrEqual(0);
   expect(end, "onClone callback must follow onSpawn").toBeGreaterThan(start);
   return src.slice(start, end);
 }
 
 function expectSpawnCallbacks(src: string, entry: string): void {
   const callbacks = spawnCallbackSource(src);
-  expect(
-    callbacks,
-    `${entry} must wire onResolveSpawn to handlePosixSpawnResolve`,
-  ).toMatch(/onResolveSpawn:\s*handlePosixSpawnResolve/);
+  // The kernel decides what a spawn runs; no host resolver second-guesses it.
+  expect(src, `${entry} must not wire a spawn preflight`).not.toMatch(
+    /onResolveSpawn|handlePosixSpawnResolve|parseShebang/,
+  );
   expect(
     callbacks,
     `${entry} must admit onSpawn through the creator gate`,
@@ -275,13 +275,10 @@ describe("spawn host parity", () => {
     }
   });
 
-  it("Node kernel-worker-entry wires both onResolveSpawn and onSpawn", () => {
+  it("Node kernel-worker-entry wires onSpawn and no spawn preflight", () => {
     const src = readFileSync(nodeEntry, "utf8");
     expect(src, `${nodeEntry} must define handlePosixSpawn`).toMatch(
       /\b(?:async\s+)?function\s+handlePosixSpawn\s*\(/,
-    );
-    expect(src, `${nodeEntry} must define handlePosixSpawnResolve`).toMatch(
-      /\b(?:async\s+)?function\s+handlePosixSpawnResolve\s*\(/,
     );
     // WHY: destroy must close this admission gate before its terminal sweep.
     // A direct handler reference can create a new process Memory while that
@@ -302,13 +299,10 @@ describe("spawn host parity", () => {
     );
   });
 
-  it("Browser kernel-worker-entry wires both onResolveSpawn and onSpawn", () => {
+  it("Browser kernel-worker-entry wires onSpawn and no spawn preflight", () => {
     const src = readFileSync(browserEntry, "utf8");
     expect(src, `${browserEntry} must define handlePosixSpawn`).toMatch(
       /\b(?:async\s+)?function\s+handlePosixSpawn\s*\(/,
-    );
-    expect(src, `${browserEntry} must define handlePosixSpawnResolve`).toMatch(
-      /\b(?:async\s+)?function\s+handlePosixSpawnResolve\s*\(/,
     );
     expectSpawnCallbacks(src, browserEntry);
     const spawnHandler = posixSpawnHandlerSource(src);
@@ -326,11 +320,9 @@ describe("spawn host parity", () => {
     );
   });
 
-  it("CentralizedKernelCallbacks declares both onResolveSpawn and onSpawn", () => {
-    // Ensures the host shared interface itself still surfaces both
-    // callbacks — without these, neither entry would even type-check.
+  it("CentralizedKernelCallbacks declares onSpawn and no spawn preflight", () => {
     const src = readFileSync(join(repoRoot, "host", "src", "kernel-worker.ts"), "utf8");
     expect(src).toMatch(/onSpawn\?:\s*\(\s*parentPid:\s*number,\s*childPid:\s*number,/s);
-    expect(src).toMatch(/onResolveSpawn\?:\s*\(/);
+    expect(src).not.toMatch(/onResolveSpawn/);
   });
 });

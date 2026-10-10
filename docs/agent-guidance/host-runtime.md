@@ -115,6 +115,17 @@ holds, and `host_fetch_deferred(uri, ...)` fetches bytes the image only names
 The host never decodes the image into a filesystem of its own.
 `docs/abi-versioning.md` ("ABI 49") lists the import set.
 
+The kernel decides what an exec or `posix_spawn` runs; the host instantiates
+it. `kernel_spawn_process` reads the spawn request from the caller's memory
+and refuses a target a launch could not run before any file action;
+`kernel_exec_target_admit` says whether a retained target is a `#!` script or
+a program runnable under this ABI; `kernel_exec_commit` sets the new image's
+pointer width. Do not add host code that parses a spawn request or an exec
+target to make one of those decisions. The one remaining host check is the
+fork-instrumentation contract in `describeWasmArtifactPolicyFailures`, which
+stays in TypeScript until the fork work brings its decoders into
+`crates/wasm-artifact`. `docs/abi-versioning.md` ("ABI 50") lists the exports.
+
 Worker protocols are contracts. Spawn, fork, exec, clone, exit, terminate,
 thread exit, crash, syscall trace, PTY, framebuffer, audio, network, VFS, and
 service-worker messages must have symmetric request, response, error, and

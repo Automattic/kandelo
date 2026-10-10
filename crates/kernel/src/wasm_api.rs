@@ -1613,53 +1613,6 @@ pub extern "C" fn kernel_transfer_scratch_cancel(token: i64) -> i32 {
     }
 }
 
-/// Begin one exclusive host-write reservation for a complete SYS_SPAWN blob.
-///
-/// Returns a positive opaque token on success or a negated errno on failure.
-/// The host must read the pointer and capacity after this call, then either
-/// consume the token with `kernel_spawn_reserved_process` or cancel it.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_begin(minimum_capacity: usize) -> i64 {
-    match crate::spawn::begin_spawn_scratch(minimum_capacity) {
-        Ok(token) => token,
-        Err(error) => -(error as i64),
-    }
-}
-
-/// Pointer owned by exactly the SYS_SPAWN reservation named by `token`, or
-/// zero for a stale token or if a reentrant query cannot acquire the mutex.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_pointer(token: i64) -> usize {
-    crate::spawn::spawn_scratch_pointer(token).unwrap_or(0)
-}
-
-/// Writable byte capacity of exactly the SYS_SPAWN reservation named by
-/// `token`, or zero for a stale token or lock contention.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_capacity(token: i64) -> usize {
-    crate::spawn::spawn_scratch_capacity(token).unwrap_or(0)
-}
-
-/// Retained allocation capacity for diagnostics. This export reveals no
-/// pointer and grants no authority to modify an active reservation.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_retained_capacity() -> usize {
-    crate::spawn::spawn_scratch_retained_capacity().unwrap_or(0)
-}
-
-/// Cancel exactly the current SYS_SPAWN reservation.
-///
-/// Cancellation waits for the reservation mutex instead of returning a
-/// transient EBUSY. The guarded Rust path performs no host imports, so the
-/// matching token cannot be stranded by contention.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_cancel(token: i64) -> i32 {
-    match crate::spawn::cancel_spawn_scratch(token) {
-        Ok(()) => 0,
-        Err(error) => -(error as i32),
-    }
-}
-
 /// Read the approximate Wasm stack pointer for debugging.
 /// Returns the address of a stack variable, which is close to the current SP.
 #[unsafe(no_mangle)]
@@ -2646,6 +2599,33 @@ pub extern "C" fn kernel_process_metadata_cancel(pid: u32, token: u32) -> i32 {
     }
 }
 
+/// Copy entry `index` of `pid`'s argv (`kind` 0) or environment (`kind` 1)
+/// into `out`, complete or `-ERANGE` (a zero capacity queries the length);
+/// `-EINVAL` past the last entry. The host reads a spawned child's vectors
+/// here, because the kernel decoded them from the caller's request.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_process_metadata_read(
+    pid: u32,
+    kind: u32,
+    index: u32,
+    out_ptr: *mut u8,
+    out_len: u32,
+) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let entries = match kind {
+        wasm_posix_shared::process_metadata_contract::KIND_ARGV => &proc.argv,
+        wasm_posix_shared::process_metadata_contract::KIND_ENVIRONMENT => &proc.environ,
+        _ => return -(Errno::EINVAL as i32),
+    };
+    match entries.get(index as usize) {
+        Some(entry) => unsafe { crate::complete_copy::copy_complete_bytes(entry, out_ptr, out_len) },
+        None => -(Errno::EINVAL as i32),
+    }
+}
+
 fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
     use core::sync::atomic::Ordering;
 
@@ -2751,66 +2731,47 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
     }
 }
 
-/// Non-forking `posix_spawn`. Parses the SYS_SPAWN
-/// blob (already copied from caller memory into the kernel's address
-/// space by the host), allocates a child pid, builds the child Process
-/// with attrs and file actions applied, and inserts it into the
-/// `ProcessTable`.
+/// Handle SYS_SPAWN for `caller_tid` in `parent_pid`: read the target path
+/// and request blob from the caller's memory, refuse a target a launch could
+/// not run before anything changes (`exec_target::probe_spawn_target`), then
+/// build the child, applying its attributes and file actions exactly once.
 ///
-/// Returns the allocated child pid on success (positive), or a negated
-/// errno on failure. The host (`handleSpawn` in `kernel-worker.ts`) is
-/// responsible for actually launching the new process worker after this
-/// call returns success — see Task 11.
-///
-/// SAFETY: this ordinary-size entry point is only for the host's checked
-/// channel-scratch lease. The caller must prove independently that `blob_ptr`
-/// names that kernel-owned allocation, `blob_len` is within its explicit
-/// capacity, the complete range is inside current kernel linear memory, and no
-/// reentrant operation can replace the bytes for the duration of this call.
-/// Merely fitting somewhere in total linear memory is not sufficient. Larger
-/// blobs must use the tokenized reservation entry point below.
+/// Returns the child pid, or a negated errno. `EAGAIN` means a lazily fetched
+/// target is still arriving; nothing has changed, so the host retries.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_spawn_process(
     parent_pid: u32,
     caller_tid: u32,
-    blob_ptr: usize,
-    blob_len: usize,
+    path_addr: u64,
+    path_len: u32,
+    blob_addr: u64,
+    blob_len: u32,
 ) -> i32 {
-    if blob_len == 0 {
-        return -(Errno::EINVAL as i32);
-    }
-    if blob_len > wasm_posix_shared::channel::MIN_CHANNEL_SIZE {
-        return -(Errno::E2BIG as i32);
-    }
-    if blob_ptr == 0 || blob_ptr.checked_add(blob_len).is_none() {
-        return -(Errno::EFAULT as i32);
-    }
-    let bytes = unsafe { core::slice::from_raw_parts(blob_ptr as *const u8, blob_len) };
-    let parsed = match crate::spawn::parse_blob(bytes) {
-        Ok(p) => p,
-        Err(e) => return -(e as i32),
-    };
-    spawn_parsed_for_caller(parent_pid, caller_tid, parsed)
-}
-
-/// Consume one tokenized kernel-owned SYS_SPAWN reservation.
-///
-/// Unlike `kernel_spawn_process`, this entry point never accepts a host-chosen
-/// pointer. The reservation validates its token and byte count, parses into an
-/// owned representation, restores its Idle state even on malformed input, and
-/// releases its mutex before this function enters the process table. Commit
-/// waits through mutex contention; no host import occurs while that lock is
-/// held, so every matching token is consumed before this export returns.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_reserved_process(
-    parent_pid: u32,
-    caller_tid: u32,
-    token: i64,
-    blob_len: usize,
-) -> i32 {
-    let parsed = match crate::spawn::parse_reserved_spawn_blob(token, blob_len) {
-        Ok(parsed) => parsed,
-        Err(error) => return -(error as i32),
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    let parsed = {
+        let Some((proc, locks)) = table.process_and_advisory_locks(parent_pid) else {
+            return -(Errno::ESRCH as i32);
+        };
+        if !proc.is_live_explicit_tid(caller_tid) {
+            return -(Errno::ESRCH as i32);
+        }
+        let request = crate::spawn::read_request(
+            &mut host,
+            parent_pid,
+            proc.pointer_width,
+            path_addr,
+            path_len as usize,
+            blob_addr,
+            blob_len as usize,
+        )
+        .and_then(|(path, parsed)| {
+            crate::exec_target::probe_spawn_target(proc, locks, &mut host, &path).map(|()| parsed)
+        });
+        match request {
+            Ok(parsed) => parsed,
+            Err(error) => return -(error as i32),
+        }
     };
     spawn_parsed_for_caller(parent_pid, caller_tid, parsed)
 }
@@ -3818,6 +3779,69 @@ pub extern "C" fn kernel_exec_target_read(
     match crate::exec_target::read(proc, &mut host, owner_pid, target, offset, buffer) {
         Ok(read) => read as i32,
         Err(error) => -(error as i32),
+    }
+}
+
+/// Decide what the retained target is (`exec_target::admit`) and write the
+/// answer to `out`: `[kind: u8]`, then for a script (kind 1)
+/// `[has_arg: u8][interp_len: u32][arg_len: u32][interp][arg]`, or for a
+/// refusal (kind 2) the reasons joined by `"; "`, cut at a UTF-8 boundary if
+/// `out` is short. Kind 0 is a runnable program. Returns the record length or
+/// a negated errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_admit(
+    owner_pid: u32,
+    token: u32,
+    expected_abi: u32,
+    out_ptr: usize,
+    out_len: usize,
+) -> i32 {
+    if out_len == 0
+        || out_len > i32::MAX as usize
+        || out_ptr == 0
+        || out_ptr.checked_add(out_len).is_none()
+    {
+        return -(Errno::EFAULT as i32);
+    }
+    let out: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(owner_pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let admission = match crate::exec_target::admit(proc, owner_pid, token, expected_abi) {
+        Ok(admission) => admission,
+        Err(error) => return -(error as i32),
+    };
+    match admission {
+        crate::exec_target::Admission::Program => {
+            out[0] = 0;
+            1
+        }
+        crate::exec_target::Admission::Script(script) => {
+            let interpreter = script.interpreter.as_bytes();
+            let argument = script.argument.as_deref().unwrap_or("").as_bytes();
+            let total = 10 + interpreter.len() + argument.len();
+            if total > out.len() {
+                return -(Errno::EOVERFLOW as i32);
+            }
+            out[0] = 1;
+            out[1] = u8::from(script.argument.is_some());
+            out[2..6].copy_from_slice(&(interpreter.len() as u32).to_le_bytes());
+            out[6..10].copy_from_slice(&(argument.len() as u32).to_le_bytes());
+            out[10..10 + interpreter.len()].copy_from_slice(interpreter);
+            out[10 + interpreter.len()..total].copy_from_slice(argument);
+            total as i32
+        }
+        crate::exec_target::Admission::Refused(reasons) => {
+            out[0] = 2;
+            let text = reasons.join("; ");
+            let mut take = text.len().min(out.len() - 1);
+            while !text.is_char_boundary(take) {
+                take -= 1;
+            }
+            out[1..1 + take].copy_from_slice(&text.as_bytes()[..take]);
+            (1 + take) as i32
+        }
     }
 }
 

@@ -243,7 +243,7 @@ test("spawn scratch workload fixes its ordinary env and validates child exit", (
   assert.match(source, /if\s*\(WEXITSTATUS\(status\)\s*!=\s*0\)/);
 });
 
-test("spawn scratch evidence rejects missing timings and unexercised capacity", () => {
+test("spawn scratch evidence rejects missing timings and kernel memory", () => {
   const stdout = [
     "spawn_ms=1.25",
     `spawn_large_wire_bytes=${SPAWN_SCRATCH_LARGE_WIRE_BYTES}`,
@@ -255,7 +255,6 @@ test("spawn scratch evidence rejects missing timings and unexercised capacity", 
   assert.deepEqual(
     collectSpawnScratchEvidence({
       stdout,
-      retainedCapacity: SPAWN_SCRATCH_LARGE_WIRE_BYTES,
       kernelMemoryPages: 270,
     }),
     {
@@ -263,14 +262,12 @@ test("spawn scratch evidence rejects missing timings and unexercised capacity", 
       spawn_large_wire_bytes: SPAWN_SCRATCH_LARGE_WIRE_BYTES,
       spawn_large_first_ms: 2.5,
       spawn_large_repeat_ms: 2.25,
-      spawn_scratch_retained_bytes: SPAWN_SCRATCH_LARGE_WIRE_BYTES,
       spawn_scratch_kernel_bytes: 17_694_720,
     },
   );
   assert.throws(
     () => collectSpawnScratchEvidence({
       stdout: stdout.replace("spawn_large_first_ms=2.5\n", ""),
-      retainedCapacity: SPAWN_SCRATCH_LARGE_WIRE_BYTES,
       kernelMemoryPages: 270,
     }),
     /spawn_large_first_ms/,
@@ -278,15 +275,6 @@ test("spawn scratch evidence rejects missing timings and unexercised capacity", 
   assert.throws(
     () => collectSpawnScratchEvidence({
       stdout,
-      retainedCapacity: SPAWN_SCRATCH_LARGE_WIRE_BYTES - 1,
-      kernelMemoryPages: 270,
-    }),
-    /did not retain enough scratch/,
-  );
-  assert.throws(
-    () => collectSpawnScratchEvidence({
-      stdout,
-      retainedCapacity: SPAWN_SCRATCH_LARGE_WIRE_BYTES,
       kernelMemoryPages: 0,
     }),
     /kernel memory pages/,

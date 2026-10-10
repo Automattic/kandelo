@@ -21206,6 +21206,9 @@ mod tests {
         freeze_exec_handles: bool,
         frozen_handle_stats: std::collections::HashMap<i64, WasmStat>,
         frozen_handle_bytes: std::collections::HashMap<i64, Vec<u8>>,
+        /// Per-path content a frozen exec handle snapshots in preference to
+        /// `prepared_exec_bytes`, for tests that open several targets.
+        path_exec_bytes: std::collections::HashMap<Vec<u8>, Vec<u8>>,
         path_inodes: std::collections::HashMap<Vec<u8>, u64>,
         next_inode: u64,
         missing_paths: std::collections::HashSet<Vec<u8>>,
@@ -21357,6 +21360,7 @@ mod tests {
                 freeze_exec_handles: false,
                 frozen_handle_stats: std::collections::HashMap::new(),
                 frozen_handle_bytes: std::collections::HashMap::new(),
+                path_exec_bytes: std::collections::HashMap::new(),
                 path_inodes: std::collections::HashMap::new(),
                 next_inode: 1,
                 missing_paths: std::collections::HashSet::new(),
@@ -21506,7 +21510,12 @@ mod tests {
             if self.freeze_exec_handles {
                 let snapshot = self.host_fstat(handle)?;
                 self.frozen_handle_stats.insert(handle, snapshot);
-                if let Some(bytes) = self.prepared_exec_bytes.clone() {
+                if let Some(bytes) = self
+                    .path_exec_bytes
+                    .get(path)
+                    .cloned()
+                    .or_else(|| self.prepared_exec_bytes.clone())
+                {
                     self.frozen_handle_bytes.insert(handle, bytes);
                 }
             }
@@ -49911,6 +49920,328 @@ impl HostIO for RelSymlinkMock {
         0x01, 0x00, 0x00, 0x00, //
         0x05, 0x03, 0x01, 0x00, 0x00, //
     ];
+
+    fn prepare_test_exec_with_bytes(
+        proc: &mut Process,
+        locks: &mut AdvisoryLockManager,
+        host: &mut MockHostIO,
+        path: &[u8],
+        bytes: &[u8],
+    ) -> u32 {
+        host.stat_size = bytes.len() as u64;
+        host.prepared_exec_bytes = Some(bytes.to_vec());
+        host.set_file_with_owner(path, 0, 0, S_IFREG | 0o755, bytes);
+        crate::exec_target::prepare(
+            proc,
+            locks,
+            host,
+            crate::exec_target::PreparedExecOwner::Process {
+                pid: proc.pid,
+                caller_tid: proc.pid,
+                generation: proc.exec_generation,
+            },
+            AT_FDCWD,
+            path,
+            0,
+        )
+        .unwrap()
+    }
+
+    /// Prepare `bytes` as an exec target and observe all of them, which is
+    /// what the host does before it may commit: the artifact-policy gate
+    /// already refuses to judge a target that is not fully read.
+    fn prepare_and_observe(
+        proc: &mut Process,
+        locks: &mut AdvisoryLockManager,
+        host: &mut MockHostIO,
+        path: &[u8],
+        bytes: &[u8],
+    ) -> u32 {
+        let pid = proc.pid;
+        let token = prepare_test_exec_with_bytes(proc, locks, host, path, bytes);
+        let mut image = alloc::vec![0u8; bytes.len()];
+        crate::exec_target::read(proc, host, pid, token, 0, &mut image).unwrap();
+        assert_eq!(image.as_slice(), bytes);
+        token
+    }
+
+    #[test]
+    fn exec_replaces_the_registered_pointer_width_when_the_image_changes_it() {
+        // An exec replaces the address space, and the replacement may have a
+        // different data model than the image that called it. The width must
+        // be replaced at the commit and nowhere else: before it, the outgoing
+        // image is still the one running; after it, the guest may already be
+        // executing under the new one.
+        let mut proc = Process::new(77);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        assert_eq!(proc.pointer_width, 4);
+
+        let token = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/wide",
+            WASM64_IMAGE,
+        );
+        // Preparing and reading the target does not touch the running image's
+        // width. Only the commit does.
+        assert_eq!(proc.pointer_width, 4);
+
+        crate::exec_target::commit_process(
+            &mut proc, &mut locks, &mut host, pid, pid, token,
+        )
+        .unwrap();
+
+        assert_eq!(proc.exec_generation, 1);
+        assert_eq!(proc.pointer_width, 8);
+
+        // And back again: a wasm64 image exec'ing a wasm32 one is the same
+        // transition in the other direction, not a one-way widening.
+        let narrow = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/narrow",
+            WASM32_IMAGE,
+        );
+        assert_eq!(proc.pointer_width, 8);
+        crate::exec_target::commit_process(
+            &mut proc, &mut locks, &mut host, pid, pid, narrow,
+        )
+        .unwrap();
+        assert_eq!(proc.pointer_width, 4);
+    }
+
+    #[test]
+    fn a_failed_exec_leaves_the_running_image_pointer_width_alone() {
+        // A commit that is refused must not have moved the width: the image
+        // that is still running is the one whose data model applies.
+        let mut proc = Process::new(78);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        proc.pointer_width = 8;
+
+        let token = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/narrow",
+            WASM32_IMAGE,
+        );
+        // A stale generation is exactly the race the owner check exists for.
+        proc.exec_generation += 1;
+
+        assert!(
+            crate::exec_target::commit_process(
+                &mut proc, &mut locks, &mut host, pid, pid, token,
+            )
+            .is_err()
+        );
+        assert_eq!(proc.pointer_width, 8);
+    }
+
+    #[test]
+    fn exec_target_artifact_bytes_are_only_the_completely_observed_target() {
+        // The artifact policy is judged over the bytes the target committed
+        // to, so a target the host has not finished reading has none to judge.
+        let mut proc = Process::new(80);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        let token = prepare_test_exec_with_bytes(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/program",
+            WASM32_IMAGE,
+        );
+        assert_eq!(
+            crate::exec_target::artifact_bytes(&proc, pid, token),
+            Err(Errno::EINVAL),
+        );
+        let mut image = alloc::vec![0u8; WASM32_IMAGE.len()];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image).unwrap();
+        assert_eq!(
+            crate::exec_target::artifact_bytes(&proc, pid, token),
+            Ok(WASM32_IMAGE),
+        );
+        assert!(crate::exec_target::artifact_bytes(&proc, pid + 1, token).is_err());
+    }
+
+    /// A host-mount file the spawn probe can open, executable unless `mode`
+    /// says otherwise, holding `bytes`.
+    fn probe_file(host: &mut MockHostIO, path: &[u8], mode: u32, bytes: &[u8]) {
+        host.set_file_with_owner(path, 0, 0, S_IFREG | mode, bytes);
+        host.path_exec_bytes.insert(path.to_vec(), bytes.to_vec());
+    }
+
+    fn probe_host() -> MockHostIO {
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        host.stat_size = 64;
+        host
+    }
+
+    #[test]
+    fn spawn_probe_admits_a_program_and_a_one_level_script_retaining_nothing() {
+        let mut proc = Process::new(161);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = probe_host();
+        probe_file(&mut host, b"/bin/prog", 0o755, WASM32_IMAGE);
+        probe_file(&mut host, b"/bin/script", 0o755, b"#!/bin/prog -x\n");
+        for path in [&b"/bin/prog"[..], b"/bin/script"] {
+            assert_eq!(
+                crate::exec_target::probe_spawn_target(&mut proc, &mut locks, &mut host, path),
+                Ok(())
+            );
+        }
+        // Every handle the probe opened was released again.
+        assert_eq!(host.closed_handles.len(), 3);
+        assert!(proc.prepared_exec_targets.is_empty());
+    }
+
+    #[test]
+    fn spawn_probe_refuses_what_a_launch_could_not_run() {
+        let mut proc = Process::new(162);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = probe_host();
+        host.missing_paths.insert(b"/bin/missing".to_vec());
+        probe_file(&mut host, b"/bin/text", 0o755, b"echo hi\n");
+        probe_file(&mut host, b"/bin/noexec", 0o644, WASM32_IMAGE);
+        probe_file(&mut host, b"/bin/orphan", 0o755, b"#!/bin/missing\n");
+        probe_file(&mut host, b"/bin/inner", 0o755, b"#!/bin/prog\n");
+        probe_file(&mut host, b"/bin/nested", 0o755, b"#!/bin/inner\n");
+        let mut probe = |path: &[u8]| {
+            crate::exec_target::probe_spawn_target(&mut proc, &mut locks, &mut host, path)
+        };
+        assert_eq!(probe(b"/bin/missing"), Err(Errno::ENOENT));
+        assert_eq!(probe(b"/bin/text"), Err(Errno::ENOEXEC));
+        assert_eq!(probe(b"/bin/noexec"), Err(Errno::EACCES));
+        assert_eq!(probe(b"/bin/orphan"), Err(Errno::ENOENT));
+        assert_eq!(probe(b"/bin/nested"), Err(Errno::ENOEXEC));
+    }
+
+    #[test]
+    fn spawn_request_is_read_from_the_caller_and_bounded_like_startup() {
+        fn blob(argv: &[&[u8]]) -> Vec<u8> {
+            let mut strings = Vec::new();
+            let mut offsets = Vec::new();
+            for arg in argv {
+                offsets.push(strings.len() as u32);
+                strings.extend_from_slice(arg);
+                strings.push(0);
+            }
+            let mut out = Vec::new();
+            out.extend_from_slice(&(argv.len() as u32).to_le_bytes());
+            out.extend_from_slice(&[0; 4]); // envc
+            out.extend_from_slice(&[0; 4]); // actions
+            out.extend_from_slice(&[0; 4]); // attr flags
+            out.extend_from_slice(&[0; 4]); // pgrp
+            out.extend_from_slice(&[0; 4]); // pad
+            out.extend_from_slice(&[0; 16]); // sigdef + sigmask
+            for offset in offsets {
+                out.extend_from_slice(&offset.to_le_bytes());
+            }
+            out.extend_from_slice(&strings);
+            out
+        }
+        let mut host = MockHostIO::new();
+        host.proc_memory = alloc::vec![0u8; 0x20000];
+        host.proc_memory[0x100..0x10a].copy_from_slice(b"/bin/prog\0");
+        let small = blob(&[b"prog", b"arg"]);
+        host.proc_memory[0x200..0x200 + small.len()].copy_from_slice(&small);
+        let (path, parsed) =
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x200, small.len()).unwrap();
+        assert_eq!(path, b"/bin/prog");
+        assert_eq!(parsed.argv, alloc::vec![b"prog".to_vec(), b"arg".to_vec()]);
+
+        // Outside the caller's memory is EFAULT, not a kernel fault.
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x1ffff, small.len()).err(),
+            Some(Errno::EFAULT)
+        );
+        // One entry above the per-entry transport limit is E2BIG.
+        let long = alloc::vec![b'a'; wasm_posix_shared::platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES + 1];
+        let big = blob(&[b"prog", &long]);
+        host.proc_memory.resize(0x200 + big.len(), 0);
+        host.proc_memory[0x200..0x200 + big.len()].copy_from_slice(&big);
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x200, big.len()).err(),
+            Some(Errno::E2BIG)
+        );
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 4096, 0x200, small.len()).err(),
+            Some(Errno::ENAMETOOLONG)
+        );
+
+        // ARG_MAX counts one pointer per entry at the caller's width: 4,096
+        // entries of 1,016 bytes fit a wasm32 caller and not a wasm64 one.
+        let entry = alloc::vec![b'e'; 1016];
+        let many: Vec<&[u8]> = (0..4096).map(|_| entry.as_slice()).collect();
+        let wide = blob(&many);
+        host.proc_memory.resize(0x200 + wide.len(), 0);
+        host.proc_memory[0x200..0x200 + wide.len()].copy_from_slice(&wide);
+        assert!(crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x200, wide.len()).is_ok());
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 8, 0x100, 10, 0x200, wide.len()).err(),
+            Some(Errno::E2BIG)
+        );
+    }
+
+    #[test]
+    fn exec_admission_names_a_script_a_program_or_the_refusal() {
+        let mut proc = Process::new(163);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        let admit = |proc: &Process, token| {
+            crate::exec_target::admit(proc, pid, token, wasm_posix_shared::ABI_VERSION)
+        };
+        let observe = |proc: &mut Process, host: &mut MockHostIO, token, len| {
+            let mut bytes = alloc::vec![0u8; len];
+            crate::exec_target::read(proc, host, pid, token, 0, &mut bytes).unwrap();
+        };
+
+        let script = prepare_test_exec_with_bytes(
+            &mut proc, &mut locks, &mut host, b"/bin/s", b"#!/bin/sh -e\n",
+        );
+        // Decided only from the bytes the target committed to, so not before
+        // the host has read them.
+        assert!(admit(&proc, script).is_err());
+        observe(&mut proc, &mut host, script, 13);
+        match admit(&proc, script).unwrap() {
+            crate::exec_target::Admission::Script(s) => {
+                assert_eq!(s.interpreter, "/bin/sh");
+                assert_eq!(s.argument.as_deref(), Some("-e"));
+            }
+            _ => panic!("a #! target is a script"),
+        }
+
+        let program = prepare_test_exec_with_bytes(
+            &mut proc, &mut locks, &mut host, b"/bin/p", WASM32_IMAGE,
+        );
+        observe(&mut proc, &mut host, program, WASM32_IMAGE.len());
+        assert!(matches!(
+            admit(&proc, program).unwrap(),
+            crate::exec_target::Admission::Program
+        ));
+
+        let text = prepare_test_exec_with_bytes(
+            &mut proc, &mut locks, &mut host, b"/bin/t", b"plain text",
+        );
+        observe(&mut proc, &mut host, text, 10);
+        assert!(matches!(
+            admit(&proc, text).unwrap(),
+            crate::exec_target::Admission::Refused(reasons) if !reasons.is_empty()
+        ));
+    }
 
     #[test]
     fn exec_target_pathname_execveat_resolves_relative_to_live_dirfd() {

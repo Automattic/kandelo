@@ -980,6 +980,30 @@ describe("extractThreadSlotDeclaration", () => {
 // ---------------------------------------------------------------------------
 
 describe("wasm artifact policy helpers", () => {
+  it("detects legacy Asyncify by its exports, not by the word appearing in the bytes", () => {
+    // A module that exports the transform's entry point is instrumented.
+    const instrumented = buildWasm({
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(1)],
+      exports: [{ name: "asyncify_start_unwind", kind: 0, index: 0 }],
+    });
+    expect(wasmContainsLegacyAsyncify(instrumented)).toBe(true);
+    expect(describeWasmArtifactPolicyFailures(instrumented))
+      .toContain("contains asyncify_");
+
+    // A module that only mentions the word, as the kernel's own artifact
+    // detector does in its message text, is not.
+    const mentionsOnly = buildWasm({
+      customSections: [{ name: "note", data: [...nameBytes("asyncify_")] }],
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(1)],
+      exports: [{ name: "detector", kind: 0, index: 0 }],
+    });
+    expect(wasmContainsLegacyAsyncify(mentionsOnly)).toBe(false);
+    expect(describeWasmArtifactPolicyFailures(mentionsOnly))
+      .not.toContain("contains asyncify_");
+  });
+
   it("reads import and export names without compiling the module", () => {
     const wasm = buildWasm({
       funcImports: [

@@ -13,7 +13,7 @@
  *   KERNEL_UID=1000 KERNEL_GID=1000 npx tsx examples/run-example.ts hello
  */
 
-import { closeSync, existsSync, openSync, readFileSync, statSync } from "fs";
+import { closeSync, existsSync, openSync, readFileSync } from "fs";
 import { resolve, dirname, isAbsolute } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinaries } from "../host/src/binary-resolver";
@@ -357,51 +357,6 @@ function loadBytes(path: string): ArrayBuffer {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
-function tryLoadGuestCandidate(candidate: string, kernelCwd: string): ArrayBuffer | null {
-    const resolved = resolve(candidate);
-    if (!existsSync(resolved)) return null;
-
-    // Guest exec resolution may read scripts and test binaries staged under
-    // KERNEL_CWD. Outside that guest workdir, only explicit .wasm paths are
-    // valid candidates; never treat host /usr/bin tools as guest programs.
-    try {
-        if (!resolved.endsWith(".wasm") &&
-            !isWithinRealDirectory(kernelCwd, resolved)) {
-            return null;
-        }
-        if (!statSync(resolved).isFile()) return null;
-        return loadBytes(resolved);
-    } catch {
-        return null;
-    }
-}
-
-function resolveProgram(
-    path: string,
-    builtinPrograms: Record<string, string | null>,
-    allowAmbientHostCandidates: boolean,
-): ArrayBuffer | null {
-    const mapped = builtinPrograms[path];
-    if (mapped) {
-        return loadBytes(mapped);
-    }
-    if (!allowAmbientHostCandidates) return null;
-    const kernelCwd = resolve(process.env.KERNEL_CWD || process.cwd());
-    const candidates = [
-        // Resolve relative to kernel CWD (sortix tests exec themselves by relative path)
-        isAbsolute(path) ? path : resolve(kernelCwd, path),
-        path.endsWith(".wasm")
-            ? (isAbsolute(path) ? path : resolve(kernelCwd, path))
-            : (isAbsolute(path) ? `${path}.wasm` : resolve(kernelCwd, `${path}.wasm`)),
-        resolve(repoRoot, `examples/${path}.wasm`),
-    ];
-    for (const c of candidates) {
-        const bytes = tryLoadGuestCandidate(c, kernelCwd);
-        if (bytes) return bytes;
-    }
-    return null;
-}
-
 async function main() {
     const name = process.argv[2];
     if (!name) {
@@ -419,29 +374,6 @@ async function main() {
         resolveBuiltinPrograms,
     );
     const builtinPrograms = resolvedBuiltins.programs;
-    let isolatedExecPrograms: Record<string, string> | undefined;
-    let isolatedExecProgramBytes: Record<string, ArrayBuffer> | undefined;
-    if (runnerFilesystem.isolated) {
-        const paths: Record<string, string> = {};
-        const bytes: Record<string, ArrayBuffer> = {};
-        const snapshotsByPath = new Map<string, ArrayBuffer>();
-        for (const [programName, programPath] of Object.entries(builtinPrograms)) {
-            if (programPath === null || !existsSync(programPath)) continue;
-            if (resolvedBuiltins.snapshotNames.has(programName)) {
-                let snapshot = snapshotsByPath.get(programPath);
-                if (snapshot === undefined) {
-                    snapshot = loadBytes(programPath);
-                    snapshotsByPath.set(programPath, snapshot);
-                }
-                bytes[programName] = snapshot;
-            } else {
-                paths[programName] = programPath;
-            }
-        }
-        if (Object.keys(paths).length > 0) isolatedExecPrograms = paths;
-        if (Object.keys(bytes).length > 0) isolatedExecProgramBytes = bytes;
-    }
-
     let programPath: string;
     if (name.endsWith(".wasm") || (isAbsolute(name) && existsSync(name))) {
         // WHY: cross-built programs for a target without an executable
@@ -514,31 +446,8 @@ async function main() {
                 ? {}
                 : { rootfsMountSpec: runnerFilesystem.rootfsMountSpec }),
             sessionSeedTrees: runnerFilesystem.sessionSeedTrees,
-            // WHY: isolated mode must give explicitly resolved guest tools
-            // precedence over same-named lazy rootfs stubs. `execPrograms` is
-            // the worker's narrow, pre-VFS capability; waiting for the
-            // fallback callback would let the stub start transport I/O first.
-            execPrograms: isolatedExecPrograms,
-            // Direct build outputs are not immutable resolver generations.
-            // Snapshot their exact bytes before worker startup so replacement
-            // cannot change a later asynchronous exec.
-            execProgramBytes: isolatedExecProgramBytes,
             onStdout: (_pid, data) => writeGuestOutput(process.stdout, data),
             onStderr: (_pid, data) => writeGuestOutput(process.stderr, data),
-            onResolveExec: (path) => {
-                if (
-                    initialProgramBytes !== undefined
-                    && path === programPath
-                ) {
-                    return initialProgramBytes.slice(0);
-                }
-                if (runnerFilesystem.isolated) return null;
-                return resolveProgram(
-                    path,
-                    builtinPrograms,
-                    true,
-                );
-            },
         });
 
         await host.init();

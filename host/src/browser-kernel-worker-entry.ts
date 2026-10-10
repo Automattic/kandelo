@@ -24,7 +24,6 @@ import type {
   ForkBorrowedReplayWorkspace,
   ForkContinuationContext,
   ResolvedSpawnProgram,
-  SpawnCandidateResolution,
   ThreadChannelAttachment,
 } from "./kernel-worker";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
@@ -53,9 +52,7 @@ import {
 } from "./networking/browser-mitm-ca-env";
 import { patchWasmForThread } from "./worker-main";
 import {
-  describeWasmArtifactPolicyFailures,
   detectPtrWidth,
-  extractAbiVersion,
   extractHeapBase,
   isWasmModuleBytes,
 } from "./constants";
@@ -293,51 +290,6 @@ const {
  */
 const intentionallyTerminated = new WeakSet<object>();
 
-const MAX_SHEBANG_DEPTH = 4;
-
-function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
-  const view = new Uint8Array(bytes);
-  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
-  let end = 2;
-  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
-  const line = new TextDecoder().decode(view.subarray(2, end)).replace(/\r$/, "").trim();
-  if (!line) return null;
-  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
-  if (!match) return null;
-  return { interpreter: match[1], arg: match[2] };
-}
-
-async function resolveExecutableForLaunch(
-  path: string,
-  argv: string[],
-  depth = 0,
-): Promise<SpawnCandidateResolution | null> {
-  if (depth > MAX_SHEBANG_DEPTH) return null;
-  const bytes = await readExecFileFromFs(path);
-  if (!bytes) return null;
-
-  const shebang = parseShebang(bytes);
-  if (!shebang) {
-    if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
-    const artifactFailures = describeWasmArtifactPolicyFailures(bytes, {
-      expectedAbi: kernelWorker.getKernelAbiVersion(),
-    });
-    if (artifactFailures.length > 0) return { errno: ENOEXEC };
-    const declaredAbi = extractAbiVersion(bytes);
-    if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
-      return { errno: ENOEXEC };
-    }
-    return { programBytes: bytes, argv };
-  }
-
-  const scriptArgv = [
-    shebang.interpreter,
-    ...(shebang.arg ? [shebang.arg] : []),
-    path,
-    ...argv.slice(1),
-  ];
-  return resolveExecutableForLaunch(shebang.interpreter, scriptArgv, depth + 1);
-}
 
 // Per-PID thread module cache: lazily compiled on first clone(), shared across
 // all threads of the same process. Keyed by PID of the process that spawned threads.
@@ -1076,7 +1028,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
           throw error;
         }
       },
-      onResolveSpawn: handlePosixSpawnResolve,
       onSpawn: (parentPid, childPid, program, envp) =>
         processMemoryCreators.run(
           "a posix_spawn process Worker",
@@ -2954,26 +2905,9 @@ async function handleExec(
 }
 
 /**
- * Pre-flight resolver — see node-kernel-worker-entry.ts:handlePosixSpawnResolve.
- * Browser-side equivalent: materialize the lazy file (the kernel answers
- * EAGAIN while the host fetches its bytes asynchronously, avoiding sync-XHR +
- * SW deadlocks; see `readRootfsFileWithRetry`), reads its contents from the
- * VFS, and follows shebangs. Compilation is deferred to the
- * shared worker's isolated candidate snapshot. Safe to call before the kernel
- * applies spawn file actions.
- */
-async function handlePosixSpawnResolve(
-  path: string,
-  argv: string[],
-): Promise<SpawnCandidateResolution | null> {
-  return resolveExecutableForLaunch(path, argv);
-}
-
-/**
  * Launch a worker for a SYS_SPAWN child whose program is derived from the
- * exact target already committed by the shared worker. Preflight is only a
- * side-effect-free candidate; child-state divergence is resolved and compiled
- * before this callback. Mirrors the Node entry's `handlePosixSpawn`.
+ * exact target already committed by the shared worker. Mirrors the Node
+ * entry's `handlePosixSpawn`.
  */
 async function handlePosixSpawn(
   parentPid: number,
@@ -4396,14 +4330,6 @@ sw.onmessage = (e: MessageEvent) => {
     case "get_wasm_module_cache_stats":
       respond(msg.requestId, kernelWorker.wasmModules.stats());
       break;
-    case "get_spawn_scratch_capacity": {
-      try {
-        respond(msg.requestId, kernelWorker.getSpawnScratchCapacity());
-      } catch (err) {
-        respondError(msg.requestId, (err as Error)?.message ?? String(err));
-      }
-      break;
-    }
     case "mouse_inject": handleMouseInject(msg); break;
     case "audio_drain": handleAudioDrain(msg); break;
     case "enum_procs": {
