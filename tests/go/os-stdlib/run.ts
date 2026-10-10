@@ -28,6 +28,7 @@ const selectedTests = [
   "TestTruncate", "TestDirSeek", "TestReaddirSmallSeek",
   "TestRootOpen_File", "TestRootOpen_Directory", "TestRootSymlink",
   "TestRootConsistencyMkdirAll",
+  "TestRootRemoveDot",
 ];
 const requiredMarkers = [
   "--- PASS: TestOpenError", "--- PASS: TestReaddirNValues", "--- PASS: TestChmod",
@@ -36,6 +37,7 @@ const requiredMarkers = [
   "--- PASS: TestReadDir", "--- PASS: TestDirSeek", "--- PASS: TestReaddirSmallSeek",
   "--- PASS: TestRootOpen_File", "--- PASS: TestRootOpen_Directory",
   "--- PASS: TestRootSymlink", "--- PASS: TestRootConsistencyMkdirAll",
+  "--- PASS: TestRootRemoveDot",
 ];
 
 const result = await runCentralizedProgram({

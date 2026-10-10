@@ -89,13 +89,13 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `readahead()` | Stub | Returns 0 (no-op advisory). |
 | `fstatat()` | Partial | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW and Linux AT_EMPTY_PATH are supported; an empty path targets either the supplied fd or the current working directory for AT_FDCWD. Real dirfds are supported through stored OFD paths. Cwd- and dirfd-relative lookup inherit the pathname-backed directory-identity limitation documented below. `st_rdev` is reported since ABI 44 (non-zero only for the evdev nodes, char 13:64+N); `st_blksize` and `st_blocks` are omitted and libc reports zero for them pending [issue #928](https://github.com/Automattic/kandelo/issues/928). |
 | `statx()` | Partial | Delegates to fstatat, accepts the statx synchronization flags, and fills the 256-byte statx structure from WasmStat using the STATX_BASIC_STATS mask. Basic identity, mode, ownership, size, and timestamp fields are reported, but block and device metadata are incomplete pending [issue #928](https://github.com/Automattic/kandelo/issues/928). It inherits fstatat's pathname-backed directory-identity limitation. |
-| `unlinkat()` | Full | AT_FDCWD delegates to unlink/rmdir. AT_REMOVEDIR flag supported. Real dirfd supported. |
+| `unlinkat()` | Partial | AT_FDCWD delegates to unlink/rmdir; AT_REMOVEDIR and real dirfds are supported. A final `.` with AT_REMOVEDIR returns EINVAL rather than removing the directory. Dirfd-relative lookup still uses the OFD's remembered pathname, so it can fail after the opened directory is renamed. |
 | `mkdirat()` | Full | AT_FDCWD delegates to mkdir. umask applied. Real dirfd supported. |
-| `renameat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
+| `renameat()` | Partial | Both dirfds supported (AT_FDCWD, absolute, or real dirfd), but real dirfds still use remembered paths rather than stable directory identity across rename. |
 | `faccessat()` | Full | AT_FDCWD delegates to access(). Absolute paths and real dirfd supported. |
 | `fchmodat()` | Full | AT_FDCWD delegates to chmod(). AT_SYMLINK_NOFOLLOW accepted. Real dirfd supported. |
 | `fchownat()` | Partial | AT_FDCWD and real dirfds are supported, including unchanged-ID sentinels and the same root/owner/group authorization as `chown()`. The final symlink is followed by default and changed directly with `AT_SYMLINK_NOFOLLOW`. Unsupported flags, including `AT_EMPTY_PATH`, return EINVAL. |
-| `linkat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
+| `linkat()` | Partial | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). Node/macOS host-filesystem scratch mounts use `fs.linkSync`, which follows source symlinks even for `linkat` without AT_SYMLINK_FOLLOW; SharedFS does not follow them. Dirfds also inherit remembered-path rather than stable-directory identity. |
 | `symlinkat()` | Full | Target stored as-is. Linkpath resolved via dirfd. Real dirfd supported. |
 | `readlinkat()` | Full | AT_FDCWD delegates to readlink(). Real dirfd supported. |
 
@@ -235,7 +235,7 @@ to a different directory than the original OFD.
 | `telldir()` | Full | Returns current position counter from DirStream. |
 | `seekdir()` | Full | Rewinds and skips entries to reach target position. |
 | `mkdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. umask applied to mode. |
-| `rmdir()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
+| `rmdir()` | Partial | Host-delegated. Relative paths resolve via kernel cwd; a final `.` returns EINVAL rather than removing the directory. |
 | `chdir()` / `getcwd()` | Partial | `chdir()` resolves components and symlinks across mounts, verifies search permissions and a directory target, and stores the canonical physical pathname. Initial process cwd uses the same validation after child credentials are installed. `getcwd()` validates that spelling and returns ERANGE if the buffer is too small, but cwd remains pathname-backed rather than a stable directory identity after rename/unlink. |
 | `link()` / `unlink()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. Named-FIFO hard links share one pipe identity and update its authoritative link count; the backing survives the last unlink while an open description remains, with link count zero and ctime updated to the unlink time. |
 | `rename()` | Partial | Host-delegated. Both paths resolved via kernel cwd. Named-FIFO identities follow file and containing-directory renames, including destination replacement. |
@@ -319,9 +319,9 @@ proves and reserves only the 128-byte prefix the kernel can write.
 | `clock_settime()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
 | `settimeofday()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
 | `adjtimex()` / `clock_adjtime()` | Stub | Returns EPERM. Cannot adjust system clock from Wasm. |
-| `utimes()` | Full | Converts timeval to timespec, delegates to utimensat. |
-| `futimesat()` | Full | Like utimes but relative to dirfd. Delegates to utimensat. |
-| `utimensat()` / `futimens()` | Partial | Updates access and modification times for host-backed files and named FIFOs. Setting both timestamps to the current time accepts either ownership or write permission; explicit timestamps require ownership, while two `UTIME_OMIT` values are an authorization-free no-op after path/fd validation. Direct descriptor mutation through futimens rejects O_PATH/O_SEARCH descriptors with EBADF. |
+| `utimes()` | Partial | Converts timeval to timespec and delegates to utimensat; SharedFS currently stores only milliseconds of the supplied microsecond precision. |
+| `futimesat()` | Partial | Like utimes but relative to dirfd; inherits the same SharedFS timestamp precision limit and remembered-path dirfd behavior. |
+| `utimensat()` / `futimens()` | Partial | Updates access and modification times for host-backed files and named FIFOs. Setting both timestamps to the current time accepts either ownership or write permission; explicit timestamps require ownership, while two `UTIME_OMIT` values are an authorization-free no-op after path/fd validation. Direct descriptor mutation through futimens rejects O_PATH/O_SEARCH descriptors with EBADF. SharedFS currently stores timestamps to millisecond precision, so sub-millisecond explicit times do not round-trip. |
 
 ## Scheduler
 

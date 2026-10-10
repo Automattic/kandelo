@@ -2238,9 +2238,42 @@ fixtures through the standard ABI-stamping script succeeds, and the full
 suite including the ceiling case passes 102/102 (34 per engine) against the
 same live source-only Vite server.
 
+**2026-10-10 — wider `os.Root` sweep and POSIX remove-dot fix.** A Node run
+of upstream `TestRoot*` found genuine shared-platform gaps beyond the
+selected `os` cases: SharedFS rounds `Chtimes` to milliseconds, `linkat` does
+not preserve symlink-source hard-link behavior, renaming an opened directory
+breaks later fd-relative lookup because its OFD remembers a pathname, and
+some root-relative rename/dot cases disagree with upstream Go. `TestRootDirFS`
+also lacks its source-tree testdata in this VFS and is not a platform result.
+The concrete `TestRootRemoveDot` failure was a Kandelo syscall defect:
+`unlinkat(..., AT_REMOVEDIR)` could canonicalize `.` to the opened root and
+remove it. `runtime-core` now rejects a final `.` with EINVAL for `rmdir`
+and `unlinkat(..., AT_REMOVEDIR)` before host mutation. The focused Rust
+regression, all 1,715 runtime-core unit tests and six doc-tests, Sortix
+`basic/unistd/rmdir`, and upstream Go `TestRootRemoveDot` pass on Node. The
+selected upstream `os` set is now 31 top-level tests and passes on Node;
+its combined browser probe passes Chromium, Firefox, and WebKit (3/3) with
+the rebuilt kernel. The full upstream `os.Root` sweep still fails on the
+other gaps above; it is not claimed as conformance. The symlink-source
+`linkat` failure is a Node/macOS scratch-mount boundary: the test's `/tmp`
+is a host-filesystem mount despite the root image being SharedFS, and
+`HostFileSystem` calls Node's `fs.linkSync`, which follows a source symlink
+on macOS. A native no-follow host operation or equivalent backend design
+is needed; changing Go's test expectation would hide the platform gap.
+The source-only WordPress image was republished after the
+kernel change, and the direct-kernel, browser UI, and Node-host
+FrankenPHP Chromium checks passed 3/3. The rebuilt-image Node server returns
+HTTP 200 for the homepage and login page. The full focused Go browser
+matrix passes 102/102 (34 each on Chromium, Firefox, and WebKit) against
+this kernel. The live source-only browser profile also reaches Running and
+renders the WordPress homepage, using the republished image whose SHA-256 is
+`e20fb208d2732e4df062f2e1d28ad63852ed6f4663927dd53796110a9ece9c7b`.
+
 The remaining Go/C platform gates, in recommended order, are:
 
-1. Run broader Go standard-library/runtime conformance on the Kandelo target.
+1. Continue broader Go standard-library/runtime conformance, including the
+   `os.Root` timestamp-precision, symlink-source `linkat`, remembered-path
+   dirfd after rename, and root-relative rename/dot gaps found above.
 2. Support real relocated/non-metadata C initializer and finalizer arrays
    if needed by source ports; the current LLVM toolchain rejects
    `.fini_array` before Kandelo's linker sees it.
