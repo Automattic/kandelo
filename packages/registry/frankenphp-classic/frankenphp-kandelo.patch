@@ -1,0 +1,221 @@
+diff --git a/cgi.go b/cgi.go
+index 63fb133..e20f861 100644
+--- a/cgi.go
++++ b/cgi.go
+@@ -1,15 +1,24 @@
+ package frankenphp
+ 
+-// #cgo nocallback frankenphp_register_bulk
+ // #cgo nocallback frankenphp_register_variables_from_request_info
+ // #cgo nocallback frankenphp_register_variable_safe
+ // #cgo nocallback frankenphp_register_single
+-// #cgo noescape frankenphp_register_bulk
+ // #cgo noescape frankenphp_register_variables_from_request_info
+ // #cgo noescape frankenphp_register_variable_safe
+ // #cgo noescape frankenphp_register_single
+ // #include <php_variables.h>
+ // #include "frankenphp.h"
++// static inline void kandelo_update_request_info(sapi_request_info *info, char *auth_user, char *auth_password, char *request_method, char *query_string, zend_long content_length, char *content_type, char *path_translated, char *request_uri, int proto_num) {
++//     info->auth_user = auth_user;
++//     info->auth_password = auth_password;
++//     info->request_method = request_method;
++//     info->query_string = query_string;
++//     info->content_length = content_length;
++//     info->content_type = content_type;
++//     info->path_translated = path_translated;
++//     info->request_uri = request_uri;
++//     info->proto_num = proto_num;
++// }
+ import "C"
+ import (
+ 	"context"
+@@ -138,38 +147,29 @@ func addKnownVariablesToServer(fc *frankenPHPContext, trackVarsArray *C.zval) {
+ 		requestURI = request.URL.RequestURI()
+ 	}
+ 
+-	C.frankenphp_register_bulk(
+-		trackVarsArray,
+-		packCgiVariable(keys["REMOTE_ADDR"], ip),
+-		packCgiVariable(keys["REMOTE_HOST"], ip),
+-		packCgiVariable(keys["REMOTE_PORT"], port),
+-		packCgiVariable(keys["DOCUMENT_ROOT"], fc.documentRoot),
+-		packCgiVariable(keys["PATH_INFO"], fc.pathInfo),
+-		packCgiVariable(keys["PHP_SELF"], request.URL.Path),
+-		packCgiVariable(keys["DOCUMENT_URI"], fc.docURI),
+-		packCgiVariable(keys["SCRIPT_FILENAME"], fc.scriptFilename),
+-		packCgiVariable(keys["SCRIPT_NAME"], fc.scriptName),
+-		packCgiVariable(keys["HTTPS"], https),
+-		packCgiVariable(keys["SSL_PROTOCOL"], sslProtocol),
+-		packCgiVariable(keys["REQUEST_SCHEME"], rs),
+-		packCgiVariable(keys["SERVER_NAME"], reqHost),
+-		packCgiVariable(keys["SERVER_PORT"], serverPort),
+-		// Variables defined in CGI 1.1 spec
+-		// Some variables are unused but cleared explicitly to prevent
+-		// the parent environment from interfering.
+-		// These values can not be overridden
+-		packCgiVariable(keys["CONTENT_LENGTH"], contentLength),
+-		packCgiVariable(keys["GATEWAY_INTERFACE"], "CGI/1.1"),
+-		packCgiVariable(keys["SERVER_PROTOCOL"], request.Proto),
+-		packCgiVariable(keys["SERVER_SOFTWARE"], "FrankenPHP"),
+-		packCgiVariable(keys["HTTP_HOST"], request.Host),
+-		// These values are always empty but must be defined:
+-		packCgiVariable(keys["AUTH_TYPE"], ""),
+-		packCgiVariable(keys["REMOTE_IDENT"], ""),
+-		// Request uri of the original request
+-		packCgiVariable(keys["REQUEST_URI"], requestURI),
+-		packCgiVariable(keys["SSL_CIPHER"], sslCipher),
+-	)
++	registerCgiVariable(trackVarsArray, keys["REMOTE_ADDR"], ip)
++	registerCgiVariable(trackVarsArray, keys["REMOTE_HOST"], ip)
++	registerCgiVariable(trackVarsArray, keys["REMOTE_PORT"], port)
++	registerCgiVariable(trackVarsArray, keys["DOCUMENT_ROOT"], fc.documentRoot)
++	registerCgiVariable(trackVarsArray, keys["PATH_INFO"], fc.pathInfo)
++	registerCgiVariable(trackVarsArray, keys["PHP_SELF"], request.URL.Path)
++	registerCgiVariable(trackVarsArray, keys["DOCUMENT_URI"], fc.docURI)
++	registerCgiVariable(trackVarsArray, keys["SCRIPT_FILENAME"], fc.scriptFilename)
++	registerCgiVariable(trackVarsArray, keys["SCRIPT_NAME"], fc.scriptName)
++	registerCgiVariable(trackVarsArray, keys["HTTPS"], https)
++	registerCgiVariable(trackVarsArray, keys["SSL_PROTOCOL"], sslProtocol)
++	registerCgiVariable(trackVarsArray, keys["REQUEST_SCHEME"], rs)
++	registerCgiVariable(trackVarsArray, keys["SERVER_NAME"], reqHost)
++	registerCgiVariable(trackVarsArray, keys["SERVER_PORT"], serverPort)
++	registerCgiVariable(trackVarsArray, keys["CONTENT_LENGTH"], contentLength)
++	registerCgiVariable(trackVarsArray, keys["GATEWAY_INTERFACE"], "CGI/1.1")
++	registerCgiVariable(trackVarsArray, keys["SERVER_PROTOCOL"], request.Proto)
++	registerCgiVariable(trackVarsArray, keys["SERVER_SOFTWARE"], "FrankenPHP")
++	registerCgiVariable(trackVarsArray, keys["HTTP_HOST"], request.Host)
++	registerCgiVariable(trackVarsArray, keys["AUTH_TYPE"], "")
++	registerCgiVariable(trackVarsArray, keys["REMOTE_IDENT"], "")
++	registerCgiVariable(trackVarsArray, keys["REQUEST_URI"], requestURI)
++	registerCgiVariable(trackVarsArray, keys["SSL_CIPHER"], sslCipher)
+ 
+ 	// These values are already present in the SG(request_info), so we'll register them from there
+ 	C.frankenphp_register_variables_from_request_info(
+@@ -182,8 +182,8 @@ func addKnownVariablesToServer(fc *frankenPHPContext, trackVarsArray *C.zval) {
+ 	)
+ }
+ 
+-func packCgiVariable(key *C.zend_string, value string) C.ht_key_value_pair {
+-	return C.ht_key_value_pair{key, toUnsafeChar(value), C.size_t(len(value))}
++func registerCgiVariable(trackVarsArray *C.zval, key *C.zend_string, value string) {
++	C.frankenphp_register_single(key, toUnsafeChar(value), C.size_t(len(value)), trackVarsArray)
+ }
+ 
+ func addHeadersToServer(ctx context.Context, request *http.Request, trackVarsArray *C.zval) {
+@@ -286,31 +286,34 @@ func go_update_request_info(threadIndex C.uintptr_t, info *C.sapi_request_info)
+ 		return
+ 	}
+ 
++	var authUserValue, authPasswordValue, contentTypeValue, pathTranslatedValue *C.char
+ 	authUser, authPassword, ok := request.BasicAuth()
+ 	if ok {
+ 		if authPassword != "" {
+-			info.auth_password = thread.pinCString(authPassword)
++			authPasswordValue = thread.pinCString(authPassword)
+ 		}
+ 		if authUser != "" {
+-			info.auth_user = thread.pinCString(authUser)
++			authUserValue = thread.pinCString(authUser)
+ 		}
+ 	}
+ 
+-	info.request_method = thread.pinCString(request.Method)
+-	info.query_string = thread.pinCString(request.URL.RawQuery)
+-	info.content_length = C.zend_long(request.ContentLength)
+-
+ 	if contentType := request.Header.Get("Content-Type"); contentType != "" {
+-		info.content_type = thread.pinCString(contentType)
++		contentTypeValue = thread.pinCString(contentType)
+ 	}
+ 
+ 	if fc.pathInfo != "" {
+-		info.path_translated = thread.pinCString(sanitizedPathJoin(fc.documentRoot, fc.pathInfo)) // See: http://www.oreilly.com/openbook/cgi/ch02_04.html
++		pathTranslatedValue = thread.pinCString(sanitizedPathJoin(fc.documentRoot, fc.pathInfo))
++	}
++	requestURI := request.URL.RequestURI()
++	if fc.originalRequest != nil {
++		requestURI = fc.originalRequest.URL.RequestURI()
+ 	}
+ 
+-	info.request_uri = thread.pinCString(request.URL.RequestURI())
+-
+-	info.proto_num = C.int(request.ProtoMajor*1000 + request.ProtoMinor)
++	C.kandelo_update_request_info(info, authUserValue, authPasswordValue,
++		thread.pinCString(request.Method), thread.pinCString(request.URL.RawQuery),
++		C.zend_long(request.ContentLength), contentTypeValue, pathTranslatedValue,
++		thread.pinCString(requestURI),
++		C.int(request.ProtoMajor*1000+request.ProtoMinor))
+ }
+ 
+ // SanitizedPathJoin performs filepath.Join(root, reqPath) that
+diff --git a/cgo.go b/cgo.go
+index 2ec9586..5eb309e 100644
+--- a/cgo.go
++++ b/cgo.go
+@@ -3,7 +3,8 @@ package frankenphp
+ // #cgo darwin pkg-config: libxml-2.0
+ // #cgo CFLAGS: -Wall -Werror
+ // #cgo linux CFLAGS: -D_GNU_SOURCE
+-// #cgo LDFLAGS: -lphp -lm -lutil
++// #cgo LDFLAGS: -L${SRCDIR}/lib -lphp -licui18n -licuio -licuuc -licudata -lc++ -lc++abi -lcurl -lzip -lxml2 -lssl -lcrypto -lsqlite3 -liconv -lz -lkandelo-ucontext-unsupported
++// #cgo !kandelo LDFLAGS: -lm -lutil
+ // #cgo linux LDFLAGS: -ldl -lresolv
+ // #cgo darwin LDFLAGS: -Wl,-rpath,/usr/local/lib -liconv -ldl
+ import "C"
+diff --git a/frankenphp.go b/frankenphp.go
+index 7444391..e6265ff 100644
+--- a/frankenphp.go
++++ b/frankenphp.go
+@@ -18,6 +18,13 @@ package frankenphp
+ // #include <zend_llist.h>
+ // #include <SAPI.h>
+ // #include "frankenphp.h"
++// static inline const char *kandelo_php_extra_version(void) { return PHP_EXTRA_VERSION; }
++// static inline const char *kandelo_php_version_string(void) { return PHP_VERSION; }
++// static inline zend_llist_element *kandelo_header_head(zend_llist *headers) { return headers->head; }
++// static inline zend_llist_element *kandelo_header_next(zend_llist_element *element) { return element->next; }
++// static inline sapi_header_struct *kandelo_header_data(zend_llist_element *element) { return (sapi_header_struct *)element->data; }
++// static inline char *kandelo_header_text(sapi_header_struct *header) { return header->header; }
++// static inline int kandelo_header_length(sapi_header_struct *header) { return (int)header->header_len; }
+ import "C"
+ import (
+ 	"bytes"
+@@ -130,15 +137,13 @@ type PHPConfig struct {
+ 
+ // Version returns infos about the PHP version.
+ func Version() PHPVersion {
+-	cVersion := C.frankenphp_get_version()
+-
+ 	return PHPVersion{
+-		int(cVersion.major_version),
+-		int(cVersion.minor_version),
+-		int(cVersion.release_version),
+-		C.GoString(cVersion.extra_version),
+-		C.GoString(cVersion.version),
+-		int(cVersion.version_id),
++		int(C.PHP_MAJOR_VERSION),
++		int(C.PHP_MINOR_VERSION),
++		int(C.PHP_RELEASE_VERSION),
++		C.GoString(C.kandelo_php_extra_version()),
++		C.GoString(C.kandelo_php_version_string()),
++		int(C.PHP_VERSION_ID),
+ 	}
+ }
+ 
+@@ -560,12 +565,12 @@ func go_write_headers(threadIndex C.uintptr_t, status C.int, headers *C.zend_lli
+ 		return C.bool(true)
+ 	}
+ 
+-	current := headers.head
++	current := C.kandelo_header_head(headers)
+ 	for current != nil {
+-		h := (*C.sapi_header_struct)(unsafe.Pointer(&(current.data)))
++		h := C.kandelo_header_data(current)
+ 
+-		addHeader(thread.context(), fc, h.header, C.int(h.header_len))
+-		current = current.next
++		addHeader(thread.context(), fc, C.kandelo_header_text(h), C.int(C.kandelo_header_length(h)))
++		current = C.kandelo_header_next(current)
+ 	}
+ 
+ 	goStatus := int(status)

@@ -1,0 +1,22 @@
+kind = "library"
+name = "php-zts"
+version = "8.3.15"
+kernel_abi = 48
+arches = ["wasm32"]
+depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8", "libiconv@1.17", "libzip@1.11.4", "libcurl@8.11.1", "icu@74.2", "libcxx@21.1.7"]
+
+[source]
+url = "https://www.php.net/distributions/php-8.3.15.tar.gz"
+sha256 = "67073c3c9c56c86461e0715d9e1806af5ddffe8e6e2eb9781f7923bbb5bd67fa"
+provider = "archive"
+
+[license]
+spdx = "PHP-3.01"
+url = "https://github.com/php/php-src/blob/master/LICENSE"
+
+[build]
+script_path = "packages/registry/php-zts/build-php-zts.sh"
+
+[outputs]
+libs = ["lib/libphp.a"]
+headers = ["include/php"]

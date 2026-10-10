@@ -132,7 +132,26 @@ that C `getenv` sees the initial process environment and Go
 validates, fork-instruments, and runs as an ABI-stamped Kandelo process on Node and
 Chromium with exit 0 and no diagnostics. This is narrow Go-to-C coverage,
 not general cgo support: Go-owned and C-created-pthread callbacks pass focused
-process probes, but secure startup and PHP initialization remain incomplete.
+process probes, but secure startup and broader PHP behavior remain incomplete.
+The `php-zts` package now builds a static ZTS embed library, and a narrow
+`tests/go/cgo/php-embed` probe executes PHP initialization, a script string,
+and shutdown on both hosts. That probe alone is not a request-level gate.
+
+The `frankenphp-classic` package is a separate request-level gate. Its
+resolver-built binary serves a PHP request and a static asset through
+Kandelo HTTP on Node and Chromium. It does not by itself prove WordPress:
+
+```sh
+scripts/dev-shell.sh bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh frankenphp-classic wasm32
+scripts/dev-shell.sh bash -c 'prefix=$(cargo xtask build-deps --arch wasm32 resolve frankenphp-classic); npx tsx packages/registry/frankenphp-classic/test/run.ts "$prefix/frankenphp-classic.wasm" "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_FRANKENPHP_CLASSIC_WASM="$(cd ../.. && cargo xtask build-deps --arch wasm32 resolve frankenphp-classic)/frankenphp-classic.wasm" npx playwright test test/frankenphp-classic.spec.ts --project=chromium'
+```
+
+```sh
+scripts/dev-shell.sh bash tests/go/cgo/php-embed/build.sh
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/cgo/php-embed/run.ts .context/go-php-embed/probe-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep "PHP ZTS embed"'
+```
 
 ```sh
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-c-abs.wasm ./tests/go/cgo && wasm-validate --enable-threads .context/go-c-abs.wasm'
@@ -174,7 +193,8 @@ cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS
 ```
 
 The separate `cgo/callback` fixture exercises Go-to-C-to-Go calls on the
-calling thread and a C-created pthread entering Go:
+calling thread and a C-created pthread entering Go. It also checks that a
+mixed scalar/pointer callback frame returns a valid C pointer:
 
 ```sh
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/cgo-callback-probe.wasm ./tests/go/cgo/callback'

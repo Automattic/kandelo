@@ -1801,6 +1801,97 @@ Remaining work, in dependency order:
    browser end-to-end behavior, conformance, and Go-runtime guidance before
    closing the draft PR.
 
+**2026-10-10 — static archive selection and PHP ZTS build in progress.**
+The adjacent Go linker now consumes cgo library search flags and pulls C Wasm
+archive members reached by C code relocations, including a second member
+called by the first. The checked-in `tests/go/cgo/static-archive` fixture
+builds through normal cgo, then runs with the Kandelo kernel in Node and
+Chromium with empty stderr and host diagnostics. The linker changes are not
+yet pinned by a registry package and do not establish that a large PHP archive
+can link. A `php-zts` resolver recipe now requests PHP 8.3.15's static embed
+SAPI, ZTS, and the WordPress extension set; its first source build is still
+running. The existing `go-hello` package resolves and runs directly; its
+`posix_spawn` package-launch test has passed repeatedly after one earlier
+stalled attempt. Do not claim that stall fixed without a reproduced cause.
+
+The immediate gates are: complete and verify the PHP ZTS resolver build;
+link a minimal PHP embed lifecycle probe through the Kandelo Go/C linker;
+then compile upstream FrankenPHP classic mode, serve a simple PHP request,
+and only then integrate the existing WordPress VFS without FPM. Repeat Node
+and Chromium request tests, conformance, ABI, and package checks before any
+performance or completion claim. No Kandelo FrankenPHP demo URL exists yet.
+
+**2026-10-10 — PHP embed lifecycle passes; FrankenPHP reveals mixed-width
+cgo layout.** The `php-zts` resolver build completed. The Go linker now
+imports the host's `__c_longjmp` tag and VM-interrupt function, resolves
+object-local functions and weak/strong C data across the PHP, ICU, libc++,
+curl, and libc archives, and preserves the Go-owned 8-byte `_cgo_yield`
+storage required when C pointers are 4 bytes. The checked-in
+`tests/go/cgo/php-embed` fixture builds through the SDK and package resolver,
+validates and fork-instruments its roughly 40 MiB raw module, and executes
+PHP init, evaluation, and shutdown in Node and Chromium with exit 0, both
+output markers, empty stderr, and no host diagnostics. PHP Fibers' always-
+compiled ucontext references link only against Kandelo's documented
+abort-on-use unsupported library; the probe does not use Fibers.
+
+Upstream FrankenPHP v1.11.0, with hot reload and Mercure excluded, now
+*compiles and links* into a Kandelo Go/C module in a scratch checkout. Its
+first Node classic-mode attempt failed before request handling: `Version()`
+received a C struct with 4-byte pointer fields that `cmd/cgo` generated as
+8-byte Go pointer fields, causing a huge invalid `GoString` allocation.
+A scratch C-accessor change removed that immediate layout mismatch; the
+resulting module is being tested. The same dependency graph also exposed
+`golang.org/x/sys/cpu`'s zero cache-line padding for generic Wasm, which
+breaks Otter's compile-time sizes on a threaded Kandelo target. Its
+Kandelo-only 64-byte adaptation is still scratch, not a reviewed package
+patch. The PHP ZTS recipe has a revised header macro patch rebuilding in
+the resolver; neither a FrankenPHP package nor WordPress demo is published.
+
+**2026-10-10 — FrankenPHP classic executes a PHP request on Kandelo.**
+Fork commit `471e7821508c58ed5d2022e52adf3abac3539e87` adds cgo static
+archive selection, Wasm tag imports, C data/function symbol fixes, foreign
+callback C-stack reentry, and byte-exact exported callback frames. Before the
+frame fix, the C-created PHP thread received a null script pointer even
+though its Go callback returned a pinned string; a callback fixture now
+checks a mixed scalar/pointer result on a C-created pthread. The PHP ZTS
+resolver revision 2 removes a header macro redefinition that upstream
+FrankenPHP treats as an error. The embed lifecycle fixture passes Node and
+Chromium against that revision, as do the callback and static-archive browser
+gates. Focused Go cgo/linker tests and forced cgo-disabled `kandelo`, `js`,
+and `wasip1` standard-library builds pass.
+
+Upstream FrankenPHP v1.11.0, with a local `x/sys` cache-line adaptation and
+C accessors for mislaid pointer-bearing PHP structs, now initializes its
+embedded PHP runtime and handles a classic-mode PHP request in the Kandelo
+Node host: `FRANKENPHP CLASSIC PASS`, exit 0. The first PHP execution had
+faulted while reading a `zend_llist` header field directly through Go's
+64-bit pointer layout; C accessors remove that mismatch. Request-info
+fields need the same treatment for WordPress and are being applied in the
+package patch. A new `frankenphp-classic` source package and a WordPress
+profile sharing the existing VFS are in progress, not yet validated or
+published. There is still no running demo URL or performance result.
+
+**2026-10-10 — resolver-built FrankenPHP serves HTTP on both hosts.**
+The `frankenphp-classic@1.11.0` source recipe builds the v1.11.0 Go library
+and PHP ZTS archive through the pinned Kandelo Go fork. The package carries
+scoped C-accessor patches for mixed-width PHP structs and registers CGI
+variables through scalar/pointer C calls rather than a pointer-bearing
+struct-by-value argument. A first real HTTP request exposed the missing
+Kandelo build tag on Go's Unix MIME registry; fork commit
+`0d3e83bce3f6329d80074361a7c00a9a3c7ba89c` fixes that runtime/stdlib
+gap. The package recipe now fork-instruments and ABI-stamps the produced
+module explicitly; `install_local_binary` did not stamp it automatically.
+
+Resolver revision 6 succeeds. Its Node test requests a rewritten PHP URL
+and a static text asset through `fetchInKernel`: both return 200, PHP sees
+the original request URI and script name, headers are correct, and host
+diagnostics are empty. The matching Chromium browser-host test passes.
+This is actual embedded PHP served by FrankenPHP, not FPM or a proxy. The
+package patch currently makes 23 separate Go-to-C calls for CGI variables;
+there is no performance claim until the application is measured. The
+WordPress profile has been added to the existing VFS recipe, but its
+full source-only image build and end-to-end requests remain in progress.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed

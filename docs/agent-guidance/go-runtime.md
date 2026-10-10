@@ -88,10 +88,12 @@ do not validate against a stale or unstamped binary.
 FrankenPHP classic mode embeds a PHP ZTS SAPI through cgo. A working
 `cmd/cgo` frontend is only one layer of that port. The `go-hello` package
 pins the callback-capable fork revision, but remains a pure-Go hello program.
-The adjacent fork now runs a narrow standard
-Go-to-C fixture on Node and Chromium. Focused Go-owned and C-created-pthread
-callback probes now pass on both hosts; PHP embedding remains unbuilt. Do not
-pin it for a FrankenPHP package on the strength of those probes alone.
+The adjacent fork runs focused Go/C calls and Go-owned and C-created-pthread
+callbacks on Node and Chromium. The `php-zts` package and PHP embed lifecycle
+probe pass on both hosts. The `frankenphp-classic` package now serves a PHP
+request and a static asset through real HTTP on Node and Chromium. Its
+WordPress profile is a separate gate. Do not infer full cgo or WordPress
+support from these focused probes.
 
 Trace the whole link path before changing flags or package recipes:
 
@@ -101,6 +103,32 @@ Trace the whole link path before changing flags or package recipes:
   insufficient: the generated constants, symbols, and imports still need
   correct interpretations. The WIP Wasm reader in the adjacent fork
   is not yet a reviewed implementation.
+- Kandelo's C ABI uses 32-bit pointers while Go/Wasm pointers are 64-bit.
+  Exported Go callbacks need a byte-exact C frame: the Go `struct` generated
+  by stock cgo pads pointer fields and can return null even when the Go
+  callback returns a valid pointer. The fork now marshals exported scalar
+  and pointer fields through C-sized byte offsets. Test mixed scalar/pointer
+  arguments and pointer results on C-created pthreads. This does not repair
+  direct Go field access to C structs containing pointers: FrankenPHP's
+  version, header-list, and request-info paths use C accessors at that
+  explicit interop boundary. Audit every new C struct access by comparing
+  C `sizeof`/`offsetof` with generated Go layout before trusting it.
+- FrankenPHP's CGI bulk registration passed a pointer-bearing C struct by
+  value, another unsupported mixed-width case. Its Kandelo package patch
+  uses the existing scalar/pointer `frankenphp_register_single` entry until
+  a general packed-struct cgo bridge exists. This makes extra Go-to-C calls
+  per request; measure the app before making performance claims.
+- Static libraries must be declared through `#cgo LDFLAGS` with
+  `-L${SRCDIR}/lib -l...`; environment-only `CGO_LDFLAGS` does not give the
+  internal linker a search path, while `-extldflags` forces unsupported
+  external linking. The internal linker selects archive members recursively
+  for referenced C code, including PHP's dependency archives. The
+  `static-archive` and `php-embed` probes cover this path on both hosts.
+- A Go cgo executable must be fork-instrumented and carry the exact current
+  `kandelo.abi.contract` digest. `install_local_binary` can instrument but
+  does not stamp by itself: instrument first, stamp that fresh artifact, then
+  install it. Unset cross-compiler `CC`/`CXX`/`AR` variables before the
+  host-side Rust instrumentation and stamping builds.
 - `src/cmd/link/internal/ld/lib.go` loads cgo's C objects. Internal mode
   originally rejected their format; the adjacent fork now imports C functions,
   initialized data, active table elements, and the CODE relocations reached
@@ -241,6 +269,30 @@ relocations in the final Wasm module on Node and Chromium. After stamping,
 assembly Go-to-C call inside a process. This is not the normal cgo build. The
 standard `C.abs`, Go-owned callback, and focused C-created-pthread callback
 gates pass; broader cgo and PHP lifecycle remain required runtime gates.
+
+The Kandelo internal linker now reads cgo `-L` and `-l` flags and explicit
+absolute `.a` paths, then selects referenced SDK C archive members, including
+members reached through another archive member's C relocation. A cgo package
+must declare its library search path with `#cgo LDFLAGS` pointing at a
+resolver-owned archive directory. Setting `CGO_LDFLAGS` alone does not put
+`-L` on this internal-link path, while `-extldflags` selects an external
+link mode that the Kandelo Go/C linker does not support. Run
+`bash tests/go/cgo/static-archive/build.sh`, its Node
+runner, and the opt-in Chromium case before relying on a large archive such as
+`libphp.a`. That fixture proves a small two-member C archive, not general PHP
+linkability or archive relocation coverage.
+
+PHP ZTS's larger archive additionally requires imported Wasm exception tags
+for `__c_longjmp`, target-owned weak/strong C data symbols, object-local
+function names, transitive static archives, and the documented unsupported
+ucontext stubs for PHP Fibers that are compiled but not used. The
+`tests/go/cgo/php-embed` probe now initializes, evaluates, and shuts down PHP
+through the normal Kandelo process path on Node and Chromium. It does not
+establish that upstream FrankenPHP requests work. In mixed-width cgo, Go's
+8-byte `unsafe.Pointer` must not read a 4-byte C data pointer and adjacent
+bytes; Kandelo's non-TSAN `_cgo_yield` storage is widened so Go observes a
+real nil value. Watch for C structs containing 4-byte pointers: generating
+native Go pointer fields silently changes their layout and corrupts values.
 
 Use the staged probes in `tests/go/README.md`:
 first a C call, then Go-to-C-to-Go on the calling thread, then a C-created

@@ -152,6 +152,10 @@ name = "foot"
 class = "user-software"
 
 [[packages]]
+name = "frankenphp-classic"
+class = "user-software"
+
+[[packages]]
 name = "freetype"
 class = "platform"
 
@@ -455,6 +459,10 @@ class = "browser-product"
 
 [[packages]]
 name = "php"
+class = "user-software"
+
+[[packages]]
+name = "php-zts"
 class = "user-software"
 
 [[packages]]
