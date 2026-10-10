@@ -12,12 +12,14 @@ export interface BrowserBinaryResolutionDependencies {
 }
 
 /**
- * Resolve the complete authored browser artifact graph at one checked
- * boundary, then serve later Vite requests from exact cached capabilities.
+ * Check required artifacts together, admitting optional artifacts only when
+ * requested. Each admission rechecks the whole active graph before publishing
+ * exact capabilities, preserving the resolver's single provenance tier.
  */
 export function createBatchedBrowserBinaryResolution(
   declaredRelPaths: readonly string[],
   dependencies: BrowserBinaryResolutionDependencies,
+  optionalRelPaths: readonly string[] = [],
 ): BrowserBinaryResolution {
   const normalizedRelPaths = [
     ...new Set(
@@ -27,18 +29,24 @@ export function createBatchedBrowserBinaryResolution(
     ),
   ];
   const declaredRelPathSet = new Set(normalizedRelPaths);
+  const optionalRelPathSet = new Set(
+    optionalRelPaths.map((path) => dependencies.normalizeRelPath(path)),
+  );
+  let admittedRelPaths = normalizedRelPaths.filter(
+    (path) => !optionalRelPathSet.has(path),
+  );
   let resolvedByRelPath: Map<string, string | null> | null = null;
 
-  function buildCheckedGraph(): Map<string, string | null> {
+  function buildCheckedGraph(relPaths = admittedRelPaths): Map<string, string | null> {
     // Absence needs no provenance check because there are no bytes to serve.
     // If a declared mirror appears later, resolve() rebuilds this complete
     // graph so a multi-file package still comes from one pinned generation.
-    const resolvedPaths = normalizedRelPaths.some(
+    const resolvedPaths = relPaths.some(
       dependencies.candidateEntryExists,
     )
-      ? dependencies.resolveBatch(normalizedRelPaths)
-      : normalizedRelPaths.map(() => null);
-    if (resolvedPaths.length !== normalizedRelPaths.length) {
+      ? dependencies.resolveBatch(relPaths)
+      : relPaths.map(() => null);
+    if (resolvedPaths.length !== relPaths.length) {
       throw new Error(
         "Browser binary batch resolver returned the wrong number of entries",
       );
@@ -56,7 +64,7 @@ export function createBatchedBrowserBinaryResolution(
 
     const nextResolvedByRelPath = new Map<string, string | null>();
     let approvedIndex = 0;
-    for (const [index, relPath] of normalizedRelPaths.entries()) {
+    for (const [index, relPath] of relPaths.entries()) {
       const resolved = resolvedPaths[index] ?? null;
       nextResolvedByRelPath.set(
         relPath,
@@ -87,12 +95,15 @@ export function createBatchedBrowserBinaryResolution(
       const cached = checked.get(normalized);
       if (cached !== undefined && cached !== null) return cached;
 
-      // A declared optional artifact may be installed while Vite is running.
-      // Rebuild every declared package request together so two members can
-      // never pin different generations across an atomic mirror replacement.
+      // A lazy glob is an optional dependency until its loader is called.
+      // Join it to the active graph and validate every admitted request together;
+      // an unrelated absent or rejected optional asset must not poison boot.
       if (!dependencies.candidateEntryExists(normalized)) return null;
       if (declaredRelPathSet.has(normalized)) {
-        const nextResolvedByRelPath = buildCheckedGraph();
+        const nextRelPaths = admittedRelPaths.includes(normalized)
+          ? admittedRelPaths : [...admittedRelPaths, normalized];
+        const nextResolvedByRelPath = buildCheckedGraph(nextRelPaths);
+        admittedRelPaths = nextRelPaths;
         resolvedByRelPath = nextResolvedByRelPath;
         return nextResolvedByRelPath.get(normalized) ?? null;
       }

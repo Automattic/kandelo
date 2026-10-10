@@ -2162,7 +2162,14 @@ Normal Vite development resolves exact optional binary URL globs through
 the verified binary resolver, including the implicit SourceOnly tree.
 The authored legacy mirror need not exist for a built image to be found.
 Absent assets remain unavailable; provenance failures propagate instead
-of being treated as missing files. Explicit SourceOnly builds retain
+of being treated as missing files. Lazy globs admit an asset only when its
+loader is called. Each admission checks it together with required and already
+admitted assets in one provenance tier; an unused optional image cannot block
+an unrelated profile. Production builds still resolve their bundled imports.
+The browser benchmark harness refreshes public application images from the
+verified resolver on each run; existing public copies do not establish artifact
+identity and cannot bypass a missing or rejected package. Explicit SourceOnly
+builds retain
 their snapshot, syntax, and fallback-denial checks.
 
 Browser binary dependency audits parse authored JavaScript and TypeScript,

@@ -48,6 +48,9 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 const authoredBrowserBinaryRelPaths = browserBinariesImports(repoRoot);
+const requiredBrowserBinaryRelPaths = new Set(
+  browserBinariesImports(repoRoot, { includeOptionalGlobs: false }),
+);
 
 // The browser demos import the VFS product catalog through this virtual
 // module. It is populated only by the removed Pages-deployment product map;
@@ -247,7 +250,7 @@ function createBrowserBinaryResolution(
     approveBatch: (files) => access.approveBatch(files),
     approve: (file) => access.approve(file),
     candidateEntryExists,
-  });
+  }, declaredRelPaths.filter((path) => !requiredBrowserBinaryRelPaths.has(path)));
 }
 
 const browserBinaryResolution = createBrowserBinaryResolution(binaryDevAccess);
@@ -571,10 +574,14 @@ function resolveBinariesAlias(
   resolution: BrowserBinaryResolution,
 ): Plugin {
   const PREFIX = "@binaries/";
+  let serving = false;
 
   return {
     name: "resolve-binaries-alias",
     enforce: "pre",
+    configResolved(config) {
+      serving = config.command === "serve";
+    },
     resolveId(source, importer, options) {
       let request: BinaryMirrorImport | null = null;
       if (source.startsWith(PREFIX)) {
@@ -632,8 +639,15 @@ function resolveBinariesAlias(
           if (/[*?\[\]{}!]/.test(specifier)) return null;
           return relativeBinaryMirrorImport(specifier, importer)?.relPath ?? null;
         },
-        resolveModule: (relPath) => resolution.resolve(relPath) === null
-          ? null : `@binaries/${relPath}?url`,
+        // A glob creates lazy loaders; policy admission belongs to resolveId
+        // when a loader imports its asset. No bytes or capability are exposed
+        // here, and a stale optional asset still fails when requested.
+        resolveModule: (relPath) => candidateEntryExists(relPath)
+          ? `${serving ? "/@id/" : ""}@binaries/${relPath}?url` : null,
+        // Vite otherwise resolves literal dynamic imports during analysis,
+        // before the browser calls the loader. /@id/ routes the later request
+        // back through resolveId and the same checked capability boundary.
+        deferDevImportAnalysis: serving,
       });
       return rewritten === null ? null : { code: rewritten, map: null };
     },

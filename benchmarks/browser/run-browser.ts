@@ -93,21 +93,17 @@ export interface BrowserBenchmarkAssetSelection {
   selectedPath: string | null;
 }
 
-function materializePublicAsset(
+export function materializePublicAsset(
   relBinaryPath: string,
   publicName: string,
+  publicRoot = resolve(browserDir, "public"),
+  resolveBinary: (request: string) => string | null = tryResolveBinary,
 ): BrowserBenchmarkAssetSelection {
-  const publicPath = resolve(browserDir, "public", publicName);
-  if (existsSync(publicPath)) {
-    return {
-      publicPath,
-      resolverRequest: relBinaryPath,
-      resolverSelectedPath: null,
-      selectedPath: publicPath,
-    };
-  }
-
-  const sourcePath = tryResolveBinary(relBinaryPath);
+  const publicPath = resolve(publicRoot, publicName);
+  // Public copies outlive source rebuilds and ABI migrations. Resolve and
+  // refresh from verified package bytes on every run; an existing public file
+  // must never bypass provenance checks or become benchmark evidence.
+  const sourcePath = resolveBinary(relBinaryPath);
   if (!sourcePath || !existsSync(sourcePath)) {
     return {
       publicPath,

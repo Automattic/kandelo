@@ -411,6 +411,42 @@ test("Vite dependency scanning does not require the package checker", async () =
   }
 });
 
+test("normal Vite loads optional globs before rejecting requested stale bytes", async ({ page }) => {
+  const namespace = `vite-optional-${randomUUID()}`;
+  const entryDirectory = generatedEntryDirectory(namespace);
+  const entry = join(entryDirectory, "entry.ts");
+  const artifact = join(repoRoot, "local-binaries", "programs", "wasm32", `${namespace}.wasm`);
+  const relativeArtifact = normalizePath(relative(entryDirectory, artifact));
+  const specifier = relativeArtifact.startsWith(".") ? relativeArtifact : `./${relativeArtifact}`;
+  let server: ViteDevServer | null = null;
+  try {
+    mkdirSync(entryDirectory, { recursive: true });
+    mkdirSync(dirname(artifact), { recursive: true });
+    writeFileSync(artifact, executableWasmWithAbi(ABI_VERSION - 1));
+    writeFileSync(entry, `export default import.meta.glob(${JSON.stringify(specifier)}, { query: "?url", import: "default" });`);
+    server = await createServer({
+      configFile: join(appRoot, "vite.config.ts"), root: appRoot,
+      logLevel: "silent", server: { host: "127.0.0.1", port: 0, hmr: false },
+    });
+    await server.listen();
+    const origin = `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}`;
+    const source = await fetch(fsUrl(origin, entry));
+    expect(source.status, await source.text()).toBe(200);
+    await page.goto(`${origin}/pages/benchmark/index.html`);
+    const result = await page.evaluate(async ({ entryUrl, key }) => {
+      const module = await import(entryUrl);
+      if (typeof module.default[key] !== "function") return "loader absent";
+      try { await module.default[key](); return "stale bytes admitted"; }
+      catch { return "requested stale bytes rejected"; }
+    }, { entryUrl: fsUrl(origin, entry), key: specifier });
+    expect(result).toBe("requested stale bytes rejected");
+  } finally {
+    await server?.close();
+    rmSync(entryDirectory, { recursive: true, force: true });
+    rmSync(artifact, { force: true });
+  }
+});
+
 test("SourceOnly Vite serves a verified snapshot after same-path replacement", async () => {
   const savedPolicy = process.env.WASM_POSIX_RESOLUTION_POLICY;
   const savedSourceOnlyRoot =
@@ -764,12 +800,14 @@ test("Vite serves an approved bottle member without exposing its cache", async (
       transformedSidecarSource,
     ).toBe(200);
     expect(transformedSidecarSource).toContain("sidecar.dat");
+    // Merely discovering an optional loader must grant no cache access.
+    expect((await fetch(fsUrl(origin, canonicalSidecar))).status).toBe(403);
     const sidecarModulePath = transformedSidecarSource.match(
-      /import\(("\/@fs\/[^"\n]+sidecar\.dat\?[^"\n]*url[^"\n]*")\)/,
+      /("\/@id\/@binaries\/[^"\n]+sidecar\.dat\?url")/,
     )?.[1];
     expect(sidecarModulePath, transformedSidecarSource).toBeDefined();
     const sidecarModule = await fetch(
-      new URL(JSON.parse(sidecarModulePath!), origin),
+      new URL(`${JSON.parse(sidecarModulePath!)}&import`, origin),
     );
     const sidecarModuleSource = await sidecarModule.text();
     expect(sidecarModule.status, sidecarModuleSource).toBe(200);
