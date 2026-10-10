@@ -1090,6 +1090,13 @@ latest `KWLCTL_EXEC` record and waits for that client's exit before
 launching another window. Older focus and tile records remain in terminal
 history and do not establish that a new window is ready to receive input.
 
+Lock-screen automation also waits for `LOCK_INPUT_READY`, emitted when
+Qt assigns active focus to the lock's keyboard input item. The compositor's
+`LOCK_SURFACE` reports mapping and can precede that client-side transition;
+typing immediately on mapping can arrive before the item handles keys.
+Both host and browser acceptance checks retain the wrong-password rejection
+and locked-session assertions after this readiness gate.
+
 #### Firefox executable-code limit
 
 SpiderMonkey reserves one fixed 2 GiB region per content process for all
