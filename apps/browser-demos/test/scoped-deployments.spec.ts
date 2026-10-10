@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 
 import { buildLocalVfsAssetGroup } from "../../../scripts/build-local-vfs-asset-group";
+import { loadVfsProductDeploymentMap } from "../../../scripts/vfs-product-deployment";
 import { runTerminalCommand } from "./support/terminal-command";
 import { startScopedStaticServer, type ScopedStaticServer } from "./support/scoped-static-server";
 
@@ -305,13 +306,13 @@ async function writeRelocatedMap(source: string, target: string, path: string): 
 }
 
 async function readAssetGroupSha256(mapPath: string): Promise<string> {
-  const map = JSON.parse(await readFile(mapPath, "utf8")) as {
-    products?: Array<{ asset_group?: { sha256?: unknown } }>;
-  };
-  const hashes = new Set(map.products?.map((product) => product.asset_group?.sha256));
+  // The registered product set owns completeness; an image added to it must
+  // participate in the same authenticated group without a second count here.
+  const map = loadVfsProductDeploymentMap({ mapPath, sourceRoot: repoRoot });
+  const hashes = new Set(map.products.map((product) => product.asset_group?.sha256));
   const [sha256] = hashes;
   if (
-    map.products?.length !== 7 || hashes.size !== 1 ||
+    hashes.size !== 1 ||
     typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)
   ) {
     throw new Error("generated product map has no single exact asset-group identity");
