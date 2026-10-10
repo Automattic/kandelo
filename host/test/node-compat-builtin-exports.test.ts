@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../src/binary-resolver";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
@@ -44,7 +44,8 @@ function stage(): Uint8Array | Promise<Uint8Array> {
   const dir = mkdtempSync(join(tmpdir(), "bexp-"));
   writeFileSync(join(dir, "surface.mjs"), SURFACE);
   writeFileSync(join(dir, "main.cjs"), MAIN);
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(8 * 1024 * 1024);
   ensureDirRecursive(fs, "/app");
   writeVfsBinary(fs, "/app/surface.mjs", new Uint8Array(readFileSync(join(dir, "surface.mjs"))), 0o644);
   writeVfsBinary(fs, "/app/main.cjs", new Uint8Array(readFileSync(join(dir, "main.cjs"))), 0o644);

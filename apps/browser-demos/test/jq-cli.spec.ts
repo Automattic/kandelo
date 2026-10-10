@@ -5,7 +5,7 @@ import { SHELL_LAZY_BINARY_SPECS } from "../../../images/vfs/lib/init/shell-bina
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import { ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 
@@ -41,10 +41,8 @@ test("lazy jq filters JSON with regexes and decimal precision in a browser", asy
   const kernelUrl = new URL("/jq-test-kernel.wasm", baseURL).href;
   const imageUrl = new URL("/jq-test.vfs", baseURL).href;
   const imageCapacity = 8 * 1024 * 1024;
-  const fs = MemoryFileSystem.create(
-    new SharedArrayBuffer(1024 * 1024, { maxByteLength: imageCapacity }),
-    imageCapacity,
-  );
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(imageCapacity);
   fs.setImageMetadata({ version: 1, kernelAbi: ABI_VERSION });
   ensureDirRecursive(fs, "/usr/bin");
   ensureDirRecursive(fs, "/bin");
