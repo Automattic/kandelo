@@ -197,6 +197,7 @@ export function rewriteBinaryMirrorUrlGlobs(
     resolveModule: (relPath: string) => string | null;
     denyFallbackGlob?: (specifier: string, importer: string) => boolean;
     strict?: boolean;
+    deferDevImportAnalysis?: boolean;
   },
 ): string | null {
   if (!code.includes("import.meta.glob")) return null;
@@ -261,11 +262,12 @@ export function rewriteBinaryMirrorUrlGlobs(
               continue;
             }
             const moduleId = relPath === null ? null : options.resolveModule(relPath);
+            const moduleImport = options.deferDevImportAnalysis
+              ? `((id)=>import(/* @vite-ignore */ id))(${JSON.stringify(moduleId)})`
+              : `import(${JSON.stringify(moduleId)})`;
             const replacement = moduleId === null
               ? "({})"
-              : `({${JSON.stringify(specifier)}:()=>import(${JSON.stringify(
-                moduleId,
-              )}).then((module)=>module.default)})`;
+              : `({${JSON.stringify(specifier)}:()=>${moduleImport}.then((module)=>module.default)})`;
             replacements.push({
               start: node.start,
               end: node.end,
