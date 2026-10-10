@@ -57,6 +57,13 @@ const THEME_ITEM: DockItem<"theme"> = {
   icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="4" /><path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.6 3.6l1 1M11.4 11.4l1 1M12.4 3.6l-1 1M4.6 11.4l-1 1" /></svg>,
 };
 
+const BLUETOOTH_ITEM: DockItem<"bluetooth"> = {
+  id: "bluetooth",
+  label: "Bluetooth",
+  title: "Pair a Bluetooth device and expose it to the guest as /dev/kandelo/bluetooth",
+  icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M4.5 5 11 10.5 8 13V3l3 2.5L4.5 11" /></svg>,
+};
+
 const PANE_ITEMS: DockItem<DockPaneId>[] = [
   {
     id: "gallery",
@@ -104,6 +111,10 @@ export const Dock: React.FC<{
   internalsOpen: boolean;
   themeOpen: boolean;
   shareAvailable: boolean;
+  /** Web Bluetooth exists and the kernel can broker a device. */
+  bluetoothAvailable?: boolean;
+  /** Name of the paired device, while one is brokered. */
+  bluetoothDevice?: string | null;
   status: MachineStatus;
   machineTitle?: string;
   viewDisabled?: Partial<Record<DockViewId, boolean>>;
@@ -113,6 +124,7 @@ export const Dock: React.FC<{
   onToggleInternals: () => void;
   onToggleTheme: () => void;
   onOpenShare: () => void;
+  onConnectBluetooth?: () => void;
   onCloseGuide: () => void;
   onCloseInternals: () => void;
   onCloseTheme: () => void;
@@ -131,6 +143,8 @@ export const Dock: React.FC<{
   internalsOpen,
   themeOpen,
   shareAvailable,
+  bluetoothAvailable = false,
+  bluetoothDevice = null,
   status,
   machineTitle,
   viewDisabled = {},
@@ -140,6 +154,7 @@ export const Dock: React.FC<{
   onToggleInternals,
   onToggleTheme,
   onOpenShare,
+  onConnectBluetooth,
   onCloseGuide,
   onCloseInternals,
   onCloseTheme,
@@ -532,6 +547,19 @@ export const Dock: React.FC<{
                   <span className="kdock-icon">{SHARE_ITEM.icon}</span>
                   <span className="kdock-label">{SHARE_ITEM.label}</span>
                 </button>
+                {bluetoothAvailable && (
+                  <button
+                    type="button"
+                    className="kdock-item"
+                    aria-pressed={bluetoothDevice !== null}
+                    title={bluetoothDevice ? `Bluetooth: ${bluetoothDevice} (click to pair another)` : BLUETOOTH_ITEM.title}
+                    aria-label={BLUETOOTH_ITEM.title}
+                    onClick={onConnectBluetooth}
+                  >
+                    <span className="kdock-icon">{BLUETOOTH_ITEM.icon}</span>
+                    <span className="kdock-label">{bluetoothDevice ? bluetoothDevice.slice(0, 10) : BLUETOOTH_ITEM.label}</span>
+                  </button>
+                )}
                 <button
                   ref={guideButtonRef}
                   type="button"

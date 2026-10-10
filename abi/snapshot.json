@@ -1,5 +1,44 @@
 {
   "abi_version": 47,
+  "bluetooth_device_abi": {
+    "constants": {
+      "KANDELO_BLUETOOTH_KIND_NOTIFY": 3,
+      "KANDELO_BLUETOOTH_KIND_REQUEST": 1,
+      "KANDELO_BLUETOOTH_KIND_RESPONSE": 2,
+      "KANDELO_BLUETOOTH_KIND_STATUS": 4,
+      "KANDELO_BLUETOOTH_MAX_PAYLOAD_BYTES": 4096,
+      "KANDELO_BLUETOOTH_MAX_PENDING_REQUESTS": 16,
+      "KANDELO_BLUETOOTH_MAX_QUEUED_RECORDS": 64,
+      "KANDELO_BLUETOOTH_RECORD_HEADER_SIZE": 16,
+      "KANDELO_BLUETOOTH_RECORD_VERSION": 1
+    },
+    "device_path": "/dev/kandelo/bluetooth",
+    "record_header": {
+      "fields": [
+        {
+          "name": "version",
+          "offset": 0,
+          "type": "u32"
+        },
+        {
+          "name": "kind",
+          "offset": 4,
+          "type": "u32"
+        },
+        {
+          "name": "seq",
+          "offset": 8,
+          "type": "u32"
+        },
+        {
+          "name": "len",
+          "offset": 12,
+          "type": "u32"
+        }
+      ],
+      "size": 16
+    }
+  },
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1101,6 +1140,10 @@
       }
     ],
     "optional_kernel_exports": [
+      "kernel_bluetooth_has_agent",
+      "kernel_bluetooth_push",
+      "kernel_bluetooth_request_pending",
+      "kernel_bluetooth_request_take",
       "kernel_clipboard_ack",
       "kernel_clipboard_guest_generation",
       "kernel_clipboard_guest_read",
@@ -2047,6 +2090,26 @@
       "kind": "func",
       "name": "kernel_blocking_retry_token",
       "signature": "(i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_bluetooth_has_agent",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_bluetooth_push",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_bluetooth_request_pending",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_bluetooth_request_take",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",

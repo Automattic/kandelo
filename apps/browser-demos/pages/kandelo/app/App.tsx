@@ -3,6 +3,13 @@
 
 import * as React from "react";
 import { useDemoGuide, useKernelHost, useLazyDownloads, useMachineProgress } from "../kernel-host/react";
+import {
+  DEFAULT_BLUETOOTH_OPTIONAL_SERVICES,
+  startBluetoothBroker,
+  type BluetoothBroker,
+  type BluetoothBrokerHost,
+  type BluetoothDeviceLike,
+} from "../../../../../web-libs/kandelo-session/src/bluetooth-broker";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
 import { MachineProgressOverlay } from "../panes/MachineProgressOverlay";
@@ -74,6 +81,39 @@ export const App: React.FC = () => {
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
+  // /dev/kandelo/bluetooth: the paired device brokered to the guest.
+  const bluetoothBrokerRef = React.useRef<BluetoothBroker | null>(null);
+  const [bluetoothDevice, setBluetoothDevice] = React.useState<string | null>(null);
+  const bluetoothHost = host as unknown as Partial<BluetoothBrokerHost> & { canBrokerBluetooth?: boolean };
+  const bluetoothAvailable = typeof navigator !== "undefined"
+    && "bluetooth" in navigator
+    && bluetoothHost.canBrokerBluetooth === true;
+  // Web Bluetooth only opens its chooser from a user gesture, so
+  // requestDevice() runs synchronously inside the click handler.
+  const connectBluetooth = React.useCallback(() => {
+    const bluetooth = (navigator as unknown as {
+      bluetooth?: { requestDevice(options: unknown): Promise<BluetoothDeviceLike> };
+    }).bluetooth;
+    if (!bluetooth) return;
+    bluetooth
+      .requestDevice({ acceptAllDevices: true, optionalServices: [...DEFAULT_BLUETOOTH_OPTIONAL_SERVICES] })
+      .then((device) => startBluetoothBroker(host as unknown as BluetoothBrokerHost, device, (m) => console.info(m)))
+      .then((broker) => {
+        bluetoothBrokerRef.current?.stop();
+        bluetoothBrokerRef.current = broker;
+        setBluetoothDevice(broker.device.name || "device");
+        broker.device.addEventListener("gattserverdisconnected", () => setBluetoothDevice(null), { once: true });
+      })
+      .catch((error: unknown) => {
+        // NotFoundError: the user cancelled the chooser — not worth a label.
+        console.warn("bluetooth pairing:", error);
+        if (error instanceof Error && error.name !== "NotFoundError") {
+          setBluetoothDevice("failed");
+          setTimeout(() => setBluetoothDevice((d) => (d === "failed" ? null : d)), 6_000);
+        }
+      });
+  }, [host]);
+  React.useEffect(() => () => bluetoothBrokerRef.current?.stop(), []);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
@@ -427,6 +467,9 @@ export const App: React.FC = () => {
           internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
           themeOpen={themeOpen}
           shareAvailable={!isEmpty}
+          bluetoothAvailable={!isEmpty && bluetoothAvailable}
+          bluetoothDevice={bluetoothDevice}
+          onConnectBluetooth={connectBluetooth}
           status={surface.status}
           machineTitle={desc.title}
           viewDisabled={{

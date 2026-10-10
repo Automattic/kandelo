@@ -3245,6 +3245,10 @@ pub mod abi {
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
+        "kernel_bluetooth_has_agent",
+        "kernel_bluetooth_push",
+        "kernel_bluetooth_request_pending",
+        "kernel_bluetooth_request_take",
         "kernel_clipboard_ack",
         "kernel_clipboard_guest_generation",
         "kernel_clipboard_guest_read",
@@ -4440,6 +4444,58 @@ pub mod clipboard {
     pub const ACK_SIZE: u32 = core::mem::size_of::<ClipboardAck>() as u32;
     const _: () = assert!(RECORD_HEADER_SIZE == 16);
     const _: () = assert!(ACK_SIZE == 8);
+}
+
+/// `/dev/kandelo/bluetooth`: a Web Bluetooth (GATT) device the browser page
+/// paired, brokered to one guest process.
+///
+/// Unlike the clipboard, the guest drives this device. It WRITES request
+/// records (`KIND_REQUEST`, `seq` = its own non-zero request id, payload = a
+/// UTF-8 command line such as `read battery_service battery_level`). The
+/// host takes them with `kernel_bluetooth_request_take`, runs the GATT
+/// operation on the page (Web Bluetooth objects live on the main thread),
+/// and pushes the answer with `kernel_bluetooth_push`: a `KIND_RESPONSE`
+/// echoing the request's `seq` (payload `ok ...` or `err ...`), plus
+/// unsolicited `KIND_NOTIFY` (characteristic notifications) and
+/// `KIND_STATUS` (`connected <name>` / `disconnected`) records with seq 0.
+/// The guest READS those as one record per read — a [`BluetoothRecordHeader`]
+/// followed by `len` payload bytes. Host-to-guest records queue (up to
+/// [`MAX_QUEUED_RECORDS`]); when full, the oldest notification is dropped
+/// first. The generated `<kandelo/bluetooth.h>` mirrors these values.
+pub mod bluetooth {
+    /// Device path; `open()` of it is how a guest claims the device.
+    pub const DEVICE_PATH: &str = "/dev/kandelo/bluetooth";
+    /// `BluetoothRecordHeader::version` for the layout below.
+    pub const RECORD_VERSION: u32 = 1;
+    /// Guest -> host: a command line. `seq` is the guest's request id (non-zero).
+    pub const KIND_REQUEST: u32 = 1;
+    /// Host -> guest: the answer to request `seq`, `ok ...` or `err ...`.
+    pub const KIND_RESPONSE: u32 = 2;
+    /// Host -> guest: a characteristic notification, `notify <svc> <chr> <hex>`.
+    pub const KIND_NOTIFY: u32 = 3;
+    /// Host -> guest: `connected <name>` or `disconnected`.
+    pub const KIND_STATUS: u32 = 4;
+    /// Largest payload in either direction; larger is EMSGSIZE, never truncated.
+    pub const MAX_PAYLOAD_BYTES: u32 = 4096;
+    /// Host -> guest records the kernel holds before dropping notifications.
+    pub const MAX_QUEUED_RECORDS: u32 = 64;
+    /// Guest -> host requests the kernel holds before a write gets EAGAIN.
+    pub const MAX_PENDING_REQUESTS: u32 = 16;
+
+    /// One record in either direction, little-endian.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct BluetoothRecordHeader {
+        pub version: u32,
+        pub kind: u32,
+        /// Request id (`KIND_REQUEST`, echoed by `KIND_RESPONSE`), else 0.
+        pub seq: u32,
+        /// Payload bytes that follow the header.
+        pub len: u32,
+    }
+
+    pub const RECORD_HEADER_SIZE: u32 = core::mem::size_of::<BluetoothRecordHeader>() as u32;
+    const _: () = assert!(RECORD_HEADER_SIZE == 16);
 }
 
 /// Implementation-neutral PCM host transport contract.

@@ -201,6 +201,16 @@ export interface KernelLike {
    */
   writeFileToVfs?(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
   /**
+   * `/dev/kandelo/bluetooth`: queue one host -> guest record (see
+   * `bluetooth-broker.ts`). Optional: kernels without the device omit it.
+   */
+  pushBluetoothRecord?(kind: number, seq: number, text: string): Promise<{ ok: boolean; reason?: string }>;
+  /** `/dev/kandelo/bluetooth`: the next guest request, `no-agent`, or `timeout`. */
+  waitForBluetoothRequest?(options?: { timeoutMs?: number }): Promise<
+    | { ok: true; request: { seq: number; command: string } }
+    | { ok: false; reason: string }
+  >;
+  /**
    * Append bytes to a process's stdin buffer. Used by the framebuffer
    * input path so DOM key events on the canvas reach the fb-bound
    * process (fbDOOM reads scancodes from stdin).
@@ -2285,6 +2295,26 @@ export class LiveKernelHost implements KernelHost {
       );
     }
     await this.kernel.writeFileToVfs(path, bytes, mode);
+  }
+
+  // ── /dev/kandelo/bluetooth ───────────────────────────────────────────────
+
+  /** True when the attached kernel host can broker a Bluetooth device. */
+  get canBrokerBluetooth(): boolean {
+    return Boolean(this.kernel?.pushBluetoothRecord && this.kernel?.waitForBluetoothRequest);
+  }
+
+  async pushBluetoothRecord(kind: number, seq: number, text: string): Promise<{ ok: boolean; reason?: string }> {
+    if (!this.kernel?.pushBluetoothRecord) return { ok: false, reason: "unsupported" };
+    return this.kernel.pushBluetoothRecord(kind, seq, text);
+  }
+
+  async waitForBluetoothRequest(options: { timeoutMs?: number } = {}): Promise<
+    | { ok: true; request: { seq: number; command: string } }
+    | { ok: false; reason: string }
+  > {
+    if (!this.kernel?.waitForBluetoothRequest) return { ok: false, reason: "unsupported" };
+    return this.kernel.waitForBluetoothRequest(options);
   }
 
   // ── KernelHost: process control ─────────────────────────────────────────

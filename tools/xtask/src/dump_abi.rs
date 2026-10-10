@@ -101,6 +101,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let spawn_header = render_spawn_contract_header();
     let soundcard_header = render_soundcard_header();
     let clipboard_header = render_clipboard_header();
+    let bluetooth_header = render_bluetooth_header();
     let ts_module = render_ts_module();
     let host_imports = render_host_imports_file();
 
@@ -119,6 +120,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let soundcard_header_out = repo_root().join("libc/musl-overlay/include/sys/soundcard.h");
     let clipboard_header_out =
         repo_root().join("libc/musl-overlay/include/kandelo/clipboard.h");
+    let bluetooth_header_out =
+        repo_root().join("libc/musl-overlay/include/kandelo/bluetooth.h");
     let ts_out = repo_root().join("host/src/generated/abi.ts");
     let host_imports_out = repo_root().join("libc/glue/kandelo-host-imports.txt");
 
@@ -155,6 +158,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             &clipboard_header_out,
             &clipboard_header,
             "libc/musl-overlay/include/kandelo/clipboard.h",
+        )?;
+        check_file(
+            &bluetooth_header_out,
+            &bluetooth_header,
+            "libc/musl-overlay/include/kandelo/bluetooth.h",
         )?;
         check_file(&ts_out, &ts_module, "host/src/generated/abi.ts")?;
         check_file(&host_imports_out, &host_imports, "libc/glue/kandelo-host-imports.txt")?;
@@ -210,6 +218,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     println!("wrote {}", soundcard_header_out.display());
     write_file(&clipboard_header_out, &clipboard_header)?;
     println!("wrote {}", clipboard_header_out.display());
+    write_file(&bluetooth_header_out, &bluetooth_header)?;
+    println!("wrote {}", bluetooth_header_out.display());
     write_file(&ts_out, &ts_module)?;
     println!("wrote {}", ts_out.display());
     write_file(&host_imports_out, &host_imports)?;
@@ -2876,6 +2886,8 @@ fn render_ts_module() -> String {
 
     render_clipboard_ts_bindings(&mut out);
 
+    render_bluetooth_ts_bindings(&mut out);
+
     out.push_str("export const HOST_ADAPTER_MANIFEST_FIELDS = {\n");
     for field in host_adapter_manifest_fields() {
         out.push_str(&format!(
@@ -3896,6 +3908,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
 
     root.insert("marshalled_structs".into(), marshalled_structs());
     root.insert("clipboard_device_abi".into(), clipboard_device_abi());
+    root.insert("bluetooth_device_abi".into(), bluetooth_device_abi());
     root.insert("oss_source_abi".into(), oss_source_abi());
     root.insert("pcm_transport_abi".into(), pcm_transport_abi());
     root.insert("syscalls".into(), syscalls());
@@ -4700,6 +4713,103 @@ fn render_clipboard_header() -> String {
         offset_of!(ClipboardAck, status)
     ));
     out.push_str("#endif\n\n#endif /* KANDELO_CLIPBOARD_H */\n");
+    out
+}
+
+/// `/dev/kandelo/bluetooth`'s guest-visible wire format, one list for every
+/// rendering.
+fn bluetooth_constants() -> Vec<(&'static str, i64)> {
+    use shared::bluetooth::*;
+    vec![
+        ("KANDELO_BLUETOOTH_RECORD_VERSION", RECORD_VERSION as i64),
+        ("KANDELO_BLUETOOTH_KIND_REQUEST", KIND_REQUEST as i64),
+        ("KANDELO_BLUETOOTH_KIND_RESPONSE", KIND_RESPONSE as i64),
+        ("KANDELO_BLUETOOTH_KIND_NOTIFY", KIND_NOTIFY as i64),
+        ("KANDELO_BLUETOOTH_KIND_STATUS", KIND_STATUS as i64),
+        ("KANDELO_BLUETOOTH_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES as i64),
+        ("KANDELO_BLUETOOTH_MAX_QUEUED_RECORDS", MAX_QUEUED_RECORDS as i64),
+        ("KANDELO_BLUETOOTH_MAX_PENDING_REQUESTS", MAX_PENDING_REQUESTS as i64),
+        ("KANDELO_BLUETOOTH_RECORD_HEADER_SIZE", RECORD_HEADER_SIZE as i64),
+    ]
+}
+
+fn bluetooth_device_abi() -> Value {
+    use shared::bluetooth::*;
+    let mut constants: JsonMap = BTreeMap::new();
+    for (name, value) in bluetooth_constants() {
+        constants.insert(name.into(), json!(value));
+    }
+    let mut abi: JsonMap = BTreeMap::new();
+    abi.insert("device_path".into(), json!(DEVICE_PATH));
+    abi.insert("constants".into(), Value::Object(constants.into_iter().collect()));
+    abi.insert(
+        "record_header".into(),
+        json!({
+            "size": size_of::<BluetoothRecordHeader>(),
+            "fields": [
+                {"name": "version", "offset": offset_of!(BluetoothRecordHeader, version), "type": "u32"},
+                {"name": "kind", "offset": offset_of!(BluetoothRecordHeader, kind), "type": "u32"},
+                {"name": "seq", "offset": offset_of!(BluetoothRecordHeader, seq), "type": "u32"},
+                {"name": "len", "offset": offset_of!(BluetoothRecordHeader, len), "type": "u32"},
+            ],
+        }),
+    );
+    Value::Object(abi.into_iter().collect())
+}
+
+fn render_bluetooth_ts_bindings(out: &mut String) {
+    out.push_str(&format!(
+        "export const KANDELO_BLUETOOTH_DEVICE_PATH = {:?} as const;\n",
+        shared::bluetooth::DEVICE_PATH
+    ));
+    for (name, value) in bluetooth_constants() {
+        out.push_str(&format!("export const {name} = {value} as const;\n"));
+    }
+    out.push('\n');
+}
+
+/// `<kandelo/bluetooth.h>`: what a C Bluetooth client reads and writes.
+fn render_bluetooth_header() -> String {
+    use shared::bluetooth::*;
+    let mut out = String::from(
+        "/* GENERATED by `cargo xtask dump-abi`. Do not edit by hand. */\n\
+         /* /dev/kandelo/bluetooth: a Web Bluetooth device brokered to one guest. */\n\
+         /* Source of truth: crates/shared/src/lib.rs, module `bluetooth`. */\n\
+         #ifndef KANDELO_BLUETOOTH_H\n\
+         #define KANDELO_BLUETOOTH_H\n\
+         \n\
+         #include <stddef.h>\n\
+         #include <stdint.h>\n\
+         \n",
+    );
+    out.push_str(&format!("#define KANDELO_BLUETOOTH_DEVICE_PATH {:?}\n", DEVICE_PATH));
+    for (name, value) in bluetooth_constants() {
+        out.push_str(&format!("#define {name} ({value})\n"));
+    }
+    out.push_str(
+        "\n\
+         /* One record in either direction: this header, then `len` bytes */\n\
+         /* of UTF-8 text. All fields are little-endian. The guest writes */\n\
+         /* KIND_REQUEST records (seq = its request id, never 0) and reads */\n\
+         /* KIND_RESPONSE (same seq), KIND_NOTIFY and KIND_STATUS records. */\n\
+         struct kandelo_bluetooth_record {\n\
+         \tuint32_t version;\n\
+         \tuint32_t kind;\n\
+         \tuint32_t seq;\n\
+         \tuint32_t len;\n\
+         };\n\
+         \n\
+         #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L\n",
+    );
+    out.push_str(&format!(
+        "_Static_assert(sizeof(struct kandelo_bluetooth_record) == {}, \"record ABI size\");\n",
+        size_of::<BluetoothRecordHeader>()
+    ));
+    out.push_str(&format!(
+        "_Static_assert(offsetof(struct kandelo_bluetooth_record, len) == {}, \"record.len ABI offset\");\n",
+        offset_of!(BluetoothRecordHeader, len)
+    ));
+    out.push_str("#endif\n\n#endif /* KANDELO_BLUETOOTH_H */\n");
     out
 }
 
