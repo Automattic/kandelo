@@ -4,6 +4,65 @@ import {
 } from "../../apps/browser-demos/vite-binary-resolution";
 
 describe("Vite browser binary resolution", () => {
+  it("keeps unused rejected optional bytes outside the active graph and retries admission", () => {
+    let repaired = false;
+    const resolveBatch = vi.fn((paths: readonly string[]) => {
+      if (paths.includes("optional") && !repaired) {
+        throw new Error("stale optional package");
+      }
+      return paths.map((path) => `/cache/${path}`);
+    });
+    const resolution = createBatchedBrowserBinaryResolution(
+      ["required", "optional", "other"],
+      {
+        normalizeRelPath: (path) => path,
+        resolveBatch,
+        resolveOne: () => { throw new Error("must check the active graph"); },
+        approveBatch: (files) => [...files],
+        approve: (file) => file,
+        candidateEntryExists: () => true,
+      },
+      ["optional", "other"],
+    );
+    expect(resolution.resolve("required")).toBe("/cache/required");
+    expect(resolveBatch).toHaveBeenLastCalledWith(["required"]);
+    expect(() => resolution.resolve("optional")).toThrow("stale optional package");
+    expect(resolveBatch).toHaveBeenLastCalledWith(["required", "optional"]);
+    expect(resolution.resolve("required")).toBe("/cache/required");
+    expect(resolution.resolve("other")).toBe("/cache/other");
+    // A rejected admission must not contaminate later, unrelated requests.
+    expect(resolveBatch).toHaveBeenLastCalledWith(["required", "other"]);
+    repaired = true;
+    expect(resolution.resolve("optional")).toBe("/cache/optional");
+    expect(resolveBatch).toHaveBeenLastCalledWith(["required", "other", "optional"]);
+  });
+
+  it("publishes no optional capability when approval fails", () => {
+    let rejected = true;
+    const approveBatch = vi.fn((files: readonly string[]) => {
+      if (rejected && files.includes("/cache/optional")) return [];
+      return [...files];
+    });
+    const resolution = createBatchedBrowserBinaryResolution(
+      ["required", "optional"],
+      {
+        normalizeRelPath: (path) => path,
+        resolveBatch: (paths) => paths.map((path) => `/cache/${path}`),
+        resolveOne: () => null,
+        approveBatch,
+        approve: (file) => file,
+        candidateEntryExists: () => true,
+      },
+      ["optional"],
+    );
+    expect(resolution.resolve("required")).toBe("/cache/required");
+    expect(() => resolution.resolve("optional")).toThrow("wrong number of entries");
+    expect(resolution.resolve("required")).toBe("/cache/required");
+    rejected = false;
+    expect(resolution.resolve("optional")).toBe("/cache/optional");
+    expect(approveBatch).toHaveBeenLastCalledWith(["/cache/required", "/cache/optional"]);
+  });
+
   it("checks the complete authored graph in one batch and reuses exact capabilities", () => {
     const resolveBatch = vi.fn(
       (relPaths: readonly string[]) =>

@@ -55,6 +55,17 @@ describe("normal binary mirror URL globs", () => {
       resolveModule: () => { throw failure; },
     })).toThrow(failure);
   });
+
+  it("defers development import analysis until the optional loader is called", () => {
+    const rewritten = rewriteBinaryMirrorUrlGlobs(code, "/app/loader.ts", {
+      resolveMirrorImport: () => "programs/wasm32/lamp.vfs.zst",
+      resolveModule: (relPath) => `/@id/@binaries/${relPath}?url`,
+      deferDevImportAnalysis: true,
+    });
+    expect(rewritten).toContain(
+      '((id)=>import(/* @vite-ignore */ id))("/@id/@binaries/programs/wasm32/lamp.vfs.zst?url")',
+    );
+  });
 });
 
 function snapshot(relPath: string, text: string): SourceOnlyBinarySnapshot {

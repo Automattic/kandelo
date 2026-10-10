@@ -329,6 +329,11 @@ describe("browser binary dependencies", () => {
         "programs/wasm32/dynamic.wasm",
         "programs/wasm32/optional.vfs.zst",
       ]);
+      expect(browserBinariesImports(fixtureRoot, { includeOptionalGlobs: false }))
+        .toEqual([
+          "programs/wasm32/actual.wasm",
+          "programs/wasm32/dynamic.wasm",
+        ]);
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
