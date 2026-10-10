@@ -1,29 +1,22 @@
-import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
+import { gotoMachine } from "./support/kandelo-machine";
 
-const imagePath = process.env.KANDELO_WORDPRESS_FRANKENPHP_VFS;
-
-test("WordPress on FrankenPHP serves the preinstalled site and admin in Chromium", async ({ page, baseURL, browserName }) => {
+test("WordPress on FrankenPHP serves the preinstalled site and admin in Chromium", async ({ page, browserName }) => {
   test.setTimeout(360_000);
   test.skip(browserName !== "chromium", "FrankenPHP WordPress browser gate uses Chromium");
-  test.skip(!imagePath, "Build the WordPress image and set KANDELO_WORDPRESS_FRANKENPHP_VFS");
-  expect(baseURL).toBeTruthy();
-
-  const imageUrl = new URL("/__wordpress_frankenphp__.vfs.zst", baseURL!).href;
-  const image = readFileSync(imagePath!);
-  await page.route(imageUrl, (route) => route.fulfill({
-    status: 200,
-    contentType: "application/octet-stream",
-    body: image,
-  }));
-
-  const url = new URL("/", baseURL!);
-  url.searchParams.set("vfs", imageUrl);
-  url.searchParams.set("profile", "wordpress-frankenphp");
-  await page.goto(url.href, { waitUntil: "domcontentloaded" });
+  test.skip(process.env.KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS !== "1", "Build and project WordPress, then set KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS=1");
+  await gotoMachine(page, "wordpress-frankenphp");
 
   const frame = page.frameLocator('iframe[title="WordPress on FrankenPHP"]');
-  await expect(frame.locator("body")).toContainText("WordPress on Kandelo", { timeout: 240_000 });
+  await Promise.race([
+    expect(frame.locator("body")).toContainText("WordPress on Kandelo", { timeout: 240_000 }),
+    page.locator('.kdock-status-text[data-status="error"]')
+      .waitFor({ state: "attached", timeout: 240_000 })
+      .then(async () => {
+        const syslog = await page.locator(".ksys-line").allTextContents();
+        throw new Error(`WordPress machine failed: ${syslog.slice(-20).join("\n")}`);
+      }),
+  ]);
   await expect(frame.locator("form#setup, form#language-chooser")).toHaveCount(0);
 
   if (!(await page.locator("aside.kdemo").count())) {

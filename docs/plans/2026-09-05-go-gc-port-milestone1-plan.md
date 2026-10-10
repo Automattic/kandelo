@@ -1984,6 +1984,51 @@ static HTTP in Node and Chromium with no host diagnostics. This fixes package
 distribution and preserves the request behavior already established; it is
 not WordPress gallery validation.
 
+**2026-10-10 — Source-only WordPress gallery and admin pass.** Revision-21
+WordPress resolved under `source-only-v1` with revision-9 FrankenPHP, then
+`xtask bootstrap wordpress` published the verified image. The resolver-owned
+image passes a Node demo admin login with no image override, a direct
+Chromium kernel-host PHP request, the focused browser profile admin login,
+and the gallery Launch/admin merge-gate case. The browser tests use the
+product's actual Vite image URL; an earlier synthetic `page.route` URL was
+intercepted by the service worker and returned HTML instead of the VFS, so
+it was not valid end-to-end evidence. The canonical source-only projection
+required current ownership for other authored service assets before Vite
+could load any gallery machine; the selected service products and the
+remaining MariaDB test/Wasm64 artifacts were published for that test.
+
+`./run.sh browser` triggers the entire local-build set and stopped on two
+unrelated package failures outside the selected WordPress/service closure.
+Those failures are not evidence against FrankenPHP; they also mean this
+full-tree command is not a passing validation claim. Restore the selected
+projection after that failed run, then use the direct Vite server to keep a
+live browser demo available. No WordPress performance comparison has been
+made, and broader Go/C conformance gaps from the list above remain open.
+
+**2026-10-10 — FrankenPHP demo integration gates complete.** After restoring
+the selected source-only projection, all 149 authored browser imports that
+have physical files have current projection ownership. The final focused
+Chromium run passed three cases in one worker: the real product-profile
+homepage/admin flow, Gallery Launch/admin flow, and Node-host demo/admin
+flow. The test now resolves the product URL through the same fixture as the
+gallery, rather than mocking a service-worker-intercepted request. The
+source-only FrankenPHP artifact independently served PHP and static HTTP in
+Node and Chromium; the source-only WordPress image served requests in the
+direct Chromium kernel host. ABI snapshot, the Go cgo frontend test, pure-Go
+`kandelo`/`js`/`wasip1` std builds, and libc-test `env`, `argv`, and
+`tls_init` cases pass. These are focused gates, not full Go or POSIX
+conformance.
+
+The resolved Node demo runs at `http://localhost:3000/` and the direct Vite
+browser app at `http://127.0.0.1:5401/`; Gallery can launch "WordPress on
+FrankenPHP" from the same `wordpress.vfs.zst` used by the existing
+nginx/PHP-FPM profile. `./run.sh browser` still cannot start because its
+entire local-build set fails on two unrelated packages, so this live Vite
+server was started directly after successful selected-product builds. A
+measured WordPress performance comparison and the broader Go/C runtime
+semantics (explicit init/fini arrays, secure-exec, automatic C shutdown,
+general callback/thread stress and wider conformance) remain open.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
