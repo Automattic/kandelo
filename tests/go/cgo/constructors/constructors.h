@@ -4,5 +4,6 @@
 unsigned int constructor_count(void);
 int constructor_value(void);
 int run_destructors(void);
+void request_c_exit(void);
 
 #endif

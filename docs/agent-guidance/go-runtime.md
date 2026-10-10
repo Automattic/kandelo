@@ -96,14 +96,14 @@ do not validate against a stale or unstamped binary.
 
 FrankenPHP classic mode embeds a PHP ZTS SAPI through cgo. A working
 `cmd/cgo` frontend is only one layer of that port. The `go-hello` package
-pins the callback-capable fork revision, but remains a pure-Go hello program.
+pins the current fork revision, but remains a pure-Go hello program.
 The adjacent fork runs focused Go/C calls and Go-owned and C-created-pthread
 callbacks on Node and Chromium. The `php-zts` package and PHP embed lifecycle
 probe pass on both hosts. The `frankenphp-classic` package now serves a PHP
 request and a static asset through real HTTP on Node and Chromium. A
-directly built WordPress VFS now serves PHP homepage and login requests
-on both hosts, but its source-only resolver and gallery/UI gates remain.
-Do not infer full cgo or deployed WordPress support from these probes.
+source-only WordPress VFS serves homepage and admin requests on Node and
+Chromium, including the browser gallery profile. Do not infer full cgo,
+POSIX conformance, or a WordPress performance advantage from these gates.
 
 Trace the whole link path before changing flags or package recipes:
 
@@ -254,10 +254,17 @@ environment table with independent C `mmap` while Go still uses a private
 contiguous `sbrk` heap: that collided in the combined process. A Node/Chromium cgo probe verifies this
 narrow environment path. Fork commit `dbec8a7` adds the Wasm constructor
 table and a static `__dso_handle` for C destructor registration. The
-constructor fixture verifies priority order and explicitly dispatches a
-registered destructor on Node and Chromium. Go-led secure-exec behavior,
-automatic C exit handlers, and explicit `.init_array`/`.fini_array` layout
-remain unproven. A cgo-disabled mixed C/Go link must reject C constructor
+constructor fixture verifies priority order, metadata-only
+`.init_array.150` dispatch, and explicit C `exit(0)` destructor dispatch on
+Node and Chromium. Go-led secure-exec startup passes focused set-ID and
+`POSIX_SPAWN_RESETIDS` transitions on both hosts. The linker accepts only
+zero-filled initializer arrays whose priorities match `INIT_FUNCS` metadata;
+it rejects nonzero, relocated, exported, or referenced arrays rather than
+treating their bytes as callable pointers. LLVM currently rejects
+`.fini_array` sections. A Go main return does not establish automatic C
+exit-handler dispatch, and broader Go security and shutdown semantics remain
+unproven. A
+cgo-disabled mixed C/Go link must reject C constructor
 metadata rather than silently discard it.
 For Go-owned callbacks, a typed Wasm export wrapper keeps the C call stack
 while Go's resumable scheduler completes the callback. Its linker root must
@@ -268,8 +275,10 @@ function, giving the thread a reserved Go bootstrap stack. The callback
 adapter then uses `needm`/`cgocallbackg`/`dropm`; after a yield it reloads
 g0 from the resumed Go M rather than trusting Wasm locals across the
 scheduler unwind. The focused callback probe exercises two callbacks per C
-thread and a second Go M on Node and Chromium. Do not treat it as general
-foreign-thread or PHP conformance.
+thread and a second Go M on Node and Chromium. Its stress mode runs three
+simultaneous C pthread callbacks across eight rounds, with C malloc/free and
+Go allocation/GC between rounds, on both hosts. This is bounded contention
+and reclaim evidence, not general foreign-thread or PHP conformance.
 
 For a repeatable C function-and-data link proof, run
 `scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends

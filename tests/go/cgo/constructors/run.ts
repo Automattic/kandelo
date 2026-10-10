@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper.ts";
 
-const [programPath, kernelPath] = process.argv.slice(2);
+const [programPath, kernelPath, mode] = process.argv.slice(2);
 if (!programPath || !kernelPath) {
   throw new Error("usage: node --import tsx run.ts <program.wasm> <kernel.wasm>");
 }
@@ -9,6 +9,7 @@ if (!programPath || !kernelPath) {
 const result = await runCentralizedProgram({
   programPath,
   kernelWasmBytes: readFileSync(kernelPath),
+  argv: mode === "c-exit" ? ["go-cgo-constructors", "c-exit"] : ["go-cgo-constructors"],
   timeout: 30_000,
   useDefaultRootfs: false,
 });
@@ -22,7 +23,7 @@ console.log(JSON.stringify({
 
 if (
   result.exitCode !== 0 ||
-  !result.stdout.includes("CGO CONSTRUCTORS PASS") ||
+  !result.stdout.includes(mode === "c-exit" ? "CGO C EXIT HANDLER PASS" : "CGO CONSTRUCTORS PASS") ||
   result.stderr !== "" ||
   result.hostDiagnostics.length !== 0
 ) {

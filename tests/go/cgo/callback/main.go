@@ -8,6 +8,7 @@ import "C"
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"time"
 )
@@ -49,6 +50,22 @@ func go_deep(value C.int) C.int {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "stress" {
+		runtime.GOMAXPROCS(4)
+		for round := 0; round < 8; round++ {
+			if value := C.call_go_on_pthreads(); value != 108 {
+				panic(fmt.Sprintf("concurrent C pthread callbacks failed in round %d: %d", round, value))
+			}
+			memory := make([]byte, 2<<20)
+			for page := 0; page < len(memory); page += 65536 {
+				memory[page] = byte(round + 1)
+			}
+			runtime.KeepAlive(memory)
+			runtime.GC()
+		}
+		fmt.Println("CGO CALLBACK STRESS PASS")
+		return
+	}
 	if C.call_go(7) != 14 {
 		panic("C-to-Go callback failed")
 	}

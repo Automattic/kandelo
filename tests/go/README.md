@@ -179,17 +179,36 @@ cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS
 ```
 
 The `cgo/constructors` fixture verifies standard Wasm C constructor
-metadata, priority order, and C destructor registration. It calls musl's
-exit-handler dispatcher explicitly; it does not claim Go process exit
-automatically executes C exit handlers. Nonempty explicit `.init_array` and
-`.fini_array` segments remain unsupported.
+metadata, priority order, a metadata-only `.init_array.150` segment, and C
+destructor registration. Its ordinary mode calls musl's exit-handler
+dispatcher explicitly. Its `c-exit` mode enters C `exit(0)` and checks that
+the registered handler runs on Node and Chromium. A Go main return does not
+establish automatic C exit-handler dispatch. The linker still rejects
+nonzero or referenced initializer arrays; LLVM currently rejects
+`.fini_array` at compile time.
+
+The `cgo/secure-exec` fixture verifies that a Go-led cgo child receives musl's
+kernel-owned secure-startup marker after a set-ID `exec`, and loses it when a
+later `posix_spawn` uses `POSIX_SPAWN_RESETIDS`. The C parent exercises the
+real VFS credential transition. Both `issetugid` and `getauxval(AT_SECURE)`
+must agree with `secure_getenv`; this is a focused startup test, not a general
+Go secure-environment audit. Build and stamp the Go child, then run the Node
+and Chromium cases:
+
+```sh
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-cgo-secure-exec.wasm ./tests/go/cgo/secure-exec'
+scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-cgo-secure-exec.wasm -o .context/go-cgo-secure-exec-instrumented.wasm; REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-cgo-secure-exec-instrumented.wasm; stamp_built_program_outputs'
+scripts/dev-shell.sh bash -c 'cd host && ./node_modules/.bin/vitest run test/secure-exec.test.ts -t "Go/cgo child"'
+cd apps/browser-demos && WASM_POSIX_RESOLUTION_POLICY=source-only-v1 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$(cd ../.. && pwd)/local-binaries/source-only-v1" KANDELO_GO_CGO_RUNTIME_TESTS=1 ./node_modules/.bin/playwright test test/secure-exec-startup.spec.ts --project=chromium --grep 'Go/cgo child'
+```
 
 ```sh
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-constructors.wasm ./tests/go/cgo/constructors && wasm-validate --enable-threads .context/go-constructors.wasm'
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-constructors.wasm -o .context/go-constructors-instrumented.wasm'
 scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-constructors-instrumented.wasm; stamp_built_program_outputs'
 node --import tsx tests/go/cgo/constructors/run.ts .context/go-constructors-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
-cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'C constructors run'
+node --import tsx tests/go/cgo/constructors/run.ts .context/go-constructors-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)" c-exit
+cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'C constructors|C exit dispatches'
 ```
 
 The separate `cgo/callback` fixture exercises Go-to-C-to-Go calls on the
@@ -202,6 +221,17 @@ scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/cgo-c
 scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/cgo-callback-probe-instrumented.wasm; stamp_built_program_outputs'
 node --import tsx tests/go/cgo/callback/run.ts .context/cgo-callback-probe-instrumented.wasm local-binaries/kernel.wasm
 cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'C-created pthread callback grows'
+```
+
+Its `stress` mode starts three C pthreads concurrently for eight rounds,
+crosses into Go with scheduler yields, allocates and frees C memory, and
+forces Go allocation/GC between rounds. This is a bounded contention and
+reclaim probe, not full pthread or allocator conformance. Run it with the
+same stamped callback artifact:
+
+```sh
+node --import tsx tests/go/cgo/callback/run.ts .context/cgo-callback-probe-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)" stress
+cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'Concurrent C pthread callbacks'
 ```
 
 It passes as an opt-in Node and Chromium process gate after fork

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,8 +16,97 @@ const probePath = resolve(
   here,
   "../../../local-binaries/programs/wasm32/secure-exec-probe.wasm",
 );
+const goCgoProbePath = resolve(
+  here,
+  "../../../.context/go-cgo-secure-exec-instrumented.wasm",
+);
 const SECURE_STDOUT_SENTINEL = "secure-stdout-sentinel\n";
 const SECURE_STDERR_SENTINEL = "secure-stderr-sentinel\n";
+
+test("Go/cgo child observes browser secure startup and reset IDs", async ({
+  page,
+  baseURL,
+}) => {
+  test.skip(
+    process.env.KANDELO_GO_CGO_RUNTIME_TESTS !== "1"
+      || !existsSync(goCgoProbePath),
+    "requires the built Go/cgo probe",
+  );
+  expect(baseURL).toBeTruthy();
+  const runtimeErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") runtimeErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => runtimeErrors.push(error.message));
+  await page.route("**/favicon.ico", (route) => route.fulfill({ status: 204 }));
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+  const asViteUrl = (path: string) => new URL(`/@fs${path}`, baseURL).href;
+  const results = await page.evaluate(async ({
+    browserKernelModuleUrl,
+    memoryFsModuleUrl,
+    parentBytes,
+    childBytes,
+  }) => {
+    const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelModuleUrl);
+    const { MemoryFileSystem } = await import(/* @vite-ignore */ memoryFsModuleUrl);
+    const parent = Uint8Array.from(parentBytes);
+    const child = Uint8Array.from(childBytes);
+    const size = Math.max(
+      4 * 1024 * 1024,
+      parent.byteLength * 3 + child.byteLength * 2,
+    );
+    const imageFs = MemoryFileSystem.create(
+      new SharedArrayBuffer((size + 65535) & ~65535),
+    );
+    imageFs.mkdir("/bin", 0o755);
+    imageFs.createFileWithOwner("/bin/secure-parent", 0o4755, 0, 0, parent);
+    imageFs.createFileWithOwner("/bin/go-secure-child", 0o755, 0, 0, child);
+    const image = await imageFs.saveImage();
+    const run = async (resetIds: number) => {
+      let stdout = "";
+      let stderr = "";
+      const hostDiagnostics: unknown[] = [];
+      const kernel = new BrowserKernel({
+        maxWorkers: 4,
+        onStdout: (data: Uint8Array) => {
+          stdout += new TextDecoder().decode(data);
+        },
+        onStderr: (data: Uint8Array) => {
+          stderr += new TextDecoder().decode(data);
+        },
+        onHostDiagnostic: (diagnostic: unknown) => {
+          hostDiagnostics.push(diagnostic);
+        },
+      });
+      await kernel.initFromImage({ vfsImage: image });
+      try {
+        const exitCode = await kernel.spawn(parent.buffer, [
+          "secure-exec-probe", "launch", "/bin/secure-parent",
+          "spawn-parent", "1", String(resetIds), "/bin/go-secure-child",
+          "target",
+        ], { uid: 1000, gid: 1000 });
+        return { exitCode, stdout, stderr, hostDiagnostics };
+      } finally {
+        await kernel.destroy();
+      }
+    };
+    return [await run(0), await run(1)];
+  }, {
+    browserKernelModuleUrl: asViteUrl(browserKernelModulePath),
+    memoryFsModuleUrl: asViteUrl(memoryFsModulePath),
+    parentBytes: Array.from(readFileSync(probePath)),
+    childBytes: Array.from(readFileSync(goCgoProbePath)),
+  });
+  for (const [index, result] of results.entries()) {
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      `GO CGO SECURE EXEC PASS secure=${index === 0}`,
+    );
+    expect(result.stderr).toBe("");
+    expect(result.hostDiagnostics).toEqual([]);
+  }
+  expect(runtimeErrors).toEqual([]);
+});
 
 test("ordinary startup receives the kernel-owned non-secure marker", async ({
   page,
