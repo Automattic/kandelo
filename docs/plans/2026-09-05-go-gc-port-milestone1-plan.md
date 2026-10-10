@@ -1522,12 +1522,40 @@ empty stderr and diagnostics) and Chromium. Pure-Go `kandelo`, `js`, and
 `wasip1` browser-basic builds pass. The normal `C.abs` build still stops at
 the explicit musl TLS boundary. No ABI or package pin change.
 
+**2026-10-09 — per-instance C TLS linker proof.** Adjacent Go fork commit
+`76410fd` lays out C TLS segments in a bounded 64 KiB
+per-thread template, relocates `R_WASM_MEMORY_ADDR_TLS_SLEB`, reserves a
+separate main-thread TLS block, emits `__wasm_init_tls`, and calls it before
+the Go `_start` entry. C TLS uses a mutable internal global distinct from
+the exported legacy `__tls_base` channel handoff. The host already calls
+`__wasm_init_tls` with each pthread's TLS/control page. The link-only
+fixture now increments a real `_Thread_local` C value from Go and checks
+that two Wasm instances over the same memory keep independent TLS bases.
+`tests/go/cgo/link-only/test-link.sh` passes direct table checks in Node and
+Chromium; the ABI-stamped Kandelo process exits 0 with `GO TO C DATA PASS`
+and no host diagnostics on Node, and the Chromium process test passes.
+This proves only the fixture's TLS initializer and instance isolation, not
+musl or PHP TLS conformance, C-created pthread callbacks, or fork replay.
+
+The same linker work now recognizes C function-pointer DATA relocations,
+cross-object GOT-style data globals, weak function definitions, and exported
+aliases instead of failing immediately on musl's TLS objects. A second
+link-only fixture initializes a C function pointer in DATA, calls through
+it from Go, and checks the result in Node and Chromium direct-table tests;
+the ABI-stamped Kandelo process also exits 0 on Node and Chromium. Pure-Go
+`kandelo`, `js`, and `wasip1` browser-basic builds pass. The normal
+`CGO_ENABLED=1` `C.abs` build currently stops at unresolved
+`_cgo_sys_thread_start`: Kandelo lacks the platform-specific `runtime/cgo`
+thread-start implementation. It still emits no cgo binary. The package pin
+stays at the earlier pure-Go fork revision; no ABI change or FrankenPHP demo
+is claimed.
+
 Remaining work, in dependency order:
 
-1. Review the experimental Wasm `cmd/cgo` frontend; validate the
-   `_cgo_topofstack` adapter, implement `asmcgocall` and C stack/global state,
-   finish TLS layout and relocations, and symbol
-   resolution until the normal `C.abs` probe runs.
+1. Review the experimental Wasm `cmd/cgo` frontend; implement Kandelo's
+   `runtime/cgo` thread-start half, validate `_cgo_topofstack`, add
+   `asmcgocall` and C stack/global state, and finish C symbol/linker rules
+   until the normal `C.abs` probe builds and runs on Node and Chromium.
 2. Implement `crosscall2`, `cgocallback`, and runtime/cgo platform support;
    run same-thread and C-created-pthread callback probes on Node and Chromium
    with truthful ABI stamps and no host diagnostics.

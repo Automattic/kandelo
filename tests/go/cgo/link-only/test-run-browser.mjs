@@ -7,7 +7,7 @@ const wasmBytes = readFileSync(wasmPath);
 const sections = readFileSync(sectionsPath, 'utf8');
 const indices = {};
 
-for (const name of ['c_target', 'weighted', 'cross_weighted']) {
+for (const name of ['c_target', 'weighted', 'cross_weighted', 'tls_weighted', 'call_function_pointer']) {
   const match = sections.match(new RegExp(`elem\\[(\\d+)\\] = ref\\.func:\\d+ <${name}>`));
   assert.ok(match, `missing table entry for ${name}`);
   indices[name] = Number(match[1]);
@@ -44,10 +44,17 @@ try {
     }
     const instance = await WebAssembly.instantiate(module, imports);
     const table = instance.exports.__indirect_function_table;
-    return [table.get(tableIndices.c_target)(5), table.get(tableIndices.weighted)(5), table.get(tableIndices.cross_weighted)(5)];
+    instance.exports.__wasm_init_tls(0x300000);
+    const firstTLS = table.get(tableIndices.tls_weighted)(5);
+    const secondTLS = table.get(tableIndices.tls_weighted)(5);
+    const secondInstance = await WebAssembly.instantiate(module, imports);
+    secondInstance.exports.__wasm_init_tls(0x310000);
+    const isolatedTLS = secondInstance.exports.__indirect_function_table.get(tableIndices.tls_weighted)(5);
+    const retainedTLS = table.get(tableIndices.tls_weighted)(5);
+    return [table.get(tableIndices.c_target)(5), table.get(tableIndices.weighted)(5), table.get(tableIndices.cross_weighted)(5), table.get(tableIndices.call_function_pointer)(5), firstTLS, secondTLS, isolatedTLS, retainedTLS];
   }, indices);
-  assert.deepEqual(result, [10, 12, 13]);
-  console.log('Chromium executes Go-linked C functions with initialized C data');
+  assert.deepEqual(result, [10, 12, 13, 8, 12, 13, 12, 14]);
+  console.log('Chromium executes Go-linked C functions with initialized data and per-instance TLS');
 } finally {
   await browser.close();
 }
