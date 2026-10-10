@@ -72,13 +72,16 @@ test("worker inspection lists live procfs descriptors and devfs through guest cl
   expect(result.proc!.find((entry) => entry.name === "self")).toMatchObject({ mode: 0o120777, target: "1" });
   expect(result.process!.find((entry) => entry.name === "cwd")).toMatchObject({ mode: 0o120777, target: "/" });
   expect(result.fds!.find((entry) => entry.name === "9")).toMatchObject({ mode: 0o120777, target: "/tmp/inspection-open-fd" });
-  expect(result.fdinfo!.find((entry) => entry.name === "9").mode & 0o170000).toBe(0o100000);
+    expect(result.fds!.length).toBeGreaterThanOrEqual(803);
+    expect(result.fds!.find((entry) => entry.name === "809")).toMatchObject({ mode: 0o120777, target: "/tmp/inspection-open-fd" });
+    expect(result.fdinfo!.find((entry) => entry.name === "809")!.mode & 0o170000).toBe(0o100000);
+  expect(result.fdinfo!.find((entry) => entry.name === "9")!.mode & 0o170000).toBe(0o100000);
   expect(result.closedFds!.some((entry) => entry.name === "9")).toBe(false);
   expect(result.closedInfo!.some((entry) => entry.name === "9")).toBe(false);
   expect(result.initFds).toEqual([]);
   expect(result.devFds).toEqual([]);
   expect(result.dev!.find((entry) => entry.name === "stdin")).toMatchObject({ mode: 0o120777, size: 9, target: "/dev/fd/0" });
-  expect(result.dev!.find((entry) => entry.name === "null").mode & 0o170000).toBe(0o020000);
+  expect(result.dev!.find((entry) => entry.name === "null")!.mode & 0o170000).toBe(0o020000);
   expect(result.input!.map((entry) => entry.name)).toEqual(["mice", "event0", "event1"]);
   expect(result.dri!.map((entry) => entry.name)).toEqual(["card0", "renderD128"]);
   expect(result.kandelo!.map((entry) => entry.name)).toEqual(["clipboard"]);

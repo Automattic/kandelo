@@ -1,7 +1,9 @@
+import type { VfsDirEntrySnapshot } from "../../src/vfs/vfs";
+
 /** Drive actual guest fd and PTY lifetime through the shared host API. */
 export async function virtualInspection(
   host: {
-    readDirFromVfs(path: string): Promise<any[] | null>;
+    readDirFromVfs(path: string): Promise<VfsDirEntrySnapshot[] | null>;
     spawnFromVfs(path: string, args: string[], options: { pty: boolean }): Promise<{ pid: number; exit: Promise<number> }>;
     ptyWrite(pid: number, data: Uint8Array): void;
   },
@@ -16,6 +18,8 @@ export async function virtualInspection(
   const { pid, exit } = await host.spawnFromVfs("/usr/bin/bash", ["bash", "-c", [
     "set -e",
     "exec 9>/tmp/inspection-open-fd",
+    // This produces more metadata than one kernel scratch lease can hold.
+    "for ((fd=10; fd<810; fd++)); do eval \"exec $fd>/tmp/inspection-open-fd\"; done",
     "printf 'INSPECTION_READY\\n'",
     "read -r next",
     "exec 9>&-",
