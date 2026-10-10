@@ -1254,7 +1254,7 @@ const auditAllowances: AuditAllowance[] = [
     why: "These two non-replay process launch paths instantiate user modules against caller-owned process memory, never kernel memory.",
   },
   {
-    key: "host/src/kernel-scratch.ts::intrinsicWasmMemoryBuffer::kernel-memory-escape::intrinsicApply( intrinsicMemoryBuffer, memory, [], )",
+    key: "host/src/kernel-scratch.ts::intrinsicWasmMemoryBuffer::kernel-memory-escape::intrinsicMemoryBuffer(memory)",
     disposition: "scratch-core",
     why: "This is the single captured intrinsic access to a genuine WebAssembly.Memory buffer; every caller immediately applies an allocation-capacity or exact fixed-range proof.",
   },
