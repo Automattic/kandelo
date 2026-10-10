@@ -173,16 +173,9 @@ test.describe.serial("real scoped production deployments", () => {
       await pageA.reload({ waitUntil: "domcontentloaded" });
       await waitForShell(pageA);
       const corruptCacheBefore = await cachedVimEntry(pageA);
-      const expectedDiagnostic =
-        `Lazy archive SHA-256 ${corrupted.corrupt.sha256} ` +
-        `does not match expected ${vimArchiveIdentity.sha256}`;
-      const shaDiagnostics: string[] = [];
-      pageA.on("console", (message) => {
-        const matches = message.text().match(
-          /Lazy archive SHA-256 [0-9a-f]{64} does not match expected [0-9a-f]{64}/g,
-        );
-        if (matches !== null) shaDiagnostics.push(...matches);
-      });
+      // Rust reports integrity rejection through the guest's EIO path. The
+      // legacy TypeScript decoder's SHA console message is not that contract:
+      // assert both real executions fail and preserve the exact corrupt cache.
       server.clearRequests();
       const firstCorruptAttempt = await runCorruptVimProbe(pageA);
       expect(firstCorruptAttempt).toMatchObject({ exitCode: 0 });
@@ -201,7 +194,6 @@ test.describe.serial("real scoped production deployments", () => {
       expect(secondCorruptAttempt.output).toContain("VIM_CORRUPT_REJECTED");
       expect(secondCorruptAttempt.output).not.toContain("VIM_CORRUPT_MATERIALIZED");
       expect(await cachedVimEntry(pageA)).toEqual(corruptCacheBefore);
-      expect(shaDiagnostics).toEqual([expectedDiagnostic, expectedDiagnostic]);
       expect(server.requests().filter((request) =>
         request.pathname.endsWith("/vim.zip")
       )).toEqual([]);
