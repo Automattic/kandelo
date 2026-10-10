@@ -62,8 +62,11 @@ describe("worker-side VFS listing and stat", () => {
     expect(result.dri!.map((entry) => entry.name)).toEqual(["card0", "renderD128"]);
     expect(result.kandelo!.map((entry) => entry.name)).toEqual(["clipboard"]);
     expect(result.shm).toEqual([]);
-    expect(result.pts!.length).toBe(result.initialPts!.length + 1);
-    expect(result.finalPts).toEqual(result.initialPts);
+    expect(result.pts!.length).toBe(result.initialPts!.length + 2);
+    expect(result.closedPts!.length).toBe(result.initialPts!.length + 1);
+    // The host's implicit master remains open until machine destruction.
+    // Guest-owned master close must remove only its own live device entry.
+    expect(result.finalPts).toEqual(result.closedPts);
     expect(result.finalProc!.some((entry) => entry.name === String(result.pid))).toBe(false);
     expect(result.vanished).toBeNull();
   }, 60_000);

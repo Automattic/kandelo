@@ -2091,7 +2091,8 @@ through allocator-owned scratch within one kernel entry and are freed
 at EOF. The main thread receives plain metadata and transferable bytes.
 Procfs/devfs listings share the guest directory enumerators. Numeric
 `/proc/<pid>/fd` and `fdinfo` use that process's live descriptors; a fresh
-listing reflects descriptor close and process exit. `/dev/pts` uses live
+listing reflects descriptor close and process reaping. Exited children remain
+visible until their parent reaps them. `/dev/pts` uses live
 PTY state, and device aliases report their guest-visible symlink targets.
 `/proc/self`, `/proc/thread-self` and `/dev/fd` refer to the reserved init
 inspection record, whose descriptor table stays empty. `/dev/shm` remains
