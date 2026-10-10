@@ -2328,7 +2328,7 @@ group, or contains the private product map.
 
 The SourceOnly local DAG described in
 [Package Management](package-management.md#local-dag-build) is the canonical
-way to build the seven active VFS products. Produce
+way to build the registered VFS products. Produce
 `local-binaries/vfs-group` and its private product map, then pass both explicit
 paths to each production build:
 
@@ -2356,7 +2356,7 @@ VITE_BASE=/candidate-b/ npm --prefix apps/browser-demos run build -- \
 ```
 
 Vite authenticates and copies the complete group beneath the owning output as
-`vfs-groups/release-1/`: manifest, seven unchanged images, and every lazy
+`vfs-groups/release-1/`: manifest, every registered image, and every lazy
 asset those images reference. The private map is not published. Changing the public group path
 requires regenerating the complete manifest/images/assets handoff, updating
 the private map to its new manifest path, and rebuilding the distribution.
@@ -2439,11 +2439,13 @@ private snapshot of the commit-bound authored static-file allowlist in
 `public/`; every other ambient file is denied in development and omitted from
 production regardless of its suffix.
 
-Verified lazy ZIP and gzip/TAR decoding is linked into each browser worker by
-inlining that worker build's dynamic imports. Source-level dynamic imports stay
-lazy in the shared and Node.js paths, while browser workers trade some initial
-parse and download size for a terminal emitted bundle that cannot depend on an
-entry after Vite removes its synthetic exports. The production graph guard
+Native lazy archive activation supports ZIP. Generic gzip, tar and zstd
+activation from the former TypeScript filesystem is not implemented; boot
+image zstd decoding remains a separate transport operation. Browser worker
+builds inline their dynamic imports, while source-level dynamic imports stay
+lazy in the shared and Node.js paths. Browser workers trade some initial
+parse and download size for an emitted bundle that cannot depend on an entry
+after Vite removes its synthetic exports. The production graph guard
 rejects every static or dynamic edge back to a stripped entry, including a
 binding-free static edge that would still evaluate the stripped entry.
 
