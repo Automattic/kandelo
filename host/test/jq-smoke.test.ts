@@ -5,7 +5,8 @@ import { SHELL_LAZY_BINARY_SPECS } from "../../images/vfs/lib/init/shell-binarie
 import { tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
-import { MemoryFileSystem, type LazyDownloadEvent } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import type { LazyDownloadEvent } from "../src/vfs/lazy-download-event";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const jqBinary = tryResolveBinary("programs/jq.wasm");
@@ -75,7 +76,8 @@ describe.skipIf(!jqBinary)("jq CLI on Kandelo", () => {
 
 describe.skipIf(!jqBinary || !bashBinary)("jq lazy shell execution", () => {
   it("materializes jq through PATH and its /bin alias for a Bash pipeline", async () => {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
+    fs.setImageCapacity(16 * 1024 * 1024);
     ensureDirRecursive(fs, "/usr/bin");
     ensureDirRecursive(fs, "/bin");
     writeVfsBinary(fs, "/usr/bin/bash", new Uint8Array(readFileSync(bashBinary!)));

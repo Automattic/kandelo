@@ -6,7 +6,7 @@ import { zstdCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { tryResolveBinaries } from "../src/binary-resolver";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { prepareRunExampleRootfs } from "../../examples/run-example-rootfs";
 
 vi.mock("../src/binary-resolver", () => ({ tryResolveBinaries: vi.fn() }));
@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 async function imageWithSources(sources: Array<{ url: string; size: number }>) {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+  const fs = KandeloImageFs.create();
   fs.mkdir("/bin", 0o755);
   sources.forEach(({ url, size }, index) => {
     fs.registerLazyFile(`/bin/tool-${index}`, url, size, 0o755);
@@ -37,7 +37,7 @@ describe("isolated runner rootfs transport", () => {
     vi.stubGlobal("SharedArrayBuffer", class {
       constructor() { throw new Error("main-thread VFS allocation"); }
     });
-    expect(MemoryFileSystem.readImageLazyFileSources(image)).toEqual([
+    expect(KandeloImageFs.readImageLazyFileSources(image)).toEqual([
       { url: "binaries/programs/wasm32/bash.wasm", size: 4 },
     ]);
   });
@@ -69,7 +69,7 @@ describe("isolated runner rootfs transport", () => {
     }]);
     expect(prepared.rootfsImage).toEqual(supplied);
     expect(prepared.rootfsImage).not.toBe(supplied);
-    expect(MemoryFileSystem.readImageLazyFileSources(prepared.rootfsImage)).toEqual([
+    expect(KandeloImageFs.readImageLazyFileSources(prepared.rootfsImage)).toEqual([
       { url, size: 4 }, { url, size: 4 },
     ]);
   });
