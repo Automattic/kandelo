@@ -403,4 +403,20 @@ test.describe("native Go port milestones", () => {
       expect(runtimeErrors).toEqual([]);
     });
   }
+
+  test("Go thread-slot ceiling reports exhaustion", async ({ page, baseURL }) => {
+    expect(baseURL).toBeTruthy();
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => runtimeErrors.push(`pageerror: ${error.message}`));
+    const result = await runProbe(page, baseURL!, {
+      name: "one-slot ceiling",
+      file: "one-slot-second-m.wasm",
+      argv: ["go-one-slot-second-m"],
+      stdout: [],
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("newosproc: kernel_clone failed");
+    expect(JSON.stringify(result.hostDiagnostics)).toContain("pthread slot limit exhausted (limit=1");
+    expect(runtimeErrors).toEqual([]);
+  });
 });

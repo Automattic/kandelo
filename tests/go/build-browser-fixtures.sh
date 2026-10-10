@@ -28,6 +28,12 @@ build_probe() {
 build_probe browser-basic basic
 build_probe user-basic user-basic
 build_probe second-m second-m
+(
+  cd "$repo_root/tests/go/second-m"
+  GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" build \
+    -ldflags=-kandelothreadslots=1 -o "$output_dir/one-slot-second-m.wasm" .
+)
+record_built_program_output "$output_dir/one-slot-second-m.wasm"
 build_probe clone-handoff clone-handoff
 build_probe scheduler scheduler
 build_probe scheduler exit-worker ./exit-worker

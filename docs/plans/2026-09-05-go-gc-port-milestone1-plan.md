@@ -2225,6 +2225,19 @@ The current screenshot is `.context/frankenphp-browser-demo.png`. These
 correctness results do not turn the exploratory timing into a performance
 advantage or full Go/POSIX conformance claim.
 
+**2026-10-10 — declared Go thread-slot ceiling.** An additional linker
+fixture sets `-kandelothreadslots=1`. The Go runtime requests another M
+before `main`, so the kernel host rejects the second allocation with an
+explicit `pthread slot limit exhausted (limit=1, active=1)` diagnostic;
+Go exits nonzero with `newosproc: kernel_clone failed`. The negative boundary
+passes the Node runner and Chromium, Firefox, and WebKit focused tests
+(3/3), without hanging or silently exceeding the declared control arena.
+This closes the one-slot exhaustion case, not upper-count bounds, extended
+thread churn, or allocator pressure. Rebuilding all 21 opt-in Go browser
+fixtures through the standard ABI-stamping script succeeds, and the full
+suite including the ceiling case passes 102/102 (34 per engine) against the
+same live source-only Vite server.
+
 The remaining Go/C platform gates, in recommended order, are:
 
 1. Run broader Go standard-library/runtime conformance on the Kandelo target.
@@ -2234,7 +2247,7 @@ The remaining Go/C platform gates, in recommended order, are:
 3. Generalize mixed-width pointer-bearing C struct access and by-value cgo
    calls; current PHP integration uses explicit C accessors and a scalar
    registration entry at that interop boundary.
-4. Exercise configured thread-slot ceilings, longer PHP worker churn,
+4. Exercise upper configured thread-slot counts, longer PHP worker churn,
    allocator pressure, and concurrent callbacks; provision the full built-in
    program closure before rerunning Sortix os-test. Keep a formal application
    performance suite distinct from correctness validation. The exploratory
