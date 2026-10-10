@@ -13,6 +13,11 @@ image.mkdir("/etc", 0o755);
 image.mkdir("/exec", 0o755);
 image.mkdir("/testdata", 0o755);
 image.mkdir("/testdata/issue37161", 0o755);
+image.mkdir("/testdata/dirfs", 0o755);
+image.mkdir("/testdata/dirfs/dir", 0o755);
+for (const path of ["/testdata/dirfs/a", "/testdata/dirfs/b", "/testdata/dirfs/dir/x"]) {
+  image.createFileWithOwner(path, 0o644, 0, 0, new Uint8Array());
+}
 image.createFileWithOwner("/etc/group", 0o644, 0, 0, new TextEncoder().encode("staff:x:200:runner\n"));
 image.createFileWithOwner("/read_test.go", 0o644, 0, 0, new TextEncoder().encode("package os_test\n"));
 for (const name of ["a", "b", "c"]) {
@@ -25,9 +30,9 @@ const selectedTests = [
   "TestChmod", "TestOpenFileKeepsPermissions", "TestChown", "TestFileChown",
   "TestLchown", "TestReadFile", "TestWriteFile", "TestReadDir", "TestMkdirAll",
   "TestRemoveAll", "TestSymlink", "TestRename", "TestCreateTemp", "TestMkdirTemp",
-  "TestTruncate", "TestDirSeek", "TestReaddirSmallSeek",
+  "TestTruncate", "TestDirSeek", "TestReaddirSmallSeek", "TestSeek", "TestSeekError",
   "TestRootOpen_File", "TestRootOpen_Directory", "TestRootSymlink",
-  "TestRootConsistencyMkdirAll",
+  "TestRootConsistencyMkdirAll", "TestRootDirFS",
   "TestRootRemoveDot",
 ];
 const requiredMarkers = [
@@ -35,9 +40,10 @@ const requiredMarkers = [
   "--- PASS: TestChown", "--- PASS: TestFileChown", "--- PASS: TestLchown",
   "--- PASS: TestMkdirAll", "--- PASS: TestRemoveAll", "--- PASS: TestReadFile",
   "--- PASS: TestReadDir", "--- PASS: TestDirSeek", "--- PASS: TestReaddirSmallSeek",
+  "--- PASS: TestSeek", "--- PASS: TestSeekError",
   "--- PASS: TestRootOpen_File", "--- PASS: TestRootOpen_Directory",
   "--- PASS: TestRootSymlink", "--- PASS: TestRootConsistencyMkdirAll",
-  "--- PASS: TestRootRemoveDot",
+  "--- PASS: TestRootRemoveDot", "--- PASS: TestRootDirFS",
 ];
 
 const result = await runCentralizedProgram({

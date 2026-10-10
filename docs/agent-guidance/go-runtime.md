@@ -112,6 +112,16 @@ APIs apply to Kandelo.
   storage and pathname-backed directory OFDs likewise cause separate
   `Chtimes` and rename-after-open failures. Fix these at their owning
   syscall/VFS/OFD layers and keep the other upstream failures visible.
+- Kandelo's `lseek` channel has four argument slots: fd, 32-bit offset low,
+  signed 32-bit offset high, and whence. Passing Go's `int64` offset in one
+  slot shifts whence into the high half; `Seek(0, SEEK_CUR)` then returns
+  `1<<32`. Keep the split at the syscall boundary and use upstream
+  `TestRootDirFS` with its three empty-file fixtures to catch regressions.
+- Keep logical file positions separate from writable file extents. The
+  upstream `TestSeek` exercises offsets above 4 GiB; Node scratch mounts
+  accepted them while browser SharedFS initially returned EFBIG at its
+  smaller maximum file size. `lseek` and EOF reads may retain that logical
+  position without allocating data, while a write beyond the limit fails.
 
 Treat changes to memory declarations, Wasm imports/exports, channel layout,
 or syscall semantics as ABI reviews. Follow `docs/agent-guidance/abi.md`:

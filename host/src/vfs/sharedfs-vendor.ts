@@ -1566,7 +1566,6 @@ export class SharedFS {
   private validateSeekPosition(position: number): void {
     if (!Number.isSafeInteger(position)) throw new SFSError(EOVERFLOW);
     if (position < 0) throw new SFSError(EINVAL);
-    if (position > MAX_FILE_SIZE) throw new SFSError(EFBIG);
   }
 
   // ── Directory operations ─────────────────────────────────────────

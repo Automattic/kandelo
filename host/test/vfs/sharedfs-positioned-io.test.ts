@@ -8,6 +8,8 @@ import {
   O_RDONLY,
   O_RDWR,
   O_TRUNC,
+  SEEK_CUR,
+  SEEK_END,
   SEEK_SET,
   SharedFS,
 } from "../../src/vfs/sharedfs-vendor";
@@ -20,6 +22,21 @@ function text(bytes: Uint8Array): string {
 }
 
 describe("SharedFS positioned I/O", () => {
+  it("allows logical seeks beyond writable file size without extending the file", () => {
+    const fs = SharedFS.mkfs(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fd = fs.open("/large-seek", O_RDWR | O_CREAT | O_TRUNC, 0o600);
+    expect(fs.write(fd, encoder.encode("abc"))).toBe(3);
+
+    const position = 2 ** 33;
+    expect(fs.lseek(fd, position, SEEK_SET)).toBe(position);
+    expect(fs.lseek(fd, 0, SEEK_CUR)).toBe(position);
+    expect(fs.read(fd, new Uint8Array(1))).toBe(0);
+    expect(fs.readAt(fd, new Uint8Array(1), position)).toBe(0);
+    expect(() => fs.write(fd, encoder.encode("x"))).toThrowError(/File too large/);
+    expect(() => fs.writeAt(fd, encoder.encode("x"), position)).toThrowError(/File too large/);
+    expect(fs.lseek(fd, 0, SEEK_END)).toBe(3);
+  });
+
   it("append is explicit and independent of flags captured at open", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const fs = SharedFS.mkfs(sab);
