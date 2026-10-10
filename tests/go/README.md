@@ -123,12 +123,13 @@ scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32po
 
 The published package revision still fails at pointer-size recognition.
 The adjacent fork's experimental cgo frontend and linker now execute this
-fixture on the main Go M. It checks `C.abs`, three scalar arguments, and C
-pointer arguments in first and middle positions. The raw module validates,
-fork-instruments, and runs as an ABI-stamped Kandelo process on Node and
+fixture on the main and a second Go M. It checks `C.abs`, three scalar
+arguments, C pointer arguments in first and middle positions, and independent
+musl pthread identity and `errno` across four worker rounds. The raw module
+validates, fork-instruments, and runs as an ABI-stamped Kandelo process on Node and
 Chromium with exit 0 and no diagnostics. This is narrow Go-to-C coverage,
-not general cgo support: `crosscall2` deliberately traps, other Go Ms have
-no C stack, and musl/PHP initialization remains incomplete.
+not general cgo support: `crosscall2` deliberately traps, C-created pthreads
+cannot enter Go, and full musl/PHP initialization remains incomplete.
 
 ```sh
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-c-abs.wasm ./tests/go/cgo && wasm-validate --enable-threads .context/go-c-abs.wasm'
