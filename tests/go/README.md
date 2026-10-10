@@ -121,11 +121,14 @@ the small C-call program in `cgo/main.go`:
 scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/cgo-probe.wasm tests/go/cgo/main.go'
 ```
 
-This currently fails with `cgo: unknown ptrSize for $GOARCH "wasm"` before
-runtime or linker validation. A compile-only pass will not establish working
-interoperability: run the binary in Node and Chromium and add a C-to-Go
-callback probe before building FrankenPHP. See the dated WordPress pivot in
-the Go implementation progress log.
+The published package revision still fails at pointer-size recognition.
+The adjacent fork's experimental cgo frontend (commit `2431313`) gets this fixture to the linker,
+where the new C-ABI `_cgo_topofstack` adapter resolves, but SDK libc archive
+symbols such as `pthread_mutex_lock` remain unresolved.
+A compile-only pass will not establish working interoperability: run the
+binary in Node and Chromium and add a C-to-Go callback probe before building
+FrankenPHP. See the dated WordPress pivot in the Go implementation progress
+log.
 
 The separate `cgo/callback` fixture exercises Go-to-C-to-Go calls on the
 calling thread and a C-created pthread entering Go:
@@ -135,11 +138,11 @@ scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=
 ```
 
 It is a deliberately unpassed gate, not part of the passing Go suite. An
-uncommitted `cmd/cgo` frontend experiment in the adjacent fork parses the
+experimental `cmd/cgo` frontend in the adjacent fork parses the
 Wasm debug object far enough for both fixtures to reach the Go linker. The
 adjacent fork's internal linker now reads C function bodies, initialized C
-data, and direct CODE relocations, but the full build stops at cgo
-dynamic-export handling and missing runtime/cgo symbols. Neither fixture
+data, active table elements, and the CODE relocations reached by runtime/cgo.
+The full build stops at missing SDK libc archive symbols; neither fixture
 links or runs. The
 `go-hello` package is still pinned to the earlier fork revision that fails
 at pointer-size recognition. Do not use a successful cgo frontend or
@@ -155,9 +158,18 @@ scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh
 It manually adds SDK C objects to a cgo-free Go archive and checks that the
 final Go Wasm module validates, relocates a C-to-C call and C static data,
 then executes both C functions through the exported Wasm function table in
-Node and Chromium. This does not call C from Go, execute Go runtime code,
-exercise `runtime/cgo`, or run through a Kandelo process worker. It is not a
-substitute for either cgo probe above.
+Node and Chromium. The checked-in Go assembly also calls `weighted(5)` and
+checks its return value in a Kandelo process on both hosts. Stamp the exact
+fresh output, then run the process and browser cases:
+
+```sh
+scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-c-link-only/combined.wasm; stamp_built_program_outputs'
+node --import tsx tests/go/cgo/link-only/run.ts .context/go-c-link-only/combined.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
+cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_LINK_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep 'Go calls linked C code with initialized data'
+```
+
+The assembly call is a narrow same-signature call, not `runtime/cgo` or the
+standard Go-to-C adapter; it is not a substitute for either cgo probe above.
 
 ## RoadRunner feasibility probe
 

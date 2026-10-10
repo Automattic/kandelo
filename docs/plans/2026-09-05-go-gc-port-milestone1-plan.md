@@ -1418,6 +1418,52 @@ symbols, archive resolution, callback/thread attachment, ZTS PHP embed
 library, FrankenPHP classic-mode server, and WordPress demo are still
 unimplemented. No package pin or Kandelo ABI version changes in this step.
 
+**2026-10-09 — executable Go→C linker probe and next cgo boundary.** The
+checked-in link-only fixture now has a Go Wasm assembly function that calls
+`weighted(5)` through the linked C function table, checks the return value
+12, and prints `GO TO C DATA PASS`. Its output is stamped with the current
+ABI-contract digest before running as a Kandelo process. The Node runner
+reported exit 0, that marker, empty stderr, and no host diagnostics. The
+opt-in Chromium Playwright process-worker case passed. The older direct
+Wasm-table Node/Chromium checks also passed. This proves a narrow same-signature
+Go→C call and initialized C data in one process, **not** standard cgo or a
+Go callback.
+
+The adjacent fork's WIP commit
+`24313139e5ac59367c16370d9a9dd17aa05c0679` now admits validated active
+C element segments already covered by Go's full function-table initialization,
+resolves C function-pointer slots and `__table_base`, and declares an
+exported `__stack_pointer` only for retained C objects that need it. The
+opt-in SDK `gcc_libinit.c` object test and focused `cmd/link/internal/loadwasm`,
+`ld`, and `wasm` tests passed. With the WIP Wasm cgo frontend and Kandelo-tagged
+POSIX `runtime/cgo` C files, the full `C.abs` build moves past the prior ELF
+dynamic-symbol, type-index, and element-section failures. A raw C-ABI
+`_cgo_topofstack` Wasm function resolves the next C shim call; the link now
+stops at `pthread_mutex_lock`, an SDK libc archive member. No normal cgo
+binary was emitted. The linker still cannot load SDK C archives or
+`reloc.DATA` and cannot execute C wrappers without the `asmcgocall` adapter
+and valid C stack state. Focused `cmd/cgo` and linker tests passed; pure-Go
+`kandelo`, `js`, and `wasip1` browser-basic builds succeeded.
+ABI review: no version bump; the optional `__stack_pointer` export is
+already recognized by the host, and this step changes neither the syscall
+channel nor an existing required import/export. The package source pin stays
+at the last usable pure-Go revision until standard cgo runs.
+
+Remaining work, in dependency order:
+
+1. Review the experimental Wasm `cmd/cgo` frontend; validate the
+   `_cgo_topofstack` adapter, implement `asmcgocall` and C stack/global state,
+   and SDK libc archive resolution until the normal `C.abs` probe runs.
+2. Implement `crosscall2`, `cgocallback`, and runtime/cgo platform support;
+   run same-thread and C-created-pthread callback probes on Node and Chromium
+   with truthful ABI stamps and no host diagnostics.
+3. Build and resolve a PHP ZTS embed library through the normal Kandelo SDK,
+   prove embedded PHP lifecycle, then port FrankenPHP classic mode and a
+   WordPress VFS demo without nginx or PHP-FPM.
+4. Recheck ABI, pure-Go `kandelo`/`js`/`wasip1` regressions, package pin,
+   end-to-end browser behavior, performance evidence, and Go-runtime guidance
+   before closing this plan and its draft PR.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
