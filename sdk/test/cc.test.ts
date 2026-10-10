@@ -7,6 +7,7 @@ import {
   decodeLlvmResponseFile,
   glueSources,
   linkerArgsFromClangTrace,
+  sdkToolQuery,
   workingDirectoryFromClangTrace,
 } from '../src/bin/cc.ts';
 import { MAX_EXECUTABLE_MEMORY_SIZE } from '../src/lib/flags.ts';
@@ -23,6 +24,11 @@ describe('buildClangArgs', () => {
     sysroot: '/tmp/sysroot',
     glueDir: '/tmp/glue',
   };
+  it('reports the SDK libc archive to toolchain consumers', () => {
+    expect(sdkToolQuery(['--print-file-name=libc.a'], toolchain))
+      .toBe('/tmp/sysroot/lib/libc.a');
+    expect(sdkToolQuery(['--print-file-name=libgcc.a'], toolchain)).toBeNull();
+  });
   const build = (
     userArgs: string[],
     selectedToolchain = toolchain,
