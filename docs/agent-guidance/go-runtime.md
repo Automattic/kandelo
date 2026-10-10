@@ -76,8 +76,8 @@ do not validate against a stale or unstamped binary.
 FrankenPHP classic mode embeds a PHP ZTS SAPI through cgo. A working
 `cmd/cgo` frontend is only one layer of that port. The current published
 `GOOS=kandelo GOARCH=wasm` fork defaults to `CGO_ENABLED=0`; its first cgo
-probe fails at Wasm pointer-size recognition. An uncommitted frontend
-experiment can compile the C-call and callback fixtures, but **neither
+probe fails at Wasm pointer-size recognition. An experimental frontend in
+fork commit `2431313` can compile the C-call and callback fixtures, but **neither
 links or runs on Kandelo**. Do not describe it as cgo support or pin it
 for a FrankenPHP package.
 
@@ -87,12 +87,12 @@ Trace the whole link path before changing flags or package recipes:
   DWARF/constant extraction, and dynamic-import handling. Wasm is not
   ELF, Mach-O, PE, or XCOFF. A magic-byte bypass of object parsing is
   insufficient: the generated constants, symbols, and imports still need
-  correct interpretations. The scratch Wasm reader in the adjacent fork
+  correct interpretations. The WIP Wasm reader in the adjacent fork
   is not yet a reviewed implementation.
 - `src/cmd/link/internal/ld/lib.go` loads cgo's C objects. Internal mode
   originally rejected their format; the adjacent fork now imports C functions,
-  initialized data, and direct CODE relocations, but not `reloc.DATA`,
-  archives, or the full `runtime/cgo` symbol set.
+  initialized data, active table elements, and the CODE relocations reached
+  by `runtime/cgo`, but not `reloc.DATA`, C archives, or Go/C ABI adapters.
   External mode reaches unsupported PC-relative relocations.
   `src/cmd/link/internal/wasm/asm.go` emits a final Wasm module, not an
   object that `wasm-ld` can link with the SDK's C Wasm objects. A direct
@@ -127,24 +127,27 @@ only the object parser and call the link complete, or route calls through a
 host shim that changes Kandelo's normal program model.
 
 `cmd/link/internal/loadwasm` in the adjacent fork decodes imports, symbols,
-signatures, bodies, data segments, and the CODE relocation kinds exercised by
-the C-call, C-data, and callback objects. The Kandelo-only internal linker
-imports C functions and initialized data into Go's static layout, then
-resolves direct C-to-C calls and memory-relative C-data addresses. The
-link-only fixture executes C functions from the final Go module's function
-table on Node and Chromium, but does not call C from Go or run a Go process.
-The full `C.abs` build still stops at dynamic-export handling and unresolved
-runtime/cgo references. Debug and DATA relocations, C archive resolution,
-Go/C adapters, and C-created-thread attachment remain. Do not
+signatures, bodies, data and active element segments, and the CODE relocation
+kinds exercised by the C-call, C-data, and runtime/cgo objects. The
+Kandelo-only internal linker imports C functions and initialized data into
+Go's static layout, resolves direct C-to-C calls and memory-relative C-data
+addresses, and maps C function-pointer relocations to Go's existing table.
+The link-only fixture now makes a narrow Go assembly call to C and executes
+as a Kandelo process on Node and Chromium. It does not exercise `runtime/cgo`
+or the standard Go/C adapters. The full `C.abs` build with the experimental
+frontend now gets past `_cgo_topofstack` and stops at unresolved SDK libc
+archive symbols such as `pthread_mutex_lock`. Debug and DATA relocations, C
+archive resolution, Go/C adapters, and C-created-thread attachment remain. Do not
 silently omit those sections or treat the C shim's `_cgo_topofstack` call as
 a direct call to a Go-resumable function. The C-data path is only one link
 layer.
 
 For a repeatable C function-and-data link proof, run
-`scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends a
+`scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends
 small SDK C objects to a cgo-free Go archive and verifies C-to-C and C-data
-relocations in the final Wasm module on Node and Chromium. This is a linker
-test, not the normal cgo build or a runnable Go-to-C interoperability test. The
+relocations in the final Wasm module on Node and Chromium. After stamping,
+`tests/go/cgo/link-only/run.ts` and the opt-in Chromium case verify the
+assembly Go-to-C call inside a process. This is not the normal cgo build. The
 real `C.abs` and callback probes remain the required runtime gates.
 
 Use the staged probes in `tests/go/README.md`:

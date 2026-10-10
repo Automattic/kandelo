@@ -173,6 +173,15 @@ const probes: Probe[] = [
   },
 ];
 
+if (process.env.KANDELO_GO_CGO_LINK_TESTS === "1") {
+  probes.push({
+    name: "Go calls linked C code with initialized data",
+    file: "../go-c-link-only/combined.wasm",
+    argv: ["go-c-data"],
+    stdout: ["GO TO C DATA PASS"],
+  });
+}
+
 async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<ProbeResult> {
   const programBytes = readFileSync(resolve(fixtureDir, probe.file));
   const kernelBytes = readFileSync(resolveBinary("kernel.wasm"));
