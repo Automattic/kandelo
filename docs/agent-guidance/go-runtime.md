@@ -76,10 +76,9 @@ do not validate against a stale or unstamped binary.
 FrankenPHP classic mode embeds a PHP ZTS SAPI through cgo. A working
 `cmd/cgo` frontend is only one layer of that port. The `go-hello` package
 still pins an earlier pure-Go revision that fails the first cgo probe at
-Wasm pointer-size recognition. The adjacent fork's experimental frontend
-compiles the C-call and callback fixtures, but **neither links or runs on
-Kandelo**. Do not describe it as cgo support or pin it for a FrankenPHP
-package.
+Wasm pointer-size recognition. The adjacent fork now runs a narrow standard
+Go-to-C fixture on Node and Chromium. **Callbacks, C-created pthreads, and
+PHP embedding do not work.** Do not pin it for a FrankenPHP package.
 
 Trace the whole link path before changing flags or package recipes:
 
@@ -93,7 +92,7 @@ Trace the whole link path before changing flags or package recipes:
   originally rejected their format; the adjacent fork now imports C functions,
   initialized data, active table elements, and the CODE relocations reached
   by `runtime/cgo`, including narrow `reloc.DATA` address references and a
-  bounded per-instance C TLS template, but not Go/C ABI adapters. Fork commit `acc452f`
+  bounded per-instance C TLS template. Fork commit `acc452f`
   asks the SDK compiler for its libc archive and resolves C function-pointer
   table relocations needed by the selected members.
   External mode reaches unsupported PC-relative relocations.
@@ -110,8 +109,9 @@ Trace the whole link path before changing flags or package recipes:
   `funcValueOffset`, static data, heap, TLS, or Kandelo's thread slots.
 - Go's Wasm functions use the runtime's resumable call convention, while
   the SDK's C functions use the Wasm C ABI. A final link also needs
-  real Go-to-C and C-to-Go adapters. `src/runtime/asm_wasm.s` currently
-  leaves `asmcgocall` and `cgocallback` as `UNDEF`. FrankenPHP additionally
+  real Go-to-C and C-to-Go adapters. `asmcgocall` now makes a typed C call
+  on the main M; `cgocallback` remains `UNDEF`, and the typed C `crosscall2`
+  entry deliberately traps. FrankenPHP additionally
   starts PHP threads with C `pthread_create`, so callbacks from a thread
   Go did not create must attach to a valid M, scheduler P, and per-thread
   Kandelo syscall channel. A same-thread callback alone is insufficient.
@@ -120,9 +120,12 @@ Continue linker work from the internal Wasm host-object reader, because the
 Go linker already owns Kandelo's final memory, table, exports, and ABI
 marker. The narrow fixture now verifies Go-to-C calls, C static data,
 function-pointer DATA relocation, and per-instance TLS on Node and Chromium.
-The normal `C.abs` build now emits a Wasm binary that validates, but is not
-a runnable cgo program: fork instrumentation succeeds but runtime startup
-traps in the still-undefined cgo assembly adapters. If the internal path cannot
+The normal `C.abs` build now validates, fork-instruments, and runs through
+an ABI-stamped Kandelo process on Node and Chromium, including scalar and
+pointer argument frames. This proves only main-M Go-to-C calls. The
+same-thread callback fixture links but traps at `crosscall2`; the combined
+pthread fixture links and validates after local musl aliases were retained,
+but has not passed its process gate. If the internal path cannot
 preserve C function types, table slots, static data and TLS alongside Go's
 layout, evaluate a
 relocatable-Go-object/external-link design explicitly. Never feed a final
@@ -150,8 +153,8 @@ standard Go/C adapters. The normal `C.abs` build discovers SDK libc and
 executable glue without manual linker flags. Absent weak init/fini bounds
 resolve to zero, while nonempty constructor arrays fail explicitly until
 their linker-owned layout and execution are implemented. The emitted module
-validates and can be fork-instrumented, but it does not pass the process gate.
-Musl/PHP TLS conformance, Go/C adapters, and
+passes the Node and Chromium process gate with empty stderr and no host
+diagnostics. Musl/PHP TLS conformance, C-to-Go adapters, and
 C-created-thread attachment remain. Do not treat the C shim's `_cgo_topofstack` call as
 a direct call to a Go-resumable function. The C-data path is only one link
 layer.
@@ -168,7 +171,9 @@ support. The link-only fixture proves only a simple initialized TLS variable.
 
 Kandelo-owned Go Ms can use the existing native `newosprocKandelo` path even
 when cgo is enabled, avoiding the `_cgo_sys_thread_start` gate for those Ms.
-This does **not** attach C-created pthreads: they still require a real
+Only the main Go M has a C stack and initialized musl thread pointer; a
+Go-to-C call on another M traps instead of sharing that stack. This does
+**not** attach C-created pthreads: they still require a real
 Go-compatible entry, musl thread pointer and TLS, M/P attachment, and a
 per-instance Kandelo channel. C function pointers cannot call raw Go table
 entries with the wrong Wasm signature. Do not add no-op thread or callback
@@ -183,7 +188,7 @@ small SDK C objects to a cgo-free Go archive and verifies C-to-C and C-data
 relocations in the final Wasm module on Node and Chromium. After stamping,
 `tests/go/cgo/link-only/run.ts` and the opt-in Chromium case verify the
 assembly Go-to-C call inside a process. This is not the normal cgo build. The
-real `C.abs` and callback probes remain the required runtime gates.
+standard `C.abs` gate now passes; callbacks remain the required runtime gate.
 
 Use the staged probes in `tests/go/README.md`:
 first a C call, then Go-to-C-to-Go on the calling thread, then a C-created
