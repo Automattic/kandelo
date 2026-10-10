@@ -1550,6 +1550,18 @@ thread-start implementation. It still emits no cgo binary. The package pin
 stays at the earlier pure-Go fork revision; no ABI change or FrankenPHP demo
 is claimed.
 
+Next runtime/cgo boundary: `gcc_util.c` supplies `x_cgo_thread_start` and
+calls an operating-system-specific `_cgo_sys_thread_start`, but the fork has
+no Kandelo/Wasm implementation. This is not dead code: with `iscgo`,
+`runtime.newm` calls `_cgo_thread_start` for new Ms. A platform C thread
+start must connect C `pthread_create` to a Go-compatible entry, initialize
+musl's thread pointer and C TLS, and capture a per-instance Kandelo channel.
+Go's resumable Wasm function type is not the C ABI function-pointer type, so
+calling a raw Go table entry as a C `void (*)(void)` is invalid. The same
+adapter issue appears in `asmcgocall`, `cgocallback`, and `crosscall2`, all
+still `UNDEF` in the fork's Wasm assembly. Do not resolve the linker error
+with a no-op thread-start stub or an unverified direct table call.
+
 Remaining work, in dependency order:
 
 1. Review the experimental Wasm `cmd/cgo` frontend; implement Kandelo's
