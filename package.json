@@ -5,6 +5,7 @@
   "scripts": {
     "wordpress:build": "bash packages/registry/wordpress/demo/build.sh",
     "wordpress:serve": "npx tsx packages/registry/wordpress/demo/serve.ts",
+    "wordpress:serve-frankenphp": "npx tsx packages/registry/wordpress/demo/serve-frankenphp.ts",
     "wordpress:benchmark": "npx tsx packages/registry/wordpress/demo/perf/benchmark.ts",
     "docs:dev": "vitepress dev docs-site --host 127.0.0.1",
     "docs:build": "vitepress build docs-site",

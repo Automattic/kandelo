@@ -321,6 +321,28 @@ test.describe("Node-host counterparts for Kandelo browser demos", () => {
     }
   });
 
+  test("WordPress FrankenPHP serves the preinstalled site without PHP-FPM", async () => {
+    test.setTimeout(300_000);
+    skipUnlessRunnable("WordPress FrankenPHP Node-host demo", serviceImages.wordpress);
+
+    const port = await getFreePort();
+    const demo = await startNodeHostDemo(
+      "packages/registry/wordpress/demo/serve-frankenphp.ts",
+      [String(port)],
+      /WordPress on Kandelo FrankenPHP:/i,
+      180_000,
+    );
+
+    try {
+      const html = await fetchText(`http://127.0.0.1:${port}/`);
+      expect(html).toMatch(/WordPress/i);
+      expect(html).not.toMatch(/id="setup"|id="language-chooser"/i);
+      expect(demo.output()).not.toMatch(/php-fpm|nginx.*listening/i);
+    } finally {
+      await stopNodeHostDemo(demo.proc);
+    }
+  });
+
   test("WordPress MariaDB reaches the installer like the browser WordPress MariaDB demo", async () => {
     test.setTimeout(420_000);
     skipUnlessRunnable("WordPress MariaDB Node-host demo", serviceImages.lamp);

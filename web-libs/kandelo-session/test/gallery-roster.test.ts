@@ -128,6 +128,7 @@ describe("parseGalleryRoster", () => {
       "nginx-python",
       "ruby-todo",
       "wordpress-sqlite",
+      "wordpress-frankenphp",
       "wordpress-mariadb",
       "doom",
       "quake",

@@ -23,6 +23,13 @@ role = "runtime"
 materialization = "embedded"
 
 [[software.package]]
+name = "frankenphp-classic"
+outputs = ["frankenphp-classic"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
 name = "dinit"
 outputs = ["dinit", "dinitctl"]
 source_roles = []

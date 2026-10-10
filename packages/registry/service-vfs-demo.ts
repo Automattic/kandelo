@@ -191,6 +191,7 @@ export function configureWordPressRuntime(
     "mariadb",
     "php-fpm",
     "nginx",
+    "frankenphp-classic",
   ]);
 }
 

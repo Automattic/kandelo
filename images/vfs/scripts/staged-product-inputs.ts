@@ -395,6 +395,7 @@ export async function buildStagedBrowserService(
           sqliteDirectory,
           nginx: packageBytes("nginx", "nginx"),
           phpFpm: packageBytes("php", "php-fpm"),
+          frankenphpClassic: packageBytes("frankenphp-classic", "frankenphp-classic"),
           opcache: packageBytes("php", "opcache"),
           msmtpd: packageBytes("msmtpd", "msmtpd"),
           dinit: dinit(),
