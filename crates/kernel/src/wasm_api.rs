@@ -113,6 +113,9 @@ unsafe extern "C" {
         offset_lo: u32,
         offset_hi: u32,
     ) -> i32;
+    // Native validation rejected these transport bytes. Eviction only;
+    // the failed read still returns EIO and does not automatically retry.
+    fn host_discard_deferred(uri_ptr: *const u8, uri_len: u32);
     // Positioned read of the VFS image's own container bytes, so the kernel can
     // parse the image it booted from instead of consuming a tree the host
     // walked for it (`rootfs::load_image`). There is exactly one image per
@@ -479,6 +482,12 @@ impl HostIO for WasmHostIO {
 
     fn fetch_deferred(&mut self, uri: &[u8], buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
         fetch_deferred_uri(uri, buf, offset)
+    }
+
+    fn discard_deferred(&mut self, uri: &[u8]) {
+        if let Ok(len) = u32::try_from(uri.len()) {
+            unsafe { host_discard_deferred(uri.as_ptr(), len) };
+        }
     }
 
     fn image_read(&mut self, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
@@ -2000,6 +2009,10 @@ pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32)
     let mut host = WasmHostIO;
     match crate::rootfs::load_image(image_len, |req, b| match req {
         crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+            host.discard_deferred(&uri);
+            Ok(0)
+        }
         crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
     }) {
         Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
@@ -2206,6 +2219,10 @@ pub extern "C" fn kernel_rootfs_read_file(
     let mut host = WasmHostIO;
     match crate::rootfs::read_file_at(path, offset, buf, |req, b| match req {
         crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+            host.discard_deferred(&uri);
+            Ok(0)
+        }
         crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
     }) {
         Ok(read) => read as i32,
@@ -2261,6 +2278,10 @@ pub extern "C" fn kernel_rootfs_write_file(
         truncate != 0,
         |req, b| match req {
             crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                host.discard_deferred(&uri);
+                Ok(0)
+            }
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         },
     ) {
@@ -2308,6 +2329,191 @@ pub extern "C" fn kernel_rootfs_stat_mode(path_ptr: *const u8, path_len: u32) ->
         Ok(stat) => (stat.st_mode & 0xffff) as i32,
         Err(error) => -(error as i32),
     }
+}
+
+// Each worker reads a snapshot synchronously inside one kernel entry. The
+// caches own only copied metadata, never inode/guest references. Locks cover
+// cache replacement/copy alone; namespace walks and host callbacks run outside.
+static INSPECTION_DIRECTORY: spin::Mutex<Vec<u8>> = spin::Mutex::new(Vec::new());
+static INSPECTION_URLS: spin::Mutex<Vec<u8>> = spin::Mutex::new(Vec::new());
+
+fn inspection_init() -> &'static Process {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.ensure_init();
+    table
+        .get(crate::process_table::SYNTHETIC_INIT_PID)
+        .expect("reserved init")
+}
+
+fn append_inspection_blob(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Errno> {
+    let len = u32::try_from(bytes.len()).map_err(|_| Errno::EOVERFLOW)?;
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+// repr(C) includes padding. Never read it as bytes: initialize the wire record
+// and copy each declared field using the authoritative Rust layout instead.
+fn append_inspection_stat(out: &mut Vec<u8>, stat: &WasmStat) {
+    let start = out.len();
+    out.resize(start + size_of::<WasmStat>(), 0);
+    macro_rules! field {
+        ($field:ident) => {{
+            let at = start + core::mem::offset_of!(WasmStat, $field);
+            let bytes = stat.$field.to_le_bytes();
+            out[at..at + bytes.len()].copy_from_slice(&bytes);
+        }};
+    }
+    field!(st_dev);
+    field!(st_ino);
+    field!(st_mode);
+    field!(st_nlink);
+    field!(st_uid);
+    field!(st_gid);
+    field!(st_size);
+    field!(st_atime_sec);
+    field!(st_atime_nsec);
+    field!(st_mtime_sec);
+    field!(st_mtime_nsec);
+    field!(st_ctime_sec);
+    field!(st_ctime_nsec);
+    field!(_pad);
+    field!(st_rdev);
+}
+
+fn read_inspection_chunk(cache: &spin::Mutex<Vec<u8>>, offset: u32, out: &mut [u8]) -> i32 {
+    let mut bytes = cache.lock();
+    let offset = offset as usize;
+    if offset >= bytes.len() {
+        *bytes = Vec::new();
+        return 0;
+    }
+    let count = out.len().min(bytes.len() - offset);
+    out[..count].copy_from_slice(&bytes[offset..offset + count]);
+    count as i32
+}
+
+/// Host inspection is privileged like image export and staging. The real,
+/// immutable init record supplies root credentials to the normal namespace
+/// walker; no guest process is created or changed. Output uses WasmStat.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_inspect_stat(
+    path_ptr: *const u8,
+    path_len: u32,
+    out_ptr: *mut WasmStat,
+    out_len: u32,
+) -> i32 {
+    if path_ptr.is_null() || out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if out_len < size_of::<WasmStat>() as u32 {
+        return -(Errno::EINVAL as i32);
+    }
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    match syscalls::inspect_namespace_stat(inspection_init(), &mut WasmHostIO, path, true) {
+        Ok(stat) => {
+            unsafe {
+                out_ptr.write_unaligned(stat);
+            }
+            0
+        }
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Read a regular file for worker inspection, following namespace symlinks
+/// across rootfs, tmpfs and foreign mounts. Data never escapes kernel scratch.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_inspect_read_file(
+    path_ptr: *const u8,
+    path_len: u32,
+    offset_lo: u32,
+    offset_hi: i32,
+    buf_ptr: *mut u8,
+    buf_len: u32,
+) -> i32 {
+    if path_ptr.is_null() || buf_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if buf_len > i32::MAX as u32 {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    match syscalls::inspect_namespace_read_file(
+        inspection_init(),
+        &mut WasmHostIO,
+        path,
+        offset,
+        buf,
+    ) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Stream one live directory snapshot. Each record is a length-prefixed name,
+/// WasmStat, and a length-prefixed symlink target (empty for other entries).
+/// Offset zero replaces the snapshot; reading EOF releases the cache.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_inspect_directory(
+    path_ptr: *const u8,
+    path_len: u32,
+    offset: u32,
+    out_ptr: *mut u8,
+    out_len: u32,
+) -> i32 {
+    if path_ptr.is_null() || out_ptr.is_null() || out_len == 0 || out_len > i32::MAX as u32 {
+        return -(Errno::EINVAL as i32);
+    }
+    if offset == 0 {
+        *INSPECTION_DIRECTORY.lock() = Vec::new();
+        let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+        let snapshot = (|| -> Result<Vec<u8>, Errno> {
+            let mut bytes = Vec::new();
+            for (name, stat, target) in
+                syscalls::inspect_namespace_directory(inspection_init(), &mut WasmHostIO, path)?
+            {
+                append_inspection_blob(&mut bytes, &name)?;
+                append_inspection_stat(&mut bytes, &stat);
+                append_inspection_blob(&mut bytes, target.as_deref().unwrap_or(b""))?;
+            }
+            Ok(bytes)
+        })();
+        match snapshot {
+            Ok(bytes) => *INSPECTION_DIRECTORY.lock() = bytes,
+            Err(error) => return -(error as i32),
+        }
+    }
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    read_inspection_chunk(&INSPECTION_DIRECTORY, offset, out)
+}
+
+/// Enumerate the whole validated image's lazy transport cohort on first use.
+/// Paths are served by Node's asynchronous resolver, outside the syscall worker.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_lazy_resource_limits(
+    offset: u32,
+    out_ptr: *mut u8,
+    out_len: u32,
+) -> i32 {
+    if out_ptr.is_null() || out_len == 0 || out_len > i32::MAX as u32 {
+        return -(Errno::EINVAL as i32);
+    }
+    if offset == 0 {
+        *INSPECTION_URLS.lock() = Vec::new();
+        let mut bytes = Vec::new();
+        for (url, size) in crate::rootfs::lazy_resource_limits() {
+            if let Err(error) = append_inspection_blob(&mut bytes, &url) {
+                return -(error as i32);
+            }
+            bytes.extend_from_slice(&size.to_le_bytes());
+        }
+        *INSPECTION_URLS.lock() = bytes;
+    }
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    read_inspection_chunk(&INSPECTION_URLS, offset, out)
 }
 
 /// Copy up to `buf_len` bytes of the overlay tree export (RXPT metadata buffer,
@@ -2397,6 +2603,10 @@ pub extern "C" fn kernel_rootfs_export_container_read(
     let mut host = WasmHostIO;
     match crate::rootfs::export_container_read(offset, buf, &mut |req, b| match req {
         crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+            host.discard_deferred(&uri);
+            Ok(0)
+        }
         crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
     }) {
         Ok(read) => read as i32,

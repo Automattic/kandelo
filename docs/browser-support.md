@@ -94,6 +94,15 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `null` from the worker and surfaces as `ENOENT`, not as empty bytes or an
   empty listing. `/proc` is kernel-virtual and is not visible through these
   worker inspection reads; the process list comes from `enumProcs`.
+  Files, directory snapshots and path metadata come from native inspection
+  exports, using the same component-wise namespace walker as guest syscalls.
+  This follows links across rootfs, tmpfs and Node foreign mounts. Directory
+  entries retain their own symlink type/target and current uid/gid; `stat`
+  follows the final link. Inspection uses root credentials from the immutable
+  reserved init record without creating a process or borrowing guest file
+  descriptors. Directory metadata larger than a scratch lease is streamed
+  inside one serialized kernel entry. Procfs/devfs directory streams remain
+  unsupported (`EOPNOTSUPP`), and their contents are not exposed by this UI.
   A quiescent machine can return durable root-image bytes through
   `BrowserKernel.exportRootfsImage()`. The worker rejects export while a guest
   process or teardown is live, serializes it against the same staging and lazy

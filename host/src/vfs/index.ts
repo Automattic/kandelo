@@ -4,9 +4,7 @@
 // verbs and their types) is deleted; nothing outside this file imported those
 // names through the barrel when they were removed.
 export {
-  listPreparedPlatformDirectory,
   readPreparedPlatformFile,
-  statPreparedPlatformPath,
   VirtualPlatformIO,
 } from "./vfs";
 export type { HostFileOffset } from "../types";

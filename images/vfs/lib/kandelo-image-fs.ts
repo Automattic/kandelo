@@ -1315,6 +1315,16 @@ export class KandeloImageFs {
     return fs.getImageMetadata();
   }
 
+  /** Read standalone transport sizes using the authoritative Rust loader.
+   * Its Wasm memory is ordinary ArrayBuffer memory; this never allocates SABs.
+   */
+  static readImageLazyFileSources(image: Uint8Array): Array<{ url: string; size: number }> {
+    const fs = KandeloImageFs.create();
+    fs.loadImage(image);
+    return fs.lazyEntries().files.filter((entry) => entry.archiveId === 0)
+      .map((entry) => ({ url: entry.uri, size: entry.size }));
+  }
+
   /**
    * The growth ceiling an image declares, without keeping the image.
    *
