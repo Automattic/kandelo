@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -10,6 +10,10 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const probeBinary = join(
   repoRoot,
   "local-binaries/programs/wasm32/secure-exec-probe.wasm",
+);
+const goCgoProbeBinary = join(
+  repoRoot,
+  ".context/go-cgo-secure-exec-instrumented.wasm",
 );
 const hasProbe = true;
 const SECURE_STDOUT_SENTINEL = "secure-stdout-sentinel\n";
@@ -28,14 +32,23 @@ const SECURE_STDERR_SENTINEL = "secure-stderr-sentinel\n";
  * the nosuid DECLARATION travels with the boot (`rootfsNosuid`) rather than as
  * a property of a host mount.
  */
-function probeRootfsImage(): Promise<Uint8Array> {
+function probeRootfsImage(goCgoChild = false): Promise<Uint8Array> {
   const bytes = new Uint8Array(readFileSync(probeBinary!));
+  const goBytes = goCgoChild
+    ? new Uint8Array(readFileSync(goCgoProbeBinary))
+    : undefined;
   const root = KandeloImageFs.create();
-  root.setImageCapacity(Math.max(4 * 1024 * 1024, bytes.byteLength * 3));
+  root.setImageCapacity(Math.max(
+    4 * 1024 * 1024,
+    bytes.byteLength * 3 + (goBytes?.byteLength ?? 0) * 2,
+  ));
   root.mkdir("/bin", 0o755);
   root.mkdir("/dev", 0o755);
   root.createFileWithOwner("/bin/secure-parent", 0o4755, 0, 0, bytes);
   root.createFileWithOwner("/bin/secure-child", 0o755, 0, 0, bytes);
+  if (goBytes) {
+    root.createFileWithOwner("/bin/go-secure-child", 0o755, 0, 0, goBytes);
+  }
   return root.saveImage();
 }
 
@@ -66,6 +79,34 @@ async function launch(
 }
 
 describe.skipIf(!hasProbe)("secure exec startup", () => {
+  it.skipIf(!existsSync(goCgoProbeBinary))(
+    "propagates and resets secure startup for a Go/cgo child",
+    async () => {
+      for (const [resetIds, expectedSecure] of [[0, true], [1, false]] as const) {
+        const result = await runCentralizedProgram({
+          programPath: probeBinary,
+          argv: [
+            "secure-exec-probe", "launch", "/bin/secure-parent",
+            "spawn-parent", "1", String(resetIds), "/bin/go-secure-child",
+            "target",
+          ],
+          env: ["KANDELO_UNTRUSTED=visible-only-outside-secure-startup"],
+          uid: 1000,
+          gid: 1000,
+          rootfsImage: await probeRootfsImage(true),
+          rootfsNosuid: false,
+          execPrograms: new Map([["/bin/go-secure-child", goCgoProbeBinary]]),
+          timeout: 20_000,
+        });
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect(result.stdout).toContain(
+          `GO CGO SECURE EXEC PASS secure=${expectedSecure}`,
+        );
+        expect(result.stderr).toBe("");
+        expect(result.hostDiagnostics).toEqual([]);
+      }
+    },
+  );
   it("keeps constructor dispatch out of the linker-synthesized entry prefix", () => {
     const disassembly = execFileSync(
       "wasm-objdump",

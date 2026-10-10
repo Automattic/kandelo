@@ -215,10 +215,22 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
     stdout: ["CGO CALLBACK PASS"],
   });
   probes.push({
+    name: "Concurrent C pthread callbacks survive Go/C allocation churn",
+    file: "../cgo-callback-probe-instrumented.wasm",
+    argv: ["go-cgo-pthread-callback", "stress"],
+    stdout: ["CGO CALLBACK STRESS PASS"],
+  });
+  probes.push({
     name: "C constructors run in priority order before Go main",
     file: "../go-constructors-instrumented.wasm",
     argv: ["go-cgo-constructors"],
     stdout: ["CGO CONSTRUCTORS PASS"],
+  });
+  probes.push({
+    name: "C exit dispatches registered handlers from Go/cgo",
+    file: "../go-constructors-instrumented.wasm",
+    argv: ["go-cgo-constructors", "c-exit"],
+    stdout: ["CGO C EXIT HANDLER PASS"],
   });
 }
 

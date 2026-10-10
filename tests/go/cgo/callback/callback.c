@@ -69,3 +69,40 @@ int call_go_deep_on_pthread(void) {
     }
     return result;
 }
+
+struct stress_argument {
+    int input;
+    int result;
+};
+
+static void *stress_thread_main(void *argument) {
+    struct stress_argument *entry = argument;
+    void *allocation = malloc(65536);
+    if (allocation == NULL) {
+        entry->result = -1;
+        return NULL;
+    }
+    entry->result = go_double(entry->input);
+    free(allocation);
+    return NULL;
+}
+
+int call_go_on_pthreads(void) {
+    pthread_t threads[3];
+    struct stress_argument entries[3];
+    int started = 0;
+    for (int index = 0; index < 3; ++index) {
+        entries[index].input = 17 + index;
+        entries[index].result = -1;
+        if (pthread_create(&threads[index], NULL, stress_thread_main, &entries[index]) != 0) {
+            break;
+        }
+        ++started;
+    }
+    int result = 0;
+    for (int index = 0; index < started; ++index) {
+        if (pthread_join(threads[index], NULL) != 0) result = -1;
+        result += entries[index].result;
+    }
+    return started == 3 ? result : -1;
+}

@@ -2029,6 +2029,95 @@ measured WordPress performance comparison and the broader Go/C runtime
 semantics (explicit init/fini arrays, secure-exec, automatic C shutdown,
 general callback/thread stress and wider conformance) remain open.
 
+**2026-10-10 — Go/cgo secure-startup gate.** A new Go/cgo child is launched
+through a real set-ID VFS exec and a subsequent `posix_spawn`, both preserving
+and resetting effective IDs. On Node and Chromium it observes the exact
+kernel-owned secure marker through musl `issetugid`, `getauxval(AT_SECURE)`,
+and `secure_getenv`; each result agrees with the expected image state, with
+empty stderr and host diagnostics. This closes the focused Go-led secure-exec
+startup gate, not a broad Go environment-security audit. The remaining order
+is explicit `.init_array`/`.fini_array` layout and C shutdown expectations;
+then general foreign-thread/callback and shared-memory reclaim/limit stress;
+then broader Go, libc, and POSIX conformance and a measured WordPress
+performance comparison. The FrankenPHP demo integration gates above remain
+complete. The draft PR remains the single review target.
+
+**2026-10-10 — metadata-only C init arrays and C-owned shutdown.** Fork
+`b2ffde7ef08137e962f954b17b74603badf67d28` accepts the zero-filled
+`.init_array.150` segments LLVM emits only when matching `INIT_FUNCS`
+metadata supplies the callable constructor. It still rejects nonzero,
+relocated, exported, or referenced array data. The constructor fixture now
+checks priority-150 dispatch before the existing priority-200/300 functions
+on Node and Chromium. A separate mode enters C `exit(0)` and verifies the
+registered destructor runs on both hosts with empty stderr/diagnostics. Go
+main return is not claimed to dispatch C exit handlers; LLVM itself rejects
+`.fini_array` sections at compile time. `cmd/link/internal/ld`,
+`cmd/link/internal/loadwasm`, and `cmd/cgo` tests pass. `go-hello` revision 7
+and `frankenphp-classic` revision 10 pin the new fork commit; the source-only
+package rebuild and WordPress regression are the next distribution gate.
+
+**2026-10-10 — bounded concurrent foreign-thread stress.** The C-created
+pthread callback fixture now runs three simultaneous callbacks for eight
+rounds, freeing C allocations and forcing Go allocation/GC between rounds.
+The stamped program passes Node and Chromium process gates with empty stderr
+and host diagnostics. This exercises contention and a repeated reclaim path,
+but not the configured thread-slot ceiling, long-running PHP worker churn,
+or broad allocator/POSIX conformance. The Go fork itself is unchanged by this
+fixture; package distribution still requires the resolver-owned WordPress
+image from the new fork pin.
+
+**2026-10-10 — pinned fork package regression.** The source-only resolver
+built `go-hello` revision 7 and WordPress revision 21 with
+`frankenphp-classic` revision 10 from fork `b2ffde7`; `xtask bootstrap
+wordpress` republished the new image. Three focused Chromium cases then
+passed in one run against that image: product-profile homepage/admin login,
+gallery Launch/admin login, and the Node-host counterpart admin login. This
+also verifies that metadata-only initializer support does not regress the
+FrankenPHP WordPress route. Go package VFS launch, ABI snapshot, wider
+conformance, performance comparison, and restarting the live demo on the new
+projection remain as final handoff checks.
+
+**2026-10-10 — resolver and live-demo handoff.** The source-only projection
+now contains revision-7 `go-hello` and the new WordPress image. The resolved
+Go package launches from a VFS child in Node and Chromium; Node reports zero
+forks, and both hosts have empty stderr/diagnostics. ABI snapshot and pure-Go
+`kandelo`/`js`/`wasip1` standard-library builds pass. The Node WordPress
+demo restarted without an image override on the new projection and serves
+homepage and login HTTP 200. The browser Vite app serves the new source-only
+image and its WordPress/FrankenPHP profile loads in a manual Chromium session.
+The broader Go browser suite is running; no application performance comparison
+or complete Go/POSIX conformance claim is made.
+
+**2026-10-10 — full focused Go browser suite and exploratory WordPress timing.**
+All 27 Chromium Go-port cases pass, including process, network, stdlib,
+PHP-embed, cgo callbacks, constructor order, C-owned exit, and the new
+concurrent callback stress case. The `go-hello` revision-7 VFS launch also
+passes Node and Chromium, with zero Node forks. A focused libc-test run passes
+`pthread_mutex`, `pthread_cond`, and `pthread_tsd` (3/3); `tls_align` was
+excluded because its companion `.mk` DSO is skipped by the runner and an
+explicit invocation cannot link its helper. This is not a full libc-test run.
+
+For a bounded browser-only application comparison, Chromium booted each
+profile from the same source-only `wordpress.vfs.zst`, then fetched 15 dynamic
+homepage URLs per profile (three warmups, 12 measured, full response body),
+twice in alternating order. The two nginx/PHP-FPM sample medians were 713 and
+721 ms; FrankenPHP classic's were 744 and 737 ms. The raw 48 samples are in
+`.context/wordpress-stack-bench.log`, and the local bench script is in
+`.context/wordpress-stack-bench.mjs`. This single-machine, sequential,
+browser-proxy measurement shows no demonstrated FrankenPHP latency advantage;
+it is not a throughput, cold-start, Node-host, or statistically powered
+comparison. No general performance claim follows from it.
+
+Remaining before **complete Go/C support** can be claimed: distinguish and
+implement real initializer/finalizer array data if a source needs it (LLVM
+currently rejects `.fini_array`); decide and test C exit-handler policy when
+Go main returns; exercise thread-slot ceiling, extended PHP worker churn,
+allocation limits, and callback races; run broader Go stdlib, libc-test,
+Sortix/POSIX and cross-browser conformance. The FrankenPHP demo itself is
+integrated and running; these remaining items are platform-wide rather than
+demo-specific. The unrelated full-tree `./run.sh browser` failures in
+`librsvg` and `rsvg-convert` remain a separate build issue.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
