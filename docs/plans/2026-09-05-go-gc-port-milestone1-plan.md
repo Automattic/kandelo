@@ -1729,12 +1729,34 @@ behavior has not been exercised in a Go-led process. The C-created pthread
 fixture still traps in `runtime.canpanic` with no Go `g`/stack/channel,
 exiting 139 on Node; libc initialization did not attach that thread.
 
+**2026-10-09 — Wasm C constructor metadata executes before Go main.**
+Published Go fork commit `dbec8a76cecd897e5e09c3b8b5770194138202ef`.
+The linker now parses standard Wasm `INIT_FUNCS` metadata, orders functions
+by priority, emits one C-ABI function-pointer table, and runs it after
+musl initialization. It provides the static `__dso_handle` required by C
+destructor registration. A cgo-disabled mixed C/Go link with constructor
+metadata now fails explicitly rather than silently skipping it. The
+tracked cgo fixture checks two priority levels and a registered C
+destructor that it dispatches explicitly. Its raw Wasm validates, fork-
+instruments, receives the ABI stamp, and exits 0 on Node with
+`CGO CONSTRUCTORS PASS`, empty stderr, and no host diagnostics. The focused
+Chromium case and all 22 opt-in Chromium Go-port process cases pass.
+The standard cgo and Go-owned callback probes were rebuilt under this
+linker and pass on Node. Focused Go cgo/linker tests pass.
+
+This does **not** prove automatic C exit-handler execution when Go exits;
+Go's normal exit bypasses musl `exit`, as it does on native Go systems.
+Explicit `.init_array`/`.fini_array` segments remain rejected, and secure
+startup in a Go-led process is still untested. C-created pthreads still
+cannot call Go; PHP ZTS and FrankenPHP remain unbuilt. The go-hello package
+pin and Kandelo ABI version are unchanged.
+
 Remaining work, in dependency order:
 
-1. Finish Go/C runtime semantics: initialize and execute nonempty C
-   constructors/destructors, validate secure-exec behavior, and review
-   callback safety and the mixed-width `cmd/cgo` frontend beyond the
-   passing scalar/pointer/environment cases.
+1. Finish Go/C runtime semantics: handle explicit `.init_array` and
+   `.fini_array` segments where needed, validate secure-exec behavior,
+   define C shutdown expectations, and review callback safety and the
+   mixed-width `cmd/cgo` frontend beyond the passing probes.
 2. Attach C-created pthreads to a Go M/P with both C and Go per-thread
    channel state. Pass
    pthread callback probes on Node and Chromium with no host
