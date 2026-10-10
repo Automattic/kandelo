@@ -20322,6 +20322,7 @@ mod tests {
 
     #[test]
     fn inspection_lists_virtual_names_without_opening_devices_or_init_fds() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
         let mut table = crate::process_table::ProcessTable::new();
         table.ensure_init();
         let inspector = table.get(crate::process_table::SYNTHETIC_INIT_PID).unwrap();
