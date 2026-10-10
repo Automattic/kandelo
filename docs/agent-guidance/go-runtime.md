@@ -97,6 +97,11 @@ APIs apply to Kandelo.
   zero owners. `Chown`, `Fchown`, and `Lchown` route through Kandelo's
   existing ownership syscalls, including no-follow behavior for symlinks.
   The selected upstream `os` chmod/chown tests cover these paths.
+- Compare Go's `syscall_kandelo.go` `O_*` values with Kandelo's
+  `crates/shared/src/lib.rs` and the wasm32posix musl headers, not WASI
+  constants. Wrong `O_DIRECTORY`/`O_NOFOLLOW` values let `Root.MkdirAll`
+  open a regular file as an intermediate directory and report the wrong
+  error path; the upstream `TestMkdirAll/InRoot` case catches this.
 
 Treat changes to memory declarations, Wasm imports/exports, channel layout,
 or syscall semantics as ABI reviews. Follow `docs/agent-guidance/abi.md`:

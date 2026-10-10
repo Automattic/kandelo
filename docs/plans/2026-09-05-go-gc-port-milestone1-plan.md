@@ -2179,6 +2179,52 @@ including the selected upstream `os` and `syscall` cases. This supersedes the
 Vite app at `http://127.0.0.1:5401/`. Neither the exploratory timing nor
 these correctness gates show a FrankenPHP performance advantage.
 
+**2026-10-10 — Go open-flag ABI and wider upstream `os` coverage.** A wider
+upstream `os` run revealed `TestMkdirAll/InRoot` returned the wrong error
+path: the fork's `O_DIRECTORY` and `O_NOFOLLOW` values did not match Kandelo's
+kernel flags, so a regular file could be opened as an intermediate directory.
+Fork commit `e2cb38f430915ba703332d91eb9950643c89a84e` aligns those
+flags and `O_SYNC` with the Kandelo/musl constants. The selected `os` set now
+includes 30 upstream top-level tests, including root-relative `MkdirAll`,
+recursive removal, symlink/rename, file read/write, temporary paths,
+directory seek/rewind, and root-relative open/symlink containment. All 30
+pass on Node; two AF_UNIX-dependent subcases skip because that socket family
+is unsupported. The combined probe passes on Chromium, Firefox, and WebKit
+(3/3). The VFS supplies the upstream test files/directories these tests
+normally find in Go's source checkout; the
+initial missing-fixture failures were not platform failures. This does not
+establish full upstream `os` conformance. Package revision 9 of `go-hello`
+and revision 12 of `frankenphp-classic` pin the new fork commit; their
+source-only bootstrap and WordPress image validation are pending below.
+
+**2026-10-10 — refreshed fork/package/demo validation.** The dev-shell Go
+fork rebuild succeeds. Pure-Go `kandelo`, `js`, and `wasip1` standard-library
+builds and focused `cmd/cgo`, `cmd/link/internal/ld`, and
+`cmd/link/internal/loadwasm` host tests pass. The full focused Go browser
+matrix passes 99/99 (33 per engine) with the corrected open flags and 30
+selected upstream `os` tests in its filesystem probe. Source-only bootstrap
+of `go-hello` revision 9 and WordPress revision 21 succeeds; the latter
+includes `frankenphp-classic` revision 12. The resolved Go package VFS
+launch passes Node with zero forks and passes Chromium, Firefox, and WebKit
+(3/3). Direct FrankenPHP PHP/static HTTP passes Node and all three browsers
+(3/3). The WordPress/FrankenPHP direct kernel-host request, preinstalled
+homepage/admin profile, and Node-host admin counterpart pass 3/3 Chromium
+on the current source-only image. A first UI run failed before boot on a
+Vite `react-dom` optimizer export mismatch while another Vite server was
+active; stopping the concurrent server, forcing source-only dependency
+optimization, and rerunning the same 3 cases passed. This was not evidence
+of a Go/FrankenPHP process failure.
+
+The live Node homepage and login return HTTP 200 at
+`http://localhost:3000/`, and the refreshed source-only browser app at
+`http://127.0.0.1:5401/` reaches the `wordpress-frankenphp` profile with
+status Running and the WordPress homepage. The exact image URL is stored in
+`.context/frankenphp-live-url.log`; its asset digest is
+`a11cb3b5f83f3314fa6da2e9414f6bfd625d5920dbf4e7bf4995dc779d6a3daa`.
+The current screenshot is `.context/frankenphp-browser-demo.png`. These
+correctness results do not turn the exploratory timing into a performance
+advantage or full Go/POSIX conformance claim.
+
 The remaining Go/C platform gates, in recommended order, are:
 
 1. Run broader Go standard-library/runtime conformance on the Kandelo target.
