@@ -857,8 +857,14 @@ describe("canonical source-rootfs shell", () => {
     }]);
     expect(composed.files.find((file) => file.path === "/usr/local/bin/love")?.uri)
       .toContain("programs/love/love.wasm");
-    expect(fs.exportLazyArchiveEntries()).toContainEqual(expect.objectContaining({
-      url: "love-examples.zip", mountPrefix: "/usr",
+    const loveArchive = composed.archives.find(
+      (archive) => archive.uri === "love-examples.zip",
+    );
+    expect(loveArchive).toBeDefined();
+    expect(composed.files).toContainEqual(expect.objectContaining({
+      path: "/usr/share/love/examples/main.lua",
+      sourcePath: "share/love/examples/main.lua",
+      archiveId: loveArchive!.archiveId,
     }));
 
     expect(resolveDemoInit(demo!, "quake")).toEqual({
