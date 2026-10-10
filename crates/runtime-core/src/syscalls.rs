@@ -8671,6 +8671,9 @@ pub fn sys_mkdir(
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
+    if final_component_is_dot(path) {
+        return Err(Errno::EINVAL);
+    }
     if crate::tmpfs::claims_path(&resolved) {
         check_may_delete(proc, host, &resolved)?;
         return crate::tmpfs::rmdir(&resolved);
@@ -16353,6 +16356,9 @@ pub fn sys_unlinkat(
     use wasm_posix_shared::flags::AT_REMOVEDIR;
 
     let resolved = resolve_at_path(proc, host, dirfd, path, PathResolveOptions::NOFOLLOW)?.path;
+    if flags & AT_REMOVEDIR != 0 && final_component_is_dot(path) {
+        return Err(Errno::EINVAL);
+    }
 
     // `unlinkat` is `unlink` and `rmdir` under one name, differing only in how
     // the target is named, so each branch must reach exactly the filesystems
@@ -16420,6 +16426,12 @@ pub fn sys_unlinkat(
         }
     }
     unlink_host_entry(host, &resolved)
+}
+
+fn final_component_is_dot(path: &[u8]) -> bool {
+    path.rsplit(|byte| *byte == b'/')
+        .find(|component| !component.is_empty())
+        == Some(b".".as_slice())
 }
 
 /// mkdirat -- mkdir relative to directory fd.
@@ -33357,6 +33369,19 @@ mod tests {
         let mut host = MockHostIO::new();
         let result = sys_unlinkat(&mut proc, &mut host, AT_FDCWD, b"/tmp/dir", AT_REMOVEDIR);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_remove_dot_does_not_reach_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for path in [b".".as_slice(), b"./", b"/tmp/.", b"/tmp/.//"] {
+            assert_eq!(sys_rmdir(&mut proc, &mut host, path), Err(Errno::EINVAL));
+            assert_eq!(
+                sys_unlinkat(&mut proc, &mut host, AT_FDCWD, path, AT_REMOVEDIR),
+                Err(Errno::EINVAL)
+            );
+        }
     }
 
     #[test]

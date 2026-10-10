@@ -106,6 +106,12 @@ APIs apply to Kandelo.
   constants. Wrong `O_DIRECTORY`/`O_NOFOLLOW` values let `Root.MkdirAll`
   open a regular file as an intermediate directory and report the wrong
   error path; the upstream `TestMkdirAll/InRoot` case catches this.
+- A wider upstream `os.Root` sweep is a platform probe, not a license to
+  patch around kernel defects in Go. `TestRootRemoveDot` exposed Kandelo's
+  `unlinkat(..., AT_REMOVEDIR)` removal of `.`; SharedFS millisecond time
+  storage and pathname-backed directory OFDs likewise cause separate
+  `Chtimes` and rename-after-open failures. Fix these at their owning
+  syscall/VFS/OFD layers and keep the other upstream failures visible.
 
 Treat changes to memory declarations, Wasm imports/exports, channel layout,
 or syscall semantics as ABI reviews. Follow `docs/agent-guidance/abi.md`:
