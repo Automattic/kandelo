@@ -1482,6 +1482,11 @@ correct TLS template/init export (or migrate Go channel discovery to an
 independent import), then validate main-thread, pthread, fork replay, and
 Node/Chromium behavior. Do not map TLS offsets into Go static memory or
 reuse the immutable channel handoff global as a shortcut.
+Go fork commit `3e2250b11e1dcc561ee8d7c0f717dec84d0d392d` makes this
+boundary explicit: it rejects TLS CODE relocations and TLS data segments
+instead of silently placing thread-local bytes in Go static data. SDK
+`abort.o` and `__wasm_tp.o` tests cover those cases. This does not implement
+TLS or advance the runnable cgo gate.
 
 Remaining work, in dependency order:
 
