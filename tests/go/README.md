@@ -122,10 +122,11 @@ scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32po
 ```
 
 The published package revision still fails at pointer-size recognition.
-The adjacent fork's experimental cgo frontend (commit `2431313`) gets this
-fixture to the linker. Fork commit `acc452f` discovers SDK libc through
-`wasm32posix-cc`, so the normal build command above now reaches the explicit
-per-thread TLS linking error. No cgo binary is emitted.
+The adjacent fork's experimental cgo frontend gets this fixture to the
+linker. The linker discovers SDK libc and now passes the first C TLS and
+data-pointer relocation gates. The normal build currently stops at the
+missing Kandelo `_cgo_sys_thread_start` runtime/cgo function. No cgo binary
+is emitted.
 
 A compile-only pass will not establish working interoperability: run the
 binary in Node and Chromium and add a C-to-Go callback probe before building
@@ -144,7 +145,8 @@ experimental `cmd/cgo` frontend in the adjacent fork parses the
 Wasm debug object far enough for both fixtures to reach the Go linker. The
 adjacent fork's internal linker now reads C function bodies, initialized C
 data, active table elements, and the CODE relocations reached by runtime/cgo.
-The full build stops at musl TLS relocations; neither fixture links or runs.
+The full build stops at Kandelo's missing runtime/cgo thread-start half;
+neither fixture links or runs.
 The `go-hello` package is still pinned to the earlier fork revision that
 fails at pointer-size recognition. Do not use a successful cgo frontend or
 function-body parse as PHP or FrankenPHP support.
@@ -163,6 +165,11 @@ and Chromium. The `weighted` and `cross_weighted` C objects read `offset`
 from a data-only fourth object;
 both its direct table call and its Go assembly call return 13. The checked-in
 Go assembly checks these return values in a Kandelo process on both hosts.
+The `tls_weighted` C object increments an initialized `_Thread_local` value;
+direct tests verify that separate Wasm instances over shared memory retain
+distinct TLS bases, and the Go assembly process checks the same variable.
+The function-pointer object checks a C function pointer initialized in DATA
+and called indirectly from Go through C code.
 Stamp the exact
 fresh output, then run the process and browser cases:
 

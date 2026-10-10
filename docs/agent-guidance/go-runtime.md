@@ -74,12 +74,12 @@ do not validate against a stale or unstamped binary.
 ## Go/Wasm cgo and C linking
 
 FrankenPHP classic mode embeds a PHP ZTS SAPI through cgo. A working
-`cmd/cgo` frontend is only one layer of that port. The current published
-`GOOS=kandelo GOARCH=wasm` fork defaults to `CGO_ENABLED=0`; its first cgo
-probe fails at Wasm pointer-size recognition. An experimental frontend in
-fork commit `2431313` can compile the C-call and callback fixtures, but **neither
-links or runs on Kandelo**. Do not describe it as cgo support or pin it
-for a FrankenPHP package.
+`cmd/cgo` frontend is only one layer of that port. The `go-hello` package
+still pins an earlier pure-Go revision that fails the first cgo probe at
+Wasm pointer-size recognition. The adjacent fork's experimental frontend
+compiles the C-call and callback fixtures, but **neither links or runs on
+Kandelo**. Do not describe it as cgo support or pin it for a FrankenPHP
+package.
 
 Trace the whole link path before changing flags or package recipes:
 
@@ -92,8 +92,8 @@ Trace the whole link path before changing flags or package recipes:
 - `src/cmd/link/internal/ld/lib.go` loads cgo's C objects. Internal mode
   originally rejected their format; the adjacent fork now imports C functions,
   initialized data, active table elements, and the CODE relocations reached
-  by `runtime/cgo`, including narrow `reloc.DATA` address references, but not
-  TLS layout and relocation or Go/C ABI adapters. Fork commit `acc452f`
+  by `runtime/cgo`, including narrow `reloc.DATA` address references and a
+  bounded per-instance C TLS template, but not Go/C ABI adapters. Fork commit `acc452f`
   asks the SDK compiler for its libc archive and resolves C function-pointer
   table relocations needed by the selected members.
   External mode reaches unsupported PC-relative relocations.
@@ -118,12 +118,12 @@ Trace the whole link path before changing flags or package recipes:
 
 Continue linker work from the internal Wasm host-object reader, because the
 Go linker already owns Kandelo's final memory, table, exports, and ABI
-marker. With C data and memory relocations now supported for the narrow
-fixture, resolve the C shim's Go-facing symbols and prove a real Go-to-C
-call in the final module
-before expanding to C archives or PHP. This path is not yet established
-feasible: if it cannot preserve C function types, table slots, static data
-and TLS alongside Go's layout, evaluate a
+marker. The narrow fixture now verifies Go-to-C calls, C static data,
+function-pointer DATA relocation, and per-instance TLS on Node and Chromium.
+The normal `C.abs` build reaches missing Kandelo `runtime/cgo` thread-start
+code; it is not an executable cgo binary. If the internal path cannot
+preserve C function types, table slots, static data and TLS alongside Go's
+layout, evaluate a
 relocatable-Go-object/external-link design explicitly. Never feed a final
 Go module to `wasm-ld` as though it were a relocatable object, implement
 only the object parser and call the link complete, or route calls through a
@@ -141,27 +141,26 @@ through Go assembly on both hosts.
 Fork commit `686572e` records global data symbols even from C objects with
 no function body and retains their static segments. This is required for
 musl archive members that define only data.
-The link-only fixture now makes a narrow Go assembly call to C and executes
-as a Kandelo process on Node and Chromium. It does not exercise `runtime/cgo`
-or the standard Go/C adapters. The full `C.abs` build with fork commit
-`acc452f` discovers SDK libc without a manual archive flag, then stops at
-the explicit per-thread TLS linking boundary. C TLS layout, Go/C adapters,
-and C-created-thread attachment remain. Do not silently omit those sections
-or treat the C shim's `_cgo_topofstack` call as
+The link-only fixture now makes a narrow Go assembly call to C, including
+an initialized `_Thread_local` value, and executes as a Kandelo process on
+Node and Chromium. Direct table tests also prove per-instance TLS isolation
+on shared memory in both engines. It does not exercise `runtime/cgo` or the
+standard Go/C adapters. The normal `C.abs` build discovers SDK libc without
+a manual archive flag and currently stops at missing Kandelo
+`_cgo_sys_thread_start`. Musl/PHP TLS conformance, Go/C adapters, and
+C-created-thread attachment remain. Do not treat the C shim's `_cgo_topofstack` call as
 a direct call to a Go-resumable function. The C-data path is only one link
 layer.
 
-The TLS barrier is semantic, not just another relocation opcode. Musl C
-objects use a mutable per-instance `__tls_base` for `_Thread_local` data;
-the current Go linker exports an immutable `__tls_base` only as the host's
-legacy syscall-channel handoff address. Kandelo's pthread host calls
-`__wasm_init_tls` for native C modules before thread entry. A combined module
-needs distinct C TLS state, a copied template and initialization on every
-thread, and a channel handoff that does not alias C TLS. Validate fork replay
-and both hosts before claiming TLS support.
-Fork commit `3e2250b` rejects TLS relocation and data-segment inputs
-explicitly until that design exists; do not remove those errors just to
-advance the link.
+Musl C objects use a mutable per-instance TLS base for `_Thread_local` data.
+The Go linker now gives C a distinct internal mutable global, reserves a main
+TLS block, copies its template before `_start`, and exports `__wasm_init_tls`
+for the host's pthread bootstrap. The exported immutable `__tls_base` remains
+the Go channel handoff address; do not conflate it with C TLS. Keep the
+template within the host's 64 KiB thread-control page, and reject overflow
+or unsupported TLS initializer relocations explicitly. Validate musl/PHP TLS,
+C-created threads, fork replay, and both hosts before claiming general TLS
+support. The link-only fixture proves only a simple initialized TLS variable.
 
 For a repeatable C function-and-data link proof, run
 `scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends

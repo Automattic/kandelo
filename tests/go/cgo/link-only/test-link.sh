@@ -11,6 +11,8 @@ wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/function
 wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/data.c" -o "$output_dir/data.o"
 wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/cross-data.c" -o "$output_dir/cross-data.o"
 wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/offset.c" -o "$output_dir/offset.o"
+wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/tls.c" -o "$output_dir/tls.o"
+wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/function-pointer.c" -o "$output_dir/function-pointer.o"
 
 if GO111MODULE=off CGO_ENABLED=0 GOOS=kandelo GOARCH=wasm GOTMPDIR="$output_dir" \
     "$go_bin" build -x -work -o "$output_dir/base.wasm" ./tests/go/cgo/link-only \
@@ -37,7 +39,7 @@ if [[ ! -f "$work_dir/b001/_pkg_.a" ]]; then
   cp "$cached_archive" "$work_dir/b001/_pkg_.a"
 fi
 
-"$go_bin" tool pack r "$work_dir/b001/_pkg_.a" "$output_dir/functions.o" "$output_dir/data.o" "$output_dir/cross-data.o" "$output_dir/offset.o"
+"$go_bin" tool pack r "$work_dir/b001/_pkg_.a" "$output_dir/functions.o" "$output_dir/data.o" "$output_dir/cross-data.o" "$output_dir/offset.o" "$output_dir/tls.o" "$output_dir/function-pointer.o"
 GOROOT="$("$go_bin" env GOROOT)" GOOS=kandelo GOARCH=wasm \
   "$go_bin" tool link -linkmode=internal -o "$output_dir/combined.wasm" \
   -importcfg "$work_dir/b001/importcfg.link" "$work_dir/b001/_pkg_.a"
