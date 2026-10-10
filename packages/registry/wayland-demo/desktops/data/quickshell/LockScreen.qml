@@ -68,6 +68,9 @@ Scope {
       Item {
         anchors.fill: parent
         focus: true
+        // Mapping the lock surface precedes Qt assigning active keyboard focus.
+        // Observe that real transition before driving input in acceptance tests.
+        onActiveFocusChanged: if (activeFocus) console.info("LOCK_INPUT_READY")
         Keys.onPressed: event => {
           event.accepted = true
           if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { root.verify(); return }
