@@ -411,7 +411,9 @@ test("Vite dependency scanning does not require the package checker", async () =
   }
 });
 
-test("normal Vite loads optional globs before rejecting requested stale bytes", async ({ page }) => {
+test("legacy-policy Vite loads optional globs before rejecting requested stale bytes", async ({ page }) => {
+  const savedPolicy = process.env.WASM_POSIX_RESOLUTION_POLICY;
+  const savedSourceOnlyRoot = process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
   const namespace = `vite-optional-${randomUUID()}`;
   const entryDirectory = generatedEntryDirectory(namespace);
   const entry = join(entryDirectory, "entry.ts");
@@ -424,6 +426,11 @@ test("normal Vite loads optional globs before rejecting requested stale bytes", 
     mkdirSync(dirname(artifact), { recursive: true });
     writeFileSync(artifact, executableWasmWithAbi(ABI_VERSION - 1));
     writeFileSync(entry, `export default import.meta.glob(${JSON.stringify(specifier)}, { query: "?url", import: "default" });`);
+    // This fixture tests the legacy mirror's deferred ABI rejection. The
+    // SourceOnly policy correctly omits its unowned synthetic file instead;
+    // that authority boundary is exercised by the SourceOnly fixtures below.
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+    delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
     server = await createServer({
       configFile: join(appRoot, "vite.config.ts"), root: appRoot,
       logLevel: "silent", server: { host: "127.0.0.1", port: 0, hmr: false },
@@ -444,6 +451,16 @@ test("normal Vite loads optional globs before rejecting requested stale bytes", 
     await server?.close();
     rmSync(entryDirectory, { recursive: true, force: true });
     rmSync(artifact, { force: true });
+    if (savedPolicy === undefined) {
+      delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+    } else {
+      process.env.WASM_POSIX_RESOLUTION_POLICY = savedPolicy;
+    }
+    if (savedSourceOnlyRoot === undefined) {
+      delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+    } else {
+      process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = savedSourceOnlyRoot;
+    }
   }
 });
 
