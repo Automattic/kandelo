@@ -3,7 +3,7 @@
 These probes run binaries from the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port) through
 Kandelo's real Chromium, Firefox, and WebKit process workers and ABI-48 kernel. Use fork commit
-`6bb9175625d8ea5863b40077866251a1ab67b4c6` or later, built with the dev shell's Go 1.25.8 as `GOROOT_BOOTSTRAP`. By default
+`a0117086e5ac481bc3a65d2c61f6023f19e7c44e` or later, built with the dev shell's Go 1.25.8 as `GOROOT_BOOTSTRAP`. By default
 the fork is checked out beside this repository as `../go-kandelo`.
 
 From the Kandelo repository root:
@@ -50,8 +50,9 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/user-basic/run.ts .cont
 ```
 
 These probes supply real `/etc/passwd` and `/etc/group` VFS files for the
-public API check. They do not establish host account database integration or
-full `os/user` conformance.
+public API check. Pass `stdlib-full` as the runner mode to run all 12
+available pure-Go `os/user` top-level tests, including current user and group
+lookup. This does not establish host account database integration.
 
 The fixture builder also compiles upstream `os` and `syscall` test binaries.
 The 60 selected upstream `os` cases cover stat, positioned reads, open
@@ -72,6 +73,20 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/syscall-stdlib/run.ts .
 
 The same selected cases are included in `go-port.spec.ts` for Chromium,
 Firefox, and WebKit. They are not the full upstream `os` or `syscall` suites.
+The VFS-backed `run-full-vfs.ts` runner supplies Go source/testdata, account
+files, `/bin/pwd`, and a non-root CWD. With `-test.run=^Test`, the available
+upstream `os` suite passes 205 top-level tests in Node; the available
+`syscall` suite passes five top-level tests in Node. The same VFS runner can
+run the upstream `sync` test binary and an `os/exec` short sweep by selecting
+`os/exec` as its optional source package. Browser probes exercise the full
+short `sync` suite: a clean combined Chromium/Firefox/WebKit rerun passes 3/3
+after an earlier WebKit timeout during `TestMutexMisuse` and a successful
+isolated retry. The `os/exec` short Node sweep passes 28 top-level tests,
+skips three due to absent helper programs/short mode, and excludes five
+signal/concurrency tests; two of those excluded tests pass in a separate
+run. A VFS-backed six-test `os/exec` process/lookup probe passes 3/3 across
+Chromium, Firefox, and WebKit with serialized test parallelism. This is not
+full conformance.
 The full Node `TestRoot*` sweep passes all 43 top-level tests, including
 `TestRootChtimes`, `TestRootLinkFrom`, and `TestRootRenameAfterOpen`, with
 documented AF_UNIX subcase skips. Run it with

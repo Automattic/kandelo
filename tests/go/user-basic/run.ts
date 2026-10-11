@@ -9,6 +9,7 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs.ts";
 const programPath = process.argv[2];
 const kernelPath = process.argv[3];
 const stdlibTests = process.argv[4] === "stdlib-tests";
+const stdlibFull = process.argv[4] === "stdlib-full";
 if (!programPath || !kernelPath) {
   throw new Error("usage: node --import tsx run.ts <program.wasm> <kernel.wasm> [stdlib-tests]");
 }
@@ -33,17 +34,19 @@ image.createFileWithOwner("/etc/passwd", 0o644, 0, 0, new TextEncoder().encode(
   "root:x:0:0:Root:/root:/bin/sh\ndaemon:x:1:1:Daemon:/home/daemon:/bin/sh\nrunner:x:1001:200:Runner:/home/runner:/bin/sh\n",
 ));
 image.createFileWithOwner("/etc/group", 0o644, 0, 0, new TextEncoder().encode(
-  "staff:x:200:runner\nworkers:x:201:runner\n",
+  "root:x:0:\nstaff:x:200:runner\nworkers:x:201:runner\n",
 ));
 
 const result = await runCentralizedProgram({
   programPath,
   kernelWasmBytes: kernelBytes,
   rootfsImage: new Uint8Array(await image.saveImage()),
-  argv: stdlibTests
-    ? [programPath, "-test.run=^(TestFindGroupName|TestFindGroupId|TestInvalidUserId|TestLookupUserId|TestLookupUserPopulatesAllFields|TestLookupUser|TestListGroups)$"]
+  argv: stdlibTests || stdlibFull
+    ? [programPath, stdlibFull
+      ? "-test.run=^Test"
+      : "-test.run=^(TestFindGroupName|TestFindGroupId|TestInvalidUserId|TestLookupUserId|TestLookupUserPopulatesAllFields|TestLookupUser|TestListGroups)$", "-test.v"]
     : [programPath],
-  timeout: 30_000,
+  timeout: stdlibFull ? 90_000 : 30_000,
 });
 
 console.log(JSON.stringify({
@@ -53,7 +56,7 @@ console.log(JSON.stringify({
   hostDiagnostics: result.hostDiagnostics,
 }));
 if (result.exitCode !== 0 ||
-    !result.stdout.includes(stdlibTests ? "PASS" : "GO USER PASS") ||
+    !result.stdout.includes(stdlibTests || stdlibFull ? "PASS" : "GO USER PASS") ||
     result.stderr !== "" || result.hostDiagnostics.length !== 0) {
   process.exitCode = 1;
 }

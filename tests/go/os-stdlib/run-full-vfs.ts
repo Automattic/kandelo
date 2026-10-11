@@ -3,14 +3,14 @@ import { resolve } from "node:path";
 import { NodeKernelHost } from "../../../host/src/node-kernel-host.ts";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs.ts";
 
-const [programPath, kernelPath, pwdPath, filter, skipFilter] = process.argv.slice(2);
+const [programPath, kernelPath, pwdPath, filter, skipFilter, sourcePackage = "os"] = process.argv.slice(2);
 if (!programPath || !kernelPath || !pwdPath || !filter) {
   throw new Error("usage: node --import tsx run-full-vfs.ts <os-test.wasm> <kernel.wasm> <pwd.wasm> <test-filter>");
 }
 
 const programBytes = readFileSync(programPath);
 const pwdBytes = readFileSync(pwdPath);
-const goOsRoot = resolve("../go-kandelo/src/os");
+const goSourceRoot = resolve("../go-kandelo/src", sourcePackage);
 const image = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
 for (const directory of [
   "/bin", "/tmp", "/etc", "/usr", "/usr/bin", "/work", "/work/exec",
@@ -21,14 +21,16 @@ for (const directory of [
 }
 image.createFileWithOwner("/bin/os-test.wasm", 0o755, 0, 0, new Uint8Array(programBytes));
 image.createFileWithOwner("/bin/pwd", 0o755, 0, 0, new Uint8Array(pwdBytes));
-for (const name of readdirSync(goOsRoot).filter((name) => name.endsWith(".go"))) {
-  image.createFileWithOwner(`/work/${name}`, 0o644, 0, 0, new Uint8Array(readFileSync(resolve(goOsRoot, name))));
+for (const name of readdirSync(goSourceRoot).filter((name) => name.endsWith(".go"))) {
+  image.createFileWithOwner(`/work/${name}`, 0o644, 0, 0, new Uint8Array(readFileSync(resolve(goSourceRoot, name))));
 }
-for (const name of [
-  "hello", "dirfs/a", "dirfs/b", "dirfs/dir/x",
-  "issue37161/a", "issue37161/b", "issue37161/c",
-]) {
-  image.createFileWithOwner(`/work/testdata/${name}`, 0o644, 0, 0, new Uint8Array(readFileSync(resolve(goOsRoot, "testdata", name))));
+if (sourcePackage === "os") {
+  for (const name of [
+    "hello", "dirfs/a", "dirfs/b", "dirfs/dir/x",
+    "issue37161/a", "issue37161/b", "issue37161/c",
+  ]) {
+    image.createFileWithOwner(`/work/testdata/${name}`, 0o644, 0, 0, new Uint8Array(readFileSync(resolve(goSourceRoot, "testdata", name))));
+  }
 }
 for (const [name, contents] of [
   ["passwd", "root:x:0:0:Root:/root:/bin/sh\n"],
@@ -63,7 +65,7 @@ try {
   }
   const { exit } = await host.spawnFromVfs(
     "/bin/os-test.wasm",
-    ["go-os-test", `-test.run=${filter}`, ...(skipFilter ? [`-test.skip=${skipFilter}`] : []), "-test.v"],
+    [sourcePackage === "os/exec" ? "/bin/os-test.wasm" : "go-os-test", `-test.run=${filter}`, ...(skipFilter ? [`-test.skip=${skipFilter}`] : []), ...(process.env.KANDELO_GO_SHORT === "1" ? ["-test.short"] : []), "-test.v"],
     { cwd: "/work", env: ["PATH=/bin:/usr/bin"] },
   );
   const timeout = Number(process.env.KANDELO_GO_TEST_TIMEOUT_MS ?? 180_000);

@@ -76,13 +76,15 @@ const probes: Probe[] = [
     ],
   },
   {
-    name: "upstream Go os/user pure-Go parser tests",
+    name: "upstream Go os/user full pure-Go suite",
     file: "user-test.wasm",
-    argv: [
-      "go-user-test",
-      "-test.run=^(TestFindGroupName|TestFindGroupId|TestInvalidUserId|TestLookupUserId|TestLookupUserPopulatesAllFields|TestLookupUser|TestListGroups)$",
-    ],
+    argv: ["go-user-test", "-test.run=^Test", "-test.v"],
     stdout: ["PASS"],
+    passedTopLevelTests: 12,
+    dataFiles: [
+      { path: "/etc/passwd", data: Array.from(Buffer.from("root:x:0:0:Root:/root:/bin/sh\ndaemon:x:1:1:Daemon:/home/daemon:/bin/sh\nrunner:x:1001:200:Runner:/home/runner:/bin/sh\n")) },
+      { path: "/etc/group", data: Array.from(Buffer.from("root:x:0:\nstaff:x:200:runner\nworkers:x:201:runner\n")) },
+    ],
   },
   {
     name: "upstream Go os file and directory tests",
@@ -230,6 +232,18 @@ const probes: Probe[] = [
     imageCapacity: 16 * 1024 * 1024,
   },
   {
+    name: "upstream Go os/exec process and lookup tests",
+    file: "os-exec-test.wasm",
+    argv: ["go-os-exec-test", "-test.run=^(TestEcho|TestCatStdin|TestExitCode|TestPipes|TestLookPath|TestNoExistExecutable)$", "-test.short", "-test.parallel=1", "-test.v"],
+    stdout: ["--- PASS: TestEcho", "--- PASS: TestPipes", "--- PASS: TestLookPath", "PASS"],
+    directories: ["/tmp", "/work"],
+    selfExecPath: "/bin/os-exec-test.wasm",
+    launchFromVfs: true,
+    cwd: "/work",
+    env: ["PATH=/bin:/usr/bin"],
+    passedTopLevelTests: 6,
+  },
+  {
     name: "Sortix spawn preflight honors fchdir file actions",
     file: "spawn-fchdir.wasm",
     argv: ["posix_spawn_file_actions_addfchdir"],
@@ -344,10 +358,13 @@ const probes: Probe[] = [
     stdout: ["PASS"],
   },
   {
-    name: "Go sync mutex, waitgroup, and condition tests",
+    name: "upstream Go sync full short suite",
     file: "sync-test.wasm",
-    argv: ["go-sync-test", "-test.run=^(TestMutex|TestWaitGroup|TestCondSignal)$", "-test.short"],
+    argv: ["go-sync-test", `-test.run=${process.env.KANDELO_GO_SYNC_FILTER ?? "^Test"}`, "-test.short", "-test.v"],
     stdout: ["PASS"],
+    directories: ["/tmp"],
+    selfExecPath: "/bin/sync-test.wasm",
+    launchFromVfs: true,
   },
 ];
 
@@ -503,7 +520,7 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
   const vfsImage = Array.from(await image.saveImage());
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
 
-  return page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, argv, env, cwd, vfsImage, launchFromVfs, selfExecPath }) => {
+  return page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, argv, env, cwd, vfsImage, launchFromVfs, selfExecPath, traceOutput }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
     const [programResponse, kernelResponse] = await Promise.all([
       fetch(programUrl),
@@ -525,8 +542,16 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     const hostDiagnostics: unknown[] = [];
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      onStdout: (data: Uint8Array) => { stdout += decoder.decode(data); },
-      onStderr: (data: Uint8Array) => { stderr += decoder.decode(data); },
+      onStdout: (data: Uint8Array) => {
+        const output = decoder.decode(data);
+        stdout += output;
+        if (traceOutput) console.info(`guest stdout: ${output}`);
+      },
+      onStderr: (data: Uint8Array) => {
+        const output = decoder.decode(data);
+        stderr += output;
+        if (traceOutput) console.info(`guest stderr: ${output}`);
+      },
       onHostDiagnostic: (diagnostic: unknown) => { hostDiagnostics.push(diagnostic); },
     });
     try {
@@ -548,6 +573,7 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     vfsImage,
     launchFromVfs: probe.launchFromVfs,
     selfExecPath: probe.selfExecPath,
+    traceOutput: process.env.KANDELO_GO_TRACE_TESTS === "1",
   });
 }
 
@@ -566,6 +592,9 @@ test.describe("native Go port milestones", () => {
       page.on("console", (message) => {
         if (message.type() === "error") {
           runtimeErrors.push(`console: ${message.text()}`);
+        }
+        if (process.env.KANDELO_GO_TRACE_TESTS === "1") {
+          process.stdout.write(`${message.text()}\n`);
         }
       });
 

@@ -2666,6 +2666,51 @@ case remains in the same probe. This tests representative
 mixed-width aggregate forms, not every ABI class or retention of Go-managed
 pointers inside C memory.
 
+The complete available pure-Go `os/user` test set passes 12/12 top-level
+tests on Node and 3/3 in Chromium, Firefox, and WebKit. The VFS supplies
+matching `/etc/passwd` and `/etc/group` files, including the truthful root
+account/group. The earlier seven-test parser-only selection did not exercise
+`Current` or live group IDs; this expanded run does.
+
+The available upstream `sync` test set passes 48/48 top-level tests on Node
+when launched from a VFS executable (empty stderr and diagnostics). A direct
+byte launch produced a single harness-only `TestMutexMisuse` failure because
+`os.Executable` correctly returns `ENOENT` without a VFS identity; the
+VFS-backed rerun gives the test its required self-exec path. The first
+full-short browser attempt timed out in WebKit during `TestMutexMisuse` after
+Chromium and Firefox passed. A WebKit-only traced rerun passed in 31.7
+seconds; then a clean combined Chromium/Firefox/WebKit rerun passed 3/3 in
+1.8 minutes, including the subprocess misuse case. The initial timeout was
+not reproducible in either retry; keep it visible as a flake observation.
+
+A VFS-backed upstream `os/exec` short sweep passes 28 top-level tests on
+Node, including `LookPath`, relative self-exec, pipes, file-descriptor
+inheritance/races, exit status, context cancellation, and error propagation.
+Three tests skip because the VFS intentionally omits an executable `go` or
+`echo` tool, or short mode avoids building a helper. Five signal/concurrency
+tests were excluded from this first sweep. A separate Node run passes
+`TestConcurrentExec` and `TestPathRace` with empty stderr and diagnostics,
+leaving three signal-related cases to assess. The initial six-case
+process/lookup sweep also passes with no stderr or host diagnostics. Do not
+infer complete `os/exec` conformance.
+
+A new source-built `os/exec` test fixture is stamped with the current ABI
+digest and launched from VFS in browsers. Six upstream process/lookup tests
+pass together 3/3 across Chromium, Firefox, and WebKit (52.3, 90, and 56.3
+seconds respectively) with empty stderr, host diagnostics, and page errors.
+The probe serializes its subprocess-heavy tests under the browser memory
+budget; this is not a browser-wide `os/exec` conformance run.
+
+The first signal-focused `os/exec` run exposed a real gap:
+`TestWaitInterrupt` fails its `SIGINT-handled` and `WaitDelay` subcases
+because the child exits from SIGINT instead of running Go's notification
+handler. The run exits 1 with empty host stderr/diagnostics. `TestWaitid`
+and `TestSIGCHLD` did not run at all: the fork does not yet classify
+`GOOS=kandelo` under the `unix` build tag, so upstream
+`exec_posix_test.go` is omitted. Registering Kandelo as Unix in both Go
+build-tag maps is being probed; it may pull in OS implementation files that
+need Kandelo-specific exclusions and genuine signal delivery support.
+
 The remaining Go/C platform gates, in recommended order, are:
 
 1. Harden the Node/macOS native no-follow `linkat` helper for distribution
@@ -2673,17 +2718,19 @@ The remaining Go/C platform gates, in recommended order, are:
    directory paths. The upstream `TestRoot*` sweep passes 43/43 top-level
    cases in Node and as a complete probe in all three browsers with the
    required source-tree fixtures.
-2. Expand Go standard-library and runtime conformance beyond the selected
-   `os`, `syscall`, and runtime probes. Executable VFS identity and upstream
-   `TestExecutable` now pass separately; track genuine browser boundaries
-   such as AF_UNIX separately from implementation failures.
+2. Expand Go standard-library and runtime conformance beyond the complete
+   available `os`, `syscall`, and pure-Go `os/user` suites and selected
+   runtime probes. Close the skipped/excluded `os/exec` cases and broaden its
+   browser coverage; track genuine browser boundaries such as AF_UNIX
+   separately from bugs.
 3. Support real relocated/non-metadata C initializer and finalizer arrays
    if needed by source ports; the current LLVM toolchain rejects
    `.fini_array` before Kandelo's linker sees it.
-4. Extend mixed-width cgo coverage beyond the now-passing pointer-bearing
-   struct and pointer-array return/by-value probe. Raw C address fields are
-   4-byte integers, not Go-managed pointers; PHP still uses explicit C
-   accessors and scalar registration at its interop boundary.
+4. Extend mixed-width cgo coverage beyond the now-passing pointer-bearing,
+   pointer-array, and nested 64-bit integer/float/function-pointer aggregate
+   return/by-value probes. Raw C address fields are 4-byte integers, not
+   Go-managed pointers; PHP still uses explicit C accessors and scalar
+   registration at its interop boundary.
 5. Exercise 1,024 simultaneously live threads, longer PHP worker churn,
    allocator pressure, and concurrent callbacks. The one-slot failure,
    48-live-M/64-slot probe, and 48-live-M/1,024-slot declaration probe cover
