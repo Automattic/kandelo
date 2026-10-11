@@ -235,6 +235,13 @@ timestamps: their clock origins can differ. Calibrate each worker profile
 with a marker visible in both clocks before attributing samples to guest
 phases. Profiling overhead and collection samples are diagnostic evidence;
 fewer constructed objects alone do not prove shorter collection pauses.
+Inspect weak-table entry lifetime as well as allocation volume: unreachable
+pointer registrations can leave private lease graphs for later collection.
+Remove synchronous authority promptly when its lease ends, preserving all
+range and revocation checks. When sampling JavaScript allocations, verify
+whether the profiler retains collected objects in its samples; a default
+live-object profile cannot measure short-lived allocation traffic. Report
+sampled allocation separately from exact byte counts and timed benchmarks.
 Before accepting a full-suite result, verify the actual suite count and
 nonempty metrics; omit `--suite` to select all suites.
 

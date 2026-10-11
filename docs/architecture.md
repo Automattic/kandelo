@@ -290,6 +290,18 @@ Each genuine buffer identity is brand-checked once against captured native
 `ArrayBuffer`/`SharedArrayBuffer` getters. The successful getter—not its
 result—is cached, so repeated shared-memory proofs avoid an exception while
 every proof still observes the live post-growth byte length.
+Captured native memory and byte-length getters are bound once, so each live
+proof avoids constructing an argument array. Export arguments and borrowed
+ranges use private records with null prototypes; inherited numeric setters
+cannot intercept them. Validation messages are assembled only on failure.
+
+Opaque export-pointer tokens remain registered only for their synchronous
+lease. The lease links its existing private pointer records and deletes their
+weak-table registrations when it ends, along with its one-shot invalidator.
+An expired token is rejected before any export call. Prompt deletion matters
+because weak tables otherwise leave dead lease graphs for a later garbage
+collection pass; fewer allocations alone do not guarantee a shorter pause.
+The lifecycle cleanup changes no syscall wire or kernel ABI.
 Async syscall preparation detaches caller data into host-owned arrays; the
 final stage, Rust call, and output snapshot happen in one lease without an
 `await`. Retry, timeout, stopped-process, and signal completion state carries
