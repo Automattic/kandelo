@@ -43,6 +43,12 @@ APIs apply to Kandelo.
   `src/runtime/channel_kandelo.go` captures it into the M before syscalls.
   Channel layout comes from `crates/shared/src/lib.rs`, not a Go-local
   convention. Keep the Go heap above the channel/control region.
+- Test a declared slot count with distinct live locked Ms, not only many
+  sequential starts. The 48-live-M/64-slot probe exposed browser teardown
+  latency after the guest had exited: a per-thread 250 ms settlement was
+  serialized past the kernel-worker's two-second detach deadline. Settle
+  independent thread terminations concurrently, but release each thread's
+  exact exit ownership only after that thread's termination resolves.
 - In cgo builds, the shared Go `__tls_base` handoff word is unsafe when a C
   pthread and a Go M start concurrently. The Go runtime reads the C
   `__channel_base` mutable Wasm global through a typed C getter, so every

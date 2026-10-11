@@ -213,6 +213,15 @@ if (process.env.KANDELO_GO_CGO_LINK_TESTS === "1") {
   });
 }
 
+if (process.env.KANDELO_GO_HIGH_THREAD_TESTS === "1") {
+  probes.push({
+    name: "48 concurrent locked Go threads under a declared 64-slot ceiling",
+    file: "slot-pressure.wasm",
+    argv: ["go-slot-pressure"],
+    stdout: ["48 concurrent locked Go threads: complete"],
+  });
+}
+
 if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
   probes.push({
     name: "PHP ZTS embed initializes, evaluates, and shuts down in Go cgo",

@@ -2425,6 +2425,28 @@ rerun. The two-worker full pass is the current clean matrix, while the
 three-worker timeout remains a concurrency/load signal to investigate
 before claiming stress robustness.
 
+A new opt-in `-kandelothreadslots=64` probe holds 48 distinct locked Go Ms
+concurrently and exits without diagnostics in Node. The first browser run
+exited 0 in every engine but reported that graceful kernel-worker detach
+exceeded its two-second bound: browser teardown had serialized a 250 ms
+settle for each thread. Browser and Node per-process thread retirement now
+starts independent terminations together while releasing each thread's
+exact exit ownership only after its own termination settles. The focused
+48-thread browser probe passes in Chromium, Firefox, and WebKit (3/3), and
+the host's process-generation parity tests and typecheck pass. The combined
+Go+cgo browser matrix including this opt-in probe passes 105/105 across
+Chromium, Firefox, and WebKit with one worker. A two-worker attempt passed
+104/105; WebKit's five-second worker-M exit watchdog fired once under load,
+but five repeat runs of that case interleaved with five high-thread probes
+passed. Host process-wait and pthread-trap regression tests pass 73/73, and
+both WordPress/FrankenPHP Chromium browser gates pass 2/2 after the cleanup
+change. This is a bounded 48-thread result, not a maximum-slot stress claim.
+The whole-tree browser asset check still fails on 13 unavailable imports
+(including `dash`, Erlang, alternate demo images, and MariaDB outputs)
+outside the selected WordPress/FrankenPHP source-only closure. The focused
+product browser tests above resolve and run their declared assets; the broad
+asset check is not green on this checkout.
+
 The remaining Go/C platform gates, in recommended order, are:
 
 1. Close the remaining upstream `os.Root` filesystem failures at their
@@ -2452,8 +2474,9 @@ The remaining Go/C platform gates, in recommended order, are:
    calls; current PHP integration uses explicit C accessors and a scalar
    registration entry at that interop boundary.
 5. Exercise upper configured thread-slot counts, longer PHP worker churn,
-   allocator pressure, and concurrent callbacks; the one-slot failure probe
-   does not establish high-count stability.
+   allocator pressure, and concurrent callbacks. The one-slot failure and
+   48-live-M/64-slot probes cover two boundaries but do not establish the
+   maximum 1,024 slots or long-lived PHP worker stability.
 6. Provision the full built-in program closure and rerun Sortix os-test;
    repeat broad POSIX conformance after further kernel/host changes. The
    current Open POSIX suite passes with its documented XFAIL/SKIP cases.

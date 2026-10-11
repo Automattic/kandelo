@@ -42,6 +42,12 @@ build_probe scheduler exit-worker ./exit-worker
 build_probe scheduler concurrent-clone ./concurrent-clone
 build_probe scheduler locked-thread ./locked-thread
 build_probe scheduler locked-exit ./locked-exit
+(
+  cd "$repo_root/tests/go/scheduler/slot-pressure"
+  GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" build \
+    -ldflags=-kandelothreadslots=64 -o "$output_dir/slot-pressure.wasm" .
+)
+record_built_program_output "$output_dir/slot-pressure.wasm"
 build_probe scheduler sysmon ./sysmon
 build_probe socket-basic socket-basic
 build_probe netpoll-basic netpoll-basic

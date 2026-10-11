@@ -444,10 +444,10 @@ async function terminateThreadWorkers(
   for (const thread of threads) {
     intentionallyTerminated.add(thread.worker as object);
   }
-  for (const t of threads) {
-    await (t.termination ?? terminateTrackedWorker(t.worker));
-    threadExits.release(pid, t.channelOffset);
-  }
+  await Promise.all(threads.map(async (thread) => {
+    await (thread.termination ?? terminateTrackedWorker(thread.worker));
+    threadExits.release(pid, thread.channelOffset);
+  }));
   return quiescence.every(Boolean);
 }
 
@@ -3331,15 +3331,15 @@ async function handleTerminate(msg: TerminateProcessMessage) {
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
   if (threads) {
-    for (const t of threads) {
-      intentionallyTerminated.add(t.worker as object);
-      forkHostImportsByWorker.get(t.worker as object)?.close();
-      await t.worker.terminate().catch(() => {});
+    await Promise.all(threads.map(async (thread) => {
+      intentionallyTerminated.add(thread.worker as object);
+      forkHostImportsByWorker.get(thread.worker as object)?.close();
+      await thread.worker.terminate().catch(() => {});
       try {
-        kernelWorker.notifyThreadExit(pid, t.tid);
-        kernelWorker.removeChannel(pid, t.channelOffset);
+        kernelWorker.notifyThreadExit(pid, thread.tid);
+        kernelWorker.removeChannel(pid, thread.channelOffset);
       } catch {}
-    }
+    }));
     threadWorkers.delete(pid);
   }
 

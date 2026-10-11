@@ -88,6 +88,21 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/slot-limit/run.ts .cont
 The same negative boundary is exercised in Chromium, Firefox, and WebKit.
 It does not prove every configured slot count or long-lived slot reuse.
 
+For an opt-in higher-count probe, the fixture builder also links
+`slot-pressure.wasm` with `-ldflags=-kandelothreadslots=64`. It holds 48
+distinct locked Go Ms live at once, then releases them and checks for a clean
+exit and teardown. Run it in Node and all three browsers with:
+
+```sh
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/scheduler/slot-pressure/run.ts .context/go-browser/slot-pressure.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_HIGH_THREAD_TESTS=1 WASM_POSIX_RESOLUTION_POLICY=source-only-v1 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$(realpath ../../local-binaries/source-only-v1)" npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit --grep "48 concurrent locked Go threads" --workers=1'
+```
+
+The browser probe caught serialized 250 ms per-thread teardown exceeding the
+kernel-worker's two-second graceful-detach deadline; thread terminations now
+settle concurrently. This tests one declared 64-slot shape, not the maximum
+1,024 slots, long-lived PHP churn, or allocator pressure.
+
 ## Resolver package and VFS launch
 
 `go-hello` is a registry program built from this repository's Go sample and
