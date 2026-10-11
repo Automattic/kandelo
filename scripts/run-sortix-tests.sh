@@ -1221,6 +1221,7 @@ if [ ! -d "$OS_TEST" ]; then
     exit 1
 fi
 abi_contract_stamp_prepare || exit 1
+export WASM_POSIX_XTASK_BIN="$KANDELO_ABI_STAMP_XTASK"
 
 PASS=0
 FAIL=0

@@ -2924,6 +2924,30 @@ four-probe rerun passed first; the full Chromium and Firefox/WebKit runs
 then passed without the worker out-of-memory failure. The initial combined
 run was interrupted, not counted as a pass.
 
+The full source-only local build now succeeds for all 184 nodes and all
+eight browser products. Its first run built 43 previously uncached nodes
+but failed `librsvg` and `rsvg-convert` because this worktree had not
+initialized `sdk/rust/libc-upstream`; after checking out the pinned
+submodule, a retry built those last two nodes and finalized the complete
+closure. This was a provisioning failure, not a Go or graphics compiler
+regression. The post-closure Open POSIX Test Suite rerun reports 174 PASS,
+zero FAIL, three documented XFAIL, and two SKIP (179 total). The Sortix
+`--all` run uses a pristine pinned source checkout on a case-sensitive APFS
+volume; the worktree's case-insensitive submodule cannot represent its
+distinct `PRIX16.c` and `PRIx16.c` filenames faithfully.
+
+The first full Sortix `--all` run finished with 5,052 PASS, six FAIL, 23
+documented XFAIL, 50 SKIP, and four TIMEOUT (5,135 total). Every failure
+was a host-side package-checker error, not guest output: parallel resolver
+processes rebuilt the same private `xtask` path and some lost the executable
+while another build replaced it. The timeouts happened under that loaded
+parallel run. The Sortix runner now exports the release `xtask` it already
+prepares to stamp ABI digests as `WASM_POSIX_XTASK_BIN`, so each guest uses
+the same stable checker rather than starting another Cargo build. All six
+failures and all four timeouts pass in isolated focused reruns (7 basic,
+one I/O, two UDP). A second complete `--all` run is in progress; these
+focused passes do not establish that the broad run is green.
+
 Remaining work, in recommended order:
 
 1. Close the Node/macOS HostFS deep-relative-path mismatch without weakening
@@ -2939,9 +2963,9 @@ Remaining work, in recommended order:
 4. Exercise 1,024 simultaneously live Go Ms, long-lived PHP churn, allocator
    pressure, and callback concurrency, not merely the declared 1,024-slot
    memory layout with 48 live Ms.
-5. Rebuild the complete built-in program closure and rerun broad Sortix and
-   POSIX conformance after further platform changes. Keep unsupported browser
-   AF_UNIX behavior separate from fixable implementation defects.
+5. Finish and assess the second broad Sortix conformance rerun after fixing
+   the parallel checker race. Keep unsupported browser AF_UNIX behavior
+   separate from fixable implementation defects.
 6. Repeat the paired throughput comparison across enough independent runs
    and environments to support any superiority claim. The four-round
    fresh-image Node and Chromium results above are mixed; neither the earlier
