@@ -2476,16 +2476,47 @@ The Node overlay keeps exact requested nanoseconds alongside native times,
 and the Wasm stat bridge prefers exact backend values without multiplying a
 large epoch-millisecond floating-point number into imprecise nanoseconds.
 `_PC_TIMESTAMP_RESOLUTION` now reports 1 ns on these backends. Focused host
-and pathconf tests pass 23/23, the host package builds, the ABI snapshot check
-passes, upstream `TestRootChtimes` passes in Node and in Chromium, Firefox,
+and pathconf tests pass 37/37, including an exact-time VFS image round-trip
+and same-millisecond external native-mutation detection. The host package
+builds, the ABI snapshot check passes, and upstream `TestRootChtimes` passes
+in Node and in Chromium, Firefox,
 and WebKit (3/3). The `browser-basic` Go program now also sets fixed,
 non-millisecond atime and mtime through `os.Chtimes` on browser `/tmp` and
 checks both `os.Stat` and `syscall.Stat` round-trip; its rebuilt fixture
 passes in Chromium, Firefox, and WebKit (3/3). The complete Node `TestRoot*`
-sweep now has exactly two
-failing top-level cases: `TestRootLinkFrom` and `TestRootRenameAfterOpen`.
-Neither the three-browser full Root sweep nor the broad conformance rerun has
-been completed for this change yet.
+sweep now has exactly two failing top-level cases: `TestRootLinkFrom` and
+`TestRootRenameAfterOpen`.
+The first broad Open POSIX rerun finished 173 PASS, one FAIL, three XFAIL,
+and two SKIP: the lone failure was a package source-projection error before
+guest launch in `sched_get_priority_min/1-1`, not a scheduling assertion.
+That interface passes 4/4 with one documented SKIP on an isolated rerun; a
+second full rerun is in progress. The three-browser full Root sweep remains
+unrun.
+
+**2026-10-10 — next-gate ownership audit.** `TestRootLinkFrom` reaches
+Node/macOS `fs.linkSync`, which follows final source symlinks despite the
+kernel's no-follow `linkat` resolution; SharedFS already links their inode.
+Do not fake a hard link with a copied symlink or change Go's expectation.
+Node exposes no no-follow `linkat` flag through its ordinary `fs` API, so a
+native capability or an equivalent truthful host implementation is needed.
+`TestRootRenameAfterOpen` reaches `resolve_at_path`, which derives every
+relative lookup from the directory OFD's remembered pathname; a renamed
+directory invalidates that spelling even though the OFD's backend handle
+still names the live object. The fix must preserve that identity across
+processes and rename operations, not create a pathname alias visible to
+unrelated absolute lookups. For `os.Executable`, the process needs a separate
+authoritative VFS executable path: `/proc/self/exe` currently reads mutable
+`argv[0]`. VFS-path launches can provide the selected path, prepared exec
+targets already retain a diagnostic path, fork must inherit the identity,
+and direct byte launches must report no path rather than inventing one.
+An added kernel export or fork-state field requires an ABI review before the
+Go fork reads procfs.
+
+The rebuilt-fixture full Go browser baseline passes 69/69 with one worker:
+23 probes across Chromium, Firefox, and WebKit. It includes both the upstream
+`TestRootChtimes` probe and the fixed-nanosecond `browser-basic` round-trip.
+The cgo/high-thread opt-in probes are not part of these 69 cases; their
+post-timestamp rerun remains outstanding.
 
 The remaining Go/C platform gates, in recommended order, are:
 
