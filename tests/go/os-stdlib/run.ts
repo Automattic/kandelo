@@ -34,6 +34,13 @@ const selectedTests = [
   "TestRootOpen_File", "TestRootOpen_Directory", "TestRootSymlink",
   "TestRootConsistencyMkdirAll", "TestRootConsistencyRename", "TestRootDirFS",
   "TestRootRemoveDot",
+  "TestExpand", "TestConsistentEnviron", "TestUnsetenv", "TestClearenv",
+  "TestLookupEnv", "TestEnvironConsistency", "TestErrIsExist",
+  "TestErrIsNotExist", "TestIsExist", "TestIsPermission", "TestErrPathNUL",
+  "TestPathErrorUnwrap", "TestErrorIsMethods", "TestStatSymlinkLoop",
+  "TestFstat", "TestLstat", "TestRead0", "TestHardLink", "TestLongSymlink",
+  "TestRenameOverwriteDest", "TestRenameFailed", "TestRenameNotExisting",
+  "TestRenameToDirFailed", "TestFTruncate", "TestTruncateNonexistentFile",
 ];
 const requiredMarkers = [
   "--- PASS: TestOpenError", "--- PASS: TestReaddirNValues", "--- PASS: TestChmod",
@@ -45,6 +52,9 @@ const requiredMarkers = [
   "--- PASS: TestRootSymlink", "--- PASS: TestRootConsistencyMkdirAll",
   "--- PASS: TestRootConsistencyRename",
   "--- PASS: TestRootRemoveDot", "--- PASS: TestRootDirFS",
+  "--- PASS: TestExpand", "--- PASS: TestEnvironConsistency",
+  "--- PASS: TestHardLink", "--- PASS: TestFstat", "--- PASS: TestLstat",
+  "--- PASS: TestRenameOverwriteDest", "--- PASS: TestFTruncate",
 ];
 
 const result = await runCentralizedProgram({

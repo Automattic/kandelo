@@ -15,8 +15,10 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && npm ci'
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit'
 ```
 
-The fixture script writes the core Wasm programs for opt-in browser tests
-under `.context/go-browser/`. Set `GO_KANDELO_BIN` to an absolute path to use
+The fixture script builds and stamps core Wasm programs in a fresh staging
+directory, then publishes them under `.context/go-browser/`. Repeating it
+after a kernel ABI-contract change replaces the old fixtures instead of
+attempting to restamp stale Wasm. Set `GO_KANDELO_BIN` to an absolute path to use
 another fork binary. Use
 `KANDELO_PLAYWRIGHT_PORT` inside the last command if another workspace already
 serves the default Playwright port.
@@ -47,11 +49,13 @@ public API check. They do not establish host account database integration or
 full `os/user` conformance.
 
 The fixture builder also compiles upstream `os` and `syscall` test binaries.
-The 35 selected upstream `os` cases cover stat, positioned reads, open
+The 60 selected upstream `os` cases cover stat, positioned reads, open
 errors, directory batching/cleanup/seek, large and negative file seeks,
 chmod, path/fd/symlink chown,
 root-relative `MkdirAll`, recursive removal, symlink/rename, file read/write,
-temporary paths, and root-relative open/symlink/rename/remove-dot/DirFS containment. Two Unix-domain
+temporary paths, environment and error helpers, file metadata and truncation,
+hard links, symlink loops, rename errors and overwrite, and root-relative
+open/symlink/rename/remove-dot/DirFS containment. Two Unix-domain
 socket subcases skip because AF_UNIX is not supported. The selected `syscall`
 cases cover `ReadDirent` and `ParseDirent` across repeated buffers. Run their
 Node VFS cases with:
@@ -63,6 +67,12 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/syscall-stdlib/run.ts .
 
 The same selected cases are included in `go-port.spec.ts` for Chromium,
 Firefox, and WebKit. They are not the full upstream `os` or `syscall` suites.
+The full Node `TestRoot*` sweep still fails `TestRootChtimes`,
+`TestRootLinkFrom`, and `TestRootRenameAfterOpen`. `TestExecutable` also
+fails: the Go fork has no Kandelo implementation, and Kandelo currently
+reports `argv[0]` rather than the executable's VFS path through
+`/proc/self/exe`. That requires a platform-owned executable identity before
+the Go API can use procfs faithfully.
 
 The builder also links `one-slot-second-m.wasm` with
 `-ldflags=-kandelothreadslots=1`. Go can request an additional M before

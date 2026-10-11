@@ -2398,8 +2398,32 @@ runner eagerly resolved unrelated optional builtin programs against an
 incomplete old local package tier. The Open POSIX cases stage only their
 own executable fixtures, so the runner now requests the existing `explicit`
 builtin mode, as the libc conformance runner already does. An individual
-`asctime/1-1` case passes with that mode; the full merged-tree rerun is in
-progress.
+`asctime/1-1` case passes with that mode. The full merged-tree rerun
+completed 179 cases: 174 PASS, three documented XFAIL, two SKIP, zero
+unexpected failures.
+
+The complete upstream `TestRoot*` Node sweep on the merged kernel still has
+exactly three failing top-level cases: `TestRootChtimes`,
+`TestRootLinkFrom`, and `TestRootRenameAfterOpen`. This confirms the
+filesystem gaps below remain open; it does not establish the browser result
+for those unselected cases.
+
+The upstream `os` test binary lists 224 top-level cases. Of 28 additional
+cases tried against the merged Node kernel, 25 passed, two skipped for
+existing Go test prerequisites, and `TestExecutable` failed because the Go
+fork has no Kandelo implementation. Kandelo's `/proc/self/exe` currently
+reads `argv[0]`, which is not a reliable executable VFS path, so the proper
+next step is to make the process/exec identity authoritative and only then
+implement the Go API. The 25 passing cases are now in the selected suite:
+60 top-level `os` cases pass in Node with no stderr or host diagnostics,
+and the expanded selection passes in Chromium, Firefox, and WebKit.
+The full Go+cgo browser matrix with this expanded selection passes 102/102
+(34 probes in each engine) with two Playwright workers. An earlier
+three-worker attempt passed 99/102 but timed out in three unrelated
+socket/clone probes; all nine engine/probe combinations passed on a focused
+rerun. The two-worker full pass is the current clean matrix, while the
+three-worker timeout remains a concurrency/load signal to investigate
+before claiming stress robustness.
 
 The remaining Go/C platform gates, in recommended order, are:
 
@@ -2416,8 +2440,11 @@ The remaining Go/C platform gates, in recommended order, are:
    Rerun the whole `TestRoot*` sweep on Node and all three browsers, staging
    source-tree fixtures rather than treating missing testdata as a pass.
 2. Expand Go standard-library and runtime conformance beyond the selected
-   `os`, `syscall`, and runtime probes. Track genuine browser boundaries such
-   as AF_UNIX separately from implementation failures.
+   `os`, `syscall`, and runtime probes. Give Kandelo an authoritative
+   executable VFS identity before implementing Go `os.Executable`; its
+   upstream case now fails rather than being silently selected out. Track
+   genuine browser boundaries such as AF_UNIX separately from implementation
+   failures.
 3. Support real relocated/non-metadata C initializer and finalizer arrays
    if needed by source ports; the current LLVM toolchain rejects
    `.fini_array` before Kandelo's linker sees it.

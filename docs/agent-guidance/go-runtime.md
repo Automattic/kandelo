@@ -112,6 +112,11 @@ APIs apply to Kandelo.
   storage and pathname-backed directory OFDs likewise cause separate
   `Chtimes` and rename-after-open failures. Fix these at their owning
   syscall/VFS/OFD layers and keep the other upstream failures visible.
+- Do not implement `os.Executable` by trusting Kandelo's current
+  `/proc/self/exe` target: it reports `argv[0]`, which can be a relative
+  display name rather than the actual VFS executable path. First make the
+  process/exec path authoritative in Kandelo, then expose it through procfs
+  and use that in the Go fork. The upstream `TestExecutable` catches this gap.
 - `linkat` without `AT_SYMLINK_FOLLOW` must link the source symlink inode.
   Kernel no-follow resolution alone does not ensure that behavior: Node's
   `fs.linkSync` follows a symlink source on macOS, while browser SharedFS
