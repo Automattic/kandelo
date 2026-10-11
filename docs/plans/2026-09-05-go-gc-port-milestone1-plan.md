@@ -2913,6 +2913,17 @@ Node FrankenPHP teardown still occasionally force-terminates live workers.
 The current source-only image also serves the preinstalled site and login
 at `http://localhost:3000/` through the Kandelo Node host.
 
+The complete opt-in Go browser matrix now passes 129/129 probes across
+Chromium (43/43), Firefox (43/43), and WebKit (43/43) on a dedicated fresh
+Vite server. The first combined run exhausted the Playwright Node worker's
+4 GiB heap after 35 passes because the test sent each VFS image to
+`page.evaluate` as a large JavaScript number array. The browser harness now
+serves exact image bytes through a test-owned route and fetches an
+`ArrayBuffer` inside the page, like its program and kernel bytes. A focused
+four-probe rerun passed first; the full Chromium and Firefox/WebKit runs
+then passed without the worker out-of-memory failure. The initial combined
+run was interrupted, not counted as a pass.
+
 Remaining work, in recommended order:
 
 1. Close the Node/macOS HostFS deep-relative-path mismatch without weakening

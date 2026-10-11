@@ -536,6 +536,7 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
   expect(programDigest).toEqual(kernelDigest);
   const programUrl = new URL("/__kandelo_go_probe__.wasm", baseURL).href;
   const kernelUrl = new URL("/__kandelo_go_kernel__.wasm", baseURL).href;
+  const imageUrl = new URL("/__kandelo_go_probe__.vfs", baseURL).href;
   const browserKernelUrl = new URL(`/@fs/${browserKernelModulePath}`, baseURL).href;
   await page.route(programUrl, (route) => route.fulfill({
     status: 200,
@@ -568,21 +569,28 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
   for (const file of (typeof probe.dataFiles === "function" ? probe.dataFiles() : probe.dataFiles) ?? []) {
     image.createFileWithOwner(file.path, 0o644, 0, 0, new Uint8Array(file.data));
   }
-  const vfsImage = Array.from(await image.saveImage());
+  const vfsImage = await image.saveImage();
+  await page.route(imageUrl, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/octet-stream",
+    body: Buffer.from(vfsImage),
+  }));
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
 
-  return page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, argv, env, cwd, vfsImage, launchFromVfs, selfExecPath, traceOutput }) => {
+  return page.evaluate(async ({ programUrl, kernelUrl, imageUrl, browserKernelUrl, argv, env, cwd, launchFromVfs, selfExecPath, traceOutput }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
-    const [programResponse, kernelResponse] = await Promise.all([
+    const [programResponse, kernelResponse, imageResponse] = await Promise.all([
       fetch(programUrl),
       fetch(kernelUrl),
+      fetch(imageUrl),
     ]);
-    if (!programResponse.ok || !kernelResponse.ok) {
-      throw new Error(`Go fixture fetch failed: program=${programResponse.status}, kernel=${kernelResponse.status}`);
+    if (!programResponse.ok || !kernelResponse.ok || !imageResponse.ok) {
+      throw new Error(`Go fixture fetch failed: program=${programResponse.status}, kernel=${kernelResponse.status}, image=${imageResponse.status}`);
     }
-    const [programBytes, kernelWasm] = await Promise.all([
+    const [programBytes, kernelWasm, vfsImage] = await Promise.all([
       programResponse.arrayBuffer(),
       kernelResponse.arrayBuffer(),
+      imageResponse.arrayBuffer(),
     ]);
     if (!WebAssembly.validate(programBytes) || !WebAssembly.validate(kernelWasm)) {
       throw new Error("Go program or kernel is not valid WebAssembly");
@@ -617,11 +625,11 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
   }, {
     programUrl,
     kernelUrl,
+    imageUrl,
     browserKernelUrl,
     argv: probe.argv,
     env: probe.env,
     cwd: probe.cwd,
-    vfsImage,
     launchFromVfs: probe.launchFromVfs,
     selfExecPath: probe.selfExecPath,
     traceOutput: process.env.KANDELO_GO_TRACE_TESTS === "1",
