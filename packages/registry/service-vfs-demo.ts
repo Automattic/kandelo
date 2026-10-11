@@ -35,6 +35,7 @@ export interface BootDinitServiceOptions extends Pick<NodeKernelHostOptions, "on
 
 export interface BootedDinitService {
   host: NodeKernelHost;
+  pid: number;
   exitPromise: Promise<number>;
 }
 
@@ -73,12 +74,12 @@ export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Pro
   // WHY: dinit belongs to the imported image. Resolve it through the
   // worker-owned VFS so the Node demo exercises the same executable lookup
   // path as every service dinit starts, without a second host-side byte copy.
-  const { exit: exitPromise } = await host.spawnFromVfs("/sbin/dinit", argv, {
+  const { pid, exit: exitPromise } = await host.spawnFromVfs("/sbin/dinit", argv, {
     env: options.env ?? SERVICE_DEMO_ENV,
     cwd: options.cwd ?? "/",
   });
 
-  return { host, exitPromise };
+  return { host, pid, exitPromise };
 }
 
 export function resolveServiceVfsImage(image: ServiceVfsImageRef): string {

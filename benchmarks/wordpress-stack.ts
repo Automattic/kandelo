@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { cpus, platform, arch } from "node:os";
 import { dirname, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { chromium, type Page } from "playwright";
 import { machineUrl } from "../apps/browser-demos/test/support/kandelo-machine.ts";
@@ -116,7 +117,7 @@ async function measureNode(profile: Profile, round: number, options: Options, im
   const smtpPort = port + 1;
   const start = performance.now();
   const diagnostics: unknown[] = [];
-  const { host, exitPromise } = await bootDinitServiceVfs({
+  const { host, pid, exitPromise } = await bootDinitServiceVfs({
     image,
     imagePath,
     target,
@@ -175,7 +176,12 @@ async function measureNode(profile: Profile, round: number, options: Options, im
       throughputDurationMs: performance.now() - throughputStarted,
     };
   } finally {
-    await host.destroy();
+    try {
+      await host.signalProcess(pid, 15);
+      await Promise.race([exitPromise.catch(() => -1), delay(5_000, -1, { ref: false })]);
+    } finally {
+      await host.destroy();
+    }
     if (diagnostics.length > 0) throw new Error(`Node host diagnostics: ${JSON.stringify(diagnostics)}`);
   }
 }

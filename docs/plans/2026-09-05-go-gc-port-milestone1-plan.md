@@ -3064,3 +3064,14 @@ throughput advantage, not an overall WordPress performance advantage;
 FrankenPHP is slower on the Node host and has higher request latency on
 both. The Node host still sometimes reports forced worker termination
 while destroying the live FrankenPHP service after measurements.
+
+The paired benchmark now receives dinit's process ID from the shared
+service-VFS boot helper, sends it SIGTERM after measurements, waits up to
+five seconds for its exit, and only then destroys the Node host. A fresh
+four-round Node-only run on the same image logs each service's stopped
+state and no force-termination warning. Its raw report is
+`.context/wordpress-stack-graceful-node.json`: median request latency is
+664 versus 798 ms and median throughput 2.16 versus 1.87 requests/s,
+listing nginx/PHP-FPM before FrankenPHP. This closes the benchmark's
+live-service teardown issue, not generic host destroy semantics or an
+overall FrankenPHP speed claim.
