@@ -114,10 +114,14 @@ APIs apply to Kandelo.
   error path; the upstream `TestMkdirAll/InRoot` case catches this.
 - A wider upstream `os.Root` sweep is a platform probe, not a license to
   patch around kernel defects in Go. `TestRootRemoveDot` exposed Kandelo's
-  `unlinkat(..., AT_REMOVEDIR)` removal of `.`; SharedFS millisecond time
-  storage and pathname-backed directory OFDs likewise cause separate
-  `Chtimes` and rename-after-open failures. Fix these at their owning
-  syscall/VFS/OFD layers and keep the other upstream failures visible.
+  `unlinkat(..., AT_REMOVEDIR)` removal of `.`; exact `Chtimes` required
+  SharedFS inode metadata, Node scratch-mount metadata, and the Wasm stat
+  bridge together. Node `/tmp` is host-backed while browser `/tmp` is
+  SharedFS-backed, so rerun both hosts. Browser `time.Now` has millisecond
+  granularity and can pass `TestRootChtimes` without exercising sub-millisecond
+  storage; use a fixed-nanosecond `os.Chtimes`/`syscall.Stat` probe too.
+  Pathname-backed directory OFDs still fail rename-after-open. Fix remaining
+  gaps at their owning syscall/VFS/OFD layers, not in the Go test harness.
 - Do not implement `os.Executable` by trusting Kandelo's current
   `/proc/self/exe` target: it reports `argv[0]`, which can be a relative
   display name rather than the actual VFS executable path. First make the
