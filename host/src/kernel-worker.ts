@@ -14492,7 +14492,8 @@ export class CentralizedKernelWorker {
     const tid = this.guestTidForChannel(channel);
     // Copy the fixed signal record to host-owned bytes before releasing the
     // region. Completion can synchronously wake another channel and reuse it.
-    const snapshot = this.#requireMainScratchRegion().withLease((lease) => {
+    let signalBytes: Uint8Array | undefined;
+    const sigResult = this.#requireMainScratchRegion().withLease((lease) => {
       const sigResult = this.#invokeEntryScratchExport(
         entry,
         lease,
@@ -14507,17 +14508,17 @@ export class CentralizedKernelWorker {
           KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
         ],
       );
-      return {
-        sigResult,
-        bytes: sigResult > 0
-          ? lease.copyOut(
-            CH_SIG_BASE,
-            KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
-          )
-          : new Uint8Array(0),
-      };
+      // WHY: most syscall completions have no caught signal. Return the
+      // scalar authority marker without allocating an empty buffer or result
+      // object; a delivered signal still needs detached bytes before revocation.
+      if (sigResult > 0) {
+        signalBytes = lease.copyOut(
+          CH_SIG_BASE,
+          KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES,
+        );
+      }
+      return sigResult;
     });
-    const { sigResult } = snapshot;
     if (sigResult < 0) {
       throw new KernelTaskBindingError(
         channel.pid,
@@ -14527,6 +14528,8 @@ export class CentralizedKernelWorker {
       );
     }
     if (sigResult > 0) {
+      // A positive dequeue copied the record while the lease was active.
+      const bytes = signalBytes!;
       if (suppressRestart) {
         // WHY: CH_SIG carries the effective action flags for this one
         // interruption. A socket deadline makes Linux/POSIX restart
@@ -14534,9 +14537,9 @@ export class CentralizedKernelWorker {
         // snapshot before exposing any bytes to the shared guest mailbox.
         const flagsOffset = CH_SIG_FLAGS - CH_SIG_BASE;
         const signalView = new DataView(
-          snapshot.bytes.buffer,
-          snapshot.bytes.byteOffset,
-          snapshot.bytes.byteLength,
+          bytes.buffer,
+          bytes.byteOffset,
+          bytes.byteLength,
         );
         signalView.setUint32(
           flagsOffset,
@@ -14549,7 +14552,7 @@ export class CentralizedKernelWorker {
       // process-channel slot.
       const processMem = new Uint8Array(channel.memory.buffer);
       processMem.set(
-        snapshot.bytes,
+        bytes,
         channel.channelOffset + CH_SIG_BASE,
       );
       return sigResult;
