@@ -341,6 +341,40 @@ carries a PHP warning or fatal error, rather than timing an error page.
 
 Build requirements: `wasm32posix-cc` SDK. The PHP build script automatically builds dependencies (SQLite, zlib, OpenSSL, libxml2). WordPress must be downloaded separately into `packages/registry/wordpress/wordpress/`.
 
+#### wordpress-stack
+
+`benchmarks/wordpress-stack.ts` compares the preinstalled WordPress nginx/PHP-FPM
+and FrankenPHP classic services from the **same** resolver-selected
+`wordpress.vfs.zst`. Unlike the `wordpress` suite above, it measures complete
+dynamic homepage responses through the actual dinit service stacks, once on
+the Node host and once through the Chromium browser demo. It verifies that
+the browser-served image has the same SHA-256 as the Node input before
+recording browser samples. Each profile boots a fresh machine per round;
+profile order alternates. Three requests warm the stack, then 12 unique-query
+responses per round are timed including full response bodies. HTTP errors,
+missing WordPress content, and PHP diagnostics fail the run. The JSON report
+retains every latency, the image digest, startup times, environment, median,
+and p90. Node runs assign distinct HTTP and SMTP ports to prevent one demo
+or round from conflicting with another.
+
+First build and publish the WordPress source-only image. For browser runs,
+serve `apps/browser-demos` with its source-only Vite configuration on port
+5401. Then run the comparison from the repository root:
+
+```bash
+WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
+WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1" \
+scripts/dev-shell.sh bash -c 'node --import tsx benchmarks/wordpress-stack.ts --host=both --rounds=4 --warmups=3 --samples=12'
+```
+
+The default report is `.context/wordpress-stack-benchmark.json`; use
+`--output=...`, `--host=node|browser|both`, `--browser-base-url=...`, or
+`--port=...` to change it. This is a paired, single-machine latency and
+cold-boot comparison, not a throughput, multi-client, or statistically
+powered superiority test. Node and Chromium medians describe different
+request paths and must not be pooled. The existing full benchmark suite is
+still required for broad platform performance claims.
+
 #### mariadb
 
 Runs MariaDB 10.5 with the Aria or InnoDB storage engine. Measures bootstrap (system table creation) and a sequence of SQL operations.

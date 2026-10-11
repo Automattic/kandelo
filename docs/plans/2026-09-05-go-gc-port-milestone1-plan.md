@@ -2447,6 +2447,24 @@ outside the selected WordPress/FrankenPHP source-only closure. The focused
 product browser tests above resolve and run their declared assets; the broad
 asset check is not green on this checkout.
 
+**2026-10-10 — paired WordPress service-stack latency benchmark.** Added
+`benchmarks/wordpress-stack.ts` to boot each preinstalled WordPress profile
+from the same source-only VFS on Node and Chromium. The browser runner checks
+the VFS SHA-256 against the Node input before measurement; Node assigns fresh
+HTTP/SMTP ports per run to avoid collision with the live demo. Four rounds
+alternate profile order, with three warmups and 12 full-body dynamic homepage
+requests per round. The raw 192 measured request latencies, startup timings,
+image digest, and summaries are in `.context/wordpress-stack-benchmark.json`.
+The image digest is
+`2a80eca8f4eb390458cbbf038466bab2d07f0a043ca1de34ea2989d2de7d737d`.
+Each host/profile has 48 valid request samples. Node nginx/FPM median/p90:
+633/706 ms; Node FrankenPHP: 787/811 ms. Chromium nginx/FPM: 705/841 ms;
+Chromium FrankenPHP: 734/767 ms. These single-machine latency samples do
+not demonstrate a FrankenPHP advantage; they do not establish throughput or
+statistical superiority. The Node FrankenPHP teardown occasionally warns
+that its bounded cooperative drain fell back to forced worker termination
+after sampling; no request failed, but teardown load is a measurement caveat.
+
 The remaining Go/C platform gates, in recommended order, are:
 
 1. Close the remaining upstream `os.Root` filesystem failures at their
@@ -2480,9 +2498,10 @@ The remaining Go/C platform gates, in recommended order, are:
 6. Provision the full built-in program closure and rerun Sortix os-test;
    repeat broad POSIX conformance after further kernel/host changes. The
    current Open POSIX suite passes with its documented XFAIL/SKIP cases.
-7. Build a formal application performance suite separate from correctness
-   validation. Exploratory browser timing so far demonstrates no FrankenPHP
-   latency advantage.
+7. Extend the now-runnable paired WordPress latency benchmark to throughput,
+   multi-client load, and statistically powered repeats before making an
+   application-performance superiority claim. The first Node/Chromium
+   comparison demonstrates no FrankenPHP latency advantage.
 
 ---
 
