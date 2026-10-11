@@ -122,11 +122,15 @@ APIs apply to Kandelo.
   storage; use a fixed-nanosecond `os.Chtimes`/`syscall.Stat` probe too.
   Pathname-backed directory OFDs still fail rename-after-open. Fix remaining
   gaps at their owning syscall/VFS/OFD layers, not in the Go test harness.
-- Do not implement `os.Executable` by trusting Kandelo's current
-  `/proc/self/exe` target: it reports `argv[0]`, which can be a relative
-  display name rather than the actual VFS executable path. First make the
-  process/exec path authoritative in Kandelo, then expose it through procfs
-  and use that in the Go fork. The upstream `TestExecutable` catches this gap.
+- `os.Executable` reads Kandelo's kernel-owned `/proc/self/exe` identity,
+  never `argv[0]`. Initial VFS launches publish the canonical selected path;
+  prepared exec/spawn commits replace it, fork inherits it, and direct byte
+  launches return `ENOENT` rather than inventing a path. Test a forged
+  `argv[0]`, post-`chdir` lookup, an actual child exec, and the upstream
+  `TestExecutable` in Node and all three browser engines. An added kernel
+  export changes the ABI snapshot and digest even if `ABI_VERSION` stays
+  compatible: rebuild fixture and package binaries instead of restamping
+  artifacts from the old digest.
 - `linkat` without `AT_SYMLINK_FOLLOW` must link the source symlink inode.
   Kernel no-follow resolution alone does not ensure that behavior: Node's
   `fs.linkSync` follows a symlink source on macOS, while browser SharedFS

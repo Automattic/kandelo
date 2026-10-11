@@ -33,6 +33,7 @@ type Probe = {
   env?: string[];
   dataFiles?: { path: string; data: number[] }[];
   selfExecPath?: string;
+  launchFromVfs?: boolean;
 };
 
 const probes: Probe[] = [
@@ -109,6 +110,15 @@ const probes: Probe[] = [
     stdout: ["--- PASS: TestRootChtimes", "PASS"],
     directories: ["/tmp"],
     imageCapacity: 8 * 1024 * 1024,
+  },
+  {
+    name: "upstream Go os.Executable ignores forged argv",
+    file: "os-test.wasm",
+    argv: ["forged-display-name", "-test.run=^TestExecutable$", "-test.v"],
+    stdout: ["--- PASS: TestExecutable", "PASS"],
+    directories: ["/tmp"],
+    selfExecPath: "/bin/os-test.wasm",
+    launchFromVfs: true,
   },
   {
     name: "second-M bootstrap and per-M syscall channel",
@@ -189,8 +199,17 @@ const probes: Probe[] = [
     name: "Go spawn, wait, and command output through a pipe",
     file: "exec-basic.wasm",
     argv: ["go-exec-basic"],
-    stdout: ["GO EXEC CHILD", "GO EXEC PASS"],
+    stdout: ["GO EXEC CHILD", "GO EXEC PATH PASS", "GO EXEC PASS"],
     selfExecPath: "/bin/go-exec-basic.wasm",
+  },
+  {
+    name: "Go executable identity from a VFS launch",
+    file: "exec-basic.wasm",
+    argv: ["forged-display-name"],
+    env: ["GO_EXPECT_EXE=present"],
+    stdout: ["GO EXEC CHILD", "GO EXEC PATH PASS", "GO EXEC PASS"],
+    selfExecPath: "/bin/go-exec-basic.wasm",
+    launchFromVfs: true,
   },
   {
     name: "process exit from a worker M",
@@ -343,7 +362,7 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
   const vfsImage = Array.from(await image.saveImage());
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
 
-  return page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, argv, env, vfsImage }) => {
+  return page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, argv, env, vfsImage, launchFromVfs, selfExecPath }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
     const [programResponse, kernelResponse] = await Promise.all([
       fetch(programUrl),
@@ -371,7 +390,9 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     });
     try {
       await kernel.initFromImage({ kernelWasm, vfsImage: new Uint8Array(vfsImage) });
-      const exitCode = await kernel.spawn(programBytes, argv, { env });
+      const exitCode = launchFromVfs
+        ? await (await kernel.spawnFromVfs(selfExecPath!, argv, { env })).exit
+        : await kernel.spawn(programBytes, argv, { env });
       return { exitCode, stdout, stderr, hostDiagnostics };
     } finally {
       await kernel.destroy();
@@ -383,6 +404,8 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     argv: probe.argv,
     env: probe.env,
     vfsImage,
+    launchFromVfs: probe.launchFromVfs,
+    selfExecPath: probe.selfExecPath,
   });
 }
 

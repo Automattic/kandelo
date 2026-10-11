@@ -1386,6 +1386,9 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
+    if (msg.programPath !== undefined) {
+      kernelWorker.setExecutablePath(pid, msg.programPath);
+    }
 
     if (msg.pty) {
       const ptyIdx = kernelWorker.setupPty(pid);

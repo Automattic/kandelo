@@ -47,6 +47,7 @@ console.log(JSON.stringify({
 if (
   result.exitCode !== 0 ||
   !result.stdout.includes("GO EXEC CHILD") ||
+  !result.stdout.includes("GO EXEC PATH PASS") ||
   !result.stdout.includes("GO EXEC PASS") ||
   result.stderr !== "" ||
   result.hostDiagnostics.length !== 0 ||

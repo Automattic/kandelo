@@ -1330,6 +1330,9 @@ async function handleSpawn(msg: SpawnMessage) {
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
+    if (msg.programPath !== undefined) {
+      kernelWorker.setExecutablePath(pid, msg.programPath);
+    }
 
     if (msg.maxAddr != null) {
       kernelWorker.setMaxAddr(pid, msg.maxAddr);

@@ -8353,6 +8353,46 @@ export class CentralizedKernelWorker {
     }
   }
 
+  setExecutablePath(pid: number, path: string): void {
+    if (!this.#initialized) throw new Error("Kernel not initialized");
+    const encoded = new TextEncoder().encode(path);
+    if (encoded.byteLength === 0 || encoded.byteLength >= POSIX_PATH_MAX_BYTES) {
+      throw new Error(`setExecutablePath failed for pid ${pid}: invalid path length`);
+    }
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("initial executable path setup");
+    }
+    let result: number | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `initial executable path setup pid=${pid}`,
+      (entry) => {
+        const setPath = this.#kernelInstanceForEntry(entry).exports
+          .kernel_set_executable_path as
+          ((pid: number, ptr: KernelPointer, len: number) => number) | undefined;
+        if (typeof setPath !== "function") {
+          throw new Error("Kernel missing required kernel_set_executable_path export");
+        }
+        result = this.#requireMainScratchRegion().withLease((scratch) => {
+          scratch.copyFrom(encoded);
+          return this.#invokeEntryScratchExport(
+            entry,
+            scratch,
+            "kernel_set_executable_path",
+            [pid, scratch.exportPointer(0, encoded.byteLength), encoded.byteLength],
+          );
+        });
+        return undefined;
+      },
+    );
+    if (deferred || result === undefined) {
+      throw new KernelReentrantEntryError("initial executable path setup");
+    }
+    if (result !== 0) {
+      throw new Error(`setExecutablePath failed for pid ${pid}: errno ${-result}`);
+    }
+  }
+
   #setCwdWithinKernelEntry(
     pid: number,
     encoded: Uint8Array,

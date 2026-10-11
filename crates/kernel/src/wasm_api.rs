@@ -2756,6 +2756,32 @@ pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_executable_path(pid: u32, path_ptr: *const u8, path_len: u32) -> i32 {
+    if path_ptr.is_null() || path_len == 0 || path_len >= platform_limits::PATH_MAX_BYTES as u32 {
+        return -(Errno::EINVAL as i32);
+    }
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    if path.contains(&0) {
+        return -(Errno::EINVAL as i32);
+    }
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    if proc.exec_generation != 0 || proc.executable_path.is_some() {
+        return -(Errno::EBUSY as i32);
+    }
+    let mut host = WasmHostIO;
+    match syscalls::resolve_existing_namespace_path(proc, &mut host, path) {
+        Ok(resolved) => {
+            proc.executable_path = Some(resolved);
+            0
+        }
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Set a process's initial real/effective uid and gid.
 /// The host calls this after creating the process but before user code starts.
 /// Pass `u32::MAX` for either uid or gid to leave that side unchanged.

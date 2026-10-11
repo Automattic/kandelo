@@ -125,6 +125,7 @@ export function sdkProgramBuildInputs(
     join(repoRoot, "sdk/src"),
     join(repoRoot, "sdk/package.json"),
     join(repoRoot, "sdk/package-lock.json"),
+    join(repoRoot, "abi/snapshot.json"),
     join(repoRoot, "libc/glue"),
     join(repoRoot, arch === "wasm64" ? "sysroot64" : "sysroot"),
     // The `kandelo.abi.contract` digest stamped onto each fixture is derived

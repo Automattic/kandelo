@@ -639,6 +639,7 @@ fn finish_commit(
     proc.secure_exec = credentials.euid != credentials.ruid || credentials.egid != credentials.rgid;
     proc.install_credentials(credentials);
     proc.exec_generation = next_generation;
+    proc.executable_path = Some(target.diagnostic_path.clone());
 
     let competing: Vec<_> = proc.prepared_exec_targets.drain().collect();
     for stale in competing {

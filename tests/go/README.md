@@ -3,7 +3,7 @@
 These probes run binaries from the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port) through
 Kandelo's real Chromium, Firefox, and WebKit process workers and ABI-48 kernel. Use fork commit
-`7c639cb7fd655cfdfa600b79c8ba1fbdf06cb502` or later, built with the dev shell's Go 1.25.8 as `GOROOT_BOOTSTRAP`. By default
+`6bb9175625d8ea5863b40077866251a1ab67b4c6` or later, built with the dev shell's Go 1.25.8 as `GOROOT_BOOTSTRAP`. By default
 the fork is checked out beside this repository as `../go-kandelo`.
 
 From the Kandelo repository root:
@@ -32,10 +32,15 @@ To run the exec probe in Node after building the fixtures:
 
 ```sh
 scripts/dev-shell.sh bash -c 'node --import tsx tests/go/exec-basic/run.ts .context/go-browser/exec-basic.wasm $(scripts/resolve-binary.sh kernel.wasm)'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/exec-basic/run-vfs.ts .context/go-browser/exec-basic.wasm $(scripts/resolve-binary.sh kernel.wasm)'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/os-stdlib/run-executable.ts .context/go-browser/os-test.wasm $(scripts/resolve-binary.sh kernel.wasm)'
 ```
 
-The Node runner also checks that both child launches leave the parent's fork
-count at zero.
+The Node runners check direct byte launches report no executable path, VFS
+launches report their selected path despite a forged `argv[0]`, and spawned
+children retain that path. The upstream `TestExecutable` subprocess test also
+passes from a VFS launch. The direct runner checks that both child launches
+leave the parent's fork count at zero.
 
 To run the `os/user` public API and selected upstream parser tests in Node:
 
@@ -74,11 +79,11 @@ fails `TestRootLinkFrom` and `TestRootRenameAfterOpen`. The focused
 The `browser-basic` program additionally checks fixed nanosecond atime and
 mtime through the real `os.Chtimes`/stat syscall path on each browser's
 SharedFS-backed `/tmp`.
-`TestExecutable` also
-fails: the Go fork has no Kandelo implementation, and Kandelo currently
-reports `argv[0]` rather than the executable's VFS path through
-`/proc/self/exe`. That requires a platform-owned executable identity before
-the Go API can use procfs faithfully.
+The selected `os` fixture still runs through a direct byte launch, so it does
+not include `TestExecutable`. A separate Node runner and browser probe launch
+that fixture from `/bin/os-test.wasm` and pass upstream `TestExecutable` in
+Node, Chromium, Firefox, and WebKit. `/proc/self/exe` uses a kernel-owned
+selected VFS path, not `argv[0]`; a direct byte launch reports `ENOENT`.
 
 The builder also links `one-slot-second-m.wasm` with
 `-ldflags=-kandelothreadslots=1`. Go can request an additional M before

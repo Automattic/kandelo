@@ -190,6 +190,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_select",
   "kernel_send",
   "kernel_set_cwd",
+  "kernel_set_executable_path",
   "kernel_setsockopt",
   "kernel_socketpair",
   "kernel_spawn_exec_target_prepare",
@@ -289,6 +290,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_recv":
     case "kernel_send":
     case "kernel_set_cwd":
+    case "kernel_set_executable_path":
     case "kernel_take_process_timer_cleanup":
     case "kernel_tcgetattr":
       return REQUIRED_POINTER_1;
@@ -404,6 +406,7 @@ function isKernelScratchExportName(
     case "kernel_select":
     case "kernel_send":
     case "kernel_set_cwd":
+    case "kernel_set_executable_path":
     case "kernel_setsockopt":
     case "kernel_socketpair":
     case "kernel_spawn_exec_target_prepare":

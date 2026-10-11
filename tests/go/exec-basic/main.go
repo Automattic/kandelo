@@ -14,6 +14,10 @@ const workDir = "/go-exec-work"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "child" {
+		path, err := os.Executable()
+		if err != nil || path != executable {
+			panic(fmt.Sprintf("wrong child executable path: %q: %v", path, err))
+		}
 		parent, err := strconv.Atoi(os.Getenv("GO_PARENT_PID"))
 		if err != nil || parent != os.Getppid() {
 			panic(fmt.Sprintf("wrong parent pid: got %d, want %d: %v", os.Getppid(), parent, err))
@@ -32,7 +36,16 @@ func main() {
 			}
 		}
 		fmt.Println("GO EXEC CHILD")
+		fmt.Println("GO EXEC PATH PASS")
 		os.Exit(7)
+	}
+	path, pathErr := os.Executable()
+	if os.Getenv("GO_EXPECT_EXE") == "present" {
+		if pathErr != nil || path != executable {
+			panic(fmt.Sprintf("wrong initial executable path: %q: %v", path, pathErr))
+		}
+	} else if pathErr == nil {
+		panic(fmt.Sprintf("byte-launched process invented executable path: %q", path))
 	}
 
 	parent := os.Getpid()

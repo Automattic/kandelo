@@ -2519,6 +2519,27 @@ The post-timestamp full opt-in Go/cgo/high-thread matrix also passes 108/108
 with one worker across the same three browsers, including the C pthread
 callback stress and 48-live-M/64-slot cases.
 
+**2026-10-11 — executable identity and upstream Go API.** The kernel now
+retains a selected executable VFS path independently of mutable `argv[0]`.
+Top-level VFS launches publish the resolved path after process registration;
+prepared exec/spawn commits replace it, fork copies it from the parent, and
+direct byte launches leave it absent. `/proc/self/exe` reports that identity
+or `ENOENT`, never a made-up display name. The Go fork implements
+`os.Executable` through procfs at commit
+`6bb9175625d8ea5863b40077866251a1ab67b4c6`; `go-hello` rev11 pins
+that commit. The export is an additive-compatible ABI snapshot change, not an
+`ABI_VERSION` bump, but it changes the ABI-contract digest: old Wasm artifacts
+must be rebuilt, not restamped. Vitest fixture freshness now includes the ABI
+snapshot so such changes rebuild fixtures before the stamp gate. The Go fork
+builds, and `os` test binaries compile for Kandelo, `js`, and `wasip1` Wasm.
+Rust procfs and fork identity tests pass; the host package builds; focused
+host tests pass 299/299. Direct-byte and VFS Go exec probes pass on Node,
+and upstream `TestExecutable` passes on Node and Chromium, Firefox, and
+WebKit. Focused direct-byte and VFS browser exec probes pass 6/6 across those
+engines. This closes the executable-identity subtask, not the wider Go
+standard-library/runtime audit. The changed digest invalidates the previous
+local WordPress/FrankenPHP artifacts until their package closure is rebuilt.
+
 The remaining Go/C platform gates, in recommended order, are:
 
 1. Close the two remaining upstream `os.Root` filesystem failures at their
@@ -2532,11 +2553,9 @@ The remaining Go/C platform gates, in recommended order, are:
    Rerun the whole `TestRoot*` sweep on Node and all three browsers, staging
    source-tree fixtures rather than treating missing testdata as a pass.
 2. Expand Go standard-library and runtime conformance beyond the selected
-   `os`, `syscall`, and runtime probes. Give Kandelo an authoritative
-   executable VFS identity before implementing Go `os.Executable`; its
-   upstream case now fails rather than being silently selected out. Track
-   genuine browser boundaries such as AF_UNIX separately from implementation
-   failures.
+   `os`, `syscall`, and runtime probes. Executable VFS identity and upstream
+   `TestExecutable` now pass separately; track genuine browser boundaries
+   such as AF_UNIX separately from implementation failures.
 3. Support real relocated/non-metadata C initializer and finalizer arrays
    if needed by source ports; the current LLVM toolchain rejects
    `.fini_array` before Kandelo's linker sees it.
