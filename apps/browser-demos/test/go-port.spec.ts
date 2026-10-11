@@ -290,6 +290,12 @@ if (process.env.KANDELO_GO_MAX_THREAD_SLOTS_TESTS === "1") {
 
 if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
   probes.push({
+    name: "mixed-width C pointer struct and by-value cgo call",
+    file: "../go-cgo-mixed-struct-instrumented.wasm",
+    argv: ["go-cgo-mixed-struct"],
+    stdout: ["CGO MIXED STRUCT PASS"],
+  });
+  probes.push({
     name: "PHP ZTS embed initializes, evaluates, and shuts down in Go cgo",
     file: "../go-php-embed/probe-instrumented.wasm",
     argv: ["go-php-embed"],

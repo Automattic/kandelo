@@ -389,8 +389,13 @@ through the normal Kandelo process path on Node and Chromium. It does not
 establish that upstream FrankenPHP requests work. In mixed-width cgo, Go's
 8-byte `unsafe.Pointer` must not read a 4-byte C data pointer and adjacent
 bytes; Kandelo's non-TSAN `_cgo_yield` storage is widened so Go observes a
-real nil value. Watch for C structs containing 4-byte pointers: generating
-native Go pointer fields silently changes their layout and corrupts values.
+real nil value. C struct pointer fields and fixed arrays of pointers use
+4-byte `uint32` fields in generated Go types, not native 8-byte Go pointers.
+Convert a C-owned address explicitly through `uintptr` when needed; do not
+store a Go-managed pointer in one of these fields. The mixed-struct probe
+checks field offsets, pointer identity, C struct return, and a by-value C
+call on Node and all three browser engines. Other aggregate shapes and Go
+pointer retention across this boundary still need separate validation.
 
 Use the staged probes in `tests/go/README.md`:
 first a C call, then Go-to-C-to-Go on the calling thread, then a C-created

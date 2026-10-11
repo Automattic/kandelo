@@ -245,6 +245,20 @@ and Chromium process gates, including a yield, timer wait, repeat callback,
 and second Go M. That is a prerequisite, not a FrankenPHP build. See the
 dated WordPress pivot in the Go implementation progress log.
 
+`cgo/mixed-struct` checks a C struct containing a pointer and a fixed
+pointer array, returned from C and passed back by value. On Kandelo/Wasm,
+generated Go struct fields that hold C addresses are 4-byte `uint32` values,
+not native Go pointers; explicit conversion is required to use a C-owned
+address. Do not store a Go-managed pointer in these raw fields. Build,
+instrument, stamp, and run this focused probe with:
+
+```sh
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/go-cgo-mixed-struct.wasm ./tests/go/cgo/mixed-struct'
+scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-cgo-mixed-struct.wasm -o .context/go-cgo-mixed-struct-instrumented.wasm; REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-cgo-mixed-struct-instrumented.wasm; stamp_built_program_outputs'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/cgo/mixed-struct/run.ts .context/go-cgo-mixed-struct-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 WASM_POSIX_RESOLUTION_POLICY=source-only-v1 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$(realpath ../../local-binaries/source-only-v1)" npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit --grep "mixed-width C pointer struct" --workers=1'
+```
+
 ```sh
 scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-callback-same.wasm ./tests/go/cgo/callback-same'
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-callback-same.wasm -o .context/go-callback-same-instrumented.wasm'

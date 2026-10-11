@@ -2583,6 +2583,27 @@ pages. It passes with empty stderr and host diagnostics on Node and 3/3 in
 Chromium, Firefox, and WebKit. This exercises the supported declaration and
 arena layout, not 1,024 simultaneously live Ms or long-lived PHP churn.
 
+**2026-10-11 — mixed-width C aggregate layout.** Fork commit
+`476693721f81cc913026ef78456d91ca52bbec2c` is pushed to
+`kandelo-dev/go` on `kandelo-port`. A C struct with one
+interleaved 4-byte pointer became a 24-byte Go struct before this change,
+rather than the 12-byte C layout. The expanded probe adds a fixed pointer
+array and requires the correct 20-byte layout. The Go cgo
+frontend now exposes pointer-bearing struct fields as raw 4-byte integers
+on Kandelo/Wasm. A focused probe checks field offsets, C pointer identity,
+struct return, and a by-value C call; it passes in Node and 3/3 in Chromium,
+Firefox, and WebKit with empty stderr and diagnostics. The full `cmd/cgo`
+unit suite, the existing C-call Node probe, and `os` test-binary cross-builds
+for `js` and `wasip1` pass. This does not establish arbitrary aggregate ABI
+mapping or safe retention of Go-managed pointers in C fields. Canonical LLVM C
+`.init_array` declarations emit `INIT_FUNCS` metadata and zero-filled data;
+an explicit `.fini_array` declaration is rejected by the SDK LLVM backend
+before the Go linker runs. Non-metadata initializer/finalizer arrays remain
+a conditional linker/toolchain gate, not a current FrankenPHP blocker. The
+WordPress closure bootstrap started before this fork revision and still uses
+its previous source pin; update the Go package pins and rebuild after that
+bootstrap publishes.
+
 The remaining Go/C platform gates, in recommended order, are:
 
 1. Harden the Node/macOS native no-follow `linkat` helper for distribution
@@ -2597,9 +2618,10 @@ The remaining Go/C platform gates, in recommended order, are:
 3. Support real relocated/non-metadata C initializer and finalizer arrays
    if needed by source ports; the current LLVM toolchain rejects
    `.fini_array` before Kandelo's linker sees it.
-4. Generalize mixed-width pointer-bearing C struct access and by-value cgo
-   calls; current PHP integration uses explicit C accessors and a scalar
-   registration entry at that interop boundary.
+4. Extend mixed-width cgo coverage beyond the now-passing pointer-bearing
+   struct and pointer-array return/by-value probe. Raw C address fields are
+   4-byte integers, not Go-managed pointers; PHP still uses explicit C
+   accessors and scalar registration at its interop boundary.
 5. Exercise 1,024 simultaneously live threads, longer PHP worker churn,
    allocator pressure, and concurrent callbacks. The one-slot failure,
    48-live-M/64-slot probe, and 48-live-M/1,024-slot declaration probe cover
