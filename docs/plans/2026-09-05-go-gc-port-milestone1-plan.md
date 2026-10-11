@@ -2986,6 +2986,15 @@ parking it for reuse. Five waves of 48 distinct live Ms pass in Node and
 diagnostics. This closes a bounded Go-thread turnover probe, not sustained
 PHP-worker churn or allocator pressure.
 
+The WordPress/FrankenPHP host gates now accept an opt-in count of extra
+dynamic PHP requests on the same server boot, alternating the homepage and
+login with distinct query strings. Forty additional requests pass against
+the fresh source-only WordPress image on both the Node-host demo and the
+Chromium kernel host. The Node test also completes its admin login after
+the request sequence; the browser host reports no diagnostics or panic.
+These bounded requests do not prove sustained PHP-worker reuse, allocator
+stability, or a performance advantage.
+
 The browser asset check used to run one source-projection freshness check per
 import (151 default imports), taking over six minutes without reaching its
 result under the completed closure. It now batches package-owned imports
@@ -3009,10 +3018,11 @@ Remaining work, in recommended order:
 3. Broaden cgo ABI coverage and support real relocated C initializer/finalizer
    arrays where needed by source ports. The current LLVM path rejects
    `.fini_array` before Kandelo's linker can handle it.
-4. Exercise 1,024 simultaneously live Go Ms, long-lived PHP churn, allocator
-   pressure, and callback concurrency. The current evidence reaches 513
-   live Ms in Node and 257 in each browser, plus five 48-worker retirement
-   waves in each host. The 512-worker Node run nearly fills this host's
+4. Exercise 1,024 simultaneously live Go Ms, sustained PHP-worker churn,
+   allocator pressure, and callback concurrency. The current evidence reaches
+   513 live Ms in Node and 257 in each browser, five 48-worker retirement
+   waves in each host, and 40 extra PHP requests on one WordPress server boot
+   in Node and Chromium. The 512-worker Node run nearly fills this host's
    memory footprint budget.
 5. Rerun the non-basic Sortix suites with timeout-sensitive exit status; the
    complete parallel basic suite is clean. Keep unsupported browser AF_UNIX

@@ -6,6 +6,10 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const imagePath = process.env.KANDELO_WORDPRESS_FRANKENPHP_VFS;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const churnRequests = Number(process.env.KANDELO_FRANKENPHP_CHURN_REQUESTS ?? "0");
+if (!Number.isSafeInteger(churnRequests) || churnRequests < 0 || churnRequests > 40) {
+  throw new Error("KANDELO_FRANKENPHP_CHURN_REQUESTS must be an integer from 0 to 40");
+}
 
 test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ page, baseURL, browserName }) => {
   test.setTimeout(240_000);
@@ -28,7 +32,7 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
   }));
   await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-  const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl }) => {
+  const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, churnRequests }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
     const [imageResponse, kernelResponse] = await Promise.all([fetch(imageUrl), fetch(kernelUrl)]);
     if (!imageResponse.ok || !kernelResponse.ok) throw new Error("WordPress test artifacts failed to load");
@@ -96,11 +100,25 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
       const login = await kernel.fetchInKernel(8080, {
         method: "GET", url: "/wp-login.php", headers: { Host: "localhost:8080" }, body: null,
       }, { timeoutMs: 30_000 });
+      for (let index = 0; index < churnRequests; index += 1) {
+        const isLogin = index % 2 === 1;
+        const response = await kernel.fetchInKernel(8080, {
+          method: "GET",
+          url: isLogin ? `/wp-login.php?round=${index}` : `/?round=${index}`,
+          headers: { Host: "localhost:8080" },
+          body: null,
+        }, { timeoutMs: 30_000 });
+        const body = decoder.decode(response.body);
+        if (response.status !== 200 || !body.includes(isLogin ? "user_login" : "WordPress on Kandelo")) {
+          throw new Error(`WordPress PHP request ${index} returned ${response.status}`);
+        }
+      }
       return {
         homepageStatus: homepage.status,
         homepageBody: decoder.decode(homepage.body),
         loginStatus: login.status,
         loginBody: decoder.decode(login.body),
+        churnCompleted: churnRequests,
         diagnostics,
         stderr,
       };
@@ -115,13 +133,14 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
       ]);
       await kernel.destroy();
     }
-  }, { imageUrl, kernelUrl, browserKernelUrl });
+  }, { imageUrl, kernelUrl, browserKernelUrl, churnRequests });
 
   expect(result.homepageStatus).toBe(200);
   expect(result.homepageBody).toContain("WordPress on Kandelo");
   expect(result.homepageBody).not.toContain("id=\"setup\"");
   expect(result.loginStatus).toBe(200);
   expect(result.loginBody).toContain("user_login");
+  expect(result.churnCompleted).toBe(churnRequests);
   expect(result.diagnostics).toEqual([]);
   expect(result.stderr).not.toContain("panic");
 });

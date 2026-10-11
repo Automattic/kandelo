@@ -226,6 +226,12 @@ request and a static asset through real HTTP on Node and Chromium. A
 source-only WordPress VFS serves homepage and admin requests on Node and
 Chromium, including the browser gallery profile. Do not infer full cgo,
 POSIX conformance, or a WordPress performance advantage from these gates.
+For a bounded same-process PHP request probe, set
+`KANDELO_FRANKENPHP_CHURN_REQUESTS=40` in the Node-host counterpart and
+Chromium kernel-host WordPress tests. They alternate homepage and login PHP
+requests with distinct query strings on one server boot and pass on both
+hosts; they do not establish sustained worker reuse, allocator stability,
+or throughput.
 
 Trace the whole link path before changing flags or package recipes:
 

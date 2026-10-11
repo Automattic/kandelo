@@ -10,6 +10,11 @@ import { tryResolveBinary } from "../../../host/src/binary-resolver";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../..");
 const publicDir = join(repoRoot, "apps", "browser-demos", "public");
+const frankenphpChurnRequests = Number(process.env.KANDELO_FRANKENPHP_CHURN_REQUESTS ?? "0");
+if (!Number.isSafeInteger(frankenphpChurnRequests) ||
+    frankenphpChurnRequests < 0 || frankenphpChurnRequests > 40) {
+  throw new Error("KANDELO_FRANKENPHP_CHURN_REQUESTS must be an integer from 0 to 40");
+}
 
 interface ServiceImageRef {
   relPath: string;
@@ -344,11 +349,19 @@ test.describe("Node-host counterparts for Kandelo browser demos", () => {
       expect(html).not.toMatch(/id="setup"|id="language-chooser"/i);
       expect(demo.output()).not.toMatch(/php-fpm|nginx.*listening/i);
 
+      for (let index = 0; index < frankenphpChurnRequests; index += 1) {
+        const isLogin = index % 2 === 1;
+        const path = isLogin ? "/wp-login.php" : "/";
+        const body = await fetchText(`http://localhost:${port}${path}?round=${index}`);
+        expect(body).toContain(isLogin ? "user_login" : "WordPress on Kandelo");
+      }
+
       await page.goto(`http://localhost:${port}/wp-login.php`);
       await page.locator("#user_login").fill("admin");
       await page.locator("#user_pass").fill("password");
       await page.locator("#wp-submit").click();
       await expect(page.locator("#adminmenu, body.wp-admin").first()).toBeVisible({ timeout: 120_000 });
+      expect(demo.output()).not.toMatch(/panic|fatal error/i);
     } finally {
       await stopNodeHostDemo(demo.proc);
     }
