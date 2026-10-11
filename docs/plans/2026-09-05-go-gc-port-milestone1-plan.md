@@ -2489,9 +2489,9 @@ sweep now has exactly two failing top-level cases: `TestRootLinkFrom` and
 The first broad Open POSIX rerun finished 173 PASS, one FAIL, three XFAIL,
 and two SKIP: the lone failure was a package source-projection error before
 guest launch in `sched_get_priority_min/1-1`, not a scheduling assertion.
-That interface passes 4/4 with one documented SKIP on an isolated rerun; a
-second full rerun is in progress. The three-browser full Root sweep remains
-unrun.
+That interface passes 4/4 with one documented SKIP on an isolated rerun. The
+second full rerun is clean: 174 PASS, zero FAIL, three documented XFAIL, and
+two SKIP (179 total). The three-browser full Root sweep remains unrun.
 
 **2026-10-10 — next-gate ownership audit.** `TestRootLinkFrom` reaches
 Node/macOS `fs.linkSync`, which follows final source symlinks despite the
@@ -2515,8 +2515,9 @@ Go fork reads procfs.
 The rebuilt-fixture full Go browser baseline passes 69/69 with one worker:
 23 probes across Chromium, Firefox, and WebKit. It includes both the upstream
 `TestRootChtimes` probe and the fixed-nanosecond `browser-basic` round-trip.
-The cgo/high-thread opt-in probes are not part of these 69 cases; their
-post-timestamp rerun remains outstanding.
+The post-timestamp full opt-in Go/cgo/high-thread matrix also passes 108/108
+with one worker across the same three browsers, including the C pthread
+callback stress and 48-live-M/64-slot cases.
 
 The remaining Go/C platform gates, in recommended order, are:
 
