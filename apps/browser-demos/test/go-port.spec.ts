@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBinary } from "../../../host/src/binary-resolver";
@@ -31,7 +31,7 @@ type Probe = {
   imageCapacity?: number;
   threadMarkers?: number;
   env?: string[];
-  dataFiles?: { path: string; data: number[] }[];
+  dataFiles?: { path: string; data: number[] }[] | (() => { path: string; data: number[] }[]);
   selfExecPath?: string;
   launchFromVfs?: boolean;
   cwd?: string;
@@ -61,6 +61,24 @@ const probes: Probe[] = [
     name: "Go account and supplementary-group lookup from VFS files",
     file: "user-basic.wasm",
     argv: ["go-user-basic"],
+    stdout: ["GO USER PASS"],
+    dataFiles: [
+      {
+        path: "/etc/passwd",
+        data: Array.from(Buffer.from(
+          "root:x:0:0:Root:/root:/bin/sh\ndaemon:x:1:1:Daemon:/home/daemon:/bin/sh\nrunner:x:1001:200:Runner:/home/runner:/bin/sh\n",
+        )),
+      },
+      {
+        path: "/etc/group",
+        data: Array.from(Buffer.from("staff:x:200:runner\nworkers:x:201:runner\n")),
+      },
+    ],
+  },
+  {
+    name: "Go cgo build retains VFS-backed account and group lookup",
+    file: "user-cgo-basic.wasm",
+    argv: ["go-user-cgo-basic"],
     stdout: ["GO USER PASS"],
     dataFiles: [
       {
@@ -112,6 +130,15 @@ const probes: Probe[] = [
     argv: ["go-os-test", "-test.run=^TestChdirAndGetwd$", "-test.v"],
     stdout: ["--- PASS: TestChdirAndGetwd", "PASS"],
     directories: ["/tmp", "/usr", "/usr/bin"],
+    imageCapacity: 8 * 1024 * 1024,
+  },
+  {
+    name: "upstream Go os getwd reaches the declared path limit",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestGetwdDeep", "-test.v"],
+    stdout: ["--- PASS: TestGetwdDeep", "--- PASS: TestGetwdDeepWithPWDSet", "PASS"],
+    passedTopLevelTests: 2,
+    directories: ["/tmp"],
     imageCapacity: 8 * 1024 * 1024,
   },
   {
@@ -191,7 +218,7 @@ const probes: Probe[] = [
     file: "os-test.wasm",
     argv: ["go-os-test", "-test.run=^TestRoot", "-test.v"],
     stdout: ["--- PASS: TestRootLinkFrom", "--- PASS: TestRootRenameAfterOpen", "PASS"],
-    passedTopLevelTests: 43,
+    passedTopLevelTests: 47,
     directories: ["/tmp", "/testdata", "/testdata/dirfs", "/testdata/dirfs/dir"],
     imageCapacity: 8 * 1024 * 1024,
     dataFiles: ["a", "b", "dir/x"].map((name) => ({
@@ -242,6 +269,30 @@ const probes: Probe[] = [
     cwd: "/work",
     env: ["PATH=/bin:/usr/bin"],
     passedTopLevelTests: 6,
+  },
+  {
+    name: "upstream Go os/exec Unix path and wait tests",
+    file: "os-exec-test.wasm",
+    argv: ["go-os-exec-test", "-test.run=^(TestImplicitPWD|TestExplicitPWD|TestLookPathUnixEmptyPath|TestWaitid|TestSIGCHLD)$", "-test.short", "-test.parallel=1", "-test.v"],
+    stdout: ["--- PASS: TestImplicitPWD", "--- PASS: TestWaitid", "--- PASS: TestSIGCHLD", "PASS"],
+    directories: ["/tmp", "/work"],
+    selfExecPath: "/bin/os-exec-test.wasm",
+    launchFromVfs: true,
+    cwd: "/work",
+    env: ["PATH=/bin:/usr/bin"],
+    passedTopLevelTests: 5,
+  },
+  {
+    name: "upstream Go archive/tar complete suite",
+    file: "tar-test.wasm",
+    argv: ["go-tar-test", "-test.run=^Test", "-test.v"],
+    stdout: ["--- PASS: TestKandeloFileInfoHeader", "PASS"],
+    directories: ["/tmp", "/testdata"],
+    imageCapacity: 16 * 1024 * 1024,
+    dataFiles: () => readdirSync(resolve(repoRoot, "../go-kandelo/src/archive/tar/testdata")).map((name) => ({
+      path: `/testdata/${name}`,
+      data: Array.from(readFileSync(resolve(repoRoot, "../go-kandelo/src/archive/tar/testdata", name))),
+    })),
   },
   {
     name: "Sortix spawn preflight honors fchdir file actions",
@@ -514,7 +565,7 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
       new Uint8Array(readFileSync(resolve(fixtureDir, executable.file))),
     );
   }
-  for (const file of probe.dataFiles ?? []) {
+  for (const file of (typeof probe.dataFiles === "function" ? probe.dataFiles() : probe.dataFiles) ?? []) {
     image.createFileWithOwner(file.path, 0o644, 0, 0, new Uint8Array(file.data));
   }
   const vfsImage = Array.from(await image.saveImage());

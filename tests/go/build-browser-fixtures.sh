@@ -30,6 +30,12 @@ build_probe() {
 build_probe browser-basic basic
 build_probe credentials-basic credentials-basic
 build_probe user-basic user-basic
+(
+  cd "$repo_root/tests/go/user-basic"
+  GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc \
+    "$go_bin" build -o "$output_dir/user-cgo-basic.wasm" .
+)
+record_built_program_output "$output_dir/user-cgo-basic.wasm"
 build_probe second-m second-m
 (
   cd "$repo_root/tests/go/second-m"
@@ -76,6 +82,8 @@ GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/os-te
 record_built_program_output "$output_dir/os-test.wasm"
 GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/os-exec-test.wasm" os/exec
 record_built_program_output "$output_dir/os-exec-test.wasm"
+GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/tar-test.wasm" archive/tar
+record_built_program_output "$output_dir/tar-test.wasm"
 GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/syscall-test.wasm" syscall
 record_built_program_output "$output_dir/syscall-test.wasm"
 

@@ -26,6 +26,26 @@ target. Confirm `GOOS=kandelo GOARCH=wasm` and cross-target `js`/`wasip1`
 builds after runtime or linker changes. Do not assume Linux build tags or
 APIs apply to Kandelo.
 
+Kandelo is a Unix target for Go build constraints. Register it in both
+`src/internal/syslist/syslist.go` and `src/cmd/dist/build.go`; changing only
+one leaves `go/build` and the toolchain disagreeing. Then inspect files newly
+selected by `unix` in `runtime`, `syscall`, `os`, and other standard-library
+packages. Keep Kandelo-specific implementations where upstream Unix code
+assumes native threads, signals, or syscalls by excluding `kandelo` from those
+files explicitly. Conversely, retain needed `!unix` Wasm fallbacks with an
+explicit `|| kandelo` when no native equivalent exists. Cross-build the full
+standard library for Kandelo, `js`, and `wasip1`, and run the upstream tests
+that newly enter the Kandelo build; successful compilation alone does not
+validate their behavior. The expanded `os` and `os/exec` suites and
+`archive/tar` metadata test cover concrete fallout from this classification.
+Repeat the full standard-library build with `CGO_ENABLED=1`: that mode
+selects additional Unix `net` and `os/user` implementations. Kandelo uses
+Go's VFS-backed DNS and account-file paths in both modes for now. The native
+Unix cgo resolver expects unavailable `res_n*` libc entry points, and its
+`struct passwd` pointer fields do not match Kandelo's mixed-width C/Go
+interop representation. Exclude those implementations in the fork, not by
+adding package-only `netgo` or `osusergo` flags to FrankenPHP.
+
 ## Memory, threads, and syscalls
 
 - The linker imports shared linear memory and declares a bounded pthread
@@ -216,6 +236,10 @@ Trace the whole link path before changing flags or package recipes:
   version, header-list, and request-info paths use C accessors at that
   explicit interop boundary. Audit every new C struct access by comparing
   C `sizeof`/`offsetof` with generated Go layout before trusting it.
+  In particular, do not initialize a `C.go_string` with a Go pointer-typed
+  struct literal or compare a raw `Bucket.key` field with `nil`: cgo exposes
+  those C addresses as `uint32` on this target. Build the value with a typed
+  C constructor and retrieve the hash key through a typed C accessor.
 - FrankenPHP's CGI bulk registration passed a pointer-bearing C struct by
   value, another unsupported mixed-width case. Its Kandelo package patch
   uses the existing scalar/pointer `frankenphp_register_single` entry until

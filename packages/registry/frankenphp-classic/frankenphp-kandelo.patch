@@ -166,7 +166,7 @@ diff --git a/frankenphp.go b/frankenphp.go
 index 7444391..e6265ff 100644
 --- a/frankenphp.go
 +++ b/frankenphp.go
-@@ -18,6 +18,13 @@ package frankenphp
+@@ -18,6 +18,14 @@ package frankenphp
  // #include <zend_llist.h>
  // #include <SAPI.h>
  // #include "frankenphp.h"
@@ -177,6 +177,7 @@ index 7444391..e6265ff 100644
 +// static inline sapi_header_struct *kandelo_header_data(zend_llist_element *element) { return (sapi_header_struct *)element->data; }
 +// static inline char *kandelo_header_text(sapi_header_struct *header) { return header->header; }
 +// static inline int kandelo_header_length(sapi_header_struct *header) { return (int)header->header_len; }
++// static inline go_string kandelo_go_string(size_t len, char *data) { go_string value = {len, data}; return value; }
  import "C"
  import (
  	"bytes"
@@ -202,7 +203,15 @@ index 7444391..e6265ff 100644
  	}
  }
  
-@@ -560,12 +565,12 @@ func go_write_headers(threadIndex C.uintptr_t, status C.int, headers *C.zend_lli
+@@ -490,5 +496,5 @@ func go_read_request_headers(threadIndex C.uintptr_t) (*C.go_string, C.size_t)
+ 		headers = append(
+ 			headers,
+-			C.go_string{C.size_t(len(field)), (*C.char)(unsafe.Pointer(fd))},
+-			C.go_string{C.size_t(len(cv)), (*C.char)(unsafe.Pointer(vd))},
++			C.kandelo_go_string(C.size_t(len(field)), (*C.char)(unsafe.Pointer(fd))),
++			C.kandelo_go_string(C.size_t(len(cv)), (*C.char)(unsafe.Pointer(vd))),
+ 		)
+@@ -560,12 +566,12 @@ func go_write_headers(threadIndex C.uintptr_t, status C.int, headers *C.zend_lli
  		return C.bool(true)
  	}
  
@@ -219,3 +228,25 @@ index 7444391..e6265ff 100644
  	}
  
  	goStatus := int(status)
+
+diff --git a/types.go b/types.go
+--- a/types.go
++++ b/types.go
+@@ -16,5 +16,6 @@
+ #cgo noescape __zval_string__
+ #cgo noescape __zval_arr__
+ #include "types.h"
++static inline zend_string *kandelo_bucket_key(Bucket *bucket) { return bucket->key; }
+ */
+ import "C"
+@@ -136,8 +137,8 @@ func goValue[T any](value *C.zval) (T, error) {
+ 			return nil, nil, err
+ 		}
+ 
+-		if bucket.key != nil {
+-			keyStr := GoString(unsafe.Pointer(bucket.key))
++		if key := C.kandelo_bucket_key(bucket); key != nil {
++			keyStr := GoString(unsafe.Pointer(key))
+ 			if v == nil {
+ 				entries[keyStr] = zeroVal
+ 			} else {

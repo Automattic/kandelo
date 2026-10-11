@@ -29,6 +29,8 @@ interface Options {
   rounds: number;
   warmups: number;
   samples: number;
+  clients: number;
+  concurrentSamples: number;
   port: number;
   browserBaseUrl: string;
   output: string;
@@ -40,6 +42,8 @@ interface RoundResult {
   round: number;
   startupMs: number;
   latenciesMs: number[];
+  throughputRequests: number;
+  throughputDurationMs: number;
 }
 
 function parseOptions(): Options {
@@ -60,7 +64,7 @@ function parseOptions(): Options {
   if (host !== "node" && host !== "browser" && host !== "both") {
     throw new Error("--host must be node, browser, or both");
   }
-  const known = new Set(["host", "rounds", "warmups", "samples", "port", "browser-base-url", "output"]);
+  const known = new Set(["host", "rounds", "warmups", "samples", "clients", "concurrent-samples", "port", "browser-base-url", "output"]);
   for (const name of values.keys()) {
     if (!known.has(name)) throw new Error(`Unknown option --${name}`);
   }
@@ -74,6 +78,8 @@ function parseOptions(): Options {
     rounds,
     warmups: integer("warmups", 3, 0),
     samples: integer("samples", 12, 1),
+    clients: integer("clients", 4, 1),
+    concurrentSamples: integer("concurrent-samples", 4, 1),
     port,
     browserBaseUrl: values.get("browser-base-url") ?? "http://127.0.0.1:5401",
     output: resolve(values.get("output") ?? ".context/wordpress-stack-benchmark.json"),
@@ -153,7 +159,21 @@ async function measureNode(profile: Profile, round: number, options: Options, im
       await fetchWordPress(url.href);
       if (index >= options.warmups) latenciesMs.push(performance.now() - began);
     }
-    return { host: "node", profile, round, startupMs, latenciesMs };
+    const throughputStarted = performance.now();
+    for (let index = 0; index < options.concurrentSamples; index++) {
+      const requests: Promise<void>[] = [];
+      for (let clientIndex = 0; clientIndex < options.clients; clientIndex++) {
+        const url = new URL(baseUrl);
+        url.searchParams.set("kandelo_benchmark", `${round}-concurrent-${clientIndex}-${index}`);
+        requests.push(fetchWordPress(url.href));
+      }
+      await Promise.all(requests);
+    }
+    return {
+      host: "node", profile, round, startupMs, latenciesMs,
+      throughputRequests: options.clients * options.concurrentSamples,
+      throughputDurationMs: performance.now() - throughputStarted,
+    };
   } finally {
     await host.destroy();
     if (diagnostics.length > 0) throw new Error(`Node host diagnostics: ${JSON.stringify(diagnostics)}`);
@@ -186,7 +206,7 @@ async function measureBrowser(
   const body = page.frameLocator(`iframe[title="${title}"]`).locator("body");
   await body.getByText("WordPress on Kandelo", { exact: false }).first().waitFor({ timeout: 180_000 });
   const startupMs = performance.now() - start;
-  const latenciesMs = await body.evaluate(async (_bodyElement, { round, warmups, samples }) => {
+  const measurements = await body.evaluate(async (_bodyElement, { round, warmups, samples, clients, concurrentSamples }) => {
     const values: number[] = [];
     for (let index = 0; index < warmups + samples; index++) {
       const url = new URL(location.href);
@@ -200,12 +220,41 @@ async function measureBrowser(
       }
       if (index >= warmups) values.push(performance.now() - began);
     }
-    return values;
-  }, { round, warmups: options.warmups, samples: options.samples });
-  if (latenciesMs.length !== options.samples) {
-    throw new Error(`Browser measured ${latenciesMs.length} requests, expected ${options.samples}`);
+    const throughputStarted = performance.now();
+    for (let index = 0; index < concurrentSamples; index++) {
+      const requests: Promise<Response>[] = [];
+      for (let clientIndex = 0; clientIndex < clients; clientIndex++) {
+        const url = new URL(location.href);
+        url.searchParams.set("kandelo_benchmark", `${round}-concurrent-${clientIndex}-${index}`);
+        requests.push(fetch(url, { cache: "no-store", signal: AbortSignal.timeout(30_000) }));
+      }
+      const responses = await Promise.all(requests);
+      const bodies: Promise<string>[] = [];
+      for (const response of responses) bodies.push(response.text());
+      const htmls = await Promise.all(bodies);
+      for (let responseIndex = 0; responseIndex < responses.length; responseIndex++) {
+        const response = responses[responseIndex]!;
+        const html = htmls[responseIndex]!;
+        if (response.status !== 200 || !html.includes("WordPress on Kandelo") ||
+            /<b>(?:Fatal error|Parse error|Warning)<\/b>:/.test(html)) {
+          throw new Error(`Invalid WordPress response: HTTP ${response.status}, body=${html.slice(0, 200)}`);
+        }
+      }
+    }
+    return { latenciesMs: values, throughputDurationMs: performance.now() - throughputStarted };
+  }, {
+    round, warmups: options.warmups, samples: options.samples,
+    clients: options.clients, concurrentSamples: options.concurrentSamples,
+  });
+  if (measurements.latenciesMs.length !== options.samples) {
+    throw new Error(`Browser measured ${measurements.latenciesMs.length} requests, expected ${options.samples}`);
   }
-  return { host: "browser", profile, round, startupMs, latenciesMs };
+  return {
+    host: "browser", profile, round, startupMs,
+    latenciesMs: measurements.latenciesMs,
+    throughputRequests: options.clients * options.concurrentSamples,
+    throughputDurationMs: measurements.throughputDurationMs,
+  };
 }
 
 async function main(): Promise<void> {
@@ -265,11 +314,13 @@ async function main(): Promise<void> {
         startupMedianMs: percentile(runs.map((result) => result.startupMs), 0.5),
         requestMedianMs: percentile(samples, 0.5),
         requestP90Ms: percentile(samples, 0.9),
+        throughputMedianRps: percentile(runs.map((result) =>
+          result.throughputRequests * 1_000 / result.throughputDurationMs), 0.5),
       }]];
     })),
   );
   const report = {
-    version: 1,
+    version: 2,
     measuredAt: new Date().toISOString(),
     environment: { platform: platform(), architecture: arch(), cpus: cpus().length, node: process.version },
     image: { path: imagePath, sha256: imageDigest },

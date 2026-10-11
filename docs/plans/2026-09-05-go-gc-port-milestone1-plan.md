@@ -2846,3 +2846,75 @@ fork commits and validation in this progress log and the Kandelo PR. Include
 the `exitThread` stack-reclamation ordering pitfall as a concrete example.
 Done when an agent can reproduce a Go runtime probe, identify which repo owns
 the fix, and report exact Node/browser evidence without relying on prior chat.
+
+## 2026-10-11: Unix build-tag expansion and remaining completion gates
+
+The adjacent Go fork now classifies `kandelo` as Unix in both build-tag maps
+at `ff20ff3a8d1a6087ca5960832dd13a2751edf316`, followed by the cgo
+selection fix at `741ef166026f15bf8c65b05c8518c263d3d03315`.
+Target-specific build
+constraints retain Kandelo's Wasm runtime, syscall, and polling paths instead
+of accidentally selecting native Unix implementations. The fork now routes
+`Fchownat` through the existing kernel syscall and carries `Stat_t.Rdev` plus
+nanosecond access/change times into `archive/tar` headers. Its complete
+standard-library build succeeds for Kandelo, JS/Wasm, and WASI/Wasm; the
+`CGO_ENABLED=1` Kandelo standard-library build also succeeds, and the
+`go/build` Unix classification regression passes. The cgo-mode `os/user`
+test binary passes six top-level cases, and a cgo-built VFS account program
+passes its current-user, lookup, and group-ID checks. A cgo-built `net` test
+binary compiles and passes two focused parser cases; AF_UNIX ancillary
+rights and IP TTL/hop options remain unsupported. These are build and
+focused-behavior results, not general Go conformance.
+The cgo-built VFS account browser probe passes in Chromium, Firefox, and
+WebKit. Its first Firefox attempt timed out while the large FrankenPHP
+package rebuild was compiling the Go toolchain; an isolated rerun passed.
+
+With source and data fixtures in VFS, the expanded upstream `os` suite passes
+213 top-level cases in Node when excluding only `TestGetwdDeep` and
+`TestGetwdDeepWithPWDSet`. Both deep-path cases fail on the default Node/macOS
+host-backed `/tmp` at about 1,024 native pathname bytes although the short
+relative component is valid; macOS reports `getconf PATH_MAX /tmp` as 1024.
+With image-backed `/tmp`, the complete 215-case upstream `os` suite passes
+in Node without excluding either case (21 top-level skips from upstream
+platform/tool availability). Browser SharedFS passes both cases in Chromium,
+Firefox, and WebKit. The
+upstream `TestRoot*` sweep now passes 47/47 in Node and as one probe in each
+browser engine. Five newly included Unix `os/exec` path/wait cases pass on
+Node and in each browser engine. The complete upstream `archive/tar` suite
+passes 44/44 on Node and as one probe in each browser engine. The new
+four-probe browser matrix passes 12/12 across the three engines. These runs
+use fresh ABI-stamped fixtures, empty stderr, and no host diagnostics.
+
+The selected WordPress source-only closure now publishes with image SHA-256
+`d9dadfc478fa8c1ec53b4a4987eab7b5ecbb27bb8f1ca9d6c84aea9d659714b4`.
+The fresh-image Node paired service smoke passes for nginx/PHP-FPM and
+FrankenPHP classic. Chromium passes both the direct PHP homepage/login gate
+and the browser demo homepage/admin flow (2/2). The direct browser test first
+loaded the stale `local-binaries/kernel.wasm`, which lacked the required
+`kernel_set_executable_path` export, and failed before PHP; it now uses the
+selected resolver kernel and passes. A Vite server from the prior day also
+caused a misleading stale-run failure, so the passing run used a fresh server
+on a dedicated port. The cgo account and complete `archive/tar` probes pass
+4/4 across Chromium and Firefox after publication.
+
+Remaining work, in recommended order:
+
+1. Close the Node/macOS HostFS deep-relative-path mismatch without weakening
+   guest path safety, and distribute native no-follow `linkat` without an
+   ambient compiler. Audit externally changed host-backed directories.
+2. Complete Go signal delivery and child credential handling, then run the
+   remaining upstream `os/exec`, standard-library, and runtime suites in
+   Node and browsers. `TestWaitInterrupt` still exposes handled-SIGINT and
+   WaitDelay gaps; requested child credentials still return honest `ENOSYS`.
+3. Broaden cgo ABI coverage and support real relocated C initializer/finalizer
+   arrays where needed by source ports. The current LLVM path rejects
+   `.fini_array` before Kandelo's linker can handle it.
+4. Exercise 1,024 simultaneously live Go Ms, long-lived PHP churn, allocator
+   pressure, and callback concurrency, not merely the declared 1,024-slot
+   memory layout with 48 live Ms.
+5. Rebuild the complete built-in program closure and rerun broad Sortix and
+   POSIX conformance after further platform changes. Keep unsupported browser
+   AF_UNIX behavior separate from fixable implementation defects.
+6. Run statistically powered, multi-client WordPress throughput comparisons
+   on the fresh image before claiming FrankenPHP outperforms PHP-FPM. The
+   earlier paired latency run showed no advantage.

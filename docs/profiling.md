@@ -351,10 +351,13 @@ the Node host and once through the Chromium browser demo. It verifies that
 the browser-served image has the same SHA-256 as the Node input before
 recording browser samples. Each profile boots a fresh machine per round;
 profile order alternates. Three requests warm the stack, then 12 unique-query
-responses per round are timed including full response bodies. HTTP errors,
+responses per round are timed including full response bodies. A separate
+four-client phase issues four requests per client and records completed
+requests per second over the whole concurrent phase. HTTP errors,
 missing WordPress content, and PHP diagnostics fail the run. The JSON report
-retains every latency, the image digest, startup times, environment, median,
-and p90. Node runs assign distinct HTTP and SMTP ports to prevent one demo
+retains every latency, concurrent-phase request count and duration, the image
+digest, startup times, environment, median, p90, and throughput median across
+rounds. Node runs assign distinct HTTP and SMTP ports to prevent one demo
 or round from conflicting with another.
 
 First build and publish the WordPress source-only image. For browser runs,
@@ -364,14 +367,15 @@ serve `apps/browser-demos` with its source-only Vite configuration on port
 ```bash
 WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1" \
-scripts/dev-shell.sh bash -c 'node --import tsx benchmarks/wordpress-stack.ts --host=both --rounds=4 --warmups=3 --samples=12'
+scripts/dev-shell.sh bash -c 'node --import tsx benchmarks/wordpress-stack.ts --host=both --rounds=4 --warmups=3 --samples=12 --clients=4 --concurrent-samples=4'
 ```
 
 The default report is `.context/wordpress-stack-benchmark.json`; use
 `--output=...`, `--host=node|browser|both`, `--browser-base-url=...`, or
-`--port=...` to change it. This is a paired, single-machine latency and
-cold-boot comparison, not a throughput, multi-client, or statistically
-powered superiority test. Node and Chromium medians describe different
+`--port=...`, `--clients=...`, or `--concurrent-samples=...` to change it.
+This is a paired, single-machine latency, cold-boot, and bounded
+multi-client throughput comparison, not a statistically powered superiority
+test. Node and Chromium medians describe different
 request paths and must not be pooled. The existing full benchmark suite is
 still required for broad platform performance claims.
 

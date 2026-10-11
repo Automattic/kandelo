@@ -5,7 +5,7 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs.ts";
 
 const [programPath, kernelPath, pwdPath, filter, skipFilter, sourcePackage = "os"] = process.argv.slice(2);
 if (!programPath || !kernelPath || !pwdPath || !filter) {
-  throw new Error("usage: node --import tsx run-full-vfs.ts <os-test.wasm> <kernel.wasm> <pwd.wasm> <test-filter>");
+  throw new Error("usage: node --import tsx run-full-vfs.ts <test.wasm> <kernel.wasm> <pwd.wasm> <test-filter> [skip-filter] [source-package]");
 }
 
 const programBytes = readFileSync(programPath);
@@ -32,6 +32,11 @@ if (sourcePackage === "os") {
     image.createFileWithOwner(`/work/testdata/${name}`, 0o644, 0, 0, new Uint8Array(readFileSync(resolve(goSourceRoot, "testdata", name))));
   }
 }
+if (sourcePackage === "archive/tar") {
+  for (const name of readdirSync(resolve(goSourceRoot, "testdata"))) {
+    image.createFileWithOwner(`/work/testdata/${name}`, 0o644, 0, 0, new Uint8Array(readFileSync(resolve(goSourceRoot, "testdata", name))));
+  }
+}
 for (const [name, contents] of [
   ["passwd", "root:x:0:0:Root:/root:/bin/sh\n"],
   ["group", "root:x:0:\n"],
@@ -46,6 +51,7 @@ const diagnostics: unknown[] = [];
 const syscallTrace: unknown[] = [];
 const host = new NodeKernelHost({
   rootfsImage: new Uint8Array(await image.saveImage()),
+  rootfsMountSpec: process.env.KANDELO_GO_IMAGE_TMP === "1" ? [{ path: "/", source: "image" }] : undefined,
   onStdout: (_pid, data) => { stdout += new TextDecoder().decode(data); },
   onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
   onHostDiagnostic: (diagnostic) => { diagnostics.push(diagnostic); },
@@ -59,6 +65,7 @@ try {
   ) as ArrayBuffer);
   if (process.env.KANDELO_GO_TRACE === "1") {
     unsubscribe = host.subscribeSyscalls((event) => {
+      if (event.nr === 40) return;
       syscallTrace.push(event);
       if (syscallTrace.length > 2000) syscallTrace.shift();
     });
@@ -76,7 +83,10 @@ try {
       timeoutHandle = setTimeout(() => reject(new Error("Go os VFS suite timed out")), timeout);
     }),
   ]).finally(() => clearTimeout(timeoutHandle));
-  console.log(JSON.stringify({ exitCode, stdout, stderr, diagnostics }));
+  console.log(JSON.stringify(
+    { exitCode, stdout, stderr, diagnostics, syscallTrace: process.env.KANDELO_GO_TRACE === "1" ? syscallTrace.slice(-40) : undefined },
+    (_key, value) => typeof value === "bigint" ? value.toString() : value,
+  ));
   if (exitCode !== 0 || !stdout.includes("PASS\n") || stderr !== "" || diagnostics.length !== 0) {
     process.exitCode = 1;
   }

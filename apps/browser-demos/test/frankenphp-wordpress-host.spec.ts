@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const imagePath = process.env.KANDELO_WORDPRESS_FRANKENPHP_VFS;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -23,7 +24,7 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
   await page.route(kernelUrl, (route) => route.fulfill({
     status: 200,
     contentType: "application/wasm",
-    body: readFileSync(resolve(repoRoot, "local-binaries/kernel.wasm")),
+    body: readFileSync(resolveBinary("kernel.wasm")),
   }));
   await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 

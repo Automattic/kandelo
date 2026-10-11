@@ -53,8 +53,12 @@ These probes supply real `/etc/passwd` and `/etc/group` VFS files for the
 public API check. Pass `stdlib-full` as the runner mode to run all 12
 available pure-Go `os/user` top-level tests, including current user and group
 lookup. This does not establish host account database integration.
+The cgo-built `user-cgo-basic` fixture exercises the same account and group
+operations with `CGO_ENABLED=1`; Kandelo deliberately retains Go's VFS-backed
+lookup path rather than selecting the native-Unix cgo `struct passwd` path.
 
-The fixture builder also compiles upstream `os` and `syscall` test binaries.
+The fixture builder also compiles upstream `os`, `os/exec`, `archive/tar`, and
+`syscall` test binaries.
 The 60 selected upstream `os` cases cover stat, positioned reads, open
 errors, directory batching/cleanup/seek, large and negative file seeks,
 chmod, path/fd/symlink chown,
@@ -75,10 +79,14 @@ The same selected cases are included in `go-port.spec.ts` for Chromium,
 Firefox, and WebKit. They are not the full upstream `os` or `syscall` suites.
 The VFS-backed `run-full-vfs.ts` runner supplies Go source/testdata, account
 files, `/bin/pwd`, and a non-root CWD. With `-test.run=^Test`, the available
-upstream `os` suite passes 205 top-level tests in Node; the available
+upstream `os` suite passes 213 top-level tests in Node when excluding the two
+deep-path cases on the default macOS host-backed `/tmp`. The full 215-case
+suite passes with image-backed `/tmp` via `KANDELO_GO_IMAGE_TMP=1`. The
+available
 `syscall` suite passes five top-level tests in Node. The same VFS runner can
-run the upstream `sync` test binary and an `os/exec` short sweep by selecting
-`os/exec` as its optional source package. Browser probes exercise the full
+run the upstream `sync` test binary, an `os/exec` short sweep, and all 44
+`archive/tar` tests by selecting the appropriate source package. Browser
+probes exercise the full
 short `sync` suite: a clean combined Chromium/Firefox/WebKit rerun passes 3/3
 after an earlier WebKit timeout during `TestMutexMisuse` and a successful
 isolated retry. The `os/exec` short Node sweep passes 28 top-level tests,
@@ -87,13 +95,20 @@ signal/concurrency tests; two of those excluded tests pass in a separate
 run. A VFS-backed six-test `os/exec` process/lookup probe passes 3/3 across
 Chromium, Firefox, and WebKit with serialized test parallelism. This is not
 full conformance.
-The full Node `TestRoot*` sweep passes all 43 top-level tests, including
-`TestRootChtimes`, `TestRootLinkFrom`, and `TestRootRenameAfterOpen`, with
+The full Node `TestRoot*` sweep passes all 47 top-level tests, including
+the Unix-only ownership cases, `TestRootChtimes`, `TestRootLinkFrom`, and
+`TestRootRenameAfterOpen`, with
 documented AF_UNIX subcase skips. Run it with
 `KANDELO_GO_TEST_TIMEOUT_MS=300000` and `-test.run=^TestRoot` as the third
 argument to `os-stdlib/run.ts`. The complete sweep passes as one probe in
 Chromium, Firefox, and WebKit after staging the three `testdata/dirfs`
 fixtures into each browser VFS.
+The expanded `os.Root`, five Unix-only `os/exec`, complete `archive/tar`, and
+deep-path `os.Getwd` probes pass 12/12 across Chromium, Firefox, and WebKit
+using fresh ABI-stamped fixtures. Browser SharedFS reaches the advertised
+path limit; the default Node/macOS scratch mount encounters its native
+1,024-byte absolute-path limit first. Set `KANDELO_GO_IMAGE_TMP=1` on the
+VFS runner to isolate Go behavior from that host-filesystem limitation.
 The `browser-basic` program additionally checks fixed nanosecond atime and
 mtime through the real `os.Chtimes`/stat syscall path on each browser's
 SharedFS-backed `/tmp`.
