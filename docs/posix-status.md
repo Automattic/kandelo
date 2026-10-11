@@ -319,9 +319,9 @@ proves and reserves only the 128-byte prefix the kernel can write.
 | `clock_settime()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
 | `settimeofday()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
 | `adjtimex()` / `clock_adjtime()` | Stub | Returns EPERM. Cannot adjust system clock from Wasm. |
-| `utimes()` | Partial | Converts timeval to timespec and delegates to utimensat; SharedFS currently stores only milliseconds of the supplied microsecond precision. |
+| `utimes()` | Partial | Converts timeval to timespec and delegates to utimensat; SharedFS and the Node metadata overlay preserve supplied sub-millisecond timestamps. |
 | `futimesat()` | Partial | Like utimes but relative to dirfd; inherits the same SharedFS timestamp precision limit and remembered-path dirfd behavior. |
-| `utimensat()` / `futimens()` | Partial | Updates access and modification times for host-backed files and named FIFOs. Setting both timestamps to the current time accepts either ownership or write permission; explicit timestamps require ownership, while two `UTIME_OMIT` values are an authorization-free no-op after path/fd validation. Direct descriptor mutation through futimens rejects O_PATH/O_SEARCH descriptors with EBADF. SharedFS currently stores timestamps to millisecond precision, so sub-millisecond explicit times do not round-trip. |
+| `utimensat()` / `futimens()` | Partial | Updates access and modification times for host-backed files and named FIFOs. Setting both timestamps to the current time accepts either ownership or write permission; explicit timestamps require ownership, while two `UTIME_OMIT` values are an authorization-free no-op after path/fd validation. Direct descriptor mutation through futimens rejects O_PATH/O_SEARCH descriptors with EBADF. SharedFS stores exact timestamps in an optional per-inode metadata block, preserving existing image layouts; Node-backed files retain exact guest-requested times in the virtual metadata overlay. OPFS timestamp writes remain unsupported. |
 
 ## Scheduler
 

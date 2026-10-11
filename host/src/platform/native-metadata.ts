@@ -113,6 +113,8 @@ interface VirtualMetadata {
   gid?: number;
   atimeMs?: number;
   mtimeMs?: number;
+  atimeNs?: bigint;
+  mtimeNs?: bigint;
   nativeAtimeMs?: number;
   nativeMtimeMs?: number;
   nativeCtimeMs?: number;
@@ -170,6 +172,11 @@ export class NativeMetadataOverlay {
       ctimeMs: metadata?.ctimeMs === undefined
         ? nativeCtimeMs
         : Math.max(metadata.ctimeMs, nativeCtimeMs),
+      atimeNs: metadata?.atimeNs ?? s.atimeNs,
+      mtimeNs: metadata?.mtimeNs ?? s.mtimeNs,
+      ctimeNs: metadata?.ctimeMs !== undefined && metadata.ctimeMs > nativeCtimeMs
+        ? BigInt(Math.floor(metadata.ctimeMs)) * NANOSECONDS_PER_MILLISECOND
+        : s.ctimeNs,
     };
   }
 
@@ -195,6 +202,8 @@ export class NativeMetadataOverlay {
     s: BigIntStats,
     atimeMs: number,
     mtimeMs: number,
+    atimeNs: bigint,
+    mtimeNs: bigint,
     nativeAfter: BigIntStats,
   ): void {
     const metadata = this.metadataFor(s);
@@ -203,6 +212,8 @@ export class NativeMetadataOverlay {
     const nativeCtimeMs = checkedMilliseconds(nativeAfter.ctimeNs, "st_ctime");
     metadata.atimeMs = atimeMs;
     metadata.mtimeMs = mtimeMs;
+    metadata.atimeNs = atimeNs;
+    metadata.mtimeNs = mtimeNs;
     metadata.nativeAtimeMs = nativeAtimeMs;
     metadata.nativeMtimeMs = nativeMtimeMs;
     metadata.nativeCtimeMs = nativeCtimeMs;
@@ -287,6 +298,7 @@ export class NativeMetadataOverlay {
       (metadata.nativeAtimeMs !== undefined && nativeAtimeMs !== metadata.nativeAtimeMs)
     ) {
       delete metadata.atimeMs;
+      delete metadata.atimeNs;
       delete metadata.nativeAtimeMs;
     }
     if (
@@ -294,6 +306,7 @@ export class NativeMetadataOverlay {
       (metadata.nativeMtimeMs !== undefined && nativeMtimeMs !== metadata.nativeMtimeMs)
     ) {
       delete metadata.mtimeMs;
+      delete metadata.mtimeNs;
       delete metadata.nativeMtimeMs;
     }
 
@@ -305,6 +318,8 @@ export class NativeMetadataOverlay {
   private clearTimeOverrides(metadata: VirtualMetadata): void {
     delete metadata.atimeMs;
     delete metadata.mtimeMs;
+    delete metadata.atimeNs;
+    delete metadata.mtimeNs;
     delete metadata.nativeAtimeMs;
     delete metadata.nativeMtimeMs;
     delete metadata.nativeCtimeMs;

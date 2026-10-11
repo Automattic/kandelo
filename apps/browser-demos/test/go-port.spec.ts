@@ -103,6 +103,14 @@ const probes: Probe[] = [
     imageCapacity: 8 * 1024 * 1024,
   },
   {
+    name: "upstream Go os.Root Chtimes nanosecond precision",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestRootChtimes$", "-test.v"],
+    stdout: ["--- PASS: TestRootChtimes", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
+  },
+  {
     name: "second-M bootstrap and per-M syscall channel",
     file: "second-m.wasm",
     argv: ["go-second-m"],

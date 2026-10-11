@@ -3602,21 +3602,31 @@ export class WasmPosixKernel {
     dataViewSetUint32(dv, 28, stat.gid, true);
     dataViewSetBigUint64(dv, 32, BigInt(stat.size), true);
 
-    // Convert millisecond timestamps to seconds + nanoseconds.
-    const atimeSec = Math.floor(stat.atimeMs / 1000);
-    const atimeNsec = Math.floor((stat.atimeMs % 1000) * 1_000_000);
-    dataViewSetBigUint64(dv, 40, BigInt(atimeSec), true);
-    dataViewSetUint32(dv, 48, atimeNsec, true);
-
-    const mtimeSec = Math.floor(stat.mtimeMs / 1000);
-    const mtimeNsec = Math.floor((stat.mtimeMs % 1000) * 1_000_000);
-    dataViewSetBigUint64(dv, 56, BigInt(mtimeSec), true);
-    dataViewSetUint32(dv, 64, mtimeNsec, true);
-
-    const ctimeSec = Math.floor(stat.ctimeMs / 1000);
-    const ctimeNsec = Math.floor((stat.ctimeMs % 1000) * 1_000_000);
-    dataViewSetBigUint64(dv, 72, BigInt(ctimeSec), true);
-    dataViewSetUint32(dv, 80, ctimeNsec, true);
+    const writeTime = (offset: number, milliseconds: number, exact?: bigint): void => {
+      let seconds: bigint;
+      let remainder: bigint;
+      if (exact === undefined) {
+        const wholeSeconds = Math.floor(milliseconds / 1000);
+        seconds = BigInt(wholeSeconds);
+        remainder = BigInt(Math.round((milliseconds - wholeSeconds * 1000) * 1_000_000));
+        if (remainder >= 1_000_000_000n) {
+          seconds += 1n;
+          remainder -= 1_000_000_000n;
+        }
+      } else {
+        seconds = exact / 1_000_000_000n;
+        remainder = exact % 1_000_000_000n;
+        if (remainder < 0n) {
+          seconds -= 1n;
+          remainder += 1_000_000_000n;
+        }
+      }
+      dataViewSetBigUint64(dv, offset, seconds, true);
+      dataViewSetUint32(dv, offset + 8, Number(remainder), true);
+    };
+    writeTime(40, stat.atimeMs, stat.atimeNs);
+    writeTime(56, stat.mtimeMs, stat.mtimeNs);
+    writeTime(72, stat.ctimeMs, stat.ctimeNs);
     // _pad at offset 84 already zeroed
     this.#writeKernelBytes(destination, bytes);
   }

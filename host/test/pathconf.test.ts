@@ -40,7 +40,7 @@ afterAll(() => {
 describe("pathconf capability values", () => {
   const memoryProfile = {
     supportsSymlinks: true,
-    timestampResolutionNs: 1_000_000,
+    timestampResolutionNs: 1,
   };
   const opfsProfile = {
     supportsSymlinks: false,
@@ -63,7 +63,7 @@ describe("pathconf capability values", () => {
     expect(backendPathconf(PATHCONF_NAMES.POSIX2_SYMLINKS, opfsProfile))
       .toBeNull();
     expect(backendPathconf(PATHCONF_NAMES.TIMESTAMP_RESOLUTION, memoryProfile))
-      .toBe(1_000_000);
+      .toBe(1);
     expect(backendPathconf(PATHCONF_NAMES.TIMESTAMP_RESOLUTION, opfsProfile))
       .toBeNull();
   });

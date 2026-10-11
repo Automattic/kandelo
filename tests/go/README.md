@@ -67,8 +67,11 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/syscall-stdlib/run.ts .
 
 The same selected cases are included in `go-port.spec.ts` for Chromium,
 Firefox, and WebKit. They are not the full upstream `os` or `syscall` suites.
-The full Node `TestRoot*` sweep still fails `TestRootChtimes`,
-`TestRootLinkFrom`, and `TestRootRenameAfterOpen`. `TestExecutable` also
+The full Node `TestRoot*` sweep passes `TestRootChtimes` after exact
+nanosecond timestamp propagation on both Node and browser backends; it still
+fails `TestRootLinkFrom` and `TestRootRenameAfterOpen`. The focused
+`TestRootChtimes` browser probe passes in Chromium, Firefox, and WebKit.
+`TestExecutable` also
 fails: the Go fork has no Kandelo implementation, and Kandelo currently
 reports `argv[0]` rather than the executable's VFS path through
 `/proc/self/exe`. That requires a platform-owned executable identity before

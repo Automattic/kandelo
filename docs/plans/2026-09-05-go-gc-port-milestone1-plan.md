@@ -2465,14 +2465,30 @@ statistical superiority. The Node FrankenPHP teardown occasionally warns
 that its bounded cooperative drain fell back to forced worker termination
 after sampling; no request failed, but teardown load is a measurement caveat.
 
+**2026-10-10 — exact filesystem timestamps across Node and browser hosts.**
+The upstream Go `TestRootChtimes` failure crossed two backends: Node's `/tmp`
+is host-backed and discarded sub-millisecond values in its virtual metadata
+overlay, while browser `/tmp` is SharedFS-backed and stored only integer
+milliseconds. SharedFS now allocates an optional 4 KiB timestamp block only
+when an inode needs exact sub-millisecond or pre-epoch times; the ordinary
+millisecond inode fields and existing portable image format remain readable.
+The Node overlay keeps exact requested nanoseconds alongside native times,
+and the Wasm stat bridge prefers exact backend values without multiplying a
+large epoch-millisecond floating-point number into imprecise nanoseconds.
+`_PC_TIMESTAMP_RESOLUTION` now reports 1 ns on these backends. Focused host
+and pathconf tests pass 23/23, the host package builds, the ABI snapshot check
+passes, upstream `TestRootChtimes` passes in Node and in Chromium, Firefox,
+and WebKit (3/3). The complete Node `TestRoot*` sweep now has exactly two
+failing top-level cases: `TestRootLinkFrom` and `TestRootRenameAfterOpen`.
+Neither the three-browser full Root sweep nor the broad conformance rerun has
+been completed for this change yet.
+
 The remaining Go/C platform gates, in recommended order, are:
 
-1. Close the remaining upstream `os.Root` filesystem failures at their
-   owning layers: SharedFS sub-millisecond timestamps, Node/macOS
-   symlink-source `linkat`, and stable dirfd identity after rename.
-   SharedFS stores integer-millisecond inode times and the host stat bridge
-   currently transports millisecond numbers, so exact `Chtimes` requires
-   coordinated storage and stat changes. Node's native hard-link call can
+1. Close the two remaining upstream `os.Root` filesystem failures at their
+   owning layers: Node/macOS symlink-source `linkat` and stable dirfd identity
+   after rename. Exact `Chtimes` now passes on Node and all three browsers.
+   Node's native hard-link call can
    follow the source symlink despite kernel no-follow resolution. `openat`
    currently resolves through the directory OFD's remembered pathname, so
    a correct rename-after-open fix needs stable object identity rather than
