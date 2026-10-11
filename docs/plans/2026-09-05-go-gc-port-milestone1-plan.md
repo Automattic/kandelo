@@ -2897,6 +2897,22 @@ caused a misleading stale-run failure, so the passing run used a fresh server
 on a dedicated port. The cgo account and complete `archive/tar` probes pass
 4/4 across Chromium and Firefox after publication.
 
+A four-round paired WordPress run on that image completed on Node and
+Chromium with two warmups, 12 serial request samples, four concurrent
+clients, and 12 requests per client for each profile and round. The raw
+report is `.context/wordpress-stack-rev17-paired.json` (untracked local
+evidence). Node request medians are 671 ms for nginx/PHP-FPM and 812 ms for
+FrankenPHP; median throughput is 2.15 versus 1.87 requests/s. Chromium
+request medians are 728 versus 755 ms, while median throughput is 1.99
+versus 2.14 requests/s. These small runs are mixed and do not establish
+FrankenPHP superiority. A first full attempt completed Node sampling but
+the browser sampler failed before measurement because an esbuild-injected
+`__name` helper was absent inside `page.evaluate`; a browser-only smoke and
+the complete paired rerun pass after using self-contained in-page loops.
+Node FrankenPHP teardown still occasionally force-terminates live workers.
+The current source-only image also serves the preinstalled site and login
+at `http://localhost:3000/` through the Kandelo Node host.
+
 Remaining work, in recommended order:
 
 1. Close the Node/macOS HostFS deep-relative-path mismatch without weakening
@@ -2915,6 +2931,7 @@ Remaining work, in recommended order:
 5. Rebuild the complete built-in program closure and rerun broad Sortix and
    POSIX conformance after further platform changes. Keep unsupported browser
    AF_UNIX behavior separate from fixable implementation defects.
-6. Run statistically powered, multi-client WordPress throughput comparisons
-   on the fresh image before claiming FrankenPHP outperforms PHP-FPM. The
-   earlier paired latency run showed no advantage.
+6. Repeat the paired throughput comparison across enough independent runs
+   and environments to support any superiority claim. The four-round
+   fresh-image Node and Chromium results above are mixed; neither the earlier
+   nor the current samples establish a FrankenPHP performance advantage.
