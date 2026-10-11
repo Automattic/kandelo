@@ -3,14 +3,16 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 go_bin="${GO_KANDELO_BIN:-$repo_root/../go-kandelo/bin/go}"
-output_dir="$repo_root/.context/go-browser"
+publish_dir="$repo_root/.context/go-browser"
 
 if [[ ! -x "$go_bin" ]]; then
   echo "Go fork binary not found: $go_bin" >&2
   exit 1
 fi
 
-mkdir -p "$output_dir"
+mkdir -p "$repo_root/.context"
+output_dir="$(mktemp -d "$repo_root/.context/go-browser-build.XXXXXX")"
+trap 'rm -rf "$output_dir"' EXIT
 REPO_ROOT="$repo_root"
 source "$repo_root/scripts/build-programs-abi-stamp.sh"
 
@@ -60,4 +62,6 @@ record_built_program_output "$output_dir/syscall-test.wasm"
 
 stamp_built_program_outputs
 
-printf 'Go browser fixtures built in %s\n' "$output_dir"
+mkdir -p "$publish_dir"
+mv "$output_dir"/*.wasm "$publish_dir/"
+printf 'Go browser fixtures built in %s\n' "$publish_dir"

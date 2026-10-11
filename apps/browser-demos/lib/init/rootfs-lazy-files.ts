@@ -2,7 +2,6 @@
 // Focused consumers such as the PHP PHPT runner must not need every optional
 // utility in the interactive shell catalog just to resolve the rootfs entries
 // their VFS image actually carries.
-import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import gawkWasmUrl from "@binaries/programs/wasm32/gawk.wasm?url";

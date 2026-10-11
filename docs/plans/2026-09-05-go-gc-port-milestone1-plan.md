@@ -2360,6 +2360,47 @@ The fresh full Open POSIX run against this renamed-dot kernel completed
 with 174 PASS, three documented XFAIL, two SKIP, and zero unexpected
 failures (179 cases total).
 
+**2026-10-10 — current-main reconciliation and fresh distribution.** The
+draft branch merged the advancing `main` without rewriting contributor
+history. Fork-instrument retains Go's Wasm feature flags alongside main's
+explicit `--keep-names` policy; its seven post-optimize CLI tests pass. The
+generated resolver bundle was regenerated from the merged source and its
+standalone check passes. ABI snapshot validation passes. A kernel rebuild
+invalidated the prior source-only program projection, so the full WordPress
+shell closure was rebuilt. One parallel `coreutils-docs` help-capture
+timed out after 30 seconds under build contention; retrying that package
+alone passed, then WordPress and `go-hello` republished successfully. The
+new WordPress VFS is SHA-256
+`2a80eca8f4eb390458cbbf038466bab2d07f0a043ca1de34ea2989d2de7d737d`
+(52,291,643 bytes).
+
+Go browser fixtures now build in a fresh staging directory before their
+ABI stamp and publication; rerunning the builder twice over existing
+outputs succeeded, instead of attempting to restamp stale Wasm after an
+ABI snapshot change. Source-only Vite also rejected an unrelated `dash`
+asset imported by the rootfs lazy-file map: `dash` is not in rootfs's
+declared package closure or VFS manifest. Removing that unused import
+keeps the browser loader faithful to the image rather than accepting an
+orphaned local binary.
+
+On the merged tree, 1,719 runtime-core unit and six doc tests pass. The
+selected upstream Go `os` and `syscall` probes and the resolved Go package
+launcher pass in Node, as does direct FrankenPHP PHP/static HTTP. After
+rebuilding the cgo fixtures from source and stamping the current ABI,
+the focused Go browser matrix passes 102/102 across Chromium, Firefox,
+and WebKit. Resolved Go package and direct FrankenPHP browser checks pass
+6/6; rebuilt-image WordPress direct kernel-host, browser homepage/admin,
+and Node-host checks pass 3/3 in Chromium. The live Node homepage/login
+return HTTP 200, and a manual source-only browser run loads the WordPress
+homepage with the machine running and no page errors. The first full Open
+POSIX attempt on the merged tree failed before guest launch: its isolated
+runner eagerly resolved unrelated optional builtin programs against an
+incomplete old local package tier. The Open POSIX cases stage only their
+own executable fixtures, so the runner now requests the existing `explicit`
+builtin mode, as the libc conformance runner already does. An individual
+`asctime/1-1` case passes with that mode; the full merged-tree rerun is in
+progress.
+
 The remaining Go/C platform gates, in recommended order, are:
 
 1. Close the remaining upstream `os.Root` filesystem failures at their
