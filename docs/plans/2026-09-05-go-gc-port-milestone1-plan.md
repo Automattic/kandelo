@@ -2960,7 +2960,11 @@ the 30-second budget; their parallel budget is now six times the configured
 base timeout. The full parallel `basic` rerun now passes 938 cases, eight
 documented XFAIL, zero FAIL, and zero TIMEOUT across all 946 cases. The
 earlier zero-exit `--all` run must not be cited as a clean conformance pass;
-the non-basic suites have not been rerun with the corrected final status.
+the non-basic suites had not yet been rerun with the corrected final status.
+The corrected full `--all` rerun now exits zero after 5,062 PASS, zero FAIL,
+23 documented XFAIL, 50 SKIP, and zero TIMEOUT across 5,135 cases. This
+closes the broad Sortix rerun gate without reclassifying expected failures
+or skips as passes.
 
 The mixed-width cgo probe now additionally returns a packed 14-byte C
 struct containing an unaligned 32-bit C pointer and an unaligned 64-bit
@@ -3027,10 +3031,21 @@ Remaining work, in recommended order:
    waves in each host, and 40 extra PHP requests on one WordPress server boot
    in Node and Chromium. The 512-worker Node run nearly fills this host's
    memory footprint budget.
-5. Rerun the non-basic Sortix suites with timeout-sensitive exit status; the
-   complete parallel basic suite is clean. Keep unsupported browser AF_UNIX
-   behavior separate from fixable implementation defects.
-6. Repeat the paired throughput comparison across enough independent runs
+5. Repeat the paired throughput comparison across enough independent runs
    and environments to support any superiority claim. The four-round
    fresh-image Node and Chromium results above are mixed; neither the earlier
    nor the current samples establish a FrankenPHP performance advantage.
+
+The first two gaps are not merely missing test fixtures. The current Node
+`HostFileSystem.safePath` builds full native pathnames, so macOS reaches its
+native path limit before Kandelo's guest limit; a local `/dev/fd/N/child`
+prototype returned `ENOENT`, not an fd-relative lookup. A safe fix needs
+native fd-relative operations that preserve directory identity during
+external mutation. The exact no-follow `linkat` path likewise still compiles
+its native helper on first use; a published host needs a reviewed native
+artifact distribution path. In the Go fork, `runtime/os_wasm.go` still has
+no-op signal enable/disable hooks, while `syscall.StartProcess` rejects
+requested child credentials with `ENOSYS`; the current spawn wire has no
+arbitrary UID/GID/group fields. Signal handling and child credentials need
+runtime and spawn-protocol designs, not a test-only skip or fabricated
+success.
