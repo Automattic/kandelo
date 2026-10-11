@@ -71,6 +71,9 @@ The full Node `TestRoot*` sweep passes `TestRootChtimes` after exact
 nanosecond timestamp propagation on both Node and browser backends; it still
 fails `TestRootLinkFrom` and `TestRootRenameAfterOpen`. The focused
 `TestRootChtimes` browser probe passes in Chromium, Firefox, and WebKit.
+The `browser-basic` program additionally checks fixed nanosecond atime and
+mtime through the real `os.Chtimes`/stat syscall path on each browser's
+SharedFS-backed `/tmp`.
 `TestExecutable` also
 fails: the Go fork has no Kandelo implementation, and Kandelo currently
 reports `argv[0]` rather than the executable's VFS path through

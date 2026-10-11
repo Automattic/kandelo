@@ -2478,7 +2478,11 @@ large epoch-millisecond floating-point number into imprecise nanoseconds.
 `_PC_TIMESTAMP_RESOLUTION` now reports 1 ns on these backends. Focused host
 and pathconf tests pass 23/23, the host package builds, the ABI snapshot check
 passes, upstream `TestRootChtimes` passes in Node and in Chromium, Firefox,
-and WebKit (3/3). The complete Node `TestRoot*` sweep now has exactly two
+and WebKit (3/3). The `browser-basic` Go program now also sets fixed,
+non-millisecond atime and mtime through `os.Chtimes` on browser `/tmp` and
+checks both `os.Stat` and `syscall.Stat` round-trip; its rebuilt fixture
+passes in Chromium, Firefox, and WebKit (3/3). The complete Node `TestRoot*`
+sweep now has exactly two
 failing top-level cases: `TestRootLinkFrom` and `TestRootRenameAfterOpen`.
 Neither the three-browser full Root sweep nor the broad conformance rerun has
 been completed for this change yet.

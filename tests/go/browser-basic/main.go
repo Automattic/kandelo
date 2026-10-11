@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"syscall"
 	"time"
 )
 
@@ -47,6 +48,19 @@ func main() {
 	output, err := os.ReadFile("/tmp/go-browser-port/new")
 	if err != nil || string(output) != string(input) {
 		panic("file round trip mismatch")
+	}
+	atime := time.Unix(1_790_000_000, 123_456_789)
+	mtime := time.Unix(1_790_000_001, 987_654_321)
+	if err := os.Chtimes("/tmp/go-browser-port/new", atime, mtime); err != nil {
+		panic(err)
+	}
+	stat, err := os.Stat("/tmp/go-browser-port/new")
+	if err != nil || !stat.ModTime().Equal(mtime) {
+		panic("nanosecond timestamps did not round trip")
+	}
+	var raw syscall.Stat_t
+	if err := syscall.Stat("/tmp/go-browser-port/new", &raw); err != nil || raw.Atime != uint64(atime.UnixNano()) {
+		panic("nanosecond access time did not round trip")
 	}
 	if err := os.Remove("/tmp/go-browser-port/new"); err != nil {
 		panic(err)
