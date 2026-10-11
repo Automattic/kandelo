@@ -78,6 +78,10 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   footprint on a 36 GB host; do not double the count on that host without
   reducing per-worker overhead. This does not prove that the reservation
   fits the constrained browser memory profile.
+- Repeat locked-M waves with goroutines returning while still locked to
+  force thread retirement rather than merely parking and reusing Ms. Five
+  48-worker waves pass in Node and Chromium, Firefox, and WebKit under the
+  declared 1,024-slot ceiling; this does not substitute for PHP-worker churn.
 - In cgo builds, the shared Go `__tls_base` handoff word is unsafe when a C
   pthread and a Go M start concurrently. The Go runtime reads the C
   `__channel_base` mutable Wasm global through a typed C getter, so every

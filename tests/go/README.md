@@ -150,7 +150,7 @@ selectable from 1 to 1,023; the default 48 passes in Node, Chromium, Firefox,
 and WebKit. A fresh 256-worker run passes in Node, Chromium, Firefox, and
 WebKit; 512 workers pass in Node. The main M also occupies a slot, so 1,023
 workers is the upper bound for this fixture. Run the
-larger probe with the count as the last Node argument, or set
+larger probe with the count after the kernel path in the Node command, or set
 `KANDELO_GO_MAX_THREAD_SLOTS_TESTS=1` and
 `KANDELO_GO_LIVE_THREAD_COUNT=256` for its opt-in browser test. These runs do
 not yet prove 1,024 simultaneously live Ms, long-lived PHP churn, or allocator
@@ -158,6 +158,13 @@ pressure. The 512-worker Node run reached a 30.4 GB peak memory footprint on
 a 36 GB host, so attempting 1,023 workers there would risk exhausting the
 machine; completing that scale gate needs lower per-worker overhead or a
 larger test host.
+
+An optional second argument selects 1–50 waves. For multiple waves, each
+locked goroutine exits without unlocking its thread so the runtime retires
+that M before the next wave. Five waves of 48 workers pass in Node and all
+three browsers with the 1,024-slot fixture. Set
+`KANDELO_GO_LIVE_THREAD_ROUNDS=5` for the browser test. This checks bounded
+Go-thread retirement, not long-lived PHP worker or allocator behavior.
 
 ## Resolver package and VFS launch
 

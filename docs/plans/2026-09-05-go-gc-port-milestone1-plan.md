@@ -2979,6 +2979,13 @@ count would risk exhausting the host; the complete 1,024-live-M gate needs
 lower per-worker overhead or a larger host. This does not cover long-lived
 worker churn or 512 workers in the browser.
 
+The same fixture now accepts multiple waves and leaves each worker goroutine
+locked when it returns, forcing Go to retire that M instead of merely
+parking it for reuse. Five waves of 48 distinct live Ms pass in Node and
+3/3 in Chromium, Firefox, and WebKit, with empty guest stderr and host
+diagnostics. This closes a bounded Go-thread turnover probe, not sustained
+PHP-worker churn or allocator pressure.
+
 The browser asset check used to run one source-projection freshness check per
 import (151 default imports), taking over six minutes without reaching its
 result under the completed closure. It now batches package-owned imports
@@ -3004,8 +3011,9 @@ Remaining work, in recommended order:
    `.fini_array` before Kandelo's linker can handle it.
 4. Exercise 1,024 simultaneously live Go Ms, long-lived PHP churn, allocator
    pressure, and callback concurrency. The current evidence reaches 513
-   live Ms in Node and 257 in each browser, while the 512-worker Node run
-   nearly fills this host's memory footprint budget.
+   live Ms in Node and 257 in each browser, plus five 48-worker retirement
+   waves in each host. The 512-worker Node run nearly fills this host's
+   memory footprint budget.
 5. Rerun the non-basic Sortix suites with timeout-sensitive exit status; the
    complete parallel basic suite is clean. Keep unsupported browser AF_UNIX
    behavior separate from fixable implementation defects.
