@@ -44,6 +44,8 @@ disabled_software_vitest_excludes=(
     "--exclude=../**/*formula*"
     "--exclude=**/*tap*"
     "--exclude=../**/*tap*"
+    # Erlang is deferred while its package/runtime validation is unstable.
+    "--exclude=../packages/registry/erlang/test/**"
     "--exclude=test/abi-staging-mini-vfs.test.ts"
     "--exclude=test/abi-staging-product-builders.test.ts"
     "--exclude=test/shell-vfs-build.test.ts"

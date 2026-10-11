@@ -111,6 +111,9 @@ test("broad service-worker scope permission exists only in historical records", 
     ".mjs", ".rs", ".sh", ".toml", ".ts", ".tsx", ".yaml", ".yml",
   ]);
   const excludedDirectories = new Set([
+    // Local worktrees and captured failure reports are evidence, not authored
+    // scope permissions. Keep production source (including .github) in scope.
+    ".context", "playwright-report", "test-results",
     ".git", ".worktrees", "binaries", "dist", "local-binaries",
     "node_modules", "target", "test-runs",
   ]);
