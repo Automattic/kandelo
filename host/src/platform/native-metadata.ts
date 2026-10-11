@@ -115,9 +115,9 @@ interface VirtualMetadata {
   mtimeMs?: number;
   atimeNs?: bigint;
   mtimeNs?: bigint;
-  nativeAtimeMs?: number;
-  nativeMtimeMs?: number;
-  nativeCtimeMs?: number;
+  nativeAtimeNs?: bigint;
+  nativeMtimeNs?: bigint;
+  nativeCtimeNs?: bigint;
   ctimeMs?: number;
 }
 
@@ -144,9 +144,9 @@ export class NativeMetadataOverlay {
     if (metadata !== undefined) {
       this.reconcileNativeTimes(
         metadata,
-        nativeAtimeMs,
-        nativeMtimeMs,
-        nativeCtimeMs,
+        s.atimeNs,
+        s.mtimeNs,
+        s.ctimeNs,
       );
     }
     const nativeMode = checkedNumber(s.mode, "st_mode");
@@ -207,16 +207,14 @@ export class NativeMetadataOverlay {
     nativeAfter: BigIntStats,
   ): void {
     const metadata = this.metadataFor(s);
-    const nativeAtimeMs = checkedMilliseconds(nativeAfter.atimeNs, "st_atime");
-    const nativeMtimeMs = checkedMilliseconds(nativeAfter.mtimeNs, "st_mtime");
     const nativeCtimeMs = checkedMilliseconds(nativeAfter.ctimeNs, "st_ctime");
     metadata.atimeMs = atimeMs;
     metadata.mtimeMs = mtimeMs;
     metadata.atimeNs = atimeNs;
     metadata.mtimeNs = mtimeNs;
-    metadata.nativeAtimeMs = nativeAtimeMs;
-    metadata.nativeMtimeMs = nativeMtimeMs;
-    metadata.nativeCtimeMs = nativeCtimeMs;
+    metadata.nativeAtimeNs = nativeAfter.atimeNs;
+    metadata.nativeMtimeNs = nativeAfter.mtimeNs;
+    metadata.nativeCtimeNs = nativeAfter.ctimeNs;
     metadata.ctimeMs = Math.max(metadata.ctimeMs ?? 0, nativeCtimeMs);
   }
 
@@ -286,32 +284,32 @@ export class NativeMetadataOverlay {
 
   private reconcileNativeTimes(
     metadata: VirtualMetadata,
-    nativeAtimeMs: number,
-    nativeMtimeMs: number,
-    nativeCtimeMs: number,
+    nativeAtimeNs: bigint,
+    nativeMtimeNs: bigint,
+    nativeCtimeNs: bigint,
   ): void {
-    if (metadata.nativeCtimeMs === undefined) return;
+    if (metadata.nativeCtimeNs === undefined) return;
 
-    const nativeMetadataChanged = nativeCtimeMs !== metadata.nativeCtimeMs;
+    const nativeMetadataChanged = nativeCtimeNs !== metadata.nativeCtimeNs;
     if (
       nativeMetadataChanged ||
-      (metadata.nativeAtimeMs !== undefined && nativeAtimeMs !== metadata.nativeAtimeMs)
+      (metadata.nativeAtimeNs !== undefined && nativeAtimeNs !== metadata.nativeAtimeNs)
     ) {
       delete metadata.atimeMs;
       delete metadata.atimeNs;
-      delete metadata.nativeAtimeMs;
+      delete metadata.nativeAtimeNs;
     }
     if (
       nativeMetadataChanged ||
-      (metadata.nativeMtimeMs !== undefined && nativeMtimeMs !== metadata.nativeMtimeMs)
+      (metadata.nativeMtimeNs !== undefined && nativeMtimeNs !== metadata.nativeMtimeNs)
     ) {
       delete metadata.mtimeMs;
       delete metadata.mtimeNs;
-      delete metadata.nativeMtimeMs;
+      delete metadata.nativeMtimeNs;
     }
 
     if (metadata.atimeMs === undefined && metadata.mtimeMs === undefined) {
-      delete metadata.nativeCtimeMs;
+      delete metadata.nativeCtimeNs;
     }
   }
 
@@ -320,9 +318,9 @@ export class NativeMetadataOverlay {
     delete metadata.mtimeMs;
     delete metadata.atimeNs;
     delete metadata.mtimeNs;
-    delete metadata.nativeAtimeMs;
-    delete metadata.nativeMtimeMs;
-    delete metadata.nativeCtimeMs;
+    delete metadata.nativeAtimeNs;
+    delete metadata.nativeMtimeNs;
+    delete metadata.nativeCtimeNs;
   }
 
   private key(s: BigIntStats): string {
