@@ -86,21 +86,25 @@ describe("HostFileSystem component-wise path resolution", () => {
     expect(existsSync(join(root, "created-hard-link"))).toBe(false);
   });
 
-  it("keeps native link semantics for a symlink source inside the mount", () => {
+  it.runIf(process.platform !== "win32")("links the symlink inode for a symlink source inside the mount", () => {
     writeFileSync(join(root, "target"), "target");
     symlinkSync("target", join(root, "source-link"));
 
     hostFs.link("/source-link", "/linked-symlink");
 
     const sourceLink = hostFs.lstat("/source-link");
-    const target = hostFs.stat("/target");
     const linked = hostFs.lstat("/linked-symlink");
-    expect([sourceLink.ino, target.ino]).toContain(linked.ino);
-    if ((linked.mode & 0xf000) === 0xa000) {
-      expect(hostFs.readlink("/linked-symlink")).toBe("target");
-    } else {
-      expect(linked.ino).toBe(target.ino);
-    }
+    expect(linked.ino).toBe(sourceLink.ino);
+    expect((linked.mode & 0xf000)).toBe(0xa000);
+    expect(hostFs.readlink("/linked-symlink")).toBe("target");
+  });
+
+  it.runIf(process.platform === "darwin")("preserves EEXIST when linking a symlink inode", () => {
+    symlinkSync("target", join(root, "source-link"));
+    writeFileSync(join(root, "destination"), "occupied");
+
+    expect(() => hostFs.link("/source-link", "/destination")).toThrow(/EEXIST/);
+    expect(hostFs.readlink("/source-link")).toBe("target");
   });
 
   it("revalidates an intermediate directory after an external replacement", () => {

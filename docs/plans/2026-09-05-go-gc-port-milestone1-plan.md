@@ -2562,17 +2562,34 @@ size mismatch while the kernel member and its index were being finalized;
 it did not launch a guest. The ABI snapshot check passes. Node/macOS
 symlink-source `TestRootLinkFrom` remains open.
 
+**2026-10-11 — native symlink-inode linking and complete Root sweep.**
+Node/macOS `fs.linkSync` follows the final symlink, so the host-backed VFS
+now invokes an exact `linkat` helper with `AT_SYMLINK_NOFOLLOW_ANY` for that
+case. It compiles lazily from fixed C source and maps the native errno back
+to the host error code; if no C compiler is available, it reports `ENOSYS`
+rather than faking a hard link. The focused HostFileSystem suite passes
+11/11, including symlink inode identity and `EEXIST`. Upstream
+`TestRootLinkFrom` passes in Node and as a focused probe 3/3 in Chromium,
+Firefox, and WebKit. The full Node `TestRoot*` sweep passes all 43 top-level
+tests with zero failures, empty stderr/diagnostics, and 30 documented AF_UNIX
+subcase skips. The full browser sweep passes 3/3 across those engines after
+staging its `testdata/dirfs` files; an earlier fixture-omission run failed
+only `TestRootDirFS` before this correction. Packaging a native helper without
+a runtime compiler remains a portability follow-up.
+
+**2026-10-11 — maximum declared Go thread arena.** A test-only build of the
+same 48-live-M probe declares 1,024 slots, reserving 256 MiB of control
+pages. It passes with empty stderr and host diagnostics on Node and 3/3 in
+Chromium, Firefox, and WebKit. This exercises the supported declaration and
+arena layout, not 1,024 simultaneously live Ms or long-lived PHP churn.
+
 The remaining Go/C platform gates, in recommended order, are:
 
-1. Close the remaining upstream `os.Root` filesystem failure at its owning
-   layer: Node/macOS symlink-source `linkat`. The live-dirfd implementation
-   passes upstream `TestRootRenameAfterOpen` in Node and all three browsers.
-   Exact `Chtimes` passes on
-   Node and all three browsers. Node's native hard-link call can follow the
-   source symlink despite kernel no-follow resolution. Directory OFDs now use
-   shared live path state rather than a single process's cached pathname.
-   Rerun the whole `TestRoot*` sweep on Node and all three browsers, staging
-   source-tree fixtures rather than treating missing testdata as a pass.
+1. Harden the Node/macOS native no-follow `linkat` helper for distribution
+   without an ambient C compiler, and audit externally mutated host-backed
+   directory paths. The upstream `TestRoot*` sweep passes 43/43 top-level
+   cases in Node and as a complete probe in all three browsers with the
+   required source-tree fixtures.
 2. Expand Go standard-library and runtime conformance beyond the selected
    `os`, `syscall`, and runtime probes. Executable VFS identity and upstream
    `TestExecutable` now pass separately; track genuine browser boundaries
@@ -2583,10 +2600,10 @@ The remaining Go/C platform gates, in recommended order, are:
 4. Generalize mixed-width pointer-bearing C struct access and by-value cgo
    calls; current PHP integration uses explicit C accessors and a scalar
    registration entry at that interop boundary.
-5. Exercise upper configured thread-slot counts, longer PHP worker churn,
-   allocator pressure, and concurrent callbacks. The one-slot failure and
-   48-live-M/64-slot probes cover two boundaries but do not establish the
-   maximum 1,024 slots or long-lived PHP worker stability.
+5. Exercise 1,024 simultaneously live threads, longer PHP worker churn,
+   allocator pressure, and concurrent callbacks. The one-slot failure,
+   48-live-M/64-slot probe, and 48-live-M/1,024-slot declaration probe cover
+   arena boundaries but not full concurrency or long-lived PHP stability.
 6. Provision the full built-in program closure and rerun Sortix os-test;
    repeat broad POSIX conformance after further kernel/host changes. The
    current Open POSIX suite passes with its documented XFAIL/SKIP cases.

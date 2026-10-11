@@ -34,6 +34,7 @@ type Probe = {
   dataFiles?: { path: string; data: number[] }[];
   selfExecPath?: string;
   launchFromVfs?: boolean;
+  passedTopLevelTests?: number;
 };
 
 const probes: Probe[] = [
@@ -118,6 +119,27 @@ const probes: Probe[] = [
     stdout: ["--- PASS: TestRootRenameAfterOpen", "PASS"],
     directories: ["/tmp"],
     imageCapacity: 8 * 1024 * 1024,
+  },
+  {
+    name: "upstream Go os.Root links symlink inodes",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestRootLinkFrom$", "-test.v"],
+    stdout: ["--- PASS: TestRootLinkFrom", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
+  },
+  {
+    name: "upstream Go os.Root complete sweep",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestRoot", "-test.v"],
+    stdout: ["--- PASS: TestRootLinkFrom", "--- PASS: TestRootRenameAfterOpen", "PASS"],
+    passedTopLevelTests: 43,
+    directories: ["/tmp", "/testdata", "/testdata/dirfs", "/testdata/dirfs/dir"],
+    imageCapacity: 8 * 1024 * 1024,
+    dataFiles: ["a", "b", "dir/x"].map((name) => ({
+      path: `/testdata/dirfs/${name}`,
+      data: [],
+    })),
   },
   {
     name: "upstream Go os.Executable ignores forged argv",
@@ -253,6 +275,15 @@ if (process.env.KANDELO_GO_HIGH_THREAD_TESTS === "1") {
     name: "48 concurrent locked Go threads under a declared 64-slot ceiling",
     file: "slot-pressure.wasm",
     argv: ["go-slot-pressure"],
+    stdout: ["48 concurrent locked Go threads: complete"],
+  });
+}
+
+if (process.env.KANDELO_GO_MAX_THREAD_SLOTS_TESTS === "1") {
+  probes.push({
+    name: "48 concurrent locked Go threads under a declared 1024-slot ceiling",
+    file: "slot-pressure-1024.wasm",
+    argv: ["go-slot-pressure-1024"],
     stdout: ["48 concurrent locked Go threads: complete"],
   });
 }
@@ -439,6 +470,11 @@ test.describe("native Go port milestones", () => {
       expect(result.exitCode, JSON.stringify(result)).toBe(0);
       for (const marker of probe.stdout) {
         expect(result.stdout).toContain(marker);
+      }
+      if (probe.passedTopLevelTests !== undefined) {
+        expect(result.stdout.match(/^--- PASS: /gm) ?? []).toHaveLength(
+          probe.passedTopLevelTests,
+        );
       }
       for (const marker of probe.absentStdout ?? []) {
         expect(result.stdout).not.toContain(marker);

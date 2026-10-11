@@ -49,6 +49,10 @@ APIs apply to Kandelo.
   serialized past the kernel-worker's two-second detach deadline. Settle
   independent thread terminations concurrently, but release each thread's
   exact exit ownership only after that thread's termination resolves.
+  A 1,024-slot declaration reserves 256 MiB for slot pages. The separate
+  maximum-declaration probe holds 48 live Ms and passes in Node and all three
+  desktop browser engines; it does not prove 1,024 concurrently live threads
+  or that this reservation fits the constrained browser memory profile.
 - In cgo builds, the shared Go `__tls_base` handoff word is unsafe when a C
   pthread and a Go M start concurrently. The Go runtime reads the C
   `__channel_base` mutable Wasm global through a typed C getter, so every
@@ -120,7 +124,10 @@ APIs apply to Kandelo.
   SharedFS-backed, so rerun both hosts. Browser `time.Now` has millisecond
   granularity and can pass `TestRootChtimes` without exercising sub-millisecond
   storage; use a fixed-nanosecond `os.Chtimes`/`syscall.Stat` probe too.
-  Pathname-backed directory OFDs still fail rename-after-open. Fix remaining
+  Directory OFDs need live path state shared across processes: a successful
+  kernel rename moves the open directory and its descendants, while an open
+  descriptor to a replaced destination must not alias the new occupant.
+  `TestRootRenameAfterOpen` catches the stale-opening-path error. Fix remaining
   gaps at their owning syscall/VFS/OFD layers, not in the Go test harness.
 - `os.Executable` reads Kandelo's kernel-owned `/proc/self/exe` identity,
   never `argv[0]`. Initial VFS launches publish the canonical selected path;
@@ -134,8 +141,11 @@ APIs apply to Kandelo.
 - `linkat` without `AT_SYMLINK_FOLLOW` must link the source symlink inode.
   Kernel no-follow resolution alone does not ensure that behavior: Node's
   `fs.linkSync` follows a symlink source on macOS, while browser SharedFS
-  links the symlink inode. `TestRootLinkFrom` exposes this host mismatch;
-  fix the HostFileSystem capability rather than changing Go's expectation.
+  links the symlink inode. The macOS HostFileSystem uses an exact native
+  `linkat` helper with `AT_SYMLINK_NOFOLLOW_ANY` for this case. The helper
+  compiles lazily from fixed source with the host C compiler; if unavailable,
+  it reports `ENOSYS` instead of pretending that a copied symlink or link to
+  the target is a hard link. `TestRootLinkFrom` catches this host mismatch.
 - Kandelo's `lseek` channel has four argument slots: fd, 32-bit offset low,
   signed 32-bit offset high, and whence. Passing Go's `int64` offset in one
   slot shifts whence into the high half; `Seek(0, SEEK_CUR)` then returns

@@ -32,6 +32,7 @@ import {
 } from "../native-positioned-write";
 import { NativeMetadataOverlay } from "../platform/native-metadata";
 import { backendPathconf } from "../pathconf";
+import { linkSymlinkInode } from "./native-linkat";
 import {
   DIRENT_TYPES,
   OPEN_FLAGS,
@@ -638,13 +639,13 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   link(existingPath: string, newPath: string): void {
-    // Resolve intermediate components ourselves, but leave the final source
-    // component to native link(2). POSIX permits link() either to follow a
-    // final symlink or to link the symlink inode; native hosts differ here.
-    fs.linkSync(
-      this.safePath(existingPath, false),
-      this.safePath(newPath, false),
-    );
+    const sourcePath = this.safePath(existingPath, false);
+    const destinationPath = this.safePath(newPath, false);
+    if (process.platform === "darwin" && fs.lstatSync(sourcePath).isSymbolicLink()) {
+      linkSymlinkInode(sourcePath, destinationPath);
+      return;
+    }
+    fs.linkSync(sourcePath, destinationPath);
   }
 
   symlink(target: string, path: string): void {

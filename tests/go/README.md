@@ -72,10 +72,13 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/syscall-stdlib/run.ts .
 
 The same selected cases are included in `go-port.spec.ts` for Chromium,
 Firefox, and WebKit. They are not the full upstream `os` or `syscall` suites.
-The full Node `TestRoot*` sweep passes `TestRootChtimes` after exact
-nanosecond timestamp propagation on both Node and browser backends; it still
-fails `TestRootLinkFrom` and `TestRootRenameAfterOpen`. The focused
-`TestRootChtimes` browser probe passes in Chromium, Firefox, and WebKit.
+The full Node `TestRoot*` sweep passes all 43 top-level tests, including
+`TestRootChtimes`, `TestRootLinkFrom`, and `TestRootRenameAfterOpen`, with
+documented AF_UNIX subcase skips. Run it with
+`KANDELO_GO_TEST_TIMEOUT_MS=300000` and `-test.run=^TestRoot` as the third
+argument to `os-stdlib/run.ts`. The complete sweep passes as one probe in
+Chromium, Firefox, and WebKit after staging the three `testdata/dirfs`
+fixtures into each browser VFS.
 The `browser-basic` program additionally checks fixed nanosecond atime and
 mtime through the real `os.Chtimes`/stat syscall path on each browser's
 SharedFS-backed `/tmp`.
@@ -111,8 +114,12 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=
 
 The browser probe caught serialized 250 ms per-thread teardown exceeding the
 kernel-worker's two-second graceful-detach deadline; thread terminations now
-settle concurrently. This tests one declared 64-slot shape, not the maximum
-1,024 slots, long-lived PHP churn, or allocator pressure.
+settle concurrently. A separate `slot-pressure-1024.wasm` fixture declares
+the maximum 1,024 slots (256 MiB of slot pages), holds 48 distinct Ms live,
+and passes in Node, Chromium, Firefox, and WebKit. Set
+`KANDELO_GO_MAX_THREAD_SLOTS_TESTS=1` for its opt-in browser probe. This checks
+maximum declaration and arena layout, not 1,024
+simultaneously live threads, long-lived PHP churn, or allocator pressure.
 
 ## Resolver package and VFS launch
 

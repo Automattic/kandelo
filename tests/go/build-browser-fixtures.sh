@@ -48,6 +48,12 @@ build_probe scheduler locked-exit ./locked-exit
     -ldflags=-kandelothreadslots=64 -o "$output_dir/slot-pressure.wasm" .
 )
 record_built_program_output "$output_dir/slot-pressure.wasm"
+(
+  cd "$repo_root/tests/go/scheduler/slot-pressure"
+  GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" build \
+    -ldflags=-kandelothreadslots=1024 -o "$output_dir/slot-pressure-1024.wasm" .
+)
+record_built_program_output "$output_dir/slot-pressure-1024.wasm"
 build_probe scheduler sysmon ./sysmon
 build_probe socket-basic socket-basic
 build_probe netpoll-basic netpoll-basic

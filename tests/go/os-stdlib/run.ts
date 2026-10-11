@@ -6,6 +6,10 @@ const [programPath, kernelPath, testFilter] = process.argv.slice(2);
 if (!programPath || !kernelPath) {
   throw new Error("usage: node --import tsx run.ts <os-test.wasm> <kernel.wasm> [test-filter]");
 }
+const timeout = Number(process.env.KANDELO_GO_TEST_TIMEOUT_MS ?? 90_000);
+if (!Number.isSafeInteger(timeout) || timeout <= 0) {
+  throw new Error("KANDELO_GO_TEST_TIMEOUT_MS must be a positive safe integer");
+}
 
 const image = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
 image.mkdir("/tmp", 0o777);
@@ -62,7 +66,7 @@ const result = await runCentralizedProgram({
   kernelWasmBytes: readFileSync(kernelPath),
   rootfsImage: new Uint8Array(await image.saveImage()),
   argv: ["go-os-test", testFilter ?? `-test.run=^(${selectedTests.join("|")})$`, "-test.v"],
-  timeout: 90_000,
+  timeout,
 });
 
 console.log(JSON.stringify({
