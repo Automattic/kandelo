@@ -2948,6 +2948,14 @@ failures and all four timeouts pass in isolated focused reruns (7 basic,
 one I/O, two UDP). A second complete `--all` run is in progress; these
 focused passes do not establish that the broad run is green.
 
+The mixed-width cgo probe now additionally returns a packed 14-byte C
+struct containing an unaligned 32-bit C pointer and an unaligned 64-bit
+integer, inspects its exact bytes in Go, and passes it back by value to C.
+The fresh instrumented and ABI-stamped probe passes on Node with empty
+stderr/diagnostics and 3/3 in Chromium, Firefox, and WebKit. This extends
+the tested ABI shapes; it does not prove arbitrary packed aggregates or
+Go-managed pointer retention in C memory.
+
 Remaining work, in recommended order:
 
 1. Close the Node/macOS HostFS deep-relative-path mismatch without weakening

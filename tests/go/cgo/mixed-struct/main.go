@@ -50,10 +50,28 @@ static int check_aggregate(struct aggregate value) {
         value.nested.pointer == &target && value.nested.ratio == 2.5 &&
         value.callback == callback && value.tail == 19;
 }
+
+struct __attribute__((packed)) packed {
+    uint8_t tag;
+    int *pointer;
+    uint64_t wide;
+    uint8_t tail;
+};
+
+static struct packed make_packed(void) {
+    struct packed value = {13, &target, 0x8877665544332211ULL, 17};
+    return value;
+}
+
+static int check_packed(struct packed value) {
+    return value.tag == 13 && value.pointer == &target &&
+        value.wide == 0x8877665544332211ULL && value.tail == 17;
+}
 */
 import "C"
 
 import (
+	"encoding/binary"
 	"fmt"
 	"unsafe"
 )
@@ -84,6 +102,17 @@ func main() {
 		uintptr(aggregate.nested.pointer) != target || aggregate.nested.ratio != 2.5 ||
 		aggregate.tail != 19 || C.check_aggregate(aggregate) != 1 {
 		panic("C nested aggregate return or by-value argument failed")
+	}
+	packed := C.make_packed()
+	if unsafe.Sizeof(packed) != uintptr(C.sizeof_struct_packed) {
+		panic("C packed struct size changed")
+	}
+	packedBytes := unsafe.Slice((*byte)(unsafe.Pointer(&packed)), int(C.sizeof_struct_packed))
+	if len(packedBytes) != 14 || packedBytes[0] != 13 ||
+		uintptr(binary.LittleEndian.Uint32(packedBytes[1:5])) != target ||
+		binary.LittleEndian.Uint64(packedBytes[5:13]) != 0x8877665544332211 ||
+		packedBytes[13] != 17 || C.check_packed(packed) != 1 {
+		panic("C packed aggregate return or by-value argument failed")
 	}
 	fmt.Println("CGO MIXED STRUCT PASS")
 }

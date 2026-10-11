@@ -279,7 +279,9 @@ dated WordPress pivot in the Go implementation progress log.
 pointer array, returned from C and passed back by value. On Kandelo/Wasm,
 generated Go struct fields that hold C addresses are 4-byte `uint32` values,
 not native Go pointers; explicit conversion is required to use a C-owned
-address. Do not store a Go-managed pointer in these raw fields. Build,
+address. It also checks a packed 14-byte struct with an unaligned pointer
+and 64-bit integer, returned from C and passed back by value. Do not store
+a Go-managed pointer in these raw fields. Build,
 instrument, stamp, and run this focused probe with:
 
 ```sh
