@@ -4,8 +4,9 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs.ts";
 
 const programPath = process.argv[2];
 const kernelPath = process.argv[3];
+const testName = process.argv[4] ?? "TestExecutable";
 if (!programPath || !kernelPath) {
-  throw new Error("usage: node --import tsx run-executable.ts <os-test.wasm> <kernel.wasm>");
+  throw new Error("usage: node --import tsx run-executable.ts <os-test.wasm> <kernel.wasm> [test-name]");
 }
 
 const bytes = readFileSync(programPath);
@@ -33,13 +34,13 @@ try {
   ) as ArrayBuffer);
   const { exit } = await host.spawnFromVfs(
     "/bin/os-test.wasm",
-    ["forged-display-name", "-test.run=^TestExecutable$", "-test.v"],
+    ["forged-display-name", `-test.run=^${testName}$`, "-test.v"],
   );
   const exitCode = await exit;
   console.log(JSON.stringify({ exitCode, stdout, stderr, diagnostics }));
   if (
     exitCode !== 0 ||
-    !stdout.includes("--- PASS: TestExecutable") ||
+    !stdout.includes(`--- PASS: ${testName}`) ||
     !stdout.includes("PASS\n") ||
     stderr !== "" ||
     diagnostics.length !== 0

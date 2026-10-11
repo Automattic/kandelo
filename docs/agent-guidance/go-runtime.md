@@ -99,6 +99,24 @@ APIs apply to Kandelo.
   inheritance must be serialized with `ForkLock`. The existing spawn
   attribute supports child-atomic process groups. Requested child
   credentials currently return `ENOSYS`; do not report a no-op as success.
+- Go's generic `os/exec/lp_wasm.go` treats every executable as absent because
+  upstream Wasm targets cannot spawn. Kandelo must select the Unix `LookPath`
+  implementation and check effective execute permission through the real
+  `faccessat2(AT_EACCESS)` syscall. Test PATH lookup with a VFS executable
+  and both absolute and child-CWD-relative `os.StartProcess` paths. Host
+  spawn preflight must account for `chdir` file actions before resolving a
+  relative candidate; Rust's post-action resolution remains authoritative.
+  Do not carry over the WASI-era `syscall` initializer that forces standard
+  fds nonblocking: `posix_spawn` must preserve the parent's OFD status flags.
+  Its presence made upstream `TestReadNonblockingFd` hang because Go attached
+  a poller to a child stdin that was blocking before spawn. A C child
+  confirmed the kernel transferred the flags correctly; removing the Go
+  initializer makes the isolated test pass.
+- Do not inherit WASI's `clock_time_get` ENOSYS stub for Kandelo. Its
+  `CLOCK_REALTIME` channel syscall writes a two-word timespec; convert
+  nanoseconds to microseconds for `syscall.Gettimeofday`. The upstream
+  `syscall` test binary exercises this and the existing dirent/env/spawn
+  cases in Node.
 - Kandelo directory reads use the kernel's Linux-style `getdents64` records
   and fd-owned iteration position, not the WASI preview-1 dirent/cookie
   format. Match `syscall.Dirent` and `os` parsing to the kernel's byte layout;

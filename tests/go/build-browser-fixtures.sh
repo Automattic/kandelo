@@ -28,6 +28,7 @@ build_probe() {
 }
 
 build_probe browser-basic basic
+build_probe credentials-basic credentials-basic
 build_probe user-basic user-basic
 build_probe second-m second-m
 (
@@ -60,6 +61,10 @@ build_probe netpoll-basic netpoll-basic
 build_probe net-basic net-basic
 build_probe http-basic http-basic
 build_probe exec-basic exec-basic
+build_probe os-stdlib os-pwd ./pwd
+wasm32posix-cc "$repo_root/tests/sortix/os-test/basic/spawn/posix_spawn_file_actions_addfchdir.c" \
+  -o "$output_dir/spawn-fchdir.wasm"
+record_built_program_output "$output_dir/spawn-fchdir.wasm"
 
 GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/atomic-test.wasm" internal/runtime/atomic
 record_built_program_output "$output_dir/atomic-test.wasm"

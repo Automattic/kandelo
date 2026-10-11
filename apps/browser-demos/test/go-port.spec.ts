@@ -34,10 +34,18 @@ type Probe = {
   dataFiles?: { path: string; data: number[] }[];
   selfExecPath?: string;
   launchFromVfs?: boolean;
+  cwd?: string;
+  executableFiles?: { path: string; file: string }[];
   passedTopLevelTests?: number;
 };
 
 const probes: Probe[] = [
+  {
+    name: "Go reports kernel-owned credentials and supplementary groups",
+    file: "credentials-basic.wasm",
+    argv: ["go-credentials-basic"],
+    stdout: ["GO CREDENTIALS PASS"],
+  },
   {
     name: "stdlib, startup metadata, and file syscalls",
     file: "basic.wasm",
@@ -97,12 +105,60 @@ const probes: Probe[] = [
     ],
   },
   {
+    name: "upstream Go os chdir and fchdir preserve cwd",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestChdirAndGetwd$", "-test.v"],
+    stdout: ["--- PASS: TestChdirAndGetwd", "PASS"],
+    directories: ["/tmp", "/usr", "/usr/bin"],
+    imageCapacity: 8 * 1024 * 1024,
+  },
+  {
+    name: "upstream Go os broken pipe returns EPIPE without killing the process",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestEPIPE$", "-test.v"],
+    stdout: ["--- PASS: TestEPIPE", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
+  },
+  {
+    name: "upstream Go os pipe close race uses POSIX errno text",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestPipeIOCloseRace$", "-test.v"],
+    stdout: ["--- PASS: TestPipeIOCloseRace", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
+  },
+  {
+    name: "upstream Go os standard pipe signals and notifications",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestStdPipe$", "-test.v"],
+    stdout: ["--- PASS: TestStdPipe", "PASS"],
+    directories: ["/tmp"],
+    selfExecPath: "/bin/os-test.wasm",
+    launchFromVfs: true,
+  },
+  {
+    name: "upstream Go os inherited blocking stdin stays blocking",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestReadNonblockingFd$", "-test.v"],
+    stdout: ["--- PASS: TestReadNonblockingFd", "PASS"],
+    directories: ["/tmp"],
+    selfExecPath: "/bin/os-test.wasm",
+    launchFromVfs: true,
+  },
+  {
     name: "upstream Go syscall dirent and repeat tests",
     file: "syscall-test.wasm",
     argv: ["go-syscall-test", "-test.run=^TestDirent(Repeat)?$", "-test.v"],
     stdout: ["--- PASS: TestDirent", "--- PASS: TestDirentRepeat", "PASS"],
     directories: ["/tmp"],
     imageCapacity: 8 * 1024 * 1024,
+  },
+  {
+    name: "upstream Go syscall.Gettimeofday reads kernel time",
+    file: "syscall-test.wasm",
+    argv: ["go-syscall-test", "-test.run=^TestGettimeofday$", "-test.v"],
+    stdout: ["--- PASS: TestGettimeofday", "PASS"],
   },
   {
     name: "upstream Go os.Root Chtimes nanosecond precision",
@@ -149,6 +205,40 @@ const probes: Probe[] = [
     directories: ["/tmp"],
     selfExecPath: "/bin/os-test.wasm",
     launchFromVfs: true,
+  },
+  {
+    name: "upstream Go os.Executable resolves child cwd before spawn",
+    file: "os-test.wasm",
+    argv: ["forged-display-name", "-test.run=^TestExecutable$", "-test.v"],
+    stdout: ["--- PASS: TestExecutable", "PASS"],
+    directories: ["/tmp", "/work"],
+    selfExecPath: "/bin/os-test.wasm",
+    launchFromVfs: true,
+    cwd: "/work",
+  },
+  {
+    name: "upstream Go os.StartProcess finds and runs pwd",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestStartProcess$", "-test.v"],
+    stdout: ["--- PASS: TestStartProcess", "--- PASS: TestStartProcess/relative", "PASS"],
+    directories: ["/tmp", "/work"],
+    selfExecPath: "/bin/os-test.wasm",
+    executableFiles: [{ path: "/bin/pwd", file: "os-pwd.wasm" }],
+    launchFromVfs: true,
+    cwd: "/work",
+    env: ["PATH=/bin:/usr/bin"],
+    imageCapacity: 16 * 1024 * 1024,
+  },
+  {
+    name: "Sortix spawn preflight honors fchdir file actions",
+    file: "spawn-fchdir.wasm",
+    argv: ["posix_spawn_file_actions_addfchdir"],
+    stdout: [],
+    directories: ["/work", "/work/spawn"],
+    selfExecPath: "/work/spawn/posix_spawn_file_actions_addfchdir",
+    launchFromVfs: true,
+    cwd: "/work",
+    env: ["PATH=."],
   },
   {
     name: "second-M bootstrap and per-M syscall channel",
@@ -390,7 +480,7 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     body: kernelBytes,
   }));
   const imageCapacity = probe.selfExecPath
-    ? Math.max(8 * 1024 * 1024, programBytes.byteLength + 2 * 1024 * 1024)
+    ? Math.max(probe.imageCapacity ?? 8 * 1024 * 1024, programBytes.byteLength + 2 * 1024 * 1024)
     : (probe.imageCapacity ?? 2 * 1024 * 1024);
   const image = MemoryFileSystem.create(new SharedArrayBuffer(Math.ceil(imageCapacity / 4) * 4));
   image.mkdir("/etc", 0o755);
@@ -401,13 +491,19 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     image.mkdir("/bin", 0o755);
     image.createFileWithOwner(probe.selfExecPath, 0o755, 0, 0, new Uint8Array(programBytes));
   }
+  for (const executable of probe.executableFiles ?? []) {
+    image.createFileWithOwner(
+      executable.path, 0o755, 0, 0,
+      new Uint8Array(readFileSync(resolve(fixtureDir, executable.file))),
+    );
+  }
   for (const file of probe.dataFiles ?? []) {
     image.createFileWithOwner(file.path, 0o644, 0, 0, new Uint8Array(file.data));
   }
   const vfsImage = Array.from(await image.saveImage());
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
 
-  return page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, argv, env, vfsImage, launchFromVfs, selfExecPath }) => {
+  return page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, argv, env, cwd, vfsImage, launchFromVfs, selfExecPath }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
     const [programResponse, kernelResponse] = await Promise.all([
       fetch(programUrl),
@@ -436,8 +532,8 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     try {
       await kernel.initFromImage({ kernelWasm, vfsImage: new Uint8Array(vfsImage) });
       const exitCode = launchFromVfs
-        ? await (await kernel.spawnFromVfs(selfExecPath!, argv, { env })).exit
-        : await kernel.spawn(programBytes, argv, { env });
+        ? await (await kernel.spawnFromVfs(selfExecPath!, argv, { env, cwd })).exit
+        : await kernel.spawn(programBytes, argv, { env, cwd });
       return { exitCode, stdout, stderr, hostDiagnostics };
     } finally {
       await kernel.destroy();
@@ -448,6 +544,7 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     browserKernelUrl,
     argv: probe.argv,
     env: probe.env,
+    cwd: probe.cwd,
     vfsImage,
     launchFromVfs: probe.launchFromVfs,
     selfExecPath: probe.selfExecPath,

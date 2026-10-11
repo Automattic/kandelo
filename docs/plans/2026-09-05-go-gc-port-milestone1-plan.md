@@ -2604,6 +2604,68 @@ WordPress closure bootstrap started before this fork revision and still uses
 its previous source pin; update the Go package pins and rebuild after that
 bootstrap publishes.
 
+**2026-10-11 — upstream Go process and pipe conformance expansion.** Fork
+commit `8fd249d` is pushed to `kandelo-dev/go` on `kandelo-port`.
+`syscall.Getuid`, `Geteuid`, `Getgid`, `Getegid`, `Getgroups`,
+`Setgroups`, `Setresuid`, and `Setresgid` now use Kandelo's credential
+syscalls rather than fabricated IDs/groups. A credential-transition probe
+passes on Node and Chromium/Firefox/WebKit. Go runtime startup ignores
+SIGPIPE through the kernel; Go `os.File.Write` restores the default
+disposition or delivers `signal.Notify` as appropriate. Upstream `TestEPIPE`,
+`TestStdPipe`, and `TestPipeIOCloseRace` pass in Node and all three browsers;
+the POSIX errno text used by Go is now lowercase. This is not a claim of
+general asynchronous signal delivery.
+
+The broader upstream `os` sweep revealed two independent process-start
+gaps. Shared host spawn preflight had resolved a relative executable against
+the *parent* CWD even when a child `chdir` action changes its effective exec
+path; preflight now projects ordered `chdir` actions before checking the
+candidate, while Rust still resolves the authoritative target after applying
+actions. Go's `os/exec.LookPath` was still linked to the generic Wasm
+always-not-found stub. Kandelo now uses the Unix lookup path and its real
+`faccessat2(AT_EACCESS)` syscall. Upstream `TestExecutable` from a non-root
+parent CWD and both absolute/relative `TestStartProcess` subcases pass in
+Node and in Chromium/Firefox/WebKit 6/6 with empty stderr and diagnostics.
+The Go fork's `os/exec` test binary cross-builds for Kandelo, `js`, and
+`wasip1`.
+The same preflight now uses a kernel-owned directory-FD path for an inherited
+`fchdir` action when earlier file actions have not changed that FD. The
+focused Sortix `posix_spawn_file_actions_addfchdir` program passes in Node
+and 3/3 in Chromium, Firefox, and WebKit with empty stderr and diagnostics.
+
+The VFS-backed full upstream `os` test runner now provisions the Go source
+tree, testdata, `/etc` account files, a `pwd` child program, and a non-root
+CWD. Its first unrestricted sweep reached over a thousand passing cases but
+timed out in `TestReadNonblockingFd`. A C child confirmed the kernel preserved
+the parent's blocking pipe status across spawn; an instrumented Go child
+identified the real cause: an inherited WASI-era `syscall` initializer
+unconditionally set all three standard descriptors to nonblocking before
+Go's `os.NewFile` examined them. That initializer is removed. The isolated
+upstream `TestReadNonblockingFd` now passes in Node. The unrestricted
+VFS-backed upstream `os` run passes 205 top-level tests (1,250 passing
+test/subtest cases, 49 skips) with empty stderr and diagnostics. The focused
+`TestReadNonblockingFd` browser probe passes 3/3 in Chromium, Firefox, and
+WebKit with empty stderr and diagnostics. This still does not establish
+complete Go standard-library conformance beyond `os`.
+
+Fork commit `a011708` is pushed to `kandelo-port`. The full upstream
+`syscall` test binary initially exposed the inherited
+`clock_time_get` ENOSYS stub. Go now reads a kernel `CLOCK_REALTIME`
+timespec through channel syscall 40 and converts it to `Timeval`; the
+unrestricted upstream `syscall` test run passes all five top-level tests
+in Node, including `TestGettimeofday`, with no skips, stderr, or host
+diagnostics. The focused `TestGettimeofday` browser probe passes 3/3 in
+Chromium, Firefox, and WebKit with empty stderr and diagnostics.
+
+The cgo aggregate probe now checks a 40-byte nested struct containing a
+64-bit integer, a 64-bit float, a 32-bit C data pointer, a function pointer,
+and a narrow tail field. It validates nested offsets, C return, and a
+by-value C argument, and passes in Node and 3/3 in Chromium, Firefox, and
+WebKit with empty stderr and diagnostics. The earlier interleaved-pointer/array
+case remains in the same probe. This tests representative
+mixed-width aggregate forms, not every ABI class or retention of Go-managed
+pointers inside C memory.
+
 The remaining Go/C platform gates, in recommended order, are:
 
 1. Harden the Node/macOS native no-follow `linkat` helper for distribution

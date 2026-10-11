@@ -15,6 +15,8 @@ const image = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
 image.mkdir("/tmp", 0o777);
 image.mkdir("/etc", 0o755);
 image.mkdir("/exec", 0o755);
+image.mkdir("/usr", 0o755);
+image.mkdir("/usr/bin", 0o755);
 image.mkdir("/testdata", 0o755);
 image.mkdir("/testdata/issue37161", 0o755);
 image.mkdir("/testdata/dirfs", 0o755);
