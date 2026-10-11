@@ -429,11 +429,15 @@ if (process.env.KANDELO_GO_CGO_LINK_TESTS === "1") {
 }
 
 if (process.env.KANDELO_GO_HIGH_THREAD_TESTS === "1") {
+  const rounds = Number(process.env.KANDELO_GO_HIGH_THREAD_ROUNDS ?? "1");
+  if (!Number.isSafeInteger(rounds) || rounds < 1 || rounds > 50) {
+    throw new Error("KANDELO_GO_HIGH_THREAD_ROUNDS must be an integer from 1 to 50");
+  }
   probes.push({
-    name: "48 concurrent locked Go threads under a declared 64-slot ceiling",
+    name: `48 concurrent locked Go threads under a declared 64-slot ceiling${rounds > 1 ? ` over ${rounds} rounds` : ""}`,
     file: "slot-pressure.wasm",
-    argv: ["go-slot-pressure"],
-    stdout: ["48 concurrent locked Go threads: complete"],
+    argv: ["go-slot-pressure", "48", String(rounds)],
+    stdout: [`48 concurrent locked Go threads: complete${rounds > 1 ? ` after ${rounds} rounds` : ""}`],
   });
 }
 

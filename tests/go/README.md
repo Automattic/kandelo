@@ -162,9 +162,12 @@ larger test host.
 An optional second argument selects 1–50 waves. For multiple waves, each
 locked goroutine exits without unlocking its thread so the runtime retires
 that M before the next wave. Five waves of 48 workers pass in Node and all
-three browsers with the 1,024-slot fixture. Set
-`KANDELO_GO_LIVE_THREAD_ROUNDS=5` for the browser test. This checks bounded
-Go-thread retirement, not long-lived PHP worker or allocator behavior.
+three browsers with both the 64-slot and 1,024-slot fixtures. Because 240
+worker Ms exceed 64 slots, the smaller fixture also exercises slot reclaim.
+Set `KANDELO_GO_HIGH_THREAD_ROUNDS=5` or
+`KANDELO_GO_LIVE_THREAD_ROUNDS=5` for the respective browser test. This
+checks bounded Go-thread retirement, not long-lived PHP worker or allocator
+behavior.
 
 ## Resolver package and VFS launch
 

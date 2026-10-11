@@ -2982,9 +2982,12 @@ worker churn or 512 workers in the browser.
 The same fixture now accepts multiple waves and leaves each worker goroutine
 locked when it returns, forcing Go to retire that M instead of merely
 parking it for reuse. Five waves of 48 distinct live Ms pass in Node and
-3/3 in Chromium, Firefox, and WebKit, with empty guest stderr and host
-diagnostics. This closes a bounded Go-thread turnover probe, not sustained
-PHP-worker churn or allocator pressure.
+3/3 in Chromium, Firefox, and WebKit under the 1,024-slot declaration, with
+empty guest stderr and host diagnostics. The same five waves pass on the
+64-slot fixture in Node and 3/3 browsers; 240 total worker Ms exceed that
+ceiling, so the run also checks actual slot reclaim. This closes a bounded
+Go-thread turnover probe, not sustained PHP-worker churn or allocator
+pressure.
 
 The WordPress/FrankenPHP host gates now accept an opt-in count of extra
 dynamic PHP requests on the same server boot, alternating the homepage and
