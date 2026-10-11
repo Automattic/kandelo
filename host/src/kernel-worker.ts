@@ -19298,9 +19298,11 @@ export class CentralizedKernelWorker {
         } finally {
           this.currentHandlePid = 0;
         }
-        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        retVal = Number(resultView.getBigInt64(CH_RETURN, true));
-        errVal = resultView.getUint32(CH_ERRNO, true);
+        // This lease-bound wrapper rechecks ownership and refreshes its native
+        // view after memory growth. Reuse it within this lease rather than
+        // allocate a second wrapper and its closures for every lock request.
+        retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
+        errVal = kernelView.getUint32(CH_ERRNO, true);
         // Only GETLK commands have output. SETLK/SETLKW take an input-only
         // flock; avoid allocating and writing back a redundant result copy.
         // The original owned input remains immutable for blocking retries.
