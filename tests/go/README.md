@@ -145,11 +145,19 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=
 The browser probe caught serialized 250 ms per-thread teardown exceeding the
 kernel-worker's two-second graceful-detach deadline; thread terminations now
 settle concurrently. A separate `slot-pressure-1024.wasm` fixture declares
-the maximum 1,024 slots (256 MiB of slot pages), holds 48 distinct Ms live,
-and passes in Node, Chromium, Firefox, and WebKit. Set
-`KANDELO_GO_MAX_THREAD_SLOTS_TESTS=1` for its opt-in browser probe. This checks
-maximum declaration and arena layout, not 1,024
-simultaneously live threads, long-lived PHP churn, or allocator pressure.
+the maximum 1,024 slots (256 MiB of slot pages). Its live locked-M count is
+selectable from 1 to 1,023; the default 48 passes in Node, Chromium, Firefox,
+and WebKit. A fresh 256-worker run passes in Node, Chromium, Firefox, and
+WebKit; 512 workers pass in Node. The main M also occupies a slot, so 1,023
+workers is the upper bound for this fixture. Run the
+larger probe with the count as the last Node argument, or set
+`KANDELO_GO_MAX_THREAD_SLOTS_TESTS=1` and
+`KANDELO_GO_LIVE_THREAD_COUNT=256` for its opt-in browser test. These runs do
+not yet prove 1,024 simultaneously live Ms, long-lived PHP churn, or allocator
+pressure. The 512-worker Node run reached a 30.4 GB peak memory footprint on
+a 36 GB host, so attempting 1,023 workers there would risk exhausting the
+machine; completing that scale gate needs lower per-worker overhead or a
+larger test host.
 
 ## Resolver package and VFS launch
 

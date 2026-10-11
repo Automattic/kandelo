@@ -70,9 +70,14 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   independent thread terminations concurrently, but release each thread's
   exact exit ownership only after that thread's termination resolves.
   A 1,024-slot declaration reserves 256 MiB for slot pages. The separate
-  maximum-declaration probe holds 48 live Ms and passes in Node and all three
-  desktop browser engines; it does not prove 1,024 concurrently live threads
-  or that this reservation fits the constrained browser memory profile.
+  maximum-declaration probe defaults to 48 live locked worker Ms and passes
+  in Node and all three desktop browser engines; a selectable 256-worker run
+  passes in Node and all three engines, and 512 workers pass in Node. Count
+  the locked main M too: the browser run proves 257 simultaneously live Ms,
+  not all 1,024 slots. The 512-worker Node run used a 30.4 GB peak memory
+  footprint on a 36 GB host; do not double the count on that host without
+  reducing per-worker overhead. This does not prove that the reservation
+  fits the constrained browser memory profile.
 - In cgo builds, the shared Go `__tls_base` handoff word is unsafe when a C
   pthread and a Go M start concurrently. The Go runtime reads the C
   `__channel_base` mutable Wasm global through a typed C getter, so every

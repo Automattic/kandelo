@@ -2948,6 +2948,20 @@ failures and all four timeouts pass in isolated focused reruns (7 basic,
 one I/O, two UDP). A second complete `--all` run is in progress; these
 focused passes do not establish that the broad run is green.
 
+The second full Sortix `--all` run reports 5,059 PASS, zero FAIL, 23
+documented XFAIL, 50 SKIP, and three TIMEOUT. It returned status zero
+despite those timeouts: the runner counted but did not include
+`TIMEOUT_COUNT` in its final failure condition. That reporting defect is
+fixed, with a forced-timeout test proving the runner now exits nonzero.
+The remaining timeout cases (`poll`, `select`, and legacy `sys_time/select`)
+fill and drain a 64 KiB pipe one byte per syscall, so a 30-second wall-time
+budget is too small when 14 guests contend. They passed individually under
+the 30-second budget; their parallel budget is now six times the configured
+base timeout. The full parallel `basic` rerun now passes 938 cases, eight
+documented XFAIL, zero FAIL, and zero TIMEOUT across all 946 cases. The
+earlier zero-exit `--all` run must not be cited as a clean conformance pass;
+the non-basic suites have not been rerun with the corrected final status.
+
 The mixed-width cgo probe now additionally returns a packed 14-byte C
 struct containing an unaligned 32-bit C pointer and an unaligned 64-bit
 integer, inspects its exact bytes in Go, and passes it back by value to C.
@@ -2955,6 +2969,15 @@ The fresh instrumented and ABI-stamped probe passes on Node with empty
 stderr/diagnostics and 3/3 in Chromium, Firefox, and WebKit. This extends
 the tested ABI shapes; it does not prove arbitrary packed aggregates or
 Go-managed pointer retention in C memory.
+
+The declared-1,024-slot Go fixture now takes a selectable live locked-M
+count. Fresh 256-worker runs pass in Node, Chromium, Firefox, and WebKit;
+512 workers pass in Node. The main M occupies a slot, so the fixture allows
+up to 1,023 workers. The 512-worker Node run consumed a 30.4 GB peak memory
+footprint (12.1 GB maximum resident set) on this 36 GB host. Doubling that
+count would risk exhausting the host; the complete 1,024-live-M gate needs
+lower per-worker overhead or a larger host. This does not cover long-lived
+worker churn or 512 workers in the browser.
 
 The browser asset check used to run one source-projection freshness check per
 import (151 default imports), taking over six minutes without reaching its
@@ -2980,11 +3003,12 @@ Remaining work, in recommended order:
    arrays where needed by source ports. The current LLVM path rejects
    `.fini_array` before Kandelo's linker can handle it.
 4. Exercise 1,024 simultaneously live Go Ms, long-lived PHP churn, allocator
-   pressure, and callback concurrency, not merely the declared 1,024-slot
-   memory layout with 48 live Ms.
-5. Finish and assess the second broad Sortix conformance rerun after fixing
-   the parallel checker race. Keep unsupported browser AF_UNIX behavior
-   separate from fixable implementation defects.
+   pressure, and callback concurrency. The current evidence reaches 513
+   live Ms in Node and 257 in each browser, while the 512-worker Node run
+   nearly fills this host's memory footprint budget.
+5. Rerun the non-basic Sortix suites with timeout-sensitive exit status; the
+   complete parallel basic suite is clean. Keep unsupported browser AF_UNIX
+   behavior separate from fixable implementation defects.
 6. Repeat the paired throughput comparison across enough independent runs
    and environments to support any superiority claim. The four-round
    fresh-image Node and Chromium results above are mixed; neither the earlier

@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 	_ "unsafe"
@@ -12,7 +14,14 @@ import (
 func getm() uintptr
 
 func main() {
-	const workers = 48
+	workers := 48
+	if len(os.Args) > 1 {
+		count, err := strconv.Atoi(os.Args[1])
+		if err != nil || count < 1 || count > 1023 {
+			panic("invalid locked Go thread count")
+		}
+		workers = count
+	}
 	runtime.GOMAXPROCS(workers + 2)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -31,7 +40,7 @@ func main() {
 		}()
 	}
 	seen := make(map[uintptr]bool, workers)
-	deadline := time.NewTimer(60 * time.Second)
+	deadline := time.NewTimer(60*time.Second + time.Duration(workers)*250*time.Millisecond)
 	defer deadline.Stop()
 	for range workers {
 		select {
@@ -46,5 +55,5 @@ func main() {
 	}
 	close(release)
 	done.Wait()
-	fmt.Println("48 concurrent locked Go threads: complete")
+	fmt.Printf("%d concurrent locked Go threads: complete\n", workers)
 }
