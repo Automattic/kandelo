@@ -2956,6 +2956,17 @@ stderr/diagnostics and 3/3 in Chromium, Firefox, and WebKit. This extends
 the tested ABI shapes; it does not prove arbitrary packed aggregates or
 Go-managed pointer retention in C memory.
 
+The browser asset check used to run one source-projection freshness check per
+import (151 default imports), taking over six minutes without reaching its
+result under the completed closure. It now batches package-owned imports
+through one verified resolver generation, while retaining individual error
+diagnostics for unresolved imports. The source-only check resolves all 137
+selected imports; the default gallery check finishes in 53 seconds and
+still reports four unavailable optional imports: Erlang VFS, `fbtest`, and
+the wasm32/wasm64 MariaDB VFS products. The focused package-system Vitest
+suite passes 30 cases with two skips. This does not make the default asset
+check green or imply those optional products were built by local-build.
+
 Remaining work, in recommended order:
 
 1. Close the Node/macOS HostFS deep-relative-path mismatch without weakening
