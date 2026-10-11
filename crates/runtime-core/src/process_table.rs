@@ -544,8 +544,10 @@ impl ProcessTable {
         let task_id = self.allocate_task_id()?;
         let pid = task_id.as_raw();
         crate::image_build_determinism::process_created(pid);
-        self.processes
-            .insert(pid, Process::new_allocated_with_stdio(task_id, stdio));
+        let mut process = Process::new_allocated_with_stdio(task_id, stdio);
+        let init = self.processes.get(&SYNTHETIC_INIT_PID).ok_or(Errno::ESRCH)?;
+        process.ofd_table.share_directory_paths_from(&init.ofd_table);
+        self.processes.insert(pid, process);
         Ok(pid)
     }
 
@@ -2042,6 +2044,38 @@ mod wait_tests {
         let child = table.get(child_pid).unwrap();
         assert_eq!(child.argv, alloc::vec![b"display-name".to_vec()]);
         assert_eq!(child.executable_path.as_deref(), Some(b"/bin/selected-program".as_slice()));
+    }
+
+    #[test]
+    fn separate_processes_share_live_directory_paths() {
+        let mut table = ProcessTable::new();
+        let first_pid = table.create_process().unwrap();
+        let second_pid = table.create_process().unwrap();
+        let first_index = table
+            .get_mut(first_pid)
+            .unwrap()
+            .ofd_table
+            .create(FileType::Directory, 0, 10, b"/tmp/old".to_vec());
+        let second_index = table
+            .get_mut(second_pid)
+            .unwrap()
+            .ofd_table
+            .create(FileType::Directory, 0, 11, b"/tmp/old".to_vec());
+
+        table
+            .get_mut(first_pid)
+            .unwrap()
+            .ofd_table
+            .rename_directory_paths(b"/tmp/old", b"/tmp/new");
+
+        assert_eq!(
+            table.get(first_pid).unwrap().ofd_table.get(first_index).unwrap().current_path(),
+            Ok(b"/tmp/new".to_vec())
+        );
+        assert_eq!(
+            table.get(second_pid).unwrap().ofd_table.get(second_index).unwrap().current_path(),
+            Ok(b"/tmp/new".to_vec())
+        );
     }
 
     fn host_stdin_pipe_fixture() -> (ProcessTable, u32, usize) {

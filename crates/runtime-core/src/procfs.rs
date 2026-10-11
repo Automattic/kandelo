@@ -860,7 +860,7 @@ pub fn procfs_readlink(
                 ProcfsEntry::FdLink(_, fd) => {
                     let fe = proc.fd_table.get(*fd).map_err(|_| Errno::EBADF)?;
                     let ofd = proc.ofd_table.get(fe.ofd_ref.0).ok_or(Errno::EBADF)?;
-                    ofd.path.clone()
+                    ofd.current_path()?
                 }
                 ProcfsEntry::Cwd(_) => proc.cwd.clone(),
                 ProcfsEntry::Exe(_) => proc.executable_path.clone().ok_or(Errno::ENOENT)?,

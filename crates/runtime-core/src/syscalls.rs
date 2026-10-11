@@ -352,22 +352,22 @@ fn match_dev_fd(path: &[u8]) -> Option<i32> {
 }
 
 /// Return the target text exposed by readlink for a devfs descriptor alias.
-fn dev_fd_link_target<'a>(
-    proc: &'a Process,
+fn dev_fd_link_target(
+    proc: &Process,
     path: &[u8],
     target_fd: i32,
-) -> Result<&'a [u8], Errno> {
+) -> Result<Vec<u8>, Errno> {
     match path {
-        b"/dev/stdin" => Ok(b"/dev/fd/0"),
-        b"/dev/stdout" => Ok(b"/dev/fd/1"),
-        b"/dev/stderr" => Ok(b"/dev/fd/2"),
+        b"/dev/stdin" => Ok(b"/dev/fd/0".to_vec()),
+        b"/dev/stdout" => Ok(b"/dev/fd/1".to_vec()),
+        b"/dev/stderr" => Ok(b"/dev/fd/2".to_vec()),
         _ => {
             let entry = proc.fd_table.get(target_fd).map_err(|_| Errno::ENOENT)?;
             let ofd = proc
                 .ofd_table
                 .get(entry.ofd_ref.0)
                 .ok_or(Errno::ENOENT)?;
-            Ok(&ofd.path)
+            ofd.current_path()
         }
     }
 }
@@ -6502,7 +6502,7 @@ pub fn sys_lseek(
             return Err(Errno::EINVAL);
         }
 
-        let path = ofd.path.clone();
+        let path = ofd.current_path()?;
         let backing_handle = ofd.host_handle;
         let old_dir_handle = ofd.dir_host_handle;
 
@@ -9008,6 +9008,7 @@ pub fn sys_rename(
         // across the move, exactly as the host path does below.
         let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old, &new)?;
         crate::tmpfs::rename(&old, &new)?;
+        proc.ofd_table.rename_directory_paths(&old, &new);
         rekey_fifo_names_after_rename(&old, &new, displaced_ctime);
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.rename_path(&old, &new) {
@@ -9025,6 +9026,7 @@ pub fn sys_rename(
         }
         check_may_rename(proc, host, &old, &new)?;
         crate::rootfs::rename(&old, &new)?;
+        proc.ofd_table.rename_directory_paths(&old, &new);
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.rename_path(&old, &new) {
             crate::wakeup::push_datagram_writable();
@@ -9041,6 +9043,7 @@ pub fn sys_rename(
     }
     let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old, &new)?;
     crate::hostdir::rename(host, &old, &new)?;
+    proc.ofd_table.rename_directory_paths(&old, &new);
     rekey_fifo_names_after_rename(&old, &new, displaced_ctime);
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     if registry.rename_path(&old, &new) {
@@ -9358,7 +9361,7 @@ pub fn sys_fchdir(proc: &mut Process, fd: i32) -> Result<(), Errno> {
     if ofd.file_type != FileType::Directory {
         return Err(Errno::ENOTDIR);
     }
-    proc.cwd = ofd.path.clone();
+    proc.cwd = ofd.current_path()?;
     Ok(())
 }
 
@@ -9654,7 +9657,7 @@ pub fn sys_getdents64(
         return Err(Errno::ENOTDIR);
     }
 
-    let path = ofd.path.clone();
+    let path = ofd.current_path()?;
     let stale_dir_handle =
         ofd.directory_iterator_is_stale().then_some(ofd.dir_host_handle);
     if let Some(old_handle) = stale_dir_handle {
@@ -10991,7 +10994,7 @@ pub fn sys_utimensat(
     let resolved = if path.is_empty() && dirfd != wasm_posix_shared::flags::AT_FDCWD {
         let entry = proc.fd_table.get(dirfd)?;
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-        ofd.path.clone()
+        ofd.current_path()?
     } else {
         resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path
     };
@@ -15946,7 +15949,7 @@ fn resolve_at_path(
     if ofd.file_type != FileType::Directory {
         return Err(Errno::ENOTDIR);
     }
-    let base = ofd.path.clone();
+    let base = ofd.current_path()?;
 
     resolve_namespace_path_from(proc, host, path, &base, options)
 }
@@ -16519,6 +16522,8 @@ pub fn sys_renameat(
         let displaced_ctime =
             refresh_displaced_fifo_before_rename(host, &old_resolved, &new_resolved)?;
         crate::tmpfs::rename(&old_resolved, &new_resolved)?;
+        proc.ofd_table
+            .rename_directory_paths(&old_resolved, &new_resolved);
         rekey_fifo_names_after_rename(&old_resolved, &new_resolved, displaced_ctime);
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.rename_path(&old_resolved, &new_resolved) {
@@ -16536,6 +16541,8 @@ pub fn sys_renameat(
         }
         check_may_rename(proc, host, &old_resolved, &new_resolved)?;
         crate::rootfs::rename(&old_resolved, &new_resolved)?;
+        proc.ofd_table
+            .rename_directory_paths(&old_resolved, &new_resolved);
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.rename_path(&old_resolved, &new_resolved) {
             crate::wakeup::push_datagram_writable();
@@ -16552,6 +16559,8 @@ pub fn sys_renameat(
     }
     let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old_resolved, &new_resolved)?;
     crate::hostdir::rename(host, &old_resolved, &new_resolved)?;
+    proc.ofd_table
+        .rename_directory_paths(&old_resolved, &new_resolved);
     rekey_fifo_names_after_rename(&old_resolved, &new_resolved, displaced_ctime);
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     if registry.rename_path(&old_resolved, &new_resolved) {
@@ -38006,6 +38015,17 @@ impl HostIO for TrackingHostIO {
         assert!(result.is_ok());
         assert_eq!(host.last_rename_old, b"/src/dir/old");
         assert_eq!(host.last_rename_new, b"/dst/dir/new");
+    }
+
+    #[test]
+    fn test_openat_uses_live_directory_path_after_rename() {
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let dirfd = open_dir_fd(&mut proc, &mut host, b"/home/dir");
+
+        sys_rename(&mut proc, &mut host, b"/home/dir", b"/home/newdir").unwrap();
+        sys_openat(&mut proc, &mut host, dirfd, b"file", O_RDONLY, 0).unwrap();
+        assert_eq!(host.last_open_path, b"/home/newdir/file");
     }
 
     #[test]

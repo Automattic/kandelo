@@ -112,6 +112,14 @@ const probes: Probe[] = [
     imageCapacity: 8 * 1024 * 1024,
   },
   {
+    name: "upstream Go os.Root survives directory rename after open",
+    file: "os-test.wasm",
+    argv: ["go-os-test", "-test.run=^TestRootRenameAfterOpen$", "-test.v"],
+    stdout: ["--- PASS: TestRootRenameAfterOpen", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
+  },
+  {
     name: "upstream Go os.Executable ignores forged argv",
     file: "os-test.wasm",
     argv: ["forged-display-name", "-test.run=^TestExecutable$", "-test.v"],

@@ -2539,17 +2539,38 @@ WebKit. Focused direct-byte and VFS browser exec probes pass 6/6 across those
 engines. This closes the executable-identity subtask, not the wider Go
 standard-library/runtime audit. The changed digest invalidates the previous
 local WordPress/FrankenPHP artifacts until their package closure is rebuilt.
+The new ABI-fixture-input regression test passes 5/5 in the pinned dev shell.
+A concurrent whole-Go three-browser sweep was stopped after the WordPress
+closure rebuild saturated the host: focused executable probes had passed
+separately, but several unrelated full-suite cases timed out under that load.
+Rerun the broad sweep after package publishing; do not count this interrupted
+run as conformance evidence.
+
+**2026-10-11 — live dirfd identity after rename.** Directory OFDs now
+share a live pathname cell across dup/fork/SCM_RIGHTS, and all processes in
+the same kernel share a weak registry of open directory cells. A successful
+`rename`/`renameat` moves the cells for the renamed directory and its open
+descendants; descriptors to a replaced destination become unlinked instead
+of aliasing the new occupant. Relative `*at` lookups, directory iteration,
+`fchdir`, and fd readlinks use the live cell, not the opening pathname.
+Four focused Rust tests pass for same-table, cross-table, process-table, and
+`openat` behavior; the full Rust workspace suite passes. The rebuilt kernel
+passes upstream `TestRootRenameAfterOpen` in Node with empty stderr and host
+diagnostics. The same case passes 3/3 in Chromium, Firefox, and WebKit after
+the source-only index published. The first browser attempt was a setup-only
+size mismatch while the kernel member and its index were being finalized;
+it did not launch a guest. The ABI snapshot check passes. Node/macOS
+symlink-source `TestRootLinkFrom` remains open.
 
 The remaining Go/C platform gates, in recommended order, are:
 
-1. Close the two remaining upstream `os.Root` filesystem failures at their
-   owning layers: Node/macOS symlink-source `linkat` and stable dirfd identity
-   after rename. Exact `Chtimes` now passes on Node and all three browsers.
-   Node's native hard-link call can
-   follow the source symlink despite kernel no-follow resolution. `openat`
-   currently resolves through the directory OFD's remembered pathname, so
-   a correct rename-after-open fix needs stable object identity rather than
-   rewriting a single process's cached path.
+1. Close the remaining upstream `os.Root` filesystem failure at its owning
+   layer: Node/macOS symlink-source `linkat`. The live-dirfd implementation
+   passes upstream `TestRootRenameAfterOpen` in Node and all three browsers.
+   Exact `Chtimes` passes on
+   Node and all three browsers. Node's native hard-link call can follow the
+   source symlink despite kernel no-follow resolution. Directory OFDs now use
+   shared live path state rather than a single process's cached pathname.
    Rerun the whole `TestRoot*` sweep on Node and all three browsers, staging
    source-tree fixtures rather than treating missing testdata as a pass.
 2. Expand Go standard-library and runtime conformance beyond the selected
