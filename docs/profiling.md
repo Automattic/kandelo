@@ -223,6 +223,21 @@ and compare it with a separate repeated-cycle diagnostic using
 explicitly; inspect worker CPU profiles for collection and scheduling
 costs before attributing the difference to the Rust lock manager.
 
+For a cold timing-resolution check, a separate diagnostic can change only
+the clock while retaining the original one-pass guest workload. Keep those
+results separate from sustained cycles and the original realtime results.
+Alternate baseline/candidate order across fresh workers, and disclose any
+shared parent or browser process instead of treating workers as independent
+parent-process launches.
+
+Do not directly align Node monotonic timestamps with V8 CPU-profile
+timestamps: their clock origins can differ. Calibrate each worker profile
+with a marker visible in both clocks before attributing samples to guest
+phases. Profiling overhead and collection samples are diagnostic evidence;
+fewer constructed objects alone do not prove shorter collection pauses.
+Before accepting a full-suite result, verify the actual suite count and
+nonempty metrics; omit `--suite` to select all suites.
+
 #### process-lifecycle
 
 Measures process management primitives against the default Node rootfs. The

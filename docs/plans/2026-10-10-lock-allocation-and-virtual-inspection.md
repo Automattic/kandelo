@@ -1,5 +1,9 @@
 # Lock allocation and live virtual-directory inspection
 
+The [October 11 scratch-view follow-up](2026-10-11-locking-scratch-view-mitigation.md)
+records a further host mitigation and new controlled measurements. The
+numbers below remain the October 10 allocation/inspection evidence.
+
 ## Problem and result
 
 The initial ABI 49 batch lost host inspection of `/proc` and `/dev`,

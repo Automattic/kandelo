@@ -799,6 +799,19 @@ embedders must not register or manipulate lock storage. The unchanged guest
 directly, which also lets a native Wasm host use the same implementation
 without a lock-specific JavaScript binding.
 
+Host advisory-lock marshalling retains an owned 32-byte request snapshot:
+blocking retries must not observe later guest writes or memory growth. Only
+successful `F_GETLK`, `F_GETLK64` and `F_OFD_GETLK` calls copy a result back;
+setters consume input only. Signal termination and caught-signal dequeue
+precede result publication and retry scheduling.
+
+One lease-bound scratch view writes the request and reads its result. The
+wrapper checks lease ownership on every access and refreshes its private
+native view after kernel memory growth. It is created within each request's
+lease and revoked with that lease; it is never cached on a channel or shared
+between requests. A second result wrapper would duplicate allocation without
+adding a memory-growth or lifetime check.
+
 ### Cooperative process-runtime interrupts
 
 A process module may import
