@@ -3031,10 +3031,10 @@ Remaining work, in recommended order:
    waves in each host, and 40 extra PHP requests on one WordPress server boot
    in Node and Chromium. The 512-worker Node run nearly fills this host's
    memory footprint budget.
-5. Repeat the paired throughput comparison across enough independent runs
-   and environments to support any superiority claim. The four-round
-   fresh-image Node and Chromium results above are mixed; neither the earlier
-   nor the current samples establish a FrankenPHP performance advantage.
+5. Before any broad performance superiority claim, compare additional
+   hardware and browser engines. Two independent four-round runs on this
+   machine show mixed Node/Chromium outcomes; no overall advantage follows.
+   This measurement gate is separate from Go correctness.
 
 The first two gaps are not merely missing test fixtures. The current Node
 `HostFileSystem.safePath` builds full native pathnames, so macOS reaches its
@@ -3049,3 +3049,18 @@ requested child credentials with `ENOSYS`; the current spawn wire has no
 arbitrary UID/GID/group fields. Signal handling and child credentials need
 runtime and spawn-protocol designs, not a test-only skip or fabricated
 success.
+
+An independent second four-round paired WordPress run used the same
+SHA-256-verified VFS image and alternated profile order on Node and
+Chromium. Its raw report is
+`.context/wordpress-stack-rev17-independent.json`. Each host/profile has
+48 serial request samples and 192 concurrent requests. Node median request
+latency is 651 ms for nginx/PHP-FPM versus 810 ms for FrankenPHP, with
+median throughput 2.17 versus 1.87 requests/s. Chromium median request
+latency is 710 versus 737 ms, with median throughput 2.00 versus 2.22
+requests/s. The earlier independent run showed the same direction on
+each host. This supports only a workload- and host-bounded Chromium
+throughput advantage, not an overall WordPress performance advantage;
+FrankenPHP is slower on the Node host and has higher request latency on
+both. The Node host still sometimes reports forced worker termination
+while destroying the live FrankenPHP service after measurements.
