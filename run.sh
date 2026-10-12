@@ -2493,7 +2493,10 @@ cmd_rebuild() {
 
 # `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--below-abi N]` —
 # garbage-collect the SourceOnly build cache this checkout uses
-# (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). A dry run
+# (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). --below-abi
+# also collects old ordinary-cache generations and debris unless isolated by
+# a source-cache override; --binary-cache-root explicitly selects that cache.
+# A dry run
 # unless --apply; the policy and its safety rules live in `xtask cache-gc`
 # (tools/xtask/src/cache_gc.rs) and docs/package-management.md.
 cmd_cache_gc() {

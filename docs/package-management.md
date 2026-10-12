@@ -1903,7 +1903,21 @@ somewhere else. `xtask clean` therefore removes only the key its own
 checkout resolves to, and without collection the cache only grows.
 
 `xtask cache-gc` (`./run.sh cache-gc`) collects what the cache itself can
-show is unused:
+show is unused. It normally scans the SourceOnly compiled cache at
+`~/.cache/kandelo/source-only/source-only-v1/compiled`. With `--below-abi N`,
+it also scans the ordinary resolver cache (`~/.cache/kandelo/libs` and
+`programs`, or the root selected by `WASM_POSIX_BINARY_CACHE_ROOT` /
+`XDG_CACHE_HOME`). The report gives totals for each cache and a combined
+total; the ordinary cache was previously omitted entirely.
+
+`--source-cache-root PATH` or `KANDELO_SOURCE_CACHE_ROOT` limits the command
+to that SourceOnly cache. To include an ordinary cache alongside an isolated
+SourceOnly cache, pass `--binary-cache-root PATH` explicitly. Both command
+line paths must be absolute; `--binary-cache-root` requires `--below-abi`.
+The ordinary cache's generations have no reliable last-use tracking or
+checkout root registry, so only the explicit ABI rule can evict them:
+`--max-age-days` and `--max-size` do not evict its generations. SourceOnly
+age/size collection and automatic collection retain their existing scope.
 
 | Entry | Removed when |
 | ----- | ------------ |
@@ -1911,6 +1925,7 @@ show is unused:
 | Generation, under `--below-abi N` | Built for a kernel ABI below `N`, no live checkout root names its key, and not used within the last day. Applies at any age. A generation named without an ABI predates the `abi<ABI>` name segment and counts as ABI 46 or older, so it is collected only when `N` is above 46. |
 | Generation, under `--max-size SIZE` | After the age pass, still over the budget: least recently used first, never a root-protected one, never one used within the last day. `SIZE` is bytes or `K`/`M`/`G`/`T` (binary multiples). |
 | `.work-<pid>-*`, `.build-stage-<pid>-*`, `.git-inputs-<pid>-*`, `.source-only-dispose-<pid>-*`, `.kandelo-receipt-tmp-<pid>` | The owning pid is not running and the entry is at least a day old. |
+| `.tmp-<label>-archive-<pid>-<counter>` incomplete archive download | The owning pid is not running and the entry is at least a day old. Collected in either scanned cache. |
 | Receipt/provenance/last-used sidecar whose generation directory is gone | At least a day old. |
 | `.<key>.kandelo-rebuild-mismatch.*.json` diagnostic | No generation with that key remains and the file is older than the age limit. |
 | Root record whose checkout or projection is gone | Always (it protects nothing). |
@@ -1936,11 +1951,16 @@ written by older code, so they were built for ABI 46 (the ABI current when
 names gained the segment) or older: `--below-abi 47` and above collect them
 like any old-ABI generation, and a lower floor leaves them to the age rule,
 which removes them once they go unused because no current build reads
-them. Live roots and the one-day
+them in SourceOnly. Historical generation names with eight-character cache
+key suffixes are recognized too; a live full key protects any matching
+short-key prefix. Live roots and the one-day
 recent-use floor still protect an old-ABI generation: a checkout that has
 not rebuilt since the bump is still using it. Source generations serve
 every ABI, carry none in their names, and are never collected by this
-rule.
+rule. The report also shows the allocated size of below-floor generations
+kept by roots and by recent use, so retained old ABIs are distinguishable
+from entries the collector missed. An ABI floor supplements SourceOnly's
+age rule; it does not restrict age collection to old ABIs.
 
 **Live roots.** When a local build publishes its projection, it records the
 cache keys that projection depends on (programs, the kernel, and the
@@ -1962,9 +1982,13 @@ admitted cannot disappear under it. While holding the lock it re-plans,
 then renames every entry it removes into
 `<cache root>/.kandelo-cache-gc-trash/<pid>-<n>/`; it deletes the trash
 after releasing the lock, so a long delete never blocks builds. A build that
-starts while a collection holds the lock waits for it. Builds run by code
-older than this mechanism take no lock; the one-day floor on debris and
-orphaned sidecars exists for them.
+starts while a collection holds the lock waits for it. Ordinary Rust resolver
+builds also hold their cache's shared lock. Ordinary cache consumers without
+locking or last-use tracking, and builds run by code older than this mechanism
+take no lock; the one-day floor on debris and orphaned sidecars exists for
+them. An ordinary generation's recent-use floor uses its directory and
+sidecar mtimes; it cannot account for unrecorded reads by older checkouts.
+Choose the ABI floor for checkouts you have moved past.
 
 **Dry run by default.** Without `--apply`, `cache-gc` takes no lock and
 changes nothing; it prints each entry it would remove, why, its size, and
