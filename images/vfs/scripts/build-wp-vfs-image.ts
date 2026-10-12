@@ -397,7 +397,7 @@ openssl.cafile=/etc/ssl/certs/ca-certificates.crt
 `);
   ensureDirRecursive(fs, "/etc/dinit.d");
   writeVfsFile(fs, FRANKENPHP_ENV_PATH,
-    `${Object.entries({ ...DINIT_SERVICE_ENV, PHPRC: "/etc/frankenphp" })
+    `${Object.entries({ ...DINIT_SERVICE_ENV, PHPRC: "/etc/frankenphp", FRANKENPHP_NUM_THREADS: "6" })
       .map(([name, value]) => `${name}=${value}`)
       .join("\n")}\n`);
 

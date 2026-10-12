@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +17,15 @@ import (
 const documentRoot = "/var/www/html"
 
 func main() {
-	if err := frankenphp.Init(frankenphp.WithNumThreads(2)); err != nil {
+	threadCount := 2
+	if value := os.Getenv("FRANKENPHP_NUM_THREADS"); value != "" {
+		configured, err := strconv.Atoi(value)
+		if err != nil || configured < 1 {
+			log.Fatal("FRANKENPHP_NUM_THREADS must be a positive integer")
+		}
+		threadCount = configured
+	}
+	if err := frankenphp.Init(frankenphp.WithNumThreads(threadCount)); err != nil {
 		log.Fatal(err)
 	}
 	defer frankenphp.Shutdown()

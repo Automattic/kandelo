@@ -2185,6 +2185,11 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 Node, WordPress, WordPress on FrankenPHP, and LAMP are optional demo profiles.
 The two WordPress profiles use the same VFS image but start different dinit
 targets; FrankenPHP executes PHP directly rather than proxying to PHP-FPM.
+The FrankenPHP profile currently embeds PHP in a small Go HTTP server, not
+the upstream Caddy `php_server` stack. It has no ZTS OPcache or page-cache
+module and is a functional classic-mode demo, not a production deployment
+recipe or an apples-to-apples PHP-FPM performance comparison. The Caddy and
+OPcache porting blockers are tracked in the Go milestone plan.
 Their VFS asset imports
 are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or

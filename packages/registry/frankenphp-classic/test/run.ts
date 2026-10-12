@@ -50,7 +50,7 @@ const host = new NodeKernelHost({
 try {
   await host.init(Uint8Array.from(readFileSync(kernelPath)).buffer);
   const exit = host.spawn(readFileSync(programPath), [programPath], {
-    env: ["HOME=/tmp", "TMPDIR=/tmp"],
+    env: ["HOME=/tmp", "TMPDIR=/tmp", "FRANKENPHP_NUM_THREADS=3"],
     onStarted: (pid) => { serverPid = pid; },
   });
   exit.catch(() => {});
@@ -76,6 +76,7 @@ try {
   console.log(JSON.stringify({ php, staticAsset, stderr, diagnostics }));
   if (php.status !== 200 || !new TextDecoder().decode(php.body).includes("GET|/welcome?x=1|/index.php") ||
       staticAsset.status !== 200 || new TextDecoder().decode(staticAsset.body) !== "static asset\n" ||
+      !stderr.includes("num_threads=3") ||
       diagnostics.length !== 0) {
     process.exitCode = 1;
   }

@@ -71,7 +71,7 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
         env: [
           "HOME=/root", "TMPDIR=/tmp", "TERM=xterm-256color",
           "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
-          "WP_APP_PATH=/", "WP_PROTO=http", "FRANKENPHP_LISTEN=:8080",
+          "WP_APP_PATH=/", "WP_PROTO=http", "FRANKENPHP_NUM_THREADS=6", "FRANKENPHP_LISTEN=:8080",
         ],
         cwd: "/",
       });
@@ -113,12 +113,15 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
           throw new Error(`WordPress PHP request ${index} returned ${response.status}`);
         }
       }
+      const serviceLog = await kernel.readFileFromVfs("/var/log/frankenphp-classic.log");
+      if (!serviceLog) throw new Error("FrankenPHP service log missing");
       return {
         homepageStatus: homepage.status,
         homepageBody: decoder.decode(homepage.body),
         loginStatus: login.status,
         loginBody: decoder.decode(login.body),
         churnCompleted: churnRequests,
+        serviceLog: decoder.decode(serviceLog),
         diagnostics,
         stderr,
       };
@@ -141,6 +144,7 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
   expect(result.loginStatus).toBe(200);
   expect(result.loginBody).toContain("user_login");
   expect(result.churnCompleted).toBe(churnRequests);
+  expect(result.serviceLog).toContain("num_threads=6");
   expect(result.diagnostics).toEqual([]);
   expect(result.stderr).not.toContain("panic");
 });

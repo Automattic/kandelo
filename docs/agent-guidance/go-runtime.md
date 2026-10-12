@@ -268,6 +268,13 @@ Trace the whole link path before changing flags or package recipes:
   external linking. The internal linker selects archive members recursively
   for referenced C code, including PHP's dependency archives. The
   `static-archive` and `php-embed` probes cover this path on both hosts.
+- A linked C archive does not imply its functions are exported from the Go
+  executable. A PHP ZTS OPcache side module can be built, but its Zend/PHP
+  imports are absent from the current FrankenPHP Go/Wasm export table.
+  Implement a general C-symbol retention/export contract in the Go linker,
+  then verify the side module's complete import closure and live `dlopen`
+  on Node.js and Chromium. Do not claim OPcache parity from a successful
+  `libphp.a` link or side-module build alone.
 - A Go cgo executable must be fork-instrumented and carry the exact current
   `kandelo.abi.contract` digest. `install_local_binary` can instrument but
   does not stamp by itself: instrument first, stamp that fresh artifact, then

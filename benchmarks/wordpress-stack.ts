@@ -141,7 +141,7 @@ async function measureNode(profile: Profile, round: number, options: Options, im
     },
     env: [
       "HOME=/root", "TERM=xterm-256color", "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
-      "WP_APP_PATH=/", "WP_PROTO=http", `FRANKENPHP_LISTEN=:${port}`,
+      "WP_APP_PATH=/", "WP_PROTO=http", "FRANKENPHP_NUM_THREADS=6", `FRANKENPHP_LISTEN=:${port}`,
     ],
     onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
   });

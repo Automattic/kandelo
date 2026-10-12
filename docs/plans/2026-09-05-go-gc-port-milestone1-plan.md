@@ -3075,3 +3075,74 @@ state and no force-termination warning. Its raw report is
 listing nginx/PHP-FPM before FrankenPHP. This closes the benchmark's
 live-service teardown issue, not generic host destroy semantics or an
 overall FrankenPHP speed claim.
+
+**2026-10-12 — Production-representative WordPress/FrankenPHP checkpoint.**
+The acceptance target now has two distinct comparisons: uncached PHP runtime
+behavior against a comparably configured nginx/PHP-FPM profile, and a
+visitor-facing stack comparison where each side may use its production-style
+page cache. The latter must verify cache freshness and bypass for logged-in,
+admin, and other personalized requests; a cached-stack win must not be
+described as a PHP-runtime win. The official FrankenPHP WordPress setup uses
+Caddy's `php_server`; FrankenWP adds a Caddy page-cache module. The current
+Kandelo profile still uses FrankenPHP's Go library behind a small custom
+router, without Caddy or a page cache, and is not a production-ready stand-in
+for those deployments.
+
+A source build of FrankenPHP v1.11.0's actual Caddy module was attempted with
+the pinned Kandelo Go fork. The full and reduced import sets both stopped
+before linking in Unix-dependent Go packages: `x/sys/unix` lacks the target's
+socket options and mapped-file APIs, while bbolt, readline, and certificate
+packages also lack Kandelo target selections. These are genuine Go-target and
+dependency-port tasks, not a Caddyfile or WordPress routing bug. Experimental
+Caddy package and profile wiring was reverted, so the checked-in resolver
+recipe still produces only the working Go-library classic binary. No Caddy
+binary or Caddy-backed WordPress result is claimed.
+
+As a bounded preparation step, `FRANKENPHP_NUM_THREADS` is now validated by
+the classic binary; the WordPress profile requests six PHP threads rather than
+the earlier fixed two, matching the baseline FPM pool's configured six child
+processes in count, not necessarily in memory or scheduling cost. Package
+revisions are `frankenphp-classic` 18 and WordPress 23. The standalone
+FrankenPHP Node probe passed with three configured threads, direct PHP and
+static HTTP, and no host diagnostics. Source-only WordPress bootstrap
+published image SHA-256
+`4136d937629065e3147b3cb587b86212f9cc7c7316c05ccd1e4df3a680e7dba7`.
+The rebuilt image passed the direct Chromium kernel-host homepage/login gate,
+which also reads the service log to verify `num_threads=6`,
+the Chromium gallery homepage/admin gate, and the Node-host browser counterpart
+admin flow (3/3). This is correctness evidence for the tuned *existing*
+profile, not a Caddy or performance result. The PHP ZTS embed build still
+omits OPcache while the FPM image includes and prewarms it, so the previous
+paired benchmark cannot be interpreted as a fair runtime comparison.
+An exploratory two-round Node paired run on the same image used one warmup,
+six serial samples, and three concurrent clients per profile: nginx/FPM
+request medians were 642 and 709 ms, while FrankenPHP's were 796 and
+785 ms. The raw report is `.context/wordpress-six-thread-node.json`.
+This small Node-only check establishes neither a tuned comparison nor a
+performance advantage; it leaves the ZTS OPcache and Caddy-path gaps open.
+
+Next, port the Caddy dependency graph through genuine Kandelo Go/POSIX
+implementations and build a source-only Caddy/FrankenPHP package. Then switch
+the WordPress profile to a reviewed Caddyfile with `php_server`, verify both
+hosts, and test real-world operational behavior (configuration, limits,
+shutdown, writes, redirects, assets, and failures). Bring PHP acceleration
+features into parity or report the incompatibility explicitly. Only then add
+a cache-enabled visitor-facing profile with safe invalidation and bypass,
+followed by independent uncached-runtime and whole-stack load comparisons.
+
+**2026-10-12 — ZTS OPcache feasibility check.** PHP's upstream
+`ext/opcache/config.m4` unconditionally selects a shared Zend extension.
+Enabling it in `php-zts` made the default `make` fail at libtool's unsupported
+Wasm shared-module output. Building `libphp.la` separately and linking the
+ZTS OPcache objects with the SDK's side-module linker did produce a resolver-
+verified `opcache-zts.so`. That did not make it loadable in the Go executable:
+the module imports hundreds of PHP/Zend symbols, including
+`zend_string_hash_func` and `php_request_startup`, while the current
+FrankenPHP Go/Wasm binary exports neither of those symbols. The Go internal
+linker needs a general way to retain and export C symbols required by
+`dlopen` side modules, followed by an import-closure and live-load test on
+Node.js and Chromium. The experimental PHP package changes were reverted;
+the working demo still has no ZTS OPcache. A PHP-FPM OPcache file cache also
+cannot simply be assumed compatible with the ZTS build; check the cache
+identity and prewarm strategy independently once loading works. No runtime
+or performance parity is claimed from this compile-only experiment.

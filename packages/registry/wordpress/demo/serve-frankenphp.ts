@@ -33,6 +33,7 @@ const { host, exitPromise } = await bootDinitServiceVfs({
     "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
     "WP_APP_PATH=/",
     "WP_PROTO=http",
+    "FRANKENPHP_NUM_THREADS=6",
     `FRANKENPHP_LISTEN=:${port}`,
   ],
 });
