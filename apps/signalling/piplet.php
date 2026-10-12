@@ -44,7 +44,32 @@
  *
  * A code starts with `kandelo1:` and fits in 64 KiB. Sessions expire
  * after ten minutes; signalling either finished long before that or never
- * will. Test with `composer install && composer test`.
+ * will.
+ *
+ * Rooms match any number of computers to one hosting computer, the centre
+ * of a star network. The host keeps the room alive by checking in; each
+ * joiner leaves its own invite under a join token and waits for the host's
+ * answer. A room token travels in the link people share, so it opens the
+ * room to joiners only: everything the host does also needs the host key,
+ * which never leaves the hosting computer and is stored here only hashed.
+ * Room tokens, join tokens and host keys are 20 to 64 lowercase letters;
+ * generate them randomly.
+ *
+ *   GET  ?room=ROOM                         the room's name, or 404
+ *   POST ?room=ROOM&role=host               create or keep the room; body
+ *                                           {"name": ...}; returns joins
+ *                                           still waiting for an answer
+ *   POST ?room=ROOM&role=join&join=JOIN     leave a joiner's invite
+ *   GET  ?room=ROOM&join=JOIN               the host's answer or refusal
+ *   POST ?room=ROOM&role=answer&join=JOIN   answer one joiner
+ *   POST ?room=ROOM&role=refuse&join=JOIN   refuse one joiner; body reason
+ *   POST ?room=ROOM&role=close              end the room
+ *
+ * Host requests carry the host key in an `X-Kandelo-Host-Key` header. A
+ * room ends 60 seconds after its host stops checking in, an unanswered join
+ * after two minutes. A room holds at most 8 waiting joins, the server at
+ * most 256 rooms and 8 MiB of codes; beyond that it answers 503. Test with
+ * `composer install && composer test`.
  */
 
 const MATCH_SESSION_TTL_SECONDS = 600;
@@ -53,6 +78,14 @@ const MATCH_MAX_SESSIONS = 256;
 const MATCH_NAME_PATTERN = '/^(?=.{1,64}$)[a-z]+(?:-[a-z]+)*$/D';
 const MATCH_CODE_PREFIX = 'kandelo1:';
 const MATCH_LOCK_DEADLINE_SECONDS = 2.0;
+const MATCH_TOKEN_PATTERN = '/^[a-z]{20,64}$/D';
+const MATCH_ROOM_TTL_SECONDS = 60;
+const MATCH_JOIN_TTL_SECONDS = 120;
+const MATCH_MAX_ROOMS = 256;
+const MATCH_MAX_WAITING_JOINS = 8;
+const MATCH_MAX_STORE_BYTES = 8 * 1024 * 1024;
+const MATCH_MAX_ROOM_NAME_CHARS = 64;
+const MATCH_MAX_REFUSAL_BYTES = 256;
 
 final class MatchHttpError extends Exception
 {
@@ -69,7 +102,7 @@ function match_headers(): void
     header('X-Content-Type-Options: nosniff');
     header('Access-Control-Allow-Origin: *');
     header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-    header('Access-Control-Allow-Headers: Content-Type');
+    header('Access-Control-Allow-Headers: Content-Type, X-Kandelo-Host-Key');
     header('Cross-Origin-Resource-Policy: cross-origin');
 }
 
@@ -85,17 +118,45 @@ function match_expired(array $session, int $now): bool
     return $session['created'] + MATCH_SESSION_TTL_SECONDS <= $now;
 }
 
-function match_read_sessions(): array
+function match_room_expired(array $room, int $now): bool
+{
+    return $room['touched'] + MATCH_ROOM_TTL_SECONDS <= $now;
+}
+
+function match_read_store(): array
 {
     $file = file_get_contents(__FILE__);
     if ($file === false) {
         throw new MatchHttpError(500, 'the session store cannot be read');
     }
     $data = json_decode(substr($file, __COMPILER_HALT_OFFSET__), true);
-    if (!is_array($data) || !is_array($data['sessions'] ?? null)) {
+    if (!is_array($data) || !is_array($data['sessions'] ?? null)
+        || !is_array($data['rooms'] ?? [])) {
         throw new MatchHttpError(500, 'the session store is corrupt');
     }
-    return $data['sessions'];
+    return ['sessions' => $data['sessions'], 'rooms' => $data['rooms'] ?? []];
+}
+
+function match_read_sessions(): array
+{
+    return match_read_store()['sessions'];
+}
+
+/** Drop expired rooms and each room's expired joins. */
+function match_prune_rooms(array $rooms, int $now): array
+{
+    $live = [];
+    foreach ($rooms as $id => $room) {
+        if (match_room_expired($room, $now)) {
+            continue;
+        }
+        $room['joins'] = array_filter(
+            $room['joins'],
+            fn (array $join) => $join['created'] + MATCH_JOIN_TTL_SECONDS > $now,
+        );
+        $live[$id] = $room;
+    }
+    return $live;
 }
 
 function match_open_locked()
@@ -128,21 +189,25 @@ function match_mutate(callable $mutate): void
 {
     $handle = match_open_locked();
     try {
-        $sessions = match_read_sessions();
-        $mutate($sessions);
+        $store = match_read_store();
+        $mutate($store);
         $now = time();
         $sessions = array_filter(
-            $sessions,
+            $store['sessions'],
             fn (array $session) => !match_expired($session, $now),
         );
+        $rooms = match_prune_rooms($store['rooms'], $now);
         $prefix = fread($handle, __COMPILER_HALT_OFFSET__);
         if ($prefix === false || strlen($prefix) !== __COMPILER_HALT_OFFSET__) {
             throw new MatchHttpError(500, 'the session store cannot be read');
         }
         $trailer = "\n" . json_encode(
-            ['sessions' => $sessions],
+            ['sessions' => (object) $sessions, 'rooms' => (object) $rooms],
             JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
         ) . "\n";
+        if (strlen($trailer) > MATCH_MAX_STORE_BYTES) {
+            throw new MatchHttpError(503, 'the signalling server is full');
+        }
         $temporary = __DIR__ . '/.piplet-tmp-' . bin2hex(random_bytes(8)) . '.php';
         $out = fopen($temporary, 'x');
         if ($out === false) {
@@ -178,6 +243,160 @@ function match_code(): string
     return $code;
 }
 
+function match_token(string $parameter, string $what): string
+{
+    $token = $_GET[$parameter] ?? '';
+    if (!is_string($token) || preg_match(MATCH_TOKEN_PATTERN, $token) !== 1) {
+        throw new MatchHttpError(422, "a $what is 20 to 64 lowercase letters");
+    }
+    return $token;
+}
+
+function match_host_key_hash(): string
+{
+    $key = $_SERVER['HTTP_X_KANDELO_HOST_KEY'] ?? '';
+    if (!is_string($key) || preg_match(MATCH_TOKEN_PATTERN, $key) !== 1) {
+        throw new MatchHttpError(401, 'the host key is 20 to 64 lowercase letters');
+    }
+    return hash('sha256', $key);
+}
+
+/** The room's display name: printable text, 1 to 64 characters. */
+function match_room_name(): string
+{
+    $body = file_get_contents('php://input', false, null, 0, 4097);
+    $payload = is_string($body) ? json_decode($body, true) : null;
+    $name = is_array($payload) ? ($payload['name'] ?? null) : null;
+    if (!is_string($name)) {
+        throw new MatchHttpError(422, 'a room needs a name');
+    }
+    $name = trim(preg_replace('/[\x00-\x1F\x7F]/u', '', $name) ?? '');
+    if ($name === '' || mb_strlen($name) > MATCH_MAX_ROOM_NAME_CHARS) {
+        throw new MatchHttpError(422, 'a room name is 1 to 64 printable characters');
+    }
+    return $name;
+}
+
+/** The room a host request addresses, after proving the host key. */
+function &match_hosted_room(array &$rooms, string $room, string $keyHash): array
+{
+    if (!isset($rooms[$room]) || match_room_expired($rooms[$room], time())) {
+        throw new MatchHttpError(404, 'no such room');
+    }
+    if (!hash_equals($rooms[$room]['key'], $keyHash)) {
+        throw new MatchHttpError(403, 'this is not the room\'s host');
+    }
+    return $rooms[$room];
+}
+
+function match_run_room(string $method, string $room): never
+{
+    $role = $_GET['role'] ?? '';
+    if ($method === 'GET') {
+        $rooms = match_prune_rooms(match_read_store()['rooms'], time());
+        if (!isset($rooms[$room])) {
+            throw new MatchHttpError(404, 'no such room');
+        }
+        if (!isset($_GET['join'])) {
+            match_json(['room' => $room, 'name' => $rooms[$room]['name']]);
+        }
+        $join = match_token('join', 'join token');
+        $entry = $rooms[$room]['joins'][$join] ?? null;
+        if ($entry === null) {
+            throw new MatchHttpError(404, 'no such join');
+        }
+        match_json(['answer' => $entry['answer'], 'refused' => $entry['refused']]);
+    }
+    if ($method !== 'POST') {
+        header('Allow: GET, POST, OPTIONS');
+        throw new MatchHttpError(405, 'use GET, POST, or OPTIONS');
+    }
+    if ($role === 'join') {
+        $join = match_token('join', 'join token');
+        $code = match_code();
+        match_mutate(function (array &$store) use ($room, $join, $code): void {
+            $rooms = match_prune_rooms($store['rooms'], time());
+            if (!isset($rooms[$room])) {
+                throw new MatchHttpError(404, 'no such room');
+            }
+            if (isset($rooms[$room]['joins'][$join])) {
+                throw new MatchHttpError(409, 'this join is already waiting');
+            }
+            $waiting = array_filter($rooms[$room]['joins'], fn (array $entry) => $entry['answer'] === null && $entry['refused'] === null);
+            if (count($waiting) >= MATCH_MAX_WAITING_JOINS) {
+                header('Retry-After: 2');
+                throw new MatchHttpError(503, 'too many computers are joining this room at once');
+            }
+            $rooms[$room]['joins'][$join] = ['offer' => $code, 'answer' => null, 'refused' => null, 'created' => time()];
+            $store['rooms'] = $rooms;
+        });
+        match_json(['ok' => true], 201);
+    }
+    $keyHash = match_host_key_hash();
+    if ($role === 'host') {
+        $name = match_room_name();
+        $waiting = [];
+        match_mutate(function (array &$store) use ($room, $keyHash, $name, &$waiting): void {
+            $rooms = match_prune_rooms($store['rooms'], time());
+            if (!isset($rooms[$room])) {
+                if (count($rooms) >= MATCH_MAX_ROOMS) {
+                    throw new MatchHttpError(503, 'the signalling server is full');
+                }
+                $rooms[$room] = ['name' => $name, 'key' => $keyHash, 'touched' => time(), 'joins' => []];
+            }
+            $hosted = &match_hosted_room($rooms, $room, $keyHash);
+            $hosted['name'] = $name;
+            $hosted['touched'] = time();
+            foreach ($hosted['joins'] as $join => $entry) {
+                if ($entry['answer'] === null && $entry['refused'] === null) {
+                    $waiting[] = ['join' => $join, 'offer' => $entry['offer']];
+                }
+            }
+            unset($hosted);
+            $store['rooms'] = $rooms;
+        });
+        match_json(['room' => $room, 'name' => $name, 'joins' => $waiting]);
+    }
+    if ($role === 'answer' || $role === 'refuse') {
+        $join = match_token('join', 'join token');
+        if ($role === 'answer') {
+            $code = match_code();
+        } else {
+            $reason = file_get_contents('php://input', false, null, 0, MATCH_MAX_REFUSAL_BYTES + 1);
+            $code = trim(preg_replace('/[\x00-\x1F\x7F]/u', '', is_string($reason) ? $reason : '') ?? '');
+            if ($code === '' || strlen($code) > MATCH_MAX_REFUSAL_BYTES) {
+                throw new MatchHttpError(422, 'a refusal is 1 to 256 bytes of text');
+            }
+        }
+        match_mutate(function (array &$store) use ($room, $keyHash, $join, $role, $code): void {
+            $rooms = match_prune_rooms($store['rooms'], time());
+            $hosted = &match_hosted_room($rooms, $room, $keyHash);
+            $entry = $hosted['joins'][$join] ?? null;
+            if ($entry === null) {
+                throw new MatchHttpError(404, 'no such join');
+            }
+            if ($entry['answer'] !== null || $entry['refused'] !== null) {
+                throw new MatchHttpError(409, 'this join is already answered');
+            }
+            $hosted['joins'][$join][$role === 'answer' ? 'answer' : 'refused'] = $code;
+            $hosted['touched'] = time();
+            unset($hosted);
+            $store['rooms'] = $rooms;
+        });
+        match_json(['ok' => true]);
+    }
+    if ($role === 'close') {
+        match_mutate(function (array &$store) use ($room, $keyHash): void {
+            $rooms = match_prune_rooms($store['rooms'], time());
+            match_hosted_room($rooms, $room, $keyHash);
+            unset($rooms[$room]);
+            $store['rooms'] = $rooms;
+        });
+        match_json(['ok' => true]);
+    }
+    throw new MatchHttpError(422, 'a room role is host, join, answer, refuse, or close');
+}
+
 function match_run(): never
 {
     match_headers();
@@ -185,6 +404,9 @@ function match_run(): never
     if ($method === 'OPTIONS') {
         http_response_code(204);
         exit;
+    }
+    if (isset($_GET['room'])) {
+        match_run_room($method, match_token('room', 'room token'));
     }
     $name = $_GET['session'] ?? '';
     if (!is_string($name) || preg_match(MATCH_NAME_PATTERN, $name) !== 1) {
@@ -204,7 +426,8 @@ function match_run(): never
     $role = $_GET['role'] ?? '';
     $code = match_code();
     if ($role === 'offer') {
-        match_mutate(function (array &$sessions) use ($name, $code): void {
+        match_mutate(function (array &$store) use ($name, $code): void {
+            $sessions = &$store['sessions'];
             $live = array_filter(
                 $sessions,
                 fn (array $session, string $key) => $key !== $name && !match_expired($session, time()),
@@ -218,7 +441,8 @@ function match_run(): never
         match_json(['ok' => true], 201);
     }
     if ($role === 'answer') {
-        match_mutate(function (array &$sessions) use ($name, $code): void {
+        match_mutate(function (array &$store) use ($name, $code): void {
+            $sessions = &$store['sessions'];
             $session = $sessions[$name] ?? null;
             if ($session === null || match_expired($session, time())) {
                 throw new MatchHttpError(404, "no session named \"$name\"");
