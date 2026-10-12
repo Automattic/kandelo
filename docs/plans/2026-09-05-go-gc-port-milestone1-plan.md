@@ -3172,3 +3172,22 @@ service-worker 503 reporting an offline computer while the dock still
 showed the machine running. Changing owner-client enumeration alone did
 not resolve it and was reverted. That bridge-lifecycle issue remains
 separate from the reported Appearance → Editor failure and is not fixed.
+
+**2026-10-12 — Firefox site-editor follow-up.** The user opened the new
+1 GiB image URL in Firefox, used the demo's admin-login button, and later
+reported that it seemed to be working better; the earlier short-lived
+failure was not reproduced. The browser UI gate now supports a timed soak
+of authenticated Appearance → Editor requests and captures browser and
+guest diagnostics on failure. On the new image, a 180-second Chromium
+soak and a 180-second Firefox soak passed; three further 120-second
+Firefox sessions also passed. These runs exercise editor loads and
+uncached requests, not editing or saving content, and do not establish
+the cause of the user's earlier failure. A 180-second macOS WebKit soak
+returned HTTP 503 at 60 seconds after five successful samples. Its
+service-worker response said the computer was offline even though the
+dock still showed it running, so the browser bridge remains an open
+issue. An optional rebase onto `origin/main` was attempted and aborted:
+main has ABI version 49 while this branch's source-only artifacts use
+version 48, and the rebase conflicts in ABI and host/kernel contract
+files. Integrating those contracts and rebuilding the affected artifacts
+requires separate validation; no rebase or performance gain is claimed.
