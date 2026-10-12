@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kandelo peer network</title><link rel="icon" href="data:,"><link rel="stylesheet" href="./styles.css"></head>
+<body><main>
+<h1>Kandelo peer network</h1><p>Connect independent computers, then send UDP messages or play together. Each computer runs its own guest programs.</p>
+<section aria-label="Connection"><label>Signalling server <input id="server" type="url" placeholder="https://your-server/piplet.php"></label><label>Session name <input id="session" placeholder="quiet-river"></label><div><button id="host">Host network</button><button id="join">Join network</button><button id="disconnect">Disconnect</button></div><p id="status" role="status">Disconnected</p><pre id="members"></pre></section>
+<section aria-label="Guest UDP"><h2>UDP message</h2><label>Destination <input id="destination" value="host"></label><label>Port <input id="port" type="number" min="1" max="65535" value="9000"></label><label>Message <input id="message" value="Hello from Kandelo"></label><button id="listen">Listen</button><button id="send">Send</button></section>
+<section aria-label="Multiplayer"><h2>Multiplayer</h2><p>Doom uses the shareware episode. Quake downloads the original shareware archive and extracts it with guest tools. Start a host game, then join from another computer.</p><div><button id="doom-host">Host Doom</button><button id="doom-join">Join Doom</button><button id="quake-host">Host Quake</button><button id="quake-join">Join Quake</button><button id="stop-game">Stop game</button></div><canvas id="screen" width="640" height="400" tabindex="0" aria-label="Guest game screen"></canvas></section>
+<section><h2>Guest output</h2><pre id="output" aria-live="polite"></pre></section>
+</main><script type="module" src="./main.ts"></script></body></html>
