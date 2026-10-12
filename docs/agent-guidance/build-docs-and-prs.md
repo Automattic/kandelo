@@ -188,6 +188,13 @@ Prefer concise PR titles that remain suitable as merge subjects.
 The title should name the purpose of the change without trying to
 carry its implementation, validation record, or full rationale.
 
+Describe the finished change against the PR's target branch. Explain its
+current behavior, validation and remaining limits without making the reader
+reconstruct intermediate implementations or timing problems. Put durable
+lessons in the relevant agent guide and architecture reflections; keep
+dated investigation reports as evidence. Historical results must not be
+presented as current readiness. See [architecture reflections](../architecture-reflections.md).
+
 Manually wrap ordinary prose in PR descriptions and commit-message
 bodies at 72 columns before publishing it. Editor or renderer soft
 wrapping does not satisfy this rule: the stored text itself should be

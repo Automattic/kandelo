@@ -1,0 +1,129 @@
+# Architecture reflections
+
+This document records reusable design lessons from moving syscall and
+filesystem authority into the Rust kernel. It explains why the boundaries
+matter and how to evaluate future changes. [Architecture](architecture.md)
+describes the implemented system; dated reports under `docs/plans/` retain
+the investigation evidence.
+
+## End temporary authority explicitly
+
+The host exchanges syscall arguments with Rust through temporary kernel
+memory called scratch memory. A lease grants permission to use a particular
+range during one synchronous operation. An opaque pointer token identifies
+that permission without letting callers manufacture an arbitrary pointer.
+
+Correctness requires that permission to expire when the operation ends.
+Memory efficiency also requires removing private registrations that no
+longer serve a purpose. A JavaScript weak map permits the garbage collector
+to reclaim unreachable entries later. It does not specify when collection
+happens, and an expired token that is still reachable can keep its private
+lease record reachable through the map. Prompt removal avoids leaving that
+cleanup entirely to the collector.
+
+Kandelo therefore deletes pointer-token registrations and the one-shot
+callback that ends a lease when that lease retires. It also avoids creating
+result wrappers, empty buffers and error messages when an operation does not
+need them. Each access still
+checks ownership, allocation capacity, the current memory range and lease
+validity. Removing temporary bookkeeping must preserve these checks.
+
+For example, a syscall completion with no pending signal needs only a single
+numeric result. A completion that delivers a signal still copies its record
+while the lease is valid. Data needed after an asynchronous wait is copied into
+host-owned storage rather than keeping a borrowed memory view alive.
+
+This lesson applies to any short-lived authority: end its registration at
+the same explicit boundary that ends its permission. Measure the resulting
+workload; fewer allocations alone do not establish faster execution or
+shorter garbage-collection pauses.
+
+## Measure the whole request against the merge target
+
+A file-lock request includes work in the JavaScript host, argument transfer,
+Rust dispatch and the lock manager. A change in its measured duration does
+not by itself identify which component changed. Even an unchanged lock
+algorithm can have different timing when host bookkeeping or collection
+changes around it.
+
+The comparison for a merge decision is the finished runtime against the
+target branch at a known commit. Comparing two intermediate PR versions
+answers a different question. When their application binary interfaces
+(ABIs) differ, each side needs programs and images built for its own kernel.
+Record the sources and artifact hashes so a stale binary cannot silently
+become the baseline.
+
+Timers also constrain what a result can show. If a browser clock advances
+in one-millisecond steps, a phase with 256 operations changes by about
+3.91 microseconds per operation for each clock tick. An apparent small
+phase difference can be one timer step. A separate monotonic-clock
+diagnostic can investigate that effect while leaving the original workload
+and result intact. Repeating a workload after warm-up answers a different
+question from its first run and must be reported separately.
+
+Alternate version order and compare complete requests as well as individual
+phases. Identify whether fresh workers share one parent process. Use worker
+profiles to investigate a cause, with a shared marker to align clocks. An
+allocation sampler that omits collected objects cannot measure all temporary
+allocation traffic. Instrumented results explain possibilities; the timing
+claim comes from uninstrumented runs and application benchmarks on both
+Node and browser. [Profiling](profiling.md) describes the measurement tools.
+
+## Move ownership with its observable contract
+
+Moving a filesystem into Rust changes who implements it. Users still rely
+on the same path resolution, permissions, lazy downloads, error behavior
+and inspection. Review those behaviors individually rather than assuming
+that moving the main read/write path preserves every capability.
+
+| Contract to review | Concrete check |
+| --- | --- |
+| Path and mount resolution | A symlink into another mount reaches the same object through guest syscalls and host inspection |
+| Lazy file identity | An image-relative reference resolves through the package authority and deployment URL without rewriting the image |
+| Integrity and retries | Incorrect size or digest fails before file mutation; rejected bytes do not poison a later explicit retry |
+| Deferred archives | Inventory each supported format; a working ZIP path does not prove a gzip-compressed TAR path exists |
+| Virtual directories | Process, descriptor and terminal entries reflect actual creation, close and reaping |
+| Inspection content | Listing a procfs file and reading its generated bytes are tested as separate operations |
+
+The inspector should share the kernel's namespace and directory providers.
+For example, `/proc/<pid>/fd` must enumerate that process's live descriptors,
+and `/dev/pts` must reflect actual terminal ownership. Building a second
+host-side tree would create another source of truth that can drift after
+close or process exit.
+
+Directory entries, metadata, symlink targets and file contents remain
+distinct capabilities. The inspector can list a generated procfs file
+without having a host API to read its contents. Its `/proc/self` is resolved
+for the reserved init process, PID 1, not whichever guest happens to have a
+terminal open. State the calling identity and any unsupported read behavior
+explicitly. [Filesystem inspection](architecture.md#inspection-of-the-live-filesystem)
+documents the current limits.
+
+The general rule is to inventory, carry forward and validate the observable
+contract alongside its new owner. A real unsupported capability belongs in
+the reference documentation and PR limits, not behind synthesized output.
+
+## Make validation observe real completion and policy
+
+An asynchronous operation can take more event-loop turns when the machine
+is busy. Waiting a guessed number of turns tests scheduler timing rather
+than completion. A spawn fixture should await the actual channel completion
+and then assert the publication, error and cleanup behavior. A test timeout
+keeps a missing completion observable.
+
+Environment settings are inputs too. A legacy cache policy may expose a
+lazy loader that later rejects stale bytes; the source-only policy may omit
+the same unowned file before a loader exists. Both can be correct. Each
+fixture must select its intended policy and restore the inherited settings,
+then pass under the complete suite's normal environment.
+
+Source audits need equally explicit inputs. Generated failure reports and
+private worktree copies can repeat text without introducing an authored
+production behavior. Exclude those directories while keeping production
+source in scope. Keep test inventories exact and distinguish passed checks,
+documented expected failures, unsupported cases and authorized deferrals.
+
+These rules make validation evidence for the implemented contract. PR
+descriptions can then explain the finished behavior and its limits in plain
+language, while the durable lessons and historical evidence live in tracked
+documentation rather than a development diary in the review summary.

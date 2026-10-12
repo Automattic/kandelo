@@ -4,18 +4,18 @@
 The VFS binary format, image metadata, and helper APIs are experimental. Images should declare their intended kernel ABI, and maintainers should expect to rebuild images after ABI or tooling changes.
 :::
 
-A Kandelo VFS image is a serialized `MemoryFileSystem`. It stores directories, files, symlinks, mode bits, ownership, lazy-file metadata, lazy-archive metadata, and optional image metadata. Browser apps fetch the image and restore it in a worker instead of recreating thousands of filesystem entries at runtime.
+A Kandelo VFS image is a serialized filesystem tree. It stores directories, files, symlinks, mode bits, ownership, lazy-file metadata, lazy-archive metadata, and optional image metadata. The kernel parses the image itself and serves it as `/`, so a machine boots without recreating thousands of filesystem entries at runtime. The format is read and written only by Rust: the kernel reads it, and image builders write it through `KandeloImageFs` (`images/vfs/lib/kandelo-image-fs.ts`), a wrapper over the import-free `crates/kandelo-image-module` Wasm module.
 
 Kandelo accepts:
 
 - `.vfs` - uncompressed image bytes;
 - `.vfs.zst` - zstd-compressed image bytes.
 
-`restoreVerifiedVfsImage()` auto-detects zstd-compressed images and
-authenticates imported atomic lazy-tree seals before returning a filesystem.
-Use the low-level synchronous `MemoryFileSystem.fromImage()` parser only for
-private format work that does not inspect, mutate, or boot imported state
-before separately completing that verification.
+The host detects zstd-compressed images and decodes them before handing the
+bytes to the kernel; the kernel refuses an image whose ABI, seals or
+deferred-file sections it cannot verify. To inspect an image offline, use
+`node tools/mkrootfs/bin/mkrootfs.mjs inspect` or
+`cargo run -p xtask -- vfs-image describe <image>`.
 
 ## When To Use A VFS Image
 
@@ -28,7 +28,7 @@ Use a VFS image when a browser machine needs:
 - reproducible launch behavior;
 - direct launch from the Kandelo UI with `?vfs=...`.
 
-For a single tiny Wasm program and no filesystem tree, a custom lab can still write files into a temporary `MemoryFileSystem`, but that is not the preferred path for user-facing demos.
+For a single tiny Wasm program and no filesystem tree, a custom lab can boot the canonical rootfs image and write its files with `writeFileToVfs()`, but that is not the preferred path for user-facing demos.
 
 ## Build From A Manifest
 
@@ -39,7 +39,7 @@ From the repo root:
 ```bash
 node tools/mkrootfs/bin/mkrootfs.mjs build MANIFEST images/rootfs \
   -o host/wasm/rootfs.vfs.zst \
-  --kernel-abi 11
+  --kernel-abi 49
 ```
 
 The canonical rootfs build is wrapped by:
@@ -53,7 +53,7 @@ For custom images, use your own source tree and manifest:
 ```bash
 node tools/mkrootfs/bin/mkrootfs.mjs build ./MY-MANIFEST ./rootfs \
   -o ./dist/my-machine.vfs \
-  --kernel-abi 11
+  --kernel-abi 49
 ```
 
 ## Manifest Grammar

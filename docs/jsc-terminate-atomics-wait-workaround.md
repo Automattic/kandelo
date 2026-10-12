@@ -162,11 +162,15 @@ the target Safari/Bun versions using the repro above and
   kernel, and asserts it was woken into a cooperative exit (status 137 = 128 +
   SIGKILL) rather than force-terminated. Runs under **both** V8 and JSC:
   ```
-  cd host && npm run test:teardown:engines   # vitest on Node, then `bun x vitest`
+  cd host && npm run test:teardown:engines   # Node, then bun x --bun vitest
   ```
   `pthread.test.ts` ("preserves exit(0)… while the main thread is blocked") also
   runs under both and covers the already-exited-process guard. `bun` is provided
-  by the flake dev shell.
+  by the flake dev shell. `--bun` is required because the Vitest executable's
+  Node shebang otherwise selects V8. The Bun invocation also declares its
+  expected runtime, and the teardown test refuses a Node worker in that run.
+  The test uses the worktree's SourceOnly kernel output, with the former flat
+  output retained as a fallback; it never selects an ambient global kernel.
 - Host vitest (Node/V8) also exercises the teardown path throughout the suite
   (it's how `runCentralizedProgram` tears down every process).
 - Playwright WebKit: kernel-owned WordPress boot/destroy loop — threads flat,
