@@ -17807,20 +17807,22 @@ fn cmd_resolve(
     } else {
         None
     };
-    // Hold the cache against `cache-gc` for the whole resolution. Nested
-    // resolvers inside a local-build node take this again under their
-    // parent's hold; shared holds never conflict with each other.
-    #[cfg(unix)]
-    let _cache_use = source_only_roots
-        .as_ref()
-        .map(|roots| {
-            crate::cache_gc::CacheUseLock::acquire_shared(&roots.base, "build-deps resolve")
-        })
-        .transpose()?;
     let cache_root = source_only_roots
         .as_ref()
         .map(|roots| roots.compiled.clone())
         .unwrap_or_else(default_cache_root);
+    // Both resolver layouts can be collected. Nested resolvers take this
+    // again under their parent's hold; shared holds never conflict.
+    #[cfg(unix)]
+    let _cache_use = {
+        let lock_root = source_only_roots
+            .as_ref()
+            .map(|roots| &roots.base)
+            .unwrap_or(&cache_root);
+        std::fs::create_dir_all(lock_root)
+            .map_err(|error| format!("create cache root {}: {error}", lock_root.display()))?;
+        crate::cache_gc::CacheUseLock::acquire_shared(lock_root, "build-deps resolve")?
+    };
     let local_libs = repo.join("local-libs");
     let forced = BTreeSet::from([m.name.clone()]);
     let opts = ResolveOpts {
