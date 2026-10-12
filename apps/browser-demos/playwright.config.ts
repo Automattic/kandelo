@@ -131,9 +131,17 @@ const sharedLaunchArgs =
 // running, depending on which worker ran what first. Tests that assert the
 // no-gesture state (kandelo-audio-toast) need the policy a first-time
 // visitor gets, so turn off the engagement bypass for the test browser.
+//
+// Chromium also replaces host ICE candidates with mDNS names, which headless
+// test contexts cannot resolve, so a loopback WebRTC link between two
+// contexts never connects unless that is disabled too. Chromium honors only
+// one --disable-features switch, so both features share it. Real loopback
+// ICE candidates keep two-context peer tests independent of macOS LAN access
+// or router hairpinning.
 const chromiumLaunchArgs = [
   ...sharedLaunchArgs,
-  "--disable-features=MediaEngagementBypassAutoplayPolicies",
+  "--disable-features=MediaEngagementBypassAutoplayPolicies,WebRtcHideLocalIpsWithMdns",
+  "--allow-loopback-in-peer-connection",
 ];
 
 export default defineConfig({
