@@ -395,6 +395,25 @@ export class LocalVirtualNetwork {
     });
   }
 
+  /**
+   * Deliver one limited broadcast (255.255.255.255) to every endpoint on its
+   * port that accepts it, as a broadcast reaches every host on a link. Only
+   * wildcard-bound sockets hear it: a socket bound to a unicast address does
+   * not, as on Linux. `reaches` selects which machines the copy is for.
+   */
+  broadcastDatagram(datagram: UdpDatagram, reaches: (machineId: string) => boolean): void {
+    for (const endpoint of [...this.udpEndpoints]) {
+      if (endpoint.port !== datagram.dstPort || endpoint.addrKey !== ANY || !reaches(endpoint.machineId)) continue;
+      endpoint.target.receive({
+        srcAddr: copyAddr(datagram.srcAddr),
+        srcPort: datagram.srcPort,
+        dstAddr: copyAddr(datagram.dstAddr),
+        dstPort: datagram.dstPort,
+        data: datagram.data.slice(),
+      });
+    }
+  }
+
   private machineOwnsAddress(machineId: string, addrKey: string): boolean {
     if (addrKey === ANY) return true;
     return this.addressOwners.get(addrKey) === machineId;

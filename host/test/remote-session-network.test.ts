@@ -142,4 +142,54 @@ describe("network sessions on running machines", () => {
     const { port1 } = new MessageChannel();
     expect(() => host.runtime.attachPeer({ port: port1, maxPayload: 65507, maxControlBytes: 65536 })).toThrow(/full/);
   });
+
+  it("broadcasts to every member with a wildcard socket on the port, never echoing", async () => {
+    const host = machine(); const first = machine(); const second = machine();
+    host.runtime.host();
+    await link(host.runtime, first.runtime);
+    await link(host.runtime, second.runtime);
+    const sockets = [host, first, second].map((each) => { const socket = receiver(); each.network.bindUdp("1:3", any, 2342, socket.target); return socket; });
+    const pinned = receiver();
+    second.network.bindUdp("1:4", ip(3), 2343, pinned.target);
+    await vi.waitFor(() => expect(host.runtime.snapshot().bindings).toHaveLength(4));
+    await vi.waitFor(() => expect(first.runtime.snapshot().bindings).toHaveLength(4));
+    const broadcast = new Uint8Array([255, 255, 255, 255]);
+
+    // A joiner's broadcast: its own copy locally, the others through the host.
+    expect(first.network.sendDatagram({ srcAddr: any, srcPort: 40000, dstAddr: broadcast, dstPort: 2342, data: new Uint8Array([1]) })).toBe(0);
+    await vi.waitFor(() => { for (const socket of sockets) expect(socket.received).toHaveLength(1); });
+    for (const socket of sockets) {
+      expect(Array.from(socket.received[0].srcAddr)).toEqual([10, 89, 0, 2]);
+      expect(Array.from(socket.received[0].dstAddr)).toEqual([255, 255, 255, 255]);
+    }
+
+    // The host's broadcast reaches itself and both joiners.
+    expect(host.network.sendDatagram({ srcAddr: any, srcPort: 40000, dstAddr: broadcast, dstPort: 2342, data: new Uint8Array([2]) })).toBe(0);
+    await vi.waitFor(() => { for (const socket of sockets) expect(socket.received).toHaveLength(2); });
+    // A socket bound to a unicast address does not hear broadcasts.
+    host.network.sendDatagram({ srcAddr: any, srcPort: 40000, dstAddr: broadcast, dstPort: 2343, data: new Uint8Array([3]) });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(pinned.received).toHaveLength(0);
+    expect(sockets.map((socket) => socket.received.length)).toEqual([2, 2, 2]);
+  });
+
+  it("meters each member's broadcasts at the forwarding host and counts the drops", async () => {
+    const host = machine(); const joiner = machine();
+    host.runtime.host();
+    await link(host.runtime, joiner.runtime);
+    const heard = receiver();
+    host.network.bindUdp("1:3", any, 26000, heard.target);
+    await vi.waitFor(() => expect(joiner.runtime.snapshot().bindings).toHaveLength(1));
+    for (let index = 0; index < 100; index++) {
+      joiner.network.sendDatagram({ srcAddr: any, srcPort: 40000, dstAddr: new Uint8Array([255, 255, 255, 255]), dstPort: 26000, data: new Uint8Array([index]) });
+    }
+    await vi.waitFor(() => expect(heard.received.length + host.runtime.snapshot().droppedBroadcasts).toBe(100));
+    expect(heard.received.length).toBeGreaterThanOrEqual(64);
+    expect(heard.received.length).toBeLessThan(100);
+  });
+
+  it("sends a broadcast nowhere without a session", () => {
+    const { network } = machine();
+    expect(network.sendDatagram({ srcAddr: any, srcPort: 1, dstAddr: new Uint8Array([255, 255, 255, 255]), dstPort: 2342, data: new Uint8Array(1) })).toBe(101);
+  });
 });

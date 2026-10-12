@@ -359,7 +359,7 @@ export class RemoteSegmentRuntime {
     const segment = this.session?.attached;
     const base: RemoteSegmentSnapshot = segment
       ? segment.snapshot()
-      : { address: null, members: [], bindings: [], tcpListeners: [] };
+      : { address: null, members: [], bindings: [], tcpListeners: [], droppedBroadcasts: 0 };
     return { ...base, state: this.state, lastDisconnect: this.lastDisconnect };
   }
 

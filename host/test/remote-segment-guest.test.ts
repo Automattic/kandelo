@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { MessageChannel } from "node:worker_threads";
 import { describe, expect, it, vi } from "vitest";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import { tryResolveBinary } from "../src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 async function minimalImage(): Promise<Uint8Array> {
@@ -16,6 +17,70 @@ function fixture(): ArrayBuffer {
 }
 
 describe("ordinary guest UDP state in dedicated Node kernel workers", () => {
+  it("carries a guest's LAN broadcast to every computer in a session", async () => {
+    let stderr = "";
+    const outputs = new Map<string, string>();
+    const image = await minimalImage();
+    const machine = () => {
+      const key = `m${outputs.size}`; outputs.set(key, "");
+      return { key, host: new NodeKernelHost({ rootfsImage: image.slice(), maxPages: 4096,
+        onStdout: (_pid, bytes) => { outputs.set(key, outputs.get(key)! + new TextDecoder().decode(bytes)); },
+        onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
+      }) };
+    };
+    const probe = new Uint8Array(readFileSync(new URL("./fixtures/udp-broadcast-observation.wasm", import.meta.url))).buffer;
+    const [hosting, announcer, other] = [machine(), machine(), machine()];
+    const all = [hosting, announcer, other];
+    try {
+      for (const each of all) await each.host.init();
+      await hosting.host.hostRemoteNetwork();
+      for (const joiner of [announcer, other]) {
+        const { port1, port2 } = new MessageChannel();
+        await Promise.all([
+          joiner.host.joinRemoteNetwork({ port: port2, maxPayload: 1200, maxControlBytes: 65536 }),
+          hosting.host.attachRemotePeer({ port: port1, maxPayload: 1200, maxControlBytes: 65536 }),
+        ]);
+      }
+      // Every computer listens, the announcing one included: Linux loops a
+      // broadcast back to its sender's own sockets.
+      const listening = all.map((each) => each.host.spawn(probe, ["udp-broadcast-observation", "listen", "2342", "1"]));
+      await vi.waitFor(async () => expect((await hosting.host.remoteNetworkSnapshot()).bindings.filter((binding) => binding.port === 2342)).toHaveLength(3));
+      await vi.waitFor(async () => expect((await announcer.host.remoteNetworkSnapshot()).bindings.some((binding) => binding.address === "10.89.0.2" && binding.port === 2342)).toBe(true));
+      const announced = announcer.host.spawn(probe, ["udp-broadcast-observation", "announce", "2342", "lan-game"]);
+      expect(await Promise.all([...listening, announced])).toEqual([0, 0, 0, 0]);
+      expect(stderr).toBe("");
+      for (const each of all) expect(outputs.get(each.key)).toContain("heard lan-game from 10.89.0.2");
+    } finally { await Promise.all(all.map((each) => each.host.destroy())); }
+  }, 60_000);
+
+  const fbdoom = tryResolveBinary("programs/fbdoom.wasm");
+  it.skipIf(!fbdoom)("finds a Doom server on another computer through the session's LAN search", async () => {
+    let searchOutput = "", serverOutput = "";
+    const image = await minimalImage();
+    const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+    const server = new NodeKernelHost({ rootfsImage: image.slice(), maxPages: 16384,
+      onStdout: (_pid, bytes) => { serverOutput += decode(bytes); }, onStderr: (_pid, bytes) => { serverOutput += decode(bytes); } });
+    const searcher = new NodeKernelHost({ rootfsImage: image.slice(), maxPages: 16384,
+      onStdout: (_pid, bytes) => { searchOutput += decode(bytes); }, onStderr: (_pid, bytes) => { searchOutput += decode(bytes); } });
+    try {
+      await Promise.all([server.init(), searcher.init()]);
+      await server.hostRemoteNetwork();
+      const { port1, port2 } = new MessageChannel();
+      await Promise.all([
+        searcher.joinRemoteNetwork({ port: port2, maxPayload: 1200, maxControlBytes: 65536 }),
+        server.attachRemotePeer({ port: port1, maxPayload: 1200, maxControlBytes: 65536 }),
+      ]);
+      const doom = new Uint8Array(readFileSync(fbdoom!)).buffer;
+      // A dedicated server and a LAN search both run before Doom needs a WAD.
+      void server.spawn(doom, ["fbdoom", "-dedicated"], { env: ["HOME=/root"] });
+      await vi.waitFor(async () => expect((await searcher.remoteNetworkSnapshot()).bindings.some((binding) => binding.address === "10.89.0.1" && binding.port === 2342)).toBe(true), { timeout: 15_000 });
+      const searched = await searcher.spawn(doom, ["fbdoom", "-localsearch"], { env: ["HOME=/root"] });
+      expect(searched, searchOutput).toBe(0);
+      expect(searchOutput, serverOutput).toMatch(/10\.89\.0\.1 .*Unnamed server/);
+      expect(searchOutput).toContain("1 server(s) found.");
+    } finally { await Promise.all([server.destroy(), searcher.destroy()]); }
+  }, 60_000);
+
   it("starts a session on running machines and reaches a guest that was already listening", async () => {
     let stderr = "", serverOutput = "", clientOutput = "";
     // Neither machine boots with a session: a person creates and joins one
