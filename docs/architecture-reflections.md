@@ -273,3 +273,17 @@ Keep notification callbacks and their captured scheduling state inside
 the active-watch path. This makes the default path's work visible in the
 code and avoids adding notification state when nobody requests updates.
 Measure both paths before claiming a performance improvement.
+
+## Keep source audits effective when compiler tooling changes
+
+A compiler executable and a compiler's JavaScript API serve different users.
+Kandelo's build can pass while its audits lose the API they need to inspect
+source code. TypeScript 7 currently supplies the executable without that API.
+Its [official compatibility package](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/)
+keeps the TypeScript 6 API available to audits, declaration generation and
+documentation tools while `tsc` selects the native compiler.
+
+Parser options also define which source a build can see. Enabling JSX for
+all files made Babel 8 treat an ordinary `.ts` generic function as JSX.
+Select language options by filename and keep parse failures visible. Exercise
+both plain TypeScript and JSX files before trusting an upgraded source audit.
