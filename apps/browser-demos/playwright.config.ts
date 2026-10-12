@@ -133,6 +133,9 @@ const sharedLaunchArgs =
 // visitor gets, so turn off the engagement bypass for the test browser.
 const chromiumLaunchArgs = [
   ...sharedLaunchArgs,
+  // Mute the browser's physical output; keep Web Audio processing and
+  // autoplay policy intact so audio behavior still gets tested.
+  "--mute-audio",
   "--disable-features=MediaEngagementBypassAutoplayPolicies",
 ];
 
@@ -213,6 +216,7 @@ export default defineConfig({
         browserName: "firefox",
         launchOptions: {
           env: firefoxLaunchEnv,
+          firefoxUserPrefs: { "media.volume_scale": "0.0" },
           args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
         },
       },

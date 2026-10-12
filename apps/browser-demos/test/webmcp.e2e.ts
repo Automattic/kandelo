@@ -5,13 +5,17 @@ type Result = { ok: boolean; [key: string]: any };
 
 // Invoke the browser's native registration surface, never adapter internals.
 async function call(page: Page, suffix: string, args: Record<string, unknown> = {}): Promise<Result> {
+  return callNamed(page, `kandelo_${suffix}`, args);
+}
+
+async function callNamed(page: Page, name: string, args: Record<string, unknown> = {}): Promise<Result> {
   return page.evaluate(async ({ name, args }) => {
     const context = (document as any).modelContext;
     const tool = (await context.getTools()).find((item: any) => item.name === name);
     if (!tool) throw new Error(`Registered WebMCP tool missing: ${name}`);
-    const result = await context.executeTool(tool, args);
+    const result = await context.executeTool(tool, JSON.stringify(args));
     return typeof result === "string" ? JSON.parse(result) : result;
-  }, { name: `kandelo_${suffix}`, args });
+  }, { name, args });
 }
 
 async function running(page: Page): Promise<string> {
@@ -35,7 +39,9 @@ async function open(page: Page, profile = "shell") {
   }).toBe("function");
   await expect.poll(() => page.evaluate(async () =>
     (await (document as any).modelContext.getTools()).filter((tool: any) => tool.name.startsWith("kandelo_")).length,
-  )).toBe(17);
+  // Only the launch tool is available while the computer is still booting.
+  // Use the same readiness budget as the running-state check below.
+  ), { timeout: 120_000 }).toBe(17);
   if (await running(page) === profile) return;
   expect((await call(page, "launch_computer", { profileId: profile })).initiated).toBe(true);
   await expect.poll(() => running(page), { timeout: 120_000 }).toBe(profile);
@@ -201,7 +207,7 @@ test("terminal overflow, conflicting retries, removed IDs and native aborts are 
     const tool = (await context.getTools()).find((tool: any) => tool.name === "kandelo_create_terminal");
     const controller = new AbortController();
     controller.abort();
-    try { return await context.executeTool(tool, {}, { signal: controller.signal }); }
+    try { return await context.executeTool(tool, "{}", { signal: controller.signal }); }
     catch (error) { return { name: (error as Error).name }; }
   });
   expect(cancellation.name).toBe("AbortError");
@@ -329,7 +335,7 @@ test("exclusive creation rejects symlinks and concurrent creators cannot clobber
   await open(page);
   const created = await Promise.all(["first", "second"].map(content => call(page, "write_file", { path: "/tmp/exclusive-race", content, overwrite: false })));
   expect(created.filter(result => result.ok)).toHaveLength(1);
-  expect(created.find(result => !result.ok)?.error.code).toBe("FILE_EXISTS");
+  expect(created.find(result => !result.ok)?.error.code, JSON.stringify(created)).toBe("FILE_EXISTS");
   const winner = created[0].ok ? "first" : "second";
   expect((await call(page, "read_file", { path: "/tmp/exclusive-race" })).content).toBe(winner);
   const linked = await call(page, "run_command", { script: "ln -s /tmp/exclusive-race /tmp/exclusive-link", waitMs: 10000 });
@@ -349,4 +355,43 @@ test("a write runs with the agent account's permissions", async ({ page }) => {
   expect((await call(page, "list_files", { path: "/etc" })).entries.find((entry: any) => entry.name === "passwd").uid).toBe(0);
   expect((await call(page, "write_file", { path: "/tmp/agent-owned", content: "foo", overwrite: true })).ok).toBe(true);
   expect((await call(page, "list_files", { path: "/tmp" })).entries.find((entry: any) => entry.name === "agent-owned").uid).toBe(1000);
+});
+
+
+test("guest-written image tools register, execute as maker, update and disappear", async ({ page }) => {
+  await open(page);
+  const setup = await call(page, "run_command", {
+    script: "mkdir -p /home/maker/mcp", waitMs: 10000,
+  });
+  expect(setup).toMatchObject({ ok: true, exitCode: 0 });
+  const path = "/home/maker/mcp/native_probe.json";
+  const definition = (label: string) => JSON.stringify({
+    description: "Report the guest account and echo an integer for native registration validation",
+    inputSchema: {
+      type: "object", properties: { value: { type: "integer" } }, required: ["value"],
+    },
+    command: `id -u; printf '${label}:%s\\n' {value:q}`,
+  });
+  expect((await call(page, "write_file", {
+    path, content: definition("first"), overwrite: false,
+  })).ok).toBe(true);
+  const registered = () => page.evaluate(async () =>
+    (await (document as any).modelContext.getTools()).map((tool: any) => tool.name),
+  );
+  await expect.poll(registered).toContain("native_probe");
+  const first = await callNamed(page, "native_probe", { value: -7 });
+  expect(first.ok).toBe(true);
+  expect(first.exitCode).toBe(0);
+  expect(first.stdout).toBe("1000\nfirst:-7\n");
+
+  expect((await call(page, "write_file", {
+    path, content: definition("updated"), overwrite: true,
+  })).ok).toBe(true);
+  await expect.poll(async () => (await callNamed(page, "native_probe", { value: 3 })).stdout)
+    .toBe("1000\nupdated:3\n");
+  const removed = await call(page, "run_command", {
+    script: `rm ${path}`, waitMs: 10000,
+  });
+  expect(removed.exitCode).toBe(0);
+  await expect.poll(registered).not.toContain("native_probe");
 });
