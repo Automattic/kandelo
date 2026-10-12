@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ToolError } from "./contract.ts";
+import { ToolError, validate } from "./contract.ts";
 import type { ModelContext, ModelContextTool } from "./model-context";
 import { BUILT_IN_PREFIX, builtInTool, imageTool, objectSchema, registerTool } from "./registry.ts";
 
 const schema = objectSchema({ bar: { type: "string" } }, ["bar"]);
+
+test("required arguments must be owned properties, including prototype-like names", () => {
+  assert.throws(() => validate(Object.create({ bar: "inherited" }), schema), /required/);
+  const constructorSchema = objectSchema({ constructor: { type: "string" } }, ["constructor"]);
+  assert.throws(() => validate({}, constructorSchema), /required/);
+  assert.doesNotThrow(() => validate({ constructor: "value" }, constructorSchema));
+});
+
+test("unbounded integer schemas accept negative values and numbers reject JSON overflow", () => {
+  assert.doesNotThrow(() => validate(-5, { type: "integer" }));
+  assert.throws(() => validate(-5, { type: "integer", minimum: 0 }), /integer range/);
+  assert.throws(() => validate(JSON.parse("1e999"), { type: "number" }), /finite number/);
+});
 
 function fakeContext() {
   const registered: Array<{ tool: ModelContextTool; signal: AbortSignal | undefined }> = [];

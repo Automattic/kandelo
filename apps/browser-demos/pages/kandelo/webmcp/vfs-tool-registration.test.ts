@@ -74,7 +74,7 @@ function fakeHost(files: Record<string, string>, listError: Error | null = null)
   setWebMcpSession(host, { uid: 1000, gid: 1000, env: ["PATH=/bin"] });
   const change = (kind: VfsChangeEvent["kind"], path: string) => {
     for (const watch of watches) {
-      if (path.startsWith(`${watch.prefix}/`)) watch.callback({ kind, path, t: 1 });
+      if (path === watch.prefix || path.startsWith(`${watch.prefix}/`)) watch.callback({ kind, path, t: 1 });
     }
   };
   return { host, runs, announced, watches, change, unsubscribed: () => unsubscribed };
@@ -92,6 +92,30 @@ function fakeContext() {
 }
 
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("a directory invalidation refreshes additions, deletions and shipped fallbacks", async () => {
+  const files: Record<string, string> = {
+    [`${STATIC}/foo.json`]: JSON.stringify(foo),
+    [`${STATIC}/baz.json`]: JSON.stringify(baz),
+    [`${DYNAMIC}/foo.json`]: JSON.stringify({ ...baz, description: "User override" }),
+  };
+  const { host, change } = fakeHost(files);
+  const { context, active } = fakeContext();
+  const controller = new AbortController();
+  try {
+    await registerVfsTools(host, context, controller.signal, () => TERMINAL);
+    delete files[`${STATIC}/baz.json`];
+    delete files[`${DYNAMIC}/foo.json`];
+    files[`${DYNAMIC}/new.json`] = JSON.stringify(baz);
+    change("modify", DYNAMIC);
+    const deadline = Date.now() + 2000;
+    while (active().map(tool => tool.name).sort().join() !== "foo,new") {
+      assert.ok(Date.now() < deadline, "directory refresh did not finish");
+      await settled();
+    }
+    assert.equal(active().find(tool => tool.name === "foo")!.description, foo.description);
+  } finally { controller.abort(); }
+});
 
 async function capturingErrors<T>(run: () => Promise<T>): Promise<{ result: T; errors: unknown[][] }> {
   const errors: unknown[][] = [];
@@ -130,6 +154,18 @@ test("loads no tools, silently, when the image has no tool directory", async () 
   const { result, errors } = await capturingErrors(() => loadVfsTools(host));
   assert.deepEqual(result, []);
   assert.deepEqual(errors, []);
+});
+
+test("a malformed maker override remains authoritative during a full refresh", async () => {
+  const { host } = fakeHost({
+    [`${STATIC}/foo.json`]: JSON.stringify(foo),
+    [`${DYNAMIC}/foo.json`]: "{ not json",
+  });
+  await assert.rejects(loadVfsTool(host, "foo"), /not valid JSON/);
+  const { result, errors } = await capturingErrors(() => loadVfsTools(host));
+  assert.deepEqual(result, [], "a full refresh must not revive the overridden shipped command");
+  assert.equal(errors.length, 1);
+  assert.match(String(errors[0]![0]), /home\/maker\/mcp\/foo.json/);
 });
 
 test("logs a tool directory that fails to list for another reason and still loads the other one", async () => {

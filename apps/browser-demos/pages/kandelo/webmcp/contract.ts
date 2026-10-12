@@ -36,16 +36,20 @@ export function validate(value: unknown, schema: Schema, name = 'arguments'): vo
   if (schema.type === 'object') {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ToolError('INVALID_ARGUMENT', `${name} must be an object`);
     const record = value as Record<string, unknown>;
-    for (const key of schema.required ?? []) if (!(key in record)) throw new ToolError('INVALID_ARGUMENT', `${name}.${key} is required`);
+    for (const key of schema.required ?? []) if (!Object.hasOwn(record, key)) throw new ToolError('INVALID_ARGUMENT', `${name}.${key} is required`);
     for (const [key, item] of Object.entries(record)) {
-      const child = schema.properties?.[key] ?? (typeof schema.additionalProperties === 'object' ? schema.additionalProperties : undefined);
+      const child = schema.properties && Object.hasOwn(schema.properties, key)
+        ? schema.properties[key]
+        : (typeof schema.additionalProperties === 'object' ? schema.additionalProperties : undefined);
       if (!child) throw new ToolError('INVALID_ARGUMENT', `Unknown argument ${name}.${key}`);
       validate(item, child, `${name}.${key}`);
     }
   } else if (schema.type === 'array') {
     if (!Array.isArray(value)) throw new ToolError('INVALID_ARGUMENT', `${name} must be an array`);
   } else if (schema.type === 'integer') {
-    if (!Number.isSafeInteger(value) || (value as number) < (schema.minimum ?? 0) || (value as number) > (schema.maximum ?? Number.MAX_SAFE_INTEGER)) throw new ToolError('INVALID_ARGUMENT', `${name} is outside its integer range`);
+    if (!Number.isSafeInteger(value) || (value as number) < (schema.minimum ?? Number.MIN_SAFE_INTEGER) || (value as number) > (schema.maximum ?? Number.MAX_SAFE_INTEGER)) throw new ToolError('INVALID_ARGUMENT', `${name} is outside its integer range`);
+  } else if (schema.type === 'number') {
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new ToolError('INVALID_ARGUMENT', `${name} must be a finite number`);
   } else if (typeof value !== schema.type || (typeof value === 'string' && ((schema.maxLength !== undefined && value.length > schema.maxLength) || (schema.enum && !schema.enum.includes(value))))) {
     throw new ToolError('INVALID_ARGUMENT', `${name} has an invalid value`);
   }

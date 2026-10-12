@@ -49,7 +49,7 @@ const documentRequests = new WeakMap<KernelHost, Map<string, RetryRecord>>();
 
 interface TerminalRecord { terminal: ShellTerminal; output: OutputBuffer; pty?: PtyHandle; pending?: Promise<void>; error?: string; off?: () => void; queue: Promise<void> }
 
-/** One adapter per mounted app; no tools or capabilities are installed in preview frames. */
+/** One adapter per mounted app document. Browser origin rules also govern frames. */
 export function registerWebMcp(get: () => AppBindings): (() => void) & { sync?: () => void } {
   const context = modelContextOf(document);
   if (!context) return () => {};
