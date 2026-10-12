@@ -1,7 +1,7 @@
 schema = 1
 id = "browser-mariadb-wasm64"
 architecture = "wasm64"
-output = "mariadb-64.vfs.zst"
+output = "mariadb-vfs.vfs.zst"
 builder = "images/vfs/scripts/build-mariadb-vfs-image.sh"
 
 [[composition.repository]]

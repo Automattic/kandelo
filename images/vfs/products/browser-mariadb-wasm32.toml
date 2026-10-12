@@ -1,7 +1,7 @@
 schema = 1
 id = "browser-mariadb-wasm32"
 architecture = "wasm32"
-output = "mariadb.vfs.zst"
+output = "mariadb-vfs.vfs.zst"
 builder = "images/vfs/scripts/build-mariadb-vfs-image.sh"
 
 [[composition.repository]]
