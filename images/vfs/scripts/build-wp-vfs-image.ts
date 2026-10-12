@@ -305,7 +305,7 @@ include $docRoot . '/index.php';
  *   smtp-capture   (process)  — local SMTP sink storing mail under /var/mail
  *   php-fpm        (process)  — depends-on wp-config-init + smtp-capture
  *   nginx          (process)  — depends-on php-fpm
- *   frankenphp-classic (process) — depends-on wp-config-init + smtp-capture
+ *   frankenphp-classic (process) — depends-on wp-config-init + smtp-capture + wordpress-secrets
  */
 function buildServices(): DinitService[] {
   return [
@@ -340,7 +340,7 @@ function buildServices(): DinitService[] {
       name: "frankenphp-classic",
       type: "process",
       command: "/usr/sbin/frankenphp-classic",
-      dependsOn: ["wp-config-init", "smtp-capture"],
+      dependsOn: ["wp-config-init", "smtp-capture", WORDPRESS_SECRETS_SERVICE],
       logfile: "/var/log/frankenphp-classic.log",
       restart: false,
       noDefaultEnvFile: true,

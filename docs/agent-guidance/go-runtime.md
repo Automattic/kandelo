@@ -214,6 +214,12 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
 Treat changes to memory declarations, Wasm imports/exports, channel layout,
 or syscall semantics as ABI reviews. Follow `docs/agent-guidance/abi.md`:
 incompatible changes require an `ABI_VERSION` bump and updated snapshot.
+The fork's `src/cmd/link/internal/wasm/asm.go` currently hardcodes the
+`__abi_version` marker. On an ABI bump, update that constant in the fork,
+publish its commit, and repin both `go-hello` and `frankenphp-classic`
+before rebuilding packages; changing only their `kernel_abi` metadata
+still emits the old marker. Check the marker in the freshly built Wasm
+before starting an expensive WordPress image build.
 Stamp newly built probe binaries with this checkout's ABI-contract digest;
 do not validate against a stale or unstamped binary.
 

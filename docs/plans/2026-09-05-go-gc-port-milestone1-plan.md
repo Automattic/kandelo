@@ -3212,3 +3212,25 @@ Clang/Qt products. A WordPress-only resolver bootstrap is underway;
 new WordPress/FrankenPHP Node and browser behavior is **not yet
 validated** on ABI 50. A new image must be published before reusing
 the live demo URL.
+
+**2026-10-12 — ABI-50 FrankenPHP and WordPress rebuild.** The first
+source-only WordPress bootstrap failed after the pinned Go linker's
+`__abi_version` marker emitted 48 despite the package metadata declaring
+50. The Go fork now emits 50 at `8110e3ac49c1d172fbb853f5e914dfa9ddccecff`;
+`go-hello` rev15 and `frankenphp-classic` rev20 pin it. A fresh bootstrap
+then published an ABI-50 FrankenPHP binary and WordPress image. The first
+Chromium WordPress request exposed a separate image service-graph error:
+FrankenPHP did not depend on main's new `wordpress-secrets` first-boot
+service, so PHP reached the deliberate placeholder and failed. WordPress
+rev26 adds that dependency. The subsequent image is SHA-256
+`50fd0d7fda78ebc673a5fb6b1be8a51ef189ce3f2a9d6430f2e40b3591a753d9`.
+The complete ABI-50 `./run.sh setup` succeeds, refreshing older optional
+gallery artifacts that prevented the app-level Vite gate from booting.
+The FrankenPHP PHP/static Node smoke and direct Chromium WordPress
+homepage/login gate pass. The app-level admin-login and Appearance → Editor
+gate, including two uncached editor requests over 20 seconds, passes once
+each in Chromium, Firefox, and WebKit. The Node WordPress/FrankenPHP demo
+returns HTTP 200 for the homepage and login. The new kernel, Go hello,
+and FrankenPHP Wasm validate as ABI 50. These are bounded functional
+checks, not a renewed sustained-soak or performance claim; the earlier
+intermittent WebKit service-worker 503 remains open.

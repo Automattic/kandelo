@@ -11,17 +11,26 @@ test("WordPress on FrankenPHP serves the preinstalled site, admin, and site edit
   page.on("pageerror", (error) => browserDiagnostics.push(`pageerror: ${error.message}`));
   page.on("crash", () => browserDiagnostics.push("page crashed"));
   await gotoMachine(page, "wordpress-frankenphp");
+  if (browserDiagnostics.some((diagnostic) => diagnostic.startsWith("pageerror:"))) {
+    throw new Error(`WordPress page failed to load: ${browserDiagnostics.join("\n")}`);
+  }
 
   const frame = page.frameLocator('iframe[title="WordPress on FrankenPHP"]');
-  await Promise.race([
-    expect(frame.locator("body")).toContainText("WordPress on Kandelo", { timeout: 240_000 }),
-    page.locator('.kdock-status-text[data-status="error"]')
-      .waitFor({ state: "attached", timeout: 240_000 })
-      .then(async () => {
-        const syslog = await page.locator(".ksys-line").allTextContents();
-        throw new Error(`WordPress machine failed: ${syslog.slice(-20).join("\n")}`);
-      }),
-  ]);
+  try {
+    await Promise.race([
+      expect(frame.locator("body")).toContainText("WordPress on Kandelo", { timeout: 240_000 }),
+      page.locator('.kdock-status-text[data-status="error"]')
+        .waitFor({ state: "attached", timeout: 240_000 })
+        .then(async () => {
+          const syslog = await page.locator(".ksys-line").allTextContents();
+          throw new Error(`WordPress machine failed: ${syslog.slice(-20).join("\n")}`);
+        }),
+      page.locator("vite-error-overlay").waitFor({ state: "attached", timeout: 240_000 })
+        .then(() => { throw new Error("Vite error overlay appeared"); }),
+    ]);
+  } catch (error) {
+    throw new Error(`WordPress page failed at ${page.url()}: ${String(error)}\n${browserDiagnostics.slice(-30).join("\n")}`);
+  }
   await expect(frame.locator("form#setup, form#language-chooser")).toHaveCount(0);
 
   if (!(await page.locator("aside.kdemo").count())) {
