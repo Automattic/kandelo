@@ -1,3 +1,5 @@
+import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
+import type { RemoteSegmentSnapshot } from "./networking/remote-segment";
 /**
  * BrowserKernel — Thin proxy that communicates with a dedicated kernel
  * web worker via MessagePort. The kernel worker owns the Wasm instance
@@ -69,6 +71,8 @@ const defaultPcmWorkletUrl = new URL(
 );
 
 export interface BrowserKernelOptions {
+  /** Worker-owned remote UDP segment; a joiner transfers its native peer port. */
+  remoteNetwork?: RemoteSegmentInit;
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
   /**
@@ -614,6 +618,7 @@ export class BrowserKernel {
         const transferBuf = opts.kernelWasmBytes.slice(0);
         const initMsg: MainToKernelMessage = {
           type: "init",
+          remoteNetwork: this.options.remoteNetwork,
           kernelWasmBytes: transferBuf,
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
@@ -653,6 +658,9 @@ export class BrowserKernel {
           // snapshotClosedLazyAssets always allocates one ordinary ArrayBuffer
           // per binding, so transferring it cannot detach caller-owned bytes.
           transfer.push(asset.bytes.buffer as ArrayBuffer);
+        }
+        if (this.options.remoteNetwork?.role === "joiner") {
+          transfer.push(this.options.remoteNetwork.peer.port as MessagePort);
         }
         this.kernelWorkerHandle.postMessage(initMsg, transfer);
       });
@@ -1594,6 +1602,23 @@ export class BrowserKernel {
   }
 
   /** Destroy the kernel and release all resources. */
+  /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
+  async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> {
+    const requestId = this.nextRequestId++;
+    try {
+      return await this.request(requestId, { type: "remote_network_attach", requestId, peer }, [peer.port as MessagePort]);
+    } catch (error) {
+      this.pendingRequests.delete(requestId);
+      throw error;
+    }
+  }
+
+  /** Inspect actual worker-owned membership and UDP bindings. */
+  remoteNetworkSnapshot(): Promise<RemoteSegmentSnapshot> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, { type: "remote_network_snapshot", requestId });
+  }
+
   async destroy(): Promise<void> {
     // Remove input-source DOM listeners regardless of worker state.
     this.attachedInputSource?.stop();

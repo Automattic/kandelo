@@ -1,3 +1,4 @@
+import { RemoteSegmentRuntime } from "./networking/remote-segment-runtime";
 /**
  * Kernel Worker Entry Point — Dedicated web worker that hosts the
  * CentralizedKernelWorker and manages all process lifecycle.
@@ -845,6 +846,8 @@ async function createFreshProcessMemory(
 
 // ── Init ──
 
+const remoteSegmentRuntime = new RemoteSegmentRuntime();
+
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = false;
   initFailure = null;
@@ -948,6 +951,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // production, keeping the browser networking path identical across modes.
   await tlsBackend.init();
   io.network = tlsBackend;
+  if (msg.remoteNetwork) {
+    io.network = await remoteSegmentRuntime.initialize(msg.remoteNetwork, io.network);
+  }
 
   // The MITM CA certificate is installed after `init`, below: it is
   // per-session runtime data that can never be in an image, and `/` is the
@@ -4155,6 +4161,7 @@ async function performDestroy() {
         "Audio clock did not consume the queued close tail before machine teardown; the remaining tail was discarded.",
     });
   }
+  remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
   initReady = false;
   initFailure = "kernel worker destroyed";
@@ -4394,9 +4401,27 @@ const sw = globalThis as unknown as {
 sw.onmessage = (e: MessageEvent) => {
   const msg = e.data as MainToKernelMessage;
   switch (msg.type) {
+    case "remote_network_attach":
+      try {
+        if (!initReady) throw new Error("the kernel is not initialized");
+        respond(msg.requestId, remoteSegmentRuntime.attachPeer(msg.peer));
+      } catch (error) {
+        msg.peer.port.close();
+        respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+      }
+      break;
+    case "remote_network_snapshot":
+      try {
+        if (!initReady) throw new Error("the kernel is not initialized");
+        respond(msg.requestId, remoteSegmentRuntime.snapshot());
+      } catch (error) {
+        respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+      }
+      break;
     case "init":
       void handleInit(msg).catch((err) => {
         const error = formatError(err);
+        remoteSegmentRuntime.close();
         initReady = false;
         initFailure = error;
         console.error("[kernel-worker] init failed:", err);
