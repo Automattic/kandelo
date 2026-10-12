@@ -19,7 +19,7 @@
       },
       "runtime": {
         "requests": {
-          "memoryPages": 4096,
+          "memoryPages": 16384,
           "maxWorkers": 12
         }
       },

@@ -23,7 +23,7 @@ const { host, exitPromise } = await bootDinitServiceVfs({
   imagePath: process.env.KANDELO_WORDPRESS_FRANKENPHP_IMAGE,
   target: "frankenphp-classic",
   maxWorkers: 12,
-  maxPages: 4096,
+  maxPages: 16384,
   configure: (fs) => configureWordPressRuntime(fs, {
     port,
   }),

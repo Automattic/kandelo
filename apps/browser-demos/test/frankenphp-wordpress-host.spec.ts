@@ -50,7 +50,7 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
       maxWorkers: 12,
-      maxMemoryPages: 4096,
+      maxMemoryPages: 16384,
       onStdout: (data: Uint8Array) => {
         stdout += decoder.decode(data);
         if (stdout.includes("[  OK  ] frankenphp-classic")) serviceReady?.();
@@ -100,6 +100,22 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
       const login = await kernel.fetchInKernel(8080, {
         method: "GET", url: "/wp-login.php", headers: { Host: "localhost:8080" }, body: null,
       }, { timeoutMs: 30_000 });
+      const loginForm = new TextEncoder().encode("log=admin&pwd=password&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1");
+      const loginPost = await kernel.fetchInKernel(8080, {
+        method: "POST", url: "/wp-login.php", headers: {
+          Host: "localhost:8080",
+          "Content-Type": "application/x-www-form-urlencoded",
+          Cookie: "wordpress_test_cookie=WP%20Cookie%20check",
+        }, body: loginForm,
+      }, { timeoutMs: 30_000 });
+      const loginCookie = Object.entries(loginPost.headers).find(([name]) => name.toLowerCase() === "set-cookie")?.[1]
+        ?.split("\n").map((line) => line.split(";")[0]).join("; ");
+      const editor = await kernel.fetchInKernel(8080, {
+        method: "GET", url: "/wp-admin/site-editor.php", headers: {
+          Host: "localhost:8080",
+          Cookie: loginCookie ?? "",
+        }, body: null,
+      }, { timeoutMs: 60_000 });
       for (let index = 0; index < churnRequests; index += 1) {
         const isLogin = index % 2 === 1;
         const response = await kernel.fetchInKernel(8080, {
@@ -120,6 +136,9 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
         homepageBody: decoder.decode(homepage.body),
         loginStatus: login.status,
         loginBody: decoder.decode(login.body),
+        loginPostStatus: loginPost.status,
+        editorStatus: editor.status,
+        editorBody: decoder.decode(editor.body).slice(0, 500),
         churnCompleted: churnRequests,
         serviceLog: decoder.decode(serviceLog),
         diagnostics,
@@ -143,6 +162,8 @@ test("WordPress on FrankenPHP serves PHP in the Chromium kernel host", async ({ 
   expect(result.homepageBody).not.toContain("id=\"setup\"");
   expect(result.loginStatus).toBe(200);
   expect(result.loginBody).toContain("user_login");
+  expect(result.loginPostStatus).toBe(302);
+  expect(result.editorStatus, `${result.editorBody}\n${result.serviceLog.slice(-3000)}`).toBe(200);
   expect(result.churnCompleted).toBe(churnRequests);
   expect(result.serviceLog).toContain("num_threads=6");
   expect(result.diagnostics).toEqual([]);

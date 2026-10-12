@@ -3146,3 +3146,29 @@ the working demo still has no ZTS OPcache. A PHP-FPM OPcache file cache also
 cannot simply be assumed compatible with the ZTS build; check the cache
 identity and prewarm strategy independently once loading works. No runtime
 or performance parity is claimed from this compile-only experiment.
+
+**2026-10-12 — WordPress site-editor memory regression.** The existing
+FrankenPHP browser profile booted and logged in, but Appearance → Editor
+reproducibly led to HTTP 500. The guest service log reported repeated
+`mmap() failed: [12] Out of memory`, and the process table showed the
+combined Go/PHP process at 254.8 MiB against its requested 256 MiB
+address space. The direct Chromium kernel-host editor request succeeded
+with a 1 GiB ceiling. The FrankenPHP profile and its Node counterpart
+now request 16,384 Wasm pages (1 GiB); the nginx/PHP-FPM profile keeps
+its separate 256 MiB process ceilings. WordPress recipe revision 24
+produced source-only image
+SHA-256 `0fd69bbd13ed4cbb7549b42594ae8dbe54f1adb765e1d0c9bdf9422307501bc2`.
+The persistent Vite server initially kept advertising the old image hash
+after the build; restarting it was necessary before the UI test used the
+new artifact. With the new image, the authenticated site editor and a
+subsequent uncached editor request passed twice each in Chromium and
+macOS WebKit. The Node-host editor path passed once. This establishes
+only the desktop 1 GiB profile. The constrained browser memory profile
+still clamps each process to 256 MiB, so mobile Safari is not covered by
+this fix; its FrankenPHP editor needs a separate memory-budget or
+architecture solution.
+An exploratory post-editor check also exposed an intermittent WebKit
+service-worker 503 reporting an offline computer while the dock still
+showed the machine running. Changing owner-client enumeration alone did
+not resolve it and was reverted. That bridge-lifecycle issue remains
+separate from the reported Appearance → Editor failure and is not fixed.

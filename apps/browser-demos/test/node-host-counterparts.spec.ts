@@ -326,7 +326,7 @@ test.describe("Node-host counterparts for Kandelo browser demos", () => {
     }
   });
 
-  test("WordPress FrankenPHP serves and logs into the preinstalled site without PHP-FPM", async ({ page }) => {
+  test("WordPress FrankenPHP serves the preinstalled site and editor without PHP-FPM", async ({ page }) => {
     test.setTimeout(300_000);
     const explicitImage = process.env.KANDELO_WORDPRESS_FRANKENPHP_IMAGE;
     if (explicitImage) {
@@ -361,6 +361,11 @@ test.describe("Node-host counterparts for Kandelo browser demos", () => {
       await page.locator("#user_pass").fill("password");
       await page.locator("#wp-submit").click();
       await expect(page.locator("#adminmenu, body.wp-admin").first()).toBeVisible({ timeout: 120_000 });
+      await page.goto(`http://localhost:${port}/wp-admin/site-editor.php`);
+      await expect(page.locator("iframe").first()).toBeVisible({ timeout: 120_000 });
+      await page.waitForTimeout(20_000);
+      const editorHealth = await page.request.get(`http://localhost:${port}/wp-admin/site-editor.php?health=${Date.now()}`);
+      expect(editorHealth.status()).toBe(200);
       expect(demo.output()).not.toMatch(/panic|fatal error/i);
     } finally {
       await stopNodeHostDemo(demo.proc);
