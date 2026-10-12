@@ -308,7 +308,7 @@ export async function buildLocalVfsAssetGroup(
       }),
       schema: 1,
     };
-    const stagedFileCount = validateStagedGroup(stagedGroup, manifest);
+    const stagedIdentity = validateStagedGroup(stagedGroup, manifest);
     validateStagedProductMap({
       finalMap: map,
       products,
@@ -321,7 +321,8 @@ export async function buildLocalVfsAssetGroup(
     publishGeneratedTargets({
       assetGroupDirectory,
       productMapPath,
-      stagedFileCount,
+      stagedFileCount: stagedIdentity.files,
+      stagedGroupBytes: stagedIdentity.bytes,
       stagedGroup,
       stagedMap,
     });
@@ -414,11 +415,11 @@ function requireSnapshots(
   });
 }
 
-/** Verify the staged group against its manifest; returns its file count. */
+/** Verify the staged group against its manifest; return its aggregate size. */
 function validateStagedGroup(
   root: string,
   manifest: VfsAssetGroupManifestV1,
-): number {
+): { files: number; bytes: number } {
   const expected = new Map<string, { bytes: number; sha256: string }>();
   const manifestBytes = readFileSync(join(root, "manifest.json"));
   expected.set("manifest.json", {
@@ -452,7 +453,7 @@ function validateStagedGroup(
       "staged local VFS asset-group inventory differs from its manifest",
     );
   }
-  return actual.size;
+  return { files: actual.size, bytes: [...actual.values()].reduce((sum, file) => sum + file.bytes, 0) };
 }
 
 export function publishGeneratedTargets(options: {
@@ -460,6 +461,7 @@ export function publishGeneratedTargets(options: {
   productMapPath: string;
   // Verified size of the staged group; bounds the reuse comparison.
   stagedFileCount: number;
+  stagedGroupBytes: number;
   stagedGroup: string;
   stagedMap: string;
 }, operations: { rename(from: string, to: string): void } = {
@@ -483,6 +485,7 @@ export function publishGeneratedTargets(options: {
         options.stagedGroup,
         options.assetGroupDirectory,
         options.stagedFileCount,
+        options.stagedGroupBytes,
       ) &&
       filesEqual(options.stagedMap, options.productMapPath)
     ) return;
@@ -688,11 +691,13 @@ function treesEqual(
   left: string,
   right: string,
   stagedFileCount: number,
+  stagedGroupBytes: number,
 ): boolean {
   if (!existsSync(right)) return false;
   const stagedInventory = inventory(left, {
     label: "staged asset group",
-    maxBytes: MAX_CAPTURE_BYTES,
+    // The capture ceiling bounds one file, not a verified multi-file group.
+    maxBytes: stagedGroupBytes,
     maxFiles: stagedFileCount,
   });
   const maxBytes = [...stagedInventory.values()].reduce(
