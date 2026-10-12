@@ -1289,6 +1289,7 @@
       "kernel_publish_spawn_child",
       "kernel_reap_exited_child",
       "kernel_remove_process",
+      "kernel_reset_tcp_connection",
       "kernel_set_current_tid",
       "kernel_set_cwd",
       "kernel_spawn_exec_commit",
@@ -1301,6 +1302,7 @@
       "kernel_spawn_scratch_pointer",
       "kernel_spawn_scratch_retained_capacity",
       "kernel_take_process_timer_cleanup",
+      "kernel_tcp_connection_id",
       "kernel_thread_exit",
       "kernel_thread_has_deliverable",
       "kernel_transfer_channel_execute",
@@ -2547,7 +2549,7 @@
     {
       "kind": "func",
       "name": "kernel_inject_connection",
-      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2857,6 +2859,11 @@
     {
       "kind": "func",
       "name": "kernel_reserve_host_region_at",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_reset_tcp_connection",
       "signature": "(i32,i32,i32) -> (i32)"
     },
     {
@@ -3218,6 +3225,11 @@
       "kind": "func",
       "name": "kernel_tcgetattr",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_tcp_connection_id",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",

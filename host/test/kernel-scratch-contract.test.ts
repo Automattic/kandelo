@@ -607,6 +607,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#drainAndProcessWakeupEventsWithinKernelEntry::kernel-export-direct-use::takePtyReadiness?.()",
   ),
   reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_tcp_connection_id as ( recv: number, send: number, ) => number )(recvPipeIdx, recvPipeIdx + 1)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#startIncomingVirtualTcpConnectionPump.pumpHostPhase::kernel-export-direct-use::reset(recvPipeIdx, sendPipeIdx, connectionId)",
+  ),
+  reviewedScalarKernelExportCall(
     "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_create_process()",
   ),
   reviewedScalarKernelExportCall(
@@ -703,7 +709,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmUnmap::kernel-export-direct-use::unmap(pid, addr, len)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#injectIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_inject_connection as ( pid: number, listenerFd: number, a: number, b: number, c: number, d: number, port: number, ) => number )( target.pid, target.fd, remoteAddr[0], remoteAddr[1], remoteAddr[2], remoteAddr[3], remotePort, )",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#injectIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_inject_connection as ( pid: number, listenerFd: number, a: number, b: number, c: number, d: number, port: number, local: number, ) => number )( target.pid, target.fd, remoteAddr[0], remoteAddr[1], remoteAddr[2], remoteAddr[3], remotePort, ((localAddr[0] << 24) | (localAddr[1] << 16) | (localAddr[2] << 8) | localAddr[3]) >>> 0, )",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#kernelThreadHasDeliverable::kernel-export-direct-use::threadHasDeliverable(pid, tid)",

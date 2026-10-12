@@ -1,3 +1,4 @@
+import {REMOTE_TCP_MARKER} from './remote-tcp-codec';
 import { MAX_SEGMENT_CONTROL_BYTES } from "./remote-segment";
 import { remoteUdpPayloadLimit } from "./remote-udp-codec";
 import { SegmentPortBridge, type RemoteSegmentPeer } from "./remote-segment-port";
@@ -42,7 +43,7 @@ export function bridgeRemoteSegmentChannels(
     }
   };
   bridge.onFrame((kind, frame, release) => {
-    if (kind === "control") {
+    if (kind === "control" || kind === "tcp") {
       pendingControl.push({ frame, release }); drainControl();
     } else {
       // A full RTC send buffer drops UDP after bridge admission. It is not a
@@ -53,14 +54,14 @@ export function bridgeRemoteSegmentChannels(
     }
   });
   bridge.onClose(close);
-  const forward = (kind: "udp" | "control", event: MessageEvent) => {
+  const forward = (kind: "udp" | "control" | "tcp", event: MessageEvent) => {
     if (!(event.data instanceof ArrayBuffer)) { close(); return; }
     const frame = new Uint8Array(event.data);
     if (frame.byteLength > (kind === "udp" ? maxPayload + 16 : maxControlBytes)) { close(); return; }
-    if (!bridge.send(kind, frame) && kind === "control") close();
+    if (!bridge.send(kind, frame) && kind !== "udp") close();
   };
   const onUdp = (event: MessageEvent) => forward("udp", event);
-  const onControl = (event: MessageEvent) => forward("control", event);
+  const onControl = (event: MessageEvent) => forward(event.data instanceof ArrayBuffer && new Uint8Array(event.data)[0] === REMOTE_TCP_MARKER ? "tcp" : "control", event);
   udp.binaryType = "arraybuffer"; control.binaryType = "arraybuffer";
   control.bufferedAmountLowThreshold = MAX_RTC_BUFFER_BYTES / 2;
   udp.addEventListener("message", onUdp); control.addEventListener("message", onControl);

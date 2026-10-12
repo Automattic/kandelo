@@ -1,3 +1,4 @@
+import {decodeRemoteTcp, encodeRemoteTcp, REMOTE_TCP_HEADER_BYTES, type RemoteTcpFrame} from './remote-tcp-codec';
 import type { UdpDatagram } from "../types";
 import {
   MAX_SEGMENT_CONTROL_BYTES,
@@ -24,7 +25,7 @@ export type RemoteSegmentInit = { role: "host" } | { role: "joiner"; peer: Remot
 
 const MAX_PENDING_FRAMES = 128;
 const MAX_PENDING_BYTES = 1024 * 1024;
-type FrameKind = "udp" | "control";
+type FrameKind = "udp" | "control" | "tcp";
 type FrameMessage = { type: FrameKind; sequence: number; frame: Uint8Array };
 type PortMessage = FrameMessage | { type: "ack"; sequence: number } | { type: "close"; reason: string };
 
@@ -38,6 +39,7 @@ export class SegmentPortBridge {
   private nextSequence = 1;
   private closed = false;
   private readonly frameListeners = new Set<(kind: FrameKind, frame: Uint8Array, release: () => void) => void>();
+  private readonly writableListeners = new Set<() => void>();
   private readonly closeListeners = new Set<(reason: string) => void>();
   private closeReason = "the segment port closed";
   private readonly handleMessage = (event: { data: unknown }) => {
@@ -50,12 +52,14 @@ export class SegmentPortBridge {
       const bytes = this.pending.get(message.sequence);
       if (bytes === undefined) { this.close("unknown or duplicate segment port acknowledgement"); return; }
       this.pending.delete(message.sequence); this.pendingBytes -= bytes;
+      for (const listener of [...this.writableListeners]) listener();
       return;
     }
     const limit = message.type === "udp" ? this.descriptor.maxPayload + REMOTE_UDP_HEADER_BYTES : this.descriptor.maxControlBytes;
-    if ((message.type !== "udp" && message.type !== "control") || !(message.frame instanceof Uint8Array)
+    if ((message.type !== "udp" && message.type !== "control" && message.type !== "tcp") || !(message.frame instanceof Uint8Array)
       || !(message.frame.buffer instanceof ArrayBuffer) || message.frame.byteLength > limit
-      || (message.type === "udp" && message.frame.byteLength < REMOTE_UDP_HEADER_BYTES)) {
+      || (message.type === "udp" && message.frame.byteLength < REMOTE_UDP_HEADER_BYTES)
+      || (message.type === "tcp" && message.frame.byteLength < REMOTE_TCP_HEADER_BYTES)) {
       this.close("invalid or oversized segment port frame"); return;
     }
     let released = false;
@@ -84,10 +88,12 @@ export class SegmentPortBridge {
     descriptor.port.start();
   }
 
-  send(kind: FrameKind, frame: Uint8Array): boolean {
+  canSend(kind: FrameKind, length: number): boolean {
     const limit = kind === "udp" ? this.descriptor.maxPayload + REMOTE_UDP_HEADER_BYTES : this.descriptor.maxControlBytes;
-    if (this.closed || frame.byteLength > limit || this.pending.size >= MAX_PENDING_FRAMES
-      || this.pendingBytes + frame.byteLength > MAX_PENDING_BYTES) return false;
+    return !this.closed && length <= limit && this.pending.size < MAX_PENDING_FRAMES && this.pendingBytes + length <= MAX_PENDING_BYTES;
+  }
+  send(kind: FrameKind, frame: Uint8Array): boolean {
+    if (!this.canSend(kind,frame.byteLength)) return false;
     const sequence = this.nextSequence++;
     // Never transfer guest memory, a view's surrounding storage, or an SAB.
     const owned = new Uint8Array(frame);
@@ -101,6 +107,7 @@ export class SegmentPortBridge {
     }
   }
 
+  onWritable(listener: () => void): () => void { this.writableListeners.add(listener); return () => {this.writableListeners.delete(listener);}; }
   onFrame(listener: (kind: FrameKind, frame: Uint8Array, release: () => void) => void): () => void {
     this.frameListeners.add(listener); return () => { this.frameListeners.delete(listener); };
   }
@@ -121,7 +128,7 @@ export class SegmentPortBridge {
     this.descriptor.port.removeEventListener("close", this.handlePortClose);
     this.descriptor.port.close(); this.pending.clear(); this.pendingBytes = 0;
     for (const listener of [...this.closeListeners]) listener(reason);
-    this.closeListeners.clear(); this.frameListeners.clear();
+    this.closeListeners.clear(); this.frameListeners.clear(); this.writableListeners.clear();
   }
 }
 
@@ -129,16 +136,22 @@ export class SegmentPortBridge {
 export class RemoteSegmentPortTransport implements RemoteSegmentTransport {
   private readonly bridge: SegmentPortBridge;
   private readonly controlListeners = new Set<(value: unknown) => void>();
+  private readonly tcpListeners = new Set<(frame: RemoteTcpFrame) => void>();
   private readonly datagramListeners = new Set<(datagram: UdpDatagram) => void>();
   readonly maxPayload: number;
+  readonly maxTcpData: number;
   constructor(descriptor: RemoteSegmentPeer) {
     this.maxPayload = descriptor.maxPayload;
+    this.maxTcpData = Math.min(16384, descriptor.maxControlBytes - REMOTE_TCP_HEADER_BYTES);
     this.bridge = new SegmentPortBridge(descriptor);
     this.bridge.onFrame((kind, frame, release) => {
       try {
         if (kind === "udp") {
           const datagram = decodeRemoteUdp(frame, this.maxPayload);
           for (const listener of [...this.datagramListeners]) listener(datagram);
+        } else if (kind === "tcp") {
+          const tcp = decodeRemoteTcp(frame);
+          for (const listener of [...this.tcpListeners]) listener(tcp);
         } else {
           const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(frame));
           for (const listener of [...this.controlListeners]) listener(value);
@@ -146,6 +159,10 @@ export class RemoteSegmentPortTransport implements RemoteSegmentTransport {
       } finally { release(); }
     });
   }
+  canSendTcp(length: number): boolean { return this.bridge.canSend("tcp",length+REMOTE_TCP_HEADER_BYTES); }
+  sendTcp(frame: RemoteTcpFrame): boolean { return this.bridge.send("tcp", encodeRemoteTcp(frame)); }
+  onTcp(listener: (frame: RemoteTcpFrame) => void): () => void { this.tcpListeners.add(listener); return () => {this.tcpListeners.delete(listener);}; }
+  onWritable(listener: () => void): () => void { return this.bridge.onWritable(listener); }
   sendControl(message: RemoteSegmentControl): boolean {
     return this.bridge.send("control", new TextEncoder().encode(JSON.stringify(message)));
   }
@@ -160,5 +177,5 @@ export class RemoteSegmentPortTransport implements RemoteSegmentTransport {
     this.datagramListeners.add(listener); return () => { this.datagramListeners.delete(listener); };
   }
   onClose(listener: (reason: string) => void): () => void { return this.bridge.onClose(listener); }
-  close(): void { this.bridge.close(); this.controlListeners.clear(); this.datagramListeners.clear(); }
+  close(): void { this.bridge.close(); this.controlListeners.clear(); this.datagramListeners.clear(); this.tcpListeners.clear(); }
 }

@@ -200,7 +200,12 @@ pub mod process_layout;
 ///     source of a non-loopback UDP route instead of assuming a demo subnet,
 ///     `host_udp_bind` of a specific address fails with `EADDRNOTAVAIL`
 ///     unless the host owns it, and `FIONREAD` on a datagram socket reports
-///     the next packet's size. docs/abi-versioning.md ("ABI 50") lists each.
+///     the next packet's size. Remote TCP adds the `host_net_connect_from`,
+///     `host_net_local_endpoint` and `host_net_shutdown` imports and the
+///     `kernel_tcp_connection_id` / `kernel_reset_tcp_connection` exports;
+///     a host-backed shutdown keeps its
+///     connection handle until close, and accepted connections report the
+///     routed local address. docs/abi-versioning.md ("ABI 50") lists each.
 pub const ABI_VERSION: u32 = 50;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
@@ -3502,6 +3507,7 @@ pub mod abi {
         "kernel_publish_spawn_child",
         "kernel_reap_exited_child",
         "kernel_remove_process",
+        "kernel_reset_tcp_connection",
         "kernel_set_current_tid",
         "kernel_set_cwd",
         "kernel_spawn_exec_commit",
@@ -3514,6 +3520,7 @@ pub mod abi {
         "kernel_spawn_scratch_pointer",
         "kernel_spawn_scratch_retained_capacity",
         "kernel_take_process_timer_cleanup",
+        "kernel_tcp_connection_id",
         "kernel_thread_exit",
         "kernel_thread_has_deliverable",
         "kernel_transfer_channel_execute",
