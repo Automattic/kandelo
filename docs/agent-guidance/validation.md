@@ -375,3 +375,14 @@ tests where possible and manually verify user-visible browser demo fixes with:
 ```bash
 ./run.sh browser
 ```
+
+## Preserve compiler APIs during tooling upgrades
+
+Some source audits inspect syntax trees through TypeScript's JavaScript API.
+A working command-line compiler does not prove that API is available.
+Before a major compiler or parser upgrade, check the upstream migration guide
+and run the source audits as well as type checks and browser builds. Use the
+upstream compatibility package when an API consumer still needs it. Select
+parser language options from each file's extension: a `.ts` generic function
+is not JSX, while `.tsx` admits JSX. Never skip source files that fail to parse
+just to make an upgrade pass.
