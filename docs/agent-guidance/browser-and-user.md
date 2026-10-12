@@ -33,6 +33,26 @@ PTY, VFS reads, proc/memory inspection, syscall trace, framebuffer, web
 preview, presentation preferences, demo guide, and snapshots. Avoid reaching
 around it unless the behavior is truly app-local.
 
+Agent tools must use that same surface. Run guest commands and file writes
+as the configured guest account, collect output from owned command families,
+and keep agent commands separate from the user's interactive input. A signal
+being sent is not proof that a job finished: require authoritative process
+exit, exact worker detachment, and process-record cleanup. Refresh image tools
+from notifications emitted by the filesystem owner; a host-side file cache
+cannot know what a guest changed. See `docs/webmcp.md` for the tool contract.
+
+Use the same precedence rules for initial tool loading, a full refresh, and
+a single-file update. Choose the definition that owns a name before parsing
+it. A malformed user override must remain disabled rather than unexpectedly
+restoring a different shipped command; removal can restore the fallback.
+
+Distinguish guest account permissions from browser origin authority. The
+native WebMCP API lets same-origin frames discover and invoke tools.
+Registering only in the app document and limiting a service worker's scope
+do not isolate guest preview scripts from that origin. Keep this browser
+trust boundary explicit; do not claim preview isolation without testing an
+actual origin boundary.
+
 Boot descriptors and shared URLs are untrusted input. They need explicit
 versioning, size caps, mount limits, path validation, allowed source kinds, and
 loud failures for malformed or oversized payloads. Do not relax validation to

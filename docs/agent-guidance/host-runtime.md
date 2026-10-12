@@ -48,6 +48,36 @@ Node-first or browser-later host changes.
 
 Before and after host work, ask: "What does this look like on the other host?"
 
+Keep a command's job ID until its owner confirms release or absence. A caller
+timeout or failed read does not prove that the process family has exited or
+that its workers have detached. If release is refused, retain the ID for
+later cleanup rather than losing a bounded job slot. Test a failed call while
+the job is live, then its eventual release after completion. See
+[the command ownership reflection](../architecture-reflections.md#run-agent-commands-with-ordinary-guest-authority).
+
+`exec` keeps a process ID while replacing its worker and memory. Recheck the
+exact old memory registration before committing an asynchronously prepared
+replacement, and check that its exec syscall channel is still pending. A
+teardown wake can complete the channel before removing the registration.
+Cancel stale work before changing Rust state. After replacement,
+retire the old image through the same generation ledger as exit, termination,
+and destroy, including failure cleanup. Direct lease release is for allocations
+that were never published, not an old image another teardown may also own.
+
+Result-bearing kernel operations must refuse a busy gate before retaining
+their callback, token, or output buffer. Queueing and then reporting refusal
+lets a retry repeat work that the caller believes never ran. An asynchronous
+exec continuation retries only this pre-entry contention on a later worker
+turn. Keep successful commit and replacement start on the same stack, and
+never retry after the consumed-token marker. Test both refused operations
+after the queue drains and the order of commit, start, and queued microtasks.
+
+Apply that retry rule to every immediate-result step of a root launch too:
+process creation, working-directory setup, and terminal setup. A preceding
+`await` lets another launch queue work even if the previous step succeeded.
+Keep ordinary errors, such as a missing working directory, visible. Test
+concurrent launches with a requested working directory on both hosts.
+
 | Concern | Node.js | Browser |
 |---|---|---|
 | Host proxy | `host/src/node-kernel-host.ts` | `host/src/browser-kernel-host.ts` |
@@ -168,3 +198,38 @@ Node and browser consideration even when only one host-specific file changed.
 `BrowserKernel` is host/runtime code. Browser demos consume it; they do not own
 it. Fix runtime bugs in `host/src`, not inside demo pages, unless the bug is
 truly presentation-specific.
+
+## Schedule notifications outside lifecycle transaction starts
+
+Use a fresh, explicit kernel entry to drain native notifications. Copy bytes
+while its scratch lease is live, then deliver observers after revocation.
+Register the scheduling effect before the initiating operation: a process
+lifecycle transaction must remain the final detached effect of that call.
+Register that effect before the operation, but use the kernel's non-consuming
+readiness check after the operation to decide whether to schedule it. Checking
+only before the operation can miss its final write when no later syscall runs.
+An idle watch must not open a second kernel entry and scratch lease for every
+unrelated operation. The readiness read stays in the current entry and does
+not copy records or invoke observers.
+
+Read readiness in an operation helper that receives the live entry
+explicitly. Keep the function that constructs the entry free of kernel
+export calls. Its job is to create authority, not to use it. The source
+audit must check the operation callback and accept forwarding only from
+the canonical gate's exact scope, effect registrar, and operation argument.
+Keep notification callbacks and their captured state on the active-watch
+path; unrelated operations need neither.
+
+Schedule the drain on the next worker turn. Queuing it immediately can make
+the filesystem read needed for exec fail because the gate is busy. Clear the
+pending-drain flag before observers run so an observer can schedule a new
+write. Test both guest exec and writes made from an observer callback.
+
+Treat an open file description's stored path as its opening name, not proof
+of its current name. The inode can survive rename, replacement, and unlink.
+Validate the native inode before publishing a precise close hint; refresh
+watched directories if a still-linked inode's current name is unknown.
+An already-unlinked inode has no directory contents to refresh. Keep this
+metadata work behind the subscription gate. Test a rename while the file
+stays open, a move from outside a watched directory, replacement of the
+opening name, and final close after unlink using real completion barriers.

@@ -59,6 +59,13 @@ For CI-shaped local runs, prefer:
 bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-workspace|cargo-xtask|vitest|browser|libc|posix|sortix> [group]
 ```
 
+When adding a Vitest file, update `scripts/ci-vitest-evidence-classes.tsv`.
+The runner checks that every enabled file appears exactly once before it
+starts the suite. Mark tests that need built package programs or images as
+`prepared-product`; use `source-only` only when source and the current ABI
+test fixtures are sufficient. This keeps a passing source check from being
+mistaken for validation of an older package binary.
+
 The optional group reproduces CI's deterministic suite partitions. Vitest
 accepts `1/2`, `2/2`, or `resource-isolated`; libc accepts
 `functional-regression` or `math`; and Sortix accepts `include`, `basic`, or

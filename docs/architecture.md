@@ -512,6 +512,21 @@ operation, so an `exec` that reuses the PID cannot receive a stale
 continuation's address-space or thread mutation. Child-launch paths use
 monotonic task IDs or the expected process memory as their equivalent guard.
 
+A prepared exec rechecks the old worker's exact memory registration and
+still-pending exec syscall channel inside the commit entry. A cooperative
+teardown can complete the channel while the registration still exists.
+If that image was removed, replaced, or interrupted during asynchronous
+preparation, the host cancels its target and returns `ESRCH` before Rust
+commits. It preserves any transition already belonging to a successor.
+Once replacement is registered, the discarded image's lease retires through
+the same exact-generation ledger used by exit, termination, and destroy.
+Overlapping cleanup paths therefore consume the lease once without removing
+or reaping the replacement's persistent process ID.
+
+The login program disables password echo and flushes earlier input before
+showing its password prompt. Input sent in response to that prompt therefore
+is not discarded by a later terminal-mode change.
+
 Positioned host-backed I/O uses required `host_pread` and `host_pwrite`
 imports. Signed 64-bit offsets remain exact across TypeScript routing and are
 split and reconstructed losslessly at the Wasm boundary; one positioned
@@ -1480,6 +1495,13 @@ input schedules its reader wake independently of output callback attachment.
 
 ### exec()
 
+Every result-bearing target operation runs immediately or refuses a busy
+kernel gate without queueing work. After an asynchronous fetch, compilation,
+or memory allocation, the shared Node/browser launcher retries this temporary
+contention on a later worker turn. A refusal does not allocate or consume a
+token and does not retain a read destination. Successful commit and replacement
+start still run on the same stack; a consumed token is never retried.
+
 1. A process calls `execve()` or `execveat()`. The centralized kernel worker
    reads the pathname arguments and derives a `diagnosticPath`. For
    `AT_EMPTY_PATH` and relative `execveat()`, path getters may help produce that
@@ -1707,6 +1729,12 @@ completed top-level process after consuming its exit status.
   parallel wires.
 
 ### Host-owned top-level process lifecycle
+
+Top-level launches yield during program compilation and memory setup. Each
+operation that needs an immediate kernel result retries temporary entry
+contention, including process creation, initial working-directory setup,
+and terminal setup. A refused operation queues no work. Real errors, such
+as a missing working directory, still fail the launch before its guest runs.
 
 Processes launched directly by the Node or browser host, rather than by a guest
 parent, are registered as children of the host-parent `ppid=0` sentinel. Their
@@ -2138,6 +2166,37 @@ trees, including OCI image layers. That decoder is not implemented by the
 native archive reader; unsupported formats fail. Standalone gzip and
 zstd were not separate lazy archive decoders. Zstd boot-image decoding
 remains supported and is separate from lazy archive activation.
+
+### Filesystem change notifications
+
+`subscribeVfsChanges(prefix, callback)` observes native rootfs and scratch
+storage on both hosts. Rust queues a changed canonical path when a writable
+file description closes, a name is renamed or unlinked, or the host stages
+file bytes. Read-only closes produce no event. With no watchers, this path
+allocates no notification records and takes no notification lock.
+
+The kernel retains at most 16 canonical directory prefixes and 256 distinct
+pending paths. Repeated changes to one path coalesce into its latest hint.
+Overflow invalidates every watched directory so consumers can read its
+current state again. The host schedules a fresh gated kernel call on the
+next worker turn, copies the records through a scratch lease, and invokes
+observers only after that call ends. A pending drain coalesces requests. Observers cannot borrow kernel memory or interrupt a native mutation.
+Image tool registration handles both file hints and directory refreshes.
+
+A file description retains the path used to open it. Renaming that file or
+replacing its old name can make the stored path stale while the descriptor
+still refers to the original inode (the file's identity). On its final
+writable close, native storage compares the descriptor's inode with the
+inode now named by that path. If a linked file no longer has that name,
+the kernel refreshes all watched directories instead of reporting a stale
+file path. Closing an inode with no remaining names needs no further hint;
+its unlink already reported the directory change. These metadata checks
+run only while subscriptions are active.
+
+These hints are not a durable change log. Mapped writes and external changes
+to Node foreign mounts are not reported, and an inode modified through a
+hard-link name is not reported under every alias. See [WebMCP](webmcp.md)
+for the consumer-facing contract.
 
 ### Inspection of the live filesystem
 
@@ -3420,3 +3479,17 @@ generated-file/snapshot checks for ABI-adjacent work and real Chromium
 evidence for shared browser runtime changes. Report exact commands, counts,
 unexpected failures, skipped suites, and environmental blocks rather than
 using a narrow passing suite as a broad readiness claim.
+
+### Filesystem notification readiness
+
+The host checks `kernel_fs_changes_pending` after each operation with active
+watches, in the same entry. It schedules a separate drain only when records
+are pending. Actual record copies and observer callbacks retain their
+existing ownership and worker-turn boundaries on Node and browser.
+
+An operation helper receives the live entry explicitly for this scalar
+read. The entry-construction function creates the context and orders its
+effects; it does not call kernel exports. Gateways forward only the
+original operation and the gate callback's exact scope and effect
+registrar. Notification callbacks and their captured state are created
+only on the active-watch path.
