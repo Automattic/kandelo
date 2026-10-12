@@ -17460,7 +17460,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     if extra.is_some() {
                         return Err("build-deps sha: unexpected extra arg".into());
                     }
-                    cmd_sha(&manifest, &registry, arch)
+                    cmd_sha(&manifest, &registry, arch, resolve_policy)
                 }
                 "path" => {
                     if extra.is_some() {
@@ -17620,14 +17620,23 @@ fn cmd_parse(m: &DepsManifest) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_sha(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(), String> {
+/// `sha` and `path` report the identity `resolve` would use under the active
+/// resolution policy, so a caller inspecting a source-only build sees the
+/// same key and location the build engine will. Both are read-only.
+fn cmd_sha(
+    m: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    policy: ResolvePolicy,
+) -> Result<(), String> {
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
-    let sha = compute_sha(
+    let sha = compute_sha_for_policy(
         m,
         registry,
         arch,
         current_abi_version(),
+        policy,
         &mut memo,
         &mut chain,
     )?;
@@ -17653,8 +17662,10 @@ fn cmd_path(
         &mut memo,
         &mut chain,
     )?;
+    // Plan, never materialize: naming an artifact that has not been built
+    // must not create the source-only cache directories.
     let cache_root = match policy {
-        ResolvePolicy::SourceOnlyV1 => source_only_cache_roots()?.compiled,
+        ResolvePolicy::SourceOnlyV1 => plan_source_only_cache_roots()?.compiled,
         ResolvePolicy::Default => default_cache_root(),
     };
     let path = canonical_path(&cache_root, m, arch, abi_version, &sha);
