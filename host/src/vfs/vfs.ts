@@ -12,7 +12,6 @@ import {
   type FileSystemBackend,
   type MountConfig,
   type TimeProvider,
-  type VfsChangeListener,
 } from "./types";
 import { AT_FLAGS, FILE_MODES, OPEN_FLAGS } from "../generated/abi";
 
@@ -20,6 +19,18 @@ export function vfsPathIsWithin(prefix: string, path: string): boolean {
   if (path === prefix) return true;
   const dir = prefix.endsWith("/") ? prefix : `${prefix}/`;
   return path.startsWith(dir);
+}
+
+export const MAX_VFS_WATCH_PREFIXES = 16;
+
+/** Validate a watch name without resolving or taking ownership of guest paths. */
+export function assertVfsWatchPrefix(prefix: string): void {
+  if (!prefix.startsWith("/") || prefix.includes("\0") || prefix.includes("//")
+    || (prefix.length > 1 && prefix.endsWith("/"))
+    || prefix.split("/").some(part => part === "." || part === "..")
+    || new TextEncoder().encode(prefix).length > 4096) {
+    throw new TypeError("Filesystem watch needs a canonical absolute guest prefix");
+  }
 }
 
 interface MountEntry {
@@ -153,25 +164,6 @@ export class VirtualPlatformIO implements PlatformIO {
   /** Whether the mount owning an absolute guest path ignores set-ID bits. */
   getMountNosuid(path: string): boolean {
     return this.resolve(path).nosuid;
-  }
-
-  /**
-   * Subscribe to change events from every mount whose backend reports them.
-   * Paths arrive in the guest namespace, with the mount point prepended; a
-   * backend exposed at several mount points reports under each of its names.
-   */
-  subscribeChanges(listener: VfsChangeListener): () => void {
-    const offs: Array<() => void> = [];
-    for (const m of this.mounts) {
-      if (!m.backend.subscribeChanges) continue;
-      offs.push(m.backend.subscribeChanges((event) => {
-        const path = m.prefix === "/" ? event.path : m.prefix + event.path;
-        listener({ ...event, path });
-      }));
-    }
-    return () => {
-      for (const off of offs) off();
-    };
   }
 
   private resolve(path: string): {

@@ -47,6 +47,7 @@ import type { ForkExternrefImportWake } from "./fork-externref-import-mailbox";
 import type { ForkHostImportOwnerWorker } from "./fork-host-import-runtime";
 import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ProcessMemoryLayout, ProcessMemoryLease } from "./process-memory";
+import type { ExactProcessGenerationDetachLedger } from "./process-generation-detach";
 import { ThreadPageAllocator } from "./thread-allocator";
 import type {
   VforkExactCompletionReason,
@@ -138,6 +139,37 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
 }
 
 // ── Host-independent helpers ────────────────────────────────────────────────
+
+/**
+ * Retire exec's discarded image through the same owner as exit and terminate.
+ * Call only after the kernel accepted the replacement registration and exec
+ * finished the old worker/channel retirement. The old image is superseded;
+ * this operation must never remove or reap the replacement's persistent PID.
+ */
+export async function retireSupersededExecGeneration<T extends ProcessGenerationOwnership>(
+  ledger: ExactProcessGenerationDetachLedger<T>,
+  pid: number,
+  generation: T,
+  quiescent: boolean,
+): Promise<void> {
+  const result = await ledger.detach({
+    pid,
+    generation,
+    memory: generation.memory,
+    // The caller's successful replacement registration already proved this.
+    // Exec owns the old channel cleanup; repeating a kernel detach here could
+    // delay launching the replacement without adding an ownership proof.
+    detach: () => false,
+    settle: () => {},
+    retire: commit => {
+      if (quiescent) generation.memoryLease.release();
+      else generation.memoryLease.releaseAfterForcedTermination();
+      commit();
+    },
+  });
+  if (result.status !== "released") throw result.error;
+  if ("postCommitError" in result) throw result.postCommitError;
+}
 
 /**
  * The signal encoded in a shell-style wait status, or null for a plain exit.

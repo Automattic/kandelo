@@ -10,6 +10,7 @@ describe('owned job process reaping', () => {
       return 0;
     });
     const instance = { exports: {
+      kernel_get_process_state: (pid: number) => parents.has(pid) ? 2 : -3,
       kernel_get_parent_pid: (pid: number) => parents.get(pid) ?? -3,
       kernel_reap_exited_child: reap,
     } } as unknown as WebAssembly.Instance;
@@ -22,11 +23,23 @@ describe('owned job process reaping', () => {
   it('refuses an unrelated guest parent and leaves running-state validation to Rust', () => {
     const reap = vi.fn(() => -10);
     const instance = { exports: {
+      kernel_get_process_state: () => 2,
       kernel_get_parent_pid: () => 99,
       kernel_reap_exited_child: reap,
     } } as unknown as WebAssembly.Instance;
     expect(() => reapOwnedJobExitedProcesses(instance, new Set([10]))).toThrow('unexpected parent 99');
     expect(reap).not.toHaveBeenCalled();
     expect(() => reapOwnedJobExitedProcesses(instance, new Set([99, 10]))).toThrow('errno 10');
+  });
+
+  it('does not consume an exited child while any family parent is still live', () => {
+    const reap = vi.fn(() => 0);
+    const instance = { exports: {
+      kernel_get_process_state: (pid: number) => pid === 10 ? 0 : 2,
+      kernel_get_parent_pid: (pid: number) => pid === 10 ? 0 : 10,
+      kernel_reap_exited_child: reap,
+    } } as unknown as WebAssembly.Instance;
+    expect(() => reapOwnedJobExitedProcesses(instance, new Set([11, 10]))).toThrow('not exited');
+    expect(reap).not.toHaveBeenCalled();
   });
 });

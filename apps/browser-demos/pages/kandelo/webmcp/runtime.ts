@@ -1,13 +1,10 @@
 import { resetPreviewProgress } from "../panes/preview-progress";
 import type { KernelHost, KernelOwnedJobRead } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { DIRENT_TYPES } from "@host/generated/abi";
 import { guestPath, ToolError } from "./contract";
 import { shellQuote } from "./vfs-tools";
 
-const DIRENT_TYPE_NAMES: Record<number, string> = {
-  [DIRENT_TYPES.DT_DIR]: "directory",
-  [DIRENT_TYPES.DT_REG]: "file",
-  [DIRENT_TYPES.DT_LNK]: "symlink",
+const FILE_TYPE_NAMES: Record<number, string> = {
+  0x4000: "directory", 0x8000: "file", 0xa000: "symlink",
 };
 
 /** The guest account every command and file write of the agent runs as. */
@@ -147,9 +144,9 @@ export async function listGuestDirectory(host: KernelHost, path: string) {
   // list_files paginates a fresh listing, so offset/limit only line up across
   // calls while the order is stable.
   entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return entries.map(({ name, type, mode, size, uid, gid, target }) => ({
+  return entries.map(({ name, mode, size, uid, gid, target }) => ({
     name,
-    type: DIRENT_TYPE_NAMES[type] ?? "other",
+    type: FILE_TYPE_NAMES[mode & 0xf000] ?? "other",
     mode,
     size,
     uid,
@@ -271,8 +268,8 @@ export type GuestScriptResult = {
 /**
  * Run `script` as an owned job and collect its last 256 KiB of output.
  * Resolves once every member of the family has terminated, or once the job's
- * own timeout has passed without that observation; the record is released
- * either way, so this job never counts against the session's retained jobs.
+ * own timeout has passed without that observation. Finished records are
+ * released; a job that still needs cleanup stays tracked by the session.
  */
 export async function runGuestScript(
   host: KernelHost,
@@ -307,9 +304,17 @@ export async function runGuestScript(
       await new Promise(resolve => setTimeout(resolve, 50));
     }
   } finally {
+    let released = false;
+    try {
+      await host.releaseOwnedJob(id);
+      released = true;
+    } catch (error) {
+      // A live family cannot be released yet. Keep its ID so the session's
+      // normal retention cleanup can retry after exit and worker detachment.
+      released = String(error).includes("UNKNOWN_JOB");
+    }
     const session = sessions.get(host);
-    if (session) session.jobs = session.jobs.filter(job => job !== id);
-    await host.releaseOwnedJob(id).catch(() => {});
+    if (released && session) session.jobs = session.jobs.filter(job => job !== id);
   }
   return { ...jobStreams(chunks), exitCode: last.exitCode, status: last.status, terminationObserved: last.terminationObserved, truncated };
 }

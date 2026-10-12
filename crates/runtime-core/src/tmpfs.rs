@@ -732,6 +732,7 @@ pub fn write_file_at(
         write(handle, offset, buf)
     })();
     release_handle(handle);
+    if result.is_ok() { crate::fs_changes::publish(1, path); }
     result
 }
 
@@ -968,7 +969,7 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
     if comps.is_empty() {
         return Err(Errno::EISDIR);
     }
-    TMPFS.with(|state| {
+    let result = TMPFS.with(|state| {
         let (parent, last, target) = state.resolve(mount_idx, &comps)?;
         let target = target.ok_or(Errno::ENOENT)?;
         let last = last.ok_or(Errno::ENOENT)?;
@@ -983,7 +984,11 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
         }
         state.maybe_free(target);
         Ok(())
-    })
+    });
+    if result.is_ok() {
+        crate::fs_changes::publish(2, path);
+    }
+    result
 }
 
 /// Create a metadata-only special node (AF_UNIX socket or FIFO) at a tmpfs path.
@@ -1071,7 +1076,7 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     if old_comps.is_empty() || new_comps.is_empty() {
         return Err(Errno::EBUSY); // cannot rename a mount root
     }
-    TMPFS.with(|state| {
+    let result = TMPFS.with(|state| {
         let (old_parent, old_name, old_target) = state.resolve(old_mount, &old_comps)?;
         let old_target = old_target.ok_or(Errno::ENOENT)?;
         let old_name = old_name.ok_or(Errno::ENOENT)?.to_vec();
@@ -1130,7 +1135,12 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
             state.recompute_dir_nlink(new_parent);
         }
         Ok(())
-    })
+    });
+    if result.is_ok() {
+        crate::fs_changes::publish(2, old);
+        crate::fs_changes::publish(1, new);
+    }
+    result
 }
 
 /// Create a hard link `new` to the existing file `old` within one scratch mount.

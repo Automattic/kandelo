@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { OwnedJobRead } from "../src/owned-jobs";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../..");
@@ -28,17 +28,12 @@ function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 async function createRootfs(): Promise<Uint8Array> {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
+  const fs = KandeloImageFs.create();
   fs.mkdir("/bin", 0o755);
   fs.mkdir("/tmp", 0o777);
   for (const [path, hostPath] of Object.entries(programs)) {
     const bytes = new Uint8Array(readFileSync(hostPath));
-    const fd = fs.open(path, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
-    try {
-      expect(fs.write(fd, bytes, null, bytes.byteLength)).toBe(bytes.byteLength);
-    } finally {
-      fs.close(fd);
-    }
+    fs.writeFile(path, bytes, 0o755);
   }
   return fs.saveImage();
 }
@@ -79,6 +74,28 @@ function decode(read: Extract<OwnedJobRead, { expired: false }>, stream: "stdout
 }
 
 describe.skipIf(!haveKernel || !havePrograms)("NodeKernelHost owned jobs", () => {
+  it("starts concurrent jobs with their requested working directory", async () => {
+    const host = await bootedHost();
+    try {
+      for (let round = 0; round < 3; round++) {
+        const ids = Array.from({ length: 4 }, (_, index) => `cwd-${round}-${index}`);
+        await Promise.all(ids.map(id => host.spawnFromVfs("/bin/echo", ["echo", id], {
+          cwd: "/tmp", uid: 1000, gid: 1000,
+          ownedJob: { id, timeoutMs: 30_000 },
+        })));
+        for (const id of ids) {
+          const read = await awaitTermination(host, id);
+          expect(read.status).toBe("completed");
+          expect(read.exitCode).toBe(0);
+          expect(decode(read, "stdout")).toContain(id);
+          await host.releaseOwnedJob(id);
+        }
+      }
+    } finally {
+      await host.destroy();
+    }
+  }, 60_000);
+
   it("records the output and exit status of a whole command family", async () => {
     const host = await bootedHost();
     try {

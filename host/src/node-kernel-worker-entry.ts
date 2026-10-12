@@ -160,6 +160,7 @@ import {
   isRootfsMissingFileError,
   readRootfsFileWithRetry,
   readNamespaceFileWithRetry,
+  retireSupersededExecGeneration,
   signalFromExitStatus,
   type ProcessGenerationOwnership,
   type VforkWorkspaceOwnership,
@@ -219,8 +220,7 @@ let rootfsLazyFetcher: LazyFetch | undefined;
  *  kernel-owned `/` (session-seed trees, extra host mounts). Handed to the
  *  kernel's rootfs so it does not claim their paths. */
 let rootfsForeignPrefixes: string[] = [];
-const watchedVfsPrefixes = new Set<string>();
-let offVfsChanges: (() => void) | null = null;
+const vfsChangeSubscriptions = new Map<string, () => void>();
 let initReady = false;
 let kernelFatalReported = false;
 let injectedExecWorkerConstructionFailure = false;
@@ -665,11 +665,9 @@ function finalizeUnexpectedWorkerError(
 const ownedJobs = new OwnedJobs(pid => {
   // A committed child can still be awaiting its Worker; let launch settle first.
   if (processes.has(pid)) kernelWorker.signalProcess(pid, 9);
-}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => reportHostDiagnostic({
-  pid: 0,
-  source: "owned job reap",
-  message: `[node-kernel-worker] failed to reap an exited owned job family: ${error instanceof Error ? error.message : String(error)}`,
-}));
+}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => {
+  terminatePoisonedKernelWorker(error instanceof Error ? error : new Error(String(error)));
+});
 
 function post(msg: KernelToMainMessage) {
   if (msg.type === "stdout" || msg.type === "stderr") ownedJobs.output(msg.pid, msg.type, msg.data);
@@ -1311,9 +1309,9 @@ async function handleSpawn(msg: SpawnMessage) {
     );
     if (!programModule) return;
 
-    const pid = kernelWorker.createProcess(
+    const pid = await retryKernelEntryResult(() => kernelWorker.createProcess(
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
-    );
+    ));
     createdPid = pid;
     if (msg.ownedJob) ownedJobs.create(msg.ownedJob.id, pid, msg.ownedJob.timeoutMs);
     const ptrWidth = detectPtrWidth(programBytes);
@@ -1348,7 +1346,9 @@ async function handleSpawn(msg: SpawnMessage) {
     const secureExec = await retryKernelEntryResult(() =>
       kernelWorker.processSecureExec(pid));
     if (msg.cwd) {
-      kernelWorker.setCwd(pid, msg.cwd);
+      // Another launch can queue ingress during the awaited secure-exec query.
+      // A refused cwd setup queued no work, so retry before starting this guest.
+      await retryKernelEntryResult(() => kernelWorker.setCwd(pid, msg.cwd!));
     }
 
     if (msg.maxAddr != null) {
@@ -1356,7 +1356,7 @@ async function handleSpawn(msg: SpawnMessage) {
     }
 
     if (msg.pty) {
-      const ptyIdx = kernelWorker.setupPty(pid);
+      const ptyIdx = await retryKernelEntryResult(() => kernelWorker.setupPty(pid));
       ptyByPid.set(pid, ptyIdx);
       // Apply initial winsize before the wasm program starts. Without this,
       // the program's first TIOCGWINSZ returns the kernel default (80x24)
@@ -2552,8 +2552,9 @@ async function handleExec(
       // WHY: only terminal messages from every old Worker prove that no realm
       // can still touch this address space. A timeout uses forced retirement,
       // which drops the kernel alias but never recycles the backing.
-      if (oldMemoryRetirementSafe) initiatingInfo.memoryLease.release();
-      else initiatingInfo.memoryLease.releaseAfterForcedTermination();
+      await retireSupersededExecGeneration(
+        processGenerationDetaches, pid, initiatingInfo, oldMemoryRetirementSafe,
+      );
       initiatingLeaseConsumed = true;
 
       installProcessWorkerListeners(
@@ -2698,8 +2699,9 @@ async function handleExec(
         }
       }
       if (preparedTransferred && !initiatingLeaseConsumed) {
-        if (oldMemoryRetirementSafe) initiatingInfo.memoryLease.release();
-        else initiatingInfo.memoryLease.releaseAfterForcedTermination();
+        await retireSupersededExecGeneration(
+          processGenerationDetaches, pid, initiatingInfo, oldMemoryRetirementSafe,
+        );
         initiatingLeaseConsumed = true;
       }
       if (
@@ -3841,26 +3843,15 @@ function handleWriteVfsFile(
 // --- Message dispatch ---
 
 function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_vfs_changes" }>) {
-  if (msg.enabled) watchedVfsPrefixes.add(msg.prefix);
-  else watchedVfsPrefixes.delete(msg.prefix);
-  if (watchedVfsPrefixes.size === 0) {
-    offVfsChanges?.();
-    offVfsChanges = null;
-    return;
+  if (msg.enabled) {
+    if (!vfsChangeSubscriptions.has(msg.prefix)) {
+      const off = kernelWorker.subscribeVfsChanges(msg.prefix, event => post({ type: "vfs_change", event }));
+      vfsChangeSubscriptions.set(msg.prefix, off);
+    }
+  } else {
+    vfsChangeSubscriptions.get(msg.prefix)?.();
+    vfsChangeSubscriptions.delete(msg.prefix);
   }
-  if (offVfsChanges) return;
-  if (!(vfsExecIO instanceof VirtualPlatformIO)) {
-    reportHostDiagnostic({
-      pid: 0,
-      source: "vfs change watch",
-      message: `[kernel-worker] cannot watch ${msg.prefix}: the kernel has no virtual filesystem`,
-    }, "warn");
-    return;
-  }
-  offVfsChanges = vfsExecIO.subscribeChanges((event) => {
-    const watched = [...watchedVfsPrefixes].some((prefix) => vfsPathIsWithin(prefix, event.path));
-    if (watched) post({ type: "vfs_change", event });
-  });
 }
 
 port.on("message", (msg: MainToKernelMessage) => {
