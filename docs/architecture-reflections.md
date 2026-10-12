@@ -327,3 +327,9 @@ Parser options also define which source a build can see. Enabling JSX for
 all files made Babel 8 treat an ordinary `.ts` generic function as JSX.
 Select language options by filename and keep parse failures visible. Exercise
 both plain TypeScript and JSX files before trusting an upgraded source audit.
+
+Test discovery is part of the evidence too. Vitest 5's default static listing
+omitted Ruby cases whose titles use imported constants. Its runtime collector
+still found and ran them. Exact case inventories must use runtime collection;
+a short list is not proof that the omitted tests do not exist. Keep the
+one-to-one case comparison rather than weakening it to accept an empty list.
