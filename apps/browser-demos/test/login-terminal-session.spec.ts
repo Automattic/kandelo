@@ -190,6 +190,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         },
       });
       const spawns: Array<{ path: string; argv: string[]; pid: number }> = [];
+      const terminalTexts = new Map<string, () => string>();
       const originalSpawnFromVfs = kernel.spawnFromVfs.bind(kernel);
       kernel.spawnFromVfs = async (
         path: string,
@@ -208,7 +209,10 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         const deadline = performance.now() + timeoutMs;
         while (!(await predicate())) {
           if (performance.now() >= deadline) {
-            throw new Error(`timed out waiting for ${label}`);
+            throw new Error(`timed out waiting for ${label}; ${JSON.stringify({
+              spawns, diagnostics,
+              terminals: Object.fromEntries([...terminalTexts].map(([path, text]) => [path, text()])),
+            })}`);
           }
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
@@ -224,6 +228,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         const off = pty.onData((bytes: Uint8Array) => {
           text += new TextDecoder().decode(bytes);
         });
+        terminalTexts.set(path, () => text);
         return { pty, off, text: () => text };
       };
 
@@ -276,7 +281,6 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
           () => reattached.text().includes("Password: "),
           "password prompt",
         );
-        await new Promise((resolve) => setTimeout(resolve, 100));
         const loginPromptsBeforeFailure = occurrences(
           reattached.text(),
           "login: ",
@@ -298,7 +302,6 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
           () => occurrences(reattached.text(), "Password: ") > passwordPrompts,
           "second password prompt",
         );
-        await new Promise((resolve) => setTimeout(resolve, 100));
         reattached.pty.write(`${password}\n`);
         const credentialsBefore = occurrences(reattached.text(), "uid=1000");
         const ordinaryMotdsBefore = occurrences(
