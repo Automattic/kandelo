@@ -38,6 +38,7 @@ The current shape: `source scripts/package-build-roots.sh`, `kandelo_package_pre
 | Fork-using programs | `docs/fork-instrumentation.md` |
 | Large compiler builds or engine resource failures | `docs/porting-guide.md` "Large compiler builds and runtime limits"; `docs/browser-support.md` "Firefox executable-code limit" |
 | Include it in `./run.sh setup` / `local-build` | Add a `[[packages]]` entry to `packages/sets/local-supported.toml` (the local-build set; an unlisted package is never built there) |
+| Shared build changes affect dormant or unlisted image recipes | `docs/agent-guidance/packages-and-builds.md` "Image recipes outside the default build"; validate affected recipes without changing product exposure |
 | Output paths | `cargo xtask build-deps output-path <pkg> <wasm>`, never hardcoded |
 
 Read those sections by heading (`rg -n '^#'` then read the relevant

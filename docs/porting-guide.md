@@ -249,25 +249,15 @@ Any time a ported program needs more than a handful of runtime files that togeth
 
 ### How it works
 
-`MemoryFileSystem.registerLazyArchiveFromEntries(url, zipEntries, mountPrefix)` walks the central directory of a zip, creates inode stubs for every file under `mountPrefix`, and remembers the archive URL. On first access to any stub in the group, the worker fetches the full zip, materializes every entry into memory, and future reads are served from memory. Materialization happens once per VFS instance.
+At image-build time, `KandeloImageFs.registerLazyArchive({ url, entries, mountPrefix })` (`images/vfs/lib/kandelo-image-fs.ts`) validates every member path of a zip's central directory, then creates deferred inodes for each file under `mountPrefix` and records the archive URL in the image. At runtime the kernel owns those inodes: on first read of any member it asks the host for the archive through `host_fetch_deferred`, keeps the archive and the members it extracts in kernel memory, and serves later reads from there. `stat` alone never downloads content. The fetch happens once per booted machine; nothing is evicted while the machine runs, which is why large archives count against the kernel's memory budget (see `docs/agent-guidance/host-runtime.md`).
 
-The legacy ZIP API remains supported for existing browser bundles. New
-package-layer infrastructure may instead use `registerLazyTree`, whose closed
-content descriptor separates the immutable bytes and decoder from a complete
-filesystem inventory. It supports deterministic ZIP as a compatibility
-scaffold and bounded gzip-compressed POSIX/PAX TAR, preserves declared hard
-links as one inode, and verifies the whole tree before an atomic regular-file
-commit. Ordinary first open/read and executable resolution use the same
-preparation path; `stat` alone never downloads content. A failed preparation
-does not expose partial or zero-byte success and may be retried.
-
-At runtime the URL stored in the group is bare — a plain filename like
-`vim.zip`. The browser runtime first awaits `restoreVerifiedVfsImage(...)`,
-then calls `memfs.rewriteLazyArchiveUrls(url => BASE_URL + url)` once, so the
-archive resolves against the deployment's base URL instead of the build-time
-one. Do not inspect, mutate, rewrite, or boot a restored image before the
-verified restore returns: imported atomic lazy-tree seals are an untrusted
-cryptographic boundary.
+At runtime the URL stored in the image is usually bare — a plain filename
+like `vim.zip`. The host resolves it when the kernel asks for it: a URL in
+`lazyUrlMap` uses the mapped address, and any other relative URL resolves
+against `lazyUrlBase` (the deployment's base URL by default). The image itself
+is never rewritten. When the image records a digest for the fetched bytes, the
+kernel checks it before the bytes become file contents, and a failed fetch surfaces as an I/O error on the read that needed
+it rather than as a zero-byte file.
 
 ### Build-side contract
 
@@ -529,7 +519,8 @@ runBtn.addEventListener("click", async () => {
     onStderr: (data) => appendOutput(decoder.decode(data), "stderr"),
   });
 
-  await kernel.init(); // fetches kernel wasm automatically
+  // Fetches the kernel wasm and the canonical rootfs image automatically.
+  await kernel.initFromImage({ vfsImage: "default" });
 
   const exitCode = await kernel.spawn(programBytes, ["my-program", "--arg"]);
   appendOutput(`\nExited with code ${exitCode}\n`);
@@ -542,7 +533,6 @@ runBtn.addEventListener("click", async () => {
 ```typescript
 const kernel = new BrowserKernel({
   maxWorkers?: number,         // Max concurrent workers (default: 4)
-  fsSize?: number,             // MemoryFileSystem size in bytes (default: 16MB)
   maxMemoryPages?: number,     // Max Wasm pages per process (default: 16384 = 1GB)
   env?: string[],              // Environment variables
   onStdout?: (data: Uint8Array) => void,
@@ -551,14 +541,14 @@ const kernel = new BrowserKernel({
   threadModule?: WebAssembly.Module,       // Pre-compiled module for threads
 });
 
-// Initialize (fetches kernel wasm if not provided)
-await kernel.init(kernelWasmBytes?: ArrayBuffer)
+// Boot the kernel from a VFS image (fetches kernel wasm if not provided).
+// The kernel owns the filesystem from here on.
+await kernel.initFromImage({ kernelWasm?: ArrayBuffer, vfsImage: Uint8Array | "default" })
 
-// Access filesystem for pre-populating files
-kernel.fs.mkdir("/data", 0o755)
-kernel.fs.open("/data/config.txt", 0x241, 0o644)  // O_WRONLY|O_CREAT|O_TRUNC
-kernel.fs.write(fd, data, data.length, -1)
-kernel.fs.close(fd)
+// Change files between process spawns (served by the kernel's filesystem)
+await kernel.writeFileToVfs("/data/config.txt", data, 0o644)
+await kernel.readFileFromVfs("/data/config.txt")
+await kernel.unlinkFileFromVfs("/data/config.txt")
 
 // Spawn a process
 const exitCode = await kernel.spawn(programBytes, argv, {
@@ -596,11 +586,11 @@ await kernel.destroy()
 
 ### Filesystem pre-population
 
-The kernel reads files from the shared `MemoryFileSystem`. For demos with many files, use a **VFS image** — a pre-built binary snapshot of the filesystem:
+The kernel owns the filesystem: it boots from a **VFS image** — a pre-built
+binary snapshot of the filesystem — and serves `/` from it:
 
 ```typescript
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
 
 // Fetch kernel wasm and VFS image in parallel
 const [kernelBuf, vfsImageBuf] = await Promise.all([
@@ -608,41 +598,34 @@ const [kernelBuf, vfsImageBuf] = await Promise.all([
   fetch(vfsImageUrl).then(r => r.arrayBuffer()),
 ]);
 
-// Restore the filesystem and authenticate imported atomic lazy-tree seals
-// before inspecting, mutating, or giving the image to the kernel.
-const memfs = await restoreVerifiedVfsImage(
-  new Uint8Array(vfsImageBuf),
-  { maxByteLength: 512 * 1024 * 1024 },  // allow growth up to the image's filesystem max
-);
-
-// Create kernel with pre-populated filesystem
-const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
+// The main thread decodes the image and transfers the bytes; the kernel
+// verifies and loads it. The page keeps no filesystem of its own.
+const kernel = new BrowserKernel({ onStdout, onStderr });
+await kernel.initFromImage({
+  kernelWasm: kernelBuf,
+  vfsImage: new Uint8Array(vfsImageBuf),
+});
 ```
 
 See [docs/browser-support.md](browser-support.md#vfs-images) for how to create VFS image build scripts.
 
-For simple demos with few files, you can also write files directly:
+For simple demos with few files, boot the canonical image and write the
+files you need between spawns:
 
 ```typescript
-const kernel = new BrowserKernel({ fsSize: 32 * 1024 * 1024 }); // 32MB
-await kernel.init();
+const kernel = new BrowserKernel();
+await kernel.initFromImage({ vfsImage: "default" });
 
 // Write a config file
-const config = new TextEncoder().encode("key=value\n");
-const fd = kernel.fs.open("/etc/my.conf", 0x241, 0o644); // O_WRONLY|O_CREAT|O_TRUNC
-kernel.fs.write(fd, config, config.length, -1);
-kernel.fs.close(fd);
+await kernel.writeFileToVfs("/etc/my.conf", new TextEncoder().encode("key=value\n"));
 
 // Load a wasm binary into the filesystem (for exec)
-const dashBytes = await fetch(dashWasmUrl).then(r => r.arrayBuffer());
-const binFd = kernel.fs.open("/bin/sh", 0x241, 0o755);
-kernel.fs.write(binFd, new Uint8Array(dashBytes), dashBytes.byteLength, -1);
-kernel.fs.close(binFd);
-
-// Create symlinks for multicall binaries
-kernel.fs.symlink("/bin/coreutils", "/bin/ls");
-kernel.fs.symlink("/bin/coreutils", "/bin/cat");
+const toolBytes = await fetch(toolWasmUrl).then(r => r.arrayBuffer());
+await kernel.writeFileToVfs("/usr/local/bin/my-tool", new Uint8Array(toolBytes), 0o755);
 ```
+
+Symlinks, ownership and directory trees belong in the image: build them with
+`KandeloImageFs` at image-build time rather than at page load.
 
 ### HTTP bridge demos (nginx, WordPress)
 

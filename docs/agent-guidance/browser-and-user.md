@@ -19,8 +19,10 @@ persistent main thread merely dropped is released only if a garbage collection
 happens to run, and reserved shared memory creates almost no heap pressure to
 trigger one, so main-thread VFS buffers accumulate across machine boots until
 Safari throws `Out of memory` (#863). Treat any new main-thread
-`MemoryFileSystem` or `SharedArrayBuffer` in a boot path as a defect: compose
-in a worker and hand the main thread plain, transferable bytes. A GC nudge
+`SharedArrayBuffer` or long-lived image buffer in a boot path as a defect:
+compose in a worker and hand the main thread plain, transferable bytes (an
+image composed with `KandeloImageFs` lives in that module's memory, which is
+why the composer runs in a worker). A GC nudge
 (`settleWebKitReclaim` in `apps/browser-demos/lib/kernel-owned-boot.ts`, still
 used by the benchmark page's main-thread build path) is best-effort with a
 deadline and does not count as reclamation.
