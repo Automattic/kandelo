@@ -26,6 +26,7 @@ export async function registerVfsTools(
   signal: AbortSignal,
   terminal: () => string | null,
 ): Promise<void> {
+  if (signal.aborted) return;
   const registrations = new Map<string, AbortController>();
   let queue: Promise<void> = Promise.resolve();
 
@@ -37,13 +38,13 @@ export async function registerVfsTools(
     unregister(tool.name);
     if (signal.aborted) return;
     const controller = new AbortController();
-    registrations.set(tool.name, controller);
     const definition = imageTool(
       tool.name,
       tool.description,
       tool.inputSchema,
       (args, callSignal) => runVfsTool(host, tool, args, terminal(), callSignal),
     );
+    registrations.set(tool.name, controller);
     await registerTool(context, definition, controller.signal);
   };
   const reload = async (name: string) => {
@@ -58,39 +59,63 @@ export async function registerVfsTools(
     return queue;
   };
 
-  const offs = VFS_TOOLS_DIRS.map((dir) => host.subscribeVfsChanges(dir, (event: VfsChangeEvent) => {
-    const name = changedToolName(event.path);
-    if (name) void enqueue(() => reload(name));
-  }));
+  const refresh = async () => {
+    const tools = await loadVfsTools(host);
+    const names = new Set(tools.map(tool => tool.name));
+    for (const name of registrations.keys()) if (!names.has(name)) unregister(name);
+    for (const tool of tools) {
+      await register(tool).catch(error => {
+        console.error(`WebMCP: registering ${tool.name} failed`, error);
+      });
+    }
+  };
+  const offs: Array<() => void> = [];
+  try {
+    for (const dir of VFS_TOOLS_DIRS) {
+      offs.push(host.subscribeVfsChanges(dir, (event: VfsChangeEvent) => {
+        // WHY: a bounded native queue invalidates whole watched directories
+        // on overflow. Ignoring that hint would leave tools permanently stale.
+        if (VFS_TOOLS_DIRS.includes(event.path)) void enqueue(refresh);
+        else {
+          const name = changedToolName(event.path);
+          if (name) void enqueue(() => reload(name));
+        }
+      }));
+    }
+  } catch (error) {
+    for (const off of offs) off();
+    throw error;
+  }
+  if (signal.aborted) { for (const off of offs) off(); return; }
   signal.addEventListener("abort", () => {
     for (const off of offs) off();
     for (const name of [...registrations.keys()]) unregister(name);
   }, { once: true });
 
-  await enqueue(async () => {
-    for (const tool of await loadVfsTools(host)) {
-      await register(tool).catch((error) => {
-        console.error(`WebMCP: registering ${tool.name} failed`, error);
-      });
-    }
-  });
+  await enqueue(refresh);
 }
 
 /** Every tool file that parses; a file that does not is logged and skipped. */
 export async function loadVfsTools(host: KernelHost): Promise<VfsTool[]> {
-  const tools = new Map<string, VfsTool>();
+  const files = new Map<string, string>();
   for (const dir of VFS_TOOLS_DIRS) {
     for (const entry of await toolEntries(host, dir)) {
       const name = vfsToolName(entry.name);
       if (!name) continue;
-      try {
-        tools.set(name, await readVfsTool(host, `${dir}/${entry.name}`));
-      } catch (error) {
-        console.error(`WebMCP: loading ${dir}/${entry.name} failed`, error);
-      }
+      files.set(name, `${dir}/${entry.name}`);
     }
   }
-  return [...tools.values()];
+  // Choose the owner before parsing. A malformed maker override must stay
+  // disabled on a full refresh, just as it does on a single-file reload.
+  const tools: VfsTool[] = [];
+  for (const file of files.values()) {
+    try {
+      tools.push(await readVfsTool(host, file));
+    } catch (error) {
+      console.error(`WebMCP: loading ${file} failed`, error);
+    }
+  }
+  return tools;
 }
 
 export async function loadVfsTool(host: KernelHost, name: string): Promise<VfsTool | null> {
