@@ -3,9 +3,13 @@ import { LocalVirtualNetwork, type VirtualNetworkBackend } from "./virtual-netwo
 import { IPV4_UDP_MAX_PAYLOAD } from "./remote-udp-codec";
 import { NET_READINESS } from "../generated/abi";
 
-const MAX_MEMBERS = 16;
-// The largest valid directory fits one 64 KiB reliable control message.
-const MAX_BINDINGS = 32;
+/** Members of one session, the hosting computer included. A star forwards
+ * every packet between joiners through the host, so its bandwidth, not the
+ * address space, is the practical limit. */
+export const MAX_MEMBERS = 32;
+// The largest valid directory fits one 64 KiB reliable control message:
+// 32 members with 16 UDP and TCP endpoints each stays well under it.
+const MAX_BINDINGS = 16;
 export const MAX_SEGMENT_CONTROL_BYTES = 64 * 1024;
 const EADDRNOTAVAIL = 99;
 const ENETUNREACH = 101;
@@ -130,6 +134,8 @@ export class RemoteVirtualNetwork implements NetworkIO {
   private nextMemberId = 2;
   private closed = false;
   private readonly connectErrors = new Map<number, number>();
+  private readonly closedListeners = new Set<(reason: string) => void>();
+  private closedReason?: string;
   private resolveReady!: () => void;
   private rejectReady!: (error: Error) => void;
   readonly ready = new Promise<void>((resolve, reject) => {
@@ -149,6 +155,31 @@ export class RemoteVirtualNetwork implements NetworkIO {
   }
 
   get localAddress(): Uint8Array | undefined { return this.local?.localAddress; }
+
+  /** Whether `addr` belongs to this segment's subnet. */
+  static routes(addr: Uint8Array): boolean { return inSegment(addr); }
+
+  /**
+   * Observe the end of this segment: an explicit close, or, for a joiner, the
+   * loss of its link to the forwarding host. A joiner without that link has
+   * no route to any other member and no authority for its address.
+   */
+  onClosed(listener: (reason: string) => void): () => void {
+    if (this.closedReason !== undefined) {
+      const reason = this.closedReason;
+      queueMicrotask(() => listener(reason));
+      return () => {};
+    }
+    this.closedListeners.add(listener);
+    return () => { this.closedListeners.delete(listener); };
+  }
+
+  private notifyClosed(reason: string): void {
+    if (this.closedReason !== undefined) return;
+    this.closedReason = reason;
+    for (const listener of [...this.closedListeners]) listener(reason);
+    this.closedListeners.clear();
+  }
 
   udpSourceAddress(destination: Uint8Array): Uint8Array | number {
     if (this.localAddress && inSegment(destination)) return this.localAddress.slice();
@@ -346,6 +377,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
     for (const [key, binding] of this.tcpBindings) if (this.role === "joiner" ? binding.owner !== this.localId : binding.owner === id) this.tcpBindings.delete(key);
     if (this.role === "joiner") {
       this.rejectReady(new Error(`remote segment disconnected: ${reason}`));
+      this.notifyClosed(reason);
       this.clearMirroredBindings();
       for (const member of [...this.members.keys()]) {
         if (member !== this.localId) { this.network.detachMachine(machineName(member)); this.members.delete(member); }
@@ -475,6 +507,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
     for (const id of this.members.keys()) this.network.detachMachine(machineName(id));
     this.localTcpConnecting.clear(); this.tcp?.dispose(); this.members.clear(); this.bindings.clear(); this.tcpBindings.clear(); this.mirroredEndpoints.clear();
     this.rejectReady(new Error("the local segment closed before assignment"));
+    this.notifyClosed("the local segment closed");
   }
   listenTcp(id: string, addr: Uint8Array, port: number, target: TcpListenTarget): number {
     if (!this.local || this.closed) return ENETUNREACH;

@@ -1,4 +1,4 @@
-import { RemoteSegmentRuntime } from "./networking/remote-segment-runtime";
+import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 /**
  * Node.js kernel worker entry point — general-purpose, message-based.
  *
@@ -1026,9 +1026,11 @@ async function handleInit(msg: InitMessage) {
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
   }
-  if (msg.remoteNetwork) {
-    io.network = await remoteSegmentRuntime.initialize(msg.remoteNetwork, io.network);
-  }
+  // The session network wraps the configured backend (or none) for the
+  // machine's life, so a session can start or end under running programs.
+  io.network = msg.remoteNetwork
+    ? await remoteSegmentRuntime.initialize(msg.remoteNetwork, io.network)
+    : remoteSegmentRuntime.install(io.network);
 
   kernelWorker = new CentralizedKernelWorker(
     {
@@ -3820,24 +3822,8 @@ function handleWriteVfsFile(
 // --- Message dispatch ---
 
 port.on("message", (msg: MainToKernelMessage) => {
+  if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
   switch (msg.type) {
-    case "remote_network_attach":
-      try {
-        if (!initReady) throw new Error("the kernel is not initialized");
-        respond(msg.requestId, remoteSegmentRuntime.attachPeer(msg.peer));
-      } catch (error) {
-        msg.peer.port.close();
-        respondError(msg.requestId, error instanceof Error ? error.message : String(error));
-      }
-      break;
-    case "remote_network_snapshot":
-      try {
-        if (!initReady) throw new Error("the kernel is not initialized");
-        respond(msg.requestId, remoteSegmentRuntime.snapshot());
-      } catch (error) {
-        respondError(msg.requestId, error instanceof Error ? error.message : String(error));
-      }
-      break;
     case "init":
       void handleInit(msg).catch((error) => {
         cleanupSessionDir();

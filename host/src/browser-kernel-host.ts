@@ -1,5 +1,5 @@
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
-import type { RemoteSegmentSnapshot } from "./networking/remote-segment";
+import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 /**
  * BrowserKernel — Thin proxy that communicates with a dedicated kernel
  * web worker via MessagePort. The kernel worker owns the Wasm instance
@@ -1601,7 +1601,6 @@ export class BrowserKernel {
     return result;
   }
 
-  /** Destroy the kernel and release all resources. */
   /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
   async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> {
     const requestId = this.nextRequestId++;
@@ -1613,12 +1612,38 @@ export class BrowserKernel {
     }
   }
 
-  /** Inspect actual worker-owned membership and UDP bindings. */
-  remoteNetworkSnapshot(): Promise<RemoteSegmentSnapshot> {
+  /** Inspect the worker-owned session: state, membership and endpoints. */
+  remoteNetworkSnapshot(): Promise<RemoteSessionSnapshot> {
     const requestId = this.nextRequestId++;
     return this.request(requestId, { type: "remote_network_snapshot", requestId });
   }
 
+  /** Start a network session hosted by this running machine; resolves with
+   *  its session address. */
+  hostRemoteNetwork(): Promise<string> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, { type: "remote_network_host", requestId });
+  }
+
+  /** Join a session over a connected peer's byte bridge to its host;
+   *  resolves with the address the host assigned. */
+  async joinRemoteNetwork(peer: RemoteSegmentPeer): Promise<string> {
+    const requestId = this.nextRequestId++;
+    try {
+      return await this.request(requestId, { type: "remote_network_join", requestId, peer }, [peer.port as MessagePort]);
+    } catch (error) {
+      this.pendingRequests.delete(requestId);
+      throw error;
+    }
+  }
+
+  /** Leave the session. Its address disappears and its streams reset. */
+  async leaveRemoteNetwork(): Promise<void> {
+    const requestId = this.nextRequestId++;
+    await this.request(requestId, { type: "remote_network_leave", requestId });
+  }
+
+  /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
     // Remove input-source DOM listeners regardless of worker state.
     this.attachedInputSource?.stop();

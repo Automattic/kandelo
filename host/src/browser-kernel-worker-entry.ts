@@ -1,4 +1,4 @@
-import { RemoteSegmentRuntime } from "./networking/remote-segment-runtime";
+import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 /**
  * Kernel Worker Entry Point — Dedicated web worker that hosts the
  * CentralizedKernelWorker and manages all process lifecycle.
@@ -950,10 +950,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // The service worker handles CORS proxying transparently in both dev and
   // production, keeping the browser networking path identical across modes.
   await tlsBackend.init();
-  io.network = tlsBackend;
-  if (msg.remoteNetwork) {
-    io.network = await remoteSegmentRuntime.initialize(msg.remoteNetwork, io.network);
-  }
+  // The session network wraps the browser backend for the machine's life, so
+  // a network session can start or end while guest programs are running.
+  io.network = msg.remoteNetwork
+    ? await remoteSegmentRuntime.initialize(msg.remoteNetwork, tlsBackend)
+    : remoteSegmentRuntime.install(tlsBackend);
 
   // The MITM CA certificate is installed after `init`, below: it is
   // per-session runtime data that can never be in an image, and `/` is the
@@ -4400,24 +4401,8 @@ const sw = globalThis as unknown as {
 
 sw.onmessage = (e: MessageEvent) => {
   const msg = e.data as MainToKernelMessage;
+  if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
   switch (msg.type) {
-    case "remote_network_attach":
-      try {
-        if (!initReady) throw new Error("the kernel is not initialized");
-        respond(msg.requestId, remoteSegmentRuntime.attachPeer(msg.peer));
-      } catch (error) {
-        msg.peer.port.close();
-        respondError(msg.requestId, error instanceof Error ? error.message : String(error));
-      }
-      break;
-    case "remote_network_snapshot":
-      try {
-        if (!initReady) throw new Error("the kernel is not initialized");
-        respond(msg.requestId, remoteSegmentRuntime.snapshot());
-      } catch (error) {
-        respondError(msg.requestId, error instanceof Error ? error.message : String(error));
-      }
-      break;
     case "init":
       void handleInit(msg).catch((err) => {
         const error = formatError(err);
