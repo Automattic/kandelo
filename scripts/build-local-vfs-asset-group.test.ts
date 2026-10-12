@@ -775,6 +775,16 @@ interface Fixture {
   sourceOnlyRoot: string;
 }
 
+test("publication checks the verified aggregate byte budget before replacing outputs", () => {
+  const fixture = publicationFixture();
+  try {
+    assert.throws(() => publishGeneratedTargets({ ...fixture, stagedGroupBytes: 1 }),
+      /staged asset group exceeds the reuse byte ceiling/);
+    assert.equal(readFileSync(join(fixture.assetGroupDirectory, "value"), "utf8"), "old group\n");
+    assert.equal(readFileSync(fixture.productMapPath, "utf8"), "old map\n");
+  } finally { fixture.dispose(); }
+});
+
 function publicationFixture() {
   const root = realpathSync(
     mkdtempSync(join(tmpdir(), "kandelo-vfs-publication-")),
@@ -795,6 +805,7 @@ function publicationFixture() {
     productMapPath,
     root,
     stagedFileCount: 1,
+    stagedGroupBytes: Buffer.byteLength("new group\n"),
     stagedGroup,
     stagedMap,
   };
