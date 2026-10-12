@@ -63,8 +63,11 @@ apply_patches() {
             >/dev/null 2>&1; then
             echo "    $name"
             kandelo_package_git_apply_patch "$SRC" "$patch_file"
+        elif GIT_CEILING_DIRECTORIES="$(dirname "$SRC")" git -C "$SRC" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+            echo "    $name (already applied)"
         else
-            echo "    $name (already applied or superseded)"
+            echo "ERROR: patch $name does not apply cleanly" >&2
+            exit 1
         fi
     done
 }
