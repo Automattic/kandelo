@@ -1,10 +1,15 @@
 import { expect, test } from "@playwright/test";
 import { gotoInPreview, gotoMachine, machineAppPrefix } from "./support/kandelo-machine";
 
-test("WordPress on FrankenPHP serves the preinstalled site, admin, and site editor", async ({ page, browserName }) => {
-  test.setTimeout(420_000);
-  test.skip(browserName === "firefox", "FrankenPHP WordPress editor gate uses Chromium and WebKit");
+const soakSeconds = Number(process.env.KANDELO_FRANKENPHP_SOAK_SECONDS ?? "20");
+
+test("WordPress on FrankenPHP serves the preinstalled site, admin, and site editor", async ({ page, context }) => {
+  test.setTimeout(Math.max(420_000, (soakSeconds + 300) * 1000));
   test.skip(process.env.KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS !== "1", "Build and project WordPress, then set KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS=1");
+  const browserDiagnostics: string[] = [];
+  context.on("console", (message) => browserDiagnostics.push(`console ${message.type()}: ${message.text()}`));
+  page.on("pageerror", (error) => browserDiagnostics.push(`pageerror: ${error.message}`));
+  page.on("crash", () => browserDiagnostics.push("page crashed"));
   await gotoMachine(page, "wordpress-frankenphp");
 
   const frame = page.frameLocator('iframe[title="WordPress on FrankenPHP"]');
@@ -37,21 +42,27 @@ test("WordPress on FrankenPHP serves the preinstalled site, admin, and site edit
         throw new Error(`WordPress editor failed: ${syslog.slice(-40).join("\n")}`);
       }),
   ]);
-  if (editorLoaded) await page.waitForTimeout(20_000);
-  const editorResult = await page.evaluate(async (prefix) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30_000);
-    try {
-      const response = await fetch(`${prefix}wp-admin/site-editor.php?health=${Date.now()}`, {
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const body = await response.text();
-      return { status: response.status, body: body.slice(-5000) };
-    } finally {
-      clearTimeout(timeout);
-    }
-  }, appPrefix);
+  let editorResult = { status: 0, body: "" };
+  const samples: string[] = [];
+  for (let elapsed = 0; elapsed < soakSeconds; elapsed += 10) {
+    await page.waitForTimeout(10_000);
+    editorResult = await page.evaluate(async (prefix) => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30_000);
+      try {
+        const response = await fetch(`${prefix}wp-admin/site-editor.php?health=${Date.now()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const body = await response.text();
+        return { status: response.status, body: body.slice(-5000) };
+      } finally {
+        clearTimeout(timeout);
+      }
+    }, appPrefix);
+    samples.push(`${elapsed + 10}s=${editorResult.status}`);
+    if (editorResult.status !== 200) break;
+  }
   let serviceLog = "";
   let visibleSyslog = "";
   let processes = "";
@@ -68,7 +79,7 @@ test("WordPress on FrankenPHP serves the preinstalled site, admin, and site edit
     serviceLog = await page.locator(".kinternals-surface pre").last().textContent() ?? "";
   }
   expect(editorLoaded, `url=${page.url()}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(-10000)}`).toBe(true);
-  expect(editorResult.status, `url=${page.url()}\n${editorResult.body}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(-10000)}`).toBe(200);
+  expect(editorResult.status, `url=${page.url()} samples=${samples.join(",")}\n${editorResult.body}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(-10000)}\n${browserDiagnostics.slice(-100).join("\n")}`).toBe(200);
 
   await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
 });
