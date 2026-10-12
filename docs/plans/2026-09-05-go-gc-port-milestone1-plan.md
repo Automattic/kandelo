@@ -3191,3 +3191,24 @@ main has ABI version 49 while this branch's source-only artifacts use
 version 48, and the rebase conflicts in ABI and host/kernel contract
 files. Integrating those contracts and rebuilding the affected artifacts
 requires separate validation; no rebase or performance gain is claimed.
+
+**2026-10-12 — Rebase onto main and ABI 50 integration.** The feature
+branch was subsequently rebased onto `fe2712d6b` (the current main at
+the time). Main's kernel-owned root filesystem and handle-only host
+mounts replaced the removed SharedFS/MemoryFileSystem paths. Go and
+FrankenPHP Node/browser fixtures now build images with the Rust-backed
+`KandeloImageFs`; the old image hash and prior browser-soak results
+remain ABI-48 evidence, not validation of this rebased tree. The
+opt-in preallocated Go thread-slot layout changes the process-memory
+contract relative to main's ABI 49, so this branch now declares ABI 50,
+regenerates the snapshot and host/libc constants, and updates its Go,
+PHP-ZTS, FrankenPHP, and WordPress package recipes. The ABI check passes.
+Focused runtime-core directory-path and rename-dot tests pass, the
+fork-instrument post-optimization suite passes 7/7, and the host
+pathconf/host-filesystem suite passes 19/19 after preserving exact
+nanosecond resolution for host mounts. A whole-tree ABI-50 setup build
+was deliberately stopped after 65 minutes while compiling unrelated
+Clang/Qt products. A WordPress-only resolver bootstrap is underway;
+new WordPress/FrankenPHP Node and browser behavior is **not yet
+validated** on ABI 50. A new image must be published before reusing
+the live demo URL.

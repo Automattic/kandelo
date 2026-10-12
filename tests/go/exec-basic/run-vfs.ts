@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../../../host/src/node-kernel-host.ts";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const programPath = process.argv[2];
 const kernelPath = process.argv[3];
@@ -9,9 +9,8 @@ if (!programPath || !kernelPath) {
 }
 
 const bytes = readFileSync(programPath);
-const image = MemoryFileSystem.create(
-  new SharedArrayBuffer(Math.ceil((bytes.byteLength + 4 * 1024 * 1024) / 4) * 4),
-);
+const image = KandeloImageFs.create();
+image.setImageCapacity(bytes.byteLength + 4 * 1024 * 1024);
 image.mkdir("/bin", 0o755);
 image.createFileWithOwner("/bin/go-exec-basic.wasm", 0o755, 0, 0, new Uint8Array(bytes));
 

@@ -7,7 +7,7 @@ import {
   ABI_CONTRACT_SECTION,
   readWasmCustomSectionPayload,
 } from "../../../host/src/constants";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -46,7 +46,8 @@ test("resolved Go package launches from a browser VFS image", async ({ page, bas
   }));
 
   const imageCapacity = Math.max(8 * 1024 * 1024, packageBytes.byteLength + 2 * 1024 * 1024);
-  const image = MemoryFileSystem.create(new SharedArrayBuffer(Math.ceil(imageCapacity / 4) * 4));
+  const image = KandeloImageFs.create();
+  image.setImageCapacity(imageCapacity);
   image.mkdir("/bin", 0o755);
   image.createFileWithOwner("/bin/go-hello.wasm", 0o755, 0, 0, new Uint8Array(packageBytes));
   const vfsImage = Array.from(await image.saveImage());

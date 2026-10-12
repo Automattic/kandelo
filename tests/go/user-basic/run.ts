@@ -4,7 +4,7 @@ import {
   readWasmCustomSectionPayload,
 } from "../../../host/src/constants.ts";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper.ts";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const programPath = process.argv[2];
 const kernelPath = process.argv[3];
@@ -28,7 +28,8 @@ if (!programDigest || !kernelDigest || programDigest.length !== 32 ||
   throw new Error("Go user fixture ABI-contract digest does not match the kernel");
 }
 
-const image = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
+const image = KandeloImageFs.create();
+image.setImageCapacity(2 * 1024 * 1024);
 image.mkdir("/etc", 0o755);
 image.createFileWithOwner("/etc/passwd", 0o644, 0, 0, new TextEncoder().encode(
   "root:x:0:0:Root:/root:/bin/sh\ndaemon:x:1:1:Daemon:/home/daemon:/bin/sh\nrunner:x:1001:200:Runner:/home/runner:/bin/sh\n",

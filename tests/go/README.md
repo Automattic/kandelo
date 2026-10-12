@@ -1,10 +1,14 @@
 # Native Go browser probes
 
-These probes run binaries from the `kandelo-port` branch of
+These probes run binaries built from the `kandelo-port` branch of
 [`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port) through
-Kandelo's real Chromium, Firefox, and WebKit process workers and ABI-48 kernel. Use fork commit
-`a0117086e5ac481bc3a65d2c61f6023f19e7c44e` or later, built with the dev shell's Go 1.25.8 as `GOROOT_BOOTSTRAP`. By default
-the fork is checked out beside this repository as `../go-kandelo`.
+Kandelo's real Chromium, Firefox, and WebKit process workers and target
+the ABI-50 kernel. Rebuild old `.context/go-browser/` fixtures before
+running them against ABI 50. Use fork commit
+`a0117086e5ac481bc3a65d2c61f6023f19e7c44e`
+or later, built with the dev shell's Go 1.25.8 as `GOROOT_BOOTSTRAP`.
+By default the fork is checked out beside this repository as
+`../go-kandelo`.
 
 From the Kandelo repository root:
 

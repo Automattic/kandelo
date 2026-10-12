@@ -125,7 +125,7 @@ describe("pathconf VFS routing", () => {
     io.unlink("/mnt/file");
 
     expect(io.fpathconf(fd, PATHCONF_NAMES.TIMESTAMP_RESOLUTION))
-      .toBe(1_000_000);
+      .toBe(1);
     try {
       io.pathconf("/mnt/file", PATHCONF_NAMES.TIMESTAMP_RESOLUTION);
       throw new Error("pathconf unexpectedly accepted an unlinked path");
@@ -161,7 +161,7 @@ describe("HostFileSystem fpathconf", () => {
     fs.unlink("/file");
 
     expect(fs.fpathconf(fd, PATHCONF_NAMES.TIMESTAMP_RESOLUTION))
-      .toBe(1_000_000);
+      .toBe(1);
     expect(() => fs.pathconf("/file", PATHCONF_NAMES.TIMESTAMP_RESOLUTION))
       .toThrow(/ENOENT/);
     fs.close(fd);

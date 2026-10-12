@@ -195,7 +195,11 @@ pub mod process_layout;
 ///     path component relative to a directory handle; the path-taking
 ///     `host_open`/`host_stat`/... family is gone). docs/abi-versioning.md
 ///     ("ABI 49") lists each.
-pub const ABI_VERSION: u32 = 49;
+/// 50: native Go programs may opt into preallocated pthread control slots
+///     below the guest heap with `__wasm_posix_preallocate_thread_slots`.
+///     The host computes a different process-memory layout for that opt-in.
+///     See docs/abi-versioning.md ("ABI 50").
+pub const ABI_VERSION: u32 = 50;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///

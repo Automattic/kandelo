@@ -168,10 +168,11 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
 - A wider upstream `os.Root` sweep is a platform probe, not a license to
   patch around kernel defects in Go. `TestRootRemoveDot` exposed Kandelo's
   `unlinkat(..., AT_REMOVEDIR)` removal of `.`; exact `Chtimes` required
-  SharedFS inode metadata, Node scratch-mount metadata, and the Wasm stat
-  bridge together. Node `/tmp` is host-backed while browser `/tmp` is
-  SharedFS-backed, so rerun both hosts. Browser `time.Now` has millisecond
-  granularity and can pass `TestRootChtimes` without exercising sub-millisecond
+  matching inode metadata and the Wasm stat bridge. ABI 49 moved `/` and
+  the scratch mounts to the kernel on both hosts; Node host-mounted
+  directories remain a separate backend, so rerun both hosts. Browser
+  `time.Now` has millisecond granularity and can pass `TestRootChtimes`
+  without exercising sub-millisecond
   storage; use a fixed-nanosecond `os.Chtimes`/`syscall.Stat` probe too.
   Directory OFDs need live path state shared across processes: a successful
   kernel rename moves the open directory and its descendants, while an open
@@ -189,8 +190,8 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   artifacts from the old digest.
 - `linkat` without `AT_SYMLINK_FOLLOW` must link the source symlink inode.
   Kernel no-follow resolution alone does not ensure that behavior: Node's
-  `fs.linkSync` follows a symlink source on macOS, while browser SharedFS
-  links the symlink inode. The macOS HostFileSystem uses an exact native
+  `fs.linkSync` follows a symlink source on macOS when targeting a host mount.
+  The macOS HostFileSystem uses an exact native
   `linkat` helper with `AT_SYMLINK_NOFOLLOW_ANY` for this case. The helper
   compiles lazily from fixed source with the host C compiler; if unavailable,
   it reports `ENOSYS` instead of pretending that a copied symlink or link to
@@ -201,10 +202,10 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   `1<<32`. Keep the split at the syscall boundary and use upstream
   `TestRootDirFS` with its three empty-file fixtures to catch regressions.
 - Keep logical file positions separate from writable file extents. The
-  upstream `TestSeek` exercises offsets above 4 GiB; Node scratch mounts
-  accepted them while browser SharedFS initially returned EFBIG at its
-  smaller maximum file size. `lseek` and EOF reads may retain that logical
-  position without allocating data, while a write beyond the limit fails.
+  upstream `TestSeek` exercises offsets above 4 GiB. The in-kernel rootfs
+  and tmpfs now own this behavior on both hosts: `lseek` and EOF reads may
+  retain a logical position without allocating data, while a write beyond
+  the storage limit fails.
 - Root-relative rename consistency is a syscall/platform check. Kandelo's
   component walker canonicalizes `dir/.` to `dir`; `rename` and `renameat`
   must reject a final `.` before host mutation or the plain-path operation

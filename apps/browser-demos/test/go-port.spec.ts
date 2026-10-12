@@ -7,7 +7,7 @@ import {
   ABI_CONTRACT_SECTION,
   readWasmCustomSectionPayload,
 } from "../../../host/src/constants";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -563,7 +563,8 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
   const imageCapacity = probe.selfExecPath
     ? Math.max(probe.imageCapacity ?? 8 * 1024 * 1024, programBytes.byteLength + 2 * 1024 * 1024)
     : (probe.imageCapacity ?? 2 * 1024 * 1024);
-  const image = MemoryFileSystem.create(new SharedArrayBuffer(Math.ceil(imageCapacity / 4) * 4));
+  const image = KandeloImageFs.create();
+  image.setImageCapacity(imageCapacity);
   image.mkdir("/etc", 0o755);
   for (const directory of probe.directories ?? []) {
     image.mkdir(directory, 0o777);

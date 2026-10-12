@@ -7,7 +7,7 @@ import {
   ABI_CONTRACT_SECTION,
   readWasmCustomSectionPayload,
 } from "../../../host/src/constants";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -33,7 +33,8 @@ test("RoadRunner serves a PHP worker response in Chromium", async ({ page, baseU
   }
 
   const capacity = serverBytes.byteLength + phpBytes.byteLength + 4 * 1024 * 1024;
-  const image = MemoryFileSystem.create(new SharedArrayBuffer(Math.ceil(capacity / 4) * 4));
+  const image = KandeloImageFs.create();
+  image.setImageCapacity(capacity);
   image.mkdir("/bin", 0o755);
   image.mkdir("/etc", 0o755);
   image.createFileWithOwner("/bin/roadrunner.wasm", 0o755, 0, 0, new Uint8Array(serverBytes));

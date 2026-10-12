@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { NodeKernelHost } from "../../../host/src/node-kernel-host.ts";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const [programPath, kernelPath, pwdPath, filter, skipFilter, sourcePackage = "os"] = process.argv.slice(2);
 if (!programPath || !kernelPath || !pwdPath || !filter) {
@@ -11,7 +11,8 @@ if (!programPath || !kernelPath || !pwdPath || !filter) {
 const programBytes = readFileSync(programPath);
 const pwdBytes = readFileSync(pwdPath);
 const goSourceRoot = resolve("../go-kandelo/src", sourcePackage);
-const image = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+const image = KandeloImageFs.create();
+image.setImageCapacity(32 * 1024 * 1024);
 for (const directory of [
   "/bin", "/tmp", "/etc", "/usr", "/usr/bin", "/work", "/work/exec",
   "/work/testdata", "/work/testdata/dirfs", "/work/testdata/dirfs/dir",

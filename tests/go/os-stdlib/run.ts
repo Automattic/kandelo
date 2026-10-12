@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper.ts";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const [programPath, kernelPath, testFilter] = process.argv.slice(2);
 if (!programPath || !kernelPath) {
@@ -11,7 +11,8 @@ if (!Number.isSafeInteger(timeout) || timeout <= 0) {
   throw new Error("KANDELO_GO_TEST_TIMEOUT_MS must be a positive safe integer");
 }
 
-const image = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+const image = KandeloImageFs.create();
+image.setImageCapacity(8 * 1024 * 1024);
 image.mkdir("/tmp", 0o777);
 image.mkdir("/etc", 0o755);
 image.mkdir("/exec", 0o755);

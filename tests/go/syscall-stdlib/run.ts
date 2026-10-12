@@ -1,13 +1,14 @@
 import { readFileSync } from "node:fs";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper.ts";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const [programPath, kernelPath, filter] = process.argv.slice(2);
 if (!programPath || !kernelPath) {
   throw new Error("usage: node --import tsx run.ts <syscall-test.wasm> <kernel.wasm>");
 }
 
-const image = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+const image = KandeloImageFs.create();
+image.setImageCapacity(8 * 1024 * 1024);
 image.mkdir("/tmp", 0o777);
 
 const result = await runCentralizedProgram({

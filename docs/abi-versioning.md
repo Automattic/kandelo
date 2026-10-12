@@ -1117,18 +1117,6 @@ ABI epoch" below):
   polling `kernel_clipboard_guest_generation` while a copy gesture is
   pending.
 
-### ABI 48 opt-in preallocated pthread arena
-
-ABI 48 adds the optional constant-return Wasm export
-`__wasm_posix_preallocate_thread_slots`. A value of `1`, together with a
-positive `__wasm_posix_thread_slots` declaration, makes the host reserve
-the declared pthread control slots below the guest heap before process
-start. This keeps native Go's directly managed heap separate from host
-thread channels. Programs without the opt-in retain the ABI 47 dynamic
-slot layout. The new declaration and process-memory contract require
-the ABI bump and a regenerated snapshot; older binaries must be rebuilt
-for ABI 48 as usual.
-
 ### ABI 47 honest program links and kernel-owned host stdin
 
 ABI 47 declares, in `shared::abi::HOST_ENV_IMPORTS`, every import the host
@@ -1470,6 +1458,21 @@ Semantic changes (not visible to the snapshot):
   longer allocates a POSIX-shared-memory SharedArrayBuffer.
 - **`mount(2)` is still `ENOSYS`.** The in-kernel filesystems are configured
   by the host at boot, not by the guest.
+
+### ABI 50 opt-in preallocated pthread arena
+
+ABI 50 adds the optional constant-return Wasm export
+`__wasm_posix_preallocate_thread_slots`. A value of `1`, together with a
+positive `__wasm_posix_thread_slots` declaration, makes the host reserve
+the declared pthread control slots below the guest heap before process
+start. This keeps native Go's directly managed heap separate from host
+thread channels. Programs without the opt-in retain the dynamic slot
+layout. The new declaration changes the process-memory contract and is
+recorded in the ABI snapshot. ABI 50 also adds the
+`kernel_set_executable_path` export so the host can give a new process
+its selected executable identity rather than trusting `argv[0]`.
+Programs, package archives, and VFS images built for ABI 49 must be
+rebuilt; mixing them with ABI 50 fails the exact-version checks.
 
 ## The snapshot
 

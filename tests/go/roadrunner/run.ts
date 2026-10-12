@@ -6,7 +6,7 @@ import {
   readWasmCustomSectionPayload,
 } from "../../../host/src/constants.ts";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper.ts";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const supervisorPath = resolve(".context/roadrunner-supervisor.wasm");
 const serverPath = resolve(".context/roadrunner-minimal.wasm");
@@ -31,7 +31,8 @@ for (const program of programs) {
 const config = readFileSync("tests/go/roadrunner/rr.yaml");
 const worker = readFileSync("tests/go/roadrunner/worker.php");
 const capacity = programs[1].byteLength + programs[2].byteLength + 4 * 1024 * 1024;
-const image = MemoryFileSystem.create(new SharedArrayBuffer(Math.ceil(capacity / 4) * 4));
+const image = KandeloImageFs.create();
+image.setImageCapacity(capacity);
 image.mkdir("/etc", 0o755);
 image.createFileWithOwner("/etc/rr.yaml", 0o644, 0, 0, new Uint8Array(config));
 image.createFileWithOwner("/worker.php", 0o644, 0, 0, new Uint8Array(worker));

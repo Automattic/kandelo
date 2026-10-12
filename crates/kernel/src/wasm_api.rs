@@ -2758,7 +2758,10 @@ pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_executable_path(pid: u32, path_ptr: *const u8, path_len: u32) -> i32 {
-    if path_ptr.is_null() || path_len == 0 || path_len >= platform_limits::PATH_MAX_BYTES as u32 {
+    if path_ptr.is_null()
+        || path_len == 0
+        || path_len >= wasm_posix_shared::platform_limits::PATH_MAX_BYTES as u32
+    {
         return -(Errno::EINVAL as i32);
     }
     let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };

@@ -1,13 +1,14 @@
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host.ts";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const [programPath, kernelPath] = process.argv.slice(2);
 if (!programPath || !kernelPath) {
   throw new Error("usage: node --import tsx run.ts <frankenphp-classic.wasm> <kernel.wasm>");
 }
 
-const image = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
+const image = KandeloImageFs.create();
+image.setImageCapacity(2 * 1024 * 1024);
 for (const directory of ["/tmp", "/var", "/var/www", "/var/www/html"]) {
   image.mkdir(directory, 0o755);
 }

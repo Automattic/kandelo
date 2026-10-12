@@ -9,7 +9,7 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 13
+revision = 14
 
 [[git_inputs]]
 name = "go_toolchain"

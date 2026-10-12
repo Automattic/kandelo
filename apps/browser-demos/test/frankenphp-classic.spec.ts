@@ -7,7 +7,7 @@ import {
   ABI_CONTRACT_SECTION,
   readWasmCustomSectionPayload,
 } from "../../../host/src/constants";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
 const programPath = process.env.KANDELO_FRANKENPHP_CLASSIC_WASM;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -24,7 +24,8 @@ test("FrankenPHP classic serves PHP and static HTTP", async ({ page, baseURL }) 
     Uint8Array.from(kernelBytes).buffer, ABI_CONTRACT_SECTION,
   ));
 
-  const image = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
+  const image = KandeloImageFs.create();
+  image.setImageCapacity(2 * 1024 * 1024);
   for (const directory of ["/tmp", "/var", "/var/www", "/var/www/html"]) {
     image.mkdir(directory, 0o755);
   }
