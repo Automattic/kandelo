@@ -12,17 +12,15 @@ export default defineConfig({
     name: "webmcp",
     use: {
       browserName: "chromium",
-      channel: process.env.KANDELO_WEBMCP_CHANNEL ?? "chrome-canary",
-      // Chrome Canary 156 exposes `document.modelContext` only in headed mode.
-      // Headless leaves it undefined under both
-      // `--enable-experimental-web-platform-features` and
-      // `--enable-features=WebMCP,DevToolsWebMCPSupport`, and registration
-      // then fails silently.
+      channel: process.env.KANDELO_WEBMCP_CHANNEL ?? "chromium",
+      // Use Playwright's full browser in headed mode to exercise the native
+      // experimental API. A separate Chrome installation is optional.
       headless: false,
       launchOptions: {
         ...base.use?.launchOptions,
         args: [
           ...(base.use?.launchOptions?.args ?? []),
+          "--mute-audio",
           "--enable-experimental-web-platform-features",
         ],
       },

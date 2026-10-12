@@ -232,7 +232,7 @@ export async function runBrowserBenchmarks(
   // Launch browser
   let browser: Browser | null = null;
   try {
-    browser = await chromium.launch();
+    browser = await chromium.launch({ args: ["--mute-audio"] });
     const context = await browser.newContext();
     const page: Page = await context.newPage();
 

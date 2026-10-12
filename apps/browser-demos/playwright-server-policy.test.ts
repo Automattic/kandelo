@@ -115,7 +115,7 @@ test("broad service-worker scope permission exists only in historical records", 
     // scope permissions. Keep production source (including .github) in scope.
     ".context", "playwright-report", "test-results",
     ".git", ".worktrees", "binaries", "dist", "local-binaries",
-    "node_modules", "target", "test-runs",
+    "node_modules", "target", "test-runs", "sysroot", "sysroot64",
   ]);
   const header = ["service", "worker", "allowed"].join("-");
   const matches = new Set<string>();
