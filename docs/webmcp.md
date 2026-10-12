@@ -16,7 +16,13 @@ capabilities directly from the tool catalog.
 Kandelo exposes 17 tools on its application document when the browser implements
 `document.modelContext.registerTool`. The tools use the same computer, terminal
 tabs and preview shown in the UI. Browsers without this API retain the normal UI.
-No shell or filesystem capabilities are delegated to preview frames.
+The app registers tools in its own document. Guest web previews share the
+app's browser origin, so their scripts can discover and invoke those tools
+too. Registering in the parent document does not isolate a same-origin frame.
+Treat preview scripts as part of the app's browser trust boundary. The
+`maker` account constrains guest commands and writes; it does not constrain
+browser JavaScript. Tools expose privileged host filesystem inspection, as
+the app's inspector does. Browser-origin isolation is a separate capability.
 
 The live browser backend supports structured jobs, cancellation, directory listing,
 file reads and writes, and atomic exclusive file creation. Status reports actual
@@ -26,7 +32,7 @@ runtime availability; tools remain registered while the computer is booting.
 
 The implementation targets Chrome's current [imperative API](https://developer.chrome.com/docs/ai/webmcp/imperative-api),
 including registration cleanup using an AbortSignal. It was exercised with native
-Chrome Canary 156 and `--enable-experimental-web-platform-features`. There is no
+Playwright Chromium with `--enable-experimental-web-platform-features`. There is no
 polyfill or test-only replacement for registration. Older versions exposing
 `navigator.modelContext` alone are unsupported. Tools have read-only and untrusted
 content annotations following Chrome's [tool security guidance](https://developer.chrome.com/docs/ai/webmcp/secure-tools).
@@ -34,13 +40,14 @@ content annotations following Chrome's [tool security guidance](https://develope
 ```js
 const tools = await document.modelContext.getTools();
 const statusTool = tools.find(t => t.name === 'kandelo_get_computer_status');
-const status = JSON.parse(await document.modelContext.executeTool(statusTool, {}));
+const status = JSON.parse(await document.modelContext.executeTool(statusTool, "{}"));
 ```
 
 Results are JSON strings: `{ok:true,...fields}` or
 `{ok:false,error:{code,message,...details}}`. Browser-level schema validation and
-aborted execution may reject the native call instead. Current Chrome accepts
-argument objects; older experimental implementations accepted JSON strings.
+aborted execution may reject the native call instead. The experimental test
+API in the validated Chromium takes JSON text as its arguments. Registered
+tool callbacks receive parsed argument objects.
 
 Launch replaces the computer in place. The tool acknowledges initiation and the
 destination URL, then boots through the same gallery callback the user's own
@@ -93,6 +100,30 @@ maker writes while the machine runs; it is a scratch mount, so a guest creates
 it with `mkdir -p` first. On a name clash the maker's file wins, and deleting
 that file falls back to the shipped one. Both directories are watched: writing,
 replacing or deleting a file registers or unregisters its tool without a reload.
+An invalid maker definition disables that name during both initial loading and
+later refreshes; it does not silently restore the shipped command. Repair the
+definition to register it again, or remove it to restore the shipped tool.
+
+Notifications come from Rust-owned rootfs and scratch storage on both Node
+and browser. A writable file description closing, a rename, or an unlink
+queues a hint to read current state again. Host staging writes also notify
+watchers. Read-only closes do not. The worker copies each event out of kernel
+scratch and delivers it after the kernel call ends; observers never receive
+live kernel memory or run while Rust is changing filesystem state.
+
+An open descriptor can survive a rename. If its stored opening path no
+longer names the same file when it closes, the kernel asks all watched
+directories to refresh. This lets a tool definition moved into a watched
+directory receive its final contents. A file with no remaining names does
+not trigger another refresh when its last writable descriptor closes.
+
+The kernel allows 16 watched absolute directory prefixes and retains at most
+256 distinct pending paths. A burst beyond that limit queues a refresh for
+every watched directory. These hints are not a complete history of edits.
+Changes through memory mappings and external edits to Node host mounts do
+not produce these notifications. A watched directory is identified by its
+canonical guest path; changes through another hard-link name are not reported
+under every alias.
 
 `/home/maker/mcp` is a trust boundary. Every program that runs as `maker` can
 write to it, and the agent runs as `maker` too. A tool there is as trustworthy
@@ -151,7 +182,9 @@ that subset; a file that uses anything else is refused and logged, so a tool
 never registers a promise its arguments are not checked against. `inputSchema`
 must be `{ "type": "object", ... }`. Every schema may carry `type` and
 `description`; `type` is one of `string`, `integer`, `number`, `boolean`,
-`array` or `object`, never a list. A `string` may carry `enum` (strings) and
+`array` or `object`, never a list. Numbers must be finite. Integers must
+fit JavaScript's safe integer range; they may be negative unless the
+schema sets a minimum. A `string` may carry `enum` (strings) and
 `maxLength`; an `integer` may carry `minimum` and `maximum`; an `object` may
 carry `properties`, `required` (names from `properties`) and
 `additionalProperties`, which is `false` or a schema. Unknown arguments are
@@ -240,11 +273,11 @@ returns null for both.
 
 ## Validation
 
-Run the native WebMCP browser E2E suite:
+Run the native WebMCP browser end-to-end suite:
 
 ```sh
 ./run.sh setup
-./run.sh prepare-browser
+scripts/dev-shell.sh bash scripts/build-programs.sh
 scripts/dev-shell.sh bash -c '
   export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
   export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
@@ -253,27 +286,21 @@ scripts/dev-shell.sh bash -c '
 '
 ```
 
-`./run.sh setup` does not build the programs the page imports;
-`./run.sh prepare-browser` builds them into `local-binaries/source-only-v1`.
-Without it Vite rejects a missing program such as `elinks.wasm` and no tool
-registers.
+Setup builds the normal kernel, package programs and rootfs. The program
+script also builds the C test fixtures imported by browser test pages.
+The two variables select those locally built artifacts for Playwright;
+`./run.sh browser` selects them automatically when running the app.
 
-The two variables select the source-only resolution policy. Without them the
-binary resolver validates a declared package closure across tiers and demands
-`programs/wasm32/mariadb-vfs.vfs.zst`, which `packages/sets/local-supported.toml`
-excludes as dormant; the boot endpoint then returns HTTP 500 and every test
-fails. `./run.sh browser` exports the same two variables.
+The dedicated config uses Playwright's full Chromium browser in headed
+mode with experimental web features enabled. It exercises the native
+`document.modelContext` API, verified with Chromium 153.0.8010.12. Set
+`KANDELO_WEBMCP_CHANNEL` to a Playwright channel name to use another
+compatible Chrome installation.
 
-The config runs headed. Chrome Canary 156 exposes `document.modelContext` only
-in headed mode, so a headless run registers no tools.
-
-The dedicated config defaults to installed `chrome-canary`; override
-`KANDELO_WEBMCP_CHANNEL` only with a browser implementing the current native API.
-It takes a Playwright channel name, not an executable path, so a Canary outside
-`/Applications` needs a symlink there.
-Tests invoke registered native tools against real kernels and include a separate
-normal-browser UI check without WebMCP enabled. Focused host tests cover owned-job
-output, cancellation, process reaping and preview observations.
+Tests invoke registered native tools against real kernels and include a
+normal-browser UI check without WebMCP enabled. Host tests cover command
+output, cancellation, process reaping, native filesystem notifications,
+and preview observations.
 
 
 ## Structured jobs
@@ -303,6 +330,13 @@ run. `kandelo_read_job` on a forgotten job returns `UNKNOWN_JOB`; read a job's
 output before running 32 more commands. A job that is still running is never
 forgotten. Starting a command when the computer already holds 64 job records
 fails with `LIMIT_EXCEEDED`, because 64 records is the kernel's real limit.
+
+Image tools release their command records after collecting the result. If a
+call fails or stops waiting while its process family is still being cleaned
+up, the session keeps the job ID and retries release during its usual cleanup.
+It forgets the ID only after release succeeds or the kernel reports that the
+record is already gone. Ending a browser call does not prove that its guest
+processes have finished.
 
 Every job runs as the agent's guest account: the `maker` account (uid 1000)
 the terminal logs into, so the agent and the user own the same files. The
@@ -350,7 +384,7 @@ metadata once. Keep native RegisteredTool objects separately for execution:
 ```js
 const registered = await document.modelContext.getTools();
 const statusTool = registered.find(t => t.name === 'kandelo_get_computer_status');
-const status = JSON.parse(await document.modelContext.executeTool(statusTool, {}));
+const status = JSON.parse(await document.modelContext.executeTool(statusTool, "{}"));
 const catalog = compactToolCatalog({
   generationId: status.generationId,
   ...status.document,
