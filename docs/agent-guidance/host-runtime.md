@@ -71,6 +71,29 @@ entries. Move a function into the shared module
 only when it is equivalent on both hosts; declare a real difference in the
 host record rather than forking the function again.
 
+## Temporary memory and authority
+
+A scratch lease permits one synchronous operation to use temporary kernel
+memory. Every access must still prove its owner, allocation capacity, live
+memory range and lease validity, including after memory growth. Do not retain
+a lease or its memory views across an `await`; copy data that must survive a
+blocking retry into host-owned storage.
+
+When a lease ends, revoke its authority and remove its private pointer-token
+and invalidator registrations. A weak map allows eventual collection; it
+does not guarantee prompt cleanup of an expired registration. Reduce
+temporary bookkeeping without removing the checks that prevent stale or
+out-of-range access. Measure both hosts before claiming a benefit.
+See [the ownership reflection](../architecture-reflections.md#end-temporary-authority-explicitly).
+
+When moving a filesystem operation between the host and kernel, inventory
+the observable behavior before changing its owner: path and symlink
+resolution, permissions, lazy archive formats, integrity checks, retries,
+cancellation and inspection. Verify each supported behavior on Node and
+browser, and document any missing capability. Directory listing, metadata
+and file-content reads are separate operations; testing one proves only
+that operation. See [the migration reflection](../architecture-reflections.md#move-ownership-with-its-observable-contract).
+
 ## The host filesystem contract is handle-only
 
 **A host resolves at most one path component, relative to a directory handle

@@ -11,6 +11,28 @@ Use precise language:
 - "This change is docs-only; I did not run runtime tests."
 - "This is not fully merge-validated because `Z` remains unrun."
 
+## Test fixtures must observe the actual contract
+
+Wait for the operation's completion event or promise rather than a fixed
+number of event-loop turns. For example, compiling a child Wasm module can
+finish later under full-suite load; a spawn assertion should observe the
+channel completion before checking its result. Keep a timeout so a missing
+completion remains a visible failure.
+
+A fixture that tests a particular resolution policy must select that policy
+explicitly and restore every changed environment setting in `finally`.
+Run it under the normal suite environment as well as in isolation. A legacy
+mirror fixture and a source-only fixture intentionally admit different
+files; inherited settings must not change which contract a test exercises.
+
+Keep authored-source audits separate from generated reports and private
+worktrees. Exclude those evidence directories explicitly while retaining
+production source. Report authorized deferred tests and unsupported cases
+separately from failures; never silently narrow the enabled inventory to
+make a suite pass. See [the validation reflection](../architecture-reflections.md#make-validation-observe-real-completion-and-policy).
+
+## Validation scope and suite selection
+
 Do not use a narrow check to support a broad claim. A passing unit test does
 not prove POSIX behavior. A passing Node/Vitest path does not prove browser
 behavior. A passing browser demo does not prove ABI compatibility. A
