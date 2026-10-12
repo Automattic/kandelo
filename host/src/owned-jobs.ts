@@ -20,7 +20,7 @@ export type OwnedJobRead =
 /** Worker-owned command families. Ownership survives exec, reparenting and setsid. */
 export class OwnedJobs {
   private jobs = new Map<string, {
-    root: number; members: Set<number>; pendingDetach: Set<number>; family: Set<number>; cleaned: boolean; exitCode: number | null;
+    root: number; members: Set<number>; pendingDetach: Set<number>; family: Set<number>; cleaned: boolean; failure: Error | null; exitCode: number | null;
     reason: 'cancelled' | 'timed_out' | null;
     chunks: Array<{ stream: 'stdout' | 'stderr'; bytes: Uint8Array }>;
     start: number; end: number; timer: ReturnType<typeof setTimeout>;
@@ -29,10 +29,11 @@ export class OwnedJobs {
   constructor(private kill: (pid: number) => void, private retainedBytes = 256 * 1024, private reap: (pids: ReadonlySet<number>) => void = () => {}, private fail: (error: unknown) => void = () => {}) {}
 
   create(id: string, pid: number, timeoutMs: number) {
+    if (!id || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 0x7fff_ffff) throw new Error('INVALID_JOB_OPTIONS');
     if (this.jobs.has(id)) throw new Error('Job ID already exists');
     if (this.jobs.size >= 64) throw new Error('Job capacity reached (64 per computer)');
     const timer = setTimeout(() => this.cancel(id, 'timed_out'), timeoutMs);
-    this.jobs.set(id, { root: pid, members: new Set([pid]), pendingDetach: new Set([pid]), family: new Set([pid]), cleaned: false, exitCode: null, reason: null, chunks: [], start: 0, end: 0, timer });
+    this.jobs.set(id, { root: pid, members: new Set([pid]), pendingDetach: new Set([pid]), family: new Set([pid]), cleaned: false, failure: null, exitCode: null, reason: null, chunks: [], start: 0, end: 0, timer });
     this.owners.set(pid, id);
   }
   inherit(parent: number, child: number) {
@@ -62,7 +63,7 @@ export class OwnedJobs {
   }
   private cleanup(id: string) {
     const job = this.require(id);
-    if (job.cleaned || job.members.size || job.pendingDetach.size) return;
+    if (job.cleaned || job.failure || job.members.size || job.pendingDetach.size) return;
     clearTimeout(job.timer);
     try {
       // No live parent can still need waitpid's exit status. Keep the complete
@@ -74,8 +75,11 @@ export class OwnedJobs {
         job.timer = setTimeout(() => this.cleanup(id), 10);
         return;
       }
-      // Every member has exited and detached; only the kernel's process entries remain.
-      this.fail(error);
+      // A failed reap is not successful cleanup. Retain the failure and let
+      // the worker halt this machine rather than advertise a completed job.
+      job.failure = error instanceof Error ? error : new Error(String(error));
+      this.fail(job.failure);
+      return;
     }
     job.cleaned = true;
     for (const pid of job.family) this.owners.delete(pid);
@@ -114,7 +118,10 @@ export class OwnedJobs {
   }
   read(id: string, offset?: number, limit = 4096): OwnedJobRead {
     const job = this.require(id);
+    if (job.failure) throw job.failure;
     const cursor = offset ?? job.start;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 65536) throw new Error('INVALID_LIMIT');
+    if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error('INVALID_CURSOR');
     if (cursor < job.start) return { expired: true, oldest: job.start };
     if (!Number.isSafeInteger(cursor) || cursor > job.end) throw new Error('INVALID_CURSOR');
     const chunks: Array<{ stream: 'stdout' | 'stderr'; bytes: Uint8Array }> = [];
@@ -132,6 +139,7 @@ export class OwnedJobs {
   /** Forget a finished job's record and free its slot. Throws while the family is live. */
   release(id: string) {
     const job = this.require(id);
+    if (job.failure) throw job.failure;
     if (!job.cleaned) throw new Error('JOB_RUNNING');
     clearTimeout(job.timer);
     this.jobs.delete(id);

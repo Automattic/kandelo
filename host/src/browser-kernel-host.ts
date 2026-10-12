@@ -1,4 +1,4 @@
-import { vfsPathIsWithin } from "./vfs/vfs";
+import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
 import type { OwnedJobRead } from "./owned-jobs";
 /**
@@ -987,8 +987,10 @@ export class BrowserKernel {
    * the worker boundary when nobody's listening.
    */
   subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void {
+    assertVfsWatchPrefix(prefix);
     let listeners = this.vfsChangeListeners.get(prefix);
     if (!listeners) {
+      if (this.vfsChangeListeners.size >= MAX_VFS_WATCH_PREFIXES) throw new Error("Filesystem watch capacity reached (16 prefixes)");
       listeners = new Set();
       this.vfsChangeListeners.set(prefix, listeners);
       this.sendToKernel({ type: "watch_vfs_changes", prefix, enabled: true });

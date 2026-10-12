@@ -87,9 +87,6 @@ export interface FileSystemBackend {
   readdir(handle: number): DirEntry | null;
   closedir(handle: number): void;
 
-  // Change notification
-  /** Report `modify` and `delete` events for paths relative to this backend. */
-  subscribeChanges?(listener: VfsChangeListener): () => void;
 }
 
 export type VfsChangeKind = "modify" | "delete";
@@ -98,7 +95,8 @@ export type VfsChangeKind = "modify" | "delete";
  * A name in this filesystem changed. `modify` fires when a handle opened for
  * writing closes or a rename gives the name new content; `delete` fires when
  * a name is unlinked or renamed away. Writes through a memory mapping do not
- * pass through a handle and are not reported.
+ * pass through a handle and are not reported. Notifications are bounded hints
+ * to re-read current state. An overflow reports a watched prefix as modified.
  */
 export interface VfsChangeEvent {
   kind: VfsChangeKind;

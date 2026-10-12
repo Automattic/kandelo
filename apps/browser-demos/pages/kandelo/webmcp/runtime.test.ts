@@ -374,6 +374,26 @@ test("a script whose call is aborted is cancelled once and still released", asyn
   assert.equal(calls.jobReleases.length, 1);
 });
 
+test("a script whose result cannot be read keeps its live job available for later cleanup", async () => {
+  const released: string[] = [];
+  let live = true;
+  const { host, calls } = attached({
+    readOwnedJob: async () => { throw new Error("READ_FAILED"); },
+    releaseOwnedJob: async (id: string) => {
+      if (live) throw new Error("JOB_RUNNING");
+      released.push(id);
+    },
+  });
+  await assert.rejects(runGuestScript(host, "sleep 1", { timeoutMs: 1000 }), /READ_FAILED/);
+  const scriptJob = calls.jobs[0]![0];
+  assert.deepEqual(released, []);
+  live = false;
+  for (let index = 0; index < 33; index++) {
+    await startGuestJob(host, `next-${index}`, { script: "true" });
+  }
+  assert.ok(released.includes(scriptJob), "the session must retry releasing the finished script job");
+});
+
 test("a script announces its first line on the terminal without sending input", () => {
   const { host, calls } = attached();
   announceGuestScript(host, "/dev/pts/1", "echo hi\nls\n");

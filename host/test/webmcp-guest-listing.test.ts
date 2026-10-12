@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { VfsDirEntry } from '../src/browser-kernel-protocol';
+import type { VfsDirEntrySnapshot as VfsDirEntry } from '../src/vfs/vfs';
 import type { KernelHost } from '../../web-libs/kandelo-session/src/kernel-host';
 import { listGuestDirectory, setWebMcpSession } from '../../apps/browser-demos/pages/kandelo/webmcp/runtime';
 
@@ -14,14 +14,14 @@ function runningHost(entries: VfsDirEntry[] | null) {
 }
 
 const entry = (over: Partial<VfsDirEntry>): VfsDirEntry =>
-  ({ name: 'foo', type: 8, mode: 0o644, size: 3, uid: 0, gid: 0, ...over });
+  ({ name: 'foo', mode: 0o100644, size: 3, uid: 0, gid: 0, ...over });
 
 it('names each dirent type the way the tool contract describes it', async () => {
   const host = runningHost([
-    entry({ name: 'bar', type: 4 }),
-    entry({ name: 'baz', type: 8 }),
-    entry({ name: 'qux', type: 10, target: '/bar' }),
-    entry({ name: 'quux', type: 1 }),
+    entry({ name: 'bar', mode: 0o40755 }),
+    entry({ name: 'baz', mode: 0o100644 }),
+    entry({ name: 'qux', mode: 0o120777, target: '/bar' }),
+    entry({ name: 'quux', mode: 0o10644 }),
   ]);
 
   const byName = new Map((await listGuestDirectory(host, '/foo')).map((e) => [e.name, e.type]));
@@ -33,10 +33,10 @@ it('names each dirent type the way the tool contract describes it', async () => 
 });
 
 it('keeps the stat metadata and the symlink target', async () => {
-  const host = runningHost([entry({ name: 'qux', type: 10, mode: 0o777, size: 7, uid: 1000, gid: 1000, target: '/bar' })]);
+  const host = runningHost([entry({ name: 'qux', mode: 0o120777, size: 7, uid: 1000, gid: 1000, target: '/bar' })]);
 
   expect(await listGuestDirectory(host, '/foo')).toEqual([
-    { name: 'qux', type: 'symlink', mode: 0o777, size: 7, uid: 1000, gid: 1000, target: '/bar' },
+    { name: 'qux', type: 'symlink', mode: 0o120777, size: 7, uid: 1000, gid: 1000, target: '/bar' },
   ]);
 });
 

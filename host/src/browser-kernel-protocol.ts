@@ -252,25 +252,12 @@ export interface ReadVfsDirMessage {
   path: string;
 }
 
-export interface ListVfsDirectoryMessage {
-  type: "list_vfs_directory";
-  requestId: number;
-  path: string;
-}
 
 /** Describe one path (following symlinks) through the worker-owned VFS. */
 export interface StatVfsPathMessage {
   type: "stat_vfs_path";
   requestId: number;
   path: string;
-}
-
-export interface WriteVfsFileMessage {
-  type: "write_vfs_file";
-  requestId: number;
-  path: string;
-  data: Uint8Array;
-  mode: number;
 }
 
 export interface UnlinkVfsFileMessage {

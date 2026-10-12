@@ -2276,6 +2276,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_drain_fs_changes",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_drain_wakeup_events",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -2378,6 +2383,11 @@
       "kind": "func",
       "name": "kernel_fork_process",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fs_changes_pending",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",
@@ -3323,6 +3333,11 @@
       "kind": "func",
       "name": "kernel_wait_retire_process",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_watch_fs_changes",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "memory",

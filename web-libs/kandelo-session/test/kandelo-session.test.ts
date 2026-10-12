@@ -275,7 +275,7 @@ describe("LiveKernelHost: status", () => {
 describe("LiveKernelHost: worker-owned VFS", () => {
   const encoder = new TextEncoder();
 
-  it("reads files and directories through the kernel worker when no sync fs exists", async () => {
+  it("reads files and directories through async worker readers", async () => {
     const files: Record<string, string> = {
       "/etc/passwd": "root:x:0:0::/root:/bin/sh\nmaker:x:1000:1000::/home/maker:/bin/bash\n",
       "/etc/group": "root:x:0:\nmaker:x:1000:\n",
@@ -287,12 +287,12 @@ describe("LiveKernelHost: worker-owned VFS", () => {
         path in files ? encoder.encode(files[path]) : null,
       readDirFromVfs: async (path: string) =>
         path === "/home/maker/mcp"
-          ? [{ name: "run_command.json", type: 8, mode: 0o100644, size: 2, uid: 1000, gid: 1000 }]
+          ? [{ name: "run_command.json", mode: 0o100644, size: 2, uid: 1000, gid: 1000 }]
           : null,
     } as any);
 
     expect(await host.readFileText("/home/maker/mcp/run_command.json")).toBe("{}");
-    await expect(host.readFile("/missing")).rejects.toThrow("ENOENT: /missing");
+    await expect(host.readFile("/missing")).rejects.toThrow(/ENOENT:.*\/missing/);
     expect(await host.readDir("/home/maker/mcp")).toEqual([
       {
         name: "run_command.json",
@@ -304,70 +304,37 @@ describe("LiveKernelHost: worker-owned VFS", () => {
         target: undefined,
       },
     ]);
-    await expect(host.readDir("/missing")).rejects.toThrow("ENOENT: /missing");
+    await expect(host.readDir("/missing")).rejects.toThrow(/ENOENT:.*\/missing/);
   });
 
-  it("reads directories through the legacy synchronous fs", async () => {
-    const passwd = encoder.encode("root:x:0:0::/root:/bin/sh\n");
-    const dirEntries = [
-      { name: ".", type: 4, ino: 1 },
-      { name: "run_command.json", type: 8, ino: 2 },
-      { name: "sh", type: 10, ino: 3 },
-      { name: "gone", type: 8, ino: 4 },
-    ];
-    let cursor = 0;
-    const fs: FileSystemLike = {
-      ...makeFs({ "/etc/passwd": "root:x:0:0::/root:/bin/sh\n" }),
-      stat(path: string) {
-        if (path === "/etc/passwd") return { mode: 0o100644, size: passwd.byteLength, mtimeMs: 0, uid: 0, gid: 0 };
-        if (path === "/home/maker/mcp/run_command.json") return { mode: 0o100644, size: 437, mtimeMs: 0, uid: 0, gid: 0 };
-        if (path === "/home/maker/mcp/sh") return { mode: 0o100755, size: 5, mtimeMs: 0, uid: 0, gid: 0 };
-        throw new Error(`ENOENT: ${path}`);
+  it("formats worker metadata without following directory-entry symlinks", async () => {
+    const host = new LiveKernelHost({
+      kernel: {
+        ...makeVfs({ "/etc/passwd": "root:x:0:0::/root:/bin/sh\n" }),
+        readDirFromVfs: async () => [
+          { name: "run_command.json", mode: 0o100644, size: 437, uid: 0, gid: 0 },
+          { name: "sh", mode: 0o120777, size: 7, uid: 0, gid: 0, target: "/bin/sh" },
+        ],
       },
-      readlink(path: string) {
-        if (path === "/home/maker/mcp/sh") return "/bin/sh";
-        throw new Error(`EINVAL: ${path}`);
-      },
-      opendir(path: string) {
-        if (path !== "/home/maker/mcp") throw new Error(`ENOENT: ${path}`);
-        cursor = 0;
-        return 42;
-      },
-      readdir() {
-        return dirEntries[cursor++] ?? null;
-      },
-      closedir() {},
-    };
-    const host = new LiveKernelHost();
-    host.attachKernel({ fs } as any);
+    });
 
     expect(await host.readDir("/home/maker/mcp")).toEqual([
       {
-        name: "run_command.json",
-        kind: "f",
-        mode: "-rw-r--r--",
-        owner: "root",
-        group: "root",
-        size: "437",
-        target: undefined,
+        name: "run_command.json", kind: "f", mode: "-rw-r--r--",
+        owner: "root", group: "root", size: "437", target: undefined,
       },
       {
-        name: "sh",
-        kind: "l",
-        mode: "lrwxr-xr-x",
-        owner: "root",
-        group: "root",
-        size: "5",
-        target: "/bin/sh",
+        name: "sh", kind: "l", mode: "lrwxrwxrwx",
+        owner: "root", group: "root", size: "7", target: "/bin/sh",
       },
     ]);
   });
 
-  it("rejects reads when the kernel has neither a sync fs nor worker reads", async () => {
+  it("rejects reads when the kernel has no worker readers", async () => {
     const host = new LiveKernelHost();
     host.attachKernel({} as any);
-    await expect(host.readFile("/etc/passwd")).rejects.toThrow("no VFS surface");
-    await expect(host.readDir("/etc")).rejects.toThrow("no VFS surface");
+    await expect(host.readFile("/etc/passwd")).rejects.toThrow("no readFileFromVfs");
+    await expect(host.readDir("/etc")).rejects.toThrow("no readDirFromVfs");
   });
 });
 
@@ -475,7 +442,7 @@ describe("LiveKernelHost: VFS change events", () => {
     const offKernel = vi.fn();
     const subscribeVfsChanges = vi.fn(() => offKernel);
     const host = new LiveKernelHost({
-      kernel: { fs: makeFs({ "/etc/passwd": "" }), subscribeVfsChanges } as any,
+      kernel: { ...makeVfs({ "/etc/passwd": "" }), subscribeVfsChanges } as any,
     });
     const callback = vi.fn();
 
@@ -1332,7 +1299,7 @@ describe("LiveKernelHost: shell command queue", () => {
     const writes: Uint8Array[] = [];
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
           callback(encoder.encode("kandelo$ "));

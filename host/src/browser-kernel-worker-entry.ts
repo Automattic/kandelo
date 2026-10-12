@@ -150,6 +150,7 @@ import {
   isRootfsMissingFileError,
   readRootfsFileWithRetry,
   readNamespaceFileWithRetry,
+  retireSupersededExecGeneration,
   signalFromExitStatus,
   type ProcessGenerationOwnership,
   type VforkWorkspaceOwnership,
@@ -162,8 +163,7 @@ const O_WRONLY_CREAT_TRUNC =
 let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
 let io: VirtualPlatformIO;
-const watchedVfsPrefixes = new Set<string>();
-let offVfsChanges: (() => void) | null = null;
+const vfsChangeSubscriptions = new Map<string, () => void>();
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let processMemoryAllocator: ProcessMemoryAllocator;
@@ -592,11 +592,9 @@ const activeBridgeRequests = new Set<number>();
 const ownedJobs = new OwnedJobs(pid => {
   // A committed child can still be awaiting its Worker; let launch settle first.
   if (processes.has(pid)) kernelWorker.signalProcess(pid, 9);
-}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => reportHostDiagnostic({
-  pid: 0,
-  source: "owned job reap",
-  message: `[browser-kernel-worker] failed to reap an exited owned job family: ${formatError(error)}`,
-}));
+}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => {
+  terminatePoisonedKernelWorker(error instanceof Error ? error : new Error(String(error)));
+});
 
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   if (msg.type === "stdout" || msg.type === "stderr") ownedJobs.output(msg.pid, msg.type, msg.data);
@@ -1360,9 +1358,9 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     );
     if (!programModule) return;
 
-    const pid = kernelWorker.createProcess(
+    const pid = await retryKernelEntryResult(() => kernelWorker.createProcess(
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
-    );
+    ));
     createdPid = pid;
     if (msg.ownedJob) ownedJobs.create(msg.ownedJob.id, pid, msg.ownedJob.timeoutMs);
     const path = msg.programPath ?? msg.argv[0];
@@ -1404,11 +1402,13 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     const secureExec = await retryKernelEntryResult(() =>
       kernelWorker.processSecureExec(pid));
     if (msg.cwd) {
-      kernelWorker.setCwd(pid, msg.cwd);
+      // Another launch can queue ingress during the awaited secure-exec query.
+      // A refused cwd setup queued no work, so retry before starting this guest.
+      await retryKernelEntryResult(() => kernelWorker.setCwd(pid, msg.cwd!));
     }
 
     if (msg.pty) {
-      const ptyIdx = kernelWorker.setupPty(pid);
+      const ptyIdx = await retryKernelEntryResult(() => kernelWorker.setupPty(pid));
       ptyByPid.set(pid, ptyIdx);
       // Apply initial winsize before the wasm program starts. Without this,
       // the program's first TIOCGWINSZ returns the kernel default (80x24)
@@ -2800,8 +2800,9 @@ async function handleExec(
       });
       preparedTransferred = true;
 
-      if (oldMemoryRetirementSafe) initiatingInfo.memoryLease.release();
-      else initiatingInfo.memoryLease.releaseAfterForcedTermination();
+      await retireSupersededExecGeneration(
+        processGenerationDetaches, pid, initiatingInfo, oldMemoryRetirementSafe,
+      );
       initiatingLeaseConsumed = true;
 
       // Wire post-exec error/exit handling. The handleFork listener (on the
@@ -2951,11 +2952,9 @@ async function handleExec(
         }
       }
       if (preparedTransferred && !initiatingLeaseConsumed) {
-        if (oldMemoryRetirementSafe) {
-          initiatingInfo.memoryLease.release();
-        } else {
-          initiatingInfo.memoryLease.releaseAfterForcedTermination();
-        }
+        await retireSupersededExecGeneration(
+          processGenerationDetaches, pid, initiatingInfo, oldMemoryRetirementSafe,
+        );
         initiatingLeaseConsumed = true;
       }
       if (
@@ -3728,18 +3727,15 @@ async function handleStatVfsPath(
 // VFS SAB off the persistent browser main thread while allowing harnesses to
 // stage transient files between process spawns.
 function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_vfs_changes" }>) {
-  if (msg.enabled) watchedVfsPrefixes.add(msg.prefix);
-  else watchedVfsPrefixes.delete(msg.prefix);
-  if (watchedVfsPrefixes.size === 0) {
-    offVfsChanges?.();
-    offVfsChanges = null;
-    return;
+  if (msg.enabled) {
+    if (!vfsChangeSubscriptions.has(msg.prefix)) {
+      const off = kernelWorker.subscribeVfsChanges(msg.prefix, event => post({ type: "vfs_change", event }));
+      vfsChangeSubscriptions.set(msg.prefix, off);
+    }
+  } else {
+    vfsChangeSubscriptions.get(msg.prefix)?.();
+    vfsChangeSubscriptions.delete(msg.prefix);
   }
-  if (offVfsChanges) return;
-  offVfsChanges = io.subscribeChanges((event) => {
-    const watched = [...watchedVfsPrefixes].some((prefix) => vfsPathIsWithin(prefix, event.path));
-    if (watched) post({ type: "vfs_change", event });
-  });
 }
 
 function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {

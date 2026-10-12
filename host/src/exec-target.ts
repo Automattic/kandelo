@@ -8,6 +8,8 @@ import {
   MAX_REPORTABLE_TRANSFER_BYTES,
 } from "./generated/abi";
 import { waitForDeferredFetch } from "./vfs/rootfs-lazy-archives";
+import { KernelReentrantEntryError } from "./kernel-entry-gate";
+import { retryKernelEntryResult } from "./kernel-entry-retry";
 
 const EAGAIN = 11;
 const EFBIG = 27;
@@ -75,18 +77,19 @@ function errnoFromNegativeResult(result: number | bigint): number {
   return EIO;
 }
 
-function cancelPreparedTarget(
+async function cancelPreparedTarget(
   kernel: PreparedExecKernel,
   ownerPid: number,
   target: number,
   error: PreparedExecTargetError,
-): PreparedExecTargetError {
+): Promise<PreparedExecTargetError> {
   if (error.targetCancelled) return error;
-  // One attempt consumes this host-side cancellation obligation even when a
-  // corrupt kernel reports an error. Retrying could consume a reused token.
+  // Only pre-entry contention is retried. An actual cancellation attempt
+  // consumes this obligation even when a corrupt kernel reports an error;
+  // repeating that attempt could consume a reused token.
   error.targetCancelled = true;
   try {
-    kernel.execTargetCancel(ownerPid, target);
+    await retryKernelEntryResult(() => kernel.execTargetCancel(ownerPid, target));
   } catch {
     // Preserve the original precommit failure. The kernel entry/fatal boundary
     // owns any exception raised while trying to release its retained target.
@@ -100,7 +103,7 @@ export async function readPreparedExecTarget(
   target: number,
 ): Promise<Uint8Array> {
   try {
-    const size = kernel.execTargetSize(ownerPid, target);
+    const size = await retryKernelEntryResult(() => kernel.execTargetSize(ownerPid, target));
     if (size < 0n) {
       throw new PreparedExecTargetError(
         "prepared exec target size failed",
@@ -143,12 +146,16 @@ export async function readPreparedExecTarget(
         output.byteLength - start,
       );
       const destination = output.subarray(start, start + capacity);
-      const read = kernel.execTargetRead(
-        ownerPid,
-        target,
-        offset,
-        destination,
-      );
+      let read: number;
+      try {
+        // Keep ordinary reads synchronous, without a promise for every chunk.
+        // A lazy fetch can yield, so the next read may encounter queued ingress.
+        read = kernel.execTargetRead(ownerPid, target, offset, destination);
+      } catch (cause) {
+        if (!(cause instanceof KernelReentrantEntryError)) throw cause;
+        read = await retryKernelEntryResult(() =>
+          kernel.execTargetRead(ownerPid, target, offset, destination));
+      }
       if (read === -EAGAIN) {
         // The deferred bytes are still being fetched: retry the same offset
         // once the fetch has settled.
@@ -187,7 +194,7 @@ export async function readPreparedExecTarget(
     }
     return output;
   } catch (cause) {
-    throw cancelPreparedTarget(
+    throw await cancelPreparedTarget(
       kernel,
       ownerPid,
       target,
@@ -363,7 +370,7 @@ export async function launchPreparedExecTarget(
   callback: ExecLaunchCallback,
 ): Promise<number> {
   await options.materializePath(options.diagnosticPath);
-  let target = preparedTargetToken(options.prepareInitialTarget());
+  let target = preparedTargetToken(await retryKernelEntryResult(options.prepareInitialTarget));
   let bytes = await readPreparedExecTarget(
     options.kernel,
     options.ownerPid,
@@ -378,10 +385,8 @@ export async function launchPreparedExecTarget(
     // Script set-ID state is deliberately never committed. Consume the script
     // token before preparing the interpreter as the sole final authority.
     targetLive = false;
-    const cancelResult = options.kernel.execTargetCancel(
-      options.ownerPid,
-      target,
-    );
+    const cancelResult = await retryKernelEntryResult(() =>
+      options.kernel.execTargetCancel(options.ownerPid, target));
     if (cancelResult < 0) {
       throw new PreparedExecTargetError(
         "unable to cancel prepared script target",
@@ -398,7 +403,7 @@ export async function launchPreparedExecTarget(
     finalDiagnosticPath = script.interpreter;
     await options.materializePath(script.interpreter);
     target = preparedTargetToken(
-      options.prepareInterpreterTarget(script.interpreter),
+      await retryKernelEntryResult(() => options.prepareInterpreterTarget(script.interpreter)),
     );
     bytes = await readPreparedExecTarget(
       options.kernel,
@@ -407,7 +412,7 @@ export async function launchPreparedExecTarget(
     );
     targetLive = true;
     if (parseShebang(bytes) !== null) {
-      throw cancelPreparedTarget(
+      throw await cancelPreparedTarget(
         options.kernel,
         options.ownerPid,
         target,
@@ -466,7 +471,7 @@ export async function launchPreparedExecTarget(
     const decision = await callback(request);
     if (typeof decision === "number") {
       targetLive = false;
-      options.kernel.execTargetCancel(options.ownerPid, target);
+      await retryKernelEntryResult(() => options.kernel.execTargetCancel(options.ownerPid, target));
       return decision < 0 ? decision : -EIO;
     }
 
@@ -474,25 +479,35 @@ export async function launchPreparedExecTarget(
     // alone owns this no-yield commit edge and invokes the postcommit action
     // immediately after Rust consumes the token.
     let commitResult: number;
-    try {
-      commitResult = options.commitTarget(
-        target,
-        targetBytes.byteLength,
-        () => {
-          // The production wrapper calls this immediately before the raw
-          // commit/cancel export. A throw before that edge leaves the token
-          // cancellable; a host-import throw after it has uncertain/consumed
-          // Rust ownership and must never retry the token.
-          targetLive = false;
-        },
-      );
-      // Every numeric kernel result has settled the exact token, including a
-      // rejected commit. Test doubles may omit the marker because they cannot
-      // throw from inside Rust after taking the target.
-      targetLive = false;
-    } catch (cause) {
-      decision.onCommitFailure();
-      throw cause;
+    for (;;) {
+      try {
+        commitResult = options.commitTarget(
+          target,
+          targetBytes.byteLength,
+          () => {
+            // The production wrapper calls this immediately before the raw
+            // commit/cancel export. A throw before that edge leaves the token
+            // cancellable; a host-import throw after it has uncertain/consumed
+            // Rust ownership and must never retry the token.
+            targetLive = false;
+          },
+        );
+        // Every numeric kernel result has settled the exact token, including a
+        // rejected commit. Test doubles may omit the marker because they cannot
+        // throw from inside Rust after taking the target.
+        targetLive = false;
+        break;
+      } catch (cause) {
+        if (targetLive && cause instanceof KernelReentrantEntryError) {
+          // Retry only a refusal before consuming the token. Keep a successful
+          // commit and start below on one stack; awaiting a generic retry
+          // promise after commit would expose a half-installed replacement.
+          await new Promise<void>(resolve => setTimeout(resolve, 0));
+          continue;
+        }
+        decision.onCommitFailure();
+        throw cause;
+      }
     }
     if (commitResult < 0) {
       decision.onCommitFailure(commitResult);
@@ -503,7 +518,7 @@ export async function launchPreparedExecTarget(
     if (targetLive) {
       targetLive = false;
       const error = targetError(cause, "prepared exec launch failed");
-      throw cancelPreparedTarget(
+      throw await cancelPreparedTarget(
         options.kernel,
         options.ownerPid,
         target,

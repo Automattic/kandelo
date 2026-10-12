@@ -15599,3 +15599,35 @@ pub extern "C" fn kernel_kms_commit_count(crtc_id: u32) -> u64 {
 pub extern "C" fn kernel_kms_last_frame_us(crtc_id: u32) -> u64 {
     crate::dri::kms_last_frame_us(crtc_id)
 }
+
+/// Enable notifications for one canonical absolute guest prefix. No host path
+/// is resolved here: events come from the operations that own filesystem state.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_watch_fs_changes(path_ptr: *const u8, path_len: u32, enabled: i32) -> i32 {
+    if path_ptr.is_null() || path_len == 0 || path_len > 4096 { return -(Errno::EINVAL as i32); }
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    match crate::fs_changes::watch(path, enabled != 0) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Non-consuming readiness check. Hosts need not open a second ingress or
+/// allocate a scratch lease when a watched filesystem has no queued changes.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fs_changes_pending() -> i32 {
+    i32::from(crate::fs_changes::has_pending())
+}
+
+/// Drain complete records: kind byte (1 modify, 2 delete), u32 little-endian
+/// path length, then path bytes. Overflow queues prefix refreshes, never a lie
+/// that a dropped event's path did not change.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_drain_fs_changes(out_ptr: *mut u8, out_len: u32) -> i32 {
+    if out_ptr.is_null() || out_len == 0 || out_len > i32::MAX as u32 { return -(Errno::EINVAL as i32); }
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    match crate::fs_changes::drain(out) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}

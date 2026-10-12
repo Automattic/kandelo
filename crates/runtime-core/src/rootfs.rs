@@ -3331,6 +3331,7 @@ where
     if truncate {
         chmod(&resolved, mode & 0o7777)?;
     }
+    if result.is_ok() { crate::fs_changes::publish(1, &resolved); }
     result
 }
 
@@ -3613,7 +3614,7 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
     if comps.is_empty() {
         return Err(Errno::EISDIR);
     }
-    ROOTFS.with(|state| {
+    let result = ROOTFS.with(|state| {
         let (parent, last, target) = state.resolve(&comps)?;
         let target = target.ok_or(Errno::ENOENT)?;
         let last = last.ok_or(Errno::ENOENT)?;
@@ -3628,7 +3629,11 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
         }
         state.maybe_free(target);
         Ok(())
-    })
+    });
+    if result.is_ok() {
+        crate::fs_changes::publish(2, path);
+    }
+    result
 }
 
 /// Rename `old` to `new` within the rootfs. Both paths must be rootfs paths (the
@@ -3646,7 +3651,7 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     if old_comps.is_empty() || new_comps.is_empty() {
         return Err(Errno::EBUSY); // cannot rename the root
     }
-    ROOTFS.with(|state| {
+    let result = ROOTFS.with(|state| {
         let (old_parent, old_name, old_target) = state.resolve(&old_comps)?;
         let old_target = old_target.ok_or(Errno::ENOENT)?;
         let old_name = old_name.ok_or(Errno::ENOENT)?.to_vec();
@@ -3703,7 +3708,12 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
             state.recompute_dir_nlink(new_parent);
         }
         Ok(())
-    })
+    });
+    if result.is_ok() {
+        crate::fs_changes::publish(2, old);
+        crate::fs_changes::publish(1, new);
+    }
+    result
 }
 
 /// Create a hard link `new` to the existing file `old` within the rootfs. Hard

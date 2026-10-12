@@ -4,6 +4,21 @@ import { OwnedJobs } from '../src/owned-jobs';
 
 afterEach(() => vi.useRealTimers());
 describe('owned command families', () => {
+  it('refuses invalid timer and output bounds without accepting a job or cursor', () => {
+    vi.useFakeTimers();
+    const jobs = new OwnedJobs(vi.fn());
+    for (const timeout of [0, -1, NaN, Infinity, 0x8000_0000]) {
+      expect(() => jobs.create('a', 10, timeout)).toThrow('INVALID_JOB_OPTIONS');
+    }
+    jobs.create('a', 10, 1000);
+    jobs.output(10, 'stdout', new Uint8Array([1, 2, 3]));
+    for (const limit of [0, -1, NaN, Infinity, 65537]) {
+      expect(() => jobs.read('a', 0, limit)).toThrow('INVALID_LIMIT');
+    }
+    expect(() => jobs.read('a', -1)).toThrow('INVALID_CURSOR');
+    expect(jobs.read('a', 0, 1)).toMatchObject({ next: 1, hasMore: true });
+    jobs.exited(10, 0); jobs.detached(10); jobs.release('a');
+  });
   it('waits for every worker to detach and retries reaping before reporting completion', () => {
     vi.useFakeTimers();
     const reap = vi.fn().mockImplementationOnce(() => { throw new KernelReentrantEntryError('owned job process reap'); });
@@ -33,7 +48,7 @@ describe('owned command families', () => {
     jobs.release('a');
   });
 
-  it('reports a reap that fails for any reason but contention and completes the job once', () => {
+  it('reports a permanent reap failure once without claiming completion or releasing the record', () => {
     vi.useFakeTimers();
     const failure = new Error('foo');
     const reap = vi.fn(() => { throw failure; });
@@ -42,11 +57,11 @@ describe('owned command families', () => {
     jobs.create('a', 10, 1000);
     jobs.exited(10, 0);
     jobs.detached(10);
-    expect(jobs.read('a')).toMatchObject({ status: 'completed', terminationObserved: true });
+    expect(() => jobs.read('a')).toThrow(failure);
     vi.advanceTimersByTime(1000);
     expect(reap).toHaveBeenCalledTimes(1);
     expect(fail).toHaveBeenCalledWith(failure);
-    jobs.release('a');
+    expect(() => jobs.release('a')).toThrow(failure);
   });
 
   it.each(['cancelled', 'timed_out'] as const)('reaps the full %s family after asynchronous detachment', reason => {
