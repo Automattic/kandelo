@@ -168,6 +168,8 @@ export interface BrowserKernelOptions {
 
 /** Options for {@link BrowserKernel.boot}. */
 export interface BrowserKernelBootOptions {
+  /** Opt-in fixed-size image-file overwrites in a named OPFS journal. */
+  experimentalFixedPersistenceName?: string;
   /** Kernel wasm bytes; if omitted, fetched from the bundled URL. */
   kernelWasm?: ArrayBuffer;
   /**
@@ -216,6 +218,8 @@ export type BrowserKernelOwnedImageBootOptions = Omit<
 };
 
 export interface BrowserKernelOwnedImageInitOptions {
+  /** Opt-in fixed-size image-file overwrites in a named OPFS journal. */
+  experimentalFixedPersistenceName?: string;
   kernelWasm?: ArrayBuffer;
   /**
    * One whole ordinary ArrayBuffer whose ownership is transferred to the
@@ -462,6 +466,7 @@ export class BrowserKernel {
    * in one step.
    */
   async initFromImage(options: {
+    experimentalFixedPersistenceName?: string;
     kernelWasm?: ArrayBuffer;
     vfsImage: Uint8Array | "default";
     lazyUrlBase?: string;
@@ -486,6 +491,7 @@ export class BrowserKernel {
       lazyUrlMap: options.lazyUrlMap,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
+      experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
       takeVfsImageOwnership: false,
     });
   }
@@ -516,6 +522,7 @@ export class BrowserKernel {
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
+      experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
       takeVfsImageOwnership: true,
     });
   }
@@ -525,6 +532,7 @@ export class BrowserKernel {
    * message (with the demo's `vfsImage`), and await ready.
    */
   private async bootWorker(opts: {
+    experimentalFixedPersistenceName?: string;
     kernelWasmBytes: ArrayBuffer;
     vfsImage: Uint8Array;
     lazyUrlBase?: string;
@@ -633,6 +641,7 @@ export class BrowserKernel {
           rootfsMountSpec: opts.rootfsMountSpec === undefined
             ? undefined
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
+          experimentalFixedPersistenceName: opts.experimentalFixedPersistenceName,
           workerEntryUrl,
           config: {
             maxWorkers: this.options.maxWorkers,

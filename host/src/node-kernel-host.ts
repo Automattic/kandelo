@@ -85,6 +85,8 @@ const DEFAULT_SSL_ENV = [
 export interface NodeKernelHostOptions {
   /** Worker-owned remote UDP segment; a joiner transfers its native peer port. */
   remoteNetwork?: RemoteSegmentInit;
+  /** Opt-in fixed-size image-file overwrites journaled at this absolute path. */
+  experimentalFixedPersistencePath?: string;
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
@@ -290,6 +292,9 @@ export class NodeKernelHost {
     if (this.options.rootfsMountSpec !== undefined && rootfsImage === null) {
       throw new Error("rootfsMountSpec requires rootfsImage");
     }
+    if (this.options.experimentalFixedPersistencePath !== undefined && rootfsImage === null) {
+      throw new Error("experimentalFixedPersistencePath requires rootfsImage");
+    }
     if (this.options.rootfsLazyUrlBase === "") {
       throw new Error("rootfsLazyUrlBase must not be empty");
     }
@@ -457,6 +462,7 @@ export class NodeKernelHost {
           rootfsMountSpec: this.options.rootfsMountSpec === undefined
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
+          experimentalFixedPersistencePath: this.options.experimentalFixedPersistencePath,
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
           rootfsLazyAssets,
           rootfsLazyAssetSources,

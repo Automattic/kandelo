@@ -16,9 +16,11 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::slice;
+use sha2::{Digest, Sha256};
 
 use wasm_posix_shared::{
     abi,
@@ -124,6 +126,11 @@ unsafe extern "C" {
     // source installed answers `-ENOSYS`, which is what keeps the image path
     // dormant until it is wired.
     fn host_image_read(buf_ptr: *mut u8, buf_len: u32, offset_lo: u32, offset_hi: u32) -> i32;
+    fn host_overlay_len() -> i64;
+    fn host_overlay_read(offset: i64, ptr: *mut u8, len: u32) -> i32;
+    fn host_overlay_write(offset: i64, ptr: *const u8, len: u32) -> i32;
+    fn host_overlay_flush() -> i32;
+    fn host_overlay_truncate(len: i64) -> i32;
     fn host_pwrite(
         handle: i64,
         buf_ptr: *const u8,
@@ -2077,6 +2084,66 @@ pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32)
     }
 }
 
+struct HostOverlayStorage;
+
+impl crate::persistent_overlay::OverlayStorage for HostOverlayStorage {
+    fn len(&mut self) -> Result<u64, Errno> {
+        let length = unsafe { host_overlay_len() };
+        u64::try_from(length).map_err(|_| Errno::EIO)
+    }
+
+    fn read_exact_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let len = u32::try_from(dst.len()).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_read(offset, dst.as_mut_ptr(), len) })
+    }
+
+    fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let len = u32::try_from(src.len()).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_write(offset, src.as_ptr(), len) })
+    }
+
+    fn flush(&mut self) -> Result<(), Errno> {
+        i32_to_result(unsafe { host_overlay_flush() })
+    }
+
+    fn truncate(&mut self, len: u64) -> Result<(), Errno> {
+        let len = i64::try_from(len).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_truncate(len) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_enable_fixed_persistence(
+    image_len_lo: u32,
+    image_len_hi: u32,
+) -> i32 {
+    let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
+    if crate::rootfs::image_length() != Some(image_len) {
+        return -(Errno::EINVAL as i32);
+    }
+    let mut digest = Sha256::new();
+    let mut host = WasmHostIO;
+    let mut bytes = [0u8; 64 * 1024];
+    let mut offset = 0u64;
+    while offset < image_len {
+        let length = usize::try_from((image_len - offset).min(bytes.len() as u64))
+            .unwrap_or(bytes.len());
+        let read = match host.image_read(&mut bytes[..length], offset) {
+            Ok(read) if read > 0 && read <= length => read,
+            _ => return -(Errno::EIO as i32),
+        };
+        digest.update(&bytes[..read]);
+        offset += read as u64;
+    }
+    let base_digest: [u8; 32] = digest.finalize().into();
+    match crate::rootfs::enable_fixed_persistence(Box::new(HostOverlayStorage), base_digest) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Enable (nonzero) or disable (zero) in-kernel rootfs authority over `/`. The
 /// host calls this at boot after the kernel has loaded the image
 /// (`kernel_rootfs_load_image`); from then on the host only serves image and
@@ -2178,6 +2245,9 @@ pub extern "C" fn kernel_rootfs_set_foreign_mount_roots(
 /// `rootfs::mkdir_parents`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_mkdir_parents(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+    if crate::rootfs::fixed_persistence_enabled() {
+        return -(Errno::EROFS as i32);
+    }
     let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
     i32::try_from(crate::rootfs::mkdir_parents(path, mode & 0o7777, 0, 0)).unwrap_or(i32::MAX)
 }

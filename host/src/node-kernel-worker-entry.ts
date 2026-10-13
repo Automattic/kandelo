@@ -15,9 +15,9 @@ import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/r
  *                  pty_output, resolve_exec, lazy_download
  */
 import { parentPort } from "node:worker_threads";
-import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CAPTURED_STDIO,
@@ -37,6 +37,7 @@ import type {
   ThreadChannelAttachment,
 } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
+import { OverlayStorageFile } from "./vfs/overlay-storage";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
@@ -177,6 +178,8 @@ const port = parentPort;
 // --- State ---
 
 let kernelWorker: CentralizedKernelWorker;
+let persistentOverlay: OverlayStorageFile | null = null;
+let persistentOverlayLockDir: string | null = null;
 let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
 let maxPages: number = DEFAULT_MAX_PAGES;
@@ -1252,6 +1255,32 @@ async function handleInit(msg: InitMessage) {
     },
   });
   await pcmDriver.prepare(pcmTransport);
+
+  if (msg.experimentalFixedPersistencePath !== undefined) {
+    const path = msg.experimentalFixedPersistencePath;
+    if (!isAbsolute(path) || basename(path) === "." || basename(path) === "..") {
+      throw new Error("fixed rootfs persistence path must be an absolute file path");
+    }
+    const lockDir = `${path}.lock`;
+    mkdirSync(lockDir, { mode: 0o700 });
+    try {
+      const storage = OverlayStorageFile.open(
+        new HostFileSystem(dirname(path)),
+        `/${basename(path)}`,
+      );
+      try {
+        kernelWorker.enableFixedRootfsPersistence(storage);
+        persistentOverlay = storage;
+        persistentOverlayLockDir = lockDir;
+      } catch (error) {
+        storage.close();
+        throw error;
+      }
+    } catch (error) {
+      rmdirSync(lockDir);
+      throw error;
+    }
+  }
 
   initReady = true;
   post({ type: "ready" });
@@ -3565,6 +3594,12 @@ async function performDestroy() {
   pcmDriver = null;
   remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
+  persistentOverlay?.close();
+  persistentOverlay = null;
+  if (persistentOverlayLockDir !== null) {
+    rmdirSync(persistentOverlayLockDir);
+    persistentOverlayLockDir = null;
+  }
   if (gracefulDetachComplete) {
     try {
       processMemoryAllocator.clear();

@@ -159,6 +159,7 @@ export interface InitMessage {
    * (custom-io / legacy path).
    */
   rootfsImage?: ArrayBuffer;
+  experimentalFixedPersistencePath?: string;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base used to resolve relative lazy URLs embedded in rootfsImage. */

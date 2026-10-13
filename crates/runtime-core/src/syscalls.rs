@@ -18802,20 +18802,15 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
 
     match ofd.file_type {
         FileType::Regular | FileType::Directory => {
-            // A synthetic in-kernel handle (tmpfs scratch mount or the rootfs
-            // overlay/COW file) has no durable host backing, so fsync/fdatasync
-            // is correctly a no-op success — mirroring the host memfs backend
-            // (where fsync is already a no-op) and matching the read/write/lseek
-            // short-circuit convention. Reaching host_fsync with a sentinel
-            // handle would hit the host with a bad fd and fail spuriously.
-            // Directories on those filesystems too: fsync of a directory fd is
-            // how software makes a newly created name durable.
             if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle)
                 || ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
-                || crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
-                || ofd.host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
             {
                 return Ok(());
+            }
+            if crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
+                || ofd.host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
+            {
+                return crate::rootfs::sync_persistence();
             }
             host.host_fsync(ofd.host_handle)
         }
