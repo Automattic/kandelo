@@ -3248,3 +3248,34 @@ dependencies before linking. Do not start a patch cascade merely to
 make the Caddy build pass. First agree on a bounded, upstreamable API
 scope or a simpler production-demo target; no new Go/Caddy changes were
 made at this gate.
+
+**2026-10-13 — Bounded Caddy API inventory; stop gate reached.** Without
+editing the Go fork, dependencies, or package recipes, cross-compiled the
+stock Caddy v2.10.2 package and its `cmd/caddy` executable from FrankenPHP
+v1.11.0's pinned Caddy module with `GOOS=kandelo GOARCH=wasm`,
+`CGO_ENABLED=0`, and readonly module metadata. The package stops on three
+missing `x/sys/unix` socket symbols (`SO_REUSEPORT`, `SOL_SOCKET`, and
+`SetsockoptInt`). The executable stops before linking in ten packages:
+Caddy and gRPC need socket options; ristretto, both badger versions, and
+Tailscale's certificate paths need `x/sys/unix` mmap, sync/advice, open, or
+access APIs; bbolt lacks a `wasm` architecture constant; readline and
+logrus have no selected terminal implementation; and Google's certificate
+transparency X.509 fork has no selected system-root implementation. The
+target selects only `vgetrandom_unsupported.go` from `x/sys/unix`, so
+adding three constants to the Go standard library would not fix this.
+Kandelo already exposes socket options and partial file-backed `mmap`,
+but their semantics need checking against these consumers, especially
+database durability and shared mappings. These ten are first-pass compile
+failures, not an exhaustive dependency inventory; the FrankenPHP/PHP cgo
+link, runtime behavior, and browser execution were not tested here.
+
+This exceeds the agreed small, reviewable Caddy change budget. Do not
+add a pile of local Go-fork or module-cache patches to force the build.
+If production Caddy remains the chosen target, split it into separately
+reviewed upstreamable work: define and test an honest Kandelo `x/sys/unix`
+surface against kernel/POSIX behavior; add explicit Kandelo/Wasm target
+selection to each affected dependency; then repeat compilation and
+runtime tests before integrating FrankenPHP's Caddy `php_server`. The
+existing library-based WordPress profile remains a functional tech demo,
+not a production-representative Caddy deployment. No new compiler,
+standard-library, dependency, or package changes were made in this audit.
