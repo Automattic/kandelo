@@ -32,7 +32,8 @@ export function devSignallingPathForBase(base: string): string {
   return `${base.endsWith("/") ? base : `${base}/`}__kandelo_signalling`;
 }
 
-async function findPhp(repoRoot: string): Promise<string> {
+/** The PHP that runs the piplet, found as the module comment describes. */
+export async function findSignallingPhp(repoRoot: string): Promise<string> {
   const configured = process.env.KANDELO_SIGNALLING_PHP;
   if (configured) return configured;
   for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
@@ -106,7 +107,7 @@ export function devSignallingServer(repoRoot: string): Plugin {
   // Start lazily: most dev sessions never open a network session, and the
   // first nix-build of the PHP tools can take a while.
   const start = () => started ??= (async () => {
-    const php = await findPhp(repoRoot);
+    const php = await findSignallingPhp(repoRoot);
     // The piplet rewrites its own file, so serve a private copy.
     workdir = fs.mkdtempSync(path.join(os.tmpdir(), "kandelo-signalling-"));
     const script = path.join(workdir, "piplet.php");

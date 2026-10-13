@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { findSignallingPhp } from "../../vite/dev-signalling";
 
 /** Real throwaway PHP server: never mutate the self-modifying repository piplet. */
 export async function startPiplet(): Promise<{ url: string; close(): Promise<void> }> {
@@ -16,7 +18,10 @@ export async function startPiplet(): Promise<{ url: string; close(): Promise<voi
   const directory = mkdtempSync(join(tmpdir(), "kandelo-udp-piplet-"));
   const file = join(directory, "piplet.php");
   writeFileSync(file, readFileSync(new URL("../../../signalling/piplet.php", import.meta.url)));
-  const server = spawn("php", ["-S", `127.0.0.1:${port}`, file], { stdio: "ignore" });
+  // The same PHP the dev server's relay uses: KANDELO_SIGNALLING_PHP, then
+  // php on PATH, then apps/signalling/tools.nix through the dev shell's Nix.
+  const php = await findSignallingPhp(fileURLToPath(new URL("../../../../", import.meta.url)));
+  const server = spawn(php, ["-S", `127.0.0.1:${port}`, file], { stdio: "ignore" });
   let failure: Error | undefined;
   server.on("error", (error) => { failure = error; });
   const url = `http://127.0.0.1:${port}/`;
