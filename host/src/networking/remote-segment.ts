@@ -77,7 +77,8 @@ const addressKey = (addr: Uint8Array | number[]) => Array.from(addr).join(".");
 const machineName = (id: number) => id === 1 ? "host" : `peer-${id}`;
 const endpointKey = (owner: number, id: string) => `${owner}:${id}`;
 const inSegment = (addr: Uint8Array) => addr.length === 4 && addr[0] === 10 && addr[1] === 89 && addr[2] === 0;
-const limitedBroadcast = (addr: Uint8Array) => addr.length === 4 && addr.every((part) => part === 255);
+/** The session's link: one /24 whose hosting computer is 10.89.0.1. */
+const SEGMENT_SUBNET = { network: [10, 89, 0, 0] as [number, number, number, number], prefixLength: 24 };
 const validId = (id: unknown): id is number => Number.isInteger(id) && Number(id) >= 1 && Number(id) <= 254;
 const validEndpoint = (id: unknown): id is string => typeof id === "string" && /^[a-zA-Z0-9:._-]{1,64}$/.test(id);
 const validPort = (port: unknown): port is number => Number.isInteger(port) && Number(port) > 0 && Number(port) <= 65535;
@@ -130,7 +131,7 @@ function parseControl(value: unknown): RemoteSegmentControl {
  * belongs in a kernel worker. Transports carry bytes; they do not run syscalls.
  */
 export class RemoteVirtualNetwork implements NetworkIO {
-  private readonly network = new LocalVirtualNetwork();
+  private readonly network = new LocalVirtualNetwork(SEGMENT_SUBNET);
   private readonly members = new Map<number, RemoteSegmentMember>();
   private readonly bindings = new Map<string, RemoteSegmentBinding>();
   private readonly tcpBindings = new Map<string, RemoteSegmentBinding>();
@@ -168,6 +169,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
   }
 
   get localAddress(): Uint8Array | undefined { return this.local?.localAddress; }
+  get localNetmask(): Uint8Array | undefined { return this.local?.localNetmask; }
 
   /** Whether `addr` belongs to this segment's subnet. */
   static routes(addr: Uint8Array): boolean { return inSegment(addr); }
@@ -195,7 +197,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
   }
 
   udpSourceAddress(destination: Uint8Array): Uint8Array | number {
-    if (this.localAddress && (inSegment(destination) || limitedBroadcast(destination))) return this.localAddress.slice();
+    if (this.localAddress && (inSegment(destination) || this.network.isBroadcast(destination))) return this.localAddress.slice();
     return this.fallback?.udpSourceAddress?.(destination) ?? ENETUNREACH;
   }
 
@@ -235,7 +237,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
       transport.onDatagram((datagram) => {
         // A star's host authenticates the source on the ingress link. A
         // joiner receives forwarded sources from any member through the host.
-        const broadcast = limitedBroadcast(datagram.dstAddr);
+        const broadcast = this.network.isBroadcast(datagram.dstAddr);
         if (!this.localId || !inSegment(datagram.srcAddr)
           || !this.members.has(datagram.srcAddr[3])
           || (this.role === "host" && datagram.srcAddr[3] !== id)
@@ -452,12 +454,13 @@ export class RemoteVirtualNetwork implements NetworkIO {
     if (!this.local || this.closed) return ENETUNREACH;
     if (addressKey(datagram.srcAddr) !== "0.0.0.0"
       && addressKey(datagram.srcAddr) !== addressKey(this.localAddress!)) return EADDRNOTAVAIL;
-    if (limitedBroadcast(datagram.dstAddr)) return this.sendBroadcast({ ...datagram, srcAddr: this.localAddress!.slice() });
+    if (this.network.isBroadcast(datagram.dstAddr)) return this.sendBroadcast({ ...datagram, srcAddr: this.localAddress!.slice() });
     return this.local.sendDatagram(datagram);
   }
 
   /**
-   * A limited broadcast reaches every member with a wildcard socket on its
+   * A broadcast — to 255.255.255.255 or the session's 10.89.0.255 —
+   * reaches every member with a wildcard socket on its
    * port, this machine included, as Linux loops a broadcast back to its
    * sender. A joiner delivers its own copy and sends one to the host; the
    * host delivers to every member but the one it came from.

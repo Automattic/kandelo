@@ -69,6 +69,11 @@ export class SessionNetwork implements NetworkIO {
     return this.segment?.localAddress ?? this.fallback?.localAddress;
   }
 
+  /** The netmask that belongs to whichever address `localAddress` reports. */
+  get localNetmask(): Uint8Array | undefined {
+    return this.segment?.localAddress ? this.segment.localNetmask : this.fallback?.localNetmask;
+  }
+
   /** Route the session's subnet through `segment`, replaying wildcard endpoints. */
   attach(segment: RemoteVirtualNetwork): void {
     if (this.segment) throw new Error("this machine is already in a network session");

@@ -266,12 +266,13 @@ unsafe extern "C" {
         result_ptr: *mut u8,
         result_len: u32,
     ) -> i32;
-    /// Writes the machine's real assigned IPv4 address (4 bytes) to
-    /// `buf_ptr` and returns 1, or returns 0 if no address is configured.
-    /// Backs `crate::netif::interface_address`'s host-owned, non-loopback
-    /// case (Workstream H4: the interface table, MAC, and struct layout are
-    /// kernel-owned; this is the one fact only the host can know).
-    fn host_network_local_address(buf_ptr: *mut u8) -> i32;
+    /// Writes the machine's real assigned IPv4 address followed by its
+    /// link's netmask (8 bytes, network byte order) to `buf_ptr` and returns
+    /// 1, or returns 0 if no address is configured. Backs
+    /// `crate::netif::interface_config`'s host-owned, non-loopback case
+    /// (Workstream H4: the interface table, MAC, flags, and struct layout
+    /// are kernel-owned; the assignment is the one fact only the host knows).
+    fn host_network_interface(buf_ptr: *mut u8) -> i32;
     fn host_futex_wake(addr: usize, count: u32) -> i32;
     fn host_is_thread_worker() -> i32;
     fn host_bind_framebuffer(
@@ -1032,14 +1033,15 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_network_local_address(&mut self) -> Option<[u8; 4]> {
-        let mut buf = [0u8; 4];
-        let found = unsafe { host_network_local_address(buf.as_mut_ptr()) };
-        if found != 0 {
-            Some(buf)
-        } else {
-            None
+    fn host_network_interface(&mut self) -> Option<crate::netif::InterfaceConfig> {
+        let mut buf = [0u8; 8];
+        if unsafe { host_network_interface(buf.as_mut_ptr()) } == 0 {
+            return None;
         }
+        crate::netif::InterfaceConfig::validated(
+            [buf[0], buf[1], buf[2], buf[3]],
+            [buf[4], buf[5], buf[6], buf[7]],
+        )
     }
 
     fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno> {

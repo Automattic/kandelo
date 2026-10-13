@@ -3,7 +3,10 @@
  * broadcast address, others listen on a wildcard socket.
  *
  *   udp-broadcast-observation listen PORT COUNT
- *   udp-broadcast-observation announce PORT PAYLOAD
+ *   udp-broadcast-observation announce PORT PAYLOAD [ADDRESS]
+ *
+ * ADDRESS defaults to the limited broadcast address; pass the interface's
+ * subnet broadcast address to test a directed broadcast.
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -15,7 +18,7 @@
 #include <unistd.h>
 
 int main(int argc, char **argv) {
-    if (argc != 4) return 2;
+    if (argc != 4 && !(argc == 5 && !strcmp(argv[1], "announce"))) return 2;
     int port = atoi(argv[2]);
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) { perror("socket"); return 1; }
@@ -39,6 +42,7 @@ int main(int argc, char **argv) {
 
     if (!strcmp(argv[1], "announce")) {
         addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+        if (argc == 5 && inet_pton(AF_INET, argv[4], &addr.sin_addr) != 1) return 2;
         size_t len = strlen(argv[3]);
         // POSIX: sending to a broadcast address needs SO_BROADCAST first.
         if (sendto(fd, argv[3], len, 0, (struct sockaddr *)&addr, sizeof(addr)) != -1 || errno != EACCES) {
