@@ -50,10 +50,10 @@ export class OverlayStorageFile implements PersistentOverlayStorage {
     this.handle = handle;
   }
 
-  static open(backend: OverlayStorageBackend, path: string): OverlayStorageFile {
+  static open(backend: OverlayStorageBackend, path: string, create = true): OverlayStorageFile {
     const handle = backend.open(
       path,
-      OPEN_FLAGS.O_RDWR | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_NOFOLLOW,
+      OPEN_FLAGS.O_RDWR | (create ? OPEN_FLAGS.O_CREAT : 0) | OPEN_FLAGS.O_NOFOLLOW,
       0o600,
     );
     return new OverlayStorageFile(backend, handle);
@@ -117,6 +117,17 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
   private constructor(private handle: FileSystemSyncAccessHandle | null) {}
 
   static async open(name: string): Promise<OpfsOverlayStorageFile> {
+    const storage = await OpfsOverlayStorageFile.openFile(name, "legacy", "journal", true);
+    if (storage === null) throw storageError("EIO");
+    return storage;
+  }
+
+  static async openFile(
+    name: string,
+    slot: "legacy" | "g0" | "g1",
+    suffix: "journal" | "seal",
+    create: boolean,
+  ): Promise<OpfsOverlayStorageFile | null> {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name)) throw storageError("EIO");
     let stage = "root";
     try {
@@ -124,10 +135,14 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
       stage = "directory";
       const directory = await root.getDirectoryHandle("kandelo-persistent-overlay", { create: true });
       stage = "file";
-      const file = await directory.getFileHandle(`${name}.journal`, { create: true });
+      const file = await directory.getFileHandle(
+        `${name}${slot === "legacy" ? "" : `.${slot}`}.${suffix}`,
+        { create },
+      );
       stage = "access handle";
       return new OpfsOverlayStorageFile(await file.createSyncAccessHandle());
     } catch (error) {
+      if (!create && error instanceof DOMException && error.name === "NotFoundError") return null;
       throw new Error(`persistent overlay OPFS ${stage}: ${error}`);
     }
   }

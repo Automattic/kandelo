@@ -5,6 +5,10 @@ import {
   verifyOverlayGenerationSeal,
   writeOverlayGenerationSeal,
 } from "../src/vfs/overlay-generation-seal";
+import {
+  enableBestOverlayGeneration,
+  type OverlayGenerationFiles,
+} from "../src/vfs/overlay-generation-selection";
 
 class MemoryStorage implements PersistentOverlayStorage {
   bytes: Uint8Array;
@@ -78,6 +82,17 @@ describe("overlay generation seal", () => {
     expect(seal.len()).toBe(0);
   });
 
+  it("can verify a sealed immutable prefix before an active append tail", async () => {
+    const journal = new MemoryStorage(Uint8Array.of(1, 2, 3));
+    const seal = new MemoryStorage();
+    await writeOverlayGenerationSeal(journal, seal, 1, new Uint8Array(32));
+    journal.writeAllAt(3, Uint8Array.of(4, 5));
+    await expect(verifyOverlayGenerationSeal(journal, seal)).rejects.toThrow("invalid");
+    expect((await verifyOverlayGenerationSeal(journal, seal, undefined, true)).journalLength).toBe(3);
+    journal.bytes[0] ^= 1;
+    await expect(verifyOverlayGenerationSeal(journal, seal, undefined, true)).rejects.toThrow("invalid");
+  });
+
   it("rejects invalid generation numbers and header damage", async () => {
     const journal = new MemoryStorage(Uint8Array.of(1, 2, 3));
     const seal = new MemoryStorage();
@@ -86,5 +101,61 @@ describe("overlay generation seal", () => {
     await writeOverlayGenerationSeal(journal, seal, 1, new Uint8Array(32));
     seal.bytes[16] ^= 1;
     await expect(verifyOverlayGenerationSeal(journal, seal)).rejects.toThrow("invalid");
+  });
+});
+
+describe("overlay generation boot selection", () => {
+  function files(entries: Record<string, MemoryStorage>): OverlayGenerationFiles {
+    return {
+      open: async (slot, file, create) => {
+        const key = `${slot}.${file}`;
+        if (create && entries[key] === undefined) entries[key] = new MemoryStorage();
+        return entries[key] ?? null;
+      },
+    };
+  }
+
+  it("selects the highest verified generation and accepts an appended journal tail", async () => {
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": new MemoryStorage(Uint8Array.of(9)),
+      "g0.journal": new MemoryStorage(Uint8Array.of(1, 2)),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(Uint8Array.of(3, 4)),
+      "g1.seal": new MemoryStorage(),
+    };
+    const digest = new Uint8Array(32);
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 2, digest);
+    await writeOverlayGenerationSeal(entries["g1.journal"]!, entries["g1.seal"]!, 3, digest);
+    entries["g1.journal"]!.writeAllAt(2, Uint8Array.of(5));
+    const selected = await enableBestOverlayGeneration(files(entries), () => {});
+    expect(selected.slot).toBe("g1");
+    expect(selected.journal.len()).toBe(3);
+  });
+
+  it("falls back after a torn seal or rejected kernel journal", async () => {
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": new MemoryStorage(Uint8Array.of(9)),
+      "g0.journal": new MemoryStorage(Uint8Array.of(1)),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(Uint8Array.of(2)),
+      "g1.seal": new MemoryStorage(),
+    };
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, new Uint8Array(32));
+    await writeOverlayGenerationSeal(entries["g1.journal"]!, entries["g1.seal"]!, 2, new Uint8Array(32));
+    entries["g1.seal"]!.truncate(4);
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
+    entries["g1.seal"]!.truncate(0);
+    expect((await enableBestOverlayGeneration(files(entries), (journal) => {
+      if (journal === entries["g0.journal"]) {
+        throw new Error("kernel refused fixed rootfs persistence (errno 5)");
+      }
+    })).slot).toBe("legacy");
+  });
+
+  it("refuses a silent reset when only incomplete generation files remain", async () => {
+    const entries = { "g0.journal": new MemoryStorage(Uint8Array.of(1)) };
+    await expect(enableBestOverlayGeneration(files(entries), () => {}))
+      .rejects.toThrow("refusing to reset");
+    expect(Object.keys(entries)).toEqual(["g0.journal"]);
   });
 });

@@ -80,6 +80,7 @@ export async function verifyOverlayGenerationSeal(
   journal: PersistentOverlayStorage,
   seal: PersistentOverlayStorage,
   expectedBaseDigest?: Uint8Array,
+  allowAppendedTail = false,
 ): Promise<OverlayGenerationSeal> {
   const bytes = new Uint8Array(HEADER_BYTES);
   if (seal.len() < HEADER_BYTES) throw sealError();
@@ -93,7 +94,7 @@ export async function verifyOverlayGenerationSeal(
     view.getUint32(4, true) !== VERSION ||
     !validLength(generation) ||
     !validLength(journalLength) ||
-    journal.len() !== journalLength ||
+    (allowAppendedTail ? journal.len() < journalLength : journal.len() !== journalLength) ||
     (expectedBaseDigest !== undefined && !sameBytes(baseDigest, expectedBaseDigest)) ||
     !sameBytes(bytes.subarray(HEADER_DATA_BYTES), await digest(bytes.subarray(0, HEADER_DATA_BYTES)))
   ) {

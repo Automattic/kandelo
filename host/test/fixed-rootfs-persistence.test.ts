@@ -1,10 +1,14 @@
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import { HostFileSystem } from "../src/vfs/host-fs";
+import { OverlayStorageFile } from "../src/vfs/overlay-storage";
+import { writeOverlayGenerationSeal } from "../src/vfs/overlay-generation-seal";
 
 const directKernelPath = join(import.meta.dirname, "../../target/wasm32-unknown-unknown/release/kandelo_kernel.wasm");
 const directImageModulePath = join(import.meta.dirname, "../../target/wasm32-unknown-unknown/release/kandelo_image_module.wasm");
@@ -47,6 +51,57 @@ async function boot(image: Uint8Array, path: string): Promise<NodeKernelHost> {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
+  it.skipIf(guestProgramPath === null)("boots a sealed slot and falls back from a torn newer slot", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-slot-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const host = await boot(image, path);
+      try {
+        const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await host.destroy();
+      }
+      copyFileSync(path, `${path}.g0.journal`);
+      copyFileSync(path, `${path}.g1.journal`);
+      const backend = new HostFileSystem(directory);
+      const digest = new Uint8Array(createHash("sha256").update(image).digest());
+      for (const [slot, generation] of [["g0", 1], ["g1", 2]] as const) {
+        const journal = OverlayStorageFile.open(backend, `/machine.journal.${slot}.journal`, false);
+        const seal = OverlayStorageFile.open(backend, `/machine.journal.${slot}.seal`);
+        try {
+          await writeOverlayGenerationSeal(journal, seal, generation, digest);
+        } finally {
+          seal.close();
+          journal.close();
+        }
+      }
+      const legacy = readFileSync(path);
+      writeFileSync(path, Buffer.from("damaged legacy"));
+      const latest = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await latest.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await latest.destroy();
+      }
+      writeFileSync(`${path}.g1.seal`, Buffer.from("torn"));
+      const prior = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await prior.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await prior.destroy();
+      }
+      writeFileSync(`${path}.g0.seal`, Buffer.from("torn"));
+      await expect(boot(image, path)).rejects.toThrow(/errno 5/);
+      writeFileSync(path, legacy);
+      const fallback = await boot(image, path);
+      await fallback.destroy();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it("boots read-only, rejects incompatible images and concurrent writers", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-"));
     const path = join(directory, "machine.journal");

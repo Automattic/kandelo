@@ -63,3 +63,13 @@ reads, but no host selects sealed generations yet. Crash-safe live compaction
 and persistent
 namespace mutations remain separate milestones, not implicit guarantees of
 the current fixed-overwrite mode.
+
+Boot now checks two optional sealed journal slots (`g0` and `g1`) on Node and
+browser hosts, preferring the highest verified generation. A seal authenticates
+the compacted prefix while the active journal may append later transactions;
+the kernel still validates and replays those transactions. If a slot is torn or
+its journal is rejected, boot tries the previous valid slot and then the
+legacy journal. If generation files exist without any valid journal, boot
+refuses to create an empty replacement. No live compaction handoff writes these
+slots yet, so this is a recovery prerequisite rather than a completed
+compaction milestone.

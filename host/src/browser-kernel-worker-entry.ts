@@ -55,6 +55,8 @@ import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
 import { OpfsImageReader } from "./vfs/opfs-image-reader";
 import { BrowserTimeProvider } from "./vfs/time";
 import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
+import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
+import { enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -168,7 +170,7 @@ const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 // State
 let kernelWorker: CentralizedKernelWorker;
-let persistentOverlay: OpfsOverlayStorageFile | null = null;
+let persistentOverlay: PersistentOverlayStorage | null = null;
 let opfsImageReader: OpfsImageReader | null = null;
 let workerAdapter: BrowserWorkerAdapter;
 let io: VirtualPlatformIO;
@@ -1290,14 +1292,12 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   if (msg.experimentalFixedPersistenceName !== undefined) {
     if (!rootImage.has()) throw new Error("fixed rootfs persistence requires a rootfs image");
-    const storage = await OpfsOverlayStorageFile.open(msg.experimentalFixedPersistenceName);
-    try {
-      kernelWorker.enableFixedRootfsPersistence(storage);
-      persistentOverlay = storage;
-    } catch (error) {
-      storage.close();
-      throw error;
-    }
+    const selected = await enableBestOverlayGeneration({
+      open: (slot, file, create) => OpfsOverlayStorageFile.openFile(
+        msg.experimentalFixedPersistenceName!, slot, file, create,
+      ),
+    }, (storage) => kernelWorker.enableFixedRootfsPersistence(storage));
+    persistentOverlay = selected.journal;
   }
 
   initReady = true;
