@@ -83,10 +83,26 @@ export function sessionInvitation(href: string): { room: string; name: string } 
   return { room, name: name || "Network session" };
 }
 
-/** A shareable link: this page, without boot recipes or scripts. */
+/**
+ * The page parameters that name the machine, as a Share link and a gallery
+ * launch write them: the image and the profile within it. An invitation opens
+ * the machine its host set the session up on.
+ */
+const MACHINE_PARAMS = ["vfs", "profile"] as const;
+
+/**
+ * A shareable link: this page and the machine it runs, plus the session.
+ * Never the fragment, where boot descriptors and startup scripts travel, or
+ * any other parameter: a script-bearing link has its own consent flow, and an
+ * invitation is not one.
+ */
 export function sessionLink(pageHref: string, room: string, name: string): string {
-  const url = new URL(pageHref);
-  url.search = ""; url.hash = "";
+  const page = new URL(pageHref);
+  const url = new URL(page.origin + page.pathname);
+  for (const key of MACHINE_PARAMS) {
+    const value = page.searchParams.get(key);
+    if (value !== null) url.searchParams.set(key, value);
+  }
   url.searchParams.set("network", room);
   url.searchParams.set("networkName", name);
   return url.href;

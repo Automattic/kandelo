@@ -71,7 +71,7 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; running: boolean 
                 <div>
                   <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Invite link</div>
                   <div className="kshare-url" data-network-link={state.link}>{state.link}</div>
-                  <p className="knetwork-note">Anyone with this link can ask to join while this computer hosts the session.</p>
+                  <p className="knetwork-note">The link opens this machine for whoever follows it, and lets them ask to join while this computer hosts the session.</p>
                 </div>
               )}
               <div>
