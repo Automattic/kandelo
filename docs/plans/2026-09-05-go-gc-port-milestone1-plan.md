@@ -3234,3 +3234,17 @@ returns HTTP 200 for the homepage and login. The new kernel, Go hello,
 and FrankenPHP Wasm validate as ABI 50. These are bounded functional
 checks, not a renewed sustained-soak or performance claim; the earlier
 intermittent WebKit service-worker 503 remains open.
+
+**2026-10-13 — Main refresh and Caddy maintainability gate.** Rebased
+onto main `008210569`, which changes cache garbage collection without
+conflicting with the Go port. The ABI snapshot check and 30 focused
+`xtask` cache-GC unit tests plus two cache-GC integration tests pass.
+Before adding Caddy support, the user asked to stop if it requires a
+large collection of Go compiler or library patches. The existing Go
+fork already differs from its Go 1.25.6 base in 241 files, with about
+9,214 inserted lines; that is existing platform-port work, not new Caddy
+work. The earlier Caddy build stopped in `x/sys/unix` and several other
+dependencies before linking. Do not start a patch cascade merely to
+make the Caddy build pass. First agree on a bounded, upstreamable API
+scope or a simpler production-demo target; no new Go/Caddy changes were
+made at this gate.
