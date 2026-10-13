@@ -313,3 +313,24 @@ export interface RemoteNetworkSnapshotMessage {
   type: "remote_network_snapshot";
   requestId: number;
 }
+
+/** Start a network session with this machine as the forwarding host.
+ *  Responds with the machine's session address. */
+export interface RemoteNetworkHostMessage {
+  type: "remote_network_host";
+  requestId: number;
+}
+
+/** Join a session over a connected peer's byte bridge to its host. Responds
+ *  with the address the host assigned. */
+export interface RemoteNetworkJoinMessage {
+  type: "remote_network_join";
+  requestId: number;
+  peer: RemoteSegmentPeer;
+}
+
+/** Leave the session; a host leaving ends it for every member. */
+export interface RemoteNetworkLeaveMessage {
+  type: "remote_network_leave";
+  requestId: number;
+}

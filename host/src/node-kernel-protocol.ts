@@ -42,6 +42,9 @@ export type {
   ProcEventMessage,
   AttachRemotePeerMessage,
   RemoteNetworkSnapshotMessage,
+  RemoteNetworkHostMessage,
+  RemoteNetworkJoinMessage,
+  RemoteNetworkLeaveMessage,
 } from "./kernel-protocol-shared";
 import type {
   SignalProcessMessage,
@@ -83,6 +86,9 @@ import type {
   ProcEventMessage,
   AttachRemotePeerMessage,
   RemoteNetworkSnapshotMessage,
+  RemoteNetworkHostMessage,
+  RemoteNetworkJoinMessage,
+  RemoteNetworkLeaveMessage,
 } from "./kernel-protocol-shared";
 
 /**
@@ -322,6 +328,9 @@ export type MainToKernelMessage =
   | InitMessage
   | AttachRemotePeerMessage
   | RemoteNetworkSnapshotMessage
+  | RemoteNetworkHostMessage
+  | RemoteNetworkJoinMessage
+  | RemoteNetworkLeaveMessage
   | SpawnMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage

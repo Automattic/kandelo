@@ -16,6 +16,43 @@ function fixture(): ArrayBuffer {
 }
 
 describe("ordinary guest UDP state in dedicated Node kernel workers", () => {
+  it("starts a session on running machines and reaches a guest that was already listening", async () => {
+    let stderr = "", serverOutput = "", clientOutput = "";
+    // Neither machine boots with a session: a person creates and joins one
+    // on computers that are already running programs.
+    const server = new NodeKernelHost({ rootfsImage: await minimalImage(), maxPages: 4096,
+      onStdout: (_pid, bytes) => { serverOutput += new TextDecoder().decode(bytes); },
+      onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
+    });
+    const client = new NodeKernelHost({ rootfsImage: await minimalImage(), maxPages: 4096,
+      onStdout: (_pid, bytes) => { clientOutput += new TextDecoder().decode(bytes); },
+      onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
+    });
+    try {
+      await Promise.all([server.init(), client.init()]);
+      expect((await server.remoteNetworkSnapshot()).state).toBe("offline");
+      // The guest binds 0.0.0.0:9001 before any session exists.
+      const received = server.spawn(fixture(), ["udp-state-observation", "server", "10.89.0.2"]);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(await server.hostRemoteNetwork()).toBe("10.89.0.1");
+      const { port1, port2 } = new MessageChannel();
+      const [assigned] = await Promise.all([
+        client.joinRemoteNetwork({ port: port2, maxPayload: 32, maxControlBytes: 65536 }),
+        server.attachRemotePeer({ port: port1, maxPayload: 32, maxControlBytes: 65536 }),
+      ]);
+      expect(assigned).toBe("10.89.0.2");
+      await vi.waitFor(async () => expect((await client.remoteNetworkSnapshot()).bindings.some((binding) => binding.port === 9001)).toBe(true));
+      const sent = client.spawn(fixture(), ["udp-state-observation", "client", "10.89.0.1", "32"]);
+      expect(await Promise.all([received, sent])).toEqual([0, 0]);
+      expect(stderr).toBe("");
+      expect(serverOutput).toContain("received hello and replied");
+      expect(clientOutput).toContain("received remote reply");
+      await client.leaveRemoteNetwork();
+      expect(await client.remoteNetworkSnapshot()).toMatchObject({ state: "offline", address: null });
+      await vi.waitFor(async () => expect((await server.remoteNetworkSnapshot()).members).toHaveLength(1));
+    } finally { await Promise.all([server.destroy(), client.destroy()]); }
+  }, 30_000);
+
   it("delivers a real guest datagram and reply between independent Node machines", async () => {
     let stderr = "", serverOutput = "", clientOutput = "";
     const server = new NodeKernelHost({ rootfsImage: await minimalImage(), maxPages: 4096,
