@@ -282,7 +282,7 @@ new file mode 100644
 index 0000000..0bd4521
 --- /dev/null
 +++ b/fbdoom/net_posix.c
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,437 @@
 +//
 +// Copyright(C) 2005-2014 Simon Howard (chocolate-doom net_sdl.c — basis)
 +// Copyright(C) 2026 wasm-posix-kernel contributors (POSIX adaptation)
@@ -459,6 +459,21 @@ index 0000000..0bd4521
 +        udpsock = -1;
 +        errno = saved_errno;
 +        return false;
++    }
++
++    // SDL_net, which this module replaces, enables broadcast on every UDP
++    // socket it opens; LAN discovery (-localsearch, -autojoin) sends to
++    // INADDR_BROADCAST, which POSIX refuses with EACCES without it.
++    {
++        int on = 1;
++        if (setsockopt(udpsock, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on)) < 0)
++        {
++            int saved_errno = errno;
++            close(udpsock);
++            udpsock = -1;
++            errno = saved_errno;
++            return false;
++        }
 +    }
 +
 +    // bind(port=0) → kernel-assigned ephemeral. Required: normal UDP receive delivery
