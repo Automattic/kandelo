@@ -21,6 +21,7 @@
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
+import type { RemoteSegmentPeer } from "./networking/remote-segment-port";
 
 export type { HttpRequest, HttpResponse };
 
@@ -298,3 +299,17 @@ export interface WriteVfsFileMessage {
 export type ProcEventMessage =
   | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
   | { type: "proc_event"; kind: "exec"; pid: number };
+
+/** Transfer a connected peer's byte bridge to the forwarding kernel worker.
+ *  Responds with the peer's assigned segment address. */
+export interface AttachRemotePeerMessage {
+  type: "remote_network_attach";
+  requestId: number;
+  peer: RemoteSegmentPeer;
+}
+
+/** Inspect the worker-owned remote segment's membership and UDP bindings. */
+export interface RemoteNetworkSnapshotMessage {
+  type: "remote_network_snapshot";
+  requestId: number;
+}

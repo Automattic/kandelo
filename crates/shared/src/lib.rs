@@ -195,7 +195,13 @@ pub mod process_layout;
 ///     path component relative to a directory handle; the path-taking
 ///     `host_open`/`host_stat`/... family is gone). docs/abi-versioning.md
 ///     ("ABI 49") lists each.
-pub const ABI_VERSION: u32 = 49;
+/// 50: guest networking reaches other machines through host-owned segments.
+///     The kernel imports `host_udp_source_address` to learn the real IPv4
+///     source of a non-loopback UDP route instead of assuming a demo subnet,
+///     `host_udp_bind` of a specific address fails with `EADDRNOTAVAIL`
+///     unless the host owns it, and `FIONREAD` on a datagram socket reports
+///     the next packet's size. docs/abi-versioning.md ("ABI 50") lists each.
+pub const ABI_VERSION: u32 = 50;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1004,11 +1010,13 @@ pub enum Errno {
     ENETUNREACH = 101,
     ECONNABORTED = 103,
     ECONNRESET = 104,
+    ENOBUFS = 105,
     ECONNREFUSED = 111,
     EISCONN = 106,
     ENOTCONN = 107,
     ESHUTDOWN = 108,
     ETIMEDOUT = 110,
+    EHOSTUNREACH = 113,
     EALREADY = 114,
     EINPROGRESS = 115,
 }
@@ -1078,11 +1086,13 @@ impl Errno {
             101 => Some(Errno::ENETUNREACH),
             103 => Some(Errno::ECONNABORTED),
             104 => Some(Errno::ECONNRESET),
+            105 => Some(Errno::ENOBUFS),
             106 => Some(Errno::EISCONN),
             111 => Some(Errno::ECONNREFUSED),
             107 => Some(Errno::ENOTCONN),
             108 => Some(Errno::ESHUTDOWN),
             110 => Some(Errno::ETIMEDOUT),
+            113 => Some(Errno::EHOSTUNREACH),
             114 => Some(Errno::EALREADY),
             115 => Some(Errno::EINPROGRESS),
             _ => None,
