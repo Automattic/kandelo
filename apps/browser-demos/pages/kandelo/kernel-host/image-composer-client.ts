@@ -10,9 +10,7 @@
 
 import ComposerWorker from "./image-composer-worker.ts?worker";
 import {
-  discardStagedFixedPersistenceImage,
-  publishFixedPersistenceImage,
-  stageFixedPersistenceImageStream,
+  saveFixedPersistenceImageStream,
   type FixedPersistenceImageHandle,
 } from "./fixed-persistence-image";
 import type { ComposeImageJob, ComposeImageResult } from "./image-composer";
@@ -47,7 +45,6 @@ export function composeImageInWorker(
   return new Promise<ComposeImageResult>((resolve, reject) => {
     let settled = false;
     let staged: FixedPersistenceImageHandle | undefined;
-    let published = false;
     let stagePromise: Promise<FixedPersistenceImageHandle> | undefined;
     const queuedChunks: Array<Uint8Array | null> = [];
     let receiveChunk: ((chunk: Uint8Array | null) => void) | undefined;
@@ -76,13 +73,6 @@ export function composeImageInWorker(
       if (settled) return;
       settled = true;
       enqueue(null);
-      if (staged !== undefined && !published && job.persistentImage !== undefined) {
-        void discardStagedFixedPersistenceImage(
-          job.persistentImage.name,
-          job.persistentImage.identity,
-          staged,
-        ).catch(() => {});
-      }
       // Terminate before resolving so the staging buffer is already released
       // when the caller starts allocating the machine's own address spaces.
       worker.terminate();
@@ -113,12 +103,15 @@ export function composeImageInWorker(
           finish(() => reject(new Error("unexpected persistent image stream")));
           return;
         }
-        stagePromise = stageFixedPersistenceImageStream(
+        stagePromise = saveFixedPersistenceImageStream(
           job.persistentImage.name,
           job.persistentImage.identity,
           imageChunks(),
           job.persistentImage.lazyAssets,
           data.composition,
+          () => {
+            if (settled || !options.isCurrent()) throw options.supersededError();
+          },
           (message) => {
             if (!options.isCurrent()) throw options.supersededError();
             options.onTick(message);
@@ -142,16 +135,8 @@ export function composeImageInWorker(
         }
         enqueue(null);
         void stagePromise.then((imageFile) => {
-          if (settled) {
-            void discardStagedFixedPersistenceImage(
-              job.persistentImage!.name,
-              job.persistentImage!.identity,
-              imageFile,
-            ).catch(() => {});
-            return;
-          }
+          if (settled) return;
           if (!options.isCurrent()) {
-            staged = imageFile;
             finish(() => reject(options.supersededError()));
             return;
           }
@@ -167,21 +152,7 @@ export function composeImageInWorker(
           return;
         }
         result.imageFile = staged;
-        void publishFixedPersistenceImage(
-          job.persistentImage.name,
-          job.persistentImage.identity,
-          staged,
-          () => {
-            if (!options.isCurrent()) throw options.supersededError();
-          },
-        ).then(() => {
-          published = true;
-          if (!options.isCurrent()) {
-            finish(() => reject(options.supersededError()));
-          } else {
-            finish(() => resolve(result));
-          }
-        }, (error: unknown) => finish(() => reject(error)));
+        finish(() => resolve(result));
       } else {
         finish(() => resolve(result));
       }

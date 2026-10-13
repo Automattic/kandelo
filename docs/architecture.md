@@ -2209,7 +2209,9 @@ a separate 4 MiB clean-page cache. First installation streams the composed
 image from the Rust writer to a generation file in OPFS in 1 MiB chunks,
 with one acknowledged chunk in flight between composer and page. The page
 checks each chunk from storage, then publishes a manifest only while that boot
-still owns the session. A superseded boot cannot publish its staged image.
+still owns the session, under the same exclusive Web Lock as the write. A
+superseded boot cannot publish its staged image; an interrupted generation
+without a manifest is reclaimed before the next installation of that name.
 Initial source
 fetch and composition still require image-sized allocations, and journal
 recovery metadata is unbounded;

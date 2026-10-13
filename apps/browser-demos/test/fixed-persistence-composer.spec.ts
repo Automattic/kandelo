@@ -14,6 +14,11 @@ const imageModulePath = [
 const programPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
 const composerPath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/image-composer-client.ts");
 const persistenceModulePath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/fixed-persistence-image.ts");
+const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
+const kernelPath = [
+  resolve(repoRoot, "target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"),
+  resolve(repoRoot, "local-binaries/kernel.wasm"),
+].find(existsSync) ?? null;
 
 test.skip(imageModulePath === null || programPath === null, "image writer and guest fixture are required");
 
@@ -87,6 +92,7 @@ test("composer reuses exact frozen computer image despite a changed source", asy
 
 test("composer stages a persistent image in OPFS without returning its bytes", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
+  test.skip(kernelPath === null, "kernel artifact is required");
   const projectUse = testInfo.project.use as {
     channel?: string;
     launchOptions?: Record<string, unknown>;
@@ -105,11 +111,14 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       const page = context.pages()[0] ?? await context.newPage();
       const image = await imageWithState("abcdefgh");
       const imageUrl = new URL("/fixed-composer-stream.vfs", baseURL).href;
+      const kernelUrl = new URL("/fixed-composer-kernel.wasm", baseURL).href;
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const result = await page.evaluate(async ({ composerUrl, persistenceUrl, imageUrl }) => {
+      const result = await page.evaluate(async ({ composerUrl, persistenceUrl, browserKernelUrl, imageUrl, kernelUrl }) => {
         const { composeImageInWorker } = await import(composerUrl);
         const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
+        const { BrowserKernel } = await import(browserKernelUrl);
         const name = `composer-${crypto.randomUUID()}`;
         const identity = "composer stream probe";
         const ticks: string[] = [];
@@ -133,6 +142,32 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           throw new Error(`${String(error)}; composer ticks: ${ticks.join(" | ")}`);
         });
         const restored = await loadFixedPersistenceImageHandle(name, identity);
+        const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
+        const open = async () => {
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          await kernel.initFromOpfsImage({
+            kernelWasm: kernelBytes,
+            vfsImageFile: restored!.file,
+            experimentalFixedPersistenceName: name,
+          });
+          return kernel;
+        };
+        const firstKernel = await open();
+        let initial: string;
+        try {
+          initial = new TextDecoder().decode(await firstKernel.readFileFromVfs("/state"));
+          const { exit } = await firstKernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite"]);
+          if (await exit !== 0) throw new Error("guest persistence write failed");
+        } finally {
+          await firstKernel.destroy();
+        }
+        const secondKernel = await open();
+        let recovered: string;
+        try {
+          recovered = new TextDecoder().decode(await secondKernel.readFileFromVfs("/state"));
+        } finally {
+          await secondKernel.destroy();
+        }
         const supersededName = `composer-${crypto.randomUUID()}`;
         let current = true;
         let superseded = false;
@@ -164,6 +199,8 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           stagedLength: composed.imageFile?.length,
           restoredLength: restored?.length,
           profile: restored?.composition.profileId,
+          initial,
+          recovered,
           fileMatches: composed.imageFile !== undefined && restored !== null
             ? await composed.imageFile.file.isSameEntry(restored.file)
             : false,
@@ -173,12 +210,16 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       }, {
         composerUrl: new URL(`/@fs/${composerPath}`, baseURL).href,
         persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
         imageUrl,
+        kernelUrl,
       });
       expect(result.returnedBytes).toBe(0);
       expect(result.stagedLength).toBeGreaterThan(0);
       expect(result.restoredLength).toBe(result.stagedLength);
       expect(result.profile).toBe("probe");
+      expect(result.initial).toBe("abcdefgh");
+      expect(result.recovered).toBe("XYcdefgh");
       expect(result.fileMatches).toBe(true);
       expect(result.superseded).toBe(true);
       expect(result.supersededUnpublished).toBe(true);

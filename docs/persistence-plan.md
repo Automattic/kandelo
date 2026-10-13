@@ -50,7 +50,8 @@ exceed the chosen runtime-memory budget.
 
 The browser prototype now streams composed output into OPFS with one
 acknowledged chunk in flight, verifies the stored bytes, and publishes only
-from the boot that still owns the session. Reopening uses positioned OPFS
+from the boot that still owns the session, under one exclusive lock. The next
+installation reclaims abandoned generation files. Reopening uses positioned OPFS
 reads and a bounded clean cache; fixed overwrites use a bounded dirty cache.
 Initial source fetch, zstd decode, and image-writer loading still materialize
 the source image. Journal block locations and recovery work still grow with
