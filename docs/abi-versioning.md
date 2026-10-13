@@ -1551,6 +1551,17 @@ added before anything shipped under the number:
   `SO_BROADCAST` is set, as the limited broadcast address already did. The
   check asks the host for the interface configuration only for a destination
   that would leave the machine.
+- **The internet egress is a NAT link.** The Node socket backend and the
+  browser fetch and TLS bridges report `eth0` as `10.0.2.15/24`, so the
+  interface queries above describe the link TCP actually leaves on. Three
+  answers change with it: `getsockname` on an internet stream reports
+  `10.0.2.15` and its port instead of the host's real address (Node) or
+  `EOPNOTSUPP` (browser); a UDP datagram for anywhere beyond the machine
+  fails with `EHOSTUNREACH` instead of `ENETUNREACH`, because the route
+  exists and its gateway cannot deliver UDP; and the browser bridges' DNS
+  answers come from `198.18.0.0/15`, assigned in order, instead of hashes
+  into `10.0.0.0/8` that could collide with each other or a session's
+  subnet.
 - **libc `getifaddrs` uses those ioctls.** musl builds the list from
   rtnetlink, which Kandelo does not provide, so `getifaddrs` failed. The
   overlay lists every interface with its IPv4 address, netmask and broadcast

@@ -1,5 +1,6 @@
 import * as net from "net";
-import type { NetworkIO } from "../types";
+import type { NetworkAddress, NetworkIO, UdpReceiveTarget } from "../types";
+import { EgressLink } from "./egress-link";
 import { lookup } from "dns";
 import { EagainError } from "./fetch-backend";
 import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
@@ -66,8 +67,19 @@ interface DnsEntry {
 export class TcpNetworkBackend implements NetworkIO {
   private connections = new Map<number, Connection>();
   private dns = new Map<string, DnsEntry>();
+  // The guest sees the host's sockets as a NAT gateway on its own link
+  // (egress-link.ts); it never sees the host's real addresses.
+  private readonly egress = new EgressLink();
 
-  connect(handle: number, addr: Uint8Array, port: number, source?: import("../types").NetworkAddress): void {
+  get localAddress(): Uint8Array { return this.egress.localAddress; }
+  get localNetmask(): Uint8Array { return this.egress.localNetmask; }
+  udpSourceAddress(destination: Uint8Array): Uint8Array { return this.egress.udpSourceAddress(destination); }
+  bindUdp(id: string, addr: Uint8Array, port: number, target: UdpReceiveTarget): number { return this.egress.bindUdp(id, addr, port, target); }
+  unbindUdp(id: string): void { this.egress.unbindUdp(id); }
+  sendDatagram(): number { return this.egress.sendDatagram(); }
+
+  connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void {
+    if (!this.egress.ownsSource(source)) throw Object.assign(new Error("EADDRNOTAVAIL"), { errno: 99 });
     const ip = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`;
     const socket = new net.Socket({ allowHalfOpen: true });
     const conn: Connection = {
@@ -97,7 +109,9 @@ export class TcpNetworkBackend implements NetworkIO {
       conn.readEnded = true;
     });
 
-    socket.connect({port,host:ip,...(source ? {localAddress:Array.from(source.addr).join("."),localPort:source.port} : {})});
+    // A bound guest port is kept on the host side of the NAT; the guest's
+    // address is its own, so the host chooses its real source address.
+    socket.connect({port,host:ip,...(source?.port ? {localPort:source.port} : {})});
     this.connections.set(handle, conn);
   }
 
@@ -191,10 +205,11 @@ export class TcpNetworkBackend implements NetworkIO {
     return facts;
   }
 
-  localEndpoint(handle: number): import('../types').NetworkAddress {
+  localEndpoint(handle: number): NetworkAddress {
     const value = this.connections.get(handle)?.socket.address();
     if (!value || typeof value === "string" || !("family" in value) || value.family !== "IPv4") throw Object.assign(new Error("ENOTCONN"),{errno:107});
-    return {addr:new Uint8Array(value.address.split('.').map(Number)),port:value.port};
+    // This machine's side of the NAT: its own address, the host's port.
+    return {addr:this.egress.localAddress,port:value.port};
   }
 
   shutdown(handle: number, how: number): void {

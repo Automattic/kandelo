@@ -88,6 +88,24 @@ describe("ordinary guest UDP state in dedicated Node kernel workers", () => {
     } finally { await Promise.all([hosting.destroy(), joiner.destroy()]); }
   }, 30_000);
 
+  it("reports the internet egress as a NAT link that carries no UDP", async () => {
+    let output = "", stderr = "";
+    const probe = new Uint8Array(readFileSync(new URL("./fixtures/interface-observation.wasm", import.meta.url))).buffer;
+    const machine = new NodeKernelHost({ rootfsImage: await minimalImage(), maxPages: 4096, enableTcpNetwork: true,
+      onStdout: (_pid, bytes) => { output += new TextDecoder().decode(bytes); },
+      onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); } });
+    try {
+      await machine.init();
+      expect(await machine.spawn(probe, ["interface-observation"])).toBe(0);
+      expect(output).toContain("eth0 flags=0x43 addr=10.0.2.15 netmask=255.255.255.0 broadcast=10.0.2.255\n");
+      output = "";
+      // The route exists and the gateway on it cannot deliver UDP.
+      expect(await machine.spawn(probe, ["interface-observation", "send", "192.0.2.1"])).toBe(0);
+      expect(output).toBe("send errno=113\n");
+      expect(stderr).toBe("");
+    } finally { await machine.destroy(); }
+  }, 30_000);
+
   const fbdoom = tryResolveBinary("programs/fbdoom.wasm");
   it.skipIf(!fbdoom)("finds a Doom server on another computer through the session's LAN search", async () => {
     let searchOutput = "", serverOutput = "";
