@@ -2606,15 +2606,24 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
 
 WebRTC or proxy-based external transports should attach as additional `NetworkIO` backends behind the same POSIX socket layer rather than adding host-specific socket APIs visible to guest programs.
 
-`RemoteVirtualNetwork` extends the local backend with a worker-owned IPv4 UDP
-star segment. `RemoteSegmentRuntime` initializes it before the kernel starts,
-so a joiner owns its assigned address before guest processes can run. Both
-`NodeKernelHost` and `BrowserKernel` accept `remoteNetwork` configuration and
-transfer native MessagePorts to their dedicated kernel workers. Attachments and
-snapshots cross the worker protocol; address ownership, forwarding, UDP bindings,
-and error decisions stay in the worker. Paired Node MessagePorts exercise the
-same segment. Node has no built-in WebRTC implementation; the RTC adapter is a
-browser transport boundary.
+`RemoteVirtualNetwork` extends the local backend with a worker-owned IPv4
+star segment: one `10.89.0.0/24` link whose hosting computer is `10.89.0.1` and
+forwards every packet between the computers that join it. A session starts and
+ends while machines run. Each kernel worker installs a `SessionNetwork` for the
+machine's whole life; without a session it behaves exactly like the backend it
+wraps (or like an absent network), and `RemoteSegmentRuntime` attaches and
+detaches segments through worker messages. Hosting assigns `10.89.0.1`; joining
+waits for the host's directory to assign the next free address. Wildcard UDP
+sockets and TCP listeners opened before a session are replayed into it, so a
+program that was already listening hears the session. Leaving removes the
+address, resets streams that used it, and keeps wildcard sockets for the next
+session; when a host leaves, its joiners observe the session ending and why.
+Both `NodeKernelHost` and `BrowserKernel` expose `hostRemoteNetwork`,
+`joinRemoteNetwork`, `attachRemotePeer`, `leaveRemoteNetwork` and
+`remoteNetworkSnapshot`, and transfer native MessagePorts to their dedicated
+kernel workers. Address ownership, forwarding, bindings and error decisions stay
+in the worker. Paired Node MessagePorts exercise the same segment. Node has no
+built-in WebRTC implementation; the RTC adapter is a browser transport boundary.
 
 The browser adapter carries raw unreliable UDP frames and reliable directory
 messages through bounded port bridges. Each direction admits at most 128 frames
@@ -2624,8 +2633,26 @@ full worker-side admission returns EAGAIN. RTC send-buffer pressure may drop
 admitted UDP frames. Control congestion closes the connection rather than
 silently losing address or binding state. Host forwarding checks ingress source
 ownership and the destination link's payload ceiling. Membership is capped at
-16 machines and 32 UDP bindings per machine. Remote TCP, broadcast, multicast,
-and external raw UDP delivery are outside this segment's current contract.
+32 computers, the host included, and 16 UDP bindings and TCP listeners per
+computer, which keeps the directory within one 64 KiB control message.
+
+A broadcast to `255.255.255.255` or to the session's `10.89.0.255` reaches
+every computer with a wildcard UDP socket on its port, the sender included; a
+socket bound to a unicast address does not hear it. A joiner delivers its own
+copy and sends one to the host, which delivers to every other member and never
+back to the sender. Because the host copies each broadcast up to 31 times, it
+meters what each member may originate (a burst of 64, refilled at 64 per
+second); excess broadcasts are dropped and counted in the snapshot. The kernel
+requires `SO_BROADCAST` for both addresses. Multicast and external raw UDP
+delivery are outside this segment's contract.
+
+The interface the kernel reports follows the host's assignment. A `NetworkIO`
+that reports `localAddress` also reports `localNetmask`, and every
+`LocalVirtualNetwork` declares the subnet its link carries. The kernel serves
+`SIOCGIFFLAGS`, `SIOCGIFNETMASK` and `SIOCGIFBRDADDR` from that pair, and libc's
+`getifaddrs` is built on those ioctls, so a program that enumerates interfaces
+sees `eth0` as, for example, `10.89.0.2/24` with broadcast `10.89.0.255` while
+joined, and as down with no address outside a session.
 
 ABI 50 adds host-selected UDP source addresses and correct next-datagram
 FIONREAD observations, and preserves host EHOSTUNREACH/ENOBUFS errors.

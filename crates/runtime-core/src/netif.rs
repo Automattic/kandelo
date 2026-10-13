@@ -10,8 +10,10 @@
 //! layout.
 //!
 //! Exactly one genuinely host-owned fact remains: the machine's real assigned
-//! IPv4 address (`HostIO::host_network_local_address`). The host cannot know
-//! it from inside the kernel, so the kernel asks.
+//! IPv4 address and the netmask of the link the host attached it to
+//! (`HostIO::host_network_interface`). The kernel cannot know either from
+//! inside itself, so it asks; the interface flags and the broadcast address
+//! follow from them.
 //!
 //! `SIOCGIFCONF` is served entirely by the kernel too, including the
 //! dereference of the caller's nested `struct ifconf.ifc_buf` pointer. This
@@ -45,6 +47,43 @@ pub const ARPHRD_ETHER: u16 = 1;
 /// `ARPHRD_LOOPBACK` — loopback hardware type reported by `SIOCGIFHWADDR`.
 pub const ARPHRD_LOOPBACK: u16 = 772;
 
+/// `struct ifreq.ifr_flags` bits the kernel reports (`<net/if.h>`).
+pub const IFF_UP: u16 = 0x1;
+pub const IFF_BROADCAST: u16 = 0x2;
+pub const IFF_LOOPBACK: u16 = 0x8;
+pub const IFF_RUNNING: u16 = 0x40;
+
+/// An interface's IPv4 configuration: its address and its link's netmask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterfaceConfig {
+    pub address: [u8; 4],
+    pub netmask: [u8; 4],
+}
+
+impl InterfaceConfig {
+    /// A host-reported configuration the kernel can serve: a contiguous
+    /// netmask (a run of one bits, then zeros). Anything else is not an
+    /// IPv4 subnet, so the interface is treated as unconfigured rather than
+    /// reporting a broadcast address derived from nonsense.
+    pub fn validated(address: [u8; 4], netmask: [u8; 4]) -> Option<Self> {
+        let mask = u32::from_be_bytes(netmask);
+        if mask.leading_ones() + mask.trailing_zeros() != 32 {
+            return None;
+        }
+        Some(Self { address, netmask })
+    }
+
+    /// The link's directed broadcast address: every host bit set. A /31 or
+    /// /32 link has no broadcast address.
+    pub fn broadcast(&self) -> Option<[u8; 4]> {
+        let mask = u32::from_be_bytes(self.netmask);
+        if mask.trailing_zeros() < 2 {
+            return None;
+        }
+        Some((u32::from_be_bytes(self.address) | !mask).to_be_bytes())
+    }
+}
+
 /// One kernel-known network interface.
 pub struct NetworkInterface {
     pub name: &'static str,
@@ -76,15 +115,51 @@ pub fn find_by_index(index: u32) -> Option<&'static NetworkInterface> {
     INTERFACES.iter().find(|iface| iface.index == index)
 }
 
-/// The IPv4 address to report for `iface`: the fixed loopback address for
-/// `lo`, or the host's real assigned address for anything else. `None` means
-/// the host has no address configured yet (`SIOCGIFADDR` reports
-/// `EADDRNOTAVAIL` in that case, matching the prior host-side behavior).
-pub fn interface_address(iface: &NetworkInterface, host: &mut dyn HostIO) -> Option<[u8; 4]> {
+/// The IPv4 configuration to report for `iface`: the fixed loopback network
+/// for `lo`, or the host's real assignment for anything else. `None` means
+/// the host has no address configured yet (`SIOCGIFADDR` and
+/// `SIOCGIFNETMASK` report `EADDRNOTAVAIL` in that case).
+pub fn interface_config(iface: &NetworkInterface, host: &mut dyn HostIO) -> Option<InterfaceConfig> {
     if iface.loopback {
-        return Some([127, 0, 0, 1]);
+        return Some(InterfaceConfig { address: [127, 0, 0, 1], netmask: [255, 0, 0, 0] });
     }
-    host.host_network_local_address()
+    host.host_network_interface()
+}
+
+pub fn interface_address(iface: &NetworkInterface, host: &mut dyn HostIO) -> Option<[u8; 4]> {
+    interface_config(iface, host).map(|config| config.address)
+}
+
+/// `SIOCGIFFLAGS`: loopback is always up. The network interface is up and
+/// running only while the host has given it an address — a machine outside
+/// any network has an interface with nothing behind it. It can broadcast
+/// whenever its link has a broadcast address.
+pub fn interface_flags(iface: &NetworkInterface, host: &mut dyn HostIO) -> u16 {
+    if iface.loopback {
+        return IFF_UP | IFF_LOOPBACK | IFF_RUNNING;
+    }
+    match host.host_network_interface() {
+        Some(config) if config.broadcast().is_some() => IFF_UP | IFF_RUNNING | IFF_BROADCAST,
+        Some(_) => IFF_UP | IFF_RUNNING,
+        None => 0,
+    }
+}
+
+/// `SIOCGIFBRDADDR`: the broadcast address of a broadcast-capable interface.
+/// Loopback has none.
+pub fn interface_broadcast(iface: &NetworkInterface, host: &mut dyn HostIO) -> Option<[u8; 4]> {
+    if iface.loopback {
+        return None;
+    }
+    host.host_network_interface()?.broadcast()
+}
+
+/// Whether `addr` is the directed broadcast address of the configured
+/// network interface, which a sender may reach only with `SO_BROADCAST`.
+pub fn is_interface_broadcast(addr: [u8; 4], host: &mut dyn HostIO) -> bool {
+    host.host_network_interface()
+        .and_then(|config| config.broadcast())
+        == Some(addr)
 }
 
 /// The kernel-owned, boot-random virtual MAC address, generated once (from
@@ -287,8 +362,8 @@ mod tests {
         fn host_futex_wake(&mut self, _: usize, _: u32) -> Result<i32, wasm_posix_shared::Errno> {
             unimplemented!()
         }
-        fn host_network_local_address(&mut self) -> Option<[u8; 4]> {
-            self.local_addr
+        fn host_network_interface(&mut self) -> Option<InterfaceConfig> {
+            self.local_addr.map(|address| InterfaceConfig { address, netmask: [255, 255, 255, 0] })
         }
     }
 
@@ -379,6 +454,37 @@ mod tests {
         let mut out = [0u8; 32];
         let written = ifconf_write(4, &mut out, &mut host);
         assert_eq!(written, 32);
+    }
+
+    #[test]
+    fn flags_and_broadcast_follow_the_hosts_assignment() {
+        let lo = find_by_name(b"lo").unwrap();
+        let eth0 = find_by_name(b"eth0").unwrap();
+        let mut offline = FakeHost { random_fill: 0, local_addr: None };
+        assert_eq!(interface_flags(lo, &mut offline), IFF_UP | IFF_LOOPBACK | IFF_RUNNING);
+        assert_eq!(interface_flags(eth0, &mut offline), 0);
+        assert_eq!(interface_broadcast(eth0, &mut offline), None);
+        assert!(!is_interface_broadcast([255, 255, 255, 255], &mut offline));
+
+        let mut joined = FakeHost { random_fill: 0, local_addr: Some([10, 89, 0, 2]) };
+        assert_eq!(interface_flags(eth0, &mut joined), IFF_UP | IFF_RUNNING | IFF_BROADCAST);
+        assert_eq!(interface_broadcast(eth0, &mut joined), Some([10, 89, 0, 255]));
+        assert_eq!(interface_broadcast(lo, &mut joined), None);
+        assert!(is_interface_broadcast([10, 89, 0, 255], &mut joined));
+        assert!(!is_interface_broadcast([10, 89, 0, 254], &mut joined));
+        assert_eq!(interface_config(lo, &mut joined).unwrap().netmask, [255, 0, 0, 0]);
+    }
+
+    #[test]
+    fn only_contiguous_netmasks_are_subnets() {
+        assert!(InterfaceConfig::validated([10, 0, 0, 1], [255, 255, 255, 0]).is_some());
+        assert!(InterfaceConfig::validated([10, 0, 0, 1], [255, 255, 255, 255]).is_some());
+        assert!(InterfaceConfig::validated([10, 0, 0, 1], [0, 0, 0, 0]).is_some());
+        assert!(InterfaceConfig::validated([10, 0, 0, 1], [255, 0, 255, 0]).is_none());
+        let point = InterfaceConfig::validated([10, 0, 0, 1], [255, 255, 255, 254]).unwrap();
+        assert_eq!(point.broadcast(), None);
+        let wide = InterfaceConfig::validated([172, 16, 5, 9], [255, 240, 0, 0]).unwrap();
+        assert_eq!(wide.broadcast(), Some([172, 31, 255, 255]));
     }
 
     #[test]

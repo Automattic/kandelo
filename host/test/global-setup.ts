@@ -38,6 +38,10 @@ const C_TEST_FIXTURES = [
     forkInstrument: true,
   },
   {
+    src: join(fixturesDir, "interface-observation.c"),
+    out: join(fixturesDir, "interface-observation.wasm"),
+  },
+  {
     src: join(fixturesDir, "udp-broadcast-observation.c"),
     out: join(fixturesDir, "udp-broadcast-observation.wasm"),
   },

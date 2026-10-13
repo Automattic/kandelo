@@ -302,6 +302,12 @@ export interface UdpReceiveTarget {
 export interface NetworkIO {
   /** IPv4 address owned by this guest network stack, when known. */
   readonly localAddress?: Uint8Array;
+  /**
+   * Netmask of the link `localAddress` is on, in network byte order. A
+   * stack that reports an address must report its netmask: the kernel
+   * derives the interface's flags and broadcast address from the pair.
+   */
+  readonly localNetmask?: Uint8Array;
   /** Select a real routed UDP source; positive errno when no route exists. */
   udpSourceAddress?(destination: Uint8Array): Uint8Array | number;
   connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void;

@@ -460,7 +460,7 @@ async function runAll(): Promise<void> {
   try {
     const artifacts = await loadArtifacts();
     post({ type: "status", status: "running" });
-    const network = new LocalVirtualNetwork();
+    const network = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     log("runner", "system", "Virtual addresses: alpha=10.88.0.2 beta=10.88.0.3 gamma=10.88.0.4\n");
     const outcomes = [
       await runUdp(network, artifacts),

@@ -2139,19 +2139,29 @@ export class WasmPosixKernel {
           }
         },
         // Workstream H4 (host-surface minimization): the network-interface
-        // ioctl content (interface table, MAC, ifreq/ifconf layout) is now
-        // kernel-owned (`crates/runtime-core/src/netif.rs`). This is the one
-        // remaining host-owned fact the kernel cannot compute itself.
-        host_network_local_address: (bufPtr: KernelPointer): number => {
+        // ioctl content (interface table, MAC, flags, ifreq/ifconf layout) is
+        // kernel-owned (`crates/runtime-core/src/netif.rs`). The address the
+        // host assigned and the netmask of its link are the one remaining
+        // host-owned fact the kernel cannot compute itself.
+        host_network_interface: (bufPtr: KernelPointer): number => {
           const address = this.io.network?.localAddress;
+          const netmask = this.io.network?.localNetmask;
           if (address?.length !== 4) return 0;
+          // An address without its link's netmask is an incomplete adapter,
+          // not a /32: say so instead of inventing a subnet.
+          if (netmask?.length !== 4) {
+            throw new Error("the network adapter reports an address without its netmask");
+          }
           try {
             const destination = this.#rustLentKernelDestination(
               bufPtr,
-              4,
-              "host_network_local_address destination",
+              8,
+              "host_network_interface destination",
             );
-            this.#writeKernelBytes(destination, address);
+            const config = new IntrinsicUint8Array(8);
+            config.set(address, 0);
+            config.set(netmask, 4);
+            this.#writeKernelBytes(destination, config);
             return 1;
           } catch {
             return 0;

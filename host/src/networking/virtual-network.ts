@@ -211,6 +211,19 @@ interface TcpConnection {
   status: number;
 }
 
+/**
+ * The IPv4 subnet one virtual link carries. Every machine on the link is
+ * inside it, so the kernel can report a truthful netmask and broadcast
+ * address for the interface the link backs.
+ */
+export interface VirtualNetworkSubnet {
+  network: Uint8Array | [number, number, number, number];
+  prefixLength: number;
+}
+
+const toU32 = (addr: Uint8Array) => ((addr[0] << 24) | (addr[1] << 16) | (addr[2] << 8) | addr[3]) >>> 0;
+const fromU32 = (value: number) => new Uint8Array([value >>> 24, (value >>> 16) & 255, (value >>> 8) & 255, value & 255]);
+
 export interface VirtualNetworkMachineOptions {
   id: string;
   address: Uint8Array | [number, number, number, number];
@@ -218,6 +231,12 @@ export interface VirtualNetworkMachineOptions {
 }
 
 export class LocalVirtualNetwork {
+  /** The link's netmask, in network byte order. */
+  readonly netmask: Uint8Array;
+  /** The link's directed broadcast address, or null on a /31 or /32 link. */
+  readonly broadcastAddress: Uint8Array | null;
+  private readonly networkAddress: number;
+  private readonly mask: number;
   private machines = new Map<string, VirtualNetworkBackend>();
   private addressOwners = new Map<string, string>();
   private hostnames = new Map<string, Uint8Array>();
@@ -225,11 +244,35 @@ export class LocalVirtualNetwork {
   private udpEndpoints: UdpEndpoint[] = [];
   private tcpPeersByMachine = new Map<string, Set<VirtualTcpPeer>>();
 
+  constructor(subnet: VirtualNetworkSubnet) {
+    const { prefixLength } = subnet;
+    if (!Number.isInteger(prefixLength) || prefixLength < 1 || prefixLength > 32) {
+      throw new Error("a virtual link's prefix length is 1 to 32");
+    }
+    this.mask = prefixLength === 32 ? 0xffffffff : (~((1 << (32 - prefixLength)) - 1)) >>> 0;
+    this.networkAddress = toU32(copyAddr(new Uint8Array(subnet.network))) & this.mask;
+    if (this.networkAddress !== toU32(copyAddr(new Uint8Array(subnet.network)))) {
+      throw new Error("a virtual link's network address has host bits set");
+    }
+    this.netmask = fromU32(this.mask);
+    this.broadcastAddress = prefixLength <= 30 ? fromU32((this.networkAddress | ~this.mask) >>> 0) : null;
+  }
+
+  /** Whether `addr` names every machine on this link. */
+  isBroadcast(addr: Uint8Array): boolean {
+    if (addr.length === 4 && addr.every((part) => part === 255)) return true;
+    return this.broadcastAddress !== null && ipKey(addr) === ipKey(this.broadcastAddress);
+  }
+
   attachMachine(options: VirtualNetworkMachineOptions): VirtualNetworkBackend {
     const address = copyAddr(options.address instanceof Uint8Array
       ? options.address
       : new Uint8Array(options.address));
     const key = ipKey(address);
+    if ((toU32(address) & this.mask) !== this.networkAddress
+      || (this.broadcastAddress && (toU32(address) === this.networkAddress || this.isBroadcast(address)))) {
+      throw new Error(`address ${key} is not a host address on this link`);
+    }
     if (this.addressOwners.has(key)) {
       throw new Error(`address ${key} is already attached`);
     }
@@ -377,6 +420,11 @@ export class LocalVirtualNetwork {
   }
 
   sendDatagram(datagram: UdpDatagram): number {
+    // A broadcast reaches every machine on the link, the sender's included.
+    if (this.isBroadcast(datagram.dstAddr)) {
+      this.broadcastDatagram(datagram, () => true);
+      return 0;
+    }
     const dstKey = ipKey(datagram.dstAddr);
     const targetMachineId = this.addressOwners.get(dstKey);
     if (!targetMachineId) return EHOSTUNREACH;
@@ -451,8 +499,11 @@ export class VirtualNetworkBackend implements NetworkIO {
     readonly localAddress: Uint8Array,
   ) {}
 
+  get localNetmask(): Uint8Array { return copyAddr(this.network.netmask); }
+
   udpSourceAddress(destination: Uint8Array): Uint8Array | number {
-    return this.network.hasAddress(destination) ? copyAddr(this.localAddress) : 101;
+    return this.network.hasAddress(destination) || this.network.isBroadcast(destination)
+      ? copyAddr(this.localAddress) : 101;
   }
 
   connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void {

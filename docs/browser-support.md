@@ -2507,15 +2507,39 @@ Browser sandboxing prevents Kandelo from listening on real network ports or open
 
 ### Purpose-checked browser peer connections
 
-The experimental `/pages/peer-network/` flow connects independent machines with
-`purpose: "network"` and the reusable piplet client. A host owns `10.89.0.1`,
-assigns up to 15 joiners, and forwards traffic between them in its dedicated
-kernel worker. The main thread transfers framed bytes between RTC channels and
-bounded native MessagePorts. Guest programs still call ordinary IPv4 UDP
-sockets. DNS names `host` and `peer-N` resolve through the worker's segment
-membership. Remote TCP and broadcast discovery are not implemented in this
-phase. Node runs the same segment over paired native ports; its built-in runtime
-has no WebRTC API, so creating RTC links remains a browser adapter capability.
+The Kandelo app's dock has a network button for **network sessions** between
+independent computers that are already running. Creating a session makes this
+computer the host of a `10.89.0.0/24` link (`10.89.0.1`) and shows an invite
+link carrying only a random room token and the session's name, never the
+page's boot image or scripts. Opening the link opens the panel with a Join
+button; joining always waits for that click, because it shows the hosting
+computer this computer's network address. A session admits up to 31 joiners;
+the host forwards their traffic in its dedicated kernel worker, and the panel
+lists the computers and addresses the worker reports. Booting another machine
+or leaving ends this computer's part in the session, and a host leaving ends
+it for everyone, with the reason shown. The bare `/pages/peer-network/` page
+connects machines it boots itself, with the same transport.
+
+Both use `purpose: "network"` peer connections. The main thread transfers
+framed bytes between RTC channels and bounded native MessagePorts. Guest
+programs use ordinary IPv4 UDP and TCP sockets; DNS names `host` and `peer-N`
+resolve through the worker's segment membership, and broadcasts reach every
+computer in the session, so LAN discovery works: in Chromium, a joiner's
+`fbdoom -localsearch` finds the hosting computer's server, and between two
+Node machines TyrQuake's Multiplayer → Join a Game search lists and joins a
+session's server. A LAN game should run as a private server
+(`fbdoom -privateserver`): a browser cannot send UDP to an internet master
+server, and fbdoom exits when its registration send fails. Node runs the
+same segment over paired native ports; its built-in runtime has no WebRTC API,
+so creating RTC links remains a browser adapter capability.
+
+Computers find each other through the signalling piplet's rooms. The
+development server relays the real `apps/signalling/piplet.php` same-origin
+at `<base>__kandelo_signalling`, run by PHP from `apps/signalling/tools.nix`
+(or `KANDELO_SIGNALLING_PHP`, or `php` on `PATH`). A deployment names its
+piplet with `VITE_KANDELO_SIGNALLING_URL`; serve it same-origin or with CORS.
+Without either, the panel says sessions are unavailable rather than offering
+a button that cannot work.
 
 UDP uses an unordered channel with zero retransmissions; directory control is
 ordered and reliable. The payload cap is the lesser of 65,507 bytes and the
@@ -2563,9 +2587,23 @@ the session-sharing work in #1372.
 
 `apps/signalling/piplet.php` and `apps/browser-demos/lib/peer-signalling.ts`
 carry the offer and answer as opaque connect codes. The server does not
-interpret purpose or carry guest traffic. A session name grants access to
-its codes; sessions expire after ten minutes and are bounded to 256 stored
-sessions, with a 64 KiB limit per code.
+interpret purpose or carry guest traffic. Two shapes share one store:
+
+- A **session** pairs two computers under a human-chosen name. The name
+  grants access to its codes; sessions expire after ten minutes and are
+  bounded to 256 stored sessions, with a 64 KiB limit per code.
+- A **room** matches many computers to one host under a random 20-64 letter
+  token. Joiners post offers under the token; the host collects waiting joins
+  on each heartbeat and answers or refuses each one. Only the host may
+  answer, refuse or close, proven by a random key in the
+  `X-Kandelo-Host-Key` header that never leaves the hosting computer; the
+  piplet stores only its SHA-256. A room expires 60 seconds after its last
+  heartbeat and an unanswered join after 120. Rooms, waiting joins per room,
+  names and the whole store are bounded.
+
+Anyone holding a room token can ask to join, and an answered join carries
+the host's network addresses, so a token is a capability: share it only with
+the people you mean to invite.
 
 ### Memory per process
 Each process gets a fresh memory layout whose requested initial pages cover the

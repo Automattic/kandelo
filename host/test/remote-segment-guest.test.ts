@@ -43,15 +43,50 @@ describe("ordinary guest UDP state in dedicated Node kernel workers", () => {
       }
       // Every computer listens, the announcing one included: Linux loops a
       // broadcast back to its sender's own sockets.
-      const listening = all.map((each) => each.host.spawn(probe, ["udp-broadcast-observation", "listen", "2342", "1"]));
+      const listening = all.map((each) => each.host.spawn(probe, ["udp-broadcast-observation", "listen", "2342", "2"]));
       await vi.waitFor(async () => expect((await hosting.host.remoteNetworkSnapshot()).bindings.filter((binding) => binding.port === 2342)).toHaveLength(3));
       await vi.waitFor(async () => expect((await announcer.host.remoteNetworkSnapshot()).bindings.some((binding) => binding.address === "10.89.0.2" && binding.port === 2342)).toBe(true));
-      const announced = announcer.host.spawn(probe, ["udp-broadcast-observation", "announce", "2342", "lan-game"]);
-      expect(await Promise.all([...listening, announced])).toEqual([0, 0, 0, 0]);
+      // Both broadcast addresses: the limited one, and the session's subnet.
+      expect(await announcer.host.spawn(probe, ["udp-broadcast-observation", "announce", "2342", "lan-game"])).toBe(0);
+      expect(await announcer.host.spawn(probe, ["udp-broadcast-observation", "announce", "2342", "subnet-game", "10.89.0.255"])).toBe(0);
+      expect(await Promise.all(listening)).toEqual([0, 0, 0]);
       expect(stderr).toBe("");
-      for (const each of all) expect(outputs.get(each.key)).toContain("heard lan-game from 10.89.0.2");
+      for (const each of all) {
+        expect(outputs.get(each.key)).toContain("heard lan-game from 10.89.0.2");
+        expect(outputs.get(each.key)).toContain("heard subnet-game from 10.89.0.2");
+      }
     } finally { await Promise.all(all.map((each) => each.host.destroy())); }
   }, 60_000);
+
+  it("reports each interface's address, netmask and broadcast address through getifaddrs", async () => {
+    const outputs = ["", ""];
+    let stderr = "";
+    const image = await minimalImage();
+    const [hosting, joiner] = outputs.map((_, index) => new NodeKernelHost({ rootfsImage: image.slice(), maxPages: 4096,
+      onStdout: (_pid, bytes) => { outputs[index] += new TextDecoder().decode(bytes); },
+      onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); } }));
+    const probe = new Uint8Array(readFileSync(new URL("./fixtures/interface-observation.wasm", import.meta.url))).buffer;
+    try {
+      await Promise.all([hosting.init(), joiner.init()]);
+      // Outside any network the interface exists but is down, with no address.
+      expect(await joiner.spawn(probe, ["interface-observation"])).toBe(0);
+      expect(outputs[1]).toBe(
+        "lo flags=0x49 addr=127.0.0.1 netmask=255.0.0.0 broadcast=-\n" +
+        "eth0 flags=0 addr=- netmask=- broadcast=-\n");
+      outputs[1] = "";
+      await hosting.hostRemoteNetwork();
+      const { port1, port2 } = new MessageChannel();
+      await Promise.all([
+        joiner.joinRemoteNetwork({ port: port2, maxPayload: 1200, maxControlBytes: 65536 }),
+        hosting.attachRemotePeer({ port: port1, maxPayload: 1200, maxControlBytes: 65536 }),
+      ]);
+      expect(await joiner.spawn(probe, ["interface-observation"])).toBe(0);
+      expect(outputs[1]).toContain("eth0 flags=0x43 addr=10.89.0.2 netmask=255.255.255.0 broadcast=10.89.0.255\n");
+      expect(await hosting.spawn(probe, ["interface-observation"])).toBe(0);
+      expect(outputs[0]).toContain("eth0 flags=0x43 addr=10.89.0.1 netmask=255.255.255.0 broadcast=10.89.0.255\n");
+      expect(stderr).toBe("");
+    } finally { await Promise.all([hosting.destroy(), joiner.destroy()]); }
+  }, 30_000);
 
   const fbdoom = tryResolveBinary("programs/fbdoom.wasm");
   it.skipIf(!fbdoom)("finds a Doom server on another computer through the session's LAN search", async () => {
