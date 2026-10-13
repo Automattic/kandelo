@@ -1303,14 +1303,17 @@ async function bootProfile(
         mounts: requestedDescriptor.mounts,
       }),
     };
-  const frozenImageBytes = persistence === null
+  const restoredImage = persistence === null
     ? null
     : await loadFixedPersistenceImage(persistence.name, persistence.identity);
+  const frozenImageBytes = restoredImage?.imageBytes ?? null;
   assertCurrent();
 
   tick("service worker active and cross-origin isolated");
   const vfsImageLabel = imageLabel(profile);
-  tick(`loading ${vfsImageLabel}...`);
+  tick(restoredImage === null
+    ? `loading ${vfsImageLabel}...`
+    : `restoring ${vfsImageLabel} from OPFS...`);
   const reportVfsImageProgress: VfsImageProgressReport = (report) => {
     // A superseded boot must not keep driving the current boot screen.
     if (!isCurrent()) return;
@@ -1328,12 +1331,26 @@ async function bootProfile(
     fetch(kernelWasmUrl)
       .then(failOn("kernel.wasm"))
       .then((r) => r.arrayBuffer()),
-    loadVfsImage(profile, reportVfsImageProgress),
+    restoredImage === null || !restoredImage.lazyAssetsRecorded
+      ? loadVfsImage(profile, reportVfsImageProgress)
+      : Promise.resolve({
+        imageBytes: new ArrayBuffer(0),
+        lazyAssets: restoredImage.lazyAssets,
+      }),
   ]);
   assertCurrent();
+  if (frozenImageBytes !== null && restoredImage?.lazyAssetsRecorded) {
+    reportVfsImageProgress({
+      loadedBytes: frozenImageBytes.byteLength,
+      totalBytes: frozenImageBytes.byteLength,
+      status: "complete",
+    });
+  }
 
   tick(
-    `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(loadedVfs.imageBytes.byteLength)}`,
+    `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(
+      frozenImageBytes?.byteLength ?? loadedVfs.imageBytes.byteLength
+    )}`,
   );
   // Compose the boot image in a DISPOSABLE worker, never on this thread.
   // Composition instantiates the image-writer module (KandeloImageFs), whose
@@ -1348,7 +1365,9 @@ async function bootProfile(
   // composition itself.
   const composed = await composeImageInWorker(
     {
-      imageBytes: new Uint8Array(loadedVfs.imageBytes),
+      imageBytes: frozenImageBytes === null
+        ? new Uint8Array(loadedVfs.imageBytes)
+        : new Uint8Array(),
       ...(frozenImageBytes === null ? {} : { frozenImageBytes }),
       maxVfsByteLength: profile.maxVfsByteLength,
       imageLabel: imageLabel(profile),
@@ -1370,11 +1389,12 @@ async function bootProfile(
   const { imageConfig, profileId, terminalSession, bootInputManifest } =
     composed;
   const vfsImageBytes = persistence !== null && frozenImageBytes === null
-    ? await saveFixedPersistenceImage(
+    ? (await saveFixedPersistenceImage(
       persistence.name,
       persistence.identity,
       composed.imageBytes,
-    )
+      loadedVfs.lazyAssets,
+    )).imageBytes
     : composed.imageBytes;
   assertCurrent();
   // The image keeps its canonical lazy addresses: nothing rewrites them. WHERE
