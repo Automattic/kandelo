@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const testDirectory = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = resolve(testDirectory, "../../..");
@@ -17,12 +18,16 @@ const imageModulePath = [publishedImageModulePath, directImageModulePath].find((
   return WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(path))).length === 0;
 }) ?? null;
 const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
+const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
 
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
+test.skip(guestProgramPath === null, "persistence guest fixture is required");
 
 test("browser kernel mounts a named OPFS journal and reopens it after destroy", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.mkdir("/bin", 0o755);
+  filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
   filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
   const image = await filesystem.saveImage();
   const kernelUrl = new URL("/fixed-rootfs-kernel.wasm", baseURL).href;
@@ -71,6 +76,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         };
         const first = await open("first boot");
         let initial: string;
+        let written: string;
         let rejected = false;
         let locked = false;
         try {
@@ -88,6 +94,9 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
           } catch {
             rejected = true;
           }
+          const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite"]);
+          if (await exit !== 0) throw new Error("guest overwrite failed");
+          written = new TextDecoder().decode(await first.readFileFromVfs("/state"));
         } finally {
           await first.destroy();
         }
@@ -95,6 +104,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         try {
           return {
             initial,
+            written,
             locked,
             rejected,
             recovered: new TextDecoder().decode(await second.readFileFromVfs("/state")),
@@ -103,7 +113,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
           await second.destroy();
         }
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result).toEqual({ initial: "abcdefgh", locked: true, rejected: true, recovered: "abcdefgh" });
+      expect(result).toEqual({ initial: "abcdefgh", written: "XYcdefgh", locked: true, rejected: true, recovered: "XYcdefgh" });
     } finally {
       await context.close();
     }
