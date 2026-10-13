@@ -29,12 +29,15 @@
 //! lives in the per-OFD `OpenFileDesc::offset` field (like host and tmpfs
 //! files), so rootfs is not a shared-cursor backing.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
+use crate::persistent_overlay::{OverlayJournal, OverlayStorage};
+use spin::Mutex;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::WasmStat;
 use wasm_posix_shared::WasmStatfs;
@@ -620,6 +623,62 @@ unsafe impl Sync for RootfsGlobal {}
 
 static ROOTFS: RootfsGlobal = RootfsGlobal::new();
 
+type PersistentJournal = OverlayJournal<Box<dyn OverlayStorage + Send>>;
+static PERSISTENT_ROOTFS: Mutex<Option<PersistentJournal>> = Mutex::new(None);
+
+pub fn enable_fixed_persistence(
+    storage: Box<dyn OverlayStorage + Send>,
+    base_digest: [u8; 32],
+) -> Result<(), Errno> {
+    let journal = OverlayJournal::open(storage, base_digest)?;
+    journal.state().validate_fixed_image_blocks(|ino| {
+        ROOTFS.with(|state| {
+            state.inodes.iter().flatten().find_map(|inode| {
+                if inode.ino != ino {
+                    return None;
+                }
+                match inode.kind {
+                    InodeKind::BaseRegular {
+                        size,
+                        source: BaseSource::Image,
+                        ..
+                    } if inode.deferred_digest == crate::sdef::DIGEST_NONE => Some(size),
+                    _ => None,
+                }
+            })
+        })
+    })?;
+    let mut active = PERSISTENT_ROOTFS.lock();
+    if active.is_some() {
+        return Err(Errno::EBUSY);
+    }
+    *active = Some(journal);
+    Ok(())
+}
+
+pub fn fixed_persistence_enabled() -> bool {
+    PERSISTENT_ROOTFS.lock().is_some()
+}
+
+pub fn image_length() -> Option<u64> {
+    ROOTFS.with(|state| state.image.map(|geometry| geometry.image_len))
+}
+
+pub fn sync_persistence() -> Result<(), Errno> {
+    match PERSISTENT_ROOTFS.lock().as_mut() {
+        Some(journal) => journal.sync(),
+        None => Ok(()),
+    }
+}
+
+fn reject_fixed_persistence_mutation() -> Result<(), Errno> {
+    if fixed_persistence_enabled() {
+        Err(Errno::EROFS)
+    } else {
+        Ok(())
+    }
+}
+
 /// Registry of *foreign* mount prefixes: the canonical mount points of every
 /// other filesystem still mounted under `/` after the host hands `/` to the
 /// overlay (for example `/run/kandelo-run` session-seed host mounts and extra
@@ -1075,6 +1134,7 @@ fn iter_to_dir_handle(idx: u32) -> i64 {
 /// Clear the whole overlay (drops every inode and open stream). Used before
 /// repopulating from a fresh image or manifest and by tests for isolation.
 pub fn reset() {
+    *PERSISTENT_ROOTFS.lock() = None;
     ROOTFS.with(|state| *state = RootfsState::new());
     FOREIGN_MOUNTS.with(|slot| slot.clear());
     ROOTFS_NOSUID.store(false, Ordering::SeqCst);
@@ -2453,10 +2513,14 @@ pub fn is_dir(path: &[u8]) -> bool {
 /// through [`opendir`].
 pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
     let comps = split_components(path);
+    let fixed_persistence = fixed_persistence_enabled();
     ROOTFS.with(|state| {
         let (parent, last, target) = state.resolve(&comps)?;
         let inode_idx = match target {
             Some(existing) => {
+                if fixed_persistence && flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
+                    return Err(Errno::EROFS);
+                }
                 if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
                     return Err(Errno::EEXIST);
                 }
@@ -2510,6 +2574,9 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                 existing
             }
             None => {
+                if fixed_persistence {
+                    return Err(Errno::EROFS);
+                }
                 if flags & O_CREAT == 0 {
                     return Err(Errno::ENOENT);
                 }
@@ -2894,6 +2961,43 @@ where
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
+    if fixed_persistence_enabled() {
+        if declares_digest(idx) {
+            return Err(Errno::EROFS);
+        }
+        let (ino, image_ino, base_size) = ROOTFS.with(|state| {
+            let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            match inode.kind {
+                InodeKind::BaseRegular {
+                    blob_id,
+                    size,
+                    source: BaseSource::Image,
+                } if inode.mode & 0o6000 == 0 => Ok((inode.ino, image_ino(blob_id)?, size)),
+                _ => Err(Errno::EROFS),
+            }
+        })?;
+        let end = (offset as u64)
+            .checked_add(buf.len() as u64)
+            .ok_or(Errno::EFBIG)?;
+        if end > base_size {
+            return Err(Errno::EFBIG);
+        }
+        let written = PERSISTENT_ROOTFS
+            .lock()
+            .as_mut()
+            .ok_or(Errno::EIO)?
+            .write_file_at(ino, base_size, offset as u64, buf, |at, dst| {
+                read_image_bytes(image_ino, at, dst, &mut byte_source)
+            })?;
+        if written > 0 {
+            ROOTFS.with(|state| {
+                if let Some(inode) = state.get_mut(idx) {
+                    inode.touch_modified();
+                }
+            });
+        }
+        return Ok(written);
+    }
     ensure_materialized(idx, &mut byte_source)?;
     ROOTFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
@@ -2942,6 +3046,7 @@ pub fn truncate_handle<F>(handle: i64, length: i64, mut byte_source: F) -> Resul
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
+    reject_fixed_persistence_mutation()?;
     let idx = file_handle_to_inode(handle)?;
     let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
     if new_len == 0 {
@@ -3001,6 +3106,28 @@ where
     let idx = file_handle_to_inode(handle)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
+    }
+    if fixed_persistence_enabled() && !declares_digest(idx) {
+        let plan = ROOTFS.with(|state| {
+            let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            match inode.kind {
+                InodeKind::BaseRegular {
+                    blob_id,
+                    size,
+                    source: BaseSource::Image,
+                } => Ok(Some((inode.ino, image_ino(blob_id)?, size))),
+                _ => Ok(None),
+            }
+        })?;
+        if let Some((ino, image_ino, base_size)) = plan {
+            return PERSISTENT_ROOTFS
+                .lock()
+                .as_mut()
+                .ok_or(Errno::EIO)?
+                .read_file_at(ino, base_size, offset as u64, buf, |at, dst| {
+                    read_image_bytes(image_ino, at, dst, &mut byte_source)
+                });
+        }
     }
     // A file whose image declared a digest cannot be served in WINDOWS. A
     // digest covers a whole object, so a single positioned read has nothing to
@@ -3561,6 +3688,7 @@ pub fn closedir(handle: i64) -> Result<(), Errno> {
 
 /// mkdir a rootfs directory.
 pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EEXIST); // the root already exists
@@ -3596,6 +3724,7 @@ pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
 
 /// Remove an empty rootfs directory.
 pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EBUSY); // cannot remove the root
@@ -3628,6 +3757,7 @@ pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
 
 /// Unlink a rootfs non-directory name.
 pub fn unlink(path: &[u8]) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EISDIR);
@@ -3660,6 +3790,7 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
 /// compatible type is atomically replaced; type mismatches yield ENOTDIR/EISDIR
 /// and a non-empty destination directory yields ENOTEMPTY.
 pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     // A directory cannot be moved into its own subtree.
     if new.len() > old.len() && new.starts_with(old) && new[old.len()] == b'/' {
         return Err(Errno::EINVAL);
@@ -3738,6 +3869,7 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
 /// links to directories are EPERM; an existing destination is EEXIST. `old` is
 /// not dereferenced (the kernel already applied the syscall's follow policy).
 pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let old_comps = split_components(old);
     let new_comps = split_components(new);
     if new_comps.is_empty() {
@@ -3772,6 +3904,7 @@ pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
 
 /// chmod a rootfs path (permission bits only).
 pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let idx = walk_to_inode(path)?;
     ROOTFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
@@ -3785,6 +3918,7 @@ pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
 /// `clear_setid` is set, set-user-ID (and set-group-ID on a group-executable
 /// file) is cleared, matching the host chown path.
 pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let idx = walk_to_inode(path)?;
     ROOTFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
@@ -3810,6 +3944,7 @@ pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), E
 
 /// fchmod an open rootfs file handle.
 pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let idx = file_handle_to_inode(handle)?;
     ROOTFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
@@ -3821,6 +3956,7 @@ pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
 
 /// fchown an open rootfs file handle. A field of `u32::MAX` (-1) is unchanged.
 pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let idx = file_handle_to_inode(handle)?;
     ROOTFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
@@ -3855,6 +3991,7 @@ pub fn utimensat(
     ctime_sec: u64,
     ctime_nsec: u32,
 ) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let idx = walk_to_inode(path)?;
     ROOTFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
@@ -3870,6 +4007,7 @@ pub fn utimensat(
 
 /// Create a symbolic link at a rootfs path pointing at `target`.
 pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let comps = split_components(linkpath);
     if comps.is_empty() {
         return Err(Errno::EEXIST);
@@ -3913,6 +4051,7 @@ pub fn mknod_special(
     gid: u32,
     type_bits: u32,
 ) -> Result<(), Errno> {
+    reject_fixed_persistence_mutation()?;
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EEXIST);
@@ -5233,6 +5372,46 @@ pub fn reset_image_export() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::sync::Arc;
+    use sha2::{Digest, Sha256};
+    use wasm_posix_shared::flags::O_RDWR;
+
+    #[derive(Clone)]
+    struct SharedJournalStorage(Arc<Mutex<Vec<u8>>>);
+
+    impl OverlayStorage for SharedJournalStorage {
+        fn len(&mut self) -> Result<u64, Errno> {
+            Ok(self.0.lock().len() as u64)
+        }
+
+        fn read_exact_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+            let bytes = self.0.lock();
+            let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
+            let end = start.checked_add(dst.len()).ok_or(Errno::EIO)?;
+            dst.copy_from_slice(bytes.get(start..end).ok_or(Errno::EIO)?);
+            Ok(())
+        }
+
+        fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
+            let mut bytes = self.0.lock();
+            let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
+            let end = start.checked_add(src.len()).ok_or(Errno::EIO)?;
+            bytes.resize(end, 0);
+            bytes[start..end].copy_from_slice(src);
+            Ok(())
+        }
+
+        fn flush(&mut self) -> Result<(), Errno> {
+            Ok(())
+        }
+
+        fn truncate(&mut self, len: u64) -> Result<(), Errno> {
+            self.0
+                .lock()
+                .truncate(usize::try_from(len).map_err(|_| Errno::EIO)?);
+            Ok(())
+        }
+    }
 
     /// Serialize tests: the store is a process-global singleton. Each test
     /// resets first, and no two run concurrently under this guard.
@@ -7875,6 +8054,47 @@ mod tests {
         let n = read(handle, 6, &mut tail, &mut host).expect("read at 6");
         assert_eq!(&tail[..n], b"sffs\n");
         assert_eq!(read(handle, 11, &mut tail, &mut host).expect("read at EOF"), 0);
+        release_handle(handle);
+    }
+
+    #[test]
+    fn fixed_persistence_replays_image_file_overwrite_after_reset() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_fixed_persistence(Box::new(storage.clone()), base_digest).unwrap();
+
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(handle, 6, b"KIFS", &mut image_bytes).unwrap(), 4);
+        let mut changed = [0u8; 16];
+        let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
+        assert_eq!(&changed[..count], b"hello KIFS\n");
+        assert_eq!(write(handle, 11, b"!", &mut image_bytes), Err(Errno::EFBIG));
+        sync_persistence().unwrap();
+        release_handle(handle);
+        assert_eq!(
+            open(b"/hello.txt", O_RDWR | O_TRUNC, 0, 0, 0),
+            Err(Errno::EROFS)
+        );
+        assert_eq!(
+            open(b"/new", O_RDWR | O_CREAT, 0o644, 0, 0),
+            Err(Errno::EROFS)
+        );
+        assert_eq!(unlink(b"/hello.txt"), Err(Errno::EROFS));
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        assert_eq!(
+            enable_fixed_persistence(Box::new(storage.clone()), [0u8; 32]),
+            Err(Errno::EIO),
+        );
+        enable_fixed_persistence(Box::new(storage), base_digest).unwrap();
+        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
+        assert_eq!(&changed[..count], b"hello KIFS\n");
         release_handle(handle);
     }
 

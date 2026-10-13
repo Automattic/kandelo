@@ -90,6 +90,7 @@ import {
   type PreparedExecKernel,
 } from "./exec-target";
 import type { DeferredFetchSettled } from "./vfs/rootfs-lazy-archives";
+import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { WasmModuleCache } from "./wasm-module-cache";
 import {
   buildRawHttpRequest,
@@ -3102,6 +3103,7 @@ export class CentralizedKernelWorker {
    * {@link #rootfsImageRead}, which the entry backs with the same bytes.
    */
   #rootfsImage: Uint8Array | null = null;
+  #rootfsImageLength = 0;
   /**
    * A positioned reader over the `/` image, in container coordinates. The
    * worker entry backs it with the image bytes it was handed at boot
@@ -5525,7 +5527,31 @@ export class CentralizedKernelWorker {
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
     this.#rootfsImage = image;
+    this.#rootfsImageLength = image.byteLength;
     this.#rootfsImageRead = imageRead;
+  }
+
+  enableFixedRootfsPersistence(storage: PersistentOverlayStorage): void {
+    if (this.#rootfsImageLength === 0) throw new Error("persistent rootfs requires a loaded image");
+    this.#kernel.setPersistentOverlayStorage(storage);
+    let status: number | undefined;
+    try {
+      this.#runImmediateKernelEntry("enable fixed rootfs persistence", (entry) => {
+        const enable = this.#kernelInstanceForEntry(entry).exports
+          .kernel_rootfs_enable_fixed_persistence as
+          | ((lengthLo: number, lengthHi: number) => number)
+          | undefined;
+        if (typeof enable !== "function") throw new Error("kernel lacks fixed rootfs persistence export");
+        const lengthLo = this.#rootfsImageLength >>> 0;
+        const lengthHi = Math.floor(this.#rootfsImageLength / 0x1_0000_0000);
+        status = enable(lengthLo, lengthHi);
+        return undefined;
+      });
+      if (status !== 0) throw new Error(`kernel refused fixed rootfs persistence (errno ${-(status ?? 5)})`);
+    } catch (error) {
+      this.#kernel.setPersistentOverlayStorage(null);
+      throw error;
+    }
   }
 
   /**
@@ -5639,22 +5665,15 @@ export class CentralizedKernelWorker {
     }
     enable(1);
 
-    // Drop the load-time container reference and re-point the window at the
-    // filesystem body.
+    // Drop the direct load-time container reference, retaining its positioned
+    // reader for the full container.
     //
-    // The container's header and trailing sections (lazy JSON, archive JSON,
-    // metadata, `KLZY`) exist for the load and are never read again. The body
-    // is different: the kernel serves every image-backed base file's content
-    // out of it, through its own KIFS reader, for the life of the session. So
-    // the window stays open, through the entry's reader. See
-    // KERNEL_IMAGE_WINDOW on `#rootfsImageRead`.
+    // The kernel serves image-backed files through its KIFS reader for the
+    // session's life. Fixed persistence also hashes the complete container
+    // after load, so this positioned provider must retain its header bytes.
     //
-    // Container coordinates are preserved: the kernel cached the image's own
-    // KIFS span at load and keeps addressing bytes by their offset in the
-    // container, so the body is served at `VFS_IMAGE_HEADER_SIZE`. A read of
-    // the header after load is refused rather than guessed at; nothing in the
-    // kernel asks for one, and a change that made it would find out here
-    // instead of reading a tree of empty files.
+    // Container coordinates are preserved: KIFS reads address the body and
+    // the persistence digest addresses the whole container.
     const imageRead = this.#rootfsImageRead;
     this.#rootfsImage = null;
     if (imageRead === null) {
@@ -5664,7 +5683,6 @@ export class CentralizedKernelWorker {
     this.#kernel.setRootfsImageProvider((offset, dest) => {
       const at = Number(offset);
       if (!Number.isSafeInteger(at) || at < 0) return -22; // EINVAL
-      if (at < VFS_IMAGE_HEADER_SIZE) return -22; // EINVAL: the header is gone
       // The backend owns where its bytes live; this stays the guard only.
       return imageRead(at, dest);
     });

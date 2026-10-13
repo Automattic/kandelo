@@ -164,6 +164,7 @@ export interface InitMessage {
    * them into the image.
    */
   vfsImage: Uint8Array;
+  experimentalFixedPersistenceName?: string;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */

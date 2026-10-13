@@ -47,6 +47,9 @@ export type {
   TarSymlinkEntry,
 } from "./tar";
 export { OpfsFileSystem } from "./opfs";
+export { OverlayStorageFile } from "./overlay-storage";
+export { OpfsOverlayStorageFile } from "./overlay-storage";
+export type { PersistentOverlayStorage } from "./overlay-storage";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";
 export { NodeTimeProvider, BrowserTimeProvider } from "./time";
 export { ST_NOSUID } from "./types";

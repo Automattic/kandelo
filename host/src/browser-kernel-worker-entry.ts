@@ -53,6 +53,7 @@ import { DEFAULT_MOUNT_SPEC } from "./vfs/default-mounts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
 import { BrowserTimeProvider } from "./vfs/time";
+import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -166,6 +167,7 @@ const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 // State
 let kernelWorker: CentralizedKernelWorker;
+let persistentOverlay: OpfsOverlayStorageFile | null = null;
 let workerAdapter: BrowserWorkerAdapter;
 let io: VirtualPlatformIO;
 const vfsChangeSubscriptions = new Map<string, () => void>();
@@ -1274,6 +1276,18 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   if (msg.bridgePort) {
     bridgePort = msg.bridgePort;
     resetBridgePendingRequests();
+  }
+
+  if (msg.experimentalFixedPersistenceName !== undefined) {
+    if (!rootImage.has()) throw new Error("fixed rootfs persistence requires a rootfs image");
+    const storage = await OpfsOverlayStorageFile.open(msg.experimentalFixedPersistenceName);
+    try {
+      kernelWorker.enableFixedRootfsPersistence(storage);
+      persistentOverlay = storage;
+    } catch (error) {
+      storage.close();
+      throw error;
+    }
   }
 
   initReady = true;
@@ -4212,6 +4226,8 @@ async function performDestroy() {
   pcmConnection?.close();
   pcmConnection = null;
   kernelWorker.shutdownPcmTransport();
+  persistentOverlay?.close();
+  persistentOverlay = null;
   initReady = false;
   initFailure = "kernel worker destroyed";
   if (gracefulDetachComplete) {

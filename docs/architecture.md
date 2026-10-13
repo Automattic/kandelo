@@ -2157,12 +2157,59 @@ either description, or whose metadata declares a different `kernelAbi`, is
 refused (`EINVAL` / `EPROTO`), and the boot fails at that cause; there is no
 host-side fallback.
 
-The kernel keeps the tree's metadata, every guest change, and every file the
-guest creates in its own memory. Unmodified file content stays in the image:
+Normally, the kernel keeps the tree's metadata, every guest change, and
+every file the guest creates in its own memory. Unmodified file content stays
+in the image:
 the kernel reads it on demand through `host_image_read`, a positioned window
 onto the bytes the worker entry holds (`imageReadFromContainer` in
 `host/src/vfs/rootfs-lazy-archives.ts`). Writing to an image-backed file
-copies it into kernel memory first.
+copies it into kernel memory first unless the experimental fixed-overwrite
+mode is enabled.
+
+`crates/runtime-core/src/persistent_overlay.rs` prototypes a separate,
+append-only durable overlay bound to a specific base-image SHA-256 digest. It
+records inode metadata, fixed-size file blocks, and directory-entry changes
+in checksummed transactions, publishes them after a storage flush, and drops
+an incomplete trailing transaction during recovery. Its experimental file
+helpers read unchanged blocks from the base image, journal only blocks touched
+by writes, and record logical length separately, so sparse offsets need not
+allocate the gap. Recovery keeps file-block locations and digests, not file-block
+contents, in memory. Reads verify changed blocks against their digests and keep
+at most 64 recently used 4 KiB blocks (256 KiB) in a cache. The metadata and
+block-location index is not yet bounded. `host/src/vfs/overlay-storage.ts`
+supplies an exact, positioned I/O adapter over the existing Node and OPFS
+filesystem backends. `crates/overlay-prototype` is a separate Wasm harness that
+connects the Rust journal to this OPFS adapter. Its browser test creates a
+named file, writes across base-image blocks and at an 8 GiB sparse offset,
+restarts both workers, and checks namespace recovery and wrong-base rejection
+in Chromium, Firefox, and WebKit.
+The live kernel can opt into a narrow first integration with
+`NodeKernelHost.experimentalFixedPersistencePath` or
+`BrowserKernel.experimentalFixedPersistenceName` (on boot or init). It hashes
+the loaded VFS image, opens the corresponding journal, and replays changes to
+existing image-backed regular files. Writes within their original length are
+journaled and flushed before they return; reads consult the journal's bounded
+block cache and fall through to the unchanged image. `fsync` and `fdatasync`
+flush again. Creation, deletion, rename, truncation, explicit metadata changes,
+growth past EOF,
+writes to deferred/digest-declared/set-ID files, and writes to files created
+in memory during boot fail with `EROFS` or `EFBIG`. This is an intentionally
+incomplete opt-in filesystem contract, not general persistent POSIX storage.
+Write-induced mtime/ctime updates are visible during a session but not replayed.
+The journal may describe inode and namespace changes, but this mode rejects
+them during recovery until rootfs can replay them accurately.
+
+Browser sessions use an OPFS `FileSystemSyncAccessHandle` in the kernel worker;
+its exclusive handle provides the single-writer lease and is closed on destroy.
+Node sessions use an absolute journal path and a sibling `.lock` directory;
+concurrent Node sessions fail closed, and a crash may require manual removal
+of a stale lock after confirming no writer remains. Journal paths must be
+private; neither adapter protects against an external writer. Offsets must
+fit JavaScript's safe-integer range. The base image is still resident in host
+memory, and the journal's block-location index grows with changed blocks.
+There is no compaction or measured performance claim. The file helper rejects
+writes exceeding one 1 MiB transaction rather than implementing POSIX
+partial-write behavior.
 
 A deferred file is one the image names but does not carry: a URL-backed lazy
 file, or a member of a lazy ZIP archive. The image records its real size, the
