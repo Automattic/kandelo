@@ -2227,7 +2227,9 @@ memory on initial installation, and the journal's block-location index grows
 with changed blocks.
 The Rust journal can stage a compacted copy in separate storage after
 verifying every live block, but the live host has no generation handoff yet;
-its journal still grows and its recovery index is not bounded. There is no
+its journal still grows and its recovery index is not bounded. A prototype
+generation seal verifies a candidate journal in 1 MiB chunks; no host boot
+selects it yet. There is no
 measured performance claim. The file helper rejects
 writes exceeding one 1 MiB transaction rather than implementing POSIX
 partial-write behavior.

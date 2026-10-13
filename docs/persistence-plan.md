@@ -57,6 +57,9 @@ Initial source fetch, zstd decode, and image-writer loading still materialize
 the source image. Journal block locations and recovery work still grow with
 the number of distinct changed blocks. Rust can stage a verified compacted
 copy without changing the source, but the host cannot yet atomically hand off
-between journal generations. Crash-safe live compaction and persistent
+between journal generations. A prototype generation seal records the base
+digest and per-MiB journal digests and can verify a candidate with bounded
+reads, but no host selects sealed generations yet. Crash-safe live compaction
+and persistent
 namespace mutations remain separate milestones, not implicit guarantees of
 the current fixed-overwrite mode.
