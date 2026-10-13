@@ -423,6 +423,7 @@ export class LocalVirtualNetwork {
 export class VirtualNetworkBackend implements NetworkIO {
   private connections = new Map<number, TcpConnectionPeer>();
   private connectErrors = new Map<number, number>();
+  private localEndpoints = new Map<number, NetworkAddress>();
   private nextEphemeralPort = 49152;
 
   constructor(
@@ -435,12 +436,15 @@ export class VirtualNetworkBackend implements NetworkIO {
     return this.network.hasAddress(destination) ? copyAddr(this.localAddress) : 101;
   }
 
-  connect(handle: number, addr: Uint8Array, port: number): void {
+  connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void {
     if (this.connections.has(handle)) {
       this.connectErrors.set(handle, EISCONN);
       return;
     }
-    const sourcePort = this.allocateEphemeralPort();
+    if (source && (source.addr.length !== 4 || (!source.addr.every(v=>v===0) && !source.addr.every((v,i)=>v===this.localAddress[i])))) {
+      this.connectErrors.set(handle,EADDRNOTAVAIL); return;
+    }
+    const sourcePort = source?.port || this.allocateEphemeralPort();
     const result = this.network.connectTcp(
       this.machineId,
       { addr: this.localAddress, port: sourcePort },
@@ -448,6 +452,7 @@ export class VirtualNetworkBackend implements NetworkIO {
     );
     if (result.status === 0) {
       this.connections.set(handle, result.peer);
+      this.localEndpoints.set(handle,{addr:copyAddr(this.localAddress),port:sourcePort});
       this.connectErrors.delete(handle);
     } else {
       this.connectErrors.set(handle, result.status);
@@ -483,10 +488,23 @@ export class VirtualNetworkBackend implements NetworkIO {
     return NET_READINESS.UNOBSERVABLE;
   }
 
+  localEndpoint(handle: number): NetworkAddress {
+    const value = this.localEndpoints.get(handle);
+    if (!value) throw Object.assign(new Error("ENOTCONN"),{errno:ENOTCONN});
+    return {addr:copyAddr(value.addr),port:value.port};
+  }
+
+  shutdown(handle: number, how: number): void {
+    const conn = this.connections.get(handle);
+    if (!conn) throw Object.assign(new Error("ENOTCONN"), {errno: ENOTCONN});
+    conn.shutdown(how);
+  }
+
   close(handle: number): void {
     const conn = this.connections.get(handle);
     if (conn) conn.close();
     this.connections.delete(handle);
+    this.localEndpoints.delete(handle);
     this.connectErrors.delete(handle);
   }
 

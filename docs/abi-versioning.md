@@ -1475,6 +1475,20 @@ Structural changes (recorded in the snapshot):
   packed source IPv4 address in network byte order, or a negative errno. The
   host derives it from the kernel worker's actual `NetworkIO` interface, and a
   host without a routed UDP interface answers `ENETUNREACH`.
+- **Remote TCP imports.** `env.host_net_connect_from(handle, addr_ptr,
+  addr_len, port, source, source_port)` starts a connect from an explicit
+  bound source; `env.host_net_local_endpoint(handle) -> i64` reports the
+  actual local address and port of a connected stream (packed address in the
+  high bits, port in the low 16), or a negative errno; and
+  `env.host_net_shutdown(handle, how)` disables stream directions on the host
+  connection. A host without one of these answers `EOPNOTSUPP`, which the
+  kernel reports instead of pretending the operation happened.
+- **Accepted-stream reset exports.** `kernel_tcp_connection_id(recv, send)`
+  returns a non-reused token for an accepted stream's pipe pair, and
+  `kernel_reset_tcp_connection(recv, send, token)` resets both halves only
+  when that token still owns them, so a pipe index freed by a half-close
+  cannot authorize a reset of a later connection. `kernel_inject_connection`
+  gains a trailing routed local-address argument.
 
 Semantic changes:
 
@@ -1493,6 +1507,23 @@ Semantic changes:
 - **Host `EHOSTUNREACH` and `ENOBUFS` reach the guest as themselves.** Both
   are now kernel `Errno` values, so a host that reports an unreachable peer
   or exhausted buffers is no longer converted to `EIO`.
+- **A failed host-backed connect stays reported.** Every later `poll`,
+  `select` or `epoll` wait reports the socket ready (with `POLLERR` until
+  `SO_ERROR` consumes the error), instead of only the wait that observed the
+  failure. A caller whose first wait absorbed the failure used to wait for a
+  connection that had already failed.
+- **Host-backed TCP shutdown keeps the connection handle.** `shutdown`
+  changes directions on the shared connection and the handle is released only
+  at close, so a half-close no longer drops a connection that another
+  descriptor still holds. An unsupported host shutdown fails without changing
+  the kernel's shutdown flags.
+- **Host connection handles are machine-wide.** They are allocated across
+  processes instead of reusing a process-local socket slot, so two processes'
+  first sockets no longer collide in a shared host backend.
+- **Stream resets are sticky and shared.** A reset reported by the host is
+  visible as `ECONNRESET` through every descriptor that shares the socket,
+  raises `POLLERR`, and is reported once through `SO_ERROR`. Accepted
+  connections report the routed local address from `getsockname`.
 
 ## The snapshot
 
