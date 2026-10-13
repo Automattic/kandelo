@@ -2604,6 +2604,8 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
 
 `TcpNetworkBackend`, `FetchNetworkBackend`, `TlsNetworkBackend`, and `LocalVirtualNetwork` share one numeric-address and hostname validator. It accepts decimal one-, two-, three-, and four-component IPv4 forms within their component widths, rejects malformed or overflowing numeric forms, enforces ASCII host-label syntax and DNS length limits, and preserves one trailing root dot. The Node TCP backend resolves validated names through the host resolver. The browser HTTP fetch/TLS bridges synthesize IPv4 mappings for syntactically acceptable DNS names; `LocalVirtualNetwork` resolves only aliases registered by attached machines. None of the browser paths adds browser DNS resolution or AF_INET6 transport.
 
+Each of these internet backends presents itself to the guest as a NAT link of its own, the shape QEMU's user-mode networking gives a guest (`host/src/networking/egress-link.ts`). The guest owns `10.0.2.15/24` on it; every off-link destination is behind the host, and `getsockname` on an internet stream reports `10.0.2.15` with the stream's port, never the host's real address. The browser bridges hand out made-up addresses from `198.18.0.0/15`, the range reserved for benchmarking networks: it is never routed on the internet and cannot overlap a session's `10.89.0.0/24` or a virtual link's subnet, and addresses are assigned in order, so two names never share one. The gateway carries TCP only. A UDP datagram for anywhere beyond the machine fails with `EHOSTUNREACH`, POSIX's "the destination host cannot be reached (... a remote router cannot reach it)": the route exists, and the router on it cannot deliver UDP. It is neither dropped silently nor reported as `ENETUNREACH`, which would deny the route TCP uses. A program that sends UDP beyond the machine sees that error; a Doom LAN server, for example, must run with `-privateserver`, because its internet master-server registration fails and fbdoom stops with a fatal error on a failed send.
+
 WebRTC or proxy-based external transports should attach as additional `NetworkIO` backends behind the same POSIX socket layer rather than adding host-specific socket APIs visible to guest programs.
 
 `RemoteVirtualNetwork` extends the local backend with a worker-owned IPv4
@@ -2652,7 +2654,9 @@ that reports `localAddress` also reports `localNetmask`, and every
 `SIOCGIFFLAGS`, `SIOCGIFNETMASK` and `SIOCGIFBRDADDR` from that pair, and libc's
 `getifaddrs` is built on those ioctls, so a program that enumerates interfaces
 sees `eth0` as, for example, `10.89.0.2/24` with broadcast `10.89.0.255` while
-joined, and as down with no address outside a session.
+joined. Outside a session `eth0` is the internet egress link, `10.0.2.15/24`,
+when the host provides one (always in the browser; on Node with
+`enableTcpNetwork`), and down with no address when it does not.
 
 ABI 50 adds host-selected UDP source addresses and correct next-datagram
 FIONREAD observations, and preserves host EHOSTUNREACH/ENOBUFS errors.

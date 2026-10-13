@@ -1,4 +1,5 @@
-import type { NetworkIO } from "../types";
+import type { NetworkAddress, NetworkIO, UdpReceiveTarget } from "../types";
+import { EgressLink, SyntheticHostAddresses } from "./egress-link";
 import { NET_READINESS } from "../generated/abi";
 import {
   parseNumericIpv4Hostname,
@@ -38,7 +39,9 @@ export interface FetchBackendOptions {
 
 export class FetchNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
-  private hostnameMap = new Map<string, string>(); // ip string → hostname
+  // The guest sees fetch as a NAT gateway on its own link (egress-link.ts).
+  private readonly egress = new EgressLink();
+  private readonly addresses = new SyntheticHostAddresses();
   private options: FetchBackendOptions;
   private corsProxy: BrowserCorsProxy | undefined;
 
@@ -50,10 +53,21 @@ export class FetchNetworkBackend implements NetworkIO {
       : new BrowserCorsProxy(corsProxyConfig, options?.onCorsProxyDiagnostic);
   }
 
-  connect(handle: number, addr: Uint8Array, port: number, source?: import("../types").NetworkAddress): void {
-    if (source) throw Object.assign(new Error("bound raw TCP is unavailable through fetch"), {errno:95});
-    const ipStr = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`;
-    const hostname = this.hostnameMap.get(ipStr) || ipStr;
+  get localAddress(): Uint8Array { return this.egress.localAddress; }
+  get localNetmask(): Uint8Array { return this.egress.localNetmask; }
+  udpSourceAddress(destination: Uint8Array): Uint8Array { return this.egress.udpSourceAddress(destination); }
+  bindUdp(id: string, addr: Uint8Array, port: number, target: UdpReceiveTarget): number { return this.egress.bindUdp(id, addr, port, target); }
+  unbindUdp(id: string): void { this.egress.unbindUdp(id); }
+  sendDatagram(): number { return this.egress.sendDatagram(); }
+
+  localEndpoint(handle: number): NetworkAddress {
+    if (!this.connections.has(handle)) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
+    return this.egress.streamEndpoint(handle);
+  }
+
+  connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void {
+    this.egress.openStream(handle, source);
+    const hostname = this.addresses.hostname(addr) ?? Array.from(addr).join(".");
     this.connections.set(handle, {
       hostname,
       ip: new Uint8Array(addr),
@@ -220,6 +234,7 @@ export class FetchNetworkBackend implements NetworkIO {
 
   close(handle: number): void {
     this.connections.delete(handle);
+    this.egress.closeStream(handle);
   }
 
   getaddrinfo(hostname: string): Uint8Array {
@@ -227,20 +242,7 @@ export class FetchNetworkBackend implements NetworkIO {
     if (literalIp) return literalIp;
     validateSyntheticDnsHostname(hostname, this.options.hostAliases);
 
-    // In the browser, return a synthetic IP.
-    // The actual connection uses the Host header, not this IP.
-    // Use a deterministic hash to generate a fake IP in the 10.x.x.x range.
-    let hash = 0;
-    for (let i = 0; i < hostname.length; i++) {
-      hash = ((hash << 5) - hash + hostname.charCodeAt(i)) | 0;
-    }
-    const ip = new Uint8Array([10, (hash >> 16) & 0xff, (hash >> 8) & 0xff, hash & 0xff]);
-    // Store hostname→IP mapping so connect() can recover the hostname
-    // (needed when program connects to port 443 where Host header may not be present
-    // before TLS handshake, or for constructing proper URLs)
-    const ipStr = `${ip[0]}.${ip[1]}.${ip[2]}.${ip[3]}`;
-    this.hostnameMap.set(ipStr, hostname);
-    return ip;
+    return this.addresses.resolve(hostname);
   }
 }
 
