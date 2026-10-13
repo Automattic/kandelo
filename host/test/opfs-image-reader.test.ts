@@ -96,4 +96,29 @@ describe("OpfsImageReader", () => {
     })).rejects.toThrow("damaged");
     expect(closed).toBe(true);
   });
+
+  it("reads sparse offsets beyond the 32-bit range without allocating the image", async () => {
+    const length = 8 * 1024 * 1024 * 1024 + 17;
+    const positions: number[] = [];
+    const file = {
+      createSyncAccessHandle: async () => ({
+        getSize: () => length,
+        read(destination: Uint8Array, options: { at: number }) {
+          positions.push(options.at);
+          destination.fill(options.at % 251);
+          return destination.byteLength;
+        },
+        close: () => {},
+      }),
+    } as unknown as FileSystemFileHandle;
+    const reader = await OpfsImageReader.open(file);
+    const data = new Uint8Array(17);
+    const offset = 4 * 1024 * 1024 * 1024 + 5;
+    expect(reader.readAt(offset, data)).toBe(17);
+    expect(positions).toContain(4 * 1024 * 1024 * 1024);
+    expect(data.every((byte) => byte === (4 * 1024 * 1024 * 1024) % 251)).toBe(true);
+    expect(reader.readAt(length - 3, data)).toBe(3);
+    expect(positions).toContain(8 * 1024 * 1024 * 1024);
+    reader.close();
+  });
 });
