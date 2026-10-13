@@ -55,6 +55,15 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   Kandelo's file-backed `MAP_SHARED` coherence and `msync` remain partial
   as described in `docs/posix-status.md`; do not infer database durability
   or immediate cross-process visibility from this API gate.
+- The direct `kandelo-dev/sys` fork provides a `golang.org/x/sys/unix`
+  Kandelo target rather than a package-local FrankenPHP copy and patch.
+  Its memory, file-lock, access, and socket-option wrappers delegate to
+  the Go fork's real syscall channel. `Madvise` is a validated no-op hint
+  in the kernel; `SO_REUSEPORT` get/set round-trips, but duplicate-listener
+  semantics are not established. The x/sys CPU target selection also lives
+  in that fork. Pin both forks in package recipes and test the API in Node
+  and browsers before extending it for a consumer. Do not mistake the
+  currently small unix surface for general Linux compatibility.
 - The linker imports shared linear memory and declares a bounded pthread
   slot arena below the Go heap. The default is 32 slots; the per-program
   `-ldflags='-kandelothreadslots=N'` accepts 1–1024. Each slot reserves

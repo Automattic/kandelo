@@ -3295,3 +3295,26 @@ Chromium smoke test. These are bounded API and rebuild checks, not a new
 WordPress image test or a production Caddy build. Kandelo's documented
 `MAP_SHARED`/`msync` limits still apply, and Caddy still needs a reviewed
 `x/sys/unix` target port and the other dependency ports from the inventory.
+
+**2026-10-13 — Direct x/sys target port.** The Go fork
+`ee2c1b39515cc4b2215db302d07b3efff491c6a1` adds channel-backed
+`Access`, `Flock`, and `Madvise` plus the Kandelo constants needed by
+`golang.org/x/sys/unix`. The new direct x/sys fork
+`9619e743cfc817e3a67db8c1a10124675cd80e89` provides Kandelo
+`unix` and `cpu` target files. FrankenPHP rev22 pins both forks and
+removes its local x/sys patch; go-hello rev17 pins the Go fork. Focused
+Go and x/sys syscall tests pass in Node and Chromium, Firefox, and
+WebKit, including file-backed mapping writeback, advisory-lock
+contention, and socket-option get/set. These tests do not establish
+`SO_REUSEPORT` duplicate binds, durable database sync, or general
+`x/sys/unix` coverage. The stock Caddy executable now compiles past
+the x/sys and Badger API errors but remains blocked by four separate
+dependency target-selection families: bbolt, readline, logrus, and
+certificate-transparency-go/x509. Do not patch all four into the
+FrankenPHP recipe; each needs a bounded direct target port or a
+reviewed platform feature as appropriate. The `go-hello` rev17 and
+`frankenphp-classic` rev22 source package builds pass. The rebuilt
+FrankenPHP serves PHP and a static asset in a Chromium HTTP smoke test.
+The ABI snapshot check passes. This does not rebuild the WordPress
+image or retest the logged-in editor workflow, and is not a Caddy
+or production-readiness claim.

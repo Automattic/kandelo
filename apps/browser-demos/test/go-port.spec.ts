@@ -198,6 +198,14 @@ const probes: Probe[] = [
     imageCapacity: 8 * 1024 * 1024,
   },
   {
+    name: "Go syscall flock enforces open-file-description contention",
+    file: "syscall-test.wasm",
+    argv: ["go-syscall-test", "-test.run=^TestKandeloFlock$", "-test.v"],
+    stdout: ["--- PASS: TestKandeloFlock", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
+  },
+  {
     name: "upstream Go os.Root Chtimes nanosecond precision",
     file: "os-test.wasm",
     argv: ["go-os-test", "-test.run=^TestRootChtimes$", "-test.v"],
@@ -426,6 +434,17 @@ const probes: Probe[] = [
     launchFromVfs: true,
   },
 ];
+
+if (process.env.KANDELO_XSYS_BROWSER_TESTS === "1") {
+  probes.push({
+    name: "Kandelo x/sys/unix socket, mmap, access, and flock APIs",
+    file: "xsys-unix-test.wasm",
+    argv: ["go-xsys-unix-test", "-test.run=^TestKandeloUnix", "-test.v"],
+    stdout: ["--- PASS: TestKandeloUnixMemory", "--- PASS: TestKandeloUnixSocketOption", "--- PASS: TestKandeloUnixFlockAccess", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
+  });
+}
 
 if (process.env.KANDELO_GO_CGO_LINK_TESTS === "1") {
   probes.push({

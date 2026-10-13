@@ -9,6 +9,7 @@ kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 source "$REPO_ROOT/sdk/activate.sh"
 
 : "${WASM_POSIX_BUILD_GIT_GO_TOOLCHAIN_DIR:?pinned Go source is required}"
+: "${WASM_POSIX_BUILD_GIT_XSYS_DIR:?pinned x/sys source is required}"
 : "${WASM_POSIX_DEP_PHP_ZTS_DIR:?php-zts dependency is required}"
 : "${WASM_POSIX_DEP_ICU_DIR:?ICU dependency is required}"
 : "${WASM_POSIX_DEP_LIBCXX_DIR:?libcxx dependency is required}"
@@ -67,10 +68,10 @@ export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm CGO_ENABLED=1 CC=wasm32posix-c
 php_include="$WASM_POSIX_DEP_PHP_ZTS_DIR/include/php"
 export CGO_CFLAGS="-I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
 
-(cd "$SOURCE_DIR" && "$GO_ROOT/bin/go" mod download golang.org/x/sys@v0.39.0)
-cp -R "$GOMODCACHE/golang.org/x/sys@v0.39.0" "$MODULE_DIR"
+mkdir -p "$MODULE_DIR"
+tar --exclude=.git -cf - -C "$WASM_POSIX_BUILD_GIT_XSYS_DIR" . |
+    tar -xf - -C "$MODULE_DIR"
 chmod -R u+w "$MODULE_DIR"
-(cd "$MODULE_DIR" && git apply "$SCRIPT_DIR/xsys-kandelo.patch")
 (cd "$SOURCE_DIR" && "$GO_ROOT/bin/go" mod edit -replace=golang.org/x/sys=../xsys-kandelo)
 (cd "$SOURCE_DIR" && "$GO_ROOT/bin/go" build -tags 'nomercure nowatcher' \
     -o "$WORK_DIR/frankenphp-classic.wasm" ./cmd/kandelo-classic)

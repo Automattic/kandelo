@@ -87,6 +87,19 @@ record_built_program_output "$output_dir/tar-test.wasm"
 GO111MODULE=off GOOS=kandelo GOARCH=wasm "$go_bin" test -c -o "$output_dir/syscall-test.wasm" syscall
 record_built_program_output "$output_dir/syscall-test.wasm"
 
+if [ -n "${GO_KANDELO_XSYS_SOURCE_DIR:-}" ]; then
+  if [ ! -f "$GO_KANDELO_XSYS_SOURCE_DIR/go.mod" ]; then
+    echo "x/sys source directory not found: $GO_KANDELO_XSYS_SOURCE_DIR" >&2
+    exit 1
+  fi
+  (
+    cd "$GO_KANDELO_XSYS_SOURCE_DIR"
+    GOWORK=off GOOS=kandelo GOARCH=wasm CGO_ENABLED=0 "$go_bin" test -c \
+      -o "$output_dir/xsys-unix-test.wasm" ./unix
+  )
+  record_built_program_output "$output_dir/xsys-unix-test.wasm"
+fi
+
 stamp_built_program_outputs
 
 mkdir -p "$publish_dir"

@@ -89,6 +89,17 @@ writeback on Node and all three browser engines. Run it in Node with:
 scripts/dev-shell.sh bash -c 'node --import tsx tests/go/syscall-stdlib/run.ts .context/go-browser/syscall-test.wasm "$(scripts/resolve-binary.sh kernel.wasm)" "^TestKandeloMmap$"'
 ```
 
+The Go fork's `TestKandeloFlock` checks open-file-description lock
+contention through the same runner. To include the direct Kandelo
+`golang.org/x/sys` port in browser fixtures, set
+`GO_KANDELO_XSYS_SOURCE_DIR` to an absolute checkout path when building
+them. Run the resulting `xsys-unix-test.wasm` in Node with the syscall
+runner and `^TestKandeloUnix`; set `KANDELO_XSYS_BROWSER_TESTS=1` alongside
+`KANDELO_GO_BROWSER_TESTS=1` for the three-browser probes. These cover
+mapped writeback, memory advice, lock contention, access checks, and a
+`SO_REUSEPORT` option round-trip. They do not prove duplicate-listener
+behavior or database durability.
+
 The VFS-backed `run-full-vfs.ts` runner supplies Go source/testdata, account
 files, `/bin/pwd`, and a non-root CWD. With `-test.run=^Test`, the available
 upstream `os` suite passes 213 top-level tests in Node when excluding the two
