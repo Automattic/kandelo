@@ -63,6 +63,14 @@ test("computers join one hosted session from its link and talk over guest TCP", 
       return (await runTerminalCommand(second.page, "cat /tmp/session.txt")).output;
     }, { timeout: 60_000 }).toContain("hello across the session");
 
+    // LAN discovery is a broadcast: Doom's search on a joiner finds a
+    // dedicated server on the hosting computer through the session. The
+    // server is LAN-only: a browser cannot send UDP to Doom's internet
+    // master server, and fbdoom exits when that registration send fails.
+    await runTerminalCommand(page, "fbdoom -dedicated -privateserver > /tmp/doom-server.log 2>&1 &");
+    await expect.poll(async () => (await runTerminalCommand(first.page, "fbdoom -localsearch 2>&1")).output, { timeout: 60_000 })
+      .toMatch(/10\.89\.0\.1 .*Unnamed server[\s\S]*1 server\(s\) found\./);
+
     // Leaving drops one member everywhere; the host ending ends it for all.
     await first.page.getByRole("button", { name: "Network session: connected", exact: true }).click();
     await first.page.getByRole("button", { name: "Leave session", exact: true }).click();

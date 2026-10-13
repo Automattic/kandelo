@@ -2518,8 +2518,12 @@ Both use `purpose: "network"` peer connections. The main thread transfers
 framed bytes between RTC channels and bounded native MessagePorts. Guest
 programs use ordinary IPv4 UDP and TCP sockets; DNS names `host` and `peer-N`
 resolve through the worker's segment membership, and broadcasts reach every
-computer in the session, so LAN discovery works (`fbdoom -localsearch` finds
-a host's server). Node runs the
+computer in the session, so LAN discovery works: in Chromium, a joiner's
+`fbdoom -localsearch` finds the hosting computer's server, and between two
+Node machines TyrQuake's Multiplayer → Join a Game search lists and joins a
+session's server. A LAN game should run as a private server
+(`fbdoom -privateserver`): a browser cannot send UDP to an internet master
+server, and fbdoom exits when its registration send fails. Node runs the
 same segment over paired native ports; its built-in runtime has no WebRTC API,
 so creating RTC links remains a browser adapter capability.
 
